@@ -1,0 +1,23 @@
+# Konkurrenzfunktionen und technische Einordnung
+
+Recherche am 16.10.2026, offizielle Produkt-/Apple-Dokumentation. Keine Konkurrenz-App dekompiliert; kein Nachweis identischen Schreibgefühls oder identischer Erkennungsqualität. Funktionen sind Vorbilder für notys eigenen Umfang.
+
+## Für den Schulalltag relevante Vorbilder
+
+- **Organisation:** Goodnotes beschreibt verschachtelte Ordner, Drag-and-drop, Namen-/Ordnersuche, Favoriten, Listen-/Rasteransicht, Export und wiederherstellbaren Papierkorb. [Goodnotes Ordner/Dokumente](https://support.goodnotes.com/hc/en-us/articles/15303674514191-Organize-folders-and-documents-in-Goodnotes). Auch aktuelles Notability verwendet Ordner; das frühere Subjects/Dividers-Modell ist keine zutreffende Beschreibung der aktuellen Version. [Notability Ordner](https://support.gingerlabs.com/en-us/articles/16300020-organize-notes-with-folders).
+- **Werkzeuge:** Notability beschreibt Farben, Breiten, Druckempfindlichkeit sowie durchgezogene/gestrichelte/gepunktete Stifte. [Apple-Pencil-Nutzung](https://support.gingerlabs.com/en-us/articles/16300204-writing-with-apple-pencil). Goodnotes unterscheidet präzises Teilradieren, segmentartiges Radieren und ganze Striche; Text/PDF/Bilder werden nicht automatisch mit dem Handschriftradierer gelöscht. [Goodnotes Radierer](https://support.goodnotes.com/hc/en-us/articles/7353718249231-Erase-handwriting-and-page-content-with-the-Eraser-tool).
+- **Objektbearbeitung:** Goodnotes bietet gemischtes Lasso für Handschrift, Text/Bilder und weitere Inhalte mit Filtern, Bewegen, Größenänderung und objektspezifischen Aktionen. [Goodnotes Lasso](https://support.goodnotes.com/hc/en-us/articles/7353695644175-Select-Move-and-Edit-Content-With-the-Lasso-Tool).
+- **Formen:** Goodnotes dokumentiert Formen-/Kurvenwerkzeuge und Diagramme. [Formenwerkzeug](https://support.goodnotes.com/hc/en-us/articles/13682939148943-Improved-Shape-Tool). Für noty sind editierbare Gerade/Pfeil/Rechteck/Ellipse ein sinnvoller eigener Anfang; Erkennung ist ein zusätzlicher Schritt.
+- **Notizen/PDF:** Notability beschreibt frei platzierbaren Tastaturtext, Stift, Marker, Radierer, Auswahl, Zoom und weitere Werkzeuge. [Notability Einstieg](https://support.gingerlabs.com/en-us/articles/16300108-getting-started-with-notability). Goodnotes bewirbt PDF-Annotation und Handschriftsuche. [PDF-Annotation](https://www.goodnotes.com/features/pdf-annotation).
+
+## Native Basis und Grenzen
+
+- `PKInkingTool` stellt Werkzeugtyp, Farbe und Breite bereit. [Apple PKInkingTool](https://developer.apple.com/documentation/pencilkit/pkinkingtool-swift.struct).
+- `PKEraserTool` bietet vector, bitmap und fixedWidthBitmap. Vollständiger Strich und präzises Teilradieren sind native Ausgangspunkte. Keine öffentliche zusätzliche Segment-/Nur-Marker-Option im geprüften SDK. [Apple EraserType](https://developer.apple.com/documentation/pencilkit/pkerasertool-swift.struct/erasertype-swift.enum).
+- Ein Dash-Pattern wurde in der vollständigen öffentlichen PKInkingTool-/PKInk-Oberfläche des installierten SDK 27.1 nicht gefunden. Das ist eine Schlussfolgerung aus der geprüften API. Eigene Geometrieobjekte für gestrichelte Formen vermeiden, dass ein ganzer Linienzug künstlich in viele unabhängig radierbare Ink-Striche zerfällt.
+- `PKToolPickerCustomItem` ist nur eine Erweiterung der Systempalette; es liefert keinen eigenen Pinselrenderer. Bei einem CustomItem ohne PKTool deaktiviert der beobachtende Canvas sein Zeichnen. Für notys ausdrücklich eigene Werkzeugleiste ist es nicht die vorausgesetzte Basis. [Apple ToolPicker](https://developer.apple.com/documentation/pencilkit/configuring-the-pencilkit-tool-picker), [WWDC24 PencilKit](https://developer.apple.com/videos/play/wwdc2024/10214/).
+- Native Auswahl kennt nicht automatisch unsere Text-/Bild-/Formobjekte. Gemischtes Lasso und gemeinsame Undo-Aktionen sind eigene Modell-/Interaktionsarbeit. [WWDC19 PencilKit](https://developer.apple.com/videos/play/wwdc2019/221/).
+- PDFPageOverlayViewProvider (seit iOS 16) ist Apples Ansatz für bedarfsgerecht erzeugte Seitenoverlays mit PencilKit; Modelle separat speichern, Export ausdrücklich zusammensetzen. [WWDC22 PDFKit](https://developer.apple.com/videos/play/wwdc2022/10089/).
+- Apple Vision verarbeitet Texterkennung auf dem Gerät. Das beweist keine zuverlässige Erkennung jeder Handschrift; eigener Test mit Zielschrift nötig. [Apple Texterkennung](https://developer.apple.com/documentation/vision/recognizing-text-in-images).
+
+Lokale API-Belege: SDK `darwin.artifactbundle/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/System/Library/Frameworks/`, insbesondere PencilKit.swiftinterface, PKCanvasView.h, PKToolPickerInkingItem.h und PDFPageOverlayViewProvider.h.
