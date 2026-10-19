@@ -426,23 +426,15 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var rulerGestureRecognizers: [UIGestureRecognizer] {
         guard canvas.isRulerActive else { return [] }
         var result: [UIGestureRecognizer] = []
-        var names = Set<String>()
         func collect(_ view: UIView) {
-            for gesture in view.gestureRecognizers ?? [] {
-                let name = NSStringFromClass(type(of: gesture))
-                names.insert(name)
-                if name.localizedCaseInsensitiveContains("ruler") { result.append(gesture) }
+            for gesture in view.gestureRecognizers ?? [] where NSStringFromClass(type(of: gesture)).localizedCaseInsensitiveContains("ruler") {
+                result.append(gesture)
             }
             view.subviews.forEach(collect)
         }
         collect(canvas)
-        if !Self.loggedRulerGestures {
-            Self.loggedRulerGestures = true
-            Self.renderLog.notice("Canvas gestures with ruler: \(names.sorted().joined(separator: ","), privacy: .public); ruler=\(result.count, privacy: .public)")
-        }
         return result
     }
-    private static var loggedRulerGestures = false
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -489,10 +481,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         let viewport = InkRenderViewport(page: page, visible: PageRect(visible), scale: resolution)
         guard viewport != renderViewport else { return }
         HangProbe.hit("Sheet.inkViewport")
-        let started = CACurrentMediaTime()
+        let started = HangProbe.isInstalled ? CACurrentMediaTime() : nil
         defer {
-            let elapsed = CACurrentMediaTime() - started
-            if elapsed > 0.016 {
+            if let started, CACurrentMediaTime() - started > 0.016 {
+                let elapsed = CACurrentMediaTime() - started
                 Self.renderLog.notice("Ink viewport update \(Int(elapsed * 1000), privacy: .public) ms; scale=\(viewport.scale, privacy: .public) native=\(Int(viewport.nativeSize.width), privacy: .public)x\(Int(viewport.nativeSize.height), privacy: .public) live=\(live, privacy: .public)")
             }
         }

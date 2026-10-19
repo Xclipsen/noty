@@ -5,8 +5,8 @@ import SwiftUI
 struct NotyApp: App {
     @StateObject private var workspaces = WorkspaceAppModel()
     init() {
-        // Read once at launch; the settings toggle documents that it applies after a restart.
-        if UserDefaults.standard.object(forKey: AppSettingsKey.hangProbe) as? Bool ?? true { HangProbe.install() }
+        // Read once at launch, off unless chosen; the settings toggle documents that it applies after a restart.
+        if UserDefaults.standard.object(forKey: AppSettingsKey.hangProbe) as? Bool ?? false { HangProbe.install() }
     }
     var body: some Scene {
         WindowGroup {

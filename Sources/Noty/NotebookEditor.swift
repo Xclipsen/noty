@@ -2,21 +2,23 @@ import SwiftUI
 import NotebookCore
 import OSLog
 
-/// Device-log timings for opening a notebook (category `editor-performance`).
-/// Each event is logged once per open, relative to the editor appearing.
+/// Device-log timings for opening a notebook (category `editor-performance`),
+/// only with Settings › Diagnose. Each event is logged once per open,
+/// relative to the editor appearing.
 @MainActor
 enum EditorOpenTrace {
     private static let log = Logger(subsystem: "de.la.noty", category: "editor-performance")
     private static var start: CFTimeInterval?
     private static var logged = Set<String>()
-    static func begin() { start = CACurrentMediaTime(); logged = [] }
-    static func mark(_ event: String, _ detail: String = "") {
+    static func begin() { guard HangProbe.isInstalled else { return }; start = CACurrentMediaTime(); logged = [] }
+    static func mark(_ event: String, _ detail: @autoclosure () -> String = "") {
         guard let start else { return }
         let elapsed = CACurrentMediaTime() - start
         // Later renders (scrolling minutes after opening) are not open timings.
         guard elapsed < 20 else { Self.start = nil; return }
         guard logged.insert(event).inserted else { return }
-        log.notice("Open: \(event, privacy: .public) after \(Int(elapsed * 1000), privacy: .public) ms \(detail, privacy: .public)")
+        let text = detail()
+        log.notice("Open: \(event, privacy: .public) after \(Int(elapsed * 1000), privacy: .public) ms \(text, privacy: .public)")
     }
 }
 
@@ -325,13 +327,15 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         guard !refreshing, let state, !frames.isEmpty else { return }
         HangProbe.hit("Viewport.refreshSheets")
         refreshing = true
-        let started = CACurrentMediaTime()
+        let started = HangProbe.isInstalled ? CACurrentMediaTime() : nil
         defer {
             refreshing = false
-            let now = CACurrentMediaTime()
-            if now - started > 0.025, now - lastSlowRefreshLog > 1 {
-                lastSlowRefreshLog = now
-                performanceLog.notice("Page refresh took \(Int((now - started) * 1000), privacy: .public) ms; native pages=\(self.sheets.count, privacy: .public)")
+            if let started {
+                let now = CACurrentMediaTime()
+                if now - started > 0.025, now - lastSlowRefreshLog > 1 {
+                    lastSlowRefreshLog = now
+                    performanceLog.notice("Page refresh took \(Int((now - started) * 1000), privacy: .public) ms; native pages=\(self.sheets.count, privacy: .public)")
+                }
             }
         }
         let visible = CGRect(x: contentOffset.x / zoomScale, y: contentOffset.y / zoomScale,
@@ -465,7 +469,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         if pinch.state == .changed, !widthSnapInProgress { constrainHorizontalOffset(duringZoom: true) }
         if pinch.state == .ended || pinch.state == .cancelled {
             if userZoomPage != nil { scrollViewDidEndZooming(self, with: surface, atScale: zoomScale) }
-            performanceLog.notice("Pinch ended at zoom \(Double(self.zoomScale), privacy: .public)")
+            if HangProbe.isInstalled { performanceLog.debug("Pinch ended at zoom \(Double(self.zoomScale), privacy: .public)") }
             // Full-resolution re-render once the fingers are gone.
             DispatchQueue.main.async { [weak self] in self?.refreshSheets() }
         }

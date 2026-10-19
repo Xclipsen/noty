@@ -76,9 +76,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     private var onChange: (([TextBox]) -> Void)?
     private var dragStart: (boxes: [TextBox], box: TextBox, generation: Int)?
     private lazy var accessory = makeAccessory()
-    private let warning = UILabel()
     private var buttons: [String: UIButton] = [:]
+    /// BUG-18 input diagnosis (category `text-input`), only with Settings › Diagnose.
     private let inputLog = Logger(subsystem: "de.la.noty", category: "text-input")
+    private var tracing: Bool { HangProbe.isInstalled }
     private var loggedSize = CGSize.zero
 
     /// Notebook-wide undo (set by the sheet). Text views, the keyboard
@@ -118,7 +119,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         }
         if reset || self.active != active {
             iconPopover?.dismiss(animated: false)
-            inputLog.info("[noty.text-input] Text mode active=\(active) reset=\(reset)")
+            if tracing { inputLog.info("[noty.text-input] Text mode active=\(active) reset=\(reset)") }
         }
         updating = true
         defer { updating = false }
@@ -180,7 +181,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     override func layoutSubviews() {
         super.layoutSubviews()
         HangProbe.hit("Text.layoutSubviews")
-        if loggedSize != bounds.size {
+        if tracing, loggedSize != bounds.size {
             loggedSize = bounds.size
             inputLog.info("[noty.text-input] Text surface width=\(Double(self.bounds.width)) height=\(Double(self.bounds.height))")
         }
@@ -341,13 +342,13 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         var view = touch.view
         while let current = view, current !== self {
             if current is TextFieldContainer || current is UITextView || current is UIControl {
-                inputLog.info("[noty.text-input] Insertion tap belongs to an existing field/control")
+                if tracing { inputLog.info("[noty.text-input] Insertion tap belongs to an existing field/control") }
                 return false
             }
             view = current.superview
         }
         let accepted = view === self && active
-        inputLog.info("[noty.text-input] Insertion touch type=\(touch.type.rawValue) accepted=\(accepted)")
+        if tracing { inputLog.info("[noty.text-input] Insertion touch type=\(touch.type.rawValue) accepted=\(accepted)") }
         return accepted
     }
     @objc private func insertAtTap(_ tap: UITapGestureRecognizer) {
@@ -357,7 +358,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
 
     /// `placing`: a real tap also sets a click-and-type caret (not the „+“ button).
     func insertText(at point: CGPoint, placing: Bool = false) {
-        guard active else { inputLog.info("[noty.text-input] Insertion ignored: text mode inactive"); return }
+        guard active else { if tracing { inputLog.info("[noty.text-input] Insertion ignored: text mode inactive") }; return }
         guard boxes.count < 200 else {
             notice.text = "Höchstens 200 Textfelder pro Seite."
             let width = min(360, max(40, bounds.width - 16))
@@ -401,7 +402,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             box = TextBox(x: frame.x, y: frame.y, width: frame.width, height: frame.height, style: style)
         } else { return }
         let previous = boxes; boxes.append(box); selectedID = box.id
-        inputLog.info("[noty.text-input] Text field inserted count=\(self.boxes.count) x=\(Double(box.x)) y=\(Double(box.y))")
+        if tracing { inputLog.info("[noty.text-input] Text field inserted count=\(self.boxes.count) x=\(Double(box.x)) y=\(Double(box.y))") }
         record(previous, name: "Textfeld einfügen"); synchronize(); publish()
         fields[box.id]?.editor.becomeFirstResponder()
         if placing, box.flowID != nil, let editor = fields[box.id]?.editor { layoutIfNeeded(); placeCaret(in: editor, at: convert(point, to: editor)) }
@@ -926,7 +927,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         var responder: UIResponder? = self
         while responder != nil && !(responder is UIViewController) { responder = responder?.next }
         guard let controller = responder as? UIViewController else { return }
-        // `warning` was never in the view hierarchy: show problems as an alert.
+        // Link problems are shown as an alert.
         func warn(_ text: String) {
             let message = UIAlertController(title: "Link", message: text, preferredStyle: .alert)
             message.overrideUserInterfaceStyle = .dark
@@ -995,10 +996,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         ])
     }
     private func updateAccessory() {
-        guard let selectedID, let box = boxes.first(where: { $0.id == selectedID }), let field = fields[selectedID] else { warning.text = nil; return }
-        warning.text = neededHeight(field.editor, width: box.width) > box.height + 1
+        guard let selectedID, let box = boxes.first(where: { $0.id == selectedID }), let field = fields[selectedID] else { return }
+        field.editor.accessibilityHint = neededHeight(field.editor, width: box.width) > box.height + 1
             ? "Textfeld am Seitenende · Text bleibt vollständig gespeichert." : nil
-        field.editor.accessibilityHint = warning.text
         let style = selectionStyle ?? box.style
         buttons["Textstil"]?.setTitle(TextStylePreset.matching(style).title, for: .normal)
         buttons["Schriftgröße"]?.setTitle(String(Int(style.fontSize)), for: .normal)

@@ -564,7 +564,7 @@ private struct AboutSettingsPage: View {
 }
 
 private struct DiagnosticsSettingsPage: View {
-    @AppStorage(AppSettingsKey.hangProbe) private var hangProbe = true
+    @AppStorage(AppSettingsKey.hangProbe) private var hangProbe = false
     var body: some View {
         Form {
             Section {
