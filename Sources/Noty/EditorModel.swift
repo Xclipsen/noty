@@ -63,6 +63,8 @@ final class EditorModel: ObservableObject {
     private var sources: NotebookPDFCatalog?
     /// Set while an older fallback state is open unchanged (see init).
     private var recoveredSnapshot: Notebook?
+    private var retryTask: Task<Void, Never>?
+    private var retryAttempt = 0
 
     init(storageRoot root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true),
          restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil) {
@@ -592,31 +594,60 @@ final class EditorModel: ObservableObject {
             self.recoveredSnapshot = nil
         }
         pendingSave?.cancel()
+        retryTask?.cancel(); retryTask = nil
         revision += 1
         let snapshot = notebook
         let savingRevision = revision
-        status = "Änderungen werden gespeichert …"
+        status = saveFailed ? "Neuer Speicherversuch …" : "Änderungen werden gespeichert …"
         saveFailed = false
         // Give iOS time to complete a flush when moving to the background.
-        let background = delayed ? UIBackgroundTaskIdentifier.invalid : UIApplication.shared.beginBackgroundTask(withName: "noty-save")
+        let background = delayed ? nil : BackgroundSaveTask()
         pendingSave = Task {
-            defer {
-                if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
-            }
+            defer { background?.end() }
             do {
                 if delayed { try await Task.sleep(for: .milliseconds(250)) }
                 try Task.checkCancellation()
                 try await store.save(snapshot, revision: savingRevision)
-                if savingRevision == revision { status = "Lokal gespeichert" }
+                if savingRevision == revision { status = "Lokal gespeichert"; retryAttempt = 0 }
             } catch is CancellationError {
                 // A newer complete snapshot supersedes this one.
             } catch {
-                if savingRevision == revision {
-                    status = "Speichern fehlgeschlagen – Änderungen nur im Speicher"
-                    saveFailed = true
-                    self.error = error.localizedDescription
-                }
+                if savingRevision == revision { saveDidFail(error) }
             }
+        }
+    }
+
+    /// Automatic retry while saving fails (SCOPE: retry on errors). Each attempt
+    /// goes through save() and therefore commits the then CURRENT snapshot with
+    /// a new revision number; the repository never lets an older one win.
+    /// Errors a retry cannot fix (size limit, unknown or invalid format) wait
+    /// for the user. A success, a newer save or closing cancels the retry.
+    private func saveDidFail(_ failure: Error) {
+        saveFailed = true
+        let message = failure.localizedDescription
+        guard Self.retryable(failure) else {
+            status = "Speichern fehlgeschlagen – Änderungen nur im Speicher"
+            error = message
+            return
+        }
+        let delay = Self.retryDelays[min(retryAttempt, Self.retryDelays.count - 1)]
+        // One alert per failure series; later attempts only update the status.
+        if retryAttempt == 0 { error = message + " Noty versucht es automatisch erneut." }
+        retryAttempt += 1
+        status = "Speichern fehlgeschlagen – Änderungen nur im Speicher · neuer Versuch in \(delay) s"
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self, self.saveFailed, self.writable else { return }
+            self.save()
+        }
+    }
+    private static let retryDelays = [2, 5, 15, 60]
+    private static func retryable(_ error: Error) -> Bool {
+        if error is StorageError { return false }
+        guard let error = error as? RevisionError else { return true }
+        switch error {
+        case .snapshotTooLarge, .unsupportedFormat: return false
+        default: return true
         }
     }
 
@@ -750,6 +781,22 @@ final class EditorModel: ObservableObject {
                 self.error = error.localizedDescription
             }
         }
+    }
+}
+
+/// iOS background time for one save. Ended exactly once: when the save
+/// finishes, or by the system's expiration handler if time runs out first
+/// (the commit itself is not cancelled; it continues when the app runs again).
+@MainActor
+private final class BackgroundSaveTask {
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+    init() {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: "noty-save") { [weak self] in self?.end() }
+    }
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
     }
 }
 
