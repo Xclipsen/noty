@@ -111,6 +111,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                    paperStyle: PaperStyle = .blank, marginStyle: PaperStyle = .blank,
                    onChange: @escaping ([TextBox]) -> Void) {
         let reset = self.pageID != pageID || self.contentGeneration != contentGeneration || self.pageLayout != layout
+        // A field drag keeps its live frame locally and commits once when it
+        // ends; the unchanged model state meanwhile is no conflicting update.
+        var incoming = incoming
+        if !reset, active, self.active, let start = dragStart, start.generation == generation, start.boxes == incoming { incoming = boxes }
         if !reset, boxes == incoming, self.active == active, self.readOnly == readOnly,
            self.darkPaper == darkPaper, self.darkMargins == darkMargins, self.hasPDF == hasPDF,
            self.paperStyle == paperStyle, self.marginStyle == marginStyle {
@@ -146,6 +150,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         if !active { endEditing(true); selectedID = nil; notice.isHidden = true }
         synchronize()
     }
+
+    /// The fields show exactly these boxes (no local edit pending).
+    func shows(_ incoming: [TextBox]) -> Bool { boxes == incoming }
+    func adoptCallback(_ onChange: @escaping ([TextBox]) -> Void) { self.onChange = onChange }
 
     func endTextEditing() { endEditing(true); onEditingActive?(false); selectedID = nil; synchronize() }
 
@@ -538,7 +546,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 box.x = min(max(start.box.x + delta.x, limits.minX), limits.maxX - box.width)
                 box.y = min(max(start.box.y + delta.y, limits.minY), limits.maxY - box.height)
             }
-            boxes[index] = box; grow(index); synchronize(); publish()
+            // Live feedback stays local; the model gets one change at the end
+            // (one undo step, no autosave/SwiftUI round trip per frame).
+            boxes[index] = box; grow(index)
+            if gesture.state == .began { synchronize() } else { showDragged(index) }
         case .ended:
             record(start.boxes, name: resizing ? "Textfeldbreite ändern" : "Textfeld verschieben")
             dragStart = nil; synchronize(); publish()
@@ -546,6 +557,16 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             boxes = start.boxes; dragStart = nil; synchronize(); publish()
         default: break
         }
+    }
+
+    /// One drag frame: only the dragged free field moves or changes width.
+    private func showDragged(_ index: Int) {
+        let box = boxes[index]
+        guard let field = fields[box.id] else { return }
+        position(field, for: box); updateRaster(field, for: box)
+        let pointScale = coordinateScale(for: box)
+        let overflowing = neededHeight(field.editor, width: box.width / pointScale) * pointScale > box.height + 1
+        field.configure(selected: active && selectedID == box.id, overflowing: overflowing, floating: box.flowID == nil)
     }
 
     @objc private func deleteSelected() {

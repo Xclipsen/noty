@@ -65,6 +65,10 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     func configure(objects incoming: [ImageObject], pageID: UUID, layout: PageLayout, contentGeneration: Int,
                    active: Bool, onChange: @escaping ([ImageObject]) -> Void, onError: @escaping (String) -> Void) {
         let reset = self.pageID != pageID || self.contentGeneration != contentGeneration || pageLayout != layout
+        // A drag shows its live frame locally and commits once when it ends;
+        // the unchanged model state meanwhile is no conflicting update.
+        var incoming = incoming
+        if !reset, active, self.active, let start = dragStart, start.generation == generation, start.objects == incoming { incoming = objects }
         if !reset, objects == incoming, self.active == active {
             self.onChange = onChange; self.onError = onError; return
         }
@@ -72,6 +76,8 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
             generation += 1; dragStart = nil; rotationSnap = nil; selectedID = nil
             cropController?.dismiss(animated: false); cropController = nil
         } else if objects != incoming {
+            // Another change (undo, other pane) replaces a drag in progress.
+            dragStart = nil; rotationSnap = nil
             let added = incoming.last { object in !objects.contains { $0.id == object.id } }
             selectedID = added?.id ?? selectedID
         }
@@ -81,6 +87,12 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         if !active { dragStart = nil; rotationSnap = nil; cropController?.dismiss(animated: false); cropController = nil }
         if !objects.contains(where: { $0.id == selectedID }) { selectedID = nil }
         refresh()
+    }
+
+    /// The plane shows exactly these objects (no local drag pending).
+    func shows(_ incoming: [ImageObject]) -> Bool { objects == incoming }
+    func adoptCallbacks(onChange: @escaping ([ImageObject]) -> Void, onError: @escaping (String) -> Void) {
+        self.onChange = onChange; self.onError = onError
     }
 
     override func didMoveToWindow() {
@@ -237,8 +249,12 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
             object.rotation = target ?? raw
         }
         objects[index] = object.fitted(in: limits)
-        if pan.state == .ended { dragStart = nil; rotationSnap = nil }
-        refresh(); onChange?(objects)
+        // Live feedback stays local; the model gets one change (one undo step)
+        // when the gesture ends instead of an autosave round trip per frame.
+        let ended = pan.state == .ended
+        if ended { dragStart = nil; rotationSnap = nil }
+        refresh()
+        if ended { onChange?(objects) }
     }
 
     private static func angle(_ degrees: Double) -> Double {

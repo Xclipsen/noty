@@ -400,11 +400,20 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
                 self.reported = page.id
                 self.state?.onSelect(page.id)
             }
-            let configureStarted = CACurrentMediaTime()
-            sheet.configure(config); sheetRevisions[page.id] = configurationRevision
-            if page.id == selected {
-                EditorOpenTrace.mark("first sheet configured", "configure=\(Int((CACurrentMediaTime() - configureStarted) * 1000)) ms pdf=\(config.sourcePage != nil) zoom=\(String(format: "%.2f", Double(zoomScale)))")
+            sheetRevisions[page.id] = configurationRevision
+            // Every model change (save status, undo availability, another
+            // page's edit) re-runs the SwiftUI body. Pages whose inputs are
+            // unchanged only adopt the new callbacks.
+            if sheet.matches(config) {
+                sheet.adoptCallbacks(config)
+            } else {
+                let configureStarted = CACurrentMediaTime()
+                sheet.configure(config)
+                if page.id == selected {
+                    EditorOpenTrace.mark("first sheet configured", "configure=\(Int((CACurrentMediaTime() - configureStarted) * 1000)) ms pdf=\(config.sourcePage != nil) zoom=\(String(format: "%.2f", Double(zoomScale)))")
+                }
             }
+            // PencilKit may install its ruler recognizers after activation.
             for gesture in sheet.rulerGestureRecognizers where !rulerGestures.contains(gesture) {
                 rulerGestures.add(gesture)
                 panGestureRecognizer.require(toFail: gesture); pinchGestureRecognizer?.require(toFail: gesture)

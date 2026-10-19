@@ -61,6 +61,27 @@ struct PageEditor: UIViewRepresentable {
     func updateUIView(_ view: ZoomingWorksheet, context: Context) { view.configure(self) }
 }
 
+extension PageEditor {
+    /// Every input a sheet configuration reads, except page content, callbacks
+    /// and undo availability. Content is compared against what the sheet shows.
+    func hasSameSettings(as other: PageEditor) -> Bool {
+        guard sourcePage === other.sourcePage, layout == other.layout, pageID == other.pageID,
+              contentGeneration == other.contentGeneration, searchHighlight == other.searchHighlight else { return false }
+        guard paper == other.paper, paperColor == other.paperColor, margins == other.margins else { return false }
+        guard tool == other.tool, width == other.width, Self.sameColor(color, other.color), enabled == other.enabled,
+              focused == other.focused, autoPen == other.autoPen, fingerDrawing == other.fingerDrawing, ruler == other.ruler else { return false }
+        return shapeOptions == other.shapeOptions && selectionFilter == other.selectionFilter && lassoMode == other.lassoMode
+            && recognizeShapes == other.recognizeShapes && markerStraight == other.markerStraight && markerTip == other.markerTip
+            && scribbleErase == other.scribbleErase
+    }
+    private static func sameColor(_ a: UIColor, _ b: UIColor) -> Bool {
+        if a === b || a.isEqual(b) { return true }
+        var x: (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0), y = x
+        guard a.getRed(&x.0, green: &x.1, blue: &x.2, alpha: &x.3), b.getRed(&y.0, green: &y.1, blue: &y.2, alpha: &y.3) else { return false }
+        return x == y
+    }
+}
+
 final class ZoomingWorksheet: UIScrollView, UIScrollViewDelegate {
     private let sheet = WorksheetView()
     private var pageID: UUID?
@@ -543,6 +564,31 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if window == nil { cancelErase() }
         if window == nil { onInteraction?(textInteractionID, false) }
         updateInputMode()
+    }
+
+    /// The sheet already shows exactly `editor` (callbacks and undo availability
+    /// aside), including local edits the model accepted. Rejected local edits
+    /// differ and are reset by a full `configure`, as before.
+    func matches(_ editor: PageEditor) -> Bool {
+        guard let current = configuration, current.hasSameSettings(as: editor),
+              lastDrawing == editor.drawing, pageContent.drawing == editor.drawing, pageContent.shapes == editor.shapes,
+              pageContent.textBoxes == editor.textBoxes, pageContent.images == editor.images else { return false }
+        return textLayer.shows(editor.textBoxes) && imageLayer.shows(editor.images)
+    }
+    /// A configuration that `matches`: only its callbacks and undo state are
+    /// new (save status, undo availability), so no page work is done.
+    func adoptCallbacks(_ editor: PageEditor) {
+        configuration = editor
+        undoForwarder.perform = editor.onUndo; undoForwarder.state = editor.undoState
+        onInkSession = editor.onInkSession; onDrawing = editor.onDrawing; onRevealCaret = editor.onRevealCaret
+        onInteraction = editor.onInteraction; onContent = editor.onContent
+        onPencilAction = editor.onPencilAction; onPencilSqueeze = editor.onPencilSqueeze
+        textLayer.onFlowChange = editor.onFlowEdit; textLayer.onFlowUndo = editor.onFlowUndo
+        textLayer.onFlowBackspace = editor.onFlowBackspace; textLayer.onUndoBoundary = editor.onUndoBoundary
+        textLayer.readCurrentBoxes = editor.readTextBoxes; textLayer.readFlowText = editor.readFlowText
+        textLayer.adoptCallback(editor.onTextBoxes)
+        imageLayer.adoptCallbacks(onChange: editor.onImages, onError: editor.onError)
+        objectLayer.adoptCommit(editor.onContent)
     }
 
     func configure(_ editor: PageEditor) {

@@ -164,6 +164,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         if needsRefresh { refresh() }
     }
 
+    func adoptCommit(_ onCommit: @escaping (PageContent, PageContent) -> Bool) { self.onCommit = onCommit }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil { contourLayer.removeAllAnimations(); contourAnimationScale = nil; endLift() }
