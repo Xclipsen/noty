@@ -548,7 +548,11 @@ private struct PageTrashView: View {
     @ObservedObject var model: EditorModel
     let cache: PageThumbnailCache
     @Environment(\.dismiss) private var dismiss
+    @State private var pendingDeletion: DeletedPage?
+    @State private var confirmingEmpty = false
     private var deleted: [DeletedPage] { model.notebook.deletedPages ?? [] }
+    private var canEdit: Bool { model.writable && !model.mutationsPaused && !model.busy }
+    private static let undoNote = "Rückgängig ist nur möglich, solange das Heft geöffnet bleibt; danach höchstens über ältere lokale Wiederherstellungspunkte."
     var body: some View {
         NavigationStack {
             Group {
@@ -575,17 +579,44 @@ private struct PageTrashView: View {
                                 if !entry.page.searchableText.isEmpty {
                                     Text(String(entry.page.searchableText.prefix(100))).font(.caption).lineLimit(2)
                                 }
-                                Button(entry.reason != nil ? "Seitenstand wiederherstellen" : "Wiederherstellen",
-                                       systemImage: "arrow.uturn.backward") {
-                                    model.restorePage(entry.page.id)
-                                }.disabled(!model.writable || model.mutationsPaused || model.busy)
+                                // Borderless: two independent buttons in one list row.
+                                HStack(spacing: 20) {
+                                    Button(entry.reason != nil ? "Seitenstand wiederherstellen" : "Wiederherstellen",
+                                           systemImage: "arrow.uturn.backward") {
+                                        model.restorePage(entry.page.id)
+                                    }
+                                    Button("Endgültig löschen", systemImage: "trash", role: .destructive) {
+                                        pendingDeletion = entry
+                                    }
+                                }.buttonStyle(.borderless).disabled(!canEdit)
                             }
                         }.padding(.vertical, 4)
                     }
                 }
             }
             .navigationTitle("Seitenpapierkorb")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Papierkorb leeren", role: .destructive) { confirmingEmpty = true }
+                        .disabled(deleted.isEmpty || !canEdit)
+                }
+                ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } }
+            }
+            .confirmationDialog("Seite endgültig löschen?", isPresented: Binding(get: { pendingDeletion != nil },
+                                set: { if !$0 { pendingDeletion = nil } }), titleVisibility: .visible, presenting: pendingDeletion) { entry in
+                Button("Endgültig löschen", role: .destructive) { model.deleteTrashedPage(entry.page.id) }
+                Button("Abbrechen", role: .cancel) {}
+            } message: { _ in
+                Text("Die Seite wird aus dem Heft entfernt, ebenso PDF-Originale, die keine Seite mehr verwendet. \(Self.undoNote)")
+            }
+            .confirmationDialog("Seitenpapierkorb leeren?", isPresented: $confirmingEmpty, titleVisibility: .visible) {
+                Button(deleted.count == 1 ? "1 Seite endgültig löschen" : "\(deleted.count) Seiten endgültig löschen", role: .destructive) {
+                    model.emptyPageTrash()
+                }
+                Button("Abbrechen", role: .cancel) {}
+            } message: {
+                Text("Alle Seiten im Papierkorb, auch gesicherte Seitenstände, werden endgültig entfernt, ebenso nicht mehr verwendete PDF-Originale. \(Self.undoNote)")
+            }
         }
     }
 }

@@ -488,6 +488,10 @@ final class EditorModel: ObservableObject {
         }
     }
     func restorePage(_ id: UUID) { editPages(resetEditor: true) { try $0.restorePage(id) } }
+    /// Permanent page-trash removal (also of unused PDF originals). One undo
+    /// step while this notebook stays open, like every page operation.
+    func deleteTrashedPage(_ id: UUID) { editPages { try $0.deleteTrashedPage(id); return nil } }
+    func emptyPageTrash() { editPages { try $0.emptyPageTrash(); return nil } }
     func toggleBookmark(_ id: UUID) { editPages { try $0.toggleBookmark(id); return nil } }
 
     func installMarginSnapshot(_ candidate: Notebook) throws {

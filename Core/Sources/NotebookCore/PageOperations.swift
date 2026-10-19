@@ -80,7 +80,7 @@ public enum PageOperationError: Error, LocalizedError {
         case .invalidOrder: "Die gewünschte Seitenposition ist ungültig."
         case .lastPage: "Die letzte Seite eines Hefts bleibt erhalten."
         case .pageLimit: "Ein Heft unterstützt derzeit höchstens 500 aktive Seiten."
-        case .trashLimit: "Der Seitenpapierkorb enthält bereits 500 Seiten. Bitte zunächst ein neues Heft verwenden."
+        case .trashLimit: "Der Seitenpapierkorb enthält bereits 500 Seiten. Bitte dort einzelne Seiten endgültig löschen oder den Papierkorb leeren."
         }
     }
 }
@@ -251,6 +251,32 @@ extension Notebook {
         next.deletedPages?.remove(at: offset); next.pages.insert(entry.page, at: index)
         try next.validate(); self = next
         return entry.page.id
+    }
+
+    /// Permanently removes one page-trash entry (also margin/clear snapshots),
+    /// then every PDF source no remaining page references.
+    public mutating func deleteTrashedPage(_ id: UUID) throws {
+        var next = try preparedForPageEditing()
+        guard let offset = next.deletedPages?.firstIndex(where: { $0.id == id }) else { throw PageOperationError.missingPage }
+        next.deletedPages?.remove(at: offset)
+        next.removeUnreferencedSources()
+        try next.validate(); self = next
+    }
+
+    public mutating func emptyPageTrash() throws {
+        var next = try preparedForPageEditing()
+        guard next.deletedPages?.isEmpty == false else { return }
+        next.deletedPages = []
+        next.removeUnreferencedSources()
+        try next.validate(); self = next
+    }
+
+    /// Sources are referenced only through `pdfReference` of active pages and
+    /// page-trash entries (margin-restore and clear snapshots are trash entries);
+    /// copied pages carry their own source bytes. Bytes of kept sources stay as is.
+    mutating func removeUnreferencedSources() {
+        let used = Set((pages + (deletedPages ?? []).map(\.page)).compactMap { $0.pdfReference?.sourceID })
+        pdfSources?.removeAll { !used.contains($0.id) }
     }
 
     public mutating func toggleBookmark(_ id: UUID) throws {
