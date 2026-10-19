@@ -251,6 +251,11 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// no decode of the previous state. Keyed by the bytes: any external
     /// configure, undo or page change invalidates it by itself.
     private var strokeCountCache: (data: Data, count: Int)?
+    /// Canonical bytes the canvas shows when it was last set from data; nil
+    /// after native strokes and derived previews (erase dimming, selection
+    /// remainder). Object previews compare against it instead of decoding the
+    /// drawing on every pan event.
+    private var canvasSource: Data?
     private var updating = false
     private var tool = EditorTool.pen
     private var editable = false
@@ -622,10 +627,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             }
         }
         if lastDrawing != editor.drawing || originChanged || contentReplaced {
-            if editor.drawing.isEmpty { canvas.drawing = PKDrawing(); strokeCountCache = (editor.drawing, 0) }
+            if editor.drawing.isEmpty { canvas.drawing = PKDrawing(); canvasSource = editor.drawing; strokeCountCache = (editor.drawing, 0) }
             else if let drawing = try? PKDrawing(data: editor.drawing) {
                 strokeCountCache = (editor.drawing, drawing.strokes.count)
-                canvas.drawing = drawing.transformed(using: pageLayout.inkTranslation)
+                canvas.drawing = drawing.transformed(using: pageLayout.inkTranslation); canvasSource = editor.drawing
             }
             lastDrawing = editor.drawing
         }
@@ -708,8 +713,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         shapeLayer.configure(content.shapes, origin: pageLayout.contentOrigin)
         updating = true
         defer { updating = false }
-        if selectionInkSource == nil, let drawing = try? PKDrawing(data: content.drawing) {
-            canvas.drawing = drawing.transformed(using: pageLayout.inkTranslation)
+        // Shape/object drags publish the same ink bytes on every pan event.
+        if selectionInkSource == nil, canvasSource != content.drawing, let drawing = try? PKDrawing(data: content.drawing) {
+            canvas.drawing = drawing.transformed(using: pageLayout.inkTranslation); canvasSource = content.drawing
         }
         textLayer.configure(boxes: content.textBoxes, pageID: editor.pageID, layout: editor.layout,
             contentGeneration: editor.contentGeneration, active: false,
@@ -726,6 +732,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         guard let transform, !indices.isEmpty else {
             if selectionInkSource != nil {
                 canvas.drawing = ((try? PKDrawing(data: data)) ?? PKDrawing()).transformed(using: pageLayout.inkTranslation)
+                canvasSource = data
             }
             selectionInkSource = nil; selectionInkIndices = []
             selectionInkImage.isHidden = true; selectionInkImage.image = nil
@@ -747,7 +754,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             selectionInkFrame = frame
             selectionInkSource = data; selectionInkIndices = indices
             let remainder = PKDrawing(strokes: drawing.strokes.enumerated().filter { !indices.contains($0.offset) }.map(\.element))
-            canvas.drawing = remainder.transformed(using: pageLayout.inkTranslation)
+            canvas.drawing = remainder.transformed(using: pageLayout.inkTranslation); canvasSource = nil
         }
         let center = CGPoint(x: selectionInkFrame.midX, y: selectionInkFrame.midY).applying(transform)
         selectionInkImage.transform = .identity
@@ -771,6 +778,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     }
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         HangProbe.hit("Sheet.drawingDidChange")
+        if !updating { canvasSource = nil } // native change
         guard !updating, [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(tool) else { return }
         if heldShape != nil {
             holdCompletion.drawingChanged(); finishHeldStroke(serial: holdSerial); return
@@ -783,7 +791,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         let drawing = canvas.drawing, strokes = drawing.strokes
         recordDrawnWidth(strokes, previousCount: previousCount)
         lastDrawing = canonicalDrawingData(drawing)
-        if eraseSession == nil { strokeCountCache = (lastDrawing, strokes.count) }
+        if eraseSession == nil { strokeCountCache = (lastDrawing, strokes.count); canvasSource = lastDrawing }
         pageContent.drawing = lastDrawing
         onDrawing?(lastDrawing)
     }
@@ -813,7 +821,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         guard pageLayout.canonicalInkBounds.insetBy(dx: -0.02, dy: -0.02).contains(straight.renderBounds) else { return }
         let wasUpdating = updating; updating = true
         canvas.drawing = PKDrawing(strokes: Array(strokes.dropLast()) + [straight]).transformed(using: pageLayout.inkTranslation)
-        updating = wasUpdating
+        canvasSource = nil; updating = wasUpdating
     }
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
         inkActive = true
@@ -978,7 +986,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         pageContent = content; lastDrawing = content.drawing
         let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()
         strokeCountCache = (content.drawing, drawing.strokes.count)
-        canvas.drawing = drawing.transformed(using: pageLayout.inkTranslation)
+        canvas.drawing = drawing.transformed(using: pageLayout.inkTranslation); canvasSource = content.drawing
         updating = false
     }
     private static func polyline(_ stroke: PKStroke) -> [PagePoint] {
@@ -1056,7 +1064,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         let wasUpdating = updating; updating = true
         canvas.drawing = PKDrawing(strokes: strokes).transformed(using: pageLayout.inkTranslation)
-        updating = wasUpdating
+        canvasSource = nil; updating = wasUpdating
         dimErasedShapes()
     }
     private func dimErasedShapes() {
@@ -1105,7 +1113,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         let wasUpdating = updating; updating = true
         canvas.drawing = PKDrawing(strokes: others.enumerated().filter { !removed.contains($0.offset) }.map(\.element))
             .transformed(using: pageLayout.inkTranslation)
-        updating = wasUpdating
+        canvasSource = nil; updating = wasUpdating
     }
     /// Every preloaded sheet owns an interaction; only the focused one may act,
     /// otherwise an even number of sheets toggles the tool back and forth.
