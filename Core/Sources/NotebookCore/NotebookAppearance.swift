@@ -46,3 +46,117 @@ extension Notebook {
         return result
     }
 }
+
+extension Notebook {
+    /// Recolours the serialized handwriting of one page. The closure receives
+    /// each stroke's canonical render bounds and colour and asks `convert`
+    /// for its replacement (nil keeps the stroke). PencilKit stays in the app;
+    /// the selection rules live here. Return the original bytes when nothing changed.
+    public typealias InkRecolor = (_ drawing: Data, _ convert: (_ renderBounds: PageRect, _ color: InkColor) -> InkColor?) throws -> Data
+
+    /// Changes the paper default of an existing notebook: every new standard
+    /// page and the trailing writing draft follow it. Cover and format stay.
+    /// - `.newPagesOnly`: only the default.
+    /// - `.emptyPages`: additionally the listed empty paper pages (ids decided by
+    ///   the app, which can inspect PencilKit data).
+    /// - `.wholeNotebook`: every active paper page takes the new paper style and
+    ///   colour; when the colour flips, neutral ink/text/shapes swap black↔white
+    ///   (`PaperInkInversion`). PDF pages keep their scan and everything over it;
+    ///   their writing margins switch colour and only content lying completely
+    ///   in the margins is swapped. Images and the page trash stay untouched.
+    /// One validated value replacement; returns how many active pages changed.
+    @discardableResult
+    public mutating func setPageDefaults(paper: PaperStyle, color: PaperColor, scope: PageDefaultsScope,
+                                         emptyPageIDs: Set<UUID> = [], recolorDrawing: InkRecolor? = nil) throws -> Int {
+        guard paper != .legacyTest else { throw StorageError.invalidDocument }
+        // Legacy virtual page text derives its colour from the paper colour and
+        // therefore already follows it; it is left virtual (no materialisation).
+        var next = try preparedForPageEditing()
+        next.schemaVersion = max(7, next.schemaVersion)
+        var appearance = next.appearance ?? next.inferredAppearance
+        appearance.paper = paper; appearance.color = color
+        next.appearance = appearance
+        var changed = 0
+        for index in next.pages.indices {
+            let original = next.pages[index]
+            var page = original
+            switch scope {
+            case .newPagesOnly:
+                continue
+            case .emptyPages:
+                guard emptyPageIDs.contains(page.id), page.pdfReference == nil, let style = page.paper, style != .legacyTest,
+                      page.margins == nil, page.effectiveTextBoxes.allSatisfy({ $0.text.isEmpty }),
+                      (page.images ?? []).isEmpty, (page.shapes ?? []).isEmpty else { continue }
+                if style != paper || (page.paperColor ?? .white) != color { page.paper = paper; page.paperColor = color }
+            case .wholeNotebook:
+                if page.pdfReference == nil {
+                    // Prototype test sheets have no own paper geometry: unchanged.
+                    guard let style = page.paper, style != .legacyTest else { continue }
+                    if style != paper { page.paper = paper }
+                    if (page.paperColor ?? .white) != color {
+                        page.paperColor = color
+                        try Self.invertInk(of: &page, to: color, onlyMargins: false, recolorDrawing: recolorDrawing)
+                    }
+                } else if var margins = page.margins, margins.color != color {
+                    margins.color = color; page.margins = margins
+                    try Self.invertInk(of: &page, to: color, onlyMargins: true, recolorDrawing: recolorDrawing)
+                }
+            }
+            if page != original { next.pages[index] = page; changed += 1 }
+        }
+        try next.validate(); self = next
+        return changed
+    }
+
+    /// Compatibility entry: empty listed paper pages follow, written pages stay.
+    @discardableResult
+    public mutating func setPageDefaults(paper: PaperStyle, color: PaperColor, alsoEmptyPages emptyPageIDs: Set<UUID> = []) throws -> Int {
+        try setPageDefaults(paper: paper, color: color, scope: emptyPageIDs.isEmpty ? .newPagesOnly : .emptyPages,
+                            emptyPageIDs: emptyPageIDs)
+    }
+
+    private static func invertInk(of page: inout Page, to color: PaperColor, onlyMargins: Bool,
+                                  recolorDrawing: InkRecolor?) throws {
+        let snapshot = page
+        if !page.drawing.isEmpty {
+            // Converting written pages without the app's PencilKit step would
+            // leave handwriting invisible: refuse instead of half converting.
+            guard let recolorDrawing else { throw StorageError.invalidDocument }
+            page.drawing = try recolorDrawing(page.drawing) { bounds, ink in
+                guard !onlyMargins || snapshot.liesInMargins(bounds) else { return nil }
+                return PaperInkInversion.converted(ink, to: color)
+            }
+        }
+        page.textBoxes = page.textBoxes?.map { box in
+            guard !onlyMargins || snapshot.textBoxLiesInMargins(box) else { return box }
+            return PaperInkInversion.converted(box, to: color)
+        }
+        page.shapes = page.shapes?.map { shape in
+            guard !onlyMargins || snapshot.liesInMargins(shape.bounds) else { return shape }
+            return PaperInkInversion.converted(shape, to: color)
+        }
+    }
+
+    /// Notebooks created before appearances existed: keep the library preview
+    /// (no cover), the format of the latest paper page and – like the trailing
+    /// writing draft – the paper style and colour of the latest paper page.
+    var inferredAppearance: NotebookAppearance {
+        var value = NotebookAppearance(); value.coverEnabled = false
+        if let size = pages.last(where: { $0.pdfReference == nil && $0.paper != .legacyTest })?.geometry?.displaySize {
+            for format in PaperFormat.allCases {
+                if format.size == size { value.format = format; value.landscape = false }
+                else if format.size.width == size.height && format.size.height == size.width { value.format = format; value.landscape = true }
+            }
+        }
+        if let latest = pages.last(where: { $0.pdfReference == nil && $0.paper != nil && $0.paper != .legacyTest }),
+           let style = latest.paper {
+            value.paper = style; value.color = latest.paperColor ?? .white
+        }
+        return value
+    }
+
+    /// The notebook's current standard page: the stored default, or for older
+    /// notebooks without one the paper the trailing writing draft would get.
+    /// What "Seitenstandard ändern" starts from; never `.legacyTest`.
+    public var pageDefaults: NotebookAppearance { appearance ?? inferredAppearance }
+}

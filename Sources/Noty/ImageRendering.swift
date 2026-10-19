@@ -83,7 +83,7 @@ enum ImageRendering {
         return image
     }
 
-    static func validate(_ object: ImageObject) throws {
+    nonisolated static func validate(_ object: ImageObject) throws {
         let (width, height) = try ImageImport.dimensions(object.data)
         guard width == object.pixelWidth, height == object.pixelHeight else { throw ImageImportError.invalid }
         _ = try ImageImport.thumbnail(object.data, limit: 32)

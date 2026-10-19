@@ -19,10 +19,10 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var toolbox: ToolbarSettingsModel
+    @Environment(\.editorSettings) private var editorSettings
+    @State private var showingSettings = false
+    @State private var editingDefaults = false
     @State private var addingPage = false
-    @State private var addingPDF = false
-    @State private var pendingPDFAnchor: UUID?
-    @State private var pendingPDFBefore = false
     @State private var importing = false
     @State private var importingBackup = false
     @State private var confirmingImport = false
@@ -30,8 +30,11 @@ struct ContentView: View {
     @State private var exportFile: ExportFile?
     @State private var exportType: UTType = .json
     @State private var tool: EditorTool = .pen
-    @State private var undoRequest = 0
-    @State private var redoRequest = 0
+    @State private var lastInkTool: EditorTool = .pen
+    @State private var pencilPalette: PencilPalettePresentation?
+    @State private var pencilSqueeze = PencilSqueezeTracker()
+    /// Undo/redo changed another page: select it, scrolling only if it is not visible.
+    @State private var revealRequest: PageRevealRequest?
     @State private var textInsertRequest = 0
     @State private var textFocus: TextFlowFocus?
     @State private var writingDraft = Page()
@@ -41,9 +44,11 @@ struct ContentView: View {
     @State private var showingCopies = false
     @State private var selectedCopy: RestoredNotebook?
     @AppStorage("noty.sidebar.visible") private var showingPages = true
+    @AppStorage("noty.editor.writingScroll") private var writingScroll = false
     @State private var customizingTools = false
     @State private var toolbarMore = false
     @State private var toolbarOptions = false
+    @State private var optionsWidths: [EditorTool: Double] = [:]
     @State private var marginsPage: MarginPage?
     @State private var importingImage = false
     @State private var choosingPhoto = false
@@ -52,6 +57,9 @@ struct ContentView: View {
     @State private var contentSearch = false
     @State private var searchHighlight: PageRect?
     @State private var searchHighlightPageID: UUID?
+    @State private var searchHighlightToken = 0
+    @State private var pageEntry = false
+    @State private var pageEntryText = ""
     private var ruler: Bool {
         get { toolbox.preferences.ruler ?? false }
         nonmutating set { toolbox.preferences.ruler = newValue }
@@ -61,6 +69,7 @@ struct ContentView: View {
         nonmutating set { toolbox.preferences.shapeKind = newValue.kind; toolbox.preferences.shapePattern = newValue.pattern; toolbox.preferences.shapeFilled = newValue.filled }
     }
     @State private var selectionFilter = SelectionFilter()
+    @State private var lassoMode = LassoMode.freeform
     private var recognizeShapes: Bool {
         get { toolbox.preferences.recognizeShapes ?? true }
         nonmutating set { toolbox.preferences.recognizeShapes = newValue }
@@ -78,6 +87,14 @@ struct ContentView: View {
         if selectedPageID == writingDraft.id, !model.notebook.pages.contains(where: { $0.id == writingDraft.id }) { return draftPage }
         return model.notebook.pages[currentPageIndex]
     }
+    /// Insert/anchor target: the trailing unsaved draft maps to the last real page.
+    private var anchorPageID: UUID {
+        currentPage.id == writingDraft.id ? (model.notebook.pages.last?.id ?? currentPage.id) : currentPage.id
+    }
+    /// Before the stored document is installed the model holds a placeholder,
+    /// which must never be shown or get a native sheet. The latch lives in the
+    /// model: this view's state may outlive a model (second pane replaced).
+    private var notebookLoaded: Bool { model.documentLoaded }
     private var currentPageIndex: Int {
         get { model.notebook.pages.firstIndex { $0.id == selectedPageID } ?? min(model.pageIndex, model.notebook.pages.count - 1) }
         nonmutating set {
@@ -96,21 +113,20 @@ struct ContentView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
-            .sheet(isPresented: $addingPage, onDismiss: { if pendingPDFAnchor != nil { addingPDF = true } }) {
+            // Full-screen writing surface: no iPadOS status bar, home indicator auto-hides.
+            .statusBarHidden(true)
+            .persistentSystemOverlays(.hidden)
+            .sheet(isPresented: $addingPage) {
                 AddPageSheet(position: .after, enabled: canEdit, defaults: model.notebook.appearance,
                     onPaper: { style, color, geometry, position in
-                        let anchor = position == .end ? model.notebook.pages.last!.id : currentPage.id
+                        let anchor = position == .end ? model.notebook.pages.last!.id : anchorPageID
                         model.insertPaper(style, color: color, relativeTo: anchor, before: position == .before, geometry: geometry)
                         addingPage = false
-                    }, onPDF: { position in
-                        pendingPDFAnchor = position == .end ? model.notebook.pages.last!.id : currentPage.id
-                        pendingPDFBefore = position == .before; addingPage = false
-                    })
-            }
-            .sheet(isPresented: $addingPDF, onDismiss: { pendingPDFAnchor = nil }) {
-                PDFImportSheet(onImport: { url, margins in
-                    if let anchor = pendingPDFAnchor { model.insertPDF(url, relativeTo: anchor, before: pendingPDFBefore, writingArea: margins) }
-                }, onError: { model.error = $0 })
+                    }, onPDF: { url, margins, position in
+                        let anchor = position == .end ? model.notebook.pages.last!.id : anchorPageID
+                        model.insertPDF(url, relativeTo: anchor, before: position == .before, writingArea: margins)
+                        addingPage = false
+                    }, onError: { model.error = $0 })
             }
             .confirmationDialog("Das aktuelle Testheft wird vor dem Import lokal archiviert. Für ein unabhängiges Backup vorher exportieren.",
                                 isPresented: $confirmingImport, titleVisibility: .visible) {
@@ -132,9 +148,10 @@ struct ContentView: View {
             .photosPicker(isPresented: $choosingPhoto, selection: $selectedPhoto, matching: .images, preferredItemEncoding: .current)
             .onChange(of: selectedPhoto) { _, item in
                 guard let item, let target = imageTarget else { return }
+                // Always clear, otherwise the same photo can't be picked again after a failure.
+                defer { selectedPhoto = nil }
                 if target == writingDraft.id { guard model.materializeDraft(draftPage) else { return } }
                 model.insertPhoto(item, pageID: target)
-                selectedPhoto = nil
             }
             .fileExporter(isPresented: $exporting, document: exportFile,
                           contentType: exportType, defaultFilename: "noty-\(exportType == .pdf ? "export" : "backup")-\(Date().formatted(.iso8601).replacingOccurrences(of: ":", with: "-"))") { result in
@@ -166,9 +183,26 @@ struct ContentView: View {
             .sheet(isPresented: $contentSearch) {
                 ContentSearchView(documents: [OpenNotebook(id: model.notebook.id, directory: model.storageRoot, title: model.notebook.title, isRestored: false)], current: model.notebook) { hit in
                     selectedPageID = hit.pageID; searchHighlight = hit.bounds; searchHighlightPageID = hit.pageID; fitRequest += 1
+                    fadeSearchHighlightLater()
                 }
             }
             .sheet(isPresented: $customizingTools) { ToolbarCustomizationView(settings: toolbox) }
+            .sheet(isPresented: $showingSettings) { editorSettings?.make() }
+            .sheet(isPresented: $editingDefaults) {
+                NotebookDefaultsView(current: model.notebook.pageDefaults) { paper, color, scope in
+                    guard model.setPageDefaults(paper: paper, color: color, convertEmptyPages: scope),
+                          scope == .wholeNotebook else { return }
+                    // The whole notebook now has this paper colour: a neutral pen
+                    // or marker of the old contrast colour would write invisibly
+                    // (white on white). Same direction-aware rule as the ink.
+                    if let pen = PaperInkInversion.converted(toolbox.preferences.penColor, to: color) {
+                        toolbox.preferences.penColor = pen
+                    }
+                    if let marker = PaperInkInversion.converted(toolbox.preferences.markerColor, to: color) {
+                        toolbox.preferences.markerColor = marker
+                    }
+                }
+            }
             .sheet(item: $marginsPage) { selection in PageMarginsView(model: model, pageID: selection.id) }
             .sheet(isPresented: $showingHistory, onDismiss: {
                 if let id = selectedLocalRevision {
@@ -194,19 +228,51 @@ struct ContentView: View {
             .onChange(of: model.pageIndex) { _, index in
                 if isPaneActive(), model.notebook.pages.indices.contains(index) { selectedPageID = model.notebook.pages[index].id }
             }
-            .onChange(of: model.notebook.pages.map(\.id)) { _, ids in
+            .onChange(of: model.notebook.pages.map(\.id)) { old, ids in
                 if ids.contains(writingDraft.id) { writingDraft = Page() }
-                if let selectedPageID, let index = ids.firstIndex(of: selectedPageID), isPaneActive() { model.pageIndex = index }
+                if let selectedPageID, let index = ids.firstIndex(of: selectedPageID) {
+                    if isPaneActive() { model.pageIndex = index }
+                }
+                // The selected page was deleted (here or in the other pane): focus the
+                // page before it, or the one after it if it was the first page. The
+                // viewport jumps there because the selection was not reported by it.
+                else if let selectedPageID, selectedPageID != writingDraft.id, !ids.isEmpty {
+                    self.selectedPageID = PageRemovalFocus.focus(removed: selectedPageID, before: old, after: ids)
+                        ?? ids[min(max(0, model.pageIndex), ids.count - 1)]
+                }
             }
             .onChange(of: selectedPageID) { _, _ in if isPaneActive() { model.pageIndex = currentPageIndex } }
             .onChange(of: model.pageContentGeneration) { _, _ in textFocus = nil; writingDraft = Page() }
-            .onChange(of: tool) { _, value in if value != .text { textFocus = nil } }
+            .onChange(of: tool) { _, value in if value != .text { textFocus = nil }; if value.isInk { lastInkTool = value } }
             .onChange(of: model.notebook.id) { _, _ in selectedPageID = model.page.id; searchHighlightPageID = model.page.id }
-            .onAppear { selectedPageID = model.page.id; searchHighlight = initialSearchBounds; searchHighlightPageID = model.page.id }
+            .onAppear {
+                selectedPageID = model.page.id; searchHighlight = initialSearchBounds; searchHighlightPageID = model.page.id
+                EditorOpenTrace.begin()
+                if model.documentLoaded { markNotebookShown() }
+            }
+            .onChange(of: model.documentLoaded) { _, loaded in if loaded { markNotebookShown() } }
+            .onChange(of: canEdit) { _, editable in if !editable { pageEntry = false } }
             // Managed editors flush before dismissal. A late onDisappear save
             // could otherwise race a new editor for the same package.
             .onDisappear { if !isLibraryDocument && !isRestoredCopy { model.save() } }
             .interactiveDismissDisabled(isLibraryDocument || isRestoredCopy)
+        }
+    }
+
+    private func markNotebookShown() {
+        // Logged once per open (EditorOpenTrace de-duplicates events).
+        EditorOpenTrace.mark("model loaded", "pages=\(model.notebook.pages.count)")
+        fadeSearchHighlightLater()
+    }
+
+    /// The jump marker of a search hit/open task stays 3 s (plus the closing
+    /// sheet animation), then fades; a newer jump restarts the time.
+    private func fadeSearchHighlightLater() {
+        guard searchHighlight != nil else { return }
+        searchHighlightToken += 1
+        let token = searchHighlightToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.4) {
+            if searchHighlightToken == token { searchHighlight = nil }
         }
     }
 
@@ -231,11 +297,18 @@ struct ContentView: View {
                         .accessibilityAddTraits(.isButton)
                 }
                 if showingPages {
-                    PageSidebarView(model: model, selectedPageID: $selectedPageID, onBack: closeEditor, onCollapse: { showingPages = false },
-                        onSelect: { if compact { showingPages = false } },
-                        onMargins: { id in marginsPage = MarginPage(id: id) })
-                        .frame(width: width)
-                        .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+                    Group {
+                        if notebookLoaded {
+                            PageSidebarView(model: model, selectedPageID: $selectedPageID, onBack: closeEditor, onCollapse: { showingPages = false },
+                                onSelect: { if compact { showingPages = false } },
+                                onMargins: { id in marginsPage = MarginPage(id: id) })
+                        } else {
+                            // Same width and tone while loading: no placeholder thumbnail, no layout jump.
+                            Color(white: 0.065).ignoresSafeArea().accessibilityHidden(true)
+                        }
+                    }
+                    .frame(width: width)
+                    .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
                 }
             }
             .animation(NotyMotion.panel(reduceMotion), value: showingPages)
@@ -247,53 +320,86 @@ struct ContentView: View {
     // Palette chrome uses viewport points. The native notebook remains child zero.
     private var editorSurface: some View {
         GeometryReader { geometry in
+            let _ = HangProbe.hit("ContentView.editorSurface")
             let layout = toolbarLayout(geometry.size)
             ZStack(alignment: .topLeading) {
-                NotebookEditor(pages: editorPages, selectedPageID: selectedPageID ?? currentPage.id,
+                if !notebookLoaded {
+                    // Never build sheets for the model's placeholder notebook.
+                    NotebookLoadingView(failed: !model.busy)
+                        .padding(.leading, layout.leftInset).padding(.trailing, layout.rightInset)
+                        .padding(.top, layout.topInset).padding(.bottom, layout.bottomInset)
+                } else {
+                let pages = editorPages
+                // Right after loading, selectedPageID may still name the placeholder
+                // page until onChange runs; never let the viewport build a sheet for
+                // a stale or wrong page in that frame.
+                NotebookEditor(pages: pages, selectedPageID: selectedPageID.flatMap { id in pages.contains { $0.id == id } ? id : nil } ?? currentPage.id,
                     paging: toolbox.preferences.paging ?? false, normalizeWidths: toolbox.preferences.normalizePageWidths ?? false,
                     fitRequest: fitRequest, textInsertRequest: textInsertRequest, textFocus: textFocus,
-                    enabled: canEdit, fingerDrawing: toolbox.preferences.fingerDrawing,
+                    enabled: canEdit, fingerDrawing: toolbox.preferences.fingerDrawing, writingScroll: writingScroll,
+                    // No separate header strip: pages use the full height and
+                    // merely start below the floating header/palette.
+                    topObstruction: layout.topInset + (toolbarOptions && tool != .text && toolbox.preferences.effectiveDock == .top ? 60 : 0),
+                    // A freely placed palette covers part of the page: the caret is kept clear of it.
+                    obstructions: toolbox.preferences.effectiveDock == .floating ? [layout.frame.cgRect.offsetBy(dx: -layout.leftInset, dy: 0)] : [],
                     configuration: pageConfiguration, onSelect: { id in
+                        HangProbe.hit("ContentView.onSelect")
                         guard canEdit else { return }; selectedPageID = id
-                    })
-                    .padding(.top, layout.topInset + (toolbarOptions && tool != .text && toolbox.preferences.effectiveDock == .top ? 60 : 0))
+                    }, onTransfer: transferContents(generation: model.pageContentGeneration),
+                    onError: { model.error = $0 }, revealRequest: revealRequest,
+                    laser: tool == .laser ? toolbox.preferences.laserStyle : nil)
+                    .ignoresSafeArea(.container, edges: .bottom)
                     .padding(.bottom, layout.bottomInset + (toolbarOptions && tool != .text && toolbox.preferences.effectiveDock == .bottom ? 60 : 0))
                     .padding(.leading, layout.leftInset)
                     .padding(.trailing, layout.rightInset)
+                }
                 editorHeader(layout: layout)
                     .frame(height: 60)
                 ToolbarPaletteHost(layout: layout, preferences: $toolbox.preferences, more: $toolbarMore,
                     secondView: onSecondView != nil, enabled: canEdit && toolbox.writable,
-                    showingOptions: toolbarOptions && tool != .text, optionsWidth: EditorToolOptions.preferredWidth(for: tool)) { axis in
+                    showingOptions: toolbarOptions && tool != .text, optionsWidth: optionsWidths[tool] ?? EditorToolOptions.preferredWidth(for: tool)) { axis in
                     palette(axis: axis)
                 } options: {
                     EditorToolOptions(tool: $tool, preferences: $toolbox.preferences, showing: $toolbarOptions,
-                        shapeOptions: Binding(get: { shapeOptions }, set: { shapeOptions = $0 }), selectionFilter: $selectionFilter,
+                        shapeOptions: Binding(get: { shapeOptions }, set: { shapeOptions = $0 }), selectionFilter: $selectionFilter, lassoMode: $lassoMode,
                         recognizeShapes: Binding(get: { recognizeShapes }, set: { recognizeShapes = $0 }),
                         onInsertText: { textInsertRequest += 1 },
                         onPhoto: { imageTarget = currentPage.id; choosingPhoto = true },
                         onImageFile: { imageTarget = currentPage.id; importingImage = true },
-                        onPasteImage: { if currentPage.id == writingDraft.id { guard model.materializeDraft(draftPage) else { return } }; model.pasteImage(pageID: currentPage.id) })
+                        onPasteImage: { if currentPage.id == writingDraft.id { guard model.materializeDraft(draftPage) else { return } }; model.pasteImage(pageID: currentPage.id) },
+                        onContentWidth: { width in if optionsWidths[tool] != width { optionsWidths[tool] = width } })
+                }
+                if notebookLoaded, canEdit, let pencilPalette {
+                    PencilToolPalette(presentation: pencilPalette, tool: $tool, preferences: $toolbox.preferences, inkTool: lastInkTool,
+                        canUndo: model.canUndo, canRedo: model.canRedo, onUndo: { performUndo(redo: $0) },
+                        onSelect: selectFromPencilPalette, onDismiss: { dismissPencilPalette(pencilPalette.id) })
+                        .id(pencilPalette.id).transition(.opacity.animation(.easeOut(duration: 0.1)))
+                        .onDisappear { dismissPencilPalette(pencilPalette.id) }
                 }
             }
             .ignoresSafeArea(.keyboard, edges: .bottom)
+            .background(Color(uiColor: NotebookViewport.backdrop).ignoresSafeArea())
             .animation(NotyMotion.palette(reduceMotion), value: toolbox.preferences.dock)
             .overlay(alignment: .bottomTrailing) {
-                pageNavigator.padding(.trailing, layout.rightInset + 14).padding(.bottom, layout.bottomInset + 16)
+                if notebookLoaded {
+                    pageNavigator.padding(.trailing, layout.rightInset + 14).padding(.bottom, layout.bottomInset + 16)
+                }
             }
             .overlay(alignment: .bottomLeading) {
+                if notebookLoaded || !model.busy {
                 Text(model.status).font(.caption2).foregroundStyle(model.saveFailed ? Color.orange : .secondary)
                     .padding(.horizontal, 10).padding(.vertical, 5).background(.ultraThinMaterial, in: Capsule())
                     .padding(.leading, layout.leftInset + 12).padding(.bottom, layout.bottomInset + 12)
                     .accessibilityIdentifier("saveStatus").allowsHitTesting(false)
+                }
             }
         }
     }
     private func toolbarLayout(_ size: CGSize) -> ToolbarLayout {
-        let count = ToolbarLayout.itemCount(more: toolbarMore, presets: toolbox.preferences.presets.count, secondView: onSecondView != nil)
+        let count = ToolbarLayout.itemCount(more: toolbarMore, preferences: toolbox.preferences, secondView: onSecondView != nil)
         return ToolbarLayout(viewport: PageSize(width: size.width, height: size.height), dock: toolbox.preferences.effectiveDock,
             floatingAxis: toolbox.preferences.floatingAxis ?? .horizontal, items: count,
-            headerItems: ToolbarLayout.itemCount(more: false, presets: toolbox.preferences.presets.count, secondView: onSecondView != nil),
+            headerItems: ToolbarLayout.itemCount(more: false, preferences: toolbox.preferences, secondView: onSecondView != nil),
             floatingX: toolbox.preferences.floatingX, floatingY: toolbox.preferences.floatingY)
     }
     private func palette(axis: ToolbarAxis) -> some View {
@@ -306,22 +412,40 @@ struct ContentView: View {
 
     private func editorHeader(layout: ToolbarLayout) -> some View {
         ZStack(alignment: .topLeading) {
-            HStack(spacing: 4) {
-                Button(action: closeEditor) {
-                    Image(systemName: "arrow.left").frame(width: 44, height: 44).contentShape(Rectangle())
-                }.accessibilityLabel("Zurück zu den Notizbüchern")
-                Text(model.notebook.title).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(width: layout.headerLeadingFrame.width, height: 44)
+            // Arrow and title form one button: tapping the name also leaves the notebook.
+            Button(action: closeEditor) {
+                HStack(spacing: 0) {
+                    Image(systemName: "arrow.left").frame(width: 44, height: 44)
+                    if layout.headerLeadingFrame.width >= 100, notebookLoaded {
+                        Text(model.notebook.title).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.tail)
+                            .padding(.trailing, 14)
+                    }
+                }.contentShape(Rectangle())
+            }.accessibilityLabel("Zurück zu den Notizbüchern").accessibilityValue(notebookLoaded ? model.notebook.title : "")
+                .padding(.horizontal, 4).frame(height: 44).notyGlass()
+                .frame(maxWidth: max(52, layout.headerLeadingFrame.width), alignment: .leading)
+                .frame(width: max(52, layout.headerLeadingFrame.width), height: 44, alignment: .leading)
                 .offset(x: layout.headerLeadingFrame.x, y: layout.headerLeadingFrame.y)
             HStack(spacing: 0) {
-                Button { undoRequest += 1 } label: {
+                // Notebook-wide: the most recent change on any page, in order.
+                Button { performUndo(redo: false) } label: {
                     Image(systemName: "arrow.uturn.backward").frame(width: 44, height: 44).contentShape(Rectangle())
-                }.accessibilityLabel("Rückgängig")
+                        .opacity(model.canUndo ? 1 : 0.35)
+                }.accessibilityLabel("Rückgängig").disabled(!model.canUndo)
                 if layout.headerActionCount >= 4 {
-                    Button { redoRequest += 1 } label: {
+                    Button { performUndo(redo: true) } label: {
                         Image(systemName: "arrow.uturn.forward").frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.accessibilityLabel("Wiederholen")
+                            .opacity(model.canRedo ? 1 : 0.35)
+                    }.accessibilityLabel("Wiederholen").disabled(!model.canRedo)
+                }
+                if layout.headerActionCount >= 5 {
+                    Button { writingScroll.toggle() } label: {
+                        Image(systemName: "arrow.left.and.right.square").frame(width: 44, height: 44)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(writingScroll ? Color.cyan.opacity(0.28) : .clear))
+                            .contentShape(Rectangle())
+                    }.accessibilityLabel("Schreibscrollen")
+                        .accessibilityValue(writingScroll ? "Ein" : "Aus")
+                        .accessibilityHint("Seitlich bis zur Blattmitte scrollen, um bequemer am Rand zu schreiben.")
                 }
                 fileMenu
                 if !layout.compactHeader {
@@ -340,8 +464,8 @@ struct ContentView: View {
     }
     @ViewBuilder private var pageInsertionActions: some View {
         Button("Standardseite hinzufügen", systemImage: "doc.badge.plus") {
-            let defaults = model.notebook.appearance ?? NotebookAppearance()
-            model.insertPaper(defaults.paper, color: defaults.color, relativeTo: currentPage.id)
+            let defaults = model.notebook.pageDefaults
+            model.insertPaper(defaults.paper, color: defaults.color, relativeTo: anchorPageID)
         }
         Button("Papier oder PDF auswählen", systemImage: "plus") { addingPage = true }
     }
@@ -349,16 +473,51 @@ struct ContentView: View {
     private var pageNavigator: some View {
         VStack(spacing: 3) {
             Button { if currentPage.id == writingDraft.id { selectedPageID = model.notebook.pages.last?.id } else { currentPageIndex -= 1 } } label: { Image(systemName: "chevron.up").frame(width: 48, height: 44).contentShape(Rectangle()) }
-                .disabled(currentPageIndex == 0 && currentPage.id != writingDraft.id).accessibilityLabel("Vorherige Seite")
-            Text(currentPage.id == writingDraft.id ? "+" : "\(currentPageIndex + 1)").font(.caption.weight(.semibold))
-            Rectangle().fill(.secondary).frame(width: 16, height: 1)
-            Text("\(model.notebook.pages.count)").font(.caption)
-            Button {
-                if currentPageIndex == model.notebook.pages.count - 1, model.notebook.pages.count < 500 { selectedPageID = writingDraft.id }
-                else { currentPageIndex += 1 }
-            } label: { Image(systemName: "chevron.down").frame(width: 48, height: 44).contentShape(Rectangle()) }
-                .disabled(currentPage.id == writingDraft.id || (model.notebook.pages.count == 500 && currentPageIndex == 499)).accessibilityLabel("Nächste Seite oder neue Schreibseite")
+                .disabled(currentPageIndex == 0 && currentPage.id != writingDraft.id)
+                .foregroundStyle(currentPageIndex == 0 && currentPage.id != writingDraft.id ? Color.gray.opacity(0.5) : .white)
+                .accessibilityLabel("Vorherige Seite")
+            pageNumberButton
+            Button { currentPageIndex += 1 } label: { Image(systemName: "chevron.down").frame(width: 48, height: 44).contentShape(Rectangle()) }
+                .disabled(currentPage.id == writingDraft.id || currentPageIndex >= model.notebook.pages.count - 1)
+                .foregroundStyle(currentPage.id == writingDraft.id || currentPageIndex >= model.notebook.pages.count - 1 ? Color.gray.opacity(0.5) : .white)
+                .accessibilityLabel("Nächste Seite")
         }.padding(4).notyGlass().buttonStyle(NotyToolStyle()).disabled(!canEdit)
+    }
+    /// Number block of the navigator: tap (or ⌘G) opens "Gehe zu Seite".
+    private var pageNumberButton: some View {
+        let count = model.notebook.pages.count
+        let onDraft = currentPage.id == writingDraft.id
+        return Button { openPageEntry() } label: {
+            VStack(spacing: 3) {
+                Text(onDraft ? "+" : "\(currentPageIndex + 1)").font(.caption.weight(.semibold))
+                Rectangle().fill(.secondary).frame(width: 16, height: 1)
+                Text("\(count)").font(.caption)
+            }.frame(width: 48, height: 40).contentShape(Rectangle())
+        }
+        .foregroundStyle(.white)
+        .keyboardShortcut("g", modifiers: .command)
+        .accessibilityLabel(onDraft ? "Neue Seite nach Seite \(count), zum Springen tippen" : "Seite \(currentPageIndex + 1) von \(count), zum Springen tippen")
+        .popover(isPresented: $pageEntry, arrowEdge: .trailing) { pageEntryPanel(count: count) }
+    }
+    private func openPageEntry() {
+        guard canEdit else { return }
+        pageEntryText = ""; pageEntry = true
+    }
+    /// Compact in-app number pad: no system keyboard. Digits that would leave
+    /// 1…N are disabled, so only existing pages can be submitted.
+    private func pageEntryPanel(count: Int) -> some View {
+        PageJumpPad(text: $pageEntryText, count: count, current: currentPageIndex + 1,
+                    onGo: jumpToEnteredPage, onCancel: { pageEntry = false })
+            .presentationCompactAdaptation(.popover)
+    }
+    private func jumpToEnteredPage() {
+        let count = model.notebook.pages.count
+        guard canEdit else { pageEntry = false; return }
+        guard let number = Int(pageEntryText), (1...count).contains(number) else { return }
+        pageEntry = false
+        // Same selection path as the chevrons and the sidebar: the viewport
+        // treats a selection it did not report as a jump (scroll and paging).
+        currentPageIndex = number - 1
     }
     private var fileMenu: some View {
         Menu {
@@ -368,14 +527,20 @@ struct ContentView: View {
             if let status = model.fileStatus { Text(status) }
             if !toolbox.status.isEmpty { Text(toolbox.status) }
             Divider()
-            Button("Rückgängig", systemImage: "arrow.uturn.backward") { undoRequest += 1 }
-            Button("Wiederholen", systemImage: "arrow.uturn.forward") { redoRequest += 1 }
+            Button("Rückgängig", systemImage: "arrow.uturn.backward") { performUndo(redo: false) }.disabled(!model.canUndo)
+            Button("Wiederholen", systemImage: "arrow.uturn.forward") { performUndo(redo: true) }.disabled(!model.canRedo)
             Menu("Seite hinzufügen", systemImage: "doc.badge.plus") { pageInsertionActions }
+            Button("Seitenstandard ändern …", systemImage: "doc.richtext") { editingDefaults = true }
+                .disabled(!canEdit)
             Divider()
+            Toggle("Schreibscrollen bis zur Blattmitte", isOn: $writingScroll)
             Toggle("Blättern statt vertikal scrollen", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
             Toggle("PDFs einheitlich anzeigen", isOn: Binding(get: { toolbox.preferences.normalizePageWidths ?? false }, set: { toolbox.preferences.normalizePageWidths = $0 }))
                 .accessibilityHint("Gleiche Arbeitsblattbreite mit Schreibraum daneben. Ändert nur die Anzeige.")
 
+                        if editorSettings != nil {
+                            Button("Einstellungen", systemImage: "gearshape") { showingSettings = true }
+                        }
                         Button("Im Heft suchen") { contentSearch = true }.keyboardShortcut("f", modifiers: .command)
                         Button("Jetzt speichern") { model.save() }.keyboardShortcut("s", modifiers: .command)
                         Button("Lokale Wiederherstellungspunkte") { showingHistory = true }
@@ -405,7 +570,7 @@ struct ContentView: View {
                                 exportFile = ExportFile(pdfData: try PDFExporter.render(model.notebook, pageIDs: [currentPage.id]))
                                 exportType = .pdf; exporting = true
                             } catch { model.error = error.localizedDescription }
-                        }.disabled(!model.writable)
+                        }.disabled(!model.writable || currentPage.id == writingDraft.id)
                         Button("Ganzes Heft als PDF exportieren") {
                             do {
                                 exportFile = ExportFile(pdfData: try PDFExporter.render(model.notebook))
@@ -417,25 +582,95 @@ struct ContentView: View {
 
         } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Optionen und Export")
     }
+    /// Notebook-wide undo/redo: reverts the most recent change on any page in
+    /// order (by stable page ID) and brings that page into view.
+    private func performUndo(redo: Bool) {
+        guard canEdit, let outcome = model.undo(redo: redo) else { return }
+        if tool == .text, var focus = outcome.focus, model.notebook.pages.contains(where: { $0.id == focus.pageID }) {
+            focus.requestID = UUID(); textFocus = focus
+        }
+        guard outcome.pageID != selectedPageID, model.notebook.pages.contains(where: { $0.id == outcome.pageID }) else { return }
+        revealRequest = PageRevealRequest(pageID: outcome.pageID)
+        selectedPageID = outcome.pageID
+    }
+    /// Pencil double tap / double squeeze: eraser ↔ the ink tool used before
+    /// (pen, pencil or marker), honouring the eraser preference. From the laser
+    /// pointer it returns straight to that ink tool.
+    private func togglePencilEraser() {
+        guard canEdit else { return }
+        pencilPalette = nil
+        if tool == .strokeEraser || tool == .precisionEraser || tool == .laser { tool = lastInkTool }
+        else {
+            if tool.isInk { lastInkTool = tool }
+            tool = toolbox.preferences.eraserPrecision == true ? .precisionEraser : .strokeEraser
+        }
+    }
+    /// Apple Pencil Pro: one squeeze opens the tool palette at the Pencil; a
+    /// quick second squeeze toggles the eraser instead (palette never shown).
+    private func handlePencilSqueeze(_ event: PencilSqueezeEvent) {
+        guard canEdit, notebookLoaded else { return }
+        switch pencilSqueeze.handle(event.phase, at: event.time, showing: pencilPalette != nil, preference: event.preference) {
+        case .none: break
+        case .schedule(let token):
+            // Shown after a short delay (most double squeezes cancel it first);
+            // a later second squeeze still closes it and toggles (tracker).
+            let presentation = PencilPalettePresentation(location: event.location, leftHanded: event.leftHanded)
+            DispatchQueue.main.asyncAfter(deadline: .now() + PencilSqueezeTracker.showDelay) {
+                guard pencilSqueeze.fire(token), canEdit, notebookLoaded, pencilPalette == nil else { return }
+                pencilPalette = presentation
+            }
+        case .dismiss: withAnimation(NotyMotion.highlight(reduceMotion)) { pencilPalette = nil }
+        case .toggle: togglePencilEraser()
+        }
+    }
+    /// Same selection path as the toolbar buttons.
+    private func selectFromPencilPalette(_ item: EditorTool) {
+        let choice = EditorToolbar.choice(item, preferences: toolbox.preferences)
+        tool = choice.tool; toolbarOptions = choice.options
+    }
+    private func dismissPencilPalette(_ id: UUID) {
+        guard pencilPalette?.id == id else { return }
+        withAnimation(NotyMotion.highlight(reduceMotion)) { pencilPalette = nil }
+    }
+
+    /// Cross-page selection moves: all pages or none (one notebook-wide undo step).
+    /// Dropping onto the trailing draft page materializes it first.
+    private func transferContents(generation: Int) -> ([PageContentReplacement]) -> Bool {
+        { changes in
+            guard isPaneActive(), model.pageContentGeneration == generation else { return false }
+            for change in changes where change.pageID == writingDraft.id && !model.notebook.pages.contains(where: { $0.id == change.pageID }) {
+                guard PageContent(page: draftPage) == change.expected, model.materializeDraft(draftPage) else { return false }
+            }
+            return model.replaceContents(changes)
+        }
+    }
+
     private func pageConfiguration(_ page: Page) -> PageEditor {
+        HangProbe.hit("ContentView.pageConfiguration")
         let sourcePage = model.sourcePage(for: page)
         let layout = (try? PageLayout(page: page, source: sourcePage?.pageRef)) ?? model.pageLayout
         let generation = model.pageContentGeneration
         let preferences = toolbox.preferences
         return PageEditor(sourcePage: sourcePage, layout: layout, pageID: page.id,
             drawing: page.drawing, textBoxes: page.effectiveTextBoxes, images: page.images ?? [], shapes: page.shapes ?? [],
-            searchHighlight: searchHighlightPageID == page.id ? searchHighlight : nil, paper: page.paper ?? .legacyTest,
+            searchHighlight: searchHighlightPageID == page.id ? searchHighlight : nil, paper: page.paper ?? (sourcePage == nil ? .legacyTest : .blank),
             paperColor: page.paperColor ?? .white, margins: page.margins,
-            tool: tool, color: UIColor((tool == .marker ? preferences.markerColor : preferences.penColor).color),
-            width: tool == .marker ? preferences.markerWidth : tool == .precisionEraser ? preferences.eraserWidth : preferences.penWidth,
-            enabled: canEdit, autoPen: preferences.autoPen ?? false, pencilPreview: preferences.pencilPreview ?? true,
-            fingerDrawing: preferences.fingerDrawing, ruler: ruler, shapeOptions: shapeOptions, selectionFilter: selectionFilter,
-            recognizeShapes: recognizeShapes,
-            onPencilAction: { if canEdit { tool = tool == .strokeEraser ? .pen : .strokeEraser } },
+            tool: tool, color: tool == .marker
+                ? UIColor(preferences.markerColor.color).withAlphaComponent(preferences.markerStrokeColor.alpha)
+                : UIColor(preferences.inkColor(for: tool).color),
+            width: preferences.inkWidth(for: tool) * page.inkWidthScale,
+            enabled: canEdit, autoPen: preferences.automaticInk(for: tool),
+            fingerDrawing: preferences.fingerDrawing, ruler: ruler, shapeOptions: shapeOptions, selectionFilter: selectionFilter, lassoMode: lassoMode,
+            recognizeShapes: recognizeShapes, markerStraight: preferences.markerStraight ?? false, markerTip: preferences.effectiveMarkerTip, scribbleErase: preferences.scribbleErase ?? true,
+            onPencilAction: { togglePencilEraser() },
+            onPencilSqueeze: { handlePencilSqueeze($0) },
             onInteraction: { id, active in
                 model.setInteraction(id, active: active)
             },
-            undoRequest: undoRequest, redoRequest: redoRequest, fitRequest: fitRequest, contentGeneration: generation,
+            onUndo: { redo in performUndo(redo: redo) },
+            undoState: UndoAvailability(undo: model.canUndo, redo: model.canRedo),
+            onInkSession: { model.beginInkSession(pageID: page.id) },
+            fitRequest: fitRequest, contentGeneration: generation,
             textInsertRequest: textInsertRequest,
             onFlowEdit: { previous, replacement, selection in
                 guard isPaneActive(), model.pageContentGeneration == generation else { return nil }
@@ -451,13 +686,15 @@ struct ContentView: View {
             },
             onFlowUndo: { redo in
                 guard isPaneActive(), model.pageContentGeneration == generation else { return }
-                if let focus = model.undoFlowText(redo: redo) { textFocus = focus; selectedPageID = focus.pageID }
+                performUndo(redo: redo)
             },
             onFlowBackspace: { box in
                 guard isPaneActive(), model.pageContentGeneration == generation else { return }
                 if let focus = model.backspaceFlowText(pageID: page.id, box: box) { textFocus = focus; selectedPageID = focus.pageID }
             },
+            onUndoBoundary: { if isPaneActive(), model.pageContentGeneration == generation { model.separateUndoStep() } },
             readTextBoxes: { model.notebook.pages.first(where: { $0.id == page.id })?.effectiveTextBoxes ?? (page.id == writingDraft.id ? writingDraft.effectiveTextBoxes : []) },
+            readFlowText: { flow in model.notebook.pages.flatMap { $0.effectiveTextBoxes.filter { $0.flowID == flow }.map(\.text) }.joined() },
             onDrawing: { data in
                 guard isPaneActive(), model.pageContentGeneration == generation else { return }
                 if page.id == writingDraft.id, !model.notebook.pages.contains(where: { $0.id == page.id }) {
@@ -486,6 +723,114 @@ struct ContentView: View {
             })
     }
 
+}
+
+/// "Gehe zu Seite" as a floating number pad (digits, delete, Los). Hardware
+/// keyboards type digits, Backspace deletes, Return jumps and Escape closes
+/// through key equivalents, so no text field and no system keyboard is needed.
+private struct PageJumpPad: View {
+    @Binding var text: String
+    let count: Int
+    let current: Int
+    let onGo: () -> Void
+    let onCancel: () -> Void
+
+    private var number: Int? { Int(text) }
+    private var valid: Bool { number.map { (1...count).contains($0) } ?? false }
+    /// A digit is offered only if the result can still be a page of this notebook.
+    private func accepts(_ digit: Int) -> Bool {
+        if text.isEmpty && digit == 0 { return false }
+        guard text.count < 4, let next = Int(text + String(digit)) else { return false }
+        return next <= count
+    }
+    private func type(_ digit: Int) { if accepts(digit) { text += String(digit) } }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(text.isEmpty ? "\(current)" : text)
+                    .font(.system(size: 34, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(text.isEmpty ? Color.secondary : Color.primary)
+                    .contentTransition(.numericText())
+                Text("von \(count)").font(.callout).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(text.isEmpty ? "Seitenzahl eingeben, aktuell Seite \(current) von \(count)" : "Seite \(text) von \(count)")
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(58), spacing: 8), count: 3), spacing: 8) {
+                ForEach(1..<10) { digit in key(digit) }
+                Button { if !text.isEmpty { text.removeLast() } } label: {
+                    Image(systemName: "delete.left").frame(width: 58, height: 46)
+                }
+                .buttonStyle(PageJumpKeyStyle())
+                .keyboardShortcut(.delete, modifiers: [])
+                .disabled(text.isEmpty)
+                .accessibilityLabel("Löschen")
+                key(0)
+                Button(action: onGo) {
+                    Text("Los").font(.headline).frame(width: 58, height: 46)
+                }
+                .buttonStyle(PageJumpKeyStyle(prominent: true))
+                .keyboardShortcut(.defaultAction)
+                .disabled(!valid)
+                .accessibilityHint(valid ? "Springt zu Seite \(text)." : "Erst eine Seitenzahl von 1 bis \(count) eingeben.")
+            }
+        }
+        .padding(14)
+        // Escape on a hardware keyboard; tapping outside closes the popover too.
+        .background {
+            Button("Abbrechen", action: onCancel).keyboardShortcut(.cancelAction)
+                .opacity(0).allowsHitTesting(false).accessibilityHidden(true)
+        }
+        .frame(width: 218)
+        .animation(.snappy(duration: 0.15), value: text)
+        // The navigator styles its label white; the popover uses system colours.
+        .foregroundStyle(.primary)
+    }
+
+    private func key(_ digit: Int) -> some View {
+        Button { type(digit) } label: {
+            Text("\(digit)").font(.title2.monospacedDigit()).frame(width: 58, height: 46)
+        }
+        .buttonStyle(PageJumpKeyStyle())
+        .keyboardShortcut(KeyEquivalent(Character("\(digit)")), modifiers: [])
+        .disabled(!accepts(digit))
+    }
+}
+
+private struct PageJumpKeyStyle: ButtonStyle {
+    var prominent = false
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(prominent ? Color.white : Color.primary)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(prominent ? Color.accentColor : Color.primary.opacity(configuration.isPressed ? 0.22 : 0.1)))
+            .opacity(isEnabled ? (configuration.isPressed && prominent ? 0.8 : 1) : 0.35)
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+/// Shown instead of the notebook until the stored document is installed.
+/// The indicator fades in late, so quick opens show only the dark background.
+private struct NotebookLoadingView: View {
+    var failed: Bool
+    @State private var visible = false
+    var body: some View {
+        ZStack {
+            Color.clear
+            if failed {
+                Text("Heft konnte nicht geöffnet werden").font(.callout).foregroundStyle(.secondary)
+            } else {
+                ProgressView().controlSize(.regular).tint(Color(white: 0.6))
+                    .opacity(visible ? 1 : 0)
+                    .accessibilityLabel("Heft wird geöffnet")
+            }
+        }
+        .allowsHitTesting(false)
+        .onAppear { withAnimation(.easeIn(duration: 0.2).delay(0.3)) { visible = true } }
+    }
 }
 
 private struct RestoredNotebookView: View {

@@ -1,5 +1,42 @@
 # Designentscheidungen für noty
 
+## Bleistift, Laserpointer, Pencil-Haptik – 19.10.2026
+
+Nutzerwunsch: Laserpointer mit mehreren Funktionen, echter Bleistift, Vibration des Pencils bei Lasso und Laserpointer. Technische Startwerte, reversibel:
+
+- **Bleistift**: native PencilKit-Bleistifttinte (Textur, Druck, breite Schattierung durch Neigen). Start Graphitgrau, Breite 1–16 (3), eigener Autostift, Lieblingsstifte. Halten begradigt/erkennt Formen, Ergebnis bleibt Bleistifttinte statt Formobjekt. Durchkritzeln-Löschen bewusst nur beim Stift: Schraffieren gleicht Kritzeln. Leiste/Squeeze-Palette direkt nach dem Stift; Doppeltippen/-drücken wechselt Radierer ↔ zuletzt benutztes Schreibwerkzeug, vom Laserpointer direkt zurück.
+- **Laserpointer**: eigene Ebene über allen Seiten des Viewports, durchgehend über Seitengrenzen, Schreibraum und PDFs. „Punkt“ (Leuchtpunkt mit kurzem Schweif) oder „Spur“ mit Dauer Kurz 0,7 s / Mittel 1,5 s / Lang 3 s / Bis Absetzen; fünf Farben, Start Rot/Spur/Mittel; Pencil-Hover zeigt einen gedimmten Punkt. Nie gespeichert, kein Undo, keine Vorschau/kein Export. Finger scrollen weiter; mit Fingermalen zeigt ein Finger, zwei navigieren.
+- **Haptik** nur Apple Pencil Pro ab iPadOS 17.5 (`UICanvasFeedbackGenerator`), sonst ohne Ersatz: Lasso schließt mit Auswahl; gedrehte Handschrift rastet bei 90°-Vielfachen ein; schwebende Auswahl erreicht eine andere Seite; Laserpointer setzt nach vollständigem Ausblenden neu an. Bestehend: Halten-Erkennung.
+- **Werkzeugformat 8**: Format 7 wird beim Laden übernommen (Bleistift nach Stift, Laserpointer nach „PDF lesen“). Exakte Format-7-Bytes bleiben vor dem ersten Format-8-Commit als `toolbar-format7.json`; ältere Builds sperren Format 8 statt Standards zu schreiben. Python-Bibliotheksprüfer akzeptiert 1–8.
+
+Stand: implementiert, Core-Tests/Host-Roundtrip/SDK-Build; Gefühl, Haptik, Hover und Laserdarstellung am iPad ungeprüft.
+
+## Präzisierungen 32 – 18.10.2026
+
+IMG_0274 bestätigt: Die Build-31-Ausnahme für PDF-Randseiten ist falsch. Bei einheitlicher Anzeige müssen Papier und PDF dieselbe Grundbreite haben, auch mit Schreibrand. 100 % neuer Rand folgt wieder der PDF-Grundbreite und erscheint damit als normale Seitenbreite. Randtext/Lineatur nutzen normale Seiteneinheiten; 14 bleibt 14 in den Stilen/Bedienelementen, keine künstlich hochgerechneten Schriftgrößen. Gespeicherte individuelle Ränder nicht still umdeuten; einen unter Build 31 zu schmal angelegten Rand ausdrücklich über Rechts/Breit/100 % erweitern.
+
+Lasso: Farbe während Vorschau und nach Commit erhalten; Handschrift mit umlaufender animierter Kontur und Drehgriff, bei Bewegung-reduzieren statisch. Nutzer präzisiert IMG_0275: Die dünnen dunklen Linien sind zwei fehlgeschlagene begradigte Stiftlinien. Halten muss die sichtbare Vorschaufarbe und konfigurierte Stärke bis zum gespeicherten nativen Strich erhalten. [Umsetzung und Geräteprüfung](EDITOR-FEEDBACK-32.md).
+
+## Präzisierungen 31 – 18.10.2026
+
+Die neue Rückmeldung ersetzt die Einschließungsregel aus Build 30: Lasso wählt alles Berührte/Enthaltene; Seitentext und gesperrte Bilder bleiben geschützt. Freiform/Rechteck zum Auswählen, bei reiner Handschrift anschließend Kontur um die Striche statt rechteckigem Rahmen. Menü ausdrücklich dunkel nach Referenz, lesbare Aktionsleiste und kleine Griffe mit großer Trefferfläche; reine Handschrift seitlich drehen/spiegeln. Kein bloß bewegter Rahmen ohne Inhalt.
+
+Starken Zoom ohne volle hochaufgelöste Seitenraster betreiben. Horizontal nur den Bereich der tatsächlich betrachteten Seite freigeben; breite Nachbarseiten dürfen schmale Seiten nicht seitlich ins Leere scrollen lassen. Neuer Import-Schreibplatz startet rechts/schwarz/100 %, wobei 100 % einer normalen A4-Seitenbreite entspricht. Schreibseiten in gemeinsamen Punktgrößen anzeigen, auch bei aktivierter PDF-Breiten-Normalisierung; vorhandene Inhalte/Ränder nicht automatisch umschreiben. Die PDF-Höhe/-Geometrie erhalten. [Umsetzung, Referenzgrenzen und Retest](EDITOR-FEEDBACK-31.md).
+
+## Präzisierungen 30 – 18.10.2026
+
+Ein einziges Hauptlasso mit Freiform/Rechteck: vollständig eingeschlossene Handschrift, freie Textfelder, Bilder und Formen gemeinsam auswählen; seitengebundenen Text schützen. Die vorherige Trennung zwischen Objekt- und Handschrift-Lasso entfällt. Neue Handschrift liegt sichtbar über Formen, ebenso in Vorschau/PDF. Halten soll die erkannte Linie vor dem Abheben gerade anzeigen und auf unterstütztem Pencil fühlbar bestätigen.
+
+Checkboxen nach IMG_0265/0266: dünner offener Kreis, erledigt gefüllter Kreis mit Haken sowie gedimmtem/durchgestrichenem Text. Dreistufiger Formatbutton und Pencil-Tipp bleiben. Formatierungsicons auf gleicher Höhe. Neue PDF-Ränder zunächst schwarz als künftiger Systemstandard, rechts 100 %; vorhandene Einstellungen erhalten. Zurückgenommene Autostiftfarbmeldung nicht erneut bearbeiten. Scrollruckler durch weniger Canvas-/Layoutarbeit reduzieren, Gerätewirkung separat abnehmen. Linienausrichtung wartet weiter auf Nutzerrückmeldung. [Umsetzung und Grenzen](EDITOR-FEEDBACK-30.md).
+
+## Präzisierungen 29 – 18.10.2026
+
+Nachgereichter Textablauf: zusätzliche Textformate und Ausrichtung als kompakte Icon-Menüs ohne sichtbare Namen; Accessibility-Beschriftung erhalten. Neue Felder/Textkörper 14 pt, Größe in Einerschritten. „Word“-Cursorformatierung gilt für folgende Zeichen, Textauswahl für markierte Zeichen; die freie-Feld-Ausnahme aus dem ersten Auftrag bleibt. Wechsel des Listentyps am Cursor betrifft die zusammenhängenden Einträge gleicher Einrückung; explizite Auswahl begrenzt den Bereich. Zitat-/Codeblöcke und gebündelte Inter-Schrift sind aus den optionalen Referenzanmerkungen noch nicht umgesetzt; keine optische Attrappe als volle Funktion ausgeben.
+
+Checkboxbutton: offen einfügen → abhaken → entfernen; Pencil-Tipp auf das Kästchen schaltet offen/abgehakt. Diese Präzisierung ersetzt den Checkbox-Zweierschritt aus Build 28; Punkte/Nummerierung bleiben Zweierschritt. Keine zusätzliche stehende Stiftmarkierung. Gemischtes Lasso schützt seitengebundenen „Word“-Text und bewegt freie Textfelder/Ink/Bilder/Formen; natives Handschrift-Lasso bleibt auf Ebene zwei. Größenänderung im freien Textfeld ohne Wortauswahl betrifft dessen gesamten Inhalt; vorhandene Wortauswahl hat Vorrang.
+
+Leistenwechsel nach links erweitern/verkürzen, rechter Umschaltpfeil bleibt stehen; größerer Griff. Formen direkt einzeln antippen. Seitenpfeile an echten Seitengrenzen grau/deaktiviert; virtuelle Schreibreserve weiter per Scrollen erreichbar. Neue PDF-Schreibränder rechts 100 %, vorhandene Ränder beim Öffnen erhalten. Grundseitenfit statt Verkleinern wegen zusätzlichem Rand; automatische Stiftfarbe nach tatsächlicher Ansatzfläche. Seitengebundener Text auf linierten Vorlagen soll an deren Grundlinien stehen; Halten begradigt Stift/Marker. Umsetzung und offene native Abnahme: [EDITOR-FEEDBACK-29](EDITOR-FEEDBACK-29.md).
+
 ## Präzisierungen 28 – 18.10.2026
 
 Checkboxen-, Aufzählungs- und Nummerierungsbutton: einmal anwenden, erneut antippen entfernt den jeweiligen Listentyp. Kein schneller Doppeltipp nötig. Abhaken einer Aufgabe bleibt eine eigene Aktion. Bestehende Wortformatierungen erhalten.

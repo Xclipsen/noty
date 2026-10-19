@@ -29,7 +29,7 @@ final class PageThumbnailCache: ObservableObject {
             let context = renderer.cgContext
             context.scaleBy(x: scale, y: scale)
             PDFExporter.drawPaper(style: page.margins?.style ?? page.paper ?? (source == nil ? .legacyTest : .blank),
-                                  bounds: bounds, color: page.margins?.color ?? page.paperColor ?? .white)
+                                  bounds: bounds, color: page.margins?.color ?? page.paperColor ?? .white, coordinateScale: page.writingCoordinateScale)
             if let pdf = source?.pageRef {
                 // Transparent PDFs retain white paper against dark note margins.
                 UIColor.white.setFill(); context.fill(layout.sourceFrame.cgRect)
@@ -42,15 +42,15 @@ final class PageThumbnailCache: ObservableObject {
                 do { try ImageRendering.draw(object, context: context, origin: layout.contentOrigin, limit: 256) }
                 catch { imageFailure = error }
             }
-            if !page.drawing.isEmpty { drawing.image(from: layout.canonicalInkBounds, scale: scale).draw(in: bounds) }
-            for box in page.effectiveTextBoxes {
+            ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)
+            if !page.drawing.isEmpty { PDFExporter.inkImage(drawing, from: layout.canonicalInkBounds, scale: scale).draw(in: bounds) }
+            for box in page.resolvedTextBoxes {
                 let frame = CGRect(x: box.x + layout.contentOrigin.x, y: box.y + layout.contentOrigin.y,
                                    width: box.width, height: box.height)
                 context.saveGState(); context.clip(to: frame)
-                TextObjectLayout(box).draw(at: frame.origin)
+                TextObjectLayout(box, on: page).draw(at: frame.origin)
                 context.restoreGState()
             }
-            ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)
         }
         if let imageFailure { throw imageFailure }
         images.setObject(Entry(page: page, image: image), forKey: key,

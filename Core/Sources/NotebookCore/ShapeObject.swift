@@ -80,6 +80,7 @@ extension Notebook {
         next.schemaVersion = max(6, next.schemaVersion)
         if content.textBoxes.contains(where: \.usesTextFlowFormat) { next.schemaVersion = max(8, next.schemaVersion) }
         if content.textBoxes.contains(where: \.usesRichText) { next.schemaVersion = max(7, next.schemaVersion) }
+        next.raiseSchemaForTextColors(content.textBoxes)
         next.pages[index].drawing = content.drawing
         next.pages[index].textBoxes = content.textBoxes
         next.pages[index].images = content.images

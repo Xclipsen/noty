@@ -1,5 +1,15 @@
 # Lokaler Revisionsspeicher – Format 1
 
+## Ergänzung 19.10.2026 · Notebook-Schema 9 (Textfarben)
+
+Zwei optionale Stilfelder, auch in UTF-16-Runs: `automaticColor` (Bool) und `highlightColor` (`yellow`, `green`, `blue`, `pink`, `orange`, `purple`; fehlend = bisheriges Gelb). `automaticColor = true` verlangt `ink == nil` und `color` Schwarz/Weiß; `color` hält nur den zuletzt aufgelösten Wert. Angezeigt und exportiert wird über `Page.resolvedTextBoxes`/`EditorInteractionPolicy.automaticTextIsLight`: Papierfarbe, Randfarbe neben PDFs, auf der PDF selbst Schwarz. Daher folgt automatischer Text späteren Papier-/Randumstellungen ohne Datenänderung; die Ganzes-Heft-Umstellung (`PaperInkInversion`) setzt den gespeicherten Wert zusätzlich passend und lässt das Flag stehen.
+
+Schema 1–8 lehnt die neuen Felder ab (Swift `Notebook.validate`, Python `notebook_format.py` für alle drei Prüfer); unbekannte neuere Schemata (≥ 10) bleiben gesperrt. Bloßes Öffnen migriert nicht; erst ein Text mit einem der Felder (neue Texte sind standardmäßig automatisch gefärbt, Markerfarbe, „Formatierung entfernen“) hebt über `Notebook.raiseSchemaForTextColors` auf 9 – in `replaceTextBoxes`, `replaceContent`, `replaceContents` (Lasso über Seiten), `materializeWritingDraft` und `reflowText`. `RevisionStore` sichert vorher die exakten bestätigten Bytes unter `Migrations/<UUID>/notebook-v8.json`; scheitert das, wird nicht committet (Test). Text-Undo mit vollständigen Heftständen setzt das Schema nicht mehr herab (`NotebookUndoHistory.apply` vergleicht/stellt Inhalte bei gleichbleibendem oder höherem Schema wieder her). Papierkorb, Revisionen, Heft-/Bibliotheksbackup, Vorschau und PDF-Export tragen die Felder unverändert; Host-Roundtrip prüft `automaticColorAndHighlightSurviveLibraryRestore`. Manifest-, Archiv- und Werkzeugformat unverändert.
+
+## Ergänzung Build 32 · Abgeleitete Randtext-Einheiten
+
+Kein neues Schema, keine Migration bestehender Bytes. Gebundener PDF-Randtext nutzt beim Rendern/Layouten den aus der angezeigten Cropbreite abgeleiteten Faktor Breite/595; gespeicherte Schriftgröße 14 und Rich-Text-Runs bleiben unverändert. Native Editor-Container sowie gemeinsame Text-/Vorschau-/PDF-/Kapazitätsrenderer benutzen denselben lokalen Normalraum und kanonischen Transform. Freie PDF-Annotationen und Papiertext behalten bestehende Einheiten. Neue Randmaße wieder relativ zur PDF-Grundgröße; gespeicherte Maße nicht automatisch ändern. Überlauf bleibt sichtbar und darf Export nicht still abschneiden. [Details](EDITOR-FEEDBACK-32.md).
+
 ## Ergänzung Build 27 · Notebook-Schema 8
 
 Textfelder können `flowID` (UUID) und `flowRegion` (`page`, `left`, `right`, `top`, `bottom`) gemeinsam enthalten; beide fehlen bei freien PDF-Feldern. Pro Seite höchstens ein Segment derselben Flow-ID. Ein Flow kann über mehrere echte Seiten laufen. Seitenkopien/Papierkorb-Sicherungen erhalten neue Flow-Identitäten, damit kopierte Abschnitte nicht unabsichtlich den ursprünglichen Text umverteilen. Ganzes unabhängiges Heft behält seine internen Verbindungen.

@@ -16,10 +16,7 @@ struct PageSidebarView: View {
     @StateObject private var cache = PageThumbnailCache()
     @State private var editMode: EditMode = .inactive
     @State private var showingTrash = false
-    @State private var importingPDF = false
-    @State private var insertion: Insertion?
     @State private var addingPage: AddRequest?
-    @State private var pendingPDF: Insertion?
     @State private var dropTarget: UUID?
     @State private var selectedTab: SidebarTab = .pages
     @State private var filter: PageFilter = .all
@@ -168,29 +165,16 @@ struct PageSidebarView: View {
         .sheet(isPresented: $showingTrash) {
             PageTrashView(model: model, cache: cache)
         }
-        .sheet(item: $addingPage, onDismiss: {
-            // Present Files only once the add-page presentation has fully closed.
-            if let pendingPDF {
-                insertion = pendingPDF
-                self.pendingPDF = nil
-                importingPDF = true
-            }
-        }) { request in
+        .sheet(item: $addingPage) { request in
             AddPageSheet(position: request.position, enabled: canEdit, defaults: model.notebook.appearance,
                          onPaper: { style, color, geometry, position in
                 let placement = placement(anchor: request.anchor, position: position)
                 model.insertPaper(style, color: color, relativeTo: placement.anchor, before: placement.before, geometry: geometry)
                 addingPage = nil
-            }, onPDF: { position in
-                pendingPDF = placement(anchor: request.anchor, position: position)
+            }, onPDF: { url, margins, position in
+                let placement = placement(anchor: request.anchor, position: position)
+                model.insertPDF(url, relativeTo: placement.anchor, before: placement.before, writingArea: margins)
                 addingPage = nil
-            })
-        }
-        .sheet(isPresented: $importingPDF) {
-            PDFImportSheet(onImport: { url, margins in
-                guard let insertion else { return }
-                model.insertPDF(url, relativeTo: insertion.anchor, before: insertion.before, writingArea: margins)
-                self.insertion = nil
             }, onError: { model.error = $0 })
         }
     }
@@ -424,58 +408,80 @@ struct AddPageSheet: View {
     let enabled: Bool
     @State private var format: PaperFormat = .a4
     @State private var landscape = false
+    @State private var choosingPDF = false
+    @State private var writingSpace = true
+    @State private var writingLeft = false
+    @State private var writingFraction = 1.0
+    @State private var writingPaper: PaperStyle = .blank
+    @State private var writingColor: PaperColor = .dark
     let onPaper: (PaperStyle, PaperColor, PDFPageGeometry, PageInsertionPosition) -> Void
-    let onPDF: (PageInsertionPosition) -> Void
+    /// Picked PDF (security-scoped temporary URL) with the chosen writing space.
+    let onPDF: (URL, PageMargins?, PageInsertionPosition) -> Void
+    var onError: (String) -> Void = { _ in }
     @Environment(\.dismiss) private var dismiss
 
     init(position: PageInsertionPosition, enabled: Bool, defaults: NotebookAppearance? = nil,
          onPaper: @escaping (PaperStyle, PaperColor, PDFPageGeometry, PageInsertionPosition) -> Void,
-         onPDF: @escaping (PageInsertionPosition) -> Void) {
+         onPDF: @escaping (URL, PageMargins?, PageInsertionPosition) -> Void,
+         onError: @escaping (String) -> Void = { _ in }) {
         _position = State(initialValue: position)
         _paperColor = State(initialValue: defaults?.color ?? .white)
         _format = State(initialValue: defaults?.format ?? .a4)
         _landscape = State(initialValue: defaults?.landscape ?? false)
-        self.enabled = enabled; self.onPaper = onPaper; self.onPDF = onPDF
+        // Writing space beside a PDF follows the notebook's standard paper.
+        _writingPaper = State(initialValue: defaults?.paper ?? .blank)
+        _writingColor = State(initialValue: defaults?.color ?? .dark)
+        self.enabled = enabled; self.onPaper = onPaper; self.onPDF = onPDF; self.onError = onError
     }
 
+    /// Everything on one screen: position, paper templates and PDF import.
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 14) {
                     Picker("Position der neuen Seite", selection: $position) {
                         ForEach(PageInsertionPosition.allCases) { position in
                             Text(position.rawValue).tag(position)
                         }
                     }.pickerStyle(.segmented)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Neue Vorlagen").font(.title3.weight(.semibold))
-                        Text("Papiergröße, Farbe und Vorlage wählen.")
-                            .font(.subheadline).foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        Picker("Größe", selection: $format) { ForEach(PaperFormat.allCases, id: \.self) { Text($0.title).tag($0) } }
+                            .pickerStyle(.segmented)
+                        Toggle("Quer", isOn: $landscape).fixedSize()
+                        Picker("Papierfarbe", selection: $paperColor) {
+                            Text("Weiß").tag(PaperColor.white)
+                            Text("Dunkel").tag(PaperColor.dark)
+                        }.pickerStyle(.segmented).frame(maxWidth: 170)
                     }
-                    Picker("Größe", selection: $format) { ForEach(PaperFormat.allCases, id: \.self) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
-                    Toggle("Querformat", isOn: $landscape)
-                    Picker("Papierfarbe", selection: $paperColor) {
-                        Text("Weiß").tag(PaperColor.white)
-                        Text("Dunkel").tag(PaperColor.dark)
-                    }.pickerStyle(.segmented)
-                    HStack(alignment: .top, spacing: 16) {
+                    HStack(alignment: .top, spacing: 12) {
                         template(.blank, title: "Blanko")
                         template(.lined, title: "Liniert")
                         template(.grid, title: "Kariert")
                     }
-                    Button {
-                        onPDF(position)
-                    } label: {
-                        HStack(spacing: 14) {
-                            Image(systemName: "doc.badge.plus").font(.title2)
-                            Text("PDF aus Dateien").font(.headline)
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.caption.weight(.semibold))
-                        }.padding(20).frame(maxWidth: .infinity).notyGlass()
-                    }.buttonStyle(.plain)
-                    Text("Die Originaldatei wird vollständig in dieses Notizbuch kopiert.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.padding(24)
+                    Divider().padding(.vertical, 4)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("PDF einfügen", systemImage: "doc.badge.plus").font(.headline)
+                        PDFWritingSpaceOptions(enabled: $writingSpace, left: $writingLeft, fraction: $writingFraction,
+                                               paper: $writingPaper, color: $writingColor)
+                        Button {
+                            choosingPDF = true
+                        } label: {
+                            HStack {
+                                Text("PDF aus Dateien wählen").font(.headline)
+                                Spacer(minLength: 8)
+                                Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                            }.padding(14).frame(maxWidth: .infinity, minHeight: 52)
+                                // The whole row (including the gap left by the
+                                // spacer and the padding) is the tap target.
+                                .contentShape(RoundedRectangle(cornerRadius: 16))
+                                .notyGlass()
+                        }.buttonStyle(.plain)
+                            .contentShape(RoundedRectangle(cornerRadius: 16))
+                            .accessibilityHint("Öffnet die Dateiauswahl.")
+                        Text("Die Originaldatei wird vollständig in dieses Notizbuch kopiert.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.padding(20)
                 .disabled(!enabled)
             }
             .background(Color(white: 0.065))
@@ -487,9 +493,18 @@ struct AddPageSheet: View {
                         .labelStyle(.iconOnly)
                 }
             }
+            .fileImporter(isPresented: $choosingPDF, allowedContentTypes: [.pdf]) { result in
+                switch result {
+                case .success(let url):
+                    onPDF(url, PDFWritingSpaceOptions.margins(enabled: writingSpace, left: writingLeft, fraction: writingFraction,
+                        paper: writingPaper, color: writingColor), position)
+                    dismiss()
+                case .failure(let error): onError(error.localizedDescription)
+                }
+            }
         }
         .preferredColorScheme(.dark)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
         .presentationDragIndicator(.visible)
     }
 
@@ -500,7 +515,7 @@ struct AddPageSheet: View {
         } label: {
             VStack(spacing: 12) {
                 PaperTemplatePreview(style: style, color: paperColor)
-                    .frame(maxWidth: .infinity).frame(height: 170)
+                    .frame(maxWidth: .infinity).frame(height: 120)
                     .background(paperColor == .dark ? Color(white: 0.12) : .white)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(.white.opacity(0.15)))

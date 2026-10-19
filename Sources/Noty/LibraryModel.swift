@@ -23,22 +23,65 @@ final class LibraryModel: ObservableObject {
     @Published var opened: OpenNotebook?
     @Published var restoredCopies: [RestoredNotebook] = []
     @Published var backupStatus = "Noch kein Bibliotheksbackup exportiert"
+    @Published private(set) var lastLibraryExport: Date?
+    @Published var trashStatus: String?
+    /// `busy` is held by background work (refresh after closing a notebook,
+    /// automatic backup). The library stays visually unchanged meanwhile;
+    /// user actions wait for it via `settle()` instead of being dropped.
+    @Published private(set) var backgroundBusy = false
+    /// Bumped for a notebook after its editor closed so only its preview is
+    /// re-rendered in place (the old image stays until the new one is ready).
+    @Published private(set) var artworkRevision: [UUID: Int] = [:]
+    /// Sidebar folders the user expanded; persisted per area until collapsed.
+    @Published var expandedFolders: Set<UUID> {
+        didSet { if expandedFolders != oldValue { UserDefaults.standard.set(expandedFolders.map(\.uuidString).sorted(), forKey: expandedKey) } }
+    }
+    private let expandedKey: String
+    /// Display order of pinned entries (stable IDs), per area. The pin itself
+    /// is the index's `favorite` flag; pins missing here follow in index order.
+    @Published var pinOrder: [UUID] {
+        didSet { if pinOrder != oldValue { UserDefaults.standard.set(pinOrder.map(\.uuidString), forKey: pinOrderKey) } }
+    }
+    private let pinOrderKey: String
+    private var lastEditedID: UUID?
+
+    private let libraryBackupKey: String
+    /// Last notebook open in this area; kept when the app is backgrounded/killed,
+    /// cleared when the user closes the notebook.
+    private let lastOpenedKey: String
+    /// Only the first library loaded in this process (always the main library
+    /// at launch) may reopen a notebook; switching areas later never does.
+    private static var launchReopenPending = true
 
     init(root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true)) {
         self.root = root
         store = LibraryStore(root: root)
-        if let date = UserDefaults.standard.object(forKey: "noty.libraryBackup.\(root.path)") as? Date {
+        // Container-independent keys; the former absolute-path key is migrated once.
+        libraryBackupKey = StableDefaults.key("libraryBackup", root: root, legacyPrefix: "noty.libraryBackup.", pick: StableDefaults.newestDate)
+        lastOpenedKey = StableSettingsKey.key("lastOpened", scope: StableDefaults.scope(root))
+        expandedKey = StableSettingsKey.key("libraryExpanded", scope: StableDefaults.scope(root))
+        expandedFolders = Set((UserDefaults.standard.stringArray(forKey: expandedKey) ?? []).compactMap(UUID.init(uuidString:)))
+        pinOrderKey = StableSettingsKey.key("libraryPinOrder", scope: StableDefaults.scope(root))
+        pinOrder = (UserDefaults.standard.stringArray(forKey: pinOrderKey) ?? []).compactMap(UUID.init(uuidString:))
+        if let date = UserDefaults.standard.object(forKey: libraryBackupKey) as? Date {
+            lastLibraryExport = date
             backupStatus = "Letzter Bibliotheksexport: \(date.formatted(date: .abbreviated, time: .shortened))"
         }
-        Task { await refresh() }
+        let reopen = Self.launchReopenPending
+        Self.launchReopenPending = false
+        Task {
+            await refresh()
+            if reopen { await reopenLastNotebook() }
+        }
     }
 
     var editorBackup: (() async -> Data?)?
 
-    func libraryBackup(editorsPaused: Bool = false) async -> Data? {
+    /// `background`: automatic backup; the library keeps its normal appearance.
+    func libraryBackup(editorsPaused: Bool = false, background: Bool = false) async -> Data? {
         guard ready, !busy, opened == nil || editorsPaused else { return nil }
-        busy = true
-        defer { busy = false }
+        busy = true; backgroundBusy = background
+        defer { busy = false; backgroundBusy = false }
         backupStatus = "Bibliotheksbackup wird vorbereitet …"
         do {
             let bundle = try await store.backupBundle()
@@ -56,7 +99,8 @@ final class LibraryModel: ObservableObject {
 
     func libraryBackupExported() {
         let date = Date()
-        UserDefaults.standard.set(date, forKey: "noty.libraryBackup.\(root.path)")
+        UserDefaults.standard.set(date, forKey: libraryBackupKey)
+        lastLibraryExport = date
         backupStatus = "Bibliotheksdatei exportiert: \(date.formatted(date: .omitted, time: .shortened))"
     }
 
@@ -71,20 +115,29 @@ final class LibraryModel: ObservableObject {
         return choices
     }
 
-    func refresh() async {
+    /// `quiet`: background reload (e.g. after closing a notebook) that keeps
+    /// the library visually unchanged; only real differences are published.
+    func refresh(quiet: Bool = false) async {
         guard !busy else { return }
-        busy = true
-        defer { busy = false }
+        busy = true; backgroundBusy = quiet
+        defer { busy = false; backgroundBusy = false }
         do {
             let result = try await store.load()
-            snapshot = result.snapshot
-            ready = true
+            if snapshot != result.snapshot { snapshot = result.snapshot }
+            if !ready { ready = true }
+            // Forget expansion only for entries that no longer exist at all
+            // (trashed folders may come back and keep their state).
+            let known = Set(snapshot.items.map(\.id))
+            if !expandedFolders.isSubset(of: known) { expandedFolders.formIntersection(known) }
+            let pins = pinOrder.filter(known.contains)
+            if pins != pinOrder { pinOrder = pins }
             var notices: [String] = []
             if result.recovered { notices.append("Bibliotheksindex aus vorherigem Stand geladen. Zuordnungen bitte prüfen.") }
             if result.unreadableDocuments > 0 {
                 notices.append("\(result.unreadableDocuments) Heftverzeichnis(se) konnten nicht gelesen werden. Dateien bleiben erhalten.")
             }
-            warning = notices.isEmpty ? nil : notices.joined(separator: " ")
+            let notice = notices.isEmpty ? nil : notices.joined(separator: " ")
+            if warning != notice { warning = notice }
             let catalog = try await NotebookRepository(directory: root).restoredCopies()
             restoredCopies = catalog.notebooks.compactMap { copy -> RestoredNotebook? in
                 guard let item = snapshot.items.first(where: { $0.id == copy.id }), !snapshot.isTrashed(copy.id) else { return nil }
@@ -93,7 +146,23 @@ final class LibraryModel: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
 
+    /// Waits (bounded) for background work so a tap is not silently dropped.
+    func settle() async {
+        var waited = 0
+        while busy && backgroundBusy && waited < 600 {
+            try? await Task.sleep(for: .milliseconds(50)); waited += 1
+        }
+    }
+
+    /// After the editor was closed: refresh in place without visible reload.
+    func editorClosed() {
+        if let id = lastEditedID { artworkRevision[id, default: 0] += 1 }
+        lastEditedID = nil
+        Task { await refresh(quiet: true) }
+    }
+
     private func change(_ action: () async throws -> LibrarySnapshot) async {
+        await settle()
         guard ready, !busy, opened == nil else { return }
         busy = true
         defer { busy = false }
@@ -118,6 +187,7 @@ final class LibraryModel: ObservableObject {
         await change { try await store.createFolder(title: title, parentID: parent) }
     }
     func createNotebook(_ title: String, appearance: NotebookAppearance = NotebookAppearance(), parent: UUID?) async -> Bool {
+        await settle()
         guard ready, !busy, opened == nil else { return false }
         busy = true; defer { busy = false }
         do {
@@ -128,12 +198,80 @@ final class LibraryModel: ObservableObject {
     }
     func rename(_ id: UUID, title: String) async { await change { try await store.rename(id, title: title) } }
     func move(_ id: UUID, to parent: UUID?) async { await change { try await store.move(id, to: parent) } }
+    /// Drag & drop: into `parent`, directly before sibling `before` (nil = at the end).
+    func place(_ id: UUID, in parent: UUID?, before: UUID?) async {
+        await change { try await store.place(id, in: parent, before: before) }
+    }
     func trash(_ id: UUID) async { await change { try await store.trash(id) } }
     func restore(_ id: UUID) async { await change { try await store.restore(id) } }
+    /// Independent copy of a notebook (new document identity) behind the original.
+    func duplicate(_ item: NotebookCore.LibraryItem) async {
+        guard !item.isFolder else { return }
+        let suffix = " Kopie"
+        let title = String(item.title.prefix(120 - suffix.count)) + suffix
+        await change { try await store.duplicateDocument(item.id, title: title).snapshot }
+    }
+    /// Items placed in the trash themselves (descendants of a trashed folder are
+    /// listed through their folder), newest first.
+    var trashedItems: [NotebookCore.LibraryItem] {
+        snapshot.items.filter { $0.deletedAt != nil }.sorted { ($0.deletedAt ?? .distantPast) > ($1.deletedAt ?? .distantPast) }
+    }
+    /// Number of index entries (including folder contents) that a purge of `item` would remove.
+    func purgeCount(_ item: NotebookCore.LibraryItem) -> Int {
+        snapshot.items.filter { candidate in
+            var current: NotebookCore.LibraryItem? = candidate
+            var visited = Set<UUID>()
+            while let value = current, visited.insert(value.id).inserted {
+                if value.id == item.id { return true }
+                current = value.parentID.flatMap { parent in snapshot.items.first { $0.id == parent } }
+            }
+            return false
+        }.count
+    }
+    /// Permanent deletion is only offered with all editors closed; the store
+    /// refuses anything that is not already in the trash.
+    func purge(_ ids: [UUID]) async { await purging { try await store.purge(ids: ids) } }
+    func emptyTrash() async { await purging { try await store.emptyTrash() } }
+    private func purging(_ action: () async throws -> LibraryPurgeResult) async {
+        await settle()
+        guard ready, !busy, opened == nil else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let result = try await action()
+            snapshot = result.snapshot
+            restoredCopies.removeAll { result.purgedIDs.contains($0.id) }
+            var parts = [result.purgedIDs.count == 1 ? "1 Eintrag endgültig gelöscht." : "\(result.purgedIDs.count) Einträge endgültig gelöscht."]
+            if !result.retainedIDs.isEmpty {
+                parts.append("Das ursprüngliche Notizbuch liegt direkt im App-Ordner und bleibt im Papierkorb.")
+            }
+            if result.leftoverDirectories > 0 {
+                parts.append("\(result.leftoverDirectories) Ordner konnten nicht vom Speicher entfernt werden; ihre Dateien bleiben erhalten und erscheinen nach dem Neuladen eventuell wieder in der Bibliothek.")
+            }
+            trashStatus = parts.joined(separator: " ")
+        } catch { self.error = "Endgültiges Löschen fehlgeschlagen: \(error.localizedDescription)" }
+    }
     func favorite(_ item: NotebookCore.LibraryItem) async { await change { try await store.setFavorite(item.id, value: !item.favorite) } }
+    /// Pinned entries (active only) in their display order.
+    var pinnedItems: [NotebookCore.LibraryItem] {
+        LibraryPinOrder.arrange(snapshot.items.filter { $0.favorite && !snapshot.isTrashed($0.id) }, order: pinOrder)
+    }
+    /// Drag & drop between pinned tiles: reorders pins, or pins an entry
+    /// dragged in from elsewhere directly at that position.
+    func placePin(_ id: UUID, at target: LibraryDropTarget) async {
+        let current = pinnedItems.map(\.id)
+        guard let order = LibraryPinOrder.placing(id, at: target, in: current) else { return }
+        if !current.contains(id) {
+            guard snapshot.items.contains(where: { $0.id == id }), !snapshot.isTrashed(id) else { return }
+            await change { try await store.setFavorite(id, value: true) }
+            guard snapshot.items.first(where: { $0.id == id })?.favorite == true else { return }
+        }
+        pinOrder = order
+    }
     func reorder(_ ids: [UUID], parent: UUID?) async { await change { try await store.reorder(ids, parentID: parent) } }
 
     func open(_ item: NotebookCore.LibraryItem, pageID: UUID? = nil, searchBounds: PageRect? = nil) async {
+        await settle()
         guard ready, !busy, opened == nil, !item.isFolder else { return }
         busy = true
         defer { busy = false }
@@ -142,10 +280,35 @@ final class LibraryModel: ObservableObject {
             snapshot = try await store.markOpened(item.id)
             opened = OpenNotebook(id: item.id, directory: url, title: item.title,
                                   isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds)
+            lastEditedID = item.id
+            UserDefaults.standard.set(item.id.uuidString, forKey: lastOpenedKey)
         } catch { self.error = error.localizedDescription }
     }
 
+    /// Called after the user closed the notebook normally (not on backgrounding).
+    func notebookClosedByUser() { UserDefaults.standard.removeObject(forKey: lastOpenedKey) }
+
+    /// Launch only: reopen the notebook that was open when the app was last used.
+    /// Missing, trashed or unreadable documents are skipped silently and forgotten;
+    /// the editor then restores its remembered page itself.
+    private func reopenLastNotebook() async {
+        guard let raw = UserDefaults.standard.string(forKey: lastOpenedKey) else { return }
+        guard ready, opened == nil, !busy else { return }
+        guard let id = UUID(uuidString: raw), let item = snapshot.items.first(where: { $0.id == id }),
+              !item.isFolder, !snapshot.isTrashed(id) else { notebookClosedByUser(); return }
+        busy = true
+        defer { busy = false }
+        do {
+            let url = try await store.documentURL(id: id)
+            snapshot = try await store.markOpened(id)
+            guard opened == nil else { return }
+            opened = OpenNotebook(id: id, directory: url, title: item.title, isRestored: item.source == .restored)
+            lastEditedID = id
+        } catch { notebookClosedByUser() }
+    }
+
     func importPDF(_ url: URL, parent: UUID?, writingArea: PageMargins? = nil) async {
+        await settle()
         guard ready, !busy, opened == nil else { return }
         busy = true
         let access = url.startAccessingSecurityScopedResource()
@@ -176,6 +339,7 @@ final class LibraryModel: ObservableObject {
     }
 
     func importBackup(_ url: URL, parent: UUID?) async {
+        await settle()
         guard ready, !busy, opened == nil else { return }
         busy = true
         let access = url.startAccessingSecurityScopedResource()

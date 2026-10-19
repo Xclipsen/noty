@@ -11,7 +11,7 @@ final class EditorRefinementTests: XCTestCase {
                 XCTAssertEqual(range.fit * page, viewport - 32, accuracy: 0.001)
                 XCTAssertLessThanOrEqual(range.minimum * page, viewport - 32 + 0.001)
                 XCTAssertLessThanOrEqual(range.minimum * height, 768.001)
-                XCTAssertEqual(max(range.minimum * page / (viewport - 32), range.minimum * height / 768), 1, accuracy: 0.001)
+                XCTAssertLessThanOrEqual(range.minimum * page * 3, viewport + 0.001)
                 XCTAssertGreaterThan(range.maximum, range.fit)
             }
         }
@@ -69,9 +69,9 @@ final class EditorRefinementTests: XCTestCase {
 
     func testOldFloatingChoiceIsPreservedButDefaultRestrictsEffectivePosition() throws {
         var old = ToolbarPreferences(); old.formatVersion = 5; old.dock = .floating
-        old.floatingAxis = .vertical; old.floatingX = 0.8; old.order.reverse()
+        old.floatingAxis = .vertical; old.floatingX = 0.8; old.order = ToolbarPreferences.format7Order.reversed()
         let migrated = try ToolbarPreferences.decode(JSONEncoder().encode(old))
-        var expected = old; expected.formatVersion = 7
+        var expected = old; expected.formatVersion = 8; expected.order = ToolbarPreferences.addingFormat8Tools(to: old.order)
         XCTAssertEqual(migrated, expected)
         XCTAssertEqual(migrated.effectiveDock, .top)
         old.dockOnly = false

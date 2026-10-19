@@ -8,6 +8,7 @@ final class WorkspaceAppModel: ObservableObject {
     @Published var root = mainRoot
     @Published var title = "Meine Bibliothek"
     @Published var kind: WorkspaceKind?
+    @Published private(set) var areaID: UUID?
     @Published var areas: [TestWorkspace] = []
     @Published var busy = false
     @Published var error: String?
@@ -24,8 +25,8 @@ final class WorkspaceAppModel: ObservableObject {
         do {
             if let record {
                 root = try await store.directory(for: record.id)
-                title = record.title; kind = record.kind
-            } else { root = Self.mainRoot; title = "Meine Bibliothek"; kind = nil }
+                title = record.title; kind = record.kind; areaID = record.id
+            } else { root = Self.mainRoot; title = "Meine Bibliothek"; kind = nil; areaID = nil }
         } catch { self.error = error.localizedDescription }
     }
     func createTest() async {
@@ -86,29 +87,59 @@ struct WorkspacePickerView: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    Button("Meine Bibliothek") { onSelect(nil) }
-                    Text("Test- und Restore-Bereiche haben eigene Hefte und Werkzeugeinstellungen. Alle liegen im App-Container; ein externes Backup bleibt nötig.")
+            WorkspacePickerList(model: model, onSelect: onSelect)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Schließen") { dismiss() } } }
+        }
+    }
+}
+
+/// Area list shared by the sheet and Settings › Backup & Daten. Without
+/// `onSelect` (e.g. while a notebook is open) areas are listed but not switchable.
+struct WorkspacePickerList: View {
+    @ObservedObject var model: WorkspaceAppModel
+    let onSelect: ((TestWorkspace?) -> Void)?
+    var body: some View {
+        List {
+            Section {
+                areaButton("Meine Bibliothek", icon: "books.vertical", current: model.areaID == nil) { onSelect?(nil) }
+                Text("Test- und Restore-Bereiche haben eigene Unterlagen und Werkzeugeinstellungen. Alle liegen im App-Container; ein externes Backup bleibt nötig.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if onSelect == nil {
+                    Text("Bereich wechseln ist nur in der Bibliothek möglich, nicht bei geöffnetem Notizbuch.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Section("Getrennte Bereiche") {
-                    ForEach(model.areas) { area in
-                        Button { onSelect(area) } label: {
+            }
+            Section("Getrennte Bereiche") {
+                ForEach(model.areas) { area in
+                    Button { onSelect?(area) } label: {
+                        HStack {
                             VStack(alignment: .leading) {
                                 Label(area.title, systemImage: area.kind == .test ? "flask" : "archivebox")
                                 Text(area.createdAt, format: .dateTime.day().month().hour().minute().second()).font(.caption).foregroundStyle(.secondary)
                             }
+                            Spacer()
+                            if model.areaID == area.id {
+                                Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Aktueller Bereich")
+                            }
                         }
-                    }
-                    Button("Neuen Testbereich anlegen", systemImage: "plus") { Task { await model.createTest() } }
-                    if model.busy { ProgressView() }
+                    }.disabled(onSelect == nil)
                 }
+                if model.areas.isEmpty { Text("Noch keine getrennten Bereiche.").foregroundStyle(.secondary) }
+                Button("Neuen Testbereich anlegen", systemImage: "plus") { Task { await model.createTest() } }
+                if model.busy { ProgressView() }
             }
-            .disabled(model.busy)
-            .navigationTitle("Bibliotheken und Tests")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Schließen") { dismiss() } } }
-            .task { await model.refresh() }
         }
+        .disabled(model.busy)
+        .navigationTitle("Bereiche")
+        .task { await model.refresh() }
+    }
+    private func areaButton(_ title: String, icon: String, current: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Label(title, systemImage: icon)
+                Spacer()
+                if current { Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Aktueller Bereich") }
+            }
+        }.disabled(onSelect == nil)
     }
 }

@@ -5,12 +5,12 @@ import NotebookCore
 /// complete visual lines and composed characters, never in an emoji/ligature.
 @MainActor
 enum TextFlowEditing {
-    static func capacity(_ box: TextBox) -> Int {
-        let layout = TextObjectLayout(box)
+    static func capacity(_ box: TextBox, page: Page) -> Int {
+        let layout = TextObjectLayout(box, on: page)
         let source = box.text as NSString
         var end = 0
         layout.manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: layout.manager.numberOfGlyphs)) { rect, _, _, glyphs, stop in
-            guard rect.maxY <= box.height + 0.25 else { stop.pointee = true; return }
+            guard rect.maxY * layout.coordinateScale <= box.height + 0.25 else { stop.pointee = true; return }
             let chars = layout.manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
             end = NSMaxRange(chars)
         }

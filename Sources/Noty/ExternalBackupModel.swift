@@ -3,10 +3,11 @@ import Security
 import NotebookCore
 
 private enum BackupTargetError: LocalizedError {
-    case missing, invalidResponse, verification, http(Int), credential, listing
+    case missing, folderUnreachable, invalidResponse, verification, http(Int), credential, listing
     var errorDescription: String? {
         switch self {
         case .missing: "Backupziel nicht erreichbar. Ordner erneut wählen bzw. WebDAV-Zugang prüfen."
+        case .folderUnreachable: ExternalBackupModel.folderUnreachableText
         case .invalidResponse: "Backupziel antwortet ungültig oder leitet um. Bitte die endgültige HTTPS-Ordneradresse verwenden."
         case .verification: "Die zurückgelesene Sicherung stimmt nicht überein. Ältere Sicherungen bleiben erhalten."
         case .http(let code): "WebDAV meldet HTTP \(code). Zugang, Ordneradresse und Schreibrechte prüfen."
@@ -52,10 +53,17 @@ final class ExternalBackupModel: ObservableObject {
     @Published private(set) var busy = false
     @Published var history: [String] = []
     @Published var error: String?
+    /// The stored folder bookmark could not be resolved; the target is kept, not forgotten.
+    @Published private(set) var folderUnreachable = false
+    nonisolated static let folderUnreachableText = "Backup-Ordner nicht mehr erreichbar – bitte neu wählen"
     private let key: String
     private let session: URLSession
     init(root: URL) {
-        key = "noty.externalBackup.\(root.path)"
+        // Stable per-area key; migrates the former absolute-container-path key once.
+        key = StableDefaults.key("externalBackup", root: root, legacyPrefix: "noty.externalBackup.") { values in
+            let decoded = values.compactMap { ($0 as? Data).flatMap { try? JSONDecoder().decode(ExternalBackupPolicy.self, from: $0) } }
+            return ExternalBackupPolicy.preferredMigration(decoded).flatMap { try? JSONEncoder().encode($0) } ?? values.first
+        }
         let saved = UserDefaults.standard.data(forKey: key)
         if let saved, let value = try? JSONDecoder().decode(ExternalBackupPolicy.self, from: saved), (try? value.validate()) != nil {
             policy = value
@@ -65,6 +73,12 @@ final class ExternalBackupModel: ObservableObject {
         configuration.timeoutIntervalForRequest = 45; configuration.timeoutIntervalForResource = 180
         configuration.urlCredentialStorage = nil; configuration.httpCookieStorage = nil; configuration.urlCache = nil
         session = URLSession(configuration: configuration, delegate: BackupSessionDelegate(), delegateQueue: nil)
+        if policy.target == .folder { Task { [weak self] in self?.checkFolder() } }
+    }
+    /// Resolves the bookmark early so an unreachable folder is reported instead of silently failing later.
+    func checkFolder() {
+        guard policy.target == .folder, !busy else { return }
+        _ = try? folder()
     }
     var username: String { (try? BackupKeychain.credentials(credentialAccount).username) ?? "" }
     private var credentialAccount: String { policy.series.uuidString }
@@ -76,7 +90,8 @@ final class ExternalBackupModel: ObservableObject {
         let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
         do {
             let bookmark = try url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
-            policy.folderBookmark = bookmark; policy.target = .folder; policy.lastSuccess = nil; policy.lastAttempt = nil
+            policy.folderBookmark = bookmark; policy.folderName = url.lastPathComponent
+            policy.target = .folder; policy.lastSuccess = nil; policy.lastAttempt = nil; folderUnreachable = false
             try policy.validate(); persist(); history = []; status = "Ordner gewählt · erste Sicherung steht aus"
         } catch { self.error = "Ordner konnte nicht eingerichtet werden." }
     }
@@ -98,7 +113,7 @@ final class ExternalBackupModel: ObservableObject {
         policy.lastAttempt = Date(); persist(); status = "Bibliothek wird für externes Backup gesichert …"
         let bytes: Data?
         if library.opened != nil { bytes = await library.editorBackup?() }
-        else if await toolbox.flush() { bytes = await library.libraryBackup() }
+        else if await toolbox.flush() { bytes = await library.libraryBackup(background: !manual) }
         else { bytes = nil }
         guard let bytes else { status = "Backup ausstehend · Speichern oder laufenden Vorgang abwarten"; return }
         let name = policy.filename()
@@ -115,7 +130,8 @@ final class ExternalBackupModel: ObservableObject {
             catch { status += " · ältere Stände nicht bereinigt" }
         } catch {
             // Never display a URLSession error that might include a credential-bearing endpoint.
-            status = "Externes Backup fehlgeschlagen · ältere Sicherungen bleiben erhalten"
+            if case .folderUnreachable? = error as? BackupTargetError { status = Self.folderUnreachableText }
+            else { status = "Externes Backup fehlgeschlagen · ältere Sicherungen bleiben erhalten" }
             self.error = (error as? BackupTargetError)?.localizedDescription ?? "Ziel nicht erreichbar, nicht beschreibbar oder Sicherung unvollständig. Bitte erneut versuchen."
         }
     }
@@ -125,8 +141,27 @@ final class ExternalBackupModel: ObservableObject {
     private func folder() throws -> URL {
         guard let data = policy.folderBookmark else { throw BackupTargetError.missing }
         var stale = false
-        let url = try URL(resolvingBookmarkData: data, options: .withoutUI, relativeTo: nil, bookmarkDataIsStale: &stale)
-        guard !stale else { throw BackupTargetError.missing }; return url
+        let url: URL
+        do { url = try URL(resolvingBookmarkData: data, options: .withoutUI, relativeTo: nil, bookmarkDataIsStale: &stale) }
+        catch {
+            // Keep the configured target and bookmark; the user re-chooses explicitly.
+            folderUnreachable = true; status = Self.folderUnreachableText
+            throw BackupTargetError.folderUnreachable
+        }
+        if folderUnreachable { folderUnreachable = false }
+        // A stale bookmark still resolves to a usable URL; Apple requires re-creating it.
+        if stale { renewBookmark(url) }
+        else if policy.folderName == nil { policy.folderName = url.lastPathComponent; persist() }
+        return url
+    }
+    private func renewBookmark(_ url: URL) {
+        let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
+        // On failure the old bookmark stays stored; this resolution is still usable now.
+        guard let fresh = try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil),
+              !fresh.isEmpty else { return }
+        policy.folderBookmark = fresh
+        if policy.folderName == nil { policy.folderName = url.lastPathComponent }
+        persist()
     }
     private func writeFolder(_ bytes: Data, name: String) async throws {
         let folder = try folder(), access = folder.startAccessingSecurityScopedResource()

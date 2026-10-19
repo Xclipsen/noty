@@ -1,5 +1,37 @@
 # Entwicklungsplan
 
+## Aktuell – Build 38
+
+Lasso über Seiten, Einstellungen/Startseite/Papierkorb mit endgültigem Löschen, Marker gerade, Seitentrennlinie, weicher Schreibplatz-Übergang, UI-Logikfehler. Installiert, **am iPad ungeprüft**. Offen: Toolbar-Neubau nach Nutzerentscheidung, Fund 10 (Strich während Auto-Backup). [Details](EDITOR-FEEDBACK-34.md).
+
+## Feedback 33 (Zoom, Schreibscrollen, Strichstärke)
+
+Zoom-out-Grenze ca. drei Seitenbreiten mit Rückschnappen, mittiges Blatt beim Pinch, keine eigene Kopfleiste, Glasblase für Zurück/Titel, engere Seiten auf grauem Grund, Schreibscrollen bis zur Blattmitte bzw. halbem Schreibplatz, Strichstärke relativ zur Blattbreite. **270 Tests, SDK-Build erfolgreich; Build 33 installiert, alle 23 Hefte/159 Dateien unverändert; Bedienung am iPad ungeprüft.** [Details](EDITOR-FEEDBACK-33.md). Zoom-Hänger als PDFKit-Hauptthreadarbeit belegt und durch eigenen PDF-Ausschnittrenderer behoben (Build 36, Nutzer: keine Ruckler); Pinch-Zentrierung in Build 37 erstmals aktiv, ungeprüft.
+
+## Bildbefunde und Halte-Linien, Build 32
+
+Build 31 verursacht bestätigte Größenabweichung bei PDFs mit Rand (IMG_0274); Ausnahme zurückgenommen. Normaler Randtext-/Linienmaßstab ohne veränderte Schriftattribute, gleiche Grundseitenbreite, Canvas-Farbumgebung für Vorschauen und separate Konturanimation implementiert. IMG_0275 als zwei zu dunkle/dünne Halte-Linien präzisiert: auf finalen nativen Zeichnungsstand warten und konstante Vorschaufarbe/-stärke erhalten. **264 Tests und Host-Roundtrip bestanden, SDK-Build erfolgreich; Build 32 installiert, alle 23 Hefte/159 Dateien unverändert.** [Nachweise](TESTING.md).
+
+Nächste Geräteabnahme: [drei gezielte Fälle](TEST-BUILD-32.md). Bereits unter Build 31 angelegte schmale Ränder ausdrücklich über 100 % erweitern; keine automatische Daten-/Maßänderung. Der erwartete Farb-/Stärkenerhalt und die echte Konturanimation sind ohne Gerätebericht nicht abgenommen. Frühere Linienausrichtungs-/Checkboxfälle sowie fremde Referenz-Zusatzfunktionen bleiben offen.
+
+## Aktuell – Lasso, Hochzoom und Schreibplatz, Build 31
+
+Build 30 wurde am Gerät für Lasso/mitgezogenen Inhalt erneut beanstandet. Regel jetzt ausdrücklich Berührung statt vollständiger Einschließung. Kontur für reine Handschrift, schnelle Ink-Vorschau, gemeinsame begrenzte Bewegung/Skalierung, dunkles Referenzmenü, reine Ink-Drehung/-Spiegelung implementiert. Hochzoom-Rasterflächen begrenzt und TextKit-Rekursion entfernt; Horizontalbereich je betrachteter Seite; neue Ränder in normalen A4-Einheiten und gleicher Text-Punktskala. **257 Core-Tests, Host-Roundtrip und finaler signierter SDK-Build bestanden; Build 31 installiert, alle 22 Hefte/153 Dateien unverändert.** Installation/Datenerhalt in [TESTING](TESTING.md).
+
+Nächster Nachweis: [Build 31 gezielt testen](TEST-BUILD-31.md), insbesondere tatsächliches Mitziehen/Undo, Kontur/Menü, extremer Zoom und Randgrenzen. Kein Geräteerfolg aus Linux-Tests ableiten. Komplette fremde Referenzpalette mit Elementbibliothek/Speichern, Handschriftkonvertierung und nativen Ink-Strichmustern sowie freie Drehung/Spiegelung gemischter Text-/Formgruppen bleibt außerhalb dieser Umsetzung. Frühere Linienausrichtungs- sowie Halte-/Kreis-Abnahme noch offen.
+
+## Aktuell – Rückmeldungen und Scrollen, Build 30
+
+Ein gemeinsames Hauptlasso Freiform/Rechteck für Ink und freie Objekte mit Flow-Schutz, Kreis-Checklisten nach Referenz, ausgerichtete Formatierungsicons, Formen unter neuer Handschrift, kontinuierliche Halteerkennung mit Canvas-Haptik, schwarze neue PDF-Ränder und Wiederverwendung begrenzter Renderflächen implementiert. Keine erneute Änderung der zurückgenommenen Autostiftfarbmeldung. **248 Core-Tests, unabhängiger Host-Roundtrip und signierter SDK-Build bestanden; Build 30 installiert, alle 22 Hefte/153 Dateien bytegleich zum aktuellen Vorupdatebestand.** [Nachweise](TESTING.md).
+
+Nächster Nachweis: [fünf gezielte Gerätetests](TEST-BUILD-30.md), insbesondere gemischte Auswahl, Halten/Haptik und tatsächliche Scrollverbesserung. Linienausrichtung aus Build-29-Test 2 wartet noch auf Nutzerbericht. Bereits bestätigte ältere Punkte nicht pauschal erneut offen nennen; neue native Wege dennoch separat abnehmen. Zitat-/Codeblöcke und gebündelte Inter-Schrift bleiben offen.
+
+## Aktuell – Editorfehler, Build 29
+
+Nachgereichte Textbedienung: Icon-Menüs, 14-pt-Start/Einerschritte, Cursor-/Auswahlsemantik, verbundener Listenwechsel und Absatz-Einfügeattribute umgesetzt und im finalen SDK-Build enthalten. Zitat-/Codeblöcke und gebündelte Inter-Schrift bleiben offen; nicht durch Textpräfixe oder andere Schriftbezeichnung vortäuschen. Native Abnahme gemeinsam mit dem übrigen Build-29-Paket.
+
+Gemeldete Stiftmarkierung, gemischtes Lasso/Flow-Schutz/Rich-Text-Skalierung, Feldformatierung, Leistenanker/Griff, direkte Formen, Checkboxzyklus/Pencil-Tipp, Seitengrenzen, PDF-Randstandard/Autostift, gemeinsames Linienlayout und Halten für Stift-/Markerlinien umgesetzt. Zoom-Scrollweiterleitung und Caret während Pinch abgesichert; vollständige Ursache der kurzzeitigen Blockade noch nicht am Gerät reproduziert. **241 Core-Tests, unabhängiger Host-Roundtrip und SDK-Build bestanden; Build 29 installiert, alle 22 Hefte/153 Dateien unverändert.** Keine Formatänderung. Nächster Nachweis: einmal den gebündelten nativen Retest einschließlich Geräte-PDF aus [EDITOR-FEEDBACK-29](EDITOR-FEEDBACK-29.md) durchführen. Keine pauschale Alltagsfreigabe.
+
 ## Aktuell – Editor-Rückmeldung, Build 28
 
 Listenbuttons toggeln, Ganzblatt-Rückkehr und Fokus laufen gemeinsam. Zoomabhängige Auflösung mit begrenztem PencilKit-/Papier-Viewport, korrigierte Seitenhintergründe und weniger Konfigurations-/Dekodierarbeit umgesetzt. 230 Core-Tests und signierter SDK-Build bestanden. Build 28 installiert und am Gerät direkt bestätigt; alle 22 Hefte/153 Dateien nach vollständigem Rücklesen unverändert. Keine Formatänderung. Native Schärfe, Ränder, Gesten/Undo und gemeldete kurze Blockaden bleiben im gebündelten Retest offen; kein genauer Freeze-Trace vorhanden. [Umsetzung und Prüfumfang](EDITOR-FEEDBACK-28.md), [Nachweise](TESTING.md).

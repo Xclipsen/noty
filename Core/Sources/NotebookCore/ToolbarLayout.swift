@@ -7,7 +7,7 @@ public struct ToolbarLayout: Equatable, Sendable {
     public static let cell = 48.0
     public static let spacing = 0.0
     public static let padding = 2.0
-    public static let grip = 24.0
+    public static let grip = 44.0
     public static let thickness = 52.0
     public let viewport: PageSize
     public let items: Int
@@ -31,8 +31,14 @@ public struct ToolbarLayout: Equatable, Sendable {
         case .floating: floating
         }
     }
-    public static func itemCount(more: Bool, presets: Int, secondView: Bool) -> Int {
-        more ? (secondView ? 7 : 6) : 9 + max(0, presets)
+    /// `tools`: visible first-level tools, plus the level arrow. The second
+    /// level shows the utilities, `secondaryTools` (laser pointer, PDF lesen) and the arrow.
+    public static func itemCount(more: Bool, presets: Int, secondView: Bool, tools: Int = 8, secondaryTools: Int = 0) -> Int {
+        more ? (secondView ? 6 : 5) + max(0, secondaryTools) : max(1, tools) + 1 + max(0, presets)
+    }
+    public static func itemCount(more: Bool, preferences: ToolbarPreferences, secondView: Bool) -> Int {
+        itemCount(more: more, presets: preferences.presets.count, secondView: secondView,
+                  tools: preferences.primaryTools.count, secondaryTools: preferences.secondaryTools.count)
     }
     public static func length(items: Int) -> Double {
         let count = max(1, items)
@@ -49,13 +55,15 @@ public struct ToolbarLayout: Equatable, Sendable {
         let usableHeight = max(1, h - header - 24)
         let mainLength = Self.length(items: self.headerItems)
         let edge = 8.0, gap = 10.0
-        let fullActions = 5.0 * 44 + 8
-        let fourActions = 4.0 * 44 + 8
+        // Undo, redo, writing scroll, options, add page, sidebar; narrower
+        // headers drop add page, then writing scroll, then redo.
+        func actionsWidth(_ count: Double) -> Double { count * 44 + 8 }
         if dock == .top {
             let sideRoom = (w - mainLength) / 2 - edge - gap
-            headerActionCount = sideRoom >= fullActions ? 5 : sideRoom >= fourActions ? 4 : 3
-        } else { headerActionCount = w >= 600 ? 5 : 3 }
-        compactHeader = headerActionCount < 5
+            headerActionCount = sideRoom >= actionsWidth(6) ? 6 : sideRoom >= actionsWidth(5) ? 5
+                : sideRoom >= actionsWidth(4) ? 4 : 3
+        } else { headerActionCount = w >= 600 ? 6 : 3 }
+        compactHeader = headerActionCount < 6
         let actions = Double(headerActionCount) * 44 + 8
         let headerCapacity = max(1, w - 2 * (actions + edge + gap))
         inlineHeader = dock == .top && headerCapacity >= min(320, mainLength)
@@ -73,10 +81,10 @@ public struct ToolbarLayout: Equatable, Sendable {
         let x: Double
         let y: Double
         switch dock {
-        case .top: x = (w - width) / 2; y = inlineHeader ? 4 : minY
-        case .bottom: x = (w - width) / 2; y = maxY
-        case .left: x = minX; y = min(maxY, max(minY, (h + header - height) / 2))
-        case .right: x = maxX; y = min(maxY, max(minY, (h + header - height) / 2))
+        case .top: x = (w + min(mainLength, availableLength)) / 2 - width; y = inlineHeader ? 4 : minY
+        case .bottom: x = (w + min(mainLength, availableLength)) / 2 - width; y = maxY
+        case .left: x = minX; y = min(maxY, max(minY, (h + header + min(mainLength, availableLength)) / 2 - height))
+        case .right: x = maxX; y = min(maxY, max(minY, (h + header + min(mainLength, availableLength)) / 2 - height))
         case .floating:
             x = minX + unit(floatingX) * (maxX - minX)
             y = minY + unit(floatingY) * (maxY - minY)
@@ -125,7 +133,7 @@ public struct ToolbarLayout: Equatable, Sendable {
         switch dock {
         case .top, .bottom:
             let width = min(240, max(30, viewport.width - 32))
-            return PageRect(x: (viewport.width - width) / 2, y: target.center.y - 14, width: width, height: 28)
+            return PageRect(x: target.center.x - width / 2, y: target.center.y - 14, width: width, height: 28)
         case .left, .right:
             let height = min(240, max(30, viewport.height - 120))
             return PageRect(x: target.center.x - 14, y: target.center.y - height / 2, width: 28, height: height)

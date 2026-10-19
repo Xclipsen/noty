@@ -8,7 +8,7 @@ final class ZoomAndListTests: XCTestCase {
         return value as String
     }
     func testEachListButtonTogglesOnAndOffWithoutStackingMarkers() {
-        for kind in [TextListEditing.Kind.checkbox, .bullet, .numbered] {
+        for kind in [TextListEditing.Kind.bullet, .numbered] {
             let source = "Erste\nZweite\nDritte"
             let range = NSRange(location: 0, length: (source as NSString).length)
             let on = TextListEditing.toggle(kind, in: source, range: range)
@@ -18,7 +18,7 @@ final class ZoomAndListTests: XCTestCase {
             XCTAssertEqual(apply(off, to: listed), source)
         }
         let tasks = "☑ fertig\n☐ offen"
-        XCTAssertEqual(apply(TextListEditing.toggle(.checkbox, in: tasks, range: .init(location: 0, length: (tasks as NSString).length)), to: tasks), "fertig\noffen")
+        XCTAssertEqual(apply(TextListEditing.toggle(.checkbox, in: tasks, range: .init(location: 0, length: (tasks as NSString).length)), to: tasks), "☑ fertig\n☑ offen")
     }
     func testSwitchingListKindKeepsIndentUnicodeAndOnlyEditsPrefixes() {
         let text = "  • 👨‍👩‍👧‍👦\n\t9. é"
@@ -31,12 +31,35 @@ final class ZoomAndListTests: XCTestCase {
         let start = NSRange(location: 0, length: 0)
         let on = TextListEditing.toggle(.checkbox, in: "", range: start)
         XCTAssertEqual(TextListEditing.selection(start, after: on), .init(location: 2, length: 0))
-        let off = TextListEditing.toggle(.checkbox, in: "☐ ", range: .init(location: 2, length: 0))
+        let off = TextListEditing.toggle(.checkbox, in: "☑ ", range: .init(location: 2, length: 0))
         XCTAssertEqual(TextListEditing.selection(.init(location: 2, length: 0), after: off), start)
         let text = "one\ntwo"
         let edits = TextListEditing.toggle(.bullet, in: text, range: .init(location: 0, length: 4))
         XCTAssertEqual(apply(edits, to: text), "• one\ntwo")
         XCTAssertTrue(TextListEditing.toggle(.bullet, in: text, range: .init(location: -1, length: 0)).isEmpty)
+    }
+    func testChangingListKindAtCaretConvertsConnectedEntriesIncludingEmptyLastItem() {
+        let tasks = "Davor\n☐ Hey\n☐ \nDanach"
+        let caret = ("Davor\n☐ Hey\n☐ " as NSString).length
+        let bullets = TextListEditing.toggle(.bullet, in: tasks, range: .init(location: caret, length: 0))
+        XCTAssertEqual(apply(bullets, to: tasks), "Davor\n• Hey\n• \nDanach")
+        let numbered = TextListEditing.toggle(.numbered, in: "• Hey\n• Hey\n• ", range: .init(location: 14, length: 0))
+        XCTAssertEqual(apply(numbered, to: "• Hey\n• Hey\n• "), "1. Hey\n2. Hey\n3. ")
+    }
+    func testListConversionStopsAtIndentationOrNormalParagraphAndRespectsExplicitSelection() {
+        let source = "• eins\n  • unter\n• zwei\nNormal\n• drei"
+        let edits = TextListEditing.toggle(.numbered, in: source, range: .init(location: 20, length: 0))
+        XCTAssertEqual(apply(edits, to: source), "• eins\n  • unter\n1. zwei\nNormal\n• drei")
+        let selected = TextListEditing.toggle(.numbered, in: "• eins\n• zwei", range: .init(location: 9, length: 2))
+        XCTAssertEqual(apply(selected, to: "• eins\n• zwei"), "• eins\n1. zwei")
+    }
+    func testIndentedListEnterContinuesAndSecondEnterExits() throws {
+        let source = "  2. Hey"
+        let next = try XCTUnwrap(TextListEditing.newline(in: source, range: .init(location: (source as NSString).length, length: 0)))
+        XCTAssertEqual(next.replacement, "\n  3. ")
+        let empty = "  3. "
+        let exit = try XCTUnwrap(TextListEditing.newline(in: empty, range: .init(location: (empty as NSString).length, length: 0)))
+        XCTAssertEqual(apply([exit], to: empty), "")
     }
     func testSingleDestinationCombinesElasticScaleAndWholePageFocus() throws {
         let range = NotebookViewportGeometry.zoomRange(viewport: .init(width: 900, height: 1000), page: .a4)
@@ -45,7 +68,7 @@ final class ZoomAndListTests: XCTestCase {
             page: page, widthRegion: page, viewport: .init(width: 900, height: 1000), center: .init(x: 30, y: 400)))
         XCTAssertEqual(target.scale, range.minimum)
         XCTAssertEqual(target.offset.x, (100 + 595.0 / 2) * range.minimum - 450, accuracy: 0.0001)
-        XCTAssertEqual(target.offset.y, (900 + 842.0 / 2) * range.minimum - 500, accuracy: 0.0001)
+        XCTAssertEqual(target.offset.y, 400 * range.minimum - 500, accuracy: 0.0001)
         XCTAssertLessThan(NotebookViewportGeometry.elasticMinimum(range), range.minimum)
     }
     func testWidthSnapKeepsVerticalReadingPositionAndStrongZoomStaysFree() throws {
@@ -73,8 +96,8 @@ final class ZoomAndListTests: XCTestCase {
         let scale = 4.0
         let plan = InkRenderViewport(page: .init(width: 14400, height: 14400),
             visible: .init(x: 12000, y: 13000, width: 250, height: 200), scale: scale)
-        XCTAssertLessThanOrEqual(plan.nativeSize.width, 1256)
-        XCTAssertLessThanOrEqual(plan.nativeSize.height, 1056)
+        XCTAssertLessThanOrEqual(plan.nativeSize.width, 1768)
+        XCTAssertLessThanOrEqual(plan.nativeSize.height, 1568)
         XCTAssertGreaterThanOrEqual(plan.frame.x, 0)
         let edge = InkRenderViewport(page: .a4, visible: .init(x: -100, y: -100, width: 900, height: 1000), scale: 1)
         XCTAssertEqual(edge.frame, .init(x: 0, y: 0, width: 595, height: 842))
@@ -100,10 +123,13 @@ final class ZoomAndListTests: XCTestCase {
         XCTAssertEqual(zoomProgress, positionProgress, accuracy: 0.000001)
     }
     func testInkResolutionBucketsNeverUnderSampleAndViewportMovesInBoundedSteps() {
-        for scale in [0.04, 0.3, 1, 1.3, 2.9, 6] {
+        for scale in [0.04, 0.3, 1, 1.3, 2.9, 5] {
             let bucket = EditorRenderGeometry.inkScale(displayScale: scale)
             XCTAssertGreaterThanOrEqual(bucket, scale)
             XCTAssertLessThanOrEqual(bucket, scale * sqrt(2) + 0.000001)
+        }
+        for scale in [6.0, 12, 30] {
+            XCTAssertEqual(EditorRenderGeometry.inkScale(displayScale: scale), EditorRenderGeometry.maximumInkScale)
         }
         let a = InkRenderViewport(page: .init(width: 14400, height: 14400), visible: .init(x: 1000, y: 1000, width: 900, height: 900), scale: 1)
         let b = InkRenderViewport(page: .init(width: 14400, height: 14400), visible: .init(x: 1001, y: 1001, width: 900, height: 900), scale: 1)

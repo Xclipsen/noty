@@ -105,11 +105,13 @@ public struct PageLayout: Equatable, Sendable {
     public let contentOrigin: PagePoint
     public let sourceFrame: PageRect
     public let pdfToCanvas: PageTransform
+    public let writingCoordinateScale: Double
 
     public init(source: PDFPageGeometry, legacyA4: Bool, margins: PageMargins? = nil) {
         self.legacyA4 = legacyA4
         let size = source.displaySize
         contentCanvas = legacyA4 ? .a4 : size
+        writingCoordinateScale = margins == nil ? 1 : contentCanvas.width / PageSize.a4.width
         contentOrigin = PagePoint(x: margins?.left ?? 0, y: margins?.top ?? 0)
         canvas = PageSize(width: contentCanvas.width + contentOrigin.x + (margins?.right ?? 0),
                           height: contentCanvas.height + contentOrigin.y + (margins?.bottom ?? 0))

@@ -4,6 +4,8 @@ public enum TextFont: String, Codable, CaseIterable, Sendable { case system, ser
 public enum TextColor: String, Codable, CaseIterable, Sendable { case black, white, blue, red }
 
 public enum TextAlignment: String, Codable, CaseIterable, Sendable { case left, center, right, justified }
+/// Marker colours for highlighted text (schema 9). nil keeps the original yellow.
+public enum HighlightColor: String, Codable, CaseIterable, Sendable { case yellow, green, blue, pink, orange, purple }
 
 public struct TextBoxStyle: Codable, Equatable, Sendable {
     public var font: TextFont
@@ -21,15 +23,21 @@ public struct TextBoxStyle: Codable, Equatable, Sendable {
     public var strikethrough: Bool?
     /// -1 subscript, 0 normal, 1 superscript.
     public var baseline: Int?
+    /// Schema 9: black/white follows the background like the automatic pen;
+    /// `color` keeps the last resolved value, `ink` stays nil.
+    public var automaticColor: Bool?
+    public var highlightColor: HighlightColor?
     public init(font: TextFont = .system, fontSize: Double = 17, bold: Bool = false,
                 italic: Bool = false, underline: Bool = false, color: TextColor = .black) {
         self.font = font; self.fontSize = fontSize; self.bold = bold; self.italic = italic
         self.underline = underline; self.color = color
     }
     public var usesExtendedStyle: Bool { fontName != nil || ink != nil || strikethrough != nil || baseline != nil }
+    public var usesColorFormat: Bool { automaticColor != nil || highlightColor != nil }
     public func validate() throws {
         guard fontName == nil || (!fontName!.isEmpty && fontName!.utf8.count <= 200),
-              baseline == nil || (-1...1).contains(baseline!) else { throw StorageError.invalidDocument }
+              baseline == nil || (-1...1).contains(baseline!),
+              automaticColor != true || (ink == nil && (color == .black || color == .white)) else { throw StorageError.invalidDocument }
         if let ink { try ink.validate() }
         guard fontSize.isFinite, (8...96).contains(fontSize),
               indent == nil || (indent!.isFinite && (0...240).contains(indent!)),
@@ -68,6 +76,7 @@ public struct TextBox: Codable, Equatable, Identifiable, Sendable {
     }
     public var rect: PageRect { PageRect(x: x, y: y, width: width, height: height) }
     public var usesTextFlowFormat: Bool { flowID != nil || style.usesExtendedStyle || (runs ?? []).contains { $0.style.usesExtendedStyle } }
+    public var usesColorFormat: Bool { style.usesColorFormat || (runs ?? []).contains { $0.style.usesColorFormat } }
     public var usesRichText: Bool {
         runs != nil || style.highlighted != nil || style.alignment != nil || style.indent != nil || style.link != nil
     }
@@ -123,6 +132,10 @@ extension Page {
 }
 
 extension Notebook {
+    /// Every text write path calls this; it only ever raises the schema.
+    public mutating func raiseSchemaForTextColors(_ boxes: [TextBox]) {
+        if boxes.contains(where: \.usesColorFormat) { schemaVersion = max(9, schemaVersion) }
+    }
     public func preparedForTextEditing() throws -> Notebook {
         var next = try preparedForPageEditing()
         next.schemaVersion = max(4, next.schemaVersion)
@@ -146,6 +159,7 @@ extension Notebook {
         var next = try preparedForTextEditing()
         if boxes.contains(where: \.usesTextFlowFormat) { next.schemaVersion = max(8, next.schemaVersion) }
         if boxes.contains(where: \.usesRichText) { next.schemaVersion = max(7, next.schemaVersion) }
+        next.raiseSchemaForTextColors(boxes)
         guard let index = next.pages.firstIndex(where: { $0.id == pageID }) else { throw PageOperationError.missingPage }
         let bounds = next.pages[index].textBounds
         for box in boxes {

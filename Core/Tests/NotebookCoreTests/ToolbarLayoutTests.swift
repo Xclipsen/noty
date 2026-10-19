@@ -5,22 +5,22 @@ import XCTest
 final class ToolbarLayoutTests: XCTestCase {
     private let screen = PageSize(width: 1194, height: 834)
 
-    func testContentDeterminesLengthAndBothLevelsStayCentered() {
+    func testMainLevelCenteredAndSwitchRemainsAtTrailingEdge() {
         let main = ToolbarLayout.itemCount(more: false, presets: 0, secondView: true)
         let more = ToolbarLayout.itemCount(more: true, presets: 0, secondView: true)
-        XCTAssertEqual(ToolbarLayout.length(items: main), 460)
-        XCTAssertEqual(ToolbarLayout.length(items: more), 364)
-        XCTAssertEqual(ToolbarLayout.itemCount(more: true, presets: 12, secondView: false), 6)
+        XCTAssertEqual(ToolbarLayout.length(items: main), 480)
+        XCTAssertEqual(ToolbarLayout.length(items: more), 336)
+        XCTAssertEqual(ToolbarLayout.itemCount(more: true, presets: 12, secondView: false), 5)
         for width in [744.0, 880, 1194] {
             for dock in [ToolbarDock.top, .bottom] {
                 let first = ToolbarLayout(viewport: .init(width: width, height: 834), dock: dock, items: main, headerItems: main)
                 let second = ToolbarLayout(viewport: first.viewport, dock: dock, items: more, headerItems: main)
                 XCTAssertEqual(first.center.x, width / 2, accuracy: 0.001)
-                XCTAssertEqual(second.center.x, width / 2, accuracy: 0.001)
+                XCTAssertEqual(second.frame.x + second.frame.width, first.frame.x + first.frame.width, accuracy: 0.001)
                 XCTAssertEqual(first.frame.y, second.frame.y)
                 XCTAssertEqual(first.inlineHeader, second.inlineHeader)
-                XCTAssertEqual(first.frame.width, width == 744 && dock == .top ? 428 : 460)
-                XCTAssertEqual(second.frame.width, 364)
+                XCTAssertEqual(first.frame.width, width == 744 && dock == .top ? 428 : 480)
+                XCTAssertEqual(second.frame.width, 336)
             }
         }
     }
@@ -115,14 +115,14 @@ final class ToolbarLayoutTests: XCTestCase {
 
     func testVersionFourMigrationPreservesChoicesAndVersionFiveRoundTripsAxis() throws {
         var old = ToolbarPreferences(); old.formatVersion = 4; old.dock = .bottom
-        old.order.reverse(); old.autoPen = true; old.pencilPreview = false; old.floatingX = 0.7
-        var expected = old; expected.formatVersion = 7
+        old.order = ToolbarPreferences.format7Order.reversed(); old.autoPen = true; old.pencilPreview = false; old.floatingX = 0.7
+        var expected = old; expected.formatVersion = 8; expected.order = ToolbarPreferences.addingFormat8Tools(to: old.order)
         XCTAssertEqual(try ToolbarPreferences.decode(JSONEncoder().encode(old)), expected)
         expected.dock = .floating; expected.floatingAxis = .vertical
         XCTAssertEqual(try ToolbarPreferences.decode(JSONEncoder().encode(expected)), expected)
         old.floatingAxis = .horizontal
         XCTAssertThrowsError(try ToolbarPreferences.decode(JSONEncoder().encode(old)))
-        expected.formatVersion = 8
+        expected.formatVersion = 9
         XCTAssertThrowsError(try ToolbarPreferences.decode(JSONEncoder().encode(expected)))
     }
 }

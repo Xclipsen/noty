@@ -10,6 +10,22 @@ final class TextFlowTests: XCTestCase {
         try book.replaceTextBoxes([box], pageID: book.pages[0].id)
         return (book, box)
     }
+    func testFlowTextStartsWithRuledLinesAndOlderTextAlignsOnEdit() throws {
+        var book = try Notebook.blank(title: "Flow", appearance: NotebookAppearance())
+        let rect = try XCTUnwrap(book.pages[0].writingRect(.page))
+        let legacy = try XCTUnwrap(book.pages[0].legacyWritingRect(.page))
+        XCTAssertEqual(rect.x, 32); XCTAssertEqual(legacy.x, 16)
+        XCTAssertEqual(rect.width, legacy.width - 32, accuracy: 0.001)
+        XCTAssertEqual(rect.y, legacy.y); XCTAssertEqual(rect.height, legacy.height)
+        var box = TextBox(x: legacy.x, y: legacy.y, width: legacy.width, height: legacy.height, text: "alt")
+        box.flowID = UUID(); box.flowRegion = .page
+        try book.replaceTextBoxes([box], pageID: book.pages[0].id)
+        var replacement = box; replacement.text = "alt!"
+        let (next, _) = try book.reflowText(pageID: book.pages[0].id, previous: box, replacement: replacement,
+            selection: NSRange(location: 4, length: 0), pageCapacity: { _, _ in 1000 })
+        let edited = try XCTUnwrap(next.pages[0].effectiveTextBoxes.first)
+        XCTAssertEqual(edited.x, rect.x); XCTAssertEqual(edited.width, rect.width); XCTAssertEqual(edited.text, "alt!")
+    }
     func testPaperAndPDFMarginsHaveDistinctAnchors() throws {
         var page = Page(); page.geometry = PaperStyle.geometry
         page.margins = PageMargins(left: 180, right: 260, top: 100, bottom: 120)

@@ -1,38 +1,66 @@
 import UIKit
 import UIKit.UIGestureRecognizerSubclass
 
-/// A passive Pencil observer. Moving restarts the hold clock and never cancels
-/// PencilKit; the completed stroke is replaced atomically after lifting.
+/// A simultaneous Pencil observer. Screen-space motion restarts the hold clock
+/// without cancelling PencilKit; a held preview is committed after lifting.
 @MainActor
-final class PencilHoldGesture: UIGestureRecognizer {
+final class PencilHoldGesture: UIGestureRecognizer, UIGestureRecognizerDelegate {
     var onHold: (() -> Void)?
     var onPoint: ((CGPoint) -> Void)?
+    var onBegin: ((CGPoint) -> Void)?
+    var onMove: (() -> Void)?
+    var onEnd: ((Bool) -> Void)?
     var allowFinger = false
     private var timer: Timer?
     private var point = CGPoint.zero
     private weak var tracked: UITouch?
+    override init(target: Any?, action: Selector?) { super.init(target: target, action: action); delegate = self }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        guard let touch = touches.first, touch.type == .pencil || allowFinger else { state = .failed; return }
-        tracked = touch; point = touch.location(in: view); onPoint?(point); arm()
+        guard tracked == nil, let touch = touches.first(where: { $0.type == .pencil || (allowFinger && $0.type == .direct) }) else {
+            timer?.invalidate(); onEnd?(true); state = tracked == nil ? .failed : .cancelled; return
+        }
+        tracked = touch; point = touch.location(in: view?.window ?? view)
+        state = .began; onBegin?(touch.location(in: view)); onPoint?(touch.location(in: view)); arm()
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let touch = tracked else { return }
         let next = touch.location(in: view)
         onPoint?(next)
-        if hypot(next.x - point.x, next.y - point.y) > 3 { point = next; arm() }
+        let screen = touch.location(in: view?.window ?? view)
+        if hypot(screen.x - point.x, screen.y - point.y) > 6 { point = screen; onMove?(); arm() }
+        state = .changed
     }
     private func arm() {
         timer?.invalidate()
         timer = Timer(timeInterval: 0.75, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.onHold?() }
+            MainActor.assumeIsolated {
+                guard let self, self.tracked != nil, self.state == .began || self.state == .changed else { return }
+                self.onHold?()
+            }
         }
         if let timer { RunLoop.main.add(timer, forMode: .common) }
     }
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { timer?.invalidate(); state = .failed }
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { timer?.invalidate(); state = .failed }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { timer?.invalidate(); state = .ended; onEnd?(false) }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { timer?.invalidate(); state = .cancelled; onEnd?(true) }
     override func reset() { timer?.invalidate(); timer = nil; tracked = nil; super.reset() }
     override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
     override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
+}
+
+/// Fail immediately away from a checkbox, so ordinary Pencil strokes stay native.
+@MainActor
+final class CheckboxTapGesture: UITapGestureRecognizer, UIGestureRecognizerDelegate {
+    var accepts: ((CGPoint) -> Bool)?
+    var onTap: ((CGPoint) -> Void)?
+    init() {
+        super.init(target: nil, action: nil)
+        delegate = self; addTarget(self, action: #selector(tapped))
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        accepts?(touch.location(in: view)) == true
+    }
+    @objc private func tapped() { if state == .ended { onTap?(location(in: view)) } }
 }
 
 /// Snapshot attempts wait for touches/gestures to finish, including shape drags

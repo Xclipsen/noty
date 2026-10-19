@@ -29,6 +29,10 @@ def text_style(style):
     assert style.get("fontName") is None or (isinstance(style["fontName"], str) and 0 < len(style["fontName"].encode("utf-8")) <= 200)
     assert style.get("strikethrough") is None or type(style["strikethrough"]) is bool
     assert style.get("baseline") is None or (type(style["baseline"]) is int and -1 <= style["baseline"] <= 1)
+    assert style.get("automaticColor") is None or type(style["automaticColor"]) is bool
+    if style.get("automaticColor") is True:
+        assert style.get("ink") is None and style["color"] in ("black", "white")
+    assert style.get("highlightColor") in (None, "yellow", "green", "blue", "pink", "orange", "purple")
     if style.get("ink") is not None:
         assert all(type(style["ink"][k]) in (int, float) and math.isfinite(style["ink"][k]) and 0 <= style["ink"][k] <= 1 for k in ("red", "green", "blue", "alpha"))
     link = style.get("link")
@@ -49,7 +53,7 @@ def appearance(value):
 
 def validate_notebook(document):
     version = document["schemaVersion"]
-    assert version in (1, 2, 3, 4, 5, 6, 7, 8), "Unsupported notebook schema"
+    assert version in (1, 2, 3, 4, 5, 6, 7, 8, 9), "Unsupported notebook schema"
     UUID(document["id"])
     if document.get("appearance") is not None:
         assert version >= 7
@@ -88,6 +92,8 @@ def validate_notebook(document):
                 for style in [box["style"]] + [r["style"] for r in box.get("runs") or []]:
                     if any(style.get(k) is not None for k in ("fontName", "ink", "strikethrough", "baseline")):
                         assert version >= 8
+                    if any(style.get(k) is not None for k in ("automaticColor", "highlightColor")):
+                        assert version >= 9
                 text_style(box["style"])
                 if any(box["style"].get(k) is not None for k in ("highlighted", "alignment", "indent", "link")):
                     assert version >= 7

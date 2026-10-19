@@ -142,13 +142,13 @@ final class UIRebuildTests: XCTestCase {
         XCTAssertEqual(decoded.toolbar, tools)
     }
     func testNewToolbarFieldsCannotMasqueradeAsAnOldFormat() throws {
-        var value = ToolbarPreferences(); value.formatVersion = 3; value.autoPen = true
+        var value = ToolbarPreferences(); value.formatVersion = 3; value.order = WritingTool.format7Tools; value.autoPen = true
         XCTAssertThrowsError(try ToolbarPreferences.decode(JSONEncoder().encode(value)))
         value.autoPen = nil; value.dock = .bottom
         XCTAssertThrowsError(try ToolbarPreferences.decode(JSONEncoder().encode(value)))
-        value.dock = .right; value.order = WritingTool.allCases
+        value.dock = .right
         let migrated = try ToolbarPreferences.decode(JSONEncoder().encode(value))
-        XCTAssertEqual(migrated.formatVersion, 7); XCTAssertEqual(migrated.order, ToolbarPreferences().order)
+        XCTAssertEqual(migrated.formatVersion, 8); XCTAssertEqual(migrated.order, ToolbarPreferences().order)
     }
     func testRotationSnapsOnlyNearRightAngles() {
         XCTAssertEqual(ImageObject.snappedRotation(88), 90)

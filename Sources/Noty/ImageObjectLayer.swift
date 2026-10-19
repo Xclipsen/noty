@@ -2,8 +2,9 @@ import UIKit
 import SwiftUI
 import NotebookCore
 
-/// One page-local image plane below ink/text. Gestures, controls and history are
-/// excluded from every export; all object coordinates stay in canonical points.
+/// One page-local image plane below ink/text. Gestures and controls are excluded
+/// from every export; undo is notebook-wide (EditorModel). All object
+/// coordinates stay in canonical points.
 @MainActor
 final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     private var objects: [ImageObject] = []
@@ -13,8 +14,6 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     private var pageLayout = PageLayout(source: .testPaper, legacyA4: true)
     private var active = false
     private var selectedID: UUID?
-    private var history = UndoManager()
-    private var historyBytes = 0
     private var onChange: (([ImageObject]) -> Void)?
     private var onError: ((String) -> Void)?
     private let outline = CAShapeLayer()
@@ -32,7 +31,6 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear; isOpaque = false; contentMode = .redraw; clipsToBounds = true
-        history.levelsOfUndo = 30
         outline.fillColor = UIColor.clear.cgColor; outline.strokeColor = UIColor.systemBlue.cgColor
         outline.lineWidth = 1.5; layer.addSublayer(outline)
         moveGesture.delegate = self; moveGesture.maximumNumberOfTouches = 1
@@ -71,13 +69,11 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
             self.onChange = onChange; self.onError = onError; return
         }
         if reset {
-            generation += 1; dragStart = nil; rotationSnap = nil; history.removeAllActions(); historyBytes = 0; selectedID = nil
+            generation += 1; dragStart = nil; rotationSnap = nil; selectedID = nil
             cropController?.dismiss(animated: false); cropController = nil
         } else if objects != incoming {
-            let previous = objects
             let added = incoming.last { object in !objects.contains { $0.id == object.id } }
             selectedID = added?.id ?? selectedID
-            objects = incoming; record(previous)
         }
         self.pageID = pageID; self.contentGeneration = contentGeneration; pageLayout = layout
         self.active = active; self.onChange = onChange; self.onError = onError; objects = incoming
@@ -123,6 +119,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        HangProbe.hit("Image.layoutSubviews")
         guard active, let object = selected else { return }
         let rect = displayBounds(object)
         let path = UIBezierPath(rect: CGRect(x: -object.width / 2, y: -object.height / 2, width: object.width, height: object.height))
@@ -137,10 +134,10 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         rotate.backgroundColor = rotationSnap == nil ? .systemBlue : .systemTeal
         let width = min(max(44, bounds.width / scale - 8), 316)
         let outerWidth = width * scale, outerHeight = 52 * scale
-        let y = rect.maxY + 12 * scale + outerHeight <= bounds.height ? rect.maxY + 12 * scale : max(0, rect.minY - 12 * scale - outerHeight)
+        let y = rect.maxY + 12 * scale + outerHeight <= bounds.maxY ? rect.maxY + 12 * scale : max(bounds.minY, rect.minY - 12 * scale - outerHeight)
         toolbar.bounds.size = CGSize(width: width, height: 52)
         toolbar.transform = CGAffineTransform(scaleX: scale, y: scale)
-        toolbar.center = CGPoint(x: min(max(outerWidth / 2, rect.midX), max(outerWidth / 2, bounds.width - outerWidth / 2)),
+        toolbar.center = CGPoint(x: min(max(bounds.minX + outerWidth / 2, rect.midX), max(bounds.minX + outerWidth / 2, bounds.maxX - outerWidth / 2)),
                                  y: y + outerHeight / 2)
         actions.frame = CGRect(x: 4, y: 4, width: 308, height: 44)
         toolbar.contentSize = CGSize(width: 316, height: 52)
@@ -155,8 +152,8 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         let half = 22 * scale
         handle.bounds = CGRect(x: 0, y: 0, width: 44, height: 44)
         handle.transform = CGAffineTransform(scaleX: scale, y: scale)
-        handle.center = CGPoint(x: min(max(half, center.x), max(half, bounds.width - half)),
-                                y: min(max(half, center.y), max(half, bounds.height - half)))
+        handle.center = CGPoint(x: min(max(bounds.minX + half, center.x), max(bounds.minX + half, bounds.maxX - half)),
+                                y: min(max(bounds.minY + half, center.y), max(bounds.minY + half, bounds.maxY - half)))
     }
     private var selected: ImageObject? { objects.first { $0.id == selectedID } }
     private var limits: PageRect { PageRect(pageLayout.canonicalInkBounds) }
@@ -240,7 +237,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
             object.rotation = target ?? raw
         }
         objects[index] = object.fitted(in: limits)
-        if pan.state == .ended { record(start.objects); dragStart = nil; rotationSnap = nil }
+        if pan.state == .ended { dragStart = nil; rotationSnap = nil }
         refresh(); onChange?(objects)
     }
 
@@ -251,37 +248,19 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     }
     private func edit(allowLocked: Bool = false, _ change: (inout ImageObject) -> Void) {
         guard active, let index = objects.firstIndex(where: { $0.id == selectedID }), allowLocked || !objects[index].locked else { return }
-        let previous = objects; change(&objects[index]); objects[index] = objects[index].fitted(in: limits)
-        record(previous); refresh(); onChange?(objects)
+        change(&objects[index]); objects[index] = objects[index].fitted(in: limits)
+        refresh(); onChange?(objects)
     }
     private func reorder(front: Bool) {
         guard active, let index = objects.firstIndex(where: { $0.id == selectedID }), !objects[index].locked else { return }
-        let previous = objects; let object = objects.remove(at: index)
+        let object = objects.remove(at: index)
         objects.insert(object, at: front ? objects.count : 0)
-        record(previous); refresh(); onChange?(objects)
+        refresh(); onChange?(objects)
     }
     private func deleteSelected() {
         guard active, selected?.locked == false else { return }
-        let previous = objects; objects.removeAll { $0.id == selectedID }; selectedID = nil
-        record(previous); refresh(); onChange?(objects)
-    }
-    private func record(_ previous: [ImageObject]) {
-        guard previous != objects else { return }
-        let cost = previous.reduce(0) { $0 + $1.data.count }
-        if !history.isUndoing && !history.isRedoing && historyBytes + cost > 40_000_000 {
-            history.removeAllActions(); historyBytes = 0
-        }
-        historyBytes += cost
-        history.registerUndo(withTarget: self) { layer in layer.restore(previous) }
-        history.setActionName("Bild bearbeiten")
-    }
-    private func restore(_ value: [ImageObject]) {
-        let previous = objects; objects = value
-        record(previous); refresh(); onChange?(objects)
-    }
-    func performUndo(redo: Bool) {
-        guard active, dragStart == nil, cropController == nil else { return }
-        if redo { history.redo() } else { history.undo() }
+        objects.removeAll { $0.id == selectedID }; selectedID = nil
+        refresh(); onChange?(objects)
     }
 
     private func openCrop() {

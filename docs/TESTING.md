@@ -1,5 +1,102 @@
 # Verifikation
 
+## Einstellungen nach App-Update, zuletzt geöffnetes Heft
+
+**Implementiert und erfolgreich gebaut (`xtool dev build`, `.tools/ios-persist.log`); nicht installiert, auf dem iPad ungeprüft.** Ursache des verlorenen Backupordners: UserDefaults-Schlüssel enthielten den absoluten Containerpfad (`noty.externalBackup.<…/Application/UUID/Documents/Noty>`), dessen UUID iOS bei Updates ändern kann; veraltete Ordner-Lesezeichen wurden zudem als Fehler verworfen statt erneuert. Neu: `noty.v2.<name>.<Pfad relativ zu Documents>` (`StableSettingsKey`), einmalige Kopie alter Pfadschlüssel (alte bleiben erhalten), Lesezeichen-Erneuerung bei `isStale`, sichtbarer Status „Backup-Ordner nicht mehr erreichbar – bitte neu wählen“ ohne Löschen des Ziels. Beim Start öffnet die Hauptbibliothek das zuletzt offene Heft (nicht nach normalem Schließen, nicht nach Bereichswechsel, nicht aus Papierkorb/fehlend) samt zuletzt angezeigter Seite. Core-Tests: 304, 0 Fehler (5 neue in `StableSettingsKeyTests`). Ungeprüft: tatsächliche Containeränderung/Migration am Gerät, Auflösung alter `.minimalBookmark`-Lesezeichen nach Update, iCloud-Ordnerzugriff, Wiederöffnen nach Beenden im App-Umschalter.
+
+## Build 39 – Seitenstandard nachträglich
+
+**Implementiert, gebaut, installiert; am iPad ungeprüft.** 291 Core-Tests, `.tools/roundtrip-defaults39.log`, Rücklesung 24 Notizbücher/166 Dateien bytegleich.
+
+## Build 38 – Lasso über Seiten, Einstellungen, UI-Fehler
+
+**Implementiert, signiert gebaut, installiert; auf dem iPad ungeprüft.** [Details](EDITOR-FEEDBACK-34.md). 289 Core-Tests, Host-Roundtrip `.tools/roundtrip-batch38.log`, Sicherung/Rücklesung 23 Hefte/160 Dateien bytegleich.
+
+## Feedback 33 – Zoom-Grenze, Schreibscrollen, Strichstärke
+
+**Implementiert, signiert gebaut und als Build 33 installiert; neue Bedienung auf dem iPad ungeprüft.** [Befunde/Umsetzung](EDITOR-FEEDBACK-33.md).
+
+- `swift test --package-path Core`: **270 Tests, 0 Fehler**, `.tools/core-editor33.log`; sechs neue Methoden in `ViewportWriting33Tests`.
+- `xtool dev build` in PTY: erfolgreich, `.tools/build-feedback33.log`. Kein Format-/Speicherpfad geändert, daher kein Host-Roundtrip.
+- `xtool dev build --sign --ipa` in PTY: `.tools/ios-editor33-sign.log`; IPA-ID, Team und Zertifikat gegenüber Build 32 unverändert, Profil bis 2026-10-26T07:55:07Z (`.tools/build-editor33-artifact.json`).
+
+### Autorisiertes Update auf Build 33
+
+Vollständige `/Documents` vorher unter `/home/la/Backups/noty-before-editor33-2026-10-19T07-54-44-393639693Z/Documents/` gesichert (stabiler Remote-Baum): **23 gültige Hefte, 49 Revisionen, 159 Dateien, 273.058.812 Bytes**. `xtool install --usb xtool/Noty.ipa` in PTY: „Successfully installed!“ (`.tools/ios-install-editor33.log`); InstallationProxy bestätigt **33** unter unveränderter ID `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype`. Frische Rücklesung `after-update/Documents/`: **alle 23 Heftinhalte und alle 159 Dateien bytegleich**, keine neuen/fehlenden Dateien (`update-inspection.json`). Keine Deinstallation.
+
+### Builds 34–37 – Zoom-Hänger
+
+Gerätelog-Mitschnitt `.tools/syslog-zoom33.log` (Teilauszüge `syslog-zoom34.log`, `syslog-hang35.log`, `syslog-pdfraster36.log`). Build 34: Hänger weiterhin (5,69 s). Build 35: Stapelproben belegen PDFKit-Layeraufbau auf dem Hauptthread. Build 36: Nutzer meldet keine Ruckler; Log ohne HangTracer-Hänger/Stall. Build 37: Pinch-Target-Korrektur. Jeweils signiert gebaut, gleiche ID/Team/Zertifikat (`.tools/build-*-artifact.json`), vor jeder Installation vollständige `/Documents`-Sicherung (`/home/la/Backups/noty-before-{zoomfix34,hangprobe35,pdfraster36,pinch37}-*`), InstallationProxy bestätigt 34/35/36/37, frische Rücklesung jeweils **23 Hefte/160 Dateien bytegleich**. 271 Core-Tests ohne Fehler (`.tools/core-zoomfix33.log`).
+
+## Build 32 – Bildbefunde, Lasso-Farbe und Halte-Linien
+
+**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 32 installiert; neue native Wirkung ungeprüft.** IMG_0274 bestätigt Größenregression aus Build 31. IMG_0275 ausdrücklich als zwei fehlerhafte begradigte Linien präzisiert. [Befunde/Dateien/Grenzen](EDITOR-FEEDBACK-32.md), [drei Gerätetests](TEST-BUILD-32.md).
+
+- `swift test --package-path Core`: **264 Tests, 0 Fehler**, `.tools/core-editor32-final.log`. Sieben neue Methoden in `WritingAndStroke32Tests` für einheitliche PDF-/Papierbreite einschließlich Rand, unveränderte 14-pt-Stile/Normalmaße, gedrehte Crop-/negative Ränder, unveränderte freie Annotationen/Papier, Erhalt schmaler gespeicherter Ränder und finale native Abschlussreihenfolgen. Build-31-Layoutannahmen an die korrigierte Vorgabe angepasst.
+- `bash scripts/check_page_workflow.sh`: **bestanden**, `.tools/roundtrip-editor32.log`, Artefakte `.tools/page-workflow-HvLfjl/`. Unabhängige Schema-8-Heft-/Bibliotheksprüfer, Rich Text/Textfluss/editierbare Layer und Originalbytes erhalten. Kein Formatwechsel oder neue Dependency.
+- Finaler signierter SDK-Build in PTY: `.tools/ios-editor32-sign-final.log`, Build 32. UIKit/PencilKit/PDFKit nicht durch Linux-Tests ausgeführt. Impliziter Trait-Kontext als mögliche Ursache des Lasso-Farbwechsels adressiert; tatsächliche Behebung nativ offen. SDK dokumentiert finalen Druckabschluss nach Werkzeugende; neue Ereignissperre deckt diese Reihenfolge ab, native Linienfarbe/-breite/Markertransparenz noch offen.
+- `git diff --check`: bestanden. Tatsächlicher Geräte-PDF zur neuen Randtextskalierung/Lineatur noch nicht vorhanden. Keine Wirkung aus Host-Pixel-/Koordinatentests als Gerätebeleg ausgeben.
+
+### Autorisiertes Update auf Build 32
+
+Nach frischer Nutzerbestätigung „Ja, geschlossen und bereit“ vollständige aktuelle `/Documents` unter `/home/la/Backups/noty-before-editor32-2026-10-18T20-51-08-032994Z/Documents/` gesichert: **23 gültige Hefte, 49 referenzierte Revisionen, 159 Dateien, 235.835.618 Bytes**, stabiler Remote-Dateibaum. Alle tatsächlichen `Noty`-/Bereichs-`Data`-Roots getrennt validiert. Finale IPA und Metadaten im Backup erhalten; Build 32 mit unveränderter IPA-ID, Team und Zertifikat gegenüber Build 31 (`.tools/build-editor32-artifact.json`).
+
+`xtool install --usb xtool/Noty.ipa` in PTY erfolgreich (`.tools/ios-install-editor32.log`), keine Deinstallation oder andere App-ID. Direkte InstallationProxy-Abfrage bestätigt **32** unter unveränderter installierter ID `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype` (`.tools/installed-build-32-confirmed.json`). Frischer vollständiger Rücklese-Abzug unter `after-update/Documents/` beendet, Abschlussbericht mit stabilem Remote-Dateibaum vorhanden. Nach Fortsetzung am 19.10.2026 getrennte Validierung sämtlicher Datenroots und vollständiger Größen-/SHA-256-Vergleich abgeschlossen: **alle 23 vollständigen Heftinhalte und alle 159 Dateien unverändert**, keine Ergänzungen/Löschungen. Kein erneutes Update oder Überschreiben von Geräteinhalten während der Fortsetzung.
+
+Nachweise `before-inspection.json`, `update-inspection.json`, `update-inspection-files.json`, `installed-build.json` im Backup; `.tools/editor32-update-summary.json`. Anschließend zum Öffnen freigegeben. **Installation und Datenerhalt belegt; tatsächliche neue Lasso-/Halte-/Text-/PDF-Wirkung weiterhin ungeprüft.**
+
+## Build 31 – Lasso, Hochzoom und Schreibraum
+
+**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 31 installiert; neue native Bedienung ungeprüft.** Build 30 wurde vom Nutzer für Lasso/mitgezogene Inhalte erneut beanstandet. Berührungsauswahl und Handschriftkontur sind die neuen Vorgaben und ersetzen die früheren Einschließungs-/Rahmenanforderungen. [Umsetzung/Grenzen](EDITOR-FEEDBACK-31.md), [Retest](TEST-BUILD-31.md).
+
+- `swift test --package-path Core`: **257 Tests, 0 Fehler**, `.tools/core-editor31-final.log`. Neun neue Methoden in `LassoAndViewport31Tests` für Schnitt/Berührung/Strichbreite, Bounding-Box-Fehlertreffer/konkave Aussparungen/negative Ränder, Gruppenbewegung an Grenzen, vier Skalieranker/Schriftgrenzen, äußere Kontur, seitenweise Horizontalgrenzen, Hochzoom-Pixelbudget und normale Rand-/Textmaße über gemischte Importe. Vorhandene Layouttests an die neue Punktskala für Schreibseiten angepasst.
+- `bash scripts/check_page_workflow.sh`: **bestanden**, `.tools/roundtrip-editor31.log`, Artefakte `.tools/page-workflow-SzswkI/`. Unabhängige Schema-8-Heft-/Bibliotheksprüfer und editierbare Daten/Originale erhalten. Keine neue Schema- oder Dependency-Version.
+- Final `xtool dev build --sign --ipa` in PTY: **bestanden**, `.tools/ios-editor31-sign-final.log`, Build 31. Signierungsidentität und IPA-ID gegenüber Build 30 unverändert, Metadaten `.tools/build-editor31-artifact.json`. Danach keine Produktänderung.
+- `git diff --check`: bestanden. UIKit/PencilKit/PDFKit auf Linux nicht ausgeführt. Tatsächliches Mitziehen, Kontur/Haptik-/Menüdarstellung, Beseitigung des Zoomhängers, Seitenbegrenzung und echtes Geräte-PDF benötigen Retest. Referenz-Zusatzfunktionen nicht pauschal als umgesetzt ausgeben.
+
+### Autorisiertes Update auf Build 31
+
+Nach frischer Nutzerbestätigung „Ja, geschlossen und bereit“ aktuelle vollständige `/Documents` gesichert unter `/home/la/Backups/noty-before-editor31-2026-10-18T20-30-27-973757Z/Documents/`: **22 gültige Hefte, 46 referenzierte Revisionen, 153 Dateien, 182.738.156 Bytes**, stabiler Remote-Dateibaum. Alle tatsächlichen `Noty`-/Bereichs-`Data`-Roots getrennt validiert. Finale IPA und geprüfte Metadaten im Backup erhalten; gleiche IPA-/Basis-ID, gleiches Team und Zertifikat gegenüber Build 30.
+
+`xtool install --usb xtool/Noty.ipa` in PTY erfolgreich (`.tools/ios-install-editor31.log`), keine Deinstallation/andere App-ID. Direkte InstallationProxy-Abfrage bestätigt **31** unter unveränderter ID `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype` (`.tools/installed-build-31-confirmed.json`). Frisch verbundener vollständiger Nachabzug `after-update/Documents/`: ebenfalls stabiler Baum, **alle 22 vollständigen Heftinhalte und alle 153 Dateien per Größe/SHA-256 unverändert**, keine Ergänzungen/Löschungen. Aktueller Vorupdatebestand nach Nutzertests verglichen, nicht ein älteres Backup. Nachweise `before-inspection.json`, `update-inspection.json`, `update-inspection-files.json`, `installed-build.json` im Backup; `.tools/editor31-update-summary.json`. Nutzer danach zum Öffnen freigegeben. **Installation/Datenerhalt belegt, native Fehlerbehebung noch ungeprüft.**
+
+## Build 30 – Rückmeldungen, gemeinsames Lasso und Scrollen
+
+**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 30 installiert. Neue native Bedienung und tatsächliche Rucklerbeseitigung noch ungeprüft.** [Änderungen/Grenzen](EDITOR-FEEDBACK-30.md), [fünf gezielte Gerätetests](TEST-BUILD-30.md).
+
+- `swift test --package-path Core`: **248 Tests, 0 Fehler**, `.tools/core-editor30-final.log`. Sieben neue Methoden in `Feedback30Tests` für Werkzeugpräferenzen/Einzellasso, vollständige Strich-/Objektauswahl mit negativen Rändern und Breite, Freiform/konkave Grenzen, UTF-16-Checkboxbereiche, gehaltene Linien und Wiederverwendung der Renderreserve. Bestehende Leisten-/Viewportbudget-Erwartungen angepasst.
+- `bash scripts/check_page_workflow.sh`: **bestanden**, `.tools/roundtrip-editor30.log`, Artefakte `.tools/page-workflow-6tjFum/`. Unabhängige Schema-8-Heft-/Bibliotheksarchivprüfer und editierbare Layer/Rich Text/Textfluss erhalten. Kein neues Speicher-/Archivformat.
+- `xtool dev build` und abschließend `xtool dev build --sign --ipa` in PTY: **bestanden**, `.tools/ios-editor30-final.log` und `.tools/ios-editor30-sign.log`. Finale IPA Build 30; App-ID, Team und Zertifikatsfingerabdruck gegenüber Build 29 unverändert, Metadaten `.tools/build-editor30-artifact.json`. Keine neuen Dependencies oder Toolchaininstallation.
+- `git diff --check`: bestanden. Kein UIKit-/PencilKit-/PDFKit-Lauf unter Linux; tatsächliche Gesten, Haptik, Kreisoptik, PDF-Ebenenreihenfolge und Scrollgefühl brauchen Geräteabnahme.
+
+Nutzerbericht zu Build 29: Punkte 1, 3, 4, 7 und 11 passen; Punkt 2 Linienausrichtung folgt noch. Punkt 5 funktioniert mit gewünschter Icon-Ausrichtung. Checkboxoptik, Lasso, Ink unter Formen und Halten wurden erneut beanstandet und hier überarbeitet. Kurz gemeldete falsche erste Autostiftfarbe ausdrücklich zurückgenommen; Logik unverändert. Neue PDF-Ränder sollen zunächst schwarz starten. Bestätigung älterer Funktionen und Implementierung der neuen Änderungen sind getrennte Nachweise.
+
+### Autorisiertes Update auf Build 30
+
+Nach frischer Nutzerbestätigung „Ja, geschlossen und bereit“ vollständige `/Documents` unter `/home/la/Backups/noty-before-editor30-2026-10-18T20-07-40-059867Z/Documents/` gesichert: stabiler Remote-Dateibaum, **22 gültige Hefte, 46 referenzierte Revisionen, 153 Dateien, 182.786.243 Bytes**. Tatsächliche `Noty`-/Bereichs-`Data`-Roots einzeln validiert; aktuelle Sicherung nach den Nutzertests verwendet, nicht mit dem älteren Build-29-Backup verwechselt. Finale IPA und Signierungsmetadaten im Sicherungsordner erhalten.
+
+`xtool install --usb xtool/Noty.ipa` in PTY erfolgreich (`.tools/ios-install-editor30.log`), ohne Deinstallation oder Containerwechsel. Direkte InstallationProxy-Abfrage bestätigt **30** unter derselben installierten ID `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype` (`.tools/installed-build-30-confirmed.json`). Vollständiger frischer Nachabzug unter `after-update/Documents/`: ebenfalls stabiler Baum, **alle 22 vollständigen Heftinhalte und alle 153 Dateien anhand Größe/SHA-256 unverändert**, keine Ergänzungen/Löschungen. Nachweise `before-inspection.json`, `update-inspection.json`, `update-inspection-files.json`, `installed-build.json` im Sicherungsordner, Kurzfassung `.tools/editor30-update-summary.json`. Nutzer anschließend zum Öffnen freigegeben. Installation/Datenerhalt belegt, native Änderungen noch ungeprüft.
+
+## Build 29 – Editorfehler und Werkzeugbedienung
+
+**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 29 installiert; native Bugfix-Abnahme noch offen.** Details zu Ursachen, Dateien, Grenzen und gebündeltem Retest: [EDITOR-FEEDBACK-29](EDITOR-FEEDBACK-29.md).
+
+- `swift test --package-path Core`: **241 Tests, 0 Fehler**, `.tools/core-editor29-final.log`. Acht neue Fälle für Checkboxzyklus mit Emoji/Einzug, Feld- vs. Wortformatierung, Rich-Text-Skalierung/Flow-Sperre, Autostift auf vier Rändern, Grundlinien, vertikalen Leistenanker, seitenbewusste Textflusskapazität und PDF-Grundseitenfit. Vorhandene Leisten-/Kopf-/Listenfälle für die geänderten Anforderungen aktualisiert.
+- Nachgereichte Textbedienung: drei weitere Regressionen für zusammenhängenden Listenwechsel samt leerem Schlussitem, Absatz-/Einzugsgrenzen und explizite Auswahl sowie eingerückte Enter-Fortsetzung/Beenden im selben 241-Test-Lauf. 14-pt-Start/Einerschritte, Icon-Popover, Einfügeattribute nach Absatzformatierung mit SDK gebaut; Erhalt von Keyboard/Auswahl nativ offen. Zitat-/Codeblöcke und gebündelte Inter-Schrift nicht implementiert.
+- `bash scripts/check_page_workflow.sh`: **bestanden**, `.tools/roundtrip-editor29.log`, Artefakte `.tools/page-workflow-ddHwCT/`. Heft-/Bibliotheksarchive, editierbare Layer, Rich Text/Textfluss, Original-PDF-/Bildbytes und unabhängige Pythonprüfer erfolgreich. Kein neues Speicher-/Archivformat.
+- `xtool dev build` in PTY: **bestanden**, `.tools/ios-editor29-final.log`; Versionskennung 29. Zwischenfehler des neuen Layoutdelegate-Actors und UITextView-Parametertyps behoben. Zunächst unsigniert gebaut; anschließend auf ausdrücklichen Nutzerauftrag signiert/installiert, siehe Installationsnachweis unten.
+- `git diff --check`: bestanden. Kein UIKit-/PencilKit-/PDFKit-Lauf unter Linux. Insbesondere Zoomblockade, genaue Textgrundlinien, native Checkbox-/Lasso-Gesten, Markerbegradigung und tatsächlicher PDF-Export bleiben **ungeprüft**. Frühere Build-28-Gerätenachweise nicht auf Build 29 übertragen.
+
+### Autorisiertes Update auf Build 29
+
+Nutzerauftrag „installiere bitte“. Erster Anschluss: iPad im USB-Bus, aber nicht in libimobiledevice/xtool. `usbmuxd` lief mit fehlgeschlagenem Interface-Aufbau. Abziehen/Anschließen reichte nicht. Dienstneustart ausdrücklich freigegeben; `sudo -n` brauchte ein Passwort, daher führte der Nutzer `sudo systemctl restart usbmuxd` selbst aus und bestätigte den Erfolg. Danach Geräteverbindung vorhanden. Keine Pairing-/Auth-Dateien verändert, keine App deinstalliert.
+
+Vollständige `/Documents` vor Update unter `/home/la/Backups/noty-before-editor29-2026-10-18T19-21-24-625468Z/Documents/`: stabiler Remote-Dateibaum, **22 gültige Hefte, 46 referenzierte Revisionen, 153 Dateien, 79.535.164 Bytes**. Alle tatsächlichen `Noty`-/Bereichs-`Data`-Roots getrennt mit dem unabhängigen Prüfer validiert. Signierter SDK-Build `xtool dev build --sign --ipa` in PTY bestanden (`.tools/ios-editor29-sign.log`). IPA-ID `XTL-BAFXLQ964V.de.la.noty.prototype`, Team und Zertifikatsfingerabdruck gegenüber dem bestätigten Vorbestand unverändert. Finale IPA und Artefaktmetadaten im Sicherungsordner aufbewahrt.
+
+`xtool install --usb xtool/Noty.ipa` in PTY erfolgreich (`.tools/ios-install-editor29.log`). Direkte InstallationProxy-Abfrage bestätigt **29** unter unveränderter installierter ID `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype` (`.tools/installed-build-29-confirmed.json`). Frischer vollständiger Abzug `after-update/Documents/`: erneut stabiler Baum, **alle 22 vollständigen Heftinhalte und sämtliche 153 Dateien bytegleich**, keine Ergänzungen/Löschungen. Nachweise `update-inspection.json`, `update-inspection-files.json` und `installed-build.json` im Sicherungsordner; Zusammenfassung `.tools/editor29-update-summary.json`. Anschließend zum Öffnen freigegeben.
+
+Installation und Datenerhalt belegt; die Bugfixes selbst noch nicht am Gerät abgenommen. Nutzeranleitung: [Build 29 selbst testen](TEST-BUILD-29.md).
+
 ## Build 28 – Listen, Zoomabschluss und Renderpfad
 
 **Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 28 installiert. Native Schärfe/Gesten und Behebung der gemeldeten kurzen Blockaden noch ungeprüft.** [Änderungen und gebündelter Retest](EDITOR-FEEDBACK-28.md).

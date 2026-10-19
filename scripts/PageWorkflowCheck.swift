@@ -53,7 +53,9 @@ struct PageWorkflowCheck {
         richStyle.fontName = "Courier"; richStyle.ink = InkColor(0.2, 0.6, 0.3)
         richStyle.strikethrough = true; richStyle.baseline = 1
         textObjects[1].flowID = UUID(); textObjects[1].flowRegion = .left
-        textObjects[1].runs = [TextRun(location: 0, length: 3, style: richStyle)]
+        var colorStyle = textObjects[1].style; colorStyle.color = .black; colorStyle.automaticColor = true
+        colorStyle.highlighted = true; colorStyle.highlightColor = .green
+        textObjects[1].runs = [TextRun(location: 0, length: 3, style: richStyle), TextRun(location: 3, length: 2, style: colorStyle)]
         try document.replaceTextBoxes(textObjects, pageID: beforeTrim.id)
         var appearance = NotebookAppearance(); appearance.cover = .purple; appearance.format = .a5; appearance.landscape = true
         document.appearance = appearance
@@ -91,6 +93,9 @@ struct PageWorkflowCheck {
         let library = LibraryStore(root: storeRoot)
         _ = try await library.load()
         var tools = ToolbarPreferences(); tools.dock = .bottom; tools.floatingAxis = .vertical; tools.dockOnly = false; tools.normalizePageWidths = true; tools.autoPen = true; tools.pencilPreview = false; tools.paging = true
+        tools.pencilColor = InkColor(0.3, 0.3, 0.32); tools.pencilWidth = 5; tools.autoPencil = true; tools.laserMode = .dot; tools.laserFade = .untilLift
+        tools.laserColor = InkColor(0.2, 0.9, 0.3); tools.presets = [InkPreset(tool: .pencil, color: InkColor(0.1, 0.1, 0.1), width: 8), InkPreset(tool: .marker, color: InkColor(1, 1, 0), width: 14, markerTip: .round)]
+        tools.markerTip = .chisel
         try await ToolbarPreferenceStore(root: storeRoot).save(tools, revision: 1)
         let bundle = try await library.backupBundle()
         let libraryFile = root.appendingPathComponent("bibliothek.notylibrary")
@@ -121,8 +126,10 @@ struct PageWorkflowCheck {
             "textFlowSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first?.flowID == continuation.flowID,
             "unmaterializedDraftExcludedFromNotebookArchive": !roundTrip.documents[0].pages.contains(where: { $0.id == document.writingDraft().id }),
             "richFormattingSurvivesLibraryRestore": roundTrip.documents[0].pages.first(where: { $0.id == beforeTrim.id })?.textBoxes?[1].runs == textObjects[1].runs,
+            "automaticColorAndHighlightSurviveLibraryRestore": roundTrip.documents[0].pages.first(where: { $0.id == beforeTrim.id })?.textBoxes?[1].runs?.last?.style == colorStyle,
             "notebookAppearanceSurvivesLibraryRestore": roundTrip.documents[0].appearance == appearance,
             "bottomDockAndPreviewSettingsSurviveLibraryRestore": roundTrip.toolbar == tools,
+            "pencilAndLaserSettingsSurviveLibraryRestore": roundTrip.toolbar.formatVersion == 8 && roundTrip.toolbar.laserStyle == tools.laserStyle && roundTrip.toolbar.presets == tools.presets,
             "activePages": document.pages.count, "deletedPages": document.deletedPages?.count ?? 0,
             "originalPDFBytesUnchanged": true, "editableShapesSurviveLibraryRestore": independent.pages.first(where: { $0.id == beforeTrim.id })?.shapes == changedShapes, "independentRestore": true,
             "originalImageBytesUnchanged": document.pages[marginPageIndex].images?.first?.data == imageData,

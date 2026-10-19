@@ -6,11 +6,19 @@ import NotebookCore
 
 @MainActor
 final class EditorModel: ObservableObject {
-    @Published var notebook = Notebook()
-    @Published var pageIndex = 0
+    /// Until the stored document is installed this is a neutral blank sheet,
+    /// never the prototype test page; the editor does not show it anyway
+    /// (`documentLoaded`), and it is never saved (`writable` is false).
+    @Published var notebook = Notebook.blank(title: "")
+    @Published var pageIndex = 0 { didSet { if pageIndex != oldValue { rememberPage() } } }
     @Published var status = "Noch nicht gespeichert"
     @Published var error: String?
-    @Published var writable = false
+    @Published var writable = false { didSet { if writable && !documentLoaded { documentLoaded = true } } }
+    /// Latched once a real document was installed (first `writable`). Later
+    /// read-only phases (import, closing) keep it, so views are not torn down.
+    /// Owned by the model, not by a view: a view reused for another model can
+    /// never mistake that model's placeholder for loaded content.
+    @Published private(set) var documentLoaded = false
     @Published var busy = true
     @Published var saveFailed = false
     @Published var backupStatus = "Noch kein Backup exportiert"
@@ -21,6 +29,13 @@ final class EditorModel: ObservableObject {
     @Published private(set) var cutPageID: UUID?
     @Published private(set) var pdfOutline: [NotebookOutlineItem] = []
     @Published private(set) var pageContentGeneration = 0
+    /// Notebook-wide, chronological undo/redo across all pages and layers.
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
+    private var history = NotebookUndoHistory()
+    /// One counter per page; each PencilKit tool use (stroke, eraser gesture)
+    /// becomes one undo step even when it reports several drawing changes.
+    private var inkSessions: [UUID: Int] = [:]
     let storageRoot: URL
     @Published private(set) var mutationsPaused = false
     private var activeInteractions = Set<UUID>()
@@ -51,8 +66,10 @@ final class EditorModel: ObservableObject {
          restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil) {
         storageRoot = root
         store = NotebookRepository(directory: root, restoreDirectory: restoreDirectory)
-        backupDateKey = "noty.backupExport.\(root.path)"
-        pageKeyPrefix = "noty.page.\(root.path)."
+        // Container-independent keys (relative to Documents); the former
+        // absolute-path keys stop matching when iOS moves the container on update.
+        backupDateKey = StableDefaults.key("backupExport", root: root, legacyPrefix: "noty.backupExport.", pick: StableDefaults.newestDate)
+        pageKeyPrefix = StableSettingsKey.key("page", scope: StableDefaults.scope(root)) + "."
         let mainPath = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true).path
         legacyPageKeysAllowed = root.path == mainPath || root.path.hasPrefix(mainPath + "/")
         self.preferredPageID = preferredPageID
@@ -61,10 +78,18 @@ final class EditorModel: ObservableObject {
             backupStatus = "Letzter Datei-Export: \(date.formatted(date: .abbreviated, time: .shortened))"
         }
         Task {
-            defer { busy = false }
+            var finished = false
+            defer { if !finished { busy = false } }
             do {
                 var (loaded, recovered) = try await store.load()
-                try validate(loaded)
+                // Opening speed: decode every PencilKit drawing and image off the
+                // UI actor; PDFKit parsing happens once (the catalogue below
+                // validates the PDFs) instead of twice on the UI actor.
+                let snapshot = loaded
+                try await Task.detached(priority: .userInitiated) {
+                    try EditorModelValidation.validateContent(snapshot)
+                }.value
+                EditorOpenTrace.mark("document read", "pages=\(loaded.pages.count)")
                 // Keep legacy page geometry nil: existing ink is never rescaled.
                 loaded.schemaVersion = max(2, loaded.schemaVersion)
                 // Library names are authoritative; synchronize only while this
@@ -74,7 +99,8 @@ final class EditorModel: ObservableObject {
                 pdfOutline = sources?.outline ?? []
                 notebook = loaded
                 let legacyPage = legacyPageKeysAllowed ? UserDefaults.standard.string(forKey: "noty.page.\(loaded.id.uuidString)") : nil
-                let remembered = (UserDefaults.standard.string(forKey: pageKeyPrefix + loaded.id.uuidString) ?? legacyPage).flatMap(UUID.init(uuidString:))
+                let pageKey = StableDefaults.key("page", root: root, suffix: "." + loaded.id.uuidString, legacyPrefix: "noty.page.")
+                let remembered = (UserDefaults.standard.string(forKey: pageKey) ?? legacyPage).flatMap(UUID.init(uuidString:))
                 if let id = self.preferredPageID ?? remembered,
                    let index = loaded.pages.firstIndex(where: { $0.id == id }) { pageIndex = index }
                 writable = true
@@ -86,6 +112,9 @@ final class EditorModel: ObservableObject {
                 status = "Lesefehler – Originaldateien geschützt"
                 self.error = "Gespeicherte Daten sind nicht lesbar. Originaldateien bleiben erhalten. Ein exportiertes Backup kann über Dateien wiederhergestellt werden. \(error.localizedDescription)"
             }
+            // Editable right away: the restore list waits behind the first
+            // save on the repository actor and must not keep the editor busy.
+            busy = false; finished = true
             await refreshRestoredCopies()
         }
     }
@@ -104,9 +133,11 @@ final class EditorModel: ObservableObject {
     }
 
     func updateTextBoxes(_ boxes: [TextBox], pageID: UUID) {
+        HangProbe.hit("Model.updateTextBoxes")
         guard writable, !mutationsPaused, let index = notebook.pages.firstIndex(where: { $0.id == pageID }) else { return }
         guard notebook.pages[index].effectiveTextBoxes != boxes else { return }
         do {
+            let before = PageContent(page: notebook.pages[index])
             var candidate = notebook
             try candidate.replaceTextBoxes(boxes, pageID: pageID)
             if candidate.schemaVersion != notebook.schemaVersion {
@@ -114,20 +145,18 @@ final class EditorModel: ObservableObject {
                 sources = catalogue; pdfOutline = catalogue.outline
             }
             notebook = candidate
+            recordChange(.text, pageID: pageID, before: before,
+                         coalescing: .init(key: "text-\(pageID.uuidString)", window: 1.5))
             scheduleSave()
         } catch { self.error = "Textänderung konnte nicht übernommen werden: \(error.localizedDescription)" }
     }
 
-    // Text-flow history is atomic across pages. Expected full snapshots prevent
-    // an old text undo from overwriting later ink/image/restore edits.
-    private struct FlowHistoryEntry {
-        var before: Notebook
-        var after: Notebook
-        var beforeFocus: TextFlowFocus
-        var afterFocus: TextFlowFocus
-    }
-    private var flowUndo: [FlowHistoryEntry] = []
-    private var flowRedo: [FlowHistoryEntry] = []
+    // Text-flow edits are atomic across pages and part of the notebook-wide
+    // history; expected states prevent an old text undo from overwriting later edits.
+    private static let flowCoalescing = NotebookUndoHistory.Coalescing(key: "text-flow", window: 1.5)
+
+    /// Automatic list conversion: its own undo step, apart from the typing.
+    func separateUndoStep() { history.separateNextStep() }
 
     func updateFlowText(pageID: UUID, previous: TextBox, replacement: TextBox,
                         selection: NSRange, trailingDraft: Page? = nil) -> TextFlowFocus? {
@@ -135,14 +164,15 @@ final class EditorModel: ObservableObject {
         let before = notebook
         do {
             let (candidate, focus) = try notebook.reflowText(pageID: pageID, previous: previous,
-                replacement: replacement, selection: selection, trailingDraft: trailingDraft, capacity: TextFlowEditing.capacity)
+                replacement: replacement, selection: selection, trailingDraft: trailingDraft,
+                pageCapacity: { page, box in TextFlowEditing.capacity(box, page: page) })
             let beforeFocus = TextFlowFocus(pageID: pageID, boxID: previous.id,
-                selection: NSRange(location: min(selection.location, (previous.text as NSString).length), length: 0), typingStyle: previous.style)
+                selection: NSRange(location: TextListEditing.caret(before: previous.text, after: replacement.text, selection: selection.location), length: 0),
+                typingStyle: previous.style)
             try installFlow(candidate)
-            if candidate != before {
-                flowUndo.append(FlowHistoryEntry(before: before, after: candidate, beforeFocus: beforeFocus, afterFocus: focus))
-                if flowUndo.count > 50 { flowUndo.removeFirst() }; flowRedo.removeAll()
-            }
+            history.record(.textFlow, before: before, after: candidate, beforeFocus: beforeFocus, afterFocus: focus,
+                           coalescing: Self.flowCoalescing)
+            publishHistory()
             return focus
         } catch {
             self.error = "Textfluss: \(error.localizedDescription)"
@@ -154,29 +184,69 @@ final class EditorModel: ObservableObject {
                 if let i = boxes.firstIndex(where: { $0.id == previous.id }) { boxes[i] = replacement }
                 updateTextBoxes(boxes, pageID: pageID)
                 if notebook != before {
-                    let focus = TextFlowFocus(pageID: pageID, boxID: replacement.id, selection: selection, typingStyle: replacement.style)
-                    flowUndo.append(FlowHistoryEntry(before: before, after: notebook, beforeFocus: focus, afterFocus: focus))
-                    if flowUndo.count > 50 { flowUndo.removeFirst() }; flowRedo.removeAll()
-                    return focus
+                    // updateTextBoxes already recorded this page change.
+                    return TextFlowFocus(pageID: pageID, boxID: replacement.id, selection: selection, typingStyle: replacement.style)
                 }
             }
             return nil
         }
     }
-    func undoFlowText(redo: Bool) -> TextFlowFocus? {
-        guard writable, !busy, !mutationsPaused,
-              let entry = redo ? flowRedo.last : flowUndo.last else { return nil }
-        guard notebook == (redo ? entry.before : entry.after) else {
-            flowUndo.removeAll(); flowRedo.removeAll()
-            error = "Der Heftinhalt wurde außerhalb des Textflusses geändert. Alte Text-Undo-Schritte wurden zum Schutz dieser Änderungen verworfen."
+    /// Reverts (or re-applies) the most recent change on any page, in order.
+    /// Steps whose page was deleted, replaced or changed elsewhere are dropped;
+    /// they never overwrite newer content. Returns the page to reveal.
+    func undo(redo: Bool) -> NotebookUndoHistory.Outcome? {
+        guard writable, !busy, !mutationsPaused else { return nil }
+        defer { publishHistory() }
+        guard let outcome = redo ? history.redo(notebook) : history.undo(notebook) else { return nil }
+        do {
+            let previous = notebook
+            let selected = page.id
+            try installFlow(outcome.notebook)
+            if outcome.kind == .pages {
+                // Page operations reorder/insert pages: keep the open page by ID.
+                if let index = notebook.pages.firstIndex(where: { $0.id == selected }) { pageIndex = index }
+                // Content of existing pages changed (clear, restore, whole-notebook
+                // restyle): reload every canvas like the original operation did, so
+                // no late callback of an old canvas writes the other state back.
+                let old = Dictionary(previous.pages.map { ($0.id, PageContent(page: $0)) }, uniquingKeysWith: { a, _ in a })
+                if notebook.pages.contains(where: { page in old[page.id].map { $0 != PageContent(page: page) } ?? false }) {
+                    pageContentGeneration += 1
+                }
+            }
+            return outcome
+        } catch {
+            history.removeAll()
+            self.error = "Rückgängig nicht möglich: \(error.localizedDescription)"
             return nil
         }
-        do {
-            try installFlow(redo ? entry.after : entry.before)
-            if redo { flowRedo.removeLast(); flowUndo.append(entry) }
-            else { flowUndo.removeLast(); flowRedo.append(entry) }
-            return redo ? entry.afterFocus : entry.beforeFocus
-        } catch { self.error = error.localizedDescription; return nil }
+    }
+    /// A PencilKit tool use began on this page (stroke or eraser gesture).
+    func beginInkSession(pageID: UUID) { inkSessions[pageID, default: 0] += 1 }
+    private func recordChange(_ kind: NotebookUndoHistory.Kind, pageID: UUID, before: PageContent,
+                              coalescing: NotebookUndoHistory.Coalescing? = nil) {
+        guard let page = notebook.pages.first(where: { $0.id == pageID }) else { return }
+        history.record(kind, changes: [PageContentReplacement(pageID: pageID, expected: before, replacement: PageContent(page: page))],
+                       coalescing: coalescing)
+        publishHistory()
+    }
+    private func publishHistory() {
+        if canUndo != history.canUndo { canUndo = history.canUndo }
+        if canRedo != history.canRedo { canRedo = history.canRedo }
+    }
+    /// After edits outside the history: drop steps that no longer match so the
+    /// buttons stay truthful.
+    private func pruneHistory() { history.prune(notebook); publishHistory() }
+    /// Page operations (paper defaults, add, delete, duplicate, move, PDF
+    /// insertion, clear, restore, bookmark, margins) are one undo step each.
+    /// A change that cannot be recorded safely (legacy notebook migrated by
+    /// this very operation) only prunes, as before.
+    private func recordPageOperation(before: Notebook, undoPageID: UUID) {
+        let redoPageID = notebook.pages.indices.contains(pageIndex) ? notebook.pages[pageIndex].id : undoPageID
+        if history.recordPages(before: before, after: notebook, undoPageID: undoPageID, redoPageID: redoPageID) {
+            publishHistory()
+        } else {
+            pruneHistory()
+        }
     }
     func backspaceFlowText(pageID: UUID, box: TextBox) -> TextFlowFocus? {
         guard let index = notebook.pages.firstIndex(where: { $0.id == pageID }), let flow = box.flowID,
@@ -215,8 +285,13 @@ final class EditorModel: ObservableObject {
     }
 
     func updateDrawing(_ data: Data, pageID: UUID) {
-        guard writable, !mutationsPaused, let index = notebook.pages.firstIndex(where: { $0.id == pageID }) else { return }
+        HangProbe.hit("Model.updateDrawing")
+        guard writable, !mutationsPaused, let index = notebook.pages.firstIndex(where: { $0.id == pageID }),
+              notebook.pages[index].drawing != data else { return }
+        let before = PageContent(page: notebook.pages[index])
         notebook.pages[index].drawing = data
+        recordChange(.ink, pageID: pageID, before: before,
+                     coalescing: .init(key: "ink-\(pageID.uuidString)-\(inkSessions[pageID] ?? 0)", window: 120))
         scheduleSave()
     }
 
@@ -224,18 +299,24 @@ final class EditorModel: ObservableObject {
         guard writable, !mutationsPaused, let index = notebook.pages.firstIndex(where: { $0.id == pageID }),
               (notebook.pages[index].images ?? []) != images else { return }
         do {
+            let before = PageContent(page: notebook.pages[index])
             var candidate = notebook
             try candidate.replaceImages(images, pageID: pageID)
             if candidate.schemaVersion != notebook.schemaVersion {
                 let catalogue = try NotebookPDFCatalog(candidate, reusing: sources)
                 sources = catalogue; pdfOutline = catalogue.outline
             }
-            notebook = candidate; scheduleSave()
+            notebook = candidate
+            // An image drag publishes every frame; one gesture is one step.
+            recordChange(.images, pageID: pageID, before: before,
+                         coalescing: .init(key: "images-\(pageID.uuidString)", window: 0.8))
+            scheduleSave()
         } catch { self.error = "Bildänderung konnte nicht übernommen werden. Höchstens 50 Bilder pro Seite und 40 MB Bildoriginale pro Heft. \(error.localizedDescription)" }
     }
 
     @discardableResult
     func updateContent(_ content: PageContent, basedOn previous: PageContent, pageID: UUID) -> Bool {
+        HangProbe.hit("Model.updateContent")
         guard writable, !mutationsPaused, !busy, let index = notebook.pages.firstIndex(where: { $0.id == pageID }),
               PageContent(page: notebook.pages[index]) == previous else {
             error = "Die Seite wurde inzwischen in einer anderen Ansicht geändert. Bitte die Auswahl erneut setzen."
@@ -247,8 +328,32 @@ final class EditorModel: ObservableObject {
                 let catalogue = try NotebookPDFCatalog(candidate, reusing: sources)
                 sources = catalogue; pdfOutline = catalogue.outline
             }
-            notebook = candidate; scheduleSave(); return true
+            notebook = candidate
+            recordChange(.objects, pageID: pageID, before: previous)
+            scheduleSave(); return true
         } catch { self.error = "Objektänderung nicht übernommen: \(error.localizedDescription)"; return false }
+    }
+
+    /// Atomic multi-page content change (selection moved to another page and
+    /// its undo/redo). Every expected page state is checked; one validated
+    /// candidate is installed and saved, or nothing changes.
+    @discardableResult
+    func replaceContents(_ changes: [PageContentReplacement]) -> Bool {
+        HangProbe.hit("Model.replaceContents")
+        guard writable, !mutationsPaused, !busy else { return false }
+        do {
+            var candidate = notebook; try candidate.replaceContents(changes)
+            if candidate.schemaVersion != notebook.schemaVersion {
+                let catalogue = try NotebookPDFCatalog(candidate, reusing: sources)
+                sources = catalogue; pdfOutline = catalogue.outline
+            }
+            notebook = candidate
+            // One step for both pages; undo reveals the source, redo the target.
+            history.record(.transfer, changes: changes); publishHistory()
+            scheduleSave(); return true
+        } catch CrossPageTransferError.conflict {
+            error = "Die Seiten wurden inzwischen geändert. Bitte die Auswahl erneut setzen."; return false
+        } catch { self.error = "Verschieben nicht übernommen: \(error.localizedDescription)"; return false }
     }
 
     private func scheduleSave() { save(delayed: true) }
@@ -266,6 +371,7 @@ final class EditorModel: ObservableObject {
         let selected = page.id
         let oldIndex = pageIndex
         do {
+            let before = notebook
             var candidate = notebook
             let requested = try action(&candidate)
             let catalogue = try NotebookPDFCatalog(candidate, reusing: sources)
@@ -276,6 +382,7 @@ final class EditorModel: ObservableObject {
             if resetEditor { pageContentGeneration += 1 }
             notebook = candidate
             pageIndex = index
+            recordPageOperation(before: before, undoPageID: selected)
             save(); return true
         } catch { self.error = error.localizedDescription; return false }
     }
@@ -295,7 +402,10 @@ final class EditorModel: ObservableObject {
     }
     func pastePage(after anchor: UUID) {
         guard let payload = copiedPage else { return }
-        let cutID = cutPageID
+        // A cut page deleted in the meantime can't be moved: paste its copy
+        // instead and drop the stale cut marker rather than failing forever.
+        let cutID = cutPageID.flatMap { id in notebook.pages.contains { $0.id == id } ? id : nil }
+        if cutID == nil { cutPageID = nil }
         let success = editPages { document in
             if let cutID { try document.movePage(cutID, after: anchor); return cutID }
             return try document.pastePage(payload, after: anchor)
@@ -305,19 +415,79 @@ final class EditorModel: ObservableObject {
     func clearPage(_ id: UUID) { editPages(resetEditor: true) { try $0.clearPage(id); return id } }
     func movePage(_ id: UUID, to index: Int) { editPages { try $0.movePage(id, to: index); return nil } }
     func reorderPages(_ ids: [UUID]) { editPages { try $0.reorderPages(ids); return nil } }
-    func trashPage(_ id: UUID) { editPages { try $0.trashPage(id); return nil } }
+    /// New standard pages (and the trailing draft) use this paper from now on.
+    /// `.emptyPages` switches empty paper pages along; `.wholeNotebook` switches
+    /// every paper page and the writing space beside PDFs, swapping neutral ink
+    /// black↔white (rules in Core `PaperInkInversion`/`setPageDefaults`). One
+    /// validated candidate, one save; the editor reloads every page so no
+    /// stale canvas can write the old colours back. One notebook-wide undo
+    /// step restores the exact previous pages, ink and default; the previous
+    /// state also stays reachable through the local revision history.
+    /// (Parameter label kept for the existing ContentView call site.)
+    @discardableResult
+    func setPageDefaults(paper: PaperStyle, color: PaperColor, convertEmptyPages scope: PageDefaultsScope) -> Bool {
+        let empty: Set<UUID> = scope == .emptyPages ? Set(notebook.pages.filter { page in
+            page.drawing.isEmpty || (try? PKDrawing(data: page.drawing))?.strokes.isEmpty == true
+        }.map(\.id)) : []
+        // Thin PencilKit step: path, transform, mask, ink type and random seed
+        // stay; only the PKInk colour of strokes Core selects is replaced.
+        let recolor: Notebook.InkRecolor = { data, convert in
+            let drawing = try PKDrawing(data: data)
+            let light = UITraitCollection(userInterfaceStyle: .light)
+            var changed = false
+            let strokes = drawing.strokes.map { stroke -> PKStroke in
+                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+                guard stroke.ink.color.resolvedColor(with: light).getRed(&r, green: &g, blue: &b, alpha: &a),
+                      let next = convert(PageRect(stroke.renderBounds), InkColor(Double(r), Double(g), Double(b), Double(a)))
+                else { return stroke }
+                var result = stroke
+                result.ink = PKInk(stroke.ink.inkType, color: UIColor(red: next.red, green: next.green, blue: next.blue, alpha: next.alpha))
+                changed = true
+                return result
+            }
+            return changed ? PKDrawing(strokes: strokes).dataRepresentation() : data
+        }
+        let drawingStep: Notebook.InkRecolor? = scope == .wholeNotebook ? recolor : nil
+        var changed = 0
+        let action: (inout Notebook) throws -> UUID? = { document in
+            changed = try document.setPageDefaults(paper: paper, color: color, scope: scope,
+                                                   emptyPageIDs: empty, recolorDrawing: drawingStep)
+            return nil
+        }
+        let converted = editPages(resetEditor: scope == .wholeNotebook, action)
+        guard converted else { return false }
+        let pages = "\(changed) Seite\(changed == 1 ? "" : "n")"
+        switch scope {
+        case .wholeNotebook: fileStatus = "Notizbuch auf \(color == .dark ? "Dunkel" : "Weiß") umgestellt: \(pages)"
+        case .emptyPages: fileStatus = changed > 0 ? "Seitenstandard geändert, \(changed) leere Seite\(changed == 1 ? "" : "n") umgestellt" : "Seitenstandard geändert"
+        case .newPagesOnly: fileStatus = "Seitenstandard geändert"
+        }
+        return true
+    }
+    /// Deleting the open page focuses the page before it (or after it, if it
+    /// was the first page); other deletions keep the current page.
+    func trashPage(_ id: UUID) {
+        let open = page.id
+        editPages { document in
+            let old = document.pages.map(\.id)
+            try document.trashPage(id)
+            return open == id ? PageRemovalFocus.focus(removed: id, before: old, after: document.pages.map(\.id)) : nil
+        }
+    }
     func restorePage(_ id: UUID) { editPages(resetEditor: true) { try $0.restorePage(id) } }
     func toggleBookmark(_ id: UUID) { editPages { try $0.toggleBookmark(id); return nil } }
 
     func installMarginSnapshot(_ candidate: Notebook) throws {
         guard writable, !mutationsPaused, !busy else { throw PageOperationError.missingPage }
         let selected = page.id
+        let before = notebook
         let catalogue = try NotebookPDFCatalog(candidate, reusing: sources)
         let index = candidate.pages.firstIndex { $0.id == selected } ?? min(pageIndex, candidate.pages.count - 1)
         sources = catalogue
         pdfOutline = catalogue.outline
         notebook = candidate
         pageIndex = index
+        recordPageOperation(before: before, undoPageID: selected)
         save()
     }
 
@@ -346,6 +516,8 @@ final class EditorModel: ObservableObject {
                     return try PDFPageGeometry(page)
                 }
                 guard let index = notebook.pages.firstIndex(where: { $0.id == anchor }) else { throw PageOperationError.missingPage }
+                let previous = notebook
+                let selected = page.id
                 var candidate = notebook
                 let ids = try candidate.insertPDF(data, geometries: geometries, at: index + (before ? 0 : 1))
                 if let writingArea {
@@ -360,6 +532,7 @@ final class EditorModel: ObservableObject {
                 pdfOutline = catalogue.outline
                 notebook = candidate
                 if let first = ids.first, let position = candidate.pages.firstIndex(where: { $0.id == first }) { pageIndex = position }
+                recordPageOperation(before: previous, undoPageID: selected)
                 save()
             } catch { self.error = "PDF-Einfügen fehlgeschlagen: \(error.localizedDescription)" }
         }
@@ -368,7 +541,7 @@ final class EditorModel: ObservableObject {
     /// Closing must finish its last commit before another editor can be opened.
     /// On failure the editor stays open with its unsaved in-memory snapshot.
     func flushBeforeClosing() async -> Bool {
-        guard !busy else { return false }
+        guard !busy else { error = "Bitte den laufenden Vorgang abwarten, dann erneut schließen."; return false }
         guard writable else { return true }
         busy = true
         defer { busy = false }
@@ -392,9 +565,15 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    /// Remembered per notebook so a relaunch reopens the last viewed page, also without edits.
+    private func rememberPage() {
+        guard writable, notebook.pages.indices.contains(pageIndex) else { return }
+        UserDefaults.standard.set(page.id.uuidString, forKey: pageKeyPrefix + notebook.id.uuidString)
+    }
+
     func save(delayed: Bool = false) {
         guard writable else { return }
-        UserDefaults.standard.set(page.id.uuidString, forKey: pageKeyPrefix + notebook.id.uuidString)
+        rememberPage()
         pendingSave?.cancel()
         revision += 1
         let snapshot = notebook
@@ -425,7 +604,7 @@ final class EditorModel: ObservableObject {
     }
 
     func importFile(_ url: URL, backup: Bool) {
-        guard !busy else { return }
+        guard !busy else { error = "Bitte den laufenden Vorgang abwarten und die Datei dann erneut wählen."; return }
         if backup {
             restoreBackupAsCopy(url)
             return
@@ -462,6 +641,7 @@ final class EditorModel: ObservableObject {
                     sources = try NotebookPDFCatalog(candidate)
                     pdfOutline = sources?.outline ?? []
                     notebook = candidate
+                    history.removeAll(); publishHistory()
                     writable = true
                     status = "Importiert und lokal gespeichert"
                     saveFailed = false
@@ -560,6 +740,11 @@ final class EditorModel: ObservableObject {
 enum EditorModelValidation {
     static func validate(_ document: Notebook) throws {
         _ = try NotebookPDFCatalog(document)
+        try validateContent(document)
+    }
+    /// PencilKit drawings and images of active and trashed pages. No UI or
+    /// PDFKit objects: safe off the UI actor (the PDF part is the catalogue).
+    nonisolated static func validateContent(_ document: Notebook) throws {
         for page in document.pages + (document.deletedPages ?? []).map(\.page) where !page.drawing.isEmpty {
             _ = try PKDrawing(data: page.drawing)
         }

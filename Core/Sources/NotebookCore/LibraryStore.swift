@@ -71,8 +71,20 @@ public struct LibraryLoad: Sendable {
     public let unreadableDocuments: Int
 }
 
+/// Outcome of a permanent deletion. `purgedIDs` are gone from the index;
+/// `leftoverDirectories` packages could not be removed from disk (their files
+/// stay intact and may be rediscovered by a later `load()`).
+public struct LibraryPurgeResult: Equatable, Sendable {
+    public let snapshot: LibrarySnapshot
+    public let purgedIDs: [UUID]
+    public let leftoverDirectories: Int
+    /// Trash roots skipped by `emptyTrash()` because they contain the legacy
+    /// main notebook, whose files live directly in the library root.
+    public let retainedIDs: [UUID]
+}
+
 public enum LibraryError: Error, LocalizedError {
-    case invalidIndex, unavailable, invalidDestination, invalidTitle, unsupportedVersion(Int)
+    case invalidIndex, unavailable, invalidDestination, invalidTitle, unsupportedVersion(Int), notPurgeable
     public var errorDescription: String? {
         switch self {
         case .invalidIndex: "Der Bibliotheksindex ist nicht lesbar. Vorhandene Hefte bleiben erhalten."
@@ -80,6 +92,7 @@ public enum LibraryError: Error, LocalizedError {
         case .invalidDestination: "Dieses Ziel ist nicht möglich. Ein Ordner kann nicht in sich selbst oder einen Unterordner verschoben werden."
         case .invalidTitle: "Bitte einen Namen mit 1 bis 120 Zeichen ohne Zeilenumbrüche eingeben."
         case .unsupportedVersion(let version): "Bibliotheksformat \(version) benötigt eine neuere noty-Version."
+        case .notPurgeable: "Das ursprüngliche Notizbuch liegt direkt im App-Ordner und kann nicht endgültig gelöscht werden. Es bleibt im Papierkorb wiederherstellbar."
         }
     }
 }
@@ -248,7 +261,37 @@ public actor LibraryStore {
     public func createDocument(_ notebook: Notebook, parentID: UUID?) throws -> LibrarySnapshot {
         var next = try current()
         try checkParent(parentID, in: next)
-        guard !next.items.contains(where: { $0.id == notebook.id }) else { throw LibraryError.invalidIndex }
+        let title = try writePackage(notebook, in: next)
+        next.items.append(LibraryItem(id: notebook.id, title: title, parentID: parentID, source: .library))
+        try commit(next)
+        return next
+    }
+
+    /// Independent copy of an active notebook directly behind the original in
+    /// the same folder. The copy gets a new document identity and its own
+    /// package with the latest committed revision (pages, page trash, PDF/image
+    /// originals unchanged; no local history). Page/object IDs stay scoped to
+    /// the copy, like restore copies. A recovered (older) source revision is
+    /// refused instead of being duplicated silently.
+    public func duplicateDocument(_ id: UUID, title: String) throws -> (snapshot: LibrarySnapshot, id: UUID) {
+        var next = try current()
+        let index = try activeIndex(id, in: next)
+        let original = next.items[index]
+        guard !original.isFolder else { throw LibraryError.unavailable }
+        let source = RevisionStore(directory: try documentURL(id: id))
+        var copy = try source.load()
+        guard !source.recovered, copy.id == id else { throw LibraryError.unavailable }
+        copy.id = UUID()
+        copy.title = try Self.validTitle(title)
+        let name = try writePackage(copy, in: next)
+        next.items.insert(LibraryItem(id: copy.id, title: name, parentID: original.parentID, source: .library), at: index + 1)
+        try commit(next)
+        return (next, copy.id)
+    }
+
+    /// Writes and reads back a complete new package before any index entry exists.
+    private func writePackage(_ notebook: Notebook, in value: LibrarySnapshot) throws -> String {
+        guard !value.items.contains(where: { $0.id == notebook.id }) else { throw LibraryError.invalidIndex }
         let title = try Self.validTitle(notebook.title)
         let destination = root.appendingPathComponent("Library/Documents/\(notebook.id.uuidString)", isDirectory: true)
         guard !fm.fileExists(atPath: destination.path) else { throw LibraryError.invalidIndex }
@@ -257,9 +300,7 @@ public actor LibraryStore {
         try requireDirectory(parent)
         try RevisionStore(directory: destination).save(notebook)
         guard try RevisionStore(directory: destination).load() == notebook else { throw LibraryError.invalidIndex }
-        next.items.append(LibraryItem(id: notebook.id, title: title, parentID: parentID, source: .library))
-        try commit(next)
-        return next
+        return title
     }
 
     public func rename(_ id: UUID, title: String) throws -> LibrarySnapshot {
@@ -281,6 +322,33 @@ public actor LibraryStore {
         var item = next.items.remove(at: index)
         item.parentID = parentID
         next.items.append(item)
+        try commit(next); return next
+    }
+
+    /// Drag & drop placement in one commit: moves `id` into `parentID` (same
+    /// cycle/target rules as `move`) and puts it directly before the active
+    /// sibling `beforeID`, or behind all siblings when `beforeID` is nil.
+    public func place(_ id: UUID, in parentID: UUID?, before beforeID: UUID?) throws -> LibrarySnapshot {
+        var next = try current()
+        let index = try activeIndex(id, in: next)
+        try checkParent(parentID, in: next)
+        var ancestor = parentID
+        while let parent = ancestor {
+            guard parent != id else { throw LibraryError.invalidDestination }
+            ancestor = next.items.first(where: { $0.id == parent })?.parentID
+        }
+        if let beforeID {
+            guard beforeID != id, next.children(of: parentID).contains(where: { $0.id == beforeID }) else {
+                throw LibraryError.unavailable
+            }
+        }
+        var item = next.items.remove(at: index)
+        item.parentID = parentID
+        if let beforeID, let target = next.items.firstIndex(where: { $0.id == beforeID }) {
+            next.items.insert(item, at: target)
+        } else {
+            next.items.append(item)
+        }
         try commit(next); return next
     }
 
@@ -330,6 +398,108 @@ public actor LibraryStore {
         if let parent = next.items[index].parentID, next.isTrashed(parent) { next.items[index].parentID = nil }
         next.items[index].deletedAt = nil
         try commit(next); return next
+    }
+
+    /// Permanently removes trashed items. Only items already in the trash
+    /// (directly or through a trashed ancestor) are accepted; a trashed folder
+    /// takes all its descendants with it. Any other ID refuses the whole call.
+    /// Order: the new index is committed first (atomic, like every other
+    /// mutation) and then also written as the fallback copy, so neither index
+    /// can reference a removed package. Only afterwards are the package
+    /// directories renamed into `Library/Purging` and removed. A failure after
+    /// the index write leaves orphaned files, never a corrupt index.
+    public func purge(ids: [UUID]) throws -> LibraryPurgeResult {
+        let value = try current()
+        guard !ids.isEmpty else { return LibraryPurgeResult(snapshot: value, purgedIDs: [], leftoverDirectories: 0, retainedIDs: []) }
+        for id in ids {
+            guard value.items.contains(where: { $0.id == id }), value.isTrashed(id) else { throw LibraryError.unavailable }
+        }
+        let removing = Self.subtree(of: Set(ids), in: value)
+        guard !value.items.contains(where: { removing.contains($0.id) && $0.source == .legacyMain }) else {
+            throw LibraryError.notPurgeable
+        }
+        // Validate every package path before touching the index: no symbolic
+        // links, nothing outside the root. Missing packages need no removal.
+        var directories: [URL] = []
+        for item in value.items where removing.contains(item.id) && !item.isFolder {
+            let url = try packageURL(item)
+            guard fm.fileExists(atPath: url.path) || (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true else { continue }
+            try requireDirectory(url)
+            directories.append(url)
+        }
+        var next = value
+        next.items.removeAll { removing.contains($0.id) }
+        try commit(next)
+        let purged = value.items.filter { removing.contains($0.id) }.map(\.id)
+        // Second commit replaces index-previous.json, too. If it fails, keep the
+        // packages: the fallback index may still reference them.
+        do { try commit(next) } catch {
+            return LibraryPurgeResult(snapshot: next, purgedIDs: purged, leftoverDirectories: directories.count, retainedIDs: [])
+        }
+        var leftovers = 0
+        let staging = directory.appendingPathComponent("Purging", isDirectory: true)
+        cleanPurgingLeftovers(staging)
+        for url in directories {
+            do {
+                try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+                try requireDirectory(staging)
+                try requireDirectory(url)
+                let target = staging.appendingPathComponent("\(url.lastPathComponent)-\(UUID().uuidString)", isDirectory: true)
+                // Rename first: a half-removed package is never rediscovered.
+                try fm.moveItem(at: url, to: target)
+                try fm.removeItem(at: target)
+            } catch { leftovers += 1 }
+        }
+        cleanPurgingLeftovers(staging)
+        return LibraryPurgeResult(snapshot: next, purgedIDs: purged, leftoverDirectories: leftovers, retainedIDs: [])
+    }
+
+    /// Purges every trash root except subtrees that contain the legacy main
+    /// notebook; those stay in the trash and are reported as retained.
+    public func emptyTrash() throws -> LibraryPurgeResult {
+        let value = try current()
+        let roots = value.items.filter { $0.deletedAt != nil }.map(\.id)
+        var retained: [UUID] = []
+        var purgeable: [UUID] = []
+        for id in roots {
+            let tree = Self.subtree(of: [id], in: value)
+            if value.items.contains(where: { tree.contains($0.id) && $0.source == .legacyMain }) { retained.append(id) }
+            else { purgeable.append(id) }
+        }
+        // Roots nested below another purgeable root are covered by its subtree.
+        let result = try purge(ids: purgeable)
+        return LibraryPurgeResult(snapshot: result.snapshot, purgedIDs: result.purgedIDs,
+                                  leftoverDirectories: result.leftoverDirectories, retainedIDs: retained)
+    }
+
+    private static func subtree(of ids: Set<UUID>, in value: LibrarySnapshot) -> Set<UUID> {
+        let lookup = Dictionary(uniqueKeysWithValues: value.items.map { ($0.id, $0) })
+        var result = Set<UUID>()
+        for item in value.items {
+            var current: LibraryItem? = item
+            var visited = Set<UUID>()
+            while let candidate = current, visited.insert(candidate.id).inserted {
+                if ids.contains(candidate.id) { result.insert(item.id); break }
+                current = candidate.parentID.flatMap { lookup[$0] }
+            }
+        }
+        return result
+    }
+
+    private func packageURL(_ item: LibraryItem) throws -> URL {
+        switch item.source {
+        case .restored: root.appendingPathComponent("Restores/\(item.id.uuidString)", isDirectory: true)
+        case .library: root.appendingPathComponent("Library/Documents/\(item.id.uuidString)", isDirectory: true)
+        case .legacyMain, nil: throw LibraryError.notPurgeable
+        }
+    }
+
+    /// Removes only direct entries of our own staging directory; symbolic links
+    /// are unlinked, never followed.
+    private func cleanPurgingLeftovers(_ staging: URL) {
+        guard (try? requireDirectory(staging)) != nil,
+              let entries = try? fm.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil, options: []) else { return }
+        for entry in entries { try? fm.removeItem(at: entry) }
     }
 
     private var currentSnapshot: LibrarySnapshot { snapshot ?? LibrarySnapshot() }

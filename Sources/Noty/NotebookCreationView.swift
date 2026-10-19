@@ -44,50 +44,69 @@ struct NotebookCoverPreview: View {
     }
 }
 
-struct NotebookCreationView: View {
+/// Cover and paper pickers, shared by notebook creation and Settings › Papier-Standards.
+struct NotebookAppearanceEditor: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var appearance: NotebookAppearance
+    var paperHeading = "Papierstandard für dieses Notizbuch"
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if appearance.coverEnabled {
+                Text("Umschlagfarbe").font(.headline)
+                HStack(spacing: 16) {
+                    ForEach(NotebookCover.allCases, id: \.self) { cover in
+                        Button { appearance.cover = cover } label: {
+                            Circle().fill(cover.color).frame(width: 38, height: 38)
+                                .overlay { if appearance.cover == cover { Image(systemName: "checkmark").foregroundStyle(.white).bold() } }
+                        }.buttonStyle(NotyPressStyle())
+                            .accessibilityLabel("Umschlag \(cover.title)")
+                            .accessibilityAddTraits(appearance.cover == cover ? .isSelected : [])
+                    }
+                }
+            }
+            Text(paperHeading).font(.headline)
+            Picker("Größe", selection: $appearance.format) {
+                ForEach(PaperFormat.allCases, id: \.self) { Text($0.title).tag($0) }
+            }.pickerStyle(.segmented)
+            Toggle("Querformat", isOn: $appearance.landscape)
+            Picker("Papierfarbe", selection: $appearance.color) { Text("Weiß").tag(PaperColor.white); Text("Dunkel").tag(PaperColor.dark) }.pickerStyle(.segmented)
+            Picker("Vorlage", selection: $appearance.paper) {
+                Text("Blanko").tag(PaperStyle.blank); Text("Liniert").tag(PaperStyle.lined); Text("Kariert").tag(PaperStyle.grid)
+            }.pickerStyle(.segmented)
+            Text("Neue Papierseiten übernehmen diese Vorgaben. Importierte PDFs behalten ihr Originalformat.").font(.caption).foregroundStyle(.secondary)
+        }
+        .animation(NotyMotion.panel(reduceMotion), value: appearance.coverEnabled)
+        .animation(NotyMotion.highlight(reduceMotion), value: appearance.cover)
+        .animation(NotyMotion.highlight(reduceMotion), value: appearance.color)
+    }
+}
+
+struct NotebookCreationView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
-    @State private var appearance = NotebookAppearance()
+    @State private var appearance: NotebookAppearance
     @State private var creating = false
     let onCreate: (String, NotebookAppearance) async -> Bool
+    /// Starts from the area's paper default (Settings › Papier-Standards), if any.
+    init(defaultAppearance: NotebookAppearance? = nil, onCreate: @escaping (String, NotebookAppearance) async -> Bool) {
+        _appearance = State(initialValue: defaultAppearance ?? NotebookAppearance())
+        self.onCreate = onCreate
+    }
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     HStack(alignment: .top, spacing: 24) {
                         NotebookCoverPreview(appearance: appearance).aspectRatio(0.71, contentMode: .fit).frame(maxWidth: 170)
+                            .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 18) {
                             TextField("Titel des Notizbuchs", text: $title).font(.title3).textFieldStyle(.roundedBorder)
                             Toggle("Umschlag", isOn: $appearance.coverEnabled)
                             Text("Der Umschlag erscheint in der Bibliothek und zählt nicht als Seite.").font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                    if appearance.coverEnabled {
-                        Text("Umschlagfarbe").font(.headline)
-                        HStack(spacing: 16) {
-                            ForEach(NotebookCover.allCases, id: \.self) { cover in
-                                Button { appearance.cover = cover } label: {
-                                    Circle().fill(cover.color).frame(width: 38, height: 38)
-                                        .overlay { if appearance.cover == cover { Image(systemName: "checkmark").foregroundStyle(.white).bold() } }
-                                }.buttonStyle(NotyPressStyle()).accessibilityLabel(cover.title)
-                            }
-                        }
-                    }
-                    Text("Papierstandard für dieses Notizbuch").font(.headline)
-                    Picker("Größe", selection: $appearance.format) {
-                        ForEach(PaperFormat.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }.pickerStyle(.segmented)
-                    Toggle("Querformat", isOn: $appearance.landscape)
-                    Picker("Papierfarbe", selection: $appearance.color) { Text("Weiß").tag(PaperColor.white); Text("Dunkel").tag(PaperColor.dark) }.pickerStyle(.segmented)
-                    Picker("Vorlage", selection: $appearance.paper) {
-                        Text("Blanko").tag(PaperStyle.blank); Text("Liniert").tag(PaperStyle.lined); Text("Kariert").tag(PaperStyle.grid)
-                    }.pickerStyle(.segmented)
-                    Text("Neue Papierseiten übernehmen diese Vorgaben. Importierte PDFs behalten ihr Originalformat.").font(.caption).foregroundStyle(.secondary)
+                    NotebookAppearanceEditor(appearance: $appearance)
                 }.padding(24)
-                    .animation(NotyMotion.panel(reduceMotion), value: appearance.coverEnabled)
-                    .animation(NotyMotion.highlight(reduceMotion), value: appearance.cover)
-                    .animation(NotyMotion.highlight(reduceMotion), value: appearance.color)
             }
             .navigationTitle("Neues Notizbuch").navigationBarTitleDisplayMode(.inline)
             .toolbar {

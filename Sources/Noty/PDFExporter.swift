@@ -40,8 +40,8 @@ enum PDFExporter {
             if let pageIDs, !pageIDs.contains(page.id) { textLayouts.append([]); continue }
             var boxes: [TextObjectLayout] = []
             let bounds = layouts[index].canonicalInkBounds
-            for box in page.effectiveTextBoxes {
-                let layout = TextObjectLayout(box)
+            for box in page.resolvedTextBoxes {
+                let layout = TextObjectLayout(box, on: page)
                 if layout.usedHeight > box.height + 0.5 || !bounds.insetBy(dx: -0.01, dy: -0.01).contains(box.rect.cgRect) {
                     throw ExportError.textOverflow(index + 1)
                 }
@@ -60,7 +60,7 @@ enum PDFExporter {
                 output.beginPage(withBounds: bounds, pageInfo: [:])
                 let context = output.cgContext
                 drawPaper(style: page.margins?.style ?? page.paper ?? .blank, bounds: bounds,
-                          color: page.margins?.color ?? page.paperColor ?? .white)
+                          color: page.margins?.color ?? page.paperColor ?? .white, coordinateScale: page.writingCoordinateScale)
                 if let sourcePage = sourcePages[index] {
                     UIColor.white.setFill(); context.fill(layout.sourceFrame.cgRect)
                     context.saveGState()
@@ -77,26 +77,34 @@ enum PDFExporter {
                     }
                 }
 
+                ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)
                 // Explicitly compose the drawing layer; UIView overlays do not export themselves.
                 if !page.drawing.isEmpty {
                     // Bound the temporary raster for unusually large PDF pages.
                     let scale = min(2, 4096 / max(bounds.width, bounds.height))
-                    drawings[index].image(from: layout.canonicalInkBounds, scale: scale).draw(in: bounds)
+                    // Stored ink colours as written (light style), never adapted to the dark app UI.
+                    PDFExporter.inkImage(drawings[index], from: layout.canonicalInkBounds, scale: scale).draw(in: bounds)
                 }
-                for (box, textLayout) in zip(page.effectiveTextBoxes, textLayouts[index]) {
+                for (box, textLayout) in zip(page.resolvedTextBoxes, textLayouts[index]) {
                     let origin = CGPoint(x: box.x + layout.contentOrigin.x, y: box.y + layout.contentOrigin.y)
                     textLayout.draw(at: origin)
                     for (url, rect) in textLayout.links(at: origin) { output.setURL(url, for: rect) }
                 }
-                ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)
             }
         }
         if let imageError { throw imageError }
         return data
     }
 
-    static func testPDF() -> PDFDocument {
-        paperPDF(style: .legacyTest, size: .a4)
+    /// PencilKit adapts ink to the current trait collection: under the app's
+    /// dark UI black ink would render white. The editor canvas is light, so
+    /// previews and exports render light as well (what you see is exported).
+    static func inkImage(_ drawing: PKDrawing, from rect: CGRect, scale: CGFloat) -> UIImage {
+        var image = UIImage()
+        UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+            image = drawing.image(from: rect, scale: scale)
+        }
+        return image
     }
 
     static func paperPDF(style: PaperStyle, size: PageSize, color: PaperColor = .white) -> PDFDocument {
@@ -107,21 +115,22 @@ enum PDFExporter {
         return PDFDocument(data: data)!
     }
 
-    static func drawPaper(style: PaperStyle, bounds: CGRect, color: PaperColor = .white) {
-        (color == .dark ? UIColor(white: 0.12, alpha: 1) : .white).setFill(); UIRectFill(bounds)
+    static func drawPaper(style: PaperStyle, bounds: CGRect, color: PaperColor = .white, coordinateScale: CGFloat = 1) {
+        (color == .dark ? UIColor.black : .white).setFill(); UIRectFill(bounds)
         guard style != .blank else { return }
         if style == .legacyTest { drawTestPaper(); return }
         let path = UIBezierPath()
-        let spacing: CGFloat = style == .lined ? 24 : 16
-        for y in stride(from: CGFloat(40), through: bounds.height - 40, by: spacing) {
-            path.move(to: CGPoint(x: 32, y: y)); path.addLine(to: CGPoint(x: bounds.width - 32, y: y))
+        let spacing: CGFloat = (style == .lined ? PaperRuling.spacing : 16) * coordinateScale
+        let bottomInset: CGFloat = (style == .lined ? 16 : 40) * coordinateScale
+        for y in stride(from: CGFloat(PaperRuling.firstBaseline) * coordinateScale, through: bounds.height - bottomInset, by: spacing) {
+            path.move(to: CGPoint(x: 32 * coordinateScale, y: y)); path.addLine(to: CGPoint(x: bounds.width - 32 * coordinateScale, y: y))
         }
         if style == .grid {
-            for x in stride(from: CGFloat(32), through: bounds.width - 32, by: spacing) {
-                path.move(to: CGPoint(x: x, y: 40)); path.addLine(to: CGPoint(x: x, y: bounds.height - 40))
+            for x in stride(from: CGFloat(32) * coordinateScale, through: bounds.width - 32 * coordinateScale, by: spacing) {
+                path.move(to: CGPoint(x: x, y: 40 * coordinateScale)); path.addLine(to: CGPoint(x: x, y: bounds.height - 40 * coordinateScale))
             }
         }
-        UIColor(white: color == .dark ? 0.3 : 0.8, alpha: 1).setStroke(); path.lineWidth = 0.5; path.stroke()
+        UIColor(white: color == .dark ? 0.3 : 0.8, alpha: 1).setStroke(); path.lineWidth = 0.5 * coordinateScale; path.stroke()
     }
 
     private static func drawTestPaper() {

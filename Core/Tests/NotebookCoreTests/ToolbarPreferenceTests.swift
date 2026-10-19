@@ -5,12 +5,12 @@ import XCTest
 final class ToolbarPreferenceTests: XCTestCase {
     func testLegacyOrderAddsImageWithoutLosingCustomOrderOrSettings() throws {
         var old = ToolbarPreferences(); old.formatVersion = 1
-        old.order = WritingTool.allCases.filter { ![.image, .shape, .selection].contains($0) }.reversed()
+        old.order = WritingTool.format7Tools.filter { ![.image, .shape, .selection].contains($0) }.reversed()
         old.dock = .right; old.penWidth = 7
         let migrated = try ToolbarPreferences.decode(JSONEncoder().encode(old))
-        XCTAssertEqual(migrated.order.filter { ![.image, .shape, .selection].contains($0) }, old.order)
+        XCTAssertEqual(migrated.order.filter { ![.image, .shape, .selection, .pencil, .laser].contains($0) }, old.order)
         XCTAssertEqual(migrated.dock, .right); XCTAssertEqual(migrated.penWidth, 7)
-        XCTAssertEqual(migrated.formatVersion, 7); try migrated.validate()
+        XCTAssertEqual(migrated.formatVersion, 8); try migrated.validate()
         old.order.append(.pen)
         XCTAssertThrowsError(try ToolbarPreferences.decode(JSONEncoder().encode(old)))
     }

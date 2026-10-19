@@ -19,7 +19,7 @@ public struct Page: Codable, Equatable, Identifiable, Sendable {
 
 /// One worksheet; each PDF page has its own PencilKit drawing and fixed text box.
 public struct Notebook: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 8
+    public static let currentSchemaVersion = 9
     // Existing callers retain the legacy representation until a structural edit.
     public var schemaVersion: Int = 2
     public var id: UUID = UUID()
@@ -84,6 +84,7 @@ public struct Notebook: Codable, Equatable, Sendable {
                 for box in boxes {
                     if box.usesTextFlowFormat { guard schemaVersion >= 8 else { throw StorageError.invalidDocument } }
                     if box.usesRichText { guard schemaVersion >= 7 else { throw StorageError.invalidDocument } }
+                    if box.usesColorFormat { guard schemaVersion >= 9 else { throw StorageError.invalidDocument } }
                     try box.validate()
                 }
             }

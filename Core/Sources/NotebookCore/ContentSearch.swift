@@ -1,6 +1,6 @@
 import Foundation
 
-public enum SearchContentKind: String, Codable, Sendable { case text, pdf, image, handwriting }
+public enum SearchContentKind: String, Codable, Sendable { case text, pdf, image, handwriting, task }
 public struct ContentSearchHit: Identifiable, Sendable {
     public let id: UUID
     public let documentID: UUID

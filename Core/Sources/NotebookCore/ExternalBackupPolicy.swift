@@ -7,6 +7,8 @@ public struct ExternalBackupPolicy: Codable, Equatable, Sendable {
     public var target: ExternalBackupTarget = .disabled
     public var keep = 7
     public var folderBookmark: Data?
+    /// Display name of the chosen folder; optional for policies stored by older builds.
+    public var folderName: String?
     public var endpoint = ""
     public var lastAttempt: Date?
     public var lastSuccess: Date?

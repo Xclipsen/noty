@@ -7,7 +7,15 @@ import struct
 import zlib
 from pathlib import Path
 from uuid import UUID
-from notebook_format import validate_notebook
+from notebook_format import appearance, validate_notebook
+
+
+def number(value, low, high):
+    return type(value) in (int, float) and low <= value <= high
+
+
+def color(value):
+    return type(value) is dict and all(number(value.get(key), 0, 1) for key in ("red", "green", "blue", "alpha"))
 
 
 def verify(path):
@@ -34,19 +42,39 @@ def verify(path):
     assert entries[0]["kind"] == "index" and entries[0].get("id") is None
     assert entries[1]["kind"] == "toolbar" and entries[1].get("id") is None
     index, toolbar = chunks[:2]
-    assert index["formatVersion"] == 1 and toolbar["formatVersion"] in (1, 2, 3, 4, 5, 6, 7)
+    assert index["formatVersion"] == 1 and toolbar["formatVersion"] in (1, 2, 3, 4, 5, 6, 7, 8)
     tools = {"pen", "marker", "strokeEraser", "precisionEraser", "inkSelection", "text", "read"}
     if toolbar["formatVersion"] >= 2:
         tools.add("image")
     if toolbar["formatVersion"] >= 3:
         tools.update(("shape", "selection"))
+    if toolbar["formatVersion"] >= 8:
+        tools.update(("pencil", "laser"))
     assert len(toolbar["order"]) == len(tools) and set(toolbar["order"]) == tools
     assert toolbar["dock"] in (("top", "bottom", "left", "right", "floating") if toolbar["formatVersion"] >= 4 else ("top", "left", "right", "floating"))
     for key in ("autoPen", "pencilPreview", "paging", "eraserPrecision"):
         assert toolbar.get(key) is None or (toolbar["formatVersion"] >= 4 and type(toolbar[key]) is bool)
     assert toolbar.get("floatingAxis") is None or (toolbar["formatVersion"] >= 5 and toolbar["floatingAxis"] in ("horizontal", "vertical"))
     assert toolbar.get("dockOnly") is None or (toolbar["formatVersion"] >= 6 and type(toolbar["dockOnly"]) is bool)
+    for key in ("markerStraight", "scribbleErase"):
+        assert toolbar.get(key) is None or type(toolbar[key]) is bool
+    assert toolbar.get("defaultAppearance") is None or type(toolbar["defaultAppearance"]) is dict
+    appearance(toolbar.get("defaultAppearance"))
     assert toolbar.get("normalizePageWidths") is None or (toolbar["formatVersion"] >= 7 and type(toolbar["normalizePageWidths"]) is bool)
+    format8 = toolbar["formatVersion"] >= 8
+    for key in ("pencilColor", "laserColor"):
+        assert toolbar.get(key) is None or (format8 and color(toolbar[key]))
+    assert toolbar.get("pencilWidth") is None or (format8 and number(toolbar["pencilWidth"], 1, 16))
+    assert toolbar.get("autoPencil") is None or (format8 and type(toolbar["autoPencil"]) is bool)
+    assert toolbar.get("laserMode") is None or (format8 and toolbar["laserMode"] in ("dot", "trail"))
+    assert toolbar.get("laserFade") is None or (format8 and toolbar["laserFade"] in ("short", "medium", "long", "untilLift"))
+    # Build 45: optional highlighter tip (format 8, absent = round).
+    assert toolbar.get("markerTip") is None or (format8 and toolbar["markerTip"] in ("round", "chisel"))
+    widths = {"pen": (1, 12), "marker": (4, 40), "pencil": (1, 16)} if format8 else {"pen": (1, 12), "marker": (4, 40)}
+    assert len(toolbar["presets"]) <= 12
+    for preset in toolbar["presets"]:
+        assert preset["tool"] in widths and number(preset["width"], *widths[preset["tool"]]) and color(preset["color"])
+        assert preset.get("markerTip") is None or (format8 and preset["tool"] == "marker" and preset["markerTip"] in ("round", "chisel"))
     items = index["items"]
     assert len(items) <= 10_000 and len({i["id"] for i in items}) == len(items)
     lookup = {i["id"]: i for i in items}

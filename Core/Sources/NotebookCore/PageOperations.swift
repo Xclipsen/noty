@@ -88,7 +88,7 @@ public enum PageOperationError: Error, LocalizedError {
 extension Notebook {
     /// A whole import shares percentages, not the reference page's point values.
     /// The displayed crop dimensions include PDF rotation; legacy ink stays A4.
-    public func marginsByPage(_ margins: PageMargins, relativeTo id: UUID, wholeImport: Bool) throws -> [UUID: PageMargins] {
+    public func marginsByPage(_ margins: PageMargins, relativeTo id: UUID, wholeImport: Bool, standardPageUnits: Bool = false) throws -> [UUID: PageMargins] {
         try margins.validate()
         let document = try preparedForPageEditing()
         guard let reference = document.pages.first(where: { $0.id == id }),
@@ -96,7 +96,7 @@ extension Notebook {
         let base = reference.geometry?.displaySize ?? .a4
         let targets = document.pages.filter { wholeImport ? $0.pdfReference?.sourceID == sourceID : $0.id == id }
         return try Dictionary(uniqueKeysWithValues: targets.map { page in
-            let value = page.id == id ? margins : try margins.scaled(from: base, to: page.geometry?.displaySize ?? .a4)
+            let value = page.id == id || standardPageUnits ? margins : try margins.scaled(from: base, to: page.geometry?.displaySize ?? .a4)
             return (page.id, value)
         })
     }

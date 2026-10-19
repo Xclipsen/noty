@@ -10,12 +10,14 @@ extension WritingTool {
         case .marker: "Marker"
         case .strokeEraser: "Ganzer Strich"
         case .precisionEraser: "Präzisionsradierer"
-        case .inkSelection: "Handschrift auswählen"
+        case .inkSelection: "Lasso"
         case .text: "Text"
         case .image: "Bilder"
         case .shape: "Formen"
         case .selection: "Gemischtes Lasso"
         case .read: "PDF lesen"
+        case .pencil: "Bleistift"
+        case .laser: "Laserpointer"
         }
     }
     var symbol: String {
@@ -30,6 +32,8 @@ extension WritingTool {
         case .shape: "square.on.circle"
         case .selection: "lasso.and.sparkles"
         case .read: "hand.draw"
+        case .pencil: "pencil"
+        case .laser: "cursorarrow.rays"
         }
     }
 }
@@ -48,7 +52,10 @@ struct EditorToolbar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var selectionSpace
     private var vertical: Bool { axis == .vertical }
-    private var mainTools: [WritingTool] { preferences.order.filter { ![.precisionEraser, .inkSelection].contains($0) } }
+    /// First level: drawing/writing tools; the laser pointer and „PDF lesen“
+    /// sit on the second level with the utilities (derived, order unchanged).
+    private var primaryTools: [WritingTool] { preferences.primaryTools }
+    private var secondaryTools: [WritingTool] { preferences.secondaryTools }
 
     var body: some View {
         let stack = vertical ? AnyLayout(VStackLayout(spacing: ToolbarLayout.spacing)) : AnyLayout(HStackLayout(spacing: ToolbarLayout.spacing))
@@ -64,6 +71,13 @@ struct EditorToolbar: View {
                     .font(.system(size: 20, weight: .regular)).foregroundStyle(.white.opacity(0.88))
                     .rotationEffect(.degrees(more ? 180 : 0))
                     .frame(width: ToolbarLayout.cell, height: ToolbarLayout.cell).contentShape(Rectangle())
+                    // The active tool lives on the other level (e.g. laser pointer).
+                    .overlay(alignment: vertical ? .bottom : .trailing) {
+                        if activeOnOtherLevel {
+                            Circle().fill(Color(red: 0.45, green: 0.7, blue: 1)).frame(width: 5, height: 5)
+                                .padding(vertical ? .bottom : .trailing, 7).allowsHitTesting(false)
+                        }
+                    }
             }.buttonStyle(NotyToolStyle())
                 .accessibilityLabel(more ? "Hauptwerkzeuge" : "Weitere Werkzeuge")
         }
@@ -71,31 +85,36 @@ struct EditorToolbar: View {
         .animation(NotyMotion.palette(reduceMotion), value: more)
         .animation(NotyMotion.highlight(reduceMotion), value: tool)
     }
+    private var activeOnOtherLevel: Bool {
+        let onSecond = secondaryTools.contains(tool)
+        return more ? primaryTools.contains(tool) || tool == .precisionEraser : onSecond
+    }
     private var levelTransition: AnyTransition {
         reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.94))
     }
     @ViewBuilder private var buttons: some View {
         if more {
+            ForEach(secondaryTools) { item in toolButton(item) }
             utility(ruler ? "Lineal ausblenden" : "Lineal einblenden", symbol: "ruler", selected: ruler) { ruler.toggle() }
-            toolButton(.inkSelection)
+                .overlay(alignment: vertical ? .top : .leading) { if !secondaryTools.isEmpty { separator } }
             utility("Seitenbreite einpassen", symbol: "arrow.up.left.and.arrow.down.right", action: onFit)
             utility("Inhalte suchen", symbol: "magnifyingglass", action: onSearch)
             if let onSecondView { utility("Zweite Ansicht", symbol: "rectangle.split.2x1", action: onSecondView) }
             utility("Werkzeugleiste anpassen", symbol: "slider.horizontal.3", action: onCustomize)
                 .overlay(alignment: vertical ? .top : .leading) { separator }
         } else {
-            ForEach(mainTools) { item in
-                toolButton(item).overlay(alignment: vertical ? .top : .leading) {
-                    if item == .read { separator }
-                }
-            }
+            ForEach(primaryTools) { item in toolButton(item) }
             ForEach(preferences.presets) { preset in
                 Button {
-                    if preset.tool == .pen { preferences.penColor = preset.color; preferences.penWidth = preset.width; preferences.autoPen = false }
-                    else { preferences.markerColor = preset.color; preferences.markerWidth = preset.width }
+                    switch preset.tool {
+                    case .pen, .pencil: preferences.setInkColor(preset.color, for: preset.tool); preferences.setInkWidth(preset.width, for: preset.tool)
+                    default:
+                        preferences.markerColor = preset.color; preferences.markerWidth = preset.width
+                        if let tip = preset.markerTip { preferences.markerTip = tip }
+                    }
                     tool = preset.tool; settings = false
                 } label: {
-                    ToolbarGlyph(tool: preset.tool).frame(width: ToolbarLayout.cell, height: ToolbarLayout.cell).contentShape(Rectangle())
+                    ToolbarGlyph(tool: preset.tool, markerTip: preset.markerTip ?? preferences.effectiveMarkerTip).frame(width: ToolbarLayout.cell, height: ToolbarLayout.cell).contentShape(Rectangle())
                         .overlay(alignment: .bottom) {
                             Circle().fill(preset.color.color).frame(width: 7, height: 7)
                                 .overlay(Circle().stroke(.white.opacity(0.8), lineWidth: 1)).offset(y: -1)
@@ -104,17 +123,22 @@ struct EditorToolbar: View {
             }
         }
     }
+    /// Selection path shared with the Pencil squeeze palette: the tool actually
+    /// chosen (eraser preference) and whether its options open.
+    static func choice(_ item: WritingTool, preferences: ToolbarPreferences) -> (tool: WritingTool, options: Bool) {
+        (item == .strokeEraser && preferences.eraserPrecision == true ? .precisionEraser : item,
+         item == .image || item == .shape || item == .inkSelection)
+    }
     private func toolButton(_ item: WritingTool) -> some View {
         let selected = tool == item || (item == .strokeEraser && tool == .precisionEraser)
         return Button {
             if selected { if item == .text { settings = false } else { settings.toggle() } }
             else {
-                settings = false
-                tool = item == .strokeEraser && preferences.eraserPrecision == true ? .precisionEraser : item
-                if item == .image { settings = true }
+                let choice = Self.choice(item, preferences: preferences)
+                tool = choice.tool; settings = choice.options
             }
         } label: {
-            ToolbarGlyph(tool: item, selected: selected)
+            ToolbarGlyph(tool: item, selected: selected, markerTip: preferences.effectiveMarkerTip)
                 .frame(width: ToolbarLayout.cell, height: ToolbarLayout.cell).contentShape(Rectangle())
                 .background {
                     if selected {
@@ -150,54 +174,73 @@ struct ToolbarCustomizationView: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
-            List {
-                if !settings.status.isEmpty {
-                    Section {
-                        Text(settings.status)
-                        Button("Erneut speichern") { settings.save() }.disabled(!settings.writable)
-                    }
-                }
-                Section("Position und Eingabe") {
-                    Picker("Werkzeugleiste", selection: Binding(get: { settings.preferences.effectiveDock }, set: { settings.preferences.dock = $0 })) {
-                        Text("Oben").tag(ToolbarDock.top)
-                        Text("Unten").tag(ToolbarDock.bottom)
-                        Text("Links").tag(ToolbarDock.left)
-                        Text("Rechts").tag(ToolbarDock.right)
-                        if settings.preferences.dockOnly == false { Text("Schwebend").tag(ToolbarDock.floating) }
-                    }
-                    Toggle("Nur an Andockpunkten", isOn: Binding(get: { settings.preferences.dockOnly ?? true }, set: {
-                        settings.preferences.dockOnly = $0
-                        if $0 && settings.preferences.dock == .floating { settings.preferences.dock = .top }
-                    }))
-                    if settings.preferences.dockOnly == false {
-                        Picker("Schwebende Ausrichtung", selection: Binding(get: { settings.preferences.floatingAxis ?? .horizontal }, set: {
-                            settings.preferences.floatingAxis = $0; settings.preferences.dock = .floating
-                        })) {
-                            Text("Horizontal").tag(ToolbarAxis.horizontal)
-                            Text("Vertikal").tag(ToolbarAxis.vertical)
-                        }.pickerStyle(.segmented)
-                    }
-                    Text("Standard: nur die vier Andockpunkte. Für freies Verschieben ausschalten; dann wechselt ein Doppeltipp auf den Griff die Ausrichtung.").font(.caption).foregroundStyle(.secondary)
-                    Toggle("Pencil-Vorschau", isOn: Binding(get: { settings.preferences.pencilPreview ?? true }, set: { settings.preferences.pencilPreview = $0 }))
-                    Toggle("Auch mit dem Finger zeichnen", isOn: $settings.preferences.fingerDrawing)
-                    Text("Standard: Pencil schreibt, Finger navigiert. Bei Fingermalen mit zwei Fingern navigieren.").font(.caption).foregroundStyle(.secondary)
-                }
-                Section("Werkzeuge umordnen") {
-                    ForEach(settings.preferences.order) { tool in Label(tool.title, systemImage: tool.symbol) }
-                        .onMove { offsets, target in settings.preferences.order.move(fromOffsets: offsets, toOffset: target) }
-                }
-                Section("Lieblingsstifte") {
-                    if settings.preferences.presets.isEmpty { Text("Stift erneut antippen und als Lieblingsstift speichern.").foregroundStyle(.secondary) }
-                    ForEach(settings.preferences.presets) { preset in
-                        Label("\(preset.tool.title) · \(preset.width.formatted())", systemImage: preset.tool.symbol).foregroundStyle(preset.color.color)
-                    }.onDelete { settings.preferences.presets.remove(atOffsets: $0) }
-                        .onMove { settings.preferences.presets.move(fromOffsets: $0, toOffset: $1) }
+            ToolbarCustomizationList(settings: settings)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
+        }
+    }
+}
+
+/// Toolbar sections shared by the editor sheet and Settings › Stift & Werkzeuge.
+struct ToolbarCustomizationList: View {
+    @ObservedObject var settings: ToolbarSettingsModel
+    var body: some View {
+        List {
+            if !settings.status.isEmpty {
+                Section {
+                    Text(settings.status)
+                    Button("Erneut speichern") { settings.save() }.disabled(!settings.writable)
                 }
             }
-            .environment(\.editMode, .constant(.active))
-            .disabled(!settings.writable)
-            .navigationTitle("Werkzeugleiste")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
+            Section("Position und Eingabe") {
+                Picker("Werkzeugleiste", selection: Binding(get: { settings.preferences.effectiveDock }, set: { settings.preferences.dock = $0 })) {
+                    Text("Oben").tag(ToolbarDock.top)
+                    Text("Unten").tag(ToolbarDock.bottom)
+                    Text("Links").tag(ToolbarDock.left)
+                    Text("Rechts").tag(ToolbarDock.right)
+                    if settings.preferences.dockOnly == false { Text("Schwebend").tag(ToolbarDock.floating) }
+                }
+                Toggle("Nur an Andockpunkten", isOn: Binding(get: { settings.preferences.dockOnly ?? true }, set: {
+                    settings.preferences.dockOnly = $0
+                    if $0 && settings.preferences.dock == .floating { settings.preferences.dock = .top }
+                }))
+                if settings.preferences.dockOnly == false {
+                    Picker("Schwebende Ausrichtung", selection: Binding(get: { settings.preferences.floatingAxis ?? .horizontal }, set: {
+                        settings.preferences.floatingAxis = $0; settings.preferences.dock = .floating
+                    })) {
+                        Text("Horizontal").tag(ToolbarAxis.horizontal)
+                        Text("Vertikal").tag(ToolbarAxis.vertical)
+                    }.pickerStyle(.segmented)
+                }
+                Text("Standard: nur die vier Andockpunkte. Für freies Verschieben ausschalten; dann wechselt ein Doppeltipp auf den Griff die Ausrichtung.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Auch mit dem Finger zeichnen", isOn: $settings.preferences.fingerDrawing)
+                Text("Standard: Pencil schreibt, Finger navigiert. Bei Fingermalen mit zwei Fingern navigieren.").font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Werkzeuge umordnen") {
+                ForEach(settings.preferences.primaryTools) { tool in Label(tool.title, systemImage: tool.symbol) }
+                    .onMove { offsets, target in
+                        var visible = settings.preferences.primaryTools
+                        visible.move(fromOffsets: offsets, toOffset: target)
+                        settings.preferences.reorderTools(visible)
+                    }
+            }
+            Section {
+                ForEach(settings.preferences.secondaryTools) { tool in Label(tool.title, systemImage: tool.symbol) }
+                    .onMove { offsets, target in
+                        var visible = settings.preferences.secondaryTools
+                        visible.move(fromOffsets: offsets, toOffset: target)
+                        settings.preferences.reorderTools(visible)
+                    }
+            } header: { Text("Zweite Ebene") } footer: { Text("Über den Pfeil am Ende der Werkzeugleiste, neben Lineal und Suche.") }
+            Section("Lieblingsstifte") {
+                if settings.preferences.presets.isEmpty { Text("Stift erneut antippen und als Lieblingsstift speichern.").foregroundStyle(.secondary) }
+                ForEach(settings.preferences.presets) { preset in
+                    Label("\(preset.tool.title) · \(preset.width.formatted())", systemImage: preset.tool.symbol).foregroundStyle(preset.color.color)
+                }.onDelete { settings.preferences.presets.remove(atOffsets: $0) }
+                    .onMove { settings.preferences.presets.move(fromOffsets: $0, toOffset: $1) }
+            }
         }
+        .environment(\.editMode, .constant(.active))
+        .disabled(!settings.writable)
+        .navigationTitle("Werkzeugleiste")
     }
 }

@@ -185,4 +185,58 @@ final class LibraryStoreTests: XCTestCase {
         do { _ = try await store.createFolder(title: "Fach\nNeu", parentID: nil); XCTFail("multiline") }
         catch LibraryError.invalidTitle { }
     }
+
+    func testDuplicateCreatesIndependentPackageBehindOriginalAndLeavesSourceBytes() async throws {
+        let root = root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = LibraryStore(root: root); _ = try await store.load()
+        let folder = try await store.createFolder(title: "Fach", parentID: nil).items[0].id
+        var book = Notebook(); book.title = "Heft"; book.pages[0].drawing = Data([4, 5, 6]); book.pages[0].text = "Inhalt"
+        _ = try await store.createDocument(book, parentID: folder)
+        let after = try await store.createFolder(title: "Danach", parentID: folder).items[2].id
+        _ = try await store.rename(book.id, title: "Umbenannt")
+        let sourceURL = try await store.documentURL(id: book.id)
+        let before = try Data(contentsOf: sourceURL.appendingPathComponent("manifest.json"))
+        let result = try await store.duplicateDocument(book.id, title: "Umbenannt Kopie")
+        XCTAssertNotEqual(result.id, book.id)
+        XCTAssertEqual(result.snapshot.children(of: folder).map(\.id), [book.id, result.id, after])
+        let item = try XCTUnwrap(result.snapshot.items.first { $0.id == result.id })
+        XCTAssertEqual(item.source, .library); XCTAssertFalse(item.favorite); XCTAssertNil(item.lastOpened)
+        let copyURL = try await store.documentURL(id: result.id)
+        XCTAssertNotEqual(copyURL.standardizedFileURL.path, sourceURL.standardizedFileURL.path)
+        let copy = try RevisionStore(directory: copyURL).load()
+        var expected = book; expected.id = result.id; expected.title = "Umbenannt Kopie"
+        XCTAssertEqual(copy, expected)
+        XCTAssertEqual(try Data(contentsOf: sourceURL.appendingPathComponent("manifest.json")), before)
+        XCTAssertEqual(try RevisionStore(directory: sourceURL).load(), book)
+        do { _ = try await store.duplicateDocument(folder, title: "Ordner Kopie"); XCTFail("folder duplicated") }
+        catch LibraryError.unavailable { }
+        _ = try await store.trash(book.id)
+        do { _ = try await store.duplicateDocument(book.id, title: "X"); XCTFail("trashed duplicated") }
+        catch LibraryError.unavailable { }
+        let current = try await store.load()
+        let fresh = try await LibraryStore(root: root).load()
+        XCTAssertEqual(fresh.snapshot, current.snapshot)
+    }
+
+    func testPlaceMovesAndPositionsInOneCommitAndRejectsCyclesAndForeignAnchors() async throws {
+        let root = root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = LibraryStore(root: root); _ = try await store.load()
+        let a = try await store.createFolder(title: "A", parentID: nil).items[0].id
+        let b = try await store.createFolder(title: "B", parentID: nil).items[1].id
+        let c = try await store.createFolder(title: "C", parentID: nil).items[2].id
+        let inner = try await store.createFolder(title: "Innen", parentID: a).items[3].id
+        var moved = try await store.place(c, in: nil, before: a)
+        XCTAssertEqual(moved.children(of: nil).map(\.id), [c, a, b])
+        moved = try await store.place(b, in: a, before: inner)
+        XCTAssertEqual(moved.children(of: a).map(\.id), [b, inner])
+        XCTAssertEqual(moved.children(of: nil).map(\.id), [c, a])
+        moved = try await store.place(c, in: a, before: nil)
+        XCTAssertEqual(moved.children(of: a).map(\.id), [b, inner, c])
+        do { _ = try await store.place(a, in: inner, before: nil); XCTFail("cycle accepted") }
+        catch LibraryError.invalidDestination { }
+        do { _ = try await store.place(b, in: nil, before: inner); XCTFail("foreign anchor accepted") }
+        catch LibraryError.unavailable { }
+        let fresh = try await LibraryStore(root: root).load()
+        XCTAssertEqual(fresh.snapshot, moved)
+    }
 }

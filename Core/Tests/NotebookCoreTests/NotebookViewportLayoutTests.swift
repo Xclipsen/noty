@@ -28,13 +28,15 @@ final class NotebookViewportLayoutTests: XCTestCase {
         var b = try page(240, 340); b.margins = PageMargins(right: 240)
         let layout = NotebookViewportLayout(pages: [a,b], selectedPageID: a.id, paging: false, normalizeWidths: true)
         XCTAssertEqual(layout.pages[0].contentFrame.x, layout.pages[1].contentFrame.x, accuracy: 0.001)
-        XCTAssertEqual(layout.pages[0].contentFrame.width, layout.pages[1].contentFrame.width, accuracy: 0.001)
+        XCTAssertEqual(layout.pages[0].scale, 0.25)
+        XCTAssertEqual(layout.pages[1].scale, 595.0 / 240)
+        XCTAssertEqual(layout.pages[0].readingFrame.width, layout.pages[1].readingFrame.width, accuracy: 0.001)
         for item in layout.pages {
             XCTAssertGreaterThanOrEqual(item.frame.x, 0)
             XCTAssertLessThanOrEqual(item.frame.x + item.frame.width, layout.size.width + 0.001)
             XCTAssertGreaterThan(item.frame.width, item.contentFrame.width)
         }
-        XCTAssertEqual(layout.pages[1].frame.y - layout.pages[0].frame.y - layout.pages[0].frame.height, 24, accuracy: 0.001)
+        XCTAssertEqual(layout.pages[1].frame.y - layout.pages[0].frame.y - layout.pages[0].frame.height, NotebookViewportLayout.pageGap, accuracy: 0.001)
     }
 
     func testSearchAndNegativeMarginCoordinatesShareOneTransform() throws {
@@ -63,14 +65,14 @@ final class NotebookViewportLayoutTests: XCTestCase {
         }
     }
 
-    func testPagingFitsWorksheetRatherThanShrinkingForWritingMargin() throws {
+    func testPagingFitsWholeSheetIncludingWritingMargin() throws {
         var page = try page(2380,3368); page.margins = PageMargins(right: 2380)
         let layout = NotebookViewportLayout(pages: [try self.page(595,842),page], selectedPageID: page.id, paging: true, normalizeWidths: true)
         XCTAssertEqual(layout.pages.count, 1)
         let placed = try XCTUnwrap(layout.pages.first)
         let range = NotebookViewportGeometry.zoomRange(viewport: .init(width: 1024, height: 768), page: placed.frame.size, contentWidth: placed.contentFrame.width)
-        XCTAssertEqual(placed.contentFrame.width * range.fit, 992, accuracy: 0.001)
-        XCTAssertEqual(placed.frame.width * range.fit, 1984, accuracy: 0.001)
+        XCTAssertEqual(placed.frame.width * range.fit, 992, accuracy: 0.001)
+        XCTAssertEqual(placed.contentFrame.width * range.fit, 496, accuracy: 0.001)
     }
 
     func testNormalizingAndSwitchingBackDoesNotChangeAnyStoredContent() throws {
@@ -96,8 +98,8 @@ final class NotebookViewportLayoutTests: XCTestCase {
     }
 
     func testVersionSixMigrationLeavesModeOffAndRejectsHiddenNewSetting() throws {
-        var old = ToolbarPreferences(); old.formatVersion = 6; old.dockOnly = false
-        var expected = old; expected.formatVersion = 7
+        var old = ToolbarPreferences(); old.formatVersion = 6; old.dockOnly = false; old.order = ToolbarPreferences.format7Order
+        var expected = old; expected.formatVersion = 8; expected.order = ToolbarPreferences().order
         let decoded = try ToolbarPreferences.decode(JSONEncoder().encode(old))
         XCTAssertEqual(decoded, expected); XCTAssertNil(decoded.normalizePageWidths)
         old.normalizePageWidths = true

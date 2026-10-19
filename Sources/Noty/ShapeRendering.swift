@@ -1,6 +1,25 @@
 import UIKit
 import NotebookCore
 
+/// Persistent forms sit below native ink; editing controls live above it.
+@MainActor
+final class ShapeObjectLayer: UIView {
+    private var shapes: [ShapeObject] = []
+    private var origin = PagePoint(x: 0, y: 0)
+    override init(frame: CGRect) {
+        super.init(frame: frame); isOpaque = false; backgroundColor = .clear; isUserInteractionEnabled = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func configure(_ shapes: [ShapeObject], origin: PagePoint) {
+        guard self.shapes != shapes || self.origin != origin else { return }
+        self.shapes = shapes; self.origin = origin; isHidden = shapes.isEmpty; setNeedsDisplay()
+    }
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        ShapeRendering.draw(shapes, origin: origin, context: context)
+    }
+}
+
 @MainActor
 enum ShapeRendering {
     static func path(_ shape: ShapeObject) -> UIBezierPath {

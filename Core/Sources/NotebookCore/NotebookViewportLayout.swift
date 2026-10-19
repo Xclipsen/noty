@@ -8,15 +8,31 @@ public struct NotebookPagePlacement: Equatable, Sendable {
     public let frame: PageRect
     public let contentFrame: PageRect
     public let scale: Double
+    /// Base sheet without writing space (reading width, zoom-out limit). The
+    /// fit/snap target is the complete `frame` including the writing space.
+    public let readingFrame: PageRect
 
     public func surfaceRect(for contentRect: PageRect) -> PageRect {
         PageRect(x: contentFrame.x + contentRect.x * scale,
                  y: contentFrame.y + contentRect.y * scale,
                  width: contentRect.width * scale, height: contentRect.height * scale)
     }
+
+    /// Surface x of the centres of the outermost sheet regions. A writing
+    /// margin counts as its own region; without margins both are the page centre.
+    public var writingScrollAnchors: (left: Double, right: Double) {
+        let leftMargin = contentFrame.x - frame.x
+        let rightMargin = frame.x + frame.width - contentFrame.x - contentFrame.width
+        let middle = contentFrame.x + contentFrame.width / 2
+        return (left: leftMargin > 0.5 ? frame.x + leftMargin / 2 : middle,
+                right: rightMargin > 0.5 ? frame.x + frame.width - rightMargin / 2 : middle)
+    }
 }
 
 public struct NotebookViewportLayout: Equatable, Sendable {
+    /// Consecutive sheets touch; only a thin grey rule (drawn in this seam)
+    /// separates them, so the notebook reads as one continuous surface.
+    public static let pageGap = 2.0
     public let pages: [NotebookPagePlacement]
     public let size: PageSize
 
@@ -30,7 +46,7 @@ public struct NotebookViewportLayout: Equatable, Sendable {
         }
         let left = values.map { ($0.page.margins?.left ?? 0) * $0.scale }.max() ?? 0
         let right = values.map { ($0.page.margins?.right ?? 0) * $0.scale }.max() ?? 0
-        let width = normalizeWidths ? left + targetWidth + right
+        let width = normalizeWidths ? left + (values.map { $0.base.width * $0.scale }.max() ?? targetWidth) + right
             : values.map { $0.page.textBounds.width }.max() ?? targetWidth
         var y = 0.0
         var result: [NotebookPagePlacement] = []
@@ -40,12 +56,16 @@ public struct NotebookViewportLayout: Equatable, Sendable {
             let scaledTop = (value.page.margins?.top ?? 0) * value.scale
             let x = normalizeWidths ? left - scaledLeft : (width - canvas.width) / 2
             let frame = PageRect(x: x, y: y, width: canvas.width * value.scale, height: canvas.height * value.scale)
+            let content = PageRect(x: x + scaledLeft, y: y + scaledTop,
+                width: value.base.width * value.scale, height: value.base.height * value.scale)
             result.append(NotebookPagePlacement(id: value.page.id, canvas: canvas, frame: frame,
-                contentFrame: PageRect(x: x + scaledLeft, y: y + scaledTop,
-                    width: value.base.width * value.scale, height: value.base.height * value.scale), scale: value.scale))
-            y += frame.height + 24
+                contentFrame: content, scale: value.scale,
+                readingFrame: PageRect(x: content.x, y: content.y,
+                    width: content.width,
+                    height: content.height)))
+            y += frame.height + Self.pageGap
         }
         self.pages = result
-        size = PageSize(width: width, height: max(1, y - 24))
+        size = PageSize(width: width, height: max(1, y - Self.pageGap))
     }
 }

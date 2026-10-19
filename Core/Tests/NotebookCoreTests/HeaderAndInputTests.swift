@@ -6,11 +6,11 @@ final class HeaderAndInputTests: XCTestCase {
     func testReported874PointEditorKeepsAllMainToolsInTopRow() {
         let layout = ToolbarLayout(viewport: .init(width: 874, height: 760), dock: .top, items: 9)
         XCTAssertTrue(layout.inlineHeader); XCTAssertTrue(layout.compactHeader)
-        XCTAssertEqual(layout.frame.width, 460)
+        XCTAssertEqual(layout.frame.width, 480)
         XCTAssertEqual(layout.frame.y, 4)
         XCTAssertEqual(layout.topInset, 64)
         XCTAssertEqual(layout.center.x, 437)
-        XCTAssertEqual(layout.headerActionsFrame.width, 184)
+        XCTAssertEqual(layout.headerActionsFrame.width, 140)
         XCTAssertLessThanOrEqual(layout.headerLeadingFrame.x + layout.headerLeadingFrame.width + 10, layout.frame.x)
         XCTAssertGreaterThanOrEqual(layout.headerActionsFrame.x, layout.frame.x + layout.frame.width + 10)
     }
@@ -21,13 +21,14 @@ final class HeaderAndInputTests: XCTestCase {
         XCTAssertFalse(closed.compactHeader); XCTAssertTrue(opened.compactHeader)
         XCTAssertEqual(closed.frame.y, opened.frame.y)
         XCTAssertEqual(closed.topInset, opened.topInset)
-        XCTAssertEqual(closed.headerActionsFrame.width, 228)
+        XCTAssertEqual(closed.headerActionsFrame.width, 272)
+        XCTAssertEqual(closed.headerActionCount, 6)
     }
 
     func testBiggerCellsFillOldGapsWithoutGrowingPaletteAndHeadersStayStable() {
         XCTAssertEqual(ToolbarLayout.cell, 48)
         XCTAssertEqual(ToolbarLayout.spacing, 0)
-        XCTAssertEqual(ToolbarLayout.length(items: 9), 460)
+        XCTAssertEqual(ToolbarLayout.length(items: 9), 480)
         let main = ToolbarLayout(viewport: .init(width: 744, height: 760), dock: .top, items: 9, headerItems: 9)
         let more = ToolbarLayout(viewport: main.viewport, dock: .top, items: 7, headerItems: 9)
         XCTAssertTrue(main.inlineHeader)
@@ -44,12 +45,12 @@ final class HeaderAndInputTests: XCTestCase {
         XCTAssertLessThanOrEqual(layout.headerLeadingFrame.x + layout.headerLeadingFrame.width, layout.headerActionsFrame.x - 8)
     }
 
-    func testMinimumZoomFitsWholeSheetIncludingAllWritingMargins() {
+    func testMinimumZoomShowsAboutThreePageWidthsAndStillWholeSheet() {
         for size in [PageSize(width: 595, height: 842), .init(width: 1190, height: 842), .init(width: 842, height: 300)] {
             let range = NotebookViewportGeometry.zoomRange(viewport: .init(width: 874, height: 700), page: size, contentWidth: 595)
             XCTAssertLessThanOrEqual(range.minimum * size.width, 842.001)
             XCTAssertLessThanOrEqual(range.minimum * size.height, 668.001)
-            XCTAssertEqual(max(range.minimum * size.width / 842, range.minimum * size.height / 668), 1, accuracy: 0.001)
+            XCTAssertEqual(range.minimum * 595 * 3, 874, accuracy: 0.001)
         }
     }
 

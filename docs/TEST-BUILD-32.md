@@ -1,0 +1,9 @@
+# Build 32 gezielt testen
+
+Ein Testheft oder eine Kopie benutzen. Bei einem Fehler reichen Nummer, Werkzeug und ob er während der Vorschau oder nach dem Loslassen auftritt.
+
+1. **Seitengröße und Randtext:** „PDFs einheitlich anzeigen“ einschalten. Papier und die große PDF aus IMG_0274 sollen dieselbe Grundbreite haben. Bei neuem Rand rechts/100 % ist der Rand ebenfalls eine normale Seitenbreite. Ein alter schmaler Build-31-Rand wird beim Öffnen erhalten: über **PDF-Schreibplatz → Rechts → Breit/100 % → Anwenden** ausdrücklich erweitern. Im Rand und auf Papier je Text mit 14 pt schreiben, auch liniert: gleiche sichtbare Größe und Linienabstände; Größenanzeige bleibt 14. Nach Heftneustart/Vorschau/Export prüfen.
+2. **Lasso-Farbe und Optik:** Weiße, schwarze und farbige Handschrift auf passenden Hintergründen auswählen, bewegen, skalieren und seitlich drehen. Farbe soll während des Ziehens und nach dem Loslassen gleich bleiben. Kontur läuft um die Handschrift, Strichelung bewegt sich; mit „Bewegung reduzieren“ steht sie still. Danach separat ein freies farbiges Textfeld zusammen mit Ink bewegen und dessen Farbe prüfen. Menü bleibt dunkel. Undo/Redo und erneutes Öffnen kontrollieren.
+3. **Gerade Linien:** Weißen Stift auf schwarzem Papier verwenden, ungefähr 0,75 Sekunden am Ende halten. Linie soll vor dem Abheben gerade werden und danach weiß in der gewählten Stärke bleiben, keine dünne dunkle Haarlinie wie in IMG_0275. Mit schwarzem Stift auf Weiß, einer Farbe und Marker wiederholen. Marker bleibt transparent; Undo entfernt den Ersatzstrich, nicht ältere Handschrift. Ohne Halten normal schreiben.
+
+Core-Tests/Build/Installation ersetzen diese Geräteprüfung nicht. Bei einem Exportproblem tatsächliche PDF für `pdfinfo`/`pdftoppm`/`pdftotext` aufheben. Früher offene Abnahmen nicht pauschal als bestanden werten.

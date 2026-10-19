@@ -80,19 +80,15 @@ struct PageMarginsView: View {
     init(model: EditorModel, pageID: UUID) {
         self.model = model; self.pageID = pageID
         let page = model.notebook.pages.first { $0.id == pageID }
-        let source = page.flatMap { model.sourcePage(for: $0)?.pageRef }
-        let size = page.flatMap { try? PageLayout(page: $0, source: source).contentCanvas } ?? .a4
-        _margins = State(initialValue: page?.margins ?? PageMargins(right: size.width * 0.6))
+        let size = page?.geometry?.displaySize ?? .a4
+        _margins = State(initialValue: page?.margins ?? .normalPageBesidePDF(size))
     }
 
     private var page: Page? { model.notebook.pages.first { $0.id == pageID } }
     private var preview: Page? {
         guard var page else { return nil }; page.margins = margins.isEmpty ? nil : margins; return page
     }
-    private var base: PageSize {
-        guard let page else { return .a4 }
-        return (try? PageLayout(page: page, source: model.sourcePage(for: page)?.pageRef).contentCanvas) ?? .a4
-    }
+    private var base: PageSize { page?.geometry?.displaySize ?? .a4 }
 
     var body: some View {
         NavigationStack {
@@ -140,7 +136,7 @@ struct PageMarginsView: View {
                             Text("Aktuelle Seite").tag(false)
                             Text("Dieser PDF-Import").tag(true)
                         }.pickerStyle(.segmented)
-                        Text("Alle aktiven Seiten dieses Imports erhalten dieselben Rand-Prozente, passend zum jeweiligen Seitenformat. Gelöschte Seiten bleiben unverändert.")
+                        Text("100 % ist so breit wie das PDF-Blatt. Bei einheitlicher Anzeige entspricht das einer normalen Seitenbreite. Gelöschte Seiten bleiben unverändert.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(16).frame(maxWidth: .infinity, alignment: .leading)
@@ -189,7 +185,7 @@ struct PageMarginsView: View {
         let editable = model.writable && !model.mutationsPaused && !model.busy
         return VStack(alignment: .leading, spacing: 10) {
             Toggle(title, isOn: Binding(get: { value.wrappedValue > 0 },
-                                       set: { value.wrappedValue = $0 ? dimension * 0.6 : 0 }))
+                                       set: { value.wrappedValue = $0 ? dimension : 0 }))
                 .toggleStyle(.switch)
                 .frame(minHeight: 44)
                 .disabled(!editable)

@@ -56,10 +56,12 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
         .animation(NotyMotion.panel(reduceMotion), value: showingOptions)
         .onChange(of: more) { old, _ in
             guard preferences.effectiveDock == .floating, drag == nil else { return }
-            let oldCount = ToolbarLayout.itemCount(more: old, presets: preferences.presets.count, secondView: secondView)
+            let oldCount = ToolbarLayout.itemCount(more: old, preferences: preferences, secondView: secondView)
             let previous = ToolbarLayout(viewport: layout.viewport, dock: .floating, floatingAxis: layout.axis,
                 items: oldCount, floatingX: preferences.floatingX, floatingY: preferences.floatingY)
-            let position = layout.floatingPosition(center: previous.center)
+            let center = PagePoint(x: previous.frame.x + previous.frame.width - layout.frame.width / 2,
+                                   y: previous.frame.y + previous.frame.height - layout.frame.height / 2)
+            let position = layout.floatingPosition(center: center)
             preferences.floatingX = position.x; preferences.floatingY = position.y
         }
     }

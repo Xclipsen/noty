@@ -1,0 +1,11 @@
+# Build 31 gezielt testen
+
+Testheft/Kopie verwenden. Bei einem Fehler reichen Nummer, Inhaltstyp und was tatsächlich passiert.
+
+1. **Lasso:** Einen Strich nur anschneiden, dann eine ganze Gruppe mit Handschrift, freiem Textfeld, Bild und Form berühren/umranden. Freiform und Rechteck probieren. Alles Berührte bzw. Enthaltene soll mitgehen; Seitentext und gesperrte Bilder bleiben geschützt. Bei reiner Handschrift Kontur um die Striche. Innerhalb der Auswahl ziehen: Inhalt folgt unmittelbar. An vier Eckgriffen verkleinern/vergrößern, loslassen, Undo/Redo und Heft erneut öffnen. Einmal vergrößert/im Rand wiederholen.
+2. **Dunkles Menü:** Aktionsleiste über der Auswahl dunkel mit Stil/Duplizieren/Ausschneiden/Kopieren/Pfeil. Farbe und Strichstärke ändern, kopieren/duplizieren/löschen und Undo prüfen. Reine Handschrift seitlich drehen bzw. über das Pfeilmenü spiegeln; Inhalt bleibt editierbare Ink. Gemischte Gruppen bewegen und skalieren. Farbwechsel allein soll die vorhandene Strichstärke erhalten.
+3. **Starker Zoom:** Papier und komplexe PDF mehrfach bis nahe ans Maximum vergrößern, verschieben und direkt wieder herauszoomen. Danach schreiben. Keine Dauerblockade, Striche bleiben unter der Spitze, Ebenen bleiben zusammen. Ein kalter PDF-Ladevorgang ist getrennt von einem dauerhaften Hänger zu melden.
+4. **Seitengrenzen:** Obere Seite ohne Rand, darunter PDF mit rechtem Schreibraum. Oben horizontal ziehen: kein weiter Leerraum wegen der unteren Seite. Nach unten scrollen: dort bis in den eigenen Schreibraum navigieren können. Wieder nach oben, auch vergrößert, keine unerreichbaren Inhalte.
+5. **Normale Schreibplatzgröße:** Neuen Import mit Schreibplatz rechts/100 %/schwarz anlegen; zusätzlich über das Seitenmenü testen. 100 % entspricht normaler A4-Seitenbreite. Auf Papier und im Rand Text mit 14 pt schreiben: bei gleichem Zoom gleiche Schriftgröße. Nach Möglichkeit auch eine kleine/große PDF testen. Vorhandene Ränder bleiben beim bloßen Öffnen erhalten; Verkleinern mit Inhalt weiterhin geschützt. PDF-Export und erneutes Öffnen prüfen.
+
+Offen bleiben die frühere Linienausrichtungs-Rückmeldung sowie die noch nicht bestätigten neuen Build-30-Fälle für Halten/Haptik und Kreis-Checklisten. Die Referenz enthält zusätzliche Funktionen (Konvertieren, Elementbibliothek/Speichern, native Ink-Strichmuster), die Build 31 nicht behauptet.
