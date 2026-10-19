@@ -688,8 +688,16 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         // (same page, new colour) the pen kept writing invisible ink.
         if editor.sourcePage == nil, sourceDark != (editor.paperColor == .dark) { sourceDark = editor.paperColor == .dark }
         if editor.autoPen, tool == .pen || tool == .pencil || tool == .shape, !sourceDarkCalculated {
-            sourceDark = editor.sourcePage.map(Self.isDarkPDF) ?? (editor.paperColor == .dark)
             sourceDarkCalculated = true
+            if editor.sourcePage == nil { sourceDark = editor.paperColor == .dark }
+            else {
+                // Measured off the main thread; the colour follows when known.
+                let page = pageID
+                pdfRaster.measureDarkness { [weak self] dark in
+                    guard let self, self.pageID == page, self.sourceDarkCalculated, self.sourceDark != dark else { return }
+                    self.sourceDark = dark; self.refreshAutomaticInk()
+                }
+            }
         }
         automaticPen = editor.autoPen; darkMargin = editor.margins?.color == .dark
         configuredWidth = editor.width
@@ -1172,21 +1180,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         guard let onPencilSqueeze else { if squeeze.phase == .ended { pencilAction() }; return }
         if worksheetFocused, window != nil { onPencilSqueeze(PencilSqueezeEvent(squeeze, in: self)) }
     }
-    private static func isDarkPDF(_ page: PDFPage) -> Bool {
-        let image = page.thumbnail(of: CGSize(width: 32, height: 32), for: .cropBox)
-        var pixels = [UInt8](repeating: 255, count: 32 * 32 * 4)
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        let luminance: Double = pixels.withUnsafeMutableBytes { buffer in
-            guard let context = CGContext(data: buffer.baseAddress, width: 32, height: 32, bitsPerComponent: 8, bytesPerRow: 128,
-                space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let cg = image.cgImage else { return 1 }
-            context.setFillColor(UIColor.white.cgColor); context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
-            context.draw(cg, in: CGRect(x: 0, y: 0, width: 32, height: 32))
-            let data = buffer.bindMemory(to: UInt8.self)
-            var sum = 0.0
-            for i in stride(from: 0, to: data.count, by: 4) { sum += 0.2126 * Double(data[i]) + 0.7152 * Double(data[i+1]) + 0.0722 * Double(data[i+2]) }
-            return sum / (1024 * 255)
-        }
-        return luminance < 0.5
+    /// Automatic pen colour after a late PDF darkness result (same rule as configure).
+    private func refreshAutomaticInk() {
+        guard automaticPen, tool == .pen || tool == .pencil, !inkActive else { return }
+        let color: UIColor = (automaticInkPoint.map(automaticInkIsLight) ?? sourceDark) ? .white : .black
+        guard lastColor != color else { return }
+        canvas.tool = inkingTool(color: color, width: configuredWidth)
+        lastColor = color
     }
     private func automaticInkIsLight(at point: CGPoint) -> Bool {
         EditorInteractionPolicy.lightAutomaticInk(at: .init(x: point.x, y: point.y),
