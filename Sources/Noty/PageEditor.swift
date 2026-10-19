@@ -247,6 +247,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private var pageID: UUID?
     private var pageLayout = PageLayout(source: .testPaper, legacyA4: true)
     private var lastDrawing = Data()
+    /// Stroke count of the published drawing bytes, so a finished stroke needs
+    /// no decode of the previous state. Keyed by the bytes: any external
+    /// configure, undo or page change invalidates it by itself.
+    private var strokeCountCache: (data: Data, count: Int)?
     private var updating = false
     private var tool = EditorTool.pen
     private var editable = false
@@ -618,8 +622,11 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             }
         }
         if lastDrawing != editor.drawing || originChanged || contentReplaced {
-            if editor.drawing.isEmpty { canvas.drawing = PKDrawing() }
-            else if let drawing = try? PKDrawing(data: editor.drawing) { canvas.drawing = drawing.transformed(using: pageLayout.inkTranslation) }
+            if editor.drawing.isEmpty { canvas.drawing = PKDrawing(); strokeCountCache = (editor.drawing, 0) }
+            else if let drawing = try? PKDrawing(data: editor.drawing) {
+                strokeCountCache = (editor.drawing, drawing.strokes.count)
+                canvas.drawing = drawing.transformed(using: pageLayout.inkTranslation)
+            }
             lastDrawing = editor.drawing
         }
         let modeChanged = tool != editor.tool || editable != editor.enabled
@@ -768,27 +775,44 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if heldShape != nil {
             holdCompletion.drawingChanged(); finishHeldStroke(serial: holdSerial); return
         }
-        if tool == .marker, markerStraight { straightenLastMarkerStroke() }
-        if tool == .pen, scribbleErase { eraseByScribble() }
-        recordDrawnWidth()
-        lastDrawing = canonicalDrawingData()
+        // Per stroke: no decode of the published drawing (count cached by its
+        // bytes) and exactly one encode of the result.
+        let previousCount = publishedStrokeCount
+        if tool == .marker, markerStraight { straightenLastMarkerStroke(previousCount: previousCount) }
+        if tool == .pen, scribbleErase { eraseByScribble(previousCount: previousCount) }
+        let drawing = canvas.drawing, strokes = drawing.strokes
+        recordDrawnWidth(strokes, previousCount: previousCount)
+        lastDrawing = canonicalDrawingData(drawing)
+        if eraseSession == nil { strokeCountCache = (lastDrawing, strokes.count) }
         pageContent.drawing = lastDrawing
         onDrawing?(lastDrawing)
+    }
+    /// Stroke count of `pageContent.drawing`; decoded at most once per distinct value.
+    private var publishedStrokeCount: Int {
+        let data = pageContent.drawing
+        if let cache = strokeCountCache, cache.data == data { return cache.count }
+        let count = (try? PKDrawing(data: data))?.strokes.count ?? 0
+        strokeCountCache = (data, count)
+        return count
+    }
+    /// The canvas drawing in canonical page coordinates (without paper margins).
+    private var canonicalCanvasDrawing: PKDrawing {
+        let translation = pageLayout.inkTranslation
+        return translation.isIdentity ? canvas.drawing : canvas.drawing.transformed(using: translation.inverted())
     }
     /// Straight-highlighter option: replace the stroke just finished with one
     /// snapped straight segment (`MarkerStraightening`), keeping its ink and
     /// the drawn point attributes so it stays exactly as wide and opaque.
-    private func straightenLastMarkerStroke() {
-        let previous = (try? PKDrawing(data: pageContent.drawing)) ?? PKDrawing()
-        let canonical = canvas.drawing.transformed(using: pageLayout.inkTranslation.inverted())
-        guard canonical.strokes.count == previous.strokes.count + 1, let stroke = canonical.strokes.last,
+    private func straightenLastMarkerStroke(previousCount: Int) {
+        let strokes = canonicalCanvasDrawing.strokes
+        guard strokes.count == previousCount + 1, let stroke = strokes.last,
               stroke.ink.inkType == .marker || stroke.ink.inkType == .monoline else { return }
         let points = stroke.path.map { $0.location.applying(stroke.transform) }.map { PagePoint(x: $0.x, y: $0.y) }
         guard let line = MarkerStraightening.line(points) else { return }
         let straight = inkStroke(from: stroke, ink: stroke.ink, path: RecognizedShape.line(start: line.start, end: line.end).outline(spacing: 12))
         guard pageLayout.canonicalInkBounds.insetBy(dx: -0.02, dy: -0.02).contains(straight.renderBounds) else { return }
         let wasUpdating = updating; updating = true
-        canvas.drawing = PKDrawing(strokes: Array(canonical.strokes.dropLast()) + [straight]).transformed(using: pageLayout.inkTranslation)
+        canvas.drawing = PKDrawing(strokes: Array(strokes.dropLast()) + [straight]).transformed(using: pageLayout.inkTranslation)
         updating = wasUpdating
     }
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
@@ -912,9 +936,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     }
     /// Learns PencilKit's drawn width per tool width, so the next held preview
     /// shows the width the replacement will actually have.
-    private func recordDrawnWidth() {
-        guard let stroke = canvas.drawing.strokes.last, configuredWidth > 0,
-              canvas.drawing.strokes.count == ((try? PKDrawing(data: pageContent.drawing))?.strokes.count ?? 0) + 1 else { return }
+    private func recordDrawnWidth(_ strokes: [PKStroke], previousCount: Int) {
+        guard let stroke = strokes.last, configuredWidth > 0, strokes.count == previousCount + 1 else { return }
         let width = Self.drawnWidth(stroke)
         if width > 0 { drawnWidthRatio[stroke.ink.inkType] = width / configuredWidth }
     }
@@ -953,7 +976,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private func installContent(_ content: PageContent) {
         updating = true
         pageContent = content; lastDrawing = content.drawing
-        canvas.drawing = ((try? PKDrawing(data: content.drawing)) ?? PKDrawing()).transformed(using: pageLayout.inkTranslation)
+        let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()
+        strokeCountCache = (content.drawing, drawing.strokes.count)
+        canvas.drawing = drawing.transformed(using: pageLayout.inkTranslation)
         updating = false
     }
     private static func polyline(_ stroke: PKStroke) -> [PagePoint] {
@@ -1063,14 +1088,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// "Durchkritzeln löscht": a finished pen scribble over existing ink
     /// removes the strokes it covers together with itself. The scribble was
     /// never published, so the change is one ink step from before it.
-    private func eraseByScribble() {
-        let previous = (try? PKDrawing(data: pageContent.drawing)) ?? PKDrawing()
-        let canonical = canvas.drawing.transformed(using: pageLayout.inkTranslation.inverted())
-        guard canonical.strokes.count == previous.strokes.count + 1, let scribble = canonical.strokes.last,
+    private func eraseByScribble(previousCount: Int) {
+        let strokes = canonicalCanvasDrawing.strokes
+        guard strokes.count == previousCount + 1, let scribble = strokes.last,
               scribble.ink.inkType != .marker else { return }
         let points = Self.polyline(scribble)
         guard ScribbleErase.isScribble(points) else { return }
-        let others = Array(canonical.strokes.dropLast())
+        let others = Array(strokes.dropLast())
         let hull = CGRect(x: points.map(\.x).min()!, y: points.map(\.y).min()!, width: 0, height: 0)
             .union(CGRect(x: points.map(\.x).max()!, y: points.map(\.y).max()!, width: 0, height: 0)).insetBy(dx: -8, dy: -8)
         let candidates = others.indices.filter { others[$0].renderBounds.intersects(hull) }
@@ -1138,12 +1162,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         tool == .marker ? (markerTip == .round ? .monoline : .marker) : tool == .pencil ? .pencil : .pen
     }
     private func inkingTool(color: UIColor, width: CGFloat) -> PKInkingTool { PKInkingTool(inkType, color: color, width: width) }
-    private func canonicalDrawingData() -> Data {
+    /// `drawing`: the current canvas drawing (display coordinates).
+    private func canonicalDrawingData(_ drawing: PKDrawing) -> Data {
         // The dimmed erase preview is display-only and must never be saved.
         if let session = eraseSession { return session.base.drawing }
         let translation = pageLayout.inkTranslation
-        if translation.isIdentity { return canvas.drawing.dataRepresentation() }
-        return canvas.drawing.transformed(using: translation.inverted()).dataRepresentation()
+        if translation.isIdentity { return drawing.dataRepresentation() }
+        return drawing.transformed(using: translation.inverted()).dataRepresentation()
     }
 }
 
