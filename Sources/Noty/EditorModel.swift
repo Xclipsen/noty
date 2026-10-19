@@ -61,6 +61,8 @@ final class EditorModel: ObservableObject {
     private var pendingSave: Task<Void, Never>?
     private var revision = 0
     private var sources: NotebookPDFCatalog?
+    /// Set while an older fallback state is open unchanged (see init).
+    private var recoveredSnapshot: Notebook?
 
     init(storageRoot root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true),
          restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil) {
@@ -104,10 +106,19 @@ final class EditorModel: ObservableObject {
                 if let id = self.preferredPageID ?? remembered,
                    let index = loaded.pages.firstIndex(where: { $0.id == id }) { pageIndex = index }
                 writable = true
-                status = recovered ? "Aus Wiederherstellungskopie geladen" : "Bereit"
-                // Also commit the prototype-to-revision migration without
-                // requiring the user to change an otherwise unchanged note.
-                save()
+                if recovered {
+                    // An older fallback is committed only with the first real
+                    // change: opening alone never replaces the newer manifest
+                    // or moves the skipped newer revisions to Quarantine/.
+                    recoveredSnapshot = loaded
+                    status = "Älterer geprüfter Stand geladen – noch nicht gespeichert"
+                    error = "Der neueste Speicherstand dieses Hefts ist beschädigt oder unvollständig. Geöffnet wurde der letzte vollständig geprüfte ältere Stand. Die neueren Daten werden nicht gelöscht: Mit der nächsten Änderung wird dieser Stand gespeichert, beschädigte neuere Revisionen bleiben im Ordner „Quarantine“ des Hefts erhalten."
+                } else {
+                    status = "Bereit"
+                    // Also commit the prototype-to-revision migration without
+                    // requiring the user to change an otherwise unchanged note.
+                    save()
+                }
             } catch {
                 status = "Lesefehler – Originaldateien geschützt"
                 self.error = "Gespeicherte Daten sind nicht lesbar. Originaldateien bleiben erhalten. Ein exportiertes Backup kann über Dateien wiederhergestellt werden. \(error.localizedDescription)"
@@ -574,6 +585,12 @@ final class EditorModel: ObservableObject {
     func save(delayed: Bool = false) {
         guard writable else { return }
         rememberPage()
+        if let recoveredSnapshot {
+            // Flushes (close, background, backup) keep the recovered notice and
+            // the damaged newer files untouched until the user changes something.
+            guard notebook != recoveredSnapshot else { return }
+            self.recoveredSnapshot = nil
+        }
         pendingSave?.cancel()
         revision += 1
         let snapshot = notebook
