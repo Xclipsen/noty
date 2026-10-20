@@ -27,10 +27,14 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     private let rotationFeedback = UISelectionFeedbackGenerator()
     private weak var cropController: UIViewController?
     private lazy var moveGesture = UIPanGestureRecognizer(target: self, action: #selector(moveImage(_:)))
+    private let liveLayer = CALayer()
+    private var liveID: UUID?
+    private var failed = Set<UUID>()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear; isOpaque = false; contentMode = .redraw; clipsToBounds = true
+        liveLayer.contentsGravity = .resize; liveLayer.isHidden = true; layer.addSublayer(liveLayer)
         outline.fillColor = UIColor.clear.cgColor; outline.strokeColor = UIColor.systemBlue.cgColor
         outline.lineWidth = 1.5; layer.addSublayer(outline)
         moveGesture.delegate = self; moveGesture.maximumNumberOfTouches = 1
@@ -87,6 +91,8 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         isUserInteractionEnabled = active
         if !active { dragStart = nil; rotationSnap = nil; cropController?.dismiss(animated: false); cropController = nil }
         if !objects.contains(where: { $0.id == selectedID }) { selectedID = nil }
+        if dragStart == nil { endLive() }
+        if reset { failed.removeAll() }
         refresh()
     }
 
@@ -105,20 +111,68 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         guard let context = UIGraphicsGetCurrentContext() else { return }
         let zoom = 1 / controlScale
         let screenScale = window?.screen.scale ?? 2
-        for object in objects {
+        for object in objects where object.id != liveID {
             guard displayBounds(object).intersects(rect) else { continue }
+            // Decoding a camera original takes long: never while drawing. Until
+            // the rendition is ready, a cached one of another size or a neutral
+            // placeholder stands in, then only its frame is redrawn.
+            let limit = Self.rendition(object, zoom: zoom, screenScale: screenScale)
+            let image = ImageRendering.cached(object, limit: limit)
+            if image == nil { request(object, limit: limit) }
             autoreleasepool {
-                // Load/import validation rejects unreadable originals. A render
-                // failure is reported, never silently accepted by PDF export.
-                // Quantize resolutions so dragging/zooming does not fill the
-                // bounded cache with almost-identical thumbnails.
-                let pixels = max(object.width / object.crop.width, object.height / object.crop.height) * zoom * screenScale
-                let limit = pixels <= 512 ? 512 : (pixels <= 1024 ? 1024 : 2048)
-                do { try ImageRendering.draw(object, context: context, origin: pageLayout.contentOrigin, limit: limit) }
-                catch { onError?(error.localizedDescription) }
+                ImageRendering.draw(image ?? ImageRendering.anyCached(object, near: limit), for: object,
+                                    context: context, origin: pageLayout.contentOrigin)
             }
         }
     }
+    /// Quantized resolutions, so dragging/zooming does not fill the bounded
+    /// cache with almost-identical renditions.
+    private static func rendition(_ object: ImageObject, zoom: CGFloat, screenScale: CGFloat) -> Int {
+        let pixels = max(object.width / object.crop.width, object.height / object.crop.height) * zoom * screenScale
+        return pixels <= 512 ? 512 : (pixels <= 1024 ? 1024 : 2048)
+    }
+    /// Load/import validation rejects unreadable originals. A render failure is
+    /// reported (once per object), never silently accepted by PDF export.
+    private func request(_ object: ImageObject, limit: Int) {
+        guard !failed.contains(object.id) else { return }
+        let id = object.id, expected = generation
+        ImageRendering.prepare(object, limit: limit) { [weak self] error in
+            guard let self, self.generation == expected, let current = self.objects.first(where: { $0.id == id }) else { return }
+            if let error { self.failed.insert(id); self.onError?(error.localizedDescription); return }
+            self.setNeedsDisplay(self.displayBounds(current))
+        }
+    }
+    /// The image being dragged is shown by `liveLayer` and moved per frame by
+    /// its transform; the plane itself is redrawn only when the drag starts and ends.
+    private func showLive(_ object: ImageObject) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        if liveID != object.id {
+            liveID = object.id
+            let limit = Self.rendition(object, zoom: 1 / controlScale, screenScale: window?.screen.scale ?? 2)
+            let image = ImageRendering.cached(object, limit: limit) ?? ImageRendering.anyCached(object, near: limit)
+            liveLayer.contents = image?.cgImage
+            liveLayer.backgroundColor = image == nil ? UIColor(white: 0.86, alpha: 0.6).cgColor : nil
+            liveLayer.contentsRect = object.crop.cgRect
+            liveLayer.isHidden = false
+            setNeedsDisplay()
+        }
+        liveLayer.setAffineTransform(.identity)
+        liveLayer.bounds = CGRect(x: 0, y: 0, width: object.width, height: object.height)
+        liveLayer.position = CGPoint(x: object.x + object.width / 2 + pageLayout.contentOrigin.x,
+                                     y: object.y + object.height / 2 + pageLayout.contentOrigin.y)
+        liveLayer.setAffineTransform(CGAffineTransform(rotationAngle: object.rotation * .pi / 180))
+        CATransaction.commit()
+    }
+    private func endLive() {
+        guard liveID != nil else { return }
+        liveID = nil
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        liveLayer.isHidden = true; liveLayer.contents = nil
+        CATransaction.commit()
+        setNeedsDisplay()
+    }
+    /// Memory warning: renditions are decoded again on the next draw.
+    func releaseRenditions() { failed.removeAll(); setNeedsDisplay() }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -163,7 +217,8 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     private func displayBounds(_ object: ImageObject) -> CGRect {
         object.rotatedBounds.cgRect.offsetBy(dx: pageLayout.contentOrigin.x, dy: pageLayout.contentOrigin.y)
     }
-    private func refresh() {
+    /// `redraw`: false while `liveLayer` shows a drag (controls only).
+    private func refresh(redraw: Bool = true) {
         isHidden = objects.isEmpty
         let visible = active && selected != nil
         outline.isHidden = !visible; toolbar.isHidden = !visible
@@ -171,7 +226,8 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         for (key, button) in buttons { button.isEnabled = key == "lock" || selected?.locked == false }
         buttons["lock"]?.setImage(UIImage(systemName: selected?.locked == true ? "lock.fill" : "lock.open"), for: .normal)
         buttons["lock"]?.accessibilityLabel = selected?.locked == true ? "Bild entsperren" : "Bild sperren"
-        setNeedsDisplay(); setNeedsLayout()
+        if redraw { setNeedsDisplay() }
+        setNeedsLayout()
     }
 
     private func action(_ key: String, title: String, symbol: String, run: @escaping () -> Void) {
@@ -219,7 +275,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         guard let start = dragStart, start.generation == generation,
               let index = objects.firstIndex(where: { $0.id == start.object.id }) else { return }
         if pan.state == .cancelled || pan.state == .failed {
-            objects = start.objects; dragStart = nil; rotationSnap = nil; refresh(); onChange?(objects); return
+            objects = start.objects; dragStart = nil; rotationSnap = nil; endLive(); refresh(); onChange?(objects); return
         }
         var object = start.object
         let delta = pan.translation(in: self)
@@ -243,8 +299,8 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         // Live feedback stays local; the model gets one change (one undo step)
         // when the gesture ends instead of an autosave round trip per frame.
         let ended = pan.state == .ended
-        if ended { dragStart = nil; rotationSnap = nil }
-        refresh()
+        if ended { dragStart = nil; rotationSnap = nil; endLive() } else { showLive(objects[index]) }
+        refresh(redraw: ended)
         if ended { onChange?(objects) }
     }
 
