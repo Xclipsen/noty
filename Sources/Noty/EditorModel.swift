@@ -23,7 +23,6 @@ final class EditorModel: ObservableObject {
     @Published var saveFailed = false
     @Published var backupStatus = "Noch kein Backup exportiert"
     @Published var fileStatus: String?
-    @Published var restoredCopies: [RestoredNotebook] = []
     @Published var openedRestore: RestoredNotebook?
     @Published private(set) var copiedPage: CopiedPage?
     @Published private(set) var cutPageID: UUID?
@@ -61,6 +60,10 @@ final class EditorModel: ObservableObject {
     private var pendingSave: Task<Void, Never>?
     private var revision = 0
     private var sources: NotebookPDFCatalog?
+    /// Set while an older fallback state is open unchanged (see init).
+    private var recoveredSnapshot: Notebook?
+    private var retryTask: Task<Void, Never>?
+    private var retryAttempt = 0
 
     init(storageRoot root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true),
          restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil) {
@@ -78,8 +81,7 @@ final class EditorModel: ObservableObject {
             backupStatus = "Letzter Datei-Export: \(date.formatted(date: .abbreviated, time: .shortened))"
         }
         Task {
-            var finished = false
-            defer { if !finished { busy = false } }
+            defer { busy = false }
             do {
                 var (loaded, recovered) = try await store.load()
                 // Opening speed: decode every PencilKit drawing and image off the
@@ -104,18 +106,23 @@ final class EditorModel: ObservableObject {
                 if let id = self.preferredPageID ?? remembered,
                    let index = loaded.pages.firstIndex(where: { $0.id == id }) { pageIndex = index }
                 writable = true
-                status = recovered ? "Aus Wiederherstellungskopie geladen" : "Bereit"
-                // Also commit the prototype-to-revision migration without
-                // requiring the user to change an otherwise unchanged note.
-                save()
+                if recovered {
+                    // An older fallback is committed only with the first real
+                    // change: opening alone never replaces the newer manifest
+                    // or moves the skipped newer revisions to Quarantine/.
+                    recoveredSnapshot = loaded
+                    status = "Älterer geprüfter Stand geladen – noch nicht gespeichert"
+                    error = "Der neueste Speicherstand dieses Hefts ist beschädigt oder unvollständig. Geöffnet wurde der letzte vollständig geprüfte ältere Stand. Die neueren Daten werden nicht gelöscht: Mit der nächsten Änderung wird dieser Stand gespeichert, beschädigte neuere Revisionen bleiben im Ordner „Quarantine“ des Hefts erhalten."
+                } else {
+                    status = "Bereit"
+                    // Also commit the prototype-to-revision migration without
+                    // requiring the user to change an otherwise unchanged note.
+                    save()
+                }
             } catch {
                 status = "Lesefehler – Originaldateien geschützt"
                 self.error = "Gespeicherte Daten sind nicht lesbar. Originaldateien bleiben erhalten. Ein exportiertes Backup kann über Dateien wiederhergestellt werden. \(error.localizedDescription)"
             }
-            // Editable right away: the restore list waits behind the first
-            // save on the repository actor and must not keep the editor busy.
-            busy = false; finished = true
-            await refreshRestoredCopies()
         }
     }
 
@@ -475,6 +482,10 @@ final class EditorModel: ObservableObject {
         }
     }
     func restorePage(_ id: UUID) { editPages(resetEditor: true) { try $0.restorePage(id) } }
+    /// Permanent page-trash removal (also of unused PDF originals). One undo
+    /// step while this notebook stays open, like every page operation.
+    func deleteTrashedPage(_ id: UUID) { editPages { try $0.deleteTrashedPage(id); return nil } }
+    func emptyPageTrash() { editPages { try $0.emptyPageTrash(); return nil } }
     func toggleBookmark(_ id: UUID) { editPages { try $0.toggleBookmark(id); return nil } }
 
     func installMarginSnapshot(_ candidate: Notebook) throws {
@@ -574,83 +585,68 @@ final class EditorModel: ObservableObject {
     func save(delayed: Bool = false) {
         guard writable else { return }
         rememberPage()
+        if let recoveredSnapshot {
+            // Flushes (close, background, backup) keep the recovered notice and
+            // the damaged newer files untouched until the user changes something.
+            guard notebook != recoveredSnapshot else { return }
+            self.recoveredSnapshot = nil
+        }
         pendingSave?.cancel()
+        retryTask?.cancel(); retryTask = nil
         revision += 1
         let snapshot = notebook
         let savingRevision = revision
-        status = "Änderungen werden gespeichert …"
+        status = saveFailed ? "Neuer Speicherversuch …" : "Änderungen werden gespeichert …"
         saveFailed = false
         // Give iOS time to complete a flush when moving to the background.
-        let background = delayed ? UIBackgroundTaskIdentifier.invalid : UIApplication.shared.beginBackgroundTask(withName: "noty-save")
+        let background = delayed ? nil : BackgroundSaveTask()
         pendingSave = Task {
-            defer {
-                if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
-            }
+            defer { background?.end() }
             do {
                 if delayed { try await Task.sleep(for: .milliseconds(250)) }
                 try Task.checkCancellation()
                 try await store.save(snapshot, revision: savingRevision)
-                if savingRevision == revision { status = "Lokal gespeichert" }
+                if savingRevision == revision { status = "Lokal gespeichert"; retryAttempt = 0 }
             } catch is CancellationError {
                 // A newer complete snapshot supersedes this one.
             } catch {
-                if savingRevision == revision {
-                    status = "Speichern fehlgeschlagen – Änderungen nur im Speicher"
-                    saveFailed = true
-                    self.error = error.localizedDescription
-                }
+                if savingRevision == revision { saveDidFail(error) }
             }
         }
     }
 
-    func importFile(_ url: URL, backup: Bool) {
-        guard !busy else { error = "Bitte den laufenden Vorgang abwarten und die Datei dann erneut wählen."; return }
-        if backup {
-            restoreBackupAsCopy(url)
+    /// Automatic retry while saving fails (SCOPE: retry on errors). Each attempt
+    /// goes through save() and therefore commits the then CURRENT snapshot with
+    /// a new revision number; the repository never lets an older one win.
+    /// Errors a retry cannot fix (size limit, unknown or invalid format) wait
+    /// for the user. A success, a newer save or closing cancels the retry.
+    private func saveDidFail(_ failure: Error) {
+        saveFailed = true
+        let message = failure.localizedDescription
+        guard Self.retryable(failure) else {
+            status = "Speichern fehlgeschlagen – Änderungen nur im Speicher"
+            error = message
             return
         }
-        let access = url.startAccessingSecurityScopedResource()
-        defer { if access { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let values = try url.resourceValues(forKeys: [.fileSizeKey])
-            guard (values.fileSize ?? 0) <= 20_000_000 else { throw StorageError.invalidDocument }
-            let data = try Data(contentsOf: url)
-            guard let pdf = PDFDocument(data: data), !pdf.isLocked,
-                  (1...500).contains(pdf.pageCount) else { throw StorageError.invalidDocument }
-            var candidate = Notebook()
-            candidate.title = url.deletingPathExtension().lastPathComponent
-            candidate.pdf = data
-            candidate.pages = try (0..<pdf.pageCount).map { index in
-                guard let source = pdf.page(at: index)?.pageRef else { throw StorageError.invalidDocument }
-                var page = Page()
-                page.geometry = try PDFPageGeometry(source)
-                return page
-            }
-            try validate(candidate)
-            pendingSave?.cancel()
-            revision += 1
-            let replacementRevision = revision
-            let previous = writable ? notebook : nil
-            writable = false
-            busy = true
-            Task {
-                defer { busy = false }
-                do {
-                    try await store.replace(candidate, preserving: previous, revision: replacementRevision)
-                    pageIndex = 0
-                    sources = try NotebookPDFCatalog(candidate)
-                    pdfOutline = sources?.outline ?? []
-                    notebook = candidate
-                    history.removeAll(); publishHistory()
-                    writable = true
-                    status = "Importiert und lokal gespeichert"
-                    saveFailed = false
-                } catch {
-                    writable = previous != nil
-                    self.error = "Import fehlgeschlagen: \(error.localizedDescription)"
-                }
-            }
-        } catch { self.error = "Import fehlgeschlagen: \(error.localizedDescription)" }
+        let delay = Self.retryDelays[min(retryAttempt, Self.retryDelays.count - 1)]
+        // One alert per failure series; later attempts only update the status.
+        if retryAttempt == 0 { error = message + " Noty versucht es automatisch erneut." }
+        retryAttempt += 1
+        status = "Speichern fehlgeschlagen – Änderungen nur im Speicher · neuer Versuch in \(delay) s"
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self, self.saveFailed, self.writable else { return }
+            self.save()
+        }
+    }
+    private static let retryDelays = [2, 5, 15, 60]
+    private static func retryable(_ error: Error) -> Bool {
+        if error is StorageError { return false }
+        guard let error = error as? RevisionError else { return true }
+        switch error {
+        case .snapshotTooLarge, .unsupportedFormat: return false
+        default: return true
+        }
     }
 
     func backupData() async -> Data? {
@@ -676,16 +672,6 @@ final class EditorModel: ObservableObject {
         backupStatus = "Backup-Datei exportiert: \(date.formatted(date: .omitted, time: .shortened))"
     }
 
-    func refreshRestoredCopies() async {
-        do {
-            let catalog = try await store.restoredCopies()
-            restoredCopies = catalog.notebooks
-            if catalog.unreadableCount > 0 {
-                fileStatus = "\(catalog.unreadableCount) Wiederherstellungskopie(n) nicht lesbar · Dateien bleiben erhalten"
-            }
-        } catch { fileStatus = "Wiederherstellungskopien konnten nicht aufgelistet werden" }
-    }
-
     func localHistory() async throws -> LocalHistory {
         try await store.localHistory()
     }
@@ -708,31 +694,24 @@ final class EditorModel: ObservableObject {
         try validate(prepared.document)
         var restored = try await store.commitRestore(prepared)
         restored.preferredPageID = page.id
-        await refreshRestoredCopies()
         backupStatus = message
         openedRestore = restored
     }
+}
 
-    private func restoreBackupAsCopy(_ url: URL) {
-        busy = true
-        let access = url.startAccessingSecurityScopedResource()
-        Task {
-            defer {
-                if access { url.stopAccessingSecurityScopedResource() }
-                busy = false
-            }
-            do {
-                let prepared = try await store.prepareRestore(from: url)
-                // Foundation tests cannot validate these Apple-framework layers.
-                let message = prepared.isLegacyJSON
-                    ? "Altes JSON ohne Prüfsumme als separate Kopie wiederhergestellt"
-                    : "Backup geprüft und als separate Kopie wiederhergestellt"
-                try await openPreparedRestore(prepared, message: message)
-            } catch {
-                backupStatus = "Wiederherstellung fehlgeschlagen · aktuelles Heft erhalten"
-                self.error = error.localizedDescription
-            }
-        }
+/// iOS background time for one save. Ended exactly once: when the save
+/// finishes, or by the system's expiration handler if time runs out first
+/// (the commit itself is not cancelled; it continues when the app runs again).
+@MainActor
+private final class BackgroundSaveTask {
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+    init() {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: "noty-save") { [weak self] in self?.end() }
+    }
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
     }
 }
 

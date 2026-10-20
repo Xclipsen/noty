@@ -1,5 +1,19 @@
 # Lokaler Revisionsspeicher – Format 1
 
+## Ergänzung 20.10.2026 · Rückfall, Historie, Seitenpapierkorb
+
+Manifestformat 1 und Notebook-Schema 9 bleiben unverändert; Manifeste dürfen jetzt 1–8 Einträge haben (ältere App-Versionen lesen nur 1–3, kein Downgrade).
+
+- **Rückfall ohne Datenverlust:** `RevisionStore` löscht nur Revisionen, die er selbst als bestätigte Kette geladen (aktuelles + voriges Manifest), geschrieben oder committet hat. Beim Rückfall übersprungene neuere Revisionen (CRC-Fehler, defektes `manifest.json`) und fremde unreferenzierte Revisionen werden beim nächsten Commit nach `Quarantine/<UUID>.json` verschoben (nie überschrieben, nie von Manifesten referenziert); ein defektes `manifest.json` wird dort als `manifest-<UUID>.json` kopiert. Der Editor speichert einen Rückfallstand nicht automatisch beim Öffnen/Schließen; Hinweis und Status bleiben bis zur ersten echten Änderung. Prototyp→Paket-Migration ohne Rückfall wird weiterhin sofort committet. Bibliotheksbackup/Duplizieren lehnen einen noch nicht bestätigten Rückfallstand wie bisher ab.
+- **Fehlgeschlagene Commits** entfernen ihre neuen, von keinem lesbaren Manifest referenzierten Revisionsdateien. Der Editor wiederholt fehlgeschlagenes Speichern automatisch nach 2, 5, 15 s und dann alle 60 s, jeweils mit dem aktuellen Stand und neuer Revisionsnummer; Größenlimit und unbekannte/ungültige Formate werden nicht automatisch wiederholt. Wiederholte Migrations-Commits verwenden ein vorhandenes Archiv mit identischen Bytes (Größe, CRC, Bytes) statt neuer Kopien.
+- **Gestufte Historie:** immer die drei jüngsten Stände, dazu Zwischenstände mit mindestens 10 Minuten Abstand nach `savedAtUnix` (gemessen vom nächstälteren behaltenen Stand), insgesamt höchstens 8 Einträge und 300 MB Zwischenstände; älteste fallen zuerst. Einträge ohne Zeitstempel werden keine Zwischenstände. Physisch höchstens die Vereinigung beider Manifeste (≤ 9 Revisionen).
+- **Seitenpapierkorb:** `deleteTrashedPage`/`emptyPageTrash` entfernen Einträge (auch Rand-/Leeren-Sicherungen) endgültig und danach jede PDF-Quelle, die keine aktive oder gelöschte Seite referenziert. Im Editor ein Undo-Schritt, solange das Heft offen ist.
+- **PDF-Grenzen:** je Quelle 100 MB (`PDFSource.maximumBytes`), alle Quellen eines Hefts zusammen weiter 100 MB; ≈ 133 MB Base64 passen in die 200-MB-Revision.
+- **Prüfer:** Python-Prüfer ohne `assert` (auch unter `python -O` wirksam); `verify_device_store.py` prüft zusätzlich `manifest-previous.json` und `Library/index*.json`. Negativtests: `bash scripts/check_verifiers.sh` (im Host-Roundtrip enthalten).
+- Entfernt: In-Place-Ersetzen eines Hefts per PDF-/Backupimport samt `Archives/`-Kopie (unerreichbar). Vorhandene `Archives/`-Ordner bleiben unangetastet; Wiederherstellungen entstehen immer als getrennte Kopien. `NotebookStore` liest Prototypdateien nur noch.
+
+Nur Core-Tests, Host-Roundtrip und unsignierter iPad-Build; Rückfall, Wiederholung, Papierkorb und Historie auf dem iPad **ungeprüft**.
+
 ## Ergänzung 19.10.2026 · Notebook-Schema 9 (Textfarben)
 
 Zwei optionale Stilfelder, auch in UTF-16-Runs: `automaticColor` (Bool) und `highlightColor` (`yellow`, `green`, `blue`, `pink`, `orange`, `purple`; fehlend = bisheriges Gelb). `automaticColor = true` verlangt `ink == nil` und `color` Schwarz/Weiß; `color` hält nur den zuletzt aufgelösten Wert. Angezeigt und exportiert wird über `Page.resolvedTextBoxes`/`EditorInteractionPolicy.automaticTextIsLight`: Papierfarbe, Randfarbe neben PDFs, auf der PDF selbst Schwarz. Daher folgt automatischer Text späteren Papier-/Randumstellungen ohne Datenänderung; die Ganzes-Heft-Umstellung (`PaperInkInversion`) setzt den gespeicherten Wert zusätzlich passend und lässt das Flag stehen.
@@ -58,8 +72,9 @@ Documents/Noty/
   manifest.json                  aktueller Commit-Zeiger
   manifest-previous.json         voriger vollständiger Commit-Zeiger
   Revisions/<UUID>.json           unveränderliche vollständige Notizstände
-  Archives/<UUID>/…              vollständiger Altbestand vor Import/Restore
-  Migrations/…                   frühere Schema-1-Archive, erhalten
+  Archives/<UUID>/…              Altbestand früherer Import-Ersetzungen (wird nicht mehr geschrieben)
+  Migrations/…                   exakte bestätigte Bytes vor Schema-Migrationen, erhalten
+  Quarantine/…                   nach Rückfall übersprungene/fremde Revisionen, defekte Manifeste
 ```
 
 Paket-`formatVersion` ist unabhängig von `Notebook.schemaVersion`. Manifestformat 1 verlangt `checksumAlgorithm = "crc32-iso-hdlc"` und ein Array `revisions`, neuester Eintrag zuerst. Ein Eintrag enthält `file`, `byteCount` und numerisches `crc32`. Ab Build 8 optional `savedAtUnix` (UTC-Sekunden seit 1970); alte Einträge ohne Zeitangabe bleiben lesbar. Nur exakt `<UUID in Großbuchstaben>.json` ist als Blattname erlaubt; keine Unterpfade. Manifest maximal 128 kB, eine Revision maximal 200 MB. Verzeichnis/Datei-Symlinks für Revisionsinhalte werden abgelehnt.
@@ -85,7 +100,7 @@ Beim Öffnen alter Hefte bleiben gespeicherte Bytes unverändert. `effectiveText
 - Papierseiten statt Referenz: `paper=blank|lined|grid|legacyTest`, optionale `paperColor=white|dark`, Geometrie A4; `legacyTest` ohne Geometrie erhält alte Testseite/Koordinaten. Kein gleichzeitiger PDF-/Papierhintergrund.
 - `bookmarked` optional, fehlend bedeutet false. `margins` nur an PDF-Seiten: `left/right/top/bottom` endliche nichtnegative Punktmaße, `style=blank|lined|grid`, `color=white|dark`. Kanonische Ink-/Textkoordinaten bleiben relativ zur Grundseite, Anzeige/Export verschieben um links/oben. Erweiterte Seite höchstens 14.400 Punkte je Dimension.
 - `deletedPages`: vollständige Seite, Zeitpunkt, frühere Position und vorige/nächste Seiten-ID. IDs über aktive/gelöschte Seiten eindeutig. Reguläres Löschen behält Seiten-ID; Snapshot vor bestätigter Randverkleinerung erhält neue ID und Grund `marginReduction`. Ab Build 16 identifiziert `previousPageID` bei `marginReduction` die ursprüngliche aktive Seite. Nur bei passender PDF-Referenz und identischer Grundgeometrie deren vollständigen Stand zurücksetzen, stabile ID/aktuelle Position erhalten und den verdrängten Stand mit neuer ID und derselben Zielverknüpfung im Papierkorb sichern. Auswahlentfernung, Sicherung und Ersetzen gemeinsam in einer Revision. Kein zusätzliches Formatfeld; vorhandene Schema-3-Randsnapshots bleiben nutzbar. Fehlt das passende Original, zusätzliche Seite statt fremder Ersetzung. Reguläre gelöschte Seiten weiterhin einfügen.
-- Höchstens 500 aktive/500 gelöschte Seiten, 500 Quellen mit je höchstens 500 Originalseiten/20 MB; Quellen zusammen höchstens 100 MB, vollständige JSON-Revision weiterhin höchstens 200 MB. Keine Quellen-GC/Endgültig-Löschen-Funktion in diesem Paket; keine Deduplizierung über Revisionen.
+- Höchstens 500 aktive/500 gelöschte Seiten, 500 Quellen mit je höchstens 500 Originalseiten/100 MB (bis 19.10.2026: 20 MB); Quellen zusammen höchstens 100 MB, vollständige JSON-Revision weiterhin höchstens 200 MB. Quellen-GC nur nach endgültigem Löschen aus dem Seitenpapierkorb (Ergänzung 20.10.2026); keine Deduplizierung über Revisionen.
 - Vor höherem Schema einer bereits paketierten Note archiviert `RevisionStore` die exakten zuletzt bestätigten Revisionsbytes dauerhaft unter `Migrations/<UUID>/notebook-v<alt>.json`, vor Manifeständerung und vor späterem Revisions-Cleanup. Fehler beim Archivieren bricht Save ab. Originale Prototypdateien bleiben ebenfalls erhalten. Kein stiller Rückfall auf ein altes Format bei unbekanntem Schema.
 
 Aktive Seiten, Papierkorb, Quellen, Ränder und Lesezeichen gehören gemeinsam zum Snapshot und damit automatisch zum versionierten Heft-/Bibliotheksbackup. Ältere App-Versionen ohne Schema-3-Unterstützung können diese neuen Stände nicht lesen; kein Downgrade-/Rollback-Gerätenachweis.
@@ -95,10 +110,10 @@ Aktive Seiten, Papierkorb, Quellen, Ränder und Lesezeichen gehören gemeinsam z
 1. Repository-Actor nimmt einen vollständigen UI-Snapshot mit monotoner Änderungsnummer entgegen. Ältere Nummern werden verworfen.
 2. Notebook validieren, Revision unter neuem UUID-Dateinamen atomar schreiben, erneut lesen und Länge/CRC prüfen.
 3. Voriges gültiges Manifest atomar nach `manifest-previous.json` schreiben.
-4. Neues Manifest mit neuer Revision und höchstens zwei älteren Einträgen **zuletzt** atomar nach `manifest.json` schreiben. Erst jetzt darf „Lokal gespeichert“ erscheinen.
-5. Nach Commit nicht mehr von einem der beiden Manifeste referenzierte reguläre UUID-Revisionsdateien best effort entfernen. Fremde Dateinamen, Verzeichnisse, Symlinks, Archive und Prototypdateien bleiben erhalten.
+4. Neues Manifest mit neuer Revision und den gestuft behaltenen älteren Einträgen (siehe Ergänzung 20.10.2026) **zuletzt** atomar nach `manifest.json` schreiben. Erst jetzt darf „Lokal gespeichert“ erscheinen.
+5. Nach Commit nicht mehr von einem der beiden Manifeste referenzierte, dem Store bekannte UUID-Revisionsdateien best effort entfernen; unbekannte nach `Quarantine/` verschieben. Fremde Dateinamen, Verzeichnisse, Symlinks, Archive und Prototypdateien bleiben erhalten.
 
-Drei reguläre Stände, normalerweise maximal vier physische Revisionen wegen des vorigen Manifests. Wenn Cleanup fehlschlägt, können mehr Dateien bleiben; erneute Bereinigung beim nächsten erfolgreichen Save. Keine physische Stromausfallgarantie durch Foundation `.atomic`; Hardwarefehler und abschließende Dateisystem-Dauerhaftigkeit sind nicht bewiesen.
+Bis zu acht reguläre Stände, physisch höchstens neun Revisionen wegen des vorigen Manifests. Wenn Cleanup fehlschlägt, können mehr Dateien bleiben; erneute Bereinigung beim nächsten erfolgreichen Save. Keine physische Stromausfallgarantie durch Foundation `.atomic`; Hardwarefehler und abschließende Dateisystem-Dauerhaftigkeit sind nicht bewiesen.
 
 Beim Lesen zuerst das aktuelle Manifest prüfen, dann dessen Revisionen in Reihenfolge; bei beschädigtem Manifest das vorige prüfen. Länge/CRC und Notebook-Schema/Geometrie müssen stimmen. Unreferenzierte Revisionen gelten nicht als Commit. Kein kompletter Stand: verständlicher Lesefehler, kein Überschreiben mit leerem Heft. Neuere unbekannte Paket- oder Dokumentschemata blockieren Fallback und Save ausdrücklich.
 
@@ -108,10 +123,10 @@ CRC-32/ISO-HDLC erkennt zufällige Beschädigung; kein Manipulationsschutz und k
 
 Ohne Manifeste vorhandene Prototypdateien über den alten validierenden Leser laden. Diese Dateien bleiben exakt erhalten. Beim ersten Paket-Commit zusätzlich eine Revision des geladenen Altstands anlegen und als voriges Manifest sichern, bevor der neue Commit-Zeiger geschrieben wird. Uncommittete Migrationsdateien ohne Manifest machen vorhandene gültige Prototypdateien nicht unlesbar.
 
-Ein absichtlich gewählter Restore archiviert vor jedem Ersetzen vorhandene Prototypdateien, beide Manifeste und alle Revisionen sowie den aktuellen Speicherstand. Schlägt das Archivieren fehl, abbrechen. Danach darf der getrennte Restorepfad beschädigte Daten durch einen validierten Kandidaten ersetzen. Unbekannte neuere Formate bleiben auch dabei gesperrt. Noch kein bestandener externer Restore und noch keine Konfliktverwaltung einer Bibliothek.
+Ein bestehendes Heft wird durch Restore nie ersetzt: Heft- und Bibliotheksrestore sowie lokale Stände entstehen als getrennte Kopie bzw. neuer Bereich (das frühere In-Place-Ersetzen mit `Archives/` ist entfernt). Unbekannte neuere Formate bleiben gesperrt. Noch keine Konfliktverwaltung einer Bibliothek.
 
 ## Grenzen / nächster Schritt
 
-Vollständige JSON-Snapshots duplizieren PDF und Ink über Revisionen und benötigen Serialisierungs-/Prüfsummenspeicher. Noch keine deduplizierten Assets; vor großen Dokumenttests verbessern. Importarchive und Prototypkopien haben noch keine Retention. Ab Build 8 Browser älterer lokaler Stände in der UI, Öffnen immer als getrennte Kopie. Feste Revisions-UUID statt Listenposition; fehlende/ungültige Auswahl wird abgelehnt. Noch Geräteprüfung offen. Historie derzeit nur drei jüngste Commits, keine langfristigen Zeitfenster. Erneutes Speichern nach Fehler ist in der Oberfläche angeboten, sein tatsächliches Fehlerverhalten auf dem iPad noch offen.
+Vollständige JSON-Snapshots duplizieren PDF und Ink über Revisionen und benötigen Serialisierungs-/Prüfsummenspeicher. Noch keine deduplizierten Assets; vor großen Dokumenttests verbessern. Importarchive und Prototypkopien haben noch keine Retention. Ab Build 8 Browser älterer lokaler Stände in der UI, Öffnen immer als getrennte Kopie. Feste Revisions-UUID statt Listenposition; fehlende/ungültige Auswahl wird abgelehnt. Noch Geräteprüfung offen. Historie gestuft (drei jüngste plus Zwischenstände, etwa eine Stunde Bearbeitung), keine Tages-/Wochenfenster. Speichern wird nach Fehlern automatisch wiederholt; das tatsächliche Fehlerverhalten auf dem iPad ist noch offen.
 
 Ab Build 7 eigenständiges versioniertes `.notybackup` für ein vollständiges aktuelles Heft, geprüfter Import über Staging und neue getrennte Kopie; Details in [BACKUPS.md](BACKUPS.md). Geräte-/PC-Roundtrip für ein Heft mit gespeicherter Textänderung und abgewiesenem beschädigtem Archiv belegt, siehe TESTING.md. Frühere reine JSON-Exporte bleiben lesbar. Gesamte Bibliothek und WebDAV/iCloud-Zielverwaltung folgen später.

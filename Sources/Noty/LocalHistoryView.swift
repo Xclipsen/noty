@@ -30,7 +30,7 @@ struct LocalHistoryView: View {
                                 if selectedID == revision.id { Label("Ausgewählt", systemImage: "checkmark.circle.fill") }
                                 Text(revision.title).foregroundStyle(.primary)
                                 if let date = revision.savedAt {
-                                    Text(date, format: .dateTime.day().month().year().hour().minute().second())
+                                    Text("\(date.formatted(.dateTime.day().month().year().hour().minute().second())) · \(date.formatted(.relative(presentation: .named)))")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Text("\(revision.pageCount) Seite(n) · als Kopie öffnen")
@@ -39,7 +39,7 @@ struct LocalHistoryView: View {
                         }.disabled(loading)
                     }
                 } footer: {
-                    Text("Ein älterer Stand enthält spätere Änderungen noch nicht. Er öffnet sich als neue Kopie; das hier genannte Heft bleibt erhalten. Lokale Stände ersetzen kein externes Backup.")
+                    Text("Aufbewahrt werden die drei jüngsten Stände und bis zu fünf ältere Zwischenstände im Abstand von mindestens 10 Minuten (zusammen höchstens 300 MB). Ein älterer Stand enthält spätere Änderungen noch nicht. Er öffnet sich als neue Kopie; das hier genannte Heft bleibt erhalten. Lokale Stände ersetzen kein externes Backup.")
                 }
                 if unreadableCount > 0 {
                     Text("\(unreadableCount) Stand/Stände nicht lesbar. Dateien bleiben erhalten.")

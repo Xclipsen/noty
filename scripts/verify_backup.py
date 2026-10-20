@@ -1,38 +1,34 @@
 #!/usr/bin/env python3
 """Verify a notybackup independently, without extracting or printing note text."""
 import argparse
-import base64
 import json
 from pathlib import Path
 import struct
 import zlib
-from notebook_format import validate_notebook
+from notebook_format import check, strict, uuid_string, validate_notebook
 
 
+@strict
 def verify(path: Path) -> dict:
     with path.open("rb") as stream:
         prefix = stream.read(12)
-        if len(prefix) != 12 or prefix[:8] != b"NOTYBKP\n":
-            raise ValueError("Invalid magic/header")
+        check(len(prefix) == 12 and prefix[:8] == b"NOTYBKP\n", "Invalid magic/header")
         length = struct.unpack(">I", prefix[8:])[0]
-        if not 1 <= length <= 64_000:
-            raise ValueError("Header length outside limits")
+        check(1 <= length <= 64_000, "Header length outside limits")
         header = json.loads(stream.read(length))
-        if header["backupFormatVersion"] != 1:
-            raise ValueError("Unsupported backup version")
-        if header["payloadName"] != "notebook.json" or header["checksumAlgorithm"] != "crc32-iso-hdlc":
-            raise ValueError("Unexpected payload path or algorithm")
+        check(isinstance(header, dict), "Invalid header")
+        check(header["backupFormatVersion"] == 1, "Unsupported backup version")
+        check(header["payloadName"] == "notebook.json" and header["checksumAlgorithm"] == "crc32-iso-hdlc",
+              "Unexpected payload path or algorithm")
         count = header["payloadByteCount"]
-        if type(count) is not int or not 1 <= count <= 200_000_000 - 12 - length:
-            raise ValueError("Payload length outside limits")
+        check(type(count) is int and 1 <= count <= 200_000_000 - 12 - length, "Payload length outside limits")
         payload = stream.read(count)
-        if len(payload) != count or stream.read(1):
-            raise ValueError("Incomplete payload or trailing bytes")
-        if zlib.crc32(payload) != header["payloadCRC32"]:
-            raise ValueError("Checksum mismatch")
+        check(len(payload) == count and not stream.read(1), "Incomplete payload or trailing bytes")
+        check(type(header["payloadCRC32"]) is int and zlib.crc32(payload) == header["payloadCRC32"], "Checksum mismatch")
         notebook = json.loads(payload)
-        if notebook["id"] != header["documentID"] or notebook["schemaVersion"] != header["notebookSchemaVersion"]:
-            raise ValueError("Manifest identity/schema mismatch")
+        check(isinstance(notebook, dict) and type(header["notebookSchemaVersion"]) is int, "Invalid payload")
+        check(uuid_string(notebook["id"]) == uuid_string(header["documentID"])
+              and notebook["schemaVersion"] == header["notebookSchemaVersion"], "Manifest identity/schema mismatch")
         validate_notebook(notebook)
         return notebook
 
@@ -46,8 +42,7 @@ def main() -> None:
     result = {"valid": True, "schemaVersion": notebook["schemaVersion"], "pageCount": len(notebook["pages"])}
     if args.compare:
         result["complete_contents_match"] = notebook == json.loads(args.compare.read_bytes())
-        if not result["complete_contents_match"]:
-            raise ValueError("Complete contents do not match comparison revision")
+        check(result["complete_contents_match"], "Complete contents do not match comparison revision")
     print(json.dumps(result))
 
 

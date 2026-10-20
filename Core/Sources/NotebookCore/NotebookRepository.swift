@@ -1,7 +1,7 @@
 import Foundation
 
 /// Serial disk work runs on this actor, never on the UI actor.
-/// Revisions prevent an older queued autosave from overwriting a replacement.
+/// Revisions prevent an older queued autosave from overwriting a newer snapshot.
 public actor NotebookRepository {
     private let store: RevisionStore
     private let restoreDirectory: URL
@@ -50,12 +50,18 @@ public actor NotebookRepository {
         try data.write(to: stagedFile, options: .atomic)
         let staged = try BackupArchive.read(stagedFile)
         guard staged == data else { throw BackupError.invalidStaging }
-        var copy = try BackupArchive.decode(staged).document
+        let copy = Self.restoredCopy(of: try BackupArchive.decode(staged).document, id: id)
+        return PreparedRestore(id: id, document: copy, isLegacyJSON: decoded.isLegacyJSON,
+                               archiveCRC32: SnapshotChecksum.crc32(staged))
+    }
+
+    /// Separate document identity; the original stays untouched.
+    private static func restoredCopy(of document: Notebook, id: UUID) -> Notebook {
+        var copy = document
         copy.id = id
         copy.schemaVersion = max(2, copy.schemaVersion)
         copy.title += " (Wiederhergestellt)"
-        return PreparedRestore(id: id, document: copy, isLegacyJSON: decoded.isLegacyJSON,
-                               archiveCRC32: SnapshotChecksum.crc32(staged))
+        return copy
     }
 
     /// Call only after the UI actor validates PDFKit/PencilKit contents of the
@@ -64,10 +70,7 @@ public actor NotebookRepository {
         let stage = store.directory.appendingPathComponent("BackupStaging/\(prepared.id.uuidString)", isDirectory: true)
         let data = try BackupArchive.read(stage.appendingPathComponent("input.notybackup"))
         guard SnapshotChecksum.crc32(data) == prepared.archiveCRC32 else { throw BackupError.invalidStaging }
-        var copy = try BackupArchive.decode(data).document
-        copy.id = prepared.id
-        copy.schemaVersion = max(2, copy.schemaVersion)
-        copy.title += " (Wiederhergestellt)"
+        let copy = Self.restoredCopy(of: try BackupArchive.decode(data).document, id: prepared.id)
         guard copy == prepared.document else { throw BackupError.invalidStaging }
         let destination = restoreDirectory.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
         guard !FileManager.default.fileExists(atPath: destination.path) else { throw BackupError.invalidStaging }
@@ -78,23 +81,47 @@ public actor NotebookRepository {
         return restoredEntry(copy, directory: destination)
     }
 
+    /// Listing for the library. A copy is decoded again only after its
+    /// manifest.json changed (every commit replaces it: new date/size); a
+    /// long-lived repository therefore lists unchanged copies without reading
+    /// their revisions. Opening a copy still validates it completely.
     public func restoredCopies() throws -> RestoreCatalog {
         let root = restoreDirectory
-        guard FileManager.default.fileExists(atPath: root.path) else { return RestoreCatalog() }
+        guard FileManager.default.fileExists(atPath: root.path) else { catalogCache = [:]; return RestoreCatalog() }
         let directories = try FileManager.default.contentsOfDirectory(at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])
         var catalog = RestoreCatalog()
+        var cache: [String: CatalogEntry] = [:]
         for directory in directories.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             guard let id = UUID(uuidString: directory.lastPathComponent), id.uuidString == directory.lastPathComponent else { continue }
             do {
                 let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
                 guard values.isDirectory == true, values.isSymbolicLink != true else { throw BackupError.invalidStaging }
+                let stamp = Self.manifestStamp(directory)
+                if let stamp, let cached = catalogCache[directory.path], cached.stamp == stamp {
+                    catalog.notebooks.append(cached.entry); cache[directory.path] = cached; continue
+                }
                 let document = try RevisionStore(directory: directory).load()
                 guard document.id == id else { throw BackupError.invalidStaging }
-                catalog.notebooks.append(restoredEntry(document, directory: directory))
+                let entry = restoredEntry(document, directory: directory)
+                catalog.notebooks.append(entry)
+                if let stamp { cache[directory.path] = CatalogEntry(stamp: stamp, entry: entry) }
             } catch { catalog.unreadableCount += 1 }
         }
+        catalogCache = cache
         return catalog
+    }
+
+    private struct ManifestStamp: Equatable, Sendable { let modified: Date; let size: Int }
+    private struct CatalogEntry: Sendable { let stamp: ManifestStamp; let entry: RestoredNotebook }
+    private var catalogCache: [String: CatalogEntry] = [:]
+
+    private static func manifestStamp(_ directory: URL) -> ManifestStamp? {
+        let values = try? directory.appendingPathComponent("manifest.json")
+            .resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+        guard let values, values.isRegularFile == true, values.isSymbolicLink != true,
+              let modified = values.contentModificationDate, let size = values.fileSize else { return nil }
+        return ManifestStamp(modified: modified, size: size)
     }
 
     private func restoredEntry(_ document: Notebook, directory: URL) -> RestoredNotebook {
@@ -109,24 +136,5 @@ public actor NotebookRepository {
         }
         return RestoredNotebook(id: document.id, title: document.title, directory: directory,
                                 collectionDirectory: restoreDirectory, modifiedAt: date, textPages: previews)
-    }
-
-    public func replace(_ document: Notebook, preserving current: Notebook?, revision: Int) throws {
-        guard revision >= self.revision else { return }
-        let archive = store.directory.appendingPathComponent("Archives/\(UUID().uuidString)", isDirectory: true)
-        let fm = FileManager.default
-        try fm.createDirectory(at: archive, withIntermediateDirectories: true)
-        if let current {
-            try JSONEncoder().encode(current).write(to: archive.appendingPathComponent("before-import.noty"), options: .atomic)
-        }
-        // Keep exact bytes too, even when the originals were unreadable.
-        for name in ["notebook.json", "recovery.json", "manifest.json", "manifest-previous.json", "Revisions"] {
-            let original = store.directory.appendingPathComponent(name)
-            if fm.fileExists(atPath: original.path) {
-                try fm.copyItem(at: original, to: archive.appendingPathComponent(name))
-            }
-        }
-        try store.replaceArchivedOriginal(with: document)
-        self.revision = revision
     }
 }

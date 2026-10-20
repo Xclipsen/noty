@@ -18,19 +18,6 @@ public struct PreparedLibraryRestore: Sendable {
     public let summary: LibraryArchiveSummary
 }
 
-/// Rejects symbolic links in every path component between `url` and `base`.
-func requireRegularDirectory(_ url: URL, below base: URL) throws {
-    var checked = url.standardizedFileURL
-    let base = base.standardizedFileURL
-    guard checked.path == base.path || checked.path.hasPrefix(base.path + "/") else { throw LibraryError.invalidIndex }
-    while true {
-        let properties = try checked.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-        guard properties.isDirectory == true, properties.isSymbolicLink != true else { throw LibraryError.invalidIndex }
-        if checked.path == base.path { break }
-        checked.deleteLastPathComponent()
-    }
-}
-
 /// Separate logical instances in the same app/container, not separate signed
 /// apps. An interrupted restore stays in Staging, invisible to the workspace
 /// picker. Publishing is a same-volume rename, never a merge with current notes.
@@ -164,5 +151,5 @@ public actor WorkspaceStore {
         try fm.moveItem(at: stage, to: destination)
         return record
     }
-    private func regularDirectory(_ url: URL) throws { try requireRegularDirectory(url, below: root) }
+    private func regularDirectory(_ url: URL) throws { try ContainedDirectory.require(url, below: root) }
 }
