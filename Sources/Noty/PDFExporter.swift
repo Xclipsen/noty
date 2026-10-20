@@ -190,21 +190,25 @@ enum PDFExporter {
 final class PDFExportJob: ObservableObject {
     struct Progress: Equatable { var done: Int; var total: Int }
     @Published private(set) var progress: Progress?
-    private var task: Task<Void, Never>?
+    /// Only touched on the main actor; read once more when the owning editor goes away.
+    nonisolated(unsafe) private var task: Task<Void, Never>?
     var running: Bool { task != nil }
+    deinit { task?.cancel() }
 
     func start(_ snapshot: Notebook, pageIDs: Set<UUID>? = nil, sourcePage: ((Page) -> PDFPage?)? = nil,
                completion: @escaping (Result<Data, Error>) -> Void) {
         guard task == nil else { return }
         progress = Progress(done: 0, total: pageIDs.map { ids in snapshot.pages.filter { ids.contains($0.id) }.count } ?? snapshot.pages.count)
-        task = Task {
+        // Weak: a closed editor releases the job, whose deinit cancels the export.
+        task = Task { [weak self] in
             let result: Result<Data, Error>
             do {
                 result = .success(try await PDFExporter.export(snapshot, pageIDs: pageIDs, sourcePage: sourcePage) { done, total in
-                    self.progress = Progress(done: done, total: total)
+                    self?.progress = Progress(done: done, total: total)
                 })
             } catch { result = .failure(error) }
-            task = nil; progress = nil
+            guard let self else { return }
+            self.task = nil; self.progress = nil
             completion(result)
         }
     }
