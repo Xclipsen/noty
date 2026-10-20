@@ -807,7 +807,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if tool == .marker, markerStraight { straightenLastMarkerStroke(previousCount: previousCount) }
         if tool == .pen, scribbleErase { eraseByScribble(previousCount: previousCount) }
         let drawing = canvas.drawing, strokes = drawing.strokes
-        recordDrawnWidth(strokes, previousCount: previousCount)
+        // A precision eraser that splits a stroke also adds one: no pen width.
+        if tool == .pen || tool == .pencil || tool == .marker { recordDrawnWidth(strokes, previousCount: previousCount) }
         lastDrawing = canonicalDrawingData(drawing)
         if eraseSession == nil { strokeCountCache = (lastDrawing, strokes.count); canvasSource = lastDrawing }
         pageContent.drawing = lastDrawing
