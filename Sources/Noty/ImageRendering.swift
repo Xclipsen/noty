@@ -71,8 +71,10 @@ enum ImageRendering {
     /// Cost: decoded pixels only. The original bytes are shared with the model
     /// (copy on write); counting them as well let a single large photo exceed
     /// the limit, so it was evicted at once and decoded again on every draw.
+    /// A 2048 rendition costs 12–16 MB: room for about ten photos plus their
+    /// smaller renditions; a memory warning empties it (`purge`).
     private static let cache: NSCache<NSString, Entry> = {
-        let cache = NSCache<NSString, Entry>(); cache.totalCostLimit = 48 * 1024 * 1024; cache.countLimit = 16
+        let cache = NSCache<NSString, Entry>(); cache.totalCostLimit = 160 * 1024 * 1024; cache.countLimit = 48
         return cache
     }()
     private static let renditions = [256, 512, 1024, 2048, 2400, 4096]
@@ -92,12 +94,20 @@ enum ImageRendering {
     }
     /// The rendition at `limit` if it is cached; never decodes.
     static func cached(_ object: ImageObject, limit: Int) -> UIImage? {
-        guard let entry = cache.object(forKey: key(object, limit)), entry.bytes == object.data else { return nil }
+        guard let entry = cache.object(forKey: key(object, limit)), sameBytes(entry.bytes, object.data) else { return nil }
         return entry.image
     }
-    /// The closest cached rendition of any size (placeholder while decoding).
+    /// The closest cached rendition of any size, larger ones first among equal
+    /// distance: drawn instead of the grey placeholder while decoding.
     static func anyCached(_ object: ImageObject, near limit: Int) -> UIImage? {
-        renditions.sorted { abs($0 - limit) < abs($1 - limit) }.lazy.compactMap { cached(object, limit: $0) }.first
+        renditions.sorted { abs($0 - limit) == abs($1 - limit) ? $0 > $1 : abs($0 - limit) < abs($1 - limit) }
+            .lazy.compactMap { cached(object, limit: $0) }.first
+    }
+    /// Shared storage (the usual case: the model's own bytes) needs no byte compare.
+    private static func sameBytes(_ a: Data, _ b: Data) -> Bool {
+        guard a.count == b.count else { return false }
+        let shared = a.withUnsafeBytes { x in b.withUnsafeBytes { y in x.baseAddress == y.baseAddress } }
+        return shared || a == b
     }
     /// Decodes the rendition off the main thread, then calls `done` on the
     /// main actor (error: unreadable original). Concurrent requests share one decode.
