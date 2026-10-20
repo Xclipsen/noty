@@ -39,6 +39,10 @@ struct ExternalBackupForm: View {
                 Text(model.status).font(.subheadline).foregroundStyle(model.folderUnreachable ? Color.orange : Color.secondary)
                 LabeledContent("Letzte erfolgreiche Sicherung",
                                value: model.policy.lastSuccess.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Noch keine")
+                if let warning = model.policy.lastWarning, model.policy.lastOutcome == .succeeded {
+                    Text("Hinweis: \(warning). Das Notizbuch öffnen und prüfen; die beschädigten neueren Daten bleiben im Heftordner.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
                 if let attempt = model.policy.lastAttempt, model.policy.lastOutcome != .succeeded {
                     LabeledContent("Letzter Versuch", value: "\(attempt.formatted(date: .abbreviated, time: .shortened)) · \(outcomeTitle)")
                     if let next = model.policy.nextAttempt, next > Date() {

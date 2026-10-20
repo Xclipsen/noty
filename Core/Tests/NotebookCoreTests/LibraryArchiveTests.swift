@@ -161,13 +161,16 @@ final class LibraryArchiveTests: XCTestCase {
         try (data + Data([0])).write(to: staged)
         do { _ = try await manager.commitRestore(prepared, title: "Kaputt"); XCTFail("modified stage accepted") } catch { }
         let empty = try await manager.list(); XCTAssertTrue(empty.workspaces.isEmpty)
-        try data.write(to: staged)
-        _ = try await manager.commitRestore(prepared, title: "Okay")
-        do { _ = try await manager.commitRestore(prepared, title: "Replay"); XCTFail("replayed token") } catch { }
+        // A failed commit spends its token and removes its own stage.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staged.deletingLastPathComponent().path))
+        do { _ = try await manager.commitRestore(prepared, title: "Erneut"); XCTFail("spent token accepted") } catch { }
+        let again = try await manager.prepareRestore(file: file)
+        _ = try await manager.commitRestore(again, title: "Okay")
+        do { _ = try await manager.commitRestore(again, title: "Replay"); XCTFail("replayed token") } catch { }
         let one = try await manager.list(); XCTAssertEqual(one.workspaces.count, 1)
     }
 
-    func testPublishFailureKeepsStagedDocumentsAndExistingDestinationUntouched() async throws {
+    func testPublishFailureRemovesOwnStageAndLeavesExistingDestinationUntouched() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let file = root.appendingPathComponent("input.notylibrary")
@@ -182,9 +185,11 @@ final class LibraryArchiveTests: XCTestCase {
         do { _ = try await manager.commitRestore(prepared, title: "Blocked"); XCTFail("overwritten") }
         catch LibraryArchiveError.destinationExists { }
         XCTAssertEqual(try Data(contentsOf: sentinel), Data([9, 8, 7]))
-        let stage = workspaces.appendingPathComponent("Staging/\(prepared.id.uuidString)/Data")
-        let readback = try await LibraryStore(root: stage).backupBundle()
-        XCTAssertEqual(readback.documents, try LibraryArchive.decode(Data(contentsOf: file)).documents)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.path), ["protected"])
+        // Up to the archive size again: the unpublished stage is gone at once.
+        let stage = workspaces.appendingPathComponent("Staging/\(prepared.id.uuidString)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stage.path))
+        XCTAssertEqual(try LibraryArchive.decode(Data(contentsOf: file)).snapshot.items.count, 4)
     }
 
     func testUnreadableOrMissingDocumentAbortsFullExportRatherThanOmittingIt() async throws {

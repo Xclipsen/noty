@@ -84,10 +84,22 @@ struct BackupPostponed: LocalizedError {
     var errorDescription: String? { "Backup verschoben: \(reason). Bitte gleich noch einmal versuchen." }
 }
 
+/// Result of committing the open editors right before a backup.
+enum BackupCommit: Equatable {
+    case committed
+    /// Input or a save is running: retry with the next minute.
+    case busy
+    /// A save failed (or nothing can be saved): retrying needs a longer pause.
+    case failed
+}
+
 /// A verified archive file in the app's temporary directory; removed after use.
 struct PreparedLibraryArchive: Sendable {
     let url: URL
     let summary: LibraryArchiveSummary
+    /// Notebooks archived in their newest readable older state (newer revision damaged).
+    var olderStates: [String] = []
+    var warning: String? { ExternalBackupPolicy.olderStateWarning(olderStates) }
 }
 
 /// Temporary archive files: never inside a library or workspace tree, so an

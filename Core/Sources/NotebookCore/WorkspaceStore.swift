@@ -24,6 +24,9 @@ public struct PreparedLibraryRestore: Sendable {
 public actor WorkspaceStore {
     public let root: URL
     private let fm = FileManager.default
+    /// Stages this store created and still owns (prepared, not yet committed or
+    /// discarded). Startup cleanup never touches them.
+    private var activeStages = Set<UUID>()
     public init(root: URL) { self.root = root }
     private var areas: URL { root.appendingPathComponent("Areas", isDirectory: true) }
     private var staging: URL { root.appendingPathComponent("Staging", isDirectory: true) }
@@ -59,6 +62,7 @@ public actor WorkspaceStore {
         let id = UUID()
         let stage = staging.appendingPathComponent(id.uuidString, isDirectory: true)
         try createStage(stage)
+        activeStages.insert(id); defer { activeStages.remove(id) }
         let data = stage.appendingPathComponent("Data", isDirectory: true)
         var snapshot = LibrarySnapshot()
         let folder = LibraryItem(title: "Steuerrecht")
@@ -82,6 +86,7 @@ public actor WorkspaceStore {
             let copied = try BoundedFile.copy(from: file, to: input)
             let summary = try LibraryArchive.verify(input, visit: validate)
             guard summary.file == copied else { throw BackupError.invalidStaging }
+            activeStages.insert(id)
             return PreparedLibraryRestore(id: id, summary: summary)
         } catch {
             try? fm.removeItem(at: stage)
@@ -91,19 +96,56 @@ public actor WorkspaceStore {
 
     /// Drops a prepared, never committed stage (e.g. the user cancelled).
     public func discardRestore(_ prepared: PreparedLibraryRestore) throws {
-        let stage = staging.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
+        activeStages.remove(prepared.id)
+        try removeStage(prepared.id)
+    }
+
+    /// Startup: unpublished stages older than `age` that this store does not own
+    /// (interrupted or failed earlier runs; the user still has the original
+    /// archive). Only UUID-named real directories directly inside `Staging/`;
+    /// published areas, foreign names and symbolic links are never touched.
+    @discardableResult
+    public func removeStaleStages(olderThan age: TimeInterval = 24 * 3600, now: Date = Date()) -> Int {
+        guard (try? regularDirectory(staging)) != nil,
+              let entries = try? fm.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil, options: []) else { return 0 }
+        var removed = 0
+        for entry in entries {
+            guard let id = UUID(uuidString: entry.lastPathComponent), entry.lastPathComponent == id.uuidString, !activeStages.contains(id),
+                  let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey, .creationDateKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            let touched = [values.contentModificationDate, values.creationDate].compactMap { $0 }.max() ?? .distantPast
+            guard now.timeIntervalSince(touched) > age, (try? removeStage(id)) != nil else { continue }
+            removed += 1
+        }
+        return removed
+    }
+
+    /// Only a real directory `Staging/<id>` below this root; never an area.
+    private func removeStage(_ id: UUID) throws {
+        let stage = staging.appendingPathComponent(id.uuidString, isDirectory: true)
         guard fm.fileExists(atPath: stage.path) else { return }
         try regularDirectory(stage)
-        guard !fm.fileExists(atPath: stage.appendingPathComponent("Data").path) else { return }
         try fm.removeItem(at: stage)
     }
 
     /// UI validated all PDFKit/PencilKit contents during preparation. The staged
     /// bytes must still match exactly; a second streaming pass re-checks every
     /// chunk while writing it into its own new package (one notebook at a time).
+    /// Any failure removes this stage (up to the archive size of disk space);
+    /// the token is then spent and a new restore starts from the original file.
     public func commitRestore(_ prepared: PreparedLibraryRestore, title: String) async throws -> TestWorkspace {
         let stage = staging.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
         try regularDirectory(stage)
+        // Still owned while the commit suspends (actor reentrancy vs. cleanup).
+        defer { activeStages.remove(prepared.id) }
+        do { return try await commitStage(stage, prepared, title: title) }
+        catch {
+            try? removeStage(prepared.id)
+            throw error
+        }
+    }
+
+    private func commitStage(_ stage: URL, _ prepared: PreparedLibraryRestore, title: String) async throws -> TestWorkspace {
         let input = stage.appendingPathComponent("input.notylibrary")
         let properties = try input.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard properties.isRegularFile == true, properties.isSymbolicLink != true else { throw BackupError.invalidStaging }

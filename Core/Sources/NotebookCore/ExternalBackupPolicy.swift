@@ -22,10 +22,12 @@ public struct ExternalBackupPolicy: Codable, Equatable, Sendable {
     /// Short German reason of the last failure; never contains credentials or URLs.
     public var lastFailureReason: String?
     public var consecutiveFailures: Int?
+    /// Warning of the last success, e.g. a notebook archived in an older readable state.
+    public var lastWarning: String?
     public init() {}
     public func validate() throws {
         guard version == 1, (3...30).contains(keep), (consecutiveFailures ?? 0) >= 0,
-              (lastFailureReason?.count ?? 0) <= 300 else { throw StorageError.invalidDocument }
+              (lastFailureReason?.count ?? 0) <= 300, (lastWarning?.count ?? 0) <= 300 else { throw StorageError.invalidDocument }
         if target == .folder { guard let folderBookmark, !folderBookmark.isEmpty else { throw StorageError.invalidDocument } }
         if target == .webDAV { _ = try Self.webDAVDirectory(endpoint) }
     }
@@ -50,13 +52,21 @@ public struct ExternalBackupPolicy: Codable, Equatable, Sendable {
         lastAttempt = date; lastOutcome = outcome == .succeeded ? .failed : outcome
         lastFailureReason = String(reason.prefix(300)); consecutiveFailures = (consecutiveFailures ?? 0) + 1
     }
-    public mutating func recordSuccess(at date: Date = Date()) {
+    /// A success with `warning` still counts fully (resets the backoff).
+    public mutating func recordSuccess(at date: Date = Date(), warning: String? = nil) {
         lastAttempt = date; lastSuccess = date; lastOutcome = .succeeded; lastFailureReason = nil; consecutiveFailures = nil
+        lastWarning = warning.map { String($0.prefix(300)) }
     }
     /// A new target starts without history; older files at the old target stay.
     public mutating func startTarget(_ target: ExternalBackupTarget, at date: Date = Date()) {
         self.target = target; configuredAt = date
-        lastAttempt = nil; lastSuccess = nil; lastOutcome = nil; lastFailureReason = nil; consecutiveFailures = nil
+        lastAttempt = nil; lastSuccess = nil; lastOutcome = nil; lastFailureReason = nil; consecutiveFailures = nil; lastWarning = nil
+    }
+    /// Warning text for notebooks archived in an older readable state (nil if none).
+    public static func olderStateWarning(_ titles: [String]) -> String? {
+        guard !titles.isEmpty else { return nil }
+        let names = titles.prefix(3).map { "„\($0.prefix(40))“" }.joined(separator: ", ") + (titles.count > 3 ? " und \(titles.count - 3) weitere" : "")
+        return "\(names): älterer lesbarer Stand gesichert, neuere Revision beschädigt"
     }
 
     public var prefix: String { "noty-auto-\(series.uuidString.lowercased())-" }
@@ -103,6 +113,8 @@ public enum ExternalBackupHealth: Equatable, Sendable {
     case notConfigured, folderUnreachable, unreachable(String), failed(String), firstPending
     /// More than three days without a successful backup (or since setup).
     case stale(Date?)
+    /// Successful, but with a warning (e.g. an older readable notebook state).
+    case warning(Date, String)
     case ok(Date)
 
     public static let overdueAfter: TimeInterval = 3 * 24 * 3600
@@ -120,11 +132,12 @@ public enum ExternalBackupHealth: Equatable, Sendable {
             self = outcome == .unreachable ? .unreachable(reason) : .failed(reason); return
         }
         guard let success = policy.lastSuccess else { self = .firstPending; return }
+        if let warning = policy.lastWarning { self = .warning(success, warning); return }
         self = .ok(success)
     }
 
     /// Configured and working (or waiting for its first run).
     public var isSetUp: Bool {
-        switch self { case .ok, .firstPending: true; default: false }
+        switch self { case .ok, .firstPending, .warning: true; default: false }
     }
 }
