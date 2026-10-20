@@ -2,8 +2,10 @@
 """Read-only CRC/identity audit of an AFC copy. Never prints note contents.
 
 ROOT is `Documents/Noty` or one `NotyWorkspaces/Areas/*/Data` root. Checks both
-manifests of every package (main root, Restores/*, Library/Documents/*), every
-referenced revision and, if present, the library index and its fallback copy."""
+manifests (1–3 entries, Build 46 format) of every package (main root,
+Restores/*, Library/Documents/*), checkpoints.json if present (files collected
+by Build 46 are tolerated and counted), every referenced revision and, if
+present, the library index and its fallback copy."""
 import argparse
 import json
 import re
@@ -18,7 +20,8 @@ PACKAGE_DIRECTORY = re.compile(CANONICAL_UUID)
 MANIFEST_LIMIT = 128_000
 REVISION_LIMIT = 200_000_000
 INDEX_LIMIT = 4_000_000
-MAXIMUM_REVISIONS = 8
+MAXIMUM_REVISIONS = 3  # Build 46 manifest format; older states are in checkpoints.json
+MAXIMUM_CHECKPOINTS = 8
 
 
 def present(path):
@@ -35,17 +38,19 @@ def real_directory(path, message):
     check(not path.is_symlink() and path.is_dir(), message)
 
 
-def read_manifest(directory, name, root, checked):
-    """Validates one manifest; `checked` caches verified revisions by file name."""
-    manifest = json.loads(regular_file(directory / name, MANIFEST_LIMIT, f"Invalid {name}"))
-    check(isinstance(manifest, dict) and manifest["formatVersion"] == 1, f"Unsupported {name} format")
-    check(manifest["checksumAlgorithm"] == "crc32-iso-hdlc", f"Unexpected checksum algorithm in {name}")
-    records = manifest["revisions"]
-    check(isinstance(records, list) and 1 <= len(records) <= MAXIMUM_REVISIONS, f"Revision count outside limits in {name}")
+def read_records(directory, name, key, minimum, maximum, root, checked, missing_allowed=False):
+    """Validates one manifest/checkpoint list; `checked` caches verified
+    revisions by file name. Returns documents and the number of missing files."""
+    listing = json.loads(regular_file(directory / name, MANIFEST_LIMIT, f"Invalid {name}"))
+    check(isinstance(listing, dict) and listing["formatVersion"] == 1, f"Unsupported {name} format")
+    check(listing["checksumAlgorithm"] == "crc32-iso-hdlc", f"Unexpected checksum algorithm in {name}")
+    records = listing[key]
+    check(isinstance(records, list) and minimum <= len(records) <= maximum, f"Revision count outside limits in {name}")
     check(len({record["file"] for record in records}) == len(records), f"Duplicate revision entries in {name}")
     revisions = directory / "Revisions"
     real_directory(revisions, "Invalid Revisions directory")
     documents = []
+    missing = 0
     for record in records:
         file, count, crc = record["file"], record["byteCount"], record["crc32"]
         check(isinstance(file, str) and REVISION_FILE.fullmatch(file) is not None, "Invalid revision file name")
@@ -53,6 +58,10 @@ def read_manifest(directory, name, root, checked):
         check(type(crc) is int and 0 <= crc <= 0xFFFF_FFFF, "Invalid revision checksum")
         saved = record.get("savedAtUnix")
         check(saved is None or (number(saved) and UNIX_RANGE[0] <= saved <= UNIX_RANGE[1]), "Revision date outside range")
+        # Build 46 does not know checkpoints.json and may have collected these files.
+        if missing_allowed and not present(revisions / file):
+            missing += 1
+            continue
         if file not in checked:
             path = revisions / file
             check(path.resolve().is_relative_to(root.resolve()), "Revision outside root")
@@ -63,7 +72,11 @@ def read_manifest(directory, name, root, checked):
             checked[file] = (count, crc, document)
         check(checked[file][:2] == (count, crc), "Manifests disagree about a revision")
         documents.append(checked[file][2])
-    return documents
+    return documents, missing
+
+
+def read_manifest(directory, name, root, checked):
+    return read_records(directory, name, "revisions", 1, MAXIMUM_REVISIONS, root, checked)[0]
 
 
 def validate_snapshot(snapshot):
@@ -139,7 +152,7 @@ def load_store(root):
             directories.extend(sorted(p for p in parent.iterdir()
                                       if p.is_dir() and not p.is_symlink() and PACKAGE_DIRECTORY.fullmatch(p.name)))
     documents, locations = {}, {}
-    revisions = quarantined = 0
+    revisions = quarantined = checkpoints = missing_checkpoints = 0
     for directory in directories:
         if not present(directory / "manifest.json"):
             if directory == root:
@@ -149,6 +162,11 @@ def load_store(root):
         head = read_manifest(directory, "manifest.json", root, checked)[0]
         if present(directory / "manifest-previous.json"):
             read_manifest(directory, "manifest-previous.json", root, checked)
+        if present(directory / "checkpoints.json"):
+            found, missing = read_records(directory, "checkpoints.json", "checkpoints", 0, MAXIMUM_CHECKPOINTS,
+                                          root, checked, missing_allowed=True)
+            checkpoints += len(found)
+            missing_checkpoints += missing
         revisions += len(checked)
         head_id = uuid_string(head["id"])
         check(head_id not in documents, "Duplicate document identity")
@@ -158,9 +176,10 @@ def load_store(root):
         locations[head_id] = directory
         quarantine = directory / "Quarantine"
         if quarantine.is_dir() and not quarantine.is_symlink():
-            quarantined += sum(1 for _ in quarantine.iterdir())
+            quarantined += sum(1 for path in quarantine.rglob("*") if path.is_file() and not path.is_symlink())
     index = check_index(root, documents, locations)
     return documents, {"documents": len(documents), "checked_revisions": revisions,
+                       "checkpoints": checkpoints, "missing_checkpoint_files": missing_checkpoints,
                        "library_index": index, "quarantined_files": quarantined}
 
 

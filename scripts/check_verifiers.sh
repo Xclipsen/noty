@@ -56,13 +56,21 @@ def manifest(directory, name, records, version=1):
     (directory / name).write_text(json.dumps({"formatVersion": version, "checksumAlgorithm": "crc32-iso-hdlc", "revisions": records}))
 
 
+def checkpoint_list(directory, records, version=1):
+    (directory / "checkpoints.json").write_text(json.dumps({"formatVersion": version, "checksumAlgorithm": "crc32-iso-hdlc",
+                                                            "checkpoints": records}))
+
+
 def package(directory, document):
     older = dict(document, title=document["title"] + " (älter)")
     first = revision(directory, older, 1_800_000_000.0)
     second = revision(directory, document, 1_800_000_700.5)
     manifest(directory, "manifest-previous.json", [first])
     manifest(directory, "manifest.json", [second, first])
-    return [second, first]
+    # One existing checkpoint, one whose file Build 46 already collected.
+    kept = revision(directory, dict(older, title=document["title"] + " (Zwischenstand)"), 1_799_990_000.0)
+    checkpoint_list(directory, [kept, dict(kept, file=uid() + ".json")])
+    return [second, first, kept]
 
 
 def envelope(snapshot):
@@ -117,6 +125,10 @@ backup("title-type.notybackup", dict(valid, title=5))
 backup("urn-page-id.notybackup", dict(valid, pages=[dict(valid["pages"][0], id="urn:uuid:" + uid().lower())] + valid["pages"][1:]))
 backup("page-count-type.notybackup", dict(valid, pdfSources=[dict(valid["pdfSources"][0], pageCount="1")]))
 backup("source-enum.notybackup", dict(valid, pages=[dict(valid["pages"][0], paper="glossy")] + valid["pages"][1:]))
+# Sources above 20 MB need schema 10, so Build 46 refuses instead of falling back.
+large = [dict(valid["pdfSources"][0], data=base64.b64encode(bytes(20_000_001)).decode())]
+backup("large-source-schema-9.notybackup", dict(valid, schemaVersion=9, pdfSources=large))
+backup("large-source-schema-10.notybackup", dict(valid, schemaVersion=10, pdfSources=large))
 
 store("valid")
 store("source-enum", lambda s: s["items"][2].update(source="bogus"))
@@ -129,6 +141,10 @@ store("missing-package", lambda s: s["items"].append({"id": uid(), "title": "Weg
 store("revision-crc", flip_revision)
 store("previous-missing", missing_previous)
 store("too-many-revisions", too_many)
+store("four-revisions", lambda s: manifest(other_dir(s), "manifest.json",
+                                           [revision(other_dir(s), s["other"], 1_800_000_000.0 + i) for i in range(4)]))
+store("checkpoint-crc", lambda s: checkpoint_list(other_dir(s), [dict(s["records"]["other"][2], crc32=s["records"]["other"][2]["crc32"] ^ 1)]))
+store("checkpoint-format", lambda s: checkpoint_list(other_dir(s), [], version=2))
 store("future-manifest", lambda s: manifest(other_dir(s), "manifest.json", s["records"]["other"], version=2))
 store("future-schema", lambda s: manifest(other_dir(s), "manifest.json",
                                           [revision(other_dir(s), dict(s["other"], schemaVersion=99), 1_800_000_900.0)]))
@@ -169,12 +185,14 @@ reject() {
 }
 
 accept verify_backup.py "$work/backups/valid.notybackup" --compare "$work/backups/valid.json"
-for name in schema-99 crc trailing title-type urn-page-id page-count-type source-enum; do
+accept verify_backup.py "$work/backups/large-source-schema-10.notybackup"
+for name in schema-99 crc trailing title-type urn-page-id page-count-type source-enum large-source-schema-9; do
     reject verify_backup.py "$work/backups/$name.notybackup"
 done
 accept verify_device_store.py "$work/stores/valid"
 for name in source-enum title-control title-length date-range favorite-type cycle missing-package revision-crc \
-            previous-missing too-many-revisions future-manifest future-schema saved-range index-crc; do
+            previous-missing too-many-revisions four-revisions checkpoint-crc checkpoint-format future-manifest \
+            future-schema saved-range index-crc; do
     reject verify_device_store.py "$work/stores/$name"
 done
 echo "Prüfer-Negativtests bestanden (auch mit python3 -O); Fixtures: $work"

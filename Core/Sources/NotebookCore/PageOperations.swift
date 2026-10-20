@@ -56,6 +56,8 @@ public struct PDFSource: Codable, Equatable, Identifiable, Sendable {
     /// A 100 MB source is ~133 MB as Base64 and still fits a 200 MB revision.
     public static let maximumBytes = 100_000_000
     public static let maximumTotalBytes = 100_000_000
+    /// Limit of Build 46 and older; larger sources require schema 10.
+    public static let legacyMaximumBytes = 20_000_000
     public let id: UUID
     public let data: Data
     public let pageCount: Int
@@ -125,6 +127,7 @@ extension Notebook {
             result.pages[0].paper = .legacyTest
         }
         result.pdf = nil
+        result.raiseSchemaForLargeSources()
         try result.validate()
         return result
     }
@@ -170,6 +173,7 @@ extension Notebook {
             return page
         }
         next.pdfSources?.append(source)
+        next.raiseSchemaForLargeSources()
         next.pages.insert(contentsOf: additions, at: index)
         try next.validate(); self = next
         return additions.map(\.id)
@@ -286,6 +290,14 @@ extension Notebook {
     mutating func removeUnreferencedSources() {
         let used = Set((pages + (deletedPages ?? []).map(\.page)).compactMap { $0.pdfReference?.sourceID })
         pdfSources?.removeAll { !used.contains($0.id) }
+    }
+
+    /// Every way a source enters (import, legacy conversion, paste) raises the
+    /// schema; removing the source later never lowers it again.
+    mutating func raiseSchemaForLargeSources() {
+        if (pdfSources ?? []).contains(where: { $0.data.count > PDFSource.legacyMaximumBytes }) {
+            schemaVersion = max(10, schemaVersion)
+        }
     }
 
     public mutating func toggleBookmark(_ id: UUID) throws {

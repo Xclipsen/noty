@@ -220,8 +220,26 @@ final class LocalHistoryTests: XCTestCase {
         try JSONDecoder().decode(RevisionManifest.self, from: Data(contentsOf: root.appendingPathComponent("manifest-previous.json")))
     }
 
-    func testContinuousEditingKeepsCheckpointsTenMinutesApartForAboutAnHour() throws {
-        let root = try directory()
+    private func checkpointList(_ root: URL) throws -> CheckpointList {
+        try JSONDecoder().decode(CheckpointList.self, from: Data(contentsOf: root.appendingPathComponent("checkpoints.json")))
+    }
+
+    /// Replica of Build 46 `RevisionStore.validate`: anything else makes it
+    /// fall back to an older revision, auto-save and delete the newer one.
+    private func build46Accepts(_ url: URL) throws -> Bool {
+        let manifest = try JSONDecoder().decode(RevisionManifest.self, from: Data(contentsOf: url))
+        return manifest.formatVersion == 1 && manifest.checksumAlgorithm == "crc32-iso-hdlc"
+            && (1...3).contains(manifest.revisions.count)
+            && Set(manifest.revisions.map(\.file)).count == manifest.revisions.count
+            && manifest.revisions.allSatisfy { record in
+                UUID(uuidString: String(record.file.dropLast(5)))?.uuidString == String(record.file.dropLast(5))
+                    && record.file.hasSuffix(".json") && (1...200_000_000).contains(record.byteCount)
+                    && (record.savedAtUnix.map { $0.isFinite && (-62_135_596_800...253_402_300_799).contains($0) } ?? true)
+            }
+    }
+
+    /// Continuous editing, one save per minute for 90 minutes.
+    private func editForNinetyMinutes(_ root: URL) throws -> (RevisionStore, Notebook, [Double: Notebook], Date) {
         let store = RevisionStore(directory: root)
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         var now = start
@@ -234,30 +252,88 @@ final class LocalHistoryTests: XCTestCase {
             try store.save(document)
             states[now.timeIntervalSince1970] = document
         }
+        return (store, document, states, start)
+    }
+
+    func testContinuousEditingKeepsCheckpointsTenMinutesApartForAboutAnHour() throws {
+        let root = try directory()
+        let (store, document, states, start) = try editForNinetyMinutes(root)
+        // Manifests keep the Build 46 format: the three newest states only.
         let entries = try manifest(root).revisions
-        XCTAssertEqual(entries.count, 8)
-        let times = entries.compactMap(\.savedAtUnix)
-        XCTAssertEqual(times.count, 8)
-        XCTAssertEqual(Array(times.prefix(3)), [90, 89, 88].map { start.timeIntervalSince1970 + Double($0) * 60 })
-        let checkpoints = Array(times.dropFirst(3))
-        for (newer, older) in zip(checkpoints, checkpoints.dropFirst()) { XCTAssertGreaterThanOrEqual(newer - older, 600) }
-        // About an hour of history in 10-minute steps, oldest states dropped first.
-        XCTAssertGreaterThanOrEqual(times[0] - times[7], 2_400)
-        XCTAssertLessThan(times[0] - times[7], 3_600)
+        XCTAssertEqual(entries.compactMap(\.savedAtUnix), [90, 89, 88].map { start.timeIntervalSince1970 + Double($0) * 60 })
+        XCTAssertTrue(try build46Accepts(root.appendingPathComponent("manifest.json")))
+        XCTAssertTrue(try build46Accepts(root.appendingPathComponent("manifest-previous.json")))
+        let checkpoints = try checkpointList(root).checkpoints
+        XCTAssertEqual(checkpoints.count, 5)
+        let times = checkpoints.compactMap(\.savedAtUnix)
+        XCTAssertEqual(times, [80, 70, 60, 50, 40].map { start.timeIntervalSince1970 + Double($0) * 60 })
         let history = try store.localHistory()
         XCTAssertEqual(history.revisions.count, 8)
-        XCTAssertEqual(history.revisions.map { $0.savedAt?.timeIntervalSince1970 }, times)
+        XCTAssertEqual(history.unreadableCount, 0)
+        XCTAssertEqual(history.revisions.map { $0.savedAt?.timeIntervalSince1970 }, entries.compactMap(\.savedAtUnix) + times)
+        XCTAssertEqual(history.revisions.filter(\.isLatest).count, 1)
         for revision in history.revisions {
             XCTAssertEqual(try store.localRevision(id: revision.id), states[revision.savedAt!.timeIntervalSince1970])
         }
-        // GC keeps exactly both manifests' union; nothing quarantined.
-        let union = Set((entries + (try previousManifest(root)).revisions).map(\.file))
+        // GC keeps manifest ∪ previous ∪ checkpoints; checkpoints are never quarantined.
+        let union = Set((entries + (try previousManifest(root)).revisions + checkpoints).map(\.file))
         XCTAssertEqual(try physicalFiles(root), union)
         XCTAssertLessThanOrEqual(union.count, 9)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Quarantine").path))
-        // A fresh reader accepts eight entries; the manifest stays far below 128 kB.
-        XCTAssertEqual(try RevisionStore(directory: root).load(), document)
-        XCTAssertLessThan(try Data(contentsOf: root.appendingPathComponent("manifest.json")).count, 4_000)
+        // A fresh store reads the same eight states.
+        let reopened = RevisionStore(directory: root)
+        XCTAssertEqual(try reopened.load(), document)
+        XCTAssertEqual(try reopened.localHistory().revisions.map(\.id), history.revisions.map(\.id))
+    }
+
+    func testCheckpointsSurviveWhereBuild46CollectedTheirFiles() throws {
+        let root = try directory()
+        let (_, document, _, _) = try editForNinetyMinutes(root)
+        // Build 46 commits: it only knows both manifests and deletes every other revision.
+        let referenced = Set((try manifest(root).revisions + (try previousManifest(root)).revisions).map(\.file))
+        for file in try physicalFiles(root) where !referenced.contains(file) {
+            try FileManager.default.removeItem(at: root.appendingPathComponent("Revisions/" + file))
+        }
+        let reopened = RevisionStore(directory: root)
+        XCTAssertEqual(try reopened.load(), document)
+        XCTAssertFalse(reopened.recovered)
+        let history = try reopened.localHistory()
+        XCTAssertEqual(history.revisions.count, 3)
+        XCTAssertEqual(history.unreadableCount, 0)
+        var edited = document
+        edited.pages[0].text = "nach Build 46"
+        try reopened.save(edited)
+        // No dangling entries are written back; nothing moves to quarantine.
+        let checkpoints = try checkpointList(root).checkpoints
+        XCTAssertTrue(Set(checkpoints.map(\.file)).isSubset(of: try physicalFiles(root)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Quarantine").path))
+        XCTAssertEqual(try RevisionStore(directory: root).load(), edited)
+    }
+
+    func testDamagedOrFutureCheckpointListNeverBlocksLoadingOrSaving() throws {
+        let root = try directory()
+        let (_, document, _, _) = try editForNinetyMinutes(root)
+        let file = root.appendingPathComponent("checkpoints.json")
+        try Data("{\"formatVersion\":1,".utf8).write(to: file)
+        let damaged = RevisionStore(directory: root)
+        XCTAssertEqual(try damaged.load(), document)
+        XCTAssertFalse(damaged.recovered)
+        XCTAssertEqual(try damaged.localHistory().revisions.count, 3)
+        var edited = document
+        edited.pages[0].text = "trotz defekter Checkpoints"
+        try damaged.save(edited)
+        XCTAssertEqual(try RevisionStore(directory: root).load(), edited)
+        XCTAssertNoThrow(try checkpointList(root))
+
+        // A newer list format is left untouched and only ignored.
+        let future = Data("{\"formatVersion\":2,\"checkpoints\":[]}".utf8)
+        try future.write(to: file)
+        let newer = RevisionStore(directory: root)
+        XCTAssertEqual(try newer.load(), edited)
+        edited.pages[0].text = "mit neuerem Checkpoint-Format"
+        try newer.save(edited)
+        XCTAssertEqual(try Data(contentsOf: file), future)
+        XCTAssertEqual(try RevisionStore(directory: root).load(), edited)
     }
 
     func testCheckpointSpacingCapAndTimestampRules() {
@@ -304,7 +380,8 @@ final class LocalHistoryTests: XCTestCase {
             document.pages[0].text = "Stand \(step)"
             try store.save(document)
         }
-        XCTAssertEqual(try manifest(root).revisions.count, 6)
+        XCTAssertEqual(try manifest(root).revisions.count, 3)
+        XCTAssertEqual(try checkpointList(root).checkpoints.count, 3)
         let reopened = RevisionStore(directory: root)
         reopened.clock = { now }
         XCTAssertEqual(try reopened.load(), document)
@@ -312,8 +389,9 @@ final class LocalHistoryTests: XCTestCase {
         document.pages[0].text = "nach dem Öffnen"
         try reopened.save(document)
         let entries = try manifest(root).revisions
-        XCTAssertEqual(entries.count, 7)
-        XCTAssertEqual(try physicalFiles(root), Set((entries + (try previousManifest(root)).revisions).map(\.file)))
+        let checkpoints = try checkpointList(root).checkpoints
+        XCTAssertEqual(entries.count + checkpoints.count, 7)
+        XCTAssertEqual(try physicalFiles(root), Set((entries + (try previousManifest(root)).revisions + checkpoints).map(\.file)))
         XCTAssertEqual(try reopened.localHistory().revisions.count, 7)
     }
 }
