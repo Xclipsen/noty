@@ -62,6 +62,18 @@ final class RevisionStoreTests: XCTestCase {
         ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).sorted()
     }
 
+    /// Quarantine sets (`Quarantine/<seconds>-<UUID>/`), oldest first.
+    private func quarantineSets(_ root: URL) -> [URL] {
+        contents(root.appendingPathComponent("Quarantine")).map { root.appendingPathComponent("Quarantine/" + $0) }
+    }
+
+    /// File names in all quarantine sets, mapped to their location.
+    private func quarantined(_ root: URL) -> [String: URL] {
+        var result: [String: URL] = [:]
+        for set in quarantineSets(root) { for name in contents(set) { result[name] = set.appendingPathComponent(name) } }
+        return result
+    }
+
     func testValidJSONWithChangedBytesFailsChecksumAndRecoversOlderState() throws {
         let root = try directory()
         let store = RevisionStore(directory: root)
@@ -87,13 +99,15 @@ final class RevisionStoreTests: XCTestCase {
         XCTAssertEqual(try RevisionStore(directory: root).load(), edited)
         XCTAssertFalse(try referenced(root).contains(newest))
         XCTAssertFalse(FileManager.default.fileExists(atPath: latest.path))
-        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Quarantine/" + newest)), damaged)
+        XCTAssertEqual(quarantineSets(root).count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(quarantined(root)[newest])), damaged)
         for revision in 1...4 {
             edited.pages[0].text = "Stand \(revision)"
             try recovered.save(edited)
         }
-        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Quarantine/" + newest)), damaged)
-        XCTAssertTrue(try referenced(root).isDisjoint(with: contents(root.appendingPathComponent("Quarantine"))))
+        XCTAssertEqual(quarantineSets(root).count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(quarantined(root)[newest])), damaged)
+        XCTAssertTrue(try referenced(root).isDisjoint(with: Set(quarantined(root).keys)))
         XCTAssertEqual(try RevisionStore(directory: root).load(), edited)
     }
 
@@ -119,12 +133,13 @@ final class RevisionStoreTests: XCTestCase {
         try reopened.save(edited)
         XCTAssertEqual(try RevisionStore(directory: root).load(), edited)
         XCTAssertFalse(try referenced(root).contains(newestFile))
-        let quarantine = root.appendingPathComponent("Quarantine")
-        XCTAssertEqual(try Data(contentsOf: quarantine.appendingPathComponent(newestFile)), newestBytes)
-        XCTAssertEqual(try Notebook.decode(Data(contentsOf: quarantine.appendingPathComponent(newestFile))), newest)
-        let manifests = contents(quarantine).filter { $0.hasPrefix("manifest-") }
-        XCTAssertEqual(manifests.count, 1)
-        XCTAssertEqual(try Data(contentsOf: quarantine.appendingPathComponent(manifests[0])), damagedManifest)
+        // One set holds the skipped revision and the damaged manifest it was named by.
+        XCTAssertEqual(quarantineSets(root).count, 1)
+        let set = quarantined(root)
+        XCTAssertEqual(Set(set.keys), [newestFile, "manifest.json"])
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(set[newestFile])), newestBytes)
+        XCTAssertEqual(try Notebook.decode(Data(contentsOf: XCTUnwrap(set[newestFile]))), newest)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(set["manifest.json"])), damagedManifest)
         // Nothing the acknowledged chain referenced was lost.
         let revisions = Set(contents(root.appendingPathComponent("Revisions")))
         XCTAssertTrue(try referenced(root).isSubset(of: revisions))
@@ -132,9 +147,68 @@ final class RevisionStoreTests: XCTestCase {
             edited.pages[0].text = "Stand \(revision)"
             try reopened.save(edited)
         }
-        XCTAssertEqual(contents(quarantine).filter { $0.hasPrefix("manifest-") }.count, 1)
-        XCTAssertEqual(try Data(contentsOf: quarantine.appendingPathComponent(newestFile)), newestBytes)
+        XCTAssertEqual(quarantined(root), set)
         XCTAssertEqual(try RevisionStore(directory: root).load(), edited)
+    }
+
+    func testFailedManifestPreservationNeverBlocksSaving() throws {
+        let root = try directory()
+        let store = RevisionStore(directory: root)
+        var first = Notebook()
+        first.pages[0].text = "bestätigt"
+        try store.save(first)
+        var newest = first
+        newest.pages[0].text = "neuer Stand"
+        try store.save(newest)
+        let newestFile = try manifest(root).revisions[0].file
+        try Data("{".utf8).write(to: root.appendingPathComponent("manifest.json"))
+        // Stands in for full storage: no quarantine set can be created.
+        try Data("kein Ordner".utf8).write(to: root.appendingPathComponent("Quarantine"))
+        let reopened = RevisionStore(directory: root)
+        XCTAssertEqual(try reopened.load(), first)
+        var edited = first
+        edited.pages[0].text = "trotzdem gespeichert"
+        try reopened.save(edited)
+        XCTAssertEqual(try RevisionStore(directory: root).load(), edited)
+        // The damaged manifest is replaced, but the newer revision is kept in place.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("Revisions/" + newestFile).path))
+        XCTAssertFalse(try referenced(root).contains(newestFile))
+        edited.pages[0].text = "noch einmal"
+        try reopened.save(edited)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("Revisions/" + newestFile).path))
+    }
+
+    func testOnlyTheThreeNewestQuarantineSetsAreKept() throws {
+        let root = try directory()
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        var document = Notebook()
+        let seed = RevisionStore(directory: root)
+        seed.clock = { now }
+        try seed.save(document)
+        var damagedFiles: [String] = []
+        for round in 1...5 {
+            // A newer revision gets damaged, the next session falls back and edits.
+            let writer = RevisionStore(directory: root)
+            writer.clock = { now }
+            _ = try writer.load()
+            document.pages[0].text = "Runde \(round)"
+            try writer.save(document)
+            let newest = try manifest(root).revisions[0].file
+            try Data("beschädigt \(round)".utf8).write(to: root.appendingPathComponent("Revisions/" + newest))
+            damagedFiles.append(newest)
+            now += 60
+            let recovering = RevisionStore(directory: root)
+            recovering.clock = { now }
+            XCTAssertNotNil(try recovering.load())
+            XCTAssertTrue(recovering.recovered)
+            document.pages[0].text = "repariert \(round)"
+            try recovering.save(document)
+            now += 60
+        }
+        let sets = quarantineSets(root)
+        XCTAssertEqual(sets.count, 3)
+        XCTAssertEqual(Set(quarantined(root).keys), Set(damagedFiles.suffix(3)))
+        XCTAssertEqual(try RevisionStore(directory: root).load(), document)
     }
 
     func testNormalCommitsDeleteOwnDroppedRevisionsWithoutQuarantine() throws {
@@ -225,28 +299,51 @@ final class RevisionStoreTests: XCTestCase {
         XCTAssertEqual(contents(migrations).count, 2)
     }
 
-    func testUncommittedRevisionDoesNotBecomeCurrentAndIsQuarantinedAfterCommit() throws {
+    func testUncommittedRevisionDoesNotBecomeCurrentAndIsCollectedAfterCommit() throws {
         let root = try directory()
         let store = RevisionStore(directory: root)
         let first = Notebook()
         try store.save(first)
+        // App ended between revision and manifest write: manifest.json stays intact.
         var uncommitted = first
         uncommitted.pages[0].text = "nie bestätigter Stand"
-        let name = UUID().uuidString + ".json"
-        let orphan = root.appendingPathComponent("Revisions/" + name)
-        let bytes = try JSONEncoder().encode(uncommitted)
-        try bytes.write(to: orphan)
+        let orphan = root.appendingPathComponent("Revisions/" + UUID().uuidString + ".json")
+        try JSONEncoder().encode(uncommitted).write(to: orphan)
         let reopened = RevisionStore(directory: root)
         XCTAssertEqual(try reopened.load(), first)
         XCTAssertFalse(reopened.recovered)
         var next = first
         next.pages[0].text = "nächster bestätigter Stand"
         try reopened.save(next)
+        // No fallback happened: the unacknowledged rest is deleted, not quarantined.
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
-        // Never acknowledged by this store: kept, not deleted, and never referenced.
-        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Quarantine/" + name)), bytes)
-        XCTAssertFalse(try referenced(root).contains(name))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Quarantine").path))
         XCTAssertEqual(try RevisionStore(directory: root).load(), next)
+    }
+
+    func testUnreadableCheckpointListKeepsUnknownRevisionsInPlace() throws {
+        let root = try directory()
+        let store = RevisionStore(directory: root)
+        var now = Date(timeIntervalSince1970: 1_800_000_000)
+        store.clock = { now }
+        var document = Notebook()
+        for step in 0..<5 {
+            document.pages[0].text = "Stand \(step)"
+            try store.save(document)
+            now += 900
+        }
+        let list = try JSONDecoder().decode(CheckpointList.self, from: Data(contentsOf: root.appendingPathComponent("checkpoints.json")))
+        XCTAssertFalse(list.checkpoints.isEmpty)
+        try Data("{".utf8).write(to: root.appendingPathComponent("checkpoints.json"))
+        let reopened = RevisionStore(directory: root)
+        XCTAssertEqual(try reopened.load(), document)
+        document.pages[0].text = "danach"
+        try reopened.save(document)
+        // Possibly still history: neither deleted nor quarantined in this session.
+        for record in list.checkpoints {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("Revisions/" + record.file).path))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Quarantine").path))
     }
 
     func testFailedManifestCommitKeepsAcknowledgedStateAndRetryWorks() throws {

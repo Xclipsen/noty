@@ -176,7 +176,7 @@ def load_store(root):
         locations[head_id] = directory
         quarantine = directory / "Quarantine"
         if quarantine.is_dir() and not quarantine.is_symlink():
-            quarantined += sum(1 for _ in quarantine.iterdir())
+            quarantined += sum(1 for path in quarantine.rglob("*") if path.is_file() and not path.is_symlink())
     index = check_index(root, documents, locations)
     return documents, {"documents": len(documents), "checked_revisions": revisions,
                        "checkpoints": checkpoints, "missing_checkpoint_files": missing_checkpoints,

@@ -80,9 +80,10 @@ public final class RevisionStore {
     private var lastDocument: Notebook?
     private var lastBytes: Data?
     private var lastManifest: RevisionManifest?
-    /// Revision files of the acknowledged chain this store loaded, wrote or
-    /// committed. Only these are ever deleted; any other unreferenced revision
-    /// (e.g. a newer one skipped by a fallback) is quarantined instead.
+    /// Revision files of the acknowledged chain (manifests, checkpoints) this
+    /// store loaded, wrote or committed. Unknown unreferenced revisions are
+    /// quarantined after a fallback load and otherwise deleted like dropped
+    /// known ones (rests of an interrupted commit), see `collectGarbage`.
     private var known = Set<String>()
     /// manifest.json exists but was unusable; a copy is kept before replacing it.
     private var damagedPrimary = false
@@ -90,6 +91,15 @@ public final class RevisionStore {
     private var checkpoints: [RevisionRecord] = []
     /// A checkpoints.json of a newer format is left untouched.
     private var checkpointsLocked = false
+    /// checkpoints.json exists but could not be used: revision files present at
+    /// load may belong to it and are left in place this session.
+    private var checkpointsUncertain = false
+    private var preexisting = Set<String>()
+    /// This store's load fell back to an older state (sticky for its lifetime):
+    /// unknown revision files are quarantined instead of deleted.
+    private var fallbackLoaded = false
+    /// Quarantine set of the current commit, created on first use.
+    private var quarantineSet: URL?
     /// Commit timestamps (`savedAtUnix`); replaceable in tests.
     var clock: () -> Date = { Date() }
     private let fm = FileManager.default
@@ -121,11 +131,13 @@ public final class RevisionStore {
                         known = chain.subtracting(skipped)
                         checkpoints = readCheckpoints().filter { !skipped.contains($0.file) && !retained.contains($0) }
                         known.formUnion(checkpoints.map(\.file))
+                        preexisting = checkpointsUncertain ? Set((try? fm.contentsOfDirectory(atPath: revisions.path)) ?? []) : []
                         damagedPrimary = manifestURL != primary
                         lastManifest = RevisionManifest(revisions: retained)
                         lastDocument = document
                         lastBytes = bytes
                         recovered = manifestURL != primary || offset > 0
+                        fallbackLoaded = recovered
                         loaded = true
                         return document
                     } catch StorageError.unsupportedSchema(let version) {
@@ -156,6 +168,9 @@ public final class RevisionStore {
         lastManifest = nil
         known = []
         checkpoints = []
+        checkpointsUncertain = false
+        preexisting = []
+        fallbackLoaded = false // Prototype files stay untouched; revision rests are uncommitted.
         damagedPrimary = false
         return document
     }
@@ -164,6 +179,7 @@ public final class RevisionStore {
         if !loaded { _ = try load() }
         if lastManifest != nil, !recovered, lastDocument == document,
            fm.fileExists(atPath: primary.path) { return }
+        quarantineSet = nil
         let bytes = try JSONEncoder().encode(document)
         guard bytes.count <= Self.maximumBytes else { throw RevisionError.snapshotTooLarge }
         _ = try Notebook.decode(bytes)
@@ -196,8 +212,9 @@ public final class RevisionStore {
             nextCheckpoints = Self.checkpoints(from: Array(older.dropFirst(2)) + checkpoints, besides: manifest.revisions)
             // Before the commit point, so a checkpoint never depends on a GC'd file.
             checkpointsWritten = writeCheckpoints(nextCheckpoints)
-            if damagedPrimary { preserveDamagedPrimary() }
             if let old { try JSONEncoder().encode(old).write(to: previous, options: .atomic) }
+            // After the valid previous pointer exists; a crash now loads it again.
+            if damagedPrimary { preserveDamagedPrimary() }
             // Commit point: no UI may claim success before this atomic replacement.
             try JSONEncoder().encode(manifest).write(to: primary, options: .atomic)
         } catch {
@@ -284,7 +301,10 @@ public final class RevisionStore {
     /// which does not know this file) are dropped silently.
     private func readCheckpoints() -> [RevisionRecord] {
         checkpointsLocked = false
-        guard itemExists(checkpointFile), let bytes = try? readRegularFile(checkpointFile, limit: 128_000) else { return [] }
+        checkpointsUncertain = false
+        guard itemExists(checkpointFile) else { return [] }
+        checkpointsUncertain = true
+        guard let bytes = try? readRegularFile(checkpointFile, limit: 128_000) else { return [] }
         struct Header: Decodable { var formatVersion: Int }
         guard let version = try? JSONDecoder().decode(Header.self, from: bytes).formatVersion else { return [] }
         guard version == 1 else { checkpointsLocked = version > 1; return [] }
@@ -292,6 +312,7 @@ public final class RevisionStore {
               list.checksumAlgorithm == "crc32-iso-hdlc", list.checkpoints.count <= Self.maximumKept,
               Set(list.checkpoints.map(\.file)).count == list.checkpoints.count,
               list.checkpoints.allSatisfy(validRecord) else { return [] }
+        checkpointsUncertain = false
         return list.checkpoints.filter { record in
             let values = try? revisions.appendingPathComponent(record.file)
                 .resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
@@ -320,39 +341,63 @@ public final class RevisionStore {
             let url = revisions.appendingPathComponent(file)
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             guard values?.isRegularFile == true, values?.isSymbolicLink != true else { continue }
-            if known.contains(file) {
-                if (try? fm.removeItem(at: url)) != nil { known.remove(file) }
-            } else {
-                moveToQuarantine(url)
-            }
+            // checkpoints.json unreadable or newer: files from before this session
+            // may still be history; leave them (this session's own rests go).
+            if checkpointsUncertain, preexisting.contains(file) { continue }
+            // Possibly newer data the fallback skipped: keep it in quarantine.
+            if !known.contains(file), fallbackLoaded { moveToQuarantine(url); continue }
+            // Dropped acknowledged states, or unacknowledged rests of an interrupted commit.
+            if (try? fm.removeItem(at: url)) != nil { known.remove(file) }
         }
     }
 
+    /// A failed move leaves the file in place, never deletes it.
     private func moveToQuarantine(_ url: URL) {
-        guard let folder = try? quarantineDirectory() else { return }
-        var target = folder.appendingPathComponent(url.lastPathComponent)
-        if itemExists(target) { target = folder.appendingPathComponent("\(UUID().uuidString)-\(url.lastPathComponent)") }
+        guard let folder = try? quarantineSetDirectory() else { return }
+        let target = folder.appendingPathComponent(url.lastPathComponent)
         guard !itemExists(target) else { return }
         try? fm.moveItem(at: url, to: target)
     }
 
-    /// A damaged manifest.json is the only pointer to skipped newer revisions;
-    /// keep a copy beside them before the recovered commit replaces it.
-    /// Copied once; a failed copy is retried with the next commit attempt.
+    /// The damaged manifest.json is the only pointer to skipped newer
+    /// revisions; it is moved (a rename, no extra space) into this commit's
+    /// quarantine set right before the new manifest replaces it. Best effort:
+    /// if that fails, e.g. on full storage, the commit still replaces it, so
+    /// saving is never blocked; the skipped revisions stay preserved anyway.
     private func preserveDamagedPrimary() {
-        guard let values = try? primary.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
-              values.isRegularFile == true, values.isSymbolicLink != true else { damagedPrimary = false; return }
-        guard let folder = try? quarantineDirectory() else { return }
-        let target = folder.appendingPathComponent("manifest-\(UUID().uuidString).json")
-        guard !itemExists(target), (try? fm.copyItem(at: primary, to: target)) != nil else { return }
         damagedPrimary = false
+        guard let values = try? primary.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true,
+              let folder = try? quarantineSetDirectory() else { return }
+        let target = folder.appendingPathComponent("manifest.json")
+        guard !itemExists(target) else { return }
+        try? fm.moveItem(at: primary, to: target)
     }
 
-    private func quarantineDirectory() throws -> URL {
+    static let quarantineSetsKept = 3
+
+    /// One set per recovered commit: `Quarantine/<unix seconds>-<UUID>/`. Only
+    /// the three newest sets of this package are kept.
+    private func quarantineSetDirectory() throws -> URL {
+        if let quarantineSet { return quarantineSet }
         try fm.createDirectory(at: quarantine, withIntermediateDirectories: true)
         let values = try quarantine.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isDirectory == true, values.isSymbolicLink != true else { throw RevisionError.invalidManifest }
-        return quarantine
+        let stamp = String(format: "%010d", Int(max(0, min(9_999_999_999, clock().timeIntervalSince1970))))
+        let set = quarantine.appendingPathComponent("\(stamp)-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: set, withIntermediateDirectories: false)
+        quarantineSet = set
+        let sets = ((try? fm.contentsOfDirectory(atPath: quarantine.path)) ?? []).filter { name in
+            let parts = name.split(separator: "-", maxSplits: 1)
+            guard parts.count == 2, parts[0].count == 10, parts[0].allSatisfy(\.isASCII), parts[0].allSatisfy(\.isNumber),
+                  UUID(uuidString: String(parts[1]))?.uuidString == String(parts[1]) else { return false }
+            let kind = try? quarantine.appendingPathComponent(name).resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            return kind?.isDirectory == true && kind?.isSymbolicLink != true
+        }.sorted()
+        for name in sets.dropLast(Self.quarantineSetsKept) where name != set.lastPathComponent {
+            try? fm.removeItem(at: quarantine.appendingPathComponent(name))
+        }
+        return set
     }
 
     /// After a failed commit, remove this attempt's new revision files that no
