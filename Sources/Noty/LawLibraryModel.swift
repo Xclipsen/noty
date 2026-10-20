@@ -67,7 +67,10 @@ final class LawLibraryModel: ObservableObject {
     @Published private(set) var syncStatus = "Lokal gespeichert"
     @Published private(set) var byteCount: Int64 = 0
     @Published var error: String?
-    @Published var panelOpen = false
+    @Published var panelOpen = false { didSet { if !panelOpen { stashed = false } } }
+    /// Pushed past the screen edge like iPad Slide Over: hidden behind an edge
+    /// tab, reader state kept. Closing the window clears it.
+    @Published var stashed = false
     @Published var docked = false
     @Published var panelOnLeft = false
     var sceneActive = true

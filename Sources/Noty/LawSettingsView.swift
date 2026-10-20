@@ -122,23 +122,30 @@ struct LawSettingsPage: View {
     }
 }
 
-struct LawPanelView: View {
+struct LawPanelView<Drag: Gesture>: View {
     @EnvironmentObject private var laws: LawLibraryModel
-    var onDrag: (CGSize) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Moves the window live; the workspace decides side, dock and stash on release.
+    var drag: Drag
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Menu {
                     Button(laws.docked ? "Über Notizbüchern schweben" : "Neben Notizbuch andocken", systemImage: laws.docked ? "rectangle.on.rectangle" : "rectangle.split.2x1") { laws.docked.toggle() }
                     Button(laws.panelOnLeft ? "Nach rechts" : "Nach links") { laws.panelOnLeft.toggle() }
+                    Button("An den Rand schieben", systemImage: laws.panelOnLeft ? "arrow.left.to.line" : "arrow.right.to.line") {
+                        withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = true }
+                    }
                 } label: { Image(systemName: "rectangle.split.2x1").frame(width: 44, height: 36) }.accessibilityLabel("Gesetzesfenster anordnen")
                 Spacer()
-                Capsule().fill(.secondary).frame(width: 44, height: 5).frame(width: 80, height: 36).contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 12).onEnded { onDrag($0.translation) })
+                Capsule().fill(.secondary).frame(width: 44, height: 5).frame(width: 80, height: 36)
                     .accessibilityLabel("Gesetzesfenster verschieben")
                 Spacer()
                 Button { laws.panelOpen = false } label: { Image(systemName: "xmark").frame(width: 44, height: 36) }.accessibilityLabel("Gesetzesfenster schließen")
             }.background(.ultraThinMaterial)
+                // The whole bar is the grip, not only the small capsule.
+                .contentShape(Rectangle())
+                .gesture(drag)
             LawReaderView()
         }.clipShape(RoundedRectangle(cornerRadius: laws.docked ? 0 : 16))
             .overlay(RoundedRectangle(cornerRadius: laws.docked ? 0 : 16).strokeBorder(.secondary.opacity(0.25)))

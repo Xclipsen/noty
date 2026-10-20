@@ -25,6 +25,9 @@ struct LawReaderView: View {
     @State private var fontSize = 18.0
     @State private var jumpParagraph: String?
     @State private var requestID = UUID()
+    @FocusState private var queryFocused: Bool
+    /// Closed or stashed at the screen edge: no hidden field may keep the keyboard.
+    private var hidden: Bool { !laws.panelOpen || laws.stashed }
     private var entry: LawEntry? { laws.entries.first { $0.id == selectedID } }
     private var section: LawSection? { document?.sections.first { $0.id == sectionID } }
     private var marks: [LawPersonalItem] {
@@ -86,6 +89,7 @@ struct LawReaderView: View {
             do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
             await search(number)
         }
+        .onChange(of: hidden) { _, hidden in if hidden { queryFocused = false } }
         .sheet(isPresented: $showContents) { contents }
         .sheet(isPresented: $showBookmarks) { bookmarks }
     }
@@ -114,13 +118,17 @@ struct LawReaderView: View {
             }
             HStack {
                 TextField("Schnellsuche · 144 HGB", text: $query).textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.search)
+                    .focused($queryFocused)
                     .onSubmit { Task { await search(query, allowFullText: true) } }
                 if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.accessibilityLabel("Suche leeren") }
             }.padding(8).background(.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             HStack {
-                LawParagraphField(placeholder: entry?.kind == "administration" ? "Abschnitt / R" : "Paragraph", text: $number, letters: letters) {
+                LawParagraphField(placeholder: entry?.kind == "administration" ? "Abschnitt / R" : "Paragraph", text: $number, letters: letters, active: !hidden) {
                     Task { await search(number, allowFullText: true) }
-                }.frame(minHeight: 32)
+                }
+                // A UITextField otherwise takes all offered height and pushes
+                // the law text down (empty box under the quick search).
+                .fixedSize(horizontal: false, vertical: true).frame(minHeight: 32)
                 Button(letters ? "123" : "abc / Abs.") { letters.toggle() }.font(.caption)
                     .accessibilityLabel("Zwischen Zahlen- und Texttastatur wechseln")
                 Button(viewPDF ? "Lesetext" : "PDF") { Task { await togglePDF() } }.disabled(document == nil)
@@ -457,6 +465,7 @@ private struct LawParagraphField: UIViewRepresentable {
     var placeholder: String
     @Binding var text: String
     var letters: Bool
+    var active: Bool
     var submit: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextField {
@@ -475,6 +484,7 @@ private struct LawParagraphField: UIViewRepresentable {
         if field.text != text { field.text = text }
         let type: UIKeyboardType = letters ? .default : .numberPad
         if field.keyboardType != type { field.keyboardType = type; if field.isFirstResponder { field.reloadInputViews() } }
+        if !active, field.isFirstResponder { field.resignFirstResponder() }
     }
     @MainActor
     final class Coordinator: NSObject, UITextFieldDelegate {

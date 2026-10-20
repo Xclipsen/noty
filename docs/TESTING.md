@@ -28,10 +28,21 @@ Produktivnachweis am 20.10.2026: Release `noty-integration-20261020-release`, be
 - Frisch zurückgelesene Daten unter `after-update/Documents`: alle **14 Hefte und 60 Dateien unverändert**, keine neuen Dateien. Zusätzlich alle Bereichsroots einzeln mit `verify_device_store.py --compare` geprüft; keine Quarantäne.
 - **Bedienung noch ungeprüft.** Nutzer startet die App manuell und aktiviert Einstellungen → Gesetzessammlung. Mail bleibt serverseitig deaktiviert; E-Mail-Registrierung/Recovery noch nicht verfügbar.
 
+### Build 55 · Gesetzesfenster ziehen und am Rand parken · 20.10.2026
+
+Nutzerrückmeldung zu Build 54 (Screenshot): Das Gesetzesfenster ließ sich nicht vernünftig ziehen; es soll sich wie Apples Slide-over über den Bildschirmrand schieben lassen und dort einen Pfeil hinterlassen. Ursachen im Code: Das Fenster bewegte sich beim Ziehen nicht mit, sondern sprang erst beim Loslassen; nur der kleine Griff reagierte; der Breitengriff maß im mitwandernden lokalen Raum. Zusätzlich nahm das Paragraphfeld (`UITextField`) jede angebotene Höhe an und erzeugte den leeren Kasten unter der Schnellsuche. Umsetzung siehe [DESIGN](DESIGN.md#gesetzessammlung--bestätigte-bedienung-20102026).
+
+- **Implementiert**: Live-Ziehen über die ganze Kopfleiste, Parken über den Rand mit Pfeil-Lasche (Tippen/Hereinziehen/Menü holt zurück), Seitenwechsel, Andocken/Schweben per senkrechtem Zug; Gesetzestastatur schließt beim Parken/Schließen; Breitengriff im festen Arbeitsflächenraum; Paragraphfeld mit fester Höhe. Keine Core-, Speicher- oder Formatänderung.
+- **Erfolgreich gebaut**: `xtool dev build` und `xtool dev build --sign --ipa` in PTY ohne Warnungen (`.tools/law-build55-build.log`, `.tools/law-build55-sign.log`). IPA-ID `XTL-BAFXLQ964V.de.la.noty.prototype`, Build **55**, Team wie bisher, ein provisioniertes Gerät, Profil bis **27.10.2026 21:03:05 UTC**, IPA-SHA-256 `b4f170efddc5d8cba07a19fe5b75edeb90290e5dcfcb7aa41fcfbf6432f7e65d`.
+- Vollständige stabile `/Documents`-Sicherung bei geschlossener App unter `/home/la/Backups/noty-before-build55-2026-10-20T21-03-22-141286596Z/`: 100 Dateien, 629.833.658 Byte, 14 Hefte, 26 geprüfte Revisionen; beide Bereichsroots ohne Quarantäne.
+- **Installiert** über `xtool install --usb`, ohne Deinstallation. InstallationProxy bestätigt Build **55** unter unveränderter tatsächlicher ID `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype`.
+- Frisch zurückgelesen (`after-update/Documents`): alle **14 Hefte und 100 Dateien unverändert**, keine neuen Dateien; `verify_device_store.py --compare` für beide Bereichsroots ohne Abweichung.
+- **Auf dem iPad ungeprüft**: Ziehen, Parken, Lasche, Seitenwechsel, Andocken per Zug, Breitengriff und Tastaturverhalten sind nur gebaut und installiert, nicht am Gerät bedient.
+
 Geräteabnahme gebündelt:
 
 1. Einschalten und kompletten Erstdownload abwarten, dann Flugmodus/Neustart; Text/PDF und Direktfundstellen prüfen. Sync- und Updateschalter unabhängig schalten, lokale Daten bei deaktiviertem Netzwerkabgleich erhalten.
-2. In einem/zwei Heften schreiben, Gesetzesfenster öffnen, schweben/andocken, Seiten/Breite wechseln, Rotation/kleines Fenster, native Zahlen-/Texttastatur, Eingabewechsel und Undo. Verdecktes zweites Heft mit Seite/Zoom und Entwurf wieder einblenden.
+2. In einem/zwei Heften schreiben, Gesetzesfenster öffnen, ziehen, über den Rand parken und per Lasche zurückholen (schwebend und angedockt), schweben/andocken, Seiten/Breite wechseln, Rotation/kleines Fenster, native Zahlen-/Texttastatur, Eingabewechsel und Undo. Verdecktes zweites Heft mit Seite/Zoom und Entwurf wieder einblenden.
 3. Text auswählen/markieren, Pencil-PDF markieren, Lesezeichen und PDF-Seiten wechseln, Neustart und separate persönliche Sicherung/Restore. Notizbuch-Undo darf keine fremde Fundstelle bearbeiten.
 4. Website↔iPad bei Netzwechsel, Löschkonflikt, Logout und Kontowechsel. Gastdaten automatisch übernehmen; Datensätze von Konto A nicht unter B hochladen. E-Mail-Konto/Bestätigung/Reset erst nach späterer Mailfreigabe prüfen.
 5. Neue/fehlerhafte/unterbrochene Fassungsdownloads und Platzmangel: alter Bestand bleibt gültig, markierte alte Fassung erreichbar, aktive Lesestelle erhalten. Automatische Aktualisierung bei beendeter App ist nicht zugesichert.
