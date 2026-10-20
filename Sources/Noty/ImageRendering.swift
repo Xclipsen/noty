@@ -7,7 +7,7 @@ enum ImageImportError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalid: "Dieses Bild konnte nicht gelesen werden. Bitte eine PNG-, JPEG- oder HEIC-Datei auswählen."
-        case .sizeLimit: "Ein Bild darf höchstens 20 MB und 200 Megapixel haben. Ein Heft unterstützt 40 MB Bildoriginale einschließlich Seitenpapierkorb."
+        case .sizeLimit: "Ein Bild darf höchstens 20 MB und 200 Megapixel haben. Ein Notizbuch unterstützt 40 MB Bildoriginale einschließlich Seitenpapierkorb."
         case .missingClipboard: "Die Zwischenablage enthält kein unterstütztes Bild. Bitte zuerst einen Screenshot oder ein Bild kopieren."
         }
     }

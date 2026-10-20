@@ -142,9 +142,7 @@ struct EditorToolbar: View {
                 .frame(width: ToolbarLayout.cell, height: ToolbarLayout.cell).contentShape(Rectangle())
                 .background {
                     if selected {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(LinearGradient(colors: [.white.opacity(0.12), .blue.opacity(0.13)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.white.opacity(0.23), lineWidth: 0.6))
+                        NotyToolSelection(shape: RoundedRectangle(cornerRadius: 13, style: .continuous))
                             .frame(width: 44, height: 44)
                             .matchedGeometryEffect(id: "selected-tool", in: selectionSpace)
                     }

@@ -19,7 +19,7 @@ struct RestoredCopiesView: View {
             List {
                 ForEach(filtered) { copy in
                     Section {
-                        Button("Heft öffnen") { onSelect(copy) }
+                        Button("Notizbuch öffnen") { onSelect(copy) }
                         ForEach(copy.textPages) { preview in
                             Button {
                                 var selected = copy
@@ -44,7 +44,7 @@ struct RestoredCopiesView: View {
             }
             .searchable(text: $search, prompt: "Name oder Vorschautext")
             .navigationTitle("Wiederhergestellte Kopien")
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Schließen") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
         }
     }
 }

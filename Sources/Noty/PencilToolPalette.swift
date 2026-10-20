@@ -261,8 +261,8 @@ struct PencilToolPalette: View {
 
     @ViewBuilder private func view(for item: Item) -> some View {
         switch item {
-        case .undo: symbolButton("Rückgängig", symbol: "arrow.uturn.backward", enabled: canUndo) { onUndo(false) }
-        case .redo: symbolButton("Wiederholen", symbol: "arrow.uturn.forward", enabled: canRedo) { onUndo(true) }
+        case .undo: actionButton("Rückgängig", kind: .undo, enabled: canUndo) { onUndo(false) }
+        case .redo: actionButton("Wiederholen", kind: .redo, enabled: canRedo) { onUndo(true) }
         case .tool(let value): toolButton(value)
         case .color: colorButton
         case .width: widthButton
@@ -290,10 +290,7 @@ struct PencilToolPalette: View {
                 .scaleEffect(0.86)
                 .frame(width: Self.itemSize, height: Self.itemSize)
                 .background {
-                    if selected {
-                        Circle().fill(LinearGradient(colors: [.white.opacity(0.2), .blue.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                            .overlay(Circle().strokeBorder(.white.opacity(0.3), lineWidth: 0.6))
-                    }
+                    if selected { NotyToolSelection(shape: Circle()) }
                 }
                 .frame(width: Self.hitSize, height: Self.hitSize).contentShape(Circle())
         }.buttonStyle(NotyPressStyle())
@@ -301,9 +298,9 @@ struct PencilToolPalette: View {
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private func symbolButton(_ title: String, symbol: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+    private func actionButton(_ title: String, kind: NotyActionGlyph.Kind, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 16, weight: .medium)).foregroundStyle(.white.opacity(0.9))
+            NotyActionGlyph(kind: kind, tint: .white.opacity(0.9)).frame(width: 20, height: 20)
                 .frame(width: Self.hitSize, height: Self.hitSize).contentShape(Circle())
                 .opacity(enabled ? 1 : 0.35)
         }.buttonStyle(NotyPressStyle()).disabled(!enabled).accessibilityLabel(title)

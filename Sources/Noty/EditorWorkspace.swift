@@ -207,7 +207,7 @@ struct EditorWorkspaceView: View {
     }
 
     private func title(_ model: EditorModel) -> String {
-        model.documentLoaded ? model.notebook.title : "Heft"
+        model.documentLoaded ? model.notebook.title : "Notizbuch"
     }
 
     // MARK: Pane strip with grab handle
@@ -271,7 +271,7 @@ struct EditorWorkspaceView: View {
             if abs(current.effectiveFraction(extent: current.vertical ? size.height : size.width) - 0.5) > 1e-9 {
                 Button("Gleich groß") { update { $0.setFraction(0.5) } }
             }
-            if entry.pane == .secondary { Button("Anderes Heft wählen …") { choose() } }
+            if entry.pane == .secondary { Button("Anderes Notizbuch wählen …") { choose() } }
             Button("Zweite Ansicht schließen") { Task { await workspace.closeSecondary() } }
         }
         .accessibilityElement(children: .ignore)
@@ -420,18 +420,18 @@ private struct SecondViewPicker: View {
                     if !recent.isEmpty {
                         Section("Zuletzt geöffnet") { ForEach(recent) { row($0) } }
                     }
-                    Section(recent.isEmpty ? "Hefte" : "Alle Hefte") {
+                    Section(recent.isEmpty ? "Notizbücher" : "Alle Notizbücher") {
                         ForEach(documents) { row($0) }
-                        if documents.isEmpty { Text("Keine Hefte verfügbar.").foregroundStyle(.secondary) }
+                        if documents.isEmpty { Text("Keine Notizbücher verfügbar.").foregroundStyle(.secondary) }
                     }
                 } else {
                     Section {
-                        HStack(spacing: 10) { ProgressView(); Text("Hefte werden geladen …").foregroundStyle(.secondary) }
+                        HStack(spacing: 10) { ProgressView(); Text("Notizbücher werden geladen …").foregroundStyle(.secondary) }
                             .accessibilityElement(children: .combine)
                     }
                 }
             }
-            .navigationTitle("Heft für zweite Ansicht")
+            .navigationTitle("Notizbuch für zweite Ansicht")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
             .task { if documents == nil { documents = await library.editorChoices() } }
         }
@@ -451,10 +451,10 @@ private struct SecondViewPicker: View {
                 Label(document.title, systemImage: document.isRestored ? "clock.arrow.circlepath" : "book.closed")
                     .foregroundStyle(.primary)
                 Spacer()
-                if document.id == primaryID { Text("gleiches Heft").font(.caption).foregroundStyle(.secondary) }
+                if document.id == primaryID { Text("gleiches Notizbuch").font(.caption).foregroundStyle(.secondary) }
                 if document.id == currentID { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
             }
         }
-        .accessibilityValue(document.id == primaryID ? "gleiches Heft" : "")
+        .accessibilityValue(document.id == primaryID ? "gleiches Notizbuch" : "")
     }
 }

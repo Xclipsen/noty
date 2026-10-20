@@ -55,19 +55,23 @@ struct PageSidebarView: View {
         VStack(spacing: 0) {
             HStack {
                 Menu {
-                    Button("Notizbücher", systemImage: "books.vertical", action: onBack)
-                        .disabled(model.busy)
-                    Button(editMode.isEditing ? "Anordnen beenden" : "Seiten anordnen", systemImage: "arrow.up.arrow.down") {
-                        withAnimation(NotyMotion.panel(reduceMotion)) {
-                            selectedTab = .pages; filter = .all
-                            editMode = editMode.isEditing ? .inactive : .active
-                        }
-                    }.disabled(!canEdit)
-                    Button("Seite hinzufügen", systemImage: "plus") {
-                        addingPage = AddRequest(anchor: currentPage.id, position: .after)
-                    }.disabled(!canEdit)
-                    Button("Seitenpapierkorb (\(deletedCount))", systemImage: "trash") { showingTrash = true }
-                        .disabled(!canEdit)
+                    Section {
+                        Button("Seite hinzufügen …", systemImage: "doc.badge.plus") {
+                            addingPage = AddRequest(anchor: currentPage.id, position: .after)
+                        }.disabled(!canEdit)
+                        Button(editMode.isEditing ? "Anordnen beenden" : "Seiten anordnen", systemImage: "arrow.up.arrow.down") {
+                            withAnimation(NotyMotion.panel(reduceMotion)) {
+                                selectedTab = .pages; filter = .all
+                                editMode = editMode.isEditing ? .inactive : .active
+                            }
+                        }.disabled(!canEdit)
+                    }
+                    Section {
+                        Button("Seitenpapierkorb (\(deletedCount)) …", systemImage: "trash") { showingTrash = true }
+                            .disabled(!canEdit)
+                        Button("Zu den Notizbüchern", systemImage: "books.vertical", action: onBack)
+                            .disabled(model.busy)
+                    }
                 } label: {
                     Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(Rectangle())
                         .notyGlass()
@@ -306,7 +310,7 @@ struct PageSidebarView: View {
                 Menu {
                     pageActions(page, index: index)
                 } label: {
-                    Image(systemName: "chevron.down").font(.caption.weight(.semibold)).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    Image(systemName: "ellipsis").font(.caption.weight(.semibold)).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Aktionen für Seite \(index + 1)")
                 .disabled(!canEdit)
@@ -317,34 +321,43 @@ struct PageSidebarView: View {
         .contextMenu { pageActions(page, index: index).disabled(!canEdit) }
     }
 
+    /// Confirmed order (UI-REBUILD §6) in groups like the reference: page-level
+    /// extras sit between „Duplizieren“ and the destructive actions at the end.
     @ViewBuilder
     private func pageActions(_ page: Page, index: Int) -> some View {
-        Button("Seite hinzufügen", systemImage: "plus") {
-            addingPage = AddRequest(anchor: page.id, position: .after)
+        Section {
+            Button("Seite hinzufügen …", systemImage: "doc.badge.plus") {
+                addingPage = AddRequest(anchor: page.id, position: .after)
+            }
         }
-        Button("Ausschneiden", systemImage: "scissors") { model.copyPage(page.id, cut: true) }
-        Button("Kopieren", systemImage: "doc.on.doc") { model.copyPage(page.id) }
-        Button("Einfügen", systemImage: "doc.on.clipboard") { model.pastePage(after: page.id) }.disabled(model.copiedPage == nil)
-        Button("Duplizieren", systemImage: "doc.on.doc") { model.duplicatePage(page.id) }
-        Button("Seite leeren", systemImage: "clear", role: .destructive) { model.clearPage(page.id) }
-        Button("Löschen", systemImage: "trash", role: .destructive) { model.trashPage(page.id) }
-            .disabled(model.notebook.pages.count <= 1)
-        Divider()
-        Button(page.bookmarked == true ? "Lesezeichen entfernen" : "Lesezeichen setzen",
-               systemImage: page.bookmarked == true ? "bookmark.slash" : "bookmark") { model.toggleBookmark(page.id) }
-        if let onMargins, model.sourcePage(for: page) != nil {
-            Button("PDF-Schreibplatz", systemImage: "arrow.up.left.and.arrow.down.right") { onMargins(page.id) }
+        Section {
+            Button("Ausschneiden", systemImage: "scissors") { model.copyPage(page.id, cut: true) }
+            Button("Kopieren", systemImage: "doc.on.doc") { model.copyPage(page.id) }
+            Button("Einfügen", systemImage: "doc.on.clipboard") { model.pastePage(after: page.id) }.disabled(model.copiedPage == nil)
+            Button("Duplizieren", systemImage: "plus.square.on.square") { model.duplicatePage(page.id) }
         }
-        Menu("Verschieben", systemImage: "arrow.up.arrow.down") {
-            Button("An den Anfang", systemImage: "arrow.up.to.line") { model.movePage(page.id, to: 0) }
-                .disabled(index == 0)
-            Button("Eine Seite nach oben", systemImage: "arrow.up") { model.movePage(page.id, to: index - 1) }
-                .disabled(index == 0)
-            Button("Eine Seite nach unten", systemImage: "arrow.down") { model.movePage(page.id, to: index + 1) }
-                .disabled(index == model.notebook.pages.count - 1)
-            Button("Ans Ende", systemImage: "arrow.down.to.line") {
-                model.movePage(page.id, to: model.notebook.pages.count - 1)
-            }.disabled(index == model.notebook.pages.count - 1)
+        Section {
+            Button(page.bookmarked == true ? "Lesezeichen entfernen" : "Lesezeichen setzen",
+                   systemImage: page.bookmarked == true ? "bookmark.slash" : "bookmark") { model.toggleBookmark(page.id) }
+            if let onMargins, model.sourcePage(for: page) != nil || page.writingSpaceExtendsPaper {
+                Button("Schreibplatz …", systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") { onMargins(page.id) }
+            }
+            Menu("Verschieben", systemImage: "arrow.up.arrow.down.square") {
+                Button("An den Anfang", systemImage: "arrow.up.to.line") { model.movePage(page.id, to: 0) }
+                    .disabled(index == 0)
+                Button("Eine Seite nach oben", systemImage: "arrow.up") { model.movePage(page.id, to: index - 1) }
+                    .disabled(index == 0)
+                Button("Eine Seite nach unten", systemImage: "arrow.down") { model.movePage(page.id, to: index + 1) }
+                    .disabled(index == model.notebook.pages.count - 1)
+                Button("Ans Ende", systemImage: "arrow.down.to.line") {
+                    model.movePage(page.id, to: model.notebook.pages.count - 1)
+                }.disabled(index == model.notebook.pages.count - 1)
+            }
+        }
+        Section {
+            Button("Seite leeren", systemImage: "clear", role: .destructive) { model.clearPage(page.id) }
+            Button("Löschen", systemImage: "trash", role: .destructive) { model.trashPage(page.id) }
+                .disabled(model.notebook.pages.count <= 1)
         }
     }
 

@@ -75,6 +75,9 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     }
     /// True when the page edits data stored per area (Bereich).
     var perArea: Bool { [.tools, .paper, .backup, .trash].contains(self) }
+    /// Rows of the settings root, grouped. `.diagnostics` has no own row; it
+    /// opens „Über noty“, which contains the Diagnose section.
+    static let rootSections: [[SettingsPage]] = [[.general, .editor, .tools, .paper], [.backup, .trash], [.about]]
 }
 
 struct SettingsRequest: Identifiable {
@@ -121,26 +124,15 @@ struct SettingsView: View {
                     Label {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Bereich „\(workspaces.title)“")
-                            Text(workspaces.kind == nil ? "Hauptbibliothek" : "Getrennter Test-/Restore-Bereich").font(.caption).foregroundStyle(.secondary)
+                            Text(workspaces.kind == nil ? "Standardbereich" : "Getrennter Test-/Restore-Bereich").font(.caption).foregroundStyle(.secondary)
                         }
                     } icon: { Image(systemName: workspaces.kind == nil ? "books.vertical" : "flask") }
                 } footer: {
                     Text("Mit „Bereich“ markierte Einstellungen gelten nur für diesen Bereich und sind in seinem Bibliotheksbackup enthalten. Die übrigen gelten für die ganze App auf diesem iPad.")
                 }
-                Section {
-                    ForEach(SettingsPage.allCases) { page in
-                        NavigationLink(value: page) {
-                            HStack {
-                                Label(page.title, systemImage: page.symbol)
-                                Spacer()
-                                if page == .trash, !library.trashedItems.isEmpty {
-                                    Text("\(library.trashedItems.count)").foregroundStyle(.secondary).monospacedDigit()
-                                }
-                                if page.perArea { Text("Bereich").font(.caption2).foregroundStyle(.secondary)
-                                    .padding(.horizontal, 6).padding(.vertical, 2).background(Capsule().fill(.secondary.opacity(0.15))) }
-                            }
-                        }
-                        .accessibilityHint(page.perArea ? "Gilt nur für den aktuellen Bereich" : "Gilt für die ganze App")
+                ForEach(SettingsPage.rootSections, id: \.self) { pages in
+                    Section {
+                        ForEach(pages) { page in pageRow(page) }
                     }
                 }
             }
@@ -162,6 +154,21 @@ struct SettingsView: View {
         .preferredColorScheme(.dark)
     }
 
+    private func pageRow(_ page: SettingsPage) -> some View {
+        NavigationLink(value: page) {
+            HStack {
+                Label(page.title, systemImage: page.symbol)
+                Spacer()
+                if page == .trash, !library.trashedItems.isEmpty {
+                    Text("\(library.trashedItems.count)").foregroundStyle(.secondary).monospacedDigit()
+                }
+                if page.perArea { Text("Bereich").font(.caption2).foregroundStyle(.secondary)
+                    .padding(.horizontal, 6).padding(.vertical, 2).background(Capsule().fill(.secondary.opacity(0.15))) }
+            }
+        }
+        .accessibilityHint(page.perArea ? "Gilt nur für den aktuellen Bereich" : "Gilt für die ganze App")
+    }
+
     @ViewBuilder private func destination(_ page: SettingsPage) -> some View {
         switch page {
         case .general: GeneralSettingsPage()
@@ -171,8 +178,7 @@ struct SettingsView: View {
         case .backup: BackupSettingsPage(library: library, toolbox: toolbox, externalBackup: externalBackup,
                                          workspaces: workspaces, onSelectArea: onSelectArea)
         case .trash: TrashSettingsPage(library: library, area: workspaces.title)
-        case .about: AboutSettingsPage(toolbox: toolbox, workspaces: workspaces)
-        case .diagnostics: DiagnosticsSettingsPage()
+        case .about, .diagnostics: AboutSettingsPage(toolbox: toolbox, workspaces: workspaces)
         }
     }
 }
@@ -541,6 +547,7 @@ private struct TrashSettingsPage: View {
 private struct AboutSettingsPage: View {
     @ObservedObject var toolbox: ToolbarSettingsModel
     @ObservedObject var workspaces: WorkspaceAppModel
+    @AppStorage(AppSettingsKey.hangProbe) private var hangProbe = true
     private func info(_ key: String) -> String { Bundle.main.object(forInfoDictionaryKey: key) as? String ?? "–" }
     var body: some View {
         Form {
@@ -551,28 +558,19 @@ private struct AboutSettingsPage: View {
                 LabeledContent("Bibliotheksindex", value: "Format 1")
             }
             Section {
-                LabeledContent("Hauptbibliothek", value: "Auf meinem iPad › noty › Noty")
+                LabeledContent("Meine Bibliothek", value: "Auf meinem iPad › noty › Noty")
                 LabeledContent("Test-/Restore-Bereiche", value: "Auf meinem iPad › noty › NotyWorkspaces")
                 LabeledContent("Aktueller Bereich", value: workspaces.title)
             } header: { Text("Datenablage") } footer: {
                 Text("Alle Unterlagen liegen lokal im App-Container und sind über die Dateien-App sichtbar. Dort bitte nichts umbenennen oder verschieben. noty hat kein Konto und keinen eigenen Server; Daten verlassen das iPad nur über ein selbst eingerichtetes Backup oder einen Export.")
             }
             SigningRenewalSection()
-        }
-        .navigationTitle("Über noty")
-    }
-}
-
-private struct DiagnosticsSettingsPage: View {
-    @AppStorage(AppSettingsKey.hangProbe) private var hangProbe = true
-    var body: some View {
-        Form {
             Section {
                 Toggle("Hänger-Diagnose", isOn: $hangProbe)
-            } footer: {
+            } header: { Text("Diagnose") } footer: {
                 Text("Protokolliert bei längeren Hängern nur Codeadressen und Zähler im Systemprotokoll, keine Inhalte. Wirkt nach einem Neustart der App.")
             }
         }
-        .navigationTitle("Diagnose")
+        .navigationTitle("Über noty")
     }
 }

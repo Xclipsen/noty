@@ -88,7 +88,7 @@ struct WorkspacePickerView: View {
     var body: some View {
         NavigationStack {
             WorkspacePickerList(model: model, onSelect: onSelect)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Schließen") { dismiss() } } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
         }
     }
 }

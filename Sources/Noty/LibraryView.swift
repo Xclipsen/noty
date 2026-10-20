@@ -554,18 +554,22 @@ struct LibraryView: View {
                         Button("Neu laden", systemImage: "arrow.clockwise") { Task { await model.refresh() } }.disabled(model.busy)
                     } label: { Label("Darstellung und Sortierung", systemImage: layout == .grid ? "square.grid.2x2" : "list.bullet") }
                     if canReorder { EditButton().disabled(!editable) }
-                    Button { prompt(.folder) } label: { Label("Neuer Ordner", systemImage: "folder.badge.plus") }
-                        .disabled(!editable)
-                    Button { creatingNotebook = true } label: { Label("Neues Notizbuch", systemImage: "square.and.pencil") }
-                        .disabled(!editable)
+                    // One primary entry point for creating and importing.
                     Menu {
-                        Button("Arbeitsblatt/PDF importieren", systemImage: "doc.badge.plus") { importingPDF = true }
-                        Button("Notizbuch-Backup als Kopie importieren", systemImage: "arrow.down.doc") { importingBackup = true }
-                        if !activeCopies.isEmpty {
-                            Button("Kopien mit Textvorschau finden", systemImage: "doc.text.magnifyingglass") { showingCopies = true }
+                        Section {
+                            Button("Notizbuch", systemImage: "square.and.pencil") { creatingNotebook = true }
+                            Button("Ordner", systemImage: "folder.badge.plus") { prompt(.folder) }
                         }
-                    } label: { Label("Importieren", systemImage: "square.and.arrow.down") }
+                        Section {
+                            Button("PDF importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
+                            Button("Backup als Kopie importieren …", systemImage: "arrow.down.doc") { importingBackup = true }
+                            if !activeCopies.isEmpty {
+                                Button("Wiederhergestellte Kopien …", systemImage: "clock.arrow.circlepath") { showingCopies = true }
+                            }
+                        }
+                    } label: { Label("Neu", systemImage: "plus") }
                     .disabled(!editable)
+                    .accessibilityLabel("Neu oder importieren")
                     Button { settingsRequest = SettingsRequest() } label: { Label("Einstellungen", systemImage: "gearshape") }
                 }
             }

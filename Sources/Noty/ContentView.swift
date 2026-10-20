@@ -60,6 +60,8 @@ struct ContentView: View {
     @State private var searchHighlightToken = 0
     @State private var pageEntry = false
     @State private var pageEntryText = ""
+    @State private var recentNote: String?
+    @State private var recentNoteToken = 0
     private var ruler: Bool {
         get { toolbox.preferences.ruler ?? false }
         nonmutating set { toolbox.preferences.ruler = newValue }
@@ -225,6 +227,8 @@ struct ContentView: View {
                 if phase != .active { model.save(); toolbox.save() }
             }
             .onChange(of: toolbox.preferences) { _, _ in toolbox.save() }
+            .onChange(of: model.fileStatus) { _, note in showRecentNote(note) }
+            .onChange(of: model.backupStatus) { _, note in showRecentNote(note) }
             .onChange(of: model.pageIndex) { _, index in
                 if isPaneActive(), model.notebook.pages.indices.contains(index) { selectedPageID = model.notebook.pages[index].id }
             }
@@ -386,14 +390,45 @@ struct ContentView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if notebookLoaded || !model.busy {
-                Text(model.status).font(.caption2).foregroundStyle(model.saveFailed ? Color.orange : .secondary)
-                    .padding(.horizontal, 10).padding(.vertical, 5).background(.ultraThinMaterial, in: Capsule())
-                    .padding(.leading, layout.leftInset + 12).padding(.bottom, layout.bottomInset + 12)
-                    .accessibilityIdentifier("saveStatus").allowsHitTesting(false)
-                }
+                // Animation scoped to the pill: autosave updates elsewhere stay unanimated.
+                ZStack(alignment: .bottomLeading) {
+                    if notebookLoaded || !model.busy, let note = statusNote {
+                        statusPill(note).padding(.leading, layout.leftInset + 12).padding(.bottom, layout.bottomInset + 12)
+                            .transition(.opacity)
+                    }
+                }.animation(NotyMotion.highlight(reduceMotion), value: statusNote)
             }
         }
+    }
+    /// Routine save states live in the options menu. The corner only shows what
+    /// needs attention (failure, recovery) or just happened (export, defaults).
+    private var statusNote: String? {
+        if model.saveFailed { return model.status }
+        if let recentNote { return recentNote }
+        return Self.routineStatuses.contains(model.status) ? nil : model.status
+    }
+    private static let routineStatuses: Set<String> = ["Noch nicht gespeichert", "Bereit", "Änderungen werden gespeichert …", "Lokal gespeichert", "Importiert und lokal gespeichert"]
+    @ViewBuilder private func statusPill(_ note: String) -> some View {
+        let label = HStack(spacing: 6) {
+            if model.saveFailed { Image(systemName: "exclamationmark.triangle.fill") }
+            Text(note).lineLimit(2)
+            if model.saveFailed && model.writable { Text("Erneut versuchen").fontWeight(.semibold) }
+        }
+        .font(.caption).foregroundStyle(model.saveFailed ? Color.orange : .secondary)
+        .padding(.horizontal, 12).padding(.vertical, 7).background(.ultraThinMaterial, in: Capsule())
+        .accessibilityIdentifier("saveStatus")
+        if model.saveFailed && model.writable {
+            Button { model.save() } label: { label }.buttonStyle(NotyPressStyle())
+        } else {
+            label.allowsHitTesting(false)
+        }
+    }
+    /// File/backup feedback stays a few seconds, then the corner is clear again.
+    private func showRecentNote(_ note: String?) {
+        guard let note, !note.isEmpty else { return }
+        recentNote = note; recentNoteToken += 1
+        let token = recentNoteToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { if recentNoteToken == token { recentNote = nil } }
     }
     private func toolbarLayout(_ size: CGSize) -> ToolbarLayout {
         let count = ToolbarLayout.itemCount(more: toolbarMore, preferences: toolbox.preferences, secondView: onSecondView != nil)
@@ -429,12 +464,12 @@ struct ContentView: View {
             HStack(spacing: 0) {
                 // Notebook-wide: the most recent change on any page, in order.
                 Button { performUndo(redo: false) } label: {
-                    Image(systemName: "arrow.uturn.backward").frame(width: 44, height: 44).contentShape(Rectangle())
+                    NotyActionGlyph(kind: .undo).frame(width: 24, height: 24).frame(width: 44, height: 44).contentShape(Rectangle())
                         .opacity(model.canUndo ? 1 : 0.35)
                 }.accessibilityLabel("Rückgängig").disabled(!model.canUndo)
                 if layout.headerActionCount >= 4 {
                     Button { performUndo(redo: true) } label: {
-                        Image(systemName: "arrow.uturn.forward").frame(width: 44, height: 44).contentShape(Rectangle())
+                        NotyActionGlyph(kind: .redo).frame(width: 24, height: 24).frame(width: 44, height: 44).contentShape(Rectangle())
                             .opacity(model.canRedo ? 1 : 0.35)
                     }.accessibilityLabel("Wiederholen").disabled(!model.canRedo)
                 }
@@ -447,7 +482,7 @@ struct ContentView: View {
                         .accessibilityValue(writingScroll ? "Ein" : "Aus")
                         .accessibilityHint("Seitlich bis zur Blattmitte scrollen, um bequemer am Rand zu schreiben.")
                 }
-                fileMenu
+                optionsMenu(layout: layout)
                 if !layout.compactHeader {
                     Menu { pageInsertionActions } label: {
                         Image(systemName: "doc.badge.plus").frame(width: 44, height: 44).contentShape(Rectangle())
@@ -467,7 +502,7 @@ struct ContentView: View {
             let defaults = model.notebook.pageDefaults
             model.insertPaper(defaults.paper, color: defaults.color, relativeTo: anchorPageID)
         }
-        Button("Papier oder PDF auswählen", systemImage: "plus") { addingPage = true }
+        Button("Papier oder PDF auswählen …", systemImage: "doc.on.doc") { addingPage = true }
     }
 
     private var pageNavigator: some View {
@@ -519,68 +554,77 @@ struct ContentView: View {
         // treats a selection it did not report as a jump (scroll and paging).
         currentPageIndex = number - 1
     }
-    private var fileMenu: some View {
+    /// Options („…“): a status line plus a few grouped entries. Rare tools sit in
+    /// submenus; undo/redo and adding pages only appear when the header has no room.
+    private func optionsMenu(layout: ToolbarLayout) -> some View {
         Menu {
-            Text(model.status)
-            if model.saveFailed { Button("Erneut speichern") { model.save() } }
-            Text(model.backupStatus)
-            if let status = model.fileStatus { Text(status) }
-            if !toolbox.status.isEmpty { Text(toolbox.status) }
-            Divider()
-            Button("Rückgängig", systemImage: "arrow.uturn.backward") { performUndo(redo: false) }.disabled(!model.canUndo)
-            Button("Wiederholen", systemImage: "arrow.uturn.forward") { performUndo(redo: true) }.disabled(!model.canRedo)
-            Menu("Seite hinzufügen", systemImage: "doc.badge.plus") { pageInsertionActions }
-            Button("Seitenstandard ändern …", systemImage: "doc.richtext") { editingDefaults = true }
-                .disabled(!canEdit)
-            Divider()
-            Toggle("Schreibscrollen bis zur Blattmitte", isOn: $writingScroll)
-            Toggle("Blättern statt vertikal scrollen", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
-            Toggle("PDFs einheitlich anzeigen", isOn: Binding(get: { toolbox.preferences.normalizePageWidths ?? false }, set: { toolbox.preferences.normalizePageWidths = $0 }))
-                .accessibilityHint("Gleiche Arbeitsblattbreite mit Schreibraum daneben. Ändert nur die Anzeige.")
-
-                        if editorSettings != nil {
-                            Button("Einstellungen", systemImage: "gearshape") { showingSettings = true }
-                        }
-                        Button("Im Heft suchen") { contentSearch = true }.keyboardShortcut("f", modifiers: .command)
-                        Button("Jetzt speichern") { model.save() }.keyboardShortcut("s", modifiers: .command)
-                        Button("Lokale Wiederherstellungspunkte") { showingHistory = true }
+            Section(model.status) {
+                if model.saveFailed {
+                    Button("Erneut speichern", systemImage: "arrow.clockwise") { model.save() }
+                }
+                if !toolbox.status.isEmpty { Text(toolbox.status) }
+            }
+            if layout.headerActionCount < 4 {
+                Button("Wiederholen", systemImage: "arrow.uturn.forward") { performUndo(redo: true) }.disabled(!model.canRedo)
+            }
+            Section {
+                Button("Im Notizbuch suchen", systemImage: "magnifyingglass") { contentSearch = true }
+                    .keyboardShortcut("f", modifiers: .command)
+                if layout.compactHeader {
+                    Menu("Seite hinzufügen", systemImage: "doc.badge.plus") { pageInsertionActions }
+                }
+                Menu("Teilen und exportieren", systemImage: "square.and.arrow.up") {
+                    Section("PDF") {
+                        Button("Diese Seite", systemImage: "doc") { exportPDF(pageIDs: [currentPage.id]) }
+                            .disabled(!model.writable || currentPage.id == writingDraft.id)
+                        Button("Ganzes Notizbuch", systemImage: "book.closed") { exportPDF(pageIDs: nil) }
                             .disabled(!model.writable)
-                        if !isRestoredCopy && !isLibraryDocument {
-                            Button("PDF importieren") { importingBackup = false; confirmingImport = true }
-                                .disabled(!model.writable)
-                        }
-                        if !isRestoredCopy && !isLibraryDocument {
-                            Button("Backup als Kopie wiederherstellen") { importingBackup = true; importing = true }
-                            if !model.restoredCopies.isEmpty {
-                                Button("Wiederhergestellte Kopien") { showingCopies = true }
-                            }
-                        }
-                        Button("Vollständiges Heft-Backup exportieren") {
-                            Task {
-                                if let data = await model.backupData() {
-                                    exportFile = ExportFile(backupData: data)
-                                    exportType = .notyBackup
-                                    exporting = true
-                                }
-                            }
-                        }
-                        .disabled(!model.writable)
-                        Button("Aktuelle Seite als PDF exportieren") {
-                            do {
-                                exportFile = ExportFile(pdfData: try PDFExporter.render(model.notebook, pageIDs: [currentPage.id]))
-                                exportType = .pdf; exporting = true
-                            } catch { model.error = error.localizedDescription }
-                        }.disabled(!model.writable || currentPage.id == writingDraft.id)
-                        Button("Ganzes Heft als PDF exportieren") {
-                            do {
-                                exportFile = ExportFile(pdfData: try PDFExporter.render(model.notebook))
-                                exportType = .pdf
-                                exporting = true
-                            } catch { model.error = error.localizedDescription }
-                        }
-                        .disabled(!model.writable)
-
-        } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Optionen und Export")
+                    }
+                    Section(model.backupStatus) {
+                        Button("Vollständiges Backup …", systemImage: "archivebox") { exportBackup() }
+                            .disabled(!model.writable)
+                    }
+                }
+            }
+            Section {
+                Menu("Ansicht", systemImage: "eye") {
+                    Toggle("Schreibscrollen bis zur Blattmitte", systemImage: "arrow.left.and.right.square", isOn: $writingScroll)
+                    Toggle("Blättern statt Scrollen", systemImage: "book.pages", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
+                    Toggle("PDFs einheitlich anzeigen", systemImage: "rectangle.split.3x1", isOn: Binding(get: { toolbox.preferences.normalizePageWidths ?? false }, set: { toolbox.preferences.normalizePageWidths = $0 }))
+                        .accessibilityHint("Gleiche Arbeitsblattbreite mit Schreibraum daneben. Ändert nur die Anzeige.")
+                }
+                Button("Schreibplatz dieser Seite …", systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") {
+                    marginsPage = MarginPage(id: currentPage.id)
+                }.disabled(!canEdit || !model.notebook.pages.contains(where: { $0.id == currentPage.id })
+                           || (model.sourcePage(for: currentPage) == nil && !currentPage.writingSpaceExtendsPaper))
+                Button("Papier für neue Seiten …", systemImage: "doc.richtext") { editingDefaults = true }
+                    .disabled(!canEdit)
+                Button("Lokale Wiederherstellungspunkte …", systemImage: "clock.arrow.circlepath") { showingHistory = true }
+                    .disabled(!model.writable)
+            }
+            if editorSettings != nil {
+                Section {
+                    Button("Einstellungen …", systemImage: "gearshape") { showingSettings = true }
+                }
+            }
+        } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(Rectangle()) }
+            .accessibilityLabel("Optionen")
+    }
+    /// `nil` exports the whole notebook.
+    private func exportPDF(pageIDs: Set<UUID>?) {
+        do {
+            exportFile = ExportFile(pdfData: try PDFExporter.render(model.notebook, pageIDs: pageIDs))
+            exportType = .pdf; exporting = true
+        } catch { model.error = error.localizedDescription }
+    }
+    private func exportBackup() {
+        Task {
+            if let data = await model.backupData() {
+                exportFile = ExportFile(backupData: data)
+                exportType = .notyBackup
+                exporting = true
+            }
+        }
     }
     /// Notebook-wide undo/redo: reverts the most recent change on any page in
     /// order (by stable page ID) and brings that page into view.
@@ -821,11 +865,11 @@ private struct NotebookLoadingView: View {
         ZStack {
             Color.clear
             if failed {
-                Text("Heft konnte nicht geöffnet werden").font(.callout).foregroundStyle(.secondary)
+                Text("Notizbuch konnte nicht geöffnet werden").font(.callout).foregroundStyle(.secondary)
             } else {
                 ProgressView().controlSize(.regular).tint(Color(white: 0.6))
                     .opacity(visible ? 1 : 0)
-                    .accessibilityLabel("Heft wird geöffnet")
+                    .accessibilityLabel("Notizbuch wird geöffnet")
             }
         }
         .allowsHitTesting(false)

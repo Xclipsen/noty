@@ -15,7 +15,7 @@ struct LocalHistoryView: View {
         NavigationStack {
             List {
                 Section {
-                    Text("Heft: \(model.notebook.title)").font(.headline)
+                    Text("Notizbuch: \(model.notebook.title)").font(.headline)
                     Text("Geöffnete Seite: \(model.pageIndex + 1)")
                     if !model.page.searchableText.isEmpty {
                         Text("Aktueller Text: \(String(model.page.searchableText.prefix(120)))")
@@ -39,14 +39,14 @@ struct LocalHistoryView: View {
                         }.disabled(loading)
                     }
                 } footer: {
-                    Text("Ein älterer Stand enthält spätere Änderungen noch nicht. Er öffnet sich als neue Kopie; das hier genannte Heft bleibt erhalten. Lokale Stände ersetzen kein externes Backup.")
+                    Text("Ein älterer Stand enthält spätere Änderungen noch nicht. Er öffnet sich als neue Kopie; das hier genannte Notizbuch bleibt erhalten. Lokale Wiederherstellungspunkte ersetzen kein externes Backup.")
                 }
                 if unreadableCount > 0 {
                     Text("\(unreadableCount) Stand/Stände nicht lesbar. Dateien bleiben erhalten.")
                 }
                 if let error { Text(error).foregroundStyle(.red) }
                 if !loading && entries.isEmpty && error == nil {
-                    Text("Noch keine vollständigen lokalen Stände vorhanden.")
+                    Text("Noch keine vollständigen lokalen Wiederherstellungspunkte vorhanden.")
                 }
             }
             .overlay { if loading { ProgressView("Stände werden geprüft …") } }
@@ -57,12 +57,12 @@ struct LocalHistoryView: View {
                 .buttonStyle(.borderedProminent).disabled(selectedID == nil || loading)
                 .padding().frame(maxWidth: .infinity).background(.bar)
             }
-            .navigationTitle("Lokale Wiederherstellung")
+            .navigationTitle("Lokale Wiederherstellungspunkte")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Schließen") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Neu laden") { Task { await load() } }.disabled(loading)
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Neu laden", systemImage: "arrow.clockwise") { Task { await load() } }.disabled(loading)
                 }
+                ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } }
             }
             .task { await load() }
         }
