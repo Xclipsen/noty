@@ -92,6 +92,8 @@ struct EditorWorkspaceView: View {
     /// that releasing now would perform (shown as a preview).
     @State private var lawDrag: LawDrag?
     @GestureState private var lawDragActive = false
+    /// Selected tool per pane; the active pane's decides Pencil in the law reader.
+    @State private var paneTools: [Int: EditorTool] = [:]
     /// Display preference only (global, like the sidebar): side, axis, size.
     static let arrangementKey = "noty.editor.splitArrangement"
     private static let space = "noty-split-area"
@@ -243,7 +245,7 @@ struct EditorWorkspaceView: View {
             onCloseWorkspace: { Task { if await toolbox.flush(), await workspace.closeAll() { library.notebookClosedByUser(); dismiss() } } },
             onSecondView: { choose() }, onLaws: lawsEnabled ? {
                 if laws.panelOpen && laws.stashed { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = false } } else { laws.panelOpen.toggle() }
-            } : nil)
+            } : nil, onToolChange: { paneTools[index] = $0 })
     }
 
     // MARK: Law window
@@ -290,7 +292,7 @@ struct EditorWorkspaceView: View {
             if let drop = lawDrag?.drop, lawDropChanges(drop, l) {
                 lawDropPreview(drop, l).allowsHitTesting(false).transition(.opacity)
             }
-            LawPanelView(drag: lawMoveGesture(l))
+            LawPanelView(drag: lawMoveGesture(l), pen: lawPen)
                 .frame(width: l.width, height: max(0, l.size.height - 2 * l.margin))
                 .opacity(shown ? 1 : 0).allowsHitTesting(visible).accessibilityHidden(!visible)
                 .scaleEffect(lifted ? 0.97 : 1)
@@ -320,6 +322,19 @@ struct EditorWorkspaceView: View {
                     .transition(.opacity)
             }
         }
+    }
+
+    /// Highlighter → Pencil marks in its colour and straightening options;
+    /// eraser → Pencil removes marks; other tools → Pencil scrolls/selects.
+    private var lawPen: LawPenMode {
+        let preferences = toolbox.preferences
+        var pen = LawPenMode(color: preferences.markerColor, straight: preferences.markerStraight ?? false, holdStraighten: preferences.markerHoldStraighten ?? true)
+        switch paneTools[workspace.activePane] ?? .pen {
+        case .marker: pen.kind = .marker
+        case .strokeEraser, .precisionEraser: pen.kind = .eraser
+        default: pen.kind = .none
+        }
+        return pen
     }
 
     private func lawPanelOffset(_ l: LawLayout, stashed: Bool) -> CGSize {

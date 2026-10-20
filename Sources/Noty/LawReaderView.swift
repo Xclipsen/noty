@@ -8,6 +8,28 @@ import NotebookCore
 struct LawTextMark: Hashable {
     var id: String
     var anchor: LawAnchor
+    var color: String?
+}
+
+/// What Apple Pencil does in the law reader, taken from the notebook's active
+/// tool: the highlighter marks (in its colour, straightened like in the
+/// notebook), an eraser removes marks, every other tool leaves Pencil to scroll
+/// and select like a finger.
+struct LawPenMode: Equatable {
+    enum Kind: Equatable { case none, marker, eraser }
+    var kind = Kind.none
+    var color = InkColor(1, 1, 0)
+    /// „Immer gerade“ of the notebook highlighter.
+    var straight = false
+    /// „Linie nach Halten begradigen“ of the notebook highlighter.
+    var holdStraighten = true
+    var hex: String { String(format: "#%02X%02X%02X", Int((color.red * 255).rounded()), Int((color.green * 255).rounded()), Int((color.blue * 255).rounded())) }
+}
+
+/// Highlight colour of a stored mark (`#RRGGBB`), yellow like the website otherwise.
+func lawMarkColor(_ hex: String?) -> UIColor {
+    guard let hex, hex.count == 7, hex.hasPrefix("#"), let value = UInt32(hex.dropFirst(), radix: 16) else { return .systemYellow }
+    return UIColor(red: CGFloat((value >> 16) & 0xFF) / 255, green: CGFloat((value >> 8) & 0xFF) / 255, blue: CGFloat(value & 0xFF) / 255, alpha: 1)
 }
 
 /// Shared between the reader and its UITextView: the live selection, the marks
@@ -47,6 +69,7 @@ private enum LawReadingPosition {
 
 struct LawReaderView: View {
     @EnvironmentObject private var laws: LawLibraryModel
+    var pen = LawPenMode()
     @StateObject private var textSelection = LawTextSelection()
     @State private var query = ""
     @State private var number = ""
@@ -80,7 +103,7 @@ struct LawReaderView: View {
         return marks.compactMap { item in
             guard item.kind == "annotation", case let .object(a) = item.payload["anchor"], a["sectionId"]?.string == section.id,
                   let start = a["start"]?.int, let end = a["end"]?.int, let quote = a["quote"]?.string else { return nil }
-            return LawTextMark(id: item.id, anchor: LawAnchor(sectionId: section.id, start: start, end: end, quote: quote))
+            return LawTextMark(id: item.id, anchor: LawAnchor(sectionId: section.id, start: start, end: end, quote: quote), color: item.payload["color"]?.string)
         }
     }
     private var bookmarkItem: LawPersonalItem? {
@@ -108,11 +131,16 @@ struct LawReaderView: View {
                 }.padding(.leading, 12).padding(.trailing, 4).padding(.vertical, 2)
                 if viewPDF, let pdfURL {
                     NativeLawPDF(url: pdfURL, page: pdfTarget ?? section.pdf?.page ?? 1, top: pdfTarget == nil ? (section.pdf?.top ?? 0) : 0, onPage: { pdfPage = $0 },
-                        items: marks.filter { $0.kind == "annotation" }, onMark: { payload in Task { await laws.save(kind: "annotation", payload: payload.merging(basePayload(doc)) { _, new in new }) } })
+                        items: marks.filter { $0.kind == "annotation" }, pen: pen,
+                        onMark: { payload in
+                            var payload = payload.merging(basePayload(doc)) { _, new in new }
+                            payload["color"] = .string(pen.hex)
+                            Task { await laws.save(kind: "annotation", payload: payload) }
+                        }, onRemove: { unmark($0) })
                         .id(pdfURL)
                 } else {
                     NativeLawText(text: section.text, html: section.html, notes: section.notes, sectionID: section.id, fontSize: fontSize,
-                        marks: textMarks, paragraph: jumpParagraph, selection: textSelection,
+                        marks: textMarks, paragraph: jumpParagraph, selection: textSelection, pen: pen,
                         onMark: { mark($0) }, onRemove: { unmark($0) })
                         .overlay(alignment: .bottom) { if textSelection.active { selectionBar } }
                 }
@@ -148,6 +176,12 @@ struct LawReaderView: View {
                 Menu {
                     ForEach(laws.entries) { entry in Button("\(entry.abbr) · \(entry.name)") { Task { await choose(entry) } } }
                 } label: { Label(entry?.abbr ?? "Gesetz wählen", systemImage: "books.vertical").lineLimit(1) }
+                // Shows what Apple Pencil does here (follows the notebook tool).
+                if pen.kind == .marker {
+                    Image(systemName: "highlighter").foregroundStyle(Color(lawMarkColor(pen.hex))).accessibilityLabel("Apple Pencil markiert")
+                } else if pen.kind == .eraser {
+                    Image(systemName: "eraser").foregroundStyle(.secondary).accessibilityLabel("Apple Pencil entfernt Markierungen")
+                }
                 Spacer()
                 // Directly in the bar, not in a menu: several taps in a row stay quick.
                 if !viewPDF {
@@ -261,6 +295,7 @@ struct LawReaderView: View {
         }
         guard (anchor.quote as NSString).length <= 4000 else { loadError = "Bitte wähle eine kürzere Textstelle aus."; return }
         var payload = basePayload(doc); payload["kind"] = .string("text"); payload["page"] = .number(0); payload["anchor"] = value
+        payload["color"] = .string(pen.hex)
         loadError = ""
         textSelection.clear()
         Task { await laws.save(kind: "annotation", payload: payload) }
@@ -367,21 +402,40 @@ struct LawReaderView: View {
     }
 }
 
-/// Pencil-only pan that remembers where the stroke really began: a pan reports
-/// only after its movement threshold.
-private final class LawPencilPan: UIPanGestureRecognizer {
+/// Apple Pencil stroke that begins on touch-down. A pan waits for its movement
+/// threshold and then loses against the text view's own Pencil selection,
+/// which made marking hit-or-miss; beginning at once prevents those gestures.
+/// Enabled only while the notebook tool gives Pencil a job here.
+private final class LawPencilStroke: UIGestureRecognizer {
     private(set) var startLocation: CGPoint?
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        if startLocation == nil { startLocation = touches.first?.location(in: view) }
-        super.touchesBegan(touches, with: event)
+    private weak var touch: UITouch?
+    override init(target: Any?, action: Selector?) {
+        super.init(target: target, action: action)
+        allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
     }
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard touch == nil, let first = touches.first else { touches.forEach { ignore($0, for: event) }; return }
+        touch = first; startLocation = first.location(in: view)
+        state = .began
+    }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let touch, touches.contains(touch) { state = .changed }
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let touch, touches.contains(touch) { state = .ended }
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let touch, touches.contains(touch) { state = .cancelled }
+    }
+    override func location(in view: UIView?) -> CGPoint { touch?.location(in: view) ?? super.location(in: view) }
     override func reset() {
         super.reset()
-        startLocation = nil
+        startLocation = nil; touch = nil
     }
 }
 
 private var lawTouchTypesWithoutPencil: [NSNumber] { [UITouch.TouchType.direct, .indirect, .indirectPointer].map { NSNumber(value: $0.rawValue) } }
+private var lawAllTouchTypes: [NSNumber] { [UITouch.TouchType.direct, .indirect, .pencil, .indirectPointer].map { NSNumber(value: $0.rawValue) } }
 
 private struct NativeLawText: UIViewRepresentable {
     var text: String
@@ -392,6 +446,7 @@ private struct NativeLawText: UIViewRepresentable {
     var marks: [LawTextMark]
     var paragraph: String?
     var selection: LawTextSelection
+    var pen: LawPenMode
     var onMark: (NSRange) -> Void
     var onRemove: ([String]) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -400,12 +455,9 @@ private struct NativeLawText: UIViewRepresentable {
         // Bottom room for the floating selection bar.
         v.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: 72, right: 12); v.delegate = context.coordinator
         v.scrollsToTop = false
-        // Apple Pencil marks like a highlighter; fingers keep scrolling and selecting.
-        v.panGestureRecognizer.allowedTouchTypes = lawTouchTypesWithoutPencil
-        let pen = LawPencilPan(target: context.coordinator, action: #selector(Coordinator.pencil(_:)))
-        pen.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
-        pen.maximumNumberOfTouches = 1
-        v.addGestureRecognizer(pen)
+        let stroke = LawPencilStroke(target: context.coordinator, action: #selector(Coordinator.pencil(_:)))
+        v.addGestureRecognizer(stroke)
+        context.coordinator.stroke = stroke
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tapped(_:)))
         tap.delegate = context.coordinator
         v.addGestureRecognizer(tap)
@@ -416,6 +468,14 @@ private struct NativeLawText: UIViewRepresentable {
         let c = context.coordinator
         c.parent = self
         selection.view = v
+        // Highlighter/eraser: Pencil marks; fingers keep scrolling and selecting.
+        // Other notebook tools: Pencil scrolls and selects like a finger.
+        let penActive = pen.kind != .none
+        if c.penActive != penActive {
+            c.penActive = penActive
+            c.stroke?.isEnabled = penActive
+            v.panGestureRecognizer.allowedTouchTypes = penActive ? lawTouchTypesWithoutPencil : lawAllTouchTypes
+        }
         let bodyKey = "\(sectionID):\(fontSize):\(text.hashValue):\(html.hashValue):\(notes.hashValue)"
         if c.bodyKey != bodyKey {
             let changedSection = c.sectionID != sectionID
@@ -450,7 +510,7 @@ private struct NativeLawText: UIViewRepresentable {
         if c.marksKey != marks.hashValue {
             c.marksKey = marks.hashValue
             let ranges = LawTextAnchor.originalRanges(text: c.renderedText, anchors: marks.map(\.anchor))
-            c.markRanges = zip(marks, ranges).compactMap { mark, range in range.map { (mark.id, $0) } }
+            c.markRanges = zip(marks, ranges).compactMap { mark, range in range.map { (mark.id, $0, lawMarkColor(mark.color)) } }
             c.applyHighlights(preview: nil)
         }
         let jump = "\(sectionID):\(paragraph ?? "")"
@@ -476,8 +536,11 @@ private struct NativeLawText: UIViewRepresentable {
         var updating = false
         var renderedText = ""
         var bodyLength = 0
-        var markRanges: [(id: String, range: NSRange)] = []
+        var markRanges: [(id: String, range: NSRange, color: UIColor)] = []
+        weak var stroke: LawPencilStroke?
+        var penActive: Bool?
         private var strokeStart: Int?
+        private var strokePreview: NSRange?
         init(_ parent: NativeLawText) { self.parent = parent }
 
         /// Rich native HTML supports tables/lists. Only use it if its exact
@@ -515,10 +578,11 @@ private struct NativeLawText: UIViewRepresentable {
             storage.beginEditing()
             storage.removeAttribute(.backgroundColor, range: body)
             for mark in markRanges where NSMaxRange(mark.range) <= body.length {
-                storage.addAttribute(.backgroundColor, value: UIColor.systemYellow.withAlphaComponent(0.4), range: mark.range)
+                storage.addAttribute(.backgroundColor, value: mark.color.withAlphaComponent(0.4), range: mark.range)
             }
             if let preview, NSMaxRange(preview) <= body.length {
-                storage.addAttribute(.backgroundColor, value: UIColor.systemYellow.withAlphaComponent(0.6), range: preview)
+                let color = parent.pen.kind == .eraser ? UIColor.systemGray.withAlphaComponent(0.5) : lawMarkColor(parent.pen.hex).withAlphaComponent(0.6)
+                storage.addAttribute(.backgroundColor, value: color, range: preview)
             }
             storage.endEditing()
         }
@@ -570,28 +634,57 @@ private struct NativeLawText: UIViewRepresentable {
                 selection.marks = hit
             }
         }
-        @objc func pencil(_ gesture: LawPencilPan) {
+        /// Highlighter: the stroke covers whole words from its start to its end, so
+        /// the result is always a straight band along the lines. Eraser: marks
+        /// under the stroke are removed.
+        @objc func pencil(_ gesture: LawPencilStroke) {
             guard let v = view else { return }
             switch gesture.state {
             case .began:
                 strokeStart = caret(at: gesture.startLocation ?? gesture.location(in: v))
-                applyHighlights(preview: stroke(to: gesture.location(in: v)))
+                showStroke(stroke(to: gesture.location(in: v)))
             case .changed:
-                applyHighlights(preview: stroke(to: gesture.location(in: v)))
+                showStroke(stroke(to: gesture.location(in: v)))
             case .ended:
                 let range = stroke(to: gesture.location(in: v))
-                strokeStart = nil
+                strokeStart = nil; strokePreview = nil
                 applyHighlights(preview: nil)
-                if let range { parent.onMark(range) }
+                guard let range else { return }
+                if parent.pen.kind == .eraser {
+                    let hit = marks(in: range)
+                    if !hit.isEmpty { parent.onRemove(hit) }
+                } else { parent.onMark(range) }
             default:
-                strokeStart = nil
+                strokeStart = nil; strokePreview = nil
                 applyHighlights(preview: nil)
             }
+        }
+        /// Restyles only when the covered characters change, not per Pencil sample.
+        private func showStroke(_ range: NSRange?) {
+            guard range != strokePreview else { return }
+            strokePreview = range
+            applyHighlights(preview: range)
         }
         private func stroke(to point: CGPoint) -> NSRange? {
             guard let start = strokeStart else { return nil }
             let end = caret(at: point)
-            return end == start ? nil : NSRange(location: min(start, end), length: abs(end - start))
+            guard end != start else { return nil }
+            return words(NSRange(location: min(start, end), length: abs(end - start)))
+        }
+        /// Widens a stroke range to whole words and drops spaces at its ends.
+        private func words(_ range: NSRange) -> NSRange? {
+            let text = renderedText as NSString
+            func word(_ i: Int) -> Bool {
+                guard i >= 0, i < text.length, let scalar = UnicodeScalar(text.character(at: i)) else { return false }
+                return CharacterSet.alphanumerics.contains(scalar)
+            }
+            var lo = range.location, hi = min(NSMaxRange(range), text.length)
+            while lo < hi, !word(lo), CharacterSet.whitespacesAndNewlines.contains(UnicodeScalar(text.character(at: lo)) ?? "x") { lo += 1 }
+            while hi > lo, !word(hi - 1), CharacterSet.whitespacesAndNewlines.contains(UnicodeScalar(text.character(at: hi - 1)) ?? "x") { hi -= 1 }
+            guard hi > lo else { return nil }
+            while lo > 0, word(lo), word(lo - 1) { lo -= 1 }
+            while hi < text.length, word(hi - 1), word(hi) { hi += 1 }
+            return NSRange(location: lo, length: hi - lo)
         }
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
     }
@@ -603,7 +696,9 @@ private struct NativeLawPDF: UIViewRepresentable {
     let top: Double
     var onPage: (Int) -> Void
     var items: [LawPersonalItem]
+    var pen: LawPenMode
     var onMark: ([String: LawJSON]) -> Void
+    var onRemove: ([String]) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> PDFView {
         let c = context.coordinator
@@ -625,18 +720,18 @@ private struct NativeLawPDF: UIViewRepresentable {
             ink.topAnchor.constraint(equalTo: v.topAnchor), ink.bottomAnchor.constraint(equalTo: v.bottomAnchor),
             mark.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -12), mark.bottomAnchor.constraint(equalTo: v.safeAreaLayoutGuide.bottomAnchor, constant: -12),
         ])
-        let pen = LawPencilPan(target: c, action: #selector(Coordinator.pencil(_:)))
-        pen.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
-        pen.maximumNumberOfTouches = 1
-        v.addGestureRecognizer(pen)
-        c.view = v; c.ink = ink; c.markButton = mark
+        let stroke = LawPencilStroke(target: c, action: #selector(Coordinator.pencil(_:)))
+        stroke.delegate = c
+        v.addGestureRecognizer(stroke)
+        c.view = v; c.ink = ink; c.markButton = mark; c.stroke = stroke
         return v
     }
     func updateUIView(_ v: PDFView, context: Context) {
         let c = context.coordinator
         c.parent = self
-        // PDFKit builds its scroll view lazily: Pencil marks, fingers scroll.
-        c.keepPencilForMarking(in: v)
+        c.stroke?.isEnabled = pen.kind != .none
+        // PDFKit builds its scroll view lazily; route Pencil on every update.
+        c.routePencil(in: v)
         let destination = "\(page):\(top)"
         if c.destination != destination {
             c.destination = destination
@@ -652,11 +747,12 @@ private struct NativeLawPDF: UIViewRepresentable {
             p.annotations.filter { $0.userName == "noty-law" }.forEach { p.removeAnnotation($0) }
             let bounds = p.bounds(for: .cropBox)
             for item in items where item.payload["page"]?.int == index + 1 {
+                let color = lawMarkColor(item.payload["color"]?.string).withAlphaComponent(0.4)
                 if case let .array(rects) = item.payload["rectangles"] {
                     for rect in rects {
                         guard case let .object(r) = rect, case let .number(x) = r["x"], case let .number(y) = r["y"], case let .number(w) = r["width"], case let .number(h) = r["height"] else { continue }
                         let a = PDFAnnotation(bounds: CGRect(x: bounds.minX + x * bounds.width, y: bounds.maxY - (y + h) * bounds.height, width: w * bounds.width, height: h * bounds.height), forType: .highlight, withProperties: nil)
-                        a.color = UIColor.systemYellow.withAlphaComponent(0.4); a.userName = "noty-law"; p.addAnnotation(a)
+                        a.color = color; a.userName = "noty-law"; p.addAnnotation(a)
                     }
                 } else if case let .array(points) = item.payload["points"] {
                     let path = UIBezierPath()
@@ -666,31 +762,40 @@ private struct NativeLawPDF: UIViewRepresentable {
                         if i == 0 { path.move(to: pos) } else { path.addLine(to: pos) }
                     }
                     let a = PDFAnnotation(bounds: bounds, forType: .ink, withProperties: nil)
-                    a.add(path); a.color = UIColor.systemYellow.withAlphaComponent(0.4); let border = PDFBorder(); border.lineWidth = bounds.width * 0.018; a.border = border; a.userName = "noty-law"; p.addAnnotation(a)
+                    a.add(path); a.color = color; let border = PDFBorder(); border.lineWidth = bounds.width * 0.018; a.border = border; a.userName = "noty-law"; p.addAnnotation(a)
                 }
             }
         }
     }
     @MainActor
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var parent: NativeLawPDF
         weak var view: PDFView?
         weak var ink: LawPDFInkOverlay?
         weak var markButton: UIButton?
+        weak var stroke: LawPencilStroke?
         var destination = ""
         var items: [LawPersonalItem] = []
+        private var straightened = false
+        private var lastMove = CGPoint.zero
+        private var holdToken = 0
         init(_ parent: NativeLawPDF) { self.parent = parent }
-        func keepPencilForMarking(in root: UIView) {
+        /// With highlighter/eraser Pencil marks and fingers scroll; otherwise
+        /// Pencil scrolls and selects like a finger.
+        func routePencil(in root: UIView) {
+            let types = parent.pen.kind == .none ? lawAllTouchTypes : lawTouchTypesWithoutPencil
             for sub in root.subviews {
-                if let scroll = sub as? UIScrollView, scroll.panGestureRecognizer.allowedTouchTypes != lawTouchTypesWithoutPencil {
-                    scroll.panGestureRecognizer.allowedTouchTypes = lawTouchTypesWithoutPencil
+                if let scroll = sub as? UIScrollView, scroll.panGestureRecognizer.allowedTouchTypes != types {
+                    scroll.panGestureRecognizer.allowedTouchTypes = types
                 }
-                keepPencilForMarking(in: sub)
+                routePencil(in: sub)
             }
         }
+        /// The „Markieren“ button stays tappable with Pencil.
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool { !(touch.view is UIControl) }
         @objc func pageChanged() {
             guard let v = view, let doc = v.document, let page = v.currentPage else { return }
-            keepPencilForMarking(in: v)
+            routePencil(in: v)
             let n = doc.index(for: page) + 1
             DispatchQueue.main.async { [weak self] in self?.parent.onPage(n) }
         }
@@ -711,61 +816,153 @@ private struct NativeLawPDF: UIViewRepresentable {
             v.clearSelection()
             markButton?.isHidden = true
         }
-        @objc func pencil(_ gesture: LawPencilPan) {
+        /// Like the notebook highlighter: „Immer gerade“ straightens on release,
+        /// „nach Halten begradigen“ when Pencil rests at the end; after that the
+        /// line end follows Pencil with angle snapping. The eraser removes marks
+        /// the stroke touches.
+        @objc func pencil(_ gesture: LawPencilStroke) {
             guard let v = view, let ink else { return }
+            let point = gesture.location(in: v)
             switch gesture.state {
             case .began:
-                ink.begin(at: gesture.startLocation ?? gesture.location(in: v))
-                ink.extend(to: gesture.location(in: v))
+                straightened = false
+                ink.begin(at: gesture.startLocation ?? point, color: parent.pen.kind == .eraser ? .systemGray : lawMarkColor(parent.pen.hex))
+                ink.extend(to: point); lastMove = point; scheduleHold()
             case .changed:
-                ink.extend(to: gesture.location(in: v))
+                if straightened { ink.moveStraightEnd(to: point); return }
+                ink.extend(to: point)
+                if hypot(point.x - lastMove.x, point.y - lastMove.y) > 4 { lastMove = point; scheduleHold() }
             case .ended:
-                ink.extend(to: gesture.location(in: v))
-                if let payload = ink.finish() { parent.onMark(payload) }
+                holdToken += 1
+                if !straightened { ink.extend(to: point) }
+                if parent.pen.kind == .eraser {
+                    let hit = erased()
+                    ink.cancel()
+                    if !hit.isEmpty { parent.onRemove(hit) }
+                } else {
+                    if parent.pen.straight && !straightened { ink.straighten() }
+                    if let payload = ink.finish() { parent.onMark(payload) }
+                }
             default:
+                holdToken += 1
                 ink.cancel()
             }
+        }
+        private func scheduleHold() {
+            holdToken += 1
+            guard parent.pen.kind == .marker, parent.pen.holdStraighten else { return }
+            let token = holdToken
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, self.holdToken == token, !self.straightened, let ink = self.ink, ink.isDrawing, ink.straighten() else { return }
+                self.straightened = true
+                UISelectionFeedbackGenerator().selectionChanged()
+            }
+        }
+        /// Marks on the stroke's page that the stroke touches (page units, y down).
+        private func erased() -> [String] {
+            guard let ink, let page = ink.page, let doc = view?.document else { return [] }
+            let number = doc.index(for: page) + 1, bounds = page.bounds(for: .cropBox)
+            let scale = { (p: CGPoint) in CGPoint(x: p.x * bounds.width, y: p.y * bounds.height) }
+            let stroke = ink.normalizedPoints.map(scale)
+            let reach = bounds.width * 0.02
+            func distance(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGFloat {
+                let dx = b.x - a.x, dy = b.y - a.y, length = dx * dx + dy * dy
+                let t = length > 0 ? min(1, max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / length)) : 0
+                return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
+            }
+            func point(_ value: LawJSON) -> CGPoint? {
+                guard case let .array(pair) = value, pair.count == 2, case let .number(x) = pair[0], case let .number(y) = pair[1] else { return nil }
+                return scale(CGPoint(x: x, y: y))
+            }
+            return items.filter { item in
+                guard item.payload["page"]?.int == number else { return false }
+                if case let .array(rects) = item.payload["rectangles"] {
+                    return rects.contains { rect in
+                        guard case let .object(r) = rect, case let .number(x) = r["x"], case let .number(y) = r["y"], case let .number(w) = r["width"], case let .number(h) = r["height"] else { return false }
+                        let box = CGRect(x: x * bounds.width, y: y * bounds.height, width: w * bounds.width, height: h * bounds.height).insetBy(dx: -reach, dy: -reach)
+                        return stroke.contains { box.contains($0) }
+                    }
+                }
+                if case let .array(values) = item.payload["points"] {
+                    let line = values.compactMap(point)
+                    let segments = line.count == 1 ? [(line[0], line[0])] : Array(zip(line, line.dropFirst()))
+                    return stroke.contains { p in segments.contains { distance(p, $0.0, $0.1) < reach } }
+                }
+                return false
+            }.map(\.id)
         }
     }
 }
 
-/// Live preview of a Pencil stroke over the PDF, in the PDF view's coordinates.
-/// The source PDF is never saved with the derived annotations.
+/// Live preview of a Pencil stroke over the PDF. Points are kept in PDF page
+/// coordinates; the source PDF is never saved with the derived annotations.
 @MainActor
 private final class LawPDFInkOverlay: UIView {
     weak var pdf: PDFView?
-    private weak var page: PDFPage?
-    private var points: [LawJSON] = []
+    private(set) weak var page: PDFPage?
+    private var pagePoints: [CGPoint] = []
+    private var straightLine: (start: CGPoint, end: CGPoint)?
     private let preview = CAShapeLayer()
-    private var path = UIBezierPath()
+    var isDrawing: Bool { page != nil }
     override init(frame: CGRect) {
         super.init(frame: frame)
-        preview.strokeColor = UIColor.systemYellow.withAlphaComponent(0.45).cgColor
         preview.fillColor = UIColor.clear.cgColor; preview.lineCap = .round; preview.lineJoin = .round
         layer.addSublayer(preview)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func begin(at point: CGPoint) {
+    func begin(at point: CGPoint, color: UIColor) {
         guard let pdf else { return }
-        page = pdf.page(for: point, nearest: false); points = []; path = UIBezierPath()
+        page = pdf.page(for: point, nearest: true); pagePoints = []; straightLine = nil
+        preview.strokeColor = color.withAlphaComponent(0.45).cgColor
         if let page { preview.lineWidth = max(2, pdf.convert(page.bounds(for: .cropBox), from: page).width * 0.018) }
         extend(to: point)
     }
     func extend(to point: CGPoint) {
-        guard points.count < 1500, let pdf, let page else { return }
-        let p = pdf.convert(point, to: page), bounds = page.bounds(for: .cropBox)
-        guard bounds.width > 0, bounds.height > 0, bounds.contains(p) else { return }
-        points.append(.array([.number((p.x - bounds.minX) / bounds.width), .number((bounds.maxY - p.y) / bounds.height)]))
-        let local = convert(point, from: pdf)
-        if path.isEmpty { path.move(to: local) } else { path.addLine(to: local) }
-        preview.path = path.cgPath
+        guard pagePoints.count < 1500, let pdf, let page else { return }
+        let p = pdf.convert(point, to: page)
+        guard page.bounds(for: .cropBox).contains(p) else { return }
+        pagePoints.append(p); redraw()
+    }
+    /// Replaces the drawn stroke by one fitted, angle-snapped segment.
+    @discardableResult
+    func straighten() -> Bool {
+        guard let line = MarkerStraightening.line(pagePoints.map { PagePoint(x: $0.x, y: $0.y) }) else { return false }
+        straightLine = (CGPoint(x: line.start.x, y: line.start.y), CGPoint(x: line.end.x, y: line.end.y)); redraw()
+        return true
+    }
+    /// After straightening the start stays; the end follows Pencil, snapped in angle.
+    func moveStraightEnd(to point: CGPoint) {
+        guard let pdf, let page, let line = straightLine else { return }
+        let p = pdf.convert(point, to: page)
+        let end = LineSnapping.end(from: PagePoint(x: line.start.x, y: line.start.y), to: PagePoint(x: p.x, y: p.y))
+        straightLine = (line.start, CGPoint(x: end.x, y: end.y)); redraw()
+    }
+    /// Stroke relative to the crop box: x to the right, y down from the top, 0…1.
+    var normalizedPoints: [CGPoint] {
+        guard let page else { return [] }
+        let b = page.bounds(for: .cropBox)
+        guard b.width > 0, b.height > 0 else { return [] }
+        return (straightLine.map { [$0.start, $0.end] } ?? pagePoints).map {
+            CGPoint(x: min(1, max(0, ($0.x - b.minX) / b.width)), y: min(1, max(0, (b.maxY - $0.y) / b.height)))
+        }
     }
     func finish() -> [String: LawJSON]? {
         defer { cancel() }
+        let points = normalizedPoints
         guard let page, let doc = pdf?.document, points.count >= 2 else { return nil }
-        return ["kind": .string("pdf"), "page": .number(Double(doc.index(for: page) + 1)), "points": .array(points)]
+        return ["kind": .string("pdf"), "page": .number(Double(doc.index(for: page) + 1)), "points": .array(points.map { .array([.number($0.x), .number($0.y)]) })]
     }
-    func cancel() { points = []; page = nil; preview.path = nil }
+    func cancel() { pagePoints = []; straightLine = nil; page = nil; preview.path = nil }
+    private func redraw() {
+        guard let pdf, let page else { preview.path = nil; return }
+        let path = UIBezierPath()
+        for (index, p) in (straightLine.map { [$0.start, $0.end] } ?? pagePoints).enumerated() {
+            let local = convert(pdf.convert(p, from: page), from: pdf)
+            if index == 0 { path.move(to: local) } else { path.addLine(to: local) }
+        }
+        preview.path = path.cgPath
+    }
 }
 
 private struct LawParagraphField: UIViewRepresentable {

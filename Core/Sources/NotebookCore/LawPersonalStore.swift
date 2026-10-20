@@ -57,6 +57,15 @@ private struct LawPersonalState: Codable {
 /// Durable outbox and deletion state. A write failure leaves the prior state
 /// intact in memory and on disk. Future/corrupt formats block writes, not reset.
 public actor LawPersonalStore {
+    /// Presentation keys only this app writes (the server echoes payloads
+    /// without them): kept locally when an acknowledgement or a pulled
+    /// change replaces the payload, so a highlighter colour survives syncing.
+    public static let localOnlyKeys = ["color"]
+    private static func keepingLocal(_ server: [String: LawJSON], from local: [String: LawJSON]) -> [String: LawJSON] {
+        var merged = server
+        for key in localOnlyKeys where merged[key] == nil { merged[key] = local[key] }
+        return merged
+    }
     private let url: URL
     private var state: LawPersonalState?
     public init(root: URL) { url = root.appendingPathComponent("personal.json") }
@@ -120,7 +129,7 @@ public actor LawPersonalStore {
         s.items[i].dirty = false
         if let payload, let remoteID = payload["id"]?.string {
             // The server may deduplicate a bookmark by target and choose its existing ID.
-            s.items[i].id = remoteID; s.items[i].payload = payload
+            s.items[i].id = remoteID; s.items[i].payload = Self.keepingLocal(payload, from: s.items[i].payload)
             s.items = s.items.enumerated().filter { $0.offset == i || !($0.element.id == remoteID && $0.element.owner == sent.owner && $0.element.kind == sent.kind) }.map(\.element)
         }
         try commit(s)
@@ -138,7 +147,7 @@ public actor LawPersonalStore {
                 if change.deleted {
                     s.items[i].deleted = true; s.items[i].dirty = false
                 } else if !s.items[i].dirty && !s.items[i].deleted {
-                    s.items[i].payload = change.payload ?? [:]
+                    s.items[i].payload = Self.keepingLocal(change.payload ?? [:], from: s.items[i].payload)
                 }
             } else {
                 s.items.append(LawPersonalItem(id: change.id, owner: owner, kind: change.kind, payload: change.payload ?? [:], deleted: change.deleted, dirty: false, revision: 0))

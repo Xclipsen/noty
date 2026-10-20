@@ -127,6 +127,8 @@ struct LawPanelView<Drag: Gesture>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Moves the window live; the workspace decides side, dock and stash on release.
     var drag: Drag
+    /// What Apple Pencil does in the reader (from the notebook's tool).
+    var pen = LawPenMode()
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -146,7 +148,7 @@ struct LawPanelView<Drag: Gesture>: View {
                 // The whole bar is the grip, not only the small capsule.
                 .contentShape(Rectangle())
                 .gesture(drag)
-            LawReaderView()
+            LawReaderView(pen: pen)
         }.clipShape(RoundedRectangle(cornerRadius: laws.docked ? 0 : 16))
             .overlay(RoundedRectangle(cornerRadius: laws.docked ? 0 : 16).strokeBorder(.secondary.opacity(0.25)))
             .shadow(color: .black.opacity(laws.docked ? 0 : 0.3), radius: 16)

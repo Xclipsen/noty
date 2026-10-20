@@ -44,4 +44,34 @@ final class LawRealCatalogTests: XCTestCase, @unchecked Sendable {
             XCTAssertNotNil(doc.sections.first { $0.keys.contains(key) }, query)
         }
     }
+    /// Every word of every real section can be marked and found again: the
+    /// anchor contract shared with the website holds for the actual texts.
+    func testEveryRealWordAnchorsAndMapsBack() throws {
+        guard let path = ProcessInfo.processInfo.environment["NOTY_LAW_FIXTURE_ROOT"] else { throw XCTSkip("Realen Gesetzesbestand über scripts/check_law_workflow.sh prüfen.") }
+        let source = URL(fileURLWithPath: path), parent = source.deletingLastPathComponent()
+        let catalog = try JSONDecoder().decode(LawCatalog.self, from: Data(contentsOf: source.appendingPathComponent("catalog.json"))).validated()
+        let words = try NSRegularExpression(pattern: "[\\p{L}\\p{N}]+")
+        var checked = 0
+        for entry in catalog.entries {
+            let v = try XCTUnwrap(entry.versions.first { $0.id == entry.currentVersion })
+            let doc = try JSONDecoder().decode(LawDocument.self, from: Data(contentsOf: parent.appendingPathComponent(String(v.dataUrl.dropFirst()))))
+            for section in doc.sections {
+                let text = section.text as NSString
+                let matches = words.matches(in: section.text, range: NSRange(location: 0, length: text.length))
+                // First, last and a spread of words plus one multi-word span keep the run short.
+                let picked = matches.isEmpty ? [] : Array(Set([0, matches.count / 3, matches.count / 2, matches.count - 1]))
+                var ranges = picked.map { matches[$0].range }
+                // A span of up to 40 words: well within the 4000-letter limit of the marking UI.
+                if matches.count > 3 { ranges.append(NSUnionRange(matches[1].range, matches[min(matches.count - 2, 41)].range)) }
+                let anchors = try ranges.map { try XCTUnwrap(LawTextAnchor.anchor(text: section.text, range: $0, sectionID: section.id), "\(entry.abbr) \(section.label)") }
+                // One mapping per section, as the reader does for all its marks.
+                for (range, found) in zip(ranges, LawTextAnchor.originalRanges(text: section.text, anchors: anchors)) {
+                    let mapped = try XCTUnwrap(found, "\(entry.abbr) \(section.label)")
+                    XCTAssertEqual(LawTextAnchor.canonical(text.substring(with: mapped)), LawTextAnchor.canonical(text.substring(with: range)), "\(entry.abbr) \(section.label)")
+                    checked += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(checked, 10_000)
+    }
 }

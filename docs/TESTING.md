@@ -60,6 +60,17 @@ Nutzerrückmeldung zu Build 56: Schriftgröße geht nicht, dafür soll sich kein
 - **Installiert**, InstallationProxy bestätigt Build **57** unter unveränderter ID. Zurückgelesen: alle **14 Hefte und 102 Dateien unverändert**, keine neuen Dateien, beide Bereichsroots ohne Abweichung.
 - **Auf dem iPad ungeprüft.**
 
+### Build 58 · Markierstift mit Pencil · 21.10.2026
+
+Nutzerrückmeldung zu Build 56/57: Markieren funktioniert nicht zuverlässig; mit dem Stift in die Gesetzessammlung, bei ausgewähltem Markierstift markieren, speichern, Strich gerade wie im Heft. Umsetzung siehe [DESIGN](DESIGN.md#gesetzessammlung--bestätigte-bedienung-20102026). Befund im Code: Die Stiftgeste war ein Schwenk mit Mindestbewegung und verlor dadurch oft gegen die Stift-Textauswahl der Textansicht.
+
+- **Implementiert**: Stiftgeste beginnt beim Aufsetzen; Stift folgt dem Werkzeug der aktiven Heftansicht (Markierstift markiert in seiner Farbe, Radierer entfernt, sonst scrollt/wählt der Stift); Text-Striche auf ganze Wörter; PDF begradigt nach „Immer gerade“/„nach Halten“; Farbe `color` im lokalen Markierungsbestand, bei Bestätigung und Abgleich erhalten.
+- **Core-Tests**: volle Suite **562 Tests ohne Fehler** (2 Opt-in-Tests übersprungen); neuer Test `testHighlighterColourSurvivesAcknowledgementAndPull`. Mit echtem Gesetzesbestand (`NOTY_LAW_FIXTURE_ROOT`, 39 Dokumente) neuer Test `testEveryRealWordAnchorsAndMapsBack`: in jeder Vorschrift erstes, letztes und mittlere Wörter sowie ein Bereich bis 40 Wörter lassen sich verankern und wiederfinden (über 10.000 Anker). Das prüft die Ankerrechnung auf dem Klartext, nicht den HTML-Lesetext am Gerät.
+- **Erfolgreich gebaut**: `xtool dev build` und `--sign --ipa` in PTY ohne Warnungen (`.tools/law-build58-build.log`, `.tools/law-build58-sign.log`). Build **58**, Profil bis **27.10.2026 22:24:13 UTC**, IPA-SHA-256 `01105f6954b774383823094615b439c9a282a198dbf84f663058ae22a54e4ce0`.
+- Sicherung bei geschlossener App: `/home/la/Backups/noty-before-build58-2026-10-20T22-45-18-280691792Z/` (102 Dateien, 649.729.361 Byte, 14 Hefte, 26 Revisionen, ohne Quarantäne).
+- **Installiert**, InstallationProxy bestätigt Build **58** unter unveränderter ID. Zurückgelesen: alle **14 Hefte und 102 Dateien unverändert**, keine neuen Dateien, beide Bereichsroots ohne Abweichung.
+- **Auf dem iPad ungeprüft**: Stift mit Markierstift/Radierer/anderen Werkzeugen in Text und PDF, Begradigen, Farben nach Abgleich.
+
 Geräteabnahme gebündelt:
 
 1. Einschalten und kompletten Erstdownload abwarten, dann Flugmodus/Neustart; Text/PDF und Direktfundstellen prüfen. Sync- und Updateschalter unabhängig schalten, lokale Daten bei deaktiviertem Netzwerkabgleich erhalten.

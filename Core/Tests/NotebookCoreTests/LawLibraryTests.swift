@@ -73,6 +73,22 @@ final class LawLibraryTests: XCTestCase, @unchecked Sendable {
         try await store.apply(LawSyncPage(changes: [creation], cursor: 1, hasMore: false), owner: "A")
         let still = try await store.items(); XCTAssertTrue(still[0].deleted); XCTAssertTrue(still[0].dirty)
     }
+    func testHighlighterColourSurvivesAcknowledgementAndPull() async throws {
+        let store = LawPersonalStore(root: try root())
+        let id = try await store.put(kind: "annotation", payload: ["kind": .string("text"), "color": .string("#33CC66")], owner: "A")
+        let pending = try await store.pending(owner: "A")
+        let sent = try XCTUnwrap(pending.first)
+        // The server echoes the annotation without the app-only colour.
+        try await store.acknowledge(sent, payload: ["id": .string(id), "kind": .string("text"), "createdAt": .number(1)])
+        var items = try await store.items()
+        var item = try XCTUnwrap(items.first)
+        XCTAssertEqual(item.payload["color"], .string("#33CC66")); XCTAssertEqual(item.payload["createdAt"], .number(1)); XCTAssertFalse(item.dirty)
+        let echo = LawSyncChange(seq: 2, kind: "annotation", id: id, payload: ["id": .string(id), "kind": .string("text")], deleted: false)
+        try await store.apply(LawSyncPage(changes: [echo], cursor: 2, hasMore: false), owner: "A")
+        items = try await store.items()
+        item = try XCTUnwrap(items.first)
+        XCTAssertEqual(item.payload["color"], .string("#33CC66"))
+    }
     func testServerTombstonePreventsResurrectionAndCursorIsDurable() async throws {
         let url = try root(); let store = LawPersonalStore(root: url)
         let id = try await store.put(kind: "annotation", payload: [:], owner: "A")
