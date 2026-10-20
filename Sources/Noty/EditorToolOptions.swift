@@ -25,7 +25,7 @@ struct EditorToolOptions: View {
         case .shape: 620
         case .marker: 420
         case .strokeEraser, .precisionEraser: 390
-        case .image: 370
+        case .image: 360
         case .selection, .inkSelection: 540
         default: 250
         }
@@ -110,9 +110,12 @@ struct EditorToolOptions: View {
             Button("Textfeld +", systemImage: "text.badge.plus") { showing = false; onInsertText() }.frame(minHeight: 44).contentShape(Rectangle())
         }
         if tool == .image {
-            Button("Fotos", systemImage: "photo.on.rectangle") { showing = false; onPhoto() }.frame(minHeight: 44).contentShape(Rectangle())
-            Button("Dateien", systemImage: "folder") { showing = false; onImageFile() }.frame(minHeight: 44).contentShape(Rectangle())
-            Button("Einfügen", systemImage: "doc.on.clipboard") { showing = false; onPasteImage() }.frame(minHeight: 44).contentShape(Rectangle())
+            // Sources first, clipboard after a group divider; same symbol size
+            // as the other options, with short labels instead of system buttons.
+            labeled("Foto", symbol: "photo", help: "Foto aus der Mediathek einfügen") { showing = false; onPhoto() }
+            labeled("Bilddatei", symbol: "folder", help: "Bilddatei aus Dateien einfügen") { showing = false; onImageFile() }
+            groupDivider
+            labeled("Einfügen", symbol: "doc.on.clipboard", help: "Bild aus der Zwischenablage einfügen") { showing = false; onPasteImage() }
         }
         if tool == .shape {
             Picker("Strich", selection: $shapeOptions.pattern) { ForEach(StrokePattern.allCases, id: \.self) { Text($0.title).tag($0) } }
@@ -146,6 +149,20 @@ struct EditorToolOptions: View {
                 }.pickerStyle(.menu).frame(minHeight: 44).accessibilityLabel("Spurdauer")
             }
         }
+    }
+    /// Action with symbol and short label (no selection state), 44-pt target.
+    private func labeled(_ title: String, symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol).font(.system(size: 18)).frame(width: 24)
+                Text(title).lineLimit(1)
+            }
+            .padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
+        }.accessibilityLabel(help).help(help)
+    }
+    /// Thin group divider like in the toolbar and the selection bars.
+    private var groupDivider: some View {
+        Rectangle().fill(.white.opacity(0.14)).frame(width: 0.5, height: 18).allowsHitTesting(false).accessibilityHidden(true)
     }
     private func option(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {

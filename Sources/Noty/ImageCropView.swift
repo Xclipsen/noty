@@ -31,7 +31,7 @@ struct ImageCropView: View {
                                 path.addRect(CGRect(x: w * left, y: h * top,
                                     width: w * (1 - left - right), height: h * (1 - top - bottom)))
                             }.fill(.black.opacity(0.6), style: FillStyle(eoFill: true))
-                            Rectangle().stroke(.white, lineWidth: 2)
+                            Rectangle().stroke(Color.notyAccent, lineWidth: 2)
                                 .frame(width: w * (1 - left - right), height: h * (1 - top - bottom))
                                 .offset(x: w * left, y: h * top)
                         }.frame(width: geometry.size.width, height: geometry.size.height)
@@ -55,7 +55,7 @@ struct ImageCropView: View {
                     }
                 }
             }
-        }.preferredColorScheme(.dark)
+        }.preferredColorScheme(.dark).tint(Color.notyAccent)
     }
 
     private func edge(_ title: String, value: Binding<Double>, opposite: Double) -> some View {
