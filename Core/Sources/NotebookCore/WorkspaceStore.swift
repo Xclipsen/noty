@@ -248,10 +248,12 @@ public actor WorkspaceStore {
         // Chunk CRCs cover the archived bytes as written (any key order, older
         // builds included); the restored packages are compared by a canonical
         // re-encoding of the decoded value, one notebook at a time.
-        // Image originals come from the scratch extracted during preparation:
-        // each staged file is checked again (SHA-256) before it is copied; the
-        // archive's own asset bytes are not hashed a second time, the whole
-        // file's size and CRC were just compared.
+        // Image originals come from the scratch extracted during preparation
+        // (asset records and originals embedded by schema 5–11 notebooks):
+        // each staged file is checked again (SHA-256) before RevisionStore
+        // copies it, assets first; the archive's own asset bytes are not
+        // hashed a second time, the whole file's size and CRC were just
+        // compared. Every restored package is schema 12 with assets.
         let scratch = stage.appendingPathComponent(Self.assetScratch, isDirectory: true)
         let staged = NotebookAssets(directory: scratch, readOnly: true)
         var fingerprints: [UUID: LibraryArchiveFileInfo] = [:]

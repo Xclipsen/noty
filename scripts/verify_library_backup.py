@@ -216,7 +216,7 @@ def verify_v1(path, size):
         for entry in entries[2:]:
             document = chunk(entry)
             require(entry["id"] == document["id"], "Notebook identity mismatch")
-            validate_notebook(document)
+            require(not validate_notebook(document), "Format 1 cannot carry image assets")
             require(document["title"] == lookup[document["id"]]["title"], "Notebook title differs from index")
             del document
         require(stream.read(1) == b"", "Trailing data")

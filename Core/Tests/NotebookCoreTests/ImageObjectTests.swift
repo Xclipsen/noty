@@ -3,9 +3,9 @@ import XCTest
 @testable import NotebookCore
 
 final class ImageObjectTests: XCTestCase {
+    private let bytes = Data([137, 80, 78, 71])
     private func image() -> ImageObject {
-        ImageObject(data: Data([137, 80, 78, 71]), pixelWidth: 1200, pixelHeight: 800,
-                    x: 100, y: 100, width: 240, height: 160)
+        .test(bytes: bytes, pixelWidth: 1200, pixelHeight: 800, x: 100, y: 100, width: 240, height: 160)
     }
 
     func testFirstImagePreservesLegacyTextAndPDFAndTextEditingCannotDowngrade() throws {
@@ -13,11 +13,11 @@ final class ImageObjectTests: XCTestCase {
         let before = document
         XCTAssertEqual(try Notebook.decode(JSONEncoder().encode(document)), before)
         try document.replaceImages([image()], pageID: document.pages[0].id)
-        XCTAssertEqual(document.schemaVersion, 5)
+        XCTAssertEqual(document.schemaVersion, 12, "image objects reference assets: schema 12")
         XCTAssertEqual(document.pdfSources?.first?.data, before.pdf)
         XCTAssertEqual(document.pages[0].text, before.pages[0].text)
         try document.replaceTextBoxes(document.pages[0].effectiveTextBoxes, pageID: document.pages[0].id)
-        XCTAssertEqual(document.schemaVersion, 5)
+        XCTAssertEqual(document.schemaVersion, 12)
         XCTAssertEqual(document.pages[0].images, [imageWithID(document.pages[0].images![0].id)])
     }
 
@@ -37,12 +37,12 @@ final class ImageObjectTests: XCTestCase {
         XCTAssertEqual(fitted.width / fitted.height, 1.5, accuracy: 0.0001)
         let crop = PageRect(x: 0.25, y: 0.1, width: 0.5, height: 0.75)
         let cropped = try fitted.cropped(to: crop, in: bounds)
-        XCTAssertEqual(cropped.crop, crop); XCTAssertEqual(cropped.data, original.data)
+        XCTAssertEqual(cropped.crop, crop); XCTAssertEqual(cropped.asset, original.asset)
         XCTAssertEqual(cropped.width / cropped.height, 1, accuracy: 0.0001)
         XCTAssertTrue(cropped.fits(in: bounds))
         let reset = try cropped.cropped(to: .init(x: 0, y: 0, width: 1, height: 1), in: bounds)
         XCTAssertEqual(reset.width / reset.height, 1.5, accuracy: 0.0001)
-        XCTAssertTrue(reset.fits(in: bounds)); XCTAssertEqual(reset.data, original.data)
+        XCTAssertTrue(reset.fits(in: bounds)); XCTAssertEqual(reset.asset, original.asset)
     }
 
     func testLimitsAndInvalidMetadataDoNotChangeTheDocument() throws {
@@ -50,20 +50,28 @@ final class ImageObjectTests: XCTestCase {
         let original = document
         let tooMany = (0..<51).map { _ in image() }
         XCTAssertThrowsError(try document.replaceImages(tooMany, pageID: id))
-        var oversized = image()
-        oversized = ImageObject(data: Data(repeating: 0, count: 20_000_001), pixelWidth: 1, pixelHeight: 1)
+        let oversized = ImageObject(asset: .declared(20_000_001), pixelWidth: 1, pixelHeight: 1)
         XCTAssertThrowsError(try document.replaceImages([oversized], pageID: id))
-        let large = ImageObject(data: Data(repeating: 0, count: 14_000_000), pixelWidth: 100, pixelHeight: 100)
-        var second = large; second.id = UUID()
-        var third = large; third.id = UUID()
-        XCTAssertThrowsError(try document.replaceImages([large, second, third], pageID: id))
-        let pixels = ImageObject(data: Data([1]), pixelWidth: 100_000, pixelHeight: 100_000)
+        let pixels = ImageObject(asset: ImageAssetReference(of: Data([1])), pixelWidth: 100_000, pixelHeight: 100_000)
         XCTAssertThrowsError(try document.replaceImages([pixels], pageID: id))
+        // 500 MB of unique originals: 35 × 14 MB fit, a 36th does not.
+        func large(_ seed: Int) -> ImageObject { ImageObject(asset: .declared(14_000_000, seed: seed), pixelWidth: 100, pixelHeight: 100) }
+        let fitting = (0..<35).map(large)
+        XCTAssertThrowsError(try document.replaceImages(fitting + [large(35)], pageID: id))
         XCTAssertEqual(document, original)
-        try document.replaceImages([large, second], pageID: id)
+        // A duplicated object shares its original and costs nothing.
+        var again = fitting[0]; again.id = UUID()
+        try document.replaceImages(fitting + [again], pageID: id)
+        XCTAssertEqual(document.uniqueImageAssetBytes, 490_000_000)
+        // Objects of one original must agree on its pixel size.
+        var otherSize = ImageObject(asset: fitting[0].asset, pixelWidth: 101, pixelHeight: 100); otherSize.x = 300
+        XCTAssertThrowsError(try document.replaceImages(fitting + [otherSize], pageID: id))
         let other = try document.insertPaper(.blank, at: 1)
         try document.trashPage(id)
-        XCTAssertThrowsError(try document.replaceImages([third], pageID: other))
+        // The page trash still counts.
+        XCTAssertThrowsError(try document.replaceImages([large(35)], pageID: other))
+        var third = again; third.id = UUID()
+        XCTAssertNoThrow(try document.replaceImages([third], pageID: other), "an original of the trash costs nothing again")
     }
 
     func testInvalidObjectsAreRejectedAtomicallyIncludingTrashIdentities() throws {
@@ -99,13 +107,13 @@ final class ImageObjectTests: XCTestCase {
         try document.setMargins(PageMargins(right: 300), pageIDs: [id])
         let copyID = try document.duplicatePage(id)
         let copied = try XCTUnwrap(document.pages[1].images?.first)
-        XCTAssertNotEqual(copied.id, object.id); XCTAssertEqual(copied.data, object.data); XCTAssertTrue(copied.locked)
+        XCTAssertNotEqual(copied.id, object.id); XCTAssertEqual(copied.asset, object.asset); XCTAssertTrue(copied.locked)
         try document.trashPage(copyID); try document.restorePage(copyID)
         try document.applyMargins(PageMargins(), pageIDs: [id], trimmedDrawings: [id: Data([4])])
         try document.replaceImages([], pageID: id)
         let snapshot = document.deletedPages!.first!.id
         try document.restorePage(snapshot)
-        XCTAssertEqual(document.pages[0].images?.first?.data, object.data)
+        XCTAssertEqual(document.pages[0].images?.first?.asset, object.asset)
         XCTAssertTrue(document.pages[0].images!.first!.locked)
         try document.validate()
     }
@@ -132,14 +140,16 @@ final class ImageObjectTests: XCTestCase {
         let revisionFiles = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Revisions"), includingPropertiesForKeys: nil)
         let acknowledged = try Data(contentsOf: XCTUnwrap(revisionFiles.first))
         var object = image(); object.rotation = -33; object.locked = true
+        _ = try store.assets.stage(bytes)
         try document.replaceImages([object], pageID: document.pages[0].id)
         try store.save(document)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Assets/\(object.asset.sha256)")), bytes)
         XCTAssertEqual(try RevisionStore(directory: root).load(), document)
         let enumerator = FileManager.default.enumerator(at: root.appendingPathComponent("Migrations"), includingPropertiesForKeys: nil)!
         let migration = try XCTUnwrap(enumerator.allObjects.compactMap { $0 as? URL }.first { $0.lastPathComponent == "notebook-v4.json" })
         XCTAssertEqual(try Data(contentsOf: migration), acknowledged)
         XCTAssertEqual(try Notebook.decode(oldBytes).schemaVersion, 4)
-        let archive = try BackupArchive.encode(document)
+        let archive = try BackupArchive.encode(document, assets: store.assets)
         XCTAssertEqual(try BackupArchive.decode(archive).document, document)
         let repository = NotebookRepository(directory: root)
         let file = root.appendingPathComponent("images.notybackup"); try archive.write(to: file)
@@ -155,7 +165,7 @@ final class ImageObjectTests: XCTestCase {
         XCTAssertEqual(try RevisionStore(directory: root).load(), document)
         let library = LibraryStore(root: root); _ = try await library.load()
         let bundle = try await library.backupBundle()
-        let libraryBytes = try LibraryArchive.encode(bundle)
+        let libraryBytes = try LibraryArchive.encode(bundle, assets: store.assets)
         XCTAssertEqual(try LibraryArchive.decode(libraryBytes).documents, bundle.documents)
     }
 }

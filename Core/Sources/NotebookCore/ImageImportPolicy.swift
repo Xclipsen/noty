@@ -4,11 +4,19 @@ import Foundation
 /// (`ImageObject.validate`, `Notebook.validate`) and the independent Python
 /// verifier use the same values; import checks them early for a clear message.
 public enum ImageLimits {
+    /// One stored original (asset); older imports up to this size stay valid.
     public static let maximumFileBytes = 20_000_000
+    /// One newly imported original; larger images are compressed first
+    /// (`ImageCompression`). Nutzer zu Build 52.
+    public static let maximumImportBytes = 5_000_000
     public static let maximumPixels = 200_000_000.0
     public static let maximumSide = 100_000
-    /// Image originals of one notebook including its page trash.
-    public static let maximumNotebookBytes = 40_000_000
+    /// Unique image originals of one notebook (each hash once) over active
+    /// pages and the page trash; duplicated pages or objects cost nothing.
+    public static let maximumNotebookBytes = 500_000_000
+    /// Stored schema 5–11 only: embedded originals summed per object
+    /// (duplicates counted), the limit up to Build 53.
+    public static let legacyMaximumNotebookBytes = 40_000_000
     public static let maximumImagesPerPage = 50
 
     /// "12,4 MB" (decimal megabytes like the limits), rounded up so a value
@@ -96,20 +104,23 @@ public enum ImageInsertionProblem: Equatable, Sendable {
 }
 
 extension Notebook {
-    /// Bytes of all image originals counted against the notebook limit:
-    /// active pages and the page trash, duplicated objects separately.
-    public var imageOriginalBytes: Int {
-        (pages + (deletedPages ?? []).map(\.page)).reduce(0) { total, page in
-            (page.images ?? []).reduce(total) { $0 + $1.data.count }
-        }
+    /// Bytes of the unique image originals counted against the notebook
+    /// limit: active pages and the page trash, each hash once.
+    public var uniqueImageAssetBytes: Int {
+        var seen = Set<String>()
+        return allImages.reduce(0) { total, image in seen.insert(image.asset.sha256).inserted ? total + image.asset.byteCount : total }
     }
 
-    public func imageInsertionProblem(bytes: Int, pageID: UUID) -> ImageInsertionProblem? {
-        guard bytes <= ImageLimits.maximumFileBytes else { return .fileTooLarge(bytes: bytes) }
+    /// Whether the imported original `reference` may be added to `pageID`.
+    /// An original already in the notebook (same hash) adds no bytes.
+    public func imageInsertionProblem(adding reference: ImageAssetReference, pageID: UUID) -> ImageInsertionProblem? {
+        let present = allImages.contains { $0.asset.sha256 == reference.sha256 }
+        guard present || reference.byteCount <= ImageLimits.maximumImportBytes else { return .fileTooLarge(bytes: reference.byteCount) }
         if let page = pages.first(where: { $0.id == pageID }),
            (page.images?.count ?? 0) >= ImageLimits.maximumImagesPerPage { return .pageFull }
-        let used = imageOriginalBytes
-        guard used + bytes <= ImageLimits.maximumNotebookBytes else { return .notebookFull(used: used, adding: bytes) }
+        let used = uniqueImageAssetBytes
+        let adding = present ? 0 : reference.byteCount
+        guard used + adding <= ImageLimits.maximumNotebookBytes else { return .notebookFull(used: used, adding: adding) }
         return nil
     }
 }

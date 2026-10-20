@@ -9,6 +9,11 @@ import XCTest
 /// format-1 writers (`encodeVersion1`, `writeVersion1`) remain for fixtures and
 /// must still give exactly these bytes.
 ///
+/// C6: the golden notebook is schema 5 with an embedded image. Readers lift it
+/// to schema 12 in memory (asset reference, bytes in `inlineImageBytes`); no
+/// writer can embed bytes again, so the format-1 writers take the exact
+/// golden chunks (fixture path) and must still frame them byte for byte.
+///
 /// Encoders without `.sortedKeys` (library manifest, single backup) emit keys in
 /// Dictionary order, which Swift seeds per process. The golden bytes were
 /// therefore produced with `SWIFT_DETERMINISTIC_HASHING=1`; only such a run can
@@ -20,11 +25,14 @@ final class RecordArchiveCompatibilityTests: XCTestCase {
 
     static func uuid(_ n: Int) -> UUID { UUID(uuidString: String(format: "00000000-0000-4000-8000-%012d", n))! }
 
+    static let imageBytes = Data([0x89, 0x50, 0x4e, 0x47, 0, 255])
+
+    /// In memory: the schema-5 notebook with its image is raised to 12.
     static func notebooks() -> [Notebook] {
         var first = Notebook()
-        first.schemaVersion = 5; first.id = uuid(1); first.title = "Golden Ä"
+        first.schemaVersion = 12; first.id = uuid(1); first.title = "Golden Ä"
         first.pages[0].id = uuid(2); first.pages[0].drawing = Data([1, 2, 3, 4, 250])
-        first.pages[0].images = [ImageObject(id: uuid(3), data: Data([0x89, 0x50, 0x4e, 0x47, 0, 255]), pixelWidth: 4, pixelHeight: 3,
+        first.pages[0].images = [ImageObject(id: uuid(3), asset: ImageAssetReference(of: imageBytes), pixelWidth: 4, pixelHeight: 3,
                                              x: 50.5, y: 60.25, width: 120, height: 90, rotation: 12.5)]
         var second = Notebook()
         second.id = uuid(4); second.title = "Papierkorb"
@@ -83,6 +91,32 @@ final class RecordArchiveCompatibilityTests: XCTestCase {
         "RpdGxlIjoiR29sZGVuIMOEIiwic2NoZW1hVmVyc2lvbiI6NSwiaWQiOiIwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEifQ==",
     ].joined())!
 
+    /// The exact notebook chunks of the golden library (as Build 53 wrote them), by document ID.
+    static func goldenChunks() -> [UUID: Data] {
+        let length = Int(goldenLibrary.dropFirst(8).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+        var offset = 12 + length + 469 + 379
+        var chunks: [UUID: Data] = [:]
+        for (id, count) in [(uuid(1), 393), (uuid(4), 193)] {
+            chunks[id] = Data(goldenLibrary[offset..<offset + count]); offset += count
+        }
+        return chunks
+    }
+
+    /// The exact notebook JSON of the golden backup.
+    static var goldenBackupPayload: Data {
+        let length = Int(goldenBackup.dropFirst(8).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+        return Data(goldenBackup.dropFirst(12 + length))
+    }
+
+    static func encodeLibraryVersion1() throws -> Data {
+        var sink = DataSink()
+        let bundle = bundle(), chunks = goldenChunks()
+        let items = bundle.documents.map { document in bundle.snapshot.items.first { $0.id == document.id }! }
+        _ = try LibraryArchive.writeVersion1(snapshot: bundle.snapshot, toolbar: bundle.toolbar, documents: items, createdAt: createdAt,
+                                             into: &sink, limits: .standard, chunk: { chunks[$0.id]! })
+        return sink.data
+    }
+
     private var deterministicHashing: Bool { ProcessInfo.processInfo.environment["SWIFT_DETERMINISTIC_HASHING"] != nil }
 
     private func header(_ data: Data) -> (length: Int, json: Data, rest: Data) {
@@ -128,6 +162,9 @@ final class RecordArchiveCompatibilityTests: XCTestCase {
         let backup = try BackupArchive.decode(Self.goldenBackup)
         XCTAssertFalse(backup.isLegacyJSON)
         XCTAssertEqual(backup.document, Self.notebooks()[0])
+        let reference = ImageAssetReference(of: Self.imageBytes)
+        XCTAssertEqual(backup.inlineImageBytes, [reference.sha256: Self.imageBytes], "embedded original kept for a restore")
+        XCTAssertEqual(backup.assets, [], "format 1 has no asset records")
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("golden-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -135,8 +172,17 @@ final class RecordArchiveCompatibilityTests: XCTestCase {
         let url = root.appendingPathComponent("golden.notylibrary")
         try Self.goldenLibrary.write(to: url)
         var visited: [UUID] = []
-        let summary = try LibraryArchive.verify(url) { visited.append($0.id) }
+        let summary = try LibraryArchive.verify(url, limits: .standard) { document, assets in
+            visited.append(document.id)
+            for image in document.allImages { XCTAssertEqual(try assets.payload(for: image.asset), .data(Self.imageBytes)) }
+        }
         XCTAssertEqual(visited, Self.notebooks().map(\.id))
+        // Extracting writes embedded originals like asset records, named by their hash.
+        let scratch = root.appendingPathComponent("scratch", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: false)
+        _ = try LibraryArchive.verify(url, extractingAssetsTo: scratch) { _, _ in }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: scratch.path), [reference.sha256])
+        XCTAssertEqual(try Data(contentsOf: scratch.appendingPathComponent(reference.sha256)), Self.imageBytes)
         XCTAssertEqual(summary.file, LibraryArchiveFileInfo(byteCount: 1_872, crc32: 579_206_857)) // zlib.crc32
         XCTAssertEqual(summary.createdAt, Self.createdAt)
         XCTAssertEqual(summary.snapshot, Self.bundle().snapshot)
@@ -147,30 +193,27 @@ final class RecordArchiveCompatibilityTests: XCTestCase {
     }
 
     func testWritingTheSameValuesGivesEquivalentBytes() throws {
-        try assertEquivalentLibrary(LibraryArchive.encodeVersion1(Self.bundle(), createdAt: Self.createdAt))
-        try assertEquivalentBackup(BackupArchive.encodeVersion1(Self.notebooks()[0], createdAt: Self.createdAt))
+        try assertEquivalentLibrary(Self.encodeLibraryVersion1())
+        try assertEquivalentBackup(BackupArchive.encodeVersion1(payload: Self.goldenBackupPayload, createdAt: Self.createdAt))
+        // A notebook with asset references cannot be written as format 1.
+        XCTAssertThrowsError(try BackupArchive.encodeVersion1(Self.notebooks()[0], createdAt: Self.createdAt))
+        XCTAssertThrowsError(try LibraryArchive.encodeVersion1(Self.bundle(), createdAt: Self.createdAt))
+        XCTAssertNoThrow(try BackupArchive.encodeVersion1(Self.notebooks()[1], createdAt: Self.createdAt))
     }
 
     /// The format-1 streaming file path (FileSink, reserved manifest patched in place).
     func testStreamingFileWriteGivesEquivalentBytes() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("golden-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        var packages: [UUID: URL] = [:]
-        for document in Self.notebooks() {
-            let package = root.appendingPathComponent(document.id.uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
-            try RevisionStore(directory: package).save(document)
-            packages[document.id] = package
-        }
-        let bundle = Self.bundle()
-        let plan = LibraryBackupPlan(snapshot: bundle.snapshot, toolbar: bundle.toolbar, packages: packages)
+        let bundle = Self.bundle(), chunks = Self.goldenChunks()
+        let items = bundle.documents.map { document in bundle.snapshot.items.first { $0.id == document.id }! }
         let url = root.appendingPathComponent("written.notylibrary")
         try Data().write(to: url)
         let handle = try FileHandle(forWritingTo: url)
         var sink = FileSink(handle: handle)
-        _ = try LibraryArchive.writeVersion1(snapshot: plan.snapshot, toolbar: plan.toolbar, documents: plan.documents,
-                                             createdAt: Self.createdAt, into: &sink, limits: .standard,
-                                             document: plan.committedNotebook)
+        _ = try LibraryArchive.writeVersion1(snapshot: bundle.snapshot, toolbar: bundle.toolbar, documents: items,
+                                             createdAt: Self.createdAt, into: &sink, limits: .standard, chunk: { chunks[$0.id]! })
         try handle.close()
         let written = try Data(contentsOf: url)
         try assertEquivalentLibrary(written)
@@ -180,7 +223,7 @@ final class RecordArchiveCompatibilityTests: XCTestCase {
 
     func testExactBytesUnderDeterministicHashing() throws {
         try XCTSkipUnless(deterministicHashing, "exact comparison needs SWIFT_DETERMINISTIC_HASHING=1")
-        XCTAssertEqual(try LibraryArchive.encodeVersion1(Self.bundle(), createdAt: Self.createdAt), Self.goldenLibrary)
-        XCTAssertEqual(try BackupArchive.encodeVersion1(Self.notebooks()[0], createdAt: Self.createdAt), Self.goldenBackup)
+        XCTAssertEqual(try Self.encodeLibraryVersion1(), Self.goldenLibrary)
+        XCTAssertEqual(try BackupArchive.encodeVersion1(payload: Self.goldenBackupPayload, createdAt: Self.createdAt), Self.goldenBackup)
     }
 }

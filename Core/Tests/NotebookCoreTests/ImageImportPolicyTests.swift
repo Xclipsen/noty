@@ -89,38 +89,49 @@ final class ImageImportPolicyTests: XCTestCase {
         XCTAssertNil(ImageFileFormat.stillImageIndex(headers: []))
     }
 
-    func testInsertionLimitsCountTrashAndDuplicatesAndMatchValidation() throws {
+    func testInsertionLimitsCountUniqueOriginalsAndMatchValidation() throws {
         var document = Notebook.blank(title: "Fotos")
         let pageID = document.pages[0].id
-        func photo(_ bytes: Int) -> ImageObject {
-            ImageObject(data: Data(repeating: 1, count: bytes), pixelWidth: 4032, pixelHeight: 3024, x: 40, y: 40, width: 240, height: 180)
+        func photo(_ reference: ImageAssetReference) -> ImageObject {
+            ImageObject(asset: reference, pixelWidth: 4032, pixelHeight: 3024, x: 40, y: 40, width: 240, height: 180)
         }
-        XCTAssertEqual(document.imageOriginalBytes, 0)
-        XCTAssertNil(document.imageInsertionProblem(bytes: 12_000_000, pageID: pageID))
-        XCTAssertEqual(document.imageInsertionProblem(bytes: ImageLimits.maximumFileBytes + 1, pageID: pageID),
-                       .fileTooLarge(bytes: 20_000_001))
-        XCTAssertNil(document.imageInsertionProblem(bytes: ImageLimits.maximumFileBytes, pageID: pageID))
+        XCTAssertEqual(document.uniqueImageAssetBytes, 0)
+        // Import: at most 5 MB per new original (larger ones are compressed first) …
+        XCTAssertNil(document.imageInsertionProblem(adding: .declared(ImageLimits.maximumImportBytes), pageID: pageID))
+        XCTAssertEqual(document.imageInsertionProblem(adding: .declared(5_000_001), pageID: pageID), .fileTooLarge(bytes: 5_000_001))
+        // … while stored originals up to 20 MB (older imports) stay valid.
+        let old = photo(.declared(20_000_000, seed: 1))
+        try document.replaceImages([old], pageID: pageID)
+        XCTAssertThrowsError(try document.replaceImages([photo(.declared(20_000_001, seed: 2))], pageID: pageID))
 
-        try document.replaceImages([photo(12_000_000)], pageID: pageID)
+        // Duplicated objects, pages and the page trash share one original.
         let copy = try document.duplicatePage(pageID)
         try document.trashPage(copy)
-        XCTAssertEqual(document.imageOriginalBytes, 24_000_000, "trash and duplicated objects count")
-        XCTAssertEqual(document.imageInsertionProblem(bytes: 16_000_001, pageID: pageID),
-                       .notebookFull(used: 24_000_000, adding: 16_000_001))
-        XCTAssertNil(document.imageInsertionProblem(bytes: 16_000_000, pageID: pageID))
+        XCTAssertEqual(document.allImages.count, 2)
+        XCTAssertEqual(document.uniqueImageAssetBytes, 20_000_000, "each original counts once")
+        // An original already in the notebook adds nothing.
+        XCTAssertNil(document.imageInsertionProblem(adding: old.asset, pageID: pageID))
+        // Fill up to 500 MB with distinct originals (declared sizes; Core does not decode).
+        var images = [old]
+        for seed in 0..<24 { var image = photo(.declared(20_000_000, seed: 100 + seed)); image.x = 40 + Double(seed); images.append(image) }
+        try document.replaceImages(images, pageID: pageID)
+        XCTAssertEqual(document.uniqueImageAssetBytes, 500_000_000)
+        XCTAssertEqual(document.imageInsertionProblem(adding: .declared(1, seed: 9), pageID: pageID),
+                       .notebookFull(used: 500_000_000, adding: 1))
+        XCTAssertNil(document.imageInsertionProblem(adding: old.asset, pageID: pageID))
         // The early check and the stored-document validation agree at the limit.
-        var accepted = document
-        XCTAssertNoThrow(try accepted.replaceImages((document.pages[0].images ?? []) + [photo(16_000_000)], pageID: pageID))
         var rejected = document
-        XCTAssertThrowsError(try rejected.replaceImages((document.pages[0].images ?? []) + [photo(16_000_001)], pageID: pageID))
+        XCTAssertThrowsError(try rejected.replaceImages(images + [photo(.declared(1, seed: 9))], pageID: pageID))
+        var duplicate = old; duplicate.id = UUID()
+        var accepted = document
+        XCTAssertNoThrow(try accepted.replaceImages(images + [duplicate], pageID: pageID))
 
         var full = Notebook.blank(title: "Voll")
-        let images = (0..<ImageLimits.maximumImagesPerPage).map { _ in photo(10) }
-        try full.replaceImages(images, pageID: full.pages[0].id)
-        XCTAssertEqual(full.imageInsertionProblem(bytes: 10, pageID: full.pages[0].id), .pageFull)
-        XCTAssertThrowsError(try full.replaceImages(images + [photo(10)], pageID: full.pages[0].id))
+        let many = (0..<ImageLimits.maximumImagesPerPage).map { _ in photo(.declared(10)) }
+        try full.replaceImages(many, pageID: full.pages[0].id)
+        XCTAssertEqual(full.imageInsertionProblem(adding: .declared(10, seed: 3), pageID: full.pages[0].id), .pageFull)
+        XCTAssertThrowsError(try full.replaceImages(many + [photo(.declared(10))], pageID: full.pages[0].id))
     }
-
     func testMegabyteTextRoundsUpInGermanNotation() {
         XCTAssertEqual(ImageLimits.megabytes(0), "0,0 MB")
         XCTAssertEqual(ImageLimits.megabytes(1), "0,1 MB")

@@ -71,6 +71,9 @@ final class EditorModel: ObservableObject {
          restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil) {
         storageRoot = root
         store = NotebookRepository(directory: root, restoreDirectory: restoreDirectory)
+        // Image layers, thumbnails and exports of this editor resolve its
+        // originals (files and pending imports) through the registry.
+        ImageAssetRegistry.shared.register(store.assets)
         // Container-independent keys (relative to Documents); the former
         // absolute-path keys stop matching when iOS moves the container on update.
         backupDateKey = StableDefaults.key("backupExport", root: root, legacyPrefix: "noty.backupExport.", pick: StableDefaults.newestDate)
@@ -89,9 +92,9 @@ final class EditorModel: ObservableObject {
                 // Opening speed: decode every PencilKit drawing and image off the
                 // UI actor; PDFKit parsing happens once (the catalogue below
                 // validates the PDFs) instead of twice on the UI actor.
-                let snapshot = loaded
+                let snapshot = loaded, assets = store.assets
                 try await Task.detached(priority: .userInitiated) {
-                    try EditorModelValidation.validateContent(snapshot)
+                    try EditorModelValidation.validateContent(snapshot, assets: assets)
                 }.value
                 EditorOpenTrace.mark("document read", "pages=\(loaded.pages.count)")
                 // Keep legacy page geometry nil: existing ink is never rescaled.
@@ -130,6 +133,23 @@ final class EditorModel: ObservableObject {
 
     func validate(_ document: Notebook, assets: ImageAssetProviding? = nil) throws {
         try EditorModelValidation.validate(document, assets: assets)
+    }
+
+    /// This notebook's image originals: committed package files plus pending
+    /// imports (staged here, written by the next commit before its revision).
+    nonisolated var imageAssets: NotebookAssets { store.assets }
+
+    /// Originals referenced by `images` that this notebook does not have yet
+    /// (objects pasted from another notebook's selection) are staged here
+    /// from the package that holds them, before the change is installed;
+    /// otherwise every later commit would fail on a missing asset. Objects
+    /// already in the notebook cost no file access.
+    private func adoptImageAssets<S: Sequence>(_ images: S) throws where S.Element == ImageObject {
+        let known = Set(notebook.allImages.map(\.asset.sha256))
+        for reference in Set(images.map(\.asset)) where !known.contains(reference.sha256) && !imageAssets.isAvailable(reference) {
+            guard let data = ImageAssetRegistry.shared.data(for: reference) else { throw ImageAssetError.missing(reference.sha256) }
+            _ = try imageAssets.stage(data)
+        }
     }
 
     var page: Page { notebook.pages[pageIndex] }
@@ -312,6 +332,7 @@ final class EditorModel: ObservableObject {
               (notebook.pages[index].images ?? []) != images else { return }
         do {
             let before = PageContent(page: notebook.pages[index])
+            try adoptImageAssets(images)
             var candidate = notebook
             try candidate.replaceImages(images, pageID: pageID)
             if candidate.schemaVersion != notebook.schemaVersion {
@@ -323,7 +344,7 @@ final class EditorModel: ObservableObject {
             recordChange(.images, pageID: pageID, before: before,
                          coalescing: .init(key: "images-\(pageID.uuidString)", window: 0.8))
             scheduleSave()
-        } catch { self.error = "Bildänderung konnte nicht übernommen werden. Höchstens 50 Bilder pro Seite und 40 MB Bildoriginale pro Heft. \(error.localizedDescription)" }
+        } catch { self.error = "Bildänderung konnte nicht übernommen werden. Höchstens 50 Bilder pro Seite und 500 MB Bildoriginale pro Heft. \(error.localizedDescription)" }
     }
 
     @discardableResult
@@ -338,6 +359,7 @@ final class EditorModel: ObservableObject {
             return false
         }
         do {
+            try adoptImageAssets(content.images)
             var candidate = notebook; try candidate.replaceContent(content, pageID: pageID)
             if candidate.schemaVersion != notebook.schemaVersion {
                 let catalogue = try NotebookPDFCatalog(candidate, reusing: sources)
@@ -361,6 +383,7 @@ final class EditorModel: ObservableObject {
         HangProbe.hit("Model.replaceContents")
         guard writable, !mutationsPaused, !busy else { return false }
         do {
+            try adoptImageAssets(changes.flatMap(\.replacement.images))
             var candidate = notebook; try candidate.replaceContents(changes)
             if candidate.schemaVersion != notebook.schemaVersion {
                 let catalogue = try NotebookPDFCatalog(candidate, reusing: sources)
@@ -746,17 +769,16 @@ enum EditorModelValidation {
     }
     /// PencilKit drawings and images of active and trashed pages. No UI or
     /// PDFKit objects: safe off the UI actor (the PDF part is the catalogue).
-    /// Image originals come from the bytes embedded in `document`, then from
-    /// `assets`; each original (content address and pixel size) is decoded
-    /// and verified once, also when duplicated pages share it.
+    /// Image originals come from `assets` (nil: the registry); each original
+    /// (content address and pixel size) is decoded and verified once, also
+    /// when duplicated pages share it.
     nonisolated static func validateContent(_ document: Notebook, assets: ImageAssetProviding? = nil) throws {
         for page in document.pages + (document.deletedPages ?? []).map(\.page) where !page.drawing.isEmpty {
             _ = try PKDrawing(data: page.drawing)
         }
         let images = document.allImages
         guard !images.isEmpty else { return }
-        let inline = InlineImageAssets(images: images)
-        let provider: ImageAssetProviding = assets.map { ChainedImageAssets([inline, $0]) } ?? inline
+        let provider: ImageAssetProviding = assets ?? ImageAssetRegistry.shared
         var checked = Set<String>()
         for image in images where checked.insert("\(image.asset.sha256)-\(image.pixelWidth)x\(image.pixelHeight)").inserted {
             try ImageRendering.validate(image, assets: provider)

@@ -217,8 +217,12 @@ final class LibraryModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
 
-    /// Read-only snapshot of the last committed revision (PDF export from the library).
-    func committedNotebook(_ id: UUID) async throws -> Notebook { try await store.previewDocument(id: id) }
+    /// Read-only snapshot of the last committed revision with its image
+    /// originals (PDF export from the library).
+    func committedNotebook(_ id: UUID) async throws -> (Notebook, NotebookAssets) {
+        let package = try await store.previewPackage(id: id)
+        return (package.document, package.assets)
+    }
 
     private final class Tile {
         let stamp: String, appearance: NotebookAppearance?, image: UIImage?
@@ -234,7 +238,7 @@ final class LibraryModel: ObservableObject {
         // Read before the document: a newer commit in between only re-renders later.
         let stamp = await Task.detached(priority: .utility) { NotebookRevisionStamp.read(directory: url) }.value
         if let stamp, let tile = tiles.object(forKey: id as NSUUID), tile.stamp == stamp { return (tile.appearance, tile.image) }
-        let document = try await store.previewDocument(id: id)
+        let (document, assets) = try await store.previewPackage(id: id)
         try Task.checkCancellation()
         let result: (NotebookAppearance?, UIImage?)
         if document.appearance?.coverEnabled == true { result = (document.appearance, nil) }
@@ -245,7 +249,7 @@ final class LibraryModel: ObservableObject {
             if let reference = page.pdfReference {
                 source = document.pdfSources?.first(where: { $0.id == reference.sourceID }).map { .data($0.data, reference.pageIndex) } ?? .none
             } else { source = document.pdf.map { .data($0, 0) } ?? .none }
-            result = (nil, try await PageThumbnailCache.render(page, source: source))
+            result = (nil, try await PageThumbnailCache.render(page, source: source, assets: assets))
         }
         if let stamp {
             let pixels = result.1.map { Int($0.size.width * $0.size.height * $0.scale * $0.scale * 4) } ?? 1

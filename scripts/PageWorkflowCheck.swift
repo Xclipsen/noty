@@ -70,7 +70,10 @@ struct PageWorkflowCheck {
               document.pages[1].margins == PageMargins(right: 300, bottom: 120, style: .grid, color: .dark),
               document.pages[1].writingCoordinateScale == 1 else { throw StorageError.invalidDocument }
         let imageData = try Data(contentsOf: fixture.deletingLastPathComponent().appendingPathComponent("Bildobjekt.png"))
-        var image = ImageObject(data: imageData, pixelWidth: 64, pixelHeight: 48,
+        // Schema 12: the original is staged in the package's asset store; the
+        // next commit writes Assets/<sha256> before its revision.
+        let imageAsset = try revisionStore.assets.stage(imageData)
+        var image = ImageObject(asset: imageAsset, pixelWidth: 64, pixelHeight: 48,
             x: -60, y: 20, width: 120, height: 90, rotation: 37, locked: true)
         image = try image.cropped(to: .init(x: 0.1, y: 0.2, width: 0.8, height: 0.6), in: document.pages[marginPageIndex].textBounds)
         try document.replaceImages([image], pageID: beforeTrim.id)
@@ -88,20 +91,33 @@ struct PageWorkflowCheck {
         _ = try document.restorePage(document.deletedPages!.first!.id)
         try document.trashPage(pastedPage)
         try revisionStore.save(document)
-        guard document.pdfSources?.first?.data == source, document.pages.first?.id == oldIDs[3],
+        guard document.schemaVersion == 12, document.pdfSources?.first?.data == source, document.pages.first?.id == oldIDs[3],
               try RevisionStore(directory: storeRoot).load() == document else { throw StorageError.invalidDocument }
+        // Duplicated, copied and trashed pages share one original: exactly one asset file.
+        let assetFiles = try FileManager.default.contentsOfDirectory(atPath: storeRoot.appendingPathComponent("Assets").path)
+        let storedOriginal = try Data(contentsOf: storeRoot.appendingPathComponent("Assets/\(imageAsset.sha256)"))
+        guard document.allImages.count >= 3, assetFiles == [imageAsset.sha256], storedOriginal == imageData,
+              revisionStore.assets.pendingReferences.isEmpty else { throw StorageError.invalidDocument }
         try JSONEncoder().encode(document).write(to: root.appendingPathComponent("current.json"))
+        // The same state as Build 53 stored it (schema 11, original embedded).
+        let legacyCurrent = try Self.legacyJSON(document, originals: [imageAsset.sha256: imageData])
+        try legacyCurrent.write(to: root.appendingPathComponent("current-v11.json"))
         // Format 2 through the app's streaming file writer; format 1 as older builds wrote it.
         let backupURL = root.appendingPathComponent("heft.notybackup")
-        let writtenBackup = try BackupArchive.write(document, to: backupURL)
+        let writtenBackup = try BackupArchive.write(document, assets: revisionStore.assets, to: backupURL)
         let backup = try Data(contentsOf: backupURL)
         guard writtenBackup.formatVersion == 2, writtenBackup.file == (try BoundedFile.checksum(backupURL)),
-              try BackupArchive.encode(document, createdAt: Date()).count == backup.count else { throw StorageError.invalidDocument }
-        // One flipped byte inside the notebook record (CRC) must be refused.
-        var corrupt = backup; corrupt[corrupt.count / 2] ^= 1
+              writtenBackup.assets == [imageAsset],
+              try BackupArchive.encode(document, assets: revisionStore.assets, createdAt: Date()).count == backup.count else {
+            throw StorageError.invalidDocument
+        }
+        // One flipped byte inside the asset record (SHA-256) must be refused.
+        guard let assetRange = backup.range(of: imageData) else { throw StorageError.invalidDocument }
+        var corrupt = backup; corrupt[assetRange.lowerBound + imageData.count / 2] ^= 1
         try corrupt.write(to: root.appendingPathComponent("corrupt.notybackup"))
+        // Format 1 as Build 53 wrote it: schema 11 with the embedded original.
         let legacyBackupURL = root.appendingPathComponent("heft-v1.notybackup")
-        try BackupArchive.encodeVersion1(document).write(to: legacyBackupURL)
+        try BackupArchive.encodeVersion1(payload: legacyCurrent).write(to: legacyBackupURL)
         // Both formats restore as separate copies through the staged repository path.
         let restoreRepository = NotebookRepository(directory: root.appendingPathComponent("RestoreCheck"))
         var restoredBackups: [Int] = []
@@ -109,7 +125,9 @@ struct PageWorkflowCheck {
             let prepared = try await restoreRepository.prepareRestore(from: url)
             let restoredCopy = try await restoreRepository.commitRestore(prepared)
             let reopened = try RevisionStore(directory: restoredCopy.directory).load()
+            let restoredOriginal = try Data(contentsOf: restoredCopy.directory.appendingPathComponent("Assets/\(imageAsset.sha256)"))
             guard reopened.id != document.id, reopened.pages == document.pages, reopened.deletedPages == document.deletedPages,
+                  reopened.schemaVersion == 12, restoredOriginal == imageData,
                   reopened.title == document.title + " (Wiederhergestellt)" else { throw StorageError.invalidDocument }
             restoredBackups.append(try BackupArchive.verify(url).formatVersion)
         }
@@ -124,7 +142,7 @@ struct PageWorkflowCheck {
         let libraryFile = root.appendingPathComponent("bibliothek.notylibrary")
         // Streaming file writer of the app; re-read once more in memory here.
         let written = try LibraryArchive.write(try await library.backupPlan(), to: libraryFile)
-        guard try LibraryArchive.decode(Data(contentsOf: libraryFile)) == bundle,
+        guard try LibraryArchive.decode(Data(contentsOf: libraryFile)) == bundle, written.assetCount == 1,
               written.file == (try BoundedFile.checksum(libraryFile)) else { throw StorageError.invalidDocument }
         var corruptLibrary = try Data(contentsOf: libraryFile); corruptLibrary[corruptLibrary.count / 2] ^= 1
         try corruptLibrary.write(to: root.appendingPathComponent("corrupt.notylibrary"))
@@ -134,7 +152,11 @@ struct PageWorkflowCheck {
         let restoredRoot = try await workspaces.directory(for: restored.id)
         let restoredLibrary = LibraryStore(root: restoredRoot)
         let roundTrip = try await restoredLibrary.backupBundle()
-        guard roundTrip.toolbar == tools, roundTrip.documents == bundle.documents else { throw StorageError.invalidDocument }
+        let restoredPackage = try await restoredLibrary.documentURL(id: document.id)
+        guard roundTrip.toolbar == tools, roundTrip.documents == bundle.documents,
+              try Data(contentsOf: restoredPackage.appendingPathComponent("Assets/\(imageAsset.sha256)")) == imageData else {
+            throw StorageError.invalidDocument
+        }
         var independent = roundTrip.documents[0]
         try independent.restorePage(copy)
         var copiedBoxes = independent.pages[0].effectiveTextBoxes
@@ -150,19 +172,7 @@ struct PageWorkflowCheck {
               try RevisionStore(directory: independentURL).load() == independent,
               independent.pages.count == document.pages.count + 1,
               old.pages[0].text == "BULK-12 · Seite 1" else { throw StorageError.invalidDocument }
-        // Asset records of format 2 with synthetic references (no schema 12 yet):
-        // written by Swift, checked independently by Python (check_page_workflow.sh).
-        let firstAsset = Data((0..<5_000).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ 1) }), secondAsset = Data("noty-Asset".utf8)
-        let assetReferences = [ImageAssetReference(of: firstAsset), ImageAssetReference(of: secondAsset)]
-        let assetNotebookID = document.id
-        ExternalAssetSeam.set { $0.id == assetNotebookID ? assetReferences : [] }
-        defer { ExternalAssetSeam.set(nil) }
-        let inlineAssets = InlineImageAssets(bytes: [assetReferences[0].sha256: firstAsset, assetReferences[1].sha256: secondAsset])
-        let assetBackup = try BackupArchive.write(document, assets: inlineAssets, to: root.appendingPathComponent("assets.notybackup"))
-        try LibraryArchive.encode(bundle, assets: inlineAssets).write(to: root.appendingPathComponent("assets.notylibrary"))
-        let referenceList = [document.id.uuidString: Dictionary(uniqueKeysWithValues: assetReferences.map { ($0.sha256, $0.byteCount) })]
-        try JSONSerialization.data(withJSONObject: referenceList).write(to: root.appendingPathComponent("asset-references.json"))
-        guard assetBackup.assets == assetReferences, bundle.documents.map(\.id) == [document.id] else { throw StorageError.invalidDocument }
+        let legacyPackage = try await Self.checkLegacyPackage(root: root, image: imageData)
         let report: [String: Any] = ["schemaVersion": document.schemaVersion,
             "textFlowSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first?.flowID == continuation.flowID,
             "unmaterializedDraftExcludedFromNotebookArchive": !roundTrip.documents[0].pages.contains(where: { $0.id == document.writingDraft().id }),
@@ -173,13 +183,105 @@ struct PageWorkflowCheck {
             "pencilAndLaserSettingsSurviveLibraryRestore": roundTrip.toolbar.formatVersion == 8 && roundTrip.toolbar.laserStyle == tools.laserStyle && roundTrip.toolbar.presets == tools.presets,
             "activePages": document.pages.count, "deletedPages": document.deletedPages?.count ?? 0,
             "originalPDFBytesUnchanged": true, "editableShapesSurviveLibraryRestore": independent.pages.first(where: { $0.id == beforeTrim.id })?.shapes == changedShapes, "independentRestore": true,
-            "originalImageBytesUnchanged": document.pages[marginPageIndex].images?.first?.data == imageData,
+            "originalImageBytesUnchanged": storedOriginal == imageData && document.pages[marginPageIndex].images?.first?.asset == imageAsset,
+            "duplicatedImagesShareOneAssetFile": assetFiles.count == 1,
             "editableImageSurvivesLibraryRestore": independent.pages.first(where: { $0.id == beforeTrim.id })?.images == [editedImage],
             "marginRestoreKeepsPageIDAndArchivesCurrent": true, "appleFrameworksExecuted": false,
             "libraryArchiveBytes": written.file.byteCount, "libraryArchiveCRC32": Int(written.file.crc32),
             "libraryArchiveFormat": written.formatVersion, "notebookBackupFormatsRestored": restoredBackups,
-            "archiveAssets": written.assetCount + writtenBackup.assets.count]
+            "archiveAssets": written.assetCount + writtenBackup.assets.count,
+            "legacySchema11OpenWritesNothing": legacyPackage.openWritesNothing,
+            "legacySchema11EditKeepsExactBytesUnderMigrations": legacyPackage.exactBytesArchived,
+            "legacySchema11EditWritesAssetThenSchema12": legacyPackage.assetWritten]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
+    }
+
+    /// The stored form of Build 53 (schema 11): every image's original as
+    /// Base64 `data` instead of `asset`. Only this fixture writes it.
+    static func legacyJSON(_ document: Notebook, originals: [String: Data]) throws -> Data {
+        guard var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(document)) as? [String: Any] else {
+            throw StorageError.invalidDocument
+        }
+        object["schemaVersion"] = 11
+        func embed(_ page: [String: Any]) throws -> [String: Any] {
+            guard var images = page["images"] as? [[String: Any]] else { return page }
+            for index in images.indices {
+                guard let asset = images[index].removeValue(forKey: "asset") as? [String: Any],
+                      let hash = asset["sha256"] as? String, let bytes = originals[hash] else { throw StorageError.invalidDocument }
+                images[index]["data"] = bytes.base64EncodedString()
+            }
+            var result = page; result["images"] = images; return result
+        }
+        object["pages"] = try (object["pages"] as? [[String: Any]] ?? []).map(embed)
+        if let deleted = object["deletedPages"] as? [[String: Any]] {
+            object["deletedPages"] = try deleted.map { entry in
+                var entry = entry; entry["page"] = try embed(entry["page"] as? [String: Any] ?? [:]); return entry
+            }
+        }
+        let bytes = try JSONSerialization.data(withJSONObject: object)
+        guard try NotebookDecoding.decode(bytes).storedSchemaVersion == 11 else { throw StorageError.invalidDocument }
+        return bytes
+    }
+
+    /// An old package exactly as Build 53 committed it: handwritten schema-11
+    /// JSON with an embedded image, one revision, Build-46 manifest. Opening
+    /// (load plus the editor's unchanged save) must write nothing; the first
+    /// edit keeps the exact old bytes under Migrations/, then writes the asset
+    /// and a schema-12 revision.
+    static func checkLegacyPackage(root: URL, image: Data) async throws -> (openWritesNothing: Bool, exactBytesArchived: Bool, assetWritten: Bool) {
+        let fm = FileManager.default
+        let package = root.appendingPathComponent("Legacy", isDirectory: true)
+        let revisions = package.appendingPathComponent("Revisions", isDirectory: true)
+        try fm.createDirectory(at: revisions, withIntermediateDirectories: true)
+        let id = "6F1B2C3D-4E5F-4A6B-8C7D-0E1F2A3B4C5D"
+        let json = """
+        {"schemaVersion":11,"id":"\(id)","title":"Altheft mit Bild","pdfSources":[],"deletedPages":[],\
+        "pages":[{"id":"0A1B2C3D-4E5F-4A6B-8C7D-111111111111","drawing":"","text":"","paper":"lined",\
+        "geometry":{"mediaBox":{"x":0,"y":0,"width":595,"height":842},"cropBox":{"x":0,"y":0,"width":595,"height":842},"rotation":0},\
+        "images":[{"id":"0A1B2C3D-4E5F-4A6B-8C7D-222222222222","data":"\(image.base64EncodedString())","pixelWidth":64,"pixelHeight":48,\
+        "x":60,"y":80,"width":128,"height":96,"rotation":0,"crop":{"x":0,"y":0,"width":1,"height":1},"locked":false},\
+        {"id":"0A1B2C3D-4E5F-4A6B-8C7D-333333333333","data":"\(image.base64EncodedString())","pixelWidth":64,"pixelHeight":48,\
+        "x":260,"y":80,"width":128,"height":96,"rotation":0,"crop":{"x":0,"y":0,"width":1,"height":1},"locked":false}]}]}
+        """
+        let bytes = Data(json.utf8)
+        let file = "11111111-2222-4333-8444-555555555555.json"
+        try bytes.write(to: revisions.appendingPathComponent(file))
+        let manifest = """
+        {"formatVersion":1,"checksumAlgorithm":"crc32-iso-hdlc","revisions":[{"file":"\(file)","byteCount":\(bytes.count),"crc32":\(SnapshotChecksum.crc32(bytes)),"savedAtUnix":1800000000}]}
+        """
+        try Data(manifest.utf8).write(to: package.appendingPathComponent("manifest.json"))
+        func inventory() throws -> [String: Data] {
+            var result: [String: Data] = [:]
+            let enumerator = fm.enumerator(at: package, includingPropertiesForKeys: nil)!
+            for case let url as URL in enumerator {
+                let isFile = (try url.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true
+                result[String(url.path.dropFirst(package.path.count))] = isFile ? try Data(contentsOf: url) : Data()
+            }
+            return result
+        }
+        let before = try inventory()
+        let repository = NotebookRepository(directory: package)
+        var (notebook, recovered) = try await repository.load()
+        // Raised in memory: schema 12, one asset for both objects, nothing written.
+        guard !recovered, notebook.schemaVersion == 12, notebook.externalImageAssets == [ImageAssetReference(of: image)],
+              repository.assets.pendingReferences == [ImageAssetReference(of: image)] else { throw StorageError.invalidDocument }
+        try await repository.save(notebook, revision: 1) // the editor's save right after opening
+        let openWritesNothing = try inventory() == before && !fm.fileExists(atPath: package.appendingPathComponent("Assets").path)
+        notebook.pages[0].drawing = Data()
+        var boxes = notebook.pages[0].effectiveTextBoxes
+        boxes.append(TextBox(x: 60, y: 300, width: 300, height: 40, text: "Erste Änderung nach dem Update"))
+        try notebook.replaceTextBoxes(boxes, pageID: notebook.pages[0].id)
+        try await repository.save(notebook, revision: 2)
+        let migrations = package.appendingPathComponent("Migrations", isDirectory: true)
+        let archived = try fm.contentsOfDirectory(at: migrations, includingPropertiesForKeys: nil)
+            .map { $0.appendingPathComponent("notebook-v11.json") }.filter { fm.fileExists(atPath: $0.path) }
+        let exactBytesArchived = try archived.count == 1 && Data(contentsOf: archived[0]) == bytes
+        let reference = ImageAssetReference(of: image)
+        let reopened = try RevisionStore(directory: package).load()
+        let assetWritten = try Data(contentsOf: package.appendingPathComponent("Assets/\(reference.sha256)")) == image
+            && reopened == notebook && repository.assets.pendingReferences.isEmpty
+        guard openWritesNothing, exactBytesArchived, assetWritten else { throw StorageError.invalidDocument }
+        return (openWritesNothing, exactBytesArchived, assetWritten)
     }
 }

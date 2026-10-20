@@ -1,7 +1,7 @@
 import Foundation
 
 /// Content address of one immutable image original in a notebook package
-/// (`Assets/<sha256>`). Not yet used by the notebook format.
+/// (`Assets/<sha256>`), stored in `ImageObject.asset` since schema 12.
 public struct ImageAssetReference: Codable, Hashable, Sendable {
     public let sha256: String
     public let byteCount: Int
@@ -43,28 +43,19 @@ extension ImageAssetProviding {
     public func verifiedPayload(for reference: ImageAssetReference) throws -> ImageAssetPayload { try payload(for: reference) }
 }
 
-/// Originals held in memory, served by content address: the bytes still
-/// embedded in the notebook model (schema ≤ 11), or any other set of bytes.
-/// References are computed from the bytes, so every payload matches its
-/// reference by construction.
+/// Originals held in memory, served by content address: the bytes a schema
+/// 5–11 notebook embedded (`DecodedNotebook.inlineImageBytes`), or any other
+/// set of bytes keyed by their own SHA-256.
 public struct InlineImageAssets: ImageAssetProviding {
     private let bytes: [String: Data]
 
     public init() { bytes = [:] }
 
-    /// Keyed by their own SHA-256 (not checked; use `init(images:)` or
-    /// `ImageAssetReference(of:)` to build the keys).
+    /// Keyed by their own SHA-256 (not checked; build the keys with
+    /// `ImageAssetReference(of:)` or take `inlineImageBytes`).
     public init(bytes: [String: Data]) { self.bytes = bytes }
 
-    /// Hashes each original once per image value (`ImageObject.asset`).
-    public init<S: Sequence>(images: S) where S.Element == ImageObject {
-        var bytes: [String: Data] = [:]
-        for image in images { bytes[image.asset.sha256] = image.data }
-        self.bytes = bytes
-    }
-
-    /// Every image of the active pages and the page trash.
-    public init(_ notebook: Notebook) { self.init(images: notebook.allImages) }
+    public var isEmpty: Bool { bytes.isEmpty }
 
     public var references: [ImageAssetReference] {
         bytes.map { ImageAssetReference(sha256: $0.key, byteCount: $0.value.count) }.sorted { $0.sha256 < $1.sha256 }
@@ -109,29 +100,14 @@ extension Notebook {
         (pages + (deletedPages ?? []).map(\.page)).flatMap { $0.images ?? [] }
     }
 
-    /// Image originals stored outside the notebook JSON, unique by hash in
-    /// order of first occurrence (active pages, then page trash): exactly the
-    /// asset records an archive carries for this notebook. Schema ≤ 11 embeds
-    /// every original in the JSON, so this is empty until schema 12 (C6) –
-    /// except for synthetic references that tests attach (`ExternalAssetSeam`).
+    /// Image originals referenced by this notebook, unique by hash in order
+    /// of first occurrence (active pages, then page trash): exactly the asset
+    /// records an archive carries and the files a package must hold for it.
+    /// (A notebook decoded from schema 5–11 lists its embedded originals here,
+    /// too; `DecodedNotebook.storedExternalAssets` excludes them.)
     public var externalImageAssets: [ImageAssetReference] {
         var seen = Set<String>()
-        return ExternalAssetSeam.references(self).filter { seen.insert($0.sha256).inserted }
-    }
-}
-
-/// Test seam until schema 12: lets tests attach asset references to notebooks
-/// so archive, staging and restore paths for assets run without a format
-/// change. Never set by the app.
-enum ExternalAssetSeam {
-    typealias Resolver = @Sendable (Notebook) -> [ImageAssetReference]
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var resolver: Resolver?
-
-    static func set(_ value: Resolver?) { lock.lock(); resolver = value; lock.unlock() }
-    static func references(_ notebook: Notebook) -> [ImageAssetReference] {
-        lock.lock(); let current = resolver; lock.unlock()
-        return current?(notebook) ?? []
+        return allImages.map(\.asset).filter { seen.insert($0.sha256).inserted }
     }
 }
 
@@ -176,7 +152,9 @@ public struct ImageAssetGarbageReport: Equatable, Sendable {
 /// Foundation offers no directory fsync; like `.atomic` this is no guarantee
 /// against power loss.
 ///
-/// Used by restores (C5) and read-only by archive writers; RevisionStore follows in C6.
+/// RevisionStore owns the writable instance of its package (assets first,
+/// then revision, manifest last); restores, previews and archive writers use
+/// further instances.
 public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
     public static let directoryName = "Assets"
     /// Imported bytes held until the next successful commit (`stage`).
@@ -262,6 +240,12 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
                 if let data = pending.removeValue(forKey: reference.sha256) { pendingBytes -= data.count }
             }
         }
+    }
+
+    /// On disk (stat) or pending in this instance: a commit can write it
+    /// without another source.
+    public func isAvailable(_ reference: ImageAssetReference) -> Bool {
+        pendingData(reference) != nil || presentOnDisk([reference])
     }
 
     private func pendingData(_ reference: ImageAssetReference) -> Data? {

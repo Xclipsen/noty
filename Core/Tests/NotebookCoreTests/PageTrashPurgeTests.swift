@@ -36,6 +36,28 @@ final class PageTrashPurgeTests: XCTestCase {
         XCTAssertEqual(try Notebook.decode(JSONEncoder().encode(book)), book)
     }
 
+    /// C6: deleting a trashed page with an image drops only the reference.
+    /// The asset file stays (older revisions still name it); freeing it is the
+    /// asset GC's job (C7), never a commit's.
+    func testPermanentDeletionKeepsTheImageAssetFile() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("purge-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = Data((0..<800).map { UInt8(truncatingIfNeeded: $0 &* 3) })
+        let store = RevisionStore(directory: root)
+        var (book, first, _) = try notebook()
+        _ = try store.assets.stage(photo)
+        try book.replaceImages([.test(bytes: photo)], pageID: first[0])
+        try store.save(book)
+        try book.trashPage(first[0])
+        XCTAssertEqual(book.uniqueImageAssetBytes, photo.count, "the page trash counts")
+        try book.deleteTrashedPage(first[0])
+        XCTAssertEqual(book.uniqueImageAssetBytes, 0)
+        XCTAssertEqual(book.schemaVersion, 12, "removing images never lowers the schema")
+        try store.save(book)
+        XCTAssertEqual(try RevisionStore(directory: root).load(), book)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Assets/\(ImageAssetReference(of: photo).sha256)")), photo)
+    }
+
     func testTrashedReferenceKeepsSourceAndEmptyTrashRemovesMarginSnapshotsToo() throws {
         var (book, first, _) = try notebook()
         let sources = try XCTUnwrap(book.pdfSources)

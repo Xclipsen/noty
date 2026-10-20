@@ -2,35 +2,25 @@ import Foundation
 import XCTest
 @testable import NotebookCore
 
-/// C4: every image byte access goes through `ImageAssetProviding`; until
-/// schema 12 the reference is derived from the inline bytes and cached.
+/// C4/C6: every image byte access goes through `ImageAssetProviding`; since
+/// schema 12 an image object stores only its content address.
 final class ImageAssetProviderTests: XCTestCase {
-    private func image(_ bytes: Data) -> ImageObject { ImageObject(data: bytes, pixelWidth: 8, pixelHeight: 6) }
+    private func image(_ bytes: Data) -> ImageObject { .test(bytes: bytes) }
 
-    func testReferenceIsDerivedFromTheBytesOnceAndSharedByCopies() {
+    func testObjectEncodesOnlyItsReferenceAndRejectsEmbeddedBytes() throws {
         let bytes = Data((0..<1_000).map { UInt8($0 % 251) })
-        let original = image(bytes)
-        XCTAssertNil(original.cachedAsset)
-        var copy = original
-        copy.x += 10; copy.id = UUID()
-        XCTAssertEqual(copy.asset, ImageAssetReference(of: bytes))
-        XCTAssertEqual(original.cachedAsset, ImageAssetReference(of: bytes), "copies share the computed reference")
-        XCTAssertTrue(original.asset.isValid)
-        // A new value with other bytes has its own reference.
-        XCTAssertNotEqual(image(bytes + Data([1])).asset, original.asset)
-    }
-
-    func testEncodingAndEqualityIgnoreTheCachedReference() throws {
-        let object = image(Data(repeating: 7, count: 64))
-        let before = try JSONEncoder().encode(object)
-        _ = object.asset
-        let after = try JSONEncoder().encode(object)
-        let keys = { (data: Data) in Set(try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any]).keys) }
-        XCTAssertEqual(try keys(before), try keys(after))
-        XCTAssertEqual(try keys(after), ["id", "data", "pixelWidth", "pixelHeight", "x", "y", "width", "height", "rotation", "crop", "locked"])
-        let decoded = try JSONDecoder().decode(ImageObject.self, from: after)
-        XCTAssertNil(decoded.cachedAsset)
-        XCTAssertEqual(decoded, object, "a computed reference never makes two values different")
+        let object = image(bytes)
+        XCTAssertEqual(object.asset, ImageAssetReference(of: bytes))
+        let encoded = try JSONEncoder().encode(object)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(Set(json.keys), ["id", "asset", "pixelWidth", "pixelHeight", "x", "y", "width", "height", "rotation", "crop", "locked"])
+        XCTAssertEqual(Set(try XCTUnwrap(json["asset"] as? [String: Any]).keys), ["sha256", "byteCount"])
+        XCTAssertEqual(try JSONDecoder().decode(ImageObject.self, from: encoded), object)
+        // Without a decoding context the current form applies: `data` is no field of it.
+        var mixed = json; mixed["data"] = bytes.base64EncodedString()
+        XCTAssertThrowsError(try JSONDecoder().decode(ImageObject.self, from: JSONSerialization.data(withJSONObject: mixed)))
+        var legacy = json; legacy.removeValue(forKey: "asset"); legacy["data"] = bytes.base64EncodedString()
+        XCTAssertThrowsError(try JSONDecoder().decode(ImageObject.self, from: JSONSerialization.data(withJSONObject: legacy)))
         var moved = object; moved.x += 1
         XCTAssertNotEqual(moved, object)
     }
@@ -42,7 +32,9 @@ final class ImageAssetProviderTests: XCTestCase {
         var trashed = Page(); trashed.images = [image(b)]
         notebook.deletedPages = [DeletedPage(page: trashed, originalIndex: 1, deletedAt: Date(timeIntervalSince1970: 1), nextPageID: nil, previousPageID: nil)]
         XCTAssertEqual(notebook.allImages.count, 3)
-        let assets = InlineImageAssets(notebook)
+        XCTAssertEqual(notebook.externalImageAssets, [ImageAssetReference(of: a), ImageAssetReference(of: b)],
+                       "unique, active pages before the page trash")
+        let assets = InlineImageAssets(bytes: [ImageAssetReference(of: a).sha256: a, ImageAssetReference(of: b).sha256: b])
         XCTAssertEqual(Set(assets.references), [ImageAssetReference(of: a), ImageAssetReference(of: b)])
         XCTAssertEqual(try assets.payload(for: ImageAssetReference(of: b)), .data(b))
         XCTAssertEqual(try assets.verifiedPayload(for: ImageAssetReference(of: a)), .data(a))
@@ -65,7 +57,7 @@ final class ImageAssetProviderTests: XCTestCase {
         _ = try package.stage(bytes)
         try package.persist([reference])
         package.dropPending([reference])
-        let inline = InlineImageAssets(images: [image(other)])
+        let inline = InlineImageAssets(bytes: [ImageAssetReference(of: other).sha256: other])
         let chain = ChainedImageAssets([inline, package])
         XCTAssertEqual(try chain.payload(for: ImageAssetReference(of: other)), .data(other))
         guard case .file = try chain.verifiedPayload(for: reference) else { return XCTFail("package file expected") }
@@ -105,10 +97,10 @@ final class ImageAssetProviderTests: XCTestCase {
         let before = ContentSearchPlanner.prepare(notebook)[0].fingerprints.imageOCR
         XCTAssertNotNil(before)
         var same = notebook
-        same.pages[0].images = [ImageObject(id: notebook.pages[0].images![0].id, data: Data(repeating: 1, count: 64), pixelWidth: 8, pixelHeight: 6)]
+        same.pages[0].images = [.test(bytes: Data(repeating: 1, count: 64), id: notebook.pages[0].images![0].id)]
         XCTAssertEqual(ContentSearchPlanner.prepare(same)[0].fingerprints.imageOCR, before)
         var changed = notebook
-        changed.pages[0].images = [ImageObject(id: notebook.pages[0].images![0].id, data: Data(repeating: 2, count: 64), pixelWidth: 8, pixelHeight: 6)]
+        changed.pages[0].images = [.test(bytes: Data(repeating: 2, count: 64), id: notebook.pages[0].images![0].id)]
         XCTAssertNotEqual(ContentSearchPlanner.prepare(changed)[0].fingerprints.imageOCR, before)
     }
 }

@@ -37,7 +37,8 @@ def verify_v1(stream, header, length):
     check(type(header["payloadCRC32"]) is int and zlib.crc32(payload) == header["payloadCRC32"], "Checksum mismatch")
     notebook = json.loads(payload)
     check_identity(notebook, header)
-    validate_notebook(notebook)
+    # Format 1 has no asset records: only notebooks that embed their originals.
+    check(not validate_notebook(notebook), "Format 1 cannot carry image assets")
     return notebook, {"formatVersion": 1, "assets": 0, "assetBytes": 0}
 
 

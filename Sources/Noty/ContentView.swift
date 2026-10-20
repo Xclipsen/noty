@@ -628,7 +628,8 @@ struct ContentView: View {
     /// Page by page with a progress badge; the snapshot is fixed at the start.
     private func startPDFExport(pageOnly: Bool) {
         guard canEdit, !pdfExport.running, !(pageOnly && currentPage.id == writingDraft.id) else { return }
-        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : nil, sourcePage: { model.sourcePage(for: $0) }) { result in
+        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : nil, sourcePage: { model.sourcePage(for: $0) },
+                        assets: model.imageAssets) { result in
             switch result {
             case .success(let data): exportFile = ExportFile(pdfData: data); exportType = .pdf; exporting = true
             case .failure(let error):

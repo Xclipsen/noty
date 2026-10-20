@@ -27,7 +27,7 @@ enum ImageImportError: LocalizedError {
         case .video: "Die ausgewählte Datei ist ein Video. Bitte ein Foto oder Bild auswählen."
         case .pageFull: "Auf dieser Seite liegen bereits 50 Bilder, mehr sind je Seite nicht möglich. Bitte eine andere Seite verwenden."
         case .notebookFull(let used, let adding):
-            "Dieses Bild (\(ImageLimits.megabytes(adding))) passt nicht mehr in das Notizbuch: Bildoriginale sind auf 40 MB je Notizbuch begrenzt, einschließlich Seitenpapierkorb und duplizierter Seiten. Belegt sind \(ImageLimits.megabytes(used)). Bitte Seiten mit Bildern im Seitenpapierkorb endgültig löschen, ein kleineres Bild wählen oder ein neues Notizbuch verwenden."
+            "Dieses Bild (\(ImageLimits.megabytes(adding))) passt nicht mehr in das Notizbuch: Bildoriginale sind auf 500 MB je Notizbuch begrenzt, einschließlich Seitenpapierkorb; mehrfach verwendete Bilder (duplizierte Seiten, Kopien) zählen nur einmal. Belegt sind \(ImageLimits.megabytes(used)). Bitte Seiten mit Bildern im Seitenpapierkorb endgültig löschen, ein kleineres Bild wählen oder ein neues Notizbuch verwenden."
         case .unsupportedPhoto(let offered):
             "Fotos hat für dieses Objekt kein Standbild geliefert (angeboten: \(offered)). Bitte das Foto in Fotos als HEIC oder JPEG sichern oder über „Bilddatei“ einfügen."
         case .photoUnavailable(let detail):
@@ -132,26 +132,25 @@ enum ImageImport {
         return image
     }
 
-    /// Off the main actor: also computes the content address once (`asset`),
-    /// so drawing the new object never hashes on the main thread.
-    static func object(_ data: Data, in bounds: PageRect) throws -> ImageObject {
+    /// Off the main actor: the new object for `data`, already staged as
+    /// `reference` (decodes its metadata and a small thumbnail once).
+    static func object(_ reference: ImageAssetReference, data: Data, in bounds: PageRect) throws -> ImageObject {
         let (width, height) = try dimensions(data)
         _ = try thumbnail(data, limit: 32)
         let scale = min(1, min(320, bounds.width * 0.7) / Double(width), bounds.height * 0.7 / Double(height))
         let w = max(1, Double(width) * scale), h = max(1, Double(height) * scale)
-        let object = ImageObject(data: data, pixelWidth: width, pixelHeight: height,
+        let object = ImageObject(asset: reference, pixelWidth: width, pixelHeight: height,
             x: bounds.x + (bounds.width - w) / 2, y: bounds.y + (bounds.height - h) / 2, width: w, height: h)
         try object.validate()
-        _ = object.asset
         return object
     }
 }
 
 /// Editor, thumbnails and PDF share crop/rotation math and orientation handling.
 /// Every byte of an original is read through an `ImageAssetProviding`
-/// (`assets`); nil means the object's own inline original (notebook schema
-/// ≤ 11 keeps the bytes in the model). Renditions are cached by content
-/// address, so duplicated images share them.
+/// (`assets`); nil means `ImageAssetRegistry.shared` (the packages of open
+/// editors and running previews). Renditions are cached by content address,
+/// so duplicated images share them.
 @MainActor
 enum ImageRendering {
     private final class Entry {
@@ -172,7 +171,7 @@ enum ImageRendering {
     /// The original's bytes. `verified`: proven to match the reference
     /// (provider-specific; inline bytes define their own reference).
     nonisolated static func payload(_ object: ImageObject, assets: ImageAssetProviding?, verified: Bool = false) throws -> ImageAssetPayload {
-        let provider = assets ?? InlineImageAssets(images: [object])
+        let provider = assets ?? ImageAssetRegistry.shared
         return verified ? try provider.verifiedPayload(for: object.asset) : try provider.payload(for: object.asset)
     }
 
@@ -187,11 +186,9 @@ enum ImageRendering {
         if let image = cached(object, limit: limit) { return image }
         return store(try ImageImport.thumbnail(payload(object, assets: assets), limit: limit), for: object.asset, limit: limit)
     }
-    /// The rendition at `limit` if it is cached; never decodes or hashes
-    /// (an object whose content address is not known yet has none).
+    /// The rendition at `limit` if it is cached; never decodes.
     static func cached(_ object: ImageObject, limit: Int) -> UIImage? {
-        guard let asset = object.cachedAsset else { return nil }
-        return cache.object(forKey: key(asset, limit))?.image
+        cache.object(forKey: key(object.asset, limit))?.image
     }
     /// The closest cached rendition of any size, larger ones first among equal
     /// distance: drawn instead of the grey placeholder while decoding.
@@ -201,17 +198,10 @@ enum ImageRendering {
     }
     /// Decodes the rendition off the main thread, then calls `done` on the
     /// main actor (error: unreadable original). Concurrent requests for the
-    /// same content share one decode. An unknown content address is computed
-    /// off the main thread first.
+    /// same content share one decode.
     static func prepare(_ object: ImageObject, limit: Int, assets: ImageAssetProviding? = nil,
                         done: @escaping @MainActor (Error?) -> Void) {
-        guard let asset = object.cachedAsset else {
-            DispatchQueue.global(qos: .userInitiated).async {
-                _ = object.asset
-                Task { @MainActor in prepare(object, limit: limit, assets: assets, done: done) }
-            }
-            return
-        }
+        let asset = object.asset
         let name = key(asset, limit)
         if cached(object, limit: limit) != nil { done(nil); return }
         if decoding[name] != nil { decoding[name]?.append(done); return }

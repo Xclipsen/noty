@@ -186,6 +186,49 @@ final class LibraryStoreTests: XCTestCase {
         catch LibraryError.invalidTitle { }
     }
 
+    func testDuplicateCopiesImageAssetsAndLeavesTheOriginalPackageUntouched() async throws {
+        let root = root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = LibraryStore(root: root); _ = try await store.load()
+        let photo = Data((0..<4_000).map { UInt8(truncatingIfNeeded: $0 &* 17) })
+        var book = try Notebook.blank(title: "Bildheft").preparedForTextEditing()
+        _ = try await store.createDocument(book, parentID: nil)
+        let sourceURL = try await store.documentURL(id: book.id)
+        let writer = RevisionStore(directory: sourceURL)
+        book = try writer.load()
+        _ = try writer.assets.stage(photo)
+        try book.replaceImages([.test(bytes: photo), .test(bytes: photo, x: 300)], pageID: book.pages[0].id)
+        try writer.save(book)
+        let before = try LegacyNotebookJSON.inventory(sourceURL)
+        let result = try await store.duplicateDocument(book.id, title: "Bildheft Kopie")
+        let copyURL = try await store.documentURL(id: result.id)
+        let hash = ImageAssetReference(of: photo).sha256
+        XCTAssertEqual(try Data(contentsOf: copyURL.appendingPathComponent("Assets/\(hash)")), photo, "copied and verified")
+        XCTAssertEqual(try LegacyNotebookJSON.inventory(sourceURL), before, "the original is only read")
+        // Removing the image in the copy never touches the original's asset.
+        let copyStore = RevisionStore(directory: copyURL)
+        var copy = try copyStore.load()
+        XCTAssertEqual(copy.allImages.map(\.asset), book.allImages.map(\.asset))
+        try copy.replaceImages([], pageID: copy.pages[0].id)
+        try copyStore.save(copy)
+        XCTAssertEqual(try LegacyNotebookJSON.inventory(sourceURL), before)
+        XCTAssertEqual(try RevisionStore(directory: sourceURL).load(), book)
+
+        // A not yet migrated schema-11 package: the copy is schema 12 with an
+        // asset of the embedded original; the original keeps its exact bytes.
+        var legacy = try Notebook.blank(title: "Altheft").preparedForTextEditing()
+        _ = try await store.createDocument(legacy, parentID: nil)
+        let legacyURL = try await store.documentURL(id: legacy.id)
+        try legacy.replaceImages([.test(bytes: photo)], pageID: legacy.pages[0].id)
+        try LegacyNotebookJSON.writePackage(legacyURL, bytes: LegacyNotebookJSON.encode(legacy, schemaVersion: 11, originals: [hash: photo]))
+        let legacyBefore = try LegacyNotebookJSON.inventory(legacyURL)
+        let migrated = try await store.duplicateDocument(legacy.id, title: "Altheft Kopie")
+        let migratedURL = try await store.documentURL(id: migrated.id)
+        let reopened = RevisionStore(directory: migratedURL, readOnly: true)
+        XCTAssertEqual(try reopened.load().schemaVersion, 12)
+        XCTAssertEqual(try Data(contentsOf: migratedURL.appendingPathComponent("Assets/\(hash)")), photo)
+        XCTAssertEqual(try LegacyNotebookJSON.inventory(legacyURL), legacyBefore, "no Assets/, no Migrations/ in the original")
+    }
+
     func testDuplicateCreatesIndependentPackageBehindOriginalAndLeavesSourceBytes() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let store = LibraryStore(root: root); _ = try await store.load()

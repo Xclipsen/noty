@@ -55,6 +55,9 @@ public struct DecodedBackup: Sendable {
     public let assets: [ImageAssetReference]
     /// Size and CRC-32 of the exact bytes read.
     public let file: LibraryArchiveFileInfo
+    /// Originals the notebook JSON embedded (schema 5–11; any format), by
+    /// SHA-256. A restore writes them as assets of the copy.
+    public var inlineImageBytes: [String: Data] = [:]
 }
 
 /// Upper bounds of one `.notybackup`; only tests lower them.
@@ -69,10 +72,12 @@ struct BackupArchiveLimits: Sendable {
 /// extracted onto the filesystem; asset files are named by checked hashes.
 ///
 /// Format 2 (written since C5): the record stream of `RecordDescriptor` with
-/// exactly one `notebook` record, then exactly the notebook's unique external
-/// image assets (`Notebook.externalImageAssets`, none before schema 12), then
-/// `end`. Format 1 (magic + header + one notebook JSON, ≤ 200 MB, read in
-/// memory) and the prototype's plain JSON stay readable.
+/// exactly one `notebook` record, then exactly the notebook's unique image
+/// assets (`Notebook.externalImageAssets`; none if the stored JSON is schema
+/// ≤ 11 and embeds its originals), then `end`. Format 1 (magic + header + one
+/// notebook JSON, ≤ 200 MB, read in memory) and the prototype's plain JSON
+/// stay readable; they cannot carry assets, so a schema-12 notebook with
+/// images in them is refused.
 public enum BackupArchive {
     /// Format 1, prototype JSON and the notebook JSON of format 2.
     public static let maximumBytes = 200_000_000
@@ -153,11 +158,20 @@ public enum BackupArchive {
     /// Format 1 exactly as written up to Build 53 (Dictionary key order).
     /// Only tests and fixtures write it; the app writes format 2.
     static func encodeVersion1(_ document: Notebook, createdAt: Date = Date()) throws -> Data {
-        let payload = try JSONEncoder().encode(document)
+        // Format 1 has no asset records.
+        guard document.externalImageAssets.isEmpty else { throw BackupError.invalidArchive }
+        return try encodeVersion1(payload: JSONEncoder().encode(document), createdAt: createdAt)
+    }
+
+    /// Format 1 around exact notebook JSON bytes (fixtures with schema ≤ 11
+    /// and embedded originals, as Build 53 wrote them).
+    static func encodeVersion1(payload: Data, createdAt: Date = Date()) throws -> Data {
         guard payload.count <= maximumBytes else { throw BackupError.sizeLimit }
-        _ = try Notebook.decode(payload)
+        let decoded = try NotebookDecoding.decode(payload)
+        guard decoded.storedExternalAssets.isEmpty else { throw BackupError.invalidArchive }
+        let document = decoded.notebook
         let manifest = BackupManifest(payloadByteCount: payload.count, payloadCRC32: SnapshotChecksum.crc32(payload),
-                                      documentID: document.id, notebookSchemaVersion: document.schemaVersion,
+                                      documentID: document.id, notebookSchemaVersion: decoded.storedSchemaVersion,
                                       createdAt: createdAt)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -195,6 +209,17 @@ public enum BackupArchive {
     }
 
     static func verify(_ url: URL, handling: RecordAssetHandling, limits: BackupArchiveLimits) throws -> DecodedBackup {
+        let decoded = try verifyRecords(url, handling: handling, limits: limits)
+        // Embedded originals (schema ≤ 11) join the extracted assets, written
+        // and verified the same way; names come from their computed hashes.
+        if case .extract(let directory) = handling, !decoded.inlineImageBytes.isEmpty {
+            let inline = InlineImageAssets(bytes: decoded.inlineImageBytes)
+            try NotebookAssets(directory: directory).persist(inline.references, from: inline)
+        }
+        return decoded
+    }
+
+    private static func verifyRecords(_ url: URL, handling: RecordAssetHandling, limits: BackupArchiveLimits) throws -> DecodedBackup {
         try mapped {
             try BoundedFile.requireRegularFile(url)
             guard let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { throw BackupError.invalidArchive }
@@ -238,7 +263,10 @@ public enum BackupArchive {
         guard data.count <= maximumBytes else { throw BackupError.sizeLimit }
         guard data.starts(with: magic) else {
             // Preserve access to the prototype's explicitly exported JSON files.
-            return DecodedBackup(document: try Notebook.decode(data), isLegacyJSON: true, formatVersion: 0, assets: [], file: file)
+            let decoded = try NotebookDecoding.decode(data)
+            guard decoded.storedExternalAssets.isEmpty else { throw BackupError.invalidArchive }
+            return DecodedBackup(document: decoded.notebook, isLegacyJSON: true, formatVersion: 0, assets: [], file: file,
+                                 inlineImageBytes: decoded.inlineImageBytes)
         }
         guard data.count >= 12 else { throw BackupError.invalidArchive }
         let headerLength = RecordArchive.length(prefix: data.prefix(RecordArchive.prefixByteCount))
@@ -259,11 +287,15 @@ public enum BackupArchive {
         }
         let payload = Data(data.suffix(manifest.payloadByteCount))
         guard SnapshotChecksum.crc32(payload) == manifest.payloadCRC32 else { throw BackupError.checksumMismatch }
-        let document = try Notebook.decode(payload)
-        guard document.id == manifest.documentID, document.schemaVersion == manifest.notebookSchemaVersion else {
+        let decoded = try NotebookDecoding.decode(payload)
+        let document = decoded.notebook
+        // The header names the stored schema; format 1 carries no assets.
+        guard document.id == manifest.documentID, decoded.storedSchemaVersion == manifest.notebookSchemaVersion,
+              decoded.storedExternalAssets.isEmpty else {
             throw BackupError.invalidArchive
         }
-        return DecodedBackup(document: document, isLegacyJSON: false, formatVersion: 1, assets: [], file: file)
+        return DecodedBackup(document: document, isLegacyJSON: false, formatVersion: 1, assets: [], file: file,
+                             inlineImageBytes: decoded.inlineImageBytes)
     }
 
     /// Exactly one notebook, then exactly its unique external assets (each
@@ -282,11 +314,13 @@ public enum BackupArchive {
                   header.assetHashAlgorithm == "sha256" else { throw BackupError.invalidArchive }
             let first = try reader.descriptor()
             guard first.kind == .notebook, first.id == header.documentID else { throw BackupError.invalidArchive }
-            let document = try drained { try Notebook.decode(reader.payload(first, limit: limits.notebook)) }
-            guard document.id == header.documentID, document.schemaVersion == header.notebookSchemaVersion else {
+            let decoded = try drained { try NotebookDecoding.decode(reader.payload(first, limit: limits.notebook)) }
+            let document = decoded.notebook
+            guard document.id == header.documentID, decoded.storedSchemaVersion == header.notebookSchemaVersion else {
                 throw BackupError.invalidArchive
             }
-            let references = try RecordArchive.uniqueAssets(document.externalImageAssets)
+            // Embedded originals (a schema ≤ 11 record) are no asset records.
+            let references = try RecordArchive.uniqueAssets(decoded.storedExternalAssets)
             let expected = Dictionary(uniqueKeysWithValues: references.map { ($0.sha256, $0) })
             var seen = Set<String>()
             while true {
@@ -299,7 +333,8 @@ public enum BackupArchive {
                 try reader.asset(reference, handling)
             }
             guard seen.count == expected.count else { throw BackupError.invalidArchive }
-            return DecodedBackup(document: document, isLegacyJSON: false, formatVersion: 2, assets: references, file: reader.file)
+            return DecodedBackup(document: document, isLegacyJSON: false, formatVersion: 2, assets: references, file: reader.file,
+                                 inlineImageBytes: decoded.inlineImageBytes)
         } catch is RecordArchiveInvalid { throw BackupError.invalidArchive }
         catch is RecordArchiveTruncated { throw BackupError.invalidArchive }
     }

@@ -232,6 +232,7 @@ extension Notebook {
             let bounds = next.pages[index].textBounds
             guard content.textBoxes.allSatisfy({ bounds.contains($0.rect) }) else { throw StorageError.invalidDocument }
         }
+        next.raiseSchemaForImageAssets()
         try next.validate(); self = next
     }
 }

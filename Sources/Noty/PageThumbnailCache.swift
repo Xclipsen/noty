@@ -51,7 +51,7 @@ final class PageThumbnailCache: ObservableObject {
 
     /// `longestSide`: pixel size of the longer edge (sidebar 224; larger for
     /// the „Seite anpassen“ preview).
-    /// `assets`: where image originals are read (nil: the page's inline bytes).
+    /// `assets`: where image originals are read (nil: the registry of open packages).
     static func render(_ page: Page, source: Source, longestSide: CGFloat = 224,
                        assets: ImageAssetProviding? = nil) async throws -> UIImage {
         await gate.acquire()

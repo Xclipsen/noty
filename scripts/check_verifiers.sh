@@ -149,11 +149,71 @@ store("future-manifest", lambda s: manifest(other_dir(s), "manifest.json", s["re
 store("future-schema", lambda s: manifest(other_dir(s), "manifest.json",
                                           [revision(other_dir(s), dict(s["other"], schemaVersion=99), 1_800_000_900.0)]))
 store("saved-range", lambda s: manifest(other_dir(s), "manifest.json", [dict(s["records"]["other"][0], savedAtUnix=1e13)]))
+
+
+# Schema 12: the library notebook references two originals (one object twice)
+# stored as Assets/<sha256>; unreferenced assets and partial files are counted.
+import hashlib
+ORIGINALS = [b"\x89PNG first original " * 30, b"second original"]
+
+
+def with_assets(s):
+    directory = other_dir(s)
+    objects = []
+    for index, data in enumerate(ORIGINALS + ORIGINALS[:1]):
+        objects.append({"id": uid(), "asset": {"sha256": hashlib.sha256(data).hexdigest(), "byteCount": len(data)},
+                        "pixelWidth": 8, "pixelHeight": 6, "x": 40 + index, "y": 40, "width": 120, "height": 90,
+                        "rotation": 0, "crop": {"x": 0, "y": 0, "width": 1, "height": 1}, "locked": False})
+    current = dict(s["other"], schemaVersion=12, pages=[dict(s["other"]["pages"][0], images=objects)] + s["other"]["pages"][1:])
+    head = revision(directory, current, 1_800_001_000.0)
+    manifest(directory, "manifest.json", [head] + s["records"]["other"][:2])
+    assets = directory / "Assets"
+    assets.mkdir()
+    for data in ORIGINALS:
+        (assets / hashlib.sha256(data).hexdigest()).write_bytes(data)
+    s["assets"] = assets
+    return directory, assets
+
+
+def asset_store(name, mutate=None):
+    def build(s):
+        _, assets = with_assets(s)
+        if mutate:
+            mutate(s, assets)
+    store(name, build)
+
+
+first_hash = hashlib.sha256(ORIGINALS[0]).hexdigest()
+asset_store("assets-valid", lambda s, a: ((a / (first_hash[:-1] + "0")).write_bytes(b"unreferenced"),
+                                          (a / (first_hash + ".partial-" + uid())).write_bytes(b"rest")))
+asset_store("asset-missing", lambda s, a: (a / first_hash).unlink())
+asset_store("asset-size", lambda s, a: (a / first_hash).write_bytes(ORIGINALS[0] + b"x"))
+asset_store("asset-flipped", lambda s, a: (a / first_hash).write_bytes(bytes([ORIGINALS[0][0] ^ 1]) + ORIGINALS[0][1:]))
+
+
+def asset_symlink(s, a):
+    target = a.parent / "elsewhere"
+    target.write_bytes(ORIGINALS[0])
+    (a / first_hash).unlink()
+    (a / first_hash).symlink_to(target)
+
+
+asset_store("asset-symlink", asset_symlink)
+
+
+def assets_directory_symlink(s, a):
+    import shutil
+    moved = a.parent / "AssetsElsewhere"
+    shutil.move(str(a), str(moved))
+    a.symlink_to(moved, target_is_directory=True)
+
+
+asset_store("assets-directory-symlink", assets_directory_symlink)
 PY
 
-# Archive format 2 (record stream) and format-1 library archives. Schema <= 11
-# references no external assets, so every asset record here is extra; the
-# harness further below attaches synthetic references for the asset rules.
+# Archive format 2 (record stream) and format-1 library archives. The base
+# notebook here has no images, so every asset record is extra; schema-12
+# notebook rules follow, the archive asset rules further below.
 python3 -B - "$work" <<'PY'
 import base64, hashlib, json, struct, sys, uuid, zlib
 from pathlib import Path
@@ -247,6 +307,55 @@ write_backup("v2-hash-path.notybackup", document, [notebook_record, path])
 write_backup("v2-asset-over-20mb.notybackup", document,
              [notebook_record, ({"kind": "asset", "sha256": "a" * 64, "byteCount": 20_000_001}, b"")], end=False)
 
+
+# Schema 12 notebook rules: refused while validating the notebook record,
+# before any asset record would be needed (sizes are declared only).
+def image_object(sha, count, width=8, height=6, x=40, **extra):
+    return dict({"id": uid(), "asset": {"sha256": sha, "byteCount": count}, "pixelWidth": width, "pixelHeight": height,
+                 "x": x, "y": 40, "width": 120, "height": 90, "rotation": 0,
+                 "crop": {"x": 0, "y": 0, "width": 1, "height": 1}, "locked": False}, **extra)
+
+
+def with_images(objects, version=12):
+    result = json.loads(json.dumps(document))
+    result["schemaVersion"] = version
+    result["pages"][0]["images"] = objects
+    return result
+
+
+def schema_case(name, notebook):
+    write_backup(name, notebook, [data_record("notebook", compact(notebook), notebook["id"])], header=backup_header(notebook))
+
+
+sha = hashlib.sha256(image).hexdigest()
+embedded = base64.b64encode(image).decode()
+schema_case("v2-schema12-data-and-asset.notybackup", with_images([image_object(sha, len(image), data=embedded)]))
+only_data = image_object(sha, len(image), data=embedded); del only_data["asset"]
+schema_case("v2-schema12-data.notybackup", with_images([only_data]))
+schema_case("v2-schema11-asset.notybackup", with_images([image_object(sha, len(image))], version=11))
+schema_case("v2-schema11-data-and-asset.notybackup", with_images([image_object(sha, len(image), data=embedded)], version=11))
+schema_case("v2-schema12-hash-upper.notybackup", with_images([image_object(sha.upper(), len(image))]))
+schema_case("v2-schema12-hash-63.notybackup", with_images([image_object(sha[:63], len(image))]))
+schema_case("v2-schema12-hash-path.notybackup", with_images([image_object("../" + sha[3:], len(image))]))
+schema_case("v2-schema12-asset-over-20mb.notybackup", with_images([image_object("b" * 64, 20_000_001)]))
+schema_case("v2-schema12-over-500mb.notybackup",
+            with_images([image_object(hashlib.sha256(bytes([n])).hexdigest(), 20_000_000, x=40 + n) for n in range(26)]))
+schema_case("v2-schema12-pixel-mismatch.notybackup",
+            with_images([image_object(sha, len(image)), image_object(sha, len(image), width=9, x=50)]))
+schema_case("v2-schema12-size-mismatch.notybackup",
+            with_images([image_object(sha, len(image)), image_object(sha, len(image) + 1, x=50)]))
+schema_case("v2-schema13.notybackup", with_images([image_object(sha, len(image))], version=13))
+# Format 1 has no asset records: a schema-12 notebook with images is refused.
+v1_document = with_images([image_object(sha, len(image))])
+v1_payload = json.dumps(v1_document).encode()
+v1_header = json.dumps({"backupFormatVersion": 1, "checksumAlgorithm": "crc32-iso-hdlc", "payloadName": "notebook.json",
+                        "payloadByteCount": len(v1_payload), "payloadCRC32": zlib.crc32(v1_payload), "documentID": v1_document["id"],
+                        "notebookSchemaVersion": 12, "createdAt": CREATED}).encode()
+(out / "backups" / "v1-schema12-asset.notybackup").write_bytes(b"NOTYBKP\n" + struct.pack(">I", len(v1_header)) + v1_header + v1_payload)
+# A format-2 archive of a schema-11 notebook embeds its original: no asset record.
+legacy = with_images([dict({k: v for k, v in image_object(sha, len(image)).items() if k != "asset"}, data=embedded)], version=11)
+write_backup("v2-schema11-embedded.notybackup", legacy, [data_record("notebook", compact(legacy), legacy["id"])], header=backup_header(legacy))
+
 first, second = notebook("Eins"), notebook("Zwei")
 items = [{"id": first["id"], "title": first["title"], "source": "library", "favorite": False},
          {"id": second["id"], "title": second["title"], "source": "library", "favorite": False}]
@@ -330,13 +439,23 @@ for name in extra-asset asset-first no-end trailing version-3 header-key crc des
             hash-upper hash-63 hash-path asset-over-20mb; do
     reject verify_backup.py "$work/backups/v2-$name.notybackup"
 done
+for name in schema12-data-and-asset schema12-data schema11-asset schema11-data-and-asset schema12-hash-upper schema12-hash-63 \
+            schema12-hash-path schema12-asset-over-20mb schema12-over-500mb schema12-pixel-mismatch schema12-size-mismatch schema13; do
+    reject verify_backup.py "$work/backups/v2-$name.notybackup"
+    # The notebook rule itself must refuse (not a missing asset record afterwards).
+    if grep -q "Referenced asset missing" "$work/last.log"; then
+        echo "FEHLER: verify_backup.py lehnt $name erst wegen fehlender Asset-Daten ab" >&2; cat "$work/last.log" >&2; exit 1
+    fi
+done
+reject verify_backup.py "$work/backups/v1-schema12-asset.notybackup"
+accept verify_backup.py "$work/backups/v2-schema11-embedded.notybackup"
 accept verify_library_backup.py "$work/libraries/v2.notylibrary"
 accept verify_library_backup.py "$work/libraries/v1.notylibrary"
 for name in asset-first extra-asset no-end trailing version-3 entries-key missing-notebook crc toolbar-first; do
     reject verify_library_backup.py "$work/libraries/v2-$name.notylibrary"
 done
-# Asset rules with synthetic references (schema 12 does not exist yet): the
-# harness patches validate_notebook to report references for given notebooks.
+# Archive asset rules with real schema-12 notebooks (image objects reference
+# the originals by SHA-256).
 for flags in "-B" "-B -O"; do
     # shellcheck disable=SC2086
     if ! python3 $flags - "$task_root/scripts" "$work/assets" <<'PY' > "$work/last.log" 2>&1; then
@@ -347,9 +466,6 @@ sys.path.insert(0, sys.argv[1])
 import verify_backup, verify_library_backup
 
 out = Path(sys.argv[2]); out.mkdir(exist_ok=True)
-references = {}
-for module in (verify_backup, verify_library_backup):
-    module.validate_notebook = (lambda original: lambda doc: (original(doc), references.get(doc["id"].upper(), {}))[1])(module.validate_notebook)
 A4 = {"x": 0, "y": 0, "width": 595, "height": 842}
 
 
@@ -357,9 +473,15 @@ def uid():
     return str(uuid.uuid4()).upper()
 
 
-def notebook(title):
-    return {"schemaVersion": 3, "id": uid(), "title": title, "pdfSources": [], "deletedPages": [],
-            "pages": [{"id": uid(), "drawing": "", "text": "", "paper": "lined", "geometry": {"mediaBox": A4, "cropBox": A4, "rotation": 0}}]}
+def notebook(title, *originals):
+    """Schema 12 with one image object per original (none: no images)."""
+    images = [{"id": uid(), "asset": {"sha256": hashlib.sha256(p).hexdigest(), "byteCount": len(p)}, "pixelWidth": 8, "pixelHeight": 6,
+               "x": 40 + i, "y": 40, "width": 120, "height": 90, "rotation": 0, "crop": {"x": 0, "y": 0, "width": 1, "height": 1},
+               "locked": False} for i, p in enumerate(originals)]
+    page = {"id": uid(), "drawing": "", "text": "", "paper": "lined", "geometry": {"mediaBox": A4, "cropBox": A4, "rotation": 0}}
+    if images:
+        page["images"] = images
+    return {"schemaVersion": 12 if images else 3, "id": uid(), "title": title, "pdfSources": [], "deletedPages": [], "pages": [page]}
 
 
 def compact(value):
@@ -408,11 +530,10 @@ def expect(name, valid, run):
     return result
 
 
-a, b = b"first synthetic original" * 40, b"second synthetic original"
-doc = notebook("Bilder")
-references[doc["id"]] = refs(a, b)
+a, b = b"first original bytes" * 40, b"second original bytes"
+doc = notebook("Bilder", a, b, a)
 header = {"backupFormatVersion": 2, "checksumAlgorithm": "crc32-iso-hdlc", "assetHashAlgorithm": "sha256",
-          "documentID": doc["id"], "notebookSchemaVersion": 3, "createdAt": "2026-10-20T08:00:00Z"}
+          "documentID": doc["id"], "notebookSchemaVersion": 12, "createdAt": "2026-10-20T08:00:00Z"}
 nb = data_record("notebook", compact(doc), doc["id"])
 backup = lambda name, records: (lambda: verify_backup.verify(write(name, b"NOTYBKP\n", header, records)))
 result = expect("backup with assets", True, backup("ok.notybackup", [nb, asset(b), asset(a)]))
@@ -422,9 +543,7 @@ expect("backup missing asset", False, backup("missing.notybackup", [nb, asset(a)
 expect("backup duplicate asset", False, backup("duplicate.notybackup", [nb, asset(a), asset(a), asset(b)]))
 expect("backup SHA-256 mismatch", False, backup("sha.notybackup", [nb, asset(a, flip=True), asset(b)]))
 
-one, two, three = notebook("Eins"), notebook("Zwei"), notebook("Drei")
-references[one["id"]] = refs(a)
-references[two["id"]] = refs(a, b)
+one, two, three = notebook("Eins", a), notebook("Zwei", a, b), notebook("Drei")
 items = [{"id": n["id"], "title": n["title"], "source": "library", "favorite": False} for n in (one, two, three)]
 toolbar = {"formatVersion": 1, "order": ["pen", "marker", "strokeEraser", "precisionEraser", "inkSelection", "text", "read"],
            "dock": "top", "presets": []}
@@ -442,17 +561,50 @@ expect("library reference never carried", False, library("missing.notylibrary", 
 expect("library same hash twice", False, library("twice.notylibrary", [n1, asset(a), n2, asset(a), asset(b), n3]))
 expect("library SHA-256 mismatch", False, library("sha.notylibrary", [n1, asset(a), n2, asset(b, flip=True), n3]))
 expect("library asset after the last notebook's group", False, library("unreferenced.notylibrary", [n1, asset(a), n2, asset(b), n3, asset(b"x")]))
+# Notebook rules directly (declared sizes, no bytes needed).
+from notebook_format import validate_notebook
+def declared(n, count=20_000_000, width=8):
+    return {"id": uid(), "asset": {"sha256": hashlib.sha256(b"declared-%d" % n).hexdigest(), "byteCount": count},
+            "pixelWidth": width, "pixelHeight": 6, "x": 40, "y": 40, "width": 120, "height": 90, "rotation": 0,
+            "crop": {"x": 0, "y": 0, "width": 1, "height": 1}, "locked": False}
+full = notebook("Voll")
+full["schemaVersion"] = 12
+full["pages"][0]["images"] = [declared(n) for n in range(25)] + [declared(0), declared(1)]
+result = expect("500 MB of unique originals, duplicates counted once", True, lambda: validate_notebook(full))
+if result is not None and (len(result), sum(result.values())) != (25, 500_000_000):
+    failures.append(f"unique references: {len(result)}, {sum(result.values())}")
+over = json.loads(json.dumps(full)); over["pages"][0]["images"].append(declared(99, count=1))
+expect("one byte over 500 MB", False, lambda: validate_notebook(over))
+trash = json.loads(json.dumps(full)); trash["pages"][0]["images"] = trash["pages"][0]["images"][:24]
+trash["deletedPages"] = [{"page": {"id": uid(), "drawing": "", "text": "", "paper": "lined",
+                                   "geometry": {"mediaBox": A4, "cropBox": A4, "rotation": 0}, "images": [declared(24), declared(98, count=1)]},
+                          "originalIndex": 1, "deletedAt": 800_000_000.0}]
+expect("the page trash counts", False, lambda: validate_notebook(trash))
+mismatch = notebook("Maße"); mismatch["schemaVersion"] = 12
+mismatch["pages"][0]["images"] = [declared(1), dict(declared(1, width=9), x=50)]
+expect("same hash, other pixel size", False, lambda: validate_notebook(mismatch))
 if failures:
     print("\n".join(failures))
     sys.exit(1)
 PY
-        echo "FEHLER: Asset-Prüfung mit synthetischen Verweisen ($flags)" >&2; cat "$work/last.log" >&2; exit 1
+        echo "FEHLER: Asset-Prüfung mit Schema-12-Heften ($flags)" >&2; cat "$work/last.log" >&2; exit 1
     fi
 done
 accept verify_device_store.py "$work/stores/valid"
+accept verify_device_store.py "$work/stores/assets-valid"
+python3 -B - "$task_root/scripts" "$work/stores/assets-valid" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from verify_device_store import load_store
+_, result = load_store(Path(sys.argv[2]))
+expected = {"assets": 2, "unreferenced_assets": 1, "partial_asset_files": 1}
+if any(result[key] != value for key, value in expected.items()):
+    sys.exit(f"FEHLER: Asset-Zählung des Gerätespeichers {result}")
+PY
 for name in source-enum title-control title-length date-range favorite-type cycle missing-package revision-crc \
             previous-missing too-many-revisions four-revisions checkpoint-crc checkpoint-format future-manifest \
-            future-schema saved-range index-crc; do
+            future-schema saved-range index-crc asset-missing asset-size asset-flipped asset-symlink assets-directory-symlink; do
     reject verify_device_store.py "$work/stores/$name"
 done
 echo "Prüfer-Negativtests bestanden (auch mit python3 -O); Fixtures: $work"

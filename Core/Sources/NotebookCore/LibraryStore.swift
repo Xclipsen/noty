@@ -159,7 +159,7 @@ public actor LibraryStore {
         try requireDirectory(url)
         guard hasDocument(at: url) else { throw LibraryError.invalidIndex }
         if source == .legacyMain, candidate.items.contains(where: { $0.source == source }) { return }
-        let notebook = try RevisionStore(directory: url).load()
+        let notebook = try RevisionStore(directory: url, readOnly: true).load()
         if source != .legacyMain {
             guard notebook.id.uuidString == url.lastPathComponent else { throw LibraryError.invalidIndex }
         }
@@ -179,7 +179,14 @@ public actor LibraryStore {
     /// Read-only, serialized with other library work; metadata remains in the
     /// versioned notebook so the index does not duplicate cover/paper settings.
     public func previewDocument(id: UUID) throws -> Notebook {
-        try RevisionStore(directory: documentURL(id: id)).load()
+        try previewPackage(id: id).document
+    }
+
+    /// Like `previewDocument`, with the package's image originals (read-only;
+    /// embedded originals of a not yet migrated schema 5–11 state in memory).
+    public func previewPackage(id: UUID) throws -> (document: Notebook, assets: NotebookAssets) {
+        let store = RevisionStore(directory: try documentURL(id: id), readOnly: true)
+        return (try store.load(), store.assets)
     }
 
     public func documentURL(id: UUID) throws -> URL {
@@ -232,8 +239,9 @@ public actor LibraryStore {
 
     /// Restore stage only: writes one complete package and reads it back. A
     /// streaming restore calls this per notebook before any index exists.
-    /// Image assets first (verified copies from `assets`), then revision and
-    /// manifest; every asset must be present afterwards.
+    /// `RevisionStore.save` writes the image assets first (verified copies
+    /// from `assets`), then revision and manifest; every asset must be
+    /// present afterwards.
     static func populatePackage(_ document: Notebook, root: URL, assetsFrom assets: ImageAssetProviding? = nil) throws {
         let fm = FileManager.default
         let documentsRoot = root.appendingPathComponent("Library/Documents", isDirectory: true)
@@ -241,14 +249,11 @@ public actor LibraryStore {
         try ContainedDirectory.require(documentsRoot, below: root)
         let destination = documentsRoot.appendingPathComponent(document.id.uuidString, isDirectory: true)
         guard !fm.fileExists(atPath: destination.path) else { throw LibraryArchiveError.destinationExists }
-        let references = document.externalImageAssets
-        if !references.isEmpty {
-            guard let assets else { throw LibraryArchiveError.incomplete }
-            try NotebookAssets(package: destination).persist(references, from: assets)
+        try RevisionStore(directory: destination).save(document, importingAssetsFrom: assets)
+        let reopened = RevisionStore(directory: destination, readOnly: true)
+        guard try reopened.load() == document, reopened.assets.presentOnDisk(document.externalImageAssets) else {
+            throw LibraryArchiveError.incomplete
         }
-        try RevisionStore(directory: destination).save(document)
-        guard try RevisionStore(directory: destination).load() == document,
-              NotebookAssets(package: destination, readOnly: true).presentOnDisk(references) else { throw LibraryArchiveError.incomplete }
     }
 
     /// Restore stage only, after every package: preferences, then the portable
@@ -302,25 +307,30 @@ public actor LibraryStore {
     /// package with the latest committed revision (pages, page trash, PDF/image
     /// originals unchanged; no local history). Page/object IDs stay scoped to
     /// the copy, like restore copies. A recovered (older) source revision is
-    /// refused instead of being duplicated silently.
+    /// refused instead of being duplicated silently. Image originals are
+    /// copied (an APFS clone) and verified into the new package; the original
+    /// is only read. A not yet migrated schema 5–11 source becomes a schema-12
+    /// copy whose assets are its embedded originals; the source keeps its bytes.
     public func duplicateDocument(_ id: UUID, title: String) throws -> (snapshot: LibrarySnapshot, id: UUID) {
         var next = try current()
         let index = try activeIndex(id, in: next)
         let original = next.items[index]
         guard !original.isFolder else { throw LibraryError.unavailable }
-        let source = RevisionStore(directory: try documentURL(id: id))
+        let source = RevisionStore(directory: try documentURL(id: id), readOnly: true)
         var copy = try source.load()
         guard !source.recovered, copy.id == id else { throw LibraryError.unavailable }
         copy.id = UUID()
         copy.title = try Self.validTitle(title)
-        let name = try writePackage(copy, in: next)
+        let name = try writePackage(copy, in: next, assetsFrom: source.assets)
         next.items.insert(LibraryItem(id: copy.id, title: name, parentID: original.parentID, source: .library), at: index + 1)
         try commit(next)
         return (next, copy.id)
     }
 
-    /// Writes and reads back a complete new package before any index entry exists.
-    private func writePackage(_ notebook: Notebook, in value: LibrarySnapshot) throws -> String {
+    /// Writes and reads back a complete new package before any index entry
+    /// exists; image assets (from `assets`) first, every one present afterwards.
+    private func writePackage(_ notebook: Notebook, in value: LibrarySnapshot,
+                              assetsFrom assets: ImageAssetProviding? = nil) throws -> String {
         guard !value.items.contains(where: { $0.id == notebook.id }) else { throw LibraryError.invalidIndex }
         let title = try Self.validTitle(notebook.title)
         let destination = root.appendingPathComponent("Library/Documents/\(notebook.id.uuidString)", isDirectory: true)
@@ -328,8 +338,11 @@ public actor LibraryStore {
         let parent = destination.deletingLastPathComponent()
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
         try requireDirectory(parent)
-        try RevisionStore(directory: destination).save(notebook)
-        guard try RevisionStore(directory: destination).load() == notebook else { throw LibraryError.invalidIndex }
+        try RevisionStore(directory: destination).save(notebook, importingAssetsFrom: assets)
+        let reopened = RevisionStore(directory: destination, readOnly: true)
+        guard try reopened.load() == notebook, reopened.assets.presentOnDisk(notebook.externalImageAssets) else {
+            throw LibraryError.invalidIndex
+        }
         return title
     }
 

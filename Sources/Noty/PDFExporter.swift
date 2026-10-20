@@ -53,17 +53,14 @@ enum PDFExporter {
     /// placed unchanged (vectors, text, images) into one document. `sourcePage`
     /// reuses the editor's PDF catalogue; without it the PDFs are parsed here.
     /// Nothing is returned unless every selected page was validated and written.
-    /// `assets`: where image originals are read (nil: the bytes embedded in
-    /// `snapshot`, hashed once off the main actor); each is verified before use.
+    /// `assets`: where image originals are read (nil: the registry of open
+    /// packages); each is verified before use.
     static func export(_ snapshot: Notebook, pageIDs: Set<UUID>? = nil, sourcePage: ((Page) -> PDFPage?)? = nil,
                        assets: ImageAssetProviding? = nil,
                        progress: (Int, Int) -> Void = { _, _ in }) async throws -> Data {
         let selected = snapshot.pages.enumerated().filter { pageIDs?.contains($0.element.id) ?? true }
         guard !selected.isEmpty else { throw ExportError.invalidSource }
-        let images = selected.flatMap { $0.element.images ?? [] }
-        let provider: ImageAssetProviding
-        if let assets { provider = assets }
-        else { provider = await Task.detached(priority: .userInitiated) { InlineImageAssets(images: images) }.value }
+        let provider: ImageAssetProviding = assets ?? ImageAssetRegistry.shared
         let catalogue = sourcePage == nil ? try NotebookPDFCatalog(snapshot) : nil
         // Resolved once: a later catalogue swap in the editor cannot change them.
         let sources: [CGPDFPage?] = try selected.map { _, page in

@@ -123,16 +123,18 @@ public struct LibraryBackupPlan: Sendable {
     /// fresh retries, returns the newest completely readable older state – the
     /// state the editor opens – with `olderState == true`. Read-only: the damaged
     /// newer files stay in the package (quarantined by the editor's next commit).
-    func readableNotebook(_ item: LibraryItem) throws -> (document: Notebook, olderState: Bool) {
+    /// `assets`: the package's originals plus, for a not yet migrated schema
+    /// 5–11 state, its embedded ones (in memory).
+    func readableNotebook(_ item: LibraryItem) throws -> (document: Notebook, olderState: Bool, assets: NotebookAssets) {
         guard let url = packages[item.id] else { throw LibraryArchiveError.incomplete }
         for attempt in 1...3 {
-            let store = RevisionStore(directory: url)
+            let store = RevisionStore(directory: url, readOnly: true)
             do {
                 var document = try store.load()
                 guard document.id == item.id else { throw LibraryArchiveError.incomplete }
                 if store.recovered, attempt < 3 { continue }
                 document.title = item.title
-                return (document, store.recovered)
+                return (document, store.recovered, store.assets)
             } catch StorageError.unsupportedSchema(let version) { throw StorageError.unsupportedSchema(version) }
             catch RevisionError.unsupportedFormat(let version) { throw RevisionError.unsupportedFormat(version) }
             catch { if attempt == 3 { throw LibraryArchiveError.incomplete } }
@@ -151,14 +153,20 @@ private struct VisitFailure: Error { let error: Error }
 ///
 /// Format 2 (written since C5): the record stream of `RecordDescriptor`:
 /// `index`, `toolbar`, then per notebook its `notebook` record followed by
-/// those of its unique external image assets (`Notebook.externalImageAssets`,
-/// none before schema 12) that no earlier group carried, then `end`. An asset
+/// those of its unique image assets (`Notebook.externalImageAssets`; none for
+/// a stored schema ≤ 11, which embeds them) that no earlier group carried,
+/// then `end`. An asset
 /// follows a notebook or asset and is referenced by the notebook of its group;
 /// each hash occurs once; every reference of every notebook appears in its own
 /// or an earlier group (duplicated notebooks share their originals).
 ///
 /// Format 1 (read): NOTYLIB\n + uint32 BE manifest length + JSON manifest
-/// (may end in spaces: reserved before the chunks were known) + raw chunks.
+/// (may end in spaces: reserved before the chunks were known) + raw chunks;
+/// no assets, so only notebooks that embed their originals (schema ≤ 11).
+///
+/// Readers hand every notebook to `visit` with a provider for all its
+/// originals: embedded ones first, then the archive's (extracted) assets.
+/// In `extract` mode embedded originals are written into the directory, too.
 public enum LibraryArchive {
     /// Whole archive. Same order of magnitude as iCloud/WebDAV upload limits and
     /// a day's backup on a home connection; keeps every offset far from Int overflow.
@@ -224,7 +232,7 @@ public enum LibraryArchive {
                                 into: &sink, limits: limits, document: { item in
                 let result = try plan.readableNotebook(item)
                 if result.olderState { olderState(item) }
-                return (result.document, try plan.assets(item))
+                return (result.document, result.assets)
             }, validate: validate)
             try handle.synchronize()
             try handle.close()
@@ -303,6 +311,21 @@ public enum LibraryArchive {
     static func writeVersion1<S: RecordArchiveSink>(snapshot: LibrarySnapshot, toolbar: ToolbarPreferences, documents: [LibraryItem],
                                                      createdAt: Date, into sink: inout S, limits: LibraryArchiveLimits,
                                                      document: (LibraryItem) throws -> Notebook) throws -> [LibraryArchiveEntry] {
+        let encoder = chunkEncoder()
+        return try writeVersion1(snapshot: snapshot, toolbar: toolbar, documents: documents, createdAt: createdAt, into: &sink,
+                                 limits: limits, chunk: { item in
+            let notebook = try document(item)
+            // Format 1 has no asset records.
+            guard notebook.externalImageAssets.isEmpty else { throw LibraryArchiveError.invalid }
+            return try encoder.encode(notebook)
+        })
+    }
+
+    /// Format 1 around exact notebook chunks (fixtures: schema ≤ 11 with
+    /// embedded originals, as Build 53 wrote them).
+    static func writeVersion1<S: RecordArchiveSink>(snapshot: LibrarySnapshot, toolbar: ToolbarPreferences, documents: [LibraryItem],
+                                                     createdAt: Date, into sink: inout S, limits: LibraryArchiveLimits,
+                                                     chunk: (LibraryItem) throws -> Data) throws -> [LibraryArchiveEntry] {
         try snapshot.validate(); try toolbar.validate()
         let expected = snapshot.items.filter { !$0.isFolder }.map(\.id)
         guard documents.count == expected.count, Set(documents.map(\.id)) == Set(expected) else { throw LibraryArchiveError.invalid }
@@ -322,10 +345,11 @@ public enum LibraryArchive {
         var total = RecordArchive.prefixByteCount + reserved + index.count + preferences.count
         for item in documents {
             let entry = try drained { () throws -> LibraryArchiveEntry in
-                let notebook = try document(item)
-                guard notebook.id == item.id, notebook.title == item.title else { throw LibraryArchiveError.invalid }
-                let data = try encoder.encode(notebook)
+                let data = try chunk(item)
                 guard data.count <= limits.notebook else { throw LibraryArchiveError.notebookTooLarge(item.title) }
+                let decoded = try NotebookDecoding.decode(data)
+                guard decoded.notebook.id == item.id, decoded.notebook.title == item.title,
+                      decoded.storedExternalAssets.isEmpty else { throw LibraryArchiveError.invalid }
                 guard data.count <= limits.total - total else { throw LibraryArchiveError.archiveTooLarge }
                 try sink.append(data)
                 return LibraryArchiveEntry(kind: "notebook", id: item.id, byteCount: data.count, crc32: StreamingCRC32.checksum(data))
@@ -391,7 +415,7 @@ public enum LibraryArchive {
             let header = try reader.header(magic: magic, maximumHeader: max(limits.header, RecordArchive.maximumRecordHeaderBytes))
             let version = try JSONDecoder().decode(LibraryArchiveVersion.self, from: header).libraryBackupVersion
             switch version {
-            case 1: return try readVersion1(&reader, header: header, limits: limits) { try visit($0, InlineImageAssets()) }
+            case 1: return try readVersion1(&reader, header: header, limits: limits, handling: handling, visit: visit)
             case 2: return try readVersion2(&reader, header: header, limits: limits, handling: handling, visit: visit)
             default: throw LibraryArchiveError.unsupported(version)
             }
@@ -406,8 +430,19 @@ public enum LibraryArchive {
         catch { throw LibraryArchiveError.invalid }
     }
 
+    /// Embedded originals of one decoded notebook: written into the
+    /// extraction directory (extract mode); the provider `visit` sees first.
+    private static func embedded(_ decoded: DecodedNotebook, _ handling: RecordAssetHandling) throws -> InlineImageAssets {
+        let inline = decoded.inlineAssets
+        if case .extract(let directory) = handling, !inline.isEmpty {
+            try NotebookAssets(directory: directory).persist(inline.references, from: inline)
+        }
+        return inline
+    }
+
     private static func readVersion1<S: RecordArchiveSource>(_ reader: inout RecordReader<S>, header: Data, limits: LibraryArchiveLimits,
-                                                               visit: (Notebook) throws -> Void) throws -> LibraryArchiveSummary {
+                                                               handling: RecordAssetHandling,
+                                                               visit: (Notebook, ImageAssetProviding) throws -> Void) throws -> LibraryArchiveSummary {
         let size = reader.size, prefixCount = RecordArchive.prefixByteCount, length = header.count
         guard length <= limits.header else { throw LibraryArchiveError.invalid }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
@@ -438,9 +473,12 @@ public enum LibraryArchive {
         for entry in entries.dropFirst(2) {
             if Task.isCancelled { throw CancellationError() }
             try drained {
-                let document = try Notebook.decode(chunk(entry))
-                guard document.id == entry.id, document.title == titles[document.id] else { throw LibraryArchiveError.invalid }
-                do { try visit(document) } catch { throw VisitFailure(error: error) }
+                let decoded = try NotebookDecoding.decode(chunk(entry))
+                let document = decoded.notebook
+                guard document.id == entry.id, document.title == titles[document.id],
+                      decoded.storedExternalAssets.isEmpty else { throw LibraryArchiveError.invalid }
+                let inline = try embedded(decoded, handling)
+                do { try visit(document, inline) } catch { throw VisitFailure(error: error) }
             }
             chunks.append(LibraryArchiveChunk(id: entry.id!, byteCount: entry.byteCount, crc32: entry.crc32))
         }
@@ -469,13 +507,14 @@ public enum LibraryArchive {
         if case .extract(let directory) = handling { extracted = NotebookAssets(directory: directory, readOnly: true) }
         else { extracted = InlineImageAssets() }
         var chunks: [LibraryArchiveChunk] = [], ids = Set<UUID>(), emitted: [String: Int] = [:], assetBytes = 0
-        var current: (document: Notebook, references: [String: ImageAssetReference])?
+        var current: (document: Notebook, references: [String: ImageAssetReference], inline: InlineImageAssets)?
         /// A group is complete once every reference was carried by it or before.
         func finishGroup() throws {
             guard let group = current else { return }
             current = nil
             guard group.references.values.allSatisfy({ emitted[$0.sha256] == $0.byteCount }) else { throw LibraryArchiveError.invalid }
-            do { try visit(group.document, extracted) } catch { throw VisitFailure(error: error) }
+            let assets: ImageAssetProviding = group.inline.isEmpty ? extracted : ChainedImageAssets([group.inline, extracted])
+            do { try visit(group.document, assets) } catch { throw VisitFailure(error: error) }
         }
         while true {
             if Task.isCancelled { throw CancellationError() }
@@ -484,10 +523,11 @@ public enum LibraryArchive {
             case .notebook:
                 try finishGroup()
                 guard let id = descriptor.id, let title = titles[id], ids.insert(id).inserted else { throw LibraryArchiveError.invalid }
-                let document = try drained { try Notebook.decode(reader.payload(descriptor, limit: limits.notebook)) }
+                let decoded = try drained { try NotebookDecoding.decode(reader.payload(descriptor, limit: limits.notebook)) }
+                let document = decoded.notebook
                 guard document.id == id, document.title == title else { throw LibraryArchiveError.invalid }
-                let references = try RecordArchive.uniqueAssets(document.externalImageAssets)
-                current = (document, Dictionary(uniqueKeysWithValues: references.map { ($0.sha256, $0) }))
+                let references = try RecordArchive.uniqueAssets(decoded.storedExternalAssets)
+                current = (document, Dictionary(uniqueKeysWithValues: references.map { ($0.sha256, $0) }), try embedded(decoded, handling))
                 chunks.append(LibraryArchiveChunk(id: id, byteCount: descriptor.byteCount!, crc32: descriptor.crc32!))
             case .asset:
                 guard let group = current, let reference = descriptor.assetReference, group.references[reference.sha256] == reference,

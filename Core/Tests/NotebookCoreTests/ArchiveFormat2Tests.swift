@@ -2,17 +2,9 @@ import Foundation
 import XCTest
 @testable import NotebookCore
 
-/// C5: `.notybackup` and `.notylibrary` format 2 (record stream). Until schema
-/// 12 notebooks embed their images, so real archives carry no asset records;
-/// these tests attach synthetic asset references (`ExternalAssetSeam`) to run
-/// the asset paths: writing, checks, staging and restore.
+/// C5/C6: `.notybackup` and `.notylibrary` format 2 (record stream) with
+/// real schema-12 image objects: writing, checks, staging and restore.
 final class ArchiveFormat2Tests: XCTestCase {
-    private var attached: [UUID: [ImageAssetReference]] = [:]
-
-    override func tearDown() {
-        ExternalAssetSeam.set(nil)
-        super.tearDown()
-    }
 
     private func directory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("format2-\(UUID().uuidString)")
@@ -21,11 +13,15 @@ final class ArchiveFormat2Tests: XCTestCase {
         return root
     }
 
-    /// Attaches references to notebooks by document ID (for every reader and writer).
-    private func attach(_ references: [UUID: [ImageAssetReference]]) {
-        attached.merge(references) { _, new in new }
-        let snapshot = attached
-        ExternalAssetSeam.set { snapshot[$0.id] ?? [] }
+    /// One image object per reference on the first page (schema 12);
+    /// repeated references are duplicated objects sharing one original.
+    private func withImages(_ notebook: Notebook, _ references: [ImageAssetReference]) -> Notebook {
+        var result = notebook
+        result.pages[0].images = references.enumerated().map { index, reference in
+            ImageObject(asset: reference, pixelWidth: 8, pixelHeight: 6, x: 40 + Double(index), y: 40)
+        }
+        if !references.isEmpty { result.schemaVersion = max(Notebook.imageAssetSchemaVersion, result.schemaVersion) }
+        return result
     }
 
     private func bytes(_ count: Int, seed: UInt8) -> Data { Data((0..<count).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ Int(seed)) }) }
@@ -134,9 +130,8 @@ final class ArchiveFormat2Tests: XCTestCase {
 
     func testAssetsAreStreamedOnceVerifiedAndExtractedByHash() throws {
         let root = try directory()
-        let document = sample()
         let a = bytes(3_000, seed: 1), b = bytes(10, seed: 2)
-        attach([document.id: [ImageAssetReference(of: a), ImageAssetReference(of: b), ImageAssetReference(of: a)]])
+        let document = withImages(sample(), [ImageAssetReference(of: a), ImageAssetReference(of: b), ImageAssetReference(of: a)])
         let assets = InlineImageAssets(bytes: [ImageAssetReference(of: a).sha256: a, ImageAssetReference(of: b).sha256: b])
         let url = root.appendingPathComponent("heft.notybackup")
         let written = try BackupArchive.write(document, assets: assets, to: url)
@@ -163,9 +158,8 @@ final class ArchiveFormat2Tests: XCTestCase {
 
     func testMissingOrDamagedSourceAssetLeavesNoArchive() throws {
         let root = try directory()
-        let document = sample()
         let a = bytes(500, seed: 3)
-        attach([document.id: [ImageAssetReference(of: a)]])
+        let document = withImages(sample(), [ImageAssetReference(of: a)])
         let url = root.appendingPathComponent("heft.notybackup")
         XCTAssertThrowsError(try BackupArchive.write(document, assets: InlineImageAssets(), to: url)) { error in
             XCTAssertEqual(error as? ImageAssetError, .missing(ImageAssetReference(of: a).sha256))
@@ -180,9 +174,8 @@ final class ArchiveFormat2Tests: XCTestCase {
     }
 
     func testEveryStructuralViolationOfANotebookArchiveIsRejected() throws {
-        let document = sample()
         let a = bytes(64, seed: 5), b = bytes(65, seed: 6)
-        attach([document.id: [ImageAssetReference(of: a), ImageAssetReference(of: b)]])
+        let document = withImages(sample(), [ImageAssetReference(of: a), ImageAssetReference(of: b)])
         let assets = InlineImageAssets(bytes: [ImageAssetReference(of: a).sha256: a, ImageAssetReference(of: b).sha256: b])
         let valid = try parse(BackupArchive.encode(document, assets: assets))
         XCTAssertNoThrow(try BackupArchive.decode(build(valid)))
@@ -236,15 +229,13 @@ final class ArchiveFormat2Tests: XCTestCase {
     func testRestoreCopiesStagedAssetsIntoTheNewPackageAndRechecksTheStage() async throws {
         let root = try directory()
         let repository = NotebookRepository(directory: root)
-        let current = sample()
-        try await repository.save(current, revision: 1)
         let a = bytes(2_000, seed: 8), b = bytes(30, seed: 9)
         let references = [ImageAssetReference(of: a), ImageAssetReference(of: b)]
-        attach([current.id: references])
-        // The package holds the committed originals (as from C6 on).
-        let package = NotebookAssets(package: root)
-        _ = try package.stage(a); _ = try package.stage(b)
-        try package.persist(references); package.dropPending(references)
+        let current = withImages(sample(), references)
+        // The commit writes the staged originals into the package first.
+        _ = try repository.assets.stage(a); _ = try repository.assets.stage(b)
+        try await repository.save(current, revision: 1)
+        XCTAssertEqual(repository.assets.pendingReferences, [], "committed assets leave the pending area")
         let file = root.appendingPathComponent("extern.notybackup")
         try await repository.backup(current, to: file)
 
@@ -252,7 +243,6 @@ final class ArchiveFormat2Tests: XCTestCase {
         XCTAssertEqual(prepared.assetReferences, references)
         guard case .file(let staged) = try prepared.assets.verifiedPayload(for: references[0]) else { return XCTFail("staged file expected") }
         XCTAssertEqual(try Data(contentsOf: staged), a)
-        attach([prepared.id: references])
         // Same size, other bytes in the stage: refused before anything is written.
         let original = try Data(contentsOf: staged)
         try bytes(2_000, seed: 10).write(to: staged)
@@ -273,16 +263,104 @@ final class ArchiveFormat2Tests: XCTestCase {
         XCTAssertTrue(NotebookAssets(package: root, readOnly: true).presentOnDisk(references))
     }
 
+    /// Archives written before C6 (format 1, and format 2 of a schema-11
+    /// notebook) embed their originals: a restore creates a schema-12 copy
+    /// with assets, a new identity, and leaves the current notebook alone.
+    func testArchivesWithEmbeddedImagesRestoreAsCopiesWithAssets() async throws {
+        let root = try directory()
+        let repository = NotebookRepository(directory: root)
+        let a = bytes(1_200, seed: 30), b = bytes(40, seed: 31)
+        let modern = withImages(sample(), [ImageAssetReference(of: a), ImageAssetReference(of: b), ImageAssetReference(of: a)])
+        let originals = [ImageAssetReference(of: a).sha256: a, ImageAssetReference(of: b).sha256: b]
+        let legacy = try LegacyNotebookJSON.encode(modern, schemaVersion: 11, originals: originals)
+        let current = sample("Aktuell")
+        try await repository.save(current, revision: 1)
+        let v1 = root.appendingPathComponent("alt-v1.notybackup")
+        try BackupArchive.encodeVersion1(payload: legacy).write(to: v1)
+        // Format 2 as C5 wrote it for a schema-11 notebook: no asset records.
+        var v2Archive = try parse(BackupArchive.encode(sample()))
+        v2Archive.header["documentID"] = modern.id.uuidString
+        v2Archive.header["notebookSchemaVersion"] = 11
+        v2Archive.records[0] = (["kind": "notebook", "id": modern.id.uuidString, "byteCount": legacy.count,
+                                 "crc32": Int(StreamingCRC32.checksum(legacy))], legacy)
+        let v2 = root.appendingPathComponent("alt-v2.notybackup")
+        try build(withEnd(v2Archive)).write(to: v2)
+        let json = root.appendingPathComponent("alt.json")
+        try legacy.write(to: json)
+        for file in [v1, v2, json] {
+            let decoded = try BackupArchive.verify(file)
+            XCTAssertEqual(decoded.document, modern, file.lastPathComponent)
+            XCTAssertEqual(decoded.inlineImageBytes, originals)
+            XCTAssertEqual(decoded.assets, [], "embedded originals are no asset records")
+            let prepared = try await repository.prepareRestore(from: file)
+            XCTAssertNotEqual(prepared.document.id, modern.id)
+            XCTAssertEqual(prepared.document.schemaVersion, 12)
+            for reference in modern.externalImageAssets {
+                guard case .file = try prepared.assets.verifiedPayload(for: reference) else { return XCTFail("staged original expected") }
+            }
+            let restored = try await repository.commitRestore(prepared)
+            for (hash, data) in originals {
+                XCTAssertEqual(try Data(contentsOf: restored.directory.appendingPathComponent("Assets/\(hash)")), data)
+            }
+            let copy = try RevisionStore(directory: restored.directory).load()
+            XCTAssertEqual(copy.pages, modern.pages)
+            XCTAssertEqual(try NotebookDecoding.decode(Data(contentsOf: restored.directory.appendingPathComponent("Revisions").appendingPathComponent(
+                try FileManager.default.contentsOfDirectory(atPath: restored.directory.appendingPathComponent("Revisions").path)[0]))).storedSchemaVersion, 12)
+        }
+        XCTAssertEqual(try RevisionStore(directory: root).load(), current)
+        // Format 1 cannot carry assets: a schema-12 notebook with images in it is refused.
+        let modernJSON = try JSONEncoder().encode(modern)
+        XCTAssertThrowsError(try BackupArchive.encodeVersion1(payload: modernJSON))
+        let template = try BackupArchive.encodeVersion1(sample())
+        let headerLength = Int(template[8..<12].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+        var header = try XCTUnwrap(JSONSerialization.jsonObject(with: template[12..<12 + headerLength]) as? [String: Any])
+        header["payloadByteCount"] = modernJSON.count; header["payloadCRC32"] = Int(SnapshotChecksum.crc32(modernJSON))
+        header["documentID"] = modern.id.uuidString; header["notebookSchemaVersion"] = 12
+        let headerData = try JSONSerialization.data(withJSONObject: header)
+        var forged = BackupArchive.magic + RecordArchive.lengthBytes(headerData.count)
+        forged.append(headerData); forged.append(modernJSON)
+        XCTAssertThrowsError(try BackupArchive.decode(forged))
+    }
+
+    func testLibraryArchiveFormat1WithEmbeddedImagesRestoresPackagesWithAssets() async throws {
+        let root = try directory()
+        let a = bytes(700, seed: 32)
+        let hash = ImageAssetReference(of: a).sha256
+        var one = Notebook(); one.title = "Eins"; one = withImages(one, [ImageAssetReference(of: a)])
+        var two = Notebook(); two.title = "Zwei"; two = withImages(two, [ImageAssetReference(of: a), ImageAssetReference(of: a)])
+        var snapshot = LibrarySnapshot()
+        snapshot.items = [LibraryItem(id: one.id, title: one.title, source: .library), LibraryItem(id: two.id, title: two.title, source: .library)]
+        let chunks = try [one.id: LegacyNotebookJSON.encode(one, schemaVersion: 11, originals: [hash: a]),
+                          two.id: LegacyNotebookJSON.encode(two, schemaVersion: 11, originals: [hash: a])]
+        var sink = DataSink()
+        _ = try LibraryArchive.writeVersion1(snapshot: snapshot, toolbar: ToolbarPreferences(), documents: snapshot.items,
+                                             createdAt: Date(), into: &sink, limits: .standard, chunk: { chunks[$0.id]! })
+        let file = root.appendingPathComponent("alt.notylibrary")
+        try sink.data.write(to: file)
+        let manager = WorkspaceStore(root: root.appendingPathComponent("Workspaces"))
+        let seen = Recorded()
+        let prepared = try await manager.prepareRestore(file: file) { document, assets in
+            seen.set(document.id, document.externalImageAssets.filter { (try? assets.verifiedPayload(for: $0)) != nil }.count)
+        }
+        XCTAssertEqual(seen.value, [one.id: 1, two.id: 1], "validation sees the embedded originals")
+        let area = try await manager.commitRestore(prepared, title: "Altbestand")
+        let restoredRoot = try await manager.directory(for: area.id)
+        for notebook in [one, two] {
+            let package = restoredRoot.appendingPathComponent("Library/Documents/\(notebook.id.uuidString)")
+            XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent("Assets/\(hash)")), a)
+            XCTAssertEqual(try RevisionStore(directory: package).load(), notebook)
+        }
+    }
+
     func testLocalRecoveryCopiesAssetsFromTheOwnPackage() async throws {
         let root = try directory()
         let repository = NotebookRepository(directory: root)
-        var document = sample()
-        try await repository.save(document, revision: 1)
         let a = bytes(700, seed: 11)
-        attach([document.id: [ImageAssetReference(of: a)]])
-        let package = NotebookAssets(package: root)
-        _ = try package.stage(a); try package.persist([ImageAssetReference(of: a)])
-        document.pages[0].text = "neuer"
+        var document = withImages(sample(), [ImageAssetReference(of: a)])
+        _ = try repository.assets.stage(a)
+        try await repository.save(document, revision: 1)
+        // The current state no longer shows the image; the older one does.
+        document.pages[0].images = []
         try await repository.save(document, revision: 2)
         let history = try await repository.localHistory()
         let older = try XCTUnwrap(history.revisions.last)
@@ -295,10 +373,10 @@ final class ArchiveFormat2Tests: XCTestCase {
     func testRejectedFileLeavesNoStagingAndKeepsTheStore() async throws {
         let root = try directory()
         let repository = NotebookRepository(directory: root)
-        let document = sample()
-        try await repository.save(document, revision: 1)
         let a = bytes(100, seed: 12)
-        attach([document.id: [ImageAssetReference(of: a)]])
+        let document = withImages(sample(), [ImageAssetReference(of: a)])
+        _ = try repository.assets.stage(a)
+        try await repository.save(document, revision: 1)
         let valid = try parse(BackupArchive.encode(document, assets: InlineImageAssets(bytes: [ImageAssetReference(of: a).sha256: a])))
         var damaged = valid; damaged.records[1].payload[0] ^= 1
         let file = root.appendingPathComponent("kaputt.notybackup")
@@ -311,9 +389,8 @@ final class ArchiveFormat2Tests: XCTestCase {
 
     func testLoweredLimitsRefuseWithoutLeavingAFile() throws {
         let root = try directory()
-        let document = sample()
         let a = bytes(5_000, seed: 21)
-        attach([document.id: [ImageAssetReference(of: a)]])
+        let document = withImages(sample(), [ImageAssetReference(of: a)])
         let assets = InlineImageAssets(bytes: [ImageAssetReference(of: a).sha256: a])
         let url = root.appendingPathComponent("heft.notybackup")
         var limits = BackupArchiveLimits(); limits.file = 4_000
@@ -377,18 +454,20 @@ final class ArchiveFormat2Tests: XCTestCase {
         return (store, notebooks)
     }
 
-    private func put(_ data: [Data], into package: URL) throws {
-        let assets = NotebookAssets(package: package)
-        for value in data { _ = try assets.stage(value) }
-        try assets.persist(assets.pendingReferences); assets.dropPending(assets.pendingReferences)
+    /// Commits image objects for `data` into the package (assets first).
+    @discardableResult
+    private func put(_ data: [Data], into package: URL) throws -> Notebook {
+        let store = RevisionStore(directory: package)
+        let document = withImages(try store.load(), data.map { ImageAssetReference(of: $0) })
+        for value in data { _ = try store.assets.stage(value) }
+        try store.save(document)
+        return document
     }
 
     func testSharedAssetsAreArchivedOnceAndRestoredIntoEveryPackage() async throws {
         let root = try directory()
         let (store, notebooks) = try await library(at: root.appendingPathComponent("Quelle"), titles: ["Eins", "Zwei", "Drei"])
         let shared = bytes(4_000, seed: 13), own = bytes(50, seed: 14)
-        attach([notebooks[0].id: [ImageAssetReference(of: shared)],
-                notebooks[1].id: [ImageAssetReference(of: own), ImageAssetReference(of: shared)]])
         for (notebook, data) in zip(notebooks.prefix(2), [[shared], [own, shared]]) {
             try put(data, into: await store.documentURL(id: notebook.id))
         }
@@ -435,7 +514,6 @@ final class ArchiveFormat2Tests: XCTestCase {
         let root = try directory()
         let (store, notebooks) = try await library(at: root.appendingPathComponent("Quelle"), titles: ["Bildheft"])
         let a = bytes(300, seed: 15)
-        attach([notebooks[0].id: [ImageAssetReference(of: a)]])
         let package = try await store.documentURL(id: notebooks[0].id)
         try put([a], into: package)
         try bytes(300, seed: 16).write(to: package.appendingPathComponent("Assets/\(ImageAssetReference(of: a).sha256)"))
@@ -444,18 +522,23 @@ final class ArchiveFormat2Tests: XCTestCase {
         XCTAssertThrowsError(try LibraryArchive.write(plan, to: file)) { error in
             XCTAssertEqual(error as? LibraryArchiveError, .damagedImage("Bildheft"))
         }
-        try FileManager.default.removeItem(at: package.appendingPathComponent("Assets/\(ImageAssetReference(of: a).sha256)"))
-        XCTAssertThrowsError(try LibraryArchive.write(plan, to: file)) { error in
-            XCTAssertEqual(error as? LibraryArchiveError, .damagedImage("Bildheft"))
-        }
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        // A missing original makes the newest revision incomplete: the backup
+        // takes the newest complete older state and reports it, like any
+        // damaged revision; nothing in the package is deleted.
+        try FileManager.default.removeItem(at: package.appendingPathComponent("Assets/\(ImageAssetReference(of: a).sha256)"))
+        var older: [String] = []
+        let summary = try LibraryArchive.write(plan, to: file, olderState: { older.append($0.title) })
+        XCTAssertEqual(older, ["Bildheft"])
+        XCTAssertEqual(summary.assetCount, 0)
+        XCTAssertEqual(try LibraryArchive.decode(Data(contentsOf: file)).documents.first?.allImages, [])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: package.appendingPathComponent("Revisions").path).count, 2)
     }
 
     func testChangedScratchAssetIsRefusedAndNoAreaIsPublished() async throws {
         let root = try directory()
         let (store, notebooks) = try await library(at: root.appendingPathComponent("Quelle"), titles: ["Bildheft"])
         let a = bytes(900, seed: 17)
-        attach([notebooks[0].id: [ImageAssetReference(of: a)]])
         try put([a], into: try await store.documentURL(id: notebooks[0].id))
         let file = root.appendingPathComponent("bibliothek.notylibrary")
         _ = try LibraryArchive.write(try await store.backupPlan(), to: file)
@@ -472,11 +555,10 @@ final class ArchiveFormat2Tests: XCTestCase {
 
     func testEveryGroupRuleOfALibraryArchiveIsEnforced() throws {
         var snapshot = LibrarySnapshot()
-        var one = Notebook(); one.title = "Eins"
-        var two = Notebook(); two.title = "Zwei"
-        snapshot.items = [LibraryItem(id: one.id, title: one.title, source: .library), LibraryItem(id: two.id, title: two.title, source: .library)]
         let a = bytes(80, seed: 19), b = bytes(81, seed: 20)
-        attach([one.id: [ImageAssetReference(of: a)], two.id: [ImageAssetReference(of: a), ImageAssetReference(of: b)]])
+        var one = Notebook(); one.title = "Eins"; one = withImages(one, [ImageAssetReference(of: a)])
+        var two = Notebook(); two.title = "Zwei"; two = withImages(two, [ImageAssetReference(of: a), ImageAssetReference(of: b)])
+        snapshot.items = [LibraryItem(id: one.id, title: one.title, source: .library), LibraryItem(id: two.id, title: two.title, source: .library)]
         let assets = InlineImageAssets(bytes: [ImageAssetReference(of: a).sha256: a, ImageAssetReference(of: b).sha256: b])
         let bundle = LibraryBundle(snapshot: snapshot, documents: [one, two])
         let encoded = try LibraryArchive.encode(bundle, assets: assets, createdAt: Date(timeIntervalSince1970: 1_800_000_000))

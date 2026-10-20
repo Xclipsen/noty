@@ -194,10 +194,10 @@ public struct NotebookUndoHistory: Sendable {
     private static func cost(_ changes: [PageContentReplacement]) -> Int {
         changes.reduce(0) { total, change in
             var value = change.expected.drawing.count + change.replacement.drawing.count + 256
+            // Image objects hold only asset references (the originals stay as
+            // package files for the whole session): about 128 bytes each.
             if change.expected.images != change.replacement.images {
-                // Only originals that left the page are kept alive by the history.
-                let kept = Set(change.replacement.images.map(\.id))
-                value += change.expected.images.filter { !kept.contains($0.id) }.reduce(0) { $0 + $1.data.count }
+                value += (change.expected.images.count + change.replacement.images.count) * ImageObject.historyCost
             }
             return total + value
         }
@@ -319,7 +319,7 @@ struct PageStructureChange: Sendable {
 
     /// Bytes the history may keep alive (conservative: shared buffers counted).
     var cost: Int {
-        func size(_ page: Page) -> Int { page.drawing.count + (page.images ?? []).reduce(0) { $0 + $1.data.count } + 512 }
+        func size(_ page: Page) -> Int { page.drawing.count + (page.images?.count ?? 0) * ImageObject.historyCost + 512 }
         let sides = [before, after]
         return 4_096 + sides.reduce(0) { total, side in
             total + side.pages.values.reduce(0) { $0 + size($1) } + side.trash.values.reduce(0) { $0 + size($1.page) }
@@ -415,4 +415,9 @@ public enum PageRemovalFocus {
         if let previous = old[..<index].last(where: { remaining.contains($0) }) { return previous }
         return old[(index + 1)...].first { remaining.contains($0) }
     }
+}
+
+extension ImageObject {
+    /// Undo-history cost of one image object (a reference plus frame), not its original.
+    static let historyCost = 128
 }

@@ -63,7 +63,7 @@ public enum RevisionError: Error, LocalizedError {
         case .unsupportedFormat(let version): "Speicherformat \(version) benötigt eine neuere noty-Version."
         case .invalidManifest: "Das Speicherverzeichnis enthält ein ungültiges Manifest."
         case .noCompleteRevision: "Kein vollständiger, geprüfter Speicherstand gefunden. Vorhandene Dateien bleiben erhalten."
-        case .snapshotTooLarge: "Der Speicherstand überschreitet das aktuelle Größenlimit von 200 MB. Bitte große PDFs oder Bilder entfernen, auch aus dem Seitenpapierkorb."
+        case .snapshotTooLarge: "Der Speicherstand überschreitet das Größenlimit von 200 MB (Bildoriginale zählen nicht mit, sie liegen getrennt). Bitte große PDFs entfernen, auch aus dem Seitenpapierkorb."
         case .revisionUnavailable: "Dieser lokale Stand ist nicht mehr verfügbar. Bitte die Liste neu öffnen."
         }
     }
@@ -71,14 +71,29 @@ public enum RevisionError: Error, LocalizedError {
 
 /// Single-owner store. Immutable complete revisions are committed by replacing
 /// the manifest last. Old prototype files remain untouched during migration.
+///
+/// Image originals (schema 12) are package assets (`assets`): a commit writes
+/// every referenced and every pending asset first (verified, never
+/// overwritten), then the revision, `checkpoints.json`, the previous manifest
+/// and the manifest last. Loading accepts a schema-12 revision only if its
+/// assets are present (stat); otherwise it falls back like on a CRC error and
+/// deletes nothing. Embedded originals of schema 5–11 go to the pending area;
+/// opening alone writes nothing.
 public final class RevisionStore {
     public let directory: URL
+    /// This package's image originals; the writable instance only here.
+    public let assets: NotebookAssets
+    /// Reading only (preview, search, duplicate source): `save` throws.
+    public let readOnly: Bool
     /// The loaded state is an older fallback (newer manifest/revision damaged or
     /// unreadable). The next commit keeps the skipped newer data in `Quarantine/`.
     public private(set) var recovered = false
     private var loaded = false
     private var lastDocument: Notebook?
     private var lastBytes: Data?
+    /// Schema of `lastBytes` as stored. `lastDocument` may already be raised to
+    /// 12 in memory; the migration copy depends on the stored value.
+    private var lastStoredSchema: Int?
     private var lastManifest: RevisionManifest?
     /// Revision files of the acknowledged chain (manifests, checkpoints) this
     /// store loaded, wrote or committed. Unknown unreferenced revisions are
@@ -102,6 +117,9 @@ public final class RevisionStore {
     private var quarantineSet: URL?
     /// Commit timestamps (`savedAtUnix`); replaceable in tests.
     var clock: () -> Date = { Date() }
+    /// Test hook after each commit step (crash images, injected failures).
+    var commitFault: (CommitStage) throws -> Void = { _ in }
+    enum CommitStage { case assetsWritten, revisionWritten, checkpointsWritten, previousWritten }
     private let fm = FileManager.default
     private static let maximumBytes = 200_000_000
     private var primary: URL { directory.appendingPathComponent("manifest.json") }
@@ -110,9 +128,22 @@ public final class RevisionStore {
     private var quarantine: URL { directory.appendingPathComponent("Quarantine", isDirectory: true) }
     private var checkpointFile: URL { directory.appendingPathComponent("checkpoints.json") }
 
-    public init(directory: URL) { self.directory = directory }
+    public init(directory: URL, readOnly: Bool = false) {
+        self.directory = directory
+        self.readOnly = readOnly
+        assets = NotebookAssets(package: directory, readOnly: readOnly)
+    }
 
     public func load() throws -> Notebook {
+        let decoded = try loadDecoded()
+        // Embedded originals of schema 5–11: in memory until the first commit
+        // writes them as assets (outside the fallback loop: a full pending
+        // area is an error, never a reason to open an older state).
+        for data in decoded.inlineImageBytes.values { _ = try assets.stage(data) }
+        return decoded.notebook
+    }
+
+    private func loadDecoded() throws -> DecodedNotebook {
         var skipped = Set<String>()
         for manifestURL in [primary, previous] where fm.fileExists(atPath: manifestURL.path) {
             do {
@@ -120,7 +151,10 @@ public final class RevisionStore {
                 for (offset, record) in manifest.revisions.enumerated() {
                     do {
                         let bytes = try readRevisionBytes(record)
-                        let document = try Notebook.decode(bytes)
+                        let decoded = try NotebookDecoding.decode(bytes)
+                        let document = decoded.notebook
+                        // Incomplete like a CRC error: older state, nothing deleted.
+                        guard assets.presentOnDisk(decoded.storedExternalAssets) else { throw RevisionError.noCompleteRevision }
                         // Skipped newer entries leave the chain, but are never deleted.
                         let retained = Array(manifest.revisions.dropFirst(offset))
                         skipped.formUnion(manifest.revisions.prefix(offset).map(\.file))
@@ -136,10 +170,11 @@ public final class RevisionStore {
                         lastManifest = RevisionManifest(revisions: retained)
                         lastDocument = document
                         lastBytes = bytes
+                        lastStoredSchema = decoded.storedSchemaVersion
                         recovered = manifestURL != primary || offset > 0
                         fallbackLoaded = recovered
                         loaded = true
-                        return document
+                        return decoded
                     } catch StorageError.unsupportedSchema(let version) {
                         throw StorageError.unsupportedSchema(version)
                     } catch { continue }
@@ -160,11 +195,12 @@ public final class RevisionStore {
             throw RevisionError.noCompleteRevision
         }
         let legacy = NotebookStore(directory: directory)
-        let document = try legacy.load()
+        let decoded = try legacy.loadDecoded()
         recovered = legacy.recovered
         loaded = true
-        lastDocument = document
+        lastDocument = decoded.notebook
         lastBytes = nil // Exact legacy originals remain at notebook.json/recovery.json.
+        lastStoredSchema = nil
         lastManifest = nil
         known = []
         checkpoints = []
@@ -172,21 +208,33 @@ public final class RevisionStore {
         preexisting = []
         fallbackLoaded = false // Prototype files stay untouched; revision rests are uncommitted.
         damagedPrimary = false
-        return document
+        return decoded
     }
 
-    public func save(_ document: Notebook) throws {
+    /// `importingAssetsFrom`: where assets that are neither on disk nor
+    /// pending here come from (a restore stage, the package of a duplicated
+    /// notebook); each is copied and verified before the revision is written.
+    public func save(_ document: Notebook, importingAssetsFrom source: ImageAssetProviding? = nil) throws {
+        guard !readOnly else { throw ImageAssetError.readOnly }
         if !loaded { _ = try load() }
         if lastManifest != nil, !recovered, lastDocument == document,
            fm.fileExists(atPath: primary.path) { return }
         quarantineSet = nil
         let bytes = try JSONEncoder().encode(document)
         guard bytes.count <= Self.maximumBytes else { throw RevisionError.snapshotTooLarge }
-        _ = try Notebook.decode(bytes)
-        if let old = lastDocument, old.id == document.id, old.schemaVersion < document.schemaVersion,
-           let lastBytes {
-            try archiveMigrationSource(lastBytes, schemaVersion: old.schemaVersion)
+        _ = try NotebookDecoding.decode(bytes)
+        // The stored schema decides: after loading schema 11 with images the
+        // document in memory is already 12, the bytes on disk are not.
+        if let old = lastDocument, old.id == document.id, let lastBytes {
+            let stored = lastStoredSchema ?? old.schemaVersion
+            if stored < document.schemaVersion { try archiveMigrationSource(lastBytes, schemaVersion: stored) }
         }
+        // Assets first: every referenced one and every pending one (undo may
+        // bring a removed image back). A failure aborts before any revision;
+        // written assets without a revision are harmless orphans.
+        let pending = assets.pendingReferences
+        try assets.persist(document.externalImageAssets + pending, from: source)
+        try commitFault(.assetsWritten)
         try fm.createDirectory(at: revisions, withIntermediateDirectories: true)
         try validateRevisionDirectory()
         var old = lastManifest
@@ -206,13 +254,16 @@ public final class RevisionStore {
             }
             let record = try writeRevision(bytes)
             written.append(record.file)
+            try commitFault(.revisionWritten)
             // Exactly the Build 46 manifest rule; older states go to checkpoints.json.
             let older = old?.revisions ?? []
             manifest = RevisionManifest(revisions: [record] + Array(older.prefix(2)))
             nextCheckpoints = Self.checkpoints(from: Array(older.dropFirst(2)) + checkpoints, besides: manifest.revisions)
             // Before the commit point, so a checkpoint never depends on a GC'd file.
             checkpointsWritten = writeCheckpoints(nextCheckpoints)
+            try commitFault(.checkpointsWritten)
             if let old { try JSONEncoder().encode(old).write(to: previous, options: .atomic) }
+            try commitFault(.previousWritten)
             // After the valid previous pointer exists; a crash now loads it again.
             if damagedPrimary { preserveDamagedPrimary() }
             // Commit point: no UI may claim success before this atomic replacement.
@@ -224,6 +275,9 @@ public final class RevisionStore {
         lastManifest = manifest
         lastDocument = document
         lastBytes = bytes
+        lastStoredSchema = document.schemaVersion
+        // Written by this commit: the renderer reads the files from now on.
+        assets.dropPending(pending)
         recovered = false
         damagedPrimary = false
         // If checkpoints.json could not be replaced, its old entries stay protected, too.
@@ -449,14 +503,16 @@ public final class RevisionStore {
         return history
     }
 
-    /// Manifest entries and checkpoints, by stable revision UUID.
-    public func localRevision(id: UUID) throws -> Notebook {
+    /// Manifest entries and checkpoints, by stable revision UUID. Originals
+    /// a schema 5–11 revision embedded are in `inlineImageBytes`; those of a
+    /// schema-12 revision are in this package (`assets`, kept as GC roots).
+    public func localRevision(id: UUID) throws -> DecodedNotebook {
         if !loaded { _ = try load() }
         let file = id.uuidString + ".json"
         guard let record = ((lastManifest?.revisions ?? []) + checkpoints).first(where: { $0.file == file }) else {
             throw RevisionError.revisionUnavailable
         }
-        return try readDocument(record)
+        return try NotebookDecoding.decode(readRevisionBytes(record))
     }
 
     private func readDocument(_ record: RevisionRecord) throws -> Notebook {

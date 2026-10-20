@@ -85,6 +85,7 @@ extension Notebook {
         next.pages[index].textBoxes = content.textBoxes
         next.pages[index].images = content.images
         next.pages[index].shapes = content.shapes
+        next.raiseSchemaForImageAssets()
         let bounds = next.pages[index].textBounds
         guard content.textBoxes.allSatisfy({ bounds.contains($0.rect) }) else { throw StorageError.invalidDocument }
         try next.validate(); self = next

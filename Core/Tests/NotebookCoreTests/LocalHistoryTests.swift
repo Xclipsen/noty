@@ -32,8 +32,8 @@ final class LocalHistoryTests: XCTestCase {
         var newer = current
         newer.pages[0].text = "noch neuer"
         try store.save(newer)
-        XCTAssertEqual(try store.localRevision(id: selected), current)
-        XCTAssertEqual(try store.localRevision(id: history.revisions[1].id), old)
+        XCTAssertEqual(try store.localRevision(id: selected).notebook, current)
+        XCTAssertEqual(try store.localRevision(id: history.revisions[1].id).notebook, old)
         XCTAssertEqual(try RevisionStore(directory: root).load(), newer)
     }
 
@@ -127,6 +127,33 @@ final class LocalHistoryTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: primary), originalBytes)
         let (unchanged, _) = try await repository.load()
         XCTAssertEqual(unchanged, current)
+    }
+
+    /// C6: a revision from before the migration (schema 11) embeds its
+    /// originals; opening it as a copy takes them from the revision itself,
+    /// even when the package no longer holds them as assets.
+    func testSchema11RevisionWithEmbeddedImageOpensAsCopyWithAssets() async throws {
+        let root = try directory()
+        let photo = Data((0..<1_500).map { UInt8(truncatingIfNeeded: $0 &* 29 &+ 1) })
+        let hash = ImageAssetReference(of: photo).sha256
+        var old = try Notebook.blank(title: "Altstand").preparedForTextEditing()
+        try old.replaceImages([.test(bytes: photo)], pageID: old.pages[0].id)
+        try LegacyNotebookJSON.writePackage(root, bytes: LegacyNotebookJSON.encode(old, schemaVersion: 11, originals: [hash: photo]))
+        let repository = NotebookRepository(directory: root)
+        var (current, _) = try await repository.load()
+        try current.replaceImages([], pageID: current.pages[0].id)
+        try await repository.save(current, revision: 1)
+        // As if the original were collected later (C7): only the old revision has it.
+        try FileManager.default.removeItem(at: root.appendingPathComponent("Assets/\(hash)"))
+        let history = try await repository.localHistory()
+        let selected = try XCTUnwrap(history.revisions.last?.id)
+        let prepared = try await repository.prepareLocalRecovery(id: selected)
+        XCTAssertEqual(prepared.document.allImages.map(\.asset), [ImageAssetReference(of: photo)])
+        let restored = try await repository.commitRestore(prepared)
+        XCTAssertEqual(try Data(contentsOf: restored.directory.appendingPathComponent("Assets/\(hash)")), photo)
+        let copy = try RevisionStore(directory: restored.directory).load()
+        XCTAssertEqual(copy.schemaVersion, 12)
+        XCTAssertEqual(copy.pages, old.pages)
     }
 
     func testUnknownOlderSchemaIsNotSilentlyHiddenOrOverwritten() throws {
@@ -273,7 +300,7 @@ final class LocalHistoryTests: XCTestCase {
         XCTAssertEqual(history.revisions.map { $0.savedAt?.timeIntervalSince1970 }, entries.compactMap(\.savedAtUnix) + times)
         XCTAssertEqual(history.revisions.filter(\.isLatest).count, 1)
         for revision in history.revisions {
-            XCTAssertEqual(try store.localRevision(id: revision.id), states[revision.savedAt!.timeIntervalSince1970])
+            XCTAssertEqual(try store.localRevision(id: revision.id).notebook, states[revision.savedAt!.timeIntervalSince1970])
         }
         // GC keeps manifest ∪ previous ∪ checkpoints; checkpoints are never quarantined.
         let union = Set((entries + (try previousManifest(root)).revisions + checkpoints).map(\.file))
