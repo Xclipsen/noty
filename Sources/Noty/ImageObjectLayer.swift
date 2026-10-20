@@ -22,6 +22,8 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     private let toolbar = UIScrollView()
     private let actions = UIStackView()
     private var buttons: [String: UIButton] = [:]
+    /// Full width of the action bar (content of the scrollable bar).
+    private var barWidth: CGFloat = 316
     private var dragStart: (objects: [ImageObject], object: ImageObject, point: CGPoint, generation: Int)?
     private var rotationSnap: Double?
     private let rotationFeedback = UISelectionFeedbackGenerator()
@@ -54,18 +56,30 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
             gesture.delegate = ScrollPanPriority.shared
             handle.addGestureRecognizer(gesture); addSubview(handle)
         }
-        actions.axis = .horizontal; actions.spacing = 4
-        toolbar.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.96)
-        toolbar.layer.cornerRadius = 10; toolbar.showsHorizontalScrollIndicator = true
+        // Dark noty bar like the lasso action bar and the text format bar:
+        // explicitly dark (the worksheet forces light), hairline contour,
+        // white symbols in 44-pt targets, subtle group dividers.
+        actions.axis = .horizontal; actions.spacing = 4; actions.alignment = .center
+        actions.accessibilityContainerType = .semanticGroup; actions.accessibilityLabel = "Bildaktionen"
+        toolbar.overrideUserInterfaceStyle = .dark
+        toolbar.backgroundColor = UIColor(white: 0.13, alpha: 0.98)
+        toolbar.layer.cornerRadius = 26; toolbar.layer.cornerCurve = .continuous
+        toolbar.layer.borderWidth = 0.5; toolbar.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
+        toolbar.showsHorizontalScrollIndicator = true; toolbar.indicatorStyle = .white
         toolbar.addSubview(actions); addSubview(toolbar)
         action("crop", title: "Zuschneiden", symbol: "crop") { [weak self] in self?.openCrop() }
         action("turn", title: "Auf nächsten 90°-Winkel drehen", symbol: "rotate.right") { [weak self] in
             self?.edit { object in object.rotation = ImageObject.nextRightAngle(after: object.rotation) }
         }
+        divider()
         action("back", title: "Bild nach hinten", symbol: "square.3.layers.3d.bottom.filled") { [weak self] in self?.reorder(front: false) }
         action("front", title: "Bild nach vorne", symbol: "square.3.layers.3d.top.filled") { [weak self] in self?.reorder(front: true) }
-        action("lock", title: "Bild sperren oder entsperren", symbol: "lock.open") { [weak self] in self?.edit(allowLocked: true) { $0.locked.toggle() } }
-        action("delete", title: "Bild löschen", symbol: "trash") { [weak self] in self?.deleteSelected() }
+        divider()
+        action("lock", title: "Bild sperren", symbol: "lock.open") { [weak self] in self?.edit(allowLocked: true) { $0.locked.toggle() } }
+        divider()
+        action("delete", title: "Bild löschen", symbol: "trash", color: .systemRed) { [weak self] in self?.deleteSelected() }
+        let items = actions.arrangedSubviews
+        barWidth = items.reduce(8) { $0 + ($1 is UIButton ? 44 : 1) } + CGFloat(items.count - 1) * actions.spacing
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -227,15 +241,15 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         placeHandle(resize, at: CGPoint(x: rect.maxX, y: rect.maxY), scale: scale)
         placeHandle(rotate, at: CGPoint(x: rect.maxX, y: rect.minY), scale: scale)
         rotate.backgroundColor = rotationSnap == nil ? .systemBlue : .systemTeal
-        let width = min(max(44, bounds.width / scale - 8), 316)
+        let width = min(max(44, bounds.width / scale - 8), barWidth)
         let outerWidth = width * scale, outerHeight = 52 * scale
         let y = rect.maxY + 12 * scale + outerHeight <= bounds.maxY ? rect.maxY + 12 * scale : max(bounds.minY, rect.minY - 12 * scale - outerHeight)
         toolbar.bounds.size = CGSize(width: width, height: 52)
         toolbar.transform = CGAffineTransform(scaleX: scale, y: scale)
         toolbar.center = CGPoint(x: min(max(bounds.minX + outerWidth / 2, rect.midX), max(bounds.minX + outerWidth / 2, bounds.maxX - outerWidth / 2)),
                                  y: y + outerHeight / 2)
-        actions.frame = CGRect(x: 4, y: 4, width: 308, height: 44)
-        toolbar.contentSize = CGSize(width: 316, height: 52)
+        actions.frame = CGRect(x: 4, y: 4, width: barWidth - 8, height: 44)
+        toolbar.contentSize = CGSize(width: barWidth, height: 52)
     }
 
     private var controlScale: CGFloat {
@@ -262,19 +276,41 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         outline.isHidden = !visible; toolbar.isHidden = !visible
         resize.isHidden = !visible || selected?.locked == true; rotate.isHidden = resize.isHidden
         for (key, button) in buttons { button.isEnabled = key == "lock" || selected?.locked == false }
-        buttons["lock"]?.setImage(UIImage(systemName: selected?.locked == true ? "lock.fill" : "lock.open"), for: .normal)
-        buttons["lock"]?.accessibilityLabel = selected?.locked == true ? "Bild entsperren" : "Bild sperren"
+        if let lock = buttons["lock"] {
+            let locked = selected?.locked == true
+            lock.configuration?.image = UIImage(systemName: locked ? "lock.fill" : "lock.open")
+            lock.backgroundColor = locked ? UIColor.systemBlue.withAlphaComponent(0.2) : .clear
+            lock.accessibilityLabel = locked ? "Bild entsperren" : "Bild sperren"; lock.toolTip = lock.accessibilityLabel
+            lock.accessibilityValue = locked ? "Gesperrt" : nil
+        }
         if redraw { setNeedsDisplay() }
         setNeedsLayout()
     }
 
-    private func action(_ key: String, title: String, symbol: String, run: @escaping () -> Void) {
+    private func action(_ key: String, title: String, symbol: String, color: UIColor = .white, run: @escaping () -> Void) {
         let button = UIButton(type: .system)
-        button.setImage(UIImage(systemName: symbol), for: .normal)
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: symbol)
+        config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+        config.baseForegroundColor = color
+        button.configuration = config
+        // Disabled (locked image): clearly dimmed on the dark bar.
+        button.configurationUpdateHandler = { button in
+            button.configuration?.baseForegroundColor = button.isEnabled ? color : UIColor.white.withAlphaComponent(0.28)
+        }
+        button.layer.cornerRadius = 9
         button.accessibilityLabel = title; button.toolTip = title
         button.addAction(UIAction { _ in run() }, for: .touchUpInside)
         actions.addArrangedSubview(button); buttons[key] = button
-        button.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        button.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+    }
+    private func divider() {
+        let line = UIView(); line.backgroundColor = UIColor.white.withAlphaComponent(0.14)
+        line.isUserInteractionEnabled = false; line.isAccessibilityElement = false
+        line.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        line.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        actions.addArrangedSubview(line)
     }
 
     private func hitObject(_ point: CGPoint) -> ImageObject? {

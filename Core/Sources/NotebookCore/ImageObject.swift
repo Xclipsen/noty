@@ -24,9 +24,9 @@ public struct ImageObject: Codable, Equatable, Identifiable, Sendable {
     }
 
     public func validate() throws {
-        guard !data.isEmpty, data.count <= 20_000_000,
-              (1...100_000).contains(pixelWidth), (1...100_000).contains(pixelHeight),
-              Double(pixelWidth) * Double(pixelHeight) <= 200_000_000,
+        guard !data.isEmpty, data.count <= ImageLimits.maximumFileBytes,
+              (1...ImageLimits.maximumSide).contains(pixelWidth), (1...ImageLimits.maximumSide).contains(pixelHeight),
+              Double(pixelWidth) * Double(pixelHeight) <= ImageLimits.maximumPixels,
               [x, y, width, height, rotation].allSatisfy(\.isFinite),
               abs(x) <= 14_400, abs(y) <= 14_400,
               (1...14_400).contains(width), (1...14_400).contains(height),
