@@ -49,6 +49,20 @@ private enum BackupKeychain {
     }
 }
 
+/// A little extra time when the app leaves the foreground mid-backup; always
+/// ended in time (an expired, unended assertion would get the app terminated).
+@MainActor
+private final class BackgroundAssertion {
+    private var id = UIBackgroundTaskIdentifier.invalid
+    init(_ name: String) {
+        id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in MainActor.assumeIsolated { self?.end() } }
+    }
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id); id = .invalid
+    }
+}
+
 @MainActor
 final class ExternalBackupModel: ObservableObject {
     @Published private(set) var policy: ExternalBackupPolicy
@@ -155,8 +169,8 @@ final class ExternalBackupModel: ObservableObject {
         guard !busy, policy.target != .disabled, manual || policy.due() else { return }
         if let reason = library.backupBlocker { postpone(reason, manual: manual); return }
         busy = true; defer { busy = false }
-        let background = UIApplication.shared.beginBackgroundTask(withName: "noty-external-backup")
-        defer { if background != .invalid { UIApplication.shared.endBackgroundTask(background) } }
+        let background = BackgroundAssertion("noty-external-backup")
+        defer { background.end() }
         // A local commit is cheap and happens anyway; while the user writes it
         // fails, so the target is not contacted every minute during input.
         let committed = library.opened != nil

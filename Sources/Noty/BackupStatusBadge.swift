@@ -2,38 +2,13 @@ import SwiftUI
 import NotebookCore
 
 /// Classification of the external backup shared by the library badge and
-/// Settings › Backup & Daten. Never claims a completed cloud upload. A merely
-/// postponed attempt (editor busy) is not recorded and never shown as failure.
-enum BackupHealth: Equatable {
-    case notConfigured, folderUnreachable, unreachable(String), failed(String), firstPending
-    /// More than three days without a successful backup (or since setup).
-    case stale(Date?)
-    case ok(Date)
+/// Settings › Backup & Daten (logic and tests in Core). Never claims a
+/// completed cloud upload; a postponed attempt is never shown as failure.
+typealias BackupHealth = ExternalBackupHealth
 
-    static let overdueAfter: TimeInterval = 3 * 24 * 3600
-
+extension ExternalBackupHealth {
     @MainActor init(_ backup: ExternalBackupModel, now: Date = Date()) {
-        let policy = backup.policy
-        if policy.target == .disabled { self = .notConfigured; return }
-        if backup.folderUnreachable { self = .folderUnreachable; return }
-        let since = policy.lastSuccess ?? policy.configuredAt
-        if let since, now.timeIntervalSince(since) > Self.overdueAfter { self = .stale(policy.lastSuccess); return }
-        let failing = policy.lastAttempt.map { attempt in policy.lastSuccess.map { attempt > $0 } ?? true } ?? false
-        if failing, !backup.busy, let outcome = policy.lastOutcome {
-            let reason = policy.lastFailureReason ?? "unbekannter Fehler"
-            switch outcome {
-            case .unreachable: self = .unreachable(reason); return
-            case .failed: self = .failed(reason); return
-            case .succeeded: break
-            }
-        }
-        guard let success = policy.lastSuccess else { self = .firstPending; return }
-        self = .ok(success)
-    }
-
-    /// Configured and working (or waiting for its first run).
-    var isSetUp: Bool {
-        switch self { case .ok, .firstPending: true; default: false }
+        self.init(backup.policy, folderUnreachable: backup.folderUnreachable, running: backup.busy, now: now)
     }
 
     /// Short status for the top right of Settings › Backup & Daten.

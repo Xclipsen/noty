@@ -295,6 +295,29 @@ final class ExternalBackupPipelineTests: XCTestCase {
         var negative = policy; negative.consecutiveFailures = -1; XCTAssertThrowsError(try negative.validate())
     }
 
+    func testHealthDistinguishesFailureUnreachableStaleAndNeverPostponed() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var policy = ExternalBackupPolicy()
+        XCTAssertEqual(ExternalBackupHealth(policy, folderUnreachable: false, running: false, now: now), .notConfigured)
+        policy.target = .folder; policy.folderBookmark = Data([1])
+        // Build ≤ 46 stored the attempt time before building, also for postponed runs.
+        policy.lastSuccess = now.addingTimeInterval(-7200); policy.lastAttempt = now.addingTimeInterval(-60)
+        XCTAssertEqual(ExternalBackupHealth(policy, folderUnreachable: false, running: false, now: now), .ok(policy.lastSuccess!))
+        policy.recordFailure(.failed, reason: "Bibliothek größer als 4 GB", at: now.addingTimeInterval(-30))
+        XCTAssertEqual(ExternalBackupHealth(policy, folderUnreachable: false, running: false, now: now), .failed("Bibliothek größer als 4 GB"))
+        XCTAssertEqual(ExternalBackupHealth(policy, folderUnreachable: false, running: true, now: now), .ok(policy.lastSuccess!))
+        XCTAssertEqual(ExternalBackupHealth(policy, folderUnreachable: true, running: false, now: now), .folderUnreachable)
+        policy.recordFailure(.unreachable, reason: "Server nicht erreichbar (offline?)", at: now)
+        XCTAssertEqual(ExternalBackupHealth(policy, folderUnreachable: false, running: false, now: now), .unreachable("Server nicht erreichbar (offline?)"))
+        XCTAssertEqual(ExternalBackupHealth(policy, folderUnreachable: false, running: false, now: now.addingTimeInterval(3 * 86400)),
+                       .stale(policy.lastSuccess))
+        policy.recordSuccess(at: now)
+        XCTAssertEqual(ExternalBackupHealth(policy, folderUnreachable: false, running: false, now: now), .ok(now))
+        var fresh = ExternalBackupPolicy(); fresh.folderBookmark = Data([1]); fresh.startTarget(.folder, at: now)
+        XCTAssertEqual(ExternalBackupHealth(fresh, folderUnreachable: false, running: false, now: now.addingTimeInterval(3600)), .firstPending)
+        XCTAssertEqual(ExternalBackupHealth(fresh, folderUnreachable: false, running: false, now: now.addingTimeInterval(4 * 86400)), .stale(nil))
+    }
+
     func testTemporaryNamesAreOwnAndStaleOnlyAfterADay() {
         let policy = ExternalBackupPolicy(), now = Date(timeIntervalSince1970: 1_700_100_000)
         let old = policy.filename(at: now.addingTimeInterval(-25 * 3600)), fresh = policy.filename(at: now.addingTimeInterval(-3600))

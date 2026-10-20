@@ -96,3 +96,35 @@ public struct ExternalBackupPolicy: Codable, Equatable, Sendable {
         return url.hasDirectoryPath ? url : url.appendingPathComponent("", isDirectory: true)
     }
 }
+
+/// What the library badge and Settings show. A merely postponed attempt is
+/// never recorded, so it can never appear as a failure.
+public enum ExternalBackupHealth: Equatable, Sendable {
+    case notConfigured, folderUnreachable, unreachable(String), failed(String), firstPending
+    /// More than three days without a successful backup (or since setup).
+    case stale(Date?)
+    case ok(Date)
+
+    public static let overdueAfter: TimeInterval = 3 * 24 * 3600
+
+    public init(_ policy: ExternalBackupPolicy, folderUnreachable: Bool, running: Bool, now: Date = Date()) {
+        if policy.target == .disabled { self = .notConfigured; return }
+        if folderUnreachable { self = .folderUnreachable; return }
+        if let since = policy.lastSuccess ?? policy.configuredAt, now.timeIntervalSince(since) > Self.overdueAfter {
+            self = .stale(policy.lastSuccess); return
+        }
+        // Policies of older builds have no outcome: their attempt time alone proves nothing.
+        let failing = policy.lastAttempt.map { attempt in policy.lastSuccess.map { attempt > $0 } ?? true } ?? false
+        if failing, !running, let outcome = policy.lastOutcome, outcome != .succeeded {
+            let reason = policy.lastFailureReason ?? "unbekannter Fehler"
+            self = outcome == .unreachable ? .unreachable(reason) : .failed(reason); return
+        }
+        guard let success = policy.lastSuccess else { self = .firstPending; return }
+        self = .ok(success)
+    }
+
+    /// Configured and working (or waiting for its first run).
+    public var isSetUp: Bool {
+        switch self { case .ok, .firstPending: true; default: false }
+    }
+}
