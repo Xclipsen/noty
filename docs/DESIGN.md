@@ -6,6 +6,48 @@ Appweites **Konto** in den Einstellungen, eigener Punkt **Gesetzessammlung** mit
 
 Native Suche: Gesetz wählen und Nummer eingeben oder `144 HGB`/`HGB 144` im direkten Suchfeld. Eindeutige Fundstellen nach kurzer Pause öffnen, Volltextsuche mit Suchen/Enter. Apples Zahlen-/Texttastatur mit direktem Wechsel für Zusätze/Absätze; keine eigene Ziffernpalette und keine zugesicherte schwebende iPad-Tastaturgröße. Text/PDF, Inhaltsverzeichnis und Fassungen im Leser. Details und tatsächliche Nachweise: [LAW-INTEGRATION-PLAN](LAW-INTEGRATION-PLAN.md), [TESTING](TESTING.md#native-gesetzessammlung--feature-worktree).
 
+## Bild-Werkzeug im noty-Stil – 20.10.2026
+
+Nutzer: Das Bild-Werkzeug passt nicht zum Stil von noty. Angeglichen an Werkzeugleiste, Lasso-Leiste und Formatleiste, ohne Funktionen hinzuzufügen oder zu entfernen. Gesten und Speichern sind unverändert.
+- **Optionszeile:** „Foto“, „Bilddatei“ und „Einfügen“ zeigen jetzt ein Symbol in derselben Größe wie die anderen Optionen (18 pt) und daneben eine kurze Beschriftung. Die Flächen sind 44 pt hoch. Ein feiner Gruppentrenner wie in der Werkzeugleiste trennt die Quellen von der Zwischenablage. „Bilddatei“ passt zum Hinweis bei nicht lesbaren Fotos. VoiceOver und Tooltips nennen jeweils die ganze Aktion.
+- **Auswahlrahmen:** Der Rahmen ist im Akzent (#7DD3FC) statt Systemblau, 2 pt breit, mit einem feinen dunklen Saum. So bleibt er auch auf weißem Papier und auf PDFs sichtbar.
+- **Anfasser:** Statt voller blauer 44-pt-Kreise gibt es schlichte 26-pt-Scheiben im Akzent mit weißem Ring, dunklem Symbol und leichtem Schatten. Die Trefferfläche bleibt 44 × 44 pt. Rastet das freie Drehen auf einen rechten Winkel ein, wird die Scheibe weiß mit Akzentring (vorher Türkis).
+- **Aktionsleiste:** Die dunkle Kapsel bleibt. „Gesperrt“ wird jetzt wie ein ausgewähltes Werkzeug angezeigt, mit eingefärbtem Schloss im Akzent statt einem blau hinterlegten Kasten. Löschen bleibt rot. „Auf nächsten 90°-Winkel drehen“ heißt kurz „Um 90° drehen“.
+- **Zuschneiden:** Der Ausschnittrahmen, die Regler und die Schaltflächen sind im Akzent statt Weiß/Systemblau.
+
+Stand: implementiert und erfolgreich gebaut (`xtool dev build` ohne Warnungen). Nicht installiert, am iPad ungeprüft (Erkennbarkeit auf hellem/dunklem Papier, Gefühl der Anfasser).
+
+## Rückmeldung zu Build 49 – 20.10.2026
+
+Nutzertest Build 49. Umgesetzt in diesem Strang:
+- **Werkzeugleiste:**
+  - Kein sichtbarer Kasten mehr um das ausgewählte Werkzeug.
+  - Hover hebt nur das Symbol selbst an, ohne Systemplatte und ohne Trefferfläche.
+  - Ausgewählt: Das Symbol wird etwas größer (1,2-fach), und nur der schreibende Teil trägt die aktive Farbe. Das sind die Mine bei Stift/Bleistift, der Strich unter dem Textmarker und der Punkt beim Laserpointer. Andere Werkzeuge färben nichts ein, sondern nehmen die Farbe des zuletzt benutzten Stifts nur dort an, wo es einen schreibenden Teil gibt.
+  - Aktive Hilfsknöpfe (Lineal, Schreibscrollen) sind eingefärbt statt hinterlegt.
+- **Schreibscrollen:** Der Blattrand (mit Schreibplatz) kann höchstens bis zur Bildschirmmitte gezogen werden. Vorher wanderte die Mitte des äußersten Bereichs bis zum gegenüberliegenden Rand. Der Schalter heißt jetzt „Schreibscrollen bis zur Bildschirmmitte“.
+- **PDF-Schreibplatz:** Die Linien im Rand beginnen mit 32 pt Abstand zum PDF statt direkt an dessen Kante. Jeder Rand wird für sich liniert, in Editor, Vorschau und Export gleich (`PageLayout.ruledColumnsBesidePDF`). Papierseiten bleiben ein durchgehendes Blatt.
+- **„Seite anpassen“:** Die Vorschau ist scharf und folgt den Reglern ohne Verzögerung. Die gespeicherte Seite wird einmal gerendert, Papier und Linien des neuen Platzes werden live gezeichnet.
+
+## Präzisionsradierer und Formen – 20.10.2026
+
+Nutzer zu Build 50: Der Präzisionsradierer entfernte eine berührte Form ganz, er soll aber nur das berührte Stück wegradieren. Jetzt:
+- **Schneiden statt Entfernen:** Durchgezogene Formen ohne Füllung (Linie, Pfeil, Rechteck, Ellipse) werden entlang der Radiererspur geschnitten. Während des Radierens ist schon zu sehen, was übrig bleibt. Beim Abheben werden die Reste zu normaler Stift-Tinte in Farbe und Breite der Form (`ShapeEraseMask`). Sie lassen sich danach wie jeder Strich weiterradieren, sind aber keine bearbeitbare Form mehr.
+- **Gefüllte, gestrichelte oder gepunktete Formen** haben keine Tinten-Entsprechung und werden weiterhin ganz entfernt.
+- **Undo:** Radieren der Tinte und Schneiden der Formen sind ein Schritt.
+- **Strich-Radierer („Ganz“):** entfernt Formen weiterhin ganz.
+- **Strichbreite der Reste (Nutzer zu Build 51: „sehr dünner Strich“):** PencilKit zeichnet einen Stift-Punkt dünner als seine Größe. Beim ersten Schneiden misst noty die tatsächlich gezeichnete Breite eines Teststrichs (Alpha-Abdeckung im Bild) und vergrößert die Punkte entsprechend, damit der Rest so breit bleibt wie die Form.
+
+## Pencil-Schnellmenü – 20.10.2026
+
+Nutzer zu Build 49: Im Schnellmenü (einmal Drücken bzw. Doppeltippen mit Palette-Einstellung) klappt das erste Scrollen. Beim zweiten Scrollen wird aber das Werkzeug gewählt, auf dem gescrollt wurde. Außerdem soll das Menü immer gleich beginnen und sich kurz merken, wo es geschlossen wurde. Umgesetzt:
+- **Nur Tippen wählt.** Eine Berührung auf dem Rad ist entweder ein Tippen oder ein Scrollen. Ab 12 pt Bewegung scrollt sie endgültig, und das Abheben wählt dann nichts, auch wenn der Finger wieder auf einem Eintrag landet. Ursache: Die Scrollgeste lief gleichzeitig mit den Eintrags-Buttons. Weil der Eintrag dem Finger folgt, endete die Berührung auf ihm und zählte als Tippen. Nur wenn das Scrollen am festen Ende anschlug, verließ der Finger den Eintrag, meist beim ersten Scrollen.
+- **Feste Reihenfolge**, unabhängig vom aktiven Werkzeug: Rückgängig | Stift, Bleistift, Textmarker, Radierer, Text. Das ist der Standardbereich; dafür sind 6 Plätze sichtbar, und der Bogen ist etwas größer (Radius ca. 146 statt 117 pt). Per Scrollen folgen die übrigen Werkzeuge in Leistenreihenfolge (Standard: Lasso, Formen, Bilder, PDF lesen, Laserpointer), dann Farbe, Breite und Autostift. Wiederholen steht direkt vor Rückgängig und ist erst sichtbar, wenn man einen Platz zurückscrollt (Nutzer zu Build 50; vorher stand es am Ende). Das aktive Werkzeug bleibt markiert; der Radierer gilt auch für den Präzisionsradierer.
+- **10-s-Gedächtnis:** Beim Schließen merkt sich das Menü die sichtbare Position. Öffnet es innerhalb von 10 s wieder, erscheint es dort, sonst im Standardbereich. Das Gedächtnis gilt app-weit und wird nicht gespeichert.
+- Unverändert bleiben Doppeldrücken (Radierer ↔ Schreibwerkzeug), Platzierung für Linkshänder, „Bewegung reduzieren“, Haptik und das dunkle Glas. VoiceOver liest die Einträge als Tasten; mit drei Fingern wischen blättert.
+
+Core: `PencilPaletteContent`, `PencilPaletteTouch`, `PencilPaletteMemory` mit Tests. Stand: implementiert, Core-Tests und SDK-Build. Gefühl beim Tippen/Scrollen und die 10 s sind am iPad ungeprüft.
+
 ## Schreibplatz für Papierseiten – 20.10.2026
 
 Nutzer: Normale Seiten sollen sich wie PDF-Seiten über „Schreibplatz hinzufügen“ erweitern lassen, vor allem nach **rechts**. Die Linien sollen in den neuen Platz übergehen, nicht abschneiden. Umgesetzt:

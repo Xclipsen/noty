@@ -68,6 +68,10 @@ public struct ToolbarPreferences: Codable, Equatable, Sendable {
     public var shapePattern: StrokePattern?
     public var shapeFilled: Bool?
     public var recognizeShapes: Bool?
+    /// Highlighter: straighten a held line (optional, v7-compatible; nil = on).
+    /// Separate from `recognizeShapes`, so turning it off for the highlighter
+    /// no longer switches off pen/pencil shape recognition.
+    public var markerHoldStraighten: Bool?
     public var ruler: Bool?
     /// Highlighter strokes snap to one horizontal/vertical segment (optional, v7-compatible).
     public var markerStraight: Bool?

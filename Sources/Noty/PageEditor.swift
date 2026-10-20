@@ -60,6 +60,8 @@ struct PageEditor {
     var onImages: ([ImageObject]) -> Void
     var onError: (String) -> Void
     var onContent: (PageContent, PageContent) -> Bool
+    /// Shapes removed by the precision eraser, merged into that gesture's ink undo step.
+    var onEraseShapes: (PageContent, PageContent) -> Bool = { _, _ in false }
 }
 
 extension PageEditor {
@@ -161,6 +163,17 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         var last: PagePoint?
     }
     var eraseSession: EraseSession?
+    /// Precision eraser gesture: shapes it touched (dimmed, removed on lift).
+    struct ShapeEraseSession {
+        var shapes: [ShapeObject]
+        var hit = Set<UUID>()
+        /// Solid, unfilled shapes the eraser cut: they become ink pieces.
+        var masks: [UUID: ShapeEraseMask] = [:]
+        var last: PagePoint?
+        /// Lifted while PencilKit still used its eraser; completes on tool end.
+        var lifted = false
+    }
+    var shapeErase: ShapeEraseSession?
     /// Soft trail of the "Ganz" eraser: exactly the hit width, recent part only.
     let eraseTrail = CAShapeLayer()
     var trailPoints: [(point: CGPoint, time: CFTimeInterval)] = []
@@ -194,10 +207,11 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private var lastWidth: CGFloat = 0
     private var contentGeneration = 0
     private let undoForwarder = NotebookUndoForwarder()
-    private var onInkSession: (() -> Void)?
+    var onInkSession: (() -> Void)?
     private var onDrawing: ((Data) -> Void)?
     var pageContent = PageContent(page: Page())
     var onContent: ((PageContent, PageContent) -> Bool)?
+    var onEraseShapes: ((PageContent, PageContent) -> Bool)?
     private var onPencilAction: (() -> Void)?
     private var onPencilSqueeze: ((PencilSqueezeEvent) -> Void)?
     var holdEnabled = true
@@ -257,17 +271,23 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             self.holdPoints.append(.init(x: canonical.x, y: canonical.y))
             // Pencil still down after recognition: the held shape follows the tip
             // (line end; arrows/closed shapes scale, `HeldShapeAdjustment`).
+            // A line/arrow end follows the tip up to the page edge, also beyond it.
             if let adjustment = self.heldAdjustment, self.heldShape != nil {
                 let shape = adjustment.shape(at: .init(x: canonical.x, y: canonical.y))
-                if shape != self.heldShape, self.heldFits(shape) { self.heldShape = shape; self.updateHeldPath() }
+                if let fitted = self.fittedHeld(shape, width: self.heldWidth, allowShift: false), fitted != self.heldShape {
+                    self.heldShape = fitted; self.updateHeldPath()
+                }
             }
             if self.eraseSession != nil { self.eraseSweep(to: .init(x: canonical.x, y: canonical.y)) }
+            if self.shapeErase != nil { self.precisionShapeSweep(to: .init(x: canonical.x, y: canonical.y)) }
         }
         holdGesture.onBegin = { [weak self] point in
             guard let self else { return }
             self.commitPendingHeldStroke()
-            self.cancelErase()
+            if self.shapeErase?.lifted == true { self.finishShapeErase(force: true) }
+            self.cancelErase(); self.cancelShapeErase()
             if self.editable, self.tool == .strokeEraser { self.beginErase() }
+            if self.editable, self.tool == .precisionEraser { self.beginShapeErase() }
             let base = self.inkActive ? (self.holdBase ?? self.pageContent) : self.pageContent
             self.clearHeldPreview(); self.holdSerial += 1; self.holdPoints = []
             self.holdBase = base
@@ -281,6 +301,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         holdGesture.onEnd = { [weak self] cancelled in
             guard let self else { return }
             if self.eraseSession != nil { if cancelled { self.cancelErase() } else { self.finishErase() } }
+            if self.shapeErase != nil { if cancelled { self.cancelShapeErase() } else { self.finishShapeErase() } }
             if cancelled { self.clearHeldPreview(); return }
             self.holdCompletion.lift()
             let serial = self.holdSerial
@@ -320,6 +341,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         textLayer.onCaretChanged = { [weak self] in self?.onRevealCaret?() }
         objectLayer.onPreview = { [weak self] content in self?.showObjectPreview(content) }
+        imageLayer.pageContent = { [weak self] in self?.objectContent }
         objectLayer.onInkPreview = { [weak self] data, indices, transform in
             self?.showSelectionInk(data, indices: indices, transform: transform)
         }
@@ -347,9 +369,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var objectPageID: UUID? { pageID }
     /// Installs the result of an atomic cross-page transfer before SwiftUI
     /// publishes it, so the next configure keeps the object history.
+    /// With the image tool the moved image is selected on the image plane
+    /// (it can be dragged on at once), otherwise the lasso selection is.
     func adoptTransfer(_ value: PageContent, selecting selection: TransferredSelection? = nil) {
         pageContent = value
-        objectLayer.adoptTransfer(value, selecting: selection)
+        let imageTool = tool == .image
+        imageLayer.adoptTransfer(value.images, selecting: imageTool ? selection?.images.first : nil)
+        objectLayer.adoptTransfer(value, selecting: imageTool ? nil : selection)
     }
     func insertText(at point: CGPoint) { textLayer.insertText(at: point) }
     /// Frame (sheet coordinates) of an image just added with the image tool.
@@ -486,7 +512,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     override func didMoveToWindow() {
         super.didMoveToWindow()
         interactionObserver.isEnabled = window != nil
-        if window == nil { cancelErase() }
+        if window == nil { cancelErase(); cancelShapeErase() }
         if window == nil { onInteraction?(textInteractionID, false) }
         updateInputMode()
     }
@@ -506,7 +532,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         configuration = editor
         undoForwarder.perform = editor.onUndo; undoForwarder.state = editor.undoState
         onInkSession = editor.onInkSession; onDrawing = editor.onDrawing; onRevealCaret = editor.onRevealCaret
-        onInteraction = editor.onInteraction; onContent = editor.onContent
+        onInteraction = editor.onInteraction; onContent = editor.onContent; onEraseShapes = editor.onEraseShapes
         onPencilAction = editor.onPencilAction; onPencilSqueeze = editor.onPencilSqueeze
         textLayer.onFlowChange = editor.onFlowEdit; textLayer.onFlowUndo = editor.onFlowUndo
         textLayer.onFlowBackspace = editor.onFlowBackspace; textLayer.onUndoBoundary = editor.onUndoBoundary
@@ -550,13 +576,15 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         onDrawing = editor.onDrawing
         onRevealCaret = editor.onRevealCaret
         onInteraction = editor.onInteraction
-        onContent = editor.onContent; onPencilAction = editor.onPencilAction; onPencilSqueeze = editor.onPencilSqueeze; holdEnabled = editor.recognizeShapes; markerStraight = editor.markerStraight
+        onContent = editor.onContent; onEraseShapes = editor.onEraseShapes; onPencilAction = editor.onPencilAction; onPencilSqueeze = editor.onPencilSqueeze; holdEnabled = editor.recognizeShapes; markerStraight = editor.markerStraight
         scribbleErase = editor.scribbleErase
         let originChanged = pageLayout.contentOrigin != editor.layout.contentOrigin
         let layoutChanged = pageLayout != editor.layout
         let contentReplaced = contentGeneration != editor.contentGeneration
         if let session = eraseSession, first || contentReplaced || layoutChanged || !editor.enabled || editor.tool != .strokeEraser
             || editor.drawing != session.base.drawing || editor.shapes != session.base.shapes { cancelErase() }
+        if let session = shapeErase, first || contentReplaced || layoutChanged || !editor.enabled || editor.tool != .precisionEraser
+            || editor.shapes != session.shapes { cancelShapeErase() }
         if first || contentReplaced || layoutChanged || !editor.enabled || editor.tool != tool {
             holdSerial += 1; clearHeldPreview()
         }
@@ -569,7 +597,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if readMode { reader().isHidden = false } else { pdfView?.isHidden = true }
         pdfRaster.isHidden = !hasSource || readMode
         paperBackground.configure(style: editor.margins?.style ?? (editor.sourcePage == nil ? editor.paper : .blank),
-                                  color: editor.margins?.color ?? editor.paperColor, coordinateScale: pageLayout.writingCoordinateScale)
+                                  color: editor.margins?.color ?? editor.paperColor, coordinateScale: pageLayout.writingCoordinateScale,
+                                  columns: editor.sourcePage == nil ? nil : pageLayout.ruledColumnsBesidePDF)
         if pageID != editor.pageID {
             pageID = editor.pageID
             sourceDark = editor.paperColor == .dark; sourceDarkCalculated = false
@@ -682,7 +711,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         // the app-owned sweep (hold observer) dims first and removes on lift.
         let nativeDrawing = tool != .strokeEraser
         if canvas.drawingGestureRecognizer.isEnabled != nativeDrawing { canvas.drawingGestureRecognizer.isEnabled = nativeDrawing }
-        if eraseSession != nil { dimErasedShapes() }
+        if eraseSession != nil || shapeErase != nil { dimErasedShapes() }
         pdfView?.isUserInteractionEnabled = tool == .read
         if modeChanged || focusChanged || first { updateInputMode() }
         setNeedsLayout()
@@ -836,7 +865,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
               stroke.ink.inkType == .marker || stroke.ink.inkType == .monoline else { return }
         let points = stroke.path.map { $0.location.applying(stroke.transform) }.map { PagePoint(x: $0.x, y: $0.y) }
         guard let line = MarkerStraightening.line(points) else { return }
-        let straight = inkStroke(from: stroke, ink: stroke.ink, path: RecognizedShape.line(start: line.start, end: line.end).outline(spacing: 12))
+        // A stroke that ran off the page is straightened up to the edge.
+        guard let fitted = HeldShapeFitting.fit(.line(start: line.start, end: line.end), in: PageRect(pageLayout.canonicalInkBounds),
+                                                padding: Self.maximumDrawnWidth(stroke) / 2 + 0.05, allowShift: false) else { return }
+        let straight = inkStroke(from: stroke, ink: stroke.ink, path: fitted.outline(spacing: 12))
         guard pageLayout.canonicalInkBounds.insetBy(dx: -0.02, dy: -0.02).contains(straight.renderBounds) else { return }
         let wasUpdating = updating; updating = true
         canvas.drawing = PKDrawing(strokes: Array(strokes.dropLast()) + [straight]).transformed(using: pageLayout.inkTranslation)
@@ -850,6 +882,14 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
         inkActive = false
         holdCompletion.endNative()
+        // Precision eraser lifted over shapes: cut them once PencilKit's own
+        // erase is on the canvas (next turn of the run loop).
+        if shapeErase?.lifted == true {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.shapeErase?.lifted == true else { return }
+                self.finishShapeErase(force: true)
+            }
+        }
     }
     func installContent(_ content: PageContent) {
         updating = true

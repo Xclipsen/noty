@@ -9,11 +9,13 @@ extension WorksheetView {
               let first = holdPoints.first, let last = holdPoints.last else { return }
         let recognized = ShapeRecognition.shape(holdPoints)
             ?? (ShapeRecognition.lineAfterHold(holdPoints) ? .line(start: first, end: LineSnapping.end(from: first, to: last)) : nil)
-        guard let shape = recognized, let base = holdBase else { return }
-        if tool == .marker { guard case .line = shape else { return } }
+        guard let recognized, let base = holdBase else { return }
+        if tool == .marker { guard case .line = recognized else { return } }
         heldColor = InkColor(Color(lastColor ?? .black))
         heldWidth = configuredWidth * (drawnWidthRatio[inkType] ?? 1)
-        guard heldFits(shape) else { return }
+        // A stroke that left the page/canvas is clipped (lines, arrows) or
+        // moved onto the page (closed shapes) instead of being dropped.
+        guard let shape = fittedHeld(recognized, width: heldWidth, allowShift: true) else { return }
         heldShape = shape
         heldAdjustment = HeldShapeAdjustment(shape: shape, grab: last)
         let frame = renderViewport?.frame.cgRect ?? bounds
@@ -29,19 +31,20 @@ extension WorksheetView {
             feedback.pathCompleted(at: CGPoint(x: end.x + pageLayout.contentOrigin.x, y: end.y + pageLayout.contentOrigin.y))
         }
     }
-    func heldFits(_ shape: RecognizedShape) -> Bool {
-        let outline = shape.outline()
-        guard !outline.isEmpty, outline.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return false }
-        if case let .line(start, end) = shape, hypot(end.x - start.x, end.y - start.y) < 1 { return false }
-        let xs = outline.map(\.x), ys = outline.map(\.y), pad = max(heldWidth / 2, shape.object(color: heldColor, lineWidth: heldWidth)?.padding ?? 0)
-        let rect = CGRect(x: xs.min()! - pad, y: ys.min()! - pad, width: xs.max()! - xs.min()! + 2 * pad, height: ys.max()! - ys.min()! + 2 * pad)
-        return pageLayout.canonicalInkBounds.contains(rect)
+    /// `shape` on the page for a stroke of `width`: unchanged when it fits,
+    /// otherwise clipped/moved (`HeldShapeFitting`); nil keeps the freehand
+    /// ink. The padding is what the model validates for an object (its
+    /// bounds) or the stroke's half width, plus a margin against rounding.
+    func fittedHeld(_ shape: RecognizedShape, width: CGFloat, allowShift: Bool) -> RecognizedShape? {
+        if case let .line(start, end) = shape, hypot(end.x - start.x, end.y - start.y) < 1 { return nil }
+        let pad = max(width / 2, shape.object(color: heldColor, lineWidth: min(40, max(0.5, width)))?.padding ?? 0) + 0.05
+        return HeldShapeFitting.fit(shape, in: PageRect(pageLayout.canonicalInkBounds), padding: pad, allowShift: allowShift)
     }
     /// Pen results that fit the editable object model (arrow, axis-aligned
     /// rectangle/square, ellipse/circle) become shapes; the rest native ink.
     /// Pencil results always stay native ink, keeping the graphite texture.
-    private func heldObject(width: CGFloat) -> ShapeObject? {
-        guard tool == .pen, let shape = heldShape?.object(color: heldColor, lineWidth: min(40, max(0.5, width))),
+    private func heldObject(_ shape: RecognizedShape?, width: CGFloat) -> ShapeObject? {
+        guard tool == .pen, let shape = shape?.object(color: heldColor, lineWidth: min(40, max(0.5, width))),
               (try? shape.validate()) != nil else { return nil }
         return shape
     }
@@ -50,7 +53,7 @@ extension WorksheetView {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         heldShapeLayer.frame = bounds
         let path: UIBezierPath
-        if let object = heldObject(width: heldWidth) { path = ShapeRendering.path(object) }
+        if let object = heldObject(shape, width: heldWidth) { path = ShapeRendering.path(object) }
         else {
             path = UIBezierPath()
             for (index, point) in shape.outline().enumerated() {
@@ -88,11 +91,17 @@ extension WorksheetView {
         // once: same ink and drawn point attributes (never the bare tool width,
         // which rendered as a hairline), or an editable shape of the drawn width.
         var next = previous
-        if let object = heldObject(width: source.map(Self.drawnWidth) ?? heldWidth) {
+        // The finished stroke can be wider than the preview estimate: fit the
+        // result again with its real width, so neither the bounds check below
+        // nor the model's shape validation rejects it near the page edge.
+        let objectWidth = source.map(Self.drawnWidth) ?? heldWidth
+        if let object = heldObject(fittedHeld(shape, width: objectWidth, allowShift: true) ?? shape, width: objectWidth) {
             next.drawing = oldDrawing.dataRepresentation(); next.shapes.append(object)
         } else {
             let ink = source?.ink ?? PKInk(inkType, color: heldColor.uiColor)
-            let stroke = inkStroke(from: source, ink: ink, path: shape.outline(spacing: 8))
+            let reach = max(heldWidth, source.map(Self.maximumDrawnWidth) ?? 0)
+            let fitted = fittedHeld(shape, width: reach, allowShift: true) ?? shape
+            let stroke = inkStroke(from: source, ink: ink, path: fitted.outline(spacing: 8))
             guard pageLayout.canonicalInkBounds.insetBy(dx: -0.02, dy: -0.02).contains(stroke.renderBounds) else {
                 clearHeldPreview(); canvasViewDrawingDidChange(canvas); return
             }
@@ -113,6 +122,11 @@ extension WorksheetView {
         let t = stroke.transform, scale = sqrt(abs(t.a * t.d - t.b * t.c))
         let widths = stroke.path.map { min($0.size.width, $0.size.height) * scale }.sorted()
         return widths.isEmpty ? 0 : widths[widths.count / 2]
+    }
+    /// Widest drawn point in page units (how far the stroke renders).
+    static func maximumDrawnWidth(_ stroke: PKStroke) -> CGFloat {
+        let t = stroke.transform, scale = sqrt(abs(t.a * t.d - t.b * t.c))
+        return stroke.path.map { max($0.size.width, $0.size.height) * scale }.max() ?? 0
     }
     /// Learns PencilKit's drawn width per tool width, so the next held preview
     /// shows the width the replacement will actually have.

@@ -49,19 +49,21 @@ final class PageThumbnailCache: ObservableObject {
     /// At most two background renders: a scrolled grid must not flood the CPU.
     private static let gate = RenderGate(limit: 2)
 
-    static func render(_ page: Page, source: Source) async throws -> UIImage {
+    /// `longestSide`: pixel size of the longer edge (sidebar 224; larger for
+    /// the „Seite anpassen“ preview).
+    static func render(_ page: Page, source: Source, longestSide: CGFloat = 224) async throws -> UIImage {
         await gate.acquire()
         let parts: Parts
         do {
             try Task.checkCancellation()
-            parts = try await Task.detached(priority: .utility) { try Self.parts(page, source: source) }.value
+            parts = try await Task.detached(priority: .utility) { try Self.parts(page, source: source, longestSide: longestSide) }.value
         } catch { await gate.release(); throw error }
         await gate.release()
         try Task.checkCancellation()
         return compose(page, parts)
     }
 
-    nonisolated private static func parts(_ page: Page, source: Source) throws -> Parts {
+    nonisolated private static func parts(_ page: Page, source: Source, longestSide: CGFloat) throws -> Parts {
         var document: CGPDFDocument?
         let pdf: CGPDFPage?
         switch source {
@@ -74,11 +76,12 @@ final class PageThumbnailCache: ObservableObject {
         defer { withExtendedLifetime(document) {} }
         let layout = try PageLayout(page: page, source: pdf)
         let bounds = layout.canvas.bounds
-        let scale = 224 / max(bounds.width, bounds.height)
-        let decoded = try (page.images ?? []).map { try ImageRendering.decoded($0, limit: 256) }
+        let scale = longestSide / max(bounds.width, bounds.height)
+        let decoded = try (page.images ?? []).map { try ImageRendering.decoded($0, limit: Int(max(256, longestSide))) }
         guard let base = PageRaster.bitmap(size: bounds.size, scale: scale, opaque: true, { context in
             PDFExporter.drawPaper(style: page.margins?.style ?? page.paper ?? (pdf == nil ? .legacyTest : .blank),
-                                  bounds: bounds, color: page.margins?.color ?? page.paperColor ?? .white, coordinateScale: page.writingCoordinateScale)
+                                  bounds: bounds, color: page.margins?.color ?? page.paperColor ?? .white, coordinateScale: page.writingCoordinateScale,
+                                  columns: pdf == nil ? nil : layout.ruledColumnsBesidePDF)
             if let pdf {
                 // Transparent PDFs retain white paper against dark note margins.
                 UIColor.white.setFill(); context.fill(layout.sourceFrame.cgRect)

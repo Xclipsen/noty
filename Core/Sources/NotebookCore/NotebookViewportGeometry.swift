@@ -52,8 +52,8 @@ public enum NotebookViewportGeometry {
         max(16, viewportWidth, (viewportWidth - contentWidth) / 2)
     }
     /// Normal mode keeps narrow pages centred and wide page edges at the screen
-    /// edges. Writing mode (`anchors`) lets the page move until the centre of its
-    /// outermost region reaches the opposite screen edge.
+    /// edges. Writing mode (`anchors`: the sheet edges) additionally lets each
+    /// edge move up to the middle of the screen, never further.
     /// `centre`: surface x that may additionally be centred on screen (the base
     /// sheet/PDF beside a writing space, the target of page jumps), so the
     /// clamp never pulls a jump back to the whole-sheet centre.
@@ -65,13 +65,14 @@ public enum NotebookViewportGeometry {
     /// Allowed content-offset x interval of one sheet (see `horizontalOffset`).
     public static func horizontalRange(viewportWidth: Double, page: PageRect, scale: Double,
                                        anchors: (left: Double, right: Double)? = nil, centre: Double? = nil) -> ClosedRange<Double> {
-        if let anchors {
-            let low = anchors.left * scale - viewportWidth, high = anchors.right * scale
-            return min(low, high)...max(low, high)
-        }
         let left = page.x * scale, right = (page.x + page.width) * scale
         var low = left - 16, high = right - viewportWidth + 16
         if right - left + 32 <= viewportWidth { low = (left + right - viewportWidth) / 2; high = low }
+        if let anchors {
+            // Never narrower than normal scrolling; edges stop at the screen middle.
+            low = min(low, anchors.left * scale - viewportWidth / 2)
+            high = max(high, anchors.right * scale - viewportWidth / 2)
+        }
         if let centre {
             let focus = centre * scale - viewportWidth / 2
             low = min(low, focus); high = max(high, focus)

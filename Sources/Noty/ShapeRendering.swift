@@ -5,19 +5,39 @@ import NotebookCore
 @MainActor
 final class ShapeObjectLayer: UIView {
     private var shapes: [ShapeObject] = []
+    private var pieces: [ShapeInkPiece] = []
     private var origin = PagePoint(x: 0, y: 0)
     override init(frame: CGRect) {
         super.init(frame: frame); isOpaque = false; backgroundColor = .clear; isUserInteractionEnabled = false
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func configure(_ shapes: [ShapeObject], origin: PagePoint) {
-        guard self.shapes != shapes || self.origin != origin else { return }
-        self.shapes = shapes; self.origin = origin; isHidden = shapes.isEmpty; setNeedsDisplay()
+    /// `pieces`: remaining parts of shapes being cut by the precision eraser.
+    func configure(_ shapes: [ShapeObject], origin: PagePoint, pieces: [ShapeInkPiece] = []) {
+        guard self.shapes != shapes || self.origin != origin || self.pieces != pieces else { return }
+        self.shapes = shapes; self.origin = origin; self.pieces = pieces
+        isHidden = shapes.isEmpty && pieces.isEmpty; setNeedsDisplay()
     }
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
         ShapeRendering.draw(shapes, origin: origin, context: context)
+        context.saveGState(); defer { context.restoreGState() }
+        context.translateBy(x: origin.x, y: origin.y)
+        for piece in pieces {
+            let path = UIBezierPath()
+            for (index, point) in piece.points.enumerated() {
+                if index == 0 { path.move(to: CGPoint(x: point.x, y: point.y)) } else { path.addLine(to: CGPoint(x: point.x, y: point.y)) }
+            }
+            piece.color.uiColor.setStroke(); path.lineWidth = piece.width
+            path.lineCapStyle = .round; path.lineJoinStyle = .round; path.stroke()
+        }
     }
+}
+
+/// A remaining part of a shape under the precision eraser (page units).
+struct ShapeInkPiece: Equatable {
+    var points: [PagePoint]
+    var color: InkColor
+    var width: Double
 }
 
 @MainActor

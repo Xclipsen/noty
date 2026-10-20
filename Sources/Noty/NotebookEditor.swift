@@ -803,6 +803,8 @@ extension NotebookViewport: SelectionTransferHost {
         do {
             result = try SelectionTransfer.build(lift, move: move, target: targetContent,
                 limits: PageRect(targetSheet.objectLayout.canonicalInkBounds))
+        } catch let error as CrossPageTransferError {
+            state.onError(error.message(image: lift.isSingleImage)); return false
         } catch {
             state.onError(error.localizedDescription); return false
         }
@@ -822,6 +824,11 @@ extension NotebookViewport: SelectionTransferHost {
             self.state?.onSelect(id)
         }
         return true
+    }
+
+    func transferTarget(for gesture: UIGestureRecognizer) -> UUID? {
+        guard state?.enabled == true, state?.onTransfer != nil, !liveZoom else { return nil }
+        return dropTarget(at: gesture.location(in: surface))?.id
     }
 
     private func dropTarget(at point: CGPoint) -> NotebookPagePlacement? {

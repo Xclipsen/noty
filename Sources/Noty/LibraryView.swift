@@ -185,7 +185,8 @@ struct LibraryView: View {
         .alert("Bibliothek", isPresented: Binding(get: { model.error != nil && settingsRequest == nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
-        .alert("Test- und Restore-Bereiche", isPresented: Binding(get: { workspaces.error != nil && settingsRequest == nil }, set: { if !$0 { workspaces.error = nil } })) {
+        // Settings and the area sheet show these errors themselves.
+        .alert("Test- und Restore-Bereiche", isPresented: Binding(get: { workspaces.error != nil && settingsRequest == nil && !showingAreas }, set: { if !$0 { workspaces.error = nil } })) {
             Button("OK") { workspaces.error = nil }
         } message: { Text(workspaces.error ?? "") }
         .onChange(of: location) { _, value in
@@ -549,52 +550,84 @@ struct LibraryView: View {
             }
             .navigationTitle(title)
             .searchable(text: $search, prompt: "Ordner- oder Notizbuchname")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if case .folder(let id) = location, search.isEmpty {
-                        Button { goUp(from: id) } label: {
-                            Label(parentTitle(of: id), systemImage: "chevron.backward").labelStyle(.titleAndIcon)
-                        }
-                        .accessibilityLabel("Zurück zu \(parentTitle(of: id))")
-                    }
+            .toolbar { libraryToolbar }
+    }
+
+    /// Top bar of the detail column. Every control is its own item with an
+    /// explicit placement, declared in display order (leading to trailing):
+    /// backup hint (only when needed) · Inhalte suchen · Darstellung ·
+    /// Bearbeiten (only when reordering is possible) · Neu · Einstellungen.
+    /// Optional items are added or left out as whole items: no permanently
+    /// present item with sometimes empty content (the leading slot used to be
+    /// one), no group whose membership changes while navigating.
+    @ToolbarContentBuilder private var libraryToolbar: some ToolbarContent {
+        if case .folder(let id) = location, search.isEmpty {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { goUp(from: id) } label: {
+                    // A long parent name (up to 120 characters) must not crowd the trailing items out of the bar.
+                    let name = parentTitle(of: id)
+                    Label(name.count > 24 ? String(name.prefix(23)) + "…" : name, systemImage: "chevron.backward")
+                        .labelStyle(.titleAndIcon).lineLimit(1)
                 }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if BackupStatusBadge.needsAttention(externalBackup) {
-                        BackupStatusBadge(externalBackup: externalBackup, library: model) { settingsRequest = SettingsRequest(page: .backup) }
-                    }
-                    Button { searchAllNotebooks() } label: {
-                        Label("Inhalte suchen", systemImage: "doc.text.magnifyingglass")
-                    }.disabled(!editable)
-                    Menu {
-                        Picker("Darstellung", selection: $layout) {
-                            ForEach(LibraryLayout.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
-                        }
-                        Picker("Sortierung", selection: $sort) {
-                            ForEach(LibrarySort.allCases) { Text($0.title).tag($0) }
-                        }
-                        Divider()
-                        Button("Neu laden", systemImage: "arrow.clockwise") { Task { await model.refresh() } }.disabled(model.busy)
-                    } label: { Label("Darstellung und Sortierung", systemImage: layout == .grid ? "square.grid.2x2" : "list.bullet") }
-                    if canReorder { EditButton().disabled(!editable) }
-                    // One primary entry point for creating and importing.
-                    Menu {
-                        Section {
-                            Button("Notizbuch", systemImage: "square.and.pencil") { creatingNotebook = true }
-                            Button("Ordner", systemImage: "folder.badge.plus") { prompt(.folder) }
-                        }
-                        Section {
-                            Button("PDF importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
-                            Button("Backup als Kopie importieren …", systemImage: "arrow.down.doc") { importingBackup = true }
-                            if !activeCopies.isEmpty {
-                                Button("Wiederhergestellte Kopien …", systemImage: "clock.arrow.circlepath") { showingCopies = true }
-                            }
-                        }
-                    } label: { Label("Neu", systemImage: "plus") }
-                    .disabled(!editable)
-                    .accessibilityLabel("Neu oder importieren")
-                    Button { settingsRequest = SettingsRequest() } label: { Label("Einstellungen", systemImage: "gearshape") }
-                }
+                .accessibilityLabel("Zurück zu \(parentTitle(of: id))")
             }
+        }
+        if BackupStatusBadge.needsAttention(externalBackup) {
+            ToolbarItem(placement: .topBarTrailing) {
+                BackupStatusBadge(externalBackup: externalBackup, library: model) { settingsRequest = SettingsRequest(page: .backup) }
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { searchAllNotebooks() } label: {
+                Label("Inhalte suchen", systemImage: "doc.text.magnifyingglass")
+            }.disabled(!editable)
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Picker("Darstellung", selection: $layout) {
+                    ForEach(LibraryLayout.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
+                }
+                Picker("Sortierung", selection: $sort) {
+                    ForEach(LibrarySort.allCases) { Text($0.title).tag($0) }
+                }
+                Divider()
+                Button("Neu laden", systemImage: "arrow.clockwise") { Task { await model.refresh() } }.disabled(model.busy)
+            } label: { Label("Darstellung und Sortierung", systemImage: layout == .grid ? "square.grid.2x2" : "list.bullet") }
+        }
+        if canReorder {
+            ToolbarItem(placement: .topBarTrailing) { EditButton().disabled(!editable) }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            // One primary entry point for creating and importing.
+            Menu {
+                Section {
+                    Button("Notizbuch", systemImage: "square.and.pencil") { creatingNotebook = true }
+                    Button("Ordner", systemImage: "folder.badge.plus") { prompt(.folder) }
+                }
+                Section {
+                    Button("PDF importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
+                    Button("Backup als Kopie importieren …", systemImage: "arrow.down.doc") { importingBackup = true }
+                    if !activeCopies.isEmpty {
+                        Button("Wiederhergestellte Kopien …", systemImage: "clock.arrow.circlepath") { showingCopies = true }
+                    }
+                }
+            } label: { Label("Neu", systemImage: "plus") }
+            .disabled(!editable)
+            .accessibilityLabel("Neu oder importieren")
+        }
+        ToolbarItem(placement: Self.settingsPlacement) {
+            Button { settingsRequest = SettingsRequest() } label: { Label("Einstellungen", systemImage: "gearshape") }
+        }
+    }
+
+    /// iPadOS 27 lays the top bar out by available space: when the detail column
+    /// is crowded (sidebar, back button with the parent's name, title, search
+    /// field) the system moves `.topBarTrailing` items, the last-declared first,
+    /// so the gear ended up away from the trailing edge. A pinned trailing item
+    /// stays at the trailing edge (it only gives way while a search is active).
+    private static var settingsPlacement: ToolbarItemPlacement {
+        if #available(iOS 27.0, *) { return .topBarPinnedTrailing }
+        return .topBarTrailing
     }
 
     /// Same exporter as the editor, from the last committed revision.

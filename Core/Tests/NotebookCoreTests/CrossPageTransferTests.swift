@@ -112,4 +112,97 @@ final class CrossPageTransferTests: XCTestCase {
         XCTAssertThrowsError(try book.replaceContents([changes[0], changes[0]]))
         XCTAssertThrowsError(try book.replaceContents([]))
     }
+
+    // Image tool: one image dragged onto the next page (writing space left of
+    // the target sheet, so its canonical x starts negative).
+    private func image(x: Double = 200, y: Double = 700, width: Double = 120, height: Double = 90) -> ImageObject {
+        ImageObject(data: Data([0x89, 1, 2, 3]), pixelWidth: 400, pixelHeight: 300, x: x, y: y, width: width, height: height,
+                    rotation: 30, crop: .init(x: 0.1, y: 0.2, width: 0.5, height: 0.6))
+    }
+
+    func testImageDroppedOnNextPageLandsBelowFingerWithSameIdentity() throws {
+        let source = placement(y: 0, scale: 1), target = placement(y: 844, scale: 1, left: 100)
+        let original = image()
+        let grab = PagePoint(x: 230, y: 720)
+        let finger = PagePoint(x: 260, y: 1100)
+        let move = try XCTUnwrap(CrossPageMove(source: source, target: target, sourceStart: grab, surfacePoint: finger))
+        let limits = PageRect(x: -100, y: 0, width: 695, height: 842)
+        let placed = try CrossPageTransfer.place(.init(images: [original]), by: move, into: PageContent(page: Page()), limits: limits)
+        let moved = try XCTUnwrap(placed.content.images.first)
+        XCTAssertEqual(placed.offset, PagePoint(x: 0, y: 0))
+        XCTAssertEqual(moved.id, original.id); XCTAssertEqual(moved.data, original.data)
+        XCTAssertEqual(moved.crop, original.crop); XCTAssertEqual(moved.rotation, original.rotation)
+        XCTAssertEqual(moved.locked, original.locked)
+        XCTAssertEqual(moved.width, original.width); XCTAssertEqual(moved.height, original.height)
+        // The grabbed point (30/20 inside the image) stays below the finger.
+        let surface = target.surfacePoint(forContent: .init(x: moved.x + 30, y: moved.y + 20))
+        XCTAssertEqual(surface.x, finger.x, accuracy: 1e-9); XCTAssertEqual(surface.y, finger.y, accuracy: 1e-9)
+        // Target canonical coordinates: page gap and the 100-pt writing space.
+        XCTAssertEqual(moved.x, 260 - 10 - 100 - 30, accuracy: 1e-9)
+        XCTAssertEqual(moved.y, 1100 - 844 - 20, accuracy: 1e-9)
+    }
+
+    func testImageDroppedAtTargetEdgeIsShiftedInsideNeverClippedOrShrunk() throws {
+        let source = placement(y: 0, scale: 1), target = placement(y: 844, scale: 0.5, left: 100)
+        let original = image()
+        let grab = PagePoint(x: 230, y: 720)
+        // Finger at the far left of the target's writing space.
+        let finger = PagePoint(x: 11, y: 845)
+        let move = try XCTUnwrap(CrossPageMove(source: source, target: target, sourceStart: grab, surfacePoint: finger))
+        let limits = PageRect(x: -100, y: 0, width: 695, height: 842)
+        let placed = try CrossPageTransfer.place(.init(images: [original]), by: move, into: PageContent(page: Page()), limits: limits)
+        let moved = try XCTUnwrap(placed.objects.images.first)
+        XCTAssertTrue(moved.fits(in: limits))
+        XCTAssertGreaterThan(placed.offset.x, 0); XCTAssertGreaterThan(placed.offset.y, 0)
+        // Same on-screen size: source scale 1, target scale 0.5.
+        XCTAssertEqual(moved.width, original.width * 2, accuracy: 1e-9)
+        XCTAssertEqual(moved.rotatedBounds.x, limits.x, accuracy: 1e-6)
+        XCTAssertEqual(moved.rotatedBounds.y, limits.y, accuracy: 1e-6)
+        // Larger than the target's writable area: refused instead of clipped.
+        let huge = image(x: 0, y: 0, width: 590, height: 400)
+        XCTAssertThrowsError(try CrossPageTransfer.place(.init(images: [huge]), by: move, into: PageContent(page: Page()), limits: limits)) {
+            XCTAssertEqual($0 as? CrossPageTransferError, .doesNotFit)
+        }
+    }
+
+    func testFullTargetPageRefusesImageWithClearMessage() throws {
+        var target = PageContent(page: Page())
+        target.images = (0..<ImageLimits.maximumImagesPerPage).map { image(x: Double($0), y: 10, width: 20, height: 20) }
+        let move = CrossPageMove(scale: 1, translation: .init(x: 0, y: -600))
+        let limits = PageRect(x: 0, y: 0, width: 595, height: 842)
+        XCTAssertThrowsError(try CrossPageTransfer.place(.init(images: [image()]), by: move, into: target, limits: limits)) {
+            XCTAssertEqual($0 as? CrossPageTransferError, .pageFull)
+        }
+        let text = CrossPageTransferError.pageFull.message(image: true)
+        XCTAssertTrue(text.contains("\(ImageLimits.maximumImagesPerPage) Bilder")); XCTAssertTrue(text.contains("bleibt"))
+        XCTAssertEqual(CrossPageTransferError.pageFull.errorDescription, CrossPageTransferError.pageFull.message(image: false))
+        XCTAssertTrue(CrossPageTransferError.doesNotFit.message(image: true).hasPrefix("Das Bild"))
+        // One slot left: accepted.
+        target.images.removeLast()
+        XCTAssertEqual(try CrossPageTransfer.place(.init(images: [image()]), by: move, into: target, limits: limits).content.images.count,
+                       ImageLimits.maximumImagesPerPage)
+    }
+
+    func testImageTransferIsOneAtomicReplacementWithInverse() throws {
+        var book = Notebook.blank(title: "Bild verschieben")
+        try book.insertPaper(.blank, at: 1)
+        let a = book.pages[0].id, b = book.pages[1].id
+        var locked = image(x: 20, y: 20, width: 40, height: 30); locked.locked = true
+        let original = image()
+        try book.replaceImages([locked, original], pageID: a)
+        let sourceBefore = PageContent(page: book.pages[0]), targetBefore = PageContent(page: book.pages[1])
+        var sourceAfter = sourceBefore; sourceAfter.images.removeAll { $0.id == original.id }
+        let placed = try CrossPageTransfer.place(.init(images: [original]), by: .init(scale: 1, translation: .init(x: 0, y: -600)),
+                                                 into: targetBefore, limits: book.pages[1].textBounds)
+        let changes = [PageContentReplacement(pageID: a, expected: sourceBefore, replacement: sourceAfter),
+                       PageContentReplacement(pageID: b, expected: targetBefore, replacement: placed.content)]
+        try book.replaceContents(changes)
+        XCTAssertEqual(book.pages[0].images?.map(\.id), [locked.id])
+        XCTAssertEqual(book.pages[1].images?.first?.id, original.id)
+        XCTAssertEqual(book.pages[1].images?.first?.data, original.data)
+        XCTAssertEqual(book.pages[1].images?.first?.y ?? 0, 100, accuracy: 1e-9)
+        try book.replaceContents(changes.map(\.inverted))
+        XCTAssertEqual(PageContent(page: book.pages[0]), sourceBefore)
+        XCTAssertEqual(PageContent(page: book.pages[1]), targetBefore)
+    }
 }

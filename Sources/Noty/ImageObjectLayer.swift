@@ -2,6 +2,47 @@ import UIKit
 import SwiftUI
 import NotebookCore
 
+private extension UIColor {
+    /// noty accent (#7DD3FC), same as `Color.notyAccent`.
+    static let notyAccent = UIColor(red: 125 / 255, green: 211 / 255, blue: 252 / 255, alpha: 1)
+    /// Dark glyph colour of the tool-icon design (#0B1220).
+    static let notyShade = UIColor(red: 11 / 255, green: 18 / 255, blue: 32 / 255, alpha: 1)
+}
+
+/// Image handle: a compact accent disc with a white ring and soft shadow,
+/// readable on light paper and on PDFs, inside an unchanged 44-pt target.
+@MainActor
+private final class ImageHandle: UIView {
+    private let disc = UIView()
+    private let symbol = UIImageView()
+    /// Rotation snapped to a right angle: inverted disc as feedback.
+    var snapped = false { didSet { if snapped != oldValue { updateColors() } } }
+    init(symbol name: String, title: String) {
+        super.init(frame: CGRect(x: 0, y: 0, width: 44, height: 44))
+        backgroundColor = .clear
+        disc.isUserInteractionEnabled = false
+        disc.layer.cornerRadius = 13; disc.layer.borderWidth = 2
+        disc.layer.shadowColor = UIColor.black.cgColor; disc.layer.shadowOpacity = 0.28
+        disc.layer.shadowRadius = 2.5; disc.layer.shadowOffset = CGSize(width: 0, height: 1)
+        disc.layer.shadowPath = UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: 26, height: 26)).cgPath
+        symbol.image = UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold))
+        symbol.contentMode = .center; symbol.isUserInteractionEnabled = false
+        addSubview(disc); disc.addSubview(symbol)
+        isAccessibilityElement = true; accessibilityTraits = .button; accessibilityLabel = title
+        updateColors()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        disc.frame = CGRect(x: 9, y: 9, width: 26, height: 26); symbol.frame = disc.bounds
+    }
+    private func updateColors() {
+        disc.backgroundColor = snapped ? .white : .notyAccent
+        disc.layer.borderColor = (snapped ? UIColor.notyAccent : .white).cgColor
+        symbol.tintColor = .notyShade
+    }
+}
+
 /// One page-local image plane below ink/text. Gestures and controls are excluded
 /// from every export; undo is notebook-wide (EditorModel). All object
 /// coordinates stay in canonical points.
@@ -17,12 +58,19 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     private var onChange: (([ImageObject]) -> Void)?
     private var onError: ((String) -> Void)?
     private let outline = CAShapeLayer()
-    private let resize = UIButton(type: .system)
-    private let rotate = UIButton(type: .system)
+    /// Soft dark halo under the accent outline, so it reads on white paper.
+    private let outlineHalo = CAShapeLayer()
+    private let resize = ImageHandle(symbol: "arrow.up.left.and.arrow.down.right", title: "Bild proportional skalieren")
+    private let rotate = ImageHandle(symbol: "arrow.clockwise", title: "Bild frei drehen")
     private let toolbar = UIScrollView()
     private let actions = UIStackView()
     private var buttons: [String: UIButton] = [:]
-    private var dragStart: (objects: [ImageObject], object: ImageObject, point: CGPoint, generation: Int)?
+    /// Actions shown as switched on (accent symbol instead of a backing).
+    private var activeActions = Set<String>()
+    /// Full width of the action bar (content of the scrollable bar).
+    private var barWidth: CGFloat = 316
+    private typealias DragStart = (objects: [ImageObject], object: ImageObject, point: CGPoint, generation: Int)
+    private var dragStart: DragStart?
     private var rotationSnap: Double?
     private let rotationFeedback = UISelectionFeedbackGenerator()
     private weak var cropController: UIViewController?
@@ -32,40 +80,55 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     /// Failed decodes per image (retry pause), and originals validation rejected.
     private var failures: [UUID: (count: Int, retryAt: CFTimeInterval)] = [:]
     private var broken = Set<UUID>()
+    /// Image dragged off its sheet onto another page of the continuous
+    /// notebook; the viewport shows it floating (`SelectionTransferHost`).
+    private var lift: SelectionLift?
+    private var liftedID: UUID? { lift?.objects.images.first?.id }
+    /// Complete committed content of this page (expected state of a transfer).
+    var pageContent: (() -> PageContent?)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear; isOpaque = false; contentMode = .redraw; clipsToBounds = true
         liveLayer.contentsGravity = .resize; liveLayer.isHidden = true; layer.addSublayer(liveLayer)
-        outline.fillColor = UIColor.clear.cgColor; outline.strokeColor = UIColor.systemBlue.cgColor
-        outline.lineWidth = 1.5; layer.addSublayer(outline)
+        for (line, color) in [(outlineHalo, UIColor.notyShade.withAlphaComponent(0.28)), (outline, .notyAccent)] {
+            line.fillColor = UIColor.clear.cgColor; line.strokeColor = color.cgColor
+            line.lineJoin = .round; layer.addSublayer(line)
+        }
         moveGesture.delegate = self; moveGesture.maximumNumberOfTouches = 1
         addGestureRecognizer(moveGesture)
         let tap = UITapGestureRecognizer(target: self, action: #selector(selectImage(_:)))
         tap.delegate = self; addGestureRecognizer(tap)
-        for (handle, symbol, title, selector) in [
-            (resize, "arrow.up.left.and.arrow.down.right", "Bild proportional skalieren", #selector(resizeImage(_:))),
-            (rotate, "arrow.clockwise", "Bild frei drehen", #selector(rotateImage(_:)))
-        ] {
-            handle.setImage(UIImage(systemName: symbol), for: .normal)
-            handle.backgroundColor = .systemBlue; handle.tintColor = .white; handle.layer.cornerRadius = 22
-            handle.accessibilityLabel = title
+        for (handle, selector) in [(resize, #selector(resizeImage(_:))), (rotate, #selector(rotateImage(_:)))] {
             let gesture = UIPanGestureRecognizer(target: self, action: selector); gesture.maximumNumberOfTouches = 1
             gesture.delegate = ScrollPanPriority.shared
             handle.addGestureRecognizer(gesture); addSubview(handle)
         }
-        actions.axis = .horizontal; actions.spacing = 4
-        toolbar.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.96)
-        toolbar.layer.cornerRadius = 10; toolbar.showsHorizontalScrollIndicator = true
+        // Dark noty bar like the lasso action bar and the text format bar:
+        // explicitly dark (the worksheet forces light), hairline contour,
+        // white symbols in 44-pt targets, subtle group dividers, delete in red,
+        // a switched-on action in the accent (no backing box).
+        actions.axis = .horizontal; actions.spacing = 4; actions.alignment = .center
+        actions.accessibilityContainerType = .semanticGroup; actions.accessibilityLabel = "Bildaktionen"
+        toolbar.overrideUserInterfaceStyle = .dark
+        toolbar.backgroundColor = UIColor(white: 0.13, alpha: 0.98)
+        toolbar.layer.cornerRadius = 26; toolbar.layer.cornerCurve = .continuous
+        toolbar.layer.borderWidth = 0.5; toolbar.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
+        toolbar.showsHorizontalScrollIndicator = true; toolbar.indicatorStyle = .white
         toolbar.addSubview(actions); addSubview(toolbar)
         action("crop", title: "Zuschneiden", symbol: "crop") { [weak self] in self?.openCrop() }
-        action("turn", title: "Auf nächsten 90°-Winkel drehen", symbol: "rotate.right") { [weak self] in
+        action("turn", title: "Um 90° drehen", symbol: "rotate.right") { [weak self] in
             self?.edit { object in object.rotation = ImageObject.nextRightAngle(after: object.rotation) }
         }
+        divider()
         action("back", title: "Bild nach hinten", symbol: "square.3.layers.3d.bottom.filled") { [weak self] in self?.reorder(front: false) }
         action("front", title: "Bild nach vorne", symbol: "square.3.layers.3d.top.filled") { [weak self] in self?.reorder(front: true) }
-        action("lock", title: "Bild sperren oder entsperren", symbol: "lock.open") { [weak self] in self?.edit(allowLocked: true) { $0.locked.toggle() } }
-        action("delete", title: "Bild löschen", symbol: "trash") { [weak self] in self?.deleteSelected() }
+        divider()
+        action("lock", title: "Bild sperren", symbol: "lock.open") { [weak self] in self?.edit(allowLocked: true) { $0.locked.toggle() } }
+        divider()
+        action("delete", title: "Bild löschen", symbol: "trash", color: .systemRed) { [weak self] in self?.deleteSelected() }
+        let items = actions.arrangedSubviews
+        barWidth = items.reduce(8) { $0 + ($1 is UIButton ? 44 : 1) } + CGFloat(items.count - 1) * actions.spacing
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -94,7 +157,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         isUserInteractionEnabled = active
         if !active { dragStart = nil; rotationSnap = nil; cropController?.dismiss(animated: false); cropController = nil }
         if !objects.contains(where: { $0.id == selectedID }) { selectedID = nil }
-        if dragStart == nil { endLive() }
+        if dragStart == nil { endLive(); endLift() }
         if reset { failures.removeAll(); broken.removeAll() }
         refresh()
     }
@@ -111,6 +174,16 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     func adoptCallbacks(onChange: @escaping ([ImageObject]) -> Void, onError: @escaping (String) -> Void) {
         self.onChange = onChange; self.onError = onError
     }
+    /// A cross-page transfer was committed atomically by the notebook (one
+    /// undo step for both pages) before SwiftUI publishes it. `id`: the moved
+    /// image on the target page, selected so it can be dragged on at once.
+    func adoptTransfer(_ incoming: [ImageObject], selecting id: UUID?) {
+        endLift(); dragStart = nil; rotationSnap = nil; endLive()
+        objects = incoming
+        if let id { selectedID = id }
+        if !objects.contains(where: { $0.id == selectedID }) { selectedID = nil }
+        refresh()
+    }
 
     /// Image drags win over notebook scrolling (handles: `ScrollPanPriority`).
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
@@ -121,7 +194,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         guard let context = UIGraphicsGetCurrentContext() else { return }
         let zoom = 1 / controlScale
         let screenScale = window?.screen.scale ?? 2
-        for object in objects where object.id != liveID {
+        for object in objects where object.id != liveID && object.id != liftedID {
             guard displayBounds(object).intersects(rect) else { continue }
             // Decoding a camera original takes long: never while drawing. Until
             // the rendition is ready, a cached one of another size or a neutral
@@ -221,21 +294,23 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         path.apply(CGAffineTransform(rotationAngle: object.rotation * .pi / 180))
         path.apply(CGAffineTransform(translationX: object.x + object.width / 2 + pageLayout.contentOrigin.x,
                                    y: object.y + object.height / 2 + pageLayout.contentOrigin.y))
-        outline.path = path.cgPath
         let scale = controlScale
-        outline.lineWidth = 1.5 * scale
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        outline.path = path.cgPath; outlineHalo.path = outline.path
+        outline.lineWidth = 2 * scale; outlineHalo.lineWidth = 4 * scale
+        CATransaction.commit()
         placeHandle(resize, at: CGPoint(x: rect.maxX, y: rect.maxY), scale: scale)
         placeHandle(rotate, at: CGPoint(x: rect.maxX, y: rect.minY), scale: scale)
-        rotate.backgroundColor = rotationSnap == nil ? .systemBlue : .systemTeal
-        let width = min(max(44, bounds.width / scale - 8), 316)
+        rotate.snapped = rotationSnap != nil
+        let width = min(max(44, bounds.width / scale - 8), barWidth)
         let outerWidth = width * scale, outerHeight = 52 * scale
         let y = rect.maxY + 12 * scale + outerHeight <= bounds.maxY ? rect.maxY + 12 * scale : max(bounds.minY, rect.minY - 12 * scale - outerHeight)
         toolbar.bounds.size = CGSize(width: width, height: 52)
         toolbar.transform = CGAffineTransform(scaleX: scale, y: scale)
         toolbar.center = CGPoint(x: min(max(bounds.minX + outerWidth / 2, rect.midX), max(bounds.minX + outerWidth / 2, bounds.maxX - outerWidth / 2)),
                                  y: y + outerHeight / 2)
-        actions.frame = CGRect(x: 4, y: 4, width: 308, height: 44)
-        toolbar.contentSize = CGSize(width: 316, height: 52)
+        actions.frame = CGRect(x: 4, y: 4, width: barWidth - 8, height: 44)
+        toolbar.contentSize = CGSize(width: barWidth, height: 52)
     }
 
     private var controlScale: CGFloat {
@@ -243,7 +318,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         let start = convert(CGPoint.zero, to: window), end = convert(CGPoint(x: 100, y: 0), to: window)
         return 1 / max(0.01, hypot(end.x - start.x, end.y - start.y) / 100)
     }
-    private func placeHandle(_ handle: UIButton, at center: CGPoint, scale: CGFloat) {
+    private func placeHandle(_ handle: UIView, at center: CGPoint, scale: CGFloat) {
         let half = 22 * scale
         handle.bounds = CGRect(x: 0, y: 0, width: 44, height: 44)
         handle.transform = CGAffineTransform(scaleX: scale, y: scale)
@@ -258,23 +333,47 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     /// `redraw`: false while `liveLayer` shows a drag (controls only).
     private func refresh(redraw: Bool = true) {
         isHidden = objects.isEmpty
-        let visible = active && selected != nil
-        outline.isHidden = !visible; toolbar.isHidden = !visible
+        let visible = active && selected != nil && lift == nil
+        outline.isHidden = !visible; outlineHalo.isHidden = !visible; toolbar.isHidden = !visible
         resize.isHidden = !visible || selected?.locked == true; rotate.isHidden = resize.isHidden
         for (key, button) in buttons { button.isEnabled = key == "lock" || selected?.locked == false }
-        buttons["lock"]?.setImage(UIImage(systemName: selected?.locked == true ? "lock.fill" : "lock.open"), for: .normal)
-        buttons["lock"]?.accessibilityLabel = selected?.locked == true ? "Bild entsperren" : "Bild sperren"
+        if let lock = buttons["lock"] {
+            let locked = selected?.locked == true
+            lock.configuration?.image = UIImage(systemName: locked ? "lock.fill" : "lock.open")
+            if locked { activeActions.insert("lock") } else { activeActions.remove("lock") }
+            lock.setNeedsUpdateConfiguration()
+            lock.accessibilityLabel = locked ? "Bild entsperren" : "Bild sperren"; lock.toolTip = lock.accessibilityLabel
+            lock.accessibilityValue = locked ? "Gesperrt" : nil
+        }
         if redraw { setNeedsDisplay() }
         setNeedsLayout()
     }
 
-    private func action(_ key: String, title: String, symbol: String, run: @escaping () -> Void) {
+    private func action(_ key: String, title: String, symbol: String, color: UIColor = .white, run: @escaping () -> Void) {
         let button = UIButton(type: .system)
-        button.setImage(UIImage(systemName: symbol), for: .normal)
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: symbol)
+        config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+        config.baseForegroundColor = color
+        button.configuration = config
+        // Disabled (locked image): clearly dimmed on the dark bar. Switched on
+        // (locked): the symbol takes the accent like a selected tool.
+        button.configurationUpdateHandler = { [weak self] button in
+            let on = self?.activeActions.contains(key) == true
+            button.configuration?.baseForegroundColor = !button.isEnabled ? UIColor.white.withAlphaComponent(0.28) : on ? .notyAccent : color
+        }
         button.accessibilityLabel = title; button.toolTip = title
         button.addAction(UIAction { _ in run() }, for: .touchUpInside)
         actions.addArrangedSubview(button); buttons[key] = button
-        button.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        button.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+    }
+    private func divider() {
+        let line = UIView(); line.backgroundColor = UIColor.white.withAlphaComponent(0.14)
+        line.isUserInteractionEnabled = false; line.isAccessibilityElement = false
+        line.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        line.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        actions.addArrangedSubview(line)
     }
 
     private func hitObject(_ point: CGPoint) -> ImageObject? {
@@ -288,6 +387,10 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         touch.view === self && active
+    }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { endLift() }
     }
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === moveGesture else { return active }
@@ -313,10 +416,14 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         guard let start = dragStart, start.generation == generation,
               let index = objects.firstIndex(where: { $0.id == start.object.id }) else { return }
         if pan.state == .cancelled || pan.state == .failed {
-            objects = start.objects; dragStart = nil; rotationSnap = nil; endLive(); refresh(); onChange?(objects); return
+            objects = start.objects; dragStart = nil; rotationSnap = nil; endLive(); endLift(); refresh(); onChange?(objects); return
         }
         var object = start.object
         let delta = pan.translation(in: self)
+        if kind == 0, updateLift(pan, start: start) {
+            if pan.state == .ended { drop(pan, start: start, index: index) }
+            return
+        }
         if kind == 0 { object.x += delta.x; object.y += delta.y }
         else if kind == 1 {
             let distance = max(1, hypot(start.point.x - displayBounds(object).midX, start.point.y - displayBounds(object).midY))
@@ -341,6 +448,79 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         if ended { dragStart = nil; rotationSnap = nil; endLive() } else { redraw = showLive(objects[index]) }
         refresh(redraw: redraw)
         if ended { onChange?(objects) }
+    }
+
+    /// Over another page the dragged image lifts off its sheet and follows
+    /// the touch above all pages (like a lasso selection); back over its own
+    /// sheet it returns to the clamped in-page move. True while lifted.
+    private func updateLift(_ pan: UIPanGestureRecognizer, start: DragStart) -> Bool {
+        guard let host = transferHost, let pageID else { return false }
+        if CGRect(origin: .zero, size: pageLayout.canvas.cgSize).contains(pan.location(in: self)) {
+            if lift != nil { endLift(); refresh() }
+            return false
+        }
+        if lift == nil {
+            // Only over another page: beside the pages the image stays clamped as before.
+            guard let target = host.transferTarget(for: pan), target != pageID,
+                  let made = makeLift(start, touch: pan) else { return false }
+            lift = made; endLive()
+            objects = start.objects
+            refresh()
+        }
+        guard let lift else { return false }
+        host.floatSelection(lift, gesture: pan)
+        return true
+    }
+    private func makeLift(_ start: DragStart,
+                          touch pan: UIPanGestureRecognizer) -> SelectionLift? {
+        // The expected state must be exactly the committed page; otherwise
+        // the model would reject the transfer as a conflict anyway.
+        guard let pageID, let content = pageContent?(), content.images == start.objects, !start.object.locked else { return nil }
+        let object = start.object
+        var remainder = content; remainder.images.removeAll { $0.id == object.id }
+        // Touch-down point (the pan began after a short movement).
+        let location = pan.location(in: self), translation = pan.translation(in: self)
+        let grab = CGPoint(x: location.x - translation.x - pageLayout.contentOrigin.x,
+                           y: location.y - translation.y - pageLayout.contentOrigin.y)
+        let zoom = 1 / controlScale, screenScale = window?.screen.scale ?? 2
+        let limit = Self.rendition(object, zoom: zoom, screenScale: screenScale)
+        let rendition = ImageRendering.cached(object, limit: limit) ?? ImageRendering.anyCached(object, near: limit)
+        let snapshot = SelectionTransfer.snapshot(image: object, rendition: rendition, pixelScale: zoom * screenScale)
+        return SelectionLift(pageID: pageID, content: content, remainder: remainder, ink: [],
+            objects: MovedObjects(images: [object]), frame: object.rotatedBounds.cgRect, start: grab, snapshot: snapshot)
+    }
+    /// Released while lifted: over another page an atomic transfer (or, if it
+    /// is refused, the image stays where it was with a message); in a gap or
+    /// beside the pages the clamped in-page move is committed as before.
+    private func drop(_ pan: UIPanGestureRecognizer, start: DragStart, index: Int) {
+        guard let lifted = lift else { return }
+        let host = transferHost
+        lift = nil; dragStart = nil; rotationSnap = nil
+        host?.hideFloatingSelection()
+        if let host, let target = host.transferTarget(for: pan), target != lifted.pageID {
+            // Success: the sheet already installed the new state (`adoptTransfer`).
+            if !host.dropSelection(lifted, gesture: pan), generation == start.generation { objects = start.objects }
+        } else if generation == start.generation, objects.indices.contains(index) {
+            var object = start.object
+            let delta = pan.translation(in: self)
+            object.x += delta.x; object.y += delta.y
+            objects[index] = object.fitted(in: limits)
+            if objects != start.objects { onChange?(objects) }
+        }
+        setNeedsDisplay(); refresh()
+    }
+    private func endLift() {
+        guard lift != nil else { return }
+        lift = nil; transferHost?.hideFloatingSelection()
+        setNeedsDisplay()
+    }
+    private var transferHost: SelectionTransferHost? {
+        var view = superview
+        while let current = view {
+            if let host = current as? SelectionTransferHost { return host }
+            view = current.superview
+        }
+        return nil
     }
 
     private static func angle(_ degrees: Double) -> Double {

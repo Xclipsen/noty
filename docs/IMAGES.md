@@ -1,5 +1,65 @@
 # Bilder und Screenshots – Build 19
 
+## Bilder über Seiten ziehen – 20.10.2026
+
+Nutzer: „beim bild darf ich leider nicht über seiten ziehen fix das bitte“. Stand: **implementiert und erfolgreich gebaut** (`xtool dev build`), **nicht installiert, am iPad ungeprüft**.
+
+- Bildwerkzeug, fortlaufendes Heft: Wird ein ungesperrtes Bild über eine andere Seite gezogen, löst es sich von seinem Blatt und folgt dem Finger als schwebende Vorschau über allen Seiten, wie die Lasso-Auswahl (`SelectionTransferHost`, gleiche Vorschau, Randautoscroll, Pencil-Pro-Tick beim Seitenwechsel). Zurück über der eigenen Seite gilt wieder das bisherige geklemmte Verschieben. Neben den Seiten oder im Spalt zwischen ihnen bleibt es beim bisherigen Klemmen; Loslassen dort übernimmt die geklemmte Position wie vorher.
+- Loslassen über einer anderen Seite: eine atomare Änderung beider Seiten über `EditorModel.replaceContents` (ein Undo-Schritt). Gleiche Bild-ID, unveränderte Originalbytes, Zuschnitt, Drehung und Sperrflag; Position mit `CrossPageMove` in kanonische Zielkoordinaten umgerechnet (Seitenabstand, Schreibplatz/negative Ränder, Breitenangleichung: gleiche Bildschirmgröße). Danach mit `CrossPageTransfer.place` vollständig in die Schreibfläche der Zielseite geschoben, nie abgeschnitten oder verkleinert. Ist es größer als die Zielfläche, bleibt es mit Meldung auf der Quellseite. Auf der Zielseite bleibt das Bild ausgewählt.
+- Zielseite mit 50 Bildern: nichts wird verschoben, Meldung „Auf der Zielseite sind schon 50 Bilder (Höchstzahl). Das Bild bleibt auf seiner Seite.“ Dieselbe Prüfung gilt jetzt auch für Lasso-Übertragungen (bisher allgemeiner Validierungsfehler).
+- Reserve-Seite am Heftende: wie beim Lasso; sie wird beim Ablegen angelegt (`transferContents`/`materializeDraft`).
+- Abbruch: Seiten-/Restore-/Generationswechsel, Werkzeugwechsel, fremde Modelländerung oder Gestenabbruch beenden die Vorschau ohne Änderung; die Übertragung prüft `pageContentGeneration`, den erwarteten Inhalt beider Seiten und die Seiten-IDs der Blätter wie beim Lasso.
+- Blättermodus (eine Seite sichtbar) und Einzelseiteneditor: kein Ziehen über Seiten, Verhalten unverändert.
+- Nachweise: Core-Tests für Zielkoordinaten, Verschieben an der Kante, Übergröße, volle Zielseite und atomaren Austausch mit Undo-Umkehrung. Ziehgefühl, Vorschau, Undo am Gerät, Reserve-Seite, gedrehte/zugeschnittene Bilder, unterschiedliche Seitenbreiten und Zoom sind **ungeprüft**.
+
+## Ergänzung nach Build 51 – große Bilder werden verkleinert
+
+Nutzer zu Build 51: „Bilder, die über 20 MB sind, sollen komprimiert werden und trotzdem importiert werden können.“ Das ist eine bewusste Ausnahme von der Regel „Original unverändert“: Sie greift nur, wenn das Original nicht passt.
+
+- **Passt das Bild,** bleibt es Byte für Byte erhalten (HEIC bleibt HEIC).
+- **Passt es nicht, wird es neu kodiert** (`ImageCompression`). Seit Build 53 gilt beim Import höchstens 5 MB je Bild (Nutzer: Ruckeln nach zwei 20-MB-Bildern). Neu kodiert wird bei:
+  - mehr als 5 MB (bis Build 52: 20 MB)
+  - mehr als 200 Megapixeln
+  - mehr Bytes, als im Bildbudget des Notizbuchs (40 MB) noch frei ist
+- **Kodierung:**
+  - Grundlage ist ein ImageIO-Vorschaubild mit eingerechneter Ausrichtung, längste Seite höchstens 4096 px.
+  - Deckende Bilder werden JPEG (Qualität ab 0,85, dann bis 0,65), Bilder mit Transparenz PNG.
+  - Passt es dann noch nicht, wird die Kantenlänge schrittweise verkleinert.
+- **Grenzen:**
+  - Gelesen werden Quellen bis 250 MB.
+  - Bleiben im Notizbuch weniger als 0,3 MB frei, erscheint wie bisher die Meldung „Notizbuch voll“.
+- **Hinweis:** Nach dem Einfügen erscheint unten links „Bild verkleinert eingefügt (alt → neu)“.
+- **Prüfung:** Core-Validierung und Python-Prüfer bleiben unverändert (20 MB/200 MP je gespeichertem Bild). Am iPad ungeprüft.
+
+## Ergänzung nach Build 50 – Foto-Import mit Rückfallwegen
+
+Nutzer zu Build 50 (Screenshot): Auch Build 50 lehnte ein iPhone-Foto ab, mit der Systemmeldung „ImportedStillImage kann nicht importiert werden … keine kompatiblen Darstellungen“. Die Übergabe über die konkreten Standbildtypen passte also nicht zu dem, was die Fotomediathek für dieses Foto anbot. Die genaue Typliste des Fotos ist unbekannt.
+
+`ImageImport.photo` versucht jetzt nacheinander drei Wege:
+1. konkrete Standbildtypen als Datei
+2. allgemeines `.image` als Datei
+3. die reinen Bytes (`Data`)
+
+Beim dritten Weg werden nur Standbilder bis 20 MB angenommen; ein Video wird abgelehnt. Eigene Fehler (Größe, Video) brechen sofort ab. Erst wenn alle drei Wege scheitern, erscheint die Meldung mit dem ersten Systemfehler. Am iPad ungeprüft.
+
+## Ergänzung nach Build 49 – iPhone-Fotos (HEIC/Live Photos) und dunkle Bildleiste
+
+Nutzerrückmeldung zu Build 49: „kann keine importen die ich auf meinem iphone gemacht habe — screenshots gehen“ und „dass die leiste vom anpassen des bildes in der noty theme ist“.
+
+**Wahrscheinliche Ursache (aus dem Code, am Gerät nicht reproduziert):** Der Fotowähler lud über einen einzigen `FileRepresentation(importedContentType: .image)` (`ImageImportModel.swift`, Zeile 12 in Build 49). Mit der iPhone-Kamera aufgenommene Fotos sind standardmäßig Live Photos und bieten neben dem HEIC-/JPEG-Foto ein Paket aus Foto und Video an. Die allgemeine `.image`-Anfrage kann dieses Paket statt des Fotos erhalten; `ImageImport.read` öffnete es als Datei (Verzeichnis) bzw. ImageIO erkannte kein Bild. Screenshots haben kein solches Paket und funktionierten deshalb. HEIC selbst wird von ImageIO gelesen; Formatgrenzen (20 MB, 200 MP) waren bei normalen iPhone-Fotos nicht die Ursache.
+
+**Korrektur:** Fotos werden zuerst über konkrete Standbildtypen geladen (HEIC, HEIF, JPEG, PNG, TIFF, GIF, WebP, BMP, RAW), die nie zum Live-Photo-Paket passen; nur Objekte ohne einen dieser Typen nutzen den allgemeinen `.image`-Weg. Kommt dennoch ein Paket an, wird darin das Foto anhand der Dateisignatur (nicht des Namens) gewählt, das Video nie. `preferredItemEncoding: .current` bleibt: keine Umkodierung. iCloud-Originale lädt das System während der Übergabe; Übergabefehler erscheinen als verständliche Meldung samt Systemdetail, fehlende Standbilder nennen die angebotenen Formate (Diagnose für den nächsten Gerätebericht).
+
+**Entscheidung: HEIC bleibt Original.** Editor, Seitenvorschau, PDF-Export und Validierung dekodieren ausschließlich über ImageIO (`ImageImport.thumbnail`), das HEIC/HEIF auf allen unterstützten iPadOS-Versionen liest; das PDF enthält wie bisher nur das gerasterte Bild. Backups und der Pythonprüfer behandeln Originalbytes formatneutral. Eine JPEG-Konvertierung würde Originalbytes ersetzen (AGENTS: Bildoriginale erhalten) und ist daher nicht vorgesehen. Auch für zu große Fotos gibt es **keine** stille Verkleinerung.
+
+**Signaturen und Grenzen:** `ImageFileFormat` (Core) erkennt PNG, JPEG, GIF, TIFF/DNG, WebP, BMP, HEIF über die `ftyp`-Marken `heic`, `heix`, `heim`, `heis`, `hevc`, `hevx`, `hevm`, `hevs`, `mif1`, `mif2`, `msf1`, AVIF sowie QuickTime/MP4-Videos. Die Erkennung dient nur dem Import (Foto im Live-Photo-Paket, Video mit klarer Meldung ablehnen). Gespeicherte Hefte werden bewusst **nicht** auf diese Formate beschränkt, weil frühere Importe alles ImageIO-Lesbare angenommen haben; Swift-Validierung und Pythonprüfer bleiben daher unverändert gleich. Die dokumentierten Grenzen liegen jetzt als `ImageLimits` in Core und werden vor dem Dekodieren geprüft: über 20 MB (z. B. ProRAW), über 200 Megapixel, 50 Bilder je Seite und 40 MB Bildoriginale je Notizbuch einschließlich Seitenpapierkorb und duplizierter Seiten erhalten je eine eigene deutsche Meldung mit belegter und benötigter Größe.
+
+**Zwischenablage:** Die Reihenfolge der Zwischenablage selbst (Originalkodierung zuerst) entscheidet, nicht mehr fest PNG zuerst. Eine kopierte Kamerafoto-Neukodierung als großes PNG verhindert das Einfügen nicht mehr, wenn das HEIC/JPEG innerhalb der Grenze liegt; es wird nichts neu kodiert.
+
+**Bildleiste im noty-Stil:** Die Aktionsleiste des ausgewählten Bildes ist ausdrücklich dunkel wie die Lasso-Aktionsleiste (Build 31) und die Textformatleiste: dunkle Fläche mit feiner heller Kontur, weiße SF Symbols in 44-pt-Trefferflächen, dezente Gruppentrenner (Zuschneiden/90° | hinten/vorne | Sperre | Löschen), Löschen rot, gesperrter Zustand mit dezentem Akzent, deaktivierte Aktionen deutlich gedimmt. Deutsche Bedienungshilfen-Bezeichnungen, Gruppe „Bildaktionen“. Funktionen, Reihenfolge, Positionierung und Zoomkompensation unverändert.
+
+**Nachweise:** implementiert; 502 Core-Tests (davon 6 neue in `ImageImportPolicyTests`: echte libheif-/ffmpeg-Kopfbytes, Live-Photo-Auswahl, Grenzen einschließlich Papierkorb) und Host-Roundtrip mit unabhängigen Prüfern bestanden; iPad-SDK-Build ohne Fehler und Warnungen. **Nicht installiert, am iPad ungeprüft.** Gebündelter Gerätetest: ein Live Photo, ein Nicht-Live-HEIC, ein nur in iCloud liegendes Foto und ein Screenshot über **Bild +** einfügen; ein über Universal Clipboard kopiertes iPhone-Foto einfügen; Fehlermeldung bei vollem Notizbuch (40 MB) ablesen; Bildleiste auf heller und dunkler Seite, gesperrt/entsperrt und bei starkem Zoom ansehen; PDF-Export mit HEIC-Bild.
+
 ## Ergänzung Build 26 – Drehmagnet und bedienbare Griffe
 
 Beim freien Drehen Eintritt bis 8° an 0/90/180/270°, Ziel bis 12° halten; außerhalb frei. Drehgriff zeigt das Einrasten farbig, Haptik einmal pro neuem Ziel. Knopf stellt den nächsten exakten Vierteldrehwinkel her, statt einen schiefen Ausgangswinkel mitzudrehen. Bildgriffe 44 pt und Bildaktionsleiste bleiben durch Kompensation von äußerem Zoom/Normalisierung in Bildschirmgröße bedienbar; Original und kanonische Objektparameter erhalten. Bildcache berücksichtigt effektiven Anzeigefaktor. Core-/SDK-Prüfungen bestanden; neue Dreh-/Zoom-/Hover-Bedienung noch ungeprüft, [TESTING](TESTING.md).
