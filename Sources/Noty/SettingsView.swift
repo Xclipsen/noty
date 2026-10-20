@@ -246,7 +246,8 @@ private struct ToolSettingsPage: View {
         Form {
             Section {
                 Toggle("Autostift für neue Striche", isOn: Binding(get: { toolbox.preferences.autoPen ?? false }, set: { toolbox.preferences.setAutomaticInk($0, for: .pen) }))
-                Toggle("Form- und Linienerkennung nach Halten", isOn: Binding(get: { toolbox.preferences.recognizeShapes ?? true }, set: { toolbox.preferences.recognizeShapes = $0 }))
+                Toggle("Stift/Bleistift: Formen nach Halten erkennen", isOn: Binding(get: { toolbox.preferences.recognizeShapes ?? true }, set: { toolbox.preferences.recognizeShapes = $0 }))
+                Toggle("Marker: Linie nach Halten begradigen", isOn: Binding(get: { toolbox.preferences.markerHoldStraighten ?? true }, set: { toolbox.preferences.markerHoldStraighten = $0 }))
                 Picker("Markerspitze", selection: Binding(get: { toolbox.preferences.effectiveMarkerTip }, set: { toolbox.preferences.markerTip = $0 })) {
                     Text("Rund").tag(MarkerTip.round); Text("Keil").tag(MarkerTip.chisel)
                 }

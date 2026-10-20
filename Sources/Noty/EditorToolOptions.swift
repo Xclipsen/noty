@@ -83,8 +83,12 @@ struct EditorToolOptions: View {
                     preferences.markerStraight = !(preferences.markerStraight ?? false)
                 }
             }
-            if tool.isInk {
-                option(tool == .marker ? "Linie nach Halten begradigen" : "Nach Halten begradigen und Formen erkennen", symbol: "wand.and.stars", selected: recognizeShapes) { recognizeShapes.toggle() }
+            if tool == .marker {
+                option("Linie nach Halten begradigen", symbol: "wand.and.stars", selected: preferences.markerHoldStraighten ?? true) {
+                    preferences.markerHoldStraighten = !(preferences.markerHoldStraighten ?? true)
+                }
+            } else if tool.isInk {
+                option("Nach Halten begradigen und Formen erkennen", symbol: "wand.and.stars", selected: recognizeShapes) { recognizeShapes.toggle() }
             }
             if tool != .shape {
                 option("Als Lieblingsstift speichern", symbol: "star") {

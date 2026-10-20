@@ -25,6 +25,17 @@ final class MarkerTipTests: XCTestCase {
         XCTAssertEqual(ToolbarPreferences().effectiveMarkerTip, .round)
     }
 
+    /// Build 50: the highlighter's hold switch is its own key; pen shapes stay on.
+    func testMarkerHoldStraightenIsSeparateFromPenShapeRecognition() throws {
+        var value = try ToolbarPreferences.decode(build44)
+        XCTAssertNil(value.markerHoldStraighten); XCTAssertNil(value.recognizeShapes)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(value), as: UTF8.self).contains("markerHoldStraighten"))
+        value.markerHoldStraighten = false
+        let decoded = try ToolbarPreferences.decode(JSONEncoder().encode(value))
+        XCTAssertEqual(decoded.markerHoldStraighten, false)
+        XCTAssertNil(decoded.recognizeShapes)
+    }
+
     func testChiselTipKeepsTheNativeMarkerOpacityAndRoundTrips() throws {
         var value = try ToolbarPreferences.decode(build44)
         value.markerTip = .chisel

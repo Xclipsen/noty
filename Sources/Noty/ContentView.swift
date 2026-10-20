@@ -712,7 +712,7 @@ struct ContentView: View {
             width: preferences.inkWidth(for: tool) * page.inkWidthScale,
             enabled: canEdit, autoPen: preferences.automaticInk(for: tool),
             fingerDrawing: preferences.fingerDrawing, ruler: ruler, shapeOptions: shapeOptions, selectionFilter: selectionFilter, lassoMode: lassoMode,
-            recognizeShapes: recognizeShapes, markerStraight: preferences.markerStraight ?? false, markerTip: preferences.effectiveMarkerTip, scribbleErase: preferences.scribbleErase ?? true,
+            recognizeShapes: tool == .marker ? preferences.markerHoldStraighten ?? true : recognizeShapes, markerStraight: preferences.markerStraight ?? false, markerTip: preferences.effectiveMarkerTip, scribbleErase: preferences.scribbleErase ?? true,
             onPencilAction: { togglePencilEraser() },
             onPencilSqueeze: { handlePencilSqueeze($0) },
             onInteraction: { id, active in
