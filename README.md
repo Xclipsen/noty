@@ -5,6 +5,8 @@ Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nut
 
 ## Aktueller Stand
 
+Build 46.2 (Branch `ui/menu-polish`): UI-Feinschliff (aufgeräumtes Optionenmenü, gruppierte Seiten-/Bibliotheksmenüs, ruhiger Statushinweis, Werkzeug-Icons und App-Icon nach Nutzerentwurf) und **Schreibplatz für Papierseiten** rechts/unten mit nahtlos weiterlaufenden Linien (Notebook-Schema 10). 449 Core-Tests, Host-Roundtrip, signierter SDK-Build erfolgreich; Installation und iPad-Test ausstehend. [UI](docs/UI-POLISH.md) · [Schreibplatz](docs/PAGE-ADJUST.md).
+
 Build 46 installiert (3 Hefte/17 Dateien unverändert): Marker nur auf Schrifthöhe, Text beginnt an den Linien, kein Linksdrift beim Zeichnen, zweite Ansicht mit Auswahl-Fix, Anfasspunkten, Ziehvorschau und Trennlinie, runder Textmarker. 441 Core-Tests, Roundtrip; vom Nutzer am iPad bestätigt („passt alles“), Build 45 ebenso. [Details](docs/EDITOR-FEEDBACK-35.md).
 
 Build 45 (Feedback zu Build 44): Wortmodus scharf beim Zoomen, weniger Scrollen, Cursor nie unter Zurück-Pfeil/Leiste, links immer Zeilen und rechts freies Textfeld, Markerfarbe bleibt, Checkliste ausgerichtet; Undo auch für Papier-/Seitenänderungen und Seitenoperationen; Bleistift mit Autostift, Laser/Hand auf zweiter Leistenebene, Lasso-Vibration, Formen beim Halten skalieren, schnelleres Glasmenü; Bibliothek mit funktionierendem Ziehen und Einfügelinien. 426 Core-Tests, Host-Roundtrip, signierter Build erfolgreich, installiert (Bibliotheksindex danach bytegleich); am iPad ungeprüft. [Details](docs/EDITOR-FEEDBACK-35.md).

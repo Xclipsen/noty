@@ -97,6 +97,8 @@ extension Notebook {
                         page.paperColor = color
                         try Self.invertInk(of: &page, to: color, onlyMargins: false, recolorDrawing: recolorDrawing)
                     }
+                    // Writing space continues the sheet: same paper, same colour.
+                    if var margins = page.margins { margins.style = paper; margins.color = color; page.margins = margins }
                 } else if var margins = page.margins, margins.color != color {
                     margins.color = color; page.margins = margins
                     try Self.invertInk(of: &page, to: color, onlyMargins: true, recolorDrawing: recolorDrawing)

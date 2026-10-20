@@ -1,5 +1,19 @@
 # Designentscheidungen für noty
 
+## Schreibplatz für Papierseiten – 20.10.2026
+
+Nutzer: Normale Seiten sollen sich wie PDF-Seiten über „Schreibplatz hinzufügen“ erweitern lassen, vor allem nach **rechts**. Die Linien sollen in den neuen Platz übergehen, nicht abschneiden. Umgesetzt:
+- Papierseiten bekommen Platz nur rechts/unten, in Papierart und -farbe der Seite. Die Lineatur läuft nahtlos weiter, kein Inhalt verschiebt sich.
+- Startwert rechts 100 %; Geltung „Aktuelle Seite“ oder „Alle Papierseiten“.
+- Zugang über das Seitenmenü und das „…“ im Editor.
+- Notebook-Schema 10.
+
+Der erste Vorschlag „nur nach unten verlängern“ ist damit ersetzt. [Details](PAGE-ADJUST.md).
+
+## UI-Feinschliff: Menüs und Icons – 19.10.2026
+
+Nutzer: Das „…“-Menü im Editor erschlägt; einfaches Konzept, andere Menüs dürfen angepasst werden, Wirkung einer fertigen App. Eigene Entwürfe für App-Icon und Werkzeug-Icons, Anpassungen erlaubt. Umgesetzt: Optionenmenü mit Statusüberschrift und gruppierten Untermenüs (Teilen und exportieren, Ansicht), Kopf-Duplikate nur bei Platzmangel im Menü, Statushinweis nur bei Handlungsbedarf/kurz nach Exporten, gruppierte Seiten-/Seitenleistenmenüs mit bestätigter Reihenfolge, Bibliothek mit einem „Neu“-Menü, Einstellungen gruppiert, einheitlich „Notizbuch“. Neue Werkzeugglyphen und App-Icon nach Nutzerentwurf; Bleistift/Laser im selben Stil ergänzt. [Konzept, Details und Nachweise](UI-POLISH.md).
+
 ## Bleistift, Laserpointer, Pencil-Haptik – 19.10.2026
 
 Nutzerwunsch: Laserpointer mit mehreren Funktionen, echter Bleistift, Vibration des Pencils bei Lasso und Laserpointer. Technische Startwerte, reversibel:

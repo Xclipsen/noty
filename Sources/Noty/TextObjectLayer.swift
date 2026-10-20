@@ -374,6 +374,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             cropBox: .init(x: 0, y: 0, width: pageLayout.contentCanvas.width, height: pageLayout.contentCanvas.height), rotation: 0)
         page.margins = PageMargins(left: -limits.minX, right: limits.maxX - pageLayout.contentCanvas.width,
             top: -limits.minY, bottom: limits.maxY - pageLayout.contentCanvas.height)
+        // Writing space beside paper keeps the sheet's units (`writingSpaceExtendsPaper`).
+        if !hasPDF { page.paper = .blank }
         var region = page.writingRegion(at: canonical, hasPDF: hasPDF)
         // Click-and-type (Feedback 44): the left half of a writing region always
         // offers the flowing lines; from the middle rightwards a tap beside or

@@ -197,7 +197,7 @@ extension Notebook {
                     let mayUseDraft = after == next.pages.count && draftID.map { id in !next.pages.contains(where: { $0.id == id }) } == true
                     var page = next.writingDraft(id: mayUseDraft ? draftID! : UUID())
                     // A margin without a matching next margin continues onto a
-                    // normal writing page. Paper pages cannot have PDF margins.
+                    // normal writing page, beside a PDF as beside paper.
                     continuationRegion = .page
                     if continuationRegion == region, let previousPaper = next.pages[currentIndex].paper,
                        previousPaper != .legacyTest {

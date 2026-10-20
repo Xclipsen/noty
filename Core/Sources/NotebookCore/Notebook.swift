@@ -19,7 +19,7 @@ public struct Page: Codable, Equatable, Identifiable, Sendable {
 
 /// One worksheet; each PDF page has its own PencilKit drawing and fixed text box.
 public struct Notebook: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 9
+    public static let currentSchemaVersion = 10
     // Existing callers retain the legacy representation until a structural edit.
     public var schemaVersion: Int = 2
     public var id: UUID = UUID()
@@ -110,9 +110,17 @@ public struct Notebook: Codable, Equatable, Sendable {
                 guard page.paper == nil, let count = lookup[reference.sourceID],
                       page.paperColor == nil, (0..<count).contains(reference.pageIndex) else { throw StorageError.invalidDocument }
             } else {
-                guard page.margins == nil, let style = page.paper,
+                guard let style = page.paper,
                       style == .legacyTest ? page.geometry == nil : (schemaVersion >= 7 ? page.geometry != nil : page.geometry == PaperStyle.geometry) else {
                     throw StorageError.invalidDocument
+                }
+                // Schema 10: a paper sheet may grow right/down; the extra space is
+                // the same paper, so lines and colour continue without a seam.
+                if let margins = page.margins {
+                    guard schemaVersion >= 10, style != .legacyTest, margins.left == 0, margins.top == 0,
+                          margins.style == style, margins.color == (page.paperColor ?? .white) else {
+                        throw StorageError.invalidDocument
+                    }
                 }
             }
             if let margins = page.margins {

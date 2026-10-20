@@ -41,7 +41,7 @@ extension PageLayout {
     init(page: Page, source: CGPDFPage?) throws {
         let sourceGeometry = try source.map { try PDFPageGeometry($0) } ?? page.geometry ?? .testPaper
         if let stored = page.geometry, stored != sourceGeometry { throw StorageError.invalidDocument }
-        self.init(source: sourceGeometry, legacyA4: page.geometry == nil, margins: page.margins)
+        self.init(source: sourceGeometry, legacyA4: page.geometry == nil, margins: page.margins, extendsPaper: page.writingSpaceExtendsPaper)
     }
 
     var textFrame: CGRect {

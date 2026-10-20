@@ -88,16 +88,23 @@ public enum PageOperationError: Error, LocalizedError {
 extension Notebook {
     /// A whole import shares percentages, not the reference page's point values.
     /// The displayed crop dimensions include PDF rotation; legacy ink stays A4.
+    /// For a paper page the group (`wholeImport`) is every active paper sheet;
+    /// each keeps its own paper style and colour in the extra space.
     public func marginsByPage(_ margins: PageMargins, relativeTo id: UUID, wholeImport: Bool, standardPageUnits: Bool = false) throws -> [UUID: PageMargins] {
         try margins.validate()
         let document = try preparedForPageEditing()
-        guard let reference = document.pages.first(where: { $0.id == id }),
-              let sourceID = reference.pdfReference?.sourceID else { throw PageOperationError.missingPage }
+        guard let reference = document.pages.first(where: { $0.id == id }) else { throw PageOperationError.missingPage }
         let base = reference.geometry?.displaySize ?? .a4
-        let targets = document.pages.filter { wholeImport ? $0.pdfReference?.sourceID == sourceID : $0.id == id }
+        let targets: [Page]
+        if let sourceID = reference.pdfReference?.sourceID {
+            targets = document.pages.filter { wholeImport ? $0.pdfReference?.sourceID == sourceID : $0.id == id }
+        } else {
+            guard reference.writingSpaceExtendsPaper else { throw PageOperationError.missingPage }
+            targets = document.pages.filter { wholeImport ? $0.writingSpaceExtendsPaper : $0.id == id }
+        }
         return try Dictionary(uniqueKeysWithValues: targets.map { page in
             let value = page.id == id || standardPageUnits ? margins : try margins.scaled(from: base, to: page.geometry?.displaySize ?? .a4)
-            return (page.id, value)
+            return (page.id, try page.writingSpace(value))
         })
     }
 
@@ -217,9 +224,9 @@ extension Notebook {
            let current = pages.first(where: { $0.id == target }),
            current.pdfReference == entry.page.pdfReference, current.geometry == entry.page.geometry { return target }
         guard entry.reason == .marginReduction, let target = entry.previousPageID,
-              let reference = entry.page.pdfReference,
               let current = pages.first(where: { $0.id == target }),
-              current.pdfReference == reference, current.geometry == entry.page.geometry else { return nil }
+              entry.page.pdfReference != nil || (entry.page.writingSpaceExtendsPaper && current.writingSpaceExtendsPaper),
+              current.pdfReference == entry.page.pdfReference, current.geometry == entry.page.geometry else { return nil }
         return target
     }
 
@@ -265,12 +272,22 @@ extension Notebook {
         var next = try preparedForPageEditing()
         guard !pageIDs.isEmpty, Set(pageIDs).count == pageIDs.count else { throw PageOperationError.missingPage }
         for id in pageIDs {
-            guard let index = next.pages.firstIndex(where: { $0.id == id }), next.pages[index].pdfReference != nil else {
+            guard let index = next.pages.firstIndex(where: { $0.id == id }),
+                  next.pages[index].pdfReference != nil || next.pages[index].writingSpaceExtendsPaper else {
                 throw PageOperationError.missingPage
             }
-            next.pages[index].margins = margins.isEmpty ? nil : margins
+            let value = try next.pages[index].writingSpace(margins)
+            next.pages[index].margins = value.isEmpty ? nil : value
         }
+        next.raiseSchemaForPaperWritingSpace()
         try next.validate(); self = next
+    }
+
+    /// Writing space on paper needs schema 10: older builds lock such a
+    /// notebook instead of rejecting it into an older recovery copy.
+    mutating func raiseSchemaForPaperWritingSpace() {
+        let all = pages + (deletedPages ?? []).map(\.page)
+        if all.contains(where: { $0.writingSpaceExtendsPaper && $0.margins != nil }) { schemaVersion = max(10, schemaVersion) }
     }
 
     /// Complete pre-trim snapshots receive new IDs. Their previousPageID links
@@ -288,9 +305,9 @@ extension Notebook {
         guard (next.deletedPages?.count ?? 0) + trimmedDrawings.count <= 500 else { throw PageOperationError.trashLimit }
         for index in next.pages.indices {
             let id = next.pages[index].id
-            guard let margins = assignments[id] else { continue }
-            try margins.validate()
-            guard next.pages[index].pdfReference != nil else { throw PageOperationError.missingPage }
+            guard let requested = assignments[id] else { continue }
+            guard next.pages[index].pdfReference != nil || next.pages[index].writingSpaceExtendsPaper else { throw PageOperationError.missingPage }
+            let margins = try next.pages[index].writingSpace(requested)
             if let drawing = trimmedDrawings[id] {
                 let copy = next.pages[index].independentCopy()
                 let entry = DeletedPage(page: copy, originalIndex: index, deletedAt: Date(),
@@ -301,6 +318,7 @@ extension Notebook {
             }
             next.pages[index].margins = margins.isEmpty ? nil : margins
         }
+        next.raiseSchemaForPaperWritingSpace()
         try next.validate()
         self = next
     }

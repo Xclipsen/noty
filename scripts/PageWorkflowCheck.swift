@@ -64,6 +64,11 @@ struct PageWorkflowCheck {
         var continuation = TextBox(x: flowRect.x, y: flowRect.y, width: flowRect.width, height: flowRect.height, text: "Fortsetzung")
         continuation.flowID = textObjects[1].flowID; continuation.flowRegion = .page
         try document.replaceTextBoxes([continuation], pageID: document.pages[1].id)
+        // Schema 10: the paper sheet grows right/down in its own paper (seamless lines).
+        try document.applyMargins(PageMargins(right: 300, bottom: 120, style: .blank, color: .white), pageIDs: [document.pages[1].id])
+        guard document.schemaVersion == 10,
+              document.pages[1].margins == PageMargins(right: 300, bottom: 120, style: .grid, color: .dark),
+              document.pages[1].writingCoordinateScale == 1 else { throw StorageError.invalidDocument }
         let imageData = try Data(contentsOf: fixture.deletingLastPathComponent().appendingPathComponent("Bildobjekt.png"))
         var image = ImageObject(data: imageData, pixelWidth: 64, pixelHeight: 48,
             x: -60, y: 20, width: 120, height: 90, rotation: 37, locked: true)

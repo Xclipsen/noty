@@ -53,7 +53,7 @@ def appearance(value):
 
 def validate_notebook(document):
     version = document["schemaVersion"]
-    assert version in (1, 2, 3, 4, 5, 6, 7, 8, 9), "Unsupported notebook schema"
+    assert version in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10), "Unsupported notebook schema"
     UUID(document["id"])
     if document.get("appearance") is not None:
         assert version >= 7
@@ -205,8 +205,13 @@ def validate_notebook(document):
             assert page.get("paper") is None and page.get("paperColor") is None and ref["sourceID"] in lookup
             assert type(ref["pageIndex"]) is int and 0 <= ref["pageIndex"] < lookup[ref["sourceID"]]
         else:
-            assert page.get("margins") is None
             assert page.get("paper") in ("blank", "lined", "grid", "legacyTest")
+            if page.get("margins") is not None:
+                # Schema 10: paper grows right/down in its own paper (seamless lines).
+                margin = page["margins"]
+                assert version >= 10 and page["paper"] != "legacyTest", "Writing space beside paper needs schema 10"
+                assert margin["left"] == 0 and margin["top"] == 0, "Paper writing space only right/below"
+                assert margin["style"] == page["paper"] and margin["color"] == (page.get("paperColor") or "white")
             expected = None if page["paper"] == "legacyTest" else {"mediaBox": a4, "cropBox": a4, "rotation": 0}
             if version >= 7 and page["paper"] != "legacyTest":
                 assert page.get("geometry") is not None

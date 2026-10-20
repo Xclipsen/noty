@@ -12,7 +12,8 @@ struct PageMarginChange {
 @MainActor
 extension EditorModel {
     func prepareMarginChange(pageID: UUID, margins: PageMargins, wholeImport: Bool) throws -> PageMarginChange {
-        guard writable, !mutationsPaused, !busy, let target = notebook.pages.first(where: { $0.id == pageID }), sourcePage(for: target) != nil else {
+        guard writable, !mutationsPaused, !busy, let target = notebook.pages.first(where: { $0.id == pageID }),
+              sourcePage(for: target) != nil || target.writingSpaceExtendsPaper else {
             throw PageOperationError.missingPage
         }
         try margins.validate()
@@ -81,8 +82,15 @@ struct PageMarginsView: View {
         self.model = model; self.pageID = pageID
         let page = model.notebook.pages.first { $0.id == pageID }
         let size = page?.geometry?.displaySize ?? .a4
-        _margins = State(initialValue: page?.margins ?? .normalPageBesidePDF(size))
+        // Paper grows by a full page width to the right by default, like the
+        // PDF writing space; it always continues the sheet's own paper.
+        let start: PageMargins = if let page, page.writingSpaceExtendsPaper {
+            PageMargins(right: size.width, style: page.paper ?? .blank, color: page.paperColor ?? .white)
+        } else { .normalPageBesidePDF(size) }
+        _margins = State(initialValue: page?.margins ?? start)
     }
+    /// Paper pages extend only right and down, in their own paper (seamless lines).
+    private var extendsPaper: Bool { page?.writingSpaceExtendsPaper == true }
 
     private var page: Page? { model.notebook.pages.first { $0.id == pageID } }
     private var preview: Page? {
@@ -99,44 +107,30 @@ struct PageMarginsView: View {
                             PageThumbnail(page: preview, source: model.sourcePage(for: preview), cache: cache)
                                 .frame(maxWidth: .infinity).frame(height: 250)
                                 .clipped().allowsHitTesting(false)
-                                .accessibilityLabel("Vorschau der PDF mit zusätzlichem Schreibplatz")
-                            Text("Die PDF behält ihre Größe und Farben. Die Seite wird um die gewählten Ränder erweitert.")
+                                .accessibilityLabel("Vorschau der Seite mit zusätzlichem Schreibplatz")
+                            Text(extendsPaper
+                                 ? "Die Seite wird nach rechts oder unten verlängert. Linien und Papierfarbe laufen nahtlos weiter, vorhandene Inhalte bleiben, wo sie sind."
+                                 : "Die PDF behält ihre Größe und Farben. Die Seite wird um die gewählten Ränder erweitert.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Schreibränder").font(.headline)
-                        edge("Links", value: $margins.left, dimension: base.width)
+                        Text(extendsPaper ? "Zusätzlicher Platz" : "Schreibränder").font(.headline)
+                        if !extendsPaper { edge("Links", value: $margins.left, dimension: base.width) }
                         edge("Rechts", value: $margins.right, dimension: base.width)
-                        edge("Oben", value: $margins.top, dimension: base.height)
+                        if !extendsPaper { edge("Oben", value: $margins.top, dimension: base.height) }
                         edge("Unten", value: $margins.bottom, dimension: base.height)
                     }
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Papier im zusätzlichen Platz").font(.headline)
-                        VStack(alignment: .leading, spacing: 16) {
-                            Text("Papierart").font(.subheadline)
-                            Picker("Papierart", selection: $margins.style) {
-                                Text("Blanko").tag(PaperStyle.blank)
-                                Text("Liniert").tag(PaperStyle.lined)
-                                Text("Kariert").tag(PaperStyle.grid)
-                            }.pickerStyle(.segmented)
-                            Text("Papierfarbe").font(.subheadline)
-                            Picker("Papierfarbe", selection: $margins.color) {
-                                Text("Weiß").tag(PaperColor.white)
-                                Text("Dunkel").tag(PaperColor.dark)
-                            }.pickerStyle(.segmented)
-                        }
-                        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(white: 0.11), in: RoundedRectangle(cornerRadius: 16))
-                        .contentShape(Rectangle()).clipped()
-                    }
+                    if !extendsPaper { marginPaper }
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Anwenden auf").font(.headline)
                         Picker("Anwenden auf", selection: $wholeImport) {
                             Text("Aktuelle Seite").tag(false)
-                            Text("Dieser PDF-Import").tag(true)
+                            Text(extendsPaper ? "Alle Papierseiten" : "Dieser PDF-Import").tag(true)
                         }.pickerStyle(.segmented)
-                        Text("100 % ist so breit wie das PDF-Blatt. Bei einheitlicher Anzeige entspricht das einer normalen Seitenbreite. Gelöschte Seiten bleiben unverändert.")
+                        Text(extendsPaper
+                             ? "100 % ist so breit bzw. hoch wie die Seite. „Alle Papierseiten“ erweitert jede vorhandene Papierseite um denselben Anteil; neue Seiten bleiben normal. Gelöschte Seiten bleiben unverändert."
+                             : "100 % ist so breit wie das PDF-Blatt. Bei einheitlicher Anzeige entspricht das einer normalen Seitenbreite. Gelöschte Seiten bleiben unverändert.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(16).frame(maxWidth: .infinity, alignment: .leading)
@@ -147,7 +141,7 @@ struct PageMarginsView: View {
                 .frame(maxWidth: .infinity)
             }
             .background(Color(white: 0.055))
-            .navigationTitle("PDF-Schreibplatz")
+            .navigationTitle("Schreibplatz")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } }
@@ -176,6 +170,29 @@ struct PageMarginsView: View {
             } message: { Text(error ?? "") }
         }
         .preferredColorScheme(.dark)
+    }
+
+    /// Style and colour of the extra space beside a PDF (paper pages use their own).
+    private var marginPaper: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Papier im zusätzlichen Platz").font(.headline)
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Papierart").font(.subheadline)
+                Picker("Papierart", selection: $margins.style) {
+                    Text("Blanko").tag(PaperStyle.blank)
+                    Text("Liniert").tag(PaperStyle.lined)
+                    Text("Kariert").tag(PaperStyle.grid)
+                }.pickerStyle(.segmented)
+                Text("Papierfarbe").font(.subheadline)
+                Picker("Papierfarbe", selection: $margins.color) {
+                    Text("Weiß").tag(PaperColor.white)
+                    Text("Dunkel").tag(PaperColor.dark)
+                }.pickerStyle(.segmented)
+            }
+            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(white: 0.11), in: RoundedRectangle(cornerRadius: 16))
+            .contentShape(Rectangle()).clipped()
+        }
     }
 
     private func edge(_ title: String, value: Binding<Double>, dimension: Double) -> some View {
