@@ -136,9 +136,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private var pdfView: PDFView?
     private let pdfRaster = PDFSourceRasterView()
     private var pdfDocument: PDFDocument?
-    private let canvas = DrawingCanvasView()
+    let canvas = DrawingCanvasView()
     private let imageLayer = ImageObjectLayer()
-    private let shapeLayer = ShapeObjectLayer()
+    let shapeLayer = ShapeObjectLayer()
     private let objectLayer = ObjectEditingLayer()
     private let textLayer = TextObjectLayer()
     private let hitHighlight = UIView()
@@ -146,13 +146,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private var sourceDarkCalculated = false
     private var automaticPen = false
     private var darkMargin = false
-    private var configuredWidth: CGFloat = 2
+    var configuredWidth: CGFloat = 2
     private var markerStraight = false
-    private var markerTip = MarkerTip.round
+    var markerTip = MarkerTip.round
     private var scribbleErase = true
     /// Whole-stroke eraser gesture: marked strokes are only dimmed (never
     /// published, saved or recorded) and removed together on lift.
-    private struct EraseSession {
+    struct EraseSession {
         var base: PageContent
         var strokes: [PKStroke]
         var polylines: [Int: [PagePoint]] = [:]
@@ -160,11 +160,11 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         var shapes = Set<UUID>()
         var last: PagePoint?
     }
-    private var eraseSession: EraseSession?
+    var eraseSession: EraseSession?
     /// Soft trail of the "Ganz" eraser: exactly the hit width, recent part only.
-    private let eraseTrail = CAShapeLayer()
-    private var trailPoints: [(point: CGPoint, time: CFTimeInterval)] = []
-    private var trailLink: CADisplayLink?
+    let eraseTrail = CAShapeLayer()
+    var trailPoints: [(point: CGPoint, time: CFTimeInterval)] = []
+    var trailLink: CADisplayLink?
     private var automaticInkPoint: CGPoint?
     private var worksheetFocused = true
     private var touching = false
@@ -175,7 +175,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     func takeCaretReveal() -> CaretReveal? { textLayer.takeCaretReveal() }
     private var onRevealCaret: (() -> Void)?
     private var pageID: UUID?
-    private var pageLayout = PageLayout(source: .testPaper, legacyA4: true)
+    var pageLayout = PageLayout(source: .testPaper, legacyA4: true)
     private var lastDrawing = Data()
     /// Stroke count of the published drawing bytes, so a finished stroke needs
     /// no decode of the previous state. Keyed by the bytes: any external
@@ -185,45 +185,45 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// after native strokes and derived previews (erase dimming, selection
     /// remainder). Object previews compare against it instead of decoding the
     /// drawing on every pan event.
-    private var canvasSource: Data?
-    private var updating = false
-    private var tool = EditorTool.pen
-    private var editable = false
+    var canvasSource: Data?
+    var updating = false
+    var tool = EditorTool.pen
+    var editable = false
     private var lastTool: EditorTool?
-    private var lastColor: UIColor?
+    var lastColor: UIColor?
     private var lastWidth: CGFloat = 0
     private var contentGeneration = 0
     private let undoForwarder = NotebookUndoForwarder()
     private var onInkSession: (() -> Void)?
     private var onDrawing: ((Data) -> Void)?
-    private var pageContent = PageContent(page: Page())
-    private var onContent: ((PageContent, PageContent) -> Bool)?
+    var pageContent = PageContent(page: Page())
+    var onContent: ((PageContent, PageContent) -> Bool)?
     private var onPencilAction: (() -> Void)?
     private var onPencilSqueeze: ((PencilSqueezeEvent) -> Void)?
-    private var holdEnabled = true
-    private var holdPoints: [PagePoint] = []
-    private var holdBase: PageContent?
-    private var heldShape: RecognizedShape?
+    var holdEnabled = true
+    var holdPoints: [PagePoint] = []
+    var holdBase: PageContent?
+    var heldShape: RecognizedShape?
     /// Live resize of the recognised shape until the Pencil lifts.
-    private var heldAdjustment: HeldShapeAdjustment?
-    private var heldColor = InkColor(0, 0, 0)
+    var heldAdjustment: HeldShapeAdjustment?
+    var heldColor = InkColor(0, 0, 0)
     /// Drawn width (from PencilKit's own points) for the preview and shape objects.
-    private var heldWidth: CGFloat = 2
+    var heldWidth: CGFloat = 2
     /// Ratio of PencilKit's drawn point size to the tool width, per ink type.
-    private var drawnWidthRatio: [PKInk.InkType: CGFloat] = [:]
-    private var holdSerial = 0
-    private var holdCompletion = StrokeCompletionGate()
-    private let heldInkImage = UIImageView()
-    private let heldShapeLayer = CAShapeLayer()
-    private var holdFeedback: UIFeedbackGenerator?
+    var drawnWidthRatio: [PKInk.InkType: CGFloat] = [:]
+    var holdSerial = 0
+    var holdCompletion = StrokeCompletionGate()
+    let heldInkImage = UIImageView()
+    let heldShapeLayer = CAShapeLayer()
+    var holdFeedback: UIFeedbackGenerator?
     private let holdGesture = PencilHoldGesture()
     private let checkboxTap = CheckboxTapGesture()
     private let interactionObserver = PageInteractionObserver()
     private let interactionID = UUID()
     private let textInteractionID = UUID()
     private var onInteraction: ((UUID, Bool) -> Void)?
-    private var inkActive = false
-    private var renderViewport: InkRenderViewport?
+    var inkActive = false
+    var renderViewport: InkRenderViewport?
     private var configuration: PageEditor?
     private var lastObjectPreview: PageContent?
     private let selectionInkImage = UIImageView()
@@ -805,7 +805,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         return count
     }
     /// The canvas drawing in canonical page coordinates (without paper margins).
-    private var canonicalCanvasDrawing: PKDrawing {
+    var canonicalCanvasDrawing: PKDrawing {
         let translation = pageLayout.inkTranslation
         return translation.isIdentity ? canvas.drawing : canvas.drawing.transformed(using: translation.inverted())
     }
@@ -833,288 +833,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         inkActive = false
         holdCompletion.endNative()
     }
-    private func previewHeldStroke() {
-        guard editable, holdEnabled, heldShape == nil, holdBase != nil, tool.isInk,
-              let first = holdPoints.first, let last = holdPoints.last else { return }
-        let recognized = ShapeRecognition.shape(holdPoints)
-            ?? (ShapeRecognition.lineAfterHold(holdPoints) ? .line(start: first, end: LineSnapping.end(from: first, to: last)) : nil)
-        guard let shape = recognized, let base = holdBase else { return }
-        if tool == .marker { guard case .line = shape else { return } }
-        heldColor = InkColor(Color(lastColor ?? .black))
-        heldWidth = configuredWidth * (drawnWidthRatio[inkType] ?? 1)
-        guard heldFits(shape) else { return }
-        heldShape = shape
-        heldAdjustment = HeldShapeAdjustment(shape: shape, grab: last)
-        let frame = renderViewport?.frame.cgRect ?? bounds
-        let scale = min(4, 2048 / max(1, frame.width, frame.height))
-        let drawing = ((try? PKDrawing(data: base.drawing)) ?? PKDrawing()).transformed(using: pageLayout.inkTranslation)
-        heldInkImage.frame = frame
-        canvas.traitCollection.performAsCurrent {
-            heldInkImage.image = drawing.image(from: frame, scale: scale).withRenderingMode(.alwaysOriginal)
-        }
-        heldInkImage.isHidden = false; canvas.layer.opacity = 0
-        updateHeldPath()
-        if #available(iOS 17.5, *), let feedback = holdFeedback as? UICanvasFeedbackGenerator, let end = shape.outline().last {
-            feedback.pathCompleted(at: CGPoint(x: end.x + pageLayout.contentOrigin.x, y: end.y + pageLayout.contentOrigin.y))
-        }
-    }
-    private func heldFits(_ shape: RecognizedShape) -> Bool {
-        let outline = shape.outline()
-        guard !outline.isEmpty, outline.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return false }
-        if case let .line(start, end) = shape, hypot(end.x - start.x, end.y - start.y) < 1 { return false }
-        let xs = outline.map(\.x), ys = outline.map(\.y), pad = max(heldWidth / 2, shape.object(color: heldColor, lineWidth: heldWidth)?.padding ?? 0)
-        let rect = CGRect(x: xs.min()! - pad, y: ys.min()! - pad, width: xs.max()! - xs.min()! + 2 * pad, height: ys.max()! - ys.min()! + 2 * pad)
-        return pageLayout.canonicalInkBounds.contains(rect)
-    }
-    /// Pen results that fit the editable object model (arrow, axis-aligned
-    /// rectangle/square, ellipse/circle) become shapes; the rest native ink.
-    /// Pencil results always stay native ink, keeping the graphite texture.
-    private func heldObject(width: CGFloat) -> ShapeObject? {
-        guard tool == .pen, let shape = heldShape?.object(color: heldColor, lineWidth: min(40, max(0.5, width))),
-              (try? shape.validate()) != nil else { return nil }
-        return shape
-    }
-    private func updateHeldPath() {
-        guard let shape = heldShape else { return }
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        heldShapeLayer.frame = bounds
-        let path: UIBezierPath
-        if let object = heldObject(width: heldWidth) { path = ShapeRendering.path(object) }
-        else {
-            path = UIBezierPath()
-            for (index, point) in shape.outline().enumerated() {
-                if index == 0 { path.move(to: CGPoint(x: point.x, y: point.y)) } else { path.addLine(to: CGPoint(x: point.x, y: point.y)) }
-            }
-        }
-        path.apply(pageLayout.inkTranslation)
-        heldShapeLayer.path = path.cgPath; heldShapeLayer.lineWidth = heldWidth
-        heldShapeLayer.strokeColor = heldColor.uiColor.withAlphaComponent(heldColor.alpha * (tool == .marker && markerTip == .chisel ? 0.35 : tool == .pencil ? 0.8 : 1)).cgColor
-        heldShapeLayer.isHidden = false
-        CATransaction.commit()
-    }
-    private func clearHeldPreview() {
-        heldShape = nil; heldAdjustment = nil; holdBase = nil; holdPoints = []
-        holdCompletion = StrokeCompletionGate()
-        heldInkImage.isHidden = true; heldInkImage.image = nil
-        heldShapeLayer.isHidden = true; heldShapeLayer.path = nil; canvas.layer.opacity = 1
-    }
-    /// A held line whose lift is done but whose final PencilKit callback never
-    /// came: commit it before the next touch (or after the fallback delay)
-    /// instead of silently keeping the freehand stroke.
-    private func commitPendingHeldStroke() {
-        guard heldShape != nil, holdCompletion.lifted, !inkActive else { return }
-        finishHeldStroke(serial: holdSerial, force: true)
-    }
-    private func finishHeldStroke(serial: Int, force: Bool = false) {
-        guard serial == holdSerial, force || holdCompletion.canCommit, !inkActive, editable, let shape = heldShape, let base = holdBase else { return }
-        let canonical = canvas.drawing.transformed(using: pageLayout.inkTranslation.inverted())
-        let oldDrawing = (try? PKDrawing(data: base.drawing)) ?? PKDrawing()
-        let source = canonical.strokes.count > oldDrawing.strokes.count ? canonical.strokes.last : nil
-        if force && source == nil { return }
-        let previous = pageContent
-        let currentData = canonical.dataRepresentation()
-        // Keep the expected published state. Replace the finalized live stroke
-        // once: same ink and drawn point attributes (never the bare tool width,
-        // which rendered as a hairline), or an editable shape of the drawn width.
-        var next = previous
-        if let object = heldObject(width: source.map(Self.drawnWidth) ?? heldWidth) {
-            next.drawing = oldDrawing.dataRepresentation(); next.shapes.append(object)
-        } else {
-            let ink = source?.ink ?? PKInk(inkType, color: heldColor.uiColor)
-            let stroke = inkStroke(from: source, ink: ink, path: shape.outline(spacing: 8))
-            guard pageLayout.canonicalInkBounds.insetBy(dx: -0.02, dy: -0.02).contains(stroke.renderBounds) else {
-                clearHeldPreview(); canvasViewDrawingDidChange(canvas); return
-            }
-            next.drawing = PKDrawing(strokes: oldDrawing.strokes + [stroke]).dataRepresentation()
-        }
-        // The model records stroke → shape/line as one notebook-wide undo step.
-        if onContent?(next, previous) == true {
-            installContent(next)
-            shapeLayer.configure(next.shapes, origin: pageLayout.contentOrigin)
-            clearHeldPreview()
-        } else {
-            clearHeldPreview()
-            if currentData != previous.drawing { canvasViewDrawingDidChange(canvas) }
-        }
-    }
-    /// Median drawn point width in page units (the visible stroke width).
-    private static func drawnWidth(_ stroke: PKStroke) -> CGFloat {
-        let t = stroke.transform, scale = sqrt(abs(t.a * t.d - t.b * t.c))
-        let widths = stroke.path.map { min($0.size.width, $0.size.height) * scale }.sorted()
-        return widths.isEmpty ? 0 : widths[widths.count / 2]
-    }
-    /// Learns PencilKit's drawn width per tool width, so the next held preview
-    /// shows the width the replacement will actually have.
-    private func recordDrawnWidth(_ strokes: [PKStroke], previousCount: Int) {
-        guard let stroke = strokes.last, configuredWidth > 0, strokes.count == previousCount + 1 else { return }
-        let width = Self.drawnWidth(stroke)
-        if width > 0 { drawnWidthRatio[stroke.ink.inkType] = width / configuredWidth }
-    }
-    /// Rebuilds a finished stroke along `path` (page units). Size, opacity,
-    /// force and tilt come from the drawn points at the same arc-length
-    /// fraction: PencilKit's own point sizes differ from the tool width (marker
-    /// tip, pressure, zoom), so a constant tool width rendered far thinner.
-    private func inkStroke(from source: PKStroke?, ink: PKInk, path: [PagePoint]) -> PKStroke {
-        let drawn = source.map { Array($0.path) } ?? []
-        let transform = source?.transform ?? .identity
-        let scale = sqrt(abs(transform.a * transform.d - transform.b * transform.c))
-        let fractions = StraightStroke.arcFractions(path)
-        let indices = StraightStroke.sampleIndices(along: drawn.map {
-            let point = $0.location.applying(transform); return PagePoint(x: point.x, y: point.y)
-        }, fractions: fractions)
-        var time = -1.0
-        let points = path.indices.map { index -> PKStrokePoint in
-            let location = CGPoint(x: path[index].x, y: path[index].y)
-            guard index < indices.count else {
-                time = max(fractions[index], time + 0.001)
-                return PKStrokePoint(location: location, timeOffset: time, size: CGSize(width: heldWidth, height: heldWidth),
-                    opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
-            }
-            let sample = drawn[indices[index]]
-            time = max(sample.timeOffset, time + 0.001)
-            let size = CGSize(width: sample.size.width * scale, height: sample.size.height * scale)
-            if #available(iOS 26.0, *) {
-                return PKStrokePoint(location: location, timeOffset: time, size: size, opacity: sample.opacity, force: sample.force,
-                    azimuth: sample.azimuth, altitude: sample.altitude, secondaryScale: sample.secondaryScale, threshold: sample.threshold)
-            }
-            return PKStrokePoint(location: location, timeOffset: time, size: size, opacity: sample.opacity, force: sample.force,
-                azimuth: sample.azimuth, altitude: sample.altitude, secondaryScale: sample.secondaryScale)
-        }
-        return PKStroke(ink: ink, path: PKStrokePath(controlPoints: points, creationDate: source?.path.creationDate ?? Date()))
-    }
-    private func installContent(_ content: PageContent) {
+    func installContent(_ content: PageContent) {
         updating = true
         pageContent = content; lastDrawing = content.drawing
         let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()
         strokeCountCache = (content.drawing, drawing.strokes.count)
         canvas.drawing = drawing.transformed(using: pageLayout.inkTranslation); canvasSource = content.drawing
         updating = false
-    }
-    private static func polyline(_ stroke: PKStroke) -> [PagePoint] {
-        stroke.path.interpolatedPoints(by: .distance(3)).map {
-            let point = $0.location.applying(stroke.transform); return PagePoint(x: point.x, y: point.y)
-        }
-    }
-    private func beginErase() {
-        let drawing = (try? PKDrawing(data: pageContent.drawing)) ?? PKDrawing()
-        eraseSession = EraseSession(base: pageContent, strokes: drawing.strokes)
-        trailPoints = []; trailLink?.invalidate()
-        eraseTrail.removeAllAnimations(); eraseTrail.opacity = 1; eraseTrail.path = nil; eraseTrail.isHidden = false
-        let link = CADisplayLink(target: self, selector: #selector(updateEraseTrail)); link.add(to: .main, forMode: .common); trailLink = link
-    }
-    @objc private func updateEraseTrail() {
-        let now = CACurrentMediaTime()
-        trailPoints.removeAll { now - $0.time > 0.3 }
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        eraseTrail.frame = bounds; eraseTrail.lineWidth = max(configuredWidth, 6)
-        let path = UIBezierPath()
-        for (index, entry) in trailPoints.enumerated() {
-            if index == 0 { path.move(to: entry.point) } else { path.addLine(to: entry.point) }
-        }
-        if trailPoints.count == 1, let point = trailPoints.first?.point { path.addLine(to: point) }
-        eraseTrail.path = trailPoints.isEmpty ? nil : path.cgPath
-        CATransaction.commit()
-    }
-    private func endEraseTrail() {
-        trailLink?.invalidate(); trailLink = nil; trailPoints = []
-        guard !eraseTrail.isHidden, eraseTrail.path != nil else { eraseTrail.isHidden = true; return }
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak self] in
-            guard let self, self.trailLink == nil else { return }
-            self.eraseTrail.isHidden = true; self.eraseTrail.path = nil
-        }
-        let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = 1; fade.toValue = 0; fade.duration = 0.22
-        eraseTrail.opacity = 0; eraseTrail.add(fade, forKey: "fade")
-        CATransaction.commit()
-    }
-    /// Sweeps a capsule as wide as the pen (minimum 6 pt) from the last point.
-    private func eraseSweep(to point: PagePoint) {
-        guard var session = eraseSession else { return }
-        let from = session.last ?? point
-        let radius = max(configuredWidth, 6) / 2
-        let sweep = CGRect(x: min(from.x, point.x), y: min(from.y, point.y), width: abs(point.x - from.x), height: abs(point.y - from.y))
-        var changed = false
-        for index in session.strokes.indices where !session.marked.contains(index) {
-            let stroke = session.strokes[index]
-            guard stroke.renderBounds.insetBy(dx: -radius - 1, dy: -radius - 1).intersects(sweep) else { continue }
-            let reach = radius + Self.drawnWidth(stroke) / 2 + 1
-            let points = session.polylines[index] ?? Self.polyline(stroke)
-            session.polylines[index] = points
-            if StrokeHitTest.hits(sweep: from, point, radius: reach, stroke: points) { session.marked.insert(index); changed = true }
-        }
-        // Shapes: hit along the same swept width as ink.
-        let steps = max(1, Int((hypot(point.x - from.x, point.y - from.y) / radius).rounded(.up)))
-        let samples = (0...steps).map { CGPoint(x: from.x + (point.x - from.x) * Double($0) / Double(steps), y: from.y + (point.y - from.y) * Double($0) / Double(steps)) }
-        for shape in session.base.shapes where !session.shapes.contains(shape.id) {
-            let path = ShapeRendering.path(shape)
-            let outline = path.cgPath.copy(strokingWithWidth: shape.lineWidth + 2 * radius, lineCap: .round, lineJoin: .round, miterLimit: 4)
-            if samples.contains(where: { outline.contains($0) || (shape.fill != nil && path.contains($0)) }) { session.shapes.insert(shape.id); changed = true }
-        }
-        trailPoints.append((CGPoint(x: point.x + pageLayout.contentOrigin.x, y: point.y + pageLayout.contentOrigin.y), CACurrentMediaTime()))
-        session.last = point
-        eraseSession = session
-        if changed { showErasePreview() }
-    }
-    private func showErasePreview() {
-        guard let session = eraseSession else { return }
-        let strokes = session.strokes.enumerated().map { index, stroke -> PKStroke in
-            guard session.marked.contains(index) else { return stroke }
-            let color = stroke.ink.color
-            return PKStroke(ink: PKInk(stroke.ink.inkType, color: color.withAlphaComponent(color.cgColor.alpha * 0.28)),
-                            path: stroke.path, transform: stroke.transform, mask: stroke.mask)
-        }
-        let wasUpdating = updating; updating = true
-        canvas.drawing = PKDrawing(strokes: strokes).transformed(using: pageLayout.inkTranslation)
-        canvasSource = nil; updating = wasUpdating
-        dimErasedShapes()
-    }
-    private func dimErasedShapes() {
-        guard let session = eraseSession else { return }
-        shapeLayer.configure(session.base.shapes.map { shape in
-            guard session.shapes.contains(shape.id) else { return shape }
-            var dimmed = shape; dimmed.color.alpha *= 0.28; dimmed.fill?.alpha *= 0.28; return dimmed
-        }, origin: pageLayout.contentOrigin)
-    }
-    /// Restores the visible state; nothing was ever published.
-    private func cancelErase() {
-        guard let session = eraseSession else { return }
-        eraseSession = nil; endEraseTrail()
-        guard !session.marked.isEmpty || !session.shapes.isEmpty else { return }
-        installContent(pageContent)
-        shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin)
-    }
-    /// One content change (and so one undo step) for every stroke/shape marked.
-    private func finishErase() {
-        guard let session = eraseSession else { return }
-        guard !session.marked.isEmpty || !session.shapes.isEmpty, editable, pageContent == session.base else { cancelErase(); return }
-        eraseSession = nil; endEraseTrail()
-        var next = session.base
-        next.drawing = PKDrawing(strokes: session.strokes.enumerated().filter { !session.marked.contains($0.offset) }.map(\.element)).dataRepresentation()
-        next.shapes = session.base.shapes.filter { !session.shapes.contains($0.id) }
-        if onContent?(next, session.base) == true { installContent(next) } else { installContent(pageContent) }
-        shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin)
-    }
-    /// "Durchkritzeln löscht": a finished pen scribble over existing ink
-    /// removes the strokes it covers together with itself. The scribble was
-    /// never published, so the change is one ink step from before it.
-    private func eraseByScribble(previousCount: Int) {
-        let strokes = canonicalCanvasDrawing.strokes
-        guard strokes.count == previousCount + 1, let scribble = strokes.last,
-              scribble.ink.inkType != .marker else { return }
-        let points = Self.polyline(scribble)
-        guard ScribbleErase.isScribble(points) else { return }
-        let others = Array(strokes.dropLast())
-        let hull = CGRect(x: points.map(\.x).min()!, y: points.map(\.y).min()!, width: 0, height: 0)
-            .union(CGRect(x: points.map(\.x).max()!, y: points.map(\.y).max()!, width: 0, height: 0)).insetBy(dx: -8, dy: -8)
-        let candidates = others.indices.filter { others[$0].renderBounds.intersects(hull) }
-        let covered = ScribbleErase.coveredStrokes(scribble: points, strokes: candidates.map { Self.polyline(others[$0]) },
-                                                   padding: max(4, Self.drawnWidth(scribble))).map { candidates[$0] }
-        guard !covered.isEmpty else { return }
-        let removed = Set(covered)
-        let wasUpdating = updating; updating = true
-        canvas.drawing = PKDrawing(strokes: others.enumerated().filter { !removed.contains($0.offset) }.map(\.element))
-            .transformed(using: pageLayout.inkTranslation)
-        canvasSource = nil; updating = wasUpdating
     }
     /// Every preloaded sheet owns an interaction; only the focused one may act,
     /// otherwise an even number of sheets toggles the tool back and forth.
@@ -1174,7 +899,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         canvas.tool = inkingTool(color: color, width: configuredWidth)
         lastColor = color
     }
-    private var inkType: PKInk.InkType {
+    var inkType: PKInk.InkType {
         tool == .marker ? (markerTip == .round ? .monoline : .marker) : tool == .pencil ? .pencil : .pen
     }
     private func inkingTool(color: UIColor, width: CGFloat) -> PKInkingTool { PKInkingTool(inkType, color: color, width: width) }
@@ -1186,22 +911,4 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if translation.isIdentity { return drawing.dataRepresentation() }
         return drawing.transformed(using: translation.inverted()).dataRepresentation()
     }
-}
-
-@MainActor
-private final class PaperBackgroundView: UIView {
-    private var style: PaperStyle = .blank
-    private var color: PaperColor = .white
-    private var coordinateScale: CGFloat = 1
-    var paperBounds = CGRect.zero { didSet { if oldValue != paperBounds { setNeedsDisplay() } } }
-    override init(frame: CGRect) {
-        super.init(frame: frame); isOpaque = true; contentMode = .redraw; isUserInteractionEnabled = false
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func configure(style: PaperStyle, color: PaperColor, coordinateScale: CGFloat = 1) {
-        if self.style != style || self.color != color || self.coordinateScale != coordinateScale {
-            self.style = style; self.color = color; self.coordinateScale = coordinateScale; setNeedsDisplay()
-        }
-    }
-    override func draw(_ rect: CGRect) { PDFExporter.drawPaper(style: style, bounds: paperBounds, color: color, coordinateScale: coordinateScale) }
 }
