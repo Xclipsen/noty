@@ -558,6 +558,14 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         updating = wasUpdating
     }
 
+    /// Memory warning: drop what is rebuilt on demand (hidden read-tool
+    /// PDFView and its PDF copy, decoded selection ink, unused text views).
+    func releaseMemory() {
+        if let pdfView, pdfView.isHidden { pdfView.document = nil; pdfView.removeFromSuperview(); self.pdfView = nil }
+        if tool != .read, configuration?.sourcePage != nil { pdfDocument = nil }
+        objectLayer.releaseMemory()
+        textLayer.releaseMemory()
+    }
     /// The read tool's PDFView, built when first needed (most sheets never are).
     private func reader() -> PDFView {
         if let pdfView { return pdfView }

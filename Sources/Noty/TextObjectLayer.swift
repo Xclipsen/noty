@@ -151,6 +151,15 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         synchronize()
     }
 
+    /// Memory warning: text views of removed boxes are kept for reuse (and so
+    /// none is released inside its own delegate callback); drop them here.
+    func releaseMemory() {
+        let live = Set(boxes.map(\.id))
+        for (id, field) in fields where !live.contains(id) && !field.editor.isFirstResponder {
+            field.editor.delegate = nil; field.editor.historyOwner = nil
+            field.removeFromSuperview(); fields.removeValue(forKey: id)
+        }
+    }
     /// The fields show exactly these boxes (no local edit pending).
     func shows(_ incoming: [TextBox]) -> Bool { boxes == incoming }
     func adoptCallback(_ onChange: @escaping ([TextBox]) -> Void) { self.onChange = onChange }

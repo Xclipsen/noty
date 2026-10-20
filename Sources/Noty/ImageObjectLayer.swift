@@ -171,9 +171,6 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         CATransaction.commit()
         setNeedsDisplay()
     }
-    /// Memory warning: renditions are decoded again on the next draw.
-    func releaseRenditions() { failed.removeAll(); setNeedsDisplay() }
-
     override func layoutSubviews() {
         super.layoutSubviews()
         HangProbe.hit("Image.layoutSubviews")

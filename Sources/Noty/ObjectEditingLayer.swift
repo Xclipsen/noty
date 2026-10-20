@@ -166,6 +166,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
 
     func adoptCommit(_ onCommit: @escaping (PageContent, PageContent) -> Bool) { self.onCommit = onCommit }
+    /// Memory warning: the decoded drawing and contour are rebuilt when needed.
+    func releaseMemory() { if !hasSelection, startContent == nil { cachedDrawing = nil; cachedOutline = nil } }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()

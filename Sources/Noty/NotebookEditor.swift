@@ -118,7 +118,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private var floatTarget: UUID?
     private var selectionFeedback: UIFeedbackGenerator?
     private var swipes: [UISwipeGestureRecognizer] = []
-
+    /// After a memory warning only on-screen pages get native sheets for a while.
+    private var lowMemoryUntil: CFTimeInterval = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -132,6 +133,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)),
             name: UIResponder.keyboardWillHideNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(memoryWarning),
+            name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
         for direction: UISwipeGestureRecognizer.Direction in [.left, .right] {
             let swipe = UISwipeGestureRecognizer(target: self, action: #selector(turnPage(_:)))
             swipe.direction = direction; swipe.delegate = self
@@ -346,7 +349,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         let visible = CGRect(x: contentOffset.x / zoomScale, y: contentOffset.y / zoomScale,
                              width: bounds.width / zoomScale, height: bounds.height / zoomScale)
         let live = liveZoom
-        let nearby = NotebookViewportGeometry.preloadRect(visible: PageRect(x: visible.minX, y: visible.minY,
+        let lowMemory = CACurrentMediaTime() < lowMemoryUntil
+        let nearby = lowMemory ? visible : NotebookViewportGeometry.preloadRect(visible: PageRect(x: visible.minX, y: visible.minY,
             width: visible.width, height: visible.height)).cgRect
         var keep = Set(frames.filter { $0.value.intersects(nearby) }.map(\.key))
         if let selected { keep.insert(selected) }
@@ -357,7 +361,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         let warm = sheets.keys.filter { !keep.contains($0) && frames[$0] != nil }.sorted {
             abs((frames[$0]?.midY ?? 0) - visible.midY) < abs((frames[$1]?.midY ?? 0) - visible.midY)
         }
-        keep.formUnion(warm.prefix(max(0, 4 - keep.count)))
+        if !lowMemory { keep.formUnion(warm.prefix(max(0, 4 - keep.count))) }
         for id in Array(sheets.keys) where !keep.contains(id) {
             sheets[id]?.removeFromSuperview(); sheets.removeValue(forKey: id); sheetRevisions.removeValue(forKey: id)
         }
@@ -425,6 +429,16 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             }
             sheet.updateRendering(visible: convert(bounds, to: sheet), scale: zoomScale * placement.scale, live: live)
         }
+    }
+    /// Memory warning: off-screen sheets (each with PDF rasters up to ~70 MB,
+    /// text rasters, PencilKit tiles) are released, the others drop caches;
+    /// for 20 s only on-screen pages are built, then preloading resumes.
+    @objc private func memoryWarning() {
+        lowMemoryUntil = CACurrentMediaTime() + 20
+        ImageRendering.purge()
+        refreshSheets()
+        sheets.values.forEach { $0.releaseMemory() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20.5) { [weak self] in self?.refreshSheets() }
     }
     /// A pinch or snap animation is in progress; final resolution follows at its end.
     private var liveZoom: Bool {
