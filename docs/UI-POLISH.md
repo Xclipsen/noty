@@ -54,3 +54,4 @@ Entfallen: „Jetzt speichern“ (Autosave und Sichern beim Verlassen bleiben un
 - **Auf dem iPad getestet:** nein. Offen: Optionenmenü in breiter/schmaler Kopfzeile (Wiederholen/Seite hinzufügen nur bei Platzmangel), Untermenüs Teilen/Ansicht, Statushinweis bei Export und Speicherfehler, Seitenmenü-Gruppen, „Neu“-Menü der Bibliothek, Einstellungen/Über noty, Werkzeugglyphen und Auswahlfarbe im Glas (Leuchtrand am Zellrand), App-Icon auf dem Home-Bildschirm (ohne Asset-Katalog).
 - **Build 50 (20.10.2026):** Rückmeldung zu Build 49 umgesetzt und installiert. Nachweise in [TESTING](TESTING.md#build-50--rückmeldung-zu-build-49).
 - **Build 51 (20.10.2026):** Rückmeldung zu Build 50 umgesetzt und installiert. Nachweise in [TESTING](TESTING.md#build-51--rückmeldung-zu-build-50).
+- **Build 52 (20.10.2026):** Rückmeldung zu Build 51 (Formreste, große Bilder, Bild-Werkzeug) umgesetzt und installiert. Nachweise in [TESTING](TESTING.md#build-52--rückmeldung-zu-build-51).

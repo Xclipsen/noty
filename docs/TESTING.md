@@ -32,6 +32,21 @@ Apple-Anmeldung, 2FA, Vertrauen und Entwicklermodus übernimmt der Nutzer (`xtoo
 
 Automatischer Start scheitert am fehlenden Developer-Disk-Image. Der Nutzer startet manuell.
 
+## Build 52 · Rückmeldung zu Build 51
+
+**Implementiert** auf `ui/menu-polish`. Nutzer zu Build 51:
+- Geschnittene Formen wurden zu einem sehr dünnen Strich. Behoben: Die Punktgröße wird an der gemessenen PencilKit-Breite ausgerichtet.
+- Bilder über 20 MB sollen verkleinert importiert werden. Umgesetzt mit `ImageCompression`, siehe [IMAGES](IMAGES.md#ergänzung-nach-build-51--große-bilder-werden-verkleinert).
+- Das Bild-Werkzeug soll zum noty-Stil passen. Umgesetzt: Optionszeile, Auswahlrahmen und Anfasser in Akzentfarbe, Aktionsleiste, Zuschneiden; siehe [DESIGN](DESIGN.md).
+
+Nachweise:
+- `swift test --package-path Core`: 543 Tests, 0 Fehler.
+- **Erfolgreich gebaut:** `--sign --ipa` ohne Warnungen. IPA: `CFBundleVersion` 52, gleiche App-ID, Team und Zertifikat (`50f3e096…`), Profil bis 27.10.2026, SHA-256 `ad609c8f…`.
+- **Installiert am 20.10.2026 um 22:20** über Build 51 (danach meldet InstallationProxy 52).
+  - Sicherung unter `/home/la/Backups/noty-before-build52-2026-10-20T20-20-21-279539027Z/`.
+  - Frisch zurückgelesen: 14 Dokumente und 60 Dateien unverändert. `--compare` meldet 6 unveränderte Dokumente, keine Quarantäne.
+- **Auf dem iPad ungeprüft:** alle drei Änderungen; Foto-Import und PDF-Export aus Build 51 weiterhin ohne Rückmeldung.
+
 ## Build 51 · Rückmeldung zu Build 50
 
 **Implementiert** auf `ui/menu-polish` (66f3c90, auf Build 50). Nutzertest von Build 50:
