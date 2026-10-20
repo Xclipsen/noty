@@ -25,7 +25,7 @@ def load_store(root):
             raise ValueError("Missing document manifest")
         manifest = json.loads((directory / "manifest.json").read_bytes())
         assert manifest["formatVersion"] == 1 and manifest["checksumAlgorithm"] == "crc32-iso-hdlc"
-        assert 1 <= len(manifest["revisions"]) <= 3
+        assert 1 <= len(manifest["revisions"]) <= 8
         head = None
         for record in manifest["revisions"]:
             assert re.fullmatch(r"[0-9A-F-]{36}\.json", record["file"])

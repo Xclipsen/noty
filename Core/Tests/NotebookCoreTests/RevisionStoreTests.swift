@@ -20,7 +20,7 @@ final class RevisionStoreTests: XCTestCase {
         XCTAssertEqual(SnapshotChecksum.crc32(Data("The quick brown fox jumps over the lazy dog".utf8)), 0x414fa339)
     }
 
-    func testImmutableRevisionsKeepThreeStatesAndBoundPhysicalHistory() throws {
+    func testImmutableRevisionsKeepNewestThreePlusFirstCheckpointAndBoundPhysicalHistory() throws {
         let root = try directory()
         let store = RevisionStore(directory: root)
         var document = Notebook()
@@ -35,8 +35,12 @@ final class RevisionStoreTests: XCTestCase {
             document.pages[0].text = "Stand \(revision)"
             try store.save(document)
         }
-        XCTAssertEqual(try manifest(root).revisions.count, 3)
-        XCTAssertLessThanOrEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("Revisions").path).count, 4)
+        // Rapid saves: the newest three plus the oldest state as only checkpoint.
+        let entries = try manifest(root).revisions
+        XCTAssertEqual(entries.count, 4)
+        XCTAssertEqual(entries.last, first)
+        XCTAssertEqual(try Data(contentsOf: firstURL), firstBytes)
+        XCTAssertLessThanOrEqual(contents(root.appendingPathComponent("Revisions")).count, 5)
         XCTAssertEqual(try RevisionStore(directory: root).load(), document)
     }
 

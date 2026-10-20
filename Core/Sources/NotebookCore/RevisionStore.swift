@@ -77,6 +77,8 @@ public final class RevisionStore {
     private var known = Set<String>()
     /// manifest.json exists but was unusable; a copy is kept before replacing it.
     private var damagedPrimary = false
+    /// Commit timestamps (`savedAtUnix`); replaceable in tests.
+    var clock: () -> Date = { Date() }
     private let fm = FileManager.default
     private static let maximumBytes = 200_000_000
     private var primary: URL { directory.appendingPathComponent("manifest.json") }
@@ -178,7 +180,7 @@ public final class RevisionStore {
             }
             let record = try writeRevision(bytes)
             written.append(record.file)
-            manifest = RevisionManifest(revisions: [record] + Array((old?.revisions ?? []).prefix(2)))
+            manifest = RevisionManifest(revisions: Self.retained([record] + (old?.revisions ?? [])))
             if damagedPrimary { preserveDamagedPrimary() }
             if let old { try JSONEncoder().encode(old).write(to: previous, options: .atomic) }
             // Commit point: no UI may claim success before this atomic replacement.
@@ -195,6 +197,32 @@ public final class RevisionStore {
         let referenced = Set((manifest.revisions + (old?.revisions ?? [])).map(\.file))
         known.formUnion(referenced)
         collectGarbage(keeping: referenced)
+    }
+
+    static let newestKept = 3
+    static let maximumKept = 8
+    static let checkpointSpacing: Double = 600
+    static let maximumCheckpointBytes = 300_000_000
+
+    /// Local history tiers for `candidates` (newest first): the newest three
+    /// always; older entries only as checkpoints at least 10 minutes apart by
+    /// `savedAtUnix`, each measured from the next older kept checkpoint, so
+    /// continuous editing leaves one every 10 minutes. At most eight entries and
+    /// 300 MB of checkpoints; the oldest checkpoints go first. Entries without a
+    /// timestamp are never checkpoints.
+    static func retained(_ candidates: [RevisionRecord]) -> [RevisionRecord] {
+        let newest = Array(candidates.prefix(newestKept))
+        var checkpoints: [RevisionRecord] = [] // oldest first
+        for candidate in candidates.dropFirst(newestKept).reversed() {
+            guard let time = candidate.savedAtUnix else { continue }
+            if let last = checkpoints.last?.savedAtUnix, time - last < checkpointSpacing { continue }
+            checkpoints.append(candidate)
+        }
+        var bytes = checkpoints.reduce(0) { $0 + $1.byteCount }
+        while checkpoints.count > maximumKept - newest.count || bytes > maximumCheckpointBytes {
+            bytes -= checkpoints.removeFirst().byteCount
+        }
+        return newest + checkpoints.reversed()
     }
 
     /// Best effort after a commit; keeps every revision referenced by either
@@ -333,7 +361,7 @@ public final class RevisionStore {
 
     private func writeRevision(_ bytes: Data) throws -> RevisionRecord {
         let record = RevisionRecord(file: UUID().uuidString + ".json", byteCount: bytes.count,
-                                    crc32: SnapshotChecksum.crc32(bytes), savedAtUnix: Date().timeIntervalSince1970)
+                                    crc32: SnapshotChecksum.crc32(bytes), savedAtUnix: clock().timeIntervalSince1970)
         let url = revisions.appendingPathComponent(record.file)
         guard !fm.fileExists(atPath: url.path) else { throw RevisionError.invalidManifest }
         try bytes.write(to: url, options: .atomic)
@@ -354,7 +382,7 @@ public final class RevisionStore {
 
     private func validate(_ manifest: RevisionManifest) throws {
         guard manifest.checksumAlgorithm == "crc32-iso-hdlc",
-              (1...3).contains(manifest.revisions.count),
+              (1...Self.maximumKept).contains(manifest.revisions.count),
               Set(manifest.revisions.map(\.file)).count == manifest.revisions.count,
               manifest.revisions.allSatisfy({ validFilename($0.file) && (1...Self.maximumBytes).contains($0.byteCount)
                   && ($0.savedAtUnix.map { $0.isFinite && (-62_135_596_800...253_402_300_799).contains($0) } ?? true) }) else {
