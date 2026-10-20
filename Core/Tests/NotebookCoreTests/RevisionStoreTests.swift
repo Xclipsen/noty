@@ -184,6 +184,42 @@ final class RevisionStoreTests: XCTestCase {
         XCTAssertTrue(recovered.recovered)
     }
 
+    func testRepeatedFailedMigrationCommitsReuseOneExactArchive() throws {
+        let root = try directory()
+        let acknowledged = Notebook.blank(title: "Schema 3")
+        try RevisionStore(directory: root).save(acknowledged)
+        let acknowledgedBytes = try Data(contentsOf: root.appendingPathComponent("Revisions/" + (try manifest(root).revisions[0].file)))
+        let primary = root.appendingPathComponent("manifest.json")
+        try FileManager.default.moveItem(at: primary, to: root.appendingPathComponent("kept-manifest.json"))
+        try FileManager.default.createDirectory(at: primary, withIntermediateDirectories: false)
+        try FileManager.default.copyItem(at: root.appendingPathComponent("kept-manifest.json"),
+                                         to: root.appendingPathComponent("manifest-previous.json"))
+        var upgraded = acknowledged
+        upgraded.schemaVersion = 7
+        upgraded.title = "Schema 7"
+        let migrations = root.appendingPathComponent("Migrations")
+        for _ in 0..<2 {
+            // Also across restarts: a fresh store finds the identical archive.
+            let store = RevisionStore(directory: root)
+            XCTAssertEqual(try store.load(), acknowledged)
+            for _ in 0..<3 { XCTAssertThrowsError(try store.save(upgraded)) }
+            XCTAssertEqual(contents(migrations).count, 1)
+        }
+        try FileManager.default.removeItem(at: primary)
+        let store = RevisionStore(directory: root)
+        XCTAssertEqual(try store.load(), acknowledged)
+        try store.save(upgraded)
+        let folders = contents(migrations)
+        XCTAssertEqual(folders.count, 1)
+        XCTAssertEqual(try Data(contentsOf: migrations.appendingPathComponent(folders[0] + "/notebook-v3.json")), acknowledgedBytes)
+        XCTAssertEqual(try RevisionStore(directory: root).load(), upgraded)
+        // A different acknowledged state still gets its own archive.
+        var next = upgraded
+        next.schemaVersion = 8
+        try store.save(next)
+        XCTAssertEqual(contents(migrations).count, 2)
+    }
+
     func testUncommittedRevisionDoesNotBecomeCurrentAndIsQuarantinedAfterCommit() throws {
         let root = try directory()
         let store = RevisionStore(directory: root)

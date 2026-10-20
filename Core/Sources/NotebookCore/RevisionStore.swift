@@ -152,16 +152,7 @@ public final class RevisionStore {
         _ = try Notebook.decode(bytes)
         if let old = lastDocument, old.id == document.id, old.schemaVersion < document.schemaVersion,
            let lastBytes {
-            let parent = directory.appendingPathComponent("Migrations", isDirectory: true)
-            try fm.createDirectory(at: parent, withIntermediateDirectories: true)
-            let values = try parent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-            guard values.isDirectory == true, values.isSymbolicLink != true else { throw RevisionError.invalidManifest }
-            let archive = parent.appendingPathComponent(UUID().uuidString, isDirectory: true)
-            try fm.createDirectory(at: archive, withIntermediateDirectories: false)
-            let original = archive.appendingPathComponent("notebook-v\(old.schemaVersion).json")
-            // Archive exact acknowledged bytes before any migration commit or GC.
-            try lastBytes.write(to: original, options: .atomic)
-            guard try Data(contentsOf: original) == lastBytes else { throw RevisionError.noCompleteRevision }
+            try archiveMigrationSource(lastBytes, schemaVersion: old.schemaVersion)
         }
         try fm.createDirectory(at: revisions, withIntermediateDirectories: true)
         try validateRevisionDirectory()
@@ -197,6 +188,34 @@ public final class RevisionStore {
         let referenced = Set((manifest.revisions + (old?.revisions ?? [])).map(\.file))
         known.formUnion(referenced)
         collectGarbage(keeping: referenced)
+    }
+
+    /// Archives exact acknowledged bytes before any migration commit or GC.
+    /// A retried commit (e.g. automatic save retry) reuses an existing archive
+    /// with identical bytes (size, CRC, then bytes) instead of adding a copy.
+    private func archiveMigrationSource(_ bytes: Data, schemaVersion: Int) throws {
+        let parent = directory.appendingPathComponent("Migrations", isDirectory: true)
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        let values = try parent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isDirectory == true, values.isSymbolicLink != true else { throw RevisionError.invalidManifest }
+        let name = "notebook-v\(schemaVersion).json"
+        let checksum = SnapshotChecksum.crc32(bytes)
+        for folder in (try? fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)) ?? [] {
+            guard UUID(uuidString: folder.lastPathComponent) != nil,
+                  let kind = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  kind.isDirectory == true, kind.isSymbolicLink != true else { continue }
+            let file = folder.appendingPathComponent(name)
+            guard let info = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
+                  info.isRegularFile == true, info.isSymbolicLink != true, info.fileSize == bytes.count,
+                  let existing = try? Data(contentsOf: file), SnapshotChecksum.crc32(existing) == checksum,
+                  existing == bytes else { continue }
+            return
+        }
+        let archive = parent.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: archive, withIntermediateDirectories: false)
+        let original = archive.appendingPathComponent(name)
+        try bytes.write(to: original, options: .atomic)
+        guard try Data(contentsOf: original) == bytes else { throw RevisionError.noCompleteRevision }
     }
 
     static let newestKept = 3
