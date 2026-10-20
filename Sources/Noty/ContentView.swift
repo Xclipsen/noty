@@ -20,6 +20,7 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var toolbox: ToolbarSettingsModel
     @Environment(\.editorSettings) private var editorSettings
+    @Environment(\.searchIndexArea) private var searchIndexArea
     @State private var showingSettings = false
     @State private var editingDefaults = false
     @State private var addingPage = false
@@ -181,7 +182,9 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $contentSearch) {
-                ContentSearchView(documents: [OpenNotebook(id: model.notebook.id, directory: model.storageRoot, title: model.notebook.title, isRestored: false)], current: model.notebook) { hit in
+                ContentSearchView(documents: [OpenNotebook(id: model.notebook.id, directory: model.storageRoot, title: model.notebook.title, isRestored: false)],
+                                  current: model.notebook, currentSources: { model.sourcePage(for: $0) },
+                                  area: searchIndexArea ?? StableDefaults.scope(model.storageRoot)) { hit in
                     selectedPageID = hit.pageID; searchHighlight = hit.bounds; searchHighlightPageID = hit.pageID; fitRequest += 1
                     fadeSearchHighlightLater()
                 }

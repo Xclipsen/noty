@@ -99,7 +99,9 @@ enum PDFExporter {
     /// PencilKit adapts ink to the current trait collection: under the app's
     /// dark UI black ink would render white. The editor canvas is light, so
     /// previews and exports render light as well (what you see is exported).
-    static func inkImage(_ drawing: PKDrawing, from rect: CGRect, scale: CGFloat) -> UIImage {
+    /// Off-main safe: the trait collection is thread-local (PencilKit's own
+    /// thumbnail sample renders drawings on a background queue).
+    nonisolated static func inkImage(_ drawing: PKDrawing, from rect: CGRect, scale: CGFloat) -> UIImage {
         var image = UIImage()
         UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
             image = drawing.image(from: rect, scale: scale)
@@ -115,7 +117,7 @@ enum PDFExporter {
         return PDFDocument(data: data)!
     }
 
-    static func drawPaper(style: PaperStyle, bounds: CGRect, color: PaperColor = .white, coordinateScale: CGFloat = 1) {
+    nonisolated static func drawPaper(style: PaperStyle, bounds: CGRect, color: PaperColor = .white, coordinateScale: CGFloat = 1) {
         (color == .dark ? UIColor.black : .white).setFill(); UIRectFill(bounds)
         guard style != .blank else { return }
         if style == .legacyTest { drawTestPaper(); return }
@@ -133,7 +135,7 @@ enum PDFExporter {
         UIColor(white: color == .dark ? 0.3 : 0.8, alpha: 1).setStroke(); path.lineWidth = 0.5 * coordinateScale; path.stroke()
     }
 
-    private static func drawTestPaper() {
+    nonisolated private static func drawTestPaper() {
         ("noty · Schreibprobe" as NSString).draw(at: CGPoint(x: 48, y: 40), withAttributes: [
             .font: UIFont.boldSystemFont(ofSize: 24), .foregroundColor: UIColor.black
         ])

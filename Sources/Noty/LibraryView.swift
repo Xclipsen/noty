@@ -112,10 +112,13 @@ struct LibraryView: View {
             if let hit = searchHit, let item = model.snapshot.items.first(where: { $0.id == hit.documentID }) {
                 searchHit = nil; Task { await model.open(item, pageID: hit.pageID, searchBounds: hit.bounds) }
             }
-        }) { search in ContentSearchView(documents: search.documents) { searchHit = $0 } }
+        }) { search in
+            ContentSearchView(documents: search.documents, area: StableDefaults.scope(model.root), retain: search.retain) { searchHit = $0 }
+        }
         // Closing a notebook updates the library in place (no visible reload).
         .fullScreenCover(item: $model.opened, onDismiss: { model.editorClosed() }) { document in
             LibraryNotebookView(document: document, root: model.root, library: model).id(document.id)
+                .environment(\.searchIndexArea, StableDefaults.scope(model.root))
                 .environment(\.editorSettings, EditorSettingsPresenter { [model, toolbox, externalBackup, workspaces] in
                     AnyView(SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces))
                 })
@@ -540,7 +543,7 @@ struct LibraryView: View {
                     if BackupStatusBadge.needsAttention(externalBackup) {
                         BackupStatusBadge(externalBackup: externalBackup, library: model) { settingsRequest = SettingsRequest(page: .backup) }
                     }
-                    Button { Task { contentSearch = NotebookChoiceList(documents: await model.editorChoices()) } } label: {
+                    Button { searchAllNotebooks() } label: {
                         Label("Inhalte suchen", systemImage: "doc.text.magnifyingglass")
                     }.disabled(!editable)
                     Menu {
@@ -569,6 +572,12 @@ struct LibraryView: View {
                     Button { settingsRequest = SettingsRequest() } label: { Label("Einstellungen", systemImage: "gearshape") }
                 }
             }
+    }
+
+    private func searchAllNotebooks() {
+        guard editable else { return }
+        let retain = Set(model.snapshot.items.filter { !$0.isFolder }.map(\.id))
+        Task { contentSearch = NotebookChoiceList(documents: await model.editorChoices(), retain: retain) }
     }
 
     private func switchAreaIfRequested() {
@@ -984,4 +993,6 @@ private struct LibraryNotebookArtwork: View {
 private struct NotebookChoiceList: Identifiable {
     let id = UUID()
     let documents: [OpenNotebook]
+    /// Every notebook of the area, trashed ones included: their index survives.
+    let retain: Set<UUID>
 }
