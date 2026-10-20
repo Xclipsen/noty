@@ -156,6 +156,7 @@ final class ContentSearchModel: ObservableObject {
         let stamp: String? = current == nil
             ? await Task.detached(priority: .utility) { NotebookRevisionStamp.read(directory: directory) }.value : nil
         if let stamp, cached?.revisionStamp == stamp { return }
+        guard generation == expected else { throw CancellationError() }
         status = "\(document.title) · wird gelesen …"
         let notebook: Notebook
         if let current { notebook = current }
@@ -184,6 +185,7 @@ final class ContentSearchModel: ObservableObject {
                 let pending = ContentSearchPlanner.pending(entry, index.pages[offset])
                 guard !pending.isEmpty else { continue }
                 try Task.checkCancellation()
+                guard generation == expected else { throw CancellationError() }
                 status = "\(document.title) · Seite \(offset + 1)/\(prepared.count)"
                 let page = notebook.pages[offset]
                 var record = index.pages[offset]
