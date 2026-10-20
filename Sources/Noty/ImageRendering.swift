@@ -21,7 +21,7 @@ enum ImageImportError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalid: "Dieses Bild konnte nicht gelesen werden. Unterstützt sind Fotos und Bilder als HEIC/HEIF, JPEG, PNG, TIFF, GIF, WebP oder BMP."
-        case .fileTooLarge: "Das Bild ist größer als 20 MB. noty übernimmt Fotos unverändert im Original und erlaubt höchstens 20 MB je Bild; ProRAW-/RAW-Fotos sind meist größer. Bitte eine kleinere Fassung wählen, z. B. in Fotos als HEIC oder JPEG sichern."
+        case .fileTooLarge: "Das Bild ist zu groß und ließ sich nicht ausreichend verkleinern (höchstens 250 MB als Quelle). Bitte eine kleinere Fassung wählen, z. B. in Fotos als HEIC oder JPEG sichern."
         case .tooManyPixels: "Das Bild hat mehr als 200 Megapixel. noty übernimmt Bilder unverändert im Original und erlaubt höchstens 200 Megapixel je Bild."
         case .missingClipboard: "Die Zwischenablage enthält kein unterstütztes Bild. Bitte zuerst einen Screenshot oder ein Bild kopieren."
         case .video: "Die ausgewählte Datei ist ein Video. Bitte ein Foto oder Bild auswählen."
@@ -53,8 +53,9 @@ enum ImageImport {
         return (5...8).contains(orientation) ? (height, width) : (width, height)
     }
 
-    /// The selected file, read in bounded chunks (never more than the limit in
-    /// memory). A directory is a Live Photo bundle (photo plus movie, the
+    /// The selected file, read in bounded chunks (never more than
+    /// `ImageCompression.maximumSourceBytes` in memory; larger than 20 MB is
+    /// compressed before insertion). A directory is a Live Photo bundle (photo plus movie, the
     /// iPhone camera default): its photo is taken, recognised by content.
     static func read(_ url: URL) throws -> Data {
         if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
@@ -64,7 +65,7 @@ enum ImageImport {
         defer { try? handle.close() }
         var data = Data()
         while let chunk = try handle.read(upToCount: 64_000), !chunk.isEmpty {
-            guard chunk.count <= ImageLimits.maximumFileBytes - data.count else { throw ImageImportError.fileTooLarge }
+            guard chunk.count <= ImageCompression.maximumSourceBytes - data.count else { throw ImageImportError.fileTooLarge }
             data.append(chunk)
         }
         return data

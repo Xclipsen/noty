@@ -19,6 +19,7 @@ Nutzer zu Build 50: Der Präzisionsradierer entfernte eine berührte Form ganz, 
 - **Gefüllte, gestrichelte oder gepunktete Formen** haben keine Tinten-Entsprechung und werden weiterhin ganz entfernt.
 - **Undo:** Radieren der Tinte und Schneiden der Formen sind ein Schritt.
 - **Strich-Radierer („Ganz“):** entfernt Formen weiterhin ganz.
+- **Strichbreite der Reste (Nutzer zu Build 51: „sehr dünner Strich“):** PencilKit zeichnet einen Stift-Punkt dünner als seine Größe. Beim ersten Schneiden misst noty die tatsächlich gezeichnete Breite eines Teststrichs (Alpha-Abdeckung im Bild) und vergrößert die Punkte entsprechend, damit der Rest so breit bleibt wie die Form.
 
 ## Pencil-Schnellmenü – 20.10.2026
 

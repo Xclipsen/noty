@@ -167,16 +167,51 @@ extension WorksheetView {
         }
         shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin)
     }
-    /// A remaining shape piece as native pen ink: constant point width, the
-    /// shape's colour, control points about every 2 pt.
+    /// A remaining shape piece as native pen ink in the shape's colour and
+    /// visible width, control points about every 2 pt.
     static func inkPiece(_ points: [PagePoint], of shape: ShapeObject) -> PKStroke {
         let thinned = points.enumerated().filter { $0.offset % 2 == 0 || $0.offset == points.count - 1 }.map(\.element)
-        let size = CGSize(width: shape.lineWidth, height: shape.lineWidth)
-        let controls = thinned.enumerated().map { index, point in
-            PKStrokePoint(location: CGPoint(x: point.x, y: point.y), timeOffset: Double(index) * 0.001, size: size,
+        let side = shape.lineWidth * penPointScale
+        return penStroke(thinned.map { CGPoint(x: $0.x, y: $0.y) }, side: side, color: shape.color.uiColor)
+    }
+    private static func penStroke(_ points: [CGPoint], side: CGFloat, color: UIColor) -> PKStroke {
+        let size = CGSize(width: side, height: side)
+        let controls = points.enumerated().map { index, point in
+            PKStrokePoint(location: point, timeOffset: Double(index) * 0.001, size: size,
                           opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
         }
-        return PKStroke(ink: PKInk(.pen, color: shape.color.uiColor), path: PKStrokePath(controlPoints: controls, creationDate: Date()))
+        return PKStroke(ink: PKInk(.pen, color: color), path: PKStrokePath(controlPoints: controls, creationDate: Date()))
+    }
+    /// Point size per visible width of PencilKit's pen ink. Its renderer draws
+    /// a point thinner than its size (Build 51: cut shapes became hairlines),
+    /// so the factor is measured once on a rendered straight test stroke
+    /// (alpha coverage across it) instead of guessed.
+    private static var measuredPenPointScale: CGFloat?
+    private static var penPointScale: CGFloat {
+        if let scale = measuredPenPointScale { return scale }
+        let side: CGFloat = 20
+        let probe = penStroke((0...20).map { CGPoint(x: CGFloat($0) * 10, y: 0) }, side: side, color: .black)
+        let rect = CGRect(x: 0, y: -40, width: 200, height: 80)
+        let drawn = coverage(PKDrawing(strokes: [probe]).image(from: rect, scale: 1), height: rect.height)
+        let scale = drawn > 0.5 ? min(8, max(1, side / drawn)) : 1
+        measuredPenPointScale = scale
+        return scale
+    }
+    /// Covered height (points) of the image's middle column: summed alpha.
+    private static func coverage(_ image: UIImage, height: CGFloat) -> CGFloat {
+        guard let cg = image.cgImage, cg.width > 0, cg.height > 0 else { return 0 }
+        let w = cg.width, h = cg.height
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            context.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h)); return true
+        }
+        guard drawn else { return 0 }
+        let column = w / 2
+        let alpha = (0..<h).reduce(0.0) { $0 + Double(pixels[($1 * w + column) * 4 + 3]) / 255 }
+        return CGFloat(alpha) * height / CGFloat(h)
     }
     /// Restores the visible state; nothing was ever published.
     func cancelErase() {
