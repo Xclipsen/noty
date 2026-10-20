@@ -2,6 +2,47 @@ import UIKit
 import SwiftUI
 import NotebookCore
 
+private extension UIColor {
+    /// noty accent (#7DD3FC), same as `Color.notyAccent`.
+    static let notyAccent = UIColor(red: 125 / 255, green: 211 / 255, blue: 252 / 255, alpha: 1)
+    /// Dark glyph colour of the tool-icon design (#0B1220).
+    static let notyShade = UIColor(red: 11 / 255, green: 18 / 255, blue: 32 / 255, alpha: 1)
+}
+
+/// Image handle: a compact accent disc with a white ring and soft shadow,
+/// readable on light paper and on PDFs, inside an unchanged 44-pt target.
+@MainActor
+private final class ImageHandle: UIView {
+    private let disc = UIView()
+    private let symbol = UIImageView()
+    /// Rotation snapped to a right angle: inverted disc as feedback.
+    var snapped = false { didSet { if snapped != oldValue { updateColors() } } }
+    init(symbol name: String, title: String) {
+        super.init(frame: CGRect(x: 0, y: 0, width: 44, height: 44))
+        backgroundColor = .clear
+        disc.isUserInteractionEnabled = false
+        disc.layer.cornerRadius = 13; disc.layer.borderWidth = 2
+        disc.layer.shadowColor = UIColor.black.cgColor; disc.layer.shadowOpacity = 0.28
+        disc.layer.shadowRadius = 2.5; disc.layer.shadowOffset = CGSize(width: 0, height: 1)
+        disc.layer.shadowPath = UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: 26, height: 26)).cgPath
+        symbol.image = UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold))
+        symbol.contentMode = .center; symbol.isUserInteractionEnabled = false
+        addSubview(disc); disc.addSubview(symbol)
+        isAccessibilityElement = true; accessibilityTraits = .button; accessibilityLabel = title
+        updateColors()
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        disc.frame = CGRect(x: 9, y: 9, width: 26, height: 26); symbol.frame = disc.bounds
+    }
+    private func updateColors() {
+        disc.backgroundColor = snapped ? .white : .notyAccent
+        disc.layer.borderColor = (snapped ? UIColor.notyAccent : .white).cgColor
+        symbol.tintColor = .notyShade
+    }
+}
+
 /// One page-local image plane below ink/text. Gestures and controls are excluded
 /// from every export; undo is notebook-wide (EditorModel). All object
 /// coordinates stay in canonical points.
@@ -17,11 +58,15 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     private var onChange: (([ImageObject]) -> Void)?
     private var onError: ((String) -> Void)?
     private let outline = CAShapeLayer()
-    private let resize = UIButton(type: .system)
-    private let rotate = UIButton(type: .system)
+    /// Soft dark halo under the accent outline, so it reads on white paper.
+    private let outlineHalo = CAShapeLayer()
+    private let resize = ImageHandle(symbol: "arrow.up.left.and.arrow.down.right", title: "Bild proportional skalieren")
+    private let rotate = ImageHandle(symbol: "arrow.clockwise", title: "Bild frei drehen")
     private let toolbar = UIScrollView()
     private let actions = UIStackView()
     private var buttons: [String: UIButton] = [:]
+    /// Actions shown as switched on (accent symbol instead of a backing).
+    private var activeActions = Set<String>()
     /// Full width of the action bar (content of the scrollable bar).
     private var barWidth: CGFloat = 316
     private var dragStart: (objects: [ImageObject], object: ImageObject, point: CGPoint, generation: Int)?
@@ -39,26 +84,23 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         super.init(frame: frame)
         backgroundColor = .clear; isOpaque = false; contentMode = .redraw; clipsToBounds = true
         liveLayer.contentsGravity = .resize; liveLayer.isHidden = true; layer.addSublayer(liveLayer)
-        outline.fillColor = UIColor.clear.cgColor; outline.strokeColor = UIColor.systemBlue.cgColor
-        outline.lineWidth = 1.5; layer.addSublayer(outline)
+        for (line, color) in [(outlineHalo, UIColor.notyShade.withAlphaComponent(0.28)), (outline, .notyAccent)] {
+            line.fillColor = UIColor.clear.cgColor; line.strokeColor = color.cgColor
+            line.lineJoin = .round; layer.addSublayer(line)
+        }
         moveGesture.delegate = self; moveGesture.maximumNumberOfTouches = 1
         addGestureRecognizer(moveGesture)
         let tap = UITapGestureRecognizer(target: self, action: #selector(selectImage(_:)))
         tap.delegate = self; addGestureRecognizer(tap)
-        for (handle, symbol, title, selector) in [
-            (resize, "arrow.up.left.and.arrow.down.right", "Bild proportional skalieren", #selector(resizeImage(_:))),
-            (rotate, "arrow.clockwise", "Bild frei drehen", #selector(rotateImage(_:)))
-        ] {
-            handle.setImage(UIImage(systemName: symbol), for: .normal)
-            handle.backgroundColor = .systemBlue; handle.tintColor = .white; handle.layer.cornerRadius = 22
-            handle.accessibilityLabel = title
+        for (handle, selector) in [(resize, #selector(resizeImage(_:))), (rotate, #selector(rotateImage(_:)))] {
             let gesture = UIPanGestureRecognizer(target: self, action: selector); gesture.maximumNumberOfTouches = 1
             gesture.delegate = ScrollPanPriority.shared
             handle.addGestureRecognizer(gesture); addSubview(handle)
         }
         // Dark noty bar like the lasso action bar and the text format bar:
         // explicitly dark (the worksheet forces light), hairline contour,
-        // white symbols in 44-pt targets, subtle group dividers.
+        // white symbols in 44-pt targets, subtle group dividers, delete in red,
+        // a switched-on action in the accent (no backing box).
         actions.axis = .horizontal; actions.spacing = 4; actions.alignment = .center
         actions.accessibilityContainerType = .semanticGroup; actions.accessibilityLabel = "Bildaktionen"
         toolbar.overrideUserInterfaceStyle = .dark
@@ -68,7 +110,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         toolbar.showsHorizontalScrollIndicator = true; toolbar.indicatorStyle = .white
         toolbar.addSubview(actions); addSubview(toolbar)
         action("crop", title: "Zuschneiden", symbol: "crop") { [weak self] in self?.openCrop() }
-        action("turn", title: "Auf nächsten 90°-Winkel drehen", symbol: "rotate.right") { [weak self] in
+        action("turn", title: "Um 90° drehen", symbol: "rotate.right") { [weak self] in
             self?.edit { object in object.rotation = ImageObject.nextRightAngle(after: object.rotation) }
         }
         divider()
@@ -235,12 +277,14 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         path.apply(CGAffineTransform(rotationAngle: object.rotation * .pi / 180))
         path.apply(CGAffineTransform(translationX: object.x + object.width / 2 + pageLayout.contentOrigin.x,
                                    y: object.y + object.height / 2 + pageLayout.contentOrigin.y))
-        outline.path = path.cgPath
         let scale = controlScale
-        outline.lineWidth = 1.5 * scale
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        outline.path = path.cgPath; outlineHalo.path = outline.path
+        outline.lineWidth = 2 * scale; outlineHalo.lineWidth = 4 * scale
+        CATransaction.commit()
         placeHandle(resize, at: CGPoint(x: rect.maxX, y: rect.maxY), scale: scale)
         placeHandle(rotate, at: CGPoint(x: rect.maxX, y: rect.minY), scale: scale)
-        rotate.backgroundColor = rotationSnap == nil ? .systemBlue : .systemTeal
+        rotate.snapped = rotationSnap != nil
         let width = min(max(44, bounds.width / scale - 8), barWidth)
         let outerWidth = width * scale, outerHeight = 52 * scale
         let y = rect.maxY + 12 * scale + outerHeight <= bounds.maxY ? rect.maxY + 12 * scale : max(bounds.minY, rect.minY - 12 * scale - outerHeight)
@@ -257,7 +301,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         let start = convert(CGPoint.zero, to: window), end = convert(CGPoint(x: 100, y: 0), to: window)
         return 1 / max(0.01, hypot(end.x - start.x, end.y - start.y) / 100)
     }
-    private func placeHandle(_ handle: UIButton, at center: CGPoint, scale: CGFloat) {
+    private func placeHandle(_ handle: UIView, at center: CGPoint, scale: CGFloat) {
         let half = 22 * scale
         handle.bounds = CGRect(x: 0, y: 0, width: 44, height: 44)
         handle.transform = CGAffineTransform(scaleX: scale, y: scale)
@@ -273,13 +317,14 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     private func refresh(redraw: Bool = true) {
         isHidden = objects.isEmpty
         let visible = active && selected != nil
-        outline.isHidden = !visible; toolbar.isHidden = !visible
+        outline.isHidden = !visible; outlineHalo.isHidden = !visible; toolbar.isHidden = !visible
         resize.isHidden = !visible || selected?.locked == true; rotate.isHidden = resize.isHidden
         for (key, button) in buttons { button.isEnabled = key == "lock" || selected?.locked == false }
         if let lock = buttons["lock"] {
             let locked = selected?.locked == true
             lock.configuration?.image = UIImage(systemName: locked ? "lock.fill" : "lock.open")
-            lock.backgroundColor = locked ? UIColor.systemBlue.withAlphaComponent(0.2) : .clear
+            if locked { activeActions.insert("lock") } else { activeActions.remove("lock") }
+            lock.setNeedsUpdateConfiguration()
             lock.accessibilityLabel = locked ? "Bild entsperren" : "Bild sperren"; lock.toolTip = lock.accessibilityLabel
             lock.accessibilityValue = locked ? "Gesperrt" : nil
         }
@@ -294,11 +339,12 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 18, weight: .regular)
         config.baseForegroundColor = color
         button.configuration = config
-        // Disabled (locked image): clearly dimmed on the dark bar.
-        button.configurationUpdateHandler = { button in
-            button.configuration?.baseForegroundColor = button.isEnabled ? color : UIColor.white.withAlphaComponent(0.28)
+        // Disabled (locked image): clearly dimmed on the dark bar. Switched on
+        // (locked): the symbol takes the accent like a selected tool.
+        button.configurationUpdateHandler = { [weak self] button in
+            let on = self?.activeActions.contains(key) == true
+            button.configuration?.baseForegroundColor = !button.isEnabled ? UIColor.white.withAlphaComponent(0.28) : on ? .notyAccent : color
         }
-        button.layer.cornerRadius = 9
         button.accessibilityLabel = title; button.toolTip = title
         button.addAction(UIAction { _ in run() }, for: .touchUpInside)
         actions.addArrangedSubview(button); buttons[key] = button

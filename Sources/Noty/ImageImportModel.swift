@@ -69,7 +69,7 @@ extension ImageImport {
 
     /// Plain bytes from Photos: only a still image within the size limit.
     private static func stillImage(_ data: Data) throws -> Data {
-        guard data.count <= ImageLimits.maximumFileBytes else { throw ImageImportError.fileTooLarge }
+        guard data.count <= ImageCompression.maximumSourceBytes else { throw ImageImportError.fileTooLarge }
         switch ImageFileFormat.detect(data) {
         case .video: throw ImageImportError.video
         case .some: return data
@@ -96,7 +96,7 @@ extension ImageImport {
         for type in offered + ImportedStillImage.contentTypes where seen.insert(type.identifier).inserted {
             guard let data = pasteboard.data(forPasteboardType: type.identifier), !data.isEmpty,
                   ImageFileFormat.detect(data) != .video else { continue }
-            guard data.count <= ImageLimits.maximumFileBytes else { tooLarge = true; continue }
+            guard data.count <= ImageCompression.maximumSourceBytes else { tooLarge = true; continue }
             return data
         }
         if tooLarge { throw ImageImportError.fileTooLarge }
@@ -132,7 +132,14 @@ extension EditorModel {
             defer { busy = false }
             await awaitMutationAccess()
             do {
-                let data = try await read()
+                let source = try await read()
+                // Over 20 MB, beyond the pixel limit or larger than the notebook's
+                // remaining image budget: compressed instead of refused.
+                let room = ImageLimits.maximumNotebookBytes - notebook.imageOriginalBytes
+                // Almost no room left: the notebook-full message below explains it better.
+                let limit = room >= ImageCompression.minimumBudget ? min(ImageLimits.maximumFileBytes, room) : ImageLimits.maximumFileBytes
+                let fitted = try await Task.detached { try ImageCompression.fitting(source, limit: limit) }.value
+                let data = fitted.data
                 // Limits first: a clear message instead of a failed validation.
                 if let problem = notebook.imageInsertionProblem(bytes: data.count, pageID: pageID) {
                     throw ImageImportError(problem)
@@ -143,6 +150,9 @@ extension EditorModel {
                     throw PageOperationError.missingPage
                 }
                 updateImages((current.images ?? []) + [object], pageID: pageID)
+                if let original = fitted.originalBytes {
+                    fileStatus = "Bild verkleinert eingefügt (\(ImageLimits.megabytes(original)) → \(ImageLimits.megabytes(data.count)))"
+                }
             } catch { self.error = "Bild nicht eingefügt: \(error.localizedDescription)" }
         }
     }

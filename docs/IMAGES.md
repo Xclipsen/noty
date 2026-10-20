@@ -1,5 +1,24 @@
 # Bilder und Screenshots – Build 19
 
+## Ergänzung nach Build 51 – große Bilder werden verkleinert
+
+Nutzer zu Build 51: „Bilder, die über 20 MB sind, sollen komprimiert werden und trotzdem importiert werden können.“ Das ist eine bewusste Ausnahme von der Regel „Original unverändert“: Sie greift nur, wenn das Original nicht passt.
+
+- **Passt das Bild,** bleibt es Byte für Byte erhalten (HEIC bleibt HEIC).
+- **Passt es nicht, wird es neu kodiert** (`ImageCompression`). Das gilt bei:
+  - mehr als 20 MB
+  - mehr als 200 Megapixeln
+  - mehr Bytes, als im Bildbudget des Notizbuchs (40 MB) noch frei ist
+- **Kodierung:**
+  - Grundlage ist ein ImageIO-Vorschaubild mit eingerechneter Ausrichtung, längste Seite höchstens 4096 px.
+  - Deckende Bilder werden JPEG (Qualität ab 0,85, dann bis 0,65), Bilder mit Transparenz PNG.
+  - Passt es dann noch nicht, wird die Kantenlänge schrittweise verkleinert.
+- **Grenzen:**
+  - Gelesen werden Quellen bis 250 MB.
+  - Bleiben im Notizbuch weniger als 0,3 MB frei, erscheint wie bisher die Meldung „Notizbuch voll“.
+- **Hinweis:** Nach dem Einfügen erscheint unten links „Bild verkleinert eingefügt (alt → neu)“.
+- **Prüfung:** Core-Validierung und Python-Prüfer bleiben unverändert (20 MB/200 MP je gespeichertem Bild). Am iPad ungeprüft.
+
 ## Ergänzung nach Build 50 – Foto-Import mit Rückfallwegen
 
 Nutzer zu Build 50 (Screenshot): Auch Build 50 lehnte ein iPhone-Foto ab, mit der Systemmeldung „ImportedStillImage kann nicht importiert werden … keine kompatiblen Darstellungen“. Die Übergabe über die konkreten Standbildtypen passte also nicht zu dem, was die Fotomediathek für dieses Foto anbot. Die genaue Typliste des Fotos ist unbekannt.
