@@ -2,24 +2,13 @@ import SwiftUI
 import NotebookCore
 
 /// Classification of the external backup shared by the library badge and
-/// Settings › Backup & Daten. Never claims a completed cloud upload.
-enum BackupHealth: Equatable {
-    case notConfigured, folderUnreachable, failed, firstPending, stale(Date), ok(Date)
+/// Settings › Backup & Daten (logic and tests in Core). Never claims a
+/// completed cloud upload; a postponed attempt is never shown as failure.
+typealias BackupHealth = ExternalBackupHealth
 
-    @MainActor init(_ backup: ExternalBackupModel) {
-        let policy = backup.policy
-        if policy.target == .disabled { self = .notConfigured; return }
-        if backup.folderUnreachable { self = .folderUnreachable; return }
-        if let attempt = policy.lastAttempt, policy.lastSuccess.map({ attempt > $0 }) ?? true, !backup.busy {
-            self = .failed; return
-        }
-        guard let success = policy.lastSuccess else { self = .firstPending; return }
-        self = Date().timeIntervalSince(success) > 2 * 24 * 3600 ? .stale(success) : .ok(success)
-    }
-
-    /// Configured and working (or waiting for its first run).
-    var isSetUp: Bool {
-        switch self { case .ok, .firstPending: true; default: false }
+extension ExternalBackupHealth {
+    @MainActor init(_ backup: ExternalBackupModel, now: Date = Date()) {
+        self.init(backup.policy, folderUnreachable: backup.folderUnreachable, running: backup.busy, now: now)
     }
 
     /// Short status for the top right of Settings › Backup & Daten.
@@ -27,8 +16,10 @@ enum BackupHealth: Equatable {
         switch self {
         case .notConfigured: "Nicht eingerichtet"
         case .folderUnreachable: "Ordner neu wählen"
+        case .unreachable: "Nicht erreichbar"
         case .failed: "Fehlgeschlagen"
         case .stale: "Überfällig"
+        case .warning: "Gesichert mit Hinweis"
         case .ok, .firstPending: "Eingerichtet"
         }
     }
@@ -47,13 +38,22 @@ struct BackupStatusBadge: View {
         return true
     }
 
+    private var last: String {
+        externalBackup.policy.lastSuccess.map { " · zuletzt \($0.formatted(.relative(presentation: .named)))" } ?? ""
+    }
+
     private var state: (String, String) {
         switch BackupHealth(externalBackup) {
         case .folderUnreachable: return ("folder.badge.questionmark", "Backup-Ordner neu wählen")
-        case .failed: return ("exclamationmark.triangle", "Backup prüfen")
+        case .unreachable: return ("wifi.exclamationmark", "Backupziel nicht erreichbar" + last)
+        case .failed(let reason): return ("exclamationmark.triangle", "Backup fehlgeschlagen: \(reason)")
         case .firstPending: return ("clock.badge.exclamationmark", "Erstes Backup ausstehend")
-        case .stale(let date): return ("exclamationmark.triangle", "Backup \(date.formatted(.relative(presentation: .named)))")
+        case .stale(let date?):
+            let days = max(3, Int(Date().timeIntervalSince(date) / 86_400))
+            return ("exclamationmark.triangle", "Seit \(days) Tagen kein Backup")
+        case .stale(nil): return ("exclamationmark.triangle", "Noch kein Backup seit der Einrichtung")
         case .ok(let date): return ("checkmark.circle", "Backup \(date.formatted(.relative(presentation: .named)))")
+        case .warning(_, let warning): return ("exclamationmark.circle", "Gesichert; \(warning)")
         case .notConfigured:
             if let export = library.lastLibraryExport {
                 return ("archivebox", "Nur Dateiexport \(export.formatted(.relative(presentation: .named)))")

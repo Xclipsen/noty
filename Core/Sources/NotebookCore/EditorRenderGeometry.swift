@@ -17,7 +17,6 @@ public struct InkRenderViewport: Equatable, Sendable {
             width: max(1, min(page.width, ceil((visible.x + visible.width + pad) / step) * step) - x),
             height: max(1, min(page.height, ceil((visible.y + visible.height + pad) / step) * step) - y))
     }
-    public func pagePoint(native point: PagePoint) -> PagePoint { .init(x: point.x / scale, y: point.y / scale) }
     /// Reuse a native viewport until the visible region approaches its reserve.
     /// A page edge needs no reserve outside the page itself.
     /// `ignoringScale` keeps the current raster while a pinch is still moving:
@@ -59,9 +58,6 @@ extension NotebookViewportGeometry {
 public enum EditorRenderGeometry {
     public static func viewportScale(size: PageSize, displayScale: Double, screenScale: Double) -> Double {
         min(max(0.001, displayScale * screenScale), sqrt(6_000_000 / max(1, size.width * size.height)))
-    }
-    public static func textScale(size: PageSize, displayScale: Double) -> Double {
-        min(max(0.001, displayScale), sqrt(2_000_000 / max(1, size.width * size.height)))
     }
     /// Device logs (Feedback 33) showed multi-second main-thread stalls only at
     /// PencilKit's finest tile level (native zoom ≥ 8). Beyond this cap the ink

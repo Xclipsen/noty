@@ -44,18 +44,6 @@ extension PageLayout {
         self.init(source: sourceGeometry, legacyA4: page.geometry == nil, margins: page.margins, extendsPaper: page.writingSpaceExtendsPaper)
     }
 
-    var textFrame: CGRect {
-        CGRect(x: contentOrigin.x + contentCanvas.width * 48 / 595,
-               y: contentOrigin.y + contentCanvas.height * 625 / 842,
-               width: contentCanvas.width * 499 / 595, height: contentCanvas.height * 169 / 842)
-    }
-
-    var textInsets: UIEdgeInsets {
-        // Version-1 UITextView used 8pt vertical inset plus 5pt line padding.
-        let horizontal: CGFloat = legacyA4 ? 5 : 8
-        return UIEdgeInsets(top: 8, left: horizontal, bottom: 8, right: horizontal)
-    }
-    var textContentFrame: CGRect { textFrame.inset(by: textInsets) }
     var canonicalInkBounds: CGRect {
         CGRect(x: -contentOrigin.x, y: -contentOrigin.y, width: canvas.width, height: canvas.height)
     }

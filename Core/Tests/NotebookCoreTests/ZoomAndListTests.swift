@@ -89,7 +89,6 @@ final class ZoomAndListTests: XCTestCase {
             let displayed = PagePoint(x: plan.frame.x + (native.x - plan.nativeOffset.x) / scale,
                                       y: plan.frame.y + (native.y - plan.nativeOffset.y) / scale)
             XCTAssertEqual(displayed.x, p.x, accuracy: 0.0001); XCTAssertEqual(displayed.y, p.y, accuracy: 0.0001)
-            XCTAssertEqual(plan.pagePoint(native: native), p)
         }
     }
     func testLargePageNativeViewportStaysScreenSizedAndClipsToPage() {
@@ -101,12 +100,6 @@ final class ZoomAndListTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(plan.frame.x, 0)
         let edge = InkRenderViewport(page: .a4, visible: .init(x: -100, y: -100, width: 900, height: 1000), scale: 1)
         XCTAssertEqual(edge.frame, .init(x: 0, y: 0, width: 595, height: 842))
-    }
-    func testInkDisplayTranslationStillSupportsNegativeMarginCoordinates() {
-        let origin = PagePoint(x: 180, y: 100), point = PagePoint(x: -80, y: -40), scale = 3.0
-        let plan = InkRenderViewport(page: .init(width: 1000, height: 1200), visible: .init(x: 20, y: 10, width: 400, height: 500), scale: scale)
-        let displayed = plan.pagePoint(native: .init(x: (point.x + origin.x) * scale, y: (point.y + origin.y) * scale))
-        XCTAssertEqual(displayed.x - origin.x, point.x); XCTAssertEqual(displayed.y - origin.y, point.y)
     }
     func testZoomScaleAndFocusUseExactlyTheSameAnimationProgress() {
         let range = NotebookViewportGeometry.zoomRange(viewport: .init(width: 900, height: 1000), page: .a4)

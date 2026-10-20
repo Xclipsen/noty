@@ -6,7 +6,7 @@
     <key>CFBundleDevelopmentRegion</key><string>de</string>
     <key>CFBundleLocalizations</key><array><string>de</string></array>
     <key>CFBundleShortVersionString</key><string>0.0.1</string>
-    <key>CFBundleVersion</key><string>46.2</string>
+    <key>CFBundleVersion</key><string>48</string>
     <key>CFBundleIcons</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon</string></array></dict></dict>
     <key>CFBundleIcons~ipad</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon</string></array></dict></dict>
     <key>UTExportedTypeDeclarations</key><array><dict>
@@ -23,6 +23,17 @@
         <key>UTTypeTagSpecification</key><dict>
             <key>public.filename-extension</key><array><string>notylibrary</string></array>
         </dict>
+    </dict></array>
+    <key>CFBundleDocumentTypes</key><array><dict>
+        <key>CFBundleTypeName</key><string>noty Heft-Backup</string>
+        <key>CFBundleTypeRole</key><string>Viewer</string>
+        <key>LSHandlerRank</key><string>Owner</string>
+        <key>LSItemContentTypes</key><array><string>de.la.noty.backup</string></array>
+    </dict><dict>
+        <key>CFBundleTypeName</key><string>noty Bibliotheksbackup</string>
+        <key>CFBundleTypeRole</key><string>Viewer</string>
+        <key>LSHandlerRank</key><string>Owner</string>
+        <key>LSItemContentTypes</key><array><string>de.la.noty.library</string></array>
     </dict></array>
     <key>UIDeviceFamily</key><array><integer>2</integer></array>
     <key>UIFileSharingEnabled</key><true/>

@@ -18,9 +18,9 @@ Ergänzend eine stets bereitstehende leere Schreibseite unten, solange unbenutzt
 
 ## Speicherung und Prüfung
 
-Notebook-Schema 8 ergänzt optionale `flowID`/`flowRegion` und optionale Stilfelder; bestehende Archiv-/Manifest-/Werkzeugformate bleiben gleich. Bestehende Daten erst bei einer tatsächlichen neuen Text-/Formatänderung migrieren; exakte bestätigte Altbytes vor dem Commit unter `Migrations` sichern. Alle Kopier-/Papierkorb-/Archivwege und unabhängige Pythonvalidierung berücksichtigen neue Felder. Die virtuelle Seite benötigt kein gespeichertes Flag und keine Exportfilterung. [STORAGE](STORAGE.md).
+Notebook-Schema 8 ergänzt optionale `flowID`/`flowRegion` und optionale Stilfelder; bestehende Archiv-/Manifest-/Werkzeugformate bleiben gleich. Bestehende Daten erst bei einer tatsächlichen neuen Text-/Formatänderung migrieren; exakte bestätigte Altbytes vor dem Commit unter `Migrations` sichern. Alle Kopier-/Papierkorb-/Archivwege und unabhängige Pythonvalidierung berücksichtigen neue Felder. Die virtuelle Seite benötigt kein gespeichertes Flag und keine Exportfilterung. [STORAGE](../STORAGE.md).
 
-219 Core-Tests und unabhängiger Schema-8-Heft-/Bibliotheksbackup-/Restore-Roundtrip bestanden. Signierter SDK-Build erfolgreich; Build 27 installiert und am Gerät bestätigt, alle 22 Hefte/152 Dateien unverändert zurückgelesen. Neue native Eingabe noch ungeprüft. Details, Installation und Bestandsvergleich: [TESTING](TESTING.md). Die ursprünglichen Scrollfehler sind aus Quelltext als mögliche Rückkopplungen eingegrenzt; eine native Reproduktion mit Trace und eine erfolgreiche Geräteabnahme sind damit nicht behauptet.
+219 Core-Tests und unabhängiger Schema-8-Heft-/Bibliotheksbackup-/Restore-Roundtrip bestanden. Signierter SDK-Build erfolgreich; Build 27 installiert und am Gerät bestätigt, alle 22 Hefte/152 Dateien unverändert zurückgelesen. Neue native Eingabe noch ungeprüft. Details, Installation und Bestandsvergleich: [TESTING](../TESTING.md). Die ursprünglichen Scrollfehler sind aus Quelltext als mögliche Rückkopplungen eingegrenzt; eine native Reproduktion mit Trace und eine erfolgreiche Geräteabnahme sind damit nicht behauptet.
 
 ## Gebündelter Gerätetest – noch offen
 
@@ -33,7 +33,7 @@ Notebook-Schema 8 ergänzt optionale `flowID`/`flowRegion` und optionale Stilfel
 
 Notability dokumentiert [direktes Schreiben, freie Textfelder und die Tastatur-Formatleiste](https://support.gingerlabs.com/en-us/articles/16300260-text-and-text-boxes). Der konkrete automatische Ausschluss der letzten leeren Fläche ist dort nicht eindeutig beschrieben; deshalb als Nutzeranforderung für Noty festgelegt, nicht als verifizierte aktuelle Exportgarantie von Notability ausgegeben. [Offizielle Export-Hilfe](https://support.gingerlabs.com/en-us/articles/16300163-sharing-notes). Öffentliche native Grundlagen: [Apple UITextView](https://developer.apple.com/documentation/uikit/uitextview), [Accessory](https://developer.apple.com/documentation/uikit/uitextview/inputaccessoryview), [gemeinsames Glyphlayout](https://developer.apple.com/documentation/uikit/nslayoutmanager).
 
-![Absatzstile und dunkle Tastatur](assets/ui-rebuild/text-reference-248-27.png)
-![Farbpalette](assets/ui-rebuild/text-reference-249-27.png)
-![Weitere Formate](assets/ui-rebuild/text-reference-250-27.png)
-![Code-Darstellung als zusätzliche Gestaltungsreferenz](assets/ui-rebuild/text-reference-251-27.png)
+![Absatzstile und dunkle Tastatur](../assets/ui-rebuild/text-reference-248-27.png)
+![Farbpalette](../assets/ui-rebuild/text-reference-249-27.png)
+![Weitere Formate](../assets/ui-rebuild/text-reference-250-27.png)
+![Code-Darstellung als zusätzliche Gestaltungsreferenz](../assets/ui-rebuild/text-reference-251-27.png)

@@ -19,7 +19,10 @@ public struct Page: Codable, Equatable, Identifiable, Sendable {
 
 /// One worksheet; each PDF page has its own PencilKit drawing and fixed text box.
 public struct Notebook: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 10
+    /// 10: PDF sources above 20 MB (Build 46 rejects them as invalid and would
+    /// fall back to an older revision; schema 10 makes it refuse the notebook).
+    /// 11: writing space beside paper pages (right/below, in the page's own paper).
+    public static let currentSchemaVersion = 11
     // Existing callers retain the legacy representation until a structural edit.
     public var schemaVersion: Int = 2
     public var id: UUID = UUID()
@@ -102,8 +105,11 @@ public struct Notebook: Codable, Equatable, Sendable {
         }
         guard schemaVersion >= 3, pdf == nil, sources.count <= 500,
               Set(sources.map(\.id)).count == sources.count,
-              sources.allSatisfy({ !$0.data.isEmpty && $0.data.count <= 20_000_000 && (1...500).contains($0.pageCount) }),
-              sources.reduce(0, { $0 + $1.data.count }) <= 100_000_000 else { throw StorageError.invalidDocument }
+              sources.allSatisfy({ !$0.data.isEmpty && $0.data.count <= PDFSource.maximumBytes && (1...500).contains($0.pageCount) }),
+              sources.reduce(0, { $0 + $1.data.count }) <= PDFSource.maximumTotalBytes else { throw StorageError.invalidDocument }
+        if sources.contains(where: { $0.data.count > PDFSource.legacyMaximumBytes }) {
+            guard schemaVersion >= 10 else { throw StorageError.invalidDocument }
+        }
         let lookup = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0.pageCount) })
         for page in allPages {
             if let reference = page.pdfReference {
@@ -114,10 +120,10 @@ public struct Notebook: Codable, Equatable, Sendable {
                       style == .legacyTest ? page.geometry == nil : (schemaVersion >= 7 ? page.geometry != nil : page.geometry == PaperStyle.geometry) else {
                     throw StorageError.invalidDocument
                 }
-                // Schema 10: a paper sheet may grow right/down; the extra space is
+                // Schema 11: a paper sheet may grow right/down; the extra space is
                 // the same paper, so lines and colour continue without a seam.
                 if let margins = page.margins {
-                    guard schemaVersion >= 10, style != .legacyTest, margins.left == 0, margins.top == 0,
+                    guard schemaVersion >= 11, style != .legacyTest, margins.left == 0, margins.top == 0,
                           margins.style == style, margins.color == (page.paperColor ?? .white) else {
                         throw StorageError.invalidDocument
                     }
@@ -155,12 +161,11 @@ public enum StorageError: Error, LocalizedError {
     }
 }
 
-/// Confined to NotebookRepository in the app; no concurrent writers.
-/// Both files contain complete snapshots, including the original PDF.
+/// Read-only access to the prototype files (notebook.json, recovery.json),
+/// used once by RevisionStore to migrate them; both are complete snapshots,
+/// including the original PDF. They are never written or changed again.
 public final class NotebookStore {
     public let directory: URL
-    private var lastGood: Data?
-    private var lastGoodDocument: Notebook?
     public private(set) var recovered = false
 
     public init(directory: URL) { self.directory = directory }
@@ -173,8 +178,6 @@ public final class NotebookStore {
             if let data = try? Data(contentsOf: url) {
                 do {
                     let notebook = try Notebook.decode(data)
-                    lastGood = data
-                    lastGoodDocument = notebook
                     recovered = url == recovery
                     return notebook
                 } catch StorageError.unsupportedSchema(let version) {
@@ -188,26 +191,5 @@ public final class NotebookStore {
         guard !fm.fileExists(atPath: primary.path),
               !fm.fileExists(atPath: recovery.path) else { throw StorageError.unreadableCopies }
         return Notebook()
-    }
-
-    public func save(_ notebook: Notebook) throws {
-        // A background flush of unchanged content must not rotate away history.
-        if !recovered, lastGoodDocument == notebook,
-           FileManager.default.fileExists(atPath: primary.path) { return }
-        let data = try JSONEncoder().encode(notebook)
-        _ = try Notebook.decode(data)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        if let old = lastGoodDocument, old.schemaVersion < notebook.schemaVersion, let lastGood {
-            let archive = directory.appendingPathComponent("Migrations/\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
-            // A failed archive write aborts the upgrade before changing either snapshot.
-            try lastGood.write(to: archive.appendingPathComponent("notebook-v\(old.schemaVersion).json"), options: .atomic)
-        }
-        // Rotate only previously decoded good bytes, never a corrupt primary file.
-        try (lastGood ?? data).write(to: recovery, options: .atomic)
-        try data.write(to: primary, options: .atomic)
-        lastGood = data
-        lastGoodDocument = notebook
-        recovered = false
     }
 }

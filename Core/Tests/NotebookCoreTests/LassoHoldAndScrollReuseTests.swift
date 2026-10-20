@@ -1,7 +1,7 @@
 import XCTest
 @testable import NotebookCore
 
-final class Feedback30Tests: XCTestCase {
+final class LassoHoldAndScrollReuseTests: XCTestCase {
     private let box = LassoRegion(points: [.init(x: -100, y: -80), .init(x: 200, y: -80), .init(x: 200, y: 250), .init(x: -100, y: 250)])
     func testOneVisibleLassoPreservesEveryLegacyToolAndCustomOrder() throws {
         var preferences = ToolbarPreferences(); preferences.order.reverse()
@@ -17,8 +17,6 @@ final class Feedback30Tests: XCTestCase {
         XCTAssertTrue(box.contains(.init(x: -100, y: -80)))
         XCTAssertFalse(box.containsPolyline([.init(x: -120, y: 0), .init(x: 220, y: 0)]))
         XCTAssertFalse(box.contains(.init(x: 180, y: 200, width: 40, height: 40)))
-        XCTAssertTrue(box.containsStroke([.init(x: -90, y: 0)], radius: 2))
-        XCTAssertFalse(box.containsStroke([.init(x: -99, y: 0), .init(x: 100, y: 0)], radius: 5))
     }
     func testFreeformUsesActualInkPathInsteadOfBoundingBoxCorners() {
         let polygon = LassoRegion(points: [.init(x: 0, y: 50), .init(x: 50, y: 0), .init(x: 100, y: 50), .init(x: 50, y: 100)])

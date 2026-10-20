@@ -1,7 +1,7 @@
 import XCTest
 @testable import NotebookCore
 
-final class LassoAndViewport31Tests: XCTestCase {
+final class LassoTouchAndHighZoomTests: XCTestCase {
     private let region = LassoRegion(points: [.init(x: 0, y: 0), .init(x: 100, y: 0), .init(x: 100, y: 100), .init(x: 0, y: 100)])
     func testTouchedObjectsAndCrossingInkAreSelectedWithoutCompleteEnclosure() {
         XCTAssertTrue(region.intersects(.init(x: 90, y: 50, width: 30, height: 40)))
@@ -68,8 +68,6 @@ final class LassoAndViewport31Tests: XCTestCase {
                 visible: .init(x: 4000, y: 4000, width: 1100 / scale, height: 800 / scale), scale: scale)
             let resolution = EditorRenderGeometry.viewportScale(size: viewport.frame.size, displayScale: scale, screenScale: 2)
             XCTAssertLessThanOrEqual(viewport.frame.width * viewport.frame.height * resolution * resolution, 6_000_001)
-            let text = EditorRenderGeometry.textScale(size: .a4, displayScale: scale * 2)
-            XCTAssertLessThanOrEqual(PageSize.a4.width * PageSize.a4.height * text * text, 2_000_001)
         }
     }
     func testStandardWritingAreaKeepsPointAndTextSizeAcrossMixedImports() throws {

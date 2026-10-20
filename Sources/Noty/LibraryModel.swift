@@ -15,6 +15,9 @@ struct OpenNotebook: Identifiable {
 final class LibraryModel: ObservableObject {
     let root: URL
     private let store: LibraryStore
+    /// Long-lived so its listing cache skips unchanged restored copies on
+    /// every refresh. Lists only; it never saves the main package.
+    private let restoreCatalog: NotebookRepository
     @Published var snapshot = LibrarySnapshot()
     @Published var ready = false
     @Published var busy = false
@@ -56,6 +59,7 @@ final class LibraryModel: ObservableObject {
     init(root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true)) {
         self.root = root
         store = LibraryStore(root: root)
+        restoreCatalog = NotebookRepository(directory: root)
         // Container-independent keys; the former absolute-path key is migrated once.
         libraryBackupKey = StableDefaults.key("libraryBackup", root: root, legacyPrefix: "noty.libraryBackup.", pick: StableDefaults.newestDate)
         lastOpenedKey = StableSettingsKey.key("lastOpened", scope: StableDefaults.scope(root))
@@ -75,21 +79,56 @@ final class LibraryModel: ObservableObject {
         }
     }
 
-    var editorBackup: (() async -> Data?)?
+    /// Set by the open editor workspace: commits every pane (editors pause only
+    /// for this flush) so a following archive contains all acknowledged input.
+    var editorCommit: (() async -> BackupCommit)?
+    /// An archive is being written from committed packages; the library stays
+    /// usable, only permanent deletion waits for it.
+    private(set) var archiveRunning = false
+    private var preparedExport: URL?
+    private var preparedExportWarning: String?
 
-    /// `background`: automatic backup; the library keeps its normal appearance.
-    func libraryBackup(editorsPaused: Bool = false, background: Bool = false) async -> Data? {
-        guard ready, !busy, opened == nil || editorsPaused else { return nil }
-        busy = true; backgroundBusy = background
-        defer { busy = false; backgroundBusy = false }
+    /// Why an automatic backup should wait a moment instead of starting now.
+    var backupBlocker: String? {
+        if !ready { return "Bibliothek wird geladen" }
+        if busy && !backgroundBusy { return "Bibliotheksvorgang läuft" }
+        if archiveRunning { return "Ein Backup läuft bereits" }
+        return nil
+    }
+
+    /// Streams the committed library into a new verified temporary archive, one
+    /// notebook at a time and off the UI actor, including the Apple-framework
+    /// checks. With an open editor the caller committed it first (`editorCommit`);
+    /// editing continues meanwhile, later commits are simply not included.
+    /// A notebook with a damaged newest revision goes in with the state its
+    /// editor would open (`olderStates`), so it never blocks the whole backup.
+    func buildArchive(editorsCommitted: Bool = false) async throws -> PreparedLibraryArchive {
+        guard ready, opened == nil || editorsCommitted, !archiveRunning else {
+            throw BackupPostponed(reason: backupBlocker ?? "Notizbuch geöffnet")
+        }
+        archiveRunning = true; defer { archiveRunning = false }
+        let plan = try await store.backupPlan()
+        let url = try BackupScratch.newFile()
+        let task = Task.detached(priority: .utility) { () throws -> PreparedLibraryArchive in
+            var olderStates: [String] = []
+            let summary = try LibraryArchive.write(plan, to: url, validate: BackupValidation.validate,
+                                                   olderState: { olderStates.append($0.title) })
+            return PreparedLibraryArchive(url: url, summary: summary, olderStates: olderStates)
+        }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    /// Manual export from Settings: closed editors, visible progress, alert on error.
+    func libraryBackup() async -> PreparedLibraryArchive? {
+        guard ready, !busy, opened == nil else { return nil }
+        busy = true; defer { busy = false }
+        discardPreparedExport()
         backupStatus = "Bibliotheksbackup wird vorbereitet …"
         do {
-            let bundle = try await store.backupBundle()
-            // Framework validation happens before calling this a usable export.
-            for document in bundle.documents { try EditorModelValidation.validate(document) }
-            let bytes = try await Task.detached { try LibraryArchive.encode(bundle) }.value
-            backupStatus = "Bibliotheksbackup vollständig vorbereitet"
-            return bytes
+            let archive = try await buildArchive()
+            preparedExport = archive.url; preparedExportWarning = archive.warning
+            backupStatus = archive.warning.map { "Bibliotheksbackup vorbereitet; \($0)" } ?? "Bibliotheksbackup vollständig vorbereitet"
+            return archive
         } catch {
             backupStatus = "Bibliotheksbackup fehlgeschlagen"
             self.error = error.localizedDescription
@@ -102,6 +141,14 @@ final class LibraryModel: ObservableObject {
         UserDefaults.standard.set(date, forKey: libraryBackupKey)
         lastLibraryExport = date
         backupStatus = "Bibliotheksdatei exportiert: \(date.formatted(date: .omitted, time: .shortened))"
+        // Success with warning: shown in the library banner, not as an error.
+        if let preparedExportWarning { warning = "Bibliotheksdatei exportiert; \(preparedExportWarning). Notizbuch öffnen und prüfen." }
+        discardPreparedExport()
+    }
+
+    private func discardPreparedExport() {
+        if let preparedExport { BackupScratch.remove(preparedExport) }
+        preparedExport = nil; preparedExportWarning = nil
     }
 
     func editorChoices() async -> [OpenNotebook] {
@@ -138,7 +185,7 @@ final class LibraryModel: ObservableObject {
             }
             let notice = notices.isEmpty ? nil : notices.joined(separator: " ")
             if warning != notice { warning = notice }
-            let catalog = try await NotebookRepository(directory: root).restoredCopies()
+            let catalog = try await restoreCatalog.restoredCopies()
             restoredCopies = catalog.notebooks.compactMap { copy -> RestoredNotebook? in
                 guard let item = snapshot.items.first(where: { $0.id == copy.id }), !snapshot.isTrashed(copy.id) else { return nil }
                 var result = copy; result.title = item.title; return result
@@ -170,18 +217,41 @@ final class LibraryModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
 
-    func artwork(for id: UUID, cache: PageThumbnailCache) async throws -> (NotebookAppearance?, UIImage?) {
+    /// Read-only snapshot of the last committed revision (PDF export from the library).
+    func committedNotebook(_ id: UUID) async throws -> Notebook { try await store.previewDocument(id: id) }
+
+    private final class Tile {
+        let stamp: String, appearance: NotebookAppearance?, image: UIImage?
+        init(stamp: String, appearance: NotebookAppearance?, image: UIImage?) { self.stamp = stamp; self.appearance = appearance; self.image = image }
+    }
+    /// Tile previews per committed revision: an unchanged notebook is not decoded again.
+    private let tiles: NSCache<NSUUID, Tile> = {
+        let cache = NSCache<NSUUID, Tile>(); cache.totalCostLimit = 24 * 1024 * 1024; return cache
+    }()
+
+    func artwork(for id: UUID) async throws -> (NotebookAppearance?, UIImage?) {
+        let url = try await store.documentURL(id: id)
+        // Read before the document: a newer commit in between only re-renders later.
+        let stamp = await Task.detached(priority: .utility) { NotebookRevisionStamp.read(directory: url) }.value
+        if let stamp, let tile = tiles.object(forKey: id as NSUUID), tile.stamp == stamp { return (tile.appearance, tile.image) }
         let document = try await store.previewDocument(id: id)
         try Task.checkCancellation()
-        if document.appearance?.coverEnabled == true { return (document.appearance, nil) }
-        guard let page = document.pages.first else { throw StorageError.invalidDocument }
-        let pdf: PDFDocument?
-        let index: Int
-        if let reference = page.pdfReference {
-            pdf = document.pdfSources?.first(where: { $0.id == reference.sourceID }).flatMap { PDFDocument(data: $0.data) }
-            index = reference.pageIndex
-        } else { pdf = document.pdf.flatMap { PDFDocument(data: $0) }; index = 0 }
-        return (nil, try cache.image(page: page, source: pdf?.page(at: index)))
+        let result: (NotebookAppearance?, UIImage?)
+        if document.appearance?.coverEnabled == true { result = (document.appearance, nil) }
+        else {
+            guard let page = document.pages.first else { throw StorageError.invalidDocument }
+            // The source PDF is parsed off the main actor (CGPDF), never with PDFKit here.
+            let source: PageThumbnailCache.Source
+            if let reference = page.pdfReference {
+                source = document.pdfSources?.first(where: { $0.id == reference.sourceID }).map { .data($0.data, reference.pageIndex) } ?? .none
+            } else { source = document.pdf.map { .data($0, 0) } ?? .none }
+            result = (nil, try await PageThumbnailCache.render(page, source: source))
+        }
+        if let stamp {
+            let pixels = result.1.map { Int($0.size.width * $0.size.height * $0.scale * $0.scale * 4) } ?? 1
+            tiles.setObject(Tile(stamp: stamp, appearance: result.0, image: result.1), forKey: id as NSUUID, cost: pixels)
+        }
+        return result
     }
     func createFolder(_ title: String, parent: UUID?) async {
         await change { try await store.createFolder(title: title, parentID: parent) }
@@ -235,6 +305,8 @@ final class LibraryModel: ObservableObject {
     private func purging(_ action: () async throws -> LibraryPurgeResult) async {
         await settle()
         guard ready, !busy, opened == nil else { return }
+        // A running backup reads these packages; deleting them would abort it.
+        guard !archiveRunning else { error = "Bitte warten, bis das laufende Backup abgeschlossen ist."; return }
         busy = true
         defer { busy = false }
         do {
@@ -334,13 +406,18 @@ final class LibraryModel: ObservableObject {
                     try document.setMargins(margins, pageIDs: [page.id])
                 }
             }
+            // Originals above 20 MB get schema 10 at once, so Build 46 refuses the
+            // whole notebook instead of failing later edits.
+            if data.count > PDFSource.legacyMaximumBytes { document = try document.preparedForPageEditing() }
             snapshot = try await store.createDocument(document, parentID: parent)
         } catch { self.error = "PDF-Import fehlgeschlagen: \(error.localizedDescription)" }
     }
 
-    func importBackup(_ url: URL, parent: UUID?) async {
+    /// Restores a notebook backup as a new separate copy; nil on failure (alert shown).
+    @discardableResult
+    func importBackup(_ url: URL, parent: UUID?) async -> RestoredNotebook? {
         await settle()
-        guard ready, !busy, opened == nil else { return }
+        guard ready, !busy, opened == nil else { return nil }
         busy = true
         let access = url.startAccessingSecurityScopedResource()
         defer {
@@ -355,7 +432,8 @@ final class LibraryModel: ObservableObject {
             let restored = try await repository.commitRestore(prepared)
             snapshot = try await store.load().snapshot
             if let parent { snapshot = try await store.move(restored.id, to: parent) }
-        } catch { self.error = "Wiederherstellung fehlgeschlagen: \(error.localizedDescription)" }
+            return restored
+        } catch { self.error = "Wiederherstellung fehlgeschlagen: \(error.localizedDescription)"; return nil }
     }
 
     nonisolated static func readPDF(_ url: URL) throws -> Data {
@@ -363,8 +441,8 @@ final class LibraryModel: ObservableObject {
         defer { try? handle.close() }
         var data = Data()
         while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
-            guard data.count + chunk.count <= 20_000_000 else {
-                throw NSError(domain: "noty", code: 1, userInfo: [NSLocalizedDescriptionKey: "PDFs dürfen derzeit höchstens 20 MB groß sein."])
+            guard data.count + chunk.count <= PDFSource.maximumBytes else {
+                throw NSError(domain: "noty", code: 1, userInfo: [NSLocalizedDescriptionKey: "PDFs dürfen höchstens 100 MB groß sein."])
             }
             data.append(chunk)
         }

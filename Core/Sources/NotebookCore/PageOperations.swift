@@ -52,6 +52,12 @@ public struct PDFPageReference: Codable, Equatable, Hashable, Sendable {
 
 /// Original bytes are immutable through page operations. Many pages can share a source.
 public struct PDFSource: Codable, Equatable, Identifiable, Sendable {
+    /// Per original and for all originals of one notebook (active + trash).
+    /// A 100 MB source is ~133 MB as Base64 and still fits a 200 MB revision.
+    public static let maximumBytes = 100_000_000
+    public static let maximumTotalBytes = 100_000_000
+    /// Limit of Build 46 and older; larger sources require schema 10.
+    public static let legacyMaximumBytes = 20_000_000
     public let id: UUID
     public let data: Data
     public let pageCount: Int
@@ -73,14 +79,15 @@ public struct DeletedPage: Codable, Equatable, Identifiable, Sendable {
 public enum PageTrashReason: String, Codable, Sendable { case marginReduction, cleared }
 
 public enum PageOperationError: Error, LocalizedError {
-    case missingPage, invalidOrder, lastPage, pageLimit, trashLimit
+    case missingPage, invalidOrder, lastPage, pageLimit, trashLimit, sourceLimit
     public var errorDescription: String? {
         switch self {
+        case .sourceLimit: "Eine PDF darf höchstens 100 MB groß sein, alle PDF-Originale eines Hefts zusammen (einschließlich Seitenpapierkorb) ebenfalls höchstens 100 MB."
         case .missingPage: "Diese Seite ist nicht mehr vorhanden. Bitte die Seitenliste erneut öffnen."
         case .invalidOrder: "Die gewünschte Seitenposition ist ungültig."
         case .lastPage: "Die letzte Seite eines Hefts bleibt erhalten."
         case .pageLimit: "Ein Heft unterstützt derzeit höchstens 500 aktive Seiten."
-        case .trashLimit: "Der Seitenpapierkorb enthält bereits 500 Seiten. Bitte zunächst ein neues Heft verwenden."
+        case .trashLimit: "Der Seitenpapierkorb enthält bereits 500 Seiten. Bitte dort einzelne Seiten endgültig löschen oder den Papierkorb leeren."
         }
     }
 }
@@ -127,6 +134,7 @@ extension Notebook {
             result.pages[0].paper = .legacyTest
         }
         result.pdf = nil
+        result.raiseSchemaForLargeSources()
         try result.validate()
         return result
     }
@@ -161,6 +169,10 @@ extension Notebook {
         var next = try preparedForPageEditing()
         guard !geometries.isEmpty, next.pages.count + geometries.count <= 500 else { throw PageOperationError.pageLimit }
         guard (0...next.pages.count).contains(index) else { throw PageOperationError.invalidOrder }
+        guard data.count <= PDFSource.maximumBytes,
+              (next.pdfSources ?? []).reduce(data.count, { $0 + $1.data.count }) <= PDFSource.maximumTotalBytes else {
+            throw PageOperationError.sourceLimit
+        }
         let source = PDFSource(data: data, pageCount: geometries.count)
         let additions = geometries.enumerated().map { offset, geometry in
             var page = Page(); page.geometry = geometry
@@ -168,6 +180,7 @@ extension Notebook {
             return page
         }
         next.pdfSources?.append(source)
+        next.raiseSchemaForLargeSources()
         next.pages.insert(contentsOf: additions, at: index)
         try next.validate(); self = next
         return additions.map(\.id)
@@ -260,6 +273,40 @@ extension Notebook {
         return entry.page.id
     }
 
+    /// Permanently removes one page-trash entry (also margin/clear snapshots),
+    /// then every PDF source no remaining page references.
+    public mutating func deleteTrashedPage(_ id: UUID) throws {
+        var next = try preparedForPageEditing()
+        guard let offset = next.deletedPages?.firstIndex(where: { $0.id == id }) else { throw PageOperationError.missingPage }
+        next.deletedPages?.remove(at: offset)
+        next.removeUnreferencedSources()
+        try next.validate(); self = next
+    }
+
+    public mutating func emptyPageTrash() throws {
+        var next = try preparedForPageEditing()
+        guard next.deletedPages?.isEmpty == false else { return }
+        next.deletedPages = []
+        next.removeUnreferencedSources()
+        try next.validate(); self = next
+    }
+
+    /// Sources are referenced only through `pdfReference` of active pages and
+    /// page-trash entries (margin-restore and clear snapshots are trash entries);
+    /// copied pages carry their own source bytes. Bytes of kept sources stay as is.
+    mutating func removeUnreferencedSources() {
+        let used = Set((pages + (deletedPages ?? []).map(\.page)).compactMap { $0.pdfReference?.sourceID })
+        pdfSources?.removeAll { !used.contains($0.id) }
+    }
+
+    /// Every way a source enters (import, legacy conversion, paste) raises the
+    /// schema; removing the source later never lowers it again.
+    mutating func raiseSchemaForLargeSources() {
+        if (pdfSources ?? []).contains(where: { $0.data.count > PDFSource.legacyMaximumBytes }) {
+            schemaVersion = max(10, schemaVersion)
+        }
+    }
+
     public mutating func toggleBookmark(_ id: UUID) throws {
         var next = try preparedForPageEditing()
         guard let index = next.pages.firstIndex(where: { $0.id == id }) else { throw PageOperationError.missingPage }
@@ -283,11 +330,11 @@ extension Notebook {
         try next.validate(); self = next
     }
 
-    /// Writing space on paper needs schema 10: older builds lock such a
+    /// Writing space on paper needs schema 11: older builds lock such a
     /// notebook instead of rejecting it into an older recovery copy.
     mutating func raiseSchemaForPaperWritingSpace() {
         let all = pages + (deletedPages ?? []).map(\.page)
-        if all.contains(where: { $0.writingSpaceExtendsPaper && $0.margins != nil }) { schemaVersion = max(10, schemaVersion) }
+        if all.contains(where: { $0.writingSpaceExtendsPaper && $0.margins != nil }) { schemaVersion = max(11, schemaVersion) }
     }
 
     /// Complete pre-trim snapshots receive new IDs. Their previousPageID links

@@ -95,6 +95,25 @@ extension TextBox {
         result.runs = first + second.map { TextRun(location: offset + $0.location, length: $0.length, style: $0.style) }
         return result
     }
+    /// The style of every UTF-16 unit as merged runs (gaps take `style`).
+    /// Boxes with equal text and equal `styleRuns` render alike, whatever
+    /// their run splits (nil, partial or complete).
+    var styleRuns: [TextRun] {
+        let length = (text as NSString).length
+        var result: [TextRun] = [], end = 0
+        func add(_ run: TextRun) {
+            guard run.length > 0 else { return }
+            if let last = result.last, last.style == run.style, last.location + last.length == run.location {
+                result[result.count - 1].length += run.length
+            } else { result.append(run) }
+        }
+        for run in runs ?? [] {
+            if run.location > end { add(TextRun(location: end, length: run.location - end, style: style)) }
+            add(run); end = run.location + run.length
+        }
+        if end < length { add(TextRun(location: end, length: length - end, style: style)) }
+        return result
+    }
 }
 
 extension Notebook {
@@ -169,6 +188,27 @@ extension Notebook {
         var consumed = 0, nodeIndex = 0, currentIndex = start
         var continuationRegion = region
         var focus: TextFlowFocus?
+        /// The rest of the flow from `offset` is exactly the stored segments
+        /// from `first` on (same text, character styles and frames, nothing
+        /// left over): their reflow would only measure the same layout again,
+        /// one TextKit pass over the remaining text per page and keystroke.
+        func storedTailMatches(from first: Int, at offset: Int) -> Bool {
+            var offset = offset
+            for (pageID, stored) in existing[first...] {
+                guard let index = next.pages.firstIndex(where: { $0.id == pageID }) else { return false }
+                let area = stored.flowRegion ?? .page
+                // An older frame is realigned by the full reflow.
+                if let legacy = next.pages[index].legacyWritingRect(area), let rect = next.pages[index].writingRect(area), legacy != rect,
+                   abs(stored.x - legacy.x) < 0.01, abs(stored.width - legacy.width) < 0.01 { return false }
+                let length = (stored.text as NSString).length
+                guard length > 0, offset + length <= total,
+                      let part = try? text.fragment(NSRange(location: offset, length: length)) else { return false }
+                var produced = stored; produced.text = part.text; produced.runs = part.runs
+                guard produced.text == stored.text, produced.styleRuns == stored.styleRuns else { return false }
+                offset += length
+            }
+            return offset == total
+        }
         repeat {
             var box: TextBox
             if nodeIndex < existing.count {
@@ -228,6 +268,8 @@ extension Notebook {
                         length: min(selection.length, max(0, consumed + count - caret))), typingStyle: replacement.style)
             }
             consumed += count; nodeIndex += 1
+            // Typing that does not move a segment boundary stops here.
+            if focus != nil, consumed < total, nodeIndex < existing.count, storedTailMatches(from: nodeIndex, at: consumed) { break }
         } while consumed < total || nodeIndex < existing.count
         next.raiseSchemaForTextColors(next.pages.flatMap { $0.textBoxes ?? [] })
         try next.validate()

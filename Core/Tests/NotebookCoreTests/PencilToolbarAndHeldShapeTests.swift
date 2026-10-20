@@ -5,7 +5,7 @@ import XCTest
 /// Rückmeldung zu Build 44: Bleistift folgt dem Autostift, Laserpointer und
 /// „PDF lesen“ auf der zweiten Leistenebene, häufige Lasso-Haptik, Formen beim
 /// Halten skalieren, Squeeze-Palette schneller und mit festem Ende.
-final class PencilFeedback45Tests: XCTestCase {
+final class PencilToolbarAndHeldShapeTests: XCTestCase {
 
     // MARK: Autostift
 

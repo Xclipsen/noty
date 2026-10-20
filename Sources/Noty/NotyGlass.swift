@@ -15,5 +15,4 @@ private struct NotyGlass: ViewModifier {
 
 extension View {
     func notyGlass() -> some View { modifier(NotyGlass()) }
-    func notyPaletteGlass() -> some View { modifier(NotyGlass()) }
 }

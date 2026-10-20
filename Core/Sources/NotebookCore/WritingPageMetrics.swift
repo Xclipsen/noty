@@ -7,7 +7,7 @@ extension Page {
     public var writingCoordinateScale: Double {
         margins == nil || writingSpaceExtendsPaper ? 1 : (geometry?.displaySize.width ?? PageSize.a4.width) / PageSize.a4.width
     }
-    /// Paper pages (schema 10) take writing space only right and below, in the
+    /// Paper pages (schema 11) take writing space only right and below, in the
     /// page's own paper and colour, so existing coordinates and lines never move.
     public var writingSpaceExtendsPaper: Bool { pdfReference == nil && paper != nil && paper != .legacyTest }
     /// The stored form of `margins` on this page: paper pages keep their own

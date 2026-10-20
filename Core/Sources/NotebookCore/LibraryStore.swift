@@ -177,24 +177,19 @@ public actor LibraryStore {
     public func documentURL(id: UUID) throws -> URL {
         let item = try current().items.first { $0.id == id }
         guard let item, let source = item.source, !currentSnapshot.isTrashed(id) else { throw LibraryError.unavailable }
-        let url: URL
-        switch source {
-        case .legacyMain: url = root
-        case .restored: url = root.appendingPathComponent("Restores/\(id.uuidString)", isDirectory: true)
-        case .library: url = root.appendingPathComponent("Library/Documents/\(id.uuidString)", isDirectory: true)
-        }
+        let url = packageURL(id: id, source: source)
         try requireDirectory(url)
         guard hasDocument(at: url) else { throw LibraryError.unavailable }
         return url
     }
 
-    /// UI calls only with all editors closed and library mutations disabled.
-    /// This synchronous actor operation captures the complete index + documents
-    /// without suspension. Includes independently trashed children and folders.
-    public func backupBundle() throws -> LibraryBundle {
+    /// Quick, on the library actor: the complete index (including trash and
+    /// folders), preferences and every package location. Notebook contents are
+    /// read afterwards from committed revisions, off this actor (`LibraryArchive.write`).
+    public func backupPlan() throws -> LibraryBackupPlan {
         let result = try load()
         guard result.unreadableDocuments == 0 else { throw LibraryArchiveError.incomplete }
-        var documents: [Notebook] = []
+        var packages: [UUID: URL] = [:]
         for item in result.snapshot.items where !item.isFolder {
             let url: URL
             switch item.source! {
@@ -204,14 +199,17 @@ public actor LibraryStore {
             }
             try requireDirectory(url)
             guard hasDocument(at: url) else { throw LibraryArchiveError.incomplete }
-            let store = RevisionStore(directory: url)
-            var document = try store.load()
-            guard document.id == item.id, !store.recovered else { throw LibraryArchiveError.incomplete }
-            document.title = item.title
-            documents.append(document)
+            packages[item.id] = url
         }
         let preferences = try ToolbarPreferenceStore.read(root: root)
-        let bundle = LibraryBundle(snapshot: result.snapshot, documents: documents, toolbar: preferences.0)
+        return LibraryBackupPlan(snapshot: result.snapshot, toolbar: preferences.0, packages: packages)
+    }
+
+    /// Complete library in memory (tests, small libraries). Includes independently
+    /// trashed children and folders; an older recovered revision aborts.
+    public func backupBundle() throws -> LibraryBundle {
+        let plan = try backupPlan()
+        let bundle = LibraryBundle(snapshot: plan.snapshot, documents: try plan.documents.map(plan.committedNotebook), toolbar: plan.toolbar)
         try bundle.validate(); return bundle
     }
 
@@ -220,23 +218,39 @@ public actor LibraryStore {
     public func populateEmpty(_ bundle: LibraryBundle) throws {
         try bundle.validate()
         guard !fm.fileExists(atPath: root.path) else { throw LibraryArchiveError.destinationExists }
-        var portable = bundle.snapshot
-        portable.items = bundle.snapshot.items.map { item in
+        for document in bundle.documents { try Self.populatePackage(document, root: root) }
+        try populateIndex(bundle.snapshot, toolbar: bundle.toolbar)
+    }
+
+    /// Restore stage only: writes one complete package and reads it back. A
+    /// streaming restore calls this per notebook before any index exists.
+    static func populatePackage(_ document: Notebook, root: URL) throws {
+        let fm = FileManager.default
+        let documentsRoot = root.appendingPathComponent("Library/Documents", isDirectory: true)
+        try fm.createDirectory(at: documentsRoot, withIntermediateDirectories: true)
+        try ContainedDirectory.require(documentsRoot, below: root)
+        let destination = documentsRoot.appendingPathComponent(document.id.uuidString, isDirectory: true)
+        guard !fm.fileExists(atPath: destination.path) else { throw LibraryArchiveError.destinationExists }
+        try RevisionStore(directory: destination).save(document)
+        guard try RevisionStore(directory: destination).load() == document else { throw LibraryArchiveError.incomplete }
+    }
+
+    /// Restore stage only, after every package: preferences, then the portable
+    /// index (all documents as `library` packages) as the last commit.
+    func populateIndex(_ value: LibrarySnapshot, toolbar: ToolbarPreferences) throws {
+        try value.validate(); try toolbar.validate()
+        guard snapshot == nil, !fm.fileExists(atPath: primary.path), !fm.fileExists(atPath: previous.path) else {
+            throw LibraryArchiveError.destinationExists
+        }
+        var portable = value
+        portable.items = value.items.map { item in
             var copy = LibraryItem(id: item.id, title: item.title, parentID: item.parentID,
                                    source: item.isFolder ? nil : .library)
             copy.favorite = item.favorite; copy.lastOpened = item.lastOpened; copy.deletedAt = item.deletedAt
             return copy
         }
-        let documentsRoot = directory.appendingPathComponent("Documents", isDirectory: true)
-        try fm.createDirectory(at: documentsRoot, withIntermediateDirectories: true)
-        try requireDirectory(documentsRoot)
-        for document in bundle.documents {
-            let destination = documentsRoot.appendingPathComponent(document.id.uuidString, isDirectory: true)
-            try RevisionStore(directory: destination).save(document)
-            guard try RevisionStore(directory: destination).load() == document else { throw LibraryArchiveError.incomplete }
-        }
-        try bundle.toolbar.validate()
-        try JSONEncoder().encode(bundle.toolbar).write(to: root.appendingPathComponent("toolbar.json"), options: .atomic)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try JSONEncoder().encode(toolbar).write(to: root.appendingPathComponent("toolbar.json"), options: .atomic)
         snapshot = LibrarySnapshot()
         try commit(portable)
         guard try LibraryStore.readIndexPayload(at: primary) == portable else { throw LibraryArchiveError.incomplete }
@@ -313,12 +327,7 @@ public actor LibraryStore {
     public func move(_ id: UUID, to parentID: UUID?) throws -> LibrarySnapshot {
         var next = try current()
         let index = try activeIndex(id, in: next)
-        try checkParent(parentID, in: next)
-        var ancestor = parentID
-        while let parent = ancestor {
-            guard parent != id else { throw LibraryError.invalidDestination }
-            ancestor = next.items.first(where: { $0.id == parent })?.parentID
-        }
+        try checkDestination(parentID, moving: id, in: next)
         var item = next.items.remove(at: index)
         item.parentID = parentID
         next.items.append(item)
@@ -331,12 +340,7 @@ public actor LibraryStore {
     public func place(_ id: UUID, in parentID: UUID?, before beforeID: UUID?) throws -> LibrarySnapshot {
         var next = try current()
         let index = try activeIndex(id, in: next)
-        try checkParent(parentID, in: next)
-        var ancestor = parentID
-        while let parent = ancestor {
-            guard parent != id else { throw LibraryError.invalidDestination }
-            ancestor = next.items.first(where: { $0.id == parent })?.parentID
-        }
+        try checkDestination(parentID, moving: id, in: next)
         if let beforeID {
             guard beforeID != id, next.children(of: parentID).contains(where: { $0.id == beforeID }) else {
                 throw LibraryError.unavailable
@@ -486,12 +490,19 @@ public actor LibraryStore {
         return result
     }
 
-    private func packageURL(_ item: LibraryItem) throws -> URL {
-        switch item.source {
-        case .restored: root.appendingPathComponent("Restores/\(item.id.uuidString)", isDirectory: true)
-        case .library: root.appendingPathComponent("Library/Documents/\(item.id.uuidString)", isDirectory: true)
-        case .legacyMain, nil: throw LibraryError.notPurgeable
+    /// Package paths are derived from source + ID only; never stored.
+    private func packageURL(id: UUID, source: LibrarySource) -> URL {
+        switch source {
+        case .legacyMain: root
+        case .restored: root.appendingPathComponent("Restores/\(id.uuidString)", isDirectory: true)
+        case .library: root.appendingPathComponent("Library/Documents/\(id.uuidString)", isDirectory: true)
         }
+    }
+
+    /// Purgeable packages only; the legacy main notebook lives in the root.
+    private func packageURL(_ item: LibraryItem) throws -> URL {
+        guard let source = item.source, source != .legacyMain else { throw LibraryError.notPurgeable }
+        return packageURL(id: item.id, source: source)
     }
 
     /// Removes only direct entries of our own staging directory; symbolic links
@@ -513,6 +524,15 @@ public actor LibraryStore {
             throw LibraryError.invalidDestination
         }
     }
+    /// Valid folder target that is neither the moved item nor one of its descendants.
+    private func checkDestination(_ parentID: UUID?, moving id: UUID, in value: LibrarySnapshot) throws {
+        try checkParent(parentID, in: value)
+        var ancestor = parentID
+        while let parent = ancestor {
+            guard parent != id else { throw LibraryError.invalidDestination }
+            ancestor = value.items.first(where: { $0.id == parent })?.parentID
+        }
+    }
     private func activeIndex(_ id: UUID, in value: LibrarySnapshot) throws -> Int {
         guard let index = value.items.firstIndex(where: { $0.id == id }), !value.isTrashed(id) else {
             throw LibraryError.unavailable
@@ -524,18 +544,7 @@ public actor LibraryStore {
             fm.fileExists(atPath: url.appendingPathComponent($0).path)
         }
     }
-    private func requireDirectory(_ url: URL) throws {
-        // Reject symbolic links in every path component below our container root.
-        var checked = url.standardizedFileURL
-        let base = root.standardizedFileURL
-        guard checked.path == base.path || checked.path.hasPrefix(base.path + "/") else { throw LibraryError.invalidIndex }
-        while true {
-            let values = try checked.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-            guard values.isDirectory == true, values.isSymbolicLink != true else { throw LibraryError.invalidIndex }
-            if checked.path == base.path { break }
-            checked.deleteLastPathComponent()
-        }
-    }
+    private func requireDirectory(_ url: URL) throws { try ContainedDirectory.require(url, below: root) }
 
     private func readIndex() throws {
         var found = false
@@ -579,5 +588,22 @@ public actor LibraryStore {
         if let lastGoodBytes { try lastGoodBytes.write(to: previous, options: .atomic) }
         try bytes.write(to: primary, options: .atomic)
         snapshot = value; lastGoodBytes = bytes
+    }
+}
+
+/// Shared by LibraryStore and WorkspaceStore.
+enum ContainedDirectory {
+    /// A real directory at or below `root`: rejects paths outside the root and
+    /// symbolic links in every path component down to the root itself.
+    static func require(_ url: URL, below root: URL) throws {
+        var checked = url.standardizedFileURL
+        let base = root.standardizedFileURL
+        guard checked.path == base.path || checked.path.hasPrefix(base.path + "/") else { throw LibraryError.invalidIndex }
+        while true {
+            let values = try checked.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else { throw LibraryError.invalidIndex }
+            if checked.path == base.path { break }
+            checked.deleteLastPathComponent()
+        }
     }
 }

@@ -3,7 +3,7 @@ import XCTest
 @testable import NotebookCore
 
 /// Build 42 feedback: page jumps centre the PDF beside a writing space.
-final class Feedback42Tests: XCTestCase {
+final class ViewportJumpCentringTests: XCTestCase {
     private func placed(margins: PageMargins?, normalized: Bool = false) throws -> NotebookPagePlacement {
         var page = Page()
         let box = PageRect(x: 0, y: 0, width: 595, height: 842)

@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import NotebookCore
 
-/// Schema 10: writing space beside paper pages (right/below, seamless paper).
+/// Schema 11: writing space beside paper pages (right/below, seamless paper).
 final class PaperWritingSpaceTests: XCTestCase {
     private func a5Notebook() throws -> Notebook {
         var settings = NotebookAppearance(); settings.format = .a5; settings.paper = .lined
@@ -11,14 +11,14 @@ final class PaperWritingSpaceTests: XCTestCase {
         return book
     }
 
-    func testPaperPageGrowsRightAndDownInItsOwnPaperAndRaisesSchemaToTen() throws {
+    func testPaperPageGrowsRightAndDownInItsOwnPaperAndRaisesSchemaToEleven() throws {
         var book = Notebook.blank(title: "Papier")
         book.pages[0].paper = .lined
         XCTAssertEqual(book.schemaVersion, 3)
         let id = book.pages[0].id
         // Requested style/colour are replaced by the page's own paper.
         try book.applyMargins(PageMargins(right: 595, bottom: 421, style: .grid, color: .dark), pageIDs: [id])
-        XCTAssertEqual(book.schemaVersion, 10)
+        XCTAssertEqual(book.schemaVersion, 11)
         XCTAssertEqual(book.pages[0].margins, PageMargins(right: 595, bottom: 421, style: .lined, color: .white))
         XCTAssertEqual(book.pages[0].geometry, PaperStyle.geometry)
         XCTAssertEqual(try Notebook.decode(JSONEncoder().encode(book)), book)
@@ -26,7 +26,7 @@ final class PaperWritingSpaceTests: XCTestCase {
         // Removing it again keeps the newer schema (never downgraded).
         try book.setMargins(PageMargins(), pageIDs: [id])
         XCTAssertNil(book.pages[0].margins)
-        XCTAssertEqual(book.schemaVersion, 10)
+        XCTAssertEqual(book.schemaVersion, 11)
     }
 
     func testPaperWritingSpaceNeverMovesContentLinesOrUnits() throws {
@@ -58,15 +58,15 @@ final class PaperWritingSpaceTests: XCTestCase {
             XCTAssertThrowsError(try book.setMargins(invalid, pageIDs: [id]))
         }
         XCTAssertNil(book.pages[0].margins)
-        var stored = book; stored.schemaVersion = 10
+        var stored = book; stored.schemaVersion = 11
         stored.pages[0].margins = PageMargins(right: 100, style: .grid)
         XCTAssertThrowsError(try stored.validate(), "foreign paper style")
         stored.pages[0].margins = PageMargins(right: 100, color: .dark)
         XCTAssertThrowsError(try stored.validate(), "foreign paper colour")
         stored.pages[0].margins = PageMargins(right: 100)
         XCTAssertNoThrow(try stored.validate())
-        stored.schemaVersion = 9
-        XCTAssertThrowsError(try stored.validate(), "schema 9 builds never wrote paper writing space")
+        stored.schemaVersion = 10
+        XCTAssertThrowsError(try stored.validate(), "schema 10 builds never wrote paper writing space")
         var legacy = Notebook.blank(title: "Test"); legacy.pages[0].paper = .legacyTest; legacy.pages[0].geometry = nil
         XCTAssertThrowsError(try legacy.applyMargins(PageMargins(right: 100), pageIDs: [legacy.pages[0].id]))
     }
@@ -130,7 +130,7 @@ final class PaperWritingSpaceTests: XCTestCase {
         XCTAssertEqual(next.pages[1].effectiveTextBoxes.first?.text, "und weiter")
     }
 
-    func testFirstSchemaTenCommitArchivesExactConfirmedOldBytes() throws {
+    func testFirstSchemaElevenCommitArchivesExactConfirmedOldBytes() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = RevisionStore(directory: root)

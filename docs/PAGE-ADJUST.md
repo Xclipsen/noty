@@ -26,8 +26,8 @@ Inhalte und Lineatur sind ab der linken oberen Blattecke gespeichert. Platz link
 
 ## Technik
 
-Details in [STORAGE](STORAGE.md#ergänzung-20102026--notebook-schema-10-schreibplatz-an-papierseiten).
-- **Schema 10:**
+Details in [STORAGE](STORAGE.md#ergänzung-20102026--notebook-schema-11-schreibplatz-an-papierseiten).
+- **Schema 11:**
   - `margins` an Papierseiten ist nur rechts/unten erlaubt, in Papierart und -farbe der Seite.
   - Gehoben wird erst beim Anwenden, nachdem die exakten Altbytes archiviert sind.
   - Ältere Builds sperren solche Notizbücher.
@@ -47,8 +47,8 @@ Details in [STORAGE](STORAGE.md#ergänzung-20102026--notebook-schema-10-schreibp
 
 - **Implementiert** auf `ui/menu-polish`.
 - **Core-Tests:** 449/449, davon 8 neue in `PaperWritingSpaceTests`.
-- **Host-Roundtrip:** mit Papierseite plus Schreibplatz (Schema 10) bestanden, Python-Prüfer für Heft-, Bibliotheks- und Gerätespeicher eingeschlossen.
-- **Negativproben im Python-Prüfer** werden abgelehnt: links, oben, fremde Vorlage, fremde Farbe, Schema 9.
+- **Host-Roundtrip:** mit Papierseite plus Schreibplatz (Schema 11) bestanden, Python-Prüfer für Heft-, Bibliotheks- und Gerätespeicher eingeschlossen.
+- **Negativproben im Python-Prüfer** werden abgelehnt: links, oben, fremde Vorlage, fremde Farbe, Schema 10.
 - **SDK-Build:** siehe [UI-POLISH](UI-POLISH.md).
 - **Auf dem iPad ungeprüft:**
   - Schreiben im neuen Platz.

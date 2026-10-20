@@ -12,21 +12,37 @@ struct PencilSqueezeEvent {
     var leftHanded: Bool
     var preference: PencilSqueezeTracker.Preference
 
-    /// Location: the squeeze's hover pose, else the last Pencil hover/touch
-    /// on a page, else the centre of the visible part of `view`.
     @available(iOS 17.5, *)
     @MainActor init(_ squeeze: UIPencilInteraction.Squeeze, in view: UIView) {
-        phase = switch squeeze.phase {
+        let phase: PencilSqueezeTracker.Phase = switch squeeze.phase {
         case .began: .began
         case .changed: .changed
         case .ended: .ended
         default: .cancelled
         }
-        time = squeeze.timestamp
+        self.init(phase: phase, time: squeeze.timestamp, hover: squeeze.hoverPose.map { ($0.location, $0.azimuthUnitVector) },
+                  in: view, preference: Self.preference)
+    }
+    /// A Pencil double tap whose system setting asks for a palette (colour
+    /// palette, ink attributes): opens the Noty palette like one squeeze.
+    @available(iOS 17.5, *)
+    @MainActor init(tap: UIPencilInteraction.Tap, in view: UIView) {
+        self.init(phase: .ended, time: tap.timestamp, hover: tap.hoverPose.map { ($0.location, $0.azimuthUnitVector) },
+                  in: view, preference: .palette)
+    }
+    /// Double tap before iPadOS 17.5 (no tap object, no hover pose).
+    @MainActor init(tapIn view: UIView) {
+        self.init(phase: .ended, time: ProcessInfo.processInfo.systemUptime, hover: nil, in: view, preference: .palette)
+    }
+    /// Location: the hover pose (in `view`), else the last Pencil hover/touch
+    /// on a page, else the centre of the visible part of `view`.
+    @MainActor private init(phase: PencilSqueezeTracker.Phase, time: TimeInterval, hover: (location: CGPoint, azimuth: CGVector)?,
+                            in view: UIView, preference: PencilSqueezeTracker.Preference) {
+        self.phase = phase; self.time = time
         let tracker = PencilLocationTracker.shared
-        if let pose = squeeze.hoverPose {
-            location = view.convert(pose.location, to: nil)
-            tracker.recordAzimuth(pose.azimuthUnitVector)
+        if let hover {
+            location = view.convert(hover.location, to: nil)
+            tracker.recordAzimuth(hover.azimuth)
         } else if let last = tracker.location(in: view.window) { location = last }
         else {
             let visible = view.convert(view.bounds, to: nil).intersection(view.window?.bounds ?? .infinite)
@@ -34,7 +50,7 @@ struct PencilSqueezeEvent {
                 : CGPoint(x: visible.midX, y: visible.midY)
         }
         leftHanded = tracker.leftHanded
-        preference = Self.preference
+        self.preference = preference
     }
 
     /// Apple: consult `preferredSqueezeAction`. Squeeze turned off (or a system

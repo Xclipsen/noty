@@ -15,6 +15,6 @@ Nutzerrückmeldung zu Build 29: Stiftmarkierung, Cursorformatierung, freie Feldf
 
 ## Nachweise und Grenzen
 
-248 Core-Tests ohne Fehler, einschließlich sieben neuer Fälle für Lasso/alte Werkzeugreihenfolge, dicke Striche/Punkte/negative Ränder, konkave Freiformen, Checkbox-UTF-16-Bereiche, Halte-Linienerkennung und Renderreserve. Unabhängiger Schema-8-Host-Roundtrip und finaler signierter iPad-SDK-Build bestanden. Kein neues Speicher-/Archivformat, keine neue Dependency. Logs und Installationsnachweis in [TESTING](TESTING.md).
+248 Core-Tests ohne Fehler, einschließlich sieben neuer Fälle für Lasso/alte Werkzeugreihenfolge, dicke Striche/Punkte/negative Ränder, konkave Freiformen, Checkbox-UTF-16-Bereiche, Halte-Linienerkennung und Renderreserve. Unabhängiger Schema-8-Host-Roundtrip und finaler signierter iPad-SDK-Build bestanden. Kein neues Speicher-/Archivformat, keine neue Dependency. Logs und Installationsnachweis in [TESTING](../TESTING.md).
 
 **Implementiert, erfolgreich gebaut und als Build 30 installiert. Neue native Auswahl, Haltegeste/Haptik, Kreisoptik, Ebenenreihenfolge und Scrollverbesserung noch ungeprüft.** Linux-Tests führen UIKit/PencilKit/PDFKit nicht aus. Die Linienausrichtung ist nicht als kaputt bekannt, ihre Geräteabnahme bleibt offen. Zitat-/Codeblöcke und mitgelieferte Inter-Schrift aus dem früheren optionalen Ablauf bleiben offen. [Gezielter Gerätetest](TEST-BUILD-30.md).

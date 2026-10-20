@@ -2,7 +2,7 @@
 
 ## Nachtrag Build 45
 
-Seitenleiste ohne `List` neu aufgebaut (Ziehen ging dort nicht mehr), Einfügelinien in Baum, Angeheftet und Hauptbereich, Angeheftet zweispaltig mit eigener Reihenfolge (UserDefaults, nicht im Bibliotheksbackup). Details und Grenzen: [EDITOR-FEEDBACK-35](EDITOR-FEEDBACK-35.md). Der folgende Abschnitt zu „Ziehen und Ablegen“ beschreibt den älteren Stand.
+Seitenleiste ohne `List` neu aufgebaut (Ziehen ging dort nicht mehr), Einfügelinien in Baum, Angeheftet und Hauptbereich, Angeheftet zweispaltig mit eigener Reihenfolge (UserDefaults, nicht im Bibliotheksbackup). Details und Grenzen: [EDITOR-FEEDBACK-35](history/EDITOR-FEEDBACK-35.md). Der folgende Abschnitt zu „Ziehen und Ablegen“ beschreibt den älteren Stand.
 
 ## Ergänzung Bibliothek im Dateien-Stil (19.10.2026, nach Build 41)
 
@@ -56,4 +56,4 @@ PDF-Import aus der Bibliothek erzeugt ein neues Heft und ersetzt den Altbestand 
 
 Zwölf Bibliotheks-Risikotests: bytegleiche Bestandsübernahme, Elternzyklen, Ordnung, rekursiver Papierkorb, Wiederherstellung bei gelöschtem Elternordner, echter Index-Schreibfehler mit verwaistem Paket, beschädigte/neue Formate, CRC, parallele Indexänderungen, später entdeckte Kopien und Symlinks. Insgesamt 73 Core-Tests erfolgreich.
 
-Separater Linux-Lauf mit Kopie aller sechs echten iPad-Hefte: Übernahme, verschachteltes Verschieben, Umbenennen, Favorit/Zuletzt verwendet, neues Heft, Papierkorb/Restore, neuer Store/Neuladen erfolgreich; ursprüngliche sechs Notebook-Snapshots anschließend vollständig gleich. Das belegt keine UIKit-/SwiftUI-Bedienung. Keine Messung großer Bibliotheken; Restore-Vorschauen lesen derzeit alle Restore-Pakete. Quellen bleiben je Revision dupliziert. Geräteabnahme gebündelt in [BATCH-TEST-10.md](BATCH-TEST-10.md).
+Separater Linux-Lauf mit Kopie aller sechs echten iPad-Hefte: Übernahme, verschachteltes Verschieben, Umbenennen, Favorit/Zuletzt verwendet, neues Heft, Papierkorb/Restore, neuer Store/Neuladen erfolgreich; ursprüngliche sechs Notebook-Snapshots anschließend vollständig gleich. Das belegt keine UIKit-/SwiftUI-Bedienung. Keine Messung großer Bibliotheken; Restore-Vorschauen lesen derzeit alle Restore-Pakete. Quellen bleiben je Revision dupliziert. Geräteabnahme gebündelt in [BATCH-TEST-10.md](history/BATCH-TEST-10.md).

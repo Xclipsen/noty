@@ -20,15 +20,14 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var toolbox: ToolbarSettingsModel
     @Environment(\.editorSettings) private var editorSettings
+    @Environment(\.searchIndexArea) private var searchIndexArea
     @State private var showingSettings = false
     @State private var editingDefaults = false
     @State private var addingPage = false
-    @State private var importing = false
-    @State private var importingBackup = false
-    @State private var confirmingImport = false
     @State private var exporting = false
     @State private var exportFile: ExportFile?
     @State private var exportType: UTType = .json
+    @StateObject private var pdfExport = PDFExportJob()
     @State private var tool: EditorTool = .pen
     @State private var lastInkTool: EditorTool = .pen
     @State private var pencilPalette: PencilPalettePresentation?
@@ -41,10 +40,8 @@ struct ContentView: View {
     @State private var fitRequest = 0
     @State private var showingHistory = false
     @State private var selectedLocalRevision: UUID?
-    @State private var showingCopies = false
-    @State private var selectedCopy: RestoredNotebook?
-    @AppStorage("noty.sidebar.visible") private var showingPages = true
-    @AppStorage("noty.editor.writingScroll") private var writingScroll = false
+    @AppStorage(AppSettingsKey.sidebarVisible) private var showingPages = true
+    @AppStorage(AppSettingsKey.writingScroll) private var writingScroll = false
     @State private var customizingTools = false
     @State private var toolbarMore = false
     @State private var toolbarOptions = false
@@ -130,17 +127,6 @@ struct ContentView: View {
                         addingPage = false
                     }, onError: { model.error = $0 })
             }
-            .confirmationDialog("Das aktuelle Testheft wird vor dem Import lokal archiviert. Für ein unabhängiges Backup vorher exportieren.",
-                                isPresented: $confirmingImport, titleVisibility: .visible) {
-                Button("Datei auswählen") { importing = true }
-            }
-            .fileImporter(isPresented: $importing,
-                          allowedContentTypes: importingBackup ? [.notyBackup, .json, .data] : [.pdf]) { result in
-                switch result {
-                case .success(let url): model.importFile(url, backup: importingBackup)
-                case .failure(let error): model.error = error.localizedDescription
-                }
-            }
             .fileImporter(isPresented: $importingImage, allowedContentTypes: [.image]) { result in
                 switch result {
                 case .success(let url): if let imageTarget { if imageTarget == writingDraft.id { guard model.materializeDraft(draftPage) else { return } }; model.insertImageFile(url, pageID: imageTarget) }
@@ -166,24 +152,13 @@ struct ContentView: View {
                     model.error = error.localizedDescription
                 }
             }
-            .fullScreenCover(item: $model.openedRestore, onDismiss: {
-                Task { await model.refreshRestoredCopies() }
-            }) { restored in
+            .fullScreenCover(item: $model.openedRestore) { restored in
                 RestoredNotebookView(restored: restored).id(restored.id)
             }
-            .sheet(isPresented: $showingCopies, onDismiss: {
-                if let copy = selectedCopy {
-                    selectedCopy = nil
-                    model.openedRestore = copy
-                }
-            }) {
-                RestoredCopiesView(copies: model.restoredCopies) { copy in
-                    selectedCopy = copy
-                    showingCopies = false
-                }
-            }
             .sheet(isPresented: $contentSearch) {
-                ContentSearchView(documents: [OpenNotebook(id: model.notebook.id, directory: model.storageRoot, title: model.notebook.title, isRestored: false)], current: model.notebook) { hit in
+                ContentSearchView(documents: [OpenNotebook(id: model.notebook.id, directory: model.storageRoot, title: model.notebook.title, isRestored: false)],
+                                  current: model.notebook, currentSources: { model.sourcePage(for: $0) },
+                                  area: searchIndexArea ?? StableDefaults.scope(model.storageRoot)) { hit in
                     selectedPageID = hit.pageID; searchHighlight = hit.bounds; searchHighlightPageID = hit.pageID; fitRequest += 1
                     fadeSearchHighlightLater()
                 }
@@ -256,11 +231,26 @@ struct ContentView: View {
             }
             .onChange(of: model.documentLoaded) { _, loaded in if loaded { markNotebookShown() } }
             .onChange(of: canEdit) { _, editable in if !editable { pageEntry = false } }
-            // Managed editors flush before dismissal. A late onDisappear save
-            // could otherwise race a new editor for the same package.
-            .onDisappear { if !isLibraryDocument && !isRestoredCopy { model.save() } }
+            // Managed editors flush before dismissal; no late onDisappear save
+            // may race a new editor for the same package.
             .interactiveDismissDisabled(isLibraryDocument || isRestoredCopy)
         }
+        .preference(key: EditorCommandsPreference.self, value: editorCommands)
+    }
+
+    /// App menu / ⌘ shortcuts of this pane while it is the active one.
+    private var editorCommands: EditorCommandActions? {
+        guard isPaneActive(), notebookLoaded else { return nil }
+        let onDraft = currentPage.id == writingDraft.id
+        // A second presentation over an open sheet would never appear.
+        let presenting = contentSearch || showingSettings || editingDefaults || addingPage || customizingTools || showingHistory || model.openedRestore != nil
+            || marginsPage != nil || exporting || importingImage || choosingPhoto || pageEntry
+        return EditorCommandActions(owner: ObjectIdentifier(model), canEdit: canEdit && !presenting,
+            canExportPage: model.writable && !onDraft, exporting: pdfExport.running,
+            hasPrevious: onDraft || currentPageIndex > 0, hasNext: !onDraft && currentPageIndex < model.notebook.pages.count - 1,
+            search: { if canEdit { contentSearch = true } }, save: { model.save() },
+            exportNotebook: { startPDFExport(pageOnly: false) }, exportPage: { startPDFExport(pageOnly: true) },
+            previousPage: { stepPage(-1) }, nextPage: { stepPage(1) })
     }
 
     private func markNotebookShown() {
@@ -389,6 +379,10 @@ struct ContentView: View {
                     pageNavigator.padding(.trailing, layout.rightInset + 14).padding(.bottom, layout.bottomInset + 16)
                 }
             }
+            .overlay(alignment: .bottom) {
+                PDFExportProgressBadge(job: pdfExport).padding(.bottom, layout.bottomInset + 12)
+                    .animation(NotyMotion.highlight(reduceMotion), value: pdfExport.progress == nil)
+            }
             .overlay(alignment: .bottomLeading) {
                 // Animation scoped to the pill: autosave updates elsewhere stay unanimated.
                 ZStack(alignment: .bottomLeading) {
@@ -507,16 +501,23 @@ struct ContentView: View {
 
     private var pageNavigator: some View {
         VStack(spacing: 3) {
-            Button { if currentPage.id == writingDraft.id { selectedPageID = model.notebook.pages.last?.id } else { currentPageIndex -= 1 } } label: { Image(systemName: "chevron.up").frame(width: 48, height: 44).contentShape(Rectangle()) }
+            Button { stepPage(-1) } label: { Image(systemName: "chevron.up").frame(width: 48, height: 44).contentShape(Rectangle()) }
                 .disabled(currentPageIndex == 0 && currentPage.id != writingDraft.id)
                 .foregroundStyle(currentPageIndex == 0 && currentPage.id != writingDraft.id ? Color.gray.opacity(0.5) : .white)
                 .accessibilityLabel("Vorherige Seite")
             pageNumberButton
-            Button { currentPageIndex += 1 } label: { Image(systemName: "chevron.down").frame(width: 48, height: 44).contentShape(Rectangle()) }
+            Button { stepPage(1) } label: { Image(systemName: "chevron.down").frame(width: 48, height: 44).contentShape(Rectangle()) }
                 .disabled(currentPage.id == writingDraft.id || currentPageIndex >= model.notebook.pages.count - 1)
                 .foregroundStyle(currentPage.id == writingDraft.id || currentPageIndex >= model.notebook.pages.count - 1 ? Color.gray.opacity(0.5) : .white)
                 .accessibilityLabel("Nächste Seite")
         }.padding(4).notyGlass().buttonStyle(NotyToolStyle()).disabled(!canEdit)
+    }
+    /// Chevrons and ⌘↑/⌘↓: from the trailing draft page "up" returns to the last real page.
+    private func stepPage(_ delta: Int) {
+        guard canEdit else { return }
+        if currentPage.id == writingDraft.id {
+            if delta < 0 { selectedPageID = model.notebook.pages.last?.id }
+        } else { currentPageIndex += delta }
     }
     /// Number block of the navigator: tap (or ⌘G) opens "Gehe zu Seite".
     private var pageNumberButton: some View {
@@ -568,17 +569,17 @@ struct ContentView: View {
                 Button("Wiederholen", systemImage: "arrow.uturn.forward") { performUndo(redo: true) }.disabled(!model.canRedo)
             }
             Section {
+                // ⌘F/⌘S live in the app menu (NotyCommands): shortcuts inside a closed Menu do not register.
                 Button("Im Notizbuch suchen", systemImage: "magnifyingglass") { contentSearch = true }
-                    .keyboardShortcut("f", modifiers: .command)
                 if layout.compactHeader {
                     Menu("Seite hinzufügen", systemImage: "doc.badge.plus") { pageInsertionActions }
                 }
                 Menu("Teilen und exportieren", systemImage: "square.and.arrow.up") {
                     Section("PDF") {
-                        Button("Diese Seite", systemImage: "doc") { exportPDF(pageIDs: [currentPage.id]) }
-                            .disabled(!model.writable || currentPage.id == writingDraft.id)
-                        Button("Ganzes Notizbuch", systemImage: "book.closed") { exportPDF(pageIDs: nil) }
-                            .disabled(!model.writable)
+                        Button("Diese Seite", systemImage: "doc") { startPDFExport(pageOnly: true) }
+                            .disabled(!model.writable || currentPage.id == writingDraft.id || pdfExport.running)
+                        Button("Ganzes Notizbuch", systemImage: "book.closed") { startPDFExport(pageOnly: false) }
+                            .disabled(!model.writable || pdfExport.running)
                     }
                     Section(model.backupStatus) {
                         Button("Vollständiges Backup …", systemImage: "archivebox") { exportBackup() }
@@ -610,19 +611,23 @@ struct ContentView: View {
         } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(Rectangle()) }
             .accessibilityLabel("Optionen")
     }
-    /// `nil` exports the whole notebook.
-    private func exportPDF(pageIDs: Set<UUID>?) {
-        do {
-            exportFile = ExportFile(pdfData: try PDFExporter.render(model.notebook, pageIDs: pageIDs))
-            exportType = .pdf; exporting = true
-        } catch { model.error = error.localizedDescription }
-    }
     private func exportBackup() {
         Task {
             if let data = await model.backupData() {
                 exportFile = ExportFile(backupData: data)
                 exportType = .notyBackup
                 exporting = true
+            }
+        }
+    }
+    /// Page by page with a progress badge; the snapshot is fixed at the start.
+    private func startPDFExport(pageOnly: Bool) {
+        guard canEdit, !pdfExport.running, !(pageOnly && currentPage.id == writingDraft.id) else { return }
+        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : nil, sourcePage: { model.sourcePage(for: $0) }) { result in
+            switch result {
+            case .success(let data): exportFile = ExportFile(pdfData: data); exportType = .pdf; exporting = true
+            case .failure(let error):
+                if error is CancellationError { model.fileStatus = "PDF-Export abgebrochen" } else { model.error = error.localizedDescription }
             }
         }
     }

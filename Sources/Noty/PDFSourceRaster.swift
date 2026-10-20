@@ -56,7 +56,7 @@ final class PDFSourceRasterView: UIView {
         baseLayer.frame = frame; baseLayer.contents = nil
         detailLayer.isHidden = true; detailLayer.contents = nil
         CATransaction.commit()
-        guard let source else { return true }
+        guard source != nil else { return true }
         basePixelScale = min(2, sqrt(Self.baseBudget / max(1, frame.width * frame.height)))
         basePending = true
         let generation = baseGeneration
@@ -100,9 +100,51 @@ final class PDFSourceRasterView: UIView {
             let started = CACurrentMediaTime()
             let image = Self.rasterize(source, region: region, scale: scale)
             return Image(image: image, milliseconds: Int((CACurrentMediaTime() - started) * 1000))
-        } done: { result in
+        } done: { [weak self] result in
             Task { @MainActor [weak self] in self?.apply(result, region: region, generation: generation, detail: detail) }
         }
+    }
+
+    private var darknessGeneration = 0
+    /// Autostift on PDF pages: is the source mostly dark (mean luminance of a
+    /// 32×32 rendering below 0.5)? Rendered on the raster queue: PDFKit's
+    /// thumbnail on the main thread stalled like the Feedback 33 zoom hang.
+    /// `done` runs on the main thread for the latest request only.
+    func measureDarkness(_ done: @escaping @MainActor @Sendable (Bool) -> Void) {
+        guard let source else { return }
+        darknessGeneration += 1
+        let generation = darknessGeneration
+        PDFRasterQueue.shared.submit(owner: ObjectIdentifier(self), generation: generation) {
+            Self.isDark(source)
+        } done: { [weak self] dark in
+            Task { @MainActor [weak self] in
+                guard let self, self.darknessGeneration == generation, self.source?.page === source.page else { return }
+                done(dark)
+            }
+        }
+    }
+
+    nonisolated private static func isDark(_ source: Source) -> Bool {
+        let size = 32, frame = source.frame
+        guard frame.width > 0, frame.height > 0 else { return false }
+        var pixels = [UInt8](repeating: 255, count: size * size * 4)
+        let luminance: Double = pixels.withUnsafeMutableBytes { buffer in
+            guard let context = CGContext(data: buffer.baseAddress, width: size, height: size, bitsPerComponent: 8, bytesPerRow: size * 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return 1 }
+            context.setFillColor(gray: 1, alpha: 1); context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+            // The crop region stretched onto the bitmap, as the former thumbnail.
+            context.translateBy(x: 0, y: CGFloat(size))
+            context.scaleBy(x: CGFloat(size) / frame.width, y: -CGFloat(size) / frame.height)
+            context.translateBy(x: -frame.minX, y: -frame.minY)
+            context.clip(to: frame)
+            context.concatenate(source.transform)
+            context.drawPDFPage(source.page)
+            let data = buffer.bindMemory(to: UInt8.self)
+            var sum = 0.0
+            for i in stride(from: 0, to: data.count, by: 4) { sum += 0.2126 * Double(data[i]) + 0.7152 * Double(data[i+1]) + 0.0722 * Double(data[i+2]) }
+            return sum / (Double(size * size) * 255)
+        }
+        return luminance < 0.5
     }
 
     private func apply(_ result: Image, region: CGRect, generation: Int, detail: Bool) {
@@ -116,7 +158,7 @@ final class PDFSourceRasterView: UIView {
         CATransaction.commit()
     }
 
-    private static func rasterize(_ source: Source, region: CGRect, scale: CGFloat) -> CGImage? {
+    nonisolated private static func rasterize(_ source: Source, region: CGRect, scale: CGFloat) -> CGImage? {
         let width = max(1, Int(ceil(region.width * scale))), height = max(1, Int(ceil(region.height * scale)))
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
             space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -125,7 +167,7 @@ final class PDFSourceRasterView: UIView {
         context.translateBy(x: 0, y: CGFloat(height))
         context.scaleBy(x: scale, y: -scale)
         context.translateBy(x: -region.minX, y: -region.minY)
-        context.setFillColor(UIColor.white.cgColor); context.fill(region)
+        context.setFillColor(gray: 1, alpha: 1); context.fill(region)
         context.clip(to: source.frame)
         context.concatenate(source.transform)
         context.interpolationQuality = .high
@@ -134,18 +176,24 @@ final class PDFSourceRasterView: UIView {
     }
 }
 
-/// One serial rasterizer; stale requests of the same layer are skipped.
+/// One serial rasterizer; stale requests of the same owner are skipped.
 private final class PDFRasterQueue: @unchecked Sendable {
     static let shared = PDFRasterQueue()
     private let queue = DispatchQueue(label: "de.la.noty.pdf-raster", qos: .userInitiated)
     private let lock = NSLock()
+    /// Pending owners only: an entry is dropped once its latest job ran, so
+    /// released sheets leave nothing behind.
     private var latest: [ObjectIdentifier: Int] = [:]
 
     func submit<T: Sendable>(owner: ObjectIdentifier, generation: Int,
                              job: @escaping @Sendable () -> T, done: @escaping @Sendable (T) -> Void) {
         lock.withLock { latest[owner] = generation }
         queue.async {
-            guard self.lock.withLock({ self.latest[owner] == generation }) else { return }
+            let current = self.lock.withLock { () -> Bool in
+                guard self.latest[owner] == generation else { return false }
+                self.latest[owner] = nil; return true
+            }
+            guard current else { return }
             done(autoreleasepool { job() })
         }
     }

@@ -64,9 +64,9 @@ struct PageWorkflowCheck {
         var continuation = TextBox(x: flowRect.x, y: flowRect.y, width: flowRect.width, height: flowRect.height, text: "Fortsetzung")
         continuation.flowID = textObjects[1].flowID; continuation.flowRegion = .page
         try document.replaceTextBoxes([continuation], pageID: document.pages[1].id)
-        // Schema 10: the paper sheet grows right/down in its own paper (seamless lines).
+        // Schema 11: the paper sheet grows right/down in its own paper (seamless lines).
         try document.applyMargins(PageMargins(right: 300, bottom: 120, style: .blank, color: .white), pageIDs: [document.pages[1].id])
-        guard document.schemaVersion == 10,
+        guard document.schemaVersion == 11,
               document.pages[1].margins == PageMargins(right: 300, bottom: 120, style: .grid, color: .dark),
               document.pages[1].writingCoordinateScale == 1 else { throw StorageError.invalidDocument }
         let imageData = try Data(contentsOf: fixture.deletingLastPathComponent().appendingPathComponent("Bildobjekt.png"))
@@ -104,7 +104,12 @@ struct PageWorkflowCheck {
         try await ToolbarPreferenceStore(root: storeRoot).save(tools, revision: 1)
         let bundle = try await library.backupBundle()
         let libraryFile = root.appendingPathComponent("bibliothek.notylibrary")
-        try LibraryArchive.encode(bundle).write(to: libraryFile)
+        // Streaming file writer of the app; re-read once more in memory here.
+        let written = try LibraryArchive.write(try await library.backupPlan(), to: libraryFile)
+        guard try LibraryArchive.decode(Data(contentsOf: libraryFile)) == bundle,
+              written.file == (try BoundedFile.checksum(libraryFile)) else { throw StorageError.invalidDocument }
+        var corruptLibrary = try Data(contentsOf: libraryFile); corruptLibrary[corruptLibrary.count - 1] ^= 1
+        try corruptLibrary.write(to: root.appendingPathComponent("corrupt.notylibrary"))
         let workspaces = WorkspaceStore(root: root.appendingPathComponent("Workspaces"))
         let staged = try await workspaces.prepareRestore(file: libraryFile)
         let restored = try await workspaces.commitRestore(staged, title: "Seiten-Restore")
@@ -139,7 +144,8 @@ struct PageWorkflowCheck {
             "originalPDFBytesUnchanged": true, "editableShapesSurviveLibraryRestore": independent.pages.first(where: { $0.id == beforeTrim.id })?.shapes == changedShapes, "independentRestore": true,
             "originalImageBytesUnchanged": document.pages[marginPageIndex].images?.first?.data == imageData,
             "editableImageSurvivesLibraryRestore": independent.pages.first(where: { $0.id == beforeTrim.id })?.images == [editedImage],
-            "marginRestoreKeepsPageIDAndArchivesCurrent": true, "appleFrameworksExecuted": false]
+            "marginRestoreKeepsPageIDAndArchivesCurrent": true, "appleFrameworksExecuted": false,
+            "libraryArchiveBytes": written.file.byteCount, "libraryArchiveCRC32": Int(written.file.crc32)]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
     }

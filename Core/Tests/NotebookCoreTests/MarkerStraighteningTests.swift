@@ -74,6 +74,5 @@ final class LineSnappingTests: XCTestCase {
         XCTAssertEqual(StraightStroke.sampleIndices(along: [.init(x: 1, y: 1)], count: 3), [0, 0, 0])
         XCTAssertEqual(StraightStroke.sampleIndices(along: Array(repeating: .init(x: 1, y: 1), count: 5), count: 3), [0, 2, 4])
         XCTAssertTrue(StraightStroke.sampleIndices(along: [], count: 3).isEmpty)
-        XCTAssertEqual(StraightStroke.sampleCount(length: 0), 8); XCTAssertEqual(StraightStroke.sampleCount(length: 10_000), 64)
     }
 }

@@ -15,7 +15,7 @@ Beim Herauszoomen mit zwei Fingern driftet das Blatt zur Seite; es soll mittig b
 
 ## Nachweise und Grenzen
 
-270 Core-Tests ohne Fehler (`.tools/core-editor33.log`), neue Klasse `ViewportWriting33Tests` (Drei-Seiten-Grenze und Rückschnappen, Zentrierung, Schreibscroll-Grenzen mit/ohne Rand, Seitenabstand, gleiche angezeigte Strichstärke). Angepasste ältere Tests: Ganzblatt-Minimum → Drei-Seiten-Minimum, Kopfaktionen 6, Inset = Viewportbreite. `xtool dev build` in PTY erfolgreich (`.tools/build-feedback33.log`). Signiert gebaut und als Build 33 installiert, alle 23 Hefte/159 Dateien nach Rücklesen unverändert ([TESTING](TESTING.md)). **Auf dem iPad ungeprüft**: Pinch-Gefühl, Rückschnappen, Schreibscrollen, Glasblase, Strichstärke auf echten Scans. Kein Host-Roundtrip nötig: kein Speicher-/Formatcode geändert.
+270 Core-Tests ohne Fehler (`.tools/core-editor33.log`), neue Klasse `ViewportWriting33Tests` (Drei-Seiten-Grenze und Rückschnappen, Zentrierung, Schreibscroll-Grenzen mit/ohne Rand, Seitenabstand, gleiche angezeigte Strichstärke). Angepasste ältere Tests: Ganzblatt-Minimum → Drei-Seiten-Minimum, Kopfaktionen 6, Inset = Viewportbreite. `xtool dev build` in PTY erfolgreich (`.tools/build-feedback33.log`). Signiert gebaut und als Build 33 installiert, alle 23 Hefte/159 Dateien nach Rücklesen unverändert ([TESTING](../TESTING.md)). **Auf dem iPad ungeprüft**: Pinch-Gefühl, Rückschnappen, Schreibscrollen, Glasblase, Strichstärke auf echten Scans. Kein Host-Roundtrip nötig: kein Speicher-/Formatcode geändert.
 
 ## Nachtrag: Hänger bei starkem Zoom (Builds 34–37)
 

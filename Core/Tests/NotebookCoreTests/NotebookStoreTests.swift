@@ -2,6 +2,18 @@ import Foundation
 import XCTest
 @testable import NotebookCore
 
+/// Writes prototype files the way the former legacy writer did: notebook.json
+/// and recovery.json as complete snapshots (the first save used the same bytes).
+enum LegacyFixture {
+    static func write(_ primary: Notebook, recovery: Notebook? = nil, to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let bytes = try JSONEncoder().encode(primary)
+        try (recovery.map { try JSONEncoder().encode($0) } ?? bytes).write(to: directory.appendingPathComponent("recovery.json"))
+        try bytes.write(to: directory.appendingPathComponent("notebook.json"))
+    }
+}
+
+/// The app only reads the prototype files (for the one-time package migration).
 final class NotebookStoreTests: XCTestCase {
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -12,33 +24,28 @@ final class NotebookStoreTests: XCTestCase {
 
     func testRoundTripIncludesPDFDrawingAndUnicodeText() throws {
         let directory = try temporaryDirectory()
-        let store = NotebookStore(directory: directory)
-        _ = try store.load()
         var notebook = Notebook()
         notebook.pdf = Data([1, 2, 3])
         notebook.pages[0].drawing = Data([5, 6, 7])
         notebook.pages[0].text = "Äquivalenz: 🖊️\nzweite Zeile"
-        try store.save(notebook)
-        XCTAssertEqual(try NotebookStore(directory: directory).load(), notebook)
+        try LegacyFixture.write(notebook, to: directory)
+        let store = NotebookStore(directory: directory)
+        XCTAssertEqual(try store.load(), notebook)
+        XCTAssertFalse(store.recovered)
     }
 
     func testTruncatedPrimaryRecoversPreviousCompleteSnapshot() throws {
         let directory = try temporaryDirectory()
-        let store = NotebookStore(directory: directory)
-        var first = try store.load()
+        var first = Notebook()
         first.pages[0].text = "erster Stand"
-        try store.save(first)
         var second = first
         second.pages[0].text = "zweiter Stand"
-        try store.save(second)
+        try LegacyFixture.write(second, recovery: first, to: directory)
         try Data("{".utf8).write(to: directory.appendingPathComponent("notebook.json"))
         let reopened = NotebookStore(directory: directory)
         XCTAssertEqual(try reopened.load(), first)
         XCTAssertTrue(reopened.recovered)
-        try reopened.save(first)
-        XCTAssertEqual(try NotebookStore(directory: directory).load(), first)
-        let recovery = try Data(contentsOf: directory.appendingPathComponent("recovery.json"))
-        XCTAssertEqual(try Notebook.decode(recovery), first)
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("notebook.json")), Data("{".utf8))
     }
 
     func testTwoCorruptCopiesArePreserved() throws {
@@ -51,13 +58,14 @@ final class NotebookStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("notebook.json")), corrupt)
     }
 
-    func testFirstSaveAlsoCreatesRecoveryCopy() throws {
+    func testRecoveryCopyAloneIsLoadedAsRecovered() throws {
         let directory = try temporaryDirectory()
-        let store = NotebookStore(directory: directory)
-        let notebook = try store.load()
-        try store.save(notebook)
+        let notebook = Notebook()
+        try LegacyFixture.write(notebook, to: directory)
         try FileManager.default.removeItem(at: directory.appendingPathComponent("notebook.json"))
-        XCTAssertEqual(try NotebookStore(directory: directory).load(), notebook)
+        let store = NotebookStore(directory: directory)
+        XCTAssertEqual(try store.load(), notebook)
+        XCTAssertTrue(store.recovered)
     }
 
     func testUnsupportedVersionsAndEmptyPagesAreRejected() throws {
@@ -67,65 +75,6 @@ final class NotebookStoreTests: XCTestCase {
         notebook.schemaVersion = 1
         notebook.pages = []
         XCTAssertThrowsError(try Notebook.decode(JSONEncoder().encode(notebook)))
-    }
-
-    func testWriteFailureIsReported() throws {
-        let directory = try temporaryDirectory()
-        let file = directory.appendingPathComponent("file")
-        try Data().write(to: file)
-        let store = NotebookStore(directory: file)
-        XCTAssertThrowsError(try store.save(Notebook()))
-    }
-
-    func testRecoveryWriteFailurePreservesPrimaryAndAllowsRetry() throws {
-        let directory = try temporaryDirectory()
-        let store = NotebookStore(directory: directory)
-        let acknowledged = Notebook()
-        try store.save(acknowledged)
-        let primary = directory.appendingPathComponent("notebook.json")
-        let recovery = directory.appendingPathComponent("recovery.json")
-        let originalBytes = try Data(contentsOf: primary)
-        // An actual filesystem error at the recovery destination, without root
-        // permissions or a fake writer that assumes how atomic writes work.
-        try FileManager.default.removeItem(at: recovery)
-        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: false)
-        var edited = acknowledged
-        edited.pages[0].text = "noch ungesicherte Änderung"
-        XCTAssertThrowsError(try store.save(edited))
-        XCTAssertEqual(try Data(contentsOf: primary), originalBytes)
-        XCTAssertEqual(try NotebookStore(directory: directory).load(), acknowledged)
-
-        try FileManager.default.removeItem(at: recovery)
-        try store.save(edited)
-        XCTAssertEqual(try NotebookStore(directory: directory).load(), edited)
-        XCTAssertEqual(try Notebook.decode(Data(contentsOf: recovery)), acknowledged)
-    }
-
-    func testPrimaryCommitFailureRecoversLastAcknowledgedSnapshotAndAllowsRetry() throws {
-        let directory = try temporaryDirectory()
-        let store = NotebookStore(directory: directory)
-        let first = Notebook()
-        try store.save(first)
-        var acknowledged = first
-        acknowledged.pages[0].text = "zuletzt bestätigter Stand"
-        try store.save(acknowledged)
-        let primary = directory.appendingPathComponent("notebook.json")
-        let recovery = directory.appendingPathComponent("recovery.json")
-        // Block only the final commit. Recovery can be written successfully.
-        try FileManager.default.moveItem(at: primary, to: directory.appendingPathComponent("preserved-primary.json"))
-        try FileManager.default.createDirectory(at: primary, withIntermediateDirectories: false)
-        var edited = acknowledged
-        edited.pages[0].text = "nach dem Fehler weiter im Speicher"
-        XCTAssertThrowsError(try store.save(edited))
-        XCTAssertEqual(try Notebook.decode(Data(contentsOf: recovery)), acknowledged)
-        let reopened = NotebookStore(directory: directory)
-        XCTAssertEqual(try reopened.load(), acknowledged)
-        XCTAssertTrue(reopened.recovered)
-
-        try FileManager.default.removeItem(at: primary)
-        try store.save(edited)
-        XCTAssertEqual(try NotebookStore(directory: directory).load(), edited)
-        XCTAssertEqual(try Notebook.decode(Data(contentsOf: recovery)), acknowledged)
     }
 
     func testDuplicatePageIDsAreRejectedAndReorderingKeepsContent() throws {
@@ -143,8 +92,7 @@ final class NotebookStoreTests: XCTestCase {
 
     func testNewerPrimarySchemaDoesNotSilentlyFallBackToOlderRecovery() throws {
         let directory = try temporaryDirectory()
-        let store = NotebookStore(directory: directory)
-        try store.save(Notebook())
+        try LegacyFixture.write(Notebook(), to: directory)
         let newer = Data("{\"schemaVersion\":99}".utf8)
         try newer.write(to: directory.appendingPathComponent("notebook.json"))
         XCTAssertThrowsError(try NotebookStore(directory: directory).load()) { error in
@@ -155,53 +103,9 @@ final class NotebookStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("notebook.json")), newer)
     }
 
-    func testUnchangedFlushKeepsOlderRecoveryPoint() throws {
+    func testEmptyDirectoryStartsBlankWithoutWritingFiles() throws {
         let directory = try temporaryDirectory()
-        let store = NotebookStore(directory: directory)
-        let first = Notebook()
-        try store.save(first)
-        var second = first
-        second.pages[0].text = "neuer Stand"
-        try store.save(second)
-        try store.save(second)
-        let recovery = try Data(contentsOf: directory.appendingPathComponent("recovery.json"))
-        XCTAssertEqual(try Notebook.decode(recovery), first)
-    }
-
-    func testLegacyUpgradeArchivesExactOldBytesAndKeepsIDsAndCoordinates() throws {
-        let directory = try temporaryDirectory()
-        var legacy = Notebook()
-        legacy.schemaVersion = 1
-        legacy.pages[0].drawing = Data([1, 2, 3])
-        legacy.pages[0].text = "Altstand"
-        let oldBytes = try JSONEncoder().encode(legacy)
-        try oldBytes.write(to: directory.appendingPathComponent("notebook.json"))
-        let store = NotebookStore(directory: directory)
-        var upgraded = try store.load()
-        XCTAssertNil(upgraded.pages[0].geometry)
-        upgraded.schemaVersion = Notebook.currentSchemaVersion
-        try store.save(upgraded)
-        XCTAssertEqual(upgraded.pages, legacy.pages)
-        XCTAssertEqual(upgraded.id, legacy.id)
-        let folders = try FileManager.default.contentsOfDirectory(
-            at: directory.appendingPathComponent("Migrations"), includingPropertiesForKeys: nil)
-        XCTAssertEqual(folders.count, 1)
-        XCTAssertEqual(try Data(contentsOf: folders[0].appendingPathComponent("notebook-v1.json")), oldBytes)
-        XCTAssertEqual(try NotebookStore(directory: directory).load(), upgraded)
-    }
-
-    func testFailedMigrationArchiveDoesNotModifyLegacySnapshot() throws {
-        let directory = try temporaryDirectory()
-        var legacy = Notebook()
-        legacy.schemaVersion = 1
-        let original = try JSONEncoder().encode(legacy)
-        try original.write(to: directory.appendingPathComponent("notebook.json"))
-        try Data("blocks archive directory".utf8).write(to: directory.appendingPathComponent("Migrations"))
-        let store = NotebookStore(directory: directory)
-        var upgraded = try store.load()
-        upgraded.schemaVersion = Notebook.currentSchemaVersion
-        XCTAssertThrowsError(try store.save(upgraded))
-        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("notebook.json")), original)
-        XCTAssertEqual(try NotebookStore(directory: directory).load(), legacy)
+        XCTAssertEqual(try NotebookStore(directory: directory).load().pages.count, 1)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), [])
     }
 }

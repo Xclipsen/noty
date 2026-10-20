@@ -14,4 +14,9 @@ if python3 -B scripts/verify_backup.py "$task_check/results/corrupt.notybackup" 
     echo 'FEHLER: beschädigtes Backup wurde akzeptiert' >&2
     exit 1
 fi
+if python3 -B scripts/verify_library_backup.py "$task_check/results/corrupt.notylibrary" > "$task_check/expected-library-corruption.log" 2>&1; then
+    echo 'FEHLER: beschädigtes Bibliotheksbackup wurde akzeptiert' >&2
+    exit 1
+fi
+bash scripts/check_verifiers.sh
 echo "Host-Roundtrip geprüft; Artefakte: $task_check"

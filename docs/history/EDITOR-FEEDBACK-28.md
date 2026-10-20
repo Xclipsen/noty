@@ -2,7 +2,7 @@
 
 Rückmeldung vom 18.10.2026: Checkboxen, Aufzählungen und Nummerierung sollen beim erneuten Antippen ausgeschaltet werden. Herauszoomen soll in einer Bewegung zurückfedern und die aktuelle Seite ausrichten. Handschrift soll beim Vergrößern schärfer werden, dünne Außenkanten sollen verschwinden und kurze Eingabeblockaden untersucht werden.
 
-**Implementiert, erfolgreich signiert gebaut und installiert. Neue native Bedienung noch ungeprüft.** 230 Core-Tests bestanden; vollständiger Updatevergleich: alle 22 Hefte und 153 Dateien unverändert. [Prüfnachweise](TESTING.md).
+**Implementiert, erfolgreich signiert gebaut und installiert. Neue native Bedienung noch ungeprüft.** 230 Core-Tests bestanden; vollständiger Updatevergleich: alle 22 Hefte und 153 Dateien unverändert. [Prüfnachweise](../TESTING.md).
 
 ## Listen
 

@@ -2,7 +2,7 @@
 
 ## Texteditor und zusätzliche Schreibseite – Build 27
 
-Seitensprünge/helle Tastatur gemeldet; neue Referenzen IMG_0248–0251 und automatische Fortsetzung auf Folgeseiten ausdrücklich bestätigt. Papier-/Randtext ohne Feldleisten, freie PDF-Felder, dunkle Tastatur und Formatierung über der Tastatur. Virtuelle letzte Schreibseite vor erster Texteingabe oder erstem Pencil-Strich außerhalb von Heft/Export/Seitenzahl. Umsetzung, Quellen, ursprüngliche Fehlergrenzen und gemeinsamer Gerätetest in [TEXT-REBUILD-27](TEXT-REBUILD-27.md); [Build-/Archiv-/Updatebelege](TESTING.md). Bisherige Textvorgaben aus Build 21 damit in diesem Punkt ersetzt.
+Seitensprünge/helle Tastatur gemeldet; neue Referenzen IMG_0248–0251 und automatische Fortsetzung auf Folgeseiten ausdrücklich bestätigt. Papier-/Randtext ohne Feldleisten, freie PDF-Felder, dunkle Tastatur und Formatierung über der Tastatur. Virtuelle letzte Schreibseite vor erster Texteingabe oder erstem Pencil-Strich außerhalb von Heft/Export/Seitenzahl. Umsetzung, Quellen, ursprüngliche Fehlergrenzen und gemeinsamer Gerätetest in [TEXT-REBUILD-27](history/TEXT-REBUILD-27.md); [Build-/Archiv-/Updatebelege](TESTING.md). Bisherige Textvorgaben aus Build 21 damit in diesem Punkt ersetzt.
 
 Stand: 18.10.2026. Zusammenfassung der Ideen aus „Noty github.md“ im Obsidian Vault und der zugehörigen Bildreferenzen, einschließlich der anschließend bestätigten Antworten zu Textfeldern, Formatierung, Umschlag, Seitennavigation, Ausschneiden, Einfügen, Leeren, Autostift und Pencil-Vorschau. Dieses Dokument beschreibt das gewünschte Ergebnis, keinen bereits implementierten oder getesteten Stand. Die konkrete Werkzeugaufteilung wurde anschließend ebenfalls vom Nutzer bestätigt. Die Gesetzessammlung bleibt eine spätere Erweiterung.
 
@@ -134,7 +134,7 @@ Der Autostift wählt die Farbe anhand der hellen oder dunklen Papier- bzw. PDF-S
 
 Die Vorschau bzw. Markierung unter dem schwebenden Apple Pencil ein- und ausschalten können. „Stiftschatten“ bezeichnet in der ursprünglichen Idee diese Vorschau.
 
-![Weitere Editorreferenz aus der Ideensammlung](assets/ui-rebuild/IMG_0229%201.png)
+![Weitere Editorreferenz aus der Ideensammlung](assets/ui-rebuild/IMG_0229-1.png)
 
 ## Zu beheben
 

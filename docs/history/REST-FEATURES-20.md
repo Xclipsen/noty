@@ -43,6 +43,6 @@ Geräte-PDF, Heft- und Bibliotheksdatei danach am PC unabhängig prüfen: vollst
 
 - `swift test --package-path Core`: 158 Tests, keine Fehler; `.tools/core-rest-final.log`. Neue Fälle für Formen/IDs/Bereichsgrenzen, exakte Schema-5-Migrationsbytes, Archive/Papierkorb/Ränder, Formen-/Pfeilerkennung, Unicode-Listen, Suchbegriffe, tägliche Versuche/Aufbewahrung, sichere WebDAV-Adressen/-Listen und tatsächliche Dateiablage/Restore/Bereinigung einschließlich Fehlern. 100 Seiten mit Text-/Formobjekten als Struktur-/Archivtest; kein PDFKit-Leistungstest.
 - `bash scripts/check_page_workflow.sh`: Schema-6-Roundtrip mit echter Quell-PDF, PNG, Text, Ink-Platzhalterdaten und Formen, vollständiger unabhängiger Heft-/Bibliotheks-/Revisionsprüfung. Form und Bild in getrenntem Restore verändert, Originalbestand gleich; beschädigtes Archiv abgewiesen. `.tools/roundtrip-rest-final.log`, Artefakte `.tools/page-workflow-QCJA56/`.
-- iPad-SDK-/Signierungsnachweise und Bestandsmigration siehe aktueller Build-20-Abschnitt in [TESTING](TESTING.md). Hosttests führen UIKit/PencilKit/Vision nicht aus.
+- iPad-SDK-/Signierungsnachweise und Bestandsmigration siehe aktueller Build-20-Abschnitt in [TESTING](../TESTING.md). Hosttests führen UIKit/PencilKit/Vision nicht aus.
 
 WebDAV-Methoden nach [RFC 4918](https://www.rfc-editor.org/rfc/rfc4918); native Gesten und Vision bleiben zusätzlich am Zielgerät zu prüfen.

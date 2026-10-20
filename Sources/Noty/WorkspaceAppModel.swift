@@ -13,6 +13,13 @@ final class WorkspaceAppModel: ObservableObject {
     @Published var busy = false
     @Published var error: String?
 
+    init() {
+        Task.detached(priority: .utility) { BackupScratch.removeStale() }
+        // Unpublished restore stages of earlier runs (failed/interrupted, older than a day).
+        Task { [store] in await store.removeStaleStages() }
+        Task { await SigningReminder.refresh() }
+    }
+
     func refresh() async {
         do {
             let result = try await store.list()
@@ -39,17 +46,31 @@ final class WorkspaceAppModel: ObservableObject {
             await refresh()
         } catch { self.error = error.localizedDescription }
     }
-    func restoreLibrary(_ url: URL) async -> Bool {
-        guard !busy else { return false }
+    /// Copies the archive into a new stage and checks it completely, including
+    /// the Apple-framework layers of every notebook, one at a time off the UI actor.
+    func prepareLibraryRestore(_ url: URL) async throws -> PreparedLibraryRestore {
+        guard !busy else { throw BackupPostponed(reason: "Eine Wiederherstellung läuft bereits") }
         busy = true
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() }; busy = false }
+        // A coordinated read makes the file provider download an iCloud file first.
+        try await Task.detached(priority: .userInitiated) { try CoordinatedBackupFiles().reading(url, metadataOnly: false) { _ in } }.value
+        return try await store.prepareRestore(file: url, validate: BackupValidation.validate)
+    }
+    /// Always a new separate area; the current library is never overwritten.
+    func commitLibraryRestore(_ prepared: PreparedLibraryRestore) async throws -> TestWorkspace {
+        guard !busy else { throw BackupPostponed(reason: "Eine Wiederherstellung läuft bereits") }
+        busy = true; defer { busy = false }
+        let existing = try await store.list()
+        let area = try await store.commitRestore(prepared, title: "Restore \(existing.workspaces.count + 1) · \(Date().formatted(date: .abbreviated, time: .shortened))")
+        await refresh()
+        return area
+    }
+    func discardLibraryRestore(_ prepared: PreparedLibraryRestore) async { try? await store.discardRestore(prepared) }
+    func restoreLibrary(_ url: URL) async -> Bool {
         do {
-            let prepared = try await store.prepareRestore(file: url)
-            for document in prepared.bundle.documents { try EditorModelValidation.validate(document) }
-            let existing = try await store.list()
-            _ = try await store.commitRestore(prepared, title: "Restore \(existing.workspaces.count + 1) · \(Date().formatted(date: .abbreviated, time: .shortened))")
-            await refresh()
+            let prepared = try await prepareLibraryRestore(url)
+            _ = try await commitLibraryRestore(prepared)
             return true
         } catch { self.error = error.localizedDescription; return false }
     }
@@ -70,14 +91,18 @@ struct WorkspaceLibraryHost: View {
     var body: some View {
         LibraryView(model: library, workspaces: workspaces).environmentObject(toolbox).environmentObject(externalBackup)
             .task {
+                // `scenePhase` captured by this long-running closure would stay at its
+                // first value; the model holds the current phase instead.
                 while !Task.isCancelled {
-                    if scenePhase == .active { await externalBackup.attempt(library: library, toolbox: toolbox) }
+                    if externalBackup.sceneActive { await externalBackup.attempt(library: library, toolbox: toolbox) }
                     do { try await Task.sleep(for: .seconds(60)) } catch { break }
                 }
             }
-            .onChange(of: scenePhase) { _, phase in
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                externalBackup.sceneActive = phase == .active
                 if phase == .active { Task { await externalBackup.attempt(library: library, toolbox: toolbox) } }
             }
+            .onOpenURL { url in Task { await IncomingBackup.receive(url, library: library, workspaces: workspaces) } }
     }
 }
 

@@ -6,7 +6,7 @@ Nutzer: Normale Seiten sollen sich wie PDF-Seiten über „Schreibplatz hinzufü
 - Papierseiten bekommen Platz nur rechts/unten, in Papierart und -farbe der Seite. Die Lineatur läuft nahtlos weiter, kein Inhalt verschiebt sich.
 - Startwert rechts 100 %; Geltung „Aktuelle Seite“ oder „Alle Papierseiten“.
 - Zugang über das Seitenmenü und das „…“ im Editor.
-- Notebook-Schema 10.
+- Notebook-Schema 11.
 
 Der erste Vorschlag „nur nach unten verlängern“ ist damit ersetzt. [Details](PAGE-ADJUST.md).
 
@@ -29,19 +29,19 @@ Stand: implementiert, Core-Tests/Host-Roundtrip/SDK-Build; Gefühl, Haptik, Hove
 
 IMG_0274 bestätigt: Die Build-31-Ausnahme für PDF-Randseiten ist falsch. Bei einheitlicher Anzeige müssen Papier und PDF dieselbe Grundbreite haben, auch mit Schreibrand. 100 % neuer Rand folgt wieder der PDF-Grundbreite und erscheint damit als normale Seitenbreite. Randtext/Lineatur nutzen normale Seiteneinheiten; 14 bleibt 14 in den Stilen/Bedienelementen, keine künstlich hochgerechneten Schriftgrößen. Gespeicherte individuelle Ränder nicht still umdeuten; einen unter Build 31 zu schmal angelegten Rand ausdrücklich über Rechts/Breit/100 % erweitern.
 
-Lasso: Farbe während Vorschau und nach Commit erhalten; Handschrift mit umlaufender animierter Kontur und Drehgriff, bei Bewegung-reduzieren statisch. Nutzer präzisiert IMG_0275: Die dünnen dunklen Linien sind zwei fehlgeschlagene begradigte Stiftlinien. Halten muss die sichtbare Vorschaufarbe und konfigurierte Stärke bis zum gespeicherten nativen Strich erhalten. [Umsetzung und Geräteprüfung](EDITOR-FEEDBACK-32.md).
+Lasso: Farbe während Vorschau und nach Commit erhalten; Handschrift mit umlaufender animierter Kontur und Drehgriff, bei Bewegung-reduzieren statisch. Nutzer präzisiert IMG_0275: Die dünnen dunklen Linien sind zwei fehlgeschlagene begradigte Stiftlinien. Halten muss die sichtbare Vorschaufarbe und konfigurierte Stärke bis zum gespeicherten nativen Strich erhalten. [Umsetzung und Geräteprüfung](history/EDITOR-FEEDBACK-32.md).
 
 ## Präzisierungen 31 – 18.10.2026
 
 Die neue Rückmeldung ersetzt die Einschließungsregel aus Build 30: Lasso wählt alles Berührte/Enthaltene; Seitentext und gesperrte Bilder bleiben geschützt. Freiform/Rechteck zum Auswählen, bei reiner Handschrift anschließend Kontur um die Striche statt rechteckigem Rahmen. Menü ausdrücklich dunkel nach Referenz, lesbare Aktionsleiste und kleine Griffe mit großer Trefferfläche; reine Handschrift seitlich drehen/spiegeln. Kein bloß bewegter Rahmen ohne Inhalt.
 
-Starken Zoom ohne volle hochaufgelöste Seitenraster betreiben. Horizontal nur den Bereich der tatsächlich betrachteten Seite freigeben; breite Nachbarseiten dürfen schmale Seiten nicht seitlich ins Leere scrollen lassen. Neuer Import-Schreibplatz startet rechts/schwarz/100 %, wobei 100 % einer normalen A4-Seitenbreite entspricht. Schreibseiten in gemeinsamen Punktgrößen anzeigen, auch bei aktivierter PDF-Breiten-Normalisierung; vorhandene Inhalte/Ränder nicht automatisch umschreiben. Die PDF-Höhe/-Geometrie erhalten. [Umsetzung, Referenzgrenzen und Retest](EDITOR-FEEDBACK-31.md).
+Starken Zoom ohne volle hochaufgelöste Seitenraster betreiben. Horizontal nur den Bereich der tatsächlich betrachteten Seite freigeben; breite Nachbarseiten dürfen schmale Seiten nicht seitlich ins Leere scrollen lassen. Neuer Import-Schreibplatz startet rechts/schwarz/100 %, wobei 100 % einer normalen A4-Seitenbreite entspricht. Schreibseiten in gemeinsamen Punktgrößen anzeigen, auch bei aktivierter PDF-Breiten-Normalisierung; vorhandene Inhalte/Ränder nicht automatisch umschreiben. Die PDF-Höhe/-Geometrie erhalten. [Umsetzung, Referenzgrenzen und Retest](history/EDITOR-FEEDBACK-31.md).
 
 ## Präzisierungen 30 – 18.10.2026
 
 Ein einziges Hauptlasso mit Freiform/Rechteck: vollständig eingeschlossene Handschrift, freie Textfelder, Bilder und Formen gemeinsam auswählen; seitengebundenen Text schützen. Die vorherige Trennung zwischen Objekt- und Handschrift-Lasso entfällt. Neue Handschrift liegt sichtbar über Formen, ebenso in Vorschau/PDF. Halten soll die erkannte Linie vor dem Abheben gerade anzeigen und auf unterstütztem Pencil fühlbar bestätigen.
 
-Checkboxen nach IMG_0265/0266: dünner offener Kreis, erledigt gefüllter Kreis mit Haken sowie gedimmtem/durchgestrichenem Text. Dreistufiger Formatbutton und Pencil-Tipp bleiben. Formatierungsicons auf gleicher Höhe. Neue PDF-Ränder zunächst schwarz als künftiger Systemstandard, rechts 100 %; vorhandene Einstellungen erhalten. Zurückgenommene Autostiftfarbmeldung nicht erneut bearbeiten. Scrollruckler durch weniger Canvas-/Layoutarbeit reduzieren, Gerätewirkung separat abnehmen. Linienausrichtung wartet weiter auf Nutzerrückmeldung. [Umsetzung und Grenzen](EDITOR-FEEDBACK-30.md).
+Checkboxen nach IMG_0265/0266: dünner offener Kreis, erledigt gefüllter Kreis mit Haken sowie gedimmtem/durchgestrichenem Text. Dreistufiger Formatbutton und Pencil-Tipp bleiben. Formatierungsicons auf gleicher Höhe. Neue PDF-Ränder zunächst schwarz als künftiger Systemstandard, rechts 100 %; vorhandene Einstellungen erhalten. Zurückgenommene Autostiftfarbmeldung nicht erneut bearbeiten. Scrollruckler durch weniger Canvas-/Layoutarbeit reduzieren, Gerätewirkung separat abnehmen. Linienausrichtung wartet weiter auf Nutzerrückmeldung. [Umsetzung und Grenzen](history/EDITOR-FEEDBACK-30.md).
 
 ## Präzisierungen 29 – 18.10.2026
 
@@ -49,19 +49,19 @@ Nachgereichter Textablauf: zusätzliche Textformate und Ausrichtung als kompakte
 
 Checkboxbutton: offen einfügen → abhaken → entfernen; Pencil-Tipp auf das Kästchen schaltet offen/abgehakt. Diese Präzisierung ersetzt den Checkbox-Zweierschritt aus Build 28; Punkte/Nummerierung bleiben Zweierschritt. Keine zusätzliche stehende Stiftmarkierung. Gemischtes Lasso schützt seitengebundenen „Word“-Text und bewegt freie Textfelder/Ink/Bilder/Formen; natives Handschrift-Lasso bleibt auf Ebene zwei. Größenänderung im freien Textfeld ohne Wortauswahl betrifft dessen gesamten Inhalt; vorhandene Wortauswahl hat Vorrang.
 
-Leistenwechsel nach links erweitern/verkürzen, rechter Umschaltpfeil bleibt stehen; größerer Griff. Formen direkt einzeln antippen. Seitenpfeile an echten Seitengrenzen grau/deaktiviert; virtuelle Schreibreserve weiter per Scrollen erreichbar. Neue PDF-Schreibränder rechts 100 %, vorhandene Ränder beim Öffnen erhalten. Grundseitenfit statt Verkleinern wegen zusätzlichem Rand; automatische Stiftfarbe nach tatsächlicher Ansatzfläche. Seitengebundener Text auf linierten Vorlagen soll an deren Grundlinien stehen; Halten begradigt Stift/Marker. Umsetzung und offene native Abnahme: [EDITOR-FEEDBACK-29](EDITOR-FEEDBACK-29.md).
+Leistenwechsel nach links erweitern/verkürzen, rechter Umschaltpfeil bleibt stehen; größerer Griff. Formen direkt einzeln antippen. Seitenpfeile an echten Seitengrenzen grau/deaktiviert; virtuelle Schreibreserve weiter per Scrollen erreichbar. Neue PDF-Schreibränder rechts 100 %, vorhandene Ränder beim Öffnen erhalten. Grundseitenfit statt Verkleinern wegen zusätzlichem Rand; automatische Stiftfarbe nach tatsächlicher Ansatzfläche. Seitengebundener Text auf linierten Vorlagen soll an deren Grundlinien stehen; Halten begradigt Stift/Marker. Umsetzung und offene native Abnahme: [EDITOR-FEEDBACK-29](history/EDITOR-FEEDBACK-29.md).
 
 ## Präzisierungen 28 – 18.10.2026
 
 Checkboxen-, Aufzählungs- und Nummerierungsbutton: einmal anwenden, erneut antippen entfernt den jeweiligen Listentyp. Kein schneller Doppeltipp nötig. Abhaken einer Aufgabe bleibt eine eigene Aktion. Bestehende Wortformatierungen erhalten.
 
-Elastische Ganzblatt-Rückkehr und Seitenfokus müssen in derselben Bewegung enden; kein nachträglicher Seitensprung. Breiten-Snap behält die vertikale Leseposition. Handschrift beim Vergrößern mit passender Auflösung darstellen, dünne Außenkanten beseitigen und Eingabepfad entlasten. Umsetzung und noch offene native Abnahme in [EDITOR-FEEDBACK-28](EDITOR-FEEDBACK-28.md).
+Elastische Ganzblatt-Rückkehr und Seitenfokus müssen in derselben Bewegung enden; kein nachträglicher Seitensprung. Breiten-Snap behält die vertikale Leseposition. Handschrift beim Vergrößern mit passender Auflösung darstellen, dünne Außenkanten beseitigen und Eingabepfad entlasten. Umsetzung und noch offene native Abnahme in [EDITOR-FEEDBACK-28](history/EDITOR-FEEDBACK-28.md).
 
 ## Präzisierungen 27 – 18.10.2026
 
 PDFs: freie Textfelder direkt an der Tippstelle. Papierseiten und zusätzlicher PDF-Schreibraum: eigener seitenbreiter Textanfang ohne Feldleisten, weiterlaufender Text. Nutzer bestätigt ausdrücklich automatischen Übergang zur nächsten Seite. Formatierungszeile direkt über dunkler Tastatur anhand IMG_0248–0251; keine zusätzliche Textleiste unter der Hauptwerkzeugleiste. Einfügen, Auswahl, Tastatur und Autosave dürfen nicht zwischen Seiten springen.
 
-Unten immer genau eine unbenutzte Schreibseite bereitstellen. Sie bleibt außerhalb von realer Seitenzahl, Heftdaten und Export, bis Text, Handschrift oder anderer Inhalt entsteht. Nutzer bestätigt ausdrücklich auch Zeichnen mit dem Pencil als Auslöser. Danach neue leere Reserve. Echte Seiten nicht nachträglich anhand einer Leerheitsheuristik löschen/aus dem Export ausblenden. [Anforderung, Quellen und native Abnahme](TEXT-REBUILD-27.md).
+Unten immer genau eine unbenutzte Schreibseite bereitstellen. Sie bleibt außerhalb von realer Seitenzahl, Heftdaten und Export, bis Text, Handschrift oder anderer Inhalt entsteht. Nutzer bestätigt ausdrücklich auch Zeichnen mit dem Pencil als Auslöser. Danach neue leere Reserve. Echte Seiten nicht nachträglich anhand einer Leerheitsheuristik löschen/aus dem Export ausblenden. [Anforderung, Quellen und native Abnahme](history/TEXT-REBUILD-27.md).
 
 Stand: 17.10.2026. Fortlaufendes Designgespräch mit dem Nutzer; beschlossene Ziele sind nicht automatisch Geräteprüfungen. Referenzen: Nutzerbilder IMG_0232 (Seitenraster) und IMG_0234 (Seite hinzufügen). Eigenständige noty-Gestaltung, keine vollständige Goodnotes-Kopie.
 
