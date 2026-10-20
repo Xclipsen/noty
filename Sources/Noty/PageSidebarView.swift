@@ -342,7 +342,8 @@ struct PageSidebarView: View {
             Button(page.bookmarked == true ? "Lesezeichen entfernen" : "Lesezeichen setzen",
                    systemImage: page.bookmarked == true ? "bookmark.slash" : "bookmark") { model.toggleBookmark(page.id) }
             if let onMargins, model.sourcePage(for: page) != nil || page.writingSpaceExtendsPaper {
-                Button("Schreibplatz …", systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") { onMargins(page.id) }
+                Button(page.writingSpaceExtendsPaper ? "Seite anpassen …" : "Schreibplatz …",
+                       systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") { onMargins(page.id) }
             }
             Menu("Verschieben", systemImage: "arrow.up.arrow.down.square") {
                 Button("An den Anfang", systemImage: "arrow.up.to.line") { model.movePage(page.id, to: 0) }

@@ -5,20 +5,23 @@ Nutzerwunsch: eine vorhandene Seite nachträglich erweitern. Der Platz soll vor 
 ## Bedienung
 
 - **Zugänge:**
-  - Seitenleiste › Seitenmenü › „Schreibplatz …“ für PDF- und Papierseiten. Vorher hieß der Eintrag „PDF-Schreibplatz …“ und gab es nur für PDF-Seiten.
-  - Editor › „…“ › „Schreibplatz dieser Seite …“, gleich neben „Papier für neue Seiten …“. Der Eintrag ist ausgegraut auf der leeren Reserve-Seite und auf Prototyp-Testseiten.
-- **Dialog „Schreibplatz“ bei Papierseiten:**
-  - Nur **Rechts** und **Unten**, jeweils mit Schalter, Regler und Schmal/Mittel/Breit (25/60/100 % der Seitenbreite bzw. -höhe).
-  - Startwert: rechts 100 %, wie beim PDF-Schreibplatz.
-  - Es gibt keine eigene Papierwahl, denn der Platz ist dasselbe Papier wie die Seite. Die Vorschau zeigt das Ergebnis.
-- **Anwenden auf:**
-  - „Aktuelle Seite“ oder „Alle Papierseiten“: jede vorhandene Papierseite mit demselben Anteil ihrer eigenen Größe.
-  - PDF-Seiten bleiben dabei unverändert, ebenso neue Seiten und gelöschte Seiten.
-- **Verkleinern wie beim PDF-Rand:**
-  - Text, Bilder oder Formen im wegfallenden Bereich blockieren.
-  - Handschrift dort wird nach Rückfrage entfernt. Der vollständige vorherige Stand landet im Seitenpapierkorb und lässt sich an Ort und Stelle wiederherstellen.
-  - Undo funktioniert.
-- **PDF-Seiten:** unverändert, also vier Seiten, eigenes Papier/Farbe und „Dieser PDF-Import“.
+  - Seitenleiste › Seitenmenü: „Seite anpassen …“ bei Papierseiten, „Schreibplatz …“ bei PDF-Seiten. Vorher hieß der Eintrag „PDF-Schreibplatz …“ und gab es nur für PDF-Seiten.
+  - Editor › „…“ › „Diese Seite anpassen …“, gleich neben „Papier für neue Seiten …“. Der Eintrag ist ausgegraut auf der leeren Reserve-Seite und auf Prototyp-Testseiten.
+- **Dialog „Seite anpassen“ bei Papierseiten** (Nutzerentwurf vom 20.10., im noty-Stil mit dunklen Karten und Akzentfarbe):
+  - **Vorschau:** Der neue Platz ist gestrichelt in der Akzentfarbe markiert.
+  - **Mehr Platz:**
+    - „Rechts verlängern“ und „Unten verlängern“, jeweils mit Schalter, Stufen „+¼ / +½ / +1 Seite“ und feinem Regler.
+    - Startwert: rechts +1 Seite, wie beim PDF-Schreibplatz. Unten startet beim Einschalten mit +½.
+    - Darunter „Gilt für“: „Diese Seite“ oder „Alle Papierseiten“. Bei „Alle Papierseiten“ wächst jede vorhandene Papierseite um denselben Anteil ihrer Größe.
+    - PDF-Seiten, neue Seiten und gelöschte Seiten bleiben unverändert.
+  - **Papier dieser Seite:**
+    - Vorlage (Blanko/Liniert/Kariert) und Farbe (Weiß/Dunkel) nur für diese Seite. Der zusätzliche Platz folgt automatisch.
+    - Beim Farbwechsel wird schwarze und weiße Schrift getauscht, farbige bleibt (`Notebook.setPaper`, gleiche Umfärbung wie „Ganzes Notizbuch“).
+- **Nie etwas löschen:**
+  - Die Regler enden am vorhandenen Inhalt (Handschrift, Text, Bilder, Formen), und solange dort Inhalt liegt, lässt sich die Seite nicht ganz zurückschalten.
+  - Würde „Alle Papierseiten“ auf einer anderen Seite Handschrift abschneiden, bricht das Anwenden mit einem Hinweis ab, statt zu löschen.
+  - Undo funktioniert, alles ist ein Schritt.
+- **PDF-Seiten:** Dialog „Schreibplatz“ wie bisher, also vier Seiten, eigenes Papier/Farbe, „Dieser PDF-Import“ und Verkleinern mit Sicherung im Seitenpapierkorb.
 
 ## Warum nur rechts und unten bei Papier
 
@@ -40,19 +43,19 @@ Details in [STORAGE](STORAGE.md#ergänzung-20102026--notebook-schema-11-schreibp
 - Platz links/oben an Papierseiten (siehe oben).
 - Endlose Seite oder automatisches Wachsen beim Schreiben.
 - Format eines beschriebenen Blatts tauschen.
-- Vorlage/Farbe für eine einzelne Seite; das bleibt eine mögliche spätere Ergänzung.
 - Schreibplatz als Standard für neue Seiten.
 
 ## Nachweise
 
 - **Implementiert** auf `ui/menu-polish`.
-- **Core-Tests:** 449/449, davon 8 neue in `PaperWritingSpaceTests`.
+- **Core-Tests:** zusammen mit Build 47 495/495, davon 9 in `PaperWritingSpaceTests`.
 - **Host-Roundtrip:** mit Papierseite plus Schreibplatz (Schema 11) bestanden, Python-Prüfer für Heft-, Bibliotheks- und Gerätespeicher eingeschlossen.
 - **Negativproben im Python-Prüfer** werden abgelehnt: links, oben, fremde Vorlage, fremde Farbe, Schema 10.
-- **SDK-Build:** siehe [UI-POLISH](UI-POLISH.md).
+- **SDK-Build:** iPad-SDK-Build 48 ohne Fehler und Warnungen, siehe auch [UI-POLISH](UI-POLISH.md).
 - **Auf dem iPad ungeprüft:**
   - Schreiben im neuen Platz.
   - Lineatur-Übergang in Editor, Vorschau und PDF.
   - Einpassen und Schreibscrollen.
   - Text in der rechten Spalte.
-  - Verkleinern mit Wiederherstellen.
+  - Grenze beim Verkleinern.
+  - Farbwechsel einer beschriebenen Seite.

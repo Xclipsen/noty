@@ -111,6 +111,31 @@ final class PaperWritingSpaceTests: XCTestCase {
         XCTAssertNoThrow(try book.validate())
     }
 
+    func testOnePagesPaperChangesWithItsWritingSpaceAndInvertsNeutralText() throws {
+        var book = Notebook.blank(title: "Papier")
+        let other = try book.insertPaper(.blank, at: 1)
+        let id = book.pages[0].id
+        try book.applyMargins(PageMargins(right: 200), pageIDs: [id])
+        var box = TextBox(x: 40, y: 40, width: 200, height: 40, text: "Notiz"); box.style.color = .black
+        try book.replaceTextBoxes([box], pageID: id)
+        let defaults = book.appearance
+        try book.setPaper(.lined, color: .dark, pageID: id)
+        XCTAssertEqual(book.pages[0].paper, .lined)
+        XCTAssertEqual(book.pages[0].paperColor, .dark)
+        XCTAssertEqual(book.pages[0].margins, PageMargins(right: 200, style: .lined, color: .dark))
+        XCTAssertEqual(book.pages[0].effectiveTextBoxes.first?.style.color, .white)
+        XCTAssertEqual(book.pages.first(where: { $0.id == other })?.paper, .blank)
+        XCTAssertEqual(book.appearance, defaults)
+        XCTAssertEqual(try Notebook.decode(JSONEncoder().encode(book)), book)
+        // Handwriting needs the app's PencilKit step; never half converted.
+        book.pages[0].drawing = Data([1])
+        XCTAssertThrowsError(try book.setPaper(.lined, color: .white, pageID: id))
+        XCTAssertEqual(book.pages[0].paperColor, .dark)
+        _ = try book.insertPDF(Data([1, 2, 3]), geometries: [PaperStyle.geometry], at: 2)
+        XCTAssertThrowsError(try book.setPaper(.grid, color: .white, pageID: book.pages[2].id))
+        XCTAssertThrowsError(try book.setPaper(.legacyTest, color: .white, pageID: other))
+    }
+
     func testDraftAndContinuationPagesStayNormalSheets() throws {
         var book = Notebook.blank(title: "Papier")
         try book.applyMargins(PageMargins(right: 595), pageIDs: [book.pages[0].id])

@@ -594,7 +594,7 @@ struct ContentView: View {
                     Toggle("PDFs einheitlich anzeigen", systemImage: "rectangle.split.3x1", isOn: Binding(get: { toolbox.preferences.normalizePageWidths ?? false }, set: { toolbox.preferences.normalizePageWidths = $0 }))
                         .accessibilityHint("Gleiche Arbeitsblattbreite mit Schreibraum daneben. Ändert nur die Anzeige.")
                 }
-                Button("Schreibplatz dieser Seite …", systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") {
+                Button("Diese Seite anpassen …", systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") {
                     marginsPage = MarginPage(id: currentPage.id)
                 }.disabled(!canEdit || !model.notebook.pages.contains(where: { $0.id == currentPage.id })
                            || (model.sourcePage(for: currentPage) == nil && !currentPage.writingSpaceExtendsPaper))

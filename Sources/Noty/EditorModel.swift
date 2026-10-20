@@ -438,25 +438,7 @@ final class EditorModel: ObservableObject {
         let empty: Set<UUID> = scope == .emptyPages ? Set(notebook.pages.filter { page in
             page.drawing.isEmpty || (try? PKDrawing(data: page.drawing))?.strokes.isEmpty == true
         }.map(\.id)) : []
-        // Thin PencilKit step: path, transform, mask, ink type and random seed
-        // stay; only the PKInk colour of strokes Core selects is replaced.
-        let recolor: Notebook.InkRecolor = { data, convert in
-            let drawing = try PKDrawing(data: data)
-            let light = UITraitCollection(userInterfaceStyle: .light)
-            var changed = false
-            let strokes = drawing.strokes.map { stroke -> PKStroke in
-                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-                guard stroke.ink.color.resolvedColor(with: light).getRed(&r, green: &g, blue: &b, alpha: &a),
-                      let next = convert(PageRect(stroke.renderBounds), InkColor(Double(r), Double(g), Double(b), Double(a)))
-                else { return stroke }
-                var result = stroke
-                result.ink = PKInk(stroke.ink.inkType, color: UIColor(red: next.red, green: next.green, blue: next.blue, alpha: next.alpha))
-                changed = true
-                return result
-            }
-            return changed ? PKDrawing(strokes: strokes).dataRepresentation() : data
-        }
-        let drawingStep: Notebook.InkRecolor? = scope == .wholeNotebook ? recolor : nil
+        let drawingStep: Notebook.InkRecolor? = scope == .wholeNotebook ? inkRecolorStep : nil
         var changed = 0
         let action: (inout Notebook) throws -> UUID? = { document in
             changed = try document.setPageDefaults(paper: paper, color: color, scope: scope,
@@ -472,6 +454,26 @@ final class EditorModel: ObservableObject {
         case .newPagesOnly: fileStatus = "Seitenstandard geändert"
         }
         return true
+    }
+    /// Thin PencilKit step for paper colour flips: path, transform, mask, ink
+    /// type and random seed stay; only the PKInk colour of strokes Core selects is replaced.
+    var inkRecolorStep: Notebook.InkRecolor {
+        { data, convert in
+            let drawing = try PKDrawing(data: data)
+            let light = UITraitCollection(userInterfaceStyle: .light)
+            var changed = false
+            let strokes = drawing.strokes.map { stroke -> PKStroke in
+                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+                guard stroke.ink.color.resolvedColor(with: light).getRed(&r, green: &g, blue: &b, alpha: &a),
+                      let next = convert(PageRect(stroke.renderBounds), InkColor(Double(r), Double(g), Double(b), Double(a)))
+                else { return stroke }
+                var result = stroke
+                result.ink = PKInk(stroke.ink.inkType, color: UIColor(red: next.red, green: next.green, blue: next.blue, alpha: next.alpha))
+                changed = true
+                return result
+            }
+            return changed ? PKDrawing(strokes: strokes).dataRepresentation() : data
+        }
     }
     /// Deleting the open page focuses the page before it (or after it, if it
     /// was the first page); other deletions keep the current page.
@@ -490,7 +492,7 @@ final class EditorModel: ObservableObject {
     func emptyPageTrash() { editPages { try $0.emptyPageTrash(); return nil } }
     func toggleBookmark(_ id: UUID) { editPages { try $0.toggleBookmark(id); return nil } }
 
-    func installMarginSnapshot(_ candidate: Notebook) throws {
+    func installMarginSnapshot(_ candidate: Notebook, resetEditor: Bool = false) throws {
         guard writable, !mutationsPaused, !busy else { throw PageOperationError.missingPage }
         let selected = page.id
         let before = notebook
@@ -498,6 +500,7 @@ final class EditorModel: ObservableObject {
         let index = candidate.pages.firstIndex { $0.id == selected } ?? min(pageIndex, candidate.pages.count - 1)
         sources = catalogue
         pdfOutline = catalogue.outline
+        if resetEditor { pageContentGeneration += 1 }
         notebook = candidate
         pageIndex = index
         recordPageOperation(before: before, undoPageID: selected)

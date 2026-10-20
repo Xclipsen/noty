@@ -7,17 +7,26 @@ struct PageMarginChange {
     let updated: Notebook
     let removedStrokes: Int
     let archivedPages: Int
+    /// A paper colour flip recoloured ink: native canvases reload.
+    var resetsEditor = false
 }
 
 @MainActor
 extension EditorModel {
-    func prepareMarginChange(pageID: UUID, margins: PageMargins, wholeImport: Bool) throws -> PageMarginChange {
+    /// `paper`: the paper page's own style/colour („Papier dieser Seite“).
+    func prepareMarginChange(pageID: UUID, margins: PageMargins, wholeImport: Bool,
+                             paper: (style: PaperStyle, color: PaperColor)? = nil) throws -> PageMarginChange {
         guard writable, !mutationsPaused, !busy, let target = notebook.pages.first(where: { $0.id == pageID }),
               sourcePage(for: target) != nil || target.writingSpaceExtendsPaper else {
             throw PageOperationError.missingPage
         }
         try margins.validate()
         var candidate = try notebook.preparedForPageEditing()
+        var recoloured = false
+        if let paper, target.writingSpaceExtendsPaper, paper.style != target.paper || paper.color != (target.paperColor ?? .white) {
+            recoloured = paper.color != (target.paperColor ?? .white)
+            try candidate.setPaper(paper.style, color: paper.color, pageID: pageID, recolorDrawing: inkRecolorStep)
+        }
         let assignments = try candidate.marginsByPage(margins, relativeTo: pageID, wholeImport: wholeImport)
         let targets = candidate.pages.filter { assignments[$0.id] != nil }
         for page in targets {
@@ -54,8 +63,15 @@ extension EditorModel {
             let count = drawing.strokes.count - keep.count
             if count > 0 { trimmed[page.id] = PKDrawing(strokes: keep).dataRepresentation(); removed += count }
         }
+        // Paper pages only shrink up to their content (the sheet enforces it for
+        // this page): nothing beside paper is ever cut, also for „Alle Papierseiten“.
+        if removed > 0, target.writingSpaceExtendsPaper {
+            throw NSError(domain: "noty", code: 6, userInfo: [NSLocalizedDescriptionKey:
+                "Auf einer Papierseite liegt Handschrift im Bereich, der wegfallen würde. Es wird nichts gelöscht; bitte den Platz dort größer lassen."])
+        }
         try candidate.applyMargins(assignments, trimmedDrawings: trimmed)
-        return PageMarginChange(original: notebook, updated: candidate, removedStrokes: removed, archivedPages: trimmed.count)
+        return PageMarginChange(original: notebook, updated: candidate, removedStrokes: removed, archivedPages: trimmed.count,
+                                resetsEditor: recoloured)
     }
 
     func commitMarginChange(_ change: PageMarginChange) throws {
@@ -63,7 +79,7 @@ extension EditorModel {
             throw NSError(domain: "noty", code: 2, userInfo: [NSLocalizedDescriptionKey: "Die Seite wurde zwischenzeitlich geändert. Bitte den Schreibplatz erneut anwenden."])
         }
         // Structural installation goes through the same checked, monotone owner.
-        try installMarginSnapshot(change.updated)
+        try installMarginSnapshot(change.updated, resetEditor: change.resetsEditor)
     }
 }
 
@@ -76,6 +92,10 @@ struct PageMarginsView: View {
     @State private var pending: PageMarginChange?
     @State private var confirming = false
     @State private var error: String?
+    /// Paper pages: own paper and how far the writing space may shrink.
+    @State private var paperStyle: PaperStyle
+    @State private var paperColor: PaperColor
+    @State private var minimum: PageSize
     @StateObject private var cache = PageThumbnailCache()
 
     init(model: EditorModel, pageID: UUID) {
@@ -88,71 +108,47 @@ struct PageMarginsView: View {
             PageMargins(right: size.width, style: page.paper ?? .blank, color: page.paperColor ?? .white)
         } else { .normalPageBesidePDF(size) }
         _margins = State(initialValue: page?.margins ?? start)
+        _paperStyle = State(initialValue: page?.paper ?? .blank)
+        _paperColor = State(initialValue: page?.paperColor ?? .white)
+        _minimum = State(initialValue: page.map { Self.contentOverhang(of: $0, base: size) } ?? PageSize(width: 0, height: 0))
     }
     /// Paper pages extend only right and down, in their own paper (seamless lines).
     private var extendsPaper: Bool { page?.writingSpaceExtendsPaper == true }
 
     private var page: Page? { model.notebook.pages.first { $0.id == pageID } }
     private var preview: Page? {
-        guard var page else { return nil }; page.margins = margins.isEmpty ? nil : margins; return page
+        guard var page else { return nil }
+        if extendsPaper {
+            page.paper = paperStyle; page.paperColor = paperColor
+            var extra = margins; extra.style = paperStyle; extra.color = paperColor
+            page.margins = extra.isEmpty ? nil : extra
+        } else { page.margins = margins.isEmpty ? nil : margins }
+        return page
     }
     private var base: PageSize { page?.geometry?.displaySize ?? .a4 }
+    private var editable: Bool { model.writable && !model.mutationsPaused && !model.busy }
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    if let preview {
-                        VStack(alignment: .leading, spacing: 12) {
-                            PageThumbnail(page: preview, source: model.sourcePage(for: preview), cache: cache)
-                                .frame(maxWidth: .infinity).frame(height: 250)
-                                .clipped().allowsHitTesting(false)
-                                .accessibilityLabel("Vorschau der Seite mit zusätzlichem Schreibplatz")
-                            Text(extendsPaper
-                                 ? "Die Seite wird nach rechts oder unten verlängert. Linien und Papierfarbe laufen nahtlos weiter, vorhandene Inhalte bleiben, wo sie sind."
-                                 : "Die PDF behält ihre Größe und Farben. Die Seite wird um die gewählten Ränder erweitert.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(extendsPaper ? "Zusätzlicher Platz" : "Schreibränder").font(.headline)
-                        if !extendsPaper { edge("Links", value: $margins.left, dimension: base.width) }
-                        edge("Rechts", value: $margins.right, dimension: base.width)
-                        if !extendsPaper { edge("Oben", value: $margins.top, dimension: base.height) }
-                        edge("Unten", value: $margins.bottom, dimension: base.height)
-                    }
-                    if !extendsPaper { marginPaper }
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Anwenden auf").font(.headline)
-                        Picker("Anwenden auf", selection: $wholeImport) {
-                            Text("Aktuelle Seite").tag(false)
-                            Text(extendsPaper ? "Alle Papierseiten" : "Dieser PDF-Import").tag(true)
-                        }.pickerStyle(.segmented)
-                        Text(extendsPaper
-                             ? "100 % ist so breit bzw. hoch wie die Seite. „Alle Papierseiten“ erweitert jede vorhandene Papierseite um denselben Anteil; neue Seiten bleiben normal. Gelöschte Seiten bleiben unverändert."
-                             : "100 % ist so breit wie das PDF-Blatt. Bei einheitlicher Anzeige entspricht das einer normalen Seitenbreite. Gelöschte Seiten bleiben unverändert.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(white: 0.11), in: RoundedRectangle(cornerRadius: 16))
-                    .contentShape(Rectangle()).clipped()
-                }
-                .padding(20).frame(maxWidth: 680)
-                .frame(maxWidth: .infinity)
+                Group { if extendsPaper { paperContent } else { pdfContent } }
+                    .padding(20).frame(maxWidth: 680)
+                    .frame(maxWidth: .infinity)
             }
             .background(Color(white: 0.055))
-            .navigationTitle("Schreibplatz")
+            .navigationTitle(extendsPaper ? "Seite anpassen" : "Schreibplatz")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Anwenden") {
                         do {
-                            let change = try model.prepareMarginChange(pageID: pageID, margins: margins, wholeImport: wholeImport)
+                            let change = try model.prepareMarginChange(pageID: pageID, margins: margins, wholeImport: wholeImport,
+                                                                       paper: extendsPaper ? (paperStyle, paperColor) : nil)
                             if change.removedStrokes > 0 { pending = change; confirming = true }
                             else { try model.commitMarginChange(change); dismiss() }
                         } catch { self.error = error.localizedDescription }
-                    }.disabled(!model.writable || model.mutationsPaused || model.busy)
+                    }.fontWeight(.semibold).disabled(!editable)
                 }
             }
             .alert("Handschrift liegt im entfernten Rand", isPresented: $confirming) {
@@ -165,11 +161,178 @@ struct PageMarginsView: View {
             } message: {
                 Text("\(pending?.removedStrokes ?? 0) betroffene Striche werden ganz entfernt. \(pending?.archivedPages ?? 0) vollständige Seitenstände mit dem bisherigen Schreibplatz bleiben im Seitenpapierkorb. Wiederherstellen setzt die bestehende Seite zurück und sichert ihren aktuellen Stand vorher im Papierkorb.")
             }
-            .alert("Schreibplatz nicht geändert", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            .alert(extendsPaper ? "Seite nicht geändert" : "Schreibplatz nicht geändert", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK") { error = nil }
             } message: { Text(error ?? "") }
         }
         .preferredColorScheme(.dark)
+    }
+
+    // MARK: Paper page („Seite anpassen“)
+
+    private var paperContent: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if let preview {
+                paperPreview(preview)
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Mehr Platz").font(.headline)
+                VStack(spacing: 0) {
+                    growthRow("Rechts verlängern", value: $margins.right, dimension: base.width, minimum: minimum.width, standard: 1)
+                    Divider().padding(.vertical, 6)
+                    growthRow("Unten verlängern", value: $margins.bottom, dimension: base.height, minimum: minimum.height, standard: 0.5)
+                    Divider().padding(.vertical, 6)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Picker("Gilt für", selection: $wholeImport) {
+                            Text("Diese Seite").tag(false)
+                            Text("Alle Papierseiten").tag(true)
+                        }.pickerStyle(.segmented).disabled(!editable)
+                        Text(wholeImport
+                             ? "Jede vorhandene Papierseite wächst um denselben Anteil ihrer Größe. Neue Seiten bleiben normal, gelöschte unverändert."
+                             : "Linien und Papierfarbe laufen nahtlos weiter. Kürzer geht nur bis zum Inhalt, es wird nie etwas gelöscht.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .notySheetCard()
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Papier dieser Seite").font(.headline)
+                VStack(alignment: .leading, spacing: 14) {
+                    LabeledContent("Vorlage") {
+                        Picker("Vorlage", selection: $paperStyle) {
+                            Text("Blanko").tag(PaperStyle.blank)
+                            Text("Liniert").tag(PaperStyle.lined)
+                            Text("Kariert").tag(PaperStyle.grid)
+                        }.pickerStyle(.segmented).frame(maxWidth: 300)
+                    }
+                    LabeledContent("Farbe") {
+                        Picker("Farbe", selection: $paperColor) {
+                            Text("Weiß").tag(PaperColor.white)
+                            Text("Dunkel").tag(PaperColor.dark)
+                        }.pickerStyle(.segmented).frame(maxWidth: 200)
+                    }
+                    if paperColor != (page?.paperColor ?? .white) {
+                        Text("Schwarze und weiße Schrift wird passend getauscht, farbige bleibt.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(!editable)
+                .notySheetCard()
+            }
+        }
+    }
+
+    /// Live preview; the added space is outlined in the accent colour.
+    private func paperPreview(_ preview: Page) -> some View {
+        let canvas = PageSize(width: base.width + margins.right, height: base.height + margins.bottom)
+        return PageThumbnail(page: preview, source: nil, cache: cache)
+            .aspectRatio(preview.previewAspectRatio, contentMode: .fit)
+            .overlay {
+                GeometryReader { geometry in
+                    let sx = geometry.size.width / canvas.width, sy = geometry.size.height / canvas.height
+                    if margins.right > 0 {
+                        addedSpace(CGRect(x: base.width * sx, y: 0, width: margins.right * sx, height: canvas.height * sy))
+                    }
+                    if margins.bottom > 0 {
+                        addedSpace(CGRect(x: 0, y: base.height * sy, width: base.width * sx, height: margins.bottom * sy))
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity).frame(height: 240)
+            .padding(16)
+            .background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .allowsHitTesting(false)
+            .accessibilityElement().accessibilityLabel("Vorschau der Seite mit zusätzlichem Platz")
+    }
+
+    private func addedSpace(_ rect: CGRect) -> some View {
+        RoundedRectangle(cornerRadius: 2)
+            .fill(Color.accentColor.opacity(0.12))
+            .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(Color.accentColor.opacity(0.9), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4])))
+            .frame(width: max(0, rect.width), height: max(0, rect.height))
+            .position(x: rect.midX, y: rect.midY)
+    }
+
+    /// One growing edge: switch, quick steps (+¼/+½/+1 page) and a fine slider.
+    /// It never goes below the page's content, so nothing can be cut off.
+    private func growthRow(_ title: String, value: Binding<Double>, dimension: Double, minimum: Double, standard: Double) -> some View {
+        let on = value.wrappedValue > 0
+        let percent = Int((value.wrappedValue / dimension * 100).rounded())
+        return VStack(alignment: .leading, spacing: 12) {
+            Toggle(title, isOn: Binding(get: { value.wrappedValue > 0 },
+                                       set: { value.wrappedValue = $0 ? max(minimum, dimension * standard) : 0 }))
+                .toggleStyle(.switch).frame(minHeight: 36)
+                .disabled(!editable || (on && minimum > 0))
+            HStack(spacing: 8) {
+                ForEach(Array(zip(["+¼ Seite", "+½ Seite", "+1 Seite"], [0.25, 0.5, 1.0])), id: \.0) { label, fraction in
+                    let target = dimension * fraction
+                    let chosen = on && abs(value.wrappedValue - target) < 0.5
+                    Button(label) { value.wrappedValue = max(minimum, target) }
+                        .font(.subheadline.weight(chosen ? .semibold : .regular))
+                        .buttonStyle(.bordered).tint(chosen ? Color.accentColor : Color.gray)
+                        .disabled(!on || !editable || target < minimum - 0.5)
+                        .accessibilityLabel("\(title) \(label)")
+                }
+                Spacer(minLength: 0)
+                Text(on ? "+\(percent) %" : "aus").font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            }
+            Slider(value: value, in: (on ? minimum : 0)...max(1, max(dimension, value.wrappedValue)))
+                .disabled(!on || !editable)
+                .accessibilityLabel("\(title), Anteil")
+            if minimum > 0.5 {
+                Text("Hier liegt schon Inhalt: kürzer als \(Int((minimum / dimension * 100).rounded())) % geht nicht.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// How far content reaches beyond the base sheet (right/below), in page points.
+    private static func contentOverhang(of page: Page, base: PageSize) -> PageSize {
+        guard page.writingSpaceExtendsPaper else { return PageSize(width: 0, height: 0) }
+        var maxX = 0.0, maxY = 0.0
+        func include(_ rect: PageRect) { maxX = max(maxX, rect.x + rect.width); maxY = max(maxY, rect.y + rect.height) }
+        if !page.drawing.isEmpty, let drawing = try? PKDrawing(data: page.drawing) {
+            for stroke in drawing.strokes where !stroke.renderBounds.isNull { include(PageRect(stroke.renderBounds)) }
+        }
+        page.effectiveTextBoxes.forEach { include($0.rect) }
+        (page.images ?? []).forEach { include($0.rotatedBounds) }
+        (page.shapes ?? []).forEach { include($0.bounds) }
+        return PageSize(width: max(0, (maxX - base.width).rounded(.up)), height: max(0, (maxY - base.height).rounded(.up)))
+    }
+
+    // MARK: PDF page („Schreibplatz“)
+
+    private var pdfContent: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if let preview {
+                VStack(alignment: .leading, spacing: 12) {
+                    PageThumbnail(page: preview, source: model.sourcePage(for: preview), cache: cache)
+                        .frame(maxWidth: .infinity).frame(height: 250)
+                        .clipped().allowsHitTesting(false)
+                        .accessibilityLabel("Vorschau der Seite mit zusätzlichem Schreibplatz")
+                    Text("Die PDF behält ihre Größe und Farben. Die Seite wird um die gewählten Ränder erweitert.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Schreibränder").font(.headline)
+                edge("Links", value: $margins.left, dimension: base.width)
+                edge("Rechts", value: $margins.right, dimension: base.width)
+                edge("Oben", value: $margins.top, dimension: base.height)
+                edge("Unten", value: $margins.bottom, dimension: base.height)
+            }
+            marginPaper
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Anwenden auf").font(.headline)
+                Picker("Anwenden auf", selection: $wholeImport) {
+                    Text("Aktuelle Seite").tag(false)
+                    Text("Dieser PDF-Import").tag(true)
+                }.pickerStyle(.segmented)
+                Text("100 % ist so breit wie das PDF-Blatt. Bei einheitlicher Anzeige entspricht das einer normalen Seitenbreite. Gelöschte Seiten bleiben unverändert.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .notySheetCard()
+        }
     }
 
     /// Style and colour of the extra space beside a PDF (paper pages use their own).
@@ -189,9 +352,7 @@ struct PageMarginsView: View {
                     Text("Dunkel").tag(PaperColor.dark)
                 }.pickerStyle(.segmented)
             }
-            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(white: 0.11), in: RoundedRectangle(cornerRadius: 16))
-            .contentShape(Rectangle()).clipped()
+            .notySheetCard()
         }
     }
 
@@ -226,5 +387,14 @@ struct PageMarginsView: View {
         .padding(16).frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(white: 0.11), in: RoundedRectangle(cornerRadius: 16))
         .contentShape(Rectangle()).clipped()
+    }
+}
+
+extension View {
+    /// Card of noty's dark sheets (Schreibplatz, Seite anpassen).
+    func notySheetCard() -> some View {
+        padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(white: 0.11), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .contentShape(Rectangle()).clipped()
     }
 }

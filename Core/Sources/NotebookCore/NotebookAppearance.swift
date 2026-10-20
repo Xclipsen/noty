@@ -110,6 +110,26 @@ extension Notebook {
         return changed
     }
 
+    /// „Seite anpassen“: one paper page's own style and colour. Its writing
+    /// space follows (same paper); a colour flip swaps neutral ink/text/shapes
+    /// like `.wholeNotebook`. The notebook defaults stay unchanged.
+    public mutating func setPaper(_ style: PaperStyle, color: PaperColor, pageID: UUID, recolorDrawing: InkRecolor? = nil) throws {
+        guard style != .legacyTest else { throw StorageError.invalidDocument }
+        var next = try preparedForPageEditing()
+        guard let index = next.pages.firstIndex(where: { $0.id == pageID }), next.pages[index].writingSpaceExtendsPaper else {
+            throw PageOperationError.missingPage
+        }
+        var page = next.pages[index]
+        page.paper = style
+        if (page.paperColor ?? .white) != color {
+            page.paperColor = color
+            try Self.invertInk(of: &page, to: color, onlyMargins: false, recolorDrawing: recolorDrawing)
+        }
+        if var margins = page.margins { margins.style = style; margins.color = color; page.margins = margins }
+        next.pages[index] = page
+        try next.validate(); self = next
+    }
+
     /// Compatibility entry: empty listed paper pages follow, written pages stay.
     @discardableResult
     public mutating func setPageDefaults(paper: PaperStyle, color: PaperColor, alsoEmptyPages emptyPageIDs: Set<UUID> = []) throws -> Int {
