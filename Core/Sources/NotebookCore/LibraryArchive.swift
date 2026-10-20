@@ -221,6 +221,8 @@ public enum LibraryArchive {
     static func write(_ plan: LibraryBackupPlan, to url: URL, createdAt: Date = Date(), limits: LibraryArchiveLimits,
                       validate: (Notebook, ImageAssetProviding) throws -> Void = { _, _ in },
                       olderState: (LibraryItem) -> Void = { _ in }) throws -> LibraryArchiveSummary {
+        // Reads committed packages: no package collects asset garbage meanwhile.
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
         try Data().write(to: url, options: .withoutOverwriting)
         var complete = false
         defer { if !complete { try? FileManager.default.removeItem(at: url) } }

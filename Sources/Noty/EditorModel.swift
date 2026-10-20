@@ -66,6 +66,9 @@ final class EditorModel: ObservableObject {
     private var retryAttempt = 0
     /// Last non-retryable save error already shown; cleared by a successful save.
     private var lastPermanentFailure: String?
+    /// The package's asset GC after opening (repository actor, before its
+    /// first commit; skipped there once a commit happened).
+    private var openingCleanup: Task<Void, Never>?
 
     init(storageRoot root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true),
          restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil) {
@@ -123,6 +126,11 @@ final class EditorModel: ObservableObject {
                     // Also commit the prototype-to-revision migration without
                     // requiring the user to change an otherwise unchanged note.
                     save()
+                }
+                // Before any undo history can matter: the repository refuses
+                // the opening run once this editor committed anything.
+                openingCleanup = Task { [store] in
+                    _ = try? await store.collectAssetGarbage(.opening, keeping: ImageAssetRegistry.shared.clipboardHashes)
                 }
             } catch {
                 status = "Lesefehler – Originaldateien geschützt"
@@ -601,9 +609,22 @@ final class EditorModel: ObservableObject {
             if closingRevision == revision {
                 if saveFailed { return false }
                 writable = false
+                await collectAssetGarbageAfterClosing()
                 return true
             }
         }
+    }
+
+    /// After the last successful commit, once the editor is no longer
+    /// writable: the package's asset GC (skipped by the repository while a
+    /// backup or restore runs, or if the state on disk differs). Awaited, so
+    /// a notebook opened again never overlaps it. Originals on the in-app
+    /// object clipboard are kept for pasting elsewhere.
+    func collectAssetGarbageAfterClosing() async {
+        guard !writable else { return }
+        await openingCleanup?.value
+        openingCleanup = nil
+        _ = try? await store.collectAssetGarbage(.closing, current: notebook, keeping: ImageAssetRegistry.shared.clipboardHashes)
     }
 
     func waitForSave() async -> Bool {

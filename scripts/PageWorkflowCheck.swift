@@ -267,7 +267,10 @@ struct PageWorkflowCheck {
         guard !recovered, notebook.schemaVersion == 12, notebook.externalImageAssets == [ImageAssetReference(of: image)],
               repository.assets.pendingReferences == [ImageAssetReference(of: image)] else { throw StorageError.invalidDocument }
         try await repository.save(notebook, revision: 1) // the editor's save right after opening
+        // The editor's asset GC after opening: an empty run, nothing written.
+        let openingRun = try await repository.collectAssetGarbage(.opening, current: notebook, keeping: [])
         let openWritesNothing = try inventory() == before && !fm.fileExists(atPath: package.appendingPathComponent("Assets").path)
+            && openingRun == ImageAssetGarbageReport()
         notebook.pages[0].drawing = Data()
         var boxes = notebook.pages[0].effectiveTextBoxes
         boxes.append(TextBox(x: 60, y: 300, width: 300, height: 40, text: "Erste Änderung nach dem Update"))
@@ -278,6 +281,10 @@ struct PageWorkflowCheck {
             .map { $0.appendingPathComponent("notebook-v11.json") }.filter { fm.fileExists(atPath: $0.path) }
         let exactBytesArchived = try archived.count == 1 && Data(contentsOf: archived[0]) == bytes
         let reference = ImageAssetReference(of: image)
+        // The closing GC after the last commit keeps the migrated original.
+        guard try await repository.collectAssetGarbage(.closing, current: notebook, keeping: []) == ImageAssetGarbageReport() else {
+            throw StorageError.invalidDocument
+        }
         let reopened = try RevisionStore(directory: package).load()
         let assetWritten = try Data(contentsOf: package.appendingPathComponent("Assets/\(reference.sha256)")) == image
             && reopened == notebook && repository.assets.pendingReferences.isEmpty

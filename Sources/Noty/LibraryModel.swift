@@ -107,6 +107,8 @@ final class LibraryModel: ObservableObject {
             throw BackupPostponed(reason: backupBlocker ?? "Notizbuch geöffnet")
         }
         archiveRunning = true; defer { archiveRunning = false }
+        // Process-wide: closing or opening editors skip their asset GC meanwhile.
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
         let plan = try await store.backupPlan()
         let url = try BackupScratch.newFile()
         let task = Task.detached(priority: .utility) { () throws -> PreparedLibraryArchive in

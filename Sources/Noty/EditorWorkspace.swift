@@ -77,6 +77,8 @@ final class EditorWorkspace: ObservableObject {
         }
         for model in models.values { if !(await model.waitForSave()) { return false } }
         for model in models.values { model.writable = false }
+        // After every pane's last commit: each package's asset GC.
+        for model in models.values { await model.collectAssetGarbageAfterClosing() }
         return true
     }
 }

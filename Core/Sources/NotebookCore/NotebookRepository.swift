@@ -28,6 +28,18 @@ public actor NotebookRepository {
         self.revision = revision
     }
 
+    /// The package's asset GC on this actor, so it runs strictly between
+    /// commits (`RevisionStore.collectAssetGarbage`): the editor calls it once
+    /// after opening and once after its last commit when closing. `keeping`:
+    /// originals the process still needs from outside the notebook (the in-app
+    /// object clipboard). Nil: skipped (a backup or restore runs, the store
+    /// already committed, or the state is not committed).
+    @discardableResult
+    public func collectAssetGarbage(_ moment: RevisionStore.AssetGarbageMoment, current: Notebook? = nil,
+                                    keeping: Set<String> = []) throws -> ImageAssetGarbageReport? {
+        try store.collectAssetGarbage(moment, current: current, keeping: keeping)
+    }
+
     /// Writes a verified `.notybackup` (format 2) of `snapshot` into a new
     /// file at `url` (a scratch file the caller owns; never replaced). The
     /// originals come from the writable store's assets: committed files and
@@ -44,7 +56,8 @@ public actor NotebookRepository {
     /// every restore copy is a schema-12 package with assets.
     /// A failed preparation removes its stage.
     public func prepareRestore(from url: URL) throws -> PreparedRestore {
-        try prepareStaged { input in
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
+        return try prepareStaged { input in
             do { return try BoundedFile.copy(from: url, to: input, limit: BackupArchive.maximumFileBytes) }
             catch LibraryArchiveError.archiveTooLarge { throw BackupError.fileTooLarge }
         }
@@ -58,6 +71,7 @@ public actor NotebookRepository {
     /// verified archive into the stage (assets from this package, where every
     /// revision's originals stay as GC roots), then checked like an import.
     public func prepareLocalRecovery(id: UUID) throws -> PreparedRestore {
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
         let decoded = try store.localRevision(id: id)
         // Originals an older revision embedded (schema ≤ 11) first, then this package.
         let assets = ChainedImageAssets([decoded.inlineAssets, store.assets])
@@ -108,6 +122,7 @@ public actor NotebookRepository {
     /// assets first, revision and manifest last, into a new empty package;
     /// read back before the stage is removed. A failure keeps the stage.
     public func commitRestore(_ prepared: PreparedRestore) throws -> RestoredNotebook {
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
         let fm = FileManager.default
         let stage = stagingRoot.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
         let input = stage.appendingPathComponent("input.notybackup")

@@ -170,6 +170,8 @@ final class ExternalBackupModel: ObservableObject {
         if !manual, let blockedUntil, Date() < blockedUntil { return }
         if let reason = library.backupBlocker { postpone(reason, manual: manual); return }
         busy = true; defer { busy = false }
+        // No package collects asset garbage while this backup runs.
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
         let background = BackgroundAssertion("noty-external-backup")
         defer { background.end() }
         // A local commit is cheap and happens anyway; while the user writes it

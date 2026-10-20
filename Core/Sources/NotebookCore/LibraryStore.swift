@@ -312,6 +312,8 @@ public actor LibraryStore {
     /// is only read. A not yet migrated schema 5–11 source becomes a schema-12
     /// copy whose assets are its embedded originals; the source keeps its bytes.
     public func duplicateDocument(_ id: UUID, title: String) throws -> (snapshot: LibrarySnapshot, id: UUID) {
+        // Reads another package's originals: no asset GC meanwhile.
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
         var next = try current()
         let index = try activeIndex(id, in: next)
         let original = next.items[index]

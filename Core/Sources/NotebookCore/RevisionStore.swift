@@ -115,6 +115,10 @@ public final class RevisionStore {
     private var fallbackLoaded = false
     /// Quarantine set of the current commit, created on first use.
     private var quarantineSet: URL?
+    /// A commit happened since loading: the opening asset GC is over.
+    private var committedSinceLoad = false
+    /// The closing asset GC ran: no further opening run on this store.
+    private var assetSessionClosed = false
     /// Commit timestamps (`savedAtUnix`); replaceable in tests.
     var clock: () -> Date = { Date() }
     /// Test hook after each commit step (crash images, injected failures).
@@ -276,6 +280,7 @@ public final class RevisionStore {
         lastDocument = document
         lastBytes = bytes
         lastStoredSchema = document.schemaVersion
+        committedSinceLoad = true
         // Written by this commit: the renderer reads the files from now on.
         assets.dropPending(pending)
         recovered = false
@@ -286,6 +291,45 @@ public final class RevisionStore {
         let referenced = Set((manifest.revisions + (old?.revisions ?? []) + kept).map(\.file))
         known.formUnion(referenced)
         collectGarbage(keeping: referenced)
+    }
+
+    public enum AssetGarbageMoment: Sendable { case opening, closing }
+
+    /// Asset GC of this package. Only the single writer runs it, and never
+    /// during an editor session, so undo/redo, copied pages and drags never
+    /// point to a deleted original:
+    /// - `.opening`: after loading and before this store's first commit
+    ///   (skipped once a commit happened, or after `.closing`);
+    /// - `.closing`: after the last successful commit; `current` must equal
+    ///   the committed state (otherwise skipped). Ends the session.
+    /// Skipped (nil) as well while `isBlocked` (a library/external backup or a
+    /// restore runs, `BackupActivity`), after a fallback load that is not yet
+    /// committed, and for an uncommitted prototype package.
+    ///
+    /// Kept: every quoted 64-hex string in any regular file below
+    /// `Revisions/`, `Quarantine/`, `Migrations/` and `Archives/` (raw search,
+    /// also damaged or newer files), the pending area, the committed state,
+    /// `current` and `keeping` (e.g. the in-app object clipboard). Deleted:
+    /// unreferenced assets older than 15 min, partial files older than 1 h.
+    /// Any read error aborts before anything is deleted.
+    @discardableResult
+    public func collectAssetGarbage(_ moment: AssetGarbageMoment, current: Notebook? = nil, keeping: Set<String> = [],
+                                    isBlocked: () -> Bool = { BackupActivity.shared.isActive }) throws -> ImageAssetGarbageReport? {
+        guard !readOnly else { throw ImageAssetError.readOnly }
+        guard loaded, !recovered, lastManifest != nil, let committed = lastDocument else { return nil }
+        switch moment {
+        case .opening:
+            guard !committedSinceLoad, !assetSessionClosed else { return nil }
+        case .closing:
+            guard current == nil || current == committed else { return nil }
+            assetSessionClosed = true
+        }
+        guard !isBlocked() else { return nil }
+        var kept = keeping.union(committed.allImages.map(\.asset.sha256))
+        if let current { kept.formUnion(current.allImages.map(\.asset.sha256)) }
+        let report = try assets.collectGarbage(roots: NotebookAssets.garbageRoots(inPackage: directory),
+                                               keeping: kept, isBlocked: isBlocked)
+        return report.skipped ? nil : report
     }
 
     /// Archives exact acknowledged bytes before any migration commit or GC.

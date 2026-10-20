@@ -19,6 +19,7 @@ final class ImageAssetRegistry: ImageAssetProviding, @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [Weak] = []
     private var pinned: [NotebookAssets] = []
+    private var pinnedHashes: Set<String> = []
 
     func register(_ assets: NotebookAssets) {
         lock.lock(); defer { lock.unlock() }
@@ -30,8 +31,13 @@ final class ImageAssetRegistry: ImageAssetProviding, @unchecked Sendable {
     /// earlier pin); an empty list releases the pin.
     func pinClipboard(_ references: [ImageAssetReference]) {
         let holders = references.isEmpty ? [] : live.filter { assets in references.contains { assets.isAvailable($0) } }
-        lock.lock(); pinned = holders; lock.unlock()
+        lock.lock(); pinned = holders; pinnedHashes = Set(references.map(\.sha256)); lock.unlock()
     }
+
+    /// Originals on the in-app object clipboard: kept by every package's
+    /// asset GC, also after their notebook was closed, so pasting them later
+    /// never fails with a missing original.
+    var clipboardHashes: Set<String> { lock.lock(); defer { lock.unlock() }; return pinnedHashes }
 
     /// Newest registration first, then pinned instances.
     private var live: [NotebookAssets] {

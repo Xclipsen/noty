@@ -169,6 +169,7 @@ public actor WorkspaceStore {
     /// once with these originals, off the UI actor. A failed preparation
     /// removes its stage.
     public func prepareRestore(file: URL, validate: @Sendable (Notebook, ImageAssetProviding) throws -> Void = { _, _ in }) throws -> PreparedLibraryRestore {
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
         let id = UUID()
         let stage = staging.appendingPathComponent(id.uuidString, isDirectory: true)
         try createStage(stage)
@@ -231,6 +232,7 @@ public actor WorkspaceStore {
         try regularDirectory(stage)
         // Still owned while the commit suspends (actor reentrancy vs. cleanup).
         defer { activeStages.remove(prepared.id) }
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
         do { return try await commitStage(stage, prepared, title: title) }
         catch {
             try? removeStage(prepared.id)

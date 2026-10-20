@@ -133,10 +133,57 @@ public enum ImageAssetError: Error, LocalizedError, Equatable {
     }
 }
 
-/// Result of one `collectGarbage` run (file names, sorted).
+/// Result of one `collectGarbage` run (file names, sorted). `skipped`: a
+/// backup or restore started meanwhile; nothing was deleted.
 public struct ImageAssetGarbageReport: Equatable, Sendable {
     public var removedAssets: [String] = []
     public var removedPartials: [String] = []
+    public var skipped = false
+}
+
+/// Process-wide marker for running library backups, external backups and
+/// restores. While any of them runs, no package collects asset garbage: the
+/// run is skipped and happens at the next opening or closing. Activities may
+/// overlap (counted).
+public final class BackupActivity: @unchecked Sendable {
+    public static let shared = BackupActivity()
+
+    private let lock = NSLock()
+    private var count = 0
+
+    public init() {}
+
+    public var isActive: Bool { lock.lock(); defer { lock.unlock() }; return count > 0 }
+
+    /// Ends with `end()` or when released.
+    public func begin() -> Hold {
+        lock.lock(); count += 1; lock.unlock()
+        return Hold(self)
+    }
+
+    public func during<T>(_ body: () throws -> T) rethrows -> T {
+        let hold = begin(); defer { hold.end() }
+        return try body()
+    }
+
+    public func during<T>(_ body: () async throws -> T) async rethrows -> T {
+        let hold = begin(); defer { hold.end() }
+        return try await body()
+    }
+
+    fileprivate func finish() { lock.lock(); count -= 1; lock.unlock() }
+
+    public final class Hold: @unchecked Sendable {
+        private let lock = NSLock()
+        private var activity: BackupActivity?
+        fileprivate init(_ activity: BackupActivity) { self.activity = activity }
+        /// Idempotent.
+        public func end() {
+            lock.lock(); let ending = activity; activity = nil; lock.unlock()
+            ending?.finish()
+        }
+        deinit { end() }
+    }
 }
 
 /// Content-addressed image originals of exactly one notebook package:
@@ -416,7 +463,8 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
 
     // MARK: Garbage collection primitives
 
-    /// Deletes, never during an editor session (C7 decides when):
+    /// Deletes, never during an editor session (`RevisionStore.collectAssetGarbage`
+    /// decides when):
     /// - `^[0-9a-f]{64}$`, regular file, no symlink, not referenced and older
     ///   than `unreferencedAssetAge`;
     /// - `<sha>.partial-<UUID>` older than `partialFileAge`.
@@ -425,9 +473,14 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
     /// names, directories and symlinks stay. Any read error in the roots or the
     /// listing aborts the run before anything is deleted; single deletions are
     /// best effort. Age is measured from the newest file time available.
+    /// `isBlocked` is asked before and again right before the first deletion
+    /// (a backup may have started during the search): then nothing is deleted
+    /// and the report says `skipped`.
     @discardableResult
-    public func collectGarbage(roots: [URL], keeping: Set<String> = []) throws -> ImageAssetGarbageReport {
+    public func collectGarbage(roots: [URL], keeping: Set<String> = [],
+                               isBlocked: () -> Bool = { false }) throws -> ImageAssetGarbageReport {
         guard !readOnly else { throw ImageAssetError.readOnly }
+        guard !isBlocked() else { return ImageAssetGarbageReport(skipped: true) }
         switch directoryState() {
         case .missing: return ImageAssetGarbageReport()
         case .invalid: throw ImageAssetError.invalidDirectory
@@ -441,6 +494,7 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
         } catch { throw ImageAssetError.garbageCollectionAborted }
         referenced.formUnion(keeping)
         referenced.formUnion(locked { pending.keys })
+        guard !isBlocked() else { return ImageAssetGarbageReport(skipped: true) }
         let now = clock()
         var report = ImageAssetGarbageReport()
         for name in names.sorted() {
@@ -564,18 +618,30 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
 }
 
 /// Finds `"` + 64 lowercase hex + `"` in a byte stream fed in arbitrary pieces.
+/// Outside a candidate it jumps to the next quote with `memchr`, so long
+/// base64 strings (embedded PDFs) cost little even in debug builds.
 struct QuotedHashScanner {
     private var candidate = false
     private var run = 0
     private var digits = [UInt8](repeating: 0, count: 64)
 
     mutating func feed(_ data: Data, into found: inout Set<String>) {
-        data.withUnsafeBytes { bytes in
-            for byte in bytes {
+        data.withUnsafeBytes { raw in
+            guard let start = raw.baseAddress, raw.count > 0 else { return }
+            let bytes = start.assumingMemoryBound(to: UInt8.self)
+            let count = raw.count
+            var index = 0
+            while index < count {
+                if !candidate {
+                    guard let quote = memchr(start + index, 0x22, count - index) else { return }
+                    index = UnsafeRawPointer(quote) - start
+                }
+                let byte = bytes[index]
+                index += 1
                 if byte == 0x22 {
                     if candidate, run == 64 { found.insert(String(decoding: digits, as: UTF8.self)) }
                     candidate = true; run = 0
-                } else if candidate, (0x30...0x39).contains(byte) || (0x61...0x66).contains(byte) {
+                } else if (0x30...0x39).contains(byte) || (0x61...0x66).contains(byte) {
                     if run < 64 { digits[run] = byte; run += 1 } else { candidate = false }
                 } else {
                     candidate = false
