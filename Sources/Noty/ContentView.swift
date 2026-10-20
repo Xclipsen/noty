@@ -239,7 +239,7 @@ struct ContentView: View {
         guard isPaneActive(), notebookLoaded else { return nil }
         let onDraft = currentPage.id == writingDraft.id
         // A second presentation over an open sheet would never appear.
-        let presenting = contentSearch || showingSettings || editingDefaults || addingPage || customizingTools || showingHistory
+        let presenting = contentSearch || showingSettings || editingDefaults || addingPage || customizingTools || showingHistory || model.openedRestore != nil
             || marginsPage != nil || exporting || importingImage || choosingPhoto || pageEntry
         return EditorCommandActions(owner: ObjectIdentifier(model), canEdit: canEdit && !presenting,
             canExportPage: model.writable && !onDraft, exporting: pdfExport.running,
