@@ -168,6 +168,14 @@ public actor LibraryStore {
         candidate.items.append(LibraryItem(id: notebook.id, title: title, source: source))
     }
 
+    /// Read-only view of the committed index (falls back to `index-previous.json`
+    /// like `load()`), without inventory of packages and without any commit.
+    /// For summaries of an area that is not open, e.g. before removing it.
+    public func committedSnapshot() throws -> LibrarySnapshot {
+        if snapshot == nil { try readIndex() }
+        return try current()
+    }
+
     /// Read-only, serialized with other library work; metadata remains in the
     /// versioned notebook so the index does not duplicate cover/paper settings.
     public func previewDocument(id: UUID) throws -> Notebook {

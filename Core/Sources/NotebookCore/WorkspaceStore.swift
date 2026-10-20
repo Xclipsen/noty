@@ -27,9 +27,15 @@ public actor WorkspaceStore {
     /// Stages this store created and still owns (prepared, not yet committed or
     /// discarded). Startup cleanup never touches them.
     private var activeStages = Set<UUID>()
+    /// Area the app currently shows (nil = „Meine Bibliothek“), set by `activate`.
+    /// `remove` checks it inside this actor, so a switch and a removal of the
+    /// same area cannot interleave.
+    private var activeArea: UUID?
     public init(root: URL) { self.root = root }
     private var areas: URL { root.appendingPathComponent("Areas", isDirectory: true) }
     private var staging: URL { root.appendingPathComponent("Staging", isDirectory: true) }
+    /// Removed areas are renamed here first and then deleted.
+    private var removing: URL { root.appendingPathComponent("Removing", isDirectory: true) }
 
     public func list() throws -> WorkspaceList {
         guard fm.fileExists(atPath: areas.path) else { return WorkspaceList() }
@@ -56,6 +62,89 @@ public actor WorkspaceStore {
     public func directory(for id: UUID) throws -> URL {
         guard try list().workspaces.contains(where: { $0.id == id }) else { throw LibraryError.unavailable }
         return areas.appendingPathComponent("\(id.uuidString)/Data", isDirectory: true)
+    }
+
+    /// Records the area the app switches to and returns its data directory
+    /// (nil for „Meine Bibliothek“). A failed lookup keeps the previous area.
+    public func activate(_ id: UUID?) throws -> URL? {
+        guard let id else { activeArea = nil; return nil }
+        let url = try directory(for: id)
+        activeArea = id
+        return url
+    }
+
+    /// Read-only: names the area and counts its notebooks for the confirmation.
+    /// Nothing in the area is written (no inventory commit).
+    public func removalSummary(_ id: UUID) async throws -> WorkspaceRemovalSummary {
+        guard let record = try list().workspaces.first(where: { $0.id == id }) else { throw WorkspaceRemovalError.unavailable }
+        let data = areas.appendingPathComponent("\(id.uuidString)/Data", isDirectory: true)
+        var ids = Set<UUID>()
+        for name in ["Library/Documents", "Restores"] {
+            let parent = data.appendingPathComponent(name, isDirectory: true)
+            guard (try? ContainedDirectory.require(parent, below: root)) != nil,
+                  let entries = try? fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { continue }
+            for entry in entries {
+                guard let id = UUID(uuidString: entry.lastPathComponent), id.uuidString == entry.lastPathComponent,
+                      (try? ContainedDirectory.require(entry, below: root)) != nil else { continue }
+                ids.insert(id)
+            }
+        }
+        guard let snapshot = try? await LibraryStore(root: data).committedSnapshot() else {
+            return WorkspaceRemovalSummary(workspace: record, notebooks: ids.count, trashedNotebooks: 0, indexReadable: false)
+        }
+        let notebooks = snapshot.items.filter { !$0.isFolder }
+        ids.formUnion(notebooks.map(\.id))
+        return WorkspaceRemovalSummary(workspace: record, notebooks: ids.count,
+                                       trashedNotebooks: notebooks.filter { snapshot.isTrashed($0.id) }.count, indexReadable: true)
+    }
+
+    /// Deletes one separate area with all its notebooks, folders, trash and
+    /// settings. Rules (`WorkspaceRemoval.blocker`): never „Meine Bibliothek“,
+    /// never the last area, never the open one. Path (`WorkspaceRemoval.directory`):
+    /// only a real `Areas/<UUID>` directory below this root, no symbolic links,
+    /// never a protected root. Order: every check first (on failure nothing is
+    /// changed), then one same-volume rename to `Removing/<UUID>-<UUID>` (the
+    /// area disappears completely or not at all; a half-deleted area is never
+    /// listed or opened), then the recursive delete. Symbolic links inside the
+    /// area are unlinked, never followed. Leftovers of a failed delete stay in
+    /// `Removing/` and are removed by `removeRemovalLeftovers()`.
+    public func remove(_ id: UUID, protecting protected: [URL]) throws {
+        let target: URL
+        do {
+            let listing = try list()
+            guard listing.workspaces.contains(where: { $0.id == id }) else { throw WorkspaceRemovalError.unavailable }
+            if let blocker = WorkspaceRemoval.blocker(target: id, active: activeArea, areaCount: listing.workspaces.count + 1) {
+                throw blocker
+            }
+            let folder = try WorkspaceRemoval.directory(for: id, workspaceRoot: root, protecting: protected)
+            try fm.createDirectory(at: removing, withIntermediateDirectories: true)
+            try regularDirectory(removing)
+            target = removing.appendingPathComponent("\(id.uuidString)-\(UUID().uuidString)", isDirectory: true)
+            try fm.moveItem(at: folder, to: target)
+        } catch let error as WorkspaceRemovalError { throw error }
+        catch { throw WorkspaceRemovalError.notRemoved }
+        do { try fm.removeItem(at: target) } catch { throw WorkspaceRemovalError.leftoverFiles }
+    }
+
+    /// Startup: finishes deletes that failed earlier. Only `<UUID>-<UUID>`
+    /// entries directly inside `Removing/`; symbolic links are unlinked, never
+    /// followed; areas, stages and foreign names are never touched.
+    @discardableResult
+    public func removeRemovalLeftovers() -> Int {
+        guard (try? regularDirectory(removing)) != nil,
+              let entries = try? fm.contentsOfDirectory(at: removing, includingPropertiesForKeys: nil, options: []) else { return 0 }
+        var removed = 0
+        for entry in entries where Self.isRemovalName(entry.lastPathComponent) {
+            if (try? fm.removeItem(at: entry)) != nil { removed += 1 }
+        }
+        return removed
+    }
+
+    /// `<area UUID>-<UUID>` as written by `remove`, canonical spelling only.
+    private static func isRemovalName(_ name: String) -> Bool {
+        guard name.count == 73, name.dropFirst(36).first == "-" else { return false }
+        let first = String(name.prefix(36)), second = String(name.suffix(36))
+        return UUID(uuidString: first)?.uuidString == first && UUID(uuidString: second)?.uuidString == second
     }
 
     public func createTest(title: String) async throws -> TestWorkspace {
