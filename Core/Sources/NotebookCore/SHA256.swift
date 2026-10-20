@@ -97,7 +97,47 @@ public struct SHA256: Sendable {
     }
 
     /// Tests only.
-    static func removeAccelerated() { Accelerator.set(nil) }
+    static func removeAccelerated() { Accelerator.set(nil); StreamAccelerator.set(nil) }
+
+    public typealias StreamingFactory = @Sendable () -> SHA256StreamingHasher
+
+    /// The app installs CryptoKit for streaming digests, too: file and
+    /// archive verification (assets, backups, restores) hash up to 500 MB per
+    /// notebook, and the portable implementation reaches only a few MB/s in
+    /// debug builds. Refused (false) unless it reproduces the FIPS 180-4
+    /// vectors and this implementation for whole messages and for messages
+    /// fed in pieces across block boundaries. `SHA256Stream` uses it.
+    @discardableResult
+    public static func installAcceleratedStreaming(_ make: @escaping StreamingFactory) -> Bool {
+        var samples = [Data(), Data("abc".utf8), Data("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".utf8)]
+        for count in [55, 56, 63, 64, 65, 1_000, 70_001] {
+            samples.append(Data((0..<count).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) }))
+        }
+        for sample in samples {
+            let expected = portableHexDigest(sample)
+            for piece in [sample.count + 1, 1, 7, 55, 64, 65, 4_096] {
+                let hasher = make()
+                var offset = 0
+                while offset < sample.count {
+                    let end = min(sample.count, offset + piece)
+                    sample[offset..<end].withUnsafeBytes { hasher.update($0) }
+                    offset = end
+                }
+                guard hex(hasher.finalize()) == expected else { return false }
+            }
+        }
+        StreamAccelerator.set(make)
+        return true
+    }
+
+    static var acceleratedStreaming: StreamingFactory? { StreamAccelerator.current }
+
+    private enum StreamAccelerator {
+        private static let lock = NSLock()
+        nonisolated(unsafe) private static var installed: StreamingFactory?
+        static var current: StreamingFactory? { lock.lock(); defer { lock.unlock() }; return installed }
+        static func set(_ make: StreamingFactory?) { lock.lock(); installed = make; lock.unlock() }
+    }
 
     private enum Accelerator {
         private static let lock = NSLock()
@@ -139,6 +179,36 @@ public struct SHA256: Sendable {
             }
             h[0] &+= a; h[1] &+= b; h[2] &+= c; h[3] &+= d; h[4] &+= e; h[5] &+= f; h[6] &+= g; h[7] &+= hh
         }
+    }
+}
+
+/// A platform SHA-256 that is fed in pieces (CryptoKit in the app). One
+/// instance per message; `finalize` is called once.
+public protocol SHA256StreamingHasher: AnyObject {
+    func update(_ bytes: UnsafeRawBufferPointer)
+    func finalize() -> [UInt8]
+}
+
+/// A running SHA-256 over a stream (files, archive records): the installed
+/// platform implementation if there is one (`installAcceleratedStreaming`),
+/// otherwise the portable one. Same digests either way.
+public struct SHA256Stream {
+    private var portable: SHA256?
+    private let accelerated: SHA256StreamingHasher?
+
+    public init() {
+        if let make = SHA256.acceleratedStreaming { accelerated = make(); portable = nil }
+        else { accelerated = nil; portable = SHA256() }
+    }
+
+    public mutating func update(_ data: Data) {
+        if let accelerated { data.withUnsafeBytes { accelerated.update($0) } } else { portable?.update(data) }
+    }
+
+    /// Ends the message.
+    public mutating func finalizeHex() -> String {
+        if let accelerated { return SHA256.hex(accelerated.finalize()) }
+        return portable?.hexDigest ?? ""
     }
 }
 

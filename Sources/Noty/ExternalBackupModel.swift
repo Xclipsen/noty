@@ -254,9 +254,10 @@ final class ExternalBackupModel: ObservableObject {
         case let error as LibraryArchiveError:
             switch error {
             case .archiveTooLarge: return "Bibliothek größer als 4 GB"
-            case .notebookTooLarge(let title): return "„\(title.prefix(40))“ größer als 200 MB"
+            case .notebookTooLarge(let title): return "„\(title.prefix(40))“: Heftdaten ohne Bilder größer als 200 MB"
             case .incomplete: return "Ein Notizbuch ist nicht vollständig lesbar"
             case .verificationFailed: return "Zurückgelesene Sicherung weicht ab"
+            case .damagedImage(let title): return "Bildoriginal in „\(title.prefix(40))“ fehlt oder ist beschädigt"
             default: return "Archiv ungültig"
             }
         case let error as BackupTargetError:
@@ -270,12 +271,14 @@ final class ExternalBackupModel: ObservableObject {
             }
         case is URLError: return isUnreachable(error) ? "Server nicht erreichbar (offline?)" : "Netzwerkfehler"
         case let error as CocoaError where error.code == .fileWriteOutOfSpace: return "Zu wenig freier Speicher auf dem iPad"
+        case is ImageAssetError: return "Bildoriginal eines Notizbuchs fehlt oder ist beschädigt"
         case is StorageError, is RevisionError, is BackupError: return "Inhalt eines Notizbuchs ungültig"
         default: return "Sicherung nicht abgeschlossen"
         }
     }
     private static func detail(_ error: Error) -> String {
-        if error is LibraryArchiveError || error is BackupTargetError || error is StorageError || error is RevisionError {
+        if error is LibraryArchiveError || error is BackupTargetError || error is StorageError || error is RevisionError
+            || error is ImageAssetError {
             return error.localizedDescription
         }
         return "Ziel nicht erreichbar, nicht beschreibbar oder Sicherung unvollständig (\(reason(error))). Ältere Sicherungen bleiben erhalten."

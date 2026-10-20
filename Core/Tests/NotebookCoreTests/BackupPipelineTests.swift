@@ -27,12 +27,25 @@ private func library(_ count: Int, bytes: Int, at root: URL) async throws -> (Li
 
 final class LibraryArchiveStreamingTests: XCTestCase {
     func testStreamingCRCMatchesReferenceVectorAndBlockSplits() {
+        /// Bitwise CRC-32/ISO-HDLC, independent of both table implementations.
+        func bitwise(_ data: Data) -> UInt32 {
+            var crc: UInt32 = 0xffffffff
+            for byte in data {
+                crc ^= UInt32(byte)
+                for _ in 0..<8 { crc = (crc >> 1) ^ (crc & 1 == 1 ? 0xedb88320 : 0) }
+            }
+            return crc ^ 0xffffffff
+        }
         XCTAssertEqual(StreamingCRC32.checksum(Data("123456789".utf8)), 0xCBF43926)
+        XCTAssertEqual(SnapshotChecksum.crc32(Data("123456789".utf8)), 0xCBF43926)
         let data = payload(100_003, seed: 7)
-        XCTAssertEqual(StreamingCRC32.checksum(data), SnapshotChecksum.crc32(data))
+        XCTAssertEqual(StreamingCRC32.checksum(data), bitwise(data))
+        XCTAssertEqual(SnapshotChecksum.crc32(data), bitwise(data))
+        for count in 0..<20 { XCTAssertEqual(SnapshotChecksum.crc32(data.prefix(count)), bitwise(data.prefix(count))) }
+        XCTAssertEqual(SnapshotChecksum.crc32(data.dropFirst(3)), bitwise(data.dropFirst(3)), "slices with an offset")
         var split = StreamingCRC32()
         for range in [0..<1, 1..<9, 9..<4096, 4096..<99_999, 99_999..<100_003] { split.update(data.subdata(in: range)) }
-        XCTAssertEqual(split.value, SnapshotChecksum.crc32(data))
+        XCTAssertEqual(split.value, bitwise(data))
         XCTAssertEqual(StreamingCRC32.checksum(Data()), 0)
     }
 

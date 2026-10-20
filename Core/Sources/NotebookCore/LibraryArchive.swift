@@ -29,7 +29,7 @@ public enum LibraryArchiveError: Error, LocalizedError, Equatable {
         case .incomplete: "Mindestens ein Heft ist nicht vollständig lesbar. Bibliotheksbackup abgebrochen; Dateien bleiben erhalten."
         case .destinationExists: "Der neue Wiederherstellungsbereich ist bereits vorhanden. Es wurde nichts überschrieben."
         case .archiveTooLarge: "Das Bibliotheksbackup würde die Grenze von 4 GB überschreiten."
-        case .notebookTooLarge(let title): "Das Notizbuch „\(title)“ ist größer als 200 MB und kann nicht gesichert werden."
+        case .notebookTooLarge(let title): "Die Heftdaten des Notizbuchs „\(title)“ sind ohne Bildoriginale größer als 200 MB (meist große PDFs); es kann nicht gesichert werden."
         case .verificationFailed: "Die zurückgelesene Sicherung stimmt nicht mit dem geprüften Archiv überein. Ältere Sicherungen bleiben erhalten."
         case .damagedImage(let title): "Ein Bildoriginal im Notizbuch „\(title)“ fehlt oder ist beschädigt. Bibliotheksbackup abgebrochen; Dateien bleiben erhalten."
         }

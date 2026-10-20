@@ -2,18 +2,11 @@ import Foundation
 
 /// CRC-32/ISO-HDLC detects accidental corruption, not deliberate tampering.
 /// No compression, authentication or encryption is implied.
+/// Revisions, manifests and archives share one implementation (slicing by
+/// eight, `StreamingCRC32`): several times faster than a byte loop, which
+/// matters for revisions with embedded PDFs or legacy images in debug builds.
 enum SnapshotChecksum {
-    private static let table: [UInt32] = (0..<256).map { byte in
-        var value = UInt32(byte)
-        for _ in 0..<8 { value = (value >> 1) ^ (value & 1 == 1 ? 0xedb88320 : 0) }
-        return value
-    }
-
-    static func crc32(_ data: Data) -> UInt32 {
-        var crc: UInt32 = 0xffffffff
-        for byte in data { crc = table[Int((crc ^ UInt32(byte)) & 255)] ^ (crc >> 8) }
-        return crc ^ 0xffffffff
-    }
+    static func crc32(_ data: Data) -> UInt32 { StreamingCRC32.checksum(data) }
 }
 
 struct RevisionRecord: Codable, Equatable {
@@ -143,7 +136,9 @@ public final class RevisionStore {
         // Embedded originals of schema 5–11: in memory until the first commit
         // writes them as assets (outside the fallback loop: a full pending
         // area is an error, never a reason to open an older state).
-        for data in decoded.inlineImageBytes.values { _ = try assets.stage(data) }
+        for (sha256, data) in decoded.inlineImageBytes {
+            try assets.stage(data, knownAs: ImageAssetReference(sha256: sha256, byteCount: data.count))
+        }
         return decoded.notebook
     }
 
@@ -155,7 +150,7 @@ public final class RevisionStore {
                 for (offset, record) in manifest.revisions.enumerated() {
                     do {
                         let bytes = try readRevisionBytes(record)
-                        let decoded = try NotebookDecoding.decode(bytes)
+                        let decoded = try NotebookDecoding.decode(bytes, storedFile: storedFile(record))
                         let document = decoded.notebook
                         // Incomplete like a CRC error: older state, nothing deleted.
                         guard assets.presentOnDisk(decoded.storedExternalAssets) else { throw RevisionError.noCompleteRevision }
@@ -556,11 +551,17 @@ public final class RevisionStore {
         guard let record = ((lastManifest?.revisions ?? []) + checkpoints).first(where: { $0.file == file }) else {
             throw RevisionError.revisionUnavailable
         }
-        return try NotebookDecoding.decode(readRevisionBytes(record))
+        return try NotebookDecoding.decode(readRevisionBytes(record), storedFile: storedFile(record))
     }
 
     private func readDocument(_ record: RevisionRecord) throws -> Notebook {
-        try Notebook.decode(readRevisionBytes(record))
+        try NotebookDecoding.decode(readRevisionBytes(record), storedFile: storedFile(record)).notebook
+    }
+
+    /// Identity of an immutable revision file whose bytes were just checked
+    /// against its record (size, CRC-32): path, size and CRC.
+    private func storedFile(_ record: RevisionRecord) -> String {
+        "\(revisions.standardizedFileURL.path)/\(record.file)#\(record.byteCount)#\(record.crc32)"
     }
 
     private func readRevisionBytes(_ record: RevisionRecord) throws -> Data {

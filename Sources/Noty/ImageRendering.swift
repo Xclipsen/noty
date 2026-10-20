@@ -197,8 +197,10 @@ enum ImageRendering {
             .lazy.compactMap { cached(object, limit: $0) }.first
     }
     /// Decodes the rendition off the main thread, then calls `done` on the
-    /// main actor (error: unreadable original). Concurrent requests for the
-    /// same content share one decode.
+    /// main actor (error: unreadable or damaged original). Concurrent requests
+    /// for the same content share one decode. The original is verified
+    /// (SHA-256 once per session and package, `verifiedPayload`): opening only
+    /// checks presence, so this first draw is the full check.
     static func prepare(_ object: ImageObject, limit: Int, assets: ImageAssetProviding? = nil,
                         done: @escaping @MainActor (Error?) -> Void) {
         let asset = object.asset
@@ -208,7 +210,7 @@ enum ImageRendering {
         decoding[name] = [done]
         DispatchQueue.global(qos: .userInitiated).async {
             let result: Decoded
-            do { result = Decoded(image: try ImageImport.thumbnail(payload(object, assets: assets), limit: limit), error: nil) }
+            do { result = Decoded(image: try ImageImport.thumbnail(payload(object, assets: assets, verified: true), limit: limit), error: nil) }
             catch { result = Decoded(image: nil, error: error) }
             Task { @MainActor in
                 if let image = result.image { _ = store(image, for: asset, limit: limit) }

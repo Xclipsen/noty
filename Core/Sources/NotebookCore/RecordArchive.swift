@@ -348,7 +348,7 @@ struct RecordWriter<Sink: RecordArchiveSink> {
     /// discards the unfinished archive).
     mutating func asset(_ reference: ImageAssetReference, from payload: ImageAssetPayload) throws {
         try descriptor(.asset(reference), payloadCount: reference.byteCount)
-        var hasher = SHA256(), count = 0
+        var hasher = SHA256Stream(), count = 0
         func take(_ block: Data) throws {
             guard block.count <= reference.byteCount - count else { throw RecordArchiveAssetMismatch(reference: reference) }
             hasher.update(block); try append(block); count += block.count
@@ -371,7 +371,7 @@ struct RecordWriter<Sink: RecordArchiveSink> {
                 try drained { try take(block) }
             }
         }
-        guard count == reference.byteCount, hasher.hexDigest == reference.sha256 else { throw RecordArchiveAssetMismatch(reference: reference) }
+        guard count == reference.byteCount, hasher.finalizeHex() == reference.sha256 else { throw RecordArchiveAssetMismatch(reference: reference) }
         records += 1; payloadBytes += count
     }
 
@@ -441,7 +441,7 @@ struct RecordReader<Source: RecordArchiveSource> {
     /// The payload of an asset record, handled as requested.
     mutating func asset(_ reference: ImageAssetReference, _ handling: RecordAssetHandling) throws {
         guard reference.byteCount <= remaining else { throw RecordArchiveInvalid() }
-        var hasher = SHA256(), count = 0
+        var hasher = SHA256Stream(), count = 0
         let hashing: Bool
         var output: FileHandle?, partial: URL?, target: URL?
         switch handling {
@@ -470,7 +470,7 @@ struct RecordReader<Source: RecordArchiveSource> {
             }
             count += wanted
         }
-        if hashing, hasher.hexDigest != reference.sha256 { throw BackupError.checksumMismatch }
+        if hashing, hasher.finalizeHex() != reference.sha256 { throw BackupError.checksumMismatch }
         if let handle = output, let partial, let target {
             try handle.synchronize()
             output = nil

@@ -263,13 +263,25 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
     public func stage(_ data: Data) throws -> ImageAssetReference {
         guard (1...ImageLimits.maximumFileBytes).contains(data.count) else { throw ImageAssetError.invalidReference }
         let reference = ImageAssetReference(of: data)
+        try addPending(data, reference)
+        return reference
+    }
+
+    /// Like `stage`, without hashing again: `reference` was derived from
+    /// exactly these bytes by `NotebookDecoding` (embedded legacy originals).
+    /// Never trusted further: `persist` verifies every written file.
+    func stage(_ data: Data, knownAs reference: ImageAssetReference) throws {
+        guard reference.isValid, reference.byteCount == data.count else { throw ImageAssetError.invalidReference }
+        try addPending(data, reference)
+    }
+
+    private func addPending(_ data: Data, _ reference: ImageAssetReference) throws {
         try locked {
             guard pending[reference.sha256] == nil else { return }
             guard data.count <= pendingLimit - pendingBytes else { throw ImageAssetError.pendingFull }
             pending[reference.sha256] = data
             pendingBytes += data.count
         }
-        return reference
     }
 
     /// Sorted by hash.
@@ -609,11 +621,11 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
     static func digest(ofFile url: URL, limit: Int, blockSize: Int = BoundedFile.block) throws -> (sha256: String, byteCount: Int) {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
-        var hasher = SHA256(), count = 0
+        var hasher = SHA256Stream(), count = 0
         while count <= limit, let chunk = try handle.read(upToCount: min(blockSize, limit + 1 - count)), !chunk.isEmpty {
             hasher.update(chunk); count += chunk.count
         }
-        return (hasher.hexDigest, count)
+        return (hasher.finalizeHex(), count)
     }
 }
 

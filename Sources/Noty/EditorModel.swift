@@ -97,7 +97,7 @@ final class EditorModel: ObservableObject {
                 // validates the PDFs) instead of twice on the UI actor.
                 let snapshot = loaded, assets = store.assets
                 try await Task.detached(priority: .userInitiated) {
-                    try EditorModelValidation.validateContent(snapshot, assets: assets)
+                    try EditorModelValidation.validateOnOpening(snapshot, assets: assets)
                 }.value
                 EditorOpenTrace.mark("document read", "pages=\(loaded.pages.count)")
                 // Keep legacy page geometry nil: existing ink is never rescaled.
@@ -793,6 +793,21 @@ enum EditorModelValidation {
     /// Image originals come from `assets` (nil: the registry); each original
     /// (content address and pixel size) is decoded and verified once, also
     /// when duplicated pages share it.
+    /// Opening: every PencilKit drawing, but image originals only by
+    /// presence (pending bytes, or a file of the right size: `stat`). Their
+    /// SHA-256 and ImageIO check follow when an image is first drawn
+    /// (`ImageRendering.prepare`; a mismatch shows the existing "damaged"
+    /// path), and in backup, restore and PDF export. Opening a notebook with
+    /// 500 MB of originals therefore reads none of them.
+    nonisolated static func validateOnOpening(_ document: Notebook, assets: NotebookAssets) throws {
+        for page in document.pages + (document.deletedPages ?? []).map(\.page) where !page.drawing.isEmpty {
+            _ = try PKDrawing(data: page.drawing)
+        }
+        for reference in document.externalImageAssets where !assets.isAvailable(reference) {
+            throw ImageAssetError.missing(reference.sha256)
+        }
+    }
+
     nonisolated static func validateContent(_ document: Notebook, assets: ImageAssetProviding? = nil) throws {
         for page in document.pages + (document.deletedPages ?? []).map(\.page) where !page.drawing.isEmpty {
             _ = try PKDrawing(data: page.drawing)

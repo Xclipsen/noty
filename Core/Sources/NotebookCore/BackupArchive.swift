@@ -13,7 +13,7 @@ public enum BackupError: Error, LocalizedError {
         switch self {
         case .invalidArchive: "Die Datei ist kein vollständiges unterstütztes noty-Backup."
         case .unsupportedVersion(let version): "Backupformat \(version) benötigt eine neuere noty-Version."
-        case .sizeLimit: "Das Backup überschreitet das aktuelle Größenlimit von 200 MB."
+        case .sizeLimit: "Das Backup überschreitet das Größenlimit: höchstens 200 MB Heftdaten ohne Bildoriginale (ältere Backups im Format 1: 200 MB insgesamt). Bitte große PDFs entfernen, auch aus dem Seitenpapierkorb."
         case .fileTooLarge: "Die Backup-Datei überschreitet die Grenze von 800 MB."
         case .checksumMismatch: "Die Backup-Prüfsumme stimmt nicht. Es wurde nichts wiederhergestellt."
         case .invalidStaging: "Die vorbereitete Wiederherstellung ist nicht mehr gültig. Bitte das Backup erneut auswählen."
