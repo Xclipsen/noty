@@ -10,11 +10,11 @@
 
 ## Build 38 – Lasso über Seiten, Einstellungen, UI-Fehler
 
-**Implementiert, signiert gebaut, installiert; auf dem iPad ungeprüft.** [Details](EDITOR-FEEDBACK-34.md). 289 Core-Tests, Host-Roundtrip `.tools/roundtrip-batch38.log`, Sicherung/Rücklesung 23 Hefte/160 Dateien bytegleich.
+**Implementiert, signiert gebaut, installiert; auf dem iPad ungeprüft.** [Details](history/EDITOR-FEEDBACK-34.md). 289 Core-Tests, Host-Roundtrip `.tools/roundtrip-batch38.log`, Sicherung/Rücklesung 23 Hefte/160 Dateien bytegleich.
 
 ## Feedback 33 – Zoom-Grenze, Schreibscrollen, Strichstärke
 
-**Implementiert, signiert gebaut und als Build 33 installiert; neue Bedienung auf dem iPad ungeprüft.** [Befunde/Umsetzung](EDITOR-FEEDBACK-33.md).
+**Implementiert, signiert gebaut und als Build 33 installiert; neue Bedienung auf dem iPad ungeprüft.** [Befunde/Umsetzung](history/EDITOR-FEEDBACK-33.md).
 
 - `swift test --package-path Core`: **270 Tests, 0 Fehler**, `.tools/core-editor33.log`; sechs neue Methoden in `ViewportWriting33Tests`.
 - `xtool dev build` in PTY: erfolgreich, `.tools/build-feedback33.log`. Kein Format-/Speicherpfad geändert, daher kein Host-Roundtrip.
@@ -30,7 +30,7 @@ Gerätelog-Mitschnitt `.tools/syslog-zoom33.log` (Teilauszüge `syslog-zoom34.lo
 
 ## Build 32 – Bildbefunde, Lasso-Farbe und Halte-Linien
 
-**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 32 installiert; neue native Wirkung ungeprüft.** IMG_0274 bestätigt Größenregression aus Build 31. IMG_0275 ausdrücklich als zwei fehlerhafte begradigte Linien präzisiert. [Befunde/Dateien/Grenzen](EDITOR-FEEDBACK-32.md), [drei Gerätetests](TEST-BUILD-32.md).
+**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 32 installiert; neue native Wirkung ungeprüft.** IMG_0274 bestätigt Größenregression aus Build 31. IMG_0275 ausdrücklich als zwei fehlerhafte begradigte Linien präzisiert. [Befunde/Dateien/Grenzen](history/EDITOR-FEEDBACK-32.md), [drei Gerätetests](history/TEST-BUILD-32.md).
 
 - `swift test --package-path Core`: **264 Tests, 0 Fehler**, `.tools/core-editor32-final.log`. Sieben neue Methoden in `WritingAndStroke32Tests` für einheitliche PDF-/Papierbreite einschließlich Rand, unveränderte 14-pt-Stile/Normalmaße, gedrehte Crop-/negative Ränder, unveränderte freie Annotationen/Papier, Erhalt schmaler gespeicherter Ränder und finale native Abschlussreihenfolgen. Build-31-Layoutannahmen an die korrigierte Vorgabe angepasst.
 - `bash scripts/check_page_workflow.sh`: **bestanden**, `.tools/roundtrip-editor32.log`, Artefakte `.tools/page-workflow-HvLfjl/`. Unabhängige Schema-8-Heft-/Bibliotheksprüfer, Rich Text/Textfluss/editierbare Layer und Originalbytes erhalten. Kein Formatwechsel oder neue Dependency.
@@ -47,7 +47,7 @@ Nachweise `before-inspection.json`, `update-inspection.json`, `update-inspection
 
 ## Build 31 – Lasso, Hochzoom und Schreibraum
 
-**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 31 installiert; neue native Bedienung ungeprüft.** Build 30 wurde vom Nutzer für Lasso/mitgezogene Inhalte erneut beanstandet. Berührungsauswahl und Handschriftkontur sind die neuen Vorgaben und ersetzen die früheren Einschließungs-/Rahmenanforderungen. [Umsetzung/Grenzen](EDITOR-FEEDBACK-31.md), [Retest](TEST-BUILD-31.md).
+**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 31 installiert; neue native Bedienung ungeprüft.** Build 30 wurde vom Nutzer für Lasso/mitgezogene Inhalte erneut beanstandet. Berührungsauswahl und Handschriftkontur sind die neuen Vorgaben und ersetzen die früheren Einschließungs-/Rahmenanforderungen. [Umsetzung/Grenzen](history/EDITOR-FEEDBACK-31.md), [Retest](history/TEST-BUILD-31.md).
 
 - `swift test --package-path Core`: **257 Tests, 0 Fehler**, `.tools/core-editor31-final.log`. Neun neue Methoden in `LassoAndViewport31Tests` für Schnitt/Berührung/Strichbreite, Bounding-Box-Fehlertreffer/konkave Aussparungen/negative Ränder, Gruppenbewegung an Grenzen, vier Skalieranker/Schriftgrenzen, äußere Kontur, seitenweise Horizontalgrenzen, Hochzoom-Pixelbudget und normale Rand-/Textmaße über gemischte Importe. Vorhandene Layouttests an die neue Punktskala für Schreibseiten angepasst.
 - `bash scripts/check_page_workflow.sh`: **bestanden**, `.tools/roundtrip-editor31.log`, Artefakte `.tools/page-workflow-SzswkI/`. Unabhängige Schema-8-Heft-/Bibliotheksprüfer und editierbare Daten/Originale erhalten. Keine neue Schema- oder Dependency-Version.
@@ -62,7 +62,7 @@ Nach frischer Nutzerbestätigung „Ja, geschlossen und bereit“ aktuelle volls
 
 ## Build 30 – Rückmeldungen, gemeinsames Lasso und Scrollen
 
-**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 30 installiert. Neue native Bedienung und tatsächliche Rucklerbeseitigung noch ungeprüft.** [Änderungen/Grenzen](EDITOR-FEEDBACK-30.md), [fünf gezielte Gerätetests](TEST-BUILD-30.md).
+**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 30 installiert. Neue native Bedienung und tatsächliche Rucklerbeseitigung noch ungeprüft.** [Änderungen/Grenzen](history/EDITOR-FEEDBACK-30.md), [fünf gezielte Gerätetests](history/TEST-BUILD-30.md).
 
 - `swift test --package-path Core`: **248 Tests, 0 Fehler**, `.tools/core-editor30-final.log`. Sieben neue Methoden in `Feedback30Tests` für Werkzeugpräferenzen/Einzellasso, vollständige Strich-/Objektauswahl mit negativen Rändern und Breite, Freiform/konkave Grenzen, UTF-16-Checkboxbereiche, gehaltene Linien und Wiederverwendung der Renderreserve. Bestehende Leisten-/Viewportbudget-Erwartungen angepasst.
 - `bash scripts/check_page_workflow.sh`: **bestanden**, `.tools/roundtrip-editor30.log`, Artefakte `.tools/page-workflow-6tjFum/`. Unabhängige Schema-8-Heft-/Bibliotheksarchivprüfer und editierbare Layer/Rich Text/Textfluss erhalten. Kein neues Speicher-/Archivformat.
@@ -79,7 +79,7 @@ Nach frischer Nutzerbestätigung „Ja, geschlossen und bereit“ vollständige 
 
 ## Build 29 – Editorfehler und Werkzeugbedienung
 
-**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 29 installiert; native Bugfix-Abnahme noch offen.** Details zu Ursachen, Dateien, Grenzen und gebündeltem Retest: [EDITOR-FEEDBACK-29](EDITOR-FEEDBACK-29.md).
+**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 29 installiert; native Bugfix-Abnahme noch offen.** Details zu Ursachen, Dateien, Grenzen und gebündeltem Retest: [EDITOR-FEEDBACK-29](history/EDITOR-FEEDBACK-29.md).
 
 - `swift test --package-path Core`: **241 Tests, 0 Fehler**, `.tools/core-editor29-final.log`. Acht neue Fälle für Checkboxzyklus mit Emoji/Einzug, Feld- vs. Wortformatierung, Rich-Text-Skalierung/Flow-Sperre, Autostift auf vier Rändern, Grundlinien, vertikalen Leistenanker, seitenbewusste Textflusskapazität und PDF-Grundseitenfit. Vorhandene Leisten-/Kopf-/Listenfälle für die geänderten Anforderungen aktualisiert.
 - Nachgereichte Textbedienung: drei weitere Regressionen für zusammenhängenden Listenwechsel samt leerem Schlussitem, Absatz-/Einzugsgrenzen und explizite Auswahl sowie eingerückte Enter-Fortsetzung/Beenden im selben 241-Test-Lauf. 14-pt-Start/Einerschritte, Icon-Popover, Einfügeattribute nach Absatzformatierung mit SDK gebaut; Erhalt von Keyboard/Auswahl nativ offen. Zitat-/Codeblöcke und gebündelte Inter-Schrift nicht implementiert.
@@ -95,16 +95,16 @@ Vollständige `/Documents` vor Update unter `/home/la/Backups/noty-before-editor
 
 `xtool install --usb xtool/Noty.ipa` in PTY erfolgreich (`.tools/ios-install-editor29.log`). Direkte InstallationProxy-Abfrage bestätigt **29** unter unveränderter installierter ID `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype` (`.tools/installed-build-29-confirmed.json`). Frischer vollständiger Abzug `after-update/Documents/`: erneut stabiler Baum, **alle 22 vollständigen Heftinhalte und sämtliche 153 Dateien bytegleich**, keine Ergänzungen/Löschungen. Nachweise `update-inspection.json`, `update-inspection-files.json` und `installed-build.json` im Sicherungsordner; Zusammenfassung `.tools/editor29-update-summary.json`. Anschließend zum Öffnen freigegeben.
 
-Installation und Datenerhalt belegt; die Bugfixes selbst noch nicht am Gerät abgenommen. Nutzeranleitung: [Build 29 selbst testen](TEST-BUILD-29.md).
+Installation und Datenerhalt belegt; die Bugfixes selbst noch nicht am Gerät abgenommen. Nutzeranleitung: [Build 29 selbst testen](history/TEST-BUILD-29.md).
 
 ## Build 28 – Listen, Zoomabschluss und Renderpfad
 
-**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 28 installiert. Native Schärfe/Gesten und Behebung der gemeldeten kurzen Blockaden noch ungeprüft.** [Änderungen und gebündelter Retest](EDITOR-FEEDBACK-28.md).
+**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 28 installiert. Native Schärfe/Gesten und Behebung der gemeldeten kurzen Blockaden noch ungeprüft.** [Änderungen und gebündelter Retest](history/EDITOR-FEEDBACK-28.md).
 
 - `swift test --package-path Core`: **230 Tests, 0 Fehler**, `.tools/core-zoom28-final3.log`. Elf neue Fälle in `ZoomAndListTests`: alle drei Listentypen ein/aus, abgehakte Aufgaben, Typwechsel/Einrückung/Unicode, leeres Caret und Zeilengrenzen, gemeinsames Zoom-/Fokusziel, Breiten-Snap mit vertikaler Leseposition, identischer Animationsfortschritt/exaktes Ende, native Zoom-/Transform-Koordinaten einschließlich negativer Ränder, begrenzter Großseiten-Viewport, Auflösungsstufen und Pixelbudget. Ein früherer Lauf fand eine Rundungsabweichung am Animationsende; exaktes Ziel wird nun ausdrücklich übernommen, finale Prüfung bestanden.
 - `xtool dev build --sign --ipa` in PTY erfolgreich: `.tools/ios-zoom28-sign.log`, **18,09 s**, Build 28. Keine neue Dependency oder Toolchaininstallation. IPA-Metadaten, SHA-256 und unveränderte Signierungsidentität geprüft: `.tools/build-zoom28-artifact.json`; Profil bis 2026-10-25T15:43:58Z gültig.
 - Keine Änderung an Notebook-/Werkzeug-/Archivformaten. Vollständiger Core-Lauf enthält bestehende Geometrie-, Objekt-, Speicher- und Archivtests. Kein neuer Host-Archivroundtrip allein für diese Editor-/Darstellungsänderungen; Schema-8-Roundtrip aus Build 27 bleibt ein historischer Nachweis.
-- Quellcodebefund zu unnötiger Konfiguration/Dekodierung, Auflösung und Kanten in [EDITOR-FEEDBACK-28](EDITOR-FEEDBACK-28.md). Kein Geräte-Trace der konkreten kurzen Blockade; deren vollständige Beseitigung noch nicht belegt. UIKit/PencilKit/PDFKit werden durch Linux-Tests nicht ausgeführt.
+- Quellcodebefund zu unnötiger Konfiguration/Dekodierung, Auflösung und Kanten in [EDITOR-FEEDBACK-28](history/EDITOR-FEEDBACK-28.md). Kein Geräte-Trace der konkreten kurzen Blockade; deren vollständige Beseitigung noch nicht belegt. UIKit/PencilKit/PDFKit werden durch Linux-Tests nicht ausgeführt.
 
 Nach frischer Nutzerbestätigung Schließen/Entsperren vollständige App-Documents gesichert unter `/home/la/Backups/noty-before-zoom28-2026-10-18T15-44-41-235309Z/Documents/`: **22 gültige Hefte, 46 referenzierte Revisionen, 153 Dateien, 79.224.648 Bytes**, stabiler Remote-Dateibaum. Finale IPA und Metadaten separat in diesem Ordner erhalten. `xtool install --usb xtool/Noty.ipa` in PTY erfolgreich; keine Deinstallation, gleicher Updateweg und Container. Direkte InstallationProxy-Abfrage bestätigt **28** unter `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype` (`.tools/installed-build-28-confirmed.json`, zusätzlich `installed-build.json` im Backup).
 
@@ -112,7 +112,7 @@ Frischer vollständiger Nachabzug `after-update/Documents/`: wieder stabiler Rem
 
 ## Build 27 – Texteditor und virtuelle Schreibseite
 
-**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 27 installiert; neue native Bedienung noch ungeprüft.** [Umfang und Gerätetest](TEXT-REBUILD-27.md).
+**Implementiert, erfolgreich signiert mit dem iPad-SDK gebaut und als Build 27 installiert; neue native Bedienung noch ungeprüft.** [Umfang und Gerätetest](history/TEXT-REBUILD-27.md).
 
 - `swift test --package-path Core`: **219 Tests, 0 Fehler**, `.tools/core-text27-final.log`. Zwölf neue Fälle für getrennte Schreibanker/PDF-Fläche, stabile Fortsetzungs-/Draft-ID, Caretübergang, Rückfluss ohne Seiten-/Ink-Verlust, belegte Folgeseiten, PDF-Rand-Fortsetzung, Graphem-/Run-Erhalt einschließlich Run-Lücken, stale/no-progress-Abbruch, virtuelle Seite/Materialisierung, Formatvalidierung und exakte Schema-7-Migrationsbytes samt Papierkorb.
 - Unabhängiger Schema-8-Host-Roundtrip mit Heft-/Bibliotheksbackup, editierbarem Restore und Pythonprüfern: `.tools/roundtrip-text27.log`, finale Artefakte `.tools/page-workflow-sU1uzf/`. Neue Flow-Verknüpfung und Schriftname/RGBA/Durchstreichen/Hochstellung erhalten, Quell-PDF-/Bildbytes unverändert, unbenutzte Reserve außerhalb des Notebook-Archivs. Beschädigtes Archiv weiterhin abgewiesen. Kein Ausführen von UIKit/PencilKit/PDFKit unter Linux behauptet.
@@ -204,7 +204,7 @@ Stand: 17.10.2026. **Implementiert**, **gebaut** und **auf dem iPad getestet** s
 
 ## Build 20 – Restliche Grundfunktionen
 
-**Implementiert, signiert gebaut und als Update installiert; native Bedienung noch ungeprüft.** [Funktionsumfang, Prüfgrenzen und gebündelter Gerätetest](REST-FEATURES-20.md). Keine erneute Grundabnahme bereits bestätigter Build-19-Bildvarianten verlangt.
+**Implementiert, signiert gebaut und als Update installiert; native Bedienung noch ungeprüft.** [Funktionsumfang, Prüfgrenzen und gebündelter Gerätetest](history/REST-FEATURES-20.md). Keine erneute Grundabnahme bereits bestätigter Build-19-Bildvarianten verlangt.
 
 - 158 Core-Tests, keine Fehler: `.tools/core-rest-final.log`. Neue Formen-/Migrations-/Archiv-, Listen-/Unicode-, Such-/Backupregel- und tatsächliche Dateiablage-/Bereinigungsprüfungen. 100 Seiten mit Text/Formen als Struktur-/Archivprüfung, kein PDFKit-Leistungstest.
 - Schema-6-Host-Roundtrip mit echter Quell-PDF/PNG und unabhängigem Python-Schema-/CRC-Vergleich bestanden; getrennte Restorekopie mit veränderten Formen/Bildern, Ausgangsheft unverändert. `.tools/roundtrip-rest-final.log`, `.tools/page-workflow-QCJA56/`. Ink-Fixture hier Platzhalterdaten; keine Apple-Framework-Laufzeit.
@@ -357,7 +357,7 @@ Seitenleiste/Seitenoperationen, Schema-3-Quellzuordnung, Lesezeichen/Outline, Pa
 - Shell-/Python-Syntax und `git diff --check` bestanden. Subagent zusätzlich Swift-Syntax und Integrationsreview. Gemeldete Probleme (transparente PDF auf dunklem Rand, Sliderbereich bei gemischten Seitengrößen) behoben; kein daraus abgeleiteter bestandener Gerätetest.
 - `xtool dev build --sign --ipa`: **Build 12 erfolgreich, 18,20 s**, Provisionierung/Signierung/IPA abgeschlossen; `.tools/ios-build-pages-12-final.log`, `.tools/Noty-build-12.sha256`. Keine gemeldeten Warnungen/Fehler. Toolchain Swift 6.4.1, xtool 1.22.2, SDK iPhoneOS 27.1, Minimum iPadOS 17 unverändert.
 
-**Noch nicht durchgeführt:** manueller Start des Pakets 12 und neue Apple-Framework-/Pencil-/Exportprüfungen auf dem iPad. Neues Schema erst bei struktureller Änderung/Lesezeichen/Rändern. Kurzer risikobasierter Gerätedurchlauf in [BATCH-TEST-12.md](BATCH-TEST-12.md), nicht jede Menü-/Farbvariante einzeln. Nachweise von Build 11 und früher unten gelten für ihre jeweiligen Stände, nicht automatisch für die neue Koordinaten-/Speicherfunktion.
+**Noch nicht durchgeführt:** manueller Start des Pakets 12 und neue Apple-Framework-/Pencil-/Exportprüfungen auf dem iPad. Neues Schema erst bei struktureller Änderung/Lesezeichen/Rändern. Kurzer risikobasierter Gerätedurchlauf in [BATCH-TEST-12.md](history/BATCH-TEST-12.md), nicht jede Menü-/Farbvariante einzeln. Nachweise von Build 11 und früher unten gelten für ihre jeweiligen Stände, nicht automatisch für die neue Koordinaten-/Speicherfunktion.
 
 ### Build 12 installiert; Update-Inhaltserhalt geprüft
 
@@ -495,7 +495,7 @@ Angefragter Build-8-Gerätetest: bestehende Kopie mit `RESTORE-17` öffnen; auf 
 
 ## Build 8 nicht abgenommen / Build 9 Navigationskorrektur
 
-Nutzer meldet nach mehrfacher lokaler Wiederherstellung nicht auffindbare Änderungen. Vollständige Datensicherung und Inventur finden ursprüngliche Kopie mit `RESTORE-17` und zusätzlicher Ink auf Seite 2; weitere gleichnamige Kopien entsprechen Hauptheftständen. Hauptheft zum Vorbestand identisch. Deshalb keinen bestandenen Build-8-Gerätetest behauptet. Details, Sicherungspfade und genaue Evidenz: [RECOVERY-2026-10-17.md](RECOVERY-2026-10-17.md).
+Nutzer meldet nach mehrfacher lokaler Wiederherstellung nicht auffindbare Änderungen. Vollständige Datensicherung und Inventur finden ursprüngliche Kopie mit `RESTORE-17` und zusätzlicher Ink auf Seite 2; weitere gleichnamige Kopien entsprechen Hauptheftständen. Hauptheft zum Vorbestand identisch. Deshalb keinen bestandenen Build-8-Gerätetest behauptet. Details, Sicherungspfade und genaue Evidenz: [RECOVERY-2026-10-17.md](history/RECOVERY-2026-10-17.md).
 
 Build 9: 61 Core-Tests erfolgreich (`.tools/core-tests-recovery-navigation.log`), signierte IPA erfolgreich gebaut in 8,17 s (`.tools/ios-build-recovery-navigation-9.log`). Frisches Backup unmittelbar vor Update: `/home/la/Backups/noty-before-navigation-fix-2026-10-17T08-56-01Z/`. Keine Quelle oder Kopie gelöscht/ersetzt. Installations- und Sichtteststatus folgt nach tatsächlicher Prüfung.
 
@@ -503,7 +503,7 @@ Build 9 erfolgreich als Update installiert (`.tools/ios-install-recovery-navigat
 
 ## Build 10 – Bibliothek als gemeinsames Testpaket
 
-Nutzer möchte die nächsten Funktionen vorbereiten und anschließend gemeinsam gebündelt testen. Der Sichtnachweis aus Build 9 wurde damit **nicht** bestätigt. Er bleibt erster Punkt in [BATCH-TEST-10.md](BATCH-TEST-10.md). Keine Zwischenfreigaben der neuen Oberfläche behaupten.
+Nutzer möchte die nächsten Funktionen vorbereiten und anschließend gemeinsam gebündelt testen. Der Sichtnachweis aus Build 9 wurde damit **nicht** bestätigt. Er bleibt erster Punkt in [BATCH-TEST-10.md](history/BATCH-TEST-10.md). Keine Zwischenfreigaben der neuen Oberfläche behaupten.
 
 **Implementiert:** getrennt versionierter Bibliotheksindex, native Seitenleiste/Ordnerbaum, neue Hefte, PDF-Import als unabhängiges Heft, Umbenennen, Verschieben, manuelle Reihenfolge, Favoriten, Zuletzt verwendet, Namenssuche, Papierkorb/Restore und Schließen erst nach letztem Save. Details: [LIBRARY.md](LIBRARY.md). Quellen-/Heftformat unverändert; weiterhin kein vollständiger Bibliotheksbackup.
 
@@ -521,7 +521,7 @@ Zusätzlicher realer Datenlauf **unter Linux**, ausschließlich im separaten Unt
 
 Nutzer autorisiert Vorbereitung weiterer Funktionen und wünscht getrennte Testinstanzen bzw. später einen gemeinsamen Test. Umsetzung als logische Bereiche mit eigenen Notizen und Präferenzen innerhalb derselben App; keine zusätzliche Installation/Signierungsidentität. **Build 11 nicht installiert, keine Geräteprüfung dieses Pakets.** Auf dem iPad bleibt Build 10. Der Sichtnachweis zum Wiederfinden und die lokale Historienabnahme aus Build 8/9/10 bleiben offen.
 
-Implementiert: Bibliotheksarchiv `.notylibrary`, Restore in neuen Bereich mit Veröffentlichung erst am Ende, neue synthetische Testbereiche, gemeinsame Bereichsauswahl, komponierte Seitenübersicht und anpassbare eigene Werkzeugleiste (Andocken/Schweben, Umordnung, Lieblingsstifte, persistierte Farben/Breiten, Fingeroption). Details in [LIBRARY-BACKUP.md](LIBRARY-BACKUP.md), Ablauf für später in [BATCH-TEST-11.md](BATCH-TEST-11.md).
+Implementiert: Bibliotheksarchiv `.notylibrary`, Restore in neuen Bereich mit Veröffentlichung erst am Ende, neue synthetische Testbereiche, gemeinsame Bereichsauswahl, komponierte Seitenübersicht und anpassbare eigene Werkzeugleiste (Andocken/Schweben, Umordnung, Lieblingsstifte, persistierte Farben/Breiten, Fingeroption). Details in [LIBRARY-BACKUP.md](LIBRARY-BACKUP.md), Ablauf für später in [BATCH-TEST-11.md](history/BATCH-TEST-11.md).
 
 **92 Core-Tests bestanden** (`.tools/core-tests-testpack-11.log`): 15 neue Archiv-/Bereichstests und vier Präferenztests. Risiken: vollständige Dokumentmenge und Titel/IDs, Ordnerreihenfolge und Papierkorb, CRC/Längen/zusätzliche Daten, übergroße Headerzahlen, neue Formate, falsche/duplizierte Identität, pfadartige Blocktypen, beschädigtes/verlinktes Staging, Replay, blockierte Veröffentlichung bei bestehendem Ziel, originales Paket unverändert nach Restore/Bearbeitung, unabhängige Test-IDs/Präferenzen, Rückfall auf vorige Präferenzen, echte atomare Schreibfehler mit Retry, ältere Save-Revisionen und ungültige Farben/Breiten/Reihenfolge/Position. Fehlendes oder nur aus älterem Stand lesbares Heft wird nicht still aus einem vollständigen Backup weggelassen.
 

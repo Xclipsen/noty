@@ -1,6 +1,6 @@
 # Bibliotheksbackup und getrennte Bereiche – Build 11
 
-Implementiert, unter Linux geprüft, für arm64 gebaut/signiert und am 17.10.2026 als Update installiert. Sechs Hefte/32 App-Dateien beim Update unverändert. UI- und Dateianbieter-Abnahme noch offen gemäß [BATCH-TEST-11.md](BATCH-TEST-11.md).
+Implementiert, unter Linux geprüft, für arm64 gebaut/signiert und am 17.10.2026 als Update installiert. Sechs Hefte/32 App-Dateien beim Update unverändert. UI- und Dateianbieter-Abnahme noch offen gemäß [BATCH-TEST-11.md](history/BATCH-TEST-11.md).
 
 ## Bereiche und Eigentümer
 

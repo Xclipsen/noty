@@ -17,7 +17,7 @@ Nur falls im selben Durchlauf noch sinnvoll: gespeicherten vorigen lokalen Stand
 
 ## Ergebnis
 
-Erster Gerätedurchlauf **nicht bestanden**: Nutzer meldet dauerhaften Ladekreis im PDF-Schreibplatz, Zurückspringen beim Scrollen und versetzte Trefferflächen der Randregler (Links löst Unten aus). Screenshot IMG_0235 zeigt den Ladekreis im Randfenster und eine funktionierende kleine Seitenvorschau links. Sammeltest deshalb unterbrochen; keine Abnahme der Rand-/Pencil-/Restorefunktionen. Korrektur und gezielter Retest in [BUG-13-PREVIEW.md](BUG-13-PREVIEW.md).
+Erster Gerätedurchlauf **nicht bestanden**: Nutzer meldet dauerhaften Ladekreis im PDF-Schreibplatz, Zurückspringen beim Scrollen und versetzte Trefferflächen der Randregler (Links löst Unten aus). Screenshot IMG_0235 zeigt den Ladekreis im Randfenster und eine funktionierende kleine Seitenvorschau links. Sammeltest deshalb unterbrochen; keine Abnahme der Rand-/Pencil-/Restorefunktionen. Korrektur und gezielter Retest in [BUG-13-PREVIEW.md](../BUG-13-PREVIEW.md).
 
 PC-Build/Hosttests ersetzen diese Laufzeitprüfungen nicht. PencilKit-Translation bei links/oben, neue Undo-Grenzen nach Randänderung und Sheet→Dateien-Übergang weiterhin unbestätigt.
 

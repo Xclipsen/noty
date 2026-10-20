@@ -38,7 +38,7 @@ Keine UIKit-/PDFKit-/PencilKit-Ausführung unter Linux. Nach dem ursprünglichen
 
 ## Ein gebündelter iPad-Retest nach autorisiertem Update
 
-Das autorisierte Update ist inzwischen erfolgt; Installation und unveränderter Bestand sind in [TESTING](TESTING.md) belegt. Kurze, nutzerorientierte Schritte zu jeder Korrektur: [Build 29 selbst testen](TEST-BUILD-29.md). Die folgenden Eingabefälle bleiben bis zur tatsächlichen Rückmeldung offen.
+Das autorisierte Update ist inzwischen erfolgt; Installation und unveränderter Bestand sind in [TESTING](../TESTING.md) belegt. Kurze, nutzerorientierte Schritte zu jeder Korrektur: [Build 29 selbst testen](TEST-BUILD-29.md). Die folgenden Eingabefälle bleiben bis zur tatsächlichen Rückmeldung offen.
 
 In einer Testkopie mit liniertem Papier und einem PDF mit dunklem 100-%-Rand:
 
