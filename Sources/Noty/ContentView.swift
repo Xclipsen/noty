@@ -14,6 +14,7 @@ struct ContentView: View {
     var onActivatePane: (() -> Void)?
     var onCloseWorkspace: (() -> Void)?
     var onSecondView: (() -> Void)?
+    var onLaws: (() -> Void)?
     @State private var selectedPageID: UUID?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -588,6 +589,7 @@ struct ContentView: View {
                 }
             }
             Section {
+                if let onLaws { Button("Gesetzessammlung", systemImage: "books.vertical", action: onLaws) }
                 Menu("Ansicht", systemImage: "eye") {
                     Toggle("Schreibscrollen bis zur Blattmitte", systemImage: "arrow.left.and.right.square", isOn: $writingScroll)
                     Toggle("Blättern statt Scrollen", systemImage: "book.pages", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))

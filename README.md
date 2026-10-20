@@ -3,7 +3,13 @@
 Native iPad-App für Schulnotizen, entwickelt auf `la@lab` unter Omarchy.
 Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nutzer auf **noty** geändert.
 
-## Aktueller Stand
+## Native Gesetzessammlung – separater Feature-Worktree
+
+Der bestätigte Ausbau ist in `feat/native-law-library` implementiert: optionale native Gesetzessammlung als internes Slide-over oder angedockte zweite Ansicht, lokale Texte/optionale PDFs, Direktfundstellen wie `144 HGB`, Apples Tastaturen und appweites E-Mail-Konto. Drei getrennte Schalter (Aktivierung aus, persönlicher Sync an, automatische Gesetzesupdates an). Notizbücher bleiben lokal; Gesetzesmarkierungen haben eine eigene dauerhafte Warteschlange und Sicherungsdatei.
+
+Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Website und Backend sind seit 20.10.2026 auf IONOS ausgerollt und öffentlich geprüft. Mail bleibt auf Nutzerwunsch aus; E-Mail-Registrierung/Recovery sind deshalb noch nicht verfügbar, bestehende Namenslogins bleiben unterstützt. Die iPad-Laufzeitprüfung steht noch aus. **Diese Erweiterung ist nicht installiert.** [Umfang und Architektur](docs/LAW-INTEGRATION-PLAN.md), [Prüfungen](docs/TESTING.md#native-gesetzessammlung--feature-worktree).
+
+## Aktueller Stand der bisherigen Lieferung
 
 **Build 49 (20.10.2026)** = Build 48 plus sechs Editor-Korrekturen aus dem Review: Nach einem abgebrochenen Anheben mit Werkzeugwechsel zeigt der Canvas wieder die gespeicherte Tinte, statt Striche beim nächsten Zeichnen zu verlieren. Der Bild-Cache fasst 160 MB/48 Einträge und zeigt bei Fehltreffern die nächstbeste Auflösung statt Grau. Dekodierfehler werden erneut versucht. Gezogene Bilder bleiben in der richtigen Reihenfolge. Werkzeugeinstellungen werden auch beim Wechsel in den Hintergrund fertig geschrieben. Die Strichbreite lernt nur noch von Stift, Bleistift und Marker. Nachweise: [TESTING](docs/TESTING.md#build-49--editor-korrekturen).
 

@@ -2,7 +2,11 @@
 
 Frühere Planstände (Phase 0 bis Build 46) unverändert im [Archiv](history/PLAN-ARCHIV.md). Verbindlicher Umfang: [SCOPE](SCOPE.md), Abnahme: [ACCEPTANCE](ACCEPTANCE.md).
 
-## Aktuell – Build 48: Review-Überarbeitung und UI-Feinschliff
+## Eigener Worktree – native Gesetzessammlung
+
+Bestätigter [Umsetzungsplan](LAW-INTEGRATION-PLAN.md), Branch `feat/native-law-library`. Native Offlinefunktion, Panel, Konto und Kontoabgleich implementiert; Website-/Backend-Erweiterung im isolierten Schwester-Worktree `gesetzessammlung-noty` (`feat/noty-law-integration`). EStR/LStR/AEAO importiert. Checks: [TESTING](TESTING.md#native-gesetzessammlung--feature-worktree). Website/Backend am 20.10.2026 auf IONOS ausgerollt, Bestandsdaten unverändert nachgewiesen. Mail auf Nutzerwunsch deaktiviert. Noch offen: Geräteabnahme und spätere Mailfreigabe. Nicht mit dem laufenden anderen Featurestrang oder dessen Buildnummer gleichsetzen.
+
+## Bisheriger Stand – Build 48: Review-Überarbeitung und UI-Feinschliff
 
 Projektweites Review vom 20.10.2026 umgesetzt: Datensicherheit (Quarantäne statt Löschen nach Rückfall, gestufte Historie, Speicher-Wiederholung, Schema 10 für große PDFs), Backups (Streaming, Zielprüfung, Backoff, Öffnen aus Dateien), Editorleistung (Stiftpfad, Ziehen, Vorschauen, Bilder, Speicherwarnungen), Undo/Tastenkürzel, persistenter Suchindex, seitenweiser PDF-Export und Aufräumen. Dazu aus dem UI-Strang: aufgeräumte Menüs, Werkzeug-Icons, App-Icon und „Seite anpassen“ für Papierseiten (Schema 11, [PAGE-ADJUST](PAGE-ADJUST.md)). Build 47 wurde nie separat installiert. Implementiert und gebaut; **auf dem iPad ungeprüft**. Gerätetest: [TESTING](TESTING.md#gerätetest-review-überarbeitung-nach-risiko-gebündelt), [UI-POLISH](UI-POLISH.md).
 
@@ -17,12 +21,12 @@ Sechs restliche Review-Funde im Editor (Anheben mit Werkzeugwechsel, Bild-Cache,
 3. WebDAV gegen einen echten Server prüfen. Bisher nur Host-Tests der Regeln und Antworten.
 4. Effiziente Speicherung großer PDF-Quellen: jede Revision enthält die Quellen weiterhin vollständig (keine Deduplizierung über Revisionen).
 
-Cloud-Synchronisierung, Zusammenarbeit, eigener Scanner, Audio, Handschrift-zu-Text, Tabelleneditor und KI bleiben ausdrücklich für später.
+Cloud-Synchronisierung von Notizbüchern, Zusammenarbeit, eigener Scanner, Audio, Handschrift-zu-Text, Tabelleneditor und KI bleiben ausdrücklich für später.
 
 ## Entscheidungen
 
 - Name noty, Basis-Bundle-ID `de.la.noty.prototype` dauerhaft. Installierte ID und Updateweg in [ENVIRONMENT](ENVIRONMENT.md).
-- SwiftUI für die App, UIKit-Brücke für PDF, Pencil und Text. Keine externen App-Abhängigkeiten, kein Konto/Server zur Laufzeit.
+- SwiftUI für die App, UIKit-Brücke für PDF, Pencil und Text. Keine externen App-Abhängigkeiten. Optionales appweites Konto/Gesetzesbackend gemäß bestätigtem Ausbau; die Notizfunktionen benötigen beides nicht.
 - iPadOS 17 als Minimum (xtool-Template, verwendete SwiftUI-APIs). Testgerät iPad17,1 mit iPadOS 27.
 - PencilKit bleibt die native Ink-Grundlage, die Werkzeugleiste ist app-eigen.
 - **Pencil-Doppeltipp/Barrel-Roll nativ (20.10.2026):** keine eigene Belegung. Der Doppeltipp folgt der Systemeinstellung (`preferredTapAction`).

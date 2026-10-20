@@ -1,5 +1,11 @@
 # Designentscheidungen für noty
 
+## Gesetzessammlung – bestätigte Bedienung, 20.10.2026
+
+Appweites **Konto** in den Einstellungen, eigener Punkt **Gesetzessammlung** mit drei unabhängigen Schaltern: Aktivierung (aus), persönlicher Abgleich (an), automatische neue Gesetzesfassungen (an). Ohne Anmeldung lesen/markieren; nach Logout bleiben Markierungen sichtbar. Gesetzesfenster über das Editor-Optionenmenü öffnen. Griff ziehen für Seite bzw. Andock-/Schwebemodus, Menü für explizite Anordnung, seitlicher Griff für Breite. Angedockt erhält das Heft eigenen Platz; das zweite Heft wird erhalten, schwebend sind zwei Hefte plus Gesetzesfenster möglich. Bei zu geringer Breite schwebend anzeigen.
+
+Native Suche: Gesetz wählen und Nummer eingeben oder `144 HGB`/`HGB 144` im direkten Suchfeld. Eindeutige Fundstellen nach kurzer Pause öffnen, Volltextsuche mit Suchen/Enter. Apples Zahlen-/Texttastatur mit direktem Wechsel für Zusätze/Absätze; keine eigene Ziffernpalette und keine zugesicherte schwebende iPad-Tastaturgröße. Text/PDF, Inhaltsverzeichnis und Fassungen im Leser. Details und tatsächliche Nachweise: [LAW-INTEGRATION-PLAN](LAW-INTEGRATION-PLAN.md), [TESTING](TESTING.md#native-gesetzessammlung--feature-worktree).
+
 ## Schreibplatz für Papierseiten – 20.10.2026
 
 Nutzer: Normale Seiten sollen sich wie PDF-Seiten über „Schreibplatz hinzufügen“ erweitern lassen, vor allem nach **rechts**. Die Linien sollen in den neuen Platz übergehen, nicht abschneiden. Umgesetzt:

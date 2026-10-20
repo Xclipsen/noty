@@ -1,5 +1,17 @@
 # Architektur
 
+## Native Gesetzessammlung – Feature-Worktree, 20.10.2026
+
+`NotyApp` hält einen appweiten `LawLibraryModel` außerhalb der wechselbaren Bibliotheksbereiche. Konto/Sitzung im Keychain; HTTPS-Session ohne Cookies und ohne Weiterleitung von Authentifizierungsdaten. Katalog, Downloads/Prüfsummen und Sync-Dekodierung laufen außerhalb des UI-Actors. `LawOfflineStore` und `LawPersonalStore` sind eigene serielle Core-Eigentümer unter `Documents/NotyLaws`; keine Heftschemaänderung und kein zusätzlicher Writer in Heftpaketen.
+
+Gesetzesdateien sind unveränderliche Fassungen. Katalog erst nach vollständiger Validierung aller aktuellen Texte atomar veröffentlichen; Abbruch lässt den alten Katalog gültig. Alte lokale Fassungen im Katalog erhalten. PDFs nach Bedarf mit SHA-256 prüfen, Originalbytes speichern. Gemeinsame stabile Gesetz-/Fassungs-/Vorschriften-IDs; Referenzparser für beide Suchreihenfolgen, UTF-16-kompatible kanonische Textanker.
+
+Persönlicher Bestand ist eine einzelne atomar geschriebene, formatgeprüfte Datei mit Eigentümer-ID, Warteschlange, Löschzuständen, lokalen Revisionen und Sync-Cursorn. Gastdaten einmalig automatisch zuordnen; Logout entfernt weder Daten noch Eigentümerbindung. Quittungen dürfen neuere lokale Änderungen nicht überschreiben. Serverseitige Löschungen verhindern Wiederbelebung; wiederholte Übertragung ist idempotent. Persönlichen JSON-Export/-Merge getrennt von `.notylibrary` anbieten, ohne Anmeldeschlüssel. Dies ist kein automatisches vollständiges Gesetzesbackup im Bibliotheksarchiv.
+
+`LawReaderView` nutzt SwiftUI/UITextView und PDFKit, einschließlich Text-/Pencil-PDF-Markierung. `EditorWorkspaceView` erhält die Identitäten beider Heftansichten beim Andocken; das verdeckte zweite Heft behält eine nichtleere interne Layoutgröße. Separater Viewer über dem bestehenden Workspace, kein modaler Hintergrundblocker. Tastaturtyp wird nativ aktualisiert und bei Bedarf mit `reloadInputViews` gewechselt. Echte Eingabe-/Fokus-/Stiftprüfung am iPad steht aus.
+
+Website/Backend im Schwesterprojekt: additive SQLite-Kontomigration, native Bearer-Sitzungen, transaktionale Sync-Ereignisse über SQLite-Trigger, paginierter benutzergebundener Verlauf, TLS-SMTP für Codes. Website-Markierungen zusätzlich mit kontogebundener IndexedDB-Warteschlange; regelmäßiges Nachladen für zweite Clients. HTML-Verwaltungstexte ohne Original-PDF werden ausdrücklich als Text angeboten. Produktiver Betrieb/SMTP sind noch nicht nachgewiesen; Ausrollplan `gesetzessammlung-noty/deploy/NOTY-RELEASE.md` im Schwesterprojekt.
+
 ## Build 47 · Review-Überarbeitung
 
 Ausgeliefert mit Build 48. Keine neue Grundarchitektur. Die bestehenden Grenzen wurden gestrafft. Abschnitte zu älteren Builds unten beschreiben den jeweiligen Stand; wo sie davon abweichen, gilt dieser Abschnitt.

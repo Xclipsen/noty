@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import NotebookCore
 
 /// Owns exactly one writer/model per document, shared by both independent panes.
@@ -82,6 +83,11 @@ final class EditorWorkspace: ObservableObject {
 }
 
 struct EditorWorkspaceView: View {
+    @EnvironmentObject private var laws: LawLibraryModel
+    @AppStorage(LawLibraryModel.enabledKey) private var lawsEnabled = false
+    @State private var lawWidth = 380.0
+    @State private var lawResizeStart: Double?
+    @GestureState private var lawResizing = false
     /// Display preference only (global, like the sidebar): side, axis, size.
     static let arrangementKey = "noty.editor.splitArrangement"
     private static let space = "noty-split-area"
@@ -135,25 +141,71 @@ struct EditorWorkspaceView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let size = PageSize(width: geometry.size.width, height: geometry.size.height)
-            let split = workspace.secondary != nil
+            let lawVisible = lawsEnabled && laws.panelOpen
+            let docking = lawVisible && laws.docked && geometry.size.width >= 640
+            let lawExtent = min(max(300, lawWidth), max(300, geometry.size.width - (docking ? 326 : 24)))
+            let editorWidth = docking ? max(0, geometry.size.width - lawExtent - 6) : geometry.size.width
+            let size = PageSize(width: editorWidth, height: geometry.size.height)
+            let split = workspace.secondary != nil && !docking
             let current = arrangement
-            let stack = current.vertical && split ? AnyLayout(VStackLayout(spacing: SplitPaneArrangement.gap))
-                : AnyLayout(HStackLayout(spacing: SplitPaneArrangement.gap))
+            let stack = current.vertical && split ? AnyLayout(VStackLayout(spacing: split ? SplitPaneArrangement.gap : 0))
+                : AnyLayout(HStackLayout(spacing: split ? SplitPaneArrangement.gap : 0))
             ZStack(alignment: .topLeading) {
                 stack {
                     ForEach(entries(current)) { entry in
-                        let frame = split ? current.frame(of: entry.pane, in: size) : PageRect(x: 0, y: 0, width: size.width, height: size.height)
-                        paneView(entry, split: split, current: current, size: size)
-                            .frame(width: max(0, frame.width), height: max(0, frame.height))
-                            .opacity(paneDrag?.pane == entry.pane ? 0.4 : 1)
+                        let hidden = docking && entry.pane == .secondary
+                        let frame = hidden ? PageRect(x: 0, y: 0, width: 0, height: 0) : (split ? current.frame(of: entry.pane, in: size) : PageRect(x: 0, y: 0, width: size.width, height: size.height))
+                        let preservedSize = PageSize(width: geometry.size.width, height: geometry.size.height)
+                        let preservedFrame = current.frame(of: entry.pane, in: preservedSize)
+                        paneView(entry, split: hidden ? true : split, current: current, size: hidden ? preservedSize : size)
+                            .frame(width: max(0, hidden ? preservedFrame.width : frame.width), height: max(0, hidden ? preservedFrame.height : frame.height))
+                            .frame(width: max(0, frame.width), height: max(0, frame.height), alignment: .topLeading)
+                            .clipped()
+                            .opacity(hidden ? 0 : (paneDrag?.pane == entry.pane ? 0.4 : 1))
+                            .allowsHitTesting(!hidden).accessibilityHidden(hidden)
                     }
                 }
-                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                .frame(width: editorWidth, height: geometry.size.height, alignment: .topLeading)
+                .offset(x: docking && laws.panelOnLeft ? lawExtent + 6 : 0)
                 if split {
                     divider(current, size: size)
                     if let paneDrag { dropPreview(paneDrag, arrangement: current, size: size).allowsHitTesting(false).transition(.opacity) }
                     if let dividerFraction { resizePreview(dividerFraction, arrangement: current, size: size).allowsHitTesting(false).transition(.opacity) }
+                }
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+            .overlay(alignment: laws.panelOnLeft ? .leading : .trailing) {
+                if lawsEnabled {
+                    LawPanelView { drag in
+                        if abs(drag.width) > 40 { laws.panelOnLeft = drag.width < 0 }
+                        if drag.height > 80 { laws.docked = true }
+                        if drag.height < -80 { laws.docked = false }
+                    }
+                    .frame(width: min(max(0, geometry.size.width - (docking ? 0 : 20)), lawExtent), height: max(0, geometry.size.height - (docking ? 0 : 20)))
+                    .padding(docking ? 0 : 10)
+                    .opacity(lawVisible ? 1 : 0).allowsHitTesting(lawVisible).accessibilityHidden(!lawVisible)
+                    .overlay(alignment: laws.panelOnLeft ? .trailing : .leading) {
+                        if lawVisible {
+                            Capsule().fill(.secondary.opacity(0.5)).frame(width: 5, height: 56).frame(width: 20)
+                                .contentShape(Rectangle())
+                                .gesture(DragGesture(minimumDistance: 3)
+                                    .updating($lawResizing) { _, state, _ in state = true }
+                                    .onChanged { drag in
+                                        if lawResizeStart == nil { lawResizeStart = lawExtent }
+                                        let width = (lawResizeStart ?? lawExtent) + drag.translation.width * (laws.panelOnLeft ? 1 : -1)
+                                        lawWidth = min(max(300, width), max(300, geometry.size.width - 326))
+                                    }.onEnded { _ in lawResizeStart = nil })
+                                .accessibilityLabel("Breite der Gesetzessammlung ändern")
+                        }
+                    }
+                }
+            }
+            .onChange(of: docking) { _, docked in
+                if docked && workspace.activePane == 1 {
+                    // Finish marked/IME text while its original pane still owns
+                    // input, before deactivating the preserved secondary view.
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    workspace.activePane = 0
                 }
             }
             .background(split ? Color(white: 0.2) : Color.clear)
@@ -166,6 +218,7 @@ struct EditorWorkspaceView: View {
             .sensoryFeedback(.selection, trigger: dividerFraction)
         }
         // A cancelled gesture never reaches onEnded: drop the preview.
+        .onChange(of: lawResizing) { _, active in if !active { lawResizeStart = nil } }
         .onChange(of: paneGestureActive) { _, active in if !active { paneDrag = nil } }
         .onChange(of: dividerGestureActive) { _, active in if !active { dividerFraction = nil } }
         .sheet(item: $picker) { request in
@@ -173,7 +226,10 @@ struct EditorWorkspaceView: View {
                 slot: request.slot, vertical: request.vertical) { document, slot, vertical in
                 picker = nil
                 update { $0.vertical = vertical; $0.place(.secondary, in: slot) }
-                Task { await workspace.openSecondary(document) }
+                Task {
+                    await workspace.openSecondary(document)
+                    if workspace.secondary != nil && laws.panelOpen && laws.docked { laws.docked = false }
+                }
             }
         }
         .alert("Ansichten", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
@@ -195,7 +251,7 @@ struct EditorWorkspaceView: View {
         ContentView(model: model, isRestoredCopy: false, isLibraryDocument: true, initialSearchBounds: index == 0 ? workspace.primaryDocument.searchBounds : nil,
             isPaneActive: { workspace.activePane == index && !workspace.closing }, onActivatePane: { workspace.activePane = index },
             onCloseWorkspace: { Task { if await toolbox.flush(), await workspace.closeAll() { library.notebookClosedByUser(); dismiss() } } },
-            onSecondView: { choose() })
+            onSecondView: { choose() }, onLaws: lawsEnabled ? { laws.panelOpen.toggle() } : nil)
     }
 
     private func choose() {

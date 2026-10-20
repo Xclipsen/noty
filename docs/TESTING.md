@@ -2,6 +2,32 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Native Gesetzessammlung – Feature-Worktree
+
+Implementiert in `noty-law-integration` / `feat/native-law-library`, getrennt vom laufenden anderen Featurestrang. Die Website-/Backendseite liegt in `gesetzessammlung-noty` / `feat/noty-law-integration`. **Website/Backend am 20.10.2026 produktiv auf IONOS ausgerollt. Native Erweiterung nicht installiert und nicht auf dem iPad getestet. Mail auf Nutzerwunsch deaktiviert.**
+
+Nachweise am 20.10.2026:
+
+- **509 Core-Tests einschließlich des realen Fixture-Roundtrips erfolgreich** (mit `NOTY_LAW_FIXTURE_ROOT`). Geprüft: beide Suchreihenfolgen und HBG-Alias, Buchstaben/Absätze, unsichere Pfade, falsche Identitäten, unveränderliche Fassungen, fehlende Downloads, neuere gesperrte Formate, automatische Gastübernahme ohne Kontovermischung, spätes ACK gegen Offline-Löschung, persistente Tombstones/Cursor und persönliche Sicherung/Restore.
+- `bash scripts/check_law_workflow.sh ../gesetzessammlung-noty/public/data`: alle **39 echten aktuellen Texte und 36 Original-PDFs** in einen neuen isolierten Store schreiben, veröffentlichen und nach neuem Storestart lesen. PDF-Originalbytes bleiben gleich; HGB/EStR/LStR/AEAO-Fundstellen passen. Ohne `NOTY_LAW_FIXTURE_ROOT` wird nur diese externe Fixture-Prüfung in der gewöhnlichen Core-Suite ausdrücklich übersprungen.
+- `bash scripts/check_page_workflow.sh`: bestehende Heft-/Bibliotheksarchive inklusive Schema 11, unabhängiger Prüfer und Prüfer-Negativtests weiterhin erfolgreich. Keine Änderung des Notebook-/Archivformats durch die Gesetzessammlung.
+- `xtool dev build` in PTY erfolgreich gegen das iPad-SDK. Das beweist keinen ausgeführten PDFKit-/Pencil-/Tastaturfall.
+- Website `npm run check` (**50 Node-Tests, 10 Python-Tests**, Typecheck, Lint, Datenprüfung) und `npm run build` erfolgreich. Reale Daten: **9.262 Vorschriften**, **8.625 geprüfte PDF-Zuordnungen**. Die drei HTML-Handbücher haben bewusst keine vorgetäuschten PDF-Zuordnungen.
+- Backendtests: bestehende Konten/Besitzrechte, native Bearer-Sitzungen und Widerruf, E-Mail-Migration mit gleichbleibender Nutzer-ID, Einmalcodes, Passwort-Reset/Sitzungswiderruf, ungültige alte Codes nach E-Mail-Wechsel, Sync nach Neustart und gelöschte UUID gegen verspäteten Create. SMTP mit **eigenem temporären TLS-Testserver** geprüft (mehrzeilige Antworten, MIME, Ablehnung), kein echter Mailversand.
+- Lokaler Browser bei 1280 und 380 CSS-Pixeln: `144 HGB` öffnet automatisch § 144, EStR-Lesetext, Anmeldung/Registrierung und schmale Kontooberfläche ohne horizontalen Überlauf. Konto dabei isolierte Testdaten und Test-Mailfunktion; kein Produktionskonto und kein IONOS-Mailnachweis. Zusätzlich einen Markierungs-POST im Browser gezielt als offline simuliert: IndexedDB enthält vor dem Neustart einen ausstehenden Auftrag; nach bestätigtem Seitenneustart werden genau eine Servermarkierung und eine lokale Markierung bei leerer Warteschlange angezeigt. Das native Gegenstück und echte Netzwechsel bleiben am iPad abzunehmen.
+
+Produktivnachweis am 20.10.2026: Release `noty-integration-20261020-release`, beide Container gesund. Konsistenter SQLite-Snapshot vor Migration; Migration zunächst auf Kopie geprüft. Danach alle vorherigen Spalten/Zeilen von Konten einschließlich Zugangsdaten, Sitzungen, Lesezeichen und Markierungen exakt verglichen, SQLite-Integrität erfolgreich. 39 JSON-Dokumente über öffentliches HTTPS mit nativen SHA-256-Prüfsummen und Bytezahlen identisch; PDF-Byte-Range 206, nicht angemeldeter Sync 401. SMTP-Konfiguration fehlt ausdrücklich; E-Mail-Registrierung und Recovery geben 503 zurück. Produktiver Browser öffnet `144 HGB` automatisch auf § 144. Kein echtes Konto zum Test neu angelegt und keine Mail versandt. Lokale Sicherung: `/home/la/Backups/20261020T203248Z-noty-law/`.
+
+Geräteabnahme gebündelt:
+
+1. Einschalten und kompletten Erstdownload abwarten, dann Flugmodus/Neustart; Text/PDF und Direktfundstellen prüfen. Sync- und Updateschalter unabhängig schalten, lokale Daten bei deaktiviertem Netzwerkabgleich erhalten.
+2. In einem/zwei Heften schreiben, Gesetzesfenster öffnen, schweben/andocken, Seiten/Breite wechseln, Rotation/kleines Fenster, native Zahlen-/Texttastatur, Eingabewechsel und Undo. Verdecktes zweites Heft mit Seite/Zoom und Entwurf wieder einblenden.
+3. Text auswählen/markieren, Pencil-PDF markieren, Lesezeichen und PDF-Seiten wechseln, Neustart und separate persönliche Sicherung/Restore. Notizbuch-Undo darf keine fremde Fundstelle bearbeiten.
+4. Website↔iPad bei Netzwechsel, Löschkonflikt, Logout und Kontowechsel. Gastdaten automatisch übernehmen; Datensätze von Konto A nicht unter B hochladen. E-Mail-Konto/Bestätigung/Reset erst nach späterer Mailfreigabe prüfen.
+5. Neue/fehlerhafte/unterbrochene Fassungsdownloads und Platzmangel: alter Bestand bleibt gültig, markierte alte Fassung erreichbar, aktive Lesestelle erhalten. Automatische Aktualisierung bei beendeter App ist nicht zugesichert.
+
+Deployment, SMTP-Einrichtung und Geräteupdate folgen den Freigabe-/Sicherungsregeln in AGENTS/ENVIRONMENT. Ein lokales Releasepaket und eine erfolgreiche Installation sind kein Laufzeitnachweis.
+
 ## Prüfungen auf diesem Rechner
 
 ```bash
