@@ -750,13 +750,58 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         _ = commit(value, previous: content); refresh()
     }
     override var keyCommands: [UIKeyCommand]? {
-        [UIKeyCommand(input: "c", modifierFlags: .command, action: #selector(copyKey)),
+        var commands = [UIKeyCommand(input: "c", modifierFlags: .command, action: #selector(copyKey)),
          UIKeyCommand(input: "v", modifierFlags: .command, action: #selector(pasteKey)),
          UIKeyCommand(input: "\u{8}", modifierFlags: [], action: #selector(deleteKey)),
-         UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey))]
+         UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey)),
+         UIKeyCommand(title: "Alles auswählen", action: #selector(selectAllKey), input: "a", modifierFlags: .command)]
+        guard hasSelection, lift == nil, startContent == nil else { return commands }
+        commands += [UIKeyCommand(title: "Ausschneiden", action: #selector(cutKey), input: "x", modifierFlags: .command),
+                     UIKeyCommand(title: "Duplizieren", action: #selector(duplicateKey), input: "d", modifierFlags: .command)]
+        // Arrow keys move the selection by 1 pt, with ⇧ by 10 pt.
+        for input in [UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow, UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow] {
+            for flags in [UIKeyModifierFlags(), .shift] {
+                let command = UIKeyCommand(input: input, modifierFlags: flags, action: #selector(nudgeKey(_:)))
+                command.wantsPriorityOverSystemBehavior = true
+                commands.append(command)
+            }
+        }
+        return commands
     }
     @objc private func copyKey() { copySelection() }
     @objc private func pasteKey() { pasteSelection() }
     @objc private func deleteKey() { deleteSelection() }
     @objc private func escapeKey() { adopted = nil; clearSelection(); refresh() }
+    @objc private func cutKey() { guard hasSelection else { return }; copySelection(); deleteSelection() }
+    @objc private func duplicateKey() { guard hasSelection else { return }; copySelection(); pasteSelection() }
+    /// ⌘A: everything selectable on this page (the lasso's filter; shape tool: shapes).
+    @objc private func selectAllKey() {
+        guard active, lift == nil, startContent == nil else { return }
+        adopted = nil; clearSelection()
+        if tool == .shape { shapes = Set(content.shapes.map(\.id)) }
+        else {
+            if filter.text { texts = Set(content.textBoxes.filter(\.allowsObjectSelection).map(\.id)) }
+            if filter.images { images = Set(content.images.filter { !$0.locked }.map(\.id)) }
+            if filter.shapes { shapes = Set(content.shapes.map(\.id)) }
+            if filter.ink, let drawing = drawing(content.drawing) { ink = Set(drawing.strokes.indices) }
+        }
+        refresh()
+    }
+    @objc private func nudgeKey(_ command: UIKeyCommand) {
+        let step = command.modifierFlags.contains(.shift) ? 10.0 : 1.0
+        let (dx, dy): (Double, Double) = switch command.input ?? "" {
+        case UIKeyCommand.inputLeftArrow: (-step, 0)
+        case UIKeyCommand.inputRightArrow: (step, 0)
+        case UIKeyCommand.inputUpArrow: (0, -step)
+        default: (0, step)
+        }
+        // Same clamped move and ink transform as a drag; one model change per key.
+        guard active, hasSelection, lift == nil, startContent == nil, var value = transformed(content, dx: dx, dy: dy, scale: 1) else { return }
+        if let inkTransform {
+            guard let moved = transformedInk(content, using: inkTransform, inkOnly: false) else { self.inkTransform = nil; return }
+            value.drawing = moved.drawing
+        }
+        inkTransform = nil
+        _ = commit(value, previous: content); refresh()
+    }
 }

@@ -207,6 +207,20 @@ final class NotebookUndoForwarder: UndoManager {
     override func redo() { perform?(true) }
 }
 
+extension UIResponder {
+    /// The current first responder (UIKit has no public getter): an action
+    /// sent to nil starts there. Without one it lands on the window or app.
+    @MainActor static var currentFirstResponder: UIResponder? {
+        FirstResponderProbe.found = nil
+        UIApplication.shared.sendAction(#selector(UIResponder.noty_reportFirstResponder), to: nil, from: nil, for: nil)
+        let found = FirstResponderProbe.found
+        FirstResponderProbe.found = nil
+        return found is UIWindow || found is UIApplication ? nil : found
+    }
+    @objc fileprivate func noty_reportFirstResponder() { FirstResponderProbe.found = self }
+}
+@MainActor private enum FirstResponderProbe { static weak var found: UIResponder? }
+
 // Ink needs first-responder status (Pencil interactions, system undo), but must
 // never summon a software keyboard through the responder chain when selecting strokes.
 final class DrawingCanvasView: PKCanvasView {
@@ -407,6 +421,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         addGestureRecognizer(interactionObserver)
         textLayer.onEditingActive = { [weak self] active in
             guard let self else { return }; self.textEditing = active; self.onInteraction?(self.textInteractionID, active)
+            // A field that stopped editing leaves no first responder; ⌘Z keeps working.
+            if !active { DispatchQueue.main.async { [weak self] in self?.claimUndoResponder() } }
         }
         textLayer.onCaretChanged = { [weak self] in self?.onRevealCaret?() }
         objectLayer.onPreview = { [weak self] content in self?.showObjectPreview(content) }
@@ -833,7 +849,29 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         } else {
             canvas.resignFirstResponder()
             if tool != .text { textLayer.endTextEditing() }
+            claimUndoResponder()
         }
+    }
+    // Undo in every mode: the responder chain of all page layers (PDFView,
+    // image plane, text fields) ends here, in the notebook history.
+    override var undoManager: UndoManager? { undoForwarder }
+    override var canBecomeFirstResponder: Bool { editable && worksheetFocused && window != nil }
+    /// ⌘Z/⇧⌘Z and the undo gestures need a first responder. Ink tools use the
+    /// canvas and active selections the object layer (its key commands); in
+    /// the other modes (image, laser, read, text tool between fields) the
+    /// focused sheet itself. Text input anywhere and this page's own layers
+    /// keep their focus.
+    private func claimUndoResponder() {
+        guard window != nil else { return }
+        guard editable, worksheetFocused else { if isFirstResponder { resignFirstResponder() }; return }
+        let target: UIResponder = [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(tool) ? canvas
+            : objectLayer.canBecomeFirstResponder ? objectLayer : self
+        guard !target.isFirstResponder else { return }
+        if let current = UIResponder.currentFirstResponder {
+            if current is UIKeyInput { return }
+            if let view = current as? UIView, view.isDescendant(of: self), view !== self { return }
+        }
+        target.becomeFirstResponder()
     }
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         HangProbe.hit("Sheet.drawingDidChange")
