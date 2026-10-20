@@ -4,8 +4,14 @@ import PencilKit
 import NotebookCore
 
 /// Snapshot export uses the same crop/rotation/legacy layout as the editor.
-/// Every layer is composed explicitly: paper, source PDF (vector, text stays
-/// searchable), images, shapes, ink raster, typed text (real PDF text) and links.
+/// Every layer is composed explicitly (`Page.exportLayers`): paper, source PDF
+/// (vector, text stays searchable), images, shapes, ink raster, typed text
+/// (real PDF text) and links.
+///
+/// Page content is drawn only inside pages begun by UIKit's own PDF renderer,
+/// as up to Build 46. Build 47–49 drew it into a self-made Core Graphics PDF
+/// context (`UIGraphicsPushContext` plus a manual flip); on the iPad those
+/// exports lost all images and typed text while the paper remained.
 @MainActor
 enum PDFExporter {
     static let pageBounds = CGRect(x: 0, y: 0, width: 595, height: 842)
@@ -32,8 +38,19 @@ enum PDFExporter {
         let ink: UIImage?
     }
 
+    /// One finished page: a single-page PDF from UIKit's renderer plus its link
+    /// rectangles (UIKit page space; `drawPDFPage` does not carry annotations).
+    private struct RenderedPage {
+        let document: CGPDFDocument
+        let page: CGPDFPage
+        let bounds: CGRect
+        let links: [(URL, CGRect)]
+    }
+
     /// Page by page: heavy decoding runs off the main actor and the UI gets a
-    /// turn between pages. Only the exported pages are decoded. `sourcePage`
+    /// turn between pages. Only the exported pages are decoded. Each page is
+    /// rendered on its own by UIKit's PDF renderer; the finished pages are then
+    /// placed unchanged (vectors, text, images) into one document. `sourcePage`
     /// reuses the editor's PDF catalogue; without it the PDFs are parsed here.
     /// Nothing is returned unless every selected page was validated and written.
     static func export(_ snapshot: Notebook, pageIDs: Set<UUID>? = nil, sourcePage: ((Page) -> PDFPage?)? = nil,
@@ -63,36 +80,54 @@ enum PDFExporter {
         }
         guard overflow.isEmpty else { throw ExportError.textOverflow(overflow) }
 
-        let data = NSMutableData()
-        var media = pageBounds
-        let info = [kCGPDFContextTitle as String: snapshot.title, kCGPDFContextCreator as String: "noty"] as CFDictionary
-        guard let consumer = CGDataConsumer(data: data as CFMutableData),
-              let context = CGContext(consumer: consumer, mediaBox: &media, info) else { throw ExportError.writeFailed }
-        var closed = false
-        defer { if !closed { context.closePDF() } }
+        var rendered: [RenderedPage] = []
         for (position, (_, page)) in selected.enumerated() {
             try Task.checkCancellation()
             progress(position, selected.count)
             let layout = layouts[position]
             let assets = try await Task.detached(priority: .userInitiated) { try Self.assets(page, layout: layout) }.value
             try Task.checkCancellation()
-            var box = layout.canvas.bounds
-            context.beginPDFPage([kCGPDFContextMediaBox as String: Data(bytes: &box, count: MemoryLayout<CGRect>.size)] as CFDictionary)
-            // UIKit's y-down page space, as UIGraphicsPDFRenderer sets it up.
-            context.saveGState()
-            context.translateBy(x: 0, y: box.height); context.scaleBy(x: 1, y: -1)
-            UIGraphicsPushContext(context)
-            autoreleasepool { draw(page, layout: layout, source: sources[position], assets: assets, context: context) }
-            UIGraphicsPopContext()
-            context.restoreGState()
-            context.endPDFPage()
-            withExtendedLifetime(documents[position]) {}
+            rendered.append(try autoreleasepool { try render(page, layout: layout, source: sources[position], assets: assets) })
             await Task.yield()
         }
-        context.closePDF(); closed = true
-        withExtendedLifetime(catalogue) {}
+        try Task.checkCancellation()
+        let data = assemble(rendered, title: snapshot.title)
+        withExtendedLifetime((documents, catalogue)) {}
+        guard let check = CGDataProvider(data: data as CFData).flatMap(CGPDFDocument.init),
+              check.numberOfPages == rendered.count else { throw ExportError.writeFailed }
         progress(selected.count, selected.count)
-        return data as Data
+        return data
+    }
+
+    /// The page in its own single-page PDF, drawn by UIKit's renderer.
+    private static func render(_ page: Page, layout: PageLayout, source: CGPDFPage?, assets: PageAssets) throws -> RenderedPage {
+        let bounds = layout.canvas.bounds
+        var links: [(URL, CGRect)] = []
+        let data = UIGraphicsPDFRenderer(bounds: bounds).pdfData { output in
+            links = drawPage(page, layout: layout, source: source, assets: assets, in: output)
+        }
+        guard let document = CGDataProvider(data: data as CFData).flatMap(CGPDFDocument.init),
+              document.numberOfPages == 1, let pdfPage = document.page(at: 1) else { throw ExportError.writeFailed }
+        return RenderedPage(document: document, page: pdfPage, bounds: bounds, links: links)
+    }
+
+    /// The finished pages, unchanged and in order, in one document (again via
+    /// UIKit's renderer). Links are set anew because a placed page has none.
+    private static func assemble(_ pages: [RenderedPage], title: String) -> Data {
+        let format = UIGraphicsPDFRendererFormat()
+        format.documentInfo = [kCGPDFContextTitle as String: title, kCGPDFContextCreator as String: "noty"]
+        return UIGraphicsPDFRenderer(bounds: pageBounds, format: format).pdfData { output in
+            for rendered in pages {
+                output.beginPage(withBounds: rendered.bounds, pageInfo: [:])
+                let context = output.cgContext
+                context.saveGState()
+                // From UIKit's y-down page space back to the page's own PDF space.
+                context.translateBy(x: 0, y: rendered.bounds.height); context.scaleBy(x: 1, y: -1)
+                context.drawPDFPage(rendered.page)
+                context.restoreGState()
+                for (url, rect) in rendered.links { output.setURL(url, for: rect) }
+            }
+        }
     }
 
     nonisolated private static func assets(_ page: Page, layout: PageLayout) throws -> PageAssets {
@@ -106,26 +141,44 @@ enum PDFExporter {
         return PageAssets(images: images, ink: inkImage(drawing, from: layout.canonicalInkBounds, scale: scale))
     }
 
-    private static func draw(_ page: Page, layout: PageLayout, source: CGPDFPage?, assets: PageAssets, context: CGContext) {
+    /// The one place page content is drawn for export: a page begun here in
+    /// UIKit's own PDF renderer (y-down page space), then every layer of
+    /// `Page.exportLayers` in order. Returns the link rectangles.
+    private static func drawPage(_ page: Page, layout: PageLayout, source: CGPDFPage?, assets: PageAssets,
+                                 in output: UIGraphicsPDFRendererContext) -> [(URL, CGRect)] {
         let bounds = layout.canvas.bounds
-        drawPaper(style: page.margins?.style ?? page.paper ?? .blank, bounds: bounds,
-                  color: page.margins?.color ?? page.paperColor ?? .white, coordinateScale: page.writingCoordinateScale)
-        if let source {
-            UIColor.white.setFill(); context.fill(layout.sourceFrame.cgRect)
-            PageRaster.drawSource(source, layout: layout, context: context)
-        } else if page.paper == nil { drawPaper(style: .legacyTest, bounds: bounds) }
-        for (object, image) in zip(page.images ?? [], assets.images) {
-            ImageRendering.draw(object, image: image, context: context, origin: layout.contentOrigin)
+        output.beginPage(withBounds: bounds, pageInfo: [:])
+        let context = output.cgContext
+        var links: [(URL, CGRect)] = []
+        for layer in page.exportLayers(hasSource: source != nil) {
+            switch layer {
+            case .paper(let style, let color, let scale):
+                drawPaper(style: style, bounds: bounds, color: color, coordinateScale: scale)
+            case .sourcePDF:
+                guard let source else { continue }
+                UIColor.white.setFill(); context.fill(layout.sourceFrame.cgRect)
+                PageRaster.drawSource(source, layout: layout, context: context)
+            case .testPaper:
+                drawPaper(style: .legacyTest, bounds: bounds)
+            case .images:
+                for (object, image) in zip(page.images ?? [], assets.images) {
+                    ImageRendering.draw(object, image: image, context: context, origin: layout.contentOrigin)
+                }
+            case .shapes:
+                ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)
+            case .ink:
+                // UIView overlays do not export themselves: the stored drawing as raster.
+                assets.ink?.draw(in: bounds)
+            case .text:
+                for box in page.resolvedTextBoxes {
+                    let text = TextObjectLayout(box, on: page)
+                    let origin = CGPoint(x: box.x + layout.contentOrigin.x, y: box.y + layout.contentOrigin.y)
+                    text.draw(at: origin)
+                    links += text.links(at: origin)
+                }
+            }
         }
-        ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)
-        // Explicitly compose the drawing layer; UIView overlays do not export themselves.
-        assets.ink?.draw(in: bounds)
-        for box in page.resolvedTextBoxes {
-            let text = TextObjectLayout(box, on: page)
-            let origin = CGPoint(x: box.x + layout.contentOrigin.x, y: box.y + layout.contentOrigin.y)
-            text.draw(at: origin)
-            for (url, rect) in text.links(at: origin) { UIGraphicsSetPDFContextURLForRect(url, rect) }
-        }
+        return links
     }
 
     /// PencilKit adapts ink to the current trait collection: under the app's
