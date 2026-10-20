@@ -617,13 +617,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }, for: [.touchUpInside, .touchUpOutside]); root.addSubview(slider)
         let label = UILabel(frame: CGRect(x: 20, y: 98, width: 280, height: 24))
         label.text = "Farben"; label.font = .systemFont(ofSize: 17, weight: .semibold); label.textColor = .white; root.addSubview(label)
-        let colors: [UIColor] = [.systemYellow, .systemOrange, .systemRed, .systemPink, .systemGreen, .systemMint, .systemBlue, .systemPurple, .black, .darkGray, .white, .brown]
-        for (index, color) in colors.enumerated() {
+        let colors: [(UIColor, String)] = [(.systemYellow, "Gelb"), (.systemOrange, "Orange"), (.systemRed, "Rot"), (.systemPink, "Pink"),
+            (.systemGreen, "Grün"), (.systemMint, "Mint"), (.systemBlue, "Blau"), (.systemPurple, "Lila"),
+            (.black, "Schwarz"), (.darkGray, "Dunkelgrau"), (.white, "Weiß"), (.brown, "Braun")]
+        for (index, (color, name)) in colors.enumerated() {
             let button = UIButton(type: .system)
             button.frame = CGRect(x: 20 + (index % 6) * 48, y: 136 + (index / 6) * 48, width: 34, height: 34)
             button.backgroundColor = color; button.layer.cornerRadius = 17
             button.layer.borderWidth = 1; button.layer.borderColor = UIColor.white.withAlphaComponent(0.3).cgColor
-            button.accessibilityLabel = "Auswahlfarbe \(index + 1)"
+            button.accessibilityLabel = name; button.accessibilityHint = "Färbt die Auswahl"
             button.addAction(UIAction { [weak self] _ in
                 guard let self, self.active else { return }; self.color = InkColor(SwiftUI.Color(color)); self.applyStyle()
             }, for: .touchUpInside); root.addSubview(button)

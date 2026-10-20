@@ -416,6 +416,11 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
                 self.state?.onSelect(page.id)
             }
             sheetRevisions[page.id] = configurationRevision
+            // VoiceOver: each sheet is a group announced with its position.
+            if let index = state.pages.firstIndex(where: { $0.id == page.id }) {
+                let label = "Seite \(index + 1) von \(state.pages.count)"
+                if sheet.accessibilityLabel != label { sheet.accessibilityLabel = label; sheet.accessibilityContainerType = .semanticGroup }
+            }
             // Every model change (save status, undo availability, another
             // page's edit) re-runs the SwiftUI body. Pages whose inputs are
             // unchanged only adopt the new callbacks.

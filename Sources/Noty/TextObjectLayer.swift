@@ -723,15 +723,15 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             UIAction(title: "Festbreite") { [weak self] _ in self?.changeStyle { $0.font = .monospaced; $0.fontName = nil } },
             UIAction(title: "Weitere Schriften …", image: UIImage(systemName: "textformat")) { [weak self] _ in self?.chooseFont() }
         ])
-        _ = button("Kleiner", symbol: "minus.circle", action: #selector(smaller))
+        button("Kleiner", symbol: "minus.circle", action: #selector(smaller)).accessibilityLabel = "Schrift kleiner"
         _ = button("Schriftgröße", title: "14", width: 38)
         buttons["Schriftgröße"]?.isUserInteractionEnabled = false
-        _ = button("Größer", symbol: "plus.circle", action: #selector(larger))
-        _ = button("Farbe", symbol: "circle.fill", action: #selector(chooseColor))
+        button("Größer", symbol: "plus.circle", action: #selector(larger)).accessibilityLabel = "Schrift größer"
+        button("Farbe", symbol: "circle.fill", action: #selector(chooseColor)).accessibilityLabel = "Textfarbe"
         separator()
-        _ = button("F", symbol: "bold", action: #selector(toggleBold))
-        _ = button("K", symbol: "italic", action: #selector(toggleItalic))
-        _ = button("U", symbol: "underline", action: #selector(toggleTextUnderline))
+        _ = button("Fett", symbol: "bold", action: #selector(toggleBold))
+        _ = button("Kursiv", symbol: "italic", action: #selector(toggleItalic))
+        _ = button("Unterstrichen", symbol: "underline", action: #selector(toggleTextUnderline))
         _ = button("Weitere Textformate", symbol: "chevron.down", action: #selector(showExtraFormats))
         separator()
         let marker = button("Markieren", symbol: "highlighter", action: #selector(toggleHighlight))
@@ -743,6 +743,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         separator()
         for (key, symbol, kind) in [("Checkbox", "checkmark.circle", TextListEditing.Kind.checkbox), ("Aufzählung", "list.bullet", .bullet), ("Nummerierung", "list.number", .numbered)] {
             let item = button(key, symbol: symbol)
+            if kind == .checkbox { item.accessibilityLabel = "Checkliste" }
             item.addAction(UIAction { [weak self] _ in self?.toggleList(kind) }, for: .touchUpInside)
         }
         _ = button("Ausrichten", symbol: "text.alignleft", action: #selector(showAlignment))
@@ -1006,6 +1007,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         let style = selectionStyle ?? box.style
         buttons["Textstil"]?.setTitle(TextStylePreset.matching(style).title, for: .normal)
         buttons["Schriftgröße"]?.setTitle(String(Int(style.fontSize)), for: .normal)
+        buttons["Schriftgröße"]?.accessibilityValue = "\(Int(style.fontSize)) Punkt"
         buttons["Schrift"]?.setTitle(style.fontName.flatMap { UIFont(name: $0, size: 17)?.familyName } ?? (style.font == .serif ? "Serif" : style.font == .monospaced ? "Festbreite" : "System"), for: .normal)
         if style.automaticColor == true {
             buttons["Farbe"]?.setImage(automaticSwatch().withRenderingMode(.alwaysOriginal), for: .normal)
@@ -1034,7 +1036,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             buttons[key]?.isSelected = enabled
             buttons[key]?.backgroundColor = enabled ? UIColor.systemBlue.withAlphaComponent(0.2) : .clear
         }
-        for (title, enabled) in [("F", style.bold), ("K", style.italic), ("U", style.underline)] {
+        for (title, enabled) in [("Fett", style.bold), ("Kursiv", style.italic), ("Unterstrichen", style.underline)] {
             buttons[title]?.isSelected = enabled
             buttons[title]?.backgroundColor = enabled ? UIColor.systemBlue.withAlphaComponent(0.15) : .clear
         }
