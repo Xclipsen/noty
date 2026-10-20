@@ -52,6 +52,40 @@ final class TextFlowTests: XCTestCase {
         XCTAssertEqual(Set(next.pages.flatMap { $0.textBoxes!.compactMap(\.flowID) }), [previous.flowID!])
         XCTAssertEqual(book.pages.count, 1); XCTAssertEqual(book.pages[0].textBoxes![0].text, "")
     }
+    func testTypingWithoutMovingABoundaryMeasuresOnlyTheEditedSegment() throws {
+        let (book, previous) = try sample()
+        var replacement = previous; replacement.text = "abcdefghij"
+        let (flowing, _) = try book.reflowText(pageID: book.pages[0].id, previous: previous, replacement: replacement,
+            selection: NSRange(location: 10, length: 0), capacity: { _ in 4 })
+        XCTAssertEqual(flowing.pages.map { $0.textBoxes![0].text }, ["abcd", "efgh", "ij"])
+        // Same length in the first segment: the stored tail still matches.
+        let first = flowing.pages[0].textBoxes![0]
+        var typed = first; typed.text = "aBcd"
+        var measured = 0
+        let (same, focus) = try flowing.reflowText(pageID: flowing.pages[0].id, previous: first, replacement: typed,
+            selection: NSRange(location: 2, length: 0), capacity: { _ in measured += 1; return 4 })
+        XCTAssertEqual(measured, 1)
+        XCTAssertEqual(same.pages.map { $0.textBoxes![0].text }, ["aBcd", "efgh", "ij"])
+        XCTAssertEqual(same.pages.map(\.id), flowing.pages.map(\.id))
+        XCTAssertEqual(focus.pageID, same.pages[0].id); XCTAssertEqual(focus.selection.location, 2)
+        // A moved boundary still reflows every following segment.
+        var inserted = first; inserted.text = "aXbcd"
+        measured = 0
+        let (moved, movedFocus) = try flowing.reflowText(pageID: flowing.pages[0].id, previous: first, replacement: inserted,
+            selection: NSRange(location: 2, length: 0), capacity: { _ in measured += 1; return 4 })
+        XCTAssertEqual(measured, 3)
+        XCTAssertEqual(moved.pages.map { $0.textBoxes![0].text }, ["aXbc", "defg", "hij"])
+        XCTAssertEqual(movedFocus.pageID, moved.pages[0].id)
+        // A formatted tail keeps its stored character styles.
+        var styled = flowing.pages[1].textBoxes![0]; styled.style.bold = true
+        var restyled = flowing; restyled.pages[1].textBoxes = [styled]
+        measured = 0
+        let (rewritten, _) = try restyled.reflowText(pageID: restyled.pages[0].id, previous: first, replacement: typed,
+            selection: NSRange(location: 2, length: 0), capacity: { _ in measured += 1; return 4 })
+        XCTAssertEqual(rewritten.pages.map { $0.textBoxes![0].text }, ["aBcd", "efgh", "ij"])
+        XCTAssertEqual(rewritten.pages[1].textBoxes![0].styleRuns, styled.styleRuns)
+        XCTAssertEqual(measured, 1, "same text and character styles: the tail is kept as stored")
+    }
     func testReflowPullsFollowingTextBackWithoutDeletingPagesOrChangingInk() throws {
         let (book, previous) = try sample()
         var replacement = previous; replacement.text = "abcdefgh"
