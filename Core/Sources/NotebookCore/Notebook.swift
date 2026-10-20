@@ -102,8 +102,8 @@ public struct Notebook: Codable, Equatable, Sendable {
         }
         guard schemaVersion >= 3, pdf == nil, sources.count <= 500,
               Set(sources.map(\.id)).count == sources.count,
-              sources.allSatisfy({ !$0.data.isEmpty && $0.data.count <= 20_000_000 && (1...500).contains($0.pageCount) }),
-              sources.reduce(0, { $0 + $1.data.count }) <= 100_000_000 else { throw StorageError.invalidDocument }
+              sources.allSatisfy({ !$0.data.isEmpty && $0.data.count <= PDFSource.maximumBytes && (1...500).contains($0.pageCount) }),
+              sources.reduce(0, { $0 + $1.data.count }) <= PDFSource.maximumTotalBytes else { throw StorageError.invalidDocument }
         let lookup = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0.pageCount) })
         for page in allPages {
             if let reference = page.pdfReference {

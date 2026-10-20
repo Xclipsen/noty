@@ -54,7 +54,7 @@ public enum RevisionError: Error, LocalizedError {
         case .unsupportedFormat(let version): "Speicherformat \(version) benötigt eine neuere noty-Version."
         case .invalidManifest: "Das Speicherverzeichnis enthält ein ungültiges Manifest."
         case .noCompleteRevision: "Kein vollständiger, geprüfter Speicherstand gefunden. Vorhandene Dateien bleiben erhalten."
-        case .snapshotTooLarge: "Der Speicherstand überschreitet das aktuelle Größenlimit von 200 MB."
+        case .snapshotTooLarge: "Der Speicherstand überschreitet das aktuelle Größenlimit von 200 MB. Bitte große PDFs oder Bilder entfernen, auch aus dem Seitenpapierkorb."
         case .revisionUnavailable: "Dieser lokale Stand ist nicht mehr verfügbar. Bitte die Liste neu öffnen."
         }
     }

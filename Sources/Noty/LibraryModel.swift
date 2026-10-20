@@ -363,8 +363,8 @@ final class LibraryModel: ObservableObject {
         defer { try? handle.close() }
         var data = Data()
         while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
-            guard data.count + chunk.count <= 20_000_000 else {
-                throw NSError(domain: "noty", code: 1, userInfo: [NSLocalizedDescriptionKey: "PDFs dürfen derzeit höchstens 20 MB groß sein."])
+            guard data.count + chunk.count <= PDFSource.maximumBytes else {
+                throw NSError(domain: "noty", code: 1, userInfo: [NSLocalizedDescriptionKey: "PDFs dürfen höchstens 100 MB groß sein."])
             }
             data.append(chunk)
         }

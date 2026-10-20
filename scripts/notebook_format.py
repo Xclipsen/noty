@@ -192,7 +192,7 @@ def validate_notebook(document):
     for source in sources:
         UUID(source["id"])
         data = base64.b64decode(source["data"], validate=True)
-        assert 1 <= len(data) <= 20_000_000 and 1 <= source["pageCount"] <= 500
+        assert 1 <= len(data) <= 100_000_000 and 1 <= source["pageCount"] <= 500
         total += len(data)
         lookup[source["id"]] = source["pageCount"]
     assert total <= 100_000_000

@@ -52,6 +52,10 @@ public struct PDFPageReference: Codable, Equatable, Hashable, Sendable {
 
 /// Original bytes are immutable through page operations. Many pages can share a source.
 public struct PDFSource: Codable, Equatable, Identifiable, Sendable {
+    /// Per original and for all originals of one notebook (active + trash).
+    /// A 100 MB source is ~133 MB as Base64 and still fits a 200 MB revision.
+    public static let maximumBytes = 100_000_000
+    public static let maximumTotalBytes = 100_000_000
     public let id: UUID
     public let data: Data
     public let pageCount: Int
@@ -73,9 +77,10 @@ public struct DeletedPage: Codable, Equatable, Identifiable, Sendable {
 public enum PageTrashReason: String, Codable, Sendable { case marginReduction, cleared }
 
 public enum PageOperationError: Error, LocalizedError {
-    case missingPage, invalidOrder, lastPage, pageLimit, trashLimit
+    case missingPage, invalidOrder, lastPage, pageLimit, trashLimit, sourceLimit
     public var errorDescription: String? {
         switch self {
+        case .sourceLimit: "Eine PDF darf höchstens 100 MB groß sein, alle PDF-Originale eines Hefts zusammen (einschließlich Seitenpapierkorb) ebenfalls höchstens 100 MB."
         case .missingPage: "Diese Seite ist nicht mehr vorhanden. Bitte die Seitenliste erneut öffnen."
         case .invalidOrder: "Die gewünschte Seitenposition ist ungültig."
         case .lastPage: "Die letzte Seite eines Hefts bleibt erhalten."
@@ -154,6 +159,10 @@ extension Notebook {
         var next = try preparedForPageEditing()
         guard !geometries.isEmpty, next.pages.count + geometries.count <= 500 else { throw PageOperationError.pageLimit }
         guard (0...next.pages.count).contains(index) else { throw PageOperationError.invalidOrder }
+        guard data.count <= PDFSource.maximumBytes,
+              (next.pdfSources ?? []).reduce(data.count, { $0 + $1.data.count }) <= PDFSource.maximumTotalBytes else {
+            throw PageOperationError.sourceLimit
+        }
         let source = PDFSource(data: data, pageCount: geometries.count)
         let additions = geometries.enumerated().map { offset, geometry in
             var page = Page(); page.geometry = geometry

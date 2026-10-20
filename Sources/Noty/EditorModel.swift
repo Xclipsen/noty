@@ -665,7 +665,7 @@ final class EditorModel: ObservableObject {
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         do {
             let values = try url.resourceValues(forKeys: [.fileSizeKey])
-            guard (values.fileSize ?? 0) <= 20_000_000 else { throw StorageError.invalidDocument }
+            guard (values.fileSize ?? 0) <= PDFSource.maximumBytes else { throw PageOperationError.sourceLimit }
             let data = try Data(contentsOf: url)
             guard let pdf = PDFDocument(data: data), !pdf.isLocked,
                   (1...500).contains(pdf.pageCount) else { throw StorageError.invalidDocument }
