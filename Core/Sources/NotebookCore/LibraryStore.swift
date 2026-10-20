@@ -188,13 +188,13 @@ public actor LibraryStore {
         return url
     }
 
-    /// UI calls only with all editors closed and library mutations disabled.
-    /// This synchronous actor operation captures the complete index + documents
-    /// without suspension. Includes independently trashed children and folders.
-    public func backupBundle() throws -> LibraryBundle {
+    /// Quick, on the library actor: the complete index (including trash and
+    /// folders), preferences and every package location. Notebook contents are
+    /// read afterwards from committed revisions, off this actor (`LibraryArchive.write`).
+    public func backupPlan() throws -> LibraryBackupPlan {
         let result = try load()
         guard result.unreadableDocuments == 0 else { throw LibraryArchiveError.incomplete }
-        var documents: [Notebook] = []
+        var packages: [UUID: URL] = [:]
         for item in result.snapshot.items where !item.isFolder {
             let url: URL
             switch item.source! {
@@ -204,14 +204,17 @@ public actor LibraryStore {
             }
             try requireDirectory(url)
             guard hasDocument(at: url) else { throw LibraryArchiveError.incomplete }
-            let store = RevisionStore(directory: url)
-            var document = try store.load()
-            guard document.id == item.id, !store.recovered else { throw LibraryArchiveError.incomplete }
-            document.title = item.title
-            documents.append(document)
+            packages[item.id] = url
         }
         let preferences = try ToolbarPreferenceStore.read(root: root)
-        let bundle = LibraryBundle(snapshot: result.snapshot, documents: documents, toolbar: preferences.0)
+        return LibraryBackupPlan(snapshot: result.snapshot, toolbar: preferences.0, packages: packages)
+    }
+
+    /// Complete library in memory (tests, small libraries). Includes independently
+    /// trashed children and folders; an older recovered revision aborts.
+    public func backupBundle() throws -> LibraryBundle {
+        let plan = try backupPlan()
+        let bundle = LibraryBundle(snapshot: plan.snapshot, documents: try plan.documents.map(plan.committedNotebook), toolbar: plan.toolbar)
         try bundle.validate(); return bundle
     }
 
@@ -220,23 +223,39 @@ public actor LibraryStore {
     public func populateEmpty(_ bundle: LibraryBundle) throws {
         try bundle.validate()
         guard !fm.fileExists(atPath: root.path) else { throw LibraryArchiveError.destinationExists }
-        var portable = bundle.snapshot
-        portable.items = bundle.snapshot.items.map { item in
+        for document in bundle.documents { try Self.populatePackage(document, root: root) }
+        try populateIndex(bundle.snapshot, toolbar: bundle.toolbar)
+    }
+
+    /// Restore stage only: writes one complete package and reads it back. A
+    /// streaming restore calls this per notebook before any index exists.
+    static func populatePackage(_ document: Notebook, root: URL) throws {
+        let fm = FileManager.default
+        let documentsRoot = root.appendingPathComponent("Library/Documents", isDirectory: true)
+        try fm.createDirectory(at: documentsRoot, withIntermediateDirectories: true)
+        try requireRegularDirectory(documentsRoot, below: root)
+        let destination = documentsRoot.appendingPathComponent(document.id.uuidString, isDirectory: true)
+        guard !fm.fileExists(atPath: destination.path) else { throw LibraryArchiveError.destinationExists }
+        try RevisionStore(directory: destination).save(document)
+        guard try RevisionStore(directory: destination).load() == document else { throw LibraryArchiveError.incomplete }
+    }
+
+    /// Restore stage only, after every package: preferences, then the portable
+    /// index (all documents as `library` packages) as the last commit.
+    func populateIndex(_ value: LibrarySnapshot, toolbar: ToolbarPreferences) throws {
+        try value.validate(); try toolbar.validate()
+        guard snapshot == nil, !fm.fileExists(atPath: primary.path), !fm.fileExists(atPath: previous.path) else {
+            throw LibraryArchiveError.destinationExists
+        }
+        var portable = value
+        portable.items = value.items.map { item in
             var copy = LibraryItem(id: item.id, title: item.title, parentID: item.parentID,
                                    source: item.isFolder ? nil : .library)
             copy.favorite = item.favorite; copy.lastOpened = item.lastOpened; copy.deletedAt = item.deletedAt
             return copy
         }
-        let documentsRoot = directory.appendingPathComponent("Documents", isDirectory: true)
-        try fm.createDirectory(at: documentsRoot, withIntermediateDirectories: true)
-        try requireDirectory(documentsRoot)
-        for document in bundle.documents {
-            let destination = documentsRoot.appendingPathComponent(document.id.uuidString, isDirectory: true)
-            try RevisionStore(directory: destination).save(document)
-            guard try RevisionStore(directory: destination).load() == document else { throw LibraryArchiveError.incomplete }
-        }
-        try bundle.toolbar.validate()
-        try JSONEncoder().encode(bundle.toolbar).write(to: root.appendingPathComponent("toolbar.json"), options: .atomic)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try JSONEncoder().encode(toolbar).write(to: root.appendingPathComponent("toolbar.json"), options: .atomic)
         snapshot = LibrarySnapshot()
         try commit(portable)
         guard try LibraryStore.readIndexPayload(at: primary) == portable else { throw LibraryArchiveError.incomplete }

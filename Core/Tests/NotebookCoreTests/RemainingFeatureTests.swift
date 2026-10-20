@@ -159,38 +159,48 @@ final class ExternalBackupTransportTests: XCTestCase {
         XCTAssertEqual(note.pages[0].id, id)
         XCTAssertEqual(note.pages[0].textBoxes![0].text, "Seite 50 · Prüfung")
     }
-    private func archive() throws -> Data { try LibraryArchive.encode(LibraryBundle(snapshot: LibrarySnapshot(), documents: [])) }
+    /// A verified local archive file, as the app hands it to the folder transport.
+    private func archive(in root: URL) throws -> (URL, LibraryArchiveFileInfo) {
+        let url = root.appendingPathComponent("local-\(UUID().uuidString).tmp")
+        try LibraryArchive.encode(LibraryBundle(snapshot: LibrarySnapshot(), documents: [])).write(to: url)
+        return (url, try LibraryArchive.verify(url).file)
+    }
     func testFolderWriteReadAndRetentionNeverAffectManualOrForeignFiles() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let target = root.appendingPathComponent("target")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         var policy = ExternalBackupPolicy(); policy.keep = 3
-        let bytes = try archive()
+        let (source, info) = try archive(in: root)
         let names = (0..<5).map { policy.filename(at: Date(timeIntervalSince1970: Double(1_700_000_000+$0))) }
         let foreign = ExternalBackupPolicy().filename()
-        try Data([1]).write(to: root.appendingPathComponent(foreign))
-        try Data([2]).write(to: root.appendingPathComponent("manual.notylibrary"))
-        for name in names { try ExternalBackupFolder.write(bytes, name: name, policy: policy, directory: root) }
-        XCTAssertEqual(try ExternalBackupFolder.read(root.appendingPathComponent(names[4])), bytes)
-        XCTAssertEqual(Set(try ExternalBackupFolder.prune(policy: policy, directory: root, verified: names[4])), Set(names.prefix(2)))
-        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(foreign)), Data([1]))
-        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("manual.notylibrary")), Data([2]))
-        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasSuffix(".partial") })
+        try Data([1]).write(to: target.appendingPathComponent(foreign))
+        try Data([2]).write(to: target.appendingPathComponent("manual.notylibrary"))
+        for name in names { try ExternalBackupFolder.write(archive: source, file: info, name: name, policy: policy, directory: target) }
+        XCTAssertEqual(try BoundedFile.checksum(target.appendingPathComponent(names[4])), info)
+        XCTAssertEqual(try ExternalBackupFolder.list(policy: policy, directory: target).archives, names.reversed())
+        XCTAssertEqual(Set(try ExternalBackupFolder.prune(policy: policy, directory: target, verified: names[4], file: info)), Set(names.prefix(2)))
+        XCTAssertEqual(try Data(contentsOf: target.appendingPathComponent(foreign)), Data([1]))
+        XCTAssertEqual(try Data(contentsOf: target.appendingPathComponent("manual.notylibrary")), Data([2]))
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: target.path).contains { $0.hasSuffix(".partial") })
     }
     func testInvalidWritesCollisionAndInvalidNewestPreventCleanup() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let target = root.appendingPathComponent("target")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let policy = ExternalBackupPolicy(), name = policy.filename(), bytes = try archive()
-        XCTAssertThrowsError(try ExternalBackupFolder.write(Data([1]), name: name, policy: policy, directory: root))
-        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
-        try ExternalBackupFolder.write(bytes, name: name, policy: policy, directory: root)
-        XCTAssertThrowsError(try ExternalBackupFolder.write(bytes, name: name, policy: policy, directory: root))
-        XCTAssertEqual(try ExternalBackupFolder.read(root.appendingPathComponent(name)), bytes)
-        let bad = policy.filename(); try Data([1]).write(to: root.appendingPathComponent(bad))
-        XCTAssertThrowsError(try ExternalBackupFolder.prune(policy: policy, directory: root, verified: bad))
-        XCTAssertEqual(try ExternalBackupFolder.read(root.appendingPathComponent(name)), bytes)
-        XCTAssertThrowsError(try ExternalBackupFolder.write(bytes, name: "../evil.notylibrary", policy: policy, directory: root))
+        let policy = ExternalBackupPolicy(), name = policy.filename()
+        let (source, info) = try archive(in: root)
+        let wrong = LibraryArchiveFileInfo(byteCount: info.byteCount, crc32: info.crc32 ^ 1)
+        XCTAssertThrowsError(try ExternalBackupFolder.write(archive: source, file: wrong, name: name, policy: policy, directory: target))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty)
+        try ExternalBackupFolder.write(archive: source, file: info, name: name, policy: policy, directory: target)
+        XCTAssertThrowsError(try ExternalBackupFolder.write(archive: source, file: info, name: name, policy: policy, directory: target))
+        XCTAssertEqual(try BoundedFile.checksum(target.appendingPathComponent(name)), info)
+        let bad = policy.filename(); try Data([1]).write(to: target.appendingPathComponent(bad))
+        XCTAssertThrowsError(try ExternalBackupFolder.prune(policy: policy, directory: target, verified: bad, file: info))
+        XCTAssertEqual(try BoundedFile.checksum(target.appendingPathComponent(name)), info)
+        XCTAssertThrowsError(try ExternalBackupFolder.write(archive: source, file: info, name: "../evil.notylibrary", policy: policy, directory: target))
     }
     func testDAVListingNamespacesDirectChildrenAndForeignOrigins() throws {
         let xml = """

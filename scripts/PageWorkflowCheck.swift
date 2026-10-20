@@ -99,7 +99,12 @@ struct PageWorkflowCheck {
         try await ToolbarPreferenceStore(root: storeRoot).save(tools, revision: 1)
         let bundle = try await library.backupBundle()
         let libraryFile = root.appendingPathComponent("bibliothek.notylibrary")
-        try LibraryArchive.encode(bundle).write(to: libraryFile)
+        // Streaming file writer of the app; re-read once more in memory here.
+        let written = try LibraryArchive.write(try await library.backupPlan(), to: libraryFile)
+        guard try LibraryArchive.decode(Data(contentsOf: libraryFile)) == bundle,
+              written.file == (try BoundedFile.checksum(libraryFile)) else { throw StorageError.invalidDocument }
+        var corruptLibrary = try Data(contentsOf: libraryFile); corruptLibrary[corruptLibrary.count - 1] ^= 1
+        try corruptLibrary.write(to: root.appendingPathComponent("corrupt.notylibrary"))
         let workspaces = WorkspaceStore(root: root.appendingPathComponent("Workspaces"))
         let staged = try await workspaces.prepareRestore(file: libraryFile)
         let restored = try await workspaces.commitRestore(staged, title: "Seiten-Restore")
@@ -134,7 +139,8 @@ struct PageWorkflowCheck {
             "originalPDFBytesUnchanged": true, "editableShapesSurviveLibraryRestore": independent.pages.first(where: { $0.id == beforeTrim.id })?.shapes == changedShapes, "independentRestore": true,
             "originalImageBytesUnchanged": document.pages[marginPageIndex].images?.first?.data == imageData,
             "editableImageSurvivesLibraryRestore": independent.pages.first(where: { $0.id == beforeTrim.id })?.images == [editedImage],
-            "marginRestoreKeepsPageIDAndArchivesCurrent": true, "appleFrameworksExecuted": false]
+            "marginRestoreKeepsPageIDAndArchivesCurrent": true, "appleFrameworksExecuted": false,
+            "libraryArchiveBytes": written.file.byteCount, "libraryArchiveCRC32": Int(written.file.crc32)]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
     }

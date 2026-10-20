@@ -184,7 +184,7 @@ final class LibraryArchiveTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: sentinel), Data([9, 8, 7]))
         let stage = workspaces.appendingPathComponent("Staging/\(prepared.id.uuidString)/Data")
         let readback = try await LibraryStore(root: stage).backupBundle()
-        XCTAssertEqual(readback.documents, prepared.bundle.documents)
+        XCTAssertEqual(readback.documents, try LibraryArchive.decode(Data(contentsOf: file)).documents)
     }
 
     func testUnreadableOrMissingDocumentAbortsFullExportRatherThanOmittingIt() async throws {
