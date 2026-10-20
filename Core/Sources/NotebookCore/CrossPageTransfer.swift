@@ -56,12 +56,20 @@ extension NotebookPagePlacement {
 }
 
 public enum CrossPageTransferError: Error, LocalizedError, Equatable {
-    case doesNotFit, invalidObject, conflict
-    public var errorDescription: String? {
+    /// `pageFull`: the target page would exceed `ImageLimits.maximumImagesPerPage`.
+    case doesNotFit, invalidObject, conflict, pageFull
+    public var errorDescription: String? { message(image: false) }
+    /// `image`: a single dragged image (image tool) instead of a lasso selection.
+    public func message(image: Bool) -> String {
         switch self {
-        case .doesNotFit: "Die Auswahl ist zu groß für diese Seite und wurde nicht verschoben."
-        case .invalidObject: "Die Auswahl kann in dieser Größe nicht auf diese Seite verschoben werden."
-        case .conflict: "Die Seiten wurden inzwischen geändert. Bitte die Auswahl erneut setzen."
+        case .doesNotFit: image ? "Das Bild ist zu groß für diese Seite und wurde nicht verschoben."
+            : "Die Auswahl ist zu groß für diese Seite und wurde nicht verschoben."
+        case .invalidObject: image ? "Das Bild kann in dieser Größe nicht auf diese Seite verschoben werden."
+            : "Die Auswahl kann in dieser Größe nicht auf diese Seite verschoben werden."
+        case .conflict: image ? "Die Seiten wurden inzwischen geändert. Bitte das Bild erneut verschieben."
+            : "Die Seiten wurden inzwischen geändert. Bitte die Auswahl erneut setzen."
+        case .pageFull: "Auf der Zielseite sind schon \(ImageLimits.maximumImagesPerPage) Bilder (Höchstzahl). "
+            + (image ? "Das Bild bleibt auf seiner Seite." : "Die Auswahl wurde nicht verschoben.")
         }
     }
 }
@@ -129,6 +137,21 @@ public enum CrossPageTransfer {
                      y: axis(frame.y, frame.height, limits.y, limits.height))
     }
 
+    /// Maps `objects` with `move`, shifts them (together with `alongside`, the
+    /// already mapped ink bounds) completely into `limits` and appends them to
+    /// `target`. `offset`: the shift, to be applied to the ink by the app.
+    /// Throws instead of clipping or shrinking anything.
+    public static func place(_ objects: MovedObjects, by move: CrossPageMove, alongside: PageRect? = nil,
+                             into target: PageContent, limits: PageRect)
+        throws -> (content: PageContent, objects: MovedObjects, offset: PagePoint) {
+        var mapped = try self.move(objects, by: move)
+        let frame = [mapped.bounds, alongside].compactMap { $0 }.reduce(nil as PageRect?) { $0?.union($1) ?? $1 }
+        guard let frame, let offset = shift(for: frame, into: limits) else { throw CrossPageTransferError.doesNotFit }
+        if offset.x != 0 || offset.y != 0 { mapped = mapped.translated(by: offset) }
+        let inserted = try inserting(mapped, into: target, limits: limits)
+        return (inserted.content, inserted.objects, offset)
+    }
+
     /// Removes the moved members from their source page (ink is handled by the app).
     public static func removing(texts: Set<UUID>, images: Set<UUID>, shapes: Set<UUID>, from content: PageContent) -> PageContent {
         var result = content
@@ -143,6 +166,9 @@ public enum CrossPageTransfer {
     /// Every object must lie inside `limits` (the target's writable bounds).
     public static func inserting(_ objects: MovedObjects, into target: PageContent, limits: PageRect)
         throws -> (content: PageContent, objects: MovedObjects) {
+        guard objects.images.isEmpty || target.images.count + objects.images.count <= ImageLimits.maximumImagesPerPage else {
+            throw CrossPageTransferError.pageFull
+        }
         var used = Set(target.textBoxes.map(\.id) + target.images.map(\.id) + target.shapes.map(\.id))
         func unique(_ id: UUID) -> UUID {
             var value = id
