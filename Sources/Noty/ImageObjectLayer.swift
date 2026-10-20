@@ -29,7 +29,9 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     private lazy var moveGesture = UIPanGestureRecognizer(target: self, action: #selector(moveImage(_:)))
     private let liveLayer = CALayer()
     private var liveID: UUID?
-    private var failed = Set<UUID>()
+    /// Failed decodes per image (retry pause), and originals validation rejected.
+    private var failures: [UUID: (count: Int, retryAt: CFTimeInterval)] = [:]
+    private var broken = Set<UUID>()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -93,7 +95,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         if !active { dragStart = nil; rotationSnap = nil; cropController?.dismiss(animated: false); cropController = nil }
         if !objects.contains(where: { $0.id == selectedID }) { selectedID = nil }
         if dragStart == nil { endLive() }
-        if reset { failed.removeAll() }
+        if reset { failures.removeAll(); broken.removeAll() }
         refresh()
     }
 
@@ -139,20 +141,50 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         let pixels = max(object.width / object.crop.width, object.height / object.crop.height) * zoom * screenScale
         return pixels <= 512 ? 512 : (pixels <= 1024 ? 1024 : 2048)
     }
-    /// Load/import validation rejects unreadable originals. A render failure is
-    /// reported (once per object), never silently accepted by PDF export.
+    /// Load/import validation rejects unreadable originals. A failed decode is
+    /// often transient (memory pressure): it is retried after a pause, and only
+    /// an original that validation rejects too is reported and given up.
     private func request(_ object: ImageObject, limit: Int) {
-        guard !failed.contains(object.id) else { return }
+        guard !broken.contains(object.id) else { return }
+        if let failure = failures[object.id], CACurrentMediaTime() < failure.retryAt { return }
         let id = object.id, expected = generation
         ImageRendering.prepare(object, limit: limit) { [weak self] error in
             guard let self, self.generation == expected, let current = self.objects.first(where: { $0.id == id }) else { return }
-            if let error { self.failed.insert(id); self.onError?(error.localizedDescription); return }
-            self.setNeedsDisplay(self.displayBounds(current))
+            guard error != nil else { self.failures[id] = nil; self.setNeedsDisplay(self.displayBounds(current)); return }
+            let count = (self.failures[id]?.count ?? 0) + 1
+            let pause: TimeInterval = count == 1 ? 2 : 10
+            self.failures[id] = (count, CACurrentMediaTime() + pause)
+            if count == 1 { self.redraw(id, after: pause); return }
+            Task.detached(priority: .utility) { [weak self] in
+                let rejected: Error?
+                do { try ImageRendering.validate(current); rejected = nil } catch { rejected = error }
+                await self?.validated(id, generation: expected, rejected: rejected, retry: count < 5 ? pause : nil)
+            }
+        }
+    }
+    private func validated(_ id: UUID, generation expected: Int, rejected: Error?, retry: TimeInterval?) {
+        guard generation == expected, objects.contains(where: { $0.id == id }) else { return }
+        if let rejected { broken.insert(id); onError?(rejected.localizedDescription) }
+        else if let retry { redraw(id, after: retry) }
+    }
+    private func redraw(_ id: UUID, after delay: TimeInterval) {
+        let expected = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay + 0.05) { [weak self] in
+            guard let self, self.generation == expected, let object = self.objects.first(where: { $0.id == id }) else { return }
+            self.setNeedsDisplay(self.displayBounds(object))
         }
     }
     /// The image being dragged is shown by `liveLayer` and moved per frame by
-    /// its transform; the plane itself is redrawn only when the drag starts and ends.
-    private func showLive(_ object: ImageObject) {
+    /// its transform; the plane itself is redrawn only when the drag starts and
+    /// ends. `liveLayer` lies above the whole plane, so while the image overlaps
+    /// one in front of it the plane draws it in order instead (true: redraw).
+    private func showLive(_ object: ImageObject) -> Bool {
+        let frame = displayBounds(object)
+        if let index = objects.firstIndex(where: { $0.id == object.id }),
+           objects[(index + 1)...].contains(where: { displayBounds($0).intersects(frame) }) {
+            if liveID != nil { endLive() }
+            return true
+        }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         if liveID != object.id {
             liveID = object.id
@@ -170,6 +202,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
                                      y: object.y + object.height / 2 + pageLayout.contentOrigin.y)
         liveLayer.setAffineTransform(CGAffineTransform(rotationAngle: object.rotation * .pi / 180))
         CATransaction.commit()
+        return false
     }
     private func endLive() {
         guard liveID != nil else { return }
@@ -304,8 +337,9 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         // Live feedback stays local; the model gets one change (one undo step)
         // when the gesture ends instead of an autosave round trip per frame.
         let ended = pan.state == .ended
-        if ended { dragStart = nil; rotationSnap = nil; endLive() } else { showLive(objects[index]) }
-        refresh(redraw: ended)
+        var redraw = ended
+        if ended { dragStart = nil; rotationSnap = nil; endLive() } else { redraw = showLive(objects[index]) }
+        refresh(redraw: redraw)
         if ended { onChange?(objects) }
     }
 
