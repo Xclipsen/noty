@@ -48,6 +48,7 @@ Details in [STORAGE](STORAGE.md#ergänzung-20102026--notebook-schema-11-schreibp
 ## Nachweise
 
 - **Implementiert** auf `ui/menu-polish`.
+- **Installiert (20.10.2026, 16:02):** Build 48 (IPA `bef3dca0…`, gleiche App-ID/Team/Zertifikat wie Build 46, Profil bis 27.10.2026) per `xtool install --usb`. Vorher alle Documents gesichert unter `/home/la/Backups/noty-before-build48-2026-10-20T14-02-03-869620305Z/`, danach installierte Version 48 bestätigt und frisch zurückgelesen: 3 Notizbücher, 23 Dateien unverändert, `verify_device_store.py --compare` meldet 3 unveränderte Dokumente, keine Quarantäne.
 - **Core-Tests:** zusammen mit Build 47 495/495, davon 9 in `PaperWritingSpaceTests`.
 - **Host-Roundtrip:** mit Papierseite plus Schreibplatz (Schema 11) bestanden, Python-Prüfer für Heft-, Bibliotheks- und Gerätespeicher eingeschlossen.
 - **Negativproben im Python-Prüfer** werden abgelehnt: links, oben, fremde Vorlage, fremde Farbe, Schema 10.
