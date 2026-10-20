@@ -133,11 +133,11 @@ extension EditorModel {
             await awaitMutationAccess()
             do {
                 let source = try await read()
-                // Over 20 MB, beyond the pixel limit or larger than the notebook's
+                // Over 5 MB, beyond the pixel limit or larger than the notebook's
                 // remaining image budget: compressed instead of refused.
                 let room = ImageLimits.maximumNotebookBytes - notebook.imageOriginalBytes
                 // Almost no room left: the notebook-full message below explains it better.
-                let limit = room >= ImageCompression.minimumBudget ? min(ImageLimits.maximumFileBytes, room) : ImageLimits.maximumFileBytes
+                let limit = room >= ImageCompression.minimumBudget ? min(ImageCompression.importTargetBytes, room) : ImageCompression.importTargetBytes
                 let fitted = try await Task.detached { try ImageCompression.fitting(source, limit: limit) }.value
                 let data = fitted.data
                 // Limits first: a clear message instead of a failed validation.

@@ -3,8 +3,8 @@ import ImageIO
 import UniformTypeIdentifiers
 import NotebookCore
 
-/// Nutzer zu Build 51: Bilder über 20 MB sollen verkleinert statt abgelehnt
-/// werden. An image that fits is kept byte for byte (HEIC stays HEIC). A
+/// Nutzer zu Build 51/52: Bilder über 5 MB werden verkleinert statt
+/// abgelehnt. An image that fits is kept byte for byte (HEIC stays HEIC). A
 /// larger one (or one beyond the pixel limit, or one that no longer fits the
 /// notebook's image budget) is re-encoded from an oriented ImageIO thumbnail:
 /// opaque images as JPEG, images with transparency as PNG, shrinking quality
@@ -16,6 +16,9 @@ enum ImageCompression {
     static let maximumSide = 4096
     /// Below this budget an image is not worth squeezing in.
     static let minimumBudget = 300_000
+    /// Nutzer zu Build 52: every imported image at most 5 MB (large originals
+    /// made dragging and saving lag). Validation still accepts 20 MB per image.
+    static let importTargetBytes = 5_000_000
 
     struct Result: Sendable {
         let data: Data
