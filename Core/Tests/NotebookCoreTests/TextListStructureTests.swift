@@ -309,3 +309,25 @@ final class TextListStructureTests: XCTestCase {
         XCTAssertEqual(result.runs?.reduce(0) { $0 + $1.length }, (result.text as NSString).length)
     }
 }
+
+/// Value-level forms of the editor's list steps (the app applies the same
+/// edits to its text storage); they keep `listNesting` and `normalize`
+/// covered on whole boxes.
+private extension TextBox {
+    /// Renumbers/normalises lists after an edit from `previous` to this text.
+    func normalizingLists(after previous: TextBox, selection: NSRange) -> (box: TextBox, selection: NSRange)? {
+        guard let changed = TextListEditing.changedRange(from: previous.text, to: text) else { return nil }
+        let restart = TextListEditing.numberedItem(in: previous.text, at: changed.location, level: previous.listLevel(at:))
+        let edits = TextListEditing.normalize(text, level: listLevel(at:), changed: changed, restart: restart)
+        guard !edits.isEmpty else { return nil }
+        return (applying(edits), TextListEditing.selection(selection, after: edits))
+    }
+    func nestingList(selection: NSRange, outdent: Bool) -> (box: TextBox, selection: NSRange)? {
+        guard let plan = listNesting(selection: selection, outdent: outdent) else { return nil }
+        var box = self
+        for (range, indent) in zip(plan.paragraphs, plan.indents) { box = box.restyled([range]) { $0.indent = indent } }
+        box = box.applying(plan.markers).applying(plan.renumbering)
+        let caret = TextListEditing.selection(TextListEditing.selection(selection, after: plan.markers), after: plan.renumbering)
+        return box == self ? nil : (box, caret)
+    }
+}

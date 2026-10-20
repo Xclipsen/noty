@@ -8,7 +8,6 @@ final class PencilHoldGesture: UIGestureRecognizer, UIGestureRecognizerDelegate 
     var onHold: (() -> Void)?
     var onPoint: ((CGPoint) -> Void)?
     var onBegin: ((CGPoint) -> Void)?
-    var onMove: (() -> Void)?
     var onEnd: ((Bool) -> Void)?
     var allowFinger = false
     private var timer: Timer?
@@ -27,7 +26,7 @@ final class PencilHoldGesture: UIGestureRecognizer, UIGestureRecognizerDelegate 
         let next = touch.location(in: view)
         onPoint?(next)
         let screen = touch.location(in: view?.window ?? view)
-        if hypot(screen.x - point.x, screen.y - point.y) > 6 { point = screen; onMove?(); arm() }
+        if hypot(screen.x - point.x, screen.y - point.y) > 6 { point = screen; arm() }
         state = .changed
     }
     private func arm() {
@@ -84,4 +83,24 @@ final class PageInteractionObserver: UIGestureRecognizer {
     override func reset() { touches.removeAll(); onChange?(false); super.reset() }
     override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
     override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+}
+
+/// Object drags and handles take precedence over notebook scrolling: the
+/// nearest enclosing scroll view's pan waits for them to fail. Asked per
+/// attempt instead of `require(toFail:)`, whose edges piled up on the shared
+/// viewport pan for every sheet and text field ever shown.
+@MainActor
+final class ScrollPanPriority: NSObject, UIGestureRecognizerDelegate {
+    static let shared = ScrollPanPriority()
+    static func outranksScrolling(_ gesture: UIGestureRecognizer, _ other: UIGestureRecognizer) -> Bool {
+        var view = gesture.view?.superview
+        while let current = view {
+            if let scroll = current as? UIScrollView { return other === scroll.panGestureRecognizer }
+            view = current.superview
+        }
+        return false
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        Self.outranksScrolling(gestureRecognizer, other)
+    }
 }

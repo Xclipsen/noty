@@ -2,21 +2,23 @@ import SwiftUI
 import NotebookCore
 import OSLog
 
-/// Device-log timings for opening a notebook (category `editor-performance`).
-/// Each event is logged once per open, relative to the editor appearing.
+/// Device-log timings for opening a notebook (category `editor-performance`),
+/// only with Settings › Diagnose. Each event is logged once per open,
+/// relative to the editor appearing.
 @MainActor
 enum EditorOpenTrace {
     private static let log = Logger(subsystem: "de.la.noty", category: "editor-performance")
     private static var start: CFTimeInterval?
     private static var logged = Set<String>()
-    static func begin() { start = CACurrentMediaTime(); logged = [] }
-    static func mark(_ event: String, _ detail: String = "") {
+    static func begin() { guard HangProbe.isInstalled else { return }; start = CACurrentMediaTime(); logged = [] }
+    static func mark(_ event: String, _ detail: @autoclosure () -> String = "") {
         guard let start else { return }
         let elapsed = CACurrentMediaTime() - start
         // Later renders (scrolling minutes after opening) are not open timings.
         guard elapsed < 20 else { Self.start = nil; return }
         guard logged.insert(event).inserted else { return }
-        log.notice("Open: \(event, privacy: .public) after \(Int(elapsed * 1000), privacy: .public) ms \(detail, privacy: .public)")
+        let text = detail()
+        log.notice("Open: \(event, privacy: .public) after \(Int(elapsed * 1000), privacy: .public) ms \(text, privacy: .public)")
     }
 }
 
@@ -93,6 +95,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private var separators: [CALayer] = []
     private var lastSearch: PageRect?
     private var pendingSearch: CGRect?
+    private var pendingImage: CGRect?
     private var lastTextFocus: UUID?
     private var lastReveal: UUID?
     /// Animated scroll to the page focused after a deletion; the horizontal
@@ -115,7 +118,9 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     /// Page below a floating selection; entering another page ticks on Apple Pencil Pro.
     private var floatTarget: UUID?
     private var selectionFeedback: UIFeedbackGenerator?
-
+    private var swipes: [UISwipeGestureRecognizer] = []
+    /// After a memory warning only on-screen pages get native sheets for a while.
+    private var lowMemoryUntil: CFTimeInterval = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -129,11 +134,15 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)),
             name: UIResponder.keyboardWillHideNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(memoryWarning),
+            name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
         for direction: UISwipeGestureRecognizer.Direction in [.left, .right] {
             let swipe = UISwipeGestureRecognizer(target: self, action: #selector(turnPage(_:)))
             swipe.direction = direction; swipe.delegate = self
             swipe.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
-            addGestureRecognizer(swipe); panGestureRecognizer.require(toFail: swipe)
+            // Off outside page mode, so scrolling never waits for a swipe to fail.
+            swipe.isEnabled = false
+            addGestureRecognizer(swipe); panGestureRecognizer.require(toFail: swipe); swipes.append(swipe)
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -161,6 +170,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         let scrollModeChanged = writingScroll != next.writingScroll
         writingScroll = next.writingScroll; topObstruction = next.topObstruction; obstructions = next.obstructions
         panGestureRecognizer.minimumNumberOfTouches = next.fingerDrawing ? 2 : 1
+        let swiping = next.paging && next.enabled && !next.fingerDrawing
+        for swipe in swipes where swipe.isEnabled != swiping { swipe.isEnabled = swiping }
         laser.configure(next.laser, fingerDrawing: next.fingerDrawing)
         let placement = NotebookViewportLayout(pages: next.pages, selectedPageID: next.selectedPageID,
             paging: mode, normalizeWidths: normalized)
@@ -279,6 +290,11 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             pendingSearch = nil
             super.scrollRectToVisible(surface.convert(target.insetBy(dx: -16, dy: -16), to: self), animated: false)
         }
+        if let target = pendingImage {
+            pendingImage = nil
+            super.scrollRectToVisible(surface.convert(target.insetBy(dx: -24, dy: -24), to: self), animated: false)
+            constrainHorizontalOffset()
+        }
         changing = false
         refreshSheets()
         if resized { revealCaret() }
@@ -325,19 +341,22 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         guard !refreshing, let state, !frames.isEmpty else { return }
         HangProbe.hit("Viewport.refreshSheets")
         refreshing = true
-        let started = CACurrentMediaTime()
+        let started = HangProbe.isInstalled ? CACurrentMediaTime() : nil
         defer {
             refreshing = false
-            let now = CACurrentMediaTime()
-            if now - started > 0.025, now - lastSlowRefreshLog > 1 {
-                lastSlowRefreshLog = now
-                performanceLog.notice("Page refresh took \(Int((now - started) * 1000), privacy: .public) ms; native pages=\(self.sheets.count, privacy: .public)")
+            if let started {
+                let now = CACurrentMediaTime()
+                if now - started > 0.025, now - lastSlowRefreshLog > 1 {
+                    lastSlowRefreshLog = now
+                    performanceLog.notice("Page refresh took \(Int((now - started) * 1000), privacy: .public) ms; native pages=\(self.sheets.count, privacy: .public)")
+                }
             }
         }
         let visible = CGRect(x: contentOffset.x / zoomScale, y: contentOffset.y / zoomScale,
                              width: bounds.width / zoomScale, height: bounds.height / zoomScale)
         let live = liveZoom
-        let nearby = NotebookViewportGeometry.preloadRect(visible: PageRect(x: visible.minX, y: visible.minY,
+        let lowMemory = CACurrentMediaTime() < lowMemoryUntil
+        let nearby = lowMemory ? visible : NotebookViewportGeometry.preloadRect(visible: PageRect(x: visible.minX, y: visible.minY,
             width: visible.width, height: visible.height)).cgRect
         var keep = Set(frames.filter { $0.value.intersects(nearby) }.map(\.key))
         if let selected { keep.insert(selected) }
@@ -348,7 +367,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         let warm = sheets.keys.filter { !keep.contains($0) && frames[$0] != nil }.sorted {
             abs((frames[$0]?.midY ?? 0) - visible.midY) < abs((frames[$1]?.midY ?? 0) - visible.midY)
         }
-        keep.formUnion(warm.prefix(max(0, 4 - keep.count)))
+        if !lowMemory { keep.formUnion(warm.prefix(max(0, 4 - keep.count))) }
         for id in Array(sheets.keys) where !keep.contains(id) {
             sheets[id]?.removeFromSuperview(); sheets.removeValue(forKey: id); sheetRevisions.removeValue(forKey: id)
         }
@@ -396,17 +415,45 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
                 self.reported = page.id
                 self.state?.onSelect(page.id)
             }
-            let configureStarted = CACurrentMediaTime()
-            sheet.configure(config); sheetRevisions[page.id] = configurationRevision
-            if page.id == selected {
-                EditorOpenTrace.mark("first sheet configured", "configure=\(Int((CACurrentMediaTime() - configureStarted) * 1000)) ms pdf=\(config.sourcePage != nil) zoom=\(String(format: "%.2f", Double(zoomScale)))")
+            sheetRevisions[page.id] = configurationRevision
+            // VoiceOver: each sheet is a group announced with its position.
+            if let index = state.pages.firstIndex(where: { $0.id == page.id }) {
+                let label = "Seite \(index + 1) von \(state.pages.count)"
+                if sheet.accessibilityLabel != label { sheet.accessibilityLabel = label; sheet.accessibilityContainerType = .semanticGroup }
             }
+            // Every model change (save status, undo availability, another
+            // page's edit) re-runs the SwiftUI body. Pages whose inputs are
+            // unchanged only adopt the new callbacks.
+            if sheet.matches(config) {
+                sheet.adoptCallbacks(config)
+            } else {
+                let configureStarted = CACurrentMediaTime()
+                sheet.configure(config)
+                // A freshly inserted image (photo, file, paste) is scrolled into view.
+                if page.id == selected, let image = sheet.takeInsertedImage() {
+                    pendingImage = sheet.convert(image, to: surface); setNeedsLayout()
+                }
+                if page.id == selected {
+                    EditorOpenTrace.mark("first sheet configured", "configure=\(Int((CACurrentMediaTime() - configureStarted) * 1000)) ms pdf=\(config.sourcePage != nil) zoom=\(String(format: "%.2f", Double(zoomScale)))")
+                }
+            }
+            // PencilKit may install its ruler recognizers after activation.
             for gesture in sheet.rulerGestureRecognizers where !rulerGestures.contains(gesture) {
                 rulerGestures.add(gesture)
                 panGestureRecognizer.require(toFail: gesture); pinchGestureRecognizer?.require(toFail: gesture)
             }
             sheet.updateRendering(visible: convert(bounds, to: sheet), scale: zoomScale * placement.scale, live: live)
         }
+    }
+    /// Memory warning: off-screen sheets (each with PDF rasters up to ~70 MB,
+    /// text rasters, PencilKit tiles) are released, the others drop caches;
+    /// for 20 s only on-screen pages are built, then preloading resumes.
+    @objc private func memoryWarning() {
+        lowMemoryUntil = CACurrentMediaTime() + 20
+        ImageRendering.purge()
+        refreshSheets()
+        sheets.values.forEach { $0.releaseMemory() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20.5) { [weak self] in self?.refreshSheets() }
     }
     /// A pinch or snap animation is in progress; final resolution follows at its end.
     private var liveZoom: Bool {
@@ -465,7 +512,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         if pinch.state == .changed, !widthSnapInProgress { constrainHorizontalOffset(duringZoom: true) }
         if pinch.state == .ended || pinch.state == .cancelled {
             if userZoomPage != nil { scrollViewDidEndZooming(self, with: surface, atScale: zoomScale) }
-            performanceLog.notice("Pinch ended at zoom \(Double(self.zoomScale), privacy: .public)")
+            if HangProbe.isInstalled { performanceLog.debug("Pinch ended at zoom \(Double(self.zoomScale), privacy: .public)") }
             // Full-resolution re-render once the fingers are gone.
             DispatchQueue.main.async { [weak self] in self?.refreshSheets() }
         }
@@ -631,7 +678,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             return mode && state?.enabled == true && state?.fingerDrawing == false
                 && !sheets.values.contains(where: { $0.editingCaret != nil }) && abs(zoomScale-fitWidth) < 0.03
         }
-        return true
+        // UIScrollView's own pan/pinch checks stay in force.
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
     }
     @objc private func turnPage(_ gesture: UISwipeGestureRecognizer) {
         guard let state, let index = state.pages.firstIndex(where: { $0.id == selected }) else { return }

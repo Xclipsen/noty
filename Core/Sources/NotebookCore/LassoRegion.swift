@@ -69,16 +69,6 @@ public struct LassoRegion: Sendable {
         containsPolyline([.init(x: rect.x, y: rect.y), .init(x: rect.x + rect.width, y: rect.y),
             .init(x: rect.x + rect.width, y: rect.y + rect.height), .init(x: rect.x, y: rect.y + rect.height)], closed: true)
     }
-    public func containsStroke(_ path: [PagePoint], radius: Double) -> Bool {
-        guard containsPolyline(path) else { return false }
-        let radius = max(0, radius)
-        return path.allSatisfy { point in
-            (0..<8).allSatisfy { index in
-                let angle = Double(index) * .pi / 4
-                return contains(.init(x: point.x + cos(angle) * radius, y: point.y + sin(angle) * radius))
-            }
-        }
-    }
 }
 
 public enum SelectionOutline {

@@ -18,6 +18,9 @@ enum HangProbe {
     private static let maxFrames = 96
     nonisolated(unsafe) private static let frames = UnsafeMutablePointer<UInt>.allocate(capacity: maxFrames)
     nonisolated(unsafe) private static var installed = false
+    /// Off by default (Settings › Diagnose, read at launch). Also gates the
+    /// editor's timing and input traces, so normal use logs nothing per touch.
+    static var isInstalled: Bool { installed }
 
     @MainActor static func install() {
         guard !installed else { return }
@@ -39,8 +42,9 @@ enum HangProbe {
         thread.start()
     }
 
-    /// Main thread only. Cheap: one lock and a dictionary increment.
+    /// Main thread only. Not installed: a single branch; else one lock and a dictionary increment.
     static func hit(_ tag: StaticString) {
+        guard installed else { return }
         os_unfair_lock_lock(&lock)
         counts["\(tag)", default: 0] += 1
         os_unfair_lock_unlock(&lock)

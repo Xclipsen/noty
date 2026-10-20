@@ -68,20 +68,58 @@ enum ImageRendering {
         let bytes: Data; let image: UIImage
         init(_ bytes: Data, _ image: UIImage) { self.bytes = bytes; self.image = image }
     }
+    /// Cost: decoded pixels only. The original bytes are shared with the model
+    /// (copy on write); counting them as well let a single large photo exceed
+    /// the limit, so it was evicted at once and decoded again on every draw.
     private static let cache: NSCache<NSString, Entry> = {
-        let cache = NSCache<NSString, Entry>(); cache.totalCostLimit = 32 * 1024 * 1024; cache.countLimit = 12
+        let cache = NSCache<NSString, Entry>(); cache.totalCostLimit = 48 * 1024 * 1024; cache.countLimit = 16
         return cache
     }()
+    private static let renditions = [256, 512, 1024, 2048, 2400, 4096]
+    private static var decoding: [NSString: [@MainActor (Error?) -> Void]] = [:]
+    private struct Decoded: @unchecked Sendable { let image: CGImage? ; let error: Error? }
 
-    static func image(_ object: ImageObject, limit: Int = 2048) throws -> UIImage {
-        let key = "\(object.id)-\(limit)" as NSString
-        if let entry = cache.object(forKey: key), entry.bytes == object.data { return entry.image }
-        let cgImage = try ImageImport.thumbnail(object.data, limit: limit)
+    private static func key(_ object: ImageObject, _ limit: Int) -> NSString { "\(object.id)-\(limit)" as NSString }
+    private static func store(_ cgImage: CGImage, for object: ImageObject, limit: Int) -> UIImage {
         let image = UIImage(cgImage: cgImage)
-        cache.setObject(Entry(object.data, image), forKey: key,
-                        cost: cgImage.bytesPerRow * cgImage.height + object.data.count)
+        cache.setObject(Entry(object.data, image), forKey: key(object, limit), cost: cgImage.bytesPerRow * cgImage.height)
         return image
     }
+
+    static func image(_ object: ImageObject, limit: Int = 2048) throws -> UIImage {
+        if let image = cached(object, limit: limit) { return image }
+        return store(try ImageImport.thumbnail(object.data, limit: limit), for: object, limit: limit)
+    }
+    /// The rendition at `limit` if it is cached; never decodes.
+    static func cached(_ object: ImageObject, limit: Int) -> UIImage? {
+        guard let entry = cache.object(forKey: key(object, limit)), entry.bytes == object.data else { return nil }
+        return entry.image
+    }
+    /// The closest cached rendition of any size (placeholder while decoding).
+    static func anyCached(_ object: ImageObject, near limit: Int) -> UIImage? {
+        renditions.sorted { abs($0 - limit) < abs($1 - limit) }.lazy.compactMap { cached(object, limit: $0) }.first
+    }
+    /// Decodes the rendition off the main thread, then calls `done` on the
+    /// main actor (error: unreadable original). Concurrent requests share one decode.
+    static func prepare(_ object: ImageObject, limit: Int, done: @escaping @MainActor (Error?) -> Void) {
+        let name = key(object, limit)
+        if cached(object, limit: limit) != nil { done(nil); return }
+        if decoding[name] != nil { decoding[name]?.append(done); return }
+        decoding[name] = [done]
+        let data = object.data
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result: Decoded
+            do { result = Decoded(image: try ImageImport.thumbnail(data, limit: limit), error: nil) }
+            catch { result = Decoded(image: nil, error: error) }
+            Task { @MainActor in
+                if let image = result.image { _ = store(image, for: object, limit: limit) }
+                let waiting = decoding.removeValue(forKey: Self.key(object, limit)) ?? []
+                waiting.forEach { $0(result.error) }
+            }
+        }
+    }
+    /// Memory warning: decoded renditions are rebuilt on demand.
+    static func purge() { cache.removeAllObjects() }
 
     nonisolated static func validate(_ object: ImageObject) throws {
         let (width, height) = try ImageImport.dimensions(object.data)
@@ -90,7 +128,7 @@ enum ImageRendering {
     }
 
     static func draw(_ object: ImageObject, context: CGContext, origin: PagePoint, limit: Int = 2048) throws {
-        draw(object, image: try image(object, limit: limit), context: context, origin: origin)
+        draw(try image(object, limit: limit), for: object, context: context, origin: origin)
     }
 
     /// Uncached decode for background rasterisation; same pixels as `image(_:limit:)`.
@@ -98,14 +136,21 @@ enum ImageRendering {
         UIImage(cgImage: try ImageImport.thumbnail(object.data, limit: limit))
     }
 
-    /// The shared crop/rotation transform for an already decoded image. Safe off
-    /// the main actor in a context pushed on the current thread.
+    /// Background rasterisation with an already decoded rendition.
     nonisolated static func draw(_ object: ImageObject, image: UIImage, context: CGContext, origin: PagePoint) {
+        draw(image, for: object, context: context, origin: origin)
+    }
+
+    /// The shared crop/rotation transform. `image`: a rendition of `object`
+    /// (nil: neutral placeholder of its frame). Safe off the main actor in a
+    /// context pushed on the current thread.
+    nonisolated static func draw(_ image: UIImage?, for object: ImageObject, context: CGContext, origin: PagePoint) {
         context.saveGState(); defer { context.restoreGState() }
         context.translateBy(x: origin.x + object.x + object.width / 2, y: origin.y + object.y + object.height / 2)
         context.rotate(by: object.rotation * .pi / 180)
         let frame = CGRect(x: -object.width / 2, y: -object.height / 2, width: object.width, height: object.height)
         context.clip(to: frame)
+        guard let image else { context.setFillColor(gray: 0.86, alpha: 0.6); context.fill(frame); return }
         let fullWidth = object.width / object.crop.width, fullHeight = object.height / object.crop.height
         image.draw(in: CGRect(x: frame.minX - object.crop.x * fullWidth, y: frame.minY - object.crop.y * fullHeight,
                               width: fullWidth, height: fullHeight))

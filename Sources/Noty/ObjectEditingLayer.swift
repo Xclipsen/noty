@@ -131,7 +131,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         for (index, handle) in (corners + [first, last, rotation]).enumerated() {
             handle.accessibilityLabel = index < 4 ? "Auswahl proportional skalieren" : index == 6 ? "Handschrift drehen" : "Formpunkt verschieben"
             let drag = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
-            drag.maximumNumberOfTouches = 1; handle.tag = index; handle.addGestureRecognizer(drag); addSubview(handle)
+            drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
+            handle.tag = index; handle.addGestureRecognizer(drag); addSubview(handle)
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -164,21 +165,18 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         if needsRefresh { refresh() }
     }
 
+    func adoptCommit(_ onCommit: @escaping (PageContent, PageContent) -> Bool) { self.onCommit = onCommit }
+    /// Memory warning: the decoded drawing and contour are rebuilt when needed.
+    func releaseMemory() { if !hasSelection, startContent == nil { cachedDrawing = nil; cachedOutline = nil } }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil { contourLayer.removeAllAnimations(); contourAnimationScale = nil; endLift() }
         else { setNeedsLayout() }
-        var view = superview
-        while let parent = view {
-            if let scroll = parent as? UIScrollView {
-                scroll.panGestureRecognizer.require(toFail: pan)
-                for handle in corners + [first, last, rotation] {
-                    for gesture in handle.gestureRecognizers ?? [] { scroll.panGestureRecognizer.require(toFail: gesture) }
-                }
-                break
-            }
-            view = parent.superview
-        }
+    }
+    /// Selection/shape drags win over notebook scrolling (handles: `ScrollPanPriority`).
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        gestureRecognizer === pan && ScrollPanPriority.outranksScrolling(gestureRecognizer, other)
     }
 
     override func draw(_ rect: CGRect) {
@@ -619,13 +617,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }, for: [.touchUpInside, .touchUpOutside]); root.addSubview(slider)
         let label = UILabel(frame: CGRect(x: 20, y: 98, width: 280, height: 24))
         label.text = "Farben"; label.font = .systemFont(ofSize: 17, weight: .semibold); label.textColor = .white; root.addSubview(label)
-        let colors: [UIColor] = [.systemYellow, .systemOrange, .systemRed, .systemPink, .systemGreen, .systemMint, .systemBlue, .systemPurple, .black, .darkGray, .white, .brown]
-        for (index, color) in colors.enumerated() {
+        let colors: [(UIColor, String)] = [(.systemYellow, "Gelb"), (.systemOrange, "Orange"), (.systemRed, "Rot"), (.systemPink, "Pink"),
+            (.systemGreen, "Grün"), (.systemMint, "Mint"), (.systemBlue, "Blau"), (.systemPurple, "Lila"),
+            (.black, "Schwarz"), (.darkGray, "Dunkelgrau"), (.white, "Weiß"), (.brown, "Braun")]
+        for (index, (color, name)) in colors.enumerated() {
             let button = UIButton(type: .system)
             button.frame = CGRect(x: 20 + (index % 6) * 48, y: 136 + (index / 6) * 48, width: 34, height: 34)
             button.backgroundColor = color; button.layer.cornerRadius = 17
             button.layer.borderWidth = 1; button.layer.borderColor = UIColor.white.withAlphaComponent(0.3).cgColor
-            button.accessibilityLabel = "Auswahlfarbe \(index + 1)"
+            button.accessibilityLabel = name; button.accessibilityHint = "Färbt die Auswahl"
             button.addAction(UIAction { [weak self] _ in
                 guard let self, self.active else { return }; self.color = InkColor(SwiftUI.Color(color)); self.applyStyle()
             }, for: .touchUpInside); root.addSubview(button)
@@ -710,11 +710,16 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         if !commit(value, previous: content) { clearSelection() }; refresh()
     }
     private func deleteSelection() {
+        // Without a selection Backspace/„Löschen“ must not re-encode the ink
+        // into an invisible undo step.
+        guard hasSelection else { return }
         var value = content
         value.textBoxes.removeAll { texts.contains($0.id) }; value.images.removeAll { images.contains($0.id) }
         value.shapes.removeAll { shapes.contains($0.id) }
-        let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()
-        value.drawing = PKDrawing(strokes: drawing.strokes.enumerated().filter { !ink.contains($0.offset) }.map(\.element)).dataRepresentation()
+        if !ink.isEmpty {
+            let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()
+            value.drawing = PKDrawing(strokes: drawing.strokes.enumerated().filter { !ink.contains($0.offset) }.map(\.element)).dataRepresentation()
+        }
         _ = commit(value, previous: content); clearSelection(); refresh()
     }
     private func applyStyle(changeWidth: Bool = false) {
@@ -749,13 +754,58 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         _ = commit(value, previous: content); refresh()
     }
     override var keyCommands: [UIKeyCommand]? {
-        [UIKeyCommand(input: "c", modifierFlags: .command, action: #selector(copyKey)),
+        var commands = [UIKeyCommand(input: "c", modifierFlags: .command, action: #selector(copyKey)),
          UIKeyCommand(input: "v", modifierFlags: .command, action: #selector(pasteKey)),
          UIKeyCommand(input: "\u{8}", modifierFlags: [], action: #selector(deleteKey)),
-         UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey))]
+         UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey)),
+         UIKeyCommand(title: "Alles auswählen", action: #selector(selectAllKey), input: "a", modifierFlags: .command)]
+        guard hasSelection, lift == nil, startContent == nil else { return commands }
+        commands += [UIKeyCommand(title: "Ausschneiden", action: #selector(cutKey), input: "x", modifierFlags: .command),
+                     UIKeyCommand(title: "Duplizieren", action: #selector(duplicateKey), input: "d", modifierFlags: .command)]
+        // Arrow keys move the selection by 1 pt, with ⇧ by 10 pt.
+        for input in [UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow, UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow] {
+            for flags in [UIKeyModifierFlags(), .shift] {
+                let command = UIKeyCommand(input: input, modifierFlags: flags, action: #selector(nudgeKey(_:)))
+                command.wantsPriorityOverSystemBehavior = true
+                commands.append(command)
+            }
+        }
+        return commands
     }
     @objc private func copyKey() { copySelection() }
     @objc private func pasteKey() { pasteSelection() }
     @objc private func deleteKey() { deleteSelection() }
     @objc private func escapeKey() { adopted = nil; clearSelection(); refresh() }
+    @objc private func cutKey() { guard hasSelection else { return }; copySelection(); deleteSelection() }
+    @objc private func duplicateKey() { guard hasSelection else { return }; copySelection(); pasteSelection() }
+    /// ⌘A: everything selectable on this page (the lasso's filter; shape tool: shapes).
+    @objc private func selectAllKey() {
+        guard active, lift == nil, startContent == nil else { return }
+        adopted = nil; clearSelection()
+        if tool == .shape { shapes = Set(content.shapes.map(\.id)) }
+        else {
+            if filter.text { texts = Set(content.textBoxes.filter(\.allowsObjectSelection).map(\.id)) }
+            if filter.images { images = Set(content.images.filter { !$0.locked }.map(\.id)) }
+            if filter.shapes { shapes = Set(content.shapes.map(\.id)) }
+            if filter.ink, let drawing = drawing(content.drawing) { ink = Set(drawing.strokes.indices) }
+        }
+        refresh()
+    }
+    @objc private func nudgeKey(_ command: UIKeyCommand) {
+        let step = command.modifierFlags.contains(.shift) ? 10.0 : 1.0
+        let (dx, dy): (Double, Double) = switch command.input ?? "" {
+        case UIKeyCommand.inputLeftArrow: (-step, 0)
+        case UIKeyCommand.inputRightArrow: (step, 0)
+        case UIKeyCommand.inputUpArrow: (0, -step)
+        default: (0, step)
+        }
+        // Same clamped move and ink transform as a drag; one model change per key.
+        guard active, hasSelection, lift == nil, startContent == nil, var value = transformed(content, dx: dx, dy: dy, scale: 1) else { return }
+        if let inkTransform {
+            guard let moved = transformedInk(content, using: inkTransform, inkOnly: false) else { self.inkTransform = nil; return }
+            value.drawing = moved.drawing
+        }
+        inkTransform = nil
+        _ = commit(value, previous: content); refresh()
+    }
 }
