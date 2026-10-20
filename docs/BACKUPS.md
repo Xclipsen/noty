@@ -1,5 +1,9 @@
 # Heft-Backup und Wiederherstellung – Format 1
 
+## Ergänzung 20.10.2026
+
+`.notybackup` unverändert (≤ 200 MB, im Speicher geprüft). Neu: Öffnen aus der Dateien-App („In noty öffnen“) kopiert die Datei zuerst ins App-`tmp`, prüft sie und zeigt Titel/Seitenzahl zur Bestätigung; danach derselbe Staging-/Kopie-Weg wie beim Import, bei geöffnetem Notizbuch erst nach dem Schließen. Bibliotheksbackup jetzt gestreamt bis 4 GB, externe Ziele mit Zielprüfung, Backoff und Aufräumen eigener Teilstände: [LIBRARY-BACKUP.md](LIBRARY-BACKUP.md). Implementiert und gebaut, auf dem iPad ungeprüft.
+
 ## Ergänzung Build 21
 
 Heft-/Bibliotheksarchive enthalten Schema-7-Umschlag/Papierstandard, gemischte Textformatierung und gesicherte Stände vor dem Leeren. Bibliotheksbackup enthält Werkzeugformat 4 einschließlich unterem Andocken, Autostift, Hover und Blättermodus. Containerformate unverändert; ältere unbekannte Notebook-/Werkzeugformate sperren. Unabhängiger Python-/Swift-Host-Roundtrip bestanden; externer Schema-7-Geräterestore noch ungeprüft. [Nachweise](UI-REBUILD.md). Aussagen zu fehlender WebDAV-/iCloud-Implementierung in den historischen Abschnitten unten wurden durch Build 20 überholt; dessen Geräteabnahme bleibt offen.

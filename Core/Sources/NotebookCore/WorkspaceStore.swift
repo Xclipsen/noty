@@ -12,10 +12,23 @@ public struct WorkspaceList: Sendable {
     public var workspaces: [TestWorkspace] = []
     public var unreadableCount = 0
 }
+/// Token for one staged archive; bound to its exact size/CRC and contents.
 public struct PreparedLibraryRestore: Sendable {
     public let id: UUID
-    public let bundle: LibraryBundle
-    let crc32: UInt32
+    public let summary: LibraryArchiveSummary
+}
+
+/// Rejects symbolic links in every path component between `url` and `base`.
+func requireRegularDirectory(_ url: URL, below base: URL) throws {
+    var checked = url.standardizedFileURL
+    let base = base.standardizedFileURL
+    guard checked.path == base.path || checked.path.hasPrefix(base.path + "/") else { throw LibraryError.invalidIndex }
+    while true {
+        let properties = try checked.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard properties.isDirectory == true, properties.isSymbolicLink != true else { throw LibraryError.invalidIndex }
+        if checked.path == base.path { break }
+        checked.deleteLastPathComponent()
+    }
 }
 
 /// Separate logical instances in the same app/container, not separate signed
@@ -70,37 +83,66 @@ public actor WorkspaceStore {
         return try publish(stage: stage, id: id, title: title, kind: .test)
     }
 
-    public func prepareRestore(file: URL) throws -> PreparedLibraryRestore {
-        let bytes = try LibraryArchive.read(file)
-        let bundle = try LibraryArchive.decode(bytes)
+    /// Copies the chosen file block-wise into a new stage and verifies the copy
+    /// in one streaming pass; `validate` (Apple-framework checks) sees every
+    /// notebook once, off the UI actor. A failed preparation removes its stage.
+    public func prepareRestore(file: URL, validate: @Sendable (Notebook) throws -> Void = { _ in }) throws -> PreparedLibraryRestore {
         let id = UUID()
         let stage = staging.appendingPathComponent(id.uuidString, isDirectory: true)
         try createStage(stage)
-        let input = stage.appendingPathComponent("input.notylibrary")
-        try bytes.write(to: input, options: .atomic)
-        guard try LibraryArchive.read(input) == bytes else { throw LibraryArchiveError.invalid }
-        return PreparedLibraryRestore(id: id, bundle: bundle, crc32: SnapshotChecksum.crc32(bytes))
+        do {
+            let input = stage.appendingPathComponent("input.notylibrary")
+            let copied = try BoundedFile.copy(from: file, to: input)
+            let summary = try LibraryArchive.verify(input, visit: validate)
+            guard summary.file == copied else { throw BackupError.invalidStaging }
+            return PreparedLibraryRestore(id: id, summary: summary)
+        } catch {
+            try? fm.removeItem(at: stage)
+            throw error
+        }
     }
 
-    /// UI validates all PDFKit/PencilKit contents before this call.
+    /// Drops a prepared, never committed stage (e.g. the user cancelled).
+    public func discardRestore(_ prepared: PreparedLibraryRestore) throws {
+        let stage = staging.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
+        guard fm.fileExists(atPath: stage.path) else { return }
+        try regularDirectory(stage)
+        guard !fm.fileExists(atPath: stage.appendingPathComponent("Data").path) else { return }
+        try fm.removeItem(at: stage)
+    }
+
+    /// UI validated all PDFKit/PencilKit contents during preparation. The staged
+    /// bytes must still match exactly; a second streaming pass re-checks every
+    /// chunk while writing it into its own new package (one notebook at a time).
     public func commitRestore(_ prepared: PreparedLibraryRestore, title: String) async throws -> TestWorkspace {
         let stage = staging.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
         try regularDirectory(stage)
         let input = stage.appendingPathComponent("input.notylibrary")
         let properties = try input.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard properties.isRegularFile == true, properties.isSymbolicLink != true else { throw BackupError.invalidStaging }
-        let bytes = try LibraryArchive.read(input)
-        guard SnapshotChecksum.crc32(bytes) == prepared.crc32,
-              try LibraryArchive.decode(bytes) == prepared.bundle else { throw BackupError.invalidStaging }
+        guard (try? BoundedFile.checksum(input)) == prepared.summary.file else { throw BackupError.invalidStaging }
         let data = stage.appendingPathComponent("Data", isDirectory: true)
-        try await LibraryStore(root: data).populateEmpty(prepared.bundle)
+        guard !fm.fileExists(atPath: data.path) else { throw LibraryArchiveError.destinationExists }
+        // Chunk CRCs cover the archived bytes as written (any key order, older
+        // builds included); the restored packages are compared by a canonical
+        // re-encoding of the decoded value, one notebook at a time.
+        var fingerprints: [UUID: LibraryArchiveFileInfo] = [:]
+        let summary = try LibraryArchive.verify(input) { document in
+            try LibraryStore.populatePackage(document, root: data)
+            fingerprints[document.id] = try LibraryArchive.fingerprint(document)
+        }
+        guard summary == prepared.summary else { throw BackupError.invalidStaging }
+        try await LibraryStore(root: data).populateIndex(summary.snapshot, toolbar: summary.toolbar)
         // A fresh independent store must reopen every restored document before
-        // the result is published. Canonical paths differ from legacy sources.
-        let result = try await LibraryStore(root: data).backupBundle()
-        guard Dictionary(uniqueKeysWithValues: result.documents.map { ($0.id, $0) }) ==
-                Dictionary(uniqueKeysWithValues: prepared.bundle.documents.map { ($0.id, $0) }),
-              result.toolbar == prepared.bundle.toolbar else {
+        // the result is published.
+        let plan = try await LibraryStore(root: data).backupPlan()
+        guard plan.toolbar == summary.toolbar, plan.snapshot.items.map(\.id) == summary.snapshot.items.map(\.id) else {
             throw LibraryArchiveError.incomplete
+        }
+        for item in plan.documents {
+            guard let expected = fingerprints[item.id], try LibraryArchive.fingerprint(plan.committedNotebook(item)) == expected else {
+                throw LibraryArchiveError.incomplete
+            }
         }
         // The checked source file is kept as part of this workspace's provenance.
         return try publish(stage: stage, id: prepared.id, title: title, kind: .restored)
@@ -122,15 +164,5 @@ public actor WorkspaceStore {
         try fm.moveItem(at: stage, to: destination)
         return record
     }
-    private func regularDirectory(_ url: URL) throws {
-        var checked = url.standardizedFileURL
-        let base = root.standardizedFileURL
-        guard checked.path == base.path || checked.path.hasPrefix(base.path + "/") else { throw LibraryError.invalidIndex }
-        while true {
-            let properties = try checked.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-            guard properties.isDirectory == true, properties.isSymbolicLink != true else { throw LibraryError.invalidIndex }
-            if checked.path == base.path { break }
-            checked.deleteLastPathComponent()
-        }
-    }
+    private func regularDirectory(_ url: URL) throws { try requireRegularDirectory(url, below: root) }
 }

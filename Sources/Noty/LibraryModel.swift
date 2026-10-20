@@ -75,21 +75,51 @@ final class LibraryModel: ObservableObject {
         }
     }
 
-    var editorBackup: (() async -> Data?)?
+    /// Set by the open editor workspace: commits every pane (editors pause only
+    /// for this flush) so a following archive contains all acknowledged input.
+    var editorCommit: (() async -> Bool)?
+    /// An archive is being written from committed packages; the library stays
+    /// usable, only permanent deletion waits for it.
+    private(set) var archiveRunning = false
+    private var preparedExport: URL?
 
-    /// `background`: automatic backup; the library keeps its normal appearance.
-    func libraryBackup(editorsPaused: Bool = false, background: Bool = false) async -> Data? {
-        guard ready, !busy, opened == nil || editorsPaused else { return nil }
-        busy = true; backgroundBusy = background
-        defer { busy = false; backgroundBusy = false }
+    /// Why an automatic backup should wait a moment instead of starting now.
+    var backupBlocker: String? {
+        if !ready { return "Bibliothek wird geladen" }
+        if busy && !backgroundBusy { return "Bibliotheksvorgang läuft" }
+        if archiveRunning { return "Ein Backup läuft bereits" }
+        return nil
+    }
+
+    /// Streams the committed library into a new verified temporary archive, one
+    /// notebook at a time and off the UI actor, including the Apple-framework
+    /// checks. With an open editor the caller committed it first (`editorCommit`);
+    /// editing continues meanwhile, later commits are simply not included.
+    func buildArchive(editorsCommitted: Bool = false) async throws -> PreparedLibraryArchive {
+        guard ready, opened == nil || editorsCommitted, !archiveRunning else {
+            throw BackupPostponed(reason: backupBlocker ?? "Notizbuch geöffnet")
+        }
+        archiveRunning = true; defer { archiveRunning = false }
+        let plan = try await store.backupPlan()
+        let url = try BackupScratch.newFile()
+        let task = Task.detached(priority: .utility) { () throws -> LibraryArchiveSummary in
+            try LibraryArchive.write(plan, to: url, validate: BackupValidation.validate)
+        }
+        let summary = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+        return PreparedLibraryArchive(url: url, summary: summary)
+    }
+
+    /// Manual export from Settings: closed editors, visible progress, alert on error.
+    func libraryBackup() async -> PreparedLibraryArchive? {
+        guard ready, !busy, opened == nil else { return nil }
+        busy = true; defer { busy = false }
+        discardPreparedExport()
         backupStatus = "Bibliotheksbackup wird vorbereitet …"
         do {
-            let bundle = try await store.backupBundle()
-            // Framework validation happens before calling this a usable export.
-            for document in bundle.documents { try EditorModelValidation.validate(document) }
-            let bytes = try await Task.detached { try LibraryArchive.encode(bundle) }.value
+            let archive = try await buildArchive()
+            preparedExport = archive.url
             backupStatus = "Bibliotheksbackup vollständig vorbereitet"
-            return bytes
+            return archive
         } catch {
             backupStatus = "Bibliotheksbackup fehlgeschlagen"
             self.error = error.localizedDescription
@@ -102,6 +132,12 @@ final class LibraryModel: ObservableObject {
         UserDefaults.standard.set(date, forKey: libraryBackupKey)
         lastLibraryExport = date
         backupStatus = "Bibliotheksdatei exportiert: \(date.formatted(date: .omitted, time: .shortened))"
+        discardPreparedExport()
+    }
+
+    private func discardPreparedExport() {
+        if let preparedExport { BackupScratch.remove(preparedExport) }
+        preparedExport = nil
     }
 
     func editorChoices() async -> [OpenNotebook] {
@@ -258,6 +294,8 @@ final class LibraryModel: ObservableObject {
     private func purging(_ action: () async throws -> LibraryPurgeResult) async {
         await settle()
         guard ready, !busy, opened == nil else { return }
+        // A running backup reads these packages; deleting them would abort it.
+        guard !archiveRunning else { error = "Bitte warten, bis das laufende Backup abgeschlossen ist."; return }
         busy = true
         defer { busy = false }
         do {
@@ -361,9 +399,11 @@ final class LibraryModel: ObservableObject {
         } catch { self.error = "PDF-Import fehlgeschlagen: \(error.localizedDescription)" }
     }
 
-    func importBackup(_ url: URL, parent: UUID?) async {
+    /// Restores a notebook backup as a new separate copy; nil on failure (alert shown).
+    @discardableResult
+    func importBackup(_ url: URL, parent: UUID?) async -> RestoredNotebook? {
         await settle()
-        guard ready, !busy, opened == nil else { return }
+        guard ready, !busy, opened == nil else { return nil }
         busy = true
         let access = url.startAccessingSecurityScopedResource()
         defer {
@@ -378,7 +418,8 @@ final class LibraryModel: ObservableObject {
             let restored = try await repository.commitRestore(prepared)
             snapshot = try await store.load().snapshot
             if let parent { snapshot = try await store.move(restored.id, to: parent) }
-        } catch { self.error = "Wiederherstellung fehlgeschlagen: \(error.localizedDescription)" }
+            return restored
+        } catch { self.error = "Wiederherstellung fehlgeschlagen: \(error.localizedDescription)"; return nil }
     }
 
     nonisolated static func readPDF(_ url: URL) throws -> Data {

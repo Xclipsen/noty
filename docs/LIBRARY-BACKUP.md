@@ -1,5 +1,26 @@
 # Bibliotheksbackup und getrennte Bereiche – Build 11
 
+## Ergänzung 20.10.2026 · Streaming, externe Ziele, Öffnen aus Dateien
+
+Implementiert, Core-Tests, Host-Roundtrip und SDK-Build erfolgreich; nicht installiert, auf dem iPad ungeprüft. Überholt unten „Höchstens 200.000.000 Bytes“, „mehrere vollständige Snapshots im Speicher“ und „kein Streaming großer Archive“.
+
+- **Format 1 unverändert.** Das Manifest wird vor den Blöcken mit maximaler Ziffernbreite reserviert und zuletzt geschrieben; der Rest ist mit Leerzeichen aufgefüllt (gültiges JSON, das Längenfeld schließt sie ein). Blöcke mit sortierten JSON-Schlüsseln; CRCs immer über die tatsächlich geschriebenen Bytes. Archive älterer Builds bleiben les- und wiederherstellbar; ältere Builds lesen neue Archive bis zu ihrer alten 200-MB-Grenze.
+- **Grenzen:** Archiv ≤ 4.000.000.000 Bytes, Heftblock ≤ 200 MB (= größte Revision), Manifest ≤ 2 MB, Index ≤ 4 MB/10.000 Einträge, Werkzeuge ≤ 64 KB. Verstöße melden das betroffene Heft bzw. die Gesamtgröße.
+- **Schreiben:** `LibraryStore.backupPlan` erfasst auf dem Bibliotheksactor nur Index (inkl. Papierkorb/Ordner), Präferenzen und Paketpfade. `LibraryArchive.write` liest danach außerhalb jedes Actors je Heft die bestätigte Revision (bei gleichzeitigem Commit bis zu drei frische Leseversuche; nur ältere gerettete Revision → Abbruch), prüft PDF (CoreGraphics), PencilKit und Bilder, kodiert, bildet CRC, hängt an und gibt frei. Danach liest ein Streaming-Durchlauf die fertige Datei vollständig zurück (CRC, Struktur, jedes Heft). Speicherbedarf ≈ ein Heft. Temporäre Archive nur in `tmp/NotyBackupArchives`, nie im Bibliotheksbaum; Reste > 1 Tag beim Start entfernt.
+- **Offene Editoren** werden nur für Flush/Commit pausiert und arbeiten danach weiter; spätere Commits fehlen im Archiv. Endgültiges Löschen wartet auf ein laufendes Backup.
+- **Restore:** Datei blockweise nach `Staging/<UUID>/input.notylibrary` kopieren, Streaming-Prüfung inkl. Apple-Prüfung je Heft; Abbruch oder fehlgeschlagene Vorbereitung entfernt dieses unveröffentlichte Stage. Commit: Größe+CRC der Stagingdatei, zweiter Streaming-Durchlauf schreibt jedes Heft einzeln in sein neues Paket und liest es zurück; der frische Store wird je Heft per kanonischer Neukodierung (Größe+CRC) mit dem Archivinhalt verglichen. Index zuletzt, Veröffentlichung unverändert.
+- **Unabhängige Prüfung:** `verify_library_backup.py` liest blockweise, gleiche Grenzen, explizite Prüfungen statt `assert`, Exitcode 1 bei Fehler; gibt Gesamtgröße und Datei-CRC aus.
+
+### Automatisches externes Backup
+
+Ablauf: lokale Vorbedingung → Editor-/Werkzeug-Commit (sonst „verschoben“, kein Fehler, neuer Versuch nach einer Minute) → Zielprüfung (Ordner: Bookmark auflösbar, Ordner vorhanden – Schreibrechte zeigt erst der echte Schreibversuch; WebDAV: authentifiziertes `PROPFIND` Depth 0) → Archiv bauen → übertragen → zurücklesen → bereinigen. Fehlversuche verlängern den Abstand: 15 min, 1 h, 4 h, danach 12 h; Erfolg setzt zurück, „Jetzt sichern“ ignoriert den Abstand. Ergebnis, kurzer Grund und Fehlerzähler stehen optional in der Richtlinie (ältere gespeicherte Richtlinien bleiben lesbar).
+
+- **Ordner/iCloud Drive:** alle Zugriffe über `NSFileCoordinator`. Kopie als `<name>.partial`, Rücklesen per Größe+CRC, Umbenennen, finales Rücklesen; Fehler entfernen den eigenen Teilstand, eine nicht bestätigte Enddatei wird entfernt (sonst in `.failed` umbenannt). `.<name>.icloud`-Platzhalter zählen für die Aufbewahrung, werden nie als beschädigt gewertet und ohne Download gelöscht; Wiederherstellen lädt sie per koordiniertem Lesen. Eigene `.partial`/`.failed` älter als 1 Tag werden beim nächsten Erfolg entfernt. Fremde Dateien nie.
+- **WebDAV:** `PUT` direkt aus der Datei, `.partial` per Download und Größe+CRC prüfen, `MOVE` ohne Überschreiben, Enddatei erneut prüfen. Nach Fehlern best effort `DELETE` des eigenen Teil- bzw. unbestätigten Stands; alte eigene `.partial` beim nächsten Erfolg. Leeres Passwortfeld behält das gespeicherte Passwort; „Zugangsdaten entfernen“ löscht den Schlüsselbundeintrag nur ausdrücklich.
+- **Status:** verschoben / nicht erreichbar / fehlgeschlagen mit Grund / Erfolg mit Datum. Automatische Fehler erzeugen keinen Alert, nur Plakette und Einstellungen; manuelles Sichern meldet per Alert. Mehr als drei Tage ohne Erfolg (oder seit Einrichtung): „Seit N Tagen kein Backup“. Weiterhin kein Beleg eines abgeschlossenen Cloud-Uploads.
+- **Aus Dateien öffnen:** `CFBundleDocumentTypes` (Owner) für `.notylibrary`/`.notybackup`. Datei wird zuerst koordiniert ins App-`tmp` kopiert und vollständig geprüft, dann mit Zusammenfassung bestätigt: Bibliothek immer als neuer Bereich, Heft als getrennte Kopie (bei geöffnetem Notizbuch erst nach dem Schließen). Abbrechen verwirft das Stage.
+- **Signierung:** Ablaufdatum aus dem eigenen `embedded.mobileprovision` (`SigningProfile`, Core-Test), Anzeige „Signatur gültig bis …“; mit eingeschalteter Erinnerung plant jeder Start die eine Mitteilung (feste Kennung) 24 h vor Ablauf neu, ohne beim Start nach Erlaubnis zu fragen.
+
 Implementiert, unter Linux geprüft, für arm64 gebaut/signiert und am 17.10.2026 als Update installiert. Sechs Hefte/32 App-Dateien beim Update unverändert. UI- und Dateianbieter-Abnahme noch offen gemäß [BATCH-TEST-11.md](history/BATCH-TEST-11.md).
 
 ## Bereiche und Eigentümer
