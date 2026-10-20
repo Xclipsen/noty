@@ -18,14 +18,12 @@ public struct NotebookPagePlacement: Equatable, Sendable {
                  width: contentRect.width * scale, height: contentRect.height * scale)
     }
 
-    /// Surface x of the centres of the outermost sheet regions. A writing
-    /// margin counts as its own region; without margins both are the page centre.
+    /// Surface x of the sheet's outer edges, writing space included. Writing
+    /// scroll lets each edge travel at most to the middle of the screen
+    /// (user request 20.10.2026; before: centre of the outermost region to the
+    /// opposite screen edge, which pushed narrow writing space almost off screen).
     public var writingScrollAnchors: (left: Double, right: Double) {
-        let leftMargin = contentFrame.x - frame.x
-        let rightMargin = frame.x + frame.width - contentFrame.x - contentFrame.width
-        let middle = contentFrame.x + contentFrame.width / 2
-        return (left: leftMargin > 0.5 ? frame.x + leftMargin / 2 : middle,
-                right: rightMargin > 0.5 ? frame.x + frame.width - rightMargin / 2 : middle)
+        (left: frame.x, right: frame.x + frame.width)
     }
 }
 

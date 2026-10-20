@@ -436,7 +436,7 @@ struct ContentView: View {
             onFit: { fitRequest += 1 }, onCustomize: { customizingTools = true },
             onSearch: { contentSearch = true }, onSecondView: onSecondView,
             ruler: Binding(get: { ruler }, set: { ruler = $0 }),
-            more: $toolbarMore, settings: $toolbarOptions, axis: axis)
+            more: $toolbarMore, settings: $toolbarOptions, axis: axis, activeInk: lastInkTool)
     }
 
     private func editorHeader(layout: ToolbarLayout) -> some View {
@@ -469,12 +469,14 @@ struct ContentView: View {
                 }
                 if layout.headerActionCount >= 5 {
                     Button { writingScroll.toggle() } label: {
-                        Image(systemName: "arrow.left.and.right.square").frame(width: 44, height: 44)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(writingScroll ? Color.cyan.opacity(0.28) : .clear))
-                            .contentShape(Rectangle())
+                        // On: the symbol itself is filled and tinted, no box behind it.
+                        Image(systemName: writingScroll ? "arrow.left.and.right.square.fill" : "arrow.left.and.right.square")
+                            .foregroundStyle(writingScroll ? Color.notyAccent : Color.white)
+                            .scaleEffect(writingScroll ? 1.12 : 1)
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.accessibilityLabel("Schreibscrollen")
                         .accessibilityValue(writingScroll ? "Ein" : "Aus")
-                        .accessibilityHint("Seitlich bis zur Blattmitte scrollen, um bequemer am Rand zu schreiben.")
+                        .accessibilityHint("Seitlich scrollen, bis der Blattrand die Bildschirmmitte erreicht, um bequemer am Rand zu schreiben.")
                 }
                 optionsMenu(layout: layout)
                 if !layout.compactHeader {
@@ -589,7 +591,7 @@ struct ContentView: View {
             }
             Section {
                 Menu("Ansicht", systemImage: "eye") {
-                    Toggle("Schreibscrollen bis zur Blattmitte", systemImage: "arrow.left.and.right.square", isOn: $writingScroll)
+                    Toggle("Schreibscrollen bis zur Bildschirmmitte", systemImage: "arrow.left.and.right.square", isOn: $writingScroll)
                     Toggle("Blättern statt Scrollen", systemImage: "book.pages", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
                     Toggle("PDFs einheitlich anzeigen", systemImage: "rectangle.split.3x1", isOn: Binding(get: { toolbox.preferences.normalizePageWidths ?? false }, set: { toolbox.preferences.normalizePageWidths = $0 }))
                         .accessibilityHint("Gleiche Arbeitsblattbreite mit Schreibraum daneben. Ändert nur die Anzeige.")

@@ -37,13 +37,13 @@ private struct NotyToolHover: ViewModifier {
     @Environment(\.isEnabled) private var enabled
     @State private var hovering = false
     func body(content: Content) -> some View {
+        // Only the symbol itself lights up and lifts: no platter, no visible
+        // hit box (user request 20.10.2026), therefore no system lift effect.
         content
-            .background(RoundedRectangle(cornerRadius: 10).fill(.white.opacity(hovering ? 0.12 : 0)))
+            .brightness(hovering ? 0.12 : 0)
             .scaleEffect(hovering && !reduced ? 1.08 : 1)
             .offset(y: hovering && !reduced ? -2 : 0)
-            .shadow(color: .black.opacity(hovering ? 0.25 : 0), radius: hovering ? 5 : 0, y: hovering ? 3 : 0)
-            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 10))
-            .hoverEffect(.lift, isEnabled: enabled && !reduced)
+            .shadow(color: .black.opacity(hovering ? 0.3 : 0), radius: hovering ? 4 : 0, y: hovering ? 3 : 0)
             .onContinuousHover { phase in
                 switch phase {
                 case .active: hovering = enabled

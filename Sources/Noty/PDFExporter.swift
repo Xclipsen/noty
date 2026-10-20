@@ -109,7 +109,8 @@ enum PDFExporter {
     private static func draw(_ page: Page, layout: PageLayout, source: CGPDFPage?, assets: PageAssets, context: CGContext) {
         let bounds = layout.canvas.bounds
         drawPaper(style: page.margins?.style ?? page.paper ?? .blank, bounds: bounds,
-                  color: page.margins?.color ?? page.paperColor ?? .white, coordinateScale: page.writingCoordinateScale)
+                  color: page.margins?.color ?? page.paperColor ?? .white, coordinateScale: page.writingCoordinateScale,
+                  columns: source == nil ? nil : layout.ruledColumnsBesidePDF)
         if let source {
             UIColor.white.setFill(); context.fill(layout.sourceFrame.cgRect)
             PageRaster.drawSource(source, layout: layout, context: context)
@@ -149,19 +150,27 @@ enum PDFExporter {
         return PDFDocument(data: data)!
     }
 
-    nonisolated static func drawPaper(style: PaperStyle, bounds: CGRect, color: PaperColor = .white, coordinateScale: CGFloat = 1) {
+    /// `columns`: x bands ruled separately, each with the 32-pt side inset
+    /// (`PageLayout.ruledColumnsBesidePDF`); nil rules the whole width.
+    nonisolated static func drawPaper(style: PaperStyle, bounds: CGRect, color: PaperColor = .white, coordinateScale: CGFloat = 1,
+                                      columns: [ClosedRange<Double>]? = nil) {
         (color == .dark ? UIColor.black : .white).setFill(); UIRectFill(bounds)
         guard style != .blank else { return }
         if style == .legacyTest { drawTestPaper(); return }
         let path = UIBezierPath()
         let spacing: CGFloat = (style == .lined ? PaperRuling.spacing : 16) * coordinateScale
         let bottomInset: CGFloat = (style == .lined ? 16 : 40) * coordinateScale
-        for y in stride(from: CGFloat(PaperRuling.firstBaseline) * coordinateScale, through: bounds.height - bottomInset, by: spacing) {
-            path.move(to: CGPoint(x: 32 * coordinateScale, y: y)); path.addLine(to: CGPoint(x: bounds.width - 32 * coordinateScale, y: y))
-        }
-        if style == .grid {
-            for x in stride(from: CGFloat(32) * coordinateScale, through: bounds.width - 32 * coordinateScale, by: spacing) {
-                path.move(to: CGPoint(x: x, y: 40 * coordinateScale)); path.addLine(to: CGPoint(x: x, y: bounds.height - 40 * coordinateScale))
+        let inset = 32 * coordinateScale
+        for column in columns ?? [0...Double(bounds.width)] {
+            let from = CGFloat(column.lowerBound) + inset, to = CGFloat(column.upperBound) - inset
+            guard to - from >= 8 * coordinateScale else { continue }
+            for y in stride(from: CGFloat(PaperRuling.firstBaseline) * coordinateScale, through: bounds.height - bottomInset, by: spacing) {
+                path.move(to: CGPoint(x: from, y: y)); path.addLine(to: CGPoint(x: to, y: y))
+            }
+            if style == .grid {
+                for x in stride(from: from, through: to, by: spacing) {
+                    path.move(to: CGPoint(x: x, y: 40 * coordinateScale)); path.addLine(to: CGPoint(x: x, y: bounds.height - 40 * coordinateScale))
+                }
             }
         }
         UIColor(white: color == .dark ? 0.3 : 0.8, alpha: 1).setStroke(); path.lineWidth = 0.5 * coordinateScale; path.stroke()

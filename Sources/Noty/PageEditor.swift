@@ -569,7 +569,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if readMode { reader().isHidden = false } else { pdfView?.isHidden = true }
         pdfRaster.isHidden = !hasSource || readMode
         paperBackground.configure(style: editor.margins?.style ?? (editor.sourcePage == nil ? editor.paper : .blank),
-                                  color: editor.margins?.color ?? editor.paperColor, coordinateScale: pageLayout.writingCoordinateScale)
+                                  color: editor.margins?.color ?? editor.paperColor, coordinateScale: pageLayout.writingCoordinateScale,
+                                  columns: editor.sourcePage == nil ? nil : pageLayout.ruledColumnsBesidePDF)
         if pageID != editor.pageID {
             pageID = editor.pageID
             sourceDark = editor.paperColor == .dark; sourceDarkCalculated = false

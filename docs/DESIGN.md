@@ -1,5 +1,17 @@
 # Designentscheidungen für noty
 
+## Rückmeldung zu Build 49 – 20.10.2026
+
+Nutzertest Build 49. Umgesetzt in diesem Strang:
+- **Werkzeugleiste:**
+  - Kein sichtbarer Kasten mehr um das ausgewählte Werkzeug.
+  - Hover hebt nur das Symbol selbst an, ohne Systemplatte und ohne Trefferfläche.
+  - Ausgewählt: Das Symbol wird etwas größer (1,2-fach), und nur der schreibende Teil trägt die aktive Farbe. Das sind die Mine bei Stift/Bleistift, der Strich unter dem Textmarker und der Punkt beim Laserpointer. Andere Werkzeuge färben nichts ein, sondern nehmen die Farbe des zuletzt benutzten Stifts nur dort an, wo es einen schreibenden Teil gibt.
+  - Aktive Hilfsknöpfe (Lineal, Schreibscrollen) sind eingefärbt statt hinterlegt.
+- **Schreibscrollen:** Der Blattrand (mit Schreibplatz) kann höchstens bis zur Bildschirmmitte gezogen werden. Vorher wanderte die Mitte des äußersten Bereichs bis zum gegenüberliegenden Rand. Der Schalter heißt jetzt „Schreibscrollen bis zur Bildschirmmitte“.
+- **PDF-Schreibplatz:** Die Linien im Rand beginnen mit 32 pt Abstand zum PDF statt direkt an dessen Kante. Jeder Rand wird für sich liniert, in Editor, Vorschau und Export gleich (`PageLayout.ruledColumnsBesidePDF`). Papierseiten bleiben ein durchgehendes Blatt.
+- **„Seite anpassen“:** Die Vorschau ist scharf und folgt den Reglern ohne Verzögerung. Die gespeicherte Seite wird einmal gerendert, Papier und Linien des neuen Platzes werden live gezeichnet.
+
 ## Schreibplatz für Papierseiten – 20.10.2026
 
 Nutzer: Normale Seiten sollen sich wie PDF-Seiten über „Schreibplatz hinzufügen“ erweitern lassen, vor allem nach **rechts**. Die Linien sollen in den neuen Platz übergehen, nicht abschneiden. Umgesetzt:

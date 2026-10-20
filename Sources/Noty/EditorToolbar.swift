@@ -49,8 +49,9 @@ struct EditorToolbar: View {
     @Binding var more: Bool
     @Binding var settings: Bool
     var axis: ToolbarAxis
+    /// Last pen/pencil/marker: non-ink tools show its colour when selected.
+    var activeInk: WritingTool = .pen
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var selectionSpace
     private var vertical: Bool { axis == .vertical }
     /// First level: drawing/writing tools; the laser pointer and „PDF lesen“
     /// sit on the second level with the utilities (derived, order unchanged).
@@ -138,25 +139,30 @@ struct EditorToolbar: View {
                 tool = choice.tool; settings = choice.options
             }
         } label: {
-            ToolbarGlyph(tool: item, selected: selected, markerTip: preferences.effectiveMarkerTip)
+            // Selected: no box, the symbol itself grows and takes the ink colour.
+            ToolbarGlyph(tool: item, selected: selected, ink: selected ? selectionInk(for: item) : nil,
+                         markerTip: preferences.effectiveMarkerTip)
+                .scaleEffect(selected ? 1.2 : 1)
                 .frame(width: ToolbarLayout.cell, height: ToolbarLayout.cell).contentShape(Rectangle())
-                .background {
-                    if selected {
-                        NotyToolSelection(shape: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                            .frame(width: 44, height: 44)
-                            .matchedGeometryEffect(id: "selected-tool", in: selectionSpace)
-                    }
-                }
         }.buttonStyle(NotyToolStyle()).accessibilityLabel(item == .strokeEraser ? "Radierer" : item.title)
             .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+    /// Colour of the active pen: ink tools their own, the laser its beam,
+    /// every other tool the last used pen/pencil/marker (full opacity).
+    private func selectionInk(for item: WritingTool) -> Color {
+        var ink = item == .laser ? preferences.laserStyle.color : preferences.inkColor(for: item.isInk ? item : activeInk)
+        ink.alpha = 1
+        return ink.color
     }
     private func utility(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 23, weight: .regular)).symbolRenderingMode(.hierarchical)
-                .foregroundStyle(LinearGradient(colors: [.white, .white.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .foregroundStyle(selected ? AnyShapeStyle(Color.notyAccent)
+                                 : AnyShapeStyle(LinearGradient(colors: [.white, .white.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing)))
+                .scaleEffect(selected ? 1.15 : 1)
                 .frame(width: ToolbarLayout.cell, height: ToolbarLayout.cell).contentShape(Rectangle())
-                .background(selected ? Color.white.opacity(0.17) : .clear, in: RoundedRectangle(cornerRadius: 13))
         }.buttonStyle(NotyToolStyle()).accessibilityLabel(title).help(title)
+            .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var separator: some View {

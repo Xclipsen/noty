@@ -214,7 +214,7 @@ private struct EditorSettingsPage: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Schreibscrollen bis zur Blattmitte", isOn: $writingScroll)
+                Toggle("Schreibscrollen bis zur Bildschirmmitte", isOn: $writingScroll)
                 Toggle("Seitenleiste beim Öffnen zeigen", isOn: $sidebarVisible)
                 Toggle("Schreibmaschinen-Modus beim Tippen", isOn: $typewriter)
             } header: { Text("Alle Bereiche") } footer: {
