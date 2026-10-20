@@ -23,7 +23,7 @@ extension Notebook {
         if let source = payload.source {
             let local = next.pdfSources?.first { $0.data == source.data && $0.pageCount == source.pageCount }
             let target = local ?? PDFSource(data: source.data, pageCount: source.pageCount)
-            if local == nil { next.pdfSources?.append(target) }
+            if local == nil { next.pdfSources?.append(target); next.raiseSchemaForLargeSources() }
             page.pdfReference?.sourceID = target.id
         }
         next.pages.insert(page, at: index + 1)

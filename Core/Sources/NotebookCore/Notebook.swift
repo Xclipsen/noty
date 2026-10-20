@@ -19,7 +19,9 @@ public struct Page: Codable, Equatable, Identifiable, Sendable {
 
 /// One worksheet; each PDF page has its own PencilKit drawing and fixed text box.
 public struct Notebook: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 9
+    /// 10: PDF sources above 20 MB (Build 46 rejects them as invalid and would
+    /// fall back to an older revision; schema 10 makes it refuse the notebook).
+    public static let currentSchemaVersion = 10
     // Existing callers retain the legacy representation until a structural edit.
     public var schemaVersion: Int = 2
     public var id: UUID = UUID()
@@ -104,6 +106,9 @@ public struct Notebook: Codable, Equatable, Sendable {
               Set(sources.map(\.id)).count == sources.count,
               sources.allSatisfy({ !$0.data.isEmpty && $0.data.count <= PDFSource.maximumBytes && (1...500).contains($0.pageCount) }),
               sources.reduce(0, { $0 + $1.data.count }) <= PDFSource.maximumTotalBytes else { throw StorageError.invalidDocument }
+        if sources.contains(where: { $0.data.count > PDFSource.legacyMaximumBytes }) {
+            guard schemaVersion >= 10 else { throw StorageError.invalidDocument }
+        }
         let lookup = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0.pageCount) })
         for page in allPages {
             if let reference = page.pdfReference {

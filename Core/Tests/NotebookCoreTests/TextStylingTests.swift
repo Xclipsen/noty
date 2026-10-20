@@ -35,9 +35,9 @@ final class TextStylingTests: XCTestCase {
         invalid.color = .white
         XCTAssertNoThrow(try invalid.validate())
         var future = try JSONSerialization.jsonObject(with: JSONEncoder().encode(book)) as! [String: Any]
-        future["schemaVersion"] = 10
+        future["schemaVersion"] = Notebook.currentSchemaVersion + 1
         XCTAssertThrowsError(try Notebook.decode(JSONSerialization.data(withJSONObject: future))) { error in
-            guard case StorageError.unsupportedSchema(10) = error else { return XCTFail("\(error)") }
+            guard case StorageError.unsupportedSchema(Notebook.currentSchemaVersion + 1) = error else { return XCTFail("\(error)") }
         }
     }
 

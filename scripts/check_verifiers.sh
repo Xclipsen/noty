@@ -125,6 +125,10 @@ backup("title-type.notybackup", dict(valid, title=5))
 backup("urn-page-id.notybackup", dict(valid, pages=[dict(valid["pages"][0], id="urn:uuid:" + uid().lower())] + valid["pages"][1:]))
 backup("page-count-type.notybackup", dict(valid, pdfSources=[dict(valid["pdfSources"][0], pageCount="1")]))
 backup("source-enum.notybackup", dict(valid, pages=[dict(valid["pages"][0], paper="glossy")] + valid["pages"][1:]))
+# Sources above 20 MB need schema 10, so Build 46 refuses instead of falling back.
+large = [dict(valid["pdfSources"][0], data=base64.b64encode(bytes(20_000_001)).decode())]
+backup("large-source-schema-9.notybackup", dict(valid, schemaVersion=9, pdfSources=large))
+backup("large-source-schema-10.notybackup", dict(valid, schemaVersion=10, pdfSources=large))
 
 store("valid")
 store("source-enum", lambda s: s["items"][2].update(source="bogus"))
@@ -181,7 +185,8 @@ reject() {
 }
 
 accept verify_backup.py "$work/backups/valid.notybackup" --compare "$work/backups/valid.json"
-for name in schema-99 crc trailing title-type urn-page-id page-count-type source-enum; do
+accept verify_backup.py "$work/backups/large-source-schema-10.notybackup"
+for name in schema-99 crc trailing title-type urn-page-id page-count-type source-enum large-source-schema-9; do
     reject verify_backup.py "$work/backups/$name.notybackup"
 done
 accept verify_device_store.py "$work/stores/valid"

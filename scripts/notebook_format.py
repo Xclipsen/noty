@@ -13,6 +13,7 @@ import unicodedata
 
 UUID_PATTERN = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
 PDF_SOURCE_LIMIT = 100_000_000
+LEGACY_PDF_SOURCE_LIMIT = 20_000_000  # Build 46; larger sources need schema 10
 PDF_SOURCES_TOTAL_LIMIT = 100_000_000
 IMAGE_LIMIT = 20_000_000
 IMAGES_TOTAL_LIMIT = 40_000_000
@@ -264,7 +265,7 @@ def _images(page, version, image_ids):
 def validate_notebook(document):
     check(isinstance(document, dict), "Notebook is not an object")
     version = document["schemaVersion"]
-    check(type(version) is int and version in range(1, 10), "Unsupported notebook schema")
+    check(type(version) is int and version in range(1, 11), "Unsupported notebook schema")
     uuid_string(document["id"])
     check(isinstance(document["title"], str), "Invalid notebook title")
     if document.get("appearance") is not None:
@@ -310,6 +311,7 @@ def validate_notebook(document):
         check(source_id not in lookup, "Duplicate PDF source identities")
         data = base64_bytes(source["data"])
         check(1 <= len(data) <= PDF_SOURCE_LIMIT, "PDF original outside size limit")
+        check(len(data) <= LEGACY_PDF_SOURCE_LIMIT or version >= 10, "PDF original above 20 MB needs schema 10")
         check(type(source["pageCount"]) is int and 1 <= source["pageCount"] <= 500, "Invalid PDF page count")
         total += len(data)
         lookup[source_id] = source["pageCount"]
