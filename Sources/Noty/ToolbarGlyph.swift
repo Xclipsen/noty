@@ -3,17 +3,18 @@ import NotebookCore
 
 /// Tool glyph after the „Werkzeug-Icons“ design: duotone vectors on a 32-unit
 /// grid (outline, translucent body, secondary parts, solid details, white glass
-/// highlight) in `tint`. The selected state is drawn by the cell
-/// (`NotyToolSelection`), so `selected` leaves the glyph unchanged.
+/// highlight) in `tint`. `ink` (selected tool) colours only the writing part:
+/// the lead of pen/pencil, the stroke under the marker, the laser dot.
 struct ToolbarGlyph: View {
     let tool: WritingTool
     var selected = false
     var tint: Color = .white
+    var ink: Color? = nil
     /// Marker glyph shows the chosen tip (round nib or chisel).
     var markerTip: MarkerTip = .round
     var body: some View {
         Canvas { context, size in
-            NotyGlyphArt.draw(tool, roundTip: markerTip == .round, with: GlyphPainter(context, size: size, tint: tint))
+            NotyGlyphArt.draw(tool, roundTip: markerTip == .round, with: GlyphPainter(context, size: size, tint: tint, ink: ink))
         }
         .frame(width: 28, height: 28)
         .shadow(color: .black.opacity(0.45), radius: 1, x: 0, y: 1)
@@ -39,45 +40,38 @@ struct NotyActionGlyph: View {
     }
 }
 
-/// Selected tool cell after the design: accent fill and edge, a fine top sheen
-/// and a soft glow small enough to stay inside the 48-pt toolbar cell.
-struct NotyToolSelection<S: InsettableShape>: View {
-    let shape: S
-    var body: some View {
-        let accent = Color(red: 125 / 255, green: 211 / 255, blue: 252 / 255)
-        shape.fill(accent.opacity(0.26))
-            .overlay { shape.strokeBorder(accent.opacity(0.62), lineWidth: 1) }
-            .overlay {
-                shape.inset(by: 1).strokeBorder(LinearGradient(colors: [.white.opacity(0.34), .white.opacity(0)],
-                                                               startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.3)), lineWidth: 1)
-            }
-            .shadow(color: accent.opacity(0.45), radius: 3)
-    }
+extension Color {
+    /// noty accent from the tool-icon design (#7DD3FC).
+    static let notyAccent = Color(red: 125 / 255, green: 211 / 255, blue: 252 / 255)
 }
 
 /// Paint roles of the design's CSS classes (`.b` body, `.s` secondary,
 /// `.f` solid, `.hl` highlight) plus the fixed colours it uses.
-private enum GlyphPaint { case body, secondary, solid, highlight, white, marker, shade }
+/// `inkFill`/`inkSolid`/`marker` are the writing parts; they take `ink` when set.
+private enum GlyphPaint { case body, secondary, solid, highlight, white, marker, shade, inkFill, inkSolid }
 
 /// Draws paths given in the design's 32-unit grid, scaled into the canvas.
 private struct GlyphPainter {
     private var context: GraphicsContext
     private let tint: Color
+    private let ink: Color?
 
-    init(_ context: GraphicsContext, size: CGSize, tint: Color) {
+    init(_ context: GraphicsContext, size: CGSize, tint: Color, ink: Color? = nil) {
         let side = min(size.width, size.height)
         var context = context
         context.translateBy(x: (size.width - side) / 2, y: (size.height - side) / 2)
         context.scaleBy(x: side / 32, y: side / 32)
         self.context = context
         self.tint = tint
+        self.ink = ink
     }
 
     private func color(_ paint: GlyphPaint) -> Color {
-        switch paint {
+        if let ink, paint == .inkFill || paint == .inkSolid || paint == .marker { return ink }
+        return switch paint {
         case .body: tint.opacity(0.2)
-        case .secondary: tint.opacity(0.62)
-        case .solid: tint
+        case .secondary, .inkFill: tint.opacity(0.62)
+        case .solid, .inkSolid: tint
         case .highlight: Color.white.opacity(0.55)
         case .white: Color.white
         case .marker: Color(red: 253 / 255, green: 224 / 255, blue: 71 / 255)
@@ -152,8 +146,8 @@ private enum NotyGlyphArt {
     static func pen(_ g: GlyphPainter) {
         let r = g.rotated(45)
         r.shape(poly(12, 9.5, 20, 9.5, 20, 22, 12, 22), .body)
-        r.shape(poly(12, 22, 20, 22, 16, 29), .secondary)
-        r.fill(poly(14.8, 26.8, 16, 29, 17.2, 26.8), .solid)
+        r.shape(poly(12, 22, 20, 22, 16, 29), .inkFill)
+        r.fill(poly(14.8, 26.8, 16, 29, 17.2, 26.8), .inkSolid)
         r.shape(path(.m(12, 9.5), .arc(12, 2.4, 13.8, 2.4, 1.8), .arc(20, 2.4, 20, 4.2, 1.8), .l(20, 9.5), .z), .secondary)
         r.stroke(line(12, 7.2, 20, 7.2), 1.4, cap: .butt)
         r.fill(rect(13.6, 11, 1.6, 9, r: 0.8), .highlight)
@@ -166,7 +160,7 @@ private enum NotyGlyphArt {
         let r = g.rotated(45)
         r.shape(path(.m(12, 20), .c(12.9, 21.4, 13.8, 21.4, 14.67, 20), .c(15.5, 21.4, 16.5, 21.4, 17.33, 20),
                      .c(18.2, 21.4, 19.1, 21.4, 20, 20), .l(16, 29.6), .z), .body)
-        r.fill(poly(14.25, 25.4, 17.75, 25.4, 16, 29.6), .solid)
+        r.fill(poly(14.25, 25.4, 17.75, 25.4, 16, 29.6), .inkSolid)
         r.shape(path(.m(12, 9.6), .l(20, 9.6), .l(20, 20), .c(19.1, 21.4, 18.2, 21.4, 17.33, 20),
                      .c(16.5, 21.4, 15.5, 21.4, 14.67, 20), .c(13.8, 21.4, 12.9, 21.4, 12, 20), .z), .secondary)
         r.stroke(line(14.67, 10.6, 14.67, 19.2), 1, paint: .shade, opacity: 0.45)
@@ -280,8 +274,8 @@ private enum NotyGlyphArt {
     static func laser(_ g: GlyphPainter) {
         g.fade(path(.m(3, 29), .l(17.2, 9.2), .l(22.8, 14.8), .z), start: (4, 28), end: (17, 15), opacity: 0.85)
         g.fill(circle(20, 12, 9), .body)
-        g.fill(circle(20, 12, 6), .secondary)
-        g.fill(circle(20, 12, 3.4), .solid)
+        g.fill(circle(20, 12, 6), .inkFill)
+        g.fill(circle(20, 12, 3.4), .inkSolid)
     }
 
     /// g-undo

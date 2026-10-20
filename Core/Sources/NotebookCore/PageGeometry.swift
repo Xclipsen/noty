@@ -126,3 +126,18 @@ public struct PageLayout: Equatable, Sendable {
                                    tx: scale * t.tx + x, ty: scale * t.ty + y)
     }
 }
+
+extension PageLayout {
+    /// Canvas x bands in which paper lines are ruled beside a PDF: every writing
+    /// margin and the band above/below the sheet are separate, so lines keep the
+    /// side inset away from the PDF edge instead of running into it (user
+    /// request 20.10.2026). Paper pages rule the whole canvas as one sheet.
+    public var ruledColumnsBesidePDF: [ClosedRange<Double>] {
+        let start = contentOrigin.x, end = contentOrigin.x + contentCanvas.width
+        var result: [ClosedRange<Double>] = []
+        if start > 0.5 { result.append(0...start) }
+        result.append(start...end)
+        if canvas.width - end > 0.5 { result.append(end...canvas.width) }
+        return result
+    }
+}

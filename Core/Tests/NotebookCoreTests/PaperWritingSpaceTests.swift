@@ -136,6 +136,15 @@ final class PaperWritingSpaceTests: XCTestCase {
         XCTAssertThrowsError(try book.setPaper(.legacyTest, color: .white, pageID: other))
     }
 
+    func testLinesBesidePDFStartInEachMarginButPaperIsOneSheet() throws {
+        let source = PaperStyle.geometry
+        let pdf = PageLayout(source: source, legacyA4: false, margins: PageMargins(left: 100, right: 300, style: .lined))
+        XCTAssertEqual(pdf.ruledColumnsBesidePDF, [0...100, 100...695, 695...995])
+        let right = PageLayout(source: source, legacyA4: false, margins: PageMargins(right: 300, style: .lined))
+        XCTAssertEqual(right.ruledColumnsBesidePDF, [0...595, 595...895])
+        XCTAssertEqual(PageLayout(source: source, legacyA4: false).ruledColumnsBesidePDF, [0...595])
+    }
+
     func testDraftAndContinuationPagesStayNormalSheets() throws {
         var book = Notebook.blank(title: "Papier")
         try book.applyMargins(PageMargins(right: 595), pageIDs: [book.pages[0].id])

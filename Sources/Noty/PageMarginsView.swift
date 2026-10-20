@@ -70,8 +70,9 @@ extension EditorModel {
                 "Auf einer Papierseite liegt Handschrift im Bereich, der wegfallen würde. Es wird nichts gelöscht; bitte den Platz dort größer lassen."])
         }
         try candidate.applyMargins(assignments, trimmedDrawings: trimmed)
+        // Native canvases reload only when handwriting was actually recoloured.
         return PageMarginChange(original: notebook, updated: candidate, removedStrokes: removed, archivedPages: trimmed.count,
-                                resetsEditor: recoloured)
+                                resetsEditor: recoloured && !target.drawing.isEmpty)
     }
 
     func commitMarginChange(_ change: PageMarginChange) throws {
@@ -96,6 +97,9 @@ struct PageMarginsView: View {
     @State private var paperStyle: PaperStyle
     @State private var paperColor: PaperColor
     @State private var minimum: PageSize
+    /// Sharp render of the page as stored (with the chosen paper); the extra
+    /// space around it is drawn live, so sliders respond without re-rendering.
+    @State private var pageImage: UIImage?
     @StateObject private var cache = PageThumbnailCache()
 
     init(model: EditorModel, pageID: UUID) {
@@ -222,21 +226,33 @@ struct PageMarginsView: View {
         }
     }
 
-    /// Live preview; the added space is outlined in the accent colour.
+    /// Live preview: the stored page is rendered once (sharp); paper, lines and
+    /// the accent outline of the added space follow the sliders immediately.
     private func paperPreview(_ preview: Page) -> some View {
         let canvas = PageSize(width: base.width + margins.right, height: base.height + margins.bottom)
-        return PageThumbnail(page: preview, source: nil, cache: cache)
-            .aspectRatio(preview.previewAspectRatio, contentMode: .fit)
-            .overlay {
-                GeometryReader { geometry in
-                    let sx = geometry.size.width / canvas.width, sy = geometry.size.height / canvas.height
-                    if margins.right > 0 {
-                        addedSpace(CGRect(x: base.width * sx, y: 0, width: margins.right * sx, height: canvas.height * sy))
-                    }
-                    if margins.bottom > 0 {
-                        addedSpace(CGRect(x: 0, y: base.height * sy, width: base.width * sx, height: margins.bottom * sy))
-                    }
-                }
+        let stored = PageSize(width: base.width + (page?.margins?.right ?? 0), height: base.height + (page?.margins?.bottom ?? 0))
+        var rendered = page; rendered?.paper = paperStyle; rendered?.paperColor = paperColor
+        if var extra = rendered?.margins { extra.style = paperStyle; extra.color = paperColor; rendered?.margins = extra }
+        return Canvas { context, size in
+            let k = size.width / canvas.width
+            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(paperColor == .dark ? .black : .white))
+            context.stroke(Self.ruling(paperStyle, size: size, scale: k),
+                           with: .color(Color(white: paperColor == .dark ? 0.3 : 0.8)), lineWidth: max(0.5, 0.5 * k))
+            if let pageImage {
+                context.draw(Image(uiImage: pageImage), in: CGRect(x: 0, y: 0, width: stored.width * k, height: stored.height * k))
+            }
+            let dash = StrokeStyle(lineWidth: 1.2, dash: [5, 4])
+            for added in [CGRect(x: base.width * k, y: 0, width: margins.right * k, height: size.height),
+                          CGRect(x: 0, y: base.height * k, width: base.width * k, height: margins.bottom * k)]
+            where added.width > 0.5 && added.height > 0.5 {
+                context.fill(Path(roundedRect: added, cornerRadius: 2), with: .color(Color.accentColor.opacity(0.12)))
+                context.stroke(Path(roundedRect: added.insetBy(dx: 0.6, dy: 0.6), cornerRadius: 2), with: .color(Color.accentColor.opacity(0.9)), style: dash)
+            }
+        }
+            .aspectRatio(canvas.width / canvas.height, contentMode: .fit)
+            .task(id: "\(paperStyle.rawValue)-\(paperColor.rawValue)") {
+                guard let rendered else { return }
+                pageImage = try? await PageThumbnailCache.render(rendered, source: .none, longestSide: 900)
             }
             .frame(maxWidth: .infinity).frame(height: 240)
             .padding(16)
@@ -245,12 +261,24 @@ struct PageMarginsView: View {
             .accessibilityElement().accessibilityLabel("Vorschau der Seite mit zusätzlichem Platz")
     }
 
-    private func addedSpace(_ rect: CGRect) -> some View {
-        RoundedRectangle(cornerRadius: 2)
-            .fill(Color.accentColor.opacity(0.12))
-            .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(Color.accentColor.opacity(0.9), style: StrokeStyle(lineWidth: 1.2, dash: [5, 4])))
-            .frame(width: max(0, rect.width), height: max(0, rect.height))
-            .position(x: rect.midX, y: rect.midY)
+    /// Same lines as `PDFExporter.drawPaper` for a paper page (one sheet,
+    /// 32-pt side inset), scaled to the preview.
+    private static func ruling(_ style: PaperStyle, size: CGSize, scale k: CGFloat) -> Path {
+        var path = Path()
+        guard style == .lined || style == .grid else { return path }
+        let spacing = (style == .lined ? PaperRuling.spacing : 16) * k
+        let bottom = size.height - (style == .lined ? 16 : 40) * k
+        let from = 32 * k, to = size.width - 32 * k
+        guard spacing > 0.5, to > from else { return path }
+        for y in stride(from: PaperRuling.firstBaseline * k, through: bottom, by: spacing) {
+            path.move(to: CGPoint(x: from, y: y)); path.addLine(to: CGPoint(x: to, y: y))
+        }
+        if style == .grid {
+            for x in stride(from: from, through: to, by: spacing) {
+                path.move(to: CGPoint(x: x, y: 40 * k)); path.addLine(to: CGPoint(x: x, y: size.height - 40 * k))
+            }
+        }
+        return path
     }
 
     /// One growing edge: switch, quick steps (+¼/+½/+1 page) and a fine slider.

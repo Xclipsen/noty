@@ -28,31 +28,42 @@ final class ZoomLimitAndWritingScrollTests: XCTestCase {
         }
     }
 
-    func testWritingScrollStopsAtSheetCentreForNormalPage() throws {
+    func testWritingScrollStopsWithSheetEdgeAtScreenMiddle() throws {
         let paper = Notebook.blank(title: "W").pages[0]
         let layout = NotebookViewportLayout(pages: [paper], selectedPageID: paper.id, paging: false, normalizeWidths: false)
         let placed = try XCTUnwrap(layout.pages.first)
         let anchors = placed.writingScrollAnchors
-        XCTAssertEqual(anchors.left, 297.5); XCTAssertEqual(anchors.right, 297.5)
+        XCTAssertEqual(anchors.left, placed.frame.x); XCTAssertEqual(anchors.right, placed.frame.x + 595)
         let scale = 2.0, width = 1000.0
         let far = NotebookViewportGeometry.horizontalOffset(99_999, viewportWidth: width, page: placed.frame, scale: scale, anchors: anchors)
-        XCTAssertEqual(far, 297.5 * scale) // sheet centre exactly at the left screen edge
+        XCTAssertEqual(far + width / 2, (placed.frame.x + 595) * scale) // right edge exactly at the screen middle
         let back = NotebookViewportGeometry.horizontalOffset(-99_999, viewportWidth: width, page: placed.frame, scale: scale, anchors: anchors)
-        XCTAssertEqual(back + width, 297.5 * scale) // sheet centre exactly at the right screen edge
+        XCTAssertEqual(back + width / 2, placed.frame.x * scale) // left edge exactly at the screen middle
         XCTAssertEqual(NotebookViewportGeometry.horizontalOffset(300, viewportWidth: width, page: placed.frame, scale: scale, anchors: anchors), 300)
     }
 
-    func testWritingScrollKeepsHalfOfWritingMarginVisible() throws {
-        var page = Notebook.blank(title: "M").pages[0]
-        page.margins = PageMargins(right: 595)
-        let layout = NotebookViewportLayout(pages: [page], selectedPageID: page.id, paging: false, normalizeWidths: true)
-        let placed = try XCTUnwrap(layout.pages.first)
-        let anchors = placed.writingScrollAnchors
-        XCTAssertEqual(anchors.left, placed.contentFrame.x + placed.contentFrame.width / 2, accuracy: 0.001)
-        XCTAssertEqual(anchors.right, placed.frame.x + placed.frame.width - 595.0 * placed.scale / 2, accuracy: 0.001)
-        let x = NotebookViewportGeometry.horizontalOffset(99_999, viewportWidth: 800, page: placed.frame, scale: 1, anchors: anchors)
-        let visibleMargin = placed.frame.x + placed.frame.width - x
-        XCTAssertEqual(visibleMargin, 595.0 * placed.scale / 2, accuracy: 0.001)
+    func testWritingScrollShowsSheetUpToScreenMiddleWithNarrowWritingSpace() throws {
+        for margin in [149.0, 357.0, 595.0] {
+            var page = Notebook.blank(title: "M").pages[0]
+            page.margins = PageMargins(right: margin)
+            let layout = NotebookViewportLayout(pages: [page], selectedPageID: page.id, paging: false, normalizeWidths: true)
+            let placed = try XCTUnwrap(layout.pages.first)
+            let x = NotebookViewportGeometry.horizontalOffset(99_999, viewportWidth: 800, page: placed.frame, scale: 1,
+                                                              anchors: placed.writingScrollAnchors)
+            // The sheet (writing space included) still fills the left half of the screen.
+            XCTAssertEqual(placed.frame.x + placed.frame.width - x, 400, accuracy: 0.001)
+        }
+    }
+
+    func testWritingScrollNeverNarrowerThanNormalScrolling() {
+        let page = PageRect(x: 0, y: 0, width: 2000, height: 842)
+        let anchors = (left: page.x, right: page.x + page.width)
+        for scale in [0.3, 1, 2.5] {
+            let normal = NotebookViewportGeometry.horizontalRange(viewportWidth: 800, page: page, scale: scale)
+            let writing = NotebookViewportGeometry.horizontalRange(viewportWidth: 800, page: page, scale: scale, anchors: anchors)
+            XCTAssertLessThanOrEqual(writing.lowerBound, normal.lowerBound)
+            XCTAssertGreaterThanOrEqual(writing.upperBound, normal.upperBound)
+        }
     }
 
     func testPagesSitCloseTogether() {

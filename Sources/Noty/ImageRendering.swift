@@ -3,12 +3,35 @@ import ImageIO
 import NotebookCore
 
 enum ImageImportError: LocalizedError {
-    case invalid, sizeLimit, missingClipboard
+    case invalid, fileTooLarge, tooManyPixels, missingClipboard, video, pageFull
+    case notebookFull(used: Int, adding: Int)
+    /// Photos delivered no still image; `offered`: its content types (diagnosis).
+    case unsupportedPhoto(offered: String)
+    /// The system could not hand over the photo (e.g. iCloud download failed).
+    case photoUnavailable(String)
+
+    init(_ problem: ImageInsertionProblem) {
+        switch problem {
+        case .fileTooLarge: self = .fileTooLarge
+        case .pageFull: self = .pageFull
+        case .notebookFull(let used, let adding): self = .notebookFull(used: used, adding: adding)
+        }
+    }
+
     var errorDescription: String? {
         switch self {
-        case .invalid: "Dieses Bild konnte nicht gelesen werden. Bitte eine PNG-, JPEG- oder HEIC-Datei auswählen."
-        case .sizeLimit: "Ein Bild darf höchstens 20 MB und 200 Megapixel haben. Ein Notizbuch unterstützt 40 MB Bildoriginale einschließlich Seitenpapierkorb."
+        case .invalid: "Dieses Bild konnte nicht gelesen werden. Unterstützt sind Fotos und Bilder als HEIC/HEIF, JPEG, PNG, TIFF, GIF, WebP oder BMP."
+        case .fileTooLarge: "Das Bild ist größer als 20 MB. noty übernimmt Fotos unverändert im Original und erlaubt höchstens 20 MB je Bild; ProRAW-/RAW-Fotos sind meist größer. Bitte eine kleinere Fassung wählen, z. B. in Fotos als HEIC oder JPEG sichern."
+        case .tooManyPixels: "Das Bild hat mehr als 200 Megapixel. noty übernimmt Bilder unverändert im Original und erlaubt höchstens 200 Megapixel je Bild."
         case .missingClipboard: "Die Zwischenablage enthält kein unterstütztes Bild. Bitte zuerst einen Screenshot oder ein Bild kopieren."
+        case .video: "Die ausgewählte Datei ist ein Video. Bitte ein Foto oder Bild auswählen."
+        case .pageFull: "Auf dieser Seite liegen bereits 50 Bilder, mehr sind je Seite nicht möglich. Bitte eine andere Seite verwenden."
+        case .notebookFull(let used, let adding):
+            "Dieses Bild (\(ImageLimits.megabytes(adding))) passt nicht mehr in das Notizbuch: Bildoriginale sind auf 40 MB je Notizbuch begrenzt, einschließlich Seitenpapierkorb und duplizierter Seiten. Belegt sind \(ImageLimits.megabytes(used)). Bitte Seiten mit Bildern im Seitenpapierkorb endgültig löschen, ein kleineres Bild wählen oder ein neues Notizbuch verwenden."
+        case .unsupportedPhoto(let offered):
+            "Fotos hat für dieses Objekt kein Standbild geliefert (angeboten: \(offered)). Bitte das Foto in Fotos als HEIC oder JPEG sichern oder über „Bilddatei“ einfügen."
+        case .photoUnavailable(let detail):
+            "Das Foto konnte nicht aus der Fotomediathek geladen werden. Liegt das Original nur in iCloud, bitte die Internetverbindung prüfen und erneut versuchen. (\(detail))"
         }
     }
 }
@@ -16,26 +39,51 @@ enum ImageImportError: LocalizedError {
 /// Metadata and thumbnails are read without decoding a full camera raster.
 enum ImageImport {
     static func dimensions(_ data: Data) throws -> (Int, Int) {
-        guard !data.isEmpty, data.count <= 20_000_000 else { throw ImageImportError.sizeLimit }
+        guard !data.isEmpty else { throw ImageImportError.invalid }
+        guard data.count <= ImageLimits.maximumFileBytes else { throw ImageImportError.fileTooLarge }
         guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
-              let height = properties[kCGImagePropertyPixelHeight] as? Int else { throw ImageImportError.invalid }
-        guard (1...100_000).contains(width), (1...100_000).contains(height),
-              Double(width) * Double(height) <= 200_000_000 else { throw ImageImportError.sizeLimit }
+              let height = properties[kCGImagePropertyPixelHeight] as? Int else {
+            throw ImageFileFormat.detect(data) == .video ? ImageImportError.video : ImageImportError.invalid
+        }
+        guard (1...ImageLimits.maximumSide).contains(width), (1...ImageLimits.maximumSide).contains(height),
+              Double(width) * Double(height) <= ImageLimits.maximumPixels else { throw ImageImportError.tooManyPixels }
         let orientation = properties[kCGImagePropertyOrientation] as? Int ?? 1
         return (5...8).contains(orientation) ? (height, width) : (width, height)
     }
 
+    /// The selected file, read in bounded chunks (never more than the limit in
+    /// memory). A directory is a Live Photo bundle (photo plus movie, the
+    /// iPhone camera default): its photo is taken, recognised by content.
     static func read(_ url: URL) throws -> Data {
+        if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+            return try read(stillImage(in: url))
+        }
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var data = Data()
         while let chunk = try handle.read(upToCount: 64_000), !chunk.isEmpty {
-            guard chunk.count <= 20_000_000 - data.count else { throw ImageImportError.sizeLimit }
+            guard chunk.count <= ImageLimits.maximumFileBytes - data.count else { throw ImageImportError.fileTooLarge }
             data.append(chunk)
         }
         return data
+    }
+
+    private static func stillImage(in bundle: URL) throws -> URL {
+        let files = try FileManager.default.contentsOfDirectory(at: bundle, includingPropertiesForKeys: [.isRegularFileKey],
+                                                               options: [.skipsHiddenFiles])
+            .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let headers = files.map { file -> Data in
+            guard let handle = try? FileHandle(forReadingFrom: file) else { return Data() }
+            defer { try? handle.close() }
+            return (try? handle.read(upToCount: ImageFileFormat.headerLength)) ?? Data()
+        }
+        guard let index = ImageFileFormat.stillImageIndex(headers: headers) else {
+            throw headers.contains { ImageFileFormat.detect($0) == .video } ? ImageImportError.video : ImageImportError.invalid
+        }
+        return files[index]
     }
 
     static func thumbnail(_ data: Data, limit: Int) throws -> CGImage {

@@ -61,7 +61,7 @@ public struct Notebook: Codable, Equatable, Sendable {
         }
         guard Set(allImages.map(\.id)).count == allImages.count,
               Set(allImages.map(\.id)).isDisjoint(with: Set(allTextBoxes.map(\.id))),
-              allImages.reduce(0, { $0 + $1.data.count }) <= 40_000_000 else { throw StorageError.invalidDocument }
+              allImages.reduce(0, { $0 + $1.data.count }) <= ImageLimits.maximumNotebookBytes else { throw StorageError.invalidDocument }
         guard !pages.isEmpty,
               pages.count <= 500, deleted.count <= 500,
               Set(allPages.map(\.id)).count == allPages.count else { throw StorageError.invalidDocument }
@@ -74,7 +74,7 @@ public struct Notebook: Codable, Equatable, Sendable {
                 }
             }
             if let images = page.images {
-                guard schemaVersion >= 5, images.count <= 50 else { throw StorageError.invalidDocument }
+                guard schemaVersion >= 5, images.count <= ImageLimits.maximumImagesPerPage else { throw StorageError.invalidDocument }
                 for image in images {
                     try image.validate()
                     guard image.fits(in: page.textBounds) else { throw StorageError.invalidDocument }

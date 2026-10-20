@@ -299,9 +299,12 @@ final class EditorModel: ObservableObject {
               notebook.pages[index].drawing != data else { return }
         let before = PageContent(page: notebook.pages[index])
         notebook.pages[index].drawing = data
-        recordChange(.ink, pageID: pageID, before: before,
-                     coalescing: .init(key: "ink-\(pageID.uuidString)-\(inkSessions[pageID] ?? 0)", window: 120))
+        recordChange(.ink, pageID: pageID, before: before, coalescing: inkCoalescing(pageID))
         scheduleSave()
+    }
+    /// One undo step per PencilKit tool use on a page.
+    private func inkCoalescing(_ pageID: UUID) -> NotebookUndoHistory.Coalescing {
+        .init(key: "ink-\(pageID.uuidString)-\(inkSessions[pageID] ?? 0)", window: 120)
     }
 
     func updateImages(_ images: [ImageObject], pageID: UUID) {
@@ -324,7 +327,10 @@ final class EditorModel: ObservableObject {
     }
 
     @discardableResult
-    func updateContent(_ content: PageContent, basedOn previous: PageContent, pageID: UUID) -> Bool {
+    /// `inkGesture`: part of the current PencilKit tool use on this page
+    /// (shapes removed by the precision eraser); recorded as ink with that
+    /// gesture's coalescing key, so eraser ink and shapes undo together.
+    func updateContent(_ content: PageContent, basedOn previous: PageContent, pageID: UUID, inkGesture: Bool = false) -> Bool {
         HangProbe.hit("Model.updateContent")
         guard writable, !mutationsPaused, !busy, let index = notebook.pages.firstIndex(where: { $0.id == pageID }),
               PageContent(page: notebook.pages[index]) == previous else {
@@ -338,7 +344,11 @@ final class EditorModel: ObservableObject {
                 sources = catalogue; pdfOutline = catalogue.outline
             }
             notebook = candidate
-            recordChange(.objects, pageID: pageID, before: previous)
+            if inkGesture {
+                recordChange(.ink, pageID: pageID, before: previous, coalescing: inkCoalescing(pageID))
+            } else {
+                recordChange(.objects, pageID: pageID, before: previous)
+            }
             scheduleSave(); return true
         } catch { self.error = "Objektänderung nicht übernommen: \(error.localizedDescription)"; return false }
     }

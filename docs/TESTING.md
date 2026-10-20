@@ -32,6 +32,27 @@ Apple-Anmeldung, 2FA, Vertrauen und Entwicklermodus übernimmt der Nutzer (`xtoo
 
 Automatischer Start scheitert am fehlenden Developer-Disk-Image. Der Nutzer startet manuell.
 
+## Build 50 · Rückmeldung zu Build 49
+
+**Implementiert** auf `ui/menu-polish` und auf Basis von Build 49. Details in [DESIGN](DESIGN.md#rückmeldung-zu-build-49--20102026) (Werkzeugleiste, Schreibscrollen, PDF-Linien, „Seite anpassen“, Pencil-Schnellmenü) und [IMAGES](IMAGES.md) (HEIC und Live Photos, Bildleiste).
+
+Weitere Änderungen:
+- PDF-Export zeichnet Bilder und Text wieder (UIKit-Seitenrenderer, `Page.exportLayers`).
+- Bibliothek: Zahnrad oben rechts, Bereiche entfernen. „Meine Bibliothek“, der geöffnete und der letzte Bereich bleiben immer erhalten (`WorkspaceRemoval`).
+- Halten zum Begradigen über den Seitenrand: Linien und Pfeile werden an der Kante abgeschnitten, geschlossene Formen auf die Seite geschoben (`HeldShapeFitting`).
+- Der Präzisionsradierer entfernt berührte Formen ganz, zusammen mit der Tinte in einem Undo-Schritt.
+- Der Textmarker hat einen eigenen Halten-Schalter (`markerHoldStraighten`). Vorher hat sein Schalter auch die Formerkennung von Stift und Bleistift abgeschaltet.
+
+Eine eindeutige Ursache für „Formen mit dem Stift gehen nicht mehr“ ist nicht gefunden: Der Halte-Code ist seit Build 46 gleich. Behoben sind nur die beiden passenden Auslöser, die Randablehnung und der gemeinsame Schalter. Notebook-Schema unverändert (11).
+
+- `swift test --package-path Core`: 537 Tests, 0 Fehler. Host-Roundtrip mit Prüfer-Negativtests vor dem letzten Merge bestanden; der letzte Merge ändert kein Format.
+- **Erfolgreich gebaut:** `xtool dev build --sign --ipa` ohne Warnungen. IPA geprüft: `CFBundleVersion` 50, `XTL-BAFXLQ964V.de.la.noty.prototype`, Team BAFXLQ964V, gleiches Zertifikat (`50f3e096…`), Profil bis 27.10.2026, SHA-256 `417123c4…`.
+- **Installiert am 20.10.2026 um 21:13** über Build 49. InstallationProxy meldet danach 50, die ID ist unverändert.
+  - Sicherung unter `/home/la/Backups/noty-before-build50-2026-10-20T19-13-03-803036796Z/`.
+  - Frisch zurückgelesen: 13 Dokumente und alle 56 Dateien unverändert, keine neuen Dateien. `verify_device_store.py --compare` meldet 5 unveränderte Dokumente in `Documents/Noty`, keine Quarantäne.
+  - Ein erster Lauf brach vor der Installation an einem veralteten lokalen Prüfhelfer ab. Am Gerät wurde dabei nichts verändert.
+- **Auf dem iPad ungeprüft.**
+
 ## Build 49 · Editor-Korrekturen
 
 **Implementiert.** Sechs restliche Review-Funde im Editor (Commits 23102fb, e65ba49, d3d9c56, b866e35, 444a1b6 auf Build 48). Die Regel für das Zurücksetzen des Canvas steht als `EditorInteractionPolicy.canvasNeedsReset` in Core und hat einen eigenen Test. Den UIKit-Ablauf selbst prüft nur das Gerät.
