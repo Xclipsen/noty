@@ -30,6 +30,7 @@ struct ContentView: View {
     @State private var exporting = false
     @State private var exportFile: ExportFile?
     @State private var exportType: UTType = .json
+    @StateObject private var pdfExport = PDFExportJob()
     @State private var tool: EditorTool = .pen
     @State private var lastInkTool: EditorTool = .pen
     @State private var pencilPalette: PencilPalettePresentation?
@@ -388,6 +389,10 @@ struct ContentView: View {
                     pageNavigator.padding(.trailing, layout.rightInset + 14).padding(.bottom, layout.bottomInset + 16)
                 }
             }
+            .overlay(alignment: .bottom) {
+                PDFExportProgressBadge(job: pdfExport).padding(.bottom, layout.bottomInset + 12)
+                    .animation(NotyMotion.highlight(reduceMotion), value: pdfExport.progress == nil)
+            }
             .overlay(alignment: .bottomLeading) {
                 if notebookLoaded || !model.busy {
                 Text(model.status).font(.caption2).foregroundStyle(model.saveFailed ? Color.orange : .secondary)
@@ -568,22 +573,23 @@ struct ContentView: View {
                             }
                         }
                         .disabled(!model.writable)
-                        Button("Aktuelle Seite als PDF exportieren") {
-                            do {
-                                exportFile = ExportFile(pdfData: try PDFExporter.render(model.notebook, pageIDs: [currentPage.id]))
-                                exportType = .pdf; exporting = true
-                            } catch { model.error = error.localizedDescription }
-                        }.disabled(!model.writable || currentPage.id == writingDraft.id)
-                        Button("Ganzes Heft als PDF exportieren") {
-                            do {
-                                exportFile = ExportFile(pdfData: try PDFExporter.render(model.notebook))
-                                exportType = .pdf
-                                exporting = true
-                            } catch { model.error = error.localizedDescription }
-                        }
-                        .disabled(!model.writable)
+                        Button("Aktuelle Seite als PDF exportieren") { startPDFExport(pageOnly: true) }
+                            .disabled(!model.writable || currentPage.id == writingDraft.id || pdfExport.running)
+                        Button("Ganzes Heft als PDF exportieren") { startPDFExport(pageOnly: false) }
+                            .disabled(!model.writable || pdfExport.running)
 
         } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44).contentShape(Rectangle()) }.accessibilityLabel("Optionen und Export")
+    }
+    /// Page by page with a progress badge; the snapshot is fixed at the start.
+    private func startPDFExport(pageOnly: Bool) {
+        guard model.writable, !pdfExport.running, !(pageOnly && currentPage.id == writingDraft.id) else { return }
+        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : nil, sourcePage: { model.sourcePage(for: $0) }) { result in
+            switch result {
+            case .success(let data): exportFile = ExportFile(pdfData: data); exportType = .pdf; exporting = true
+            case .failure(let error):
+                if error is CancellationError { model.fileStatus = "PDF-Export abgebrochen" } else { model.error = error.localizedDescription }
+            }
+        }
     }
     /// Notebook-wide undo/redo: reverts the most recent change on any page in
     /// order (by stable page ID) and brings that page into view.

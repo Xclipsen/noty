@@ -170,6 +170,9 @@ final class LibraryModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
 
+    /// Read-only snapshot of the last committed revision (PDF export from the library).
+    func committedNotebook(_ id: UUID) async throws -> Notebook { try await store.previewDocument(id: id) }
+
     func artwork(for id: UUID, cache: PageThumbnailCache) async throws -> (NotebookAppearance?, UIImage?) {
         let document = try await store.previewDocument(id: id)
         try Task.checkCancellation()

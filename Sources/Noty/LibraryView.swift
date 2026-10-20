@@ -47,6 +47,10 @@ struct LibraryView: View {
     @State private var frames = DropFrames()
     @State private var sidebarSize = CGSize(width: 280, height: 600)
     @State private var detailSize = CGSize(width: 600, height: 600)
+    @StateObject private var pdfExport = PDFExportJob()
+    @State private var exportedPDF: ExportFile?
+    @State private var exportingPDF = false
+    @State private var exportedPDFName = "noty-export"
 
     private enum NameAction { case folder, notebook, rename(UUID) }
     private var parentID: UUID? { if case .folder(let id) = location { return id }; return nil }
@@ -523,6 +527,13 @@ struct LibraryView: View {
                 }
             }
             .overlay(alignment: .bottom) {
+                PDFExportProgressBadge(job: pdfExport).padding(12)
+            }
+            .fileExporter(isPresented: $exportingPDF, document: exportedPDF, contentType: .pdf, defaultFilename: exportedPDFName) { result in
+                if case .failure(let error) = result { model.error = error.localizedDescription }
+                exportedPDF = nil
+            }
+            .overlay(alignment: .bottom) {
                 // Only user-started operations show progress; background work stays invisible.
                 if model.ready && model.busy && !model.backgroundBusy {
                     ProgressView().padding(10).background(.regularMaterial, in: Capsule()).padding(12)
@@ -572,6 +583,23 @@ struct LibraryView: View {
                     Button { settingsRequest = SettingsRequest() } label: { Label("Einstellungen", systemImage: "gearshape") }
                 }
             }
+    }
+
+    /// Same exporter as the editor, from the last committed revision.
+    private func exportPDF(_ item: NotebookCore.LibraryItem) {
+        guard !item.isFolder, !pdfExport.running else { return }
+        Task {
+            do {
+                let notebook = try await model.committedNotebook(item.id)
+                exportedPDFName = item.title
+                pdfExport.start(notebook) { result in
+                    switch result {
+                    case .success(let data): exportedPDF = ExportFile(pdfData: data); exportingPDF = true
+                    case .failure(let error): if !(error is CancellationError) { model.error = error.localizedDescription }
+                    }
+                }
+            } catch { model.error = error.localizedDescription }
+        }
     }
 
     private func searchAllNotebooks() {
@@ -762,6 +790,7 @@ struct LibraryView: View {
             Button("Verschieben", systemImage: "folder") { moving = item }
             if !item.isFolder {
                 Button("Duplizieren", systemImage: "plus.square.on.square") { Task { await model.duplicate(item) } }
+                Button("Als PDF exportieren", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
             }
             if showsEnclosing {
                 Button("Im Ordner zeigen", systemImage: "arrow.up.forward.square") {
