@@ -54,10 +54,7 @@ public enum BackupArchive {
         guard header.count <= maximumHeaderBytes, 12 + header.count + payload.count <= maximumBytes else {
             throw BackupError.sizeLimit
         }
-        let length = UInt32(header.count)
-        var archive = magic
-        archive.append(contentsOf: [UInt8((length >> 24) & 255), UInt8((length >> 16) & 255),
-                                    UInt8((length >> 8) & 255), UInt8(length & 255)])
+        var archive = magic + RecordArchive.lengthBytes(header.count)
         archive.append(header)
         archive.append(payload)
         // Validate the exact finished bytes before handing them to the exporter.
@@ -79,8 +76,7 @@ public enum BackupArchive {
             return DecodedBackup(document: try Notebook.decode(data), isLegacyJSON: true)
         }
         guard data.count >= 12 else { throw BackupError.invalidArchive }
-        let prefix = Array(data.prefix(12))
-        let headerLength = Int(prefix[8..<12].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+        let headerLength = RecordArchive.length(prefix: data.prefix(RecordArchive.prefixByteCount))
         guard (1...maximumHeaderBytes).contains(headerLength), data.count >= 12 + headerLength else {
             throw BackupError.invalidArchive
         }
@@ -114,114 +110,6 @@ public enum BackupArchive {
     static func readBounded(_ url: URL, limit: Int) throws -> Data {
         guard (1...maximumBytes).contains(limit) else { throw BackupError.sizeLimit }
         return try BoundedFile.read(url, limit: limit)
-    }
-}
-
-/// Incremental CRC-32/ISO-HDLC (same values as zlib.crc32), slicing-by-8 so
-/// multi-hundred-megabyte archives can be checked block by block.
-struct StreamingCRC32 {
-    private static let table: [UInt32] = {
-        var table = [UInt32](repeating: 0, count: 8 * 256)
-        for byte in 0..<256 {
-            var value = UInt32(byte)
-            for _ in 0..<8 { value = (value >> 1) ^ (value & 1 == 1 ? 0xedb88320 : 0) }
-            table[byte] = value
-        }
-        for slice in 1..<8 {
-            for byte in 0..<256 {
-                let previous = table[(slice - 1) * 256 + byte]
-                table[slice * 256 + byte] = (previous >> 8) ^ table[Int(previous & 255)]
-            }
-        }
-        return table
-    }()
-    private var state: UInt32 = 0xffffffff
-    var value: UInt32 { state ^ 0xffffffff }
-
-    mutating func update(_ data: Data) { data.withUnsafeBytes { update($0) } }
-    mutating func update(_ bytes: UnsafeRawBufferPointer) {
-        guard let base = bytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-        var crc = state, index = 0
-        let count = bytes.count
-        Self.table.withUnsafeBufferPointer { t in
-            while index + 8 <= count {
-                let one = crc ^ (UInt32(base[index]) | UInt32(base[index + 1]) << 8 | UInt32(base[index + 2]) << 16 | UInt32(base[index + 3]) << 24)
-                let two = UInt32(base[index + 4]) | UInt32(base[index + 5]) << 8 | UInt32(base[index + 6]) << 16 | UInt32(base[index + 7]) << 24
-                crc = t[1792 + Int(one & 255)] ^ t[1536 + Int((one >> 8) & 255)] ^ t[1280 + Int((one >> 16) & 255)] ^ t[1024 + Int(one >> 24)]
-                    ^ t[768 + Int(two & 255)] ^ t[512 + Int((two >> 8) & 255)] ^ t[256 + Int((two >> 16) & 255)] ^ t[Int(two >> 24)]
-                index += 8
-            }
-            while index < count { crc = t[Int((crc ^ UInt32(base[index])) & 255)] ^ (crc >> 8); index += 1 }
-        }
-        state = crc
-    }
-    static func checksum(_ data: Data) -> UInt32 { var crc = StreamingCRC32(); crc.update(data); return crc.value }
-}
-
-/// Exact byte count and CRC-32 of a complete archive file.
-public struct LibraryArchiveFileInfo: Codable, Equatable, Sendable {
-    public let byteCount: Int
-    public let crc32: UInt32
-    public init(byteCount: Int, crc32: UInt32) { self.byteCount = byteCount; self.crc32 = crc32 }
-}
-
-/// Bounded, block-wise file access shared by backup readers and transports:
-/// no unbounded `Data(contentsOf:)` before a size check, no whole archive in memory.
-public enum BoundedFile {
-    static let block = 4 * 1024 * 1024
-
-    /// Small files only (manifests, listings): the limit is checked while reading.
-    public static func read(_ url: URL, limit: Int) throws -> Data {
-        guard limit >= 1 else { throw BackupError.sizeLimit }
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var data = Data()
-        while let chunk = try handle.read(upToCount: min(64_000, limit + 1)), !chunk.isEmpty {
-            guard chunk.count <= limit - data.count else { throw BackupError.sizeLimit }
-            data.append(chunk)
-        }
-        return data
-    }
-
-    /// Size and CRC-32 of a regular file (no symbolic link), streamed in blocks.
-    public static func checksum(_ url: URL, limit: Int = LibraryArchive.maximumBytes) throws -> LibraryArchiveFileInfo {
-        try requireRegularFile(url)
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var crc = StreamingCRC32(), count = 0
-        while let chunk = try handle.read(upToCount: block), !chunk.isEmpty {
-            guard chunk.count <= limit - count else { throw LibraryArchiveError.archiveTooLarge }
-            crc.update(chunk); count += chunk.count
-        }
-        return LibraryArchiveFileInfo(byteCount: count, crc32: crc.value)
-    }
-
-    /// Streams `source` into a newly created `destination` (never replaces an
-    /// existing file) and syncs it. A partially written destination is removed.
-    @discardableResult
-    public static func copy(from source: URL, to destination: URL, limit: Int = LibraryArchive.maximumBytes) throws -> LibraryArchiveFileInfo {
-        try requireRegularFile(source)
-        let input = try FileHandle(forReadingFrom: source)
-        defer { try? input.close() }
-        try Data().write(to: destination, options: .withoutOverwriting)
-        var complete = false
-        defer { if !complete { try? FileManager.default.removeItem(at: destination) } }
-        let output = try FileHandle(forWritingTo: destination)
-        defer { try? output.close() }
-        var crc = StreamingCRC32(), count = 0
-        while let chunk = try input.read(upToCount: block), !chunk.isEmpty {
-            guard chunk.count <= limit - count else { throw LibraryArchiveError.archiveTooLarge }
-            try output.write(contentsOf: chunk)
-            crc.update(chunk); count += chunk.count
-        }
-        try output.synchronize()
-        complete = true
-        return LibraryArchiveFileInfo(byteCount: count, crc32: crc.value)
-    }
-
-    static func requireRegularFile(_ url: URL) throws {
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-        guard values.isRegularFile == true, values.isSymbolicLink != true else { throw LibraryArchiveError.invalid }
     }
 }
 

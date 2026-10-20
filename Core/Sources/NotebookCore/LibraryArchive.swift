@@ -117,64 +117,7 @@ public struct LibraryBackupPlan: Sendable {
     }
 }
 
-protocol LibraryArchiveSink {
-    mutating func append(_ data: Data) throws
-    mutating func replace(at offset: Int, with data: Data) throws
-}
-private struct DataSink: LibraryArchiveSink {
-    var data = Data()
-    mutating func append(_ data: Data) { self.data.append(data) }
-    mutating func replace(at offset: Int, with data: Data) { self.data.replaceSubrange(offset..<offset + data.count, with: data) }
-}
-private struct FileSink: LibraryArchiveSink {
-    let handle: FileHandle
-    func append(_ data: Data) throws { try handle.write(contentsOf: data) }
-    func replace(at offset: Int, with data: Data) throws {
-        try handle.seek(toOffset: UInt64(offset)); try handle.write(contentsOf: data); _ = try handle.seekToEnd()
-    }
-}
-
-protocol LibraryArchiveSource {
-    var size: Int { get }
-    /// Exactly `count` bytes or an error; never more than requested.
-    mutating func read(_ count: Int) throws -> Data
-    mutating func atEnd() throws -> Bool
-}
-private struct DataSource: LibraryArchiveSource {
-    let data: Data
-    var offset = 0
-    var size: Int { data.count }
-    mutating func read(_ count: Int) throws -> Data {
-        guard count <= data.count - offset else { throw LibraryArchiveError.invalid }
-        let start = data.startIndex + offset
-        offset += count
-        return Data(data[start..<start + count])
-    }
-    func atEnd() -> Bool { offset == data.count }
-}
-private struct FileSource: LibraryArchiveSource {
-    let handle: FileHandle
-    let size: Int
-    func read(_ count: Int) throws -> Data {
-        var result = Data(capacity: count)
-        while result.count < count {
-            guard let piece = try handle.read(upToCount: min(BoundedFile.block, count - result.count)), !piece.isEmpty else {
-                throw LibraryArchiveError.invalid
-            }
-            result.append(piece)
-        }
-        return result
-    }
-    func atEnd() throws -> Bool { (try handle.read(upToCount: 1))?.isEmpty ?? true }
-}
-
 private struct VisitFailure: Error { let error: Error }
-
-#if canImport(ObjectiveC)
-private func drained<T>(_ body: () throws -> T) rethrows -> T { try autoreleasepool(invoking: body) }
-#else
-private func drained<T>(_ body: () throws -> T) rethrows -> T { try body() }
-#endif
 
 /// NOTYLIB\n + uint32 BE manifest length + JSON manifest + bounded raw chunks.
 /// There are no archive paths. Chunk IDs are checked against the index; restore
@@ -253,7 +196,7 @@ public enum LibraryArchive {
         return summary
     }
 
-    static func write<S: LibraryArchiveSink>(snapshot: LibrarySnapshot, toolbar: ToolbarPreferences, documents: [LibraryItem],
+    static func write<S: RecordArchiveSink>(snapshot: LibrarySnapshot, toolbar: ToolbarPreferences, documents: [LibraryItem],
                                              createdAt: Date, into sink: inout S, limits: LibraryArchiveLimits,
                                              document: (LibraryItem) throws -> Notebook,
                                              validate: (Notebook) throws -> Void) throws -> [LibraryArchiveEntry] {
@@ -272,9 +215,9 @@ public enum LibraryArchive {
             LibraryArchiveEntry(kind: "notebook", id: $0.id, byteCount: limits.notebook, crc32: .max)
         }).count
         guard reserved <= limits.header else { throw LibraryArchiveError.invalid }
-        try sink.append(magic + lengthBytes(reserved) + Data(repeating: 0x20, count: reserved))
+        try sink.append(magic + RecordArchive.lengthBytes(reserved) + Data(repeating: 0x20, count: reserved))
         try sink.append(index); try sink.append(preferences)
-        var total = 12 + reserved + index.count + preferences.count
+        var total = RecordArchive.prefixByteCount + reserved + index.count + preferences.count
         for item in documents {
             if Task.isCancelled { throw CancellationError() }
             let entry = try drained { () throws -> LibraryArchiveEntry in
@@ -292,17 +235,13 @@ public enum LibraryArchive {
         }
         let manifest = try manifestBytes(created, entries)
         guard manifest.count <= reserved else { throw LibraryArchiveError.invalid }
-        try sink.replace(at: 12, with: manifest + Data(repeating: 0x20, count: reserved - manifest.count))
+        try sink.replace(at: RecordArchive.prefixByteCount, with: manifest + Data(repeating: 0x20, count: reserved - manifest.count))
         return entries
     }
 
     private static func manifestBytes(_ createdAt: Date, _ entries: [LibraryArchiveEntry]) throws -> Data {
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         return try encoder.encode(LibraryArchiveManifest(createdAt: createdAt, entries: entries))
-    }
-    private static func lengthBytes(_ value: Int) -> Data {
-        let length = UInt32(value)
-        return Data([UInt8(length >> 24), UInt8((length >> 16) & 255), UInt8((length >> 8) & 255), UInt8(length & 255)])
     }
 
     // MARK: Reading
@@ -332,7 +271,7 @@ public enum LibraryArchive {
         return try read(&source, limits: limits, visit: visit)
     }
 
-    static func read<S: LibraryArchiveSource>(_ source: inout S, limits: LibraryArchiveLimits,
+    static func read<S: RecordArchiveSource>(_ source: inout S, limits: LibraryArchiveLimits,
                                               visit: (Notebook) throws -> Void) throws -> LibraryArchiveSummary {
         do { return try readValidated(&source, limits: limits, visit: visit) }
         catch let failure as VisitFailure { throw failure.error }
@@ -345,18 +284,18 @@ public enum LibraryArchive {
         catch { throw LibraryArchiveError.invalid }
     }
 
-    private static func readValidated<S: LibraryArchiveSource>(_ source: inout S, limits: LibraryArchiveLimits,
+    private static func readValidated<S: RecordArchiveSource>(_ source: inout S, limits: LibraryArchiveLimits,
                                                                visit: (Notebook) throws -> Void) throws -> LibraryArchiveSummary {
-        let size = source.size
+        var reader = ChecksummedReader(source)
+        defer { source = reader.source }
+        let size = reader.size, prefixCount = RecordArchive.prefixByteCount
         guard size <= limits.total else { throw LibraryArchiveError.archiveTooLarge }
-        guard size >= 12 else { throw LibraryArchiveError.invalid }
-        var crc = StreamingCRC32()
-        func next(_ count: Int) throws -> Data { let data = try source.read(count); crc.update(data); return data }
-        let prefix = try next(12)
+        guard size >= prefixCount else { throw LibraryArchiveError.invalid }
+        let prefix = try reader.next(prefixCount)
         guard prefix.starts(with: magic) else { throw LibraryArchiveError.invalid }
-        let length = Int(prefix.dropFirst(8).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
-        guard (1...limits.header).contains(length), size - 12 >= length else { throw LibraryArchiveError.invalid }
-        let header = try next(length)
+        let length = RecordArchive.length(prefix: prefix)
+        guard (1...limits.header).contains(length), size - prefixCount >= length else { throw LibraryArchiveError.invalid }
+        let header = try reader.next(length)
         let version = try JSONDecoder().decode(LibraryArchiveVersion.self, from: header).libraryBackupVersion
         guard version == 1 else { throw LibraryArchiveError.unsupported(version) }
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
@@ -374,9 +313,9 @@ public enum LibraryArchive {
             if position >= 2 { guard entry.kind == "notebook", let id = entry.id, ids.insert(id).inserted else { throw LibraryArchiveError.invalid } }
             payload += entry.byteCount
         }
-        guard payload == size - 12 - length else { throw LibraryArchiveError.invalid }
+        guard payload == size - prefixCount - length else { throw LibraryArchiveError.invalid }
         func chunk(_ entry: LibraryArchiveEntry) throws -> Data {
-            let data = try next(entry.byteCount)
+            let data = try reader.next(entry.byteCount)
             guard StreamingCRC32.checksum(data) == entry.crc32 else { throw BackupError.checksumMismatch }
             return data
         }
@@ -395,8 +334,8 @@ public enum LibraryArchive {
             }
             chunks.append(LibraryArchiveChunk(id: entry.id!, byteCount: entry.byteCount, crc32: entry.crc32))
         }
-        guard try source.atEnd() else { throw LibraryArchiveError.invalid }
+        guard try reader.atEnd() else { throw LibraryArchiveError.invalid }
         return LibraryArchiveSummary(createdAt: manifest.createdAt, snapshot: snapshot, toolbar: toolbar, notebooks: chunks,
-                                     file: LibraryArchiveFileInfo(byteCount: size, crc32: crc.value))
+                                     file: LibraryArchiveFileInfo(byteCount: size, crc32: reader.crc.value))
     }
 }
