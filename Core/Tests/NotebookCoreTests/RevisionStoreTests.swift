@@ -35,10 +35,11 @@ final class RevisionStoreTests: XCTestCase {
             document.pages[0].text = "Stand \(revision)"
             try store.save(document)
         }
-        // Rapid saves: the newest three plus the oldest state as only checkpoint.
-        let entries = try manifest(root).revisions
-        XCTAssertEqual(entries.count, 4)
-        XCTAssertEqual(entries.last, first)
+        // Rapid saves: the newest three in the manifest (Build 46 format), the
+        // oldest state as only checkpoint in checkpoints.json.
+        XCTAssertEqual(try manifest(root).revisions.count, 3)
+        let checkpoints = try JSONDecoder().decode(CheckpointList.self, from: Data(contentsOf: root.appendingPathComponent("checkpoints.json")))
+        XCTAssertEqual(checkpoints.checkpoints, [first])
         XCTAssertEqual(try Data(contentsOf: firstURL), firstBytes)
         XCTAssertLessThanOrEqual(contents(root.appendingPathComponent("Revisions")).count, 5)
         XCTAssertEqual(try RevisionStore(directory: root).load(), document)
@@ -49,6 +50,10 @@ final class RevisionStoreTests: XCTestCase {
         let previous = root.appendingPathComponent("manifest-previous.json")
         if FileManager.default.fileExists(atPath: previous.path) {
             files.formUnion(try JSONDecoder().decode(RevisionManifest.self, from: Data(contentsOf: previous)).revisions.map(\.file))
+        }
+        let checkpoints = root.appendingPathComponent("checkpoints.json")
+        if FileManager.default.fileExists(atPath: checkpoints.path) {
+            files.formUnion(try JSONDecoder().decode(CheckpointList.self, from: Data(contentsOf: checkpoints)).checkpoints.map(\.file))
         }
         return files
     }

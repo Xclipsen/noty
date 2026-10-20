@@ -42,6 +42,15 @@ struct RevisionManifest: Codable {
     var revisions: [RevisionRecord]
 }
 
+/// `checkpoints.json`: older local-history states beyond the three manifest
+/// entries. Separate so manifests keep the Build 46 format (1–3 entries); a
+/// missing/damaged list or missing files only shorten the history.
+struct CheckpointList: Codable, Equatable {
+    var formatVersion = 1
+    var checksumAlgorithm = "crc32-iso-hdlc"
+    var checkpoints: [RevisionRecord]
+}
+
 public enum RevisionError: Error, LocalizedError {
     case unsupportedFormat(Int)
     case invalidManifest
@@ -77,6 +86,10 @@ public final class RevisionStore {
     private var known = Set<String>()
     /// manifest.json exists but was unusable; a copy is kept before replacing it.
     private var damagedPrimary = false
+    /// Older local-history states from checkpoints.json whose files exist.
+    private var checkpoints: [RevisionRecord] = []
+    /// A checkpoints.json of a newer format is left untouched.
+    private var checkpointsLocked = false
     /// Commit timestamps (`savedAtUnix`); replaceable in tests.
     var clock: () -> Date = { Date() }
     private let fm = FileManager.default
@@ -85,6 +98,7 @@ public final class RevisionStore {
     private var previous: URL { directory.appendingPathComponent("manifest-previous.json") }
     private var revisions: URL { directory.appendingPathComponent("Revisions", isDirectory: true) }
     private var quarantine: URL { directory.appendingPathComponent("Quarantine", isDirectory: true) }
+    private var checkpointFile: URL { directory.appendingPathComponent("checkpoints.json") }
 
     public init(directory: URL) { self.directory = directory }
 
@@ -105,6 +119,8 @@ public final class RevisionStore {
                             chain.formUnion(older.revisions.map(\.file))
                         }
                         known = chain.subtracting(skipped)
+                        checkpoints = readCheckpoints().filter { !skipped.contains($0.file) && !retained.contains($0) }
+                        known.formUnion(checkpoints.map(\.file))
                         damagedPrimary = manifestURL != primary
                         lastManifest = RevisionManifest(revisions: retained)
                         lastDocument = document
@@ -139,6 +155,7 @@ public final class RevisionStore {
         lastBytes = nil // Exact legacy originals remain at notebook.json/recovery.json.
         lastManifest = nil
         known = []
+        checkpoints = []
         damagedPrimary = false
         return document
     }
@@ -159,6 +176,8 @@ public final class RevisionStore {
         var old = lastManifest
         var written: [String] = []
         let manifest: RevisionManifest
+        var nextCheckpoints: [RevisionRecord] = []
+        var checkpointsWritten = false
         do {
             if old == nil, hasLegacyFiles, let legacy = lastDocument {
                 // The first package commit also has a valid previous pointer to the
@@ -171,7 +190,12 @@ public final class RevisionStore {
             }
             let record = try writeRevision(bytes)
             written.append(record.file)
-            manifest = RevisionManifest(revisions: Self.retained([record] + (old?.revisions ?? [])))
+            // Exactly the Build 46 manifest rule; older states go to checkpoints.json.
+            let older = old?.revisions ?? []
+            manifest = RevisionManifest(revisions: [record] + Array(older.prefix(2)))
+            nextCheckpoints = Self.checkpoints(from: Array(older.dropFirst(2)) + checkpoints, besides: manifest.revisions)
+            // Before the commit point, so a checkpoint never depends on a GC'd file.
+            checkpointsWritten = writeCheckpoints(nextCheckpoints)
             if damagedPrimary { preserveDamagedPrimary() }
             if let old { try JSONEncoder().encode(old).write(to: previous, options: .atomic) }
             // Commit point: no UI may claim success before this atomic replacement.
@@ -185,7 +209,10 @@ public final class RevisionStore {
         lastBytes = bytes
         recovered = false
         damagedPrimary = false
-        let referenced = Set((manifest.revisions + (old?.revisions ?? [])).map(\.file))
+        // If checkpoints.json could not be replaced, its old entries stay protected, too.
+        let kept = checkpointsWritten ? nextCheckpoints : nextCheckpoints + checkpoints
+        checkpoints = nextCheckpoints
+        let referenced = Set((manifest.revisions + (old?.revisions ?? []) + kept).map(\.file))
         known.formUnion(referenced)
         collectGarbage(keeping: referenced)
     }
@@ -224,24 +251,62 @@ public final class RevisionStore {
     static let maximumCheckpointBytes = 300_000_000
 
     /// Local history tiers for `candidates` (newest first): the newest three
-    /// always; older entries only as checkpoints at least 10 minutes apart by
-    /// `savedAtUnix`, each measured from the next older kept checkpoint, so
-    /// continuous editing leaves one every 10 minutes. At most eight entries and
-    /// 300 MB of checkpoints; the oldest checkpoints go first. Entries without a
-    /// timestamp are never checkpoints.
+    /// (the manifest) and the checkpoints chosen from the rest.
     static func retained(_ candidates: [RevisionRecord]) -> [RevisionRecord] {
         let newest = Array(candidates.prefix(newestKept))
-        var checkpoints: [RevisionRecord] = [] // oldest first
-        for candidate in candidates.dropFirst(newestKept).reversed() {
+        return newest + checkpoints(from: Array(candidates.dropFirst(newestKept)), besides: newest)
+    }
+
+    /// Checkpoints from older `candidates` (newest first, duplicates and entries
+    /// of `newest` ignored): at least 10 minutes apart by `savedAtUnix`, each
+    /// measured from the next older kept checkpoint, so continuous editing
+    /// leaves one every 10 minutes. With `newest` at most eight entries and
+    /// 300 MB of checkpoints; the oldest go first. Entries without a timestamp
+    /// are never checkpoints. Returns newest first.
+    static func checkpoints(from candidates: [RevisionRecord], besides newest: [RevisionRecord]) -> [RevisionRecord] {
+        var seen = Set(newest.map(\.file))
+        let unique = candidates.filter { seen.insert($0.file).inserted }
+        var kept: [RevisionRecord] = [] // oldest first
+        for candidate in unique.reversed() {
             guard let time = candidate.savedAtUnix else { continue }
-            if let last = checkpoints.last?.savedAtUnix, time - last < checkpointSpacing { continue }
-            checkpoints.append(candidate)
+            if let last = kept.last?.savedAtUnix, time - last < checkpointSpacing { continue }
+            kept.append(candidate)
         }
-        var bytes = checkpoints.reduce(0) { $0 + $1.byteCount }
-        while checkpoints.count > maximumKept - newest.count || bytes > maximumCheckpointBytes {
-            bytes -= checkpoints.removeFirst().byteCount
+        var bytes = kept.reduce(0) { $0 + $1.byteCount }
+        while kept.count > maximumKept - newest.count || bytes > maximumCheckpointBytes {
+            bytes -= kept.removeFirst().byteCount
         }
-        return newest + checkpoints.reversed()
+        return kept.reversed()
+    }
+
+    /// Never throws: a missing, damaged or foreign list only shortens the
+    /// history. Entries whose revision file is gone (e.g. collected by Build 46,
+    /// which does not know this file) are dropped silently.
+    private func readCheckpoints() -> [RevisionRecord] {
+        checkpointsLocked = false
+        guard itemExists(checkpointFile), let bytes = try? readRegularFile(checkpointFile, limit: 128_000) else { return [] }
+        struct Header: Decodable { var formatVersion: Int }
+        guard let version = try? JSONDecoder().decode(Header.self, from: bytes).formatVersion else { return [] }
+        guard version == 1 else { checkpointsLocked = version > 1; return [] }
+        guard let list = try? JSONDecoder().decode(CheckpointList.self, from: bytes),
+              list.checksumAlgorithm == "crc32-iso-hdlc", list.checkpoints.count <= Self.maximumKept,
+              Set(list.checkpoints.map(\.file)).count == list.checkpoints.count,
+              list.checkpoints.allSatisfy(validRecord) else { return [] }
+        return list.checkpoints.filter { record in
+            let values = try? revisions.appendingPathComponent(record.file)
+                .resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            return values?.isRegularFile == true && values?.isSymbolicLink != true && values?.fileSize == record.byteCount
+        }
+    }
+
+    /// Atomic and best effort; skipped when unchanged. False keeps the list on
+    /// disk authoritative for GC.
+    private func writeCheckpoints(_ next: [RevisionRecord]) -> Bool {
+        guard !checkpointsLocked else { return false }
+        if next == checkpoints, next.isEmpty || itemExists(checkpointFile) { return true }
+        guard let bytes = try? JSONEncoder().encode(CheckpointList(checkpoints: next)), bytes.count <= 128_000,
+              (try? bytes.write(to: checkpointFile, options: .atomic)) != nil else { return false }
+        return true
     }
 
     /// Best effort after a commit; keeps every revision referenced by either
@@ -317,7 +382,11 @@ public final class RevisionStore {
     public func localHistory() throws -> LocalHistory {
         if !loaded { _ = try load() }
         var history = LocalHistory()
-        for (offset, record) in (lastManifest?.revisions ?? []).enumerated() {
+        let manifestEntries = lastManifest?.revisions ?? []
+        for (offset, record) in (manifestEntries + checkpoints).enumerated() {
+            let checkpoint = offset >= manifestEntries.count
+            // A checkpoint file that disappeared is only shorter history.
+            if checkpoint, !itemExists(revisions.appendingPathComponent(record.file)) { continue }
             do {
                 let document = try readDocument(record)
                 guard let id = UUID(uuidString: String(record.file.dropLast(5))) else {
@@ -328,16 +397,18 @@ public final class RevisionStore {
                 history.revisions.append(LocalRevision(id: id,
                     savedAt: record.savedAtUnix.map { Date(timeIntervalSince1970: $0) } ?? fileDate,
                     title: document.title, pageCount: document.pages.count, isLatest: offset == 0))
-            } catch StorageError.unsupportedSchema(let version) {
+            } catch StorageError.unsupportedSchema(let version) where !checkpoint {
                 throw StorageError.unsupportedSchema(version)
             } catch { history.unreadableCount += 1 }
         }
         return history
     }
 
+    /// Manifest entries and checkpoints, by stable revision UUID.
     public func localRevision(id: UUID) throws -> Notebook {
         if !loaded { _ = try load() }
-        guard let record = lastManifest?.revisions.first(where: { $0.file == id.uuidString + ".json" }) else {
+        let file = id.uuidString + ".json"
+        guard let record = ((lastManifest?.revisions ?? []) + checkpoints).first(where: { $0.file == file }) else {
             throw RevisionError.revisionUnavailable
         }
         return try readDocument(record)
@@ -382,13 +453,18 @@ public final class RevisionStore {
     }
 
     private func validate(_ manifest: RevisionManifest) throws {
+        // 1–3 entries: unchanged since Build 46, which falls back on anything else.
         guard manifest.checksumAlgorithm == "crc32-iso-hdlc",
-              (1...Self.maximumKept).contains(manifest.revisions.count),
+              (1...Self.newestKept).contains(manifest.revisions.count),
               Set(manifest.revisions.map(\.file)).count == manifest.revisions.count,
-              manifest.revisions.allSatisfy({ validFilename($0.file) && (1...Self.maximumBytes).contains($0.byteCount)
-                  && ($0.savedAtUnix.map { $0.isFinite && (-62_135_596_800...253_402_300_799).contains($0) } ?? true) }) else {
+              manifest.revisions.allSatisfy(validRecord) else {
             throw RevisionError.invalidManifest
         }
+    }
+
+    private func validRecord(_ record: RevisionRecord) -> Bool {
+        validFilename(record.file) && (1...Self.maximumBytes).contains(record.byteCount)
+            && (record.savedAtUnix.map { $0.isFinite && (-62_135_596_800...253_402_300_799).contains($0) } ?? true)
     }
 
     private func validFilename(_ file: String) -> Bool {
