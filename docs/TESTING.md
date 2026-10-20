@@ -32,6 +32,29 @@ Apple-Anmeldung, 2FA, Vertrauen und Entwicklermodus übernimmt der Nutzer (`xtoo
 
 Automatischer Start scheitert am fehlenden Developer-Disk-Image. Der Nutzer startet manuell.
 
+## Build 51 · Rückmeldung zu Build 50
+
+**Implementiert** auf `ui/menu-polish` (66f3c90, auf Build 50). Nutzertest von Build 50:
+- Am iPad bestätigt: Werkzeugleiste, Schnellmenü (scrollen, Start, 10 s), Formen mit dem Stift, Halten über den Rand, Schreibscrollen, PDF-Schreibplatz-Linien, „Seite anpassen“, Bibliothek.
+- Offen gemeldet:
+  - Foto-Import scheitert weiter (Systemmeldung zu `ImportedStillImage`).
+  - Der Präzisionsradierer soll Formen nur teilweise radieren.
+  - Wiederholen soll vor Rückgängig stehen, aber erst nach Scrollen sichtbar sein.
+- Der PDF-Export (Bilder und Text) ist ohne Rückmeldung, also weiter ungeprüft.
+
+Umgesetzt:
+- Präzisionsradierer schneidet Formen ([DESIGN](DESIGN.md#präzisionsradierer-und-formen--20102026)).
+- Foto-Import mit Rückfallwegen ([IMAGES](IMAGES.md#ergänzung-nach-build-50--foto-import-mit-rückfallwegen)).
+- Schnellmenü-Reihenfolge angepasst.
+
+Nachweise:
+- `swift test --package-path Core`: 543 Tests, 0 Fehler, davon 6 neue in `ShapeEraseMaskTests`. Format unverändert.
+- **Erfolgreich gebaut:** `xtool dev build` und `--sign --ipa` ohne Warnungen. IPA geprüft: `CFBundleVersion` 51, gleiche App-ID, Team und Zertifikat (`50f3e096…`), Profil bis 27.10.2026, SHA-256 `cc4bf964…`.
+- **Installiert am 20.10.2026 um 21:57** über Build 50 (danach meldet InstallationProxy 51).
+  - Sicherung unter `/home/la/Backups/noty-before-build51-2026-10-20T19-57-17-975437957Z/`.
+  - Frisch zurückgelesen: 14 Dokumente und 60 Dateien unverändert. `verify_device_store.py --compare` meldet 6 unveränderte Dokumente, keine Quarantäne.
+- **Auf dem iPad ungeprüft:** Foto-Import, Formen schneiden, Wiederholen im Schnellmenü, PDF-Export.
+
 ## Build 50 · Rückmeldung zu Build 49
 
 **Implementiert** auf `ui/menu-polish` und auf Basis von Build 49. Details in [DESIGN](DESIGN.md#rückmeldung-zu-build-49--20102026) (Werkzeugleiste, Schreibscrollen, PDF-Linien, „Seite anpassen“, Pencil-Schnellmenü) und [IMAGES](IMAGES.md) (HEIC und Live Photos, Bildleiste).
