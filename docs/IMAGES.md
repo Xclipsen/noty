@@ -5,8 +5,8 @@
 Nutzer zu Build 51: „Bilder, die über 20 MB sind, sollen komprimiert werden und trotzdem importiert werden können.“ Das ist eine bewusste Ausnahme von der Regel „Original unverändert“: Sie greift nur, wenn das Original nicht passt.
 
 - **Passt das Bild,** bleibt es Byte für Byte erhalten (HEIC bleibt HEIC).
-- **Passt es nicht, wird es neu kodiert** (`ImageCompression`). Das gilt bei:
-  - mehr als 20 MB
+- **Passt es nicht, wird es neu kodiert** (`ImageCompression`). Seit Build 53 gilt beim Import höchstens 5 MB je Bild (Nutzer: Ruckeln nach zwei 20-MB-Bildern). Neu kodiert wird bei:
+  - mehr als 5 MB (bis Build 52: 20 MB)
   - mehr als 200 Megapixeln
   - mehr Bytes, als im Bildbudget des Notizbuchs (40 MB) noch frei ist
 - **Kodierung:**
