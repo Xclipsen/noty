@@ -45,8 +45,8 @@ struct ContentView: View {
     @State private var selectedLocalRevision: UUID?
     @State private var showingCopies = false
     @State private var selectedCopy: RestoredNotebook?
-    @AppStorage("noty.sidebar.visible") private var showingPages = true
-    @AppStorage("noty.editor.writingScroll") private var writingScroll = false
+    @AppStorage(AppSettingsKey.sidebarVisible) private var showingPages = true
+    @AppStorage(AppSettingsKey.writingScroll) private var writingScroll = false
     @State private var customizingTools = false
     @State private var toolbarMore = false
     @State private var toolbarOptions = false

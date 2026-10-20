@@ -34,14 +34,14 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
                 content(axis)
             }
             .frame(width: frame.width, height: frame.height)
-            .notyPaletteGlass()
+            .notyGlass()
             .offset(x: frame.x, y: frame.y)
             .animation(drag == nil ? NotyMotion.palette(reduceMotion) : nil, value: frame)
             .disabled(!enabled)
             if showingOptions && drag == nil {
                 let attached = layout.optionsFrame(preferredWidth: optionsWidth)
                 options().frame(width: attached.width, height: attached.height)
-                    .notyPaletteGlass()
+                    .notyGlass()
                     .offset(x: attached.x, y: attached.y)
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: -6)))
                     .animation(NotyMotion.palette(reduceMotion), value: attached)

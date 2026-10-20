@@ -52,7 +52,7 @@ struct LibraryView: View {
     @State private var exportingPDF = false
     @State private var exportedPDFName = "noty-export"
 
-    private enum NameAction { case folder, notebook, rename(UUID) }
+    private enum NameAction { case folder, rename(UUID) }
     private var parentID: UUID? { if case .folder(let id) = location { return id }; return nil }
     /// Background work (refresh after closing a notebook, automatic backup)
     /// keeps the library interactive and visually unchanged.
@@ -844,7 +844,6 @@ struct LibraryView: View {
     private var nameTitle: String {
         switch nameAction {
         case .folder: "Neuer Ordner"
-        case .notebook: "Neues Notizbuch"
         case .rename: "Umbenennen"
         }
     }
@@ -858,7 +857,6 @@ struct LibraryView: View {
         Task {
             switch action {
             case .folder: await model.createFolder(value, parent: parent)
-            case .notebook: _ = await model.createNotebook(value, appearance: toolbox.preferences.defaultAppearance ?? NotebookAppearance(), parent: parent)
             case .rename(let id): await model.rename(id, title: value)
             }
         }

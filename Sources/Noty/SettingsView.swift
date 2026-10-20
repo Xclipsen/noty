@@ -309,8 +309,10 @@ private struct BackupSettingsPage: View {
     @ObservedObject var workspaces: WorkspaceAppModel
     let onSelectArea: ((TestWorkspace?) -> Void)?
     @State private var exporting = false
+    /// One importer for both purposes: two `.fileImporter`s on one view conflict in SwiftUI.
+    private enum ImportPurpose { case backupFolder, libraryArchive }
     @State private var importing = false
-    @State private var choosingFolder = false
+    @State private var importPurpose = ImportPurpose.libraryArchive
     @State private var showingInfo = false
     @State private var restoredArea = false
     /// The pushed form shows backup errors itself; avoid a second alert.
@@ -334,7 +336,7 @@ private struct BackupSettingsPage: View {
         Form {
             Section("Externes Backup") {
                 if policy.target == .disabled {
-                    Button("Backup-Ordner wählen", systemImage: "folder.badge.plus") { choosingFolder = true }
+                    Button("Backup-Ordner wählen", systemImage: "folder.badge.plus") { pick(.backupFolder) }
                         .disabled(externalBackup.busy)
                 } else {
                     LabeledContent(policy.target == .webDAV ? "WebDAV" : "Ordner", value: targetName)
@@ -343,7 +345,7 @@ private struct BackupSettingsPage: View {
                         Task { await externalBackup.attempt(library: library, toolbox: toolbox, manual: true) }
                     }.disabled(externalBackup.busy || !library.ready)
                     if policy.target == .folder {
-                        Button(health == .folderUnreachable ? "Ordner neu wählen" : "Ordner ändern", systemImage: "folder") { choosingFolder = true }
+                        Button(health == .folderUnreachable ? "Ordner neu wählen" : "Ordner ändern", systemImage: "folder") { pick(.backupFolder) }
                             .disabled(externalBackup.busy)
                     }
                 }
@@ -360,7 +362,7 @@ private struct BackupSettingsPage: View {
                         if let data = await library.libraryBackup() { file = ExportFile(libraryData: data); exporting = true }
                     }
                 }.disabled(!libraryIdle)
-                Button("Als neuen Bereich wiederherstellen …", systemImage: "arrow.down.doc") { importing = true }
+                Button("Als neuen Bereich wiederherstellen …", systemImage: "arrow.down.doc") { pick(.libraryArchive) }
                     .disabled(!libraryIdle)
             }
             Section {
@@ -390,10 +392,12 @@ private struct BackupSettingsPage: View {
         }
         .overlay { if library.busy || workspaces.busy || externalBackup.busy { ProgressView().padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
         .onAppear { externalBackup.checkFolder() }
-        .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result { externalBackup.useFolder(url) }
-        }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.notyLibrary, .data]) { result in
+        .fileImporter(isPresented: $importing,
+                      allowedContentTypes: importPurpose == .backupFolder ? [.folder] : [.notyLibrary, .data]) { result in
+            if importPurpose == .backupFolder {
+                if case .success(let url) = result { externalBackup.useFolder(url) }
+                return
+            }
             switch result {
             case .success(let url): Task {
                 if await workspaces.restoreLibrary(url) {
@@ -420,6 +424,8 @@ private struct BackupSettingsPage: View {
             Button("OK", role: .cancel) { }
         } message: { Text("Unter „Bereich“ verfügbar. Die aktuelle Bibliothek bleibt erhalten.") }
     }
+
+    private func pick(_ purpose: ImportPurpose) { importPurpose = purpose; importing = true }
 
     /// A few short lines only: status, last backup, target.
     private var info: some View {

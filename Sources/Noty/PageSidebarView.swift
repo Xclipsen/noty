@@ -205,6 +205,8 @@ struct PageSidebarView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 3))
                     Text("Seite \(index + 1)").font(.subheadline)
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Seite \(index + 1)\(page.id == currentPage.id ? ", aktuell" : "")\(page.bookmarked == true ? ", Lesezeichen" : "")")
                 .id(page.id)
                 .listRowBackground(Color.clear)
             }
@@ -279,7 +281,7 @@ struct PageSidebarView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Seite \(index + 1)\(selected ? ", ausgewählt" : "")")
+            .accessibilityLabel("Seite \(index + 1)\(selected ? ", aktuell" : "")\(page.bookmarked == true ? ", Lesezeichen" : "")")
             .disabled(!canEdit)
             .overlay(alignment: .topTrailing) {
                 Button {

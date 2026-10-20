@@ -3,7 +3,7 @@ import PDFKit
 import PencilKit
 import NotebookCore
 
-/// Shared by the sidebar and the optional large overview. Cached content is tied
+/// Shared by the page sidebar, page trash and margin previews. Cached content is tied
 /// to a page snapshot, never to its current position in the notebook.
 @MainActor
 final class PageThumbnailCache: ObservableObject {
@@ -57,38 +57,6 @@ final class PageThumbnailCache: ObservableObject {
                          cost: Int(size.width * size.height * 4) + page.drawing.count + page.searchableText.utf8.count
                             + (page.images ?? []).reduce(0, { $0 + $1.data.count }))
         return image
-    }
-}
-
-struct PageOverviewView: View {
-    @ObservedObject var model: EditorModel
-    @Environment(\.dismiss) private var dismiss
-    @StateObject private var cache = PageThumbnailCache()
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 145, maximum: 220))], spacing: 20) {
-                    ForEach(Array(model.notebook.pages.enumerated()), id: \.element.id) { index, page in
-                        Button {
-                            model.selectPage(page.id)
-                            dismiss()
-                        } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                PageThumbnail(page: page, source: model.sourcePage(for: page), cache: cache, selected: index == model.pageIndex)
-                                    .aspectRatio(page.previewAspectRatio, contentMode: .fit)
-                                    .frame(maxHeight: 224)
-                                    .frame(maxWidth: .infinity)
-                                Text("Seite \(index + 1)").font(.headline)
-                                Text(page.searchableText.isEmpty ? (page.drawing.isEmpty ? "Keine eigenen Einträge" : "Handschrift") : String(page.searchableText.prefix(80)))
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                            }
-                        }.buttonStyle(.plain)
-                    }
-                }.padding()
-            }
-            .navigationTitle("\(model.notebook.pages.count) Seiten · \(model.notebook.title)")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Schließen") { dismiss() } } }
-        }
     }
 }
 
