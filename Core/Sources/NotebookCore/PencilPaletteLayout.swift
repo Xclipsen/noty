@@ -141,15 +141,18 @@ public enum PencilPaletteItem: Hashable, Sendable {
 }
 
 /// Fixed item order of the Pencil quick palette (20.10.2026), independent of
-/// the active tool: undo, then the main group pen, pencil, highlighter,
-/// eraser, text — exactly the slots visible at the standard position.
-/// Scrolling reveals the other tools (first toolbar level before the second,
-/// each in its saved order), then colour, width and Autostift; redo sits at
-/// the far end. Groups are separated by dividers.
+/// the active tool: redo, undo, then the main group pen, pencil, highlighter,
+/// eraser, text. The standard position (`standardScroll`) shows undo and the
+/// main group; redo sits just before undo and appears after scrolling back
+/// one slot (Build-50 feedback). Scrolling forward reveals the other tools
+/// (first toolbar level before the second, each in its saved order), then
+/// colour, width and Autostift. Groups are separated by dividers.
 public struct PencilPaletteContent: Equatable, Sendable {
     public static let mainTools: [WritingTool] = [.pen, .pencil, .marker, .strokeEraser, .text]
     /// Slots visible at once: undo plus the main group.
     public static let visibleSlots = 1 + mainTools.count
+    /// Scroll offset of the standard position: redo stays hidden before undo.
+    public static let standardScroll = 1.0
     public let items: [PencilPaletteItem]
     /// Separator positions between groups (half-way between two items).
     public let dividers: [Double]
@@ -163,8 +166,8 @@ public struct PencilPaletteContent: Equatable, Sendable {
             guard tool != .precisionEraser, !Self.mainTools.contains(tool), !rest.contains(tool) else { continue }
             rest.append(tool)
         }
-        let groups: [[PencilPaletteItem]] = [[.undo], Self.mainTools.map(PencilPaletteItem.tool), rest.map(PencilPaletteItem.tool),
-                                             [.color, .width, .autoPen], [.redo]]
+        let groups: [[PencilPaletteItem]] = [[.redo, .undo], Self.mainTools.map(PencilPaletteItem.tool), rest.map(PencilPaletteItem.tool),
+                                             [.color, .width, .autoPen]]
         var items: [PencilPaletteItem] = [], dividers: [Double] = []
         for group in groups where !group.isEmpty {
             if !items.isEmpty { dividers.append(Double(items.count) - 0.5) }
@@ -219,12 +222,12 @@ public struct PencilPaletteTouch: Equatable, Sendable {
     private func distance(to point: PagePoint) -> Double { hypot(point.x - start.x, point.y - start.y) }
 }
 
-/// Where the palette opens: at the standard position (scroll 0: undo and the
-/// main group) or — within `retention` after it closed — at the position it
+/// Where the palette opens: at the standard position (undo and the main
+/// group, redo hidden just before them) or — within `retention` after it closed — at the position it
 /// was closed at, i.e. with the same icons visible.
 public struct PencilPaletteMemory: Equatable, Sendable {
     public static let retention: TimeInterval = 10
-    public static let standardScroll = 0.0
+    public static let standardScroll = PencilPaletteContent.standardScroll
     public private(set) var scroll: Double?
     public private(set) var closedAt: TimeInterval?
     public init() {}

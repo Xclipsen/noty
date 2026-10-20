@@ -137,8 +137,8 @@ struct PencilPalettePresentation: Identifiable, Equatable {
 
 /// Squeeze palette: a compact arc beside the Pencil tip (away from the
 /// writing hand) in a fixed order (`PencilPaletteContent`): undo | pen,
-/// pencil, highlighter, eraser, text at the standard position; the other
-/// tools, colour, width, Autostift and finally redo scroll in along the arc.
+/// pencil, highlighter, eraser, text at the standard position; redo scrolls
+/// in before undo, the other tools, colour, width and Autostift after text.
 /// It opens at the standard position, or within 10 s where it was closed
 /// (`PencilPaletteMemory`). One gesture handles the arc: a touch that moves
 /// is a scroll and never selects (`PencilPaletteTouch`); only a tap acts.
