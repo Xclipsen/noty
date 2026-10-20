@@ -51,6 +51,8 @@ final class WorkspaceAppModel: ObservableObject {
         busy = true
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() }; busy = false }
+        // A coordinated read makes the file provider download an iCloud file first.
+        try await Task.detached(priority: .userInitiated) { try CoordinatedBackupFiles().reading(url, metadataOnly: false) { _ in } }.value
         return try await store.prepareRestore(file: url, validate: BackupValidation.validate)
     }
     /// Always a new separate area; the current library is never overwritten.

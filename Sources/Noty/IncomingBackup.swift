@@ -11,6 +11,11 @@ enum IncomingBackup {
     static func receive(_ url: URL, library: LibraryModel, workspaces: WorkspaceAppModel) async {
         let kind = url.pathExtension.lowercased()
         guard kind == "notylibrary" || kind == "notybackup" else { return }
+        // On a cold launch the library first loads and may reopen the last
+        // notebook as a full-screen cover; present only above that, not under it.
+        var waited = 0
+        while !library.ready, waited < 100 { try? await Task.sleep(for: .milliseconds(100)); waited += 1 }
+        try? await Task.sleep(for: .milliseconds(800))
         let progress = TopAlert.progress("Backup wird geprüft …")
         let copy: URL
         do {

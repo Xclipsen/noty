@@ -166,7 +166,7 @@ final class ExternalBackupModel: ObservableObject {
     /// upload/copy and read back → prune. Automatic runs never raise alerts and
     /// follow the backoff in `policy.due()`; "Jetzt sichern" ignores it.
     func attempt(library: LibraryModel, toolbox: ToolbarSettingsModel, manual: Bool = false) async {
-        guard !busy, policy.target != .disabled, manual || policy.due() else { return }
+        guard !busy, policy.target != .disabled, library.ready, manual || policy.due() else { return }
         if let reason = library.backupBlocker { postpone(reason, manual: manual); return }
         busy = true; defer { busy = false }
         let background = BackgroundAssertion("noty-external-backup")
@@ -207,6 +207,8 @@ final class ExternalBackupModel: ObservableObject {
         if manual { error = BackupPostponed(reason: reason).localizedDescription }
     }
     private func fail(_ outcome: ExternalBackupOutcome, _ error: Error, manual: Bool) {
+        // Cancelled (area switch, app ended the run): retried normally, no backoff step.
+        if error is CancellationError || (error as? URLError)?.code == .cancelled { postpone("Vorgang abgebrochen", manual: manual); return }
         let reason = Self.reason(error)
         policy.recordFailure(outcome, reason: reason); persist()
         let next = policy.nextAttempt.map { " · nächster Versuch \($0.formatted(date: .omitted, time: .shortened))" } ?? ""
