@@ -86,15 +86,17 @@ final class ImageAssetProviderTests: XCTestCase {
         let data = Data("abc".utf8)
         XCTAssertFalse(SHA256.installAccelerated { _ in [UInt8](repeating: 0, count: 32) })
         XCTAssertEqual(SHA256.hexDigest(data), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-        let calls = Counter()
+        let seen = Seen()
         XCTAssertTrue(SHA256.installAccelerated { bytes in
-            calls.increment()
+            seen.insert(bytes)
             var hasher = SHA256(); hasher.update(bytes); return hasher.finalize()
         })
-        let before = calls.value
+        // Unique inputs: other digests running meanwhile cannot disturb the check.
+        let marker = Data("noty-\(UUID().uuidString)".utf8), other = Data("noty-\(UUID().uuidString)".utf8)
+        XCTAssertEqual(SHA256.hexDigest(marker), SHA256.portableHexDigest(marker))
+        XCTAssertEqual(ImageAssetReference(of: other).sha256, SHA256.portableHexDigest(other))
+        XCTAssertTrue(seen.contains(marker) && seen.contains(other), "one-shot digests use the installed implementation")
         XCTAssertEqual(SHA256.hexDigest(data), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-        XCTAssertEqual(ImageAssetReference(of: data).sha256, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
-        XCTAssertEqual(calls.value, before + 2, "one-shot digests use the installed implementation")
     }
 
     func testSearchFingerprintFollowsTheContentAddress() {
@@ -111,9 +113,9 @@ final class ImageAssetProviderTests: XCTestCase {
     }
 }
 
-private final class Counter: @unchecked Sendable {
+private final class Seen: @unchecked Sendable {
     private let lock = NSLock()
-    private var count = 0
-    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
-    func increment() { lock.lock(); count += 1; lock.unlock() }
+    private var inputs = Set<Data>()
+    func insert(_ data: Data) { lock.lock(); inputs.insert(data); lock.unlock() }
+    func contains(_ data: Data) -> Bool { lock.lock(); defer { lock.unlock() }; return inputs.contains(data) }
 }

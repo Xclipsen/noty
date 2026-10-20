@@ -108,6 +108,31 @@ extension Notebook {
     public var allImages: [ImageObject] {
         (pages + (deletedPages ?? []).map(\.page)).flatMap { $0.images ?? [] }
     }
+
+    /// Image originals stored outside the notebook JSON, unique by hash in
+    /// order of first occurrence (active pages, then page trash): exactly the
+    /// asset records an archive carries for this notebook. Schema ≤ 11 embeds
+    /// every original in the JSON, so this is empty until schema 12 (C6) –
+    /// except for synthetic references that tests attach (`ExternalAssetSeam`).
+    public var externalImageAssets: [ImageAssetReference] {
+        var seen = Set<String>()
+        return ExternalAssetSeam.references(self).filter { seen.insert($0.sha256).inserted }
+    }
+}
+
+/// Test seam until schema 12: lets tests attach asset references to notebooks
+/// so archive, staging and restore paths for assets run without a format
+/// change. Never set by the app.
+enum ExternalAssetSeam {
+    typealias Resolver = @Sendable (Notebook) -> [ImageAssetReference]
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var resolver: Resolver?
+
+    static func set(_ value: Resolver?) { lock.lock(); resolver = value; lock.unlock() }
+    static func references(_ notebook: Notebook) -> [ImageAssetReference] {
+        lock.lock(); let current = resolver; lock.unlock()
+        return current?(notebook) ?? []
+    }
 }
 
 public enum ImageAssetError: Error, LocalizedError, Equatable {
@@ -151,7 +176,7 @@ public struct ImageAssetGarbageReport: Equatable, Sendable {
 /// Foundation offers no directory fsync; like `.atomic` this is no guarantee
 /// against power loss.
 ///
-/// Not yet used by RevisionStore or the app.
+/// Used by restores (C5) and read-only by archive writers; RevisionStore follows in C6.
 public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
     public static let directoryName = "Assets"
     /// Imported bytes held until the next successful commit (`stage`).
@@ -368,26 +393,23 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
         else if let source { payload = try source.payload(for: reference) }
         else { throw ImageAssetError.missing(reference.sha256) }
         let partial = directory.appendingPathComponent("\(reference.sha256).partial-\(UUID().uuidString)", isDirectory: false)
-        try Data().write(to: partial, options: .withoutOverwriting)
+        if case .file(let url) = payload {
+            // Another package or a restore stage: `copyItem` clones on APFS
+            // (no extra space); the copy is verified below like written bytes.
+            try BoundedFile.requireRegularFile(url)
+            do { try fm.copyItem(at: url, to: partial) } catch { try? fm.removeItem(at: partial); throw error }
+        } else {
+            try Data().write(to: partial, options: .withoutOverwriting)
+        }
         do {
             let output = try FileHandle(forWritingTo: partial)
             do {
-                switch payload {
-                case .data(let data):
+                if case .data(let data) = payload {
                     guard data.count == reference.byteCount else { throw ImageAssetError.damaged(reference.sha256) }
                     var offset = data.startIndex
                     while offset < data.endIndex {
                         let end = data.index(offset, offsetBy: min(blockSize, data.endIndex - offset))
                         try output.write(contentsOf: data[offset..<end]); offset = end
-                    }
-                case .file(let url):
-                    try BoundedFile.requireRegularFile(url)
-                    let input = try FileHandle(forReadingFrom: url)
-                    defer { try? input.close() }
-                    var count = 0
-                    while let chunk = try input.read(upToCount: blockSize), !chunk.isEmpty {
-                        guard chunk.count <= reference.byteCount - count else { throw ImageAssetError.damaged(reference.sha256) }
-                        try output.write(contentsOf: chunk); count += chunk.count
                     }
                 }
                 try output.synchronize()

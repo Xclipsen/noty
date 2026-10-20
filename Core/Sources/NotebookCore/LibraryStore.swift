@@ -232,15 +232,23 @@ public actor LibraryStore {
 
     /// Restore stage only: writes one complete package and reads it back. A
     /// streaming restore calls this per notebook before any index exists.
-    static func populatePackage(_ document: Notebook, root: URL) throws {
+    /// Image assets first (verified copies from `assets`), then revision and
+    /// manifest; every asset must be present afterwards.
+    static func populatePackage(_ document: Notebook, root: URL, assetsFrom assets: ImageAssetProviding? = nil) throws {
         let fm = FileManager.default
         let documentsRoot = root.appendingPathComponent("Library/Documents", isDirectory: true)
         try fm.createDirectory(at: documentsRoot, withIntermediateDirectories: true)
         try ContainedDirectory.require(documentsRoot, below: root)
         let destination = documentsRoot.appendingPathComponent(document.id.uuidString, isDirectory: true)
         guard !fm.fileExists(atPath: destination.path) else { throw LibraryArchiveError.destinationExists }
+        let references = document.externalImageAssets
+        if !references.isEmpty {
+            guard let assets else { throw LibraryArchiveError.incomplete }
+            try NotebookAssets(package: destination).persist(references, from: assets)
+        }
         try RevisionStore(directory: destination).save(document)
-        guard try RevisionStore(directory: destination).load() == document else { throw LibraryArchiveError.incomplete }
+        guard try RevisionStore(directory: destination).load() == document,
+              NotebookAssets(package: destination, readOnly: true).presentOnDisk(references) else { throw LibraryArchiveError.incomplete }
     }
 
     /// Restore stage only, after every package: preferences, then the portable

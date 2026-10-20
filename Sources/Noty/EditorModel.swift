@@ -128,8 +128,8 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    func validate(_ document: Notebook) throws {
-        try EditorModelValidation.validate(document)
+    func validate(_ document: Notebook, assets: ImageAssetProviding? = nil) throws {
+        try EditorModelValidation.validate(document, assets: assets)
     }
 
     var page: Page { notebook.pages[pageIndex] }
@@ -667,16 +667,21 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    func backupData() async -> Data? {
+    /// A verified `.notybackup` file in the app's temporary backup directory
+    /// (never inside a notebook package); the caller removes it after the
+    /// export dialog (`BackupScratch.remove`). The archive is written and
+    /// re-read on the repository actor, never held in memory as a whole.
+    func backupFile() async -> URL? {
         guard writable, !mutationsPaused, !busy else { return nil }
         busy = true
         let snapshot = notebook
         backupStatus = "Backup wird vorbereitet …"
         defer { busy = false }
         do {
-            let data = try await store.backup(snapshot)
+            let url = try BackupScratch.newFile("notybackup")
+            do { try await store.backup(snapshot, to: url) } catch { BackupScratch.remove(url); throw error }
             backupStatus = "Backup geprüft · Speicherort wählen"
-            return data
+            return url
         } catch {
             backupStatus = "Backup konnte nicht erstellt werden"
             self.error = error.localizedDescription
@@ -709,7 +714,7 @@ final class EditorModel: ObservableObject {
     }
 
     private func openPreparedRestore(_ prepared: PreparedRestore, message: String) async throws {
-        try validate(prepared.document)
+        try validate(prepared.document, assets: prepared.assets)
         var restored = try await store.commitRestore(prepared)
         restored.preferredPageID = page.id
         backupStatus = message
@@ -764,18 +769,23 @@ extension UTType {
     static let notyLibrary = UTType(exportedAs: "de.la.noty.library", conformingTo: .data)
 }
 
+/// Editor exports: a PDF in memory or a verified backup file. A backup is
+/// handed to the system from its file (like `LibraryArchiveFile`), never
+/// loaded into memory as a whole. Export only; reading goes through the
+/// staged restore paths.
 struct ExportFile: FileDocument {
     static var readableContentTypes: [UTType] { [.notyBackup, .notyLibrary, .json, .pdf] }
-    var data: Data
-    init(backupData: Data) { data = backupData }
-    init(pdfData: Data) { data = pdfData }
-    init(libraryData: Data) { data = libraryData }
-    init(configuration: ReadConfiguration) throws {
-        data = configuration.file.regularFileContents ?? Data()
-        if configuration.contentType == .notyLibrary { _ = try LibraryArchive.decode(data) }
-        else if configuration.contentType != .pdf { _ = try BackupArchive.decode(data) }
-    }
+    private enum Content { case data(Data), file(URL) }
+    private let content: Content
+    init(pdfData: Data) { content = .data(pdfData) }
+    init(backupFile url: URL) { content = .file(url) }
+    init(configuration: ReadConfiguration) throws { throw CocoaError(.featureUnsupported) }
+    /// The scratch file behind a backup export.
+    var fileURL: URL? { if case .file(let url) = content { url } else { nil } }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: data)
+        switch content {
+        case .data(let data): FileWrapper(regularFileWithContents: data)
+        case .file(let url): try FileWrapper(url: url, options: [])
+        }
     }
 }

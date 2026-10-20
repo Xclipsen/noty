@@ -22,7 +22,7 @@ enum IncomingBackup {
             copy = try BackupScratch.newFile(kind)
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
-            let limit = kind == "notybackup" ? BackupArchive.maximumBytes : LibraryArchive.maximumBytes
+            let limit = kind == "notybackup" ? BackupArchive.maximumFileBytes : LibraryArchive.maximumBytes
             try await Task.detached(priority: .userInitiated) {
                 try CoordinatedBackupFiles().reading(url, metadataOnly: false) { source in _ = try BoundedFile.copy(from: source, to: copy, limit: limit) }
             }.value
@@ -64,7 +64,8 @@ enum IncomingBackup {
 
     private static func offerNotebook(_ copy: URL, progress: UIAlertController?, library: LibraryModel) async {
         let decoded: DecodedBackup
-        do { decoded = try await Task.detached(priority: .userInitiated) { try BackupArchive.decode(BackupArchive.read(copy)) }.value }
+        // One streaming pass (format 2: every asset verified, nothing kept).
+        do { decoded = try await Task.detached(priority: .userInitiated) { try BackupArchive.verify(copy) }.value }
         catch {
             await TopAlert.dismiss(progress)
             TopAlert.show("Heft-Backup abgelehnt", error.localizedDescription + " Es wurde nichts verändert.")

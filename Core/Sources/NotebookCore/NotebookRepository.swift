@@ -23,39 +23,68 @@ public actor NotebookRepository {
         self.revision = revision
     }
 
-    public func backup(_ snapshot: Notebook) throws -> Data {
-        try BackupArchive.encode(snapshot)
+    /// Image originals of this package, read-only (committed assets).
+    private var packageAssets: NotebookAssets { NotebookAssets(package: store.directory, readOnly: true) }
+
+    /// Writes a verified `.notybackup` (format 2) of `snapshot` into a new
+    /// file at `url` (a scratch file the caller owns; never replaced).
+    @discardableResult
+    public func backup(_ snapshot: Notebook, to url: URL) throws -> DecodedBackup {
+        try BackupArchive.write(snapshot, assets: packageAssets, to: url)
     }
 
+    /// Copies the chosen file block-wise into a new stage, then verifies the
+    /// copy in one streaming pass (format 2: every asset verified into the
+    /// stage's `Assets/`; format 1 and prototype JSON in memory, ≤ 200 MB).
+    /// A failed preparation removes its stage.
     public func prepareRestore(from url: URL) throws -> PreparedRestore {
-        let data = try BackupArchive.read(url)
-        return try prepareRestore(data: data)
+        try prepareStaged { input in
+            do { return try BoundedFile.copy(from: url, to: input, limit: BackupArchive.maximumFileBytes) }
+            catch LibraryArchiveError.archiveTooLarge { throw BackupError.fileTooLarge }
+        }
     }
 
     public func localHistory() throws -> LocalHistory {
         try store.localHistory()
     }
 
+    /// A kept local revision through the same staged path: written as a
+    /// verified archive into the stage (assets from this package, where every
+    /// revision's originals stay as GC roots), then checked like an import.
     public func prepareLocalRecovery(id: UUID) throws -> PreparedRestore {
         let document = try store.localRevision(id: id)
-        return try prepareRestore(data: BackupArchive.encode(document))
+        let assets = packageAssets
+        return try prepareStaged { input in try BackupArchive.write(document, assets: assets, to: input).file }
     }
 
-    private func prepareRestore(data: Data) throws -> PreparedRestore {
-        let decoded = try BackupArchive.decode(data)
+    private var stagingRoot: URL { store.directory.appendingPathComponent("BackupStaging", isDirectory: true) }
+
+    private func prepareStaged(_ fill: (URL) throws -> LibraryArchiveFileInfo) throws -> PreparedRestore {
+        let fm = FileManager.default
         let id = UUID()
-        let stage = store.directory.appendingPathComponent("BackupStaging/\(id.uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
-        let stagedFile = stage.appendingPathComponent("input.notybackup")
-        try data.write(to: stagedFile, options: .atomic)
-        let staged = try BackupArchive.read(stagedFile)
-        guard staged == data else { throw BackupError.invalidStaging }
-        let copy = Self.restoredCopy(of: try BackupArchive.decode(staged).document, id: id)
-        return PreparedRestore(id: id, document: copy, isLegacyJSON: decoded.isLegacyJSON,
-                               archiveCRC32: SnapshotChecksum.crc32(staged))
+        let stage = stagingRoot.appendingPathComponent(id.uuidString, isDirectory: true)
+        try fm.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+        try fm.createDirectory(at: stage, withIntermediateDirectories: false)
+        do {
+            let input = stage.appendingPathComponent("input.notybackup")
+            let copied = try fill(input)
+            let assetDirectory = stage.appendingPathComponent(NotebookAssets.directoryName, isDirectory: true)
+            try fm.createDirectory(at: assetDirectory, withIntermediateDirectories: false)
+            let decoded = try BackupArchive.verify(input, extractingAssetsTo: assetDirectory)
+            guard decoded.file == copied else { throw BackupError.invalidStaging }
+            return PreparedRestore(id: id, document: Self.restoredCopy(of: decoded.document, id: id), isLegacyJSON: decoded.isLegacyJSON,
+                                   assets: NotebookAssets(directory: assetDirectory, readOnly: true),
+                                   archive: copied, assetReferences: decoded.assets)
+        } catch {
+            try? fm.removeItem(at: stage)
+            // No empty staging root is left behind by a rejected file.
+            if (try? fm.contentsOfDirectory(atPath: stagingRoot.path))?.isEmpty == true { try? fm.removeItem(at: stagingRoot) }
+            throw error
+        }
     }
 
-    /// Separate document identity; the original stays untouched.
+    /// Separate document identity; the original stays untouched. Image asset
+    /// references stay (content addresses).
     private static func restoredCopy(of document: Notebook, id: UUID) -> Notebook {
         var copy = document
         copy.id = id
@@ -66,18 +95,33 @@ public actor NotebookRepository {
 
     /// Call only after the UI actor validates PDFKit/PencilKit contents of the
     /// prepared document. The current store and its revision counter never change.
+    /// The stage is checked again first: the archive's exact size and CRC (one
+    /// pass, which also re-reads the notebook) and the SHA-256 of every staged
+    /// asset. Then assets first, revision and manifest last, into a new empty
+    /// package; read back before the stage is removed. A failure keeps the stage.
     public func commitRestore(_ prepared: PreparedRestore) throws -> RestoredNotebook {
-        let stage = store.directory.appendingPathComponent("BackupStaging/\(prepared.id.uuidString)", isDirectory: true)
-        let data = try BackupArchive.read(stage.appendingPathComponent("input.notybackup"))
-        guard SnapshotChecksum.crc32(data) == prepared.archiveCRC32 else { throw BackupError.invalidStaging }
-        let copy = Self.restoredCopy(of: try BackupArchive.decode(data).document, id: prepared.id)
+        let fm = FileManager.default
+        let stage = stagingRoot.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
+        let input = stage.appendingPathComponent("input.notybackup")
+        let decoded: DecodedBackup
+        do { decoded = try BackupArchive.verify(input, handling: .skip, limits: .standard) }
+        catch { throw BackupError.invalidStaging }
+        guard decoded.file == prepared.archive, decoded.assets == prepared.assetReferences else { throw BackupError.invalidStaging }
+        let copy = Self.restoredCopy(of: decoded.document, id: prepared.id)
         guard copy == prepared.document else { throw BackupError.invalidStaging }
+        let staged = NotebookAssets(directory: stage.appendingPathComponent(NotebookAssets.directoryName, isDirectory: true), readOnly: true)
+        for reference in decoded.assets {
+            guard case .file = try staged.verifiedPayload(for: reference) else { throw BackupError.invalidStaging }
+        }
         let destination = restoreDirectory.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
-        guard !FileManager.default.fileExists(atPath: destination.path) else { throw BackupError.invalidStaging }
-        let restored = RevisionStore(directory: destination)
-        try restored.save(copy)
-        guard try RevisionStore(directory: destination).load() == copy else { throw BackupError.invalidStaging }
-        try? FileManager.default.removeItem(at: stage)
+        guard !fm.fileExists(atPath: destination.path) else { throw BackupError.invalidStaging }
+        if !decoded.assets.isEmpty { try NotebookAssets(package: destination).persist(decoded.assets, from: staged) }
+        try RevisionStore(directory: destination).save(copy)
+        guard try RevisionStore(directory: destination).load() == copy,
+              NotebookAssets(package: destination, readOnly: true).presentOnDisk(copy.externalImageAssets + decoded.assets) else {
+            throw BackupError.invalidStaging
+        }
+        try? fm.removeItem(at: stage)
         return restoredEntry(copy, directory: destination)
     }
 

@@ -91,10 +91,28 @@ struct PageWorkflowCheck {
         guard document.pdfSources?.first?.data == source, document.pages.first?.id == oldIDs[3],
               try RevisionStore(directory: storeRoot).load() == document else { throw StorageError.invalidDocument }
         try JSONEncoder().encode(document).write(to: root.appendingPathComponent("current.json"))
-        let backup = try BackupArchive.encode(document)
-        try backup.write(to: root.appendingPathComponent("heft.notybackup"))
-        var corrupt = backup; corrupt[corrupt.count - 1] ^= 1
+        // Format 2 through the app's streaming file writer; format 1 as older builds wrote it.
+        let backupURL = root.appendingPathComponent("heft.notybackup")
+        let writtenBackup = try BackupArchive.write(document, to: backupURL)
+        let backup = try Data(contentsOf: backupURL)
+        guard writtenBackup.formatVersion == 2, writtenBackup.file == (try BoundedFile.checksum(backupURL)),
+              try BackupArchive.encode(document, createdAt: Date()).count == backup.count else { throw StorageError.invalidDocument }
+        // One flipped byte inside the notebook record (CRC) must be refused.
+        var corrupt = backup; corrupt[corrupt.count / 2] ^= 1
         try corrupt.write(to: root.appendingPathComponent("corrupt.notybackup"))
+        let legacyBackupURL = root.appendingPathComponent("heft-v1.notybackup")
+        try BackupArchive.encodeVersion1(document).write(to: legacyBackupURL)
+        // Both formats restore as separate copies through the staged repository path.
+        let restoreRepository = NotebookRepository(directory: root.appendingPathComponent("RestoreCheck"))
+        var restoredBackups: [Int] = []
+        for url in [backupURL, legacyBackupURL] {
+            let prepared = try await restoreRepository.prepareRestore(from: url)
+            let restoredCopy = try await restoreRepository.commitRestore(prepared)
+            let reopened = try RevisionStore(directory: restoredCopy.directory).load()
+            guard reopened.id != document.id, reopened.pages == document.pages, reopened.deletedPages == document.deletedPages,
+                  reopened.title == document.title + " (Wiederhergestellt)" else { throw StorageError.invalidDocument }
+            restoredBackups.append(try BackupArchive.verify(url).formatVersion)
+        }
         let library = LibraryStore(root: storeRoot)
         _ = try await library.load()
         var tools = ToolbarPreferences(); tools.dock = .bottom; tools.floatingAxis = .vertical; tools.dockOnly = false; tools.normalizePageWidths = true; tools.autoPen = true; tools.pencilPreview = false; tools.paging = true
@@ -108,7 +126,7 @@ struct PageWorkflowCheck {
         let written = try LibraryArchive.write(try await library.backupPlan(), to: libraryFile)
         guard try LibraryArchive.decode(Data(contentsOf: libraryFile)) == bundle,
               written.file == (try BoundedFile.checksum(libraryFile)) else { throw StorageError.invalidDocument }
-        var corruptLibrary = try Data(contentsOf: libraryFile); corruptLibrary[corruptLibrary.count - 1] ^= 1
+        var corruptLibrary = try Data(contentsOf: libraryFile); corruptLibrary[corruptLibrary.count / 2] ^= 1
         try corruptLibrary.write(to: root.appendingPathComponent("corrupt.notylibrary"))
         let workspaces = WorkspaceStore(root: root.appendingPathComponent("Workspaces"))
         let staged = try await workspaces.prepareRestore(file: libraryFile)
@@ -132,6 +150,19 @@ struct PageWorkflowCheck {
               try RevisionStore(directory: independentURL).load() == independent,
               independent.pages.count == document.pages.count + 1,
               old.pages[0].text == "BULK-12 · Seite 1" else { throw StorageError.invalidDocument }
+        // Asset records of format 2 with synthetic references (no schema 12 yet):
+        // written by Swift, checked independently by Python (check_page_workflow.sh).
+        let firstAsset = Data((0..<5_000).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ 1) }), secondAsset = Data("noty-Asset".utf8)
+        let assetReferences = [ImageAssetReference(of: firstAsset), ImageAssetReference(of: secondAsset)]
+        let assetNotebookID = document.id
+        ExternalAssetSeam.set { $0.id == assetNotebookID ? assetReferences : [] }
+        defer { ExternalAssetSeam.set(nil) }
+        let inlineAssets = InlineImageAssets(bytes: [assetReferences[0].sha256: firstAsset, assetReferences[1].sha256: secondAsset])
+        let assetBackup = try BackupArchive.write(document, assets: inlineAssets, to: root.appendingPathComponent("assets.notybackup"))
+        try LibraryArchive.encode(bundle, assets: inlineAssets).write(to: root.appendingPathComponent("assets.notylibrary"))
+        let referenceList = [document.id.uuidString: Dictionary(uniqueKeysWithValues: assetReferences.map { ($0.sha256, $0.byteCount) })]
+        try JSONSerialization.data(withJSONObject: referenceList).write(to: root.appendingPathComponent("asset-references.json"))
+        guard assetBackup.assets == assetReferences, bundle.documents.map(\.id) == [document.id] else { throw StorageError.invalidDocument }
         let report: [String: Any] = ["schemaVersion": document.schemaVersion,
             "textFlowSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first?.flowID == continuation.flowID,
             "unmaterializedDraftExcludedFromNotebookArchive": !roundTrip.documents[0].pages.contains(where: { $0.id == document.writingDraft().id }),
@@ -145,7 +176,9 @@ struct PageWorkflowCheck {
             "originalImageBytesUnchanged": document.pages[marginPageIndex].images?.first?.data == imageData,
             "editableImageSurvivesLibraryRestore": independent.pages.first(where: { $0.id == beforeTrim.id })?.images == [editedImage],
             "marginRestoreKeepsPageIDAndArchivesCurrent": true, "appleFrameworksExecuted": false,
-            "libraryArchiveBytes": written.file.byteCount, "libraryArchiveCRC32": Int(written.file.crc32)]
+            "libraryArchiveBytes": written.file.byteCount, "libraryArchiveCRC32": Int(written.file.crc32),
+            "libraryArchiveFormat": written.formatVersion, "notebookBackupFormatsRestored": restoredBackups,
+            "archiveAssets": written.assetCount + writtenBackup.assets.count]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
     }

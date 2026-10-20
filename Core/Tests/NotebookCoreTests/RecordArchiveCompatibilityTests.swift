@@ -5,8 +5,9 @@ import XCTest
 /// C3 moved the streaming machinery (sink, source, StreamingCRC32,
 /// BoundedFile) into RecordArchive.swift without any format change. The golden
 /// archives below were written by the code before that refactor (commit
-/// efd8ace); writing the same values must still give exactly these bytes, and
-/// they must stay readable.
+/// efd8ace); they must stay readable. Since C5 the app writes format 2; the
+/// format-1 writers (`encodeVersion1`, `writeVersion1`) remain for fixtures and
+/// must still give exactly these bytes.
 ///
 /// Encoders without `.sortedKeys` (library manifest, single backup) emit keys in
 /// Dictionary order, which Swift seeds per process. The golden bytes were
@@ -146,11 +147,11 @@ final class RecordArchiveCompatibilityTests: XCTestCase {
     }
 
     func testWritingTheSameValuesGivesEquivalentBytes() throws {
-        try assertEquivalentLibrary(LibraryArchive.encode(Self.bundle(), createdAt: Self.createdAt))
-        try assertEquivalentBackup(BackupArchive.encode(Self.notebooks()[0], createdAt: Self.createdAt))
+        try assertEquivalentLibrary(LibraryArchive.encodeVersion1(Self.bundle(), createdAt: Self.createdAt))
+        try assertEquivalentBackup(BackupArchive.encodeVersion1(Self.notebooks()[0], createdAt: Self.createdAt))
     }
 
-    /// The streaming file path (FileSink, reserved manifest patched in place).
+    /// The format-1 streaming file path (FileSink, reserved manifest patched in place).
     func testStreamingFileWriteGivesEquivalentBytes() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("golden-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -164,16 +165,22 @@ final class RecordArchiveCompatibilityTests: XCTestCase {
         let bundle = Self.bundle()
         let plan = LibraryBackupPlan(snapshot: bundle.snapshot, toolbar: bundle.toolbar, packages: packages)
         let url = root.appendingPathComponent("written.notylibrary")
-        let summary = try LibraryArchive.write(plan, to: url, createdAt: Self.createdAt)
+        try Data().write(to: url)
+        let handle = try FileHandle(forWritingTo: url)
+        var sink = FileSink(handle: handle)
+        _ = try LibraryArchive.writeVersion1(snapshot: plan.snapshot, toolbar: plan.toolbar, documents: plan.documents,
+                                             createdAt: Self.createdAt, into: &sink, limits: .standard,
+                                             document: plan.committedNotebook)
+        try handle.close()
         let written = try Data(contentsOf: url)
         try assertEquivalentLibrary(written)
-        XCTAssertEqual(summary.file, try BoundedFile.checksum(url))
+        XCTAssertEqual(try LibraryArchive.verify(url).file, try BoundedFile.checksum(url))
         if deterministicHashing { XCTAssertEqual(written, Self.goldenLibrary) }
     }
 
     func testExactBytesUnderDeterministicHashing() throws {
         try XCTSkipUnless(deterministicHashing, "exact comparison needs SWIFT_DETERMINISTIC_HASHING=1")
-        XCTAssertEqual(try LibraryArchive.encode(Self.bundle(), createdAt: Self.createdAt), Self.goldenLibrary)
-        XCTAssertEqual(try BackupArchive.encode(Self.notebooks()[0], createdAt: Self.createdAt), Self.goldenBackup)
+        XCTAssertEqual(try LibraryArchive.encodeVersion1(Self.bundle(), createdAt: Self.createdAt), Self.goldenLibrary)
+        XCTAssertEqual(try BackupArchive.encodeVersion1(Self.notebooks()[0], createdAt: Self.createdAt), Self.goldenBackup)
     }
 }

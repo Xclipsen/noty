@@ -263,6 +263,10 @@ def _images(page, version, image_ids):
 
 @strict
 def validate_notebook(document):
+    """Validates one notebook and returns its external image assets as
+    {sha256: byteCount}. Schema <= 11 embeds every original in the JSON, so the
+    result is empty until schema 12 (archive format 2 already carries asset
+    records for such references)."""
     check(isinstance(document, dict), "Notebook is not an object")
     version = document["schemaVersion"]
     check(type(version) is int and version in range(1, 12), "Unsupported notebook schema")
@@ -300,7 +304,7 @@ def validate_notebook(document):
               "Page fields need schema 3 representation")
         if document.get("pdf") is not None:
             base64_bytes(document["pdf"])
-        return
+        return {}
     check(version >= 3 and document.get("pdf") is None, "Invalid PDF source representation")
     sources = document["pdfSources"]
     check(isinstance(sources, list) and len(sources) <= 500, "Too many PDF sources")
@@ -356,3 +360,4 @@ def validate_notebook(document):
         if entry.get("reason") == "cleared":
             check(version >= 7, "Cleared-page snapshot needs schema 7")
         check(entry.get("reason") in (None, "marginReduction", "cleared"), "Unknown trash reason")
+    return {}

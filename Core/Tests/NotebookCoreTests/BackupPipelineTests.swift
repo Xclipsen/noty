@@ -45,13 +45,13 @@ final class LibraryArchiveStreamingTests: XCTestCase {
         let plan = try await store.backupPlan()
         let file = root.appendingPathComponent("bibliothek.notylibrary")
         var validated: [UUID] = []
-        let summary = try LibraryArchive.write(plan, to: file, limits: limits) { validated.append($0.id) }
+        let summary = try LibraryArchive.write(plan, to: file, limits: limits) { document, _ in validated.append(document.id) }
         XCTAssertEqual(validated, notebooks.map(\.id))
         XCTAssertEqual(summary.notebooks.map(\.id), notebooks.map(\.id))
         XCTAssertGreaterThan(summary.file.byteCount, limits.notebook * 4)
         XCTAssertEqual(summary.file, try BoundedFile.checksum(file))
         XCTAssertEqual(summary.trashedCount, 1); XCTAssertEqual(summary.folderCount, 1)
-        // The same file is an ordinary format-1 archive for the in-memory reader.
+        // The same file is an ordinary format-2 archive for the in-memory reader.
         let bundle = try await store.backupBundle()
         XCTAssertEqual(try LibraryArchive.decode(Data(contentsOf: file)), bundle)
         let manager = WorkspaceStore(root: root.appendingPathComponent("Workspaces"))
@@ -86,7 +86,7 @@ final class LibraryArchiveStreamingTests: XCTestCase {
         let big = try Data(contentsOf: ok)
         var readLimits = LibraryArchiveLimits(); readLimits.total = big.count - 1
         var source = BytesSource(big)
-        XCTAssertThrowsError(try LibraryArchive.read(&source, limits: readLimits) { _ in }) { error in
+        XCTAssertThrowsError(try LibraryArchive.read(&source, limits: readLimits) { _, _ in }) { error in
             XCTAssertEqual(error as? LibraryArchiveError, .archiveTooLarge)
         }
     }
@@ -102,10 +102,13 @@ final class LibraryArchiveStreamingTests: XCTestCase {
         _ = try LibraryArchive.write(snapshot: snapshot, toolbar: ToolbarPreferences(), documents: snapshot.items, createdAt: Date(),
                                      into: &writer, limits: .standard, document: { item in
             sink.events.append("load")
-            return documents.first { $0.id == item.id }!
-        }, validate: { _ in sink.events.append("validate") })
-        // Header, index, toolbar; then strictly load → validate → append per notebook; manifest last.
-        XCTAssertEqual(sink.events, ["append", "append", "append"] + Array(repeating: ["load", "validate", "append"], count: 4).flatMap { $0 } + ["replace"])
+            return (documents.first { $0.id == item.id }!, InlineImageAssets())
+        }, validate: { _, _ in sink.events.append("validate") })
+        // Header, index and toolbar records (descriptor + payload); then strictly
+        // load → validate → descriptor → payload per notebook; end record last.
+        // Nothing is ever patched afterwards (no reserved manifest in format 2).
+        XCTAssertEqual(sink.events, Array(repeating: "append", count: 5)
+                       + Array(repeating: ["load", "validate", "append", "append"], count: 4).flatMap { $0 } + ["append"])
         XCTAssertEqual(try LibraryArchive.decode(sink.data).documents, documents)
     }
 
@@ -140,7 +143,7 @@ final class LibraryArchiveStreamingTests: XCTestCase {
         var snapshot = LibrarySnapshot(); var notebook = Notebook(); notebook.title = "Alt"
         snapshot.items = [LibraryItem(id: notebook.id, title: notebook.title, source: .legacyMain)]
         let bundle = LibraryBundle(snapshot: snapshot, documents: [notebook])
-        let data = try LibraryArchive.encode(bundle)
+        let data = try LibraryArchive.encodeVersion1(bundle)
         let length = Int(data.dropFirst(8).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
         let header = Data(data.dropFirst(12).prefix(length))
         XCTAssertEqual(header.last, 0x20)
@@ -285,7 +288,7 @@ final class LibraryArchiveStreamingTests: XCTestCase {
         let manager = WorkspaceStore(root: workspaces)
         struct FrameworkRejected: Error {}
         let rejected = notebooks[1].id
-        do { _ = try await manager.prepareRestore(file: file) { if $0.id == rejected { throw FrameworkRejected() } }; XCTFail("accepted") }
+        do { _ = try await manager.prepareRestore(file: file) { document, _ in if document.id == rejected { throw FrameworkRejected() } }; XCTFail("accepted") }
         catch is FrameworkRejected { }
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: workspaces.appendingPathComponent("Staging").path).isEmpty)
         let prepared = try await manager.prepareRestore(file: file)

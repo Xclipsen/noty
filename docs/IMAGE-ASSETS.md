@@ -546,3 +546,37 @@ Hinweis: Während der Untersuchung kamen auf dem Branch die Commits „Build 53�
 - **Prüfung** (`EditorModelValidation.validateContent`, `BackupValidation`): je Original (Hash plus Pixelmaße) einmal ImageIO, über `verifiedPayload`; Quelle zuerst die eingebetteten Bytes, dann der übergebene Provider.
 - **Suche:** Fingerprint über `image.asset.sha256`. Der abgeleitete Index berechnet die Bild-OCR-Ebene deshalb einmal neu.
 - **CryptoKit (Zusatz):** Die App installiert beim Start `SHA256.installAccelerated` mit CryptoKit für Einmal-Digests von Daten im Speicher, also Inhaltsadressen und `stage`. Core übernimmt eine Implementierung nur, wenn sie die FIPS-Vektoren und Blockgrenzen-Längen exakt reproduziert. Streamende Prüfungen (Dateien, Archive) bleiben beim portablen Swift-SHA. Grund: `xtool dev build` baut standardmäßig Debug, dort ist das portable SHA langsam, und C4 hasht eingebettete Originale einmal je Sitzung.
+
+### C5 (Archivformat 2)
+
+- **Format wie umgesetzt** (`RecordArchive.swift`, `RecordDescriptor`): Kopf und Deskriptoren mit sortierten Schlüsseln und exakt festgelegten Schlüsselmengen; Swift und Python lehnen fehlende und zusätzliche Felder ab. Datensätze `index`/`toolbar`: `kind, byteCount, crc32`; `notebook`: zusätzlich `id`; `asset`: `kind, sha256, byteCount`; `end`: `kind, records, payloadBytes`. `records` zählt die Datensätze vor `end`, `payloadBytes` deren Nutzlast. Kopf `.notybackup`: `backupFormatVersion: 2, checksumAlgorithm, assetHashAlgorithm: "sha256", documentID, notebookSchemaVersion, createdAt`. Kopf `.notylibrary`: `libraryBackupVersion: 2, checksumAlgorithm, assetHashAlgorithm, createdAt`. Gleiche Magic wie Format 1, die Version steht im Kopf. Auch das Heft-JSON im Einzelbackup ist jetzt sortiert kodiert; gleiche Werte ergeben gleiche Bytes (Test).
+- **Reihenfolge der Assets (Präzisierung):** Der Schreiber gibt die Assets in der Reihenfolge ihres ersten Auftretens aus (aktive Seiten, dann Papierkorb). Die Leser verlangen innerhalb der Regeln aus 8.2/8.3 aber nur die Menge, keine Reihenfolge.
+- **Bibliothek:** `visit` bzw. die Apple-Prüfung sieht ein Heft erst, wenn seine Gruppe vollständig ist. So stehen der Prüfung die Assets der Gruppe schon zur Verfügung.
+- **Asset-Listen:** `Notebook.externalImageAssets` ist bei Schema ≤ 11 leer. Tests hängen über die interne Naht `ExternalAssetSeam` synthetische Verweise an Hefte, damit Schreiben, Prüfen, Staging und Restore mit Assets ohne Formatwechsel laufen. Der Host-Roundtrip nutzt sie auch: Swift schreibt Asset-Datensätze, Python prüft sie unabhängig.
+- **Schreiben:** Asset-Bytes werden in 4-MB-Blöcken gestreamt und dabei gehasht (`payload`, kein zweites Lesen über `verifiedPayload`). Eine Abweichung bricht ab und entfernt die Datei: Einzelheft mit `ImageAssetError.damaged`, Bibliothek mit dem neuen `LibraryArchiveError.damagedImage(Titel)`. Danach folgt wie bisher ein vollständiges streamendes Rücklesen mit SHA je Asset.
+- **Lesen:** drei Modi. `verify` (SHA, Bytes verworfen); `extract` (geprüft nach `<Verzeichnis>/<sha>`, über `<sha>.partial-<UUID>`, fsync, Umbenennen; nie überschreiben); `skip` (nur Größe). `skip` dient nur für zweite Durchläufe, deren Datei-Größe und -CRC mit einem geprüften ersten Durchlauf verglichen werden.
+- **Heft-Restore:**
+  - Die Datei wird blockweise nach `BackupStaging/<id>/input.notybackup` kopiert, dann streamend geprüft; die Assets landen in `BackupStaging/<id>/Assets/`.
+  - `PreparedRestore` hält `LibraryArchiveFileInfo`, die Asset-Liste und schreibgeschützte `assets` für die UI-Prüfung.
+  - Eine gescheiterte Vorbereitung entfernt ihr Stage und ein leeres `BackupStaging/`.
+  - `commitRestore` prüft das Staging erneut: ein Durchlauf mit `skip` (Größe und CRC der Datei, Heft neu dekodiert), dann SHA jedes gestagten Assets. Danach Assets zuerst über `NotebookAssets.persist`, dann wie bisher Revision und Manifest, frisch zurücklesen inklusive `presentOnDisk`. Erst dann wird das Stage entfernt.
+  - Die Reihenfolge „Assets zuerst“ übernimmt in C5 der Aufrufer, `RevisionStore` bleibt unverändert. C6 verlegt sie in `save(_:importingAssetsFrom:)`.
+- **Lokale Historie (Abweichung von Abschnitt 9):** Weiterhin der Weg über ein Archiv. `prepareLocalRecovery` schreibt ein v2-Archiv in das Stage (Assets aus dem eigenen Paket) und nimmt dann denselben Prüfweg wie ein Import. Grund: eine einzige Staging-Prüfung für alle Kopien. Der Preis ist eine zusätzliche Kopie der Assets; sie lässt sich nach Messung in C8 abkürzen.
+- **Bibliotheks-Restore:** Die Vorbereitung extrahiert nach `Staging/<id>/AssetScratch/`. Der Commit vergleicht wie bisher Größe und CRC und macht dann einen zweiten Durchlauf mit `skip`: SHA jedes Scratch-Assets, dann `populatePackage(_:root:assetsFrom:)` (Assets zuerst). Der frische Store prüft zusätzlich `presentOnDisk`. Der Scratch wird vor dem Veröffentlichen entfernt und gehört nicht zum Bereich.
+- **`NotebookAssets` (Änderung an C2):** Teildateien aus Dateiquellen (Paket, Stage) entstehen über `copyItem`, unter APFS ein Klon, und werden danach wie geschriebene Bytes synchronisiert und per SHA geprüft.
+- **Grenzen:**
+  - `.notybackup` Format 2: Datei ≤ 800 MB (`BackupArchive.maximumFileBytes`, neuer Fehler `fileTooLarge`), Heft-JSON ≤ 200 MB.
+  - Format 1 und Prototyp-JSON weiter im Speicher ≤ 200 MB.
+  - Bibliothek ≤ 4 GB; Kopf ≤ 64 KB, Deskriptor ≤ 4 KB, Asset ≤ 20 MB (`ImageLimits.maximumFileBytes`, unverändert).
+- **Format-1-Schreiber** bleiben intern (`BackupArchive.encodeVersion1`, `LibraryArchive.encodeVersion1`/`writeVersion1`) für Fixtures und Kompatibilitätstests; die App schreibt nur Format 2. Unter `SWIFT_DETERMINISTIC_HASHING=1` sind die Golden-Archive weiter bytegleich.
+- **App:**
+  - `EditorModel.backupFile()` schreibt nach `BackupScratch` (`tmp/NotyBackupArchives`). `ExportFile(backupFile:)` übergibt die Datei per `FileWrapper(url:)`, die Scratch-Datei wird nach dem Dialog entfernt. `ExportFile` liest nicht mehr (`init(configuration:)` wirft).
+  - „In noty öffnen“ kopiert Heft-Backups bis 800 MB und prüft streamend.
+  - Die Prüf-Callbacks heißen `(Notebook, ImageAssetProviding)`; eingebettete Bytes werden zuerst gefragt.
+- **Ältere Builds** (≤ 53 und Stände vor C5) lehnen Archive des Formats 2 als „Backupformat 2 …“ bzw. „Bibliotheksbackup 2 benötigt eine neuere noty-Version“ ab. Einen Rückweg gibt es nicht.
+- **Python:**
+  - Neues gemeinsames `scripts/record_archive.py`. `verify_backup.py` und `verify_library_backup.py` lesen Format 1 und 2; die Ausgabe enthält zusätzlich `formatVersion`, `assets`, `assetBytes`, bei der Bibliothek auch `sharedAssets`.
+  - `VerificationError` ist jetzt ein `ValueError`; die Fehlerausgabe nennt den Typ.
+  - `validate_notebook` gibt `{sha256: byteCount}` zurück, bis C6 leer.
+  - `check_verifiers.sh` enthält v2-Fixtures, ein v1-Bibliotheksarchiv und die Archiv-Negativfälle aus Abschnitt 10, soweit ohne Schema 12 möglich. Dazu kommt ein Harness, der `validate_notebook` mit synthetischen Verweisen ersetzt (fehlend, doppelt, SHA, fremde Gruppe, zu spät, geteiltes Asset), auch unter `-O`.
+  - Offen für C6: die Negativfälle, die Schema 12 brauchen (`data`/`asset` gemischt, Hash-Format im Heft, Summe über 500 MB, gleicher Hash mit anderen Maßen), und die Gerätespeicher-Fälle.

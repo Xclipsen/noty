@@ -164,16 +164,20 @@ public actor WorkspaceStore {
     }
 
     /// Copies the chosen file block-wise into a new stage and verifies the copy
-    /// in one streaming pass; `validate` (Apple-framework checks) sees every
-    /// notebook once, off the UI actor. A failed preparation removes its stage.
-    public func prepareRestore(file: URL, validate: @Sendable (Notebook) throws -> Void = { _ in }) throws -> PreparedLibraryRestore {
+    /// in one streaming pass, every image asset verified into the stage's
+    /// `AssetScratch/`; `validate` (Apple-framework checks) sees every notebook
+    /// once with these originals, off the UI actor. A failed preparation
+    /// removes its stage.
+    public func prepareRestore(file: URL, validate: @Sendable (Notebook, ImageAssetProviding) throws -> Void = { _, _ in }) throws -> PreparedLibraryRestore {
         let id = UUID()
         let stage = staging.appendingPathComponent(id.uuidString, isDirectory: true)
         try createStage(stage)
         do {
             let input = stage.appendingPathComponent("input.notylibrary")
             let copied = try BoundedFile.copy(from: file, to: input)
-            let summary = try LibraryArchive.verify(input, visit: validate)
+            let scratch = stage.appendingPathComponent(Self.assetScratch, isDirectory: true)
+            try fm.createDirectory(at: scratch, withIntermediateDirectories: false)
+            let summary = try LibraryArchive.verify(input, extractingAssetsTo: scratch, visit: validate)
             guard summary.file == copied else { throw BackupError.invalidStaging }
             activeStages.insert(id)
             return PreparedLibraryRestore(id: id, summary: summary)
@@ -244,9 +248,18 @@ public actor WorkspaceStore {
         // Chunk CRCs cover the archived bytes as written (any key order, older
         // builds included); the restored packages are compared by a canonical
         // re-encoding of the decoded value, one notebook at a time.
+        // Image originals come from the scratch extracted during preparation:
+        // each staged file is checked again (SHA-256) before it is copied; the
+        // archive's own asset bytes are not hashed a second time, the whole
+        // file's size and CRC were just compared.
+        let scratch = stage.appendingPathComponent(Self.assetScratch, isDirectory: true)
+        let staged = NotebookAssets(directory: scratch, readOnly: true)
         var fingerprints: [UUID: LibraryArchiveFileInfo] = [:]
-        let summary = try LibraryArchive.verify(input) { document in
-            try LibraryStore.populatePackage(document, root: data)
+        let summary = try LibraryArchive.verify(input, limits: .standard, handling: .skip) { document, _ in
+            for reference in document.externalImageAssets {
+                guard case .file = try staged.verifiedPayload(for: reference) else { throw BackupError.invalidStaging }
+            }
+            try LibraryStore.populatePackage(document, root: data, assetsFrom: staged)
             fingerprints[document.id] = try LibraryArchive.fingerprint(document)
         }
         guard summary == prepared.summary else { throw BackupError.invalidStaging }
@@ -258,13 +271,20 @@ public actor WorkspaceStore {
             throw LibraryArchiveError.incomplete
         }
         for item in plan.documents {
-            guard let expected = fingerprints[item.id], try LibraryArchive.fingerprint(plan.committedNotebook(item)) == expected else {
+            let document = try plan.committedNotebook(item)
+            guard let expected = fingerprints[item.id], try LibraryArchive.fingerprint(document) == expected,
+                  try plan.assets(item).presentOnDisk(document.externalImageAssets) else {
                 throw LibraryArchiveError.incomplete
             }
         }
+        // Copied into every package: the scratch is not part of the area.
+        try fm.removeItem(at: scratch)
         // The checked source file is kept as part of this workspace's provenance.
         return try publish(stage: stage, id: prepared.id, title: title, kind: .restored)
     }
+
+    /// Verified image originals of a prepared stage (`<sha256>` files).
+    private static let assetScratch = "AssetScratch"
 
     private func createStage(_ url: URL) throws {
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)

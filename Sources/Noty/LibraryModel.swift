@@ -428,7 +428,7 @@ final class LibraryModel: ObservableObject {
             // Use the existing staged, independently validated restore path.
             let repository = NotebookRepository(directory: root)
             let prepared = try await repository.prepareRestore(from: url)
-            try EditorModelValidation.validate(prepared.document)
+            try EditorModelValidation.validate(prepared.document, assets: prepared.assets)
             let restored = try await repository.commitRestore(prepared)
             snapshot = try await store.load().snapshot
             if let parent { snapshot = try await store.move(restored.id, to: parent) }
