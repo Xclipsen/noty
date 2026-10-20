@@ -338,6 +338,9 @@ final class LibraryModel: ObservableObject {
                     try document.setMargins(margins, pageIDs: [page.id])
                 }
             }
+            // Originals above 20 MB get schema 10 at once, so Build 46 refuses the
+            // whole notebook instead of failing later edits.
+            if data.count > PDFSource.legacyMaximumBytes { document = try document.preparedForPageEditing() }
             snapshot = try await store.createDocument(document, parentID: parent)
         } catch { self.error = "PDF-Import fehlgeschlagen: \(error.localizedDescription)" }
     }
