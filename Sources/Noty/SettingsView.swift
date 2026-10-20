@@ -232,6 +232,10 @@ private struct EditorSettingsPage: View {
 private struct ToolSettingsPage: View {
     @ObservedObject var toolbox: ToolbarSettingsModel
     let area: String
+    private var hoverPreviewState: String {
+        if #available(iOS 17.5, *) { return UIPencilInteraction.prefersHoverToolPreview ? "System: ein" : "System: aus" }
+        return "Systemeinstellung"
+    }
     var body: some View {
         Form {
             Section {
@@ -247,10 +251,13 @@ private struct ToolSettingsPage: View {
             } header: { Text("Stift, Marker, Radierer") } footer: {
                 Text("Autostift wählt für neue Striche eine zur Seitenhelligkeit passende Farbe. Runde Markerspitze: gleichmäßig breit und durchscheinend; Keil: klassischer Marker. Vorhandene Striche bleiben unverändert.")
             }
+            // PencilKit offers no per-view switch for its hover tool preview; the
+            // system setting is read-only (`prefersHoverToolPreview`). The stored
+            // `pencilPreview` field stays in the toolbar format for compatibility.
             Section {
-                Toggle("Pencil-Hover-Vorschau", isOn: Binding(get: { toolbox.preferences.pencilPreview ?? true }, set: { toolbox.preferences.pencilPreview = $0 }))
+                LabeledContent("Pencil-Hover-Vorschau", value: hoverPreviewState)
             } footer: {
-                Text("Die Einstellung wird gespeichert und mitgesichert. Der Editor wertet sie in diesem Stand noch nicht aus.")
+                Text("Die Werkzeugvorschau beim Schweben folgt der Systemeinstellung unter Einstellungen › Apple Pencil. iPadOS bietet Apps keine Möglichkeit, sie nur in noty abzuschalten.")
             }
             Section {
                 Picker("Leistenposition", selection: Binding(get: { toolbox.preferences.effectiveDock }, set: { toolbox.preferences.dock = $0 })) {
