@@ -59,6 +59,11 @@ struct LibraryView: View {
     private var editable: Bool {
         model.ready && model.opened == nil && !workspaces.busy && (!model.busy || model.backgroundBusy)
     }
+    /// Menu shortcuts pause while a sheet/dialog is shown: a second presentation would not appear.
+    private var presenting: Bool {
+        creatingNotebook || settingsRequest != nil || contentSearch != nil || moving != nil || showingAreas || showingCopies
+            || showingName || trashing != nil || importingPDF || importingBackup || exportingPDF
+    }
     private var normalFolder: Bool { location == .root || parentID != nil }
     /// Manual drag order is only meaningful for the unsorted contents of one folder.
     private var canReorder: Bool { normalFolder && search.isEmpty && sort == .manual }
@@ -123,6 +128,7 @@ struct LibraryView: View {
         .fullScreenCover(item: $model.opened, onDismiss: { model.editorClosed() }) { document in
             LibraryNotebookView(document: document, root: model.root, library: model).id(document.id)
                 .environment(\.searchIndexArea, StableDefaults.scope(model.root))
+                .publishesEditorCommands()
                 .environment(\.editorSettings, EditorSettingsPresenter { [model, toolbox, externalBackup, workspaces] in
                     AnyView(SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces))
                 })
@@ -188,6 +194,9 @@ struct LibraryView: View {
             if case .folder(let id) = value { reveal(id) }
         }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
+        .focusedSceneValue(\.libraryCommands, model.opened == nil && !presenting ? LibraryCommandActions(
+            newNotebook: editable ? { creatingNotebook = true } : nil,
+            search: editable ? { searchAllNotebooks() } : nil) : nil)
     }
 
     // MARK: Sidebar

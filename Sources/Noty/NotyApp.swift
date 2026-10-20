@@ -12,5 +12,6 @@ struct NotyApp: App {
         WindowGroup {
             WorkspaceLibraryHost(workspaces: workspaces).id(workspaces.root.path).preferredColorScheme(.dark)
         }
+        .commands { NotyCommands() }
     }
 }
