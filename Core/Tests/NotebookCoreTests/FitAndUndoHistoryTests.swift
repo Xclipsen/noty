@@ -4,7 +4,7 @@ import XCTest
 
 /// Build 41 device feedback: fit with writing space, notebook-wide undo,
 /// focus after deleting the selected page.
-final class Feedback41Tests: XCTestCase {
+final class FitAndUndoHistoryTests: XCTestCase {
     private func pdfPage(_ width: Double, _ height: Double, margins: PageMargins? = nil) throws -> Page {
         var page = Page()
         let box = PageRect(x: 0, y: 0, width: width, height: height)

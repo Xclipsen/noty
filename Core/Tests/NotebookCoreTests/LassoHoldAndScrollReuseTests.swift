@@ -1,7 +1,7 @@
 import XCTest
 @testable import NotebookCore
 
-final class Feedback30Tests: XCTestCase {
+final class LassoHoldAndScrollReuseTests: XCTestCase {
     private let box = LassoRegion(points: [.init(x: -100, y: -80), .init(x: 200, y: -80), .init(x: 200, y: 250), .init(x: -100, y: 250)])
     func testOneVisibleLassoPreservesEveryLegacyToolAndCustomOrder() throws {
         var preferences = ToolbarPreferences(); preferences.order.reverse()

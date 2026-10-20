@@ -1,7 +1,7 @@
 import XCTest
 @testable import NotebookCore
 
-final class WritingAndStroke32Tests: XCTestCase {
+final class WritingAreaUnitsAndStrokeGateTests: XCTestCase {
     private func pdf(width: Double, rotation: Int = 0) throws -> Page {
         var page = Page()
         let rect = PageRect(x: 20, y: 30, width: width, height: width * 842 / 595)

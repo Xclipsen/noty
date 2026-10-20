@@ -1,7 +1,7 @@
 import XCTest
 @testable import NotebookCore
 
-final class LassoAndViewport31Tests: XCTestCase {
+final class LassoTouchAndHighZoomTests: XCTestCase {
     private let region = LassoRegion(points: [.init(x: 0, y: 0), .init(x: 100, y: 0), .init(x: 100, y: 100), .init(x: 0, y: 100)])
     func testTouchedObjectsAndCrossingInkAreSelectedWithoutCompleteEnclosure() {
         XCTAssertTrue(region.intersects(.init(x: 90, y: 50, width: 30, height: 40)))

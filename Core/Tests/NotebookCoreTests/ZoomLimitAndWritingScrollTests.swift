@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import NotebookCore
 
-final class ViewportWriting33Tests: XCTestCase {
+final class ZoomLimitAndWritingScrollTests: XCTestCase {
     func testZoomOutLimitIsThreePageWidthsAndOverZoomSpringsBackCentred() throws {
         let viewport = PageSize(width: 1194, height: 760)
         let range = NotebookViewportGeometry.zoomRange(viewport: viewport, page: .a4)
