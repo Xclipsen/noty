@@ -771,6 +771,11 @@ struct ContentView: View {
                     guard model.materializeDraft(draftPage) else { return false }
                 }
                 return model.updateContent(next, basedOn: before, pageID: page.id)
+            },
+            onEraseShapes: { next, before in
+                // Only existing pages carry shapes; the draft page has none.
+                guard isPaneActive(), model.pageContentGeneration == generation else { return false }
+                return model.updateContent(next, basedOn: before, pageID: page.id, inkGesture: true)
             })
     }
 

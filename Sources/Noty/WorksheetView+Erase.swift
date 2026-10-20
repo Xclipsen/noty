@@ -57,13 +57,8 @@ extension WorksheetView {
             if StrokeHitTest.hits(sweep: from, point, radius: reach, stroke: points) { session.marked.insert(index); changed = true }
         }
         // Shapes: hit along the same swept width as ink.
-        let steps = max(1, Int((hypot(point.x - from.x, point.y - from.y) / radius).rounded(.up)))
-        let samples = (0...steps).map { CGPoint(x: from.x + (point.x - from.x) * Double($0) / Double(steps), y: from.y + (point.y - from.y) * Double($0) / Double(steps)) }
-        for shape in session.base.shapes where !session.shapes.contains(shape.id) {
-            let path = ShapeRendering.path(shape)
-            let outline = path.cgPath.copy(strokingWithWidth: shape.lineWidth + 2 * radius, lineCap: .round, lineJoin: .round, miterLimit: 4)
-            if samples.contains(where: { outline.contains($0) || (shape.fill != nil && path.contains($0)) }) { session.shapes.insert(shape.id); changed = true }
-        }
+        let hit = Self.shapesHit(session.base.shapes.filter { !session.shapes.contains($0.id) }, from: from, to: point, radius: radius)
+        if !hit.isEmpty { session.shapes.formUnion(hit); changed = true }
         trailPoints.append((CGPoint(x: point.x + pageLayout.contentOrigin.x, y: point.y + pageLayout.contentOrigin.y), CACurrentMediaTime()))
         session.last = point
         eraseSession = session
@@ -83,11 +78,69 @@ extension WorksheetView {
         dimErasedShapes()
     }
     func dimErasedShapes() {
-        guard let session = eraseSession else { return }
-        shapeLayer.configure(session.base.shapes.map { shape in
-            guard session.shapes.contains(shape.id) else { return shape }
+        if let session = eraseSession { dimShapes(session.base.shapes, hit: session.shapes) }
+        if let session = shapeErase { dimShapes(session.shapes, hit: session.hit) }
+    }
+    private func dimShapes(_ shapes: [ShapeObject], hit: Set<UUID>) {
+        shapeLayer.configure(shapes.map { shape in
+            guard hit.contains(shape.id) else { return shape }
             var dimmed = shape; dimmed.color.alpha *= 0.28; dimmed.fill?.alpha *= 0.28; return dimmed
         }, origin: pageLayout.contentOrigin)
+    }
+    /// IDs of `shapes` whose stroke (or fill) the eraser capsule `from→to`
+    /// with `radius` touches. Shared by both erasers.
+    static func shapesHit(_ shapes: [ShapeObject], from: PagePoint, to point: PagePoint, radius: Double) -> Set<UUID> {
+        guard !shapes.isEmpty else { return [] }
+        let steps = max(1, Int((hypot(point.x - from.x, point.y - from.y) / max(radius, 0.5)).rounded(.up)))
+        let samples = (0...steps).map { CGPoint(x: from.x + (point.x - from.x) * Double($0) / Double(steps), y: from.y + (point.y - from.y) * Double($0) / Double(steps)) }
+        var hit = Set<UUID>()
+        for shape in shapes {
+            let path = ShapeRendering.path(shape)
+            let outline = path.cgPath.copy(strokingWithWidth: shape.lineWidth + 2 * radius, lineCap: .round, lineJoin: .round, miterLimit: 4)
+            if samples.contains(where: { outline.contains($0) || (shape.fill != nil && path.contains($0)) }) { hit.insert(shape.id) }
+        }
+        return hit
+    }
+
+    // MARK: Precision eraser and shapes
+    // PencilKit's bitmap eraser only cuts ink. Shapes it touches are dimmed
+    // during the gesture and removed whole on lift, merged into the gesture's
+    // ink undo step (`onEraseShapes`). Vector shapes are never cut partially.
+
+    func beginShapeErase() {
+        guard !pageContent.shapes.isEmpty else { return }
+        shapeErase = ShapeEraseSession(shapes: pageContent.shapes)
+        // A fresh ink session, so the removal never merges into the previous
+        // stroke's undo step even if PencilKit reports no tool use for a tap.
+        onInkSession?()
+    }
+    /// The precision eraser's own width (`PKEraserTool(.fixedWidthBitmap)`).
+    func precisionShapeSweep(to point: PagePoint) {
+        guard var session = shapeErase else { return }
+        let hit = Self.shapesHit(session.shapes.filter { !session.hit.contains($0.id) }, from: session.last ?? point, to: point,
+                                 radius: max(configuredWidth, 1) / 2)
+        session.last = point
+        session.hit.formUnion(hit)
+        shapeErase = session
+        if !hit.isEmpty { dimErasedShapes() }
+    }
+    /// Shows the shapes again; nothing was published.
+    func cancelShapeErase() {
+        guard let session = shapeErase else { return }
+        shapeErase = nil
+        if !session.hit.isEmpty { shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin) }
+    }
+    /// Removes the touched shapes in one content change. The ink is left as
+    /// published: PencilKit may still deliver the eraser's final drawing, and
+    /// the canvas is not touched here.
+    func finishShapeErase() {
+        guard let session = shapeErase else { return }
+        guard !session.hit.isEmpty, editable, pageContent.shapes == session.shapes else { cancelShapeErase(); return }
+        shapeErase = nil
+        var next = pageContent
+        next.shapes.removeAll { session.hit.contains($0.id) }
+        if onEraseShapes?(next, pageContent) == true { pageContent.shapes = next.shapes }
+        shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin)
     }
     /// Restores the visible state; nothing was ever published.
     func cancelErase() {
