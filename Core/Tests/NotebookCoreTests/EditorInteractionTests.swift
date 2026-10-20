@@ -2,6 +2,18 @@ import XCTest
 @testable import NotebookCore
 
 final class EditorInteractionTests: XCTestCase {
+    func testAbortedLiftSetsTheCanvasBackToTheModelInk() {
+        let model = Data([1, 2, 3]), remainder = Data([1])
+        // Lift in progress: the canvas legitimately shows only the remainder.
+        XCTAssertFalse(EditorInteractionPolicy.canvasNeedsReset(shown: remainder, model: model, stroke: false, transient: true))
+        // Tool change or lost editing right ended the lift: back to the model.
+        XCTAssertTrue(EditorInteractionPolicy.canvasNeedsReset(shown: remainder, model: model, stroke: false, transient: false))
+        // Natively drawn, not yet published ink (unknown bytes) is never discarded.
+        XCTAssertFalse(EditorInteractionPolicy.canvasNeedsReset(shown: nil, model: model, stroke: false, transient: false))
+        // A stroke in progress is never replaced; matching ink needs nothing.
+        XCTAssertFalse(EditorInteractionPolicy.canvasNeedsReset(shown: remainder, model: model, stroke: true, transient: false))
+        XCTAssertFalse(EditorInteractionPolicy.canvasNeedsReset(shown: model, model: model, stroke: false, transient: false))
+    }
     func testTasksCycleAndPencilTogglePreservesIndentationAndSelection() throws {
         var text = "\t👨‍👩‍👧‍👦 Aufgabe"
         var selection = NSRange(location: (text as NSString).length, length: 0)

@@ -57,8 +57,12 @@ final class ToolbarSettingsModel: ObservableObject {
         revision += 1
         let savingRevision = revision
         let snapshot = preferences
+        // The write often starts as the app goes to the background (pending
+        // debounce): iPadOS keeps it running until it is done or time is up.
+        let background = SettingsWriteTask()
         // Do not cancel a dispatched write; actor revisions protect arrival order.
         pending = Task {
+            defer { background.end() }
             do {
                 try await store.save(snapshot, revision: savingRevision)
                 if revision == savingRevision { status = "" }
@@ -75,5 +79,20 @@ final class ToolbarSettingsModel: ObservableObject {
             await pending?.value
             if flushingRevision == revision { return status.isEmpty }
         }
+    }
+}
+
+/// Background execution time for one settings write (as `BackgroundSaveTask`
+/// in EditorModel); ended by the write or by iPadOS when time runs out.
+@MainActor
+private final class SettingsWriteTask {
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+    init() {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: "noty-tool-settings") { [weak self] in self?.end() }
+    }
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
     }
 }

@@ -166,6 +166,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
 
     func adoptCommit(_ onCommit: @escaping (PageContent, PageContent) -> Bool) { self.onCommit = onCommit }
+    /// A drag, lift or new shape is shown instead of the committed content.
+    var showsTransientPreview: Bool { preview != nil || draft != nil || lift != nil || startContent != nil }
     /// Memory warning: the decoded drawing and contour are rebuilt when needed.
     func releaseMemory() { if !hasSelection, startContent == nil { cachedDrawing = nil; cachedOutline = nil } }
 

@@ -667,6 +667,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         objectLayer.configure(PageContent(page: page), pageID: editor.pageID, layout: editor.layout,
             generation: editor.contentGeneration, tool: tool, enabled: editable, fingerDrawing: editor.fingerDrawing, options: editor.shapeOptions,
             filter: editor.selectionFilter, lassoMode: editor.lassoMode, color: InkColor(Color(editor.color)), width: editor.width, onCommit: editor.onContent)
+        // Every aborted lift or object drag (tool change, lost editing right)
+        // ends here: the canvas shows the model's ink before the next stroke.
+        syncCanvas(to: pageContent.drawing)
         if automaticPen {
             objectLayer.automaticColor = { [weak self] point -> InkColor? in
                 guard let self else { return nil }
@@ -715,6 +718,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             }
             selectionInkSource = nil; selectionInkIndices = []
             selectionInkImage.isHidden = true; selectionInkImage.image = nil
+            // A lift ended without a drop (tool change during it) still shows
+            // only the remainder; `data` is the committed ink again.
+            syncCanvas(to: data)
             return
         }
         if selectionInkSource != data || selectionInkIndices != indices {
@@ -741,6 +747,17 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         selectionInkImage.center = CGPoint(x: center.x + pageLayout.contentOrigin.x, y: center.y + pageLayout.contentOrigin.y)
         selectionInkImage.transform = CGAffineTransform(a: transform.a, b: transform.b, c: transform.c, d: transform.d, tx: 0, ty: 0)
         selectionInkImage.isHidden = false
+    }
+
+    /// Puts `data` (canonical; normally the model's ink) back on the canvas
+    /// when it shows anything else while nothing transient is on screen.
+    private func syncCanvas(to data: Data) {
+        let transient = heldShape != nil || eraseSession != nil || selectionInkSource != nil || objectLayer.showsTransientPreview
+        guard EditorInteractionPolicy.canvasNeedsReset(shown: canvasSource, model: data, stroke: inkActive, transient: transient),
+              let drawing = data.isEmpty ? PKDrawing() : try? PKDrawing(data: data) else { return }
+        let wasUpdating = updating; updating = true
+        canvas.drawing = drawing.transformed(using: pageLayout.inkTranslation); canvasSource = data
+        updating = wasUpdating
     }
 
     private func updateInputMode() {
@@ -790,7 +807,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if tool == .marker, markerStraight { straightenLastMarkerStroke(previousCount: previousCount) }
         if tool == .pen, scribbleErase { eraseByScribble(previousCount: previousCount) }
         let drawing = canvas.drawing, strokes = drawing.strokes
-        recordDrawnWidth(strokes, previousCount: previousCount)
+        // A precision eraser that splits a stroke also adds one: no pen width.
+        if tool == .pen || tool == .pencil || tool == .marker { recordDrawnWidth(strokes, previousCount: previousCount) }
         lastDrawing = canonicalDrawingData(drawing)
         if eraseSession == nil { strokeCountCache = (lastDrawing, strokes.count); canvasSource = lastDrawing }
         pageContent.drawing = lastDrawing
