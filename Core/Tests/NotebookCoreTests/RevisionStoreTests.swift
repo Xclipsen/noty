@@ -269,8 +269,7 @@ final class RevisionStoreTests: XCTestCase {
         legacy.schemaVersion = 1
         legacy.pages[0].drawing = Data([1, 2, 3])
         legacy.pages[0].text = "Ältere Notiz"
-        let oldStore = NotebookStore(directory: root)
-        try oldStore.save(legacy)
+        try LegacyFixture.write(legacy, to: root)
         let original = try Data(contentsOf: root.appendingPathComponent("notebook.json"))
         let store = RevisionStore(directory: root)
         var upgraded = try store.load()
@@ -381,7 +380,7 @@ final class RevisionStoreTests: XCTestCase {
     func testFailedFirstMigrationCommitRetainsReadableLegacyAndPreviousPointer() throws {
         let root = try directory()
         let legacy = Notebook()
-        try NotebookStore(directory: root).save(legacy)
+        try LegacyFixture.write(legacy, to: root)
         let bytes = try Data(contentsOf: root.appendingPathComponent("notebook.json"))
         let store = RevisionStore(directory: root)
         _ = try store.load()

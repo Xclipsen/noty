@@ -355,24 +355,6 @@ public final class RevisionStore {
         return bytes
     }
 
-    /// Only called after NotebookRepository has archived the complete original
-    /// directory. A deliberate restore can replace corruption, never a future format.
-    func replaceArchivedOriginal(with document: Notebook) throws {
-        if !loaded {
-            do { _ = try load() }
-            catch RevisionError.unsupportedFormat(let version) { throw RevisionError.unsupportedFormat(version) }
-            catch StorageError.unsupportedSchema(let version) { throw StorageError.unsupportedSchema(version) }
-            catch {
-                lastDocument = nil
-                lastBytes = nil
-                lastManifest = nil
-                recovered = false
-                loaded = true
-            }
-        }
-        try save(document)
-    }
-
     private var hasLegacyFiles: Bool {
         fm.fileExists(atPath: directory.appendingPathComponent("notebook.json").path)
             || fm.fileExists(atPath: directory.appendingPathComponent("recovery.json").path)

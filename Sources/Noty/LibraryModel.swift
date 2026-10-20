@@ -15,6 +15,9 @@ struct OpenNotebook: Identifiable {
 final class LibraryModel: ObservableObject {
     let root: URL
     private let store: LibraryStore
+    /// Long-lived so its listing cache skips unchanged restored copies on
+    /// every refresh. Lists only; it never saves the main package.
+    private let restoreCatalog: NotebookRepository
     @Published var snapshot = LibrarySnapshot()
     @Published var ready = false
     @Published var busy = false
@@ -56,6 +59,7 @@ final class LibraryModel: ObservableObject {
     init(root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true)) {
         self.root = root
         store = LibraryStore(root: root)
+        restoreCatalog = NotebookRepository(directory: root)
         // Container-independent keys; the former absolute-path key is migrated once.
         libraryBackupKey = StableDefaults.key("libraryBackup", root: root, legacyPrefix: "noty.libraryBackup.", pick: StableDefaults.newestDate)
         lastOpenedKey = StableSettingsKey.key("lastOpened", scope: StableDefaults.scope(root))
@@ -138,7 +142,7 @@ final class LibraryModel: ObservableObject {
             }
             let notice = notices.isEmpty ? nil : notices.joined(separator: " ")
             if warning != notice { warning = notice }
-            let catalog = try await NotebookRepository(directory: root).restoredCopies()
+            let catalog = try await restoreCatalog.restoredCopies()
             restoredCopies = catalog.notebooks.compactMap { copy -> RestoredNotebook? in
                 guard let item = snapshot.items.first(where: { $0.id == copy.id }), !snapshot.isTrashed(copy.id) else { return nil }
                 var result = copy; result.title = item.title; return result

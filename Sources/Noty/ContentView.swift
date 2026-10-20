@@ -23,9 +23,6 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var editingDefaults = false
     @State private var addingPage = false
-    @State private var importing = false
-    @State private var importingBackup = false
-    @State private var confirmingImport = false
     @State private var exporting = false
     @State private var exportFile: ExportFile?
     @State private var exportType: UTType = .json
@@ -41,8 +38,6 @@ struct ContentView: View {
     @State private var fitRequest = 0
     @State private var showingHistory = false
     @State private var selectedLocalRevision: UUID?
-    @State private var showingCopies = false
-    @State private var selectedCopy: RestoredNotebook?
     @AppStorage("noty.sidebar.visible") private var showingPages = true
     @AppStorage("noty.editor.writingScroll") private var writingScroll = false
     @State private var customizingTools = false
@@ -128,17 +123,6 @@ struct ContentView: View {
                         addingPage = false
                     }, onError: { model.error = $0 })
             }
-            .confirmationDialog("Das aktuelle Testheft wird vor dem Import lokal archiviert. Für ein unabhängiges Backup vorher exportieren.",
-                                isPresented: $confirmingImport, titleVisibility: .visible) {
-                Button("Datei auswählen") { importing = true }
-            }
-            .fileImporter(isPresented: $importing,
-                          allowedContentTypes: importingBackup ? [.notyBackup, .json, .data] : [.pdf]) { result in
-                switch result {
-                case .success(let url): model.importFile(url, backup: importingBackup)
-                case .failure(let error): model.error = error.localizedDescription
-                }
-            }
             .fileImporter(isPresented: $importingImage, allowedContentTypes: [.image]) { result in
                 switch result {
                 case .success(let url): if let imageTarget { if imageTarget == writingDraft.id { guard model.materializeDraft(draftPage) else { return } }; model.insertImageFile(url, pageID: imageTarget) }
@@ -164,21 +148,8 @@ struct ContentView: View {
                     model.error = error.localizedDescription
                 }
             }
-            .fullScreenCover(item: $model.openedRestore, onDismiss: {
-                Task { await model.refreshRestoredCopies() }
-            }) { restored in
+            .fullScreenCover(item: $model.openedRestore) { restored in
                 RestoredNotebookView(restored: restored).id(restored.id)
-            }
-            .sheet(isPresented: $showingCopies, onDismiss: {
-                if let copy = selectedCopy {
-                    selectedCopy = nil
-                    model.openedRestore = copy
-                }
-            }) {
-                RestoredCopiesView(copies: model.restoredCopies) { copy in
-                    selectedCopy = copy
-                    showingCopies = false
-                }
             }
             .sheet(isPresented: $contentSearch) {
                 ContentSearchView(documents: [OpenNotebook(id: model.notebook.id, directory: model.storageRoot, title: model.notebook.title, isRestored: false)], current: model.notebook) { hit in
@@ -252,9 +223,8 @@ struct ContentView: View {
             }
             .onChange(of: model.documentLoaded) { _, loaded in if loaded { markNotebookShown() } }
             .onChange(of: canEdit) { _, editable in if !editable { pageEntry = false } }
-            // Managed editors flush before dismissal. A late onDisappear save
-            // could otherwise race a new editor for the same package.
-            .onDisappear { if !isLibraryDocument && !isRestoredCopy { model.save() } }
+            // Managed editors flush before dismissal; no late onDisappear save
+            // may race a new editor for the same package.
             .interactiveDismissDisabled(isLibraryDocument || isRestoredCopy)
         }
     }
@@ -545,16 +515,6 @@ struct ContentView: View {
                         Button("Jetzt speichern") { model.save() }.keyboardShortcut("s", modifiers: .command)
                         Button("Lokale Wiederherstellungspunkte") { showingHistory = true }
                             .disabled(!model.writable)
-                        if !isRestoredCopy && !isLibraryDocument {
-                            Button("PDF importieren") { importingBackup = false; confirmingImport = true }
-                                .disabled(!model.writable)
-                        }
-                        if !isRestoredCopy && !isLibraryDocument {
-                            Button("Backup als Kopie wiederherstellen") { importingBackup = true; importing = true }
-                            if !model.restoredCopies.isEmpty {
-                                Button("Wiederhergestellte Kopien") { showingCopies = true }
-                            }
-                        }
                         Button("Vollständiges Heft-Backup exportieren") {
                             Task {
                                 if let data = await model.backupData() {

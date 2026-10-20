@@ -23,7 +23,6 @@ final class EditorModel: ObservableObject {
     @Published var saveFailed = false
     @Published var backupStatus = "Noch kein Backup exportiert"
     @Published var fileStatus: String?
-    @Published var restoredCopies: [RestoredNotebook] = []
     @Published var openedRestore: RestoredNotebook?
     @Published private(set) var copiedPage: CopiedPage?
     @Published private(set) var cutPageID: UUID?
@@ -82,8 +81,7 @@ final class EditorModel: ObservableObject {
             backupStatus = "Letzter Datei-Export: \(date.formatted(date: .abbreviated, time: .shortened))"
         }
         Task {
-            var finished = false
-            defer { if !finished { busy = false } }
+            defer { busy = false }
             do {
                 var (loaded, recovered) = try await store.load()
                 // Opening speed: decode every PencilKit drawing and image off the
@@ -125,10 +123,6 @@ final class EditorModel: ObservableObject {
                 status = "Lesefehler – Originaldateien geschützt"
                 self.error = "Gespeicherte Daten sind nicht lesbar. Originaldateien bleiben erhalten. Ein exportiertes Backup kann über Dateien wiederhergestellt werden. \(error.localizedDescription)"
             }
-            // Editable right away: the restore list waits behind the first
-            // save on the repository actor and must not keep the editor busy.
-            busy = false; finished = true
-            await refreshRestoredCopies()
         }
     }
 
@@ -655,56 +649,6 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    func importFile(_ url: URL, backup: Bool) {
-        guard !busy else { error = "Bitte den laufenden Vorgang abwarten und die Datei dann erneut wählen."; return }
-        if backup {
-            restoreBackupAsCopy(url)
-            return
-        }
-        let access = url.startAccessingSecurityScopedResource()
-        defer { if access { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let values = try url.resourceValues(forKeys: [.fileSizeKey])
-            guard (values.fileSize ?? 0) <= PDFSource.maximumBytes else { throw PageOperationError.sourceLimit }
-            let data = try Data(contentsOf: url)
-            guard let pdf = PDFDocument(data: data), !pdf.isLocked,
-                  (1...500).contains(pdf.pageCount) else { throw StorageError.invalidDocument }
-            var candidate = Notebook()
-            candidate.title = url.deletingPathExtension().lastPathComponent
-            candidate.pdf = data
-            candidate.pages = try (0..<pdf.pageCount).map { index in
-                guard let source = pdf.page(at: index)?.pageRef else { throw StorageError.invalidDocument }
-                var page = Page()
-                page.geometry = try PDFPageGeometry(source)
-                return page
-            }
-            try validate(candidate)
-            pendingSave?.cancel()
-            revision += 1
-            let replacementRevision = revision
-            let previous = writable ? notebook : nil
-            writable = false
-            busy = true
-            Task {
-                defer { busy = false }
-                do {
-                    try await store.replace(candidate, preserving: previous, revision: replacementRevision)
-                    pageIndex = 0
-                    sources = try NotebookPDFCatalog(candidate)
-                    pdfOutline = sources?.outline ?? []
-                    notebook = candidate
-                    history.removeAll(); publishHistory()
-                    writable = true
-                    status = "Importiert und lokal gespeichert"
-                    saveFailed = false
-                } catch {
-                    writable = previous != nil
-                    self.error = "Import fehlgeschlagen: \(error.localizedDescription)"
-                }
-            }
-        } catch { self.error = "Import fehlgeschlagen: \(error.localizedDescription)" }
-    }
-
     func backupData() async -> Data? {
         guard writable, !mutationsPaused, !busy else { return nil }
         busy = true
@@ -726,16 +670,6 @@ final class EditorModel: ObservableObject {
         let date = Date()
         UserDefaults.standard.set(date, forKey: backupDateKey)
         backupStatus = "Backup-Datei exportiert: \(date.formatted(date: .omitted, time: .shortened))"
-    }
-
-    func refreshRestoredCopies() async {
-        do {
-            let catalog = try await store.restoredCopies()
-            restoredCopies = catalog.notebooks
-            if catalog.unreadableCount > 0 {
-                fileStatus = "\(catalog.unreadableCount) Wiederherstellungskopie(n) nicht lesbar · Dateien bleiben erhalten"
-            }
-        } catch { fileStatus = "Wiederherstellungskopien konnten nicht aufgelistet werden" }
     }
 
     func localHistory() async throws -> LocalHistory {
@@ -760,31 +694,8 @@ final class EditorModel: ObservableObject {
         try validate(prepared.document)
         var restored = try await store.commitRestore(prepared)
         restored.preferredPageID = page.id
-        await refreshRestoredCopies()
         backupStatus = message
         openedRestore = restored
-    }
-
-    private func restoreBackupAsCopy(_ url: URL) {
-        busy = true
-        let access = url.startAccessingSecurityScopedResource()
-        Task {
-            defer {
-                if access { url.stopAccessingSecurityScopedResource() }
-                busy = false
-            }
-            do {
-                let prepared = try await store.prepareRestore(from: url)
-                // Foundation tests cannot validate these Apple-framework layers.
-                let message = prepared.isLegacyJSON
-                    ? "Altes JSON ohne Prüfsumme als separate Kopie wiederhergestellt"
-                    : "Backup geprüft und als separate Kopie wiederhergestellt"
-                try await openPreparedRestore(prepared, message: message)
-            } catch {
-                backupStatus = "Wiederherstellung fehlgeschlagen · aktuelles Heft erhalten"
-                self.error = error.localizedDescription
-            }
-        }
     }
 }
 

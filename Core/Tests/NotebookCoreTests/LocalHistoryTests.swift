@@ -172,7 +172,7 @@ final class LocalHistoryTests: XCTestCase {
     func testListingLegacyHistoryDoesNotMigrateOrModifyOriginal() throws {
         let root = try directory()
         let document = Notebook()
-        try NotebookStore(directory: root).save(document)
+        try LegacyFixture.write(document, to: root)
         let original = try Data(contentsOf: root.appendingPathComponent("notebook.json"))
         let history = try RevisionStore(directory: root).localHistory()
         XCTAssertTrue(history.revisions.isEmpty)
