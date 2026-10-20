@@ -26,6 +26,8 @@ Implementiert, unter Linux geprüft, für arm64 gebaut/signiert und am 17.10.202
 
 ## Bereiche und Eigentümer
 
+Ergänzung 20.10.2026: Getrennte Bereiche lassen sich nach Bestätigung endgültig entfernen, nie „Meine Bibliothek“, nie der letzte oder der geöffnete Bereich (Regeln und Pfadprüfung: [LIBRARY](LIBRARY.md), Nachtrag 20.10.2026). Automatisch entfernt noty weiterhin keinen Bereich.
+
 „Meine Bibliothek“ bleibt `Documents/Noty/`. Neue Test- und Restore-Bereiche liegen unter `Documents/NotyWorkspaces/Areas/<neue Bereichs-UUID>/Data/`. Jeder Bereich hat eigenen LibraryStore, Heftpakete und `toolbar.json`. Die Bereiche sind logische Instanzen derselben App; keine zweite Signierungsidentität oder zusätzlicher kostenloser App-Platz. Alle liegen im selben Container und sind kein Schutz gegen Deinstallation/Geräteverlust.
 
 Die App startet weiterhin in „Meine Bibliothek“. Wechsel nur aus der geschlossenen Heftbibliothek über „Bereiche“. Ein neuer Testbereich enthält zwei Demoordner und ein neues Testheft mit neuen IDs, ohne Kopie persönlicher Notizen. Bereichsname ist sichtbar. Ein wiederhergestelltes Bibliotheksarchiv behält Dokument-/Seiten-/Ordner-IDs innerhalb des neuen Bereichs; dessen neue Bereichs-UUID trennt den Namensraum. Gemerkte Seiten und Exportstatus sind nach Speicherpfad getrennt, Werkzeugeinstellungen im jeweiligen Bereich. Die alten Seitenschlüssel werden nur im ursprünglichen Noty-Baum als Fallback gelesen.
