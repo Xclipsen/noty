@@ -131,7 +131,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         for (index, handle) in (corners + [first, last, rotation]).enumerated() {
             handle.accessibilityLabel = index < 4 ? "Auswahl proportional skalieren" : index == 6 ? "Handschrift drehen" : "Formpunkt verschieben"
             let drag = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
-            drag.maximumNumberOfTouches = 1; handle.tag = index; handle.addGestureRecognizer(drag); addSubview(handle)
+            drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
+            handle.tag = index; handle.addGestureRecognizer(drag); addSubview(handle)
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -170,17 +171,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         super.didMoveToWindow()
         if window == nil { contourLayer.removeAllAnimations(); contourAnimationScale = nil; endLift() }
         else { setNeedsLayout() }
-        var view = superview
-        while let parent = view {
-            if let scroll = parent as? UIScrollView {
-                scroll.panGestureRecognizer.require(toFail: pan)
-                for handle in corners + [first, last, rotation] {
-                    for gesture in handle.gestureRecognizers ?? [] { scroll.panGestureRecognizer.require(toFail: gesture) }
-                }
-                break
-            }
-            view = parent.superview
-        }
+    }
+    /// Selection/shape drags win over notebook scrolling (handles: `ScrollPanPriority`).
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        gestureRecognizer === pan && ScrollPanPriority.outranksScrolling(gestureRecognizer, other)
     }
 
     override func draw(_ rect: CGRect) {
@@ -712,11 +706,16 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         if !commit(value, previous: content) { clearSelection() }; refresh()
     }
     private func deleteSelection() {
+        // Without a selection Backspace/„Löschen“ must not re-encode the ink
+        // into an invisible undo step.
+        guard hasSelection else { return }
         var value = content
         value.textBoxes.removeAll { texts.contains($0.id) }; value.images.removeAll { images.contains($0.id) }
         value.shapes.removeAll { shapes.contains($0.id) }
-        let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()
-        value.drawing = PKDrawing(strokes: drawing.strokes.enumerated().filter { !ink.contains($0.offset) }.map(\.element)).dataRepresentation()
+        if !ink.isEmpty {
+            let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()
+            value.drawing = PKDrawing(strokes: drawing.strokes.enumerated().filter { !ink.contains($0.offset) }.map(\.element)).dataRepresentation()
+        }
         _ = commit(value, previous: content); clearSelection(); refresh()
     }
     private func applyStyle(changeWidth: Bool = false) {

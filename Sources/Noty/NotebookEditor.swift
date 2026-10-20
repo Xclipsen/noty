@@ -117,6 +117,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     /// Page below a floating selection; entering another page ticks on Apple Pencil Pro.
     private var floatTarget: UUID?
     private var selectionFeedback: UIFeedbackGenerator?
+    private var swipes: [UISwipeGestureRecognizer] = []
 
 
     override init(frame: CGRect) {
@@ -135,7 +136,9 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             let swipe = UISwipeGestureRecognizer(target: self, action: #selector(turnPage(_:)))
             swipe.direction = direction; swipe.delegate = self
             swipe.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
-            addGestureRecognizer(swipe); panGestureRecognizer.require(toFail: swipe)
+            // Off outside page mode, so scrolling never waits for a swipe to fail.
+            swipe.isEnabled = false
+            addGestureRecognizer(swipe); panGestureRecognizer.require(toFail: swipe); swipes.append(swipe)
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -163,6 +166,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         let scrollModeChanged = writingScroll != next.writingScroll
         writingScroll = next.writingScroll; topObstruction = next.topObstruction; obstructions = next.obstructions
         panGestureRecognizer.minimumNumberOfTouches = next.fingerDrawing ? 2 : 1
+        let swiping = next.paging && next.enabled && !next.fingerDrawing
+        for swipe in swipes where swipe.isEnabled != swiping { swipe.isEnabled = swiping }
         laser.configure(next.laser, fingerDrawing: next.fingerDrawing)
         let placement = NotebookViewportLayout(pages: next.pages, selectedPageID: next.selectedPageID,
             paging: mode, normalizeWidths: normalized)
@@ -644,7 +649,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             return mode && state?.enabled == true && state?.fingerDrawing == false
                 && !sheets.values.contains(where: { $0.editingCaret != nil }) && abs(zoomScale-fitWidth) < 0.03
         }
-        return true
+        // UIScrollView's own pan/pinch checks stay in force.
+        return super.gestureRecognizerShouldBegin(gestureRecognizer)
     }
     @objc private func turnPage(_ gesture: UISwipeGestureRecognizer) {
         guard let state, let index = state.pages.firstIndex(where: { $0.id == selected }) else { return }

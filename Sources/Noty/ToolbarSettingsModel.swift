@@ -18,6 +18,8 @@ final class ToolbarSettingsModel: ObservableObject {
     private let store: ToolbarPreferenceStore
     private var revision = 0
     private var pending: Task<Void, Never>?
+    private var debounce: Task<Void, Never>?
+    nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
 
     init(root: URL) {
         store = ToolbarPreferenceStore(root: root)
@@ -28,8 +30,29 @@ final class ToolbarSettingsModel: ObservableObject {
                 status = recovered ? "Vorherige Werkzeugeinstellungen geladen" : ""
             } catch { status = error.localizedDescription }
         }
+        for name in [UIApplication.didEnterBackgroundNotification, UIApplication.willTerminateNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.writePending() }
+            })
+        }
     }
+    deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+
+    /// Sliders and the colour picker change the preferences many times per
+    /// second: the file is written 0.5 s after the last change, at once by
+    /// `flush()` (closing, backups) and when the app goes to the background.
     func save() {
+        guard writable else { return }
+        debounce?.cancel()
+        debounce = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            self?.write()
+        }
+    }
+    private func writePending() { if debounce != nil { write() } }
+    private func write() {
+        debounce?.cancel(); debounce = nil
         guard writable else { return }
         revision += 1
         let savingRevision = revision
@@ -46,7 +69,7 @@ final class ToolbarSettingsModel: ObservableObject {
     }
     func flush() async -> Bool {
         guard writable else { return false }
-        save()
+        write()
         while true {
             let flushingRevision = revision
             await pending?.value

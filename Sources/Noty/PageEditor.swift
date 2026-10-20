@@ -222,9 +222,10 @@ final class DrawingCanvasView: PKCanvasView {
 final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate {
     private static let renderLog = Logger(subsystem: "de.la.noty", category: "editor-performance")
     private let paperBackground = PaperBackgroundView()
-    /// Only for the read tool (PDF text selection/links). Normal display uses
-    /// `pdfRaster`: PDFKit stalled the main thread for seconds when zoomed.
-    private let pdfView = PDFView()
+    /// Only for the read tool (PDF text selection/links), created on first use.
+    /// Normal display uses `pdfRaster`: PDFKit stalled the main thread for
+    /// seconds when zoomed.
+    private var pdfView: PDFView?
     private let pdfRaster = PDFSourceRasterView()
     private var pdfDocument: PDFDocument?
     private let canvas = DrawingCanvasView()
@@ -328,13 +329,6 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         layer.allowsEdgeAntialiasing = false; layer.edgeAntialiasingMask = []
         overrideUserInterfaceStyle = .light
         clipsToBounds = true
-        pdfView.displayMode = .singlePage
-        pdfView.autoScales = true
-        pdfView.backgroundColor = .white
-        pdfView.displaysPageBreaks = false
-        pdfView.pageBreakMargins = .zero
-        pdfView.pageShadowsEnabled = false
-        pdfView.displayBox = .cropBox
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.drawingPolicy = .pencilOnly
@@ -421,7 +415,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         let interaction = UIPencilInteraction(); interaction.delegate = self; addInteraction(interaction)
         PencilLocationTracker.shared.observe(self)
-        [paperBackground, pdfRaster, pdfView, imageLayer, shapeLayer, canvas, textLayer, objectLayer, hitHighlight].forEach { addSubview($0) }
+        [paperBackground, pdfRaster, imageLayer, shapeLayer, canvas, textLayer, objectLayer, hitHighlight].forEach { addSubview($0) }
         selectionInkImage.isUserInteractionEnabled = false; selectionInkImage.isHidden = true
         insertSubview(selectionInkImage, aboveSubview: canvas)
         heldInkImage.isUserInteractionEnabled = false; heldInkImage.isHidden = true
@@ -475,7 +469,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             paperBackground.bounds = viewport.frame.cgRect
         } else { paperBackground.frame = bounds }
         if pdfRaster.frame != bounds { pdfRaster.frame = bounds }
-        if !pdfView.isHidden {
+        if let pdfView, !pdfView.isHidden {
             let frame = pageLayout.sourceFrame.cgRect
             if pdfView.frame != frame {
                 pdfView.frame = frame; pdfView.layoutIfNeeded(); lockPDFScrolling(in: pdfView)
@@ -548,6 +542,17 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         updating = wasUpdating
     }
 
+    /// The read tool's PDFView, built when first needed (most sheets never are).
+    private func reader() -> PDFView {
+        if let pdfView { return pdfView }
+        let view = PDFView()
+        view.displayMode = .singlePage; view.autoScales = true; view.backgroundColor = .white
+        view.displaysPageBreaks = false; view.pageBreakMargins = .zero; view.pageShadowsEnabled = false
+        view.displayBox = .cropBox; view.isHidden = true
+        insertSubview(view, aboveSubview: pdfRaster)
+        pdfView = view
+        return view
+    }
     private func lockPDFScrolling(in view: UIView) {
         for child in view.subviews {
             if let scroll = child as? UIScrollView {
@@ -641,7 +646,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         backgroundColor = (editor.margins?.color ?? editor.paperColor) == .dark ? .black : .white
         let hasSource = editor.sourcePage != nil || editor.paper == .legacyTest
         let readMode = hasSource && editor.tool == .read
-        pdfView.isHidden = !readMode
+        if readMode { reader().isHidden = false } else { pdfView?.isHidden = true }
         pdfRaster.isHidden = !hasSource || readMode
         paperBackground.configure(style: editor.margins?.style ?? (editor.sourcePage == nil ? editor.paper : .blank),
                                   color: editor.margins?.color ?? editor.paperColor, coordinateScale: pageLayout.writingCoordinateScale)
@@ -666,7 +671,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
                                layout: pageLayout) { renderViewport = nil }
         // A detached document keeps PDFKit from tiling while it is not shown.
         let shownDocument = readMode ? pdfDocument : nil
-        if pdfView.document !== shownDocument {
+        if let pdfView, pdfView.document !== shownDocument {
             pdfView.document = shownDocument
             if readMode {
                 pdfView.frame = pageLayout.sourceFrame.cgRect; pdfView.layoutIfNeeded(); lockPDFScrolling(in: pdfView)
@@ -755,7 +760,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         let nativeDrawing = tool != .strokeEraser
         if canvas.drawingGestureRecognizer.isEnabled != nativeDrawing { canvas.drawingGestureRecognizer.isEnabled = nativeDrawing }
         if eraseSession != nil { dimErasedShapes() }
-        pdfView.isUserInteractionEnabled = tool == .read
+        pdfView?.isUserInteractionEnabled = tool == .read
         if modeChanged || focusChanged || first { updateInputMode() }
         setNeedsLayout()
     }
@@ -1172,9 +1177,24 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// Every preloaded sheet owns an interaction; only the focused one may act,
     /// otherwise an even number of sheets toggles the tool back and forth.
     private func pencilAction() { if worksheetFocused, window != nil { onPencilAction?() } }
-    func pencilInteractionDidTap(_ interaction: UIPencilInteraction) { pencilAction() }
+    /// Double tap follows the system setting (Einstellungen › Apple Pencil):
+    /// eraser or previous tool → the app's eraser toggle; colour palette or
+    /// ink attributes → the app's own tool palette at the Pencil; off → nothing.
+    private func pencilTap(palette: () -> PencilSqueezeEvent) {
+        guard worksheetFocused, window != nil else { return }
+        switch UIPencilInteraction.preferredTapAction {
+        case .ignore: return
+        case .switchEraser, .switchPrevious: onPencilAction?()
+        case .showColorPalette, .showInkAttributes:
+            if let onPencilSqueeze { onPencilSqueeze(palette()) } else { onPencilAction?() }
+        default: return // system shortcuts and future actions are handled by iPadOS
+        }
+    }
+    func pencilInteractionDidTap(_ interaction: UIPencilInteraction) { pencilTap { PencilSqueezeEvent(tapIn: self) } }
     @available(iOS 17.5, *)
-    func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) { pencilAction() }
+    func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+        pencilTap { PencilSqueezeEvent(tap: tap, in: self) }
+    }
     @available(iOS 17.5, *)
     func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
         guard let onPencilSqueeze else { if squeeze.phase == .ended { pencilAction() }; return }

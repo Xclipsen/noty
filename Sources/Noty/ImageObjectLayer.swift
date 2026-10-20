@@ -45,6 +45,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
             handle.backgroundColor = .systemBlue; handle.tintColor = .white; handle.layer.cornerRadius = 22
             handle.accessibilityLabel = title
             let gesture = UIPanGestureRecognizer(target: self, action: selector); gesture.maximumNumberOfTouches = 1
+            gesture.delegate = ScrollPanPriority.shared
             handle.addGestureRecognizer(gesture); addSubview(handle)
         }
         actions.axis = .horizontal; actions.spacing = 4
@@ -95,19 +96,9 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         self.onChange = onChange; self.onError = onError
     }
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        var parent = superview
-        while let current = parent {
-            if let scroll = current as? UIScrollView {
-                scroll.panGestureRecognizer.require(toFail: moveGesture)
-                for handle in [resize, rotate] {
-                    for gesture in handle.gestureRecognizers ?? [] { scroll.panGestureRecognizer.require(toFail: gesture) }
-                }
-                break
-            }
-            parent = current.superview
-        }
+    /// Image drags win over notebook scrolling (handles: `ScrollPanPriority`).
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        gestureRecognizer === moveGesture && ScrollPanPriority.outranksScrolling(gestureRecognizer, other)
     }
 
     override func draw(_ rect: CGRect) {

@@ -225,8 +225,11 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                     guard let self, let field, let box = self.boxes.first(where: { $0.id == field.id }) else { return }
                     self.onFlowBackspace?(box)
                 }
-                field.move.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(moveField(_:))))
-                field.resize.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(resizeField(_:))))
+                for (handle, action) in [(field.move, #selector(moveField(_:))), (field.resize, #selector(resizeField(_:)))] {
+                    let pan = UIPanGestureRecognizer(target: self, action: action)
+                    pan.delegate = ScrollPanPriority.shared // the notebook pan waits for field drags
+                    handle.addGestureRecognizer(pan)
+                }
                 field.delete.addTarget(self, action: #selector(deleteSelected), for: .touchUpInside)
                 fields[box.id] = field
             }
@@ -1388,21 +1391,6 @@ private final class TextFieldContainer: UIView {
         return max(0.001, hypot(b.x - a.x, b.y - a.y) / 100)
     }
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        var parent = superview
-        while let current = parent {
-            if let scroll = current as? UIScrollView {
-                for handle in [move, resize] {
-                    for gesture in handle.gestureRecognizers ?? [] {
-                        scroll.panGestureRecognizer.require(toFail: gesture)
-                    }
-                }
-                break
-            }
-            parent = current.superview
-        }
-    }
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         // Right of the middle beside/below page text: the layer opens a free field there.
         if editor.isFlow, editor.opensFreeField(at: convert(point, to: editor)) { return false }
