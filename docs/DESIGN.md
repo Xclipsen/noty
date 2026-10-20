@@ -1,5 +1,16 @@
 # Designentscheidungen für noty
 
+## Bild-Werkzeug im noty-Stil – 20.10.2026
+
+Nutzer: Das Bild-Werkzeug passt nicht zum Stil von noty. Angeglichen an Werkzeugleiste, Lasso-Leiste und Formatleiste, ohne Funktionen hinzuzufügen oder zu entfernen. Gesten und Speichern sind unverändert.
+- **Optionszeile:** „Foto“, „Bilddatei“ und „Einfügen“ zeigen jetzt ein Symbol in derselben Größe wie die anderen Optionen (18 pt) und daneben eine kurze Beschriftung. Die Flächen sind 44 pt hoch. Ein feiner Gruppentrenner wie in der Werkzeugleiste trennt die Quellen von der Zwischenablage. „Bilddatei“ passt zum Hinweis bei nicht lesbaren Fotos. VoiceOver und Tooltips nennen jeweils die ganze Aktion.
+- **Auswahlrahmen:** Der Rahmen ist im Akzent (#7DD3FC) statt Systemblau, 2 pt breit, mit einem feinen dunklen Saum. So bleibt er auch auf weißem Papier und auf PDFs sichtbar.
+- **Anfasser:** Statt voller blauer 44-pt-Kreise gibt es schlichte 26-pt-Scheiben im Akzent mit weißem Ring, dunklem Symbol und leichtem Schatten. Die Trefferfläche bleibt 44 × 44 pt. Rastet das freie Drehen auf einen rechten Winkel ein, wird die Scheibe weiß mit Akzentring (vorher Türkis).
+- **Aktionsleiste:** Die dunkle Kapsel bleibt. „Gesperrt“ wird jetzt wie ein ausgewähltes Werkzeug angezeigt, mit eingefärbtem Schloss im Akzent statt einem blau hinterlegten Kasten. Löschen bleibt rot. „Auf nächsten 90°-Winkel drehen“ heißt kurz „Um 90° drehen“.
+- **Zuschneiden:** Der Ausschnittrahmen, die Regler und die Schaltflächen sind im Akzent statt Weiß/Systemblau.
+
+Stand: implementiert und erfolgreich gebaut (`xtool dev build` ohne Warnungen). Nicht installiert, am iPad ungeprüft (Erkennbarkeit auf hellem/dunklem Papier, Gefühl der Anfasser).
+
 ## Rückmeldung zu Build 49 – 20.10.2026
 
 Nutzertest Build 49. Umgesetzt in diesem Strang:
