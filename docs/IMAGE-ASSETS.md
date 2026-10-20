@@ -508,3 +508,24 @@ Die Semantik bleibt (`restorePage`, `PageOperations.swift:253-256`): Snapshot un
 Dazu kommt ein gebündelter Gerätetest. Der größte Unsicherheitsposten ist C6, wegen der vielen Kopierwege und der Migrationsgleichheit.
 
 Hinweis: Während der Untersuchung kamen auf dem Branch die Commits „Build 53“ und „Bilder über Seiten ziehen“ hinzu. Die Zeilenangaben für `ImageObjectLayer.swift` und `SelectionTransfer.swift` beziehen sich auf diesen neuen Stand; die Speicher- und Archivdateien haben sich dabei nicht geändert.
+
+---
+
+## Umsetzungsnotizen
+
+### C1 (SHA-256, `ImageAssetReference`)
+
+- `SHA256` liegt wie geplant in `SHA256.swift`; `ImageAssetReference` bereits in `ImageAssets.swift` (dort kommen in C2 die übrigen Asset-Typen hinzu). Dateien, die zusätzlich CryptoKit importieren, müssen `NotebookCore.SHA256` schreiben (Namensgleichheit).
+- `ImageAssetReference.isValid` prüft Hash-Regex und 1 … `ImageLimits.maximumFileBytes`. Das synthetisierte `Codable` validiert nicht; die Prüfung beim Dekodieren gehört zu C6.
+
+### C2 (`NotebookAssets`)
+
+- `init(directory:readOnly:)` erwartet den `Assets`-Ordner selbst; `init(package:readOnly:)` hängt `Assets` an. Die GC-Wurzeln übergibt der Aufrufer (`garbageRoots(inPackage:)` liefert die vier Ordner aus Abschnitt 7).
+- Neuer Fehlertyp `ImageAssetError` (`invalidReference`, `missing`, `damaged`, `pendingFull`, `readOnly`, `invalidDirectory`, `garbageCollectionAborted`) mit deutschen Meldungen.
+- `persist` prüft vorhandene Ziele mit passender Größe nur per `stat`, außer die Bytes liegen in diesem Pending-Bereich: dann einmal je Sitzung streamender SHA-Vergleich. So kostet ein Autosave kein erneutes Hashen von bis zu 500 MB. „Nachweislich falsch“ heißt: andere Größe oder SHA-Abweichung (auch über `verifiedPayload` festgestellt). Repariert wird nur mit einer bereits verifizierten Teildatei derselben Adresse (`replaceItemAt`). Falsche Größe ohne verfügbare Bytes wirft `damaged` und lässt die Datei unverändert.
+- Ein Ziel, das während des Schreibens auftaucht, wird nie überschrieben (`moveItem` scheitert); passt seine Größe, gilt das Asset als geschrieben, sonst wirft `persist`.
+- Bezugsquelle der Bytes: zuerst der eigene Pending-Bereich, dann `from:`. Eine Quelle mit falschen Bytes scheitert an der Rücklese-Prüfung (`damaged`); die eigene Teildatei wird bei jedem Fehler entfernt, wiederholte Fehlschläge hinterlassen keine Dateien.
+- `stage` ist auch auf schreibgeschützten Instanzen erlaubt (nur Speicher, z. B. eingebettete Altbilder einer Vorschau). `persist` und `collectGarbage` werfen dort `readOnly`, ohne etwas anzulegen. `stage` prüft die Größe vor dem Hashen.
+- `verifiedPayload` markiert eine SHA-Abweichung für die Sitzung als defekt; `payload` und `presentOnDisk` behandeln solche Assets danach als nicht vorhanden. Lesefehler gelten nicht als Beweis. Nichts wird beim Lesen gelöscht oder umgeschrieben.
+- GC-Alter: Abstand zur jüngsten verfügbaren Dateizeit (Inhalt, Attribute/ctime, Erstellung), Referenzzeit über `clock`. Dadurch gelten frisch geklonte oder kopierte Assets mit alter Inhaltszeit trotzdem als jung. Fehlt jede Zeit, bleibt die Datei.
+- Rohsuche: Symlinks und Sonderdateien unter den Wurzeln werden nicht verfolgt (der Store liest ohnehin keine Revision über Symlinks). Eine Wurzel, die existiert, aber kein echtes Verzeichnis ist (Datei, auch hängender Symlink), bricht den Lauf ab, ebenso jeder Listen- oder Lesefehler und mehr als 64 Verzeichnisebenen. Teildateien werden nur mit exakt dem geschriebenen Namen (`<sha>.partial-<UUID in Großbuchstaben>`) entfernt.
