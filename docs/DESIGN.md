@@ -12,6 +12,16 @@ Nutzertest Build 49. Umgesetzt in diesem Strang:
 - **PDF-Schreibplatz:** Die Linien im Rand beginnen mit 32 pt Abstand zum PDF statt direkt an dessen Kante. Jeder Rand wird für sich liniert, in Editor, Vorschau und Export gleich (`PageLayout.ruledColumnsBesidePDF`). Papierseiten bleiben ein durchgehendes Blatt.
 - **„Seite anpassen“:** Die Vorschau ist scharf und folgt den Reglern ohne Verzögerung. Die gespeicherte Seite wird einmal gerendert, Papier und Linien des neuen Platzes werden live gezeichnet.
 
+## Pencil-Schnellmenü – 20.10.2026
+
+Nutzer zu Build 49: Im Schnellmenü (einmal Drücken bzw. Doppeltippen mit Palette-Einstellung) klappt das erste Scrollen. Beim zweiten Scrollen wird aber das Werkzeug gewählt, auf dem gescrollt wurde. Außerdem soll das Menü immer gleich beginnen und sich kurz merken, wo es geschlossen wurde. Umgesetzt:
+- **Nur Tippen wählt.** Eine Berührung auf dem Rad ist entweder ein Tippen oder ein Scrollen. Ab 12 pt Bewegung scrollt sie endgültig, und das Abheben wählt dann nichts, auch wenn der Finger wieder auf einem Eintrag landet. Ursache: Die Scrollgeste lief gleichzeitig mit den Eintrags-Buttons. Weil der Eintrag dem Finger folgt, endete die Berührung auf ihm und zählte als Tippen. Nur wenn das Scrollen am festen Ende anschlug, verließ der Finger den Eintrag, meist beim ersten Scrollen.
+- **Feste Reihenfolge**, unabhängig vom aktiven Werkzeug: Rückgängig | Stift, Bleistift, Textmarker, Radierer, Text. Das ist der Standardbereich; dafür sind 6 Plätze sichtbar, und der Bogen ist etwas größer (Radius ca. 146 statt 117 pt). Per Scrollen folgen die übrigen Werkzeuge in Leistenreihenfolge (Standard: Lasso, Formen, Bilder, PDF lesen, Laserpointer), dann Farbe, Breite und Autostift. Wiederholen steht am Ende. Das aktive Werkzeug bleibt markiert; der Radierer gilt auch für den Präzisionsradierer.
+- **10-s-Gedächtnis:** Beim Schließen merkt sich das Menü die sichtbare Position. Öffnet es innerhalb von 10 s wieder, erscheint es dort, sonst im Standardbereich. Das Gedächtnis gilt app-weit und wird nicht gespeichert.
+- Unverändert bleiben Doppeldrücken (Radierer ↔ Schreibwerkzeug), Platzierung für Linkshänder, „Bewegung reduzieren“, Haptik und das dunkle Glas. VoiceOver liest die Einträge als Tasten; mit drei Fingern wischen blättert.
+
+Core: `PencilPaletteContent`, `PencilPaletteTouch`, `PencilPaletteMemory` mit Tests. Stand: implementiert, Core-Tests und SDK-Build. Gefühl beim Tippen/Scrollen und die 10 s sind am iPad ungeprüft.
+
 ## Schreibplatz für Papierseiten – 20.10.2026
 
 Nutzer: Normale Seiten sollen sich wie PDF-Seiten über „Schreibplatz hinzufügen“ erweitern lassen, vor allem nach **rechts**. Die Linien sollen in den neuen Platz übergehen, nicht abschneiden. Umgesetzt:

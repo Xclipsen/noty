@@ -87,6 +87,23 @@ public struct PencilPaletteLayout: Equatable, Sendable {
         let outside = max(0, -slot, slot - Double(visibleSlots - 1))
         return max(0, 1 - outside * 2)
     }
+    /// Items fading out beyond the visible slots take no touches below this visibility.
+    public static let interactiveVisibility = 0.6
+    public func isInteractive(item index: Int, scroll: Double) -> Bool {
+        visibility(item: Double(index), scroll: scroll) > Self.interactiveVisibility
+    }
+    /// Item under `point` at a scroll offset: the nearest interactive one
+    /// within `hitRadius` (half the slot spacing, so the band has no gaps).
+    public func item(at point: PagePoint, scroll: Double, hitRadius: Double = 23) -> Int? {
+        guard point.x.isFinite, point.y.isFinite, scroll.isFinite else { return nil }
+        var best: (index: Int, distance: Double)?
+        for index in 0..<itemCount where isInteractive(item: index, scroll: scroll) {
+            let p = self.point(item: Double(index), scroll: scroll)
+            let distance = hypot(p.x - point.x, p.y - point.y)
+            if distance <= hitRadius, distance < best?.distance ?? .infinity { best = (index, distance) }
+        }
+        return best?.index
+    }
     public func clampedScroll(_ value: Double) -> Double { min(max(0, value), maximumScroll) }
     /// Scroll so that `index` sits as close to the middle slot as possible.
     public func scroll(centering index: Int) -> Double {
@@ -115,6 +132,114 @@ public struct PencilPaletteLayout: Equatable, Sendable {
         if value > .pi { value -= 2 * .pi }
         if value <= -.pi { value += 2 * .pi }
         return value
+    }
+}
+
+/// One entry of the Pencil quick palette.
+public enum PencilPaletteItem: Hashable, Sendable {
+    case undo, redo, tool(WritingTool), color, width, autoPen
+}
+
+/// Fixed item order of the Pencil quick palette (20.10.2026), independent of
+/// the active tool: undo, then the main group pen, pencil, highlighter,
+/// eraser, text — exactly the slots visible at the standard position.
+/// Scrolling reveals the other tools (first toolbar level before the second,
+/// each in its saved order), then colour, width and Autostift; redo sits at
+/// the far end. Groups are separated by dividers.
+public struct PencilPaletteContent: Equatable, Sendable {
+    public static let mainTools: [WritingTool] = [.pen, .pencil, .marker, .strokeEraser, .text]
+    /// Slots visible at once: undo plus the main group.
+    public static let visibleSlots = 1 + mainTools.count
+    public let items: [PencilPaletteItem]
+    /// Separator positions between groups (half-way between two items).
+    public let dividers: [Double]
+
+    /// `tools`: the toolbar's tools in display order. The precision eraser is
+    /// reached through the eraser; the legacy lasso ID counts as the lasso.
+    public init(tools: [WritingTool]) {
+        var rest: [WritingTool] = []
+        for raw in tools {
+            let tool: WritingTool = raw == .selection ? .inkSelection : raw
+            guard tool != .precisionEraser, !Self.mainTools.contains(tool), !rest.contains(tool) else { continue }
+            rest.append(tool)
+        }
+        let groups: [[PencilPaletteItem]] = [[.undo], Self.mainTools.map(PencilPaletteItem.tool), rest.map(PencilPaletteItem.tool),
+                                             [.color, .width, .autoPen], [.redo]]
+        var items: [PencilPaletteItem] = [], dividers: [Double] = []
+        for group in groups where !group.isEmpty {
+            if !items.isEmpty { dividers.append(Double(items.count) - 0.5) }
+            items += group
+        }
+        self.items = items
+        self.dividers = dividers
+    }
+    public init(preferences: ToolbarPreferences) { self.init(tools: preferences.primaryTools + preferences.secondaryTools) }
+
+    /// Largest scroll offset with `visibleSlots` shown.
+    public var maximumScroll: Double { Double(max(0, items.count - Self.visibleSlots)) }
+}
+
+/// One finger or Pencil touch on the palette arc: either a tap on an item or a
+/// scroll along the arc, never both. Once the touch has moved `slop` from
+/// where it went down it scrolls for good, and its lift selects nothing —
+/// even though the items follow the touch and the lift lands on an item again.
+public struct PencilPaletteTouch: Equatable, Sendable {
+    /// A slightly sliding Pencil tap below this distance stays a tap.
+    public static let slop: Double = 12
+    public let start: PagePoint
+    /// Item under the touch-down point (nil between or outside the items).
+    public let item: Int?
+    public private(set) var isScrolling = false
+    private var last: PagePoint
+
+    public init(at start: PagePoint, item: Int?) {
+        self.start = start; self.item = item; last = start
+    }
+
+    /// Item shown as pressed while the touch may still become a tap.
+    public var pressedItem: Int? { isScrolling ? nil : item }
+
+    /// Moves the touch to `point`; returns the new scroll offset (unchanged while still a possible tap).
+    public mutating func move(to point: PagePoint, scroll: Double, in layout: PencilPaletteLayout) -> Double {
+        if !isScrolling {
+            guard distance(to: point) >= Self.slop else { return scroll }
+            isScrolling = true
+        }
+        // The first scroll step catches up from the touch-down point: items follow the touch.
+        defer { last = point }
+        return layout.scrolled(scroll, from: last, to: point)
+    }
+
+    /// Lift at `point`: the item to activate, only for a touch that never scrolled.
+    public func end(at point: PagePoint) -> Int? {
+        guard !isScrolling, distance(to: point) < Self.slop else { return nil }
+        return item
+    }
+
+    private func distance(to point: PagePoint) -> Double { hypot(point.x - start.x, point.y - start.y) }
+}
+
+/// Where the palette opens: at the standard position (scroll 0: undo and the
+/// main group) or — within `retention` after it closed — at the position it
+/// was closed at, i.e. with the same icons visible.
+public struct PencilPaletteMemory: Equatable, Sendable {
+    public static let retention: TimeInterval = 10
+    public static let standardScroll = 0.0
+    public private(set) var scroll: Double?
+    public private(set) var closedAt: TimeInterval?
+    public init() {}
+
+    /// The palette closed at `scroll` (snapped to a whole slot).
+    public mutating func close(scroll: Double, at time: TimeInterval) {
+        guard scroll.isFinite, time.isFinite else { self = .init(); return }
+        self.scroll = max(0, scroll.rounded()); closedAt = time
+    }
+
+    /// Scroll offset for a palette opening at `time`. A clock that went
+    /// backwards counts as expired.
+    public func openingScroll(at time: TimeInterval) -> Double {
+        guard let scroll, let closedAt, time.isFinite, time >= closedAt, time - closedAt < Self.retention else { return Self.standardScroll }
+        return scroll
     }
 }
 

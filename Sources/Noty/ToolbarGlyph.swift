@@ -40,25 +40,9 @@ struct NotyActionGlyph: View {
     }
 }
 
-/// Selected tool cell after the design: accent fill and edge, a fine top sheen
-/// and a soft glow small enough to stay inside the 48-pt toolbar cell.
 extension Color {
     /// noty accent from the tool-icon design (#7DD3FC).
     static let notyAccent = Color(red: 125 / 255, green: 211 / 255, blue: 252 / 255)
-}
-
-struct NotyToolSelection<S: InsettableShape>: View {
-    let shape: S
-    var body: some View {
-        let accent = Color.notyAccent
-        shape.fill(accent.opacity(0.26))
-            .overlay { shape.strokeBorder(accent.opacity(0.62), lineWidth: 1) }
-            .overlay {
-                shape.inset(by: 1).strokeBorder(LinearGradient(colors: [.white.opacity(0.34), .white.opacity(0)],
-                                                               startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.3)), lineWidth: 1)
-            }
-            .shadow(color: accent.opacity(0.45), radius: 3)
-    }
 }
 
 /// Paint roles of the design's CSS classes (`.b` body, `.s` secondary,
