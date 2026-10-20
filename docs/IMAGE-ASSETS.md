@@ -466,7 +466,7 @@ Die Semantik bleibt (`restorePage`, `PageOperations.swift:253-256`): Snapshot un
 
 ---
 
-## 13. Risiken, offene Fragen, Aufwand
+## 13. Risiken, Entscheidungen, Aufwand
 
 ### Risiken
 
