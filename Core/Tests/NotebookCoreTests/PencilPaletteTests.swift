@@ -88,14 +88,14 @@ final class PencilPaletteTests: XCTestCase {
                             visibleSlots: PencilPaletteContent.visibleSlots, leftHanded: leftHanded)
     }
 
-    func testStandardOrderIsFixedWithUndoThenTheMainToolsAndRedoFarAlong() {
+    func testStandardOrderShowsUndoAndTheMainToolsWithRedoHiddenBeforeUndo() {
         let standard: [PencilPaletteItem] = [.undo, .tool(.pen), .tool(.pencil), .tool(.marker), .tool(.strokeEraser), .tool(.text)]
         let defaults = PencilPaletteContent(preferences: ToolbarPreferences())
         XCTAssertEqual(PencilPaletteContent.visibleSlots, 6)
-        XCTAssertEqual(Array(defaults.items.prefix(6)), standard)
-        XCTAssertEqual(defaults.items, standard + [.tool(.inkSelection), .tool(.shape), .tool(.image), .tool(.read), .tool(.laser),
-                                                   .color, .width, .autoPen, .redo])
-        XCTAssertEqual(defaults.dividers, [0.5, 5.5, 10.5, 13.5])
+        XCTAssertEqual(PencilPaletteMemory.standardScroll, 1)
+        XCTAssertEqual(defaults.items, [.redo] + standard + [.tool(.inkSelection), .tool(.shape), .tool(.image), .tool(.read), .tool(.laser),
+                                                             .color, .width, .autoPen])
+        XCTAssertEqual(defaults.dividers, [1.5, 6.5, 11.5])
         XCTAssertEqual(defaults.maximumScroll, 9)
         XCTAssertEqual(Set(defaults.items).count, defaults.items.count, "every item once")
         XCTAssertFalse(defaults.items.contains(.tool(.precisionEraser)))
@@ -104,21 +104,24 @@ final class PencilPaletteTests: XCTestCase {
         var preferences = ToolbarPreferences()
         preferences.reorderTools([.image, .text, .shape, .marker, .inkSelection, .strokeEraser, .pencil, .pen])
         let reordered = PencilPaletteContent(preferences: preferences)
-        XCTAssertEqual(Array(reordered.items.prefix(6)), standard)
-        XCTAssertEqual(Array(reordered.items[6..<9]), [.tool(.image), .tool(.shape), .tool(.inkSelection)])
-        XCTAssertEqual(reordered.items.last, .redo)
+        XCTAssertEqual(Array(reordered.items.prefix(7)), [.redo] + standard)
+        XCTAssertEqual(Array(reordered.items[7..<10]), [.tool(.image), .tool(.shape), .tool(.inkSelection)])
+        XCTAssertEqual(reordered.items.last, .autoPen)
         // Legacy lasso ID and precision eraser map onto the visible entries.
         XCTAssertEqual(PencilPaletteContent(tools: [.precisionEraser, .selection, .inkSelection, .pen]).items,
-                       standard + [.tool(.inkSelection), .color, .width, .autoPen, .redo])
+                       [.redo] + standard + [.tool(.inkSelection), .color, .width, .autoPen])
 
         // Standard position: exactly undo and the main group are visible and tappable, redo is not.
         let layout = paletteLayout(defaults)
         let shown = defaults.items.indices.filter { layout.isInteractive(item: $0, scroll: PencilPaletteMemory.standardScroll) }
         XCTAssertEqual(shown.map { defaults.items[$0] }, standard)
         XCTAssertEqual(layout.maximumScroll, defaults.maximumScroll)
-        // Scrolled to the far end: colour, width, Autostift and redo.
+        // One slot back: redo appears before undo, text leaves.
+        let back = defaults.items.indices.filter { layout.isInteractive(item: $0, scroll: 0) }
+        XCTAssertEqual(back.map { defaults.items[$0] }, [.redo] + standard.dropLast())
+        // Scrolled to the far end: colour, width and Autostift.
         let end = defaults.items.indices.filter { layout.isInteractive(item: $0, scroll: layout.maximumScroll) }
-        XCTAssertEqual(Array(end.map { defaults.items[$0] }.suffix(4)), [.color, .width, .autoPen, .redo])
+        XCTAssertEqual(Array(end.map { defaults.items[$0] }.suffix(3)), [.color, .width, .autoPen])
     }
 
     func testSixSlotArcStaysBesideTheTipAwayFromTheHand() {
@@ -172,7 +175,7 @@ final class PencilPaletteTests: XCTestCase {
     func testScrollingNeverSelectsEvenWhenTheItemFollowsTheTouch() {
         let content = PencilPaletteContent(preferences: ToolbarPreferences())
         let layout = paletteLayout(content)
-        var scroll = PencilPaletteMemory.standardScroll
+        var scroll = 0.0
 
         // First scroll: from the eraser slot two slots back; the items follow the touch.
         XCTAssertNil(drag(layout, scroll: &scroll, from: 4, to: 2))
@@ -213,7 +216,7 @@ final class PencilPaletteTests: XCTestCase {
         XCTAssertEqual(tap.move(to: slid, scroll: scroll, in: layout), scroll)
         XCTAssertFalse(tap.isScrolling)
         XCTAssertEqual(tap.end(at: slid), 8)
-        XCTAssertEqual(content.items[8], .tool(.image))
+        XCTAssertEqual(content.items[8], .tool(.shape))
         // A touch inside the arc, off the band, selects nothing.
         let off = layout.point(item: 2, scroll: 0, radius: layout.radius - 45)
         XCTAssertNil(PencilPaletteTouch(at: off, item: layout.item(at: off, scroll: scroll)).end(at: off))

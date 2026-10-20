@@ -12,11 +12,19 @@ Nutzertest Build 49. Umgesetzt in diesem Strang:
 - **PDF-Schreibplatz:** Die Linien im Rand beginnen mit 32 pt Abstand zum PDF statt direkt an dessen Kante. Jeder Rand wird für sich liniert, in Editor, Vorschau und Export gleich (`PageLayout.ruledColumnsBesidePDF`). Papierseiten bleiben ein durchgehendes Blatt.
 - **„Seite anpassen“:** Die Vorschau ist scharf und folgt den Reglern ohne Verzögerung. Die gespeicherte Seite wird einmal gerendert, Papier und Linien des neuen Platzes werden live gezeichnet.
 
+## Präzisionsradierer und Formen – 20.10.2026
+
+Nutzer zu Build 50: Der Präzisionsradierer entfernte eine berührte Form ganz, er soll aber nur das berührte Stück wegradieren. Jetzt:
+- **Schneiden statt Entfernen:** Durchgezogene Formen ohne Füllung (Linie, Pfeil, Rechteck, Ellipse) werden entlang der Radiererspur geschnitten. Während des Radierens ist schon zu sehen, was übrig bleibt. Beim Abheben werden die Reste zu normaler Stift-Tinte in Farbe und Breite der Form (`ShapeEraseMask`). Sie lassen sich danach wie jeder Strich weiterradieren, sind aber keine bearbeitbare Form mehr.
+- **Gefüllte, gestrichelte oder gepunktete Formen** haben keine Tinten-Entsprechung und werden weiterhin ganz entfernt.
+- **Undo:** Radieren der Tinte und Schneiden der Formen sind ein Schritt.
+- **Strich-Radierer („Ganz“):** entfernt Formen weiterhin ganz.
+
 ## Pencil-Schnellmenü – 20.10.2026
 
 Nutzer zu Build 49: Im Schnellmenü (einmal Drücken bzw. Doppeltippen mit Palette-Einstellung) klappt das erste Scrollen. Beim zweiten Scrollen wird aber das Werkzeug gewählt, auf dem gescrollt wurde. Außerdem soll das Menü immer gleich beginnen und sich kurz merken, wo es geschlossen wurde. Umgesetzt:
 - **Nur Tippen wählt.** Eine Berührung auf dem Rad ist entweder ein Tippen oder ein Scrollen. Ab 12 pt Bewegung scrollt sie endgültig, und das Abheben wählt dann nichts, auch wenn der Finger wieder auf einem Eintrag landet. Ursache: Die Scrollgeste lief gleichzeitig mit den Eintrags-Buttons. Weil der Eintrag dem Finger folgt, endete die Berührung auf ihm und zählte als Tippen. Nur wenn das Scrollen am festen Ende anschlug, verließ der Finger den Eintrag, meist beim ersten Scrollen.
-- **Feste Reihenfolge**, unabhängig vom aktiven Werkzeug: Rückgängig | Stift, Bleistift, Textmarker, Radierer, Text. Das ist der Standardbereich; dafür sind 6 Plätze sichtbar, und der Bogen ist etwas größer (Radius ca. 146 statt 117 pt). Per Scrollen folgen die übrigen Werkzeuge in Leistenreihenfolge (Standard: Lasso, Formen, Bilder, PDF lesen, Laserpointer), dann Farbe, Breite und Autostift. Wiederholen steht am Ende. Das aktive Werkzeug bleibt markiert; der Radierer gilt auch für den Präzisionsradierer.
+- **Feste Reihenfolge**, unabhängig vom aktiven Werkzeug: Rückgängig | Stift, Bleistift, Textmarker, Radierer, Text. Das ist der Standardbereich; dafür sind 6 Plätze sichtbar, und der Bogen ist etwas größer (Radius ca. 146 statt 117 pt). Per Scrollen folgen die übrigen Werkzeuge in Leistenreihenfolge (Standard: Lasso, Formen, Bilder, PDF lesen, Laserpointer), dann Farbe, Breite und Autostift. Wiederholen steht direkt vor Rückgängig und ist erst sichtbar, wenn man einen Platz zurückscrollt (Nutzer zu Build 50; vorher stand es am Ende). Das aktive Werkzeug bleibt markiert; der Radierer gilt auch für den Präzisionsradierer.
 - **10-s-Gedächtnis:** Beim Schließen merkt sich das Menü die sichtbare Position. Öffnet es innerhalb von 10 s wieder, erscheint es dort, sonst im Standardbereich. Das Gedächtnis gilt app-weit und wird nicht gespeichert.
 - Unverändert bleiben Doppeldrücken (Radierer ↔ Schreibwerkzeug), Platzierung für Linkshänder, „Bewegung reduzieren“, Haptik und das dunkle Glas. VoiceOver liest die Einträge als Tasten; mit drei Fingern wischen blättert.
 

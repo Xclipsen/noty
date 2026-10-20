@@ -1,5 +1,16 @@
 # Bilder und Screenshots – Build 19
 
+## Ergänzung nach Build 50 – Foto-Import mit Rückfallwegen
+
+Nutzer zu Build 50 (Screenshot): Auch Build 50 lehnte ein iPhone-Foto ab, mit der Systemmeldung „ImportedStillImage kann nicht importiert werden … keine kompatiblen Darstellungen“. Die Übergabe über die konkreten Standbildtypen passte also nicht zu dem, was die Fotomediathek für dieses Foto anbot. Die genaue Typliste des Fotos ist unbekannt.
+
+`ImageImport.photo` versucht jetzt nacheinander drei Wege:
+1. konkrete Standbildtypen als Datei
+2. allgemeines `.image` als Datei
+3. die reinen Bytes (`Data`)
+
+Beim dritten Weg werden nur Standbilder bis 20 MB angenommen; ein Video wird abgelehnt. Eigene Fehler (Größe, Video) brechen sofort ab. Erst wenn alle drei Wege scheitern, erscheint die Meldung mit dem ersten Systemfehler. Am iPad ungeprüft.
+
 ## Ergänzung nach Build 49 – iPhone-Fotos (HEIC/Live Photos) und dunkle Bildleiste
 
 Nutzerrückmeldung zu Build 49: „kann keine importen die ich auf meinem iphone gemacht habe — screenshots gehen“ und „dass die leiste vom anpassen des bildes in der noty theme ist“.

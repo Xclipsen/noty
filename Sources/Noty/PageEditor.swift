@@ -167,7 +167,11 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     struct ShapeEraseSession {
         var shapes: [ShapeObject]
         var hit = Set<UUID>()
+        /// Solid, unfilled shapes the eraser cut: they become ink pieces.
+        var masks: [UUID: ShapeEraseMask] = [:]
         var last: PagePoint?
+        /// Lifted while PencilKit still used its eraser; completes on tool end.
+        var lifted = false
     }
     var shapeErase: ShapeEraseSession?
     /// Soft trail of the "Ganz" eraser: exactly the hit width, recent part only.
@@ -280,6 +284,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         holdGesture.onBegin = { [weak self] point in
             guard let self else { return }
             self.commitPendingHeldStroke()
+            if self.shapeErase?.lifted == true { self.finishShapeErase(force: true) }
             self.cancelErase(); self.cancelShapeErase()
             if self.editable, self.tool == .strokeEraser { self.beginErase() }
             if self.editable, self.tool == .precisionEraser { self.beginShapeErase() }
@@ -872,6 +877,14 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
         inkActive = false
         holdCompletion.endNative()
+        // Precision eraser lifted over shapes: cut them once PencilKit's own
+        // erase is on the canvas (next turn of the run loop).
+        if shapeErase?.lifted == true {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.shapeErase?.lifted == true else { return }
+                self.finishShapeErase(force: true)
+            }
+        }
     }
     func installContent(_ content: PageContent) {
         updating = true

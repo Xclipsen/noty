@@ -49,15 +49,32 @@ extension ImageImport {
     static func photo(_ item: PhotosPickerItem) async throws -> Data {
         let offered = item.supportedContentTypes
         let still = offered.contains { type in ImportedStillImage.contentTypes.contains { type.conforms(to: $0) } }
-        let data: Data?
-        do {
-            data = still ? try await item.loadTransferable(type: ImportedStillImage.self)?.data
-                         : try await item.loadTransferable(type: ImportedImage.self)?.data
-        } catch { throw importError(error) ?? ImageImportError.photoUnavailable(error.localizedDescription) }
-        guard let data else {
-            throw ImageImportError.unsupportedPhoto(offered: offered.isEmpty ? "keine Formate" : offered.map(\.identifier).joined(separator: ", "))
+        // Build 50 on the iPad: an iPhone photo failed the concrete still-image
+        // representations ("keine kompatiblen Darstellungen"). Each way is tried
+        // in turn: concrete still types, any image file, then the plain bytes.
+        // Our own errors (size, video) end the search at once.
+        var failure: Error?
+        func attempt(_ load: () async throws -> Data?) async throws -> Data? {
+            do { return try await load() } catch {
+                if let own = importError(error) { throw own }
+                failure = failure ?? error; return nil
+            }
         }
-        return data
+        if still, let data = try await attempt({ try await item.loadTransferable(type: ImportedStillImage.self)?.data }) { return data }
+        if let data = try await attempt({ try await item.loadTransferable(type: ImportedImage.self)?.data }) { return data }
+        if let data = try await attempt({ try await item.loadTransferable(type: Data.self) }) { return try stillImage(data) }
+        if let failure { throw ImageImportError.photoUnavailable(failure.localizedDescription) }
+        throw ImageImportError.unsupportedPhoto(offered: offered.isEmpty ? "keine Formate" : offered.map(\.identifier).joined(separator: ", "))
+    }
+
+    /// Plain bytes from Photos: only a still image within the size limit.
+    private static func stillImage(_ data: Data) throws -> Data {
+        guard data.count <= ImageLimits.maximumFileBytes else { throw ImageImportError.fileTooLarge }
+        switch ImageFileFormat.detect(data) {
+        case .video: throw ImageImportError.video
+        case .some: return data
+        case nil: throw ImageImportError.invalid
+        }
     }
 
     /// Our own reading error (size, bundle without photo), also when the

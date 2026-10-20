@@ -79,13 +79,18 @@ extension WorksheetView {
     }
     func dimErasedShapes() {
         if let session = eraseSession { dimShapes(session.base.shapes, hit: session.shapes) }
-        if let session = shapeErase { dimShapes(session.shapes, hit: session.hit) }
+        if let session = shapeErase { dimShapes(session.shapes, hit: session.hit, masks: session.masks) }
     }
-    private func dimShapes(_ shapes: [ShapeObject], hit: Set<UUID>) {
-        shapeLayer.configure(shapes.map { shape in
+    private func dimShapes(_ shapes: [ShapeObject], hit: Set<UUID>, masks: [UUID: ShapeEraseMask] = [:]) {
+        // Cut shapes show what will remain as ink; others dim until the lift.
+        let pieces = masks.values.flatMap { mask in
+            mask.runs.map { ShapeInkPiece(points: $0, color: mask.shape.color, width: mask.shape.lineWidth) }
+        }
+        shapeLayer.configure(shapes.compactMap { shape in
             guard hit.contains(shape.id) else { return shape }
+            guard masks[shape.id] == nil else { return nil }
             var dimmed = shape; dimmed.color.alpha *= 0.28; dimmed.fill?.alpha *= 0.28; return dimmed
-        }, origin: pageLayout.contentOrigin)
+        }, origin: pageLayout.contentOrigin, pieces: pieces)
     }
     /// IDs of `shapes` whose stroke (or fill) the eraser capsule `from→to`
     /// with `radius` touches. Shared by both erasers.
@@ -103,9 +108,11 @@ extension WorksheetView {
     }
 
     // MARK: Precision eraser and shapes
-    // PencilKit's bitmap eraser only cuts ink. Shapes it touches are dimmed
-    // during the gesture and removed whole on lift, merged into the gesture's
-    // ink undo step (`onEraseShapes`). Vector shapes are never cut partially.
+    // PencilKit's bitmap eraser only cuts ink. A solid, unfilled shape it
+    // touches is cut along the eraser (`ShapeEraseMask`) and its remaining
+    // pieces become native ink on lift, so they can be erased further like
+    // any stroke; filled or dashed shapes are removed whole. Both are merged
+    // into the gesture's ink undo step (`onEraseShapes`).
 
     func beginShapeErase() {
         guard !pageContent.shapes.isEmpty else { return }
@@ -116,13 +123,23 @@ extension WorksheetView {
     }
     /// The precision eraser's own width (`PKEraserTool(.fixedWidthBitmap)`).
     func precisionShapeSweep(to point: PagePoint) {
-        guard var session = shapeErase else { return }
-        let hit = Self.shapesHit(session.shapes.filter { !session.hit.contains($0.id) }, from: session.last ?? point, to: point,
-                                 radius: max(configuredWidth, 1) / 2)
+        guard var session = shapeErase, !session.lifted else { return }
+        let from = session.last ?? point, radius = max(configuredWidth, 1) / 2
+        var changed = false
+        let whole = session.shapes.filter { !ShapeEraseMask.canErasePartially($0) && !session.hit.contains($0.id) }
+        let hit = Self.shapesHit(whole, from: from, to: point, radius: radius)
+        if !hit.isEmpty { session.hit.formUnion(hit); changed = true }
+        for shape in session.shapes where ShapeEraseMask.canErasePartially(shape) {
+            let reach = radius + shape.lineWidth / 2 + 1, box = shape.bounds
+            guard min(from.x, point.x) - reach <= box.x + box.width, max(from.x, point.x) + reach >= box.x,
+                  min(from.y, point.y) - reach <= box.y + box.height, max(from.y, point.y) + reach >= box.y else { continue }
+            var mask = session.masks[shape.id] ?? ShapeEraseMask(shape)
+            guard mask.erase(from: from, to: point, radius: radius) else { continue }
+            session.masks[shape.id] = mask; session.hit.insert(shape.id); changed = true
+        }
         session.last = point
-        session.hit.formUnion(hit)
         shapeErase = session
-        if !hit.isEmpty { dimErasedShapes() }
+        if changed { dimErasedShapes() }
     }
     /// Shows the shapes again; nothing was published.
     func cancelShapeErase() {
@@ -130,17 +147,36 @@ extension WorksheetView {
         shapeErase = nil
         if !session.hit.isEmpty { shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin) }
     }
-    /// Removes the touched shapes in one content change. The ink is left as
-    /// published: PencilKit may still deliver the eraser's final drawing, and
-    /// the canvas is not touched here.
-    func finishShapeErase() {
-        guard let session = shapeErase else { return }
+    /// Removes the touched shapes and adds the remaining pieces of cut ones as
+    /// ink, in one content change. While PencilKit still uses its eraser the
+    /// lift waits for its tool end (`force` skips that wait), so the ink taken
+    /// from the canvas already contains the eraser's last cut.
+    func finishShapeErase(force: Bool = false) {
+        guard var session = shapeErase else { return }
         guard !session.hit.isEmpty, editable, pageContent.shapes == session.shapes else { cancelShapeErase(); return }
+        if inkActive && !force { session.lifted = true; shapeErase = session; return }
         shapeErase = nil
         var next = pageContent
         next.shapes.removeAll { session.hit.contains($0.id) }
-        if onEraseShapes?(next, pageContent) == true { pageContent.shapes = next.shapes }
+        let pieces = session.masks.values.flatMap { mask in mask.runs.map { Self.inkPiece($0, of: mask.shape) } }
+        if !pieces.isEmpty {
+            next.drawing = PKDrawing(strokes: canonicalCanvasDrawing.strokes + pieces).dataRepresentation()
+        }
+        if onEraseShapes?(next, pageContent) == true {
+            if pieces.isEmpty { pageContent.shapes = next.shapes } else { installContent(next) }
+        }
         shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin)
+    }
+    /// A remaining shape piece as native pen ink: constant point width, the
+    /// shape's colour, control points about every 2 pt.
+    static func inkPiece(_ points: [PagePoint], of shape: ShapeObject) -> PKStroke {
+        let thinned = points.enumerated().filter { $0.offset % 2 == 0 || $0.offset == points.count - 1 }.map(\.element)
+        let size = CGSize(width: shape.lineWidth, height: shape.lineWidth)
+        let controls = thinned.enumerated().map { index, point in
+            PKStrokePoint(location: CGPoint(x: point.x, y: point.y), timeOffset: Double(index) * 0.001, size: size,
+                          opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
+        }
+        return PKStroke(ink: PKInk(.pen, color: shape.color.uiColor), path: PKStrokePath(controlPoints: controls, creationDate: Date()))
     }
     /// Restores the visible state; nothing was ever published.
     func cancelErase() {
