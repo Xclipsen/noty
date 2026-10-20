@@ -71,7 +71,40 @@ public struct SHA256: Sendable {
     /// 64 lowercase hexadecimal characters (the asset file name).
     public var hexDigest: String { Self.hex(finalize()) }
 
-    public static func hexDigest(_ data: Data) -> String { var hasher = SHA256(); hasher.update(data); return hasher.hexDigest }
+    /// One-shot digest of in-memory bytes (asset references, staging). Uses an
+    /// installed platform implementation if there is one (`installAccelerated`).
+    public static func hexDigest(_ data: Data) -> String {
+        if let accelerated = Accelerator.current { return hex(accelerated(data)) }
+        return portableHexDigest(data)
+    }
+
+    static func portableHexDigest(_ data: Data) -> String { var hasher = SHA256(); hasher.update(data); return hasher.hexDigest }
+
+    public typealias OneShotDigest = @Sendable (Data) -> [UInt8]
+
+    /// The app installs CryptoKit here: the plain Swift implementation is slow
+    /// in debug builds, and every inline image original is hashed once per
+    /// session. Refused (false) unless it reproduces FIPS 180-4 vectors and
+    /// this implementation on block-boundary lengths. Streaming digests
+    /// (file verification) always use this implementation.
+    @discardableResult
+    public static func installAccelerated(_ digest: @escaping OneShotDigest) -> Bool {
+        var samples = [Data(), Data("abc".utf8), Data("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".utf8)]
+        for count in [55, 56, 63, 64, 65, 1_000] { samples.append(Data((0..<count).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })) }
+        guard samples.allSatisfy({ hex(digest($0)) == portableHexDigest($0) }) else { return false }
+        Accelerator.set(digest)
+        return true
+    }
+
+    /// Tests only.
+    static func removeAccelerated() { Accelerator.set(nil) }
+
+    private enum Accelerator {
+        private static let lock = NSLock()
+        nonisolated(unsafe) private static var installed: OneShotDigest?
+        static var current: OneShotDigest? { lock.lock(); defer { lock.unlock() }; return installed }
+        static func set(_ digest: OneShotDigest?) { lock.lock(); installed = digest; lock.unlock() }
+    }
 
     static func hex(_ bytes: [UInt8]) -> String {
         let digits = Array("0123456789abcdef".utf8)

@@ -287,10 +287,11 @@ final class ContentSearchModel: ObservableObject {
 
     /// Scan/PDF background (only without a meaningful text layer) plus inserted images.
     /// `keepAlive` (the PDF document) outlives drawing its page off the main actor.
+    /// `assets`: where image originals are read (nil: the images' inline bytes).
     private static func recognizeBackground(_ pdf: SendablePDFPage?, images: [ImageObject], layout: PageLayout,
-                                            keepAlive: AnyObject?) async throws -> [SearchLine] {
+                                            assets: ImageAssetProviding? = nil, keepAlive: AnyObject?) async throws -> [SearchLine] {
         let lines = try await Task.detached(priority: .utility) { () throws -> [SearchLine] in
-            let decoded = try images.map { try ImageRendering.decoded($0, limit: 2400) }
+            let decoded = try images.map { try ImageRendering.decoded($0, limit: 2400, assets: assets) }
             guard let image = PageRaster.bitmap(size: layout.canvas.cgSize, scale: scale(layout), opaque: true, { context in
                 UIColor.white.setFill(); context.fill(layout.canvas.bounds)
                 if let pdf { PageRaster.drawSource(pdf.page, layout: layout, context: context) }

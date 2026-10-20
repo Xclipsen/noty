@@ -33,6 +33,81 @@ public enum ImageAssetPayload: Equatable, Sendable {
 
 public protocol ImageAssetProviding: Sendable {
     func payload(for reference: ImageAssetReference) throws -> ImageAssetPayload
+    /// Like `payload`, but the bytes are proven to match the reference (backup,
+    /// restore, PDF export). Default: `payload`, for providers whose bytes
+    /// already define their reference (inline originals).
+    func verifiedPayload(for reference: ImageAssetReference) throws -> ImageAssetPayload
+}
+
+extension ImageAssetProviding {
+    public func verifiedPayload(for reference: ImageAssetReference) throws -> ImageAssetPayload { try payload(for: reference) }
+}
+
+/// Originals held in memory, served by content address: the bytes still
+/// embedded in the notebook model (schema ≤ 11), or any other set of bytes.
+/// References are computed from the bytes, so every payload matches its
+/// reference by construction.
+public struct InlineImageAssets: ImageAssetProviding {
+    private let bytes: [String: Data]
+
+    public init() { bytes = [:] }
+
+    /// Keyed by their own SHA-256 (not checked; use `init(images:)` or
+    /// `ImageAssetReference(of:)` to build the keys).
+    public init(bytes: [String: Data]) { self.bytes = bytes }
+
+    /// Hashes each original once per image value (`ImageObject.asset`).
+    public init<S: Sequence>(images: S) where S.Element == ImageObject {
+        var bytes: [String: Data] = [:]
+        for image in images { bytes[image.asset.sha256] = image.data }
+        self.bytes = bytes
+    }
+
+    /// Every image of the active pages and the page trash.
+    public init(_ notebook: Notebook) { self.init(images: notebook.allImages) }
+
+    public var references: [ImageAssetReference] {
+        bytes.map { ImageAssetReference(sha256: $0.key, byteCount: $0.value.count) }.sorted { $0.sha256 < $1.sha256 }
+    }
+
+    public func payload(for reference: ImageAssetReference) throws -> ImageAssetPayload {
+        guard reference.isValid else { throw ImageAssetError.invalidReference }
+        guard let data = bytes[reference.sha256], data.count == reference.byteCount else { throw ImageAssetError.missing(reference.sha256) }
+        return .data(data)
+    }
+}
+
+/// The first provider that has the asset, in order. A proven damage is
+/// reported before a plain absence.
+public struct ChainedImageAssets: ImageAssetProviding {
+    public let providers: [ImageAssetProviding]
+    public init(_ providers: [ImageAssetProviding]) { self.providers = providers }
+
+    public func payload(for reference: ImageAssetReference) throws -> ImageAssetPayload {
+        try first(reference) { try $0.payload(for: reference) }
+    }
+
+    public func verifiedPayload(for reference: ImageAssetReference) throws -> ImageAssetPayload {
+        try first(reference) { try $0.verifiedPayload(for: reference) }
+    }
+
+    private func first(_ reference: ImageAssetReference,
+                       _ body: (ImageAssetProviding) throws -> ImageAssetPayload) throws -> ImageAssetPayload {
+        var failure: Error = ImageAssetError.missing(reference.sha256)
+        for provider in providers {
+            do { return try body(provider) } catch {
+                if case ImageAssetError.missing = failure { failure = error }
+            }
+        }
+        throw failure
+    }
+}
+
+extension Notebook {
+    /// Images of the active pages, then of the page trash, in page order.
+    public var allImages: [ImageObject] {
+        (pages + (deletedPages ?? []).map(\.page)).flatMap { $0.images ?? [] }
+    }
 }
 
 public enum ImageAssetError: Error, LocalizedError, Equatable {

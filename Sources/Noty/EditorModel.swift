@@ -735,18 +735,26 @@ private final class BackgroundSaveTask {
 
 @MainActor
 enum EditorModelValidation {
-    static func validate(_ document: Notebook) throws {
+    static func validate(_ document: Notebook, assets: ImageAssetProviding? = nil) throws {
         _ = try NotebookPDFCatalog(document)
-        try validateContent(document)
+        try validateContent(document, assets: assets)
     }
     /// PencilKit drawings and images of active and trashed pages. No UI or
     /// PDFKit objects: safe off the UI actor (the PDF part is the catalogue).
-    nonisolated static func validateContent(_ document: Notebook) throws {
+    /// Image originals come from the bytes embedded in `document`, then from
+    /// `assets`; each original (content address and pixel size) is decoded
+    /// and verified once, also when duplicated pages share it.
+    nonisolated static func validateContent(_ document: Notebook, assets: ImageAssetProviding? = nil) throws {
         for page in document.pages + (document.deletedPages ?? []).map(\.page) where !page.drawing.isEmpty {
             _ = try PKDrawing(data: page.drawing)
         }
-        for page in document.pages + (document.deletedPages ?? []).map(\.page) {
-            for image in page.images ?? [] { try ImageRendering.validate(image) }
+        let images = document.allImages
+        guard !images.isEmpty else { return }
+        let inline = InlineImageAssets(images: images)
+        let provider: ImageAssetProviding = assets.map { ChainedImageAssets([inline, $0]) } ?? inline
+        var checked = Set<String>()
+        for image in images where checked.insert("\(image.asset.sha256)-\(image.pixelWidth)x\(image.pixelHeight)").inserted {
+            try ImageRendering.validate(image, assets: provider)
         }
     }
 }

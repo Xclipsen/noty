@@ -14,6 +14,21 @@ public struct ImageObject: Codable, Equatable, Identifiable, Sendable {
     public var rotation: Double
     public var crop: PageRect
     public var locked: Bool
+    /// Content address of `data`, computed once and shared by every copy of
+    /// this value (`data` is immutable). Not encoded, not compared.
+    private let assetCache = ImageAssetCache()
+
+    private enum CodingKeys: String, CodingKey {
+        case id, data, pixelWidth, pixelHeight, x, y, width, height, rotation, crop, locked
+    }
+
+    /// The asset reference of the original. Until notebook schema 12 the bytes
+    /// stay embedded in the JSON and the reference is derived from them; the
+    /// first call hashes them (off the main thread where possible).
+    public var asset: ImageAssetReference { assetCache.reference(for: data) }
+
+    /// `asset` if it was already computed for this value or a copy; never hashes.
+    public var cachedAsset: ImageAssetReference? { assetCache.cached }
 
     public init(id: UUID = UUID(), data: Data, pixelWidth: Int, pixelHeight: Int,
                 x: Double = 40, y: Double = 40, width: Double = 240, height: Double = 180,
@@ -77,6 +92,26 @@ public struct ImageObject: Codable, Equatable, Identifiable, Sendable {
         try result.validate()
         return result
     }
+}
+
+/// Lazily computed reference of immutable bytes, shared by struct copies.
+/// Hashing runs outside the lock, so `cached` never waits for it.
+final class ImageAssetCache: Equatable, @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: ImageAssetReference?
+
+    var cached: ImageAssetReference? { lock.lock(); defer { lock.unlock() }; return value }
+
+    func reference(for data: Data) -> ImageAssetReference {
+        if let cached { return cached }
+        let computed = ImageAssetReference(of: data)
+        lock.lock(); defer { lock.unlock() }
+        if value == nil { value = computed }
+        return value!
+    }
+
+    /// A cache never makes two image objects different.
+    static func == (_: ImageAssetCache, _: ImageAssetCache) -> Bool { true }
 }
 
 extension Notebook {
