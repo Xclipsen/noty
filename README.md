@@ -5,7 +5,9 @@ Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nut
 
 ## Aktueller Stand
 
-**Build 48 (20.10.2026)** fasst zwei Arbeitsstränge zusammen: die Review-Überarbeitung (intern Build 47, nie separat installiert) und UI-Feinschliff mit „Seite anpassen“ für Papierseiten. Stand und Nachweise der Installation: [TESTING](docs/TESTING.md), [UI](docs/UI-POLISH.md), [Schreibplatz](docs/PAGE-ADJUST.md).
+**Build 49 (20.10.2026)** = Build 48 plus sechs Editor-Korrekturen aus dem Review: Nach einem abgebrochenen Anheben mit Werkzeugwechsel zeigt der Canvas wieder die gespeicherte Tinte, statt Striche beim nächsten Zeichnen zu verlieren. Der Bild-Cache fasst 160 MB/48 Einträge und zeigt bei Fehltreffern die nächstbeste Auflösung statt Grau. Dekodierfehler werden erneut versucht. Gezogene Bilder bleiben in der richtigen Reihenfolge. Werkzeugeinstellungen werden auch beim Wechsel in den Hintergrund fertig geschrieben. Die Strichbreite lernt nur noch von Stift, Bleistift und Marker. Nachweise: [TESTING](docs/TESTING.md#build-49--editor-korrekturen).
+
+**Build 48 (20.10.2026, installiert)** fasst zwei Arbeitsstränge zusammen: die Review-Überarbeitung (intern Build 47, nie separat installiert) und UI-Feinschliff mit „Seite anpassen“ für Papierseiten. Stand und Nachweise der Installation: [TESTING](docs/TESTING.md), [UI](docs/UI-POLISH.md), [Schreibplatz](docs/PAGE-ADJUST.md).
 
 - **UI (Build 48):** aufgeräumtes Optionenmenü, gruppierte Seiten- und Bibliotheksmenüs, ruhiger Statushinweis, neue Werkzeug-Icons und App-Icon nach Nutzerentwurf. Papierseiten lassen sich rechts/unten mit nahtlos weiterlaufenden Linien erweitern, Papier je Seite (Notebook-Schema 11).
 - **Daten (Review):** Ein Rückfall auf einen älteren Stand verschiebt neuere Revisionen in eine Quarantäne (höchstens drei Sätze), statt sie zu löschen. Nach einem Rückfall kein automatisches Speichern. Lokale Historie mit Zwischenständen im Abstand von mindestens 10 Minuten (`checkpoints.json`). Das Manifest bleibt im Build-46-Format. Fehlgeschlagenes Speichern wird nach 2/5/15/60 s erneut versucht. PDF-Originale bis 100 MB; Hefte mit Quellen über 20 MB nutzen Schema 10.
