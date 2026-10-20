@@ -63,7 +63,8 @@ struct LawReaderView: View {
     @State private var loading = false
     @State private var showContents = false
     @State private var showBookmarks = false
-    @State private var fontSize = 18.0
+    /// Reading size of the law text, kept across sections, notebooks and launches.
+    @AppStorage("noty.laws.fontSize") private var fontSize = 18.0
     @State private var jumpParagraph: String?
     @State private var requestID = UUID()
     @FocusState private var queryFocused: Bool
@@ -148,6 +149,13 @@ struct LawReaderView: View {
                     ForEach(laws.entries) { entry in Button("\(entry.abbr) · \(entry.name)") { Task { await choose(entry) } } }
                 } label: { Label(entry?.abbr ?? "Gesetz wählen", systemImage: "books.vertical").lineLimit(1) }
                 Spacer()
+                // Directly in the bar, not in a menu: several taps in a row stay quick.
+                if !viewPDF {
+                    Button { fontSize = max(12, fontSize - 2) } label: { Image(systemName: "textformat.size.smaller").frame(minWidth: 30, minHeight: 32) }
+                        .disabled(fontSize <= 12).accessibilityLabel("Schrift kleiner")
+                    Button { fontSize = min(32, fontSize + 2) } label: { Image(systemName: "textformat.size.larger").frame(minWidth: 30, minHeight: 32) }
+                        .disabled(fontSize >= 32).accessibilityLabel("Schrift größer")
+                }
                 Button { showContents = true } label: { Image(systemName: "list.bullet") }.accessibilityLabel("Inhaltsverzeichnis")
                 Button { showBookmarks = true } label: { Image(systemName: "bookmark") }.accessibilityLabel("Lesezeichen und Markierungen")
                 Menu {
@@ -160,9 +168,7 @@ struct LawReaderView: View {
                     if let last = marks.last(where: { $0.kind == "annotation" }) {
                         Button("Letzte Markierung rückgängig", systemImage: "arrow.uturn.backward") { Task { await laws.remove(last) } }
                     }
-                    Button("Schrift größer", systemImage: "textformat.size.larger") { fontSize = min(32, fontSize + 2) }
-                    Button("Schrift kleiner", systemImage: "textformat.size.smaller") { fontSize = max(12, fontSize - 2) }
-                } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Fassung und Schrift")
+                } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Fassung und Markierungen")
             }
             HStack {
                 TextField("Schnellsuche · 144 HGB", text: $query).textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.search)
@@ -413,19 +419,14 @@ private struct NativeLawText: UIViewRepresentable {
         let bodyKey = "\(sectionID):\(fontSize):\(text.hashValue):\(html.hashValue):\(notes.hashValue)"
         if c.bodyKey != bodyKey {
             let changedSection = c.sectionID != sectionID
+            let resized = !changedSection && c.fontSize != fontSize
             let offset = v.contentOffset
+            // The first visible character stays on top when the size changes.
+            let topCharacter = resized ? v.closestPosition(to: CGPoint(x: v.textContainerInset.left + 1, y: offset.y + v.textContainerInset.top + 1)) .map { v.offset(from: v.beginningOfDocument, to: $0) } : nil
             let attributes: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: fontSize), .foregroundColor: UIColor.label]
-            var body = NSMutableAttributedString(string: text, attributes: attributes)
-            // Rich native HTML supports tables/lists. Only use it if its exact
-            // canonical text matches the shared anchor contract; otherwise plain
-            // source text is authoritative. Never fetch remote HTML resources.
-            if let html, !html.isEmpty, html.utf8.count <= 250_000,
-               html.range(of: "<(?:script|iframe|img|link|object|style)|(?:src|href)\\s*=", options: [.regularExpression, .caseInsensitive]) == nil {
-                let markup = "<html><head><meta charset='utf-8'><style>body{font-family:-apple-system;font-size:\(fontSize)px;color:#eeeeee}table{border-collapse:collapse}td,th{border:1px solid #666;padding:4px}</style></head><body>" + html + "</body></html>"
-                if let data = markup.data(using: .utf8),
-                   let rich = try? NSMutableAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil),
-                   LawTextAnchor.canonical(rich.string) == LawTextAnchor.canonical(text) { body = rich }
-            }
+            let richKey = "\(sectionID):\(text.hashValue):\(html.hashValue)"
+            if c.richKey != richKey { c.richKey = richKey; c.importRich(html: html, text: text) }
+            let body = c.rich.map { c.scaled($0, to: fontSize) } ?? NSMutableAttributedString(string: text, attributes: attributes)
             let rendered = body.string
             if !notes.isEmpty { body.append(NSAttributedString(string: "\n\n" + notes, attributes: attributes)) }
             c.renderedText = rendered; c.bodyLength = (rendered as NSString).length
@@ -434,10 +435,16 @@ private struct NativeLawText: UIViewRepresentable {
             v.attributedText = body
             if changedSection { v.setContentOffset(.zero, animated: false) } else {
                 v.layoutIfNeeded()
-                v.setContentOffset(CGPoint(x: 0, y: min(offset.y, max(0, v.contentSize.height - v.bounds.height))), animated: false)
+                var y = offset.y
+                if let topCharacter, let start = v.position(from: v.beginningOfDocument, offset: topCharacter),
+                   let end = v.position(from: start, offset: 1), let range = v.textRange(from: start, to: end) {
+                    let rect = v.firstRect(for: range)
+                    if rect.minY.isFinite { y = rect.minY - v.textContainerInset.top }
+                }
+                v.setContentOffset(CGPoint(x: 0, y: min(max(0, y), max(0, v.contentSize.height - v.bounds.height))), animated: false)
             }
             c.updating = false
-            c.bodyKey = bodyKey; c.sectionID = sectionID; c.marksKey = nil
+            c.bodyKey = bodyKey; c.sectionID = sectionID; c.fontSize = fontSize; c.marksKey = nil
         }
         // Marks only change attributes in place: no new text, no scroll jump.
         if c.marksKey != marks.hashValue {
@@ -459,8 +466,13 @@ private struct NativeLawText: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
         var parent: NativeLawText
         weak var view: UITextView?
-        var bodyKey = "", sectionID = "", jump = ""
+        var bodyKey = "", sectionID = "", jump = "", richKey = ""
+        var fontSize = 0.0
         var marksKey: Int?
+        /// HTML rendering of the current section at a reference size, or nil when
+        /// the plain text is used. Imported once per section, not per size step.
+        var rich: NSAttributedString?
+        private var richBase: CGFloat = 17
         var updating = false
         var renderedText = ""
         var bodyLength = 0
@@ -468,6 +480,35 @@ private struct NativeLawText: UIViewRepresentable {
         private var strokeStart: Int?
         init(_ parent: NativeLawText) { self.parent = parent }
 
+        /// Rich native HTML supports tables/lists. Only use it if its exact
+        /// canonical text matches the shared anchor contract; otherwise plain
+        /// source text is authoritative. Never fetch remote HTML resources.
+        func importRich(html: String?, text: String) {
+            rich = nil
+            guard let html, !html.isEmpty, html.utf8.count <= 250_000,
+                  html.range(of: "<(?:script|iframe|img|link|object|style)|(?:src|href)\\s*=", options: [.regularExpression, .caseInsensitive]) == nil else { return }
+            let markup = "<html><head><meta charset='utf-8'><style>body{font-family:-apple-system;font-size:17px;color:#eeeeee}table{border-collapse:collapse}td,th{border:1px solid #666;padding:4px}</style></head><body>" + html + "</body></html>"
+            guard let data = markup.data(using: .utf8),
+                  let imported = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil),
+                  LawTextAnchor.canonical(imported.string) == LawTextAnchor.canonical(text) else { return }
+            // Body size as the importer actually produced it (its px/pt mapping).
+            var lengths: [CGFloat: Int] = [:]
+            imported.enumerateAttribute(.font, in: NSRange(location: 0, length: imported.length)) { value, range, _ in
+                if let font = value as? UIFont { lengths[font.pointSize, default: 0] += range.length }
+            }
+            richBase = lengths.max { $0.value < $1.value }?.key ?? 17
+            rich = imported
+        }
+        /// The imported text with every font scaled so the body text is `size` pt.
+        func scaled(_ source: NSAttributedString, to size: Double) -> NSMutableAttributedString {
+            let result = NSMutableAttributedString(attributedString: source)
+            let factor = CGFloat(size) / max(1, richBase)
+            result.enumerateAttribute(.font, in: NSRange(location: 0, length: result.length)) { value, range, _ in
+                guard let font = value as? UIFont else { return }
+                result.addAttribute(.font, value: font.withSize(font.pointSize * factor), range: range)
+            }
+            return result
+        }
         func applyHighlights(preview: NSRange?) {
             guard let storage = view?.textStorage else { return }
             let body = NSRange(location: 0, length: min(bodyLength, storage.length))

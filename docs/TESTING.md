@@ -50,6 +50,16 @@ Nutzerrückmeldung zu Build 55: Pfeil zur nächsten Vorschrift fehlt, Pfeile lin
 - Das erste Zurücklesen (`after-update/`, 24 Dateien) wurde nach der Installation durch einen versehentlichen Abbruch des Skripts unterbrochen und ist unvollständig. Danach bei geschlossener App vollständig neu zurückgelesen (`after-update-complete/Documents`): alle **14 Hefte und 102 Dateien unverändert**, keine neuen Dateien; `verify_device_store.py --compare` für beide Bereichsroots ohne Abweichung.
 - **Auf dem iPad ungeprüft**: Drag & Drop, Lasche, Blättern, Markieren (Auswahl, Menü, Stift, PDF), Entfernen, Lesestelle und Synchronisierung neuer Markierungen sind gebaut und installiert, aber nicht am Gerät bedient.
 
+### Build 57 · Schriftgröße direkt · 20.10.2026
+
+Nutzerrückmeldung zu Build 56: Schriftgröße geht nicht, dafür soll sich kein Menü öffnen. Umsetzung siehe [DESIGN](DESIGN.md#gesetzessammlung--bestätigte-bedienung-20102026).
+
+- **Implementiert**: Knöpfe „Schrift kleiner/größer“ direkt in der Leserleiste; HTML-Text einmal je Vorschrift importiert und pro Stufe skaliert; oberste sichtbare Textstelle bleibt; Größe gemerkt.
+- **Erfolgreich gebaut**: `xtool dev build` und `--sign --ipa` in PTY ohne Warnungen (`.tools/law-build57-build.log`, `.tools/law-build57-sign.log`). Build **57**, Profil bis **27.10.2026 21:43:46 UTC**, IPA-SHA-256 `4e1b99682592090d7ad6877a0a3d8dc91b950e76e964e50d2ec6fc858b3beddd`.
+- Sicherung bei geschlossener App: `/home/la/Backups/noty-before-build57-2026-10-20T21-44-07-582410158Z/` (102 Dateien, 640.321.859 Byte, 14 Hefte, 26 Revisionen, ohne Quarantäne).
+- **Installiert**, InstallationProxy bestätigt Build **57** unter unveränderter ID. Zurückgelesen: alle **14 Hefte und 102 Dateien unverändert**, keine neuen Dateien, beide Bereichsroots ohne Abweichung.
+- **Auf dem iPad ungeprüft.**
+
 Geräteabnahme gebündelt:
 
 1. Einschalten und kompletten Erstdownload abwarten, dann Flugmodus/Neustart; Text/PDF und Direktfundstellen prüfen. Sync- und Updateschalter unabhängig schalten, lokale Daten bei deaktiviertem Netzwerkabgleich erhalten.
