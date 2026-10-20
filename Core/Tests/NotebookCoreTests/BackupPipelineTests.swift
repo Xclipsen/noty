@@ -184,6 +184,84 @@ final class LibraryArchiveStreamingTests: XCTestCase {
         XCTAssertEqual(restored.documents, bundle.documents)
     }
 
+    private func files(_ directory: URL) throws -> [String: Data] {
+        var result: [String: Data] = [:]
+        let base = directory.standardizedFileURL.path
+        for case let url as URL in FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey])! {
+            guard (try url.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else { continue }
+            result[String(url.standardizedFileURL.path.dropFirst(base.count))] = try Data(contentsOf: url)
+        }
+        return result
+    }
+
+    /// A damaged newest revision must not block every library backup: the
+    /// notebook goes in with the state its editor opens, reported as warning.
+    func testDamagedNewestRevisionArchivesTheReadableOlderStateWithWarning() async throws {
+        let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let (store, notebooks) = try await library(2, bytes: 500, at: root.appendingPathComponent("Quelle"))
+        let directory = try await store.documentURL(id: notebooks[0].id)
+        var newer = notebooks[0]; newer.pages[0].text = "neuer, danach beschädigt"
+        try RevisionStore(directory: directory).save(newer)
+        let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("manifest.json"))) as! [String: Any]
+        let latest = directory.appendingPathComponent("Revisions/\((manifest["revisions"] as! [[String: Any]])[0]["file"] as! String)")
+        try Data("damaged".utf8).write(to: latest)
+        let opened = RevisionStore(directory: directory)
+        let editorState = try opened.load()
+        XCTAssertTrue(opened.recovered); XCTAssertEqual(editorState.pages[0].text, notebooks[0].pages[0].text)
+        let before = try files(directory)
+        let plan = try await store.backupPlan()
+        let file = root.appendingPathComponent("mit-hinweis.notylibrary")
+        var older: [UUID] = []
+        let summary = try LibraryArchive.write(plan, to: file, olderState: { older.append($0.id) })
+        XCTAssertEqual(older, [notebooks[0].id])
+        XCTAssertEqual(summary.notebooks.count, 2)
+        let decoded = try LibraryArchive.decode(Data(contentsOf: file))
+        XCTAssertEqual(decoded.documents.first { $0.id == notebooks[0].id }, editorState)
+        XCTAssertEqual(decoded.documents.first { $0.id == notebooks[1].id }, notebooks[1])
+        // Read-only: damaged revision, manifest and everything else stay as they were (no quarantine move).
+        XCTAssertEqual(try files(directory), before)
+        // The in-memory helper has no warning channel and still refuses.
+        do { _ = try await store.backupBundle(); XCTFail("silent older state") } catch LibraryArchiveError.incomplete { }
+        // The archive is an ordinary one: verification and restore expect nothing special.
+        let manager = WorkspaceStore(root: root.appendingPathComponent("Workspaces"))
+        let area = try await manager.commitRestore(try await manager.prepareRestore(file: file), title: "Mit Hinweis")
+        let restored = try await LibraryStore(root: manager.directory(for: area.id)).backupBundle()
+        XCTAssertEqual(restored.documents, decoded.documents)
+        XCTAssertEqual(ExternalBackupPolicy.olderStateWarning([notebooks[0].title]),
+                       "„Heft 1 · ÄÖÜ“: älterer lesbarer Stand gesichert, neuere Revision beschädigt")
+        XCTAssertNil(ExternalBackupPolicy.olderStateWarning([]))
+    }
+
+    func testStartupRemovesOnlyStaleUnownedStagesAndNeverAreas() async throws {
+        let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let (store, _) = try await library(1, bytes: 100, at: root.appendingPathComponent("Quelle"))
+        let file = root.appendingPathComponent("in.notylibrary")
+        let plan = try await store.backupPlan(); _ = try LibraryArchive.write(plan, to: file)
+        let workspaces = root.appendingPathComponent("Workspaces"), staging = workspaces.appendingPathComponent("Staging")
+        let earlierRun = WorkspaceStore(root: workspaces)
+        let leftover = try await earlierRun.prepareRestore(file: file)
+        let launch = WorkspaceStore(root: workspaces)
+        let owned = try await launch.prepareRestore(file: file)
+        let area = try await launch.commitRestore(try await launch.prepareRestore(file: file), title: "Bereich")
+        try FileManager.default.createDirectory(at: staging.appendingPathComponent("Notizen"), withIntermediateDirectories: true)
+        let outside = root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data([5]).write(to: outside.appendingPathComponent("keep"))
+        let link = UUID().uuidString
+        try FileManager.default.createSymbolicLink(at: staging.appendingPathComponent(link), withDestinationURL: outside)
+        let fresh = await launch.removeStaleStages(now: Date())
+        XCTAssertEqual(fresh, 0)
+        let removed = await launch.removeStaleStages(now: Date().addingTimeInterval(2 * 86400))
+        XCTAssertEqual(removed, 1)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: staging.path)), [owned.id.uuidString, "Notizen", link])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.appendingPathComponent(leftover.id.uuidString).path))
+        XCTAssertEqual(try Data(contentsOf: outside.appendingPathComponent("keep")), Data([5]))
+        let listed = try await launch.list(); XCTAssertEqual(listed.workspaces.map(\.id), [area.id])
+        // The stage this run still owns stays usable.
+        _ = try await launch.commitRestore(owned, title: "Später")
+        let both = try await launch.list(); XCTAssertEqual(both.workspaces.count, 2)
+    }
+
     func testWriteReadsTheLatestCommitAfterConcurrentSaves() async throws {
         let root = temporaryRoot(); defer { try? FileManager.default.removeItem(at: root) }
         let (store, notebooks) = try await library(2, bytes: 1_000, at: root.appendingPathComponent("Quelle"))
@@ -311,7 +389,13 @@ final class ExternalBackupPipelineTests: XCTestCase {
         XCTAssertEqual(ExternalBackupHealth(policy, folderUnreachable: false, running: false, now: now), .unreachable("Server nicht erreichbar (offline?)"))
         XCTAssertEqual(ExternalBackupHealth(policy, folderUnreachable: false, running: false, now: now.addingTimeInterval(3 * 86400)),
                        .stale(policy.lastSuccess))
+        // A success with warning is a success: backoff reset, shown, not a failure.
+        policy.recordSuccess(at: now, warning: "„X“: älterer lesbarer Stand gesichert, neuere Revision beschädigt")
+        let warned = ExternalBackupHealth(policy, folderUnreachable: false, running: false, now: now)
+        XCTAssertEqual(warned, .warning(now, "„X“: älterer lesbarer Stand gesichert, neuere Revision beschädigt"))
+        XCTAssertTrue(warned.isSetUp); XCTAssertNil(policy.consecutiveFailures); XCTAssertFalse(policy.due(at: now.addingTimeInterval(3600)))
         policy.recordSuccess(at: now)
+        XCTAssertNil(policy.lastWarning)
         XCTAssertEqual(ExternalBackupHealth(policy, folderUnreachable: false, running: false, now: now), .ok(now))
         var fresh = ExternalBackupPolicy(); fresh.folderBookmark = Data([1]); fresh.startTarget(.folder, at: now)
         XCTAssertEqual(ExternalBackupHealth(fresh, folderUnreachable: false, running: false, now: now.addingTimeInterval(3600)), .firstPending)

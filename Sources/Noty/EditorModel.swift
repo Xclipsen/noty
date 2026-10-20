@@ -64,6 +64,8 @@ final class EditorModel: ObservableObject {
     private var recoveredSnapshot: Notebook?
     private var retryTask: Task<Void, Never>?
     private var retryAttempt = 0
+    /// Last non-retryable save error already shown; cleared by a successful save.
+    private var lastPermanentFailure: String?
 
     init(storageRoot root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true),
          restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil) {
@@ -606,7 +608,7 @@ final class EditorModel: ObservableObject {
                 if delayed { try await Task.sleep(for: .milliseconds(250)) }
                 try Task.checkCancellation()
                 try await store.save(snapshot, revision: savingRevision)
-                if savingRevision == revision { status = "Lokal gespeichert"; retryAttempt = 0 }
+                if savingRevision == revision { status = "Lokal gespeichert"; retryAttempt = 0; lastPermanentFailure = nil }
             } catch is CancellationError {
                 // A newer complete snapshot supersedes this one.
             } catch {
@@ -625,7 +627,10 @@ final class EditorModel: ObservableObject {
         let message = failure.localizedDescription
         guard Self.retryable(failure) else {
             status = "Speichern fehlgeschlagen – Änderungen nur im Speicher"
-            error = message
+            // The same permanent error again (e.g. a later flush) keeps the
+            // status but raises no new alert; a different error does.
+            if message != lastPermanentFailure { error = message }
+            lastPermanentFailure = message
             return
         }
         let delay = Self.retryDelays[min(retryAttempt, Self.retryDelays.count - 1)]

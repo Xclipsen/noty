@@ -15,6 +15,8 @@ final class WorkspaceAppModel: ObservableObject {
 
     init() {
         Task.detached(priority: .utility) { BackupScratch.removeStale() }
+        // Unpublished restore stages of earlier runs (failed/interrupted, older than a day).
+        Task { [store] in await store.removeStaleStages() }
         Task { await SigningReminder.refresh() }
     }
 

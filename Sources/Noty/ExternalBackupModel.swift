@@ -167,6 +167,7 @@ final class ExternalBackupModel: ObservableObject {
     /// follow the backoff in `policy.due()`; "Jetzt sichern" ignores it.
     func attempt(library: LibraryModel, toolbox: ToolbarSettingsModel, manual: Bool = false) async {
         guard !busy, policy.target != .disabled, library.ready, manual || policy.due() else { return }
+        if !manual, let blockedUntil, Date() < blockedUntil { return }
         if let reason = library.backupBlocker { postpone(reason, manual: manual); return }
         busy = true; defer { busy = false }
         let background = BackgroundAssertion("noty-external-backup")
@@ -174,9 +175,13 @@ final class ExternalBackupModel: ObservableObject {
         // A local commit is cheap and happens anyway; while the user writes it
         // fails, so the target is not contacted every minute during input.
         let committed = library.opened != nil
-        let flushed: Bool
-        if committed { flushed = await library.editorCommit?() ?? false } else { flushed = await toolbox.flush() }
-        guard flushed else { postpone("Notizbuch wird bearbeitet oder gespeichert", manual: manual); return }
+        let commit: BackupCommit
+        if committed { commit = await library.editorCommit?() ?? .busy } else { commit = await toolbox.flush() ? .committed : .failed }
+        switch commit {
+        case .busy: postpone("Notizbuch wird bearbeitet oder gespeichert", manual: manual); return
+        case .failed: postpone("Speichern im Notizbuch oder der Werkzeugeinstellungen fehlgeschlagen", manual: manual, stuck: true); return
+        case .committed: blockedCount = 0; blockedUntil = nil
+        }
         status = "Backupziel wird geprüft …"
         let folderURL: URL?
         do { folderURL = try await reachableTarget() }
@@ -193,19 +198,33 @@ final class ExternalBackupModel: ObservableObject {
             if let folderURL { try await writeFolder(archive, name: name, folder: folderURL) }
             else { try await writeWebDAV(archive, name: name) }
         } catch { fail(Self.isUnreachable(error) ? .unreachable : .failed, error, manual: manual); return }
-        policy.recordSuccess(); persist()
-        status = policy.target == .folder
+        // Older readable notebook states are a warning, never a failure.
+        policy.recordSuccess(warning: archive.warning); persist()
+        status = (archive.warning.map { "Gesichert; \($0) · " } ?? "") + (policy.target == .folder
             ? "Zieldatei geprüft · Cloud-Upload übernimmt die Dateien-App"
-            : "WebDAV-Sicherung vollständig zurückgelesen und geprüft"
+            : "WebDAV-Sicherung vollständig zurückgelesen und geprüft")
         do { try await reloadHistory(); try await prune(verified: name, file: archive.summary.file) }
         catch { status += " · ältere Stände nicht bereinigt" }
     }
 
-    private func postpone(_ reason: String, manual: Bool) {
-        // Not a failure: no attempt time, no backoff step; the loop retries shortly.
-        status = "Backup verschoben: \(reason)"
+    /// Not a failure: no attempt time and no target backoff. Running input is
+    /// retried with the next minute; a `stuck` reason (a save failed) waits
+    /// 5, 15, then 60 minutes, so the loop does not pause the editor and
+    /// re-save every minute. Reset by the next successful commit.
+    private func postpone(_ reason: String, manual: Bool, stuck: Bool = false) {
+        var text = "Backup verschoben: \(reason)"
+        if stuck {
+            blockedCount += 1
+            let until = Date().addingTimeInterval(Self.stuckDelays[min(blockedCount, Self.stuckDelays.count) - 1])
+            blockedUntil = until
+            text += " · nächster Versuch \(until.formatted(date: .omitted, time: .shortened))"
+        }
+        status = text
         if manual { error = BackupPostponed(reason: reason).localizedDescription }
     }
+    private static let stuckDelays: [TimeInterval] = [5 * 60, 15 * 60, 60 * 60]
+    private var blockedCount = 0
+    private var blockedUntil: Date?
     private func fail(_ outcome: ExternalBackupOutcome, _ error: Error, manual: Bool) {
         // Cancelled (area switch, app ended the run): retried normally, no backoff step.
         if error is CancellationError || (error as? URLError)?.code == .cancelled { postpone("Vorgang abgebrochen", manual: manual); return }

@@ -48,19 +48,23 @@ final class EditorWorkspace: ObservableObject {
     }
     /// Pauses the editors only until every pane and the tool settings are
     /// committed; the backup archive is then built from committed packages
-    /// while editing continues. False: postpone (input or a save in progress).
-    func commitForBackup(toolbox: ToolbarSettingsModel) async -> Bool {
-        guard !closing, models.values.allSatisfy({ !$0.busy && !$0.inputInProgress && $0.writable }) else { return false }
+    /// while editing continues. A pane whose save already failed is not saved
+    /// again here (that would pause input, rewrite the whole snapshot and repeat
+    /// its error); the backup is postponed with a longer pause instead.
+    func commitForBackup(toolbox: ToolbarSettingsModel) async -> BackupCommit {
+        guard !closing, models.values.allSatisfy({ !$0.busy && !$0.inputInProgress }) else { return .busy }
+        guard models.values.allSatisfy({ $0.writable && !$0.saveFailed }) else { return .failed }
         closing = true
         for model in models.values { model.pauseMutations() }
         defer {
             for model in models.values { model.resumeMutations() }
             closing = false
         }
-        guard await toolbox.flush(), models.values.allSatisfy({ !$0.busy && !$0.inputInProgress }) else { return false }
+        guard await toolbox.flush() else { return .failed }
+        guard models.values.allSatisfy({ !$0.busy && !$0.inputInProgress }) else { return .busy }
         for model in models.values { model.save() }
-        for model in models.values { if !(await model.waitForSave()) { return false } }
-        return true
+        for model in models.values { if !(await model.waitForSave()) { return .failed } }
+        return .committed
     }
     func closeAll() async -> Bool {
         guard !closing else { return false }

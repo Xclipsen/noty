@@ -19,6 +19,7 @@ extension ExternalBackupHealth {
         case .unreachable: "Nicht erreichbar"
         case .failed: "Fehlgeschlagen"
         case .stale: "Überfällig"
+        case .warning: "Gesichert mit Hinweis"
         case .ok, .firstPending: "Eingerichtet"
         }
     }
@@ -52,6 +53,7 @@ struct BackupStatusBadge: View {
             return ("exclamationmark.triangle", "Seit \(days) Tagen kein Backup")
         case .stale(nil): return ("exclamationmark.triangle", "Noch kein Backup seit der Einrichtung")
         case .ok(let date): return ("checkmark.circle", "Backup \(date.formatted(.relative(presentation: .named)))")
+        case .warning(_, let warning): return ("exclamationmark.circle", "Gesichert; \(warning)")
         case .notConfigured:
             if let export = library.lastLibraryExport {
                 return ("archivebox", "Nur Dateiexport \(export.formatted(.relative(presentation: .named)))")

@@ -90,15 +90,25 @@ public struct LibraryBackupPlan: Sendable {
     /// and the manifest is replaced last, but an editor committing meanwhile can
     /// remove the revision named by a manifest read a moment earlier: retry fresh.
     func committedNotebook(_ item: LibraryItem) throws -> Notebook {
+        let result = try readableNotebook(item)
+        guard !result.olderState else { throw LibraryArchiveError.incomplete }
+        return result.document
+    }
+
+    /// Like `committedNotebook`, but when the newest revision stays damaged after
+    /// fresh retries, returns the newest completely readable older state – the
+    /// state the editor opens – with `olderState == true`. Read-only: the damaged
+    /// newer files stay in the package (quarantined by the editor's next commit).
+    func readableNotebook(_ item: LibraryItem) throws -> (document: Notebook, olderState: Bool) {
         guard let url = packages[item.id] else { throw LibraryArchiveError.incomplete }
         for attempt in 1...3 {
             let store = RevisionStore(directory: url)
             do {
                 var document = try store.load()
                 guard document.id == item.id else { throw LibraryArchiveError.incomplete }
-                guard !store.recovered else { if attempt < 3 { continue }; throw LibraryArchiveError.incomplete }
+                if store.recovered, attempt < 3 { continue }
                 document.title = item.title
-                return document
+                return (document, store.recovered)
             } catch StorageError.unsupportedSchema(let version) { throw StorageError.unsupportedSchema(version) }
             catch RevisionError.unsupportedFormat(let version) { throw RevisionError.unsupportedFormat(version) }
             catch { if attempt == 3 { throw LibraryArchiveError.incomplete } }
@@ -207,13 +217,18 @@ public enum LibraryArchive {
     /// then re-reads the written file completely (CRC, structure, every notebook).
     /// `validate` sees each notebook before it is encoded. On any error the
     /// unfinished file is removed. Safe off every actor; checks cancellation.
+    /// A notebook whose newest revision is damaged is archived in its newest
+    /// readable older state and reported through `olderState` (a warning, the
+    /// archive itself is an ordinary complete one).
     public static func write(_ plan: LibraryBackupPlan, to url: URL, createdAt: Date = Date(),
-                             validate: (Notebook) throws -> Void = { _ in }) throws -> LibraryArchiveSummary {
-        try write(plan, to: url, createdAt: createdAt, limits: .standard, validate: validate)
+                             validate: (Notebook) throws -> Void = { _ in },
+                             olderState: (LibraryItem) -> Void = { _ in }) throws -> LibraryArchiveSummary {
+        try write(plan, to: url, createdAt: createdAt, limits: .standard, validate: validate, olderState: olderState)
     }
 
     static func write(_ plan: LibraryBackupPlan, to url: URL, createdAt: Date = Date(), limits: LibraryArchiveLimits,
-                      validate: (Notebook) throws -> Void = { _ in }) throws -> LibraryArchiveSummary {
+                      validate: (Notebook) throws -> Void = { _ in },
+                      olderState: (LibraryItem) -> Void = { _ in }) throws -> LibraryArchiveSummary {
         try Data().write(to: url, options: .withoutOverwriting)
         var complete = false
         defer { if !complete { try? FileManager.default.removeItem(at: url) } }
@@ -222,7 +237,11 @@ public enum LibraryArchive {
         do {
             var sink = FileSink(handle: handle)
             entries = try write(snapshot: plan.snapshot, toolbar: plan.toolbar, documents: plan.documents, createdAt: createdAt,
-                                into: &sink, limits: limits, document: plan.committedNotebook, validate: validate)
+                                into: &sink, limits: limits, document: { item in
+                let result = try plan.readableNotebook(item)
+                if result.olderState { olderState(item) }
+                return result.document
+            }, validate: validate)
             try handle.synchronize()
             try handle.close()
         } catch { try? handle.close(); throw error }

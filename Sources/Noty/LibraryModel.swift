@@ -81,11 +81,12 @@ final class LibraryModel: ObservableObject {
 
     /// Set by the open editor workspace: commits every pane (editors pause only
     /// for this flush) so a following archive contains all acknowledged input.
-    var editorCommit: (() async -> Bool)?
+    var editorCommit: (() async -> BackupCommit)?
     /// An archive is being written from committed packages; the library stays
     /// usable, only permanent deletion waits for it.
     private(set) var archiveRunning = false
     private var preparedExport: URL?
+    private var preparedExportWarning: String?
 
     /// Why an automatic backup should wait a moment instead of starting now.
     var backupBlocker: String? {
@@ -99,6 +100,8 @@ final class LibraryModel: ObservableObject {
     /// notebook at a time and off the UI actor, including the Apple-framework
     /// checks. With an open editor the caller committed it first (`editorCommit`);
     /// editing continues meanwhile, later commits are simply not included.
+    /// A notebook with a damaged newest revision goes in with the state its
+    /// editor would open (`olderStates`), so it never blocks the whole backup.
     func buildArchive(editorsCommitted: Bool = false) async throws -> PreparedLibraryArchive {
         guard ready, opened == nil || editorsCommitted, !archiveRunning else {
             throw BackupPostponed(reason: backupBlocker ?? "Notizbuch geöffnet")
@@ -106,11 +109,13 @@ final class LibraryModel: ObservableObject {
         archiveRunning = true; defer { archiveRunning = false }
         let plan = try await store.backupPlan()
         let url = try BackupScratch.newFile()
-        let task = Task.detached(priority: .utility) { () throws -> LibraryArchiveSummary in
-            try LibraryArchive.write(plan, to: url, validate: BackupValidation.validate)
+        let task = Task.detached(priority: .utility) { () throws -> PreparedLibraryArchive in
+            var olderStates: [String] = []
+            let summary = try LibraryArchive.write(plan, to: url, validate: BackupValidation.validate,
+                                                   olderState: { olderStates.append($0.title) })
+            return PreparedLibraryArchive(url: url, summary: summary, olderStates: olderStates)
         }
-        let summary = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
-        return PreparedLibraryArchive(url: url, summary: summary)
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
     /// Manual export from Settings: closed editors, visible progress, alert on error.
@@ -121,8 +126,8 @@ final class LibraryModel: ObservableObject {
         backupStatus = "Bibliotheksbackup wird vorbereitet …"
         do {
             let archive = try await buildArchive()
-            preparedExport = archive.url
-            backupStatus = "Bibliotheksbackup vollständig vorbereitet"
+            preparedExport = archive.url; preparedExportWarning = archive.warning
+            backupStatus = archive.warning.map { "Bibliotheksbackup vorbereitet; \($0)" } ?? "Bibliotheksbackup vollständig vorbereitet"
             return archive
         } catch {
             backupStatus = "Bibliotheksbackup fehlgeschlagen"
@@ -136,12 +141,14 @@ final class LibraryModel: ObservableObject {
         UserDefaults.standard.set(date, forKey: libraryBackupKey)
         lastLibraryExport = date
         backupStatus = "Bibliotheksdatei exportiert: \(date.formatted(date: .omitted, time: .shortened))"
+        // Success with warning: shown in the library banner, not as an error.
+        if let preparedExportWarning { warning = "Bibliotheksdatei exportiert; \(preparedExportWarning). Notizbuch öffnen und prüfen." }
         discardPreparedExport()
     }
 
     private func discardPreparedExport() {
         if let preparedExport { BackupScratch.remove(preparedExport) }
-        preparedExport = nil
+        preparedExport = nil; preparedExportWarning = nil
     }
 
     func editorChoices() async -> [OpenNotebook] {
