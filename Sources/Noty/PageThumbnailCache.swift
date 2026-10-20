@@ -4,7 +4,9 @@ import PencilKit
 import NotebookCore
 
 /// Shared by the page sidebar, page trash and margin previews. Cached content is tied
-/// to a page snapshot, never to its current position in the notebook.
+/// to a page snapshot (validated by full content equality, not by position).
+/// Paper, PDF, images and ink are rasterised off the main actor; shapes and
+/// typed text (TextKit on the main actor) are composed on top here.
 @MainActor
 final class PageThumbnailCache: ObservableObject {
     private final class Entry {
@@ -13,37 +15,94 @@ final class PageThumbnailCache: ObservableObject {
         init(page: Page, image: UIImage) { self.page = page; self.image = image }
     }
     private let images = NSCache<NSString, Entry>()
-    init() { images.countLimit = 24; images.totalCostLimit = 8 * 1024 * 1024 }
+    /// Entries share their page data with the open notebook; cost counts pixels,
+    /// ink and text (image originals are the notebook's immutable bytes).
+    init() { images.countLimit = 160; images.totalCostLimit = 40 * 1024 * 1024 }
 
-    func image(page: Page, source: PDFPage?) throws -> UIImage {
-        let key = page.id.uuidString as NSString
-        if let entry = images.object(forKey: key), entry.page == page { return entry.image }
-        let layout = try PageLayout(page: page, source: source?.pageRef)
+    func cached(_ page: Page) -> UIImage? {
+        guard let entry = images.object(forKey: page.id.uuidString as NSString), entry.page == page else { return nil }
+        return entry.image
+    }
+
+    /// `keepAlive`: owner of `source` (its PDF document) while it is drawn off-main.
+    func image(page: Page, source: CGPDFPage?, keepAlive: AnyObject? = nil) async throws -> UIImage {
+        if let hit = cached(page) { return hit }
+        let image = try await Self.render(page, source: source.map { .page($0) } ?? .none)
+        withExtendedLifetime(keepAlive) {}
+        images.setObject(Entry(page: page, image: image), forKey: page.id.uuidString as NSString,
+                         cost: Int(image.size.width * image.size.height * 4) + page.drawing.count + page.searchableText.utf8.count)
+        return image
+    }
+
+    enum Source: @unchecked Sendable {
+        case none
+        case page(CGPDFPage)
+        /// Parsed off the main actor (library tiles): bytes plus zero-based page index.
+        case data(Data, Int)
+    }
+    private struct Parts: Sendable {
+        let layout: PageLayout
+        let scale: CGFloat
+        let base: UIImage
+        let ink: UIImage?
+    }
+    /// At most two background renders: a scrolled grid must not flood the CPU.
+    private static let gate = RenderGate(limit: 2)
+
+    static func render(_ page: Page, source: Source) async throws -> UIImage {
+        await gate.acquire()
+        let parts: Parts
+        do {
+            try Task.checkCancellation()
+            parts = try await Task.detached(priority: .utility) { try Self.parts(page, source: source) }.value
+        } catch { await gate.release(); throw error }
+        await gate.release()
+        try Task.checkCancellation()
+        return compose(page, parts)
+    }
+
+    nonisolated private static func parts(_ page: Page, source: Source) throws -> Parts {
+        var document: CGPDFDocument?
+        let pdf: CGPDFPage?
+        switch source {
+        case .none: pdf = nil
+        case .page(let value): pdf = value
+        case .data(let data, let index):
+            document = CGDataProvider(data: data as CFData).flatMap(CGPDFDocument.init)
+            pdf = document?.page(at: index + 1)
+        }
+        defer { withExtendedLifetime(document) {} }
+        let layout = try PageLayout(page: page, source: pdf)
         let bounds = layout.canvas.bounds
         let scale = 224 / max(bounds.width, bounds.height)
-        let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
-        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
-        let drawing = page.drawing.isEmpty ? PKDrawing() : try PKDrawing(data: page.drawing)
-        var imageFailure: Error?
-        let image = UIGraphicsImageRenderer(size: size, format: format).image { renderer in
-            let context = renderer.cgContext
-            context.scaleBy(x: scale, y: scale)
-            PDFExporter.drawPaper(style: page.margins?.style ?? page.paper ?? (source == nil ? .legacyTest : .blank),
+        let decoded = try (page.images ?? []).map { try ImageRendering.decoded($0, limit: 256) }
+        guard let base = PageRaster.bitmap(size: bounds.size, scale: scale, opaque: true, { context in
+            PDFExporter.drawPaper(style: page.margins?.style ?? page.paper ?? (pdf == nil ? .legacyTest : .blank),
                                   bounds: bounds, color: page.margins?.color ?? page.paperColor ?? .white, coordinateScale: page.writingCoordinateScale)
-            if let pdf = source?.pageRef {
+            if let pdf {
                 // Transparent PDFs retain white paper against dark note margins.
                 UIColor.white.setFill(); context.fill(layout.sourceFrame.cgRect)
-                context.saveGState(); context.clip(to: layout.sourceFrame.cgRect)
-                context.concatenate(layout.pdfToCanvas.cgTransform); context.drawPDFPage(pdf); context.restoreGState()
+                PageRaster.drawSource(pdf, layout: layout, context: context)
             }
-            for object in page.images ?? [] {
-                // Failure leaves the existing preview and surfaces a failed
-                // thumbnail; exports perform their own throwing validation.
-                do { try ImageRendering.draw(object, context: context, origin: layout.contentOrigin, limit: 256) }
-                catch { imageFailure = error }
+            for (object, image) in zip(page.images ?? [], decoded) {
+                ImageRendering.draw(object, image: image, context: context, origin: layout.contentOrigin)
             }
+        }) else { throw ImageImportError.invalid }
+        let ink = page.drawing.isEmpty ? nil
+            : PDFExporter.inkImage(try PKDrawing(data: page.drawing), from: layout.canonicalInkBounds, scale: scale)
+        return Parts(layout: layout, scale: scale, base: UIImage(cgImage: base), ink: ink)
+    }
+
+    private static func compose(_ page: Page, _ parts: Parts) -> UIImage {
+        let layout = parts.layout, bounds = layout.canvas.bounds
+        let size = CGSize(width: bounds.width * parts.scale, height: bounds.height * parts.scale)
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+        return UIGraphicsImageRenderer(size: size, format: format).image { renderer in
+            let context = renderer.cgContext
+            parts.base.draw(in: CGRect(origin: .zero, size: size))
+            context.scaleBy(x: parts.scale, y: parts.scale)
             ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)
-            if !page.drawing.isEmpty { PDFExporter.inkImage(drawing, from: layout.canonicalInkBounds, scale: scale).draw(in: bounds) }
+            parts.ink?.draw(in: bounds)
             for box in page.resolvedTextBoxes {
                 let frame = CGRect(x: box.x + layout.contentOrigin.x, y: box.y + layout.contentOrigin.y,
                                    width: box.width, height: box.height)
@@ -52,11 +111,20 @@ final class PageThumbnailCache: ObservableObject {
                 context.restoreGState()
             }
         }
-        if let imageFailure { throw imageFailure }
-        images.setObject(Entry(page: page, image: image), forKey: key,
-                         cost: Int(size.width * size.height * 4) + page.drawing.count + page.searchableText.utf8.count
-                            + (page.images ?? []).reduce(0, { $0 + $1.data.count }))
-        return image
+    }
+}
+
+/// Small async semaphore; waiters resume in order.
+actor RenderGate {
+    private var available: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    init(limit: Int) { available = limit }
+    func acquire() async {
+        if available > 0 { available -= 1; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func release() {
+        if waiters.isEmpty { available += 1 } else { waiters.removeFirst().resume() }
     }
 }
 
@@ -78,13 +146,16 @@ struct PageThumbnail: View {
         .clipped()
         .allowsHitTesting(false)
         .task(id: request) {
+            // Scrolled back into view: a cached preview appears without a spinner frame.
+            if image == nil, let hit = cache.cached(page) { image = hit; failed = false; return }
             if image != nil {
                 do { try await Task.sleep(for: .milliseconds(600)) }
                 catch { return }
             } else { await Task.yield() }
             guard !Task.isCancelled else { return }
-            do { image = try cache.image(page: page, source: source); failed = false }
-            catch { failed = true }
+            do { image = try await cache.image(page: page, source: source?.pageRef, keepAlive: source?.document); failed = false }
+            catch is CancellationError { }
+            catch { if !Task.isCancelled { failed = true } }
         }
         .onChange(of: page) { _, _ in request = UUID() }
         .onDisappear { image = nil }

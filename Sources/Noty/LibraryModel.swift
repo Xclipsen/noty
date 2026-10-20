@@ -173,18 +173,38 @@ final class LibraryModel: ObservableObject {
     /// Read-only snapshot of the last committed revision (PDF export from the library).
     func committedNotebook(_ id: UUID) async throws -> Notebook { try await store.previewDocument(id: id) }
 
-    func artwork(for id: UUID, cache: PageThumbnailCache) async throws -> (NotebookAppearance?, UIImage?) {
+    private final class Tile {
+        let stamp: String, appearance: NotebookAppearance?, image: UIImage?
+        init(stamp: String, appearance: NotebookAppearance?, image: UIImage?) { self.stamp = stamp; self.appearance = appearance; self.image = image }
+    }
+    /// Tile previews per committed revision: an unchanged notebook is not decoded again.
+    private let tiles: NSCache<NSUUID, Tile> = {
+        let cache = NSCache<NSUUID, Tile>(); cache.totalCostLimit = 24 * 1024 * 1024; return cache
+    }()
+
+    func artwork(for id: UUID) async throws -> (NotebookAppearance?, UIImage?) {
+        let url = try await store.documentURL(id: id)
+        // Read before the document: a newer commit in between only re-renders later.
+        let stamp = await Task.detached(priority: .utility) { NotebookRevisionStamp.read(directory: url) }.value
+        if let stamp, let tile = tiles.object(forKey: id as NSUUID), tile.stamp == stamp { return (tile.appearance, tile.image) }
         let document = try await store.previewDocument(id: id)
         try Task.checkCancellation()
-        if document.appearance?.coverEnabled == true { return (document.appearance, nil) }
-        guard let page = document.pages.first else { throw StorageError.invalidDocument }
-        let pdf: PDFDocument?
-        let index: Int
-        if let reference = page.pdfReference {
-            pdf = document.pdfSources?.first(where: { $0.id == reference.sourceID }).flatMap { PDFDocument(data: $0.data) }
-            index = reference.pageIndex
-        } else { pdf = document.pdf.flatMap { PDFDocument(data: $0) }; index = 0 }
-        return (nil, try cache.image(page: page, source: pdf?.page(at: index)))
+        let result: (NotebookAppearance?, UIImage?)
+        if document.appearance?.coverEnabled == true { result = (document.appearance, nil) }
+        else {
+            guard let page = document.pages.first else { throw StorageError.invalidDocument }
+            // The source PDF is parsed off the main actor (CGPDF), never with PDFKit here.
+            let source: PageThumbnailCache.Source
+            if let reference = page.pdfReference {
+                source = document.pdfSources?.first(where: { $0.id == reference.sourceID }).map { .data($0.data, reference.pageIndex) } ?? .none
+            } else { source = document.pdf.map { .data($0, 0) } ?? .none }
+            result = (nil, try await PageThumbnailCache.render(page, source: source))
+        }
+        if let stamp {
+            let pixels = result.1.map { Int($0.size.width * $0.size.height * $0.scale * $0.scale * 4) } ?? 1
+            tiles.setObject(Tile(stamp: stamp, appearance: result.0, image: result.1), forKey: id as NSUUID, cost: pixels)
+        }
+        return result
     }
     func createFolder(_ title: String, parent: UUID?) async {
         await change { try await store.createFolder(title: title, parentID: parent) }

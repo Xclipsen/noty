@@ -26,7 +26,6 @@ struct LibraryView: View {
     @State private var importingPDF = false
     @State private var importingBackup = false
     @State private var showingName = false
-    @StateObject private var artworkCache = PageThumbnailCache()
     @State private var creatingNotebook = false
     @State private var libraryEditMode: EditMode = .inactive
     @State private var name = ""
@@ -742,7 +741,7 @@ struct LibraryView: View {
                     if item.isFolder {
                         Image(systemName: "folder.fill").font(.system(size: 76)).foregroundStyle(Color.accentColor)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else { LibraryNotebookArtwork(item: item, model: model, cache: artworkCache) }
+                    } else { LibraryNotebookArtwork(item: item, model: model) }
                 }.aspectRatio(0.72, contentMode: .fit)
             }.buttonStyle(NotyPressStyle()).disabled(!editable)
                 .accessibilityLabel(accessibilityName(item))
@@ -999,7 +998,6 @@ private struct MoveDestinationView: View {
 private struct LibraryNotebookArtwork: View {
     let item: NotebookCore.LibraryItem
     @ObservedObject var model: LibraryModel
-    @ObservedObject var cache: PageThumbnailCache
     @State private var appearance: NotebookAppearance?
     @State private var image: UIImage?
     @State private var failed = false
@@ -1016,7 +1014,7 @@ private struct LibraryNotebookArtwork: View {
         // the previous image stays visible until the new one is ready.
         .task(id: "\(item.id)-\(item.lastOpened?.timeIntervalSince1970 ?? 0)-\(model.artworkRevision[item.id] ?? 0)") {
             do {
-                let result = try await model.artwork(for: item.id, cache: cache)
+                let result = try await model.artwork(for: item.id)
                 try Task.checkCancellation()
                 appearance = result.0; image = result.1; failed = false
             } catch is CancellationError { }
