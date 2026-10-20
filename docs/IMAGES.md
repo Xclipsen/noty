@@ -1,5 +1,17 @@
 # Bilder und Screenshots – Build 19
 
+## Bilder über Seiten ziehen – 20.10.2026
+
+Nutzer: „beim bild darf ich leider nicht über seiten ziehen fix das bitte“. Stand: **implementiert und erfolgreich gebaut** (`xtool dev build`), **nicht installiert, am iPad ungeprüft**.
+
+- Bildwerkzeug, fortlaufendes Heft: Wird ein ungesperrtes Bild über eine andere Seite gezogen, löst es sich von seinem Blatt und folgt dem Finger als schwebende Vorschau über allen Seiten, wie die Lasso-Auswahl (`SelectionTransferHost`, gleiche Vorschau, Randautoscroll, Pencil-Pro-Tick beim Seitenwechsel). Zurück über der eigenen Seite gilt wieder das bisherige geklemmte Verschieben. Neben den Seiten oder im Spalt zwischen ihnen bleibt es beim bisherigen Klemmen; Loslassen dort übernimmt die geklemmte Position wie vorher.
+- Loslassen über einer anderen Seite: eine atomare Änderung beider Seiten über `EditorModel.replaceContents` (ein Undo-Schritt). Gleiche Bild-ID, unveränderte Originalbytes, Zuschnitt, Drehung und Sperrflag; Position mit `CrossPageMove` in kanonische Zielkoordinaten umgerechnet (Seitenabstand, Schreibplatz/negative Ränder, Breitenangleichung: gleiche Bildschirmgröße). Danach mit `CrossPageTransfer.place` vollständig in die Schreibfläche der Zielseite geschoben, nie abgeschnitten oder verkleinert. Ist es größer als die Zielfläche, bleibt es mit Meldung auf der Quellseite. Auf der Zielseite bleibt das Bild ausgewählt.
+- Zielseite mit 50 Bildern: nichts wird verschoben, Meldung „Auf der Zielseite sind schon 50 Bilder (Höchstzahl). Das Bild bleibt auf seiner Seite.“ Dieselbe Prüfung gilt jetzt auch für Lasso-Übertragungen (bisher allgemeiner Validierungsfehler).
+- Reserve-Seite am Heftende: wie beim Lasso; sie wird beim Ablegen angelegt (`transferContents`/`materializeDraft`).
+- Abbruch: Seiten-/Restore-/Generationswechsel, Werkzeugwechsel, fremde Modelländerung oder Gestenabbruch beenden die Vorschau ohne Änderung; die Übertragung prüft `pageContentGeneration`, den erwarteten Inhalt beider Seiten und die Seiten-IDs der Blätter wie beim Lasso.
+- Blättermodus (eine Seite sichtbar) und Einzelseiteneditor: kein Ziehen über Seiten, Verhalten unverändert.
+- Nachweise: Core-Tests für Zielkoordinaten, Verschieben an der Kante, Übergröße, volle Zielseite und atomaren Austausch mit Undo-Umkehrung. Ziehgefühl, Vorschau, Undo am Gerät, Reserve-Seite, gedrehte/zugeschnittene Bilder, unterschiedliche Seitenbreiten und Zoom sind **ungeprüft**.
+
 ## Ergänzung nach Build 51 – große Bilder werden verkleinert
 
 Nutzer zu Build 51: „Bilder, die über 20 MB sind, sollen komprimiert werden und trotzdem importiert werden können.“ Das ist eine bewusste Ausnahme von der Regel „Original unverändert“: Sie greift nur, wenn das Original nicht passt.

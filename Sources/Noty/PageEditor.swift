@@ -341,6 +341,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         textLayer.onCaretChanged = { [weak self] in self?.onRevealCaret?() }
         objectLayer.onPreview = { [weak self] content in self?.showObjectPreview(content) }
+        imageLayer.pageContent = { [weak self] in self?.objectContent }
         objectLayer.onInkPreview = { [weak self] data, indices, transform in
             self?.showSelectionInk(data, indices: indices, transform: transform)
         }
@@ -368,9 +369,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var objectPageID: UUID? { pageID }
     /// Installs the result of an atomic cross-page transfer before SwiftUI
     /// publishes it, so the next configure keeps the object history.
+    /// With the image tool the moved image is selected on the image plane
+    /// (it can be dragged on at once), otherwise the lasso selection is.
     func adoptTransfer(_ value: PageContent, selecting selection: TransferredSelection? = nil) {
         pageContent = value
-        objectLayer.adoptTransfer(value, selecting: selection)
+        let imageTool = tool == .image
+        imageLayer.adoptTransfer(value.images, selecting: imageTool ? selection?.images.first : nil)
+        objectLayer.adoptTransfer(value, selecting: imageTool ? nil : selection)
     }
     func insertText(at point: CGPoint) { textLayer.insertText(at: point) }
     /// Frame (sheet coordinates) of an image just added with the image tool.
