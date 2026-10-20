@@ -1,6 +1,6 @@
 # Native Gesetzessammlung in noty – bestätigter Umsetzungsplan
 
-Stand: 20.10.2026. Vom Nutzer nach dem Umfangsinterview bestätigt; Umsetzung im separaten Worktree autorisiert. **Im Feature-Worktree implementiert und für iPad gebaut; nicht installiert und auf dem iPad ungeprüft.** Der persönliche Markierungs-/Lesezeichensync ist auf ausdrücklichen Nutzerwunsch standardmäßig an.
+Stand: 20.10.2026. Vom Nutzer nach dem Umfangsinterview bestätigt; Umsetzung im separaten Worktree autorisiert. **Im Feature-Worktree mit dem aktuellen Build 53 zusammengeführt, als Build 54 signiert und auf dem iPad installiert; Bedienung auf dem iPad weiterhin ungeprüft.** Der persönliche Markierungs-/Lesezeichensync ist auf ausdrücklichen Nutzerwunsch standardmäßig an.
 
 ## Im Interview entschieden
 

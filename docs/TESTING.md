@@ -4,7 +4,7 @@ Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verl
 
 ## Native Gesetzessammlung – Feature-Worktree
 
-Implementiert in `noty-law-integration` / `feat/native-law-library`, getrennt vom laufenden anderen Featurestrang. Die Website-/Backendseite liegt in `gesetzessammlung-noty` / `feat/noty-law-integration`. **Website/Backend am 20.10.2026 produktiv auf IONOS ausgerollt. Native Erweiterung nicht installiert und nicht auf dem iPad getestet. Mail auf Nutzerwunsch deaktiviert.**
+Implementiert in `noty-law-integration` / `feat/native-law-library`, getrennt vom laufenden anderen Featurestrang. Die Website-/Backendseite liegt in `gesetzessammlung-noty` / `feat/noty-law-integration`. **Website/Backend am 20.10.2026 produktiv auf IONOS ausgerollt. Native Erweiterung als Build 54 installiert; Bedienung noch nicht auf dem iPad getestet. Mail auf Nutzerwunsch deaktiviert.**
 
 Nachweise am 20.10.2026:
 
@@ -17,6 +17,16 @@ Nachweise am 20.10.2026:
 - Lokaler Browser bei 1280 und 380 CSS-Pixeln: `144 HGB` öffnet automatisch § 144, EStR-Lesetext, Anmeldung/Registrierung und schmale Kontooberfläche ohne horizontalen Überlauf. Konto dabei isolierte Testdaten und Test-Mailfunktion; kein Produktionskonto und kein IONOS-Mailnachweis. Zusätzlich einen Markierungs-POST im Browser gezielt als offline simuliert: IndexedDB enthält vor dem Neustart einen ausstehenden Auftrag; nach bestätigtem Seitenneustart werden genau eine Servermarkierung und eine lokale Markierung bei leerer Warteschlange angezeigt. Das native Gegenstück und echte Netzwechsel bleiben am iPad abzunehmen.
 
 Produktivnachweis am 20.10.2026: Release `noty-integration-20261020-release`, beide Container gesund. Konsistenter SQLite-Snapshot vor Migration; Migration zunächst auf Kopie geprüft. Danach alle vorherigen Spalten/Zeilen von Konten einschließlich Zugangsdaten, Sitzungen, Lesezeichen und Markierungen exakt verglichen, SQLite-Integrität erfolgreich. 39 JSON-Dokumente über öffentliches HTTPS mit nativen SHA-256-Prüfsummen und Bytezahlen identisch; PDF-Byte-Range 206, nicht angemeldeter Sync 401. SMTP-Konfiguration fehlt ausdrücklich; E-Mail-Registrierung und Recovery geben 503 zurück. Produktiver Browser öffnet `144 HGB` automatisch auf § 144. Kein echtes Konto zum Test neu angelegt und keine Mail versandt. Lokale Sicherung: `/home/la/Backups/20261020T203248Z-noty-law/`.
+
+### Installation Build 54 · 20.10.2026
+
+- Featurestand mit `main` Build 53 (`8bbf078`) im eigenen Worktree zusammengeführt, ohne den Haupt-Checkout oder dessen parallele Änderungen anzufassen. Neue Buildnummer in `Info.plist`: **54**. Die neuen Bild-, Pencil- und Editorfunktionen aus Build 53 sind enthalten.
+- **560 Core-Tests** einschließlich echter Gesetzes-Fixtures ohne Fehler (`.tools/law-build54-core.log`); Host-Roundtrip mit unabhängigen Archivprüfern und Negativtests erfolgreich (`.tools/law-build54-page.log`).
+- `xtool dev build --sign --ipa` in PTY erfolgreich, ohne Warnungen (`.tools/law-build54-sign.log`). IPA-ID `XTL-BAFXLQ964V.de.la.noty.prototype`, Team und Zertifikat wie bei der bisherigen Lieferung, gleiches provisioniertes Gerät. Profil bis **27.10.2026 20:43:31 UTC**, IPA-SHA-256 `84d7a6bef9a1dbb5a46aa73fca7b2f815cc336da418e76ce13954e47ca2358fa`.
+- Vollständige stabile `/Documents`-Sicherung bei geschlossener App unter `/home/la/Backups/noty-before-build54-20261020T204350Z/`: 60 Dateien, 588.684.030 Byte, 14 Hefte und 26 geprüfte Revisionen. Keine persönlichen Inhalte im Repository.
+- **Installiert** über `xtool install --usb xtool/Noty.ipa`, ohne Deinstallation. InstallationProxy bestätigt Build **54** unter unveränderter tatsächlicher ID `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype`.
+- Frisch zurückgelesene Daten unter `after-update/Documents`: alle **14 Hefte und 60 Dateien unverändert**, keine neuen Dateien. Zusätzlich alle Bereichsroots einzeln mit `verify_device_store.py --compare` geprüft; keine Quarantäne.
+- **Bedienung noch ungeprüft.** Nutzer startet die App manuell und aktiviert Einstellungen → Gesetzessammlung. Mail bleibt serverseitig deaktiviert; E-Mail-Registrierung/Recovery noch nicht verfügbar.
 
 Geräteabnahme gebündelt:
 
