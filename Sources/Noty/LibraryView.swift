@@ -26,7 +26,6 @@ struct LibraryView: View {
     @State private var importingPDF = false
     @State private var importingBackup = false
     @State private var showingName = false
-    @StateObject private var artworkCache = PageThumbnailCache()
     @State private var creatingNotebook = false
     @State private var libraryEditMode: EditMode = .inactive
     @State private var name = ""
@@ -47,13 +46,22 @@ struct LibraryView: View {
     @State private var frames = DropFrames()
     @State private var sidebarSize = CGSize(width: 280, height: 600)
     @State private var detailSize = CGSize(width: 600, height: 600)
+    @StateObject private var pdfExport = PDFExportJob()
+    @State private var exportedPDF: ExportFile?
+    @State private var exportingPDF = false
+    @State private var exportedPDFName = "noty-export"
 
-    private enum NameAction { case folder, notebook, rename(UUID) }
+    private enum NameAction { case folder, rename(UUID) }
     private var parentID: UUID? { if case .folder(let id) = location { return id }; return nil }
     /// Background work (refresh after closing a notebook, automatic backup)
     /// keeps the library interactive and visually unchanged.
     private var editable: Bool {
         model.ready && model.opened == nil && !workspaces.busy && (!model.busy || model.backgroundBusy)
+    }
+    /// Menu shortcuts pause while a sheet/dialog is shown: a second presentation would not appear.
+    private var presenting: Bool {
+        creatingNotebook || settingsRequest != nil || contentSearch != nil || moving != nil || showingAreas || showingCopies
+            || showingName || trashing != nil || importingPDF || importingBackup || exportingPDF
     }
     private var normalFolder: Bool { location == .root || parentID != nil }
     /// Manual drag order is only meaningful for the unsorted contents of one folder.
@@ -112,10 +120,14 @@ struct LibraryView: View {
             if let hit = searchHit, let item = model.snapshot.items.first(where: { $0.id == hit.documentID }) {
                 searchHit = nil; Task { await model.open(item, pageID: hit.pageID, searchBounds: hit.bounds) }
             }
-        }) { search in ContentSearchView(documents: search.documents) { searchHit = $0 } }
+        }) { search in
+            ContentSearchView(documents: search.documents, area: StableDefaults.scope(model.root), retain: search.retain) { searchHit = $0 }
+        }
         // Closing a notebook updates the library in place (no visible reload).
         .fullScreenCover(item: $model.opened, onDismiss: { model.editorClosed() }) { document in
             LibraryNotebookView(document: document, root: model.root, library: model).id(document.id)
+                .environment(\.searchIndexArea, StableDefaults.scope(model.root))
+                .publishesEditorCommands()
                 .environment(\.editorSettings, EditorSettingsPresenter { [model, toolbox, externalBackup, workspaces] in
                     AnyView(SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces))
                 })
@@ -181,6 +193,9 @@ struct LibraryView: View {
             if case .folder(let id) = value { reveal(id) }
         }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
+        .focusedSceneValue(\.libraryCommands, model.opened == nil && !presenting ? LibraryCommandActions(
+            newNotebook: editable ? { creatingNotebook = true } : nil,
+            search: editable ? { searchAllNotebooks() } : nil) : nil)
     }
 
     // MARK: Sidebar
@@ -520,6 +535,13 @@ struct LibraryView: View {
                 }
             }
             .overlay(alignment: .bottom) {
+                PDFExportProgressBadge(job: pdfExport).padding(12)
+            }
+            .fileExporter(isPresented: $exportingPDF, document: exportedPDF, contentType: .pdf, defaultFilename: exportedPDFName) { result in
+                if case .failure(let error) = result { model.error = error.localizedDescription }
+                exportedPDF = nil
+            }
+            .overlay(alignment: .bottom) {
                 // Only user-started operations show progress; background work stays invisible.
                 if model.ready && model.busy && !model.backgroundBusy {
                     ProgressView().padding(10).background(.regularMaterial, in: Capsule()).padding(12)
@@ -540,7 +562,7 @@ struct LibraryView: View {
                     if BackupStatusBadge.needsAttention(externalBackup) {
                         BackupStatusBadge(externalBackup: externalBackup, library: model) { settingsRequest = SettingsRequest(page: .backup) }
                     }
-                    Button { Task { contentSearch = NotebookChoiceList(documents: await model.editorChoices()) } } label: {
+                    Button { searchAllNotebooks() } label: {
                         Label("Inhalte suchen", systemImage: "doc.text.magnifyingglass")
                     }.disabled(!editable)
                     Menu {
@@ -569,6 +591,29 @@ struct LibraryView: View {
                     Button { settingsRequest = SettingsRequest() } label: { Label("Einstellungen", systemImage: "gearshape") }
                 }
             }
+    }
+
+    /// Same exporter as the editor, from the last committed revision.
+    private func exportPDF(_ item: NotebookCore.LibraryItem) {
+        guard !item.isFolder, !pdfExport.running else { return }
+        Task {
+            do {
+                let notebook = try await model.committedNotebook(item.id)
+                exportedPDFName = item.title
+                pdfExport.start(notebook) { result in
+                    switch result {
+                    case .success(let data): exportedPDF = ExportFile(pdfData: data); exportingPDF = true
+                    case .failure(let error): if !(error is CancellationError) { model.error = error.localizedDescription }
+                    }
+                }
+            } catch { model.error = error.localizedDescription }
+        }
+    }
+
+    private func searchAllNotebooks() {
+        guard editable else { return }
+        let retain = Set(model.snapshot.items.filter { !$0.isFolder }.map(\.id))
+        Task { contentSearch = NotebookChoiceList(documents: await model.editorChoices(), retain: retain) }
     }
 
     private func switchAreaIfRequested() {
@@ -696,7 +741,7 @@ struct LibraryView: View {
                     if item.isFolder {
                         Image(systemName: "folder.fill").font(.system(size: 76)).foregroundStyle(Color.accentColor)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else { LibraryNotebookArtwork(item: item, model: model, cache: artworkCache) }
+                    } else { LibraryNotebookArtwork(item: item, model: model) }
                 }.aspectRatio(0.72, contentMode: .fit)
             }.buttonStyle(NotyPressStyle()).disabled(!editable)
                 .accessibilityLabel(accessibilityName(item))
@@ -753,6 +798,7 @@ struct LibraryView: View {
             Button("Verschieben", systemImage: "folder") { moving = item }
             if !item.isFolder {
                 Button("Duplizieren", systemImage: "plus.square.on.square") { Task { await model.duplicate(item) } }
+                Button("Als PDF exportieren", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
             }
             if showsEnclosing {
                 Button("Im Ordner zeigen", systemImage: "arrow.up.forward.square") {
@@ -797,7 +843,6 @@ struct LibraryView: View {
     private var nameTitle: String {
         switch nameAction {
         case .folder: "Neuer Ordner"
-        case .notebook: "Neues Notizbuch"
         case .rename: "Umbenennen"
         }
     }
@@ -811,7 +856,6 @@ struct LibraryView: View {
         Task {
             switch action {
             case .folder: await model.createFolder(value, parent: parent)
-            case .notebook: _ = await model.createNotebook(value, appearance: toolbox.preferences.defaultAppearance ?? NotebookAppearance(), parent: parent)
             case .rename(let id): await model.rename(id, title: value)
             }
         }
@@ -954,7 +998,6 @@ private struct MoveDestinationView: View {
 private struct LibraryNotebookArtwork: View {
     let item: NotebookCore.LibraryItem
     @ObservedObject var model: LibraryModel
-    @ObservedObject var cache: PageThumbnailCache
     @State private var appearance: NotebookAppearance?
     @State private var image: UIImage?
     @State private var failed = false
@@ -971,7 +1014,7 @@ private struct LibraryNotebookArtwork: View {
         // the previous image stays visible until the new one is ready.
         .task(id: "\(item.id)-\(item.lastOpened?.timeIntervalSince1970 ?? 0)-\(model.artworkRevision[item.id] ?? 0)") {
             do {
-                let result = try await model.artwork(for: item.id, cache: cache)
+                let result = try await model.artwork(for: item.id)
                 try Task.checkCancellation()
                 appearance = result.0; image = result.1; failed = false
             } catch is CancellationError { }
@@ -984,4 +1027,6 @@ private struct LibraryNotebookArtwork: View {
 private struct NotebookChoiceList: Identifiable {
     let id = UUID()
     let documents: [OpenNotebook]
+    /// Every notebook of the area, trashed ones included: their index survives.
+    let retain: Set<UUID>
 }

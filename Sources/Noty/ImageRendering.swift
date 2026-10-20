@@ -90,7 +90,17 @@ enum ImageRendering {
     }
 
     static func draw(_ object: ImageObject, context: CGContext, origin: PagePoint, limit: Int = 2048) throws {
-        let image = try image(object, limit: limit)
+        draw(object, image: try image(object, limit: limit), context: context, origin: origin)
+    }
+
+    /// Uncached decode for background rasterisation; same pixels as `image(_:limit:)`.
+    nonisolated static func decoded(_ object: ImageObject, limit: Int) throws -> UIImage {
+        UIImage(cgImage: try ImageImport.thumbnail(object.data, limit: limit))
+    }
+
+    /// The shared crop/rotation transform for an already decoded image. Safe off
+    /// the main actor in a context pushed on the current thread.
+    nonisolated static func draw(_ object: ImageObject, image: UIImage, context: CGContext, origin: PagePoint) {
         context.saveGState(); defer { context.restoreGState() }
         context.translateBy(x: origin.x + object.x + object.width / 2, y: origin.y + object.y + object.height / 2)
         context.rotate(by: object.rotation * .pi / 180)

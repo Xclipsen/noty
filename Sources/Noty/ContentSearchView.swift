@@ -2,10 +2,34 @@ import SwiftUI
 import PDFKit
 import PencilKit
 import Vision
-import ImageIO
 import NotebookCore
 
 private struct RecognizedLine: Sendable { let text: String; let bounds: PageRect }
+
+/// One derived index directory per area (library root) under Library/Caches.
+/// Never part of a notebook package, revision or backup; safe to delete.
+@MainActor
+enum ContentSearchIndexLocation {
+    private static var stores: [String: ContentSearchIndexStore] = [:]
+    static func store(area: String) -> ContentSearchIndexStore {
+        if let store = stores[area] { return store }
+        var name = ContentFingerprint("area"); name.add(area)
+        let store = ContentSearchIndexStore(directory: URL.cachesDirectory
+            .appendingPathComponent("NotySearchIndex", isDirectory: true)
+            .appendingPathComponent(name.value, isDirectory: true))
+        stores[area] = store
+        return store
+    }
+}
+
+private struct SearchIndexAreaKey: EnvironmentKey { static let defaultValue: String? = nil }
+extension EnvironmentValues {
+    /// Area scope (`StableDefaults.scope(libraryRoot)`) shared by library and editor search.
+    var searchIndexArea: String? {
+        get { self[SearchIndexAreaKey.self] }
+        set { self[SearchIndexAreaKey.self] = newValue }
+    }
+}
 
 @MainActor
 final class ContentSearchModel: ObservableObject {
@@ -15,6 +39,11 @@ final class ContentSearchModel: ObservableObject {
     @Published var error: String?
     private var worker: Task<Void, Never>?
     private var generation = 0
+    /// Hits per notebook and page: a recognised page only rebuilds its own hits.
+    private var pageHits: [UUID: [[ContentSearchHit]]] = [:]
+    private var order: [UUID] = []
+    private var total = 0
+    private var lastPublish = ContinuousClock.now
     @Published var tasks: [ContentSearchHit] = []
     @Published var taskStatus = "Offene Aufgaben werden gesucht …"
     @Published var collectingTasks = false
@@ -67,122 +96,250 @@ final class ContentSearchModel: ObservableObject {
                 title: document.title, text: task.text.isEmpty ? "(leere Aufgabe)" : task.text, kind: .task, bounds: bounds)
         }
     }
-    func start(documents: [OpenNotebook], current: Notebook? = nil) {
-        cancel(); records = []; running = true
+
+    private struct Summary {
+        var pages = 0, failed = 0, unreadable = 0
+        func text(records: Int, total: Int) -> String {
+            var text = "\(records) Textstellen erfasst"
+            if total >= ContentSearchIndexFormat.hitLimit { text += " · Grenze 50.000 erreicht" }
+            text += pages == 0 ? " · Suchindex aktuell" : pages == 1 ? " · 1 Seite neu erfasst" : " · \(pages) Seiten neu erfasst"
+            if failed > 0 { text += " · \(failed) Erkennung(en) fehlgeschlagen" }
+            if unreadable > 0 { text += " · \(unreadable) Heft(e) nicht lesbar" }
+            return text + " · lokal, Deutsch/Englisch"
+        }
+    }
+
+    /// Cached hits appear at once; only pages whose inputs changed are recognised
+    /// again. Progress is stored while running, so closing the sheet keeps it.
+    /// `retain`: all notebook IDs of the area (library search); other indexes are removed.
+    func start(documents: [OpenNotebook], current: Notebook? = nil, currentSources: (@MainActor (Page) -> PDFPage?)? = nil,
+               area: String, retain: Set<UUID>? = nil, rebuild: Bool = false) {
+        cancel(); running = true; error = nil
         let expected = generation
+        let store = ContentSearchIndexLocation.store(area: area)
+        order = documents.map(\.id); pageHits = [:]; publish(force: true)
+        status = rebuild ? "Suchindex wird neu erfasst …" : "Gespeicherte Treffer werden geladen …"
         worker = Task {
             defer { if generation == expected { running = false } }
+            if rebuild { await store.remove(documents.map(\.id)) }
+            var cached: [UUID: SearchDocumentIndex] = [:]
+            for document in documents {
+                guard let index = await store.load(document.id) else { continue }
+                guard generation == expected else { return }
+                cached[document.id] = index; show(index, document)
+            }
+            publish(force: true)
+            if let retain { await store.prune(keeping: retain) }
+            var summary = Summary()
             do {
                 for document in documents {
                     try Task.checkCancellation()
-                    let notebook: Notebook
-                    if let current { notebook = current }
-                    else {
-                        notebook = try await Task.detached(priority: .utility) {
-                            try RevisionStore(directory: document.directory).load()
-                        }.value
-                    }
-                    try Task.checkCancellation()
-                    let catalog = try NotebookPDFCatalog(notebook)
-                    for (index, page) in notebook.pages.enumerated() {
-                        try Task.checkCancellation()
-                        status = "\(document.title) · Seite \(index + 1)/\(notebook.pages.count)"
-                        let pdf = catalog.sourcePage(for: page)
-                        let layout = try PageLayout(page: page, source: pdf?.pageRef)
-                        for box in page.effectiveTextBoxes where !box.text.isEmpty {
-                            var start = box.text.startIndex
-                            while start < box.text.endIndex {
-                                let end = box.text.index(start, offsetBy: 2_000, limitedBy: box.text.endIndex) ?? box.text.endIndex
-                                append(document, page, index, String(box.text[start..<end]), .text, box.rect)
-                                if end == box.text.endIndex { break }
-                                start = box.text.index(end, offsetBy: -160)
-                            }
-                        }
-                        if let pdf, let selection = pdf.selection(for: pdf.bounds(for: .cropBox)) {
-                            for line in selection.selectionsByLine() {
-                                guard let text = line.string, !text.isEmpty else { continue }
-                                let canvas = line.bounds(for: pdf).applying(layout.pdfToCanvas.cgTransform)
-                                    .offsetBy(dx: -layout.contentOrigin.x, dy: -layout.contentOrigin.y)
-                                append(document, page, index, text, .pdf, PageRect(canvas))
-                            }
-                        }
-                        if pdf != nil || !(page.images ?? []).isEmpty {
-                            let bytes = try raster(page: page, source: pdf?.pageRef, layout: layout, ink: false)
-                            let lines = try await Self.recognize(bytes)
-                            try Task.checkCancellation()
-                            for line in lines { append(document, page, index, line.text, .image, canonical(line.bounds, layout)) }
-                        }
-                        if !page.drawing.isEmpty {
-                            let bytes = try raster(page: page, source: nil, layout: layout, ink: true)
-                            let lines = try await Self.recognize(bytes)
-                            try Task.checkCancellation()
-                            for line in lines { append(document, page, index, line.text, .handwriting, canonical(line.bounds, layout)) }
-                        }
-                        await Task.yield()
-                    }
+                    try await indexDocument(document, cached: cached[document.id], current: current, currentSources: currentSources,
+                                    store: store, expected: expected, summary: &summary)
                 }
-                status = "\(records.count) Textstellen erfasst\(records.count >= 50_000 ? " · Grenze 50.000 erreicht" : "") · lokal, Deutsch/Englisch"
-            } catch is CancellationError { if generation == expected { status = "Suche angehalten · bisherige Treffer bleiben sichtbar" } }
-            catch { if generation == expected { self.error = error.localizedDescription; status = "Suche unvollständig · bisherige Treffer sichtbar" } }
+                guard generation == expected else { return }
+                publish(force: true)
+                status = summary.text(records: records.count, total: total)
+            } catch is CancellationError {
+                if generation == expected { publish(force: true); status = "Suche angehalten · bisherige Treffer bleiben sichtbar und gespeichert" }
+            } catch {
+                if generation == expected { publish(force: true); self.error = error.localizedDescription; status = "Suche unvollständig · bisherige Treffer sichtbar" }
+            }
         }
     }
-    private func append(_ doc: OpenNotebook, _ page: Page, _ index: Int, _ text: String, _ kind: SearchContentKind, _ rect: PageRect) {
-        guard records.count < 50_000 else { return }
-        // OCR of a text PDF can overlap its exact text layer. Prefer the exact layer.
-        if kind == .image, records.suffix(300).contains(where: { $0.pageID == page.id && $0.kind == .pdf && $0.text == text }) { return }
-        records.append(ContentSearchHit(documentID: doc.id, pageID: page.id, pageNumber: index + 1,
-            title: doc.title, text: text, kind: kind, bounds: rect))
+
+    private func indexDocument(_ document: OpenNotebook, cached: SearchDocumentIndex?, current: Notebook?,
+                       currentSources: (@MainActor (Page) -> PDFPage?)?, store: ContentSearchIndexStore,
+                       expected: Int, summary: inout Summary) async throws {
+        let directory = document.directory
+        // Read before the notebook: a newer commit in between only causes a later re-check.
+        let stamp: String? = current == nil
+            ? await Task.detached(priority: .utility) { NotebookRevisionStamp.read(directory: directory) }.value : nil
+        if let stamp, cached?.revisionStamp == stamp { return }
+        guard generation == expected else { throw CancellationError() }
+        status = "\(document.title) · wird gelesen …"
+        let notebook: Notebook
+        if let current { notebook = current }
+        else {
+            do { notebook = try await Task.detached(priority: .utility) { try RevisionStore(directory: directory).load() }.value }
+            catch { summary.unreadable += 1; return }
+        }
+        try Task.checkCancellation()
+        let prepared = await Task.detached(priority: .utility) { ContentSearchPlanner.prepare(notebook) }.value
+        var index = ContentSearchPlanner.reconcile(cached, documentID: document.id, pages: prepared)
+        guard generation == expected else { throw CancellationError() }
+        show(index, document); publish()
+        var catalog: NotebookPDFCatalog?, catalogError: Error?
+        // PDFKit parses lazily, only for pages whose PDF layers need recognition.
+        func source(_ page: Page) throws -> PDFPage? {
+            if let currentSources { return currentSources(page) }
+            if let catalogError { throw catalogError }
+            if catalog == nil {
+                do { catalog = try NotebookPDFCatalog(notebook) } catch { catalogError = error; throw error }
+            }
+            return catalog?.sourcePage(for: page)
+        }
+        var lastSave = ContinuousClock.now
+        do {
+            for (offset, entry) in prepared.enumerated() {
+                let pending = ContentSearchPlanner.pending(entry, index.pages[offset])
+                guard !pending.isEmpty else { continue }
+                try Task.checkCancellation()
+                guard generation == expected else { throw CancellationError() }
+                status = "\(document.title) · Seite \(offset + 1)/\(prepared.count)"
+                let page = notebook.pages[offset]
+                var record = index.pages[offset]
+                do {
+                    let needsSource = entry.hasPDF && (pending.contains(.pdfText) || pending.contains(.imageOCR) || page.geometry == nil)
+                    let pdf = needsSource ? try source(page) : nil
+                    if needsSource, pdf?.pageRef == nil { throw SearchSourceError.missingSource }
+                    let layout = try PageLayout(page: page, source: pdf?.pageRef)
+                    for layer in pending {
+                        guard let fingerprint = entry.fingerprints[layer] else { continue }
+                        do {
+                            let lines: [SearchLine]
+                            switch layer {
+                            case .pdfText:
+                                lines = pdf.map { Self.pdfLines($0, layout) } ?? []
+                            case .imageOCR:
+                                let background = pdf != nil && !ContentSearchPlanner.hasMeaningfulTextLayer(record.pdfText?.lines ?? [])
+                                let images = page.images ?? []
+                                lines = background || !images.isEmpty
+                                    ? try await Self.recognizeBackground(background ? pdf?.pageRef.map(SendablePDFPage.init) : nil,
+                                                                         images: images, layout: layout, keepAlive: pdf?.document) : []
+                            case .handwriting:
+                                lines = try await Self.recognizeInk(page.drawing, layout: layout)
+                            }
+                            record[layer] = SearchLayerRecord(fingerprint: fingerprint, lines: lines)
+                        } catch {
+                            summary.failed += 1
+                            if generation == expected, self.error == nil { self.error = error.localizedDescription }
+                        }
+                        try Task.checkCancellation()
+                    }
+                } catch is CancellationError { throw CancellationError() }
+                catch {
+                    summary.failed += 1
+                    if generation == expected, self.error == nil { self.error = error.localizedDescription }
+                }
+                index.pages[offset] = record
+                summary.pages += 1
+                guard generation == expected else { throw CancellationError() }
+                show(page: offset, record, document); publish()
+                if lastSave.duration(to: .now) > .seconds(3) { await store.save(index); lastSave = .now }
+                await Task.yield()
+            }
+        } catch {
+            await store.save(index)
+            throw error
+        }
+        if let stamp, ContentSearchPlanner.isComplete(index, prepared) { index.revisionStamp = stamp }
+        await store.save(index)
     }
-    private func canonical(_ rect: PageRect, _ layout: PageLayout) -> PageRect {
+
+    private enum SearchSourceError: LocalizedError {
+        case missingSource
+        var errorDescription: String? { "Die PDF-Seite konnte für die Suche nicht gelesen werden." }
+    }
+
+    private func show(_ index: SearchDocumentIndex, _ document: OpenNotebook) {
+        pageHits[document.id] = index.pages.enumerated().map { offset, record in
+            ContentSearchPlanner.hits(record, pageNumber: offset + 1, documentID: document.id, title: document.title)
+        }
+    }
+    private func show(page offset: Int, _ record: SearchPageRecord, _ document: OpenNotebook) {
+        guard pageHits[document.id]?.indices.contains(offset) == true else { return }
+        pageHits[document.id]?[offset] = ContentSearchPlanner.hits(record, pageNumber: offset + 1, documentID: document.id, title: document.title)
+    }
+    /// Notebook order, then page order; capped like the original search.
+    private func publish(force: Bool = false) {
+        guard force || lastPublish.duration(to: .now) > .milliseconds(250) else { return }
+        lastPublish = .now
+        let limit = ContentSearchIndexFormat.hitLimit
+        var result: [ContentSearchHit] = [], count = 0
+        for id in order {
+            for page in pageHits[id] ?? [] {
+                count += page.count
+                if result.count < limit { result.append(contentsOf: page.prefix(limit - result.count)) }
+            }
+        }
+        total = count; records = result
+    }
+
+    private static func pdfLines(_ pdf: PDFPage, _ layout: PageLayout) -> [SearchLine] {
+        guard let selection = pdf.selection(for: pdf.bounds(for: .cropBox)) else { return [] }
+        return selection.selectionsByLine().compactMap { line in
+            guard let text = line.string, !text.isEmpty else { return nil }
+            let canvas = line.bounds(for: pdf).applying(layout.pdfToCanvas.cgTransform)
+                .offsetBy(dx: -layout.contentOrigin.x, dy: -layout.contentOrigin.y)
+            return SearchLine(text: text, kind: .pdf, bounds: PageRect(canvas))
+        }
+    }
+
+    nonisolated private static func scale(_ layout: PageLayout) -> CGFloat {
+        min(2, 2400 / max(layout.canvas.width, layout.canvas.height))
+    }
+    nonisolated private static func canonical(_ rect: PageRect, _ layout: PageLayout) -> PageRect {
         .init(x: rect.x * layout.canvas.width - layout.contentOrigin.x,
               y: (1 - rect.y - rect.height) * layout.canvas.height - layout.contentOrigin.y,
               width: rect.width * layout.canvas.width, height: rect.height * layout.canvas.height)
     }
-    private func raster(page: Page, source: CGPDFPage?, layout: PageLayout, ink: Bool) throws -> Data {
-        let scale = min(2, 2400 / max(layout.canvas.width, layout.canvas.height))
-        let format = UIGraphicsImageRendererFormat(); format.scale = scale; format.opaque = true
-        var failure: Error?
-        let result = UIGraphicsImageRenderer(size: layout.canvas.cgSize, format: format).pngData { output in
-            let context = output.cgContext
-            UIColor.white.setFill(); context.fill(layout.canvas.bounds)
-            if ink {
-                if let drawing = try? PKDrawing(data: page.drawing) {
-                    // Normalize ink color for OCR, retaining every original stroke in storage.
-                    let strokes = drawing.strokes.map { stroke in
-                        PKStroke(ink: PKInk(.pen, color: .black), path: stroke.path, transform: stroke.transform, mask: stroke.mask)
-                    }
-                    PDFExporter.inkImage(PKDrawing(strokes: strokes), from: layout.canonicalInkBounds, scale: scale).draw(in: layout.canvas.bounds)
-                }
-            } else {
-                if let source {
-                    context.saveGState(); context.clip(to: layout.sourceFrame.cgRect)
-                    context.concatenate(layout.pdfToCanvas.cgTransform); context.drawPDFPage(source); context.restoreGState()
-                }
-                for image in page.images ?? [] {
-                    do { try ImageRendering.draw(image, context: context, origin: layout.contentOrigin, limit: 2400) }
-                    catch { failure = error }
-                }
-            }
-        }
-        if let failure { throw failure }; return result
-    }
-    nonisolated private static func recognize(_ bytes: Data) async throws -> [RecognizedLine] {
-        try await Task.detached(priority: .utility) {
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate; request.recognitionLanguages = ["de-DE", "en-US"]
-            request.usesLanguageCorrection = true
-            try VNImageRequestHandler(data: bytes, options: [:]).perform([request])
-            return (request.results ?? []).compactMap { observation in
-                guard let candidate = observation.topCandidates(1).first else { return nil }
-                return RecognizedLine(text: candidate.string, bounds: PageRect(observation.boundingBox))
-            }
+
+    /// Scan/PDF background (only without a meaningful text layer) plus inserted images.
+    /// `keepAlive` (the PDF document) outlives drawing its page off the main actor.
+    private static func recognizeBackground(_ pdf: SendablePDFPage?, images: [ImageObject], layout: PageLayout,
+                                            keepAlive: AnyObject?) async throws -> [SearchLine] {
+        let lines = try await Task.detached(priority: .utility) { () throws -> [SearchLine] in
+            let decoded = try images.map { try ImageRendering.decoded($0, limit: 2400) }
+            guard let image = PageRaster.bitmap(size: layout.canvas.cgSize, scale: scale(layout), opaque: true, { context in
+                UIColor.white.setFill(); context.fill(layout.canvas.bounds)
+                if let pdf { PageRaster.drawSource(pdf.page, layout: layout, context: context) }
+                for (object, image) in zip(images, decoded) { ImageRendering.draw(object, image: image, context: context, origin: layout.contentOrigin) }
+            }) else { throw ImageImportError.invalid }
+            return try recognize(image).map { SearchLine(text: $0.text, kind: .image, bounds: canonical($0.bounds, layout)) }
         }.value
+        withExtendedLifetime(keepAlive) {}
+        return lines
+    }
+
+    /// Ink normalised to black for OCR; stored strokes stay untouched.
+    private static func recognizeInk(_ data: Data, layout: PageLayout) async throws -> [SearchLine] {
+        try await Task.detached(priority: .utility) { () throws -> [SearchLine] in
+            let drawing = try PKDrawing(data: data)
+            let strokes = drawing.strokes.map { stroke in
+                PKStroke(ink: PKInk(.pen, color: .black), path: stroke.path, transform: stroke.transform, mask: stroke.mask)
+            }
+            let pixelScale = scale(layout)
+            let ink = PDFExporter.inkImage(PKDrawing(strokes: strokes), from: layout.canonicalInkBounds, scale: pixelScale)
+            guard let image = PageRaster.bitmap(size: layout.canvas.cgSize, scale: pixelScale, opaque: true, { context in
+                UIColor.white.setFill(); context.fill(layout.canvas.bounds)
+                ink.draw(in: layout.canvas.bounds)
+            }) else { throw ImageImportError.invalid }
+            return try recognize(image).map { SearchLine(text: $0.text, kind: .handwriting, bounds: canonical($0.bounds, layout)) }
+        }.value
+    }
+
+    nonisolated private static func recognize(_ image: CGImage) throws -> [RecognizedLine] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate; request.recognitionLanguages = ["de-DE", "en-US"]
+        request.usesLanguageCorrection = true
+        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+        return (request.results ?? []).compactMap { observation in
+            guard let candidate = observation.topCandidates(1).first else { return nil }
+            return RecognizedLine(text: candidate.string, bounds: PageRect(observation.boundingBox))
+        }
     }
 }
 
 struct ContentSearchView: View {
     let documents: [OpenNotebook]
     var current: Notebook? = nil
+    /// The editor's PDF catalogue: no second parse of the open notebook's PDFs.
+    var currentSources: (@MainActor (Page) -> PDFPage?)? = nil
+    /// Index area (`StableDefaults.scope(libraryRoot)`).
+    let area: String
+    /// Library search only: every notebook ID of the area (including trashed ones).
+    var retain: Set<UUID>? = nil
     let onSelect: (ContentSearchHit) -> Void
     @StateObject private var model = ContentSearchModel()
     @State private var query = ""
@@ -201,7 +358,7 @@ struct ContentSearchView: View {
                 Text(openTasks ? model.taskStatus : model.status).font(.caption).padding(.horizontal)
                 if openTasks ? model.collectingTasks : model.running { ProgressView().padding(.horizontal) }
                 if !openTasks {
-                    Text("Handschrift und Scan-/Bild-OCR sind lokal. Die Erkennungsqualität muss mit deinen Unterlagen geprüft werden.")
+                    Text("Handschrift und Scan-/Bild-OCR sind lokal. Erkanntes bleibt als abgeleiteter Suchindex auf diesem iPad gespeichert und wird nur für geänderte Seiten neu erfasst. Die Erkennungsqualität muss mit deinen Unterlagen geprüft werden.")
                         .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
                 }
                 if let error = model.error { Text(error).foregroundStyle(.red).font(.caption).padding(.horizontal) }
@@ -229,12 +386,15 @@ struct ContentSearchView: View {
                     ToolbarItem(placement: .primaryAction) {
                         if openTasks { Button("Aktualisieren") { model.collectTasks(documents: documents, current: current) }.disabled(model.collectingTasks) }
                         else if model.running { Button("Anhalten") { model.cancel() } }
-                        else { Button("Neu erfassen") { model.start(documents: documents, current: current) } }
+                        else { Button("Neu erfassen") { start(rebuild: true) } }
                     }
                 }
-                .task { model.start(documents: documents, current: current) }
+                .task { start(rebuild: false) }
                 .onDisappear { model.cancel(); model.cancelTasks() }
         }
+    }
+    private func start(rebuild: Bool) {
+        model.start(documents: documents, current: current, currentSources: currentSources, area: area, retain: retain, rebuild: rebuild)
     }
     private func label(_ kind: SearchContentKind) -> String {
         switch kind { case .text: "Textfeld"; case .pdf: "PDF-Text"; case .image: "Scan/Bild · OCR"; case .handwriting: "Handschrift · OCR"; case .task: "Offene Aufgabe" }
