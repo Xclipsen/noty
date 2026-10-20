@@ -46,18 +46,21 @@ final class EditorWorkspace: ObservableObject {
         }
         secondary = nil; secondaryID = nil; activePane = 0
     }
-    func backup(library: LibraryModel, toolbox: ToolbarSettingsModel) async -> Data? {
-        guard !closing, models.values.allSatisfy({ !$0.busy && !$0.inputInProgress && $0.writable }) else { return nil }
+    /// Pauses the editors only until every pane and the tool settings are
+    /// committed; the backup archive is then built from committed packages
+    /// while editing continues. False: postpone (input or a save in progress).
+    func commitForBackup(toolbox: ToolbarSettingsModel) async -> Bool {
+        guard !closing, models.values.allSatisfy({ !$0.busy && !$0.inputInProgress && $0.writable }) else { return false }
         closing = true
         for model in models.values { model.pauseMutations() }
         defer {
             for model in models.values { model.resumeMutations() }
             closing = false
         }
-        guard await toolbox.flush(), models.values.allSatisfy({ !$0.busy && !$0.inputInProgress }) else { return nil }
+        guard await toolbox.flush(), models.values.allSatisfy({ !$0.busy && !$0.inputInProgress }) else { return false }
         for model in models.values { model.save() }
-        for model in models.values { if !(await model.waitForSave()) { return nil } }
-        return await library.libraryBackup(editorsPaused: true)
+        for model in models.values { if !(await model.waitForSave()) { return false } }
+        return true
     }
     func closeAll() async -> Bool {
         guard !closing else { return false }
@@ -172,8 +175,8 @@ struct EditorWorkspaceView: View {
         .alert("Ansichten", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
             Button("OK") { workspace.error = nil }
         } message: { Text(workspace.error ?? "") }
-        .onAppear { library.editorBackup = { await workspace.backup(library: library, toolbox: toolbox) } }
-        .onDisappear { library.editorBackup = nil }
+        .onAppear { library.editorCommit = { await workspace.commitForBackup(toolbox: toolbox) } }
+        .onDisappear { library.editorCommit = nil }
         .interactiveDismissDisabled()
     }
 

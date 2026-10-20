@@ -22,6 +22,17 @@
             <key>public.filename-extension</key><array><string>notylibrary</string></array>
         </dict>
     </dict></array>
+    <key>CFBundleDocumentTypes</key><array><dict>
+        <key>CFBundleTypeName</key><string>noty Heft-Backup</string>
+        <key>CFBundleTypeRole</key><string>Viewer</string>
+        <key>LSHandlerRank</key><string>Owner</string>
+        <key>LSItemContentTypes</key><array><string>de.la.noty.backup</string></array>
+    </dict><dict>
+        <key>CFBundleTypeName</key><string>noty Bibliotheksbackup</string>
+        <key>CFBundleTypeRole</key><string>Viewer</string>
+        <key>LSHandlerRank</key><string>Owner</string>
+        <key>LSItemContentTypes</key><array><string>de.la.noty.library</string></array>
+    </dict></array>
     <key>UIDeviceFamily</key><array><integer>2</integer></array>
     <key>UIFileSharingEnabled</key><true/>
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>

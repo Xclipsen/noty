@@ -315,7 +315,7 @@ private struct BackupSettingsPage: View {
     @State private var restoredArea = false
     /// The pushed form shows backup errors itself; avoid a second alert.
     @State private var formVisible = false
-    @State private var file: ExportFile?
+    @State private var file: LibraryArchiveFile?
     private var libraryIdle: Bool { library.ready && !library.busy && !workspaces.busy && library.opened == nil }
     private var health: BackupHealth { BackupHealth(externalBackup) }
     private var policy: ExternalBackupPolicy { externalBackup.policy }
@@ -357,7 +357,7 @@ private struct BackupSettingsPage: View {
                 Button("Exportieren …", systemImage: "square.and.arrow.up") {
                     Task {
                         guard await toolbox.flush() else { library.error = toolbox.status; return }
-                        if let data = await library.libraryBackup() { file = ExportFile(libraryData: data); exporting = true }
+                        if let archive = await library.libraryBackup() { file = LibraryArchiveFile(url: archive.url); exporting = true }
                     }
                 }.disabled(!libraryIdle)
                 Button("Als neuen Bereich wiederherstellen …", systemImage: "arrow.down.doc") { importing = true }
