@@ -136,10 +136,13 @@ struct PencilPalettePresentation: Identifiable, Equatable {
 }
 
 /// Squeeze palette: a compact arc beside the Pencil tip (away from the
-/// writing hand) with undo/redo, the main toolbar's drawing tools, colour,
-/// width and Autostift. Shows a few items at a time; a finger or Pencil drag
-/// along the arc scrolls the rest in. Tool selection goes through `onSelect`
-/// (the toolbar's own selection path).
+/// writing hand) in a fixed order (`PencilPaletteContent`): undo | pen,
+/// pencil, highlighter, eraser, text at the standard position; the other
+/// tools, colour, width, Autostift and finally redo scroll in along the arc.
+/// It opens at the standard position, or within 10 s where it was closed
+/// (`PencilPaletteMemory`). One gesture handles the arc: a touch that moves
+/// is a scroll and never selects (`PencilPaletteTouch`); only a tap acts.
+/// Tool selection goes through `onSelect` (the toolbar's own selection path).
 struct PencilToolPalette: View {
     let presentation: PencilPalettePresentation
     @Binding var tool: WritingTool
@@ -156,41 +159,56 @@ struct PencilToolPalette: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var appeared = false
     @State private var detail: Detail?
-    @State private var scroll: Double?
-    /// Last drag location while scrolling the arc (incremental, hard-clamped).
-    @State private var dragPoint: CGPoint?
+    /// Scroll offset in items; 0 is the standard position.
+    @State private var scroll: Double
+    /// The current finger/Pencil touch on the arc (tap or scroll, never both).
+    @State private var touch: PencilPaletteTouch?
+    /// Where the last palette closed, shared by all editors of the app session.
+    @MainActor private static var memory = PencilPaletteMemory()
     private enum Detail { case color, width }
-    private enum Item: Hashable { case undo, redo, tool(WritingTool), color, width, autoPen }
     private static let itemSize: CGFloat = 40
     /// Hit target per item: the full slot spacing (46 pt ≥ 44 pt), so a
     /// Pencil tap between two glyphs still lands on one of them.
     private static let hitSize: CGFloat = 46
     private static let space = "pencil-palette"
 
-    /// First-level tools, then the laser pointer (second toolbar level).
-    private var tools: [WritingTool] { (preferences.primaryTools + preferences.secondaryTools).filter { $0 != .image && $0 != .read } }
-    private var items: [Item] { [.undo, .redo] + tools.map(Item.tool) + [.color, .width, .autoPen] }
-    private var dividers: [Double] { [1.5, Double(tools.count) + 1.5] }
+    init(presentation: PencilPalettePresentation, tool: Binding<WritingTool>, preferences: Binding<ToolbarPreferences>,
+         inkTool: WritingTool, canUndo: Bool, canRedo: Bool, onUndo: @escaping (Bool) -> Void,
+         onSelect: @escaping (WritingTool) -> Void, onDismiss: @escaping () -> Void) {
+        self.presentation = presentation
+        _tool = tool
+        _preferences = preferences
+        self.inkTool = inkTool
+        self.canUndo = canUndo
+        self.canRedo = canRedo
+        self.onUndo = onUndo
+        self.onSelect = onSelect
+        self.onDismiss = onDismiss
+        // Only used for a new presentation (`.id` per opening); later re-inits keep the state.
+        _scroll = State(initialValue: Self.memory.openingScroll(at: Date.now.timeIntervalSinceReferenceDate))
+    }
+
+    private var content: PencilPaletteContent { PencilPaletteContent(preferences: preferences) }
     private var inkTarget: WritingTool { tool.isInk || tool == .shape ? tool : (inkTool.isInk ? inkTool : .pen) }
     private var widthTarget: WritingTool { tool == .precisionEraser ? .precisionEraser : inkTarget }
     private var currentColor: InkColor { tool == .laser ? preferences.laserStyle.color : preferences.inkColor(for: inkTarget) }
     private func isSelected(_ item: WritingTool) -> Bool { tool == item || (item == .strokeEraser && tool == .precisionEraser) }
 
     var body: some View {
+        let content = self.content
         GeometryReader { proxy in
             let origin = proxy.frame(in: .global).origin
             let layout = PencilPaletteLayout(
                 anchor: PagePoint(x: presentation.location.x - origin.x, y: presentation.location.y - origin.y),
                 bounds: PageRect(x: 0, y: 0, width: proxy.size.width, height: proxy.size.height),
-                itemCount: items.count, leftHanded: presentation.leftHanded)
-            let offset = scroll ?? layout.scroll(centering: items.firstIndex { if case .tool(let t) = $0 { isSelected(t) } else { false } } ?? 0)
+                itemCount: content.items.count, visibleSlots: PencilPaletteContent.visibleSlots, leftHanded: presentation.leftHanded)
             ZStack(alignment: .topLeading) {
                 // Any touch outside (finger or Pencil, tap or scroll) closes the palette.
                 Color.black.opacity(0.001).contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 0).onChanged { _ in onDismiss() })
                     .accessibilityHidden(true)
-                arc(layout, offset: offset, size: proxy.size)
-                    .simultaneousGesture(scrollGesture(layout, offset: offset))
+                arc(layout, content: content, offset: layout.clampedScroll(scroll), size: proxy.size)
+                    .gesture(arcGesture(layout, content: content))
                 if let detail { detailRow(detail, layout: layout, size: proxy.size) }
             }
             .coordinateSpace(name: Self.space)
@@ -199,49 +217,74 @@ struct PencilToolPalette: View {
         }
         .onChange(of: scenePhase) { _, phase in if phase != .active { onDismiss() } }
         .onChange(of: tool) { _, next in if next == .text || next == .read || next == .image { onDismiss() } }
+        .onDisappear { Self.memory.close(scroll: scroll, at: Date.now.timeIntervalSinceReferenceDate) }
         .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Werkzeugpalette")
         .accessibilityAddTraits(.isModal)
         .accessibilityAction(.escape) { onDismiss() }
+        // VoiceOver: three-finger swipes page through the items not shown.
+        .accessibilityScrollAction { edge in
+            let page = Double(PencilPaletteContent.visibleSlots - 1)
+            let next = edge == .bottom || edge == .trailing ? scroll + page : scroll - page
+            scroll = min(max(0, next.rounded()), content.maximumScroll)
+        }
         .sensoryFeedback(.selection, trigger: detail)
         .onAppear { withAnimation(reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.16, dampingFraction: 0.9)) { appeared = true } }
     }
 
-    /// Drag along the arc: items follow the finger/Pencil, then snap to a slot.
-    /// Hard stops at both ends (no rubber band, no wrap-around); a slightly
-    /// sliding Pencil tap (< 12 pt) stays a tap on the item.
-    private func scrollGesture(_ layout: PencilPaletteLayout, offset: Double) -> some Gesture {
-        DragGesture(minimumDistance: 12, coordinateSpace: .named(Self.space))
+    /// The only touch handling on the arc. A touch that stays within
+    /// `PencilPaletteTouch.slop` (a slightly sliding Pencil tap) is a tap on
+    /// the item it went down on; once it moves further it scrolls — items
+    /// follow the finger/Pencil with hard stops at both ends, then snap to a
+    /// slot — and its lift selects nothing. (Build 49 ran the scroll beside
+    /// item buttons; as the item travelled with the touch, the lift still
+    /// counted as a tap on it.)
+    private func arcGesture(_ layout: PencilPaletteLayout, content: PencilPaletteContent) -> some Gesture {
+        /// The touch of this gesture; one left over from a cancelled gesture (no `onEnded`) is replaced.
+        func gestureTouch(_ value: DragGesture.Value) -> PencilPaletteTouch {
+            let start = PagePoint(x: value.startLocation.x, y: value.startLocation.y)
+            if let touch, touch.start == start { return touch }
+            return PencilPaletteTouch(at: start, item: layout.item(at: start, scroll: layout.clampedScroll(scroll)))
+        }
+        return DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.space))
             .onChanged { value in
-                guard layout.maximumScroll > 0 else { return }
-                let previous = dragPoint ?? value.startLocation
-                if dragPoint == nil { detail = nil }
-                dragPoint = value.location
-                scroll = layout.scrolled(scroll ?? offset, from: PagePoint(x: previous.x, y: previous.y),
-                                         to: PagePoint(x: value.location.x, y: value.location.y))
+                var current = gestureTouch(value)
+                let wasScrolling = current.isScrolling
+                let next = current.move(to: PagePoint(x: value.location.x, y: value.location.y), scroll: layout.clampedScroll(scroll), in: layout)
+                if current.isScrolling {
+                    if !wasScrolling { detail = nil }
+                    scroll = next
+                }
+                touch = current
             }
-            .onEnded { _ in
-                guard dragPoint != nil else { return }
-                dragPoint = nil
-                withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85)) {
-                    scroll = layout.clampedScroll((scroll ?? offset).rounded())
+            .onEnded { value in
+                let current = gestureTouch(value)
+                touch = nil
+                if current.isScrolling {
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85)) {
+                        scroll = layout.clampedScroll(scroll.rounded())
+                    }
+                } else if let index = current.end(at: PagePoint(x: value.location.x, y: value.location.y)),
+                          content.items.indices.contains(index) {
+                    activate(content.items[index])
                 }
             }
     }
 
-    @ViewBuilder private func arc(_ layout: PencilPaletteLayout, offset: Double, size: CGSize) -> some View {
+    @ViewBuilder private func arc(_ layout: PencilPaletteLayout, content: PencilPaletteContent, offset: Double, size: CGSize) -> some View {
         let center = CGPoint(x: layout.center.x, y: layout.center.y)
         let half = layout.step / 2
         let band = ArcBand(center: center, radius: layout.radius, width: Self.itemSize + 8,
                            start: layout.firstAngle - half * 0.6, end: layout.angle(item: Double(layout.visibleSlots - 1), scroll: 0) + half * 0.6)
         let unit = UnitPoint(x: size.width > 0 ? center.x / size.width : 0.5, y: size.height > 0 ? center.y / size.height : 0.5)
+        let pressed = touch?.pressedItem
         ZStack(alignment: .topLeading) {
             Color.clear.frame(width: size.width, height: size.height)
                 .modifier(PaletteGlass(shape: band))
                 .overlay { band.stroke(.white.opacity(0.14), lineWidth: 0.6).allowsHitTesting(false) }
-                // A touch on the band between items must not close the palette.
-                .contentShape(band).onTapGesture {}
+                // The band between items belongs to the arc gesture: no close, scrolling works there too.
+                .contentShape(band)
                 .accessibilityHidden(true)
                 .scaleEffect(appeared || reduceMotion ? 1 : 0.85, anchor: unit)
                 .opacity(appeared ? 1 : 0)
@@ -252,7 +295,7 @@ struct PencilToolPalette: View {
                 Circle().fill(.white.opacity(more && appeared ? 0.55 : 0)).frame(width: 4, height: 4)
                     .position(x: p.x, y: p.y).allowsHitTesting(false)
             }
-            ForEach(dividers, id: \.self) { index in
+            ForEach(content.dividers, id: \.self) { index in
                 let inner = layout.point(item: index, scroll: offset, radius: layout.radius - 12)
                 let outer = layout.point(item: index, scroll: offset, radius: layout.radius + 12)
                 Path { path in path.move(to: CGPoint(x: inner.x, y: inner.y)); path.addLine(to: CGPoint(x: outer.x, y: outer.y)) }
@@ -260,83 +303,85 @@ struct PencilToolPalette: View {
                     .opacity(appeared ? layout.visibility(item: index, scroll: offset) : 0)
                     .allowsHitTesting(false)
             }
-            ForEach(Array(items.enumerated()), id: \.element) { index, item in
+            ForEach(Array(content.items.enumerated()), id: \.element) { index, item in
                 let visibility = layout.visibility(item: Double(index), scroll: offset)
+                let interactive = layout.isInteractive(item: index, scroll: offset)
                 let p = layout.point(item: Double(index), scroll: offset)
-                view(for: item)
-                    .frame(width: Self.hitSize, height: Self.hitSize)
+                let down = pressed == index
+                itemView(item)
+                    .frame(width: Self.hitSize, height: Self.hitSize).contentShape(Circle())
+                    // Press feedback as `NotyPressStyle`, only while the touch can still be a tap.
+                    .scaleEffect(down && !reduceMotion ? 0.91 : 1)
+                    .opacity(down ? 0.75 : 1)
+                    .animation(.easeOut(duration: 0.12), value: down)
                     .scaleEffect(appeared || reduceMotion ? 0.7 + 0.3 * visibility : 0.6)
                     .opacity(appeared ? visibility : 0)
                     .position(appeared || reduceMotion ? CGPoint(x: p.x, y: p.y) : center)
-                    .allowsHitTesting(visibility > 0.6)
-                    .accessibilityHidden(visibility < 0.6)
-                    .animation(reduceMotion || dragPoint != nil ? nil : .spring(response: 0.16, dampingFraction: 0.9), value: appeared)
+                    .allowsHitTesting(interactive)
+                    .accessibilityHidden(!interactive)
+                    .animation(reduceMotion || touch != nil ? nil : .spring(response: 0.16, dampingFraction: 0.9), value: appeared)
             }
         }
     }
 
-    @ViewBuilder private func view(for item: Item) -> some View {
+    /// Runs an item: a tap from `arcGesture` or the VoiceOver activation.
+    private func activate(_ item: PencilPaletteItem) {
         switch item {
-        case .undo: actionButton("Rückgängig", kind: .undo, enabled: canUndo) { onUndo(false) }
-        case .redo: actionButton("Wiederholen", kind: .redo, enabled: canRedo) { onUndo(true) }
-        case .tool(let value): toolButton(value)
-        case .color: colorButton
-        case .width: widthButton
+        case .undo: if canUndo { onUndo(false) }
+        case .redo: if canRedo { onUndo(true) }
+        case .tool(let value):
+            if !isSelected(value) { onSelect(value) }
+            onDismiss()
+        case .color: detail = detail == .color ? nil : .color
+        case .width: detail = detail == .width ? nil : .width
         case .autoPen:
             let pencil = inkTarget == .pencil
             let on = preferences.automaticInk(for: pencil ? .pencil : .pen)
-            Button {
-                // The pen's Autostift also drives the pencil unless it was set apart.
-                preferences.setAutomaticInk(!on, for: pencil ? .pencil : .pen)
-                if !on, pencil ? tool != .pencil : (tool != .pen && tool != .shape) { onSelect(pencil ? .pencil : .pen) }
-                onDismiss()
-            } label: {
-                Image(systemName: on ? "a.circle.fill" : "a.circle").font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(on ? Color(red: 0.62, green: 0.84, blue: 1) : .white.opacity(0.9))
-                    .frame(width: Self.hitSize, height: Self.hitSize).contentShape(Circle())
-            }.buttonStyle(NotyPressStyle()).accessibilityLabel("Autostift")
-                .accessibilityValue(on ? "Ein" : "Aus").accessibilityHint("Schwarz oder Weiß passend zum Hintergrund.")
+            // The pen's Autostift also drives the pencil unless it was set apart.
+            preferences.setAutomaticInk(!on, for: pencil ? .pencil : .pen)
+            if !on, pencil ? tool != .pencil : (tool != .pen && tool != .shape) { onSelect(pencil ? .pencil : .pen) }
+            onDismiss()
         }
     }
 
-    private func toolButton(_ item: WritingTool) -> some View {
-        let selected = isSelected(item)
-        return Button { if !selected { onSelect(item) }; onDismiss() } label: {
-            ToolbarGlyph(tool: item, selected: selected, markerTip: preferences.effectiveMarkerTip)
+    /// Glyph of one item. It has no gesture of its own (touches go to
+    /// `arcGesture`); for accessibility it is a button running `activate`.
+    @ViewBuilder private func itemView(_ item: PencilPaletteItem) -> some View {
+        switch item {
+        case .undo: actionGlyph("Rückgängig", kind: .undo, enabled: canUndo, item: item)
+        case .redo: actionGlyph("Wiederholen", kind: .redo, enabled: canRedo, item: item)
+        case .tool(let value):
+            let selected = isSelected(value)
+            ToolbarGlyph(tool: value, selected: selected, markerTip: preferences.effectiveMarkerTip)
                 .scaleEffect(0.86)
                 .frame(width: Self.itemSize, height: Self.itemSize)
                 .background {
                     if selected { NotyToolSelection(shape: Circle()) }
                 }
-                .frame(width: Self.hitSize, height: Self.hitSize).contentShape(Circle())
-        }.buttonStyle(NotyPressStyle())
-            .accessibilityLabel(item == .strokeEraser ? "Radierer" : item.title)
-            .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private func actionButton(_ title: String, kind: NotyActionGlyph.Kind, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            NotyActionGlyph(kind: kind, tint: .white.opacity(0.9)).frame(width: 20, height: 20)
-                .frame(width: Self.hitSize, height: Self.hitSize).contentShape(Circle())
-                .opacity(enabled ? 1 : 0.35)
-        }.buttonStyle(NotyPressStyle()).disabled(!enabled).accessibilityLabel(title)
-    }
-
-    private var colorButton: some View {
-        Button { detail = detail == .color ? nil : .color } label: {
+                .paletteButton(value == .strokeEraser ? "Radierer" : value.title, selected: selected) { activate(item) }
+        case .color:
             Circle().fill(currentColor.color)
                 .overlay(Circle().strokeBorder(.white.opacity(detail == .color ? 0.95 : 0.6), lineWidth: detail == .color ? 2.5 : 1.2))
-                .frame(width: 28, height: 28).frame(width: Self.hitSize, height: Self.hitSize).contentShape(Circle())
-        }.buttonStyle(NotyPressStyle()).accessibilityLabel("Farbe").accessibilityValue(tool == .laser ? tool.title : inkTarget.title)
-    }
-
-    private var widthButton: some View {
-        let value = width(of: widthTarget)
-        return Button { detail = detail == .width ? nil : .width } label: {
+                .frame(width: 28, height: 28)
+                .paletteButton("Farbe", value: tool == .laser ? tool.title : inkTarget.title) { activate(item) }
+        case .width:
+            let value = width(of: widthTarget)
             Circle().fill(.white.opacity(detail == .width ? 0.28 : 0.14))
                 .overlay(Circle().fill(.white).frame(width: dot(value, for: widthTarget), height: dot(value, for: widthTarget)))
-                .frame(width: 32, height: 32).frame(width: Self.hitSize, height: Self.hitSize).contentShape(Circle())
-        }.buttonStyle(NotyPressStyle()).accessibilityLabel("Breite").accessibilityValue(value.formatted())
+                .frame(width: 32, height: 32)
+                .paletteButton("Breite", value: value.formatted()) { activate(item) }
+        case .autoPen:
+            let on = preferences.automaticInk(for: inkTarget == .pencil ? .pencil : .pen)
+            Image(systemName: on ? "a.circle.fill" : "a.circle").font(.system(size: 20, weight: .medium))
+                .foregroundStyle(on ? Color(red: 0.62, green: 0.84, blue: 1) : .white.opacity(0.9))
+                .paletteButton("Autostift", value: on ? "Ein" : "Aus", hint: "Schwarz oder Weiß passend zum Hintergrund.") { activate(item) }
+        }
+    }
+
+    private func actionGlyph(_ title: String, kind: NotyActionGlyph.Kind, enabled: Bool, item: PencilPaletteItem) -> some View {
+        NotyActionGlyph(kind: kind, tint: .white.opacity(0.9)).frame(width: 20, height: 20)
+            .opacity(enabled ? 1 : 0.35)
+            .paletteButton(title, enabled: enabled) { activate(item) }
     }
 
     /// Colour/width choices just outside the arc, away from the tip and hand.
@@ -420,6 +465,21 @@ struct PencilToolPalette: View {
         let range: ClosedRange<Double> = target == .precisionEraser ? 4...60 : ToolbarPreferences.widthRange(for: target) ?? 1...12
         let fraction = (min(max(value, range.lowerBound), range.upperBound) - range.lowerBound) / (range.upperBound - range.lowerBound)
         return 3 + 15 * sqrt(fraction)
+    }
+}
+
+private extension View {
+    /// A palette item for VoiceOver: a button running `action`. Only the
+    /// accessibility representation is a button; touches stay with the arc gesture.
+    func paletteButton(_ label: String, value: String = "", hint: String = "", selected: Bool = false, enabled: Bool = true,
+                       action: @escaping () -> Void) -> some View {
+        accessibilityRepresentation {
+            Button(label, action: action)
+                .disabled(!enabled)
+                .accessibilityValue(value)
+                .accessibilityHint(hint)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+        }
     }
 }
 
