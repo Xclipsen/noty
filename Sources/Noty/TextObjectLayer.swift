@@ -6,7 +6,6 @@ import OSLog
 /// the current paper margins; only their display frames receive that translation.
 @MainActor
 final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDelegate, UIColorPickerViewControllerDelegate, UIFontPickerViewControllerDelegate, UIPopoverPresentationControllerDelegate {
-    private(set) var textHistory = UndoManager()
     var onEditingActive: ((Bool) -> Void)?
     var onCaretChanged: (() -> Void)?
     var onFlowChange: ((TextBox, TextBox, NSRange) -> TextFlowFocus?)?
@@ -84,16 +83,16 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
 
     /// Notebook-wide undo (set by the sheet). Text views, the keyboard
     /// shortcut bar and ⌘Z use it, so text undo follows the same chronological
-    /// history as ink, images and objects. `textHistory` remains the fallback.
+    /// history as ink, images and objects: every change is published to the
+    /// model, which records it (`onChange`, `onFlowChange`). No local history.
     weak var notebookUndo: UndoManager?
     override var canBecomeFirstResponder: Bool { true }
-    override var undoManager: UndoManager? { notebookUndo ?? textHistory }
+    override var undoManager: UndoManager? { notebookUndo }
     override var inputView: UIView? { UIView(frame: .zero) }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear; clipsToBounds = true
-        textHistory.levelsOfUndo = 50
         notice.font = .systemFont(ofSize: 14); notice.textColor = .systemRed
         notice.backgroundColor = .systemBackground; notice.layer.cornerRadius = 6
         notice.clipsToBounds = true; notice.numberOfLines = 2; notice.isHidden = true
@@ -127,7 +126,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         }
         updating = true
         defer { updating = false }
-        if !reset && boxes != incoming { textHistory.removeAllActions(); dragStart = nil }
+        if !reset && boxes != incoming { dragStart = nil }
         if reset {
             onEditingActive?(false)
             compositionBase = nil
@@ -137,8 +136,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 field.editor.historyOwner = nil
                 field.removeFromSuperview()
             }
-            fields.removeAll(); selectedID = nil; textHistory.removeAllActions()
-            textHistory = UndoManager(); textHistory.levelsOfUndo = 50
+            fields.removeAll(); selectedID = nil
         }
         self.pageID = pageID; self.contentGeneration = contentGeneration
         self.pageLayout = layout; self.active = active; self.readOnly = readOnly; self.darkPaper = darkPaper
@@ -331,30 +329,6 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         boxes[index].height = min(available, max(boxes[index].height, max(24, neededHeight(field.editor, width: boxes[index].width))))
     }
 
-    private func compactHistoryPool() {
-        guard fields.count >= 400 else { return }
-        // Native undo actions may retain removed UITextViews. Discard their
-        // history before releasing those targets; current text views stay alive.
-        textHistory.removeAllActions()
-        let live = Set(boxes.map(\.id))
-        for id in Array(fields.keys) where !live.contains(id) {
-            fields[id]?.editor.delegate = nil
-            fields[id]?.editor.historyOwner = nil
-            fields.removeValue(forKey: id)
-        }
-    }
-    private func record(_ previous: [TextBox], name: String) {
-        guard previous != boxes else { return }
-        textHistory.registerUndo(withTarget: self) { layer in layer.restore(previous, name: name) }
-        textHistory.setActionName(name)
-    }
-    private func restore(_ snapshot: [TextBox], name: String) {
-        let previous = boxes
-        boxes = snapshot
-        if let selectedID, !boxes.contains(where: { $0.id == selectedID }) { self.selectedID = nil }
-        record(previous, name: name)
-        synchronize(); publish()
-    }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         // UIKit may hit a blank descendant rather than this exact UIView.
@@ -387,7 +361,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             notice.isHidden = false; bringSubviewToFront(notice)
             return
         }
-        notice.isHidden = true; compactHistoryPool()
+        notice.isHidden = true
+        if fields.count >= 400 { releaseMemory() } // views of removed boxes, see there
         let limits = canonicalBounds
         guard limits.width >= 40, limits.height >= 24 else { return }
         let canonical = PagePoint(x: point.x - pageLayout.contentOrigin.x, y: point.y - pageLayout.contentOrigin.y)
@@ -421,9 +396,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         } else if let frame = TextPlacement.freeFieldFrame(tap: canonical, limits: fieldLimits, fontSize: style.fontSize) {
             box = TextBox(x: frame.x, y: frame.y, width: frame.width, height: frame.height, style: style)
         } else { return }
-        let previous = boxes; boxes.append(box); selectedID = box.id
+        boxes.append(box); selectedID = box.id
         if tracing { inputLog.info("[noty.text-input] Text field inserted count=\(self.boxes.count) x=\(Double(box.x)) y=\(Double(box.y))") }
-        record(previous, name: "Textfeld einfügen"); synchronize(); publish()
+        synchronize(); publish()
         fields[box.id]?.editor.becomeFirstResponder()
         if placing, box.flowID != nil, let editor = fields[box.id]?.editor { layoutIfNeeded(); placeCaret(in: editor, at: convert(point, to: editor)) }
     }
@@ -465,10 +440,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                   let index = self.boxes.firstIndex(where: { $0.id == id }), self.boxes[index].flowID == nil,
                   self.boxes[index].text.isEmpty, self.fields[id]?.editor.isFirstResponder != true,
                   self.fields[id]?.editor.markedTextRange == nil, self.dragStart == nil else { return }
-            let previous = self.boxes
             self.boxes.remove(at: index)
             if self.selectedID == id { self.selectedID = nil }
-            self.record(previous, name: "Leeres Textfeld entfernen"); self.synchronize(); self.publish()
+            self.synchronize(); self.publish()
         }
     }
     func textViewDidChange(_ textView: UITextView) {
@@ -563,7 +537,6 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             boxes[index] = box; grow(index)
             if gesture.state == .began { synchronize() } else { showDragged(index) }
         case .ended:
-            record(start.boxes, name: resizing ? "Textfeldbreite ändern" : "Textfeld verschieben")
             dragStart = nil; synchronize(); publish()
         case .cancelled, .failed:
             boxes = start.boxes; dragStart = nil; synchronize(); publish()
@@ -583,10 +556,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
 
     @objc private func deleteSelected() {
         guard active, let selectedID else { return }
-        let previous = boxes
         fields[selectedID]?.editor.resignFirstResponder()
         boxes.removeAll { $0.id == selectedID }; self.selectedID = nil
-        record(previous, name: "Textfeld löschen"); synchronize(); publish()
+        synchronize(); publish()
         becomeFirstResponder()
     }
 
@@ -629,7 +601,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         grow(index); synchronize()
         updating = wasUpdating
         if boxes[index].flowID != nil { commitFlow(previous: previous[index], editor: editor) }
-        else { record(previous, name: "Text formatieren"); publish() }
+        else { publish() }
         layoutIfNeeded(); requestCaretReveal(.typing)
     }
     func textViewDidChangeSelection(_ textView: UITextView) {
@@ -690,9 +662,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     private func applyListEdits(_ edits: [TextListEditing.Edit], at index: Int, editor: PageTextView) {
         guard !edits.isEmpty else { return }
-        let previous = boxes, selection = TextListEditing.selection(editor.selectedRange, after: edits)
+        let previous = boxes[index], selection = TextListEditing.selection(editor.selectedRange, after: edits)
         updating = true
-        textHistory.disableUndoRegistration()
         editor.textStorage.beginEditing()
         for edit in edits.reversed() {
             let location = min(edit.range.location, max(0, editor.attributedText.length - 1))
@@ -701,12 +672,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         }
         editor.textStorage.endEditing()
         editor.selectedRange = selection
-        textHistory.enableUndoRegistration(); updating = false
+        updating = false
         boxes[index].capture(editor.attributedText); fields[boxes[index].id]?.content = boxes[index]
-        normalizeFloatingList(index, previous: previous[index], editor: editor)
+        normalizeFloatingList(index, previous: previous, editor: editor)
         grow(index); synchronize()
-        if boxes[index].flowID != nil { commitFlow(previous: previous[index], editor: editor) }
-        else { record(previous, name: "Listenformat ändern"); publish() }
+        if boxes[index].flowID != nil { commitFlow(previous: previous, editor: editor) }
+        else { publish() }
         layoutIfNeeded(); requestCaretReveal(.typing)
     }
 
@@ -1228,7 +1199,7 @@ private final class PageTextView: UITextView {
         addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override var undoManager: UndoManager? { historyOwner?.notebookUndo ?? (isFlow ? nil : historyOwner?.textHistory) }
+    override var undoManager: UndoManager? { historyOwner?.notebookUndo }
     override var keyCommands: [UIKeyCommand]? {
         (super.keyCommands ?? []) + (isFlow ? [
             UIKeyCommand(input: "z", modifierFlags: .command, action: #selector(undoFlow)),
@@ -1492,10 +1463,8 @@ extension TextObjectLayer {
         defer { updating = wasUpdating }
         if placement.newlines > 0 {
             var filler = typing; filler[.paragraphStyle] = NSParagraphStyle.default
-            textHistory.disableUndoRegistration()
             editor.textStorage.replaceCharacters(in: NSRange(location: placement.location, length: 0),
                 with: NSAttributedString(string: String(repeating: "\n", count: placement.newlines), attributes: filler))
-            textHistory.enableUndoRegistration()
         }
         editor.selectedRange = NSRange(location: placement.location + placement.newlines, length: 0)
         let paragraph = ((typing[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
@@ -1510,10 +1479,9 @@ extension TextObjectLayer {
               let index = boxes.firstIndex(where: { $0.id == editor.objectID }),
               let plan = boxes[index].listNesting(selection: editor.selectedRange, outdent: outdent) else { return false }
         editor.placement = nil
-        let previous = boxes
+        let previous = boxes[index]
         var selection = editor.selectedRange
         updating = true
-        textHistory.disableUndoRegistration()
         editor.textStorage.beginEditing()
         for (range, indent) in zip(plan.paragraphs, plan.indents) where NSMaxRange(range) <= editor.textStorage.length {
             editor.textStorage.enumerateAttribute(.paragraphStyle, in: range) { value, part, _ in
@@ -1527,11 +1495,11 @@ extension TextObjectLayer {
         }
         editor.textStorage.endEditing()
         editor.selectedRange = selection
-        textHistory.enableUndoRegistration(); updating = false
+        updating = false
         boxes[index].capture(editor.attributedText); fields[boxes[index].id]?.content = boxes[index]
         grow(index); synchronize()
-        if boxes[index].flowID != nil { commitFlow(previous: previous[index], editor: editor) }
-        else { record(previous, name: outdent ? "Liste ausrücken" : "Liste einrücken"); publish() }
+        if boxes[index].flowID != nil { commitFlow(previous: previous, editor: editor) }
+        else { publish() }
         layoutIfNeeded(); requestCaretReveal(.typing)
         return true
     }
@@ -1558,10 +1526,9 @@ extension TextObjectLayer {
         guard !edits.isEmpty else { return }
         let wasUpdating = updating; updating = true
         let selection = TextListEditing.selection(editor.selectedRange, after: edits)
-        textHistory.disableUndoRegistration()
         editor.textStorage.beginEditing(); replace(edits, in: editor); editor.textStorage.endEditing()
         editor.selectedRange = selection
-        textHistory.enableUndoRegistration(); updating = wasUpdating
+        updating = wasUpdating
         boxes[index].capture(editor.attributedText); fields[boxes[index].id]?.content = boxes[index]
     }
 

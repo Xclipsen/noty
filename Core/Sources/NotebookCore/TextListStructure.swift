@@ -285,18 +285,6 @@ extension TextBox {
         return box
     }
 
-    /// Renumbers/normalises lists after an edit from `previous` to this text.
-    public func normalizingLists(after previous: TextBox, selection: NSRange, context: TextListEditing.ListContext = .init(),
-                                 continuation: Bool = false) -> (box: TextBox, selection: NSRange)? {
-        guard let changed = TextListEditing.changedRange(from: previous.text, to: text) else { return nil }
-        let restart = TextListEditing.numberedItem(in: previous.text, at: changed.location, level: previous.listLevel(at:),
-            continuation: continuation)
-        let edits = TextListEditing.normalize(text, level: listLevel(at:), changed: changed, restart: restart,
-            context: context, continuation: continuation)
-        guard !edits.isEmpty else { return nil }
-        return (applying(edits), TextListEditing.selection(selection, after: edits))
-    }
-
     public struct ListNesting: Equatable, Sendable {
         /// Line ranges and their new paragraph indents (format points).
         public var paragraphs: [NSRange]
@@ -335,15 +323,6 @@ extension TextBox {
             changed: NSRange(location: first.location, length: max(0, end - first.location - 1)), context: context,
             continuation: continuation, freshStarts: true)
         return plan
-    }
-    public func nestingList(selection: NSRange, outdent: Bool, context: TextListEditing.ListContext = .init(),
-                            continuation: Bool = false) -> (box: TextBox, selection: NSRange)? {
-        guard let plan = listNesting(selection: selection, outdent: outdent, context: context, continuation: continuation) else { return nil }
-        var box = self
-        for (range, indent) in zip(plan.paragraphs, plan.indents) { box = box.restyled([range]) { $0.indent = indent } }
-        box = box.applying(plan.markers).applying(plan.renumbering)
-        let caret = TextListEditing.selection(TextListEditing.selection(selection, after: plan.markers), after: plan.renumbering)
-        return box == self ? nil : (box, caret)
     }
 }
 

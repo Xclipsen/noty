@@ -85,6 +85,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
             dragStart = nil; rotationSnap = nil
             let added = incoming.last { object in !objects.contains { $0.id == object.id } }
             selectedID = added?.id ?? selectedID
+            if active, let added { insertedID = added.id }
         }
         self.pageID = pageID; self.contentGeneration = contentGeneration; pageLayout = layout
         self.active = active; self.onChange = onChange; self.onError = onError; objects = incoming
@@ -96,6 +97,13 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         refresh()
     }
 
+    /// An image added while the image tool is active (import, paste, undo of
+    /// a deletion), taken once by the viewport to scroll it into view.
+    private var insertedID: UUID?
+    func takeInsertedImage() -> CGRect? {
+        defer { insertedID = nil }
+        return insertedID.flatMap { id in objects.first { $0.id == id } }.map(displayBounds)
+    }
     /// The plane shows exactly these objects (no local drag pending).
     func shows(_ incoming: [ImageObject]) -> Bool { objects == incoming }
     func adoptCallbacks(onChange: @escaping ([ImageObject]) -> Void, onError: @escaping (String) -> Void) {

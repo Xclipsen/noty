@@ -95,6 +95,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private var separators: [CALayer] = []
     private var lastSearch: PageRect?
     private var pendingSearch: CGRect?
+    private var pendingImage: CGRect?
     private var lastTextFocus: UUID?
     private var lastReveal: UUID?
     /// Animated scroll to the page focused after a deletion; the horizontal
@@ -289,6 +290,11 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             pendingSearch = nil
             super.scrollRectToVisible(surface.convert(target.insetBy(dx: -16, dy: -16), to: self), animated: false)
         }
+        if let target = pendingImage {
+            pendingImage = nil
+            super.scrollRectToVisible(surface.convert(target.insetBy(dx: -24, dy: -24), to: self), animated: false)
+            constrainHorizontalOffset()
+        }
         changing = false
         refreshSheets()
         if resized { revealCaret() }
@@ -418,6 +424,10 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             } else {
                 let configureStarted = CACurrentMediaTime()
                 sheet.configure(config)
+                // A freshly inserted image (photo, file, paste) is scrolled into view.
+                if page.id == selected, let image = sheet.takeInsertedImage() {
+                    pendingImage = sheet.convert(image, to: surface); setNeedsLayout()
+                }
                 if page.id == selected {
                     EditorOpenTrace.mark("first sheet configured", "configure=\(Int((CACurrentMediaTime() - configureStarted) * 1000)) ms pdf=\(config.sourcePage != nil) zoom=\(String(format: "%.2f", Double(zoomScale)))")
                 }

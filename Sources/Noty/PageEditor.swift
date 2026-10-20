@@ -4,7 +4,9 @@ import PencilKit
 import NotebookCore
 import OSLog
 
-struct PageEditor: UIViewRepresentable {
+/// Configuration of one native page (`WorksheetView`), built per page by the
+/// editor and applied by `NotebookViewport`.
+struct PageEditor {
     var sourcePage: PDFPage?
     var layout: PageLayout
     var pageID: UUID
@@ -42,9 +44,11 @@ struct PageEditor: UIViewRepresentable {
     var undoState = UndoAvailability()
     /// A PencilKit tool use began on this page: one undo step per stroke/eraser gesture.
     var onInkSession: () -> Void = {}
-    var fitRequest: Int
+    /// Unused by the sheet (the viewport fits and inserts text itself); kept
+    /// with defaults so existing call sites compile.
+    var fitRequest = 0
     var contentGeneration: Int
-    var textInsertRequest: Int
+    var textInsertRequest = 0
     var onFlowEdit: ((TextBox, TextBox, NSRange) -> TextFlowFocus?)? = nil
     var onFlowUndo: ((Bool) -> Void)? = nil
     var onFlowBackspace: ((TextBox) -> Void)? = nil
@@ -56,9 +60,6 @@ struct PageEditor: UIViewRepresentable {
     var onImages: ([ImageObject]) -> Void
     var onError: (String) -> Void
     var onContent: (PageContent, PageContent) -> Bool
-
-    func makeUIView(context: Context) -> ZoomingWorksheet { ZoomingWorksheet() }
-    func updateUIView(_ view: ZoomingWorksheet, context: Context) { view.configure(self) }
 }
 
 extension PageEditor {
@@ -80,113 +81,6 @@ extension PageEditor {
         guard a.getRed(&x.0, green: &x.1, blue: &x.2, alpha: &x.3), b.getRed(&y.0, green: &y.1, blue: &y.2, alpha: &y.3) else { return false }
         return x == y
     }
-}
-
-final class ZoomingWorksheet: UIScrollView, UIScrollViewDelegate {
-    private let sheet = WorksheetView()
-    private var pageID: UUID?
-    private var previousSize = CGSize.zero
-    private var fitWidth: CGFloat = 1
-    private var needsInitialFit = true
-    private var fitRequest = 0
-    private var textInsertRequest = 0
-    private var lastSearch: PageRect?
-    private var pendingSearch: CGRect?
-    private var imageIDs = Set<UUID>()
-    private var adjusting = false
-
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        delegate = self
-        backgroundColor = .secondarySystemBackground
-        contentInsetAdjustmentBehavior = .never
-        keyboardDismissMode = .interactive
-        delaysContentTouches = false
-        panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
-        addSubview(sheet)
-    }
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func configure(_ editor: PageEditor) {
-        if lastSearch != editor.searchHighlight || pageID != editor.pageID {
-            lastSearch = editor.searchHighlight
-            pendingSearch = editor.searchHighlight?.cgRect.offsetBy(dx: editor.layout.contentOrigin.x, dy: editor.layout.contentOrigin.y)
-        }
-        let incomingImages = Set(editor.images.map(\.id))
-        let insertedImage = pageID == editor.pageID && editor.tool == .image
-            ? editor.images.last(where: { !imageIDs.contains($0.id) }) : nil
-        imageIDs = incomingImages
-        let touches = editor.fingerDrawing ? 2 : 1
-        if panGestureRecognizer.minimumNumberOfTouches != touches { panGestureRecognizer.minimumNumberOfTouches = touches }
-        if pageID != editor.pageID || sheet.bounds.size != editor.layout.canvas.cgSize {
-            pageID = editor.pageID
-            minimumZoomScale = 0.01
-            maximumZoomScale = 12
-            setZoomScale(1, animated: false)
-            sheet.frame = editor.layout.canvas.bounds
-            contentSize = editor.layout.canvas.cgSize
-            needsInitialFit = true
-        }
-        sheet.configure(editor)
-        if textInsertRequest != editor.textInsertRequest {
-            textInsertRequest = editor.textInsertRequest
-            let point = convert(CGPoint(x: bounds.midX, y: bounds.midY), to: sheet)
-            sheet.insertText(at: point)
-        }
-        if fitRequest != editor.fitRequest {
-            fitRequest = editor.fitRequest
-            needsInitialFit = true
-        }
-        setNeedsLayout()
-        if let image = insertedImage {
-            layoutIfNeeded()
-            let rect = image.rotatedBounds.cgRect.offsetBy(dx: editor.layout.contentOrigin.x, dy: editor.layout.contentOrigin.y)
-            scrollRectToVisible(sheet.convert(rect.insetBy(dx: -24, dy: -24), to: self), animated: true)
-        }
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        guard !adjusting, bounds.width > 40, bounds.height > 40, sheet.bounds.width > 0 else { return }
-        if previousSize != bounds.size || needsInitialFit {
-            adjusting = true
-            let oldSize = previousSize
-            let center = CGPoint(x: (contentOffset.x + oldSize.width / 2) / zoomScale,
-                                 y: (contentOffset.y + oldSize.height / 2) / zoomScale)
-            let relativeZoom = zoomScale / fitWidth
-            fitWidth = (bounds.width - 32) / sheet.bounds.width
-            minimumZoomScale = min(fitWidth, (bounds.height - 32) / sheet.bounds.height)
-            maximumZoomScale = max(fitWidth * 6, 6)
-            let desired = needsInitialFit ? fitWidth : fitWidth * relativeZoom
-            setZoomScale(min(max(desired, minimumZoomScale), maximumZoomScale), animated: false)
-            centerSheet()
-            if needsInitialFit {
-                contentOffset = CGPoint(x: -contentInset.left, y: -contentInset.top)
-            } else {
-                let x = center.x * zoomScale - bounds.width / 2
-                let y = center.y * zoomScale - bounds.height / 2
-                contentOffset = CGPoint(
-                    x: min(max(x, -contentInset.left), max(-contentInset.left, contentSize.width - bounds.width + contentInset.right)),
-                    y: min(max(y, -contentInset.top), max(-contentInset.top, contentSize.height - bounds.height + contentInset.bottom)))
-            }
-            previousSize = bounds.size
-            needsInitialFit = false
-            adjusting = false
-        } else { centerSheet() }
-        if let target = pendingSearch {
-            pendingSearch = nil
-            scrollRectToVisible(sheet.convert(target.insetBy(dx: -16, dy: -16), to: self), animated: false)
-        }
-    }
-
-    private func centerSheet() {
-        let horizontal = max(16, (bounds.width - contentSize.width) / 2)
-        let vertical = max(16, (bounds.height - contentSize.height) / 2)
-        let insets = UIEdgeInsets(top: vertical, left: horizontal, bottom: vertical, right: horizontal)
-        if contentInset != insets { contentInset = insets }
-    }
-    func viewForZooming(in scrollView: UIScrollView) -> UIView? { sheet }
-    func scrollViewDidZoom(_ scrollView: UIScrollView) { centerSheet() }
 }
 
 struct UndoAvailability: Equatable { var undo = false, redo = false }
@@ -458,6 +352,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         objectLayer.adoptTransfer(value, selecting: selection)
     }
     func insertText(at point: CGPoint) { textLayer.insertText(at: point) }
+    /// Frame (sheet coordinates) of an image just added with the image tool.
+    func takeInsertedImage() -> CGRect? { imageLayer.takeInsertedImage().map { imageLayer.convert($0, to: self) } }
     func focusText(_ focus: TextFlowFocus) { textLayer.applyTextFocus(focus) }
     func finishTextEditing() { textLayer.endTextEditing() }
     /// PencilKit's private ruler recognizers (moved/rotated with two fingers).

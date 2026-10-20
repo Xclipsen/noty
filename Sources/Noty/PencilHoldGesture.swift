@@ -8,7 +8,6 @@ final class PencilHoldGesture: UIGestureRecognizer, UIGestureRecognizerDelegate 
     var onHold: (() -> Void)?
     var onPoint: ((CGPoint) -> Void)?
     var onBegin: ((CGPoint) -> Void)?
-    var onMove: (() -> Void)?
     var onEnd: ((Bool) -> Void)?
     var allowFinger = false
     private var timer: Timer?
@@ -27,7 +26,7 @@ final class PencilHoldGesture: UIGestureRecognizer, UIGestureRecognizerDelegate 
         let next = touch.location(in: view)
         onPoint?(next)
         let screen = touch.location(in: view?.window ?? view)
-        if hypot(screen.x - point.x, screen.y - point.y) > 6 { point = screen; onMove?(); arm() }
+        if hypot(screen.x - point.x, screen.y - point.y) > 6 { point = screen; arm() }
         state = .changed
     }
     private func arm() {

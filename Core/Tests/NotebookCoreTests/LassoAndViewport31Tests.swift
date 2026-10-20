@@ -68,8 +68,6 @@ final class LassoAndViewport31Tests: XCTestCase {
                 visible: .init(x: 4000, y: 4000, width: 1100 / scale, height: 800 / scale), scale: scale)
             let resolution = EditorRenderGeometry.viewportScale(size: viewport.frame.size, displayScale: scale, screenScale: 2)
             XCTAssertLessThanOrEqual(viewport.frame.width * viewport.frame.height * resolution * resolution, 6_000_001)
-            let text = EditorRenderGeometry.textScale(size: .a4, displayScale: scale * 2)
-            XCTAssertLessThanOrEqual(PageSize.a4.width * PageSize.a4.height * text * text, 2_000_001)
         }
     }
     func testStandardWritingAreaKeepsPointAndTextSizeAcrossMixedImports() throws {

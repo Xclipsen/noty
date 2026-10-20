@@ -86,10 +86,6 @@ public enum MarkerInk {
 /// opacity, tilt) are sampled from the drawn points by arc length, so a long
 /// hold at the end only shapes the line's end, not half of it.
 public enum StraightStroke {
-    public static func sampleCount(length: Double) -> Int {
-        guard length.isFinite else { return 8 }
-        return min(64, max(8, Int(length / 16) + 2))
-    }
     /// Index of the drawn point at each of `count` evenly spaced arc-length fractions.
     public static func sampleIndices(along points: [PagePoint], count: Int) -> [Int] {
         guard count > 0 else { return [] }
