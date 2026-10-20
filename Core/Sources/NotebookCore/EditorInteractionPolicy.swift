@@ -11,6 +11,18 @@ public enum EditorInteractionPolicy {
             && point.y >= source.y && point.y < source.y + source.height
         return inside ? sourceDark : marginDark
     }
+
+    /// Whether the canvas must be set back to the model's ink. `shown`: the
+    /// canonical bytes the canvas was last set from; nil after a native change
+    /// (drawn ink not yet published, e.g. a held stroke ending) which is never
+    /// discarded here. Whenever nothing transient is on screen (no stroke,
+    /// held shape, erase sweep, lift or object drag) known bytes must match:
+    /// an aborted lift (tool change, pane deactivated) left only the remainder
+    /// there, and the next stroke would have published it without the lifted ink.
+    public static func canvasNeedsReset(shown: Data?, model: Data, stroke: Bool, transient: Bool) -> Bool {
+        guard let shown, !stroke, !transient else { return false }
+        return shown != model
+    }
 }
 
 extension EditorInteractionPolicy {
