@@ -141,17 +141,23 @@ struct LawPanelView<Drag: Gesture>: View {
                     Button("An den Rand schieben", systemImage: laws.panelOnLeft ? "arrow.left.to.line" : "arrow.right.to.line") {
                         withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = true }
                     }
+                    // The only way to remove the edge tab as well; the notebook
+                    // menu „Gesetzessammlung“ opens the window again.
+                    Button("Ganz schließen (ohne Pfeil)", systemImage: "xmark.rectangle") { laws.panelOpen = false }
                 } label: { Image(systemName: "rectangle.split.2x1").frame(width: 44, height: 36) }.accessibilityLabel("Gesetzesfenster anordnen")
                 Spacer()
                 Capsule().fill(.secondary).frame(width: 44, height: 5).frame(width: 80, height: 36)
                     .accessibilityLabel("Gesetzesfenster verschieben")
                 Spacer()
-                Button { laws.panelOpen = false } label: { Image(systemName: "xmark").frame(width: 44, height: 36) }.accessibilityLabel("Gesetzesfenster schließen")
+                // Closing slides the window past its edge and leaves the arrow
+                // tab, like iPad Slide Over; the reader keeps its state.
+                Button { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = true } } label: { Image(systemName: "xmark").frame(width: 44, height: 36) }
+                    .accessibilityLabel("Gesetzesfenster schließen").accessibilityHint("Bleibt als Pfeil am Bildschirmrand")
             }.background(.ultraThinMaterial)
                 // The whole bar is the grip, not only the small capsule.
                 .contentShape(Rectangle())
                 .gesture(drag)
-            LawReaderView(pen: pen, onPenChange: onPenChange)
+            LawReaderView(inPanel: true, pen: pen, onPenChange: onPenChange)
         }.clipShape(RoundedRectangle(cornerRadius: laws.docked ? 0 : 16))
             .overlay(RoundedRectangle(cornerRadius: laws.docked ? 0 : 16).strokeBorder(.secondary.opacity(0.25)))
             .shadow(color: .black.opacity(laws.docked ? 0 : 0.3), radius: 16)

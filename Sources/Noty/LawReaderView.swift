@@ -71,8 +71,13 @@ private enum LawReadingPosition {
     }
 }
 
+/// Which input started a lookup; that field keeps what was typed there.
+private enum LawLookupField { case query, number }
+
 struct LawReaderView: View {
     @EnvironmentObject private var laws: LawLibraryModel
+    /// Shown in the notebook's law window, which can be closed or stashed.
+    var inPanel = false
     var pen = LawPenMode()
     /// Lets the reader switch what Apple Pencil does; nil hides the switch.
     var onPenChange: ((LawPenMode) -> Void)? = nil
@@ -98,7 +103,7 @@ struct LawReaderView: View {
     @State private var requestID = UUID()
     @FocusState private var queryFocused: Bool
     /// Closed or stashed at the screen edge: no hidden field may keep the keyboard.
-    private var hidden: Bool { !laws.panelOpen || laws.stashed }
+    private var hidden: Bool { inPanel && (!laws.panelOpen || laws.stashed) }
     private var entry: LawEntry? { laws.entries.first { $0.id == selectedID } }
     private var section: LawSection? { document?.sections.first { $0.id == sectionID } }
     private var marks: [LawPersonalItem] {
@@ -173,12 +178,13 @@ struct LawReaderView: View {
         .task(id: query) {
             guard !query.isEmpty else { return }
             do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
-            await search(query)
+            await search(query, from: .query)
         }
         .task(id: number) {
-            guard !number.isEmpty else { return }
+            // The field following the reader (arrows, contents) is no new lookup.
+            guard !number.isEmpty, !showsCurrentSection(number) else { return }
             do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
-            await search(number)
+            await search(number, from: .number)
         }
         .onChange(of: hidden) { _, hidden in if hidden { queryFocused = false; textSelection.clear() } }
         .sheet(isPresented: $showContents) { contents }
@@ -222,12 +228,12 @@ struct LawReaderView: View {
             HStack {
                 TextField("Schnellsuche · 144 HGB", text: $query).textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.search)
                     .focused($queryFocused)
-                    .onSubmit { Task { await search(query, allowFullText: true) } }
+                    .onSubmit { Task { await search(query, allowFullText: true, from: .query) } }
                 if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }.accessibilityLabel("Suche leeren") }
             }.padding(8).background(.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             HStack {
                 LawParagraphField(placeholder: entry?.kind == "administration" ? "Abschnitt / R" : "Paragraph", text: $number, letters: letters, active: !hidden) {
-                    Task { await search(number, allowFullText: true) }
+                    Task { await search(number, allowFullText: true, from: .number) }
                 }
                 // A UITextField otherwise takes all offered height and pushes
                 // the law text down (empty box under the quick search).
@@ -308,6 +314,22 @@ struct LawReaderView: View {
         guard let sections = document?.sections, let i = sections.firstIndex(where: { $0.id == sectionID }), sections.indices.contains(i + direction) else { return }
         textSelection.clear()
         pdfTarget = nil; sectionID = sections[i + direction].id; jumpParagraph = nil; loadError = ""
+        follow(sections[i + direction])
+    }
+    /// Both fields describe where the reader is. After arrows, contents,
+    /// bookmarks or another law the paragraph field shows the new section's
+    /// number and a quick-search location that no longer applies is cleared;
+    /// the field a lookup was typed into keeps its input (e.g. „4 Abs. 2“).
+    private func follow(_ shown: LawSection?, from field: LawLookupField? = nil) {
+        if field != .number { number = shown?.keys.first ?? "" }
+        if field != .query, !query.isEmpty,
+           LawQuickTarget.parse(query, entries: laws.entries) != nil || LawReference.parse(query) != nil { query = "" }
+    }
+    /// `value` names the shown section without a paragraph, so a lookup would
+    /// change nothing (in particular the paragraph field following the reader).
+    private func showsCurrentSection(_ value: String) -> Bool {
+        guard let section, let ref = LawReference.parse(value), ref.paragraph == nil else { return false }
+        return section.keys.contains(ref.key)
     }
     private func toggleBookmark() {
         if let existing = bookmarkItem { Task { await laws.remove(existing) }; return }
@@ -355,7 +377,7 @@ struct LawReaderView: View {
     }
     /// `resume`: a remembered target that no longer exists opens the beginning
     /// silently instead of reporting a missing citation.
-    private func open(_ entry: LawEntry, version: String? = nil, target: String? = nil, paragraph: String? = nil, resume: Bool = false) async {
+    private func open(_ entry: LawEntry, version: String? = nil, target: String? = nil, paragraph: String? = nil, resume: Bool = false, from field: LawLookupField? = nil) async {
         let request = UUID(); requestID = request
         loading = true; loadError = ""
         defer { if requestID == request { loading = false } }
@@ -366,23 +388,27 @@ struct LawReaderView: View {
             if target != nil && found == nil && !resume { loadError = "Diese Fundstelle ist in dieser Fassung nicht vorhanden."; return }
             textSelection.clear()
             selectedID = entry.id; versionID = doc.version; document = doc
-            sectionID = found?.id ?? doc.sections.first?.id ?? ""; jumpParagraph = paragraph
+            let shown = found ?? doc.sections.first
+            sectionID = shown?.id ?? ""; jumpParagraph = paragraph
             pdfURL = nil; viewPDF = false; pdfTarget = nil
+            follow(shown, from: field)
         } catch { if requestID == request { loadError = error.localizedDescription } }
     }
-    private func search(_ value: String, allowFullText: Bool = false) async {
+    private func search(_ value: String, allowFullText: Bool = false, from field: LawLookupField) async {
         if let target = LawQuickTarget.parse(value, entries: laws.entries), let entry = laws.entries.first(where: { $0.id == target.lawID }) {
-            await open(entry, target: target.reference.key, paragraph: target.reference.paragraph)
+            await open(entry, target: target.reference.key, paragraph: target.reference.paragraph, from: field)
         } else if let ref = LawReference.parse(value), let entry {
             if let doc = document, let s = doc.sections.first(where: { $0.keys.contains(ref.key) }) {
                 textSelection.clear()
                 pdfTarget = nil; sectionID = s.id; jumpParagraph = ref.paragraph; loadError = ""
-            } else { await open(entry, version: document?.version, target: ref.key, paragraph: ref.paragraph) }
+                follow(s, from: field)
+            } else { await open(entry, version: document?.version, target: ref.key, paragraph: ref.paragraph, from: field) }
         } else if allowFullText, let doc = document, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let term = value.lowercased()
             if let found = doc.sections.first(where: { ("\($0.label) \($0.title) \($0.text) \($0.notes)").lowercased().contains(term) }) {
                 textSelection.clear()
                 sectionID = found.id; jumpParagraph = nil; loadError = ""
+                follow(found, from: field)
             }
         }
     }
@@ -397,7 +423,7 @@ struct LawReaderView: View {
     private var contents: some View {
         NavigationStack {
             List(document?.sections ?? []) { s in
-                Button { textSelection.clear(); pdfTarget = nil; sectionID = s.id; jumpParagraph = nil; showContents = false } label: {
+                Button { textSelection.clear(); pdfTarget = nil; sectionID = s.id; jumpParagraph = nil; follow(s); showContents = false } label: {
                     VStack(alignment: .leading) { Text(s.label).font(.headline); Text(s.title).font(.caption) }
                 }
             }.navigationTitle("Inhaltsverzeichnis")
@@ -1036,6 +1062,12 @@ private struct LawParagraphField: UIViewRepresentable {
         init(_ parent: LawParagraphField) { self.parent = parent }
         @objc func changed(_ field: UITextField) { parent.text = field.text ?? "" }
         @objc func search() { parent.submit() }
+        /// The field shows the current section: typing replaces that number.
+        func textFieldDidBeginEditing(_ textField: UITextField) {
+            DispatchQueue.main.async {
+                textField.selectedTextRange = textField.textRange(from: textField.beginningOfDocument, to: textField.endOfDocument)
+            }
+        }
         func textFieldShouldReturn(_ textField: UITextField) -> Bool { parent.submit(); return true }
     }
 }

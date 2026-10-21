@@ -67,12 +67,27 @@ final class LawLibraryModel: ObservableObject {
     @Published private(set) var syncStatus = "Lokal gespeichert"
     @Published private(set) var byteCount: Int64 = 0
     @Published var error: String?
-    @Published var panelOpen = false { didSet { if !panelOpen { stashed = false } } }
+    /// Where the law window was last: open/stashed, docked/floating, side and
+    /// width, kept across notebooks and launches. Display state only.
+    static let panelOpenKey = "noty.laws.panelOpen"
+    static let panelStashedKey = "noty.laws.panelStashed"
+    static let panelDockedKey = "noty.laws.panelDocked"
+    static let panelLeftKey = "noty.laws.panelLeft"
+    static let panelWidthKey = "noty.laws.panelWidth"
+    @Published var panelOpen = UserDefaults.standard.bool(forKey: LawLibraryModel.panelOpenKey) {
+        didSet { if !panelOpen { stashed = false }; UserDefaults.standard.set(panelOpen, forKey: Self.panelOpenKey) }
+    }
     /// Pushed past the screen edge like iPad Slide Over: hidden behind an edge
-    /// tab, reader state kept. Closing the window clears it.
-    @Published var stashed = false
-    @Published var docked = false
-    @Published var panelOnLeft = false
+    /// tab, reader state kept. Closing the window completely clears it.
+    @Published var stashed = UserDefaults.standard.bool(forKey: LawLibraryModel.panelStashedKey) {
+        didSet { UserDefaults.standard.set(stashed, forKey: Self.panelStashedKey) }
+    }
+    @Published var docked = UserDefaults.standard.bool(forKey: LawLibraryModel.panelDockedKey) {
+        didSet { UserDefaults.standard.set(docked, forKey: Self.panelDockedKey) }
+    }
+    @Published var panelOnLeft = UserDefaults.standard.bool(forKey: LawLibraryModel.panelLeftKey) {
+        didSet { UserDefaults.standard.set(panelOnLeft, forKey: Self.panelLeftKey) }
+    }
     var sceneActive = true
     private var started = false
     private var epoch = 0

@@ -31,6 +31,12 @@ Nutzer zu Build 58 (iPadOS 27): Markierungen erscheinen nicht sofort, Entfernen 
 - **Konto erklärt**: Markieren braucht kein Konto; ohne Konto bleiben Markierungen auf diesem iPad, mit Konto werden sie abgeglichen. Status im „…“-Menü des Lesers.
 - **Registrieren ohne E-Mail**: Neues Konto mit Benutzername (2–32 Buchstaben, Zahlen oder . _ -) und Passwort ab 12 Zeichen; der Server legt es sofort an und verschickt nichts. Registrieren per E-Mail bleibt gesperrt, solange Mail serverseitig aus ist; ohne E-Mail ist kein Passwort-Reset möglich.
 
+Nutzer zu Build 59: Die Position der Gesetzessammlung soll gespeichert werden, wo sie aktiv war; komplett geschlossen soll sie mit dem Pfeil zur Seite verschwinden; beim Blättern mit den Pfeilen unten aktualisiert sich der Text im Paragraphfeld nicht. Umgesetzt in Build 60:
+
+- **Position gemerkt**: geöffnet/geparkt, angedockt/schwebend, linke/rechte Seite und Breite bleiben über Heftwechsel und Neustart erhalten (nur Anzeigezustand in UserDefaults). Ein Heft zeigt das Fenster dort, wo es zuletzt war, geparkt als Pfeil-Lasche.
+- **Schließen parkt**: ✕ in der Kopfleiste schiebt das Fenster über seinen Rand und lässt die Pfeil-Lasche stehen; der Leserzustand bleibt. Der Menüpunkt „Gesetzessammlung“ im Heft holt es hervor bzw. parkt ein sichtbares Fenster. Ganz ohne Pfeil nur über „Ganz schließen (ohne Pfeil)“ im Anordnungsmenü oder durch Abschalten der Gesetzessammlung.
+- **Paragraphfeld folgt**: Nach Blättern, Inhaltsverzeichnis, Lesezeichen, Gesetz-/Fassungswechsel und Schnellsuche zeigt das Feld die Nummer der angezeigten Vorschrift; eine Fundstelle in der Schnellsuche, die nicht mehr zutrifft, wird geleert, ein Volltextbegriff bleibt. Was im Feld selbst gesucht wurde (z. B. „4 Abs. 2“), bleibt stehen. Antippen markiert die Nummer, Tippen ersetzt sie. Die angezeigte Nummer löst keine neue Suche aus.
+
 Native Suche: Gesetz wählen und Nummer eingeben oder `144 HGB`/`HGB 144` im direkten Suchfeld. Eindeutige Fundstellen nach kurzer Pause öffnen, Volltextsuche mit Suchen/Enter. Apples Zahlen-/Texttastatur mit direktem Wechsel für Zusätze/Absätze; keine eigene Ziffernpalette und keine zugesicherte schwebende iPad-Tastaturgröße. Text/PDF, Inhaltsverzeichnis und Fassungen im Leser. Details und tatsächliche Nachweise: [LAW-INTEGRATION-PLAN](LAW-INTEGRATION-PLAN.md), [TESTING](TESTING.md#native-gesetzessammlung--feature-worktree).
 
 ## Bild-Werkzeug im noty-Stil – 20.10.2026

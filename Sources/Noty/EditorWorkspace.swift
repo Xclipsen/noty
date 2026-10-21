@@ -85,7 +85,8 @@ final class EditorWorkspace: ObservableObject {
 struct EditorWorkspaceView: View {
     @EnvironmentObject private var laws: LawLibraryModel
     @AppStorage(LawLibraryModel.enabledKey) private var lawsEnabled = false
-    @State private var lawWidth = 380.0
+    /// Live width while resizing; stored when the resize ends.
+    @State private var lawWidth = UserDefaults.standard.object(forKey: LawLibraryModel.panelWidthKey) as? Double ?? 380
     @State private var lawResizeStart: Double?
     @GestureState private var lawResizing = false
     /// Live drag of the law window's top bar or of its edge tab, with the drop
@@ -209,7 +210,9 @@ struct EditorWorkspaceView: View {
             .sensoryFeedback(.selection, trigger: lawDrag.flatMap { $0.drop == .stay ? nil : $0.drop })
         }
         // A cancelled gesture never reaches onEnded: drop the preview.
-        .onChange(of: lawResizing) { _, active in if !active { lawResizeStart = nil } }
+        .onChange(of: lawResizing) { _, active in
+            if !active { lawResizeStart = nil; UserDefaults.standard.set(lawWidth, forKey: LawLibraryModel.panelWidthKey) }
+        }
         .onChange(of: lawDragActive) { _, active in if !active, lawDrag != nil { withAnimation(NotyMotion.panel(reduceMotion)) { lawDrag = nil } } }
         .onChange(of: paneGestureActive) { _, active in if !active { paneDrag = nil } }
         .onChange(of: dividerGestureActive) { _, active in if !active { dividerFraction = nil } }
@@ -244,7 +247,9 @@ struct EditorWorkspaceView: View {
             isPaneActive: { workspace.activePane == index && !workspace.closing }, onActivatePane: { workspace.activePane = index },
             onCloseWorkspace: { Task { if await toolbox.flush(), await workspace.closeAll() { library.notebookClosedByUser(); dismiss() } } },
             onSecondView: { choose() }, onLaws: lawsEnabled ? {
-                if laws.panelOpen && laws.stashed { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = false } } else { laws.panelOpen.toggle() }
+                // Shows the window; a visible one goes to its edge tab like its ✕.
+                if !laws.panelOpen { laws.panelOpen = true; laws.stashed = false }
+                else { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed.toggle() } }
             } : nil, onToolChange: { tool in
                 // Picking the highlighter or an eraser in the active notebook
                 // switches the law reader along; other tools leave its choice.
