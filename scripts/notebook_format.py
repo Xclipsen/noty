@@ -15,8 +15,12 @@ UUID_PATTERN = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-F
 PDF_SOURCE_LIMIT = 100_000_000
 LEGACY_PDF_SOURCE_LIMIT = 20_000_000  # Build 46; larger sources need schema 10
 PDF_SOURCES_TOTAL_LIMIT = 100_000_000
-IMAGE_LIMIT = 20_000_000
-IMAGES_TOTAL_LIMIT = 40_000_000
+IMAGE_LIMIT = 20_000_000  # per stored original
+IMAGES_TOTAL_LIMIT = 500_000_000  # unique originals (each hash once), schema 12
+LEGACY_IMAGES_TOTAL_LIMIT = 40_000_000  # embedded originals summed per object, schema <= 11
+IMAGE_ASSET_SCHEMA = 12  # image objects reference package assets instead of embedding
+CURRENT_SCHEMA = 12
+ASSET_HASH = re.compile(r"[0-9a-f]{64}")
 # Foundation dates: seconds since 2001 (JSONEncoder default); Swift accepts years 1…9999.
 REFERENCE_DATE_UNIX = 978_307_200
 UNIX_RANGE = (-62_135_596_800, 253_402_300_799)
@@ -230,7 +234,20 @@ def _shapes(page, version, shape_ids):
         check(max(a["y"], b["y"]) + pad <= h + m.get("bottom", 0) + 0.02, "Shape outside page")
 
 
-def _images(page, version, image_ids):
+def asset_reference(value):
+    """{"sha256": 64 lowercase hex, "byteCount": 1 ... 20 MB} -> (sha256, byteCount)."""
+    check(isinstance(value, dict), "Invalid image asset reference")
+    sha, count = value["sha256"], value["byteCount"]
+    check(isinstance(sha, str) and ASSET_HASH.fullmatch(sha) is not None, "Invalid image asset hash")
+    check(type(count) is int and 1 <= count <= IMAGE_LIMIT, "Image original outside size limit")
+    return sha, count
+
+
+def _images(page, version, image_ids, assets):
+    """Schema 12: `asset` required, `data` forbidden; objects sharing a hash
+    agree on size and pixel dimensions (`assets`: sha -> (byteCount, w, h)).
+    Schema 5-11: `data` (Base64) required, `asset` forbidden. Returns the
+    embedded bytes of this page (legacy sum)."""
     check(version >= 5 and len(page["images"]) <= 50, "Invalid image layer")
     total = 0
     w, h = _page_size(page)
@@ -239,10 +256,17 @@ def _images(page, version, image_ids):
         image_id = uuid_string(image["id"])
         check(image_id not in image_ids, "Duplicate image identities")
         image_ids.add(image_id)
-        original = base64_bytes(image["data"])
-        check(1 <= len(original) <= IMAGE_LIMIT, "Image original outside size limit")
-        total += len(original)
         check(all(type(image[k]) is int and 1 <= image[k] <= 100_000 for k in ("pixelWidth", "pixelHeight")), "Invalid image size")
+        if version >= IMAGE_ASSET_SCHEMA:
+            check("data" not in image, "Schema 12 image embeds its original")
+            sha, count = asset_reference(image["asset"])
+            entry = (count, image["pixelWidth"], image["pixelHeight"])
+            check(assets.setdefault(sha, entry) == entry, "Image objects of one original disagree on size")
+        else:
+            check("asset" not in image, "Image asset reference needs schema 12")
+            original = base64_bytes(image["data"])
+            check(1 <= len(original) <= IMAGE_LIMIT, "Image original outside size limit")
+            total += len(original)
         check(image["pixelWidth"] * image["pixelHeight"] <= 200_000_000, "Image exceeds 200 megapixels")
         check(all(number(image[k]) for k in ("x", "y", "width", "height", "rotation")), "Invalid image frame")
         check(abs(image["x"]) <= 14_400 and abs(image["y"]) <= 14_400, "Invalid image frame")
@@ -263,9 +287,12 @@ def _images(page, version, image_ids):
 
 @strict
 def validate_notebook(document):
+    """Validates one notebook and returns its external image assets as
+    {sha256: byteCount}: what a package or a format-2 archive must carry. Schema
+    <= 11 embeds every original in the JSON, so the result is empty there."""
     check(isinstance(document, dict), "Notebook is not an object")
     version = document["schemaVersion"]
-    check(type(version) is int and version in range(1, 12), "Unsupported notebook schema")
+    check(type(version) is int and version in range(1, CURRENT_SCHEMA + 1), "Unsupported notebook schema")
     uuid_string(document["id"])
     check(isinstance(document["title"], str), "Invalid notebook title")
     if document.get("appearance") is not None:
@@ -280,6 +307,7 @@ def validate_notebook(document):
     check(len(set(page_ids)) == len(pages), "Duplicate page identities")
     text_ids, image_ids, shape_ids = set(), set(), set()
     image_bytes = 0
+    assets = {}
     for page in pages:
         base64_bytes(page["drawing"])
         check(isinstance(page["text"], str), "Invalid page text")
@@ -291,8 +319,10 @@ def validate_notebook(document):
         if page.get("shapes") is not None:
             _shapes(page, version, shape_ids)
         if page.get("images") is not None:
-            image_bytes += _images(page, version, image_ids)
-    check(image_bytes <= IMAGES_TOTAL_LIMIT, "Image originals exceed 40 MB")
+            image_bytes += _images(page, version, image_ids, assets)
+    check(image_bytes <= LEGACY_IMAGES_TOTAL_LIMIT, "Embedded image originals exceed 40 MB")
+    check(sum(count for count, _, _ in assets.values()) <= IMAGES_TOTAL_LIMIT, "Unique image originals exceed 500 MB")
+    references = {sha: count for sha, (count, _, _) in assets.items()}
     check(image_ids.isdisjoint(text_ids) and shape_ids.isdisjoint(text_ids | image_ids), "Object identities overlap")
     if document.get("pdfSources") is None:
         check(document.get("deletedPages") is None, "Page trash needs PDF sources representation")
@@ -300,7 +330,7 @@ def validate_notebook(document):
               "Page fields need schema 3 representation")
         if document.get("pdf") is not None:
             base64_bytes(document["pdf"])
-        return
+        return references
     check(version >= 3 and document.get("pdf") is None, "Invalid PDF source representation")
     sources = document["pdfSources"]
     check(isinstance(sources, list) and len(sources) <= 500, "Too many PDF sources")
@@ -356,3 +386,4 @@ def validate_notebook(document):
         if entry.get("reason") == "cleared":
             check(version >= 7, "Cleared-page snapshot needs schema 7")
         check(entry.get("reason") in (None, "marginReduction", "cleared"), "Unknown trash reason")
+    return references

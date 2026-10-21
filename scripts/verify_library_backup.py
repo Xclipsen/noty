@@ -2,8 +2,12 @@
 """Independently verify a .notylibrary archive, without extracting paths/text.
 
 Reads the archive chunk by chunk (one notebook in memory at a time) and checks
-the same limits as noty: archive <= 4 GB, notebook chunk <= 200 MB, manifest
-<= 2 MB, index <= 4 MB, preferences <= 64 KB. Exit code 1 on any violation.
+the same limits as noty: archive <= 4 GB, notebook chunk <= 200 MB, index
+<= 4 MB, preferences <= 64 KB; format 1 manifest <= 2 MB. Format 2 is the
+record stream of record_archive.py: index, toolbar, then per notebook its
+record followed by those of its image assets no earlier group carried, then
+the end record. Each asset hash occurs once, is referenced by the notebook of
+its group and is checked with SHA-256. Exit code 1 on any violation.
 """
 import argparse
 import json
@@ -12,7 +16,8 @@ import sys
 import zlib
 from pathlib import Path
 from uuid import UUID
-from notebook_format import appearance, validate_notebook
+from notebook_format import appearance, uuid_string, validate_notebook
+from record_archive import ASSET_LIMIT, MAXIMUM_HEADER as RECORD_HEADER, RecordReader, check_date, check_references
 
 MAXIMUM_BYTES = 4_000_000_000
 MAXIMUM_NOTEBOOK = 200_000_000
@@ -21,7 +26,7 @@ MAXIMUM_INDEX = 4_000_000
 MAXIMUM_TOOLBAR = 64_000
 
 
-class VerificationError(Exception):
+class VerificationError(ValueError):
     pass
 
 
@@ -92,10 +97,81 @@ def verify_index(index):
     return items, lookup
 
 
+HEADER_KEYS = {"libraryBackupVersion", "checksumAlgorithm", "assetHashAlgorithm", "createdAt"}
+
+
 def verify(path):
     require(path.is_file() and not path.is_symlink(), "Not a regular file")
     size = path.stat().st_size
     require(size <= MAXIMUM_BYTES, "Archive exceeds size limit")
+    with path.open("rb") as stream:
+        prefix = stream.read(12)
+        require(len(prefix) == 12 and prefix[:8] == b"NOTYLIB\n", "Wrong header")
+        length, = struct.unpack(">I", prefix[8:12])
+        require(1 <= length <= MAXIMUM_HEADER and size - 12 >= length, "Wrong header length")
+        header = json.loads(stream.read(length))
+        require(isinstance(header, dict), "Invalid header")
+        version = header.get("libraryBackupVersion")
+    require(version in (1, 2) and type(version) is int, "Unsupported archive version")
+    return verify_v1(path, size) if version == 1 else verify_v2(path, size)
+
+
+def verify_v2(path, size):
+    with path.open("rb") as stream:
+        reader = RecordReader(stream, size)
+        header = reader.header(b"NOTYLIB\n", RECORD_HEADER)
+        require(set(header) == HEADER_KEYS, "Unexpected header fields")
+        require(header["libraryBackupVersion"] == 2 and header["checksumAlgorithm"] == "crc32-iso-hdlc"
+                and header["assetHashAlgorithm"] == "sha256", "Unexpected format or algorithm")
+        check_date(header["createdAt"])
+        first = reader.descriptor()
+        require(first["kind"] == "index", "First record must be the index")
+        items, lookup = verify_index(json.loads(reader.payload(first, MAXIMUM_INDEX)))
+        second = reader.descriptor()
+        require(second["kind"] == "toolbar", "Second record must be the toolbar")
+        toolbar = json.loads(reader.payload(second, MAXIMUM_TOOLBAR))
+        verify_toolbar(toolbar)
+        expected = {uuid_string(i["id"]): i["id"] for i in items if i.get("source") is not None}
+        emitted, ids, shared = {}, set(), set()
+        group = None  # references of the current notebook
+
+        def finish(group):
+            if group is not None:
+                require(all(emitted.get(sha) == count for sha, count in group.items()), "Referenced asset missing")
+
+        while True:
+            record = reader.descriptor()
+            kind = record["kind"]
+            if kind == "notebook":
+                finish(group)
+                require(record["id"] in expected and record["id"] not in ids, "Wrong notebook entry")
+                ids.add(record["id"])
+                document = json.loads(reader.payload(record, MAXIMUM_NOTEBOOK))
+                require(isinstance(document, dict) and uuid_string(document["id"]) == record["id"], "Notebook identity mismatch")
+                group = check_references(validate_notebook(document))
+                require(document["title"] == lookup[expected[record["id"]]]["title"], "Notebook title differs from index")
+                shared.update(sha for sha in group if sha in emitted)
+                del document
+            elif kind == "asset":
+                require(group is not None, "Asset before any notebook")
+                require(group.get(record["sha256"]) == record["byteCount"], "Asset not referenced by its notebook")
+                require(record["sha256"] not in emitted and record["byteCount"] <= ASSET_LIMIT, "Duplicate asset")
+                reader.asset(record)
+                emitted[record["sha256"]] = record["byteCount"]
+            elif kind == "end":
+                finish(group)
+                reader.end(record)
+                break
+            else:
+                require(False, "Index or toolbar record out of place")
+        require(ids == set(expected), "Incomplete document set")
+    return {"formatVersion": 2, "documents": len(expected), "folders": len(items) - len(expected),
+            "explicitly_trashed": sum(i.get("deletedAt") is not None for i in items),
+            "presets": len(toolbar["presets"]), "assets": len(emitted), "assetBytes": sum(emitted.values()),
+            "sharedAssets": len(shared), "bytes": size, "crc32": reader.crc, "all_payload_checksums_valid": True}
+
+
+def verify_v1(path, size):
     total_crc = 0
     with path.open("rb") as stream:
         def read(count):
@@ -140,14 +216,14 @@ def verify(path):
         for entry in entries[2:]:
             document = chunk(entry)
             require(entry["id"] == document["id"], "Notebook identity mismatch")
-            validate_notebook(document)
+            require(not validate_notebook(document), "Format 1 cannot carry image assets")
             require(document["title"] == lookup[document["id"]]["title"], "Notebook title differs from index")
             del document
         require(stream.read(1) == b"", "Trailing data")
-    return {"documents": len(expected), "folders": len(items) - len(expected),
+    return {"formatVersion": 1, "documents": len(expected), "folders": len(items) - len(expected),
             "explicitly_trashed": sum(i.get("deletedAt") is not None for i in items),
-            "presets": len(toolbar["presets"]), "bytes": size, "crc32": total_crc,
-            "all_payload_checksums_valid": True}
+            "presets": len(toolbar["presets"]), "assets": 0, "assetBytes": 0, "sharedAssets": 0,
+            "bytes": size, "crc32": total_crc, "all_payload_checksums_valid": True}
 
 
 if __name__ == "__main__":
@@ -157,5 +233,6 @@ if __name__ == "__main__":
     try:
         print(json.dumps(verify(arguments.archive)))
     except Exception as error:  # noqa: BLE001 - any malformed input must fail closed
-        print("FEHLER: " + (str(error) or type(error).__name__), file=sys.stderr)
+        # The type tells explicit checks (VerificationError/ValueError) from crashes.
+        print("FEHLER: " + (str(error) or type(error).__name__) + " (" + type(error).__name__ + ")", file=sys.stderr)
         sys.exit(1)

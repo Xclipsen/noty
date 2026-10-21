@@ -14,6 +14,9 @@ struct ContentView: View {
     var onActivatePane: (() -> Void)?
     var onCloseWorkspace: (() -> Void)?
     var onSecondView: (() -> Void)?
+    var onLaws: (() -> Void)?
+    /// Reports the selected tool, e.g. so Pencil highlights in the law reader.
+    var onToolChange: ((EditorTool) -> Void)?
     @State private var selectedPageID: UUID?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -143,6 +146,8 @@ struct ContentView: View {
             }
             .fileExporter(isPresented: $exporting, document: exportFile,
                           contentType: exportType, defaultFilename: "noty-\(exportType == .pdf ? "export" : "backup")-\(Date().formatted(.iso8601).replacingOccurrences(of: ":", with: "-"))") { result in
+                // The system wrote its copy: the scratch archive is no longer needed.
+                if let scratch = exportFile?.fileURL { BackupScratch.remove(scratch) }
                 switch result {
                 case .success:
                     if exportType == .pdf { model.fileStatus = "PDF-Datei exportiert" }
@@ -223,6 +228,7 @@ struct ContentView: View {
             .onChange(of: selectedPageID) { _, _ in if isPaneActive() { model.pageIndex = currentPageIndex } }
             .onChange(of: model.pageContentGeneration) { _, _ in textFocus = nil; writingDraft = Page() }
             .onChange(of: tool) { _, value in if value != .text { textFocus = nil }; if value.isInk { lastInkTool = value } }
+            .onChange(of: tool, initial: true) { _, value in onToolChange?(value) }
             .onChange(of: model.notebook.id) { _, _ in selectedPageID = model.page.id; searchHighlightPageID = model.page.id }
             .onAppear {
                 selectedPageID = model.page.id; searchHighlight = initialSearchBounds; searchHighlightPageID = model.page.id
@@ -590,6 +596,7 @@ struct ContentView: View {
                 }
             }
             Section {
+                if let onLaws { Button("Gesetzessammlung", systemImage: "books.vertical", action: onLaws) }
                 Menu("Ansicht", systemImage: "eye") {
                     Toggle("Schreibscrollen bis zur Bildschirmmitte", systemImage: "arrow.left.and.right.square", isOn: $writingScroll)
                     Toggle("Blättern statt Scrollen", systemImage: "book.pages", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
@@ -615,8 +622,9 @@ struct ContentView: View {
     }
     private func exportBackup() {
         Task {
-            if let data = await model.backupData() {
-                exportFile = ExportFile(backupData: data)
+            if let url = await model.backupFile() {
+                if let previous = exportFile?.fileURL { BackupScratch.remove(previous) }
+                exportFile = ExportFile(backupFile: url)
                 exportType = .notyBackup
                 exporting = true
             }
@@ -625,7 +633,8 @@ struct ContentView: View {
     /// Page by page with a progress badge; the snapshot is fixed at the start.
     private func startPDFExport(pageOnly: Bool) {
         guard canEdit, !pdfExport.running, !(pageOnly && currentPage.id == writingDraft.id) else { return }
-        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : nil, sourcePage: { model.sourcePage(for: $0) }) { result in
+        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : nil, sourcePage: { model.sourcePage(for: $0) },
+                        assets: model.imageAssets) { result in
             switch result {
             case .success(let data): exportFile = ExportFile(pdfData: data); exportType = .pdf; exporting = true
             case .failure(let error):

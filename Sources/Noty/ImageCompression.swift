@@ -18,7 +18,7 @@ enum ImageCompression {
     static let minimumBudget = 300_000
     /// Nutzer zu Build 52: every imported image at most 5 MB (large originals
     /// made dragging and saving lag). Validation still accepts 20 MB per image.
-    static let importTargetBytes = 5_000_000
+    static let importTargetBytes = ImageLimits.maximumImportBytes
 
     struct Result: Sendable {
         let data: Data

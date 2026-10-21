@@ -207,7 +207,9 @@ public enum ContentSearchPlanner {
         if pdfIdentity != nil || !images.isEmpty {
             var value = layout("imageOCR"); value.add(pdfIdentity ?? "-")
             for image in images {
-                value.add(image.id); value.add(image.data)
+                // Content address, hashed once per image value instead of
+                // re-reading the whole original for every fingerprint.
+                value.add(image.id); value.add(image.asset.sha256)
                 for number in [image.x, image.y, image.width, image.height, image.rotation] { value.add(number) }
                 value.add(image.crop)
             }

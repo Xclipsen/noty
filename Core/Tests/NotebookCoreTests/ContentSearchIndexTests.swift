@@ -23,7 +23,7 @@ final class ContentSearchIndexTests: XCTestCase {
     }
 
     private func image(_ byte: UInt8 = 1) -> ImageObject {
-        ImageObject(data: Data(repeating: byte, count: 64), pixelWidth: 8, pixelHeight: 8)
+        ImageObject.test(bytes: Data(repeating: byte, count: 64), pixelWidth: 8, pixelHeight: 8)
     }
 
     func testDigestIsDeterministicAndSensitiveToEveryByte() {

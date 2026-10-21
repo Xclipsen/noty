@@ -41,3 +41,15 @@ Wöchentlichen Signierungs-/Installationsweg auf Omarchy dokumentieren und mit d
 Mit einem repräsentativen 100-Seiten-Text-PDF und einem mehrseitigen hochauflösenden Scan testen. Dateigröße, Seitengrößen, verwendetes Gerät und beobachtete Speicher-/Bedienprobleme protokollieren. Nur sichtbare/nahe Canvas-Ansichten aktiv halten und Caches begrenzen; Inhalte vor Freigabe speichern.
 
 Danach einen Probetag mit Testnotizen durchführen und anschließend einen externen Restore nachweisen. Freigabe für den persönlichen Alltag erst bei erfülltem Scope, bestandenen Pflichtprüfungen und geklärten verbleibenden Einschränkungen. Aussagen immer nach **implementiert**, **erfolgreich gebaut**, **auf dem iPad getestet** und ggf. **vom Nutzer bestätigt** unterscheiden.
+
+
+## Ergänzung 20.10.2026: native Gesetzessammlung
+
+Diese Kriterien gehören zum bestätigten Ausbau, sind keine bestandene Geräteabnahme:
+
+- Aktivierung aus, persönlicher Sync an, Fassungsupdates an; jeder Schalter wirkt unabhängig. Kein Loginzwang für Offline-Lesen/Markieren, keine Übertragung von Heften.
+- Alle 39 aktuellen Dokumente nach Erstdownload und App-Neustart im Flugmodus lesen; optionale PDFs erhalten Originalbytes. `144 HGB`, `HGB 144`, `144 HBG`, Buchstabenzusätze/Absätze, EStR/LStR und AEAO treffen die richtige Fassung/Fundstelle.
+- Slide-over über einem und zwei Heften; andocken, Breite ändern, Seiten tauschen, Rotation und schmale Fenster. Beide Hefte behalten Seiten/Zoom/Ink/Textentwürfe/Undo. Im freien Heft weiterschreiben; keine Such-Tastatur verschiebt einen fremden Cursor.
+- Text-/Pencil-PDF-Markierung und Lesezeichen nach Neustart erhalten. App-/Website-Abgleich mit zwei Clients, Offlineänderungen, Wiederholungen, Logout/Kontowechsel und Löschung gegen späten Offline-Create prüfen. Lokale Daten werden beim ersten Login automatisch übernommen, fremde Kontodaten niemals neu zugeordnet.
+- Ein bestätigtes E-Mail-Konto, echter Mailversand, einmalige Bestätigung und Passwortwiederherstellung auf dem produktiven Backend. Vorhandene Benutzer-IDs und Daten bleiben bei Migration erhalten.
+- Gesetzesupdate zuerst serverseitig validiert/versioniert, anschließend Clientdownload. Abbruch, Prüfsummenfehler und Platzmangel erhalten den vollständigen alten Bestand; alte markierte Fassungen bleiben erreichbar. Separate persönliche Sicherung in frischen Bestand ergänzen, ohne spätere Löschungen zu überschreiben.

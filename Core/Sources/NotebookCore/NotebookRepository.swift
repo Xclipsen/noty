@@ -6,9 +6,14 @@ public actor NotebookRepository {
     private let store: RevisionStore
     private let restoreDirectory: URL
     private var revision = 0
+    /// The package's image originals: committed files plus the pending area
+    /// (imports staged from any thread, embedded originals of an old schema).
+    /// The single writer is this repository's store; rendering only reads.
+    public nonisolated let assets: NotebookAssets
 
     public init(directory: URL, restoreDirectory: URL? = nil) {
         store = RevisionStore(directory: directory)
+        assets = store.assets
         self.restoreDirectory = restoreDirectory ?? directory.appendingPathComponent("Restores", isDirectory: true)
     }
 
@@ -23,39 +28,84 @@ public actor NotebookRepository {
         self.revision = revision
     }
 
-    public func backup(_ snapshot: Notebook) throws -> Data {
-        try BackupArchive.encode(snapshot)
+    /// The package's asset GC on this actor, so it runs strictly between
+    /// commits (`RevisionStore.collectAssetGarbage`): the editor calls it once
+    /// after opening and once after its last commit when closing. `keeping`:
+    /// originals the process still needs from outside the notebook (the in-app
+    /// object clipboard). Nil: skipped (a backup or restore runs, the store
+    /// already committed, or the state is not committed).
+    @discardableResult
+    public func collectAssetGarbage(_ moment: RevisionStore.AssetGarbageMoment, current: Notebook? = nil,
+                                    keeping: Set<String> = []) throws -> ImageAssetGarbageReport? {
+        try store.collectAssetGarbage(moment, current: current, keeping: keeping)
     }
 
+    /// Writes a verified `.notybackup` (format 2) of `snapshot` into a new
+    /// file at `url` (a scratch file the caller owns; never replaced). The
+    /// originals come from the writable store's assets: committed files and
+    /// pending ones, so not yet committed images are included.
+    @discardableResult
+    public func backup(_ snapshot: Notebook, to url: URL) throws -> DecodedBackup {
+        try BackupArchive.write(snapshot, assets: store.assets, to: url)
+    }
+
+    /// Copies the chosen file block-wise into a new stage, then verifies the
+    /// copy in one streaming pass (format 2: every asset verified into the
+    /// stage's `Assets/`; format 1 and prototype JSON in memory, ≤ 200 MB).
+    /// Originals embedded by schema 5–11 land in the stage's `Assets/` too, so
+    /// every restore copy is a schema-12 package with assets.
+    /// A failed preparation removes its stage.
     public func prepareRestore(from url: URL) throws -> PreparedRestore {
-        let data = try BackupArchive.read(url)
-        return try prepareRestore(data: data)
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
+        return try prepareStaged { input in
+            do { return try BoundedFile.copy(from: url, to: input, limit: BackupArchive.maximumFileBytes) }
+            catch LibraryArchiveError.archiveTooLarge { throw BackupError.fileTooLarge }
+        }
     }
 
     public func localHistory() throws -> LocalHistory {
         try store.localHistory()
     }
 
+    /// A kept local revision through the same staged path: written as a
+    /// verified archive into the stage (assets from this package, where every
+    /// revision's originals stay as GC roots), then checked like an import.
     public func prepareLocalRecovery(id: UUID) throws -> PreparedRestore {
-        let document = try store.localRevision(id: id)
-        return try prepareRestore(data: BackupArchive.encode(document))
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
+        let decoded = try store.localRevision(id: id)
+        // Originals an older revision embedded (schema ≤ 11) first, then this package.
+        let assets = ChainedImageAssets([decoded.inlineAssets, store.assets])
+        return try prepareStaged { input in try BackupArchive.write(decoded.notebook, assets: assets, to: input).file }
     }
 
-    private func prepareRestore(data: Data) throws -> PreparedRestore {
-        let decoded = try BackupArchive.decode(data)
+    private var stagingRoot: URL { store.directory.appendingPathComponent("BackupStaging", isDirectory: true) }
+
+    private func prepareStaged(_ fill: (URL) throws -> LibraryArchiveFileInfo) throws -> PreparedRestore {
+        let fm = FileManager.default
         let id = UUID()
-        let stage = store.directory.appendingPathComponent("BackupStaging/\(id.uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
-        let stagedFile = stage.appendingPathComponent("input.notybackup")
-        try data.write(to: stagedFile, options: .atomic)
-        let staged = try BackupArchive.read(stagedFile)
-        guard staged == data else { throw BackupError.invalidStaging }
-        let copy = Self.restoredCopy(of: try BackupArchive.decode(staged).document, id: id)
-        return PreparedRestore(id: id, document: copy, isLegacyJSON: decoded.isLegacyJSON,
-                               archiveCRC32: SnapshotChecksum.crc32(staged))
+        let stage = stagingRoot.appendingPathComponent(id.uuidString, isDirectory: true)
+        try fm.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+        try fm.createDirectory(at: stage, withIntermediateDirectories: false)
+        do {
+            let input = stage.appendingPathComponent("input.notybackup")
+            let copied = try fill(input)
+            let assetDirectory = stage.appendingPathComponent(NotebookAssets.directoryName, isDirectory: true)
+            try fm.createDirectory(at: assetDirectory, withIntermediateDirectories: false)
+            let decoded = try BackupArchive.verify(input, extractingAssetsTo: assetDirectory)
+            guard decoded.file == copied else { throw BackupError.invalidStaging }
+            return PreparedRestore(id: id, document: Self.restoredCopy(of: decoded.document, id: id), isLegacyJSON: decoded.isLegacyJSON,
+                                   assets: NotebookAssets(directory: assetDirectory, readOnly: true),
+                                   archive: copied, assetReferences: decoded.assets)
+        } catch {
+            try? fm.removeItem(at: stage)
+            // No empty staging root is left behind by a rejected file.
+            if (try? fm.contentsOfDirectory(atPath: stagingRoot.path))?.isEmpty == true { try? fm.removeItem(at: stagingRoot) }
+            throw error
+        }
     }
 
-    /// Separate document identity; the original stays untouched.
+    /// Separate document identity; the original stays untouched. Image asset
+    /// references stay (content addresses).
     private static func restoredCopy(of document: Notebook, id: UUID) -> Notebook {
         var copy = document
         copy.id = id
@@ -66,18 +116,34 @@ public actor NotebookRepository {
 
     /// Call only after the UI actor validates PDFKit/PencilKit contents of the
     /// prepared document. The current store and its revision counter never change.
+    /// The stage is checked again first: the archive's exact size and CRC (one
+    /// pass, which also re-reads the notebook) and the SHA-256 of every staged
+    /// original the copy references. Then `RevisionStore.save` writes the
+    /// assets first, revision and manifest last, into a new empty package;
+    /// read back before the stage is removed. A failure keeps the stage.
     public func commitRestore(_ prepared: PreparedRestore) throws -> RestoredNotebook {
-        let stage = store.directory.appendingPathComponent("BackupStaging/\(prepared.id.uuidString)", isDirectory: true)
-        let data = try BackupArchive.read(stage.appendingPathComponent("input.notybackup"))
-        guard SnapshotChecksum.crc32(data) == prepared.archiveCRC32 else { throw BackupError.invalidStaging }
-        let copy = Self.restoredCopy(of: try BackupArchive.decode(data).document, id: prepared.id)
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
+        let fm = FileManager.default
+        let stage = stagingRoot.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
+        let input = stage.appendingPathComponent("input.notybackup")
+        let decoded: DecodedBackup
+        do { decoded = try BackupArchive.verify(input, handling: .skip, limits: .standard) }
+        catch { throw BackupError.invalidStaging }
+        guard decoded.file == prepared.archive, decoded.assets == prepared.assetReferences else { throw BackupError.invalidStaging }
+        let copy = Self.restoredCopy(of: decoded.document, id: prepared.id)
         guard copy == prepared.document else { throw BackupError.invalidStaging }
+        let staged = NotebookAssets(directory: stage.appendingPathComponent(NotebookAssets.directoryName, isDirectory: true), readOnly: true)
+        for reference in copy.externalImageAssets {
+            guard case .file = try staged.verifiedPayload(for: reference) else { throw BackupError.invalidStaging }
+        }
         let destination = restoreDirectory.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
-        guard !FileManager.default.fileExists(atPath: destination.path) else { throw BackupError.invalidStaging }
-        let restored = RevisionStore(directory: destination)
-        try restored.save(copy)
-        guard try RevisionStore(directory: destination).load() == copy else { throw BackupError.invalidStaging }
-        try? FileManager.default.removeItem(at: stage)
+        guard !fm.fileExists(atPath: destination.path) else { throw BackupError.invalidStaging }
+        try RevisionStore(directory: destination).save(copy, importingAssetsFrom: staged)
+        let reopened = RevisionStore(directory: destination, readOnly: true)
+        guard try reopened.load() == copy, reopened.assets.presentOnDisk(copy.externalImageAssets) else {
+            throw BackupError.invalidStaging
+        }
+        try? fm.removeItem(at: stage)
         return restoredEntry(copy, directory: destination)
     }
 
@@ -101,7 +167,7 @@ public actor NotebookRepository {
                 if let stamp, let cached = catalogCache[directory.path], cached.stamp == stamp {
                     catalog.notebooks.append(cached.entry); cache[directory.path] = cached; continue
                 }
-                let document = try RevisionStore(directory: directory).load()
+                let document = try RevisionStore(directory: directory, readOnly: true).load()
                 guard document.id == id else { throw BackupError.invalidStaging }
                 let entry = restoredEntry(document, directory: directory)
                 catalog.notebooks.append(entry)

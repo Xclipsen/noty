@@ -7,7 +7,12 @@ import NotebookCore
 /// count, lock and geometry rules as NotebookPDFCatalog), then PencilKit
 /// drawings and images like EditorModelValidation.
 enum BackupValidation {
-    nonisolated static func validate(_ document: Notebook) throws {
+    nonisolated static func validate(_ document: Notebook) throws { try validate(document, assets: nil) }
+
+    /// `assets`: originals stored outside the notebook JSON (package, staging).
+    nonisolated static func validate(_ document: Notebook, _ assets: ImageAssetProviding) throws { try validate(document, assets: assets) }
+
+    nonisolated private static func validate(_ document: Notebook, assets: ImageAssetProviding?) throws {
         try document.validate()
         func parse(_ data: Data) throws -> CGPDFDocument {
             guard let provider = CGDataProvider(data: data as CFData), let pdf = CGPDFDocument(provider), pdf.isUnlocked else {
@@ -34,7 +39,7 @@ enum BackupValidation {
             if page.pdfReference != nil || document.pdf != nil { guard source != nil else { throw StorageError.invalidDocument } }
             _ = try PageLayout(page: page, source: source)
         }
-        try EditorModelValidation.validateContent(document)
+        try EditorModelValidation.validateContent(document, assets: assets)
     }
 }
 
