@@ -143,6 +143,8 @@ struct ContentView: View {
             }
             .fileExporter(isPresented: $exporting, document: exportFile,
                           contentType: exportType, defaultFilename: "noty-\(exportType == .pdf ? "export" : "backup")-\(Date().formatted(.iso8601).replacingOccurrences(of: ":", with: "-"))") { result in
+                // The system wrote its copy: the scratch archive is no longer needed.
+                if let scratch = exportFile?.fileURL { BackupScratch.remove(scratch) }
                 switch result {
                 case .success:
                     if exportType == .pdf { model.fileStatus = "PDF-Datei exportiert" }
@@ -615,8 +617,9 @@ struct ContentView: View {
     }
     private func exportBackup() {
         Task {
-            if let data = await model.backupData() {
-                exportFile = ExportFile(backupData: data)
+            if let url = await model.backupFile() {
+                if let previous = exportFile?.fileURL { BackupScratch.remove(previous) }
+                exportFile = ExportFile(backupFile: url)
                 exportType = .notyBackup
                 exporting = true
             }
@@ -625,7 +628,8 @@ struct ContentView: View {
     /// Page by page with a progress badge; the snapshot is fixed at the start.
     private func startPDFExport(pageOnly: Bool) {
         guard canEdit, !pdfExport.running, !(pageOnly && currentPage.id == writingDraft.id) else { return }
-        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : nil, sourcePage: { model.sourcePage(for: $0) }) { result in
+        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : nil, sourcePage: { model.sourcePage(for: $0) },
+                        assets: model.imageAssets) { result in
             switch result {
             case .success(let data): exportFile = ExportFile(pdfData: data); exportType = .pdf; exporting = true
             case .failure(let error):

@@ -63,7 +63,7 @@ final class ContentSearchModel: ObservableObject {
                 if let current { notebook = current }
                 else {
                     guard let loaded = try? await Task.detached(priority: .userInitiated, operation: {
-                        try RevisionStore(directory: document.directory).load()
+                        try RevisionStore(directory: document.directory, readOnly: true).load()
                     }).value else { failed += 1; continue }
                     notebook = loaded
                 }
@@ -159,10 +159,18 @@ final class ContentSearchModel: ObservableObject {
         guard generation == expected else { throw CancellationError() }
         status = "\(document.title) · wird gelesen …"
         let notebook: Notebook
+        // Image originals of a closed notebook come from its package (read-only);
+        // the open notebook's from the registry.
+        var assets: ImageAssetProviding?
         if let current { notebook = current }
         else {
-            do { notebook = try await Task.detached(priority: .utility) { try RevisionStore(directory: directory).load() }.value }
-            catch { summary.unreadable += 1; return }
+            do {
+                let package = try await Task.detached(priority: .utility) { () throws -> (Notebook, NotebookAssets) in
+                    let store = RevisionStore(directory: directory, readOnly: true)
+                    return (try store.load(), store.assets)
+                }.value
+                notebook = package.0; assets = package.1
+            } catch { summary.unreadable += 1; return }
         }
         try Task.checkCancellation()
         let prepared = await Task.detached(priority: .utility) { ContentSearchPlanner.prepare(notebook) }.value
@@ -206,7 +214,8 @@ final class ContentSearchModel: ObservableObject {
                                 let images = page.images ?? []
                                 lines = background || !images.isEmpty
                                     ? try await Self.recognizeBackground(background ? pdf?.pageRef.map(SendablePDFPage.init) : nil,
-                                                                         images: images, layout: layout, keepAlive: pdf?.document) : []
+                                                                         images: images, layout: layout, assets: assets,
+                                                                         keepAlive: pdf?.document) : []
                             case .handwriting:
                                 lines = try await Self.recognizeInk(page.drawing, layout: layout)
                             }
@@ -287,10 +296,11 @@ final class ContentSearchModel: ObservableObject {
 
     /// Scan/PDF background (only without a meaningful text layer) plus inserted images.
     /// `keepAlive` (the PDF document) outlives drawing its page off the main actor.
+    /// `assets`: where image originals are read (nil: the registry).
     private static func recognizeBackground(_ pdf: SendablePDFPage?, images: [ImageObject], layout: PageLayout,
-                                            keepAlive: AnyObject?) async throws -> [SearchLine] {
+                                            assets: ImageAssetProviding? = nil, keepAlive: AnyObject?) async throws -> [SearchLine] {
         let lines = try await Task.detached(priority: .utility) { () throws -> [SearchLine] in
-            let decoded = try images.map { try ImageRendering.decoded($0, limit: 2400) }
+            let decoded = try images.map { try ImageRendering.decoded($0, limit: 2400, assets: assets) }
             guard let image = PageRaster.bitmap(size: layout.canvas.cgSize, scale: scale(layout), opaque: true, { context in
                 UIColor.white.setFill(); context.fill(layout.canvas.bounds)
                 if let pdf { PageRaster.drawSource(pdf.page, layout: layout, context: context) }

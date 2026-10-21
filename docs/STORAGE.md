@@ -1,5 +1,20 @@
 # Lokaler Revisionsspeicher – Format 1
 
+## Ergänzung 21.10.2026 · Notebook-Schema 12 (Bildoriginale als Paket-Assets)
+
+Bildbytes stehen nicht mehr im Heft-JSON. Jedes Original ist eine unveränderliche Datei `Assets/<sha256>` (64 Hex-Zeichen klein, ohne Endung) im eigenen Paket; `ImageObject` hält nur `asset: {sha256, byteCount}`. Gleiches Original (duplizierte Seite, Kopie, Randsnapshot, Papierkorb) = eine Datei. Pakete sind getrennt, auch `Restores/*` und `Library/Documents/*` haben ihr eigenes `Assets/`. Manifestformat 1 und `checkpoints.json` bleiben unverändert. Plan und Umsetzungsnotizen: [IMAGE-ASSETS](IMAGE-ASSETS.md).
+
+- **Formregeln (Swift `NotebookDecoding`/`Notebook.validate`, Python `notebook_format.py`):** Schema 12: `asset` Pflicht, `data` verboten; Schema 5–11: `data` Pflicht, `asset` verboten; gemischte Formen ungültig; ab 13 gesperrt (`unsupportedSchema`, kein Rückfall). `sha256` = `^[0-9a-f]{64}$`, `byteCount` 1 … 20 MB. Gleicher Hash verlangt gleiche Größe und Pixelmaße. Summe der **eindeutigen** Originale über aktive Seiten und Seitenpapierkorb ≤ 500 MB; für gespeicherte Schema-≤-11-Bytes gilt weiter die Altregel (je ≤ 20 MB, Summe je Objekt ≤ 40 MB). Neue Importe werden auf ≤ 5 MB verkleinert ([IMAGES](IMAGES.md)).
+- **Commit:** zuerst die Assets (Referenzen des Dokuments ∪ alle Pending-Assets, auch nicht mehr referenzierte, damit Undo sie findet): `<sha>.partial-<UUID>` schreiben → `synchronize` → streamend zurücklesen (SHA-256, Größe) → umbenennen; ein vorhandenes Ziel wird nie überschrieben, nur nachweislich falscher Inhalt durch geprüfte Bytes derselben Adresse ersetzt. Danach wie bisher Revision, `checkpoints.json`, `manifest-previous.json`, `manifest.json` zuletzt. Scheitert der Asset-Schritt, entsteht keine Revision; Waisen sind harmlos. „Gespeichert“ erst nach dem Manifest.
+- **Laden:** Eine Schema-12-Revision gilt nur, wenn alle ihre Assets vorhanden sind (`stat`: reguläre Datei, kein Symlink, richtige Größe). Sonst Rückfall auf die ältere Revision bzw. Lesefehler wie bei einem CRC-Fehler; nichts wird gelöscht. Die SHA-Prüfung folgt beim ersten Zeichnen eines Bildes, bei Backup, Restore und PDF-Export, nicht beim Öffnen (500 MB wären zu teuer).
+- **Migration:** Schema 5–11 mit Bildern wird beim Laden nur im Speicher auf 12 gehoben; die eingebetteten Bytes liegen im Pending-Bereich. Bloßes Öffnen schreibt nichts, auch kein `Assets/`. Die erste echte Änderung sichert die exakten bestätigten Altbytes unter `Migrations/<UUID>/notebook-v<alt>.json`, schreibt die Assets und dann die Schema-12-Revision; scheitert die Sicherung, gibt es keinen Commit. Undo, Seitenkopien und Restore-Kopien senken das Schema nie. Kopien (Restore, Duplikat eines Althefts) entstehen direkt als Schema 12 mit Assets.
+- **Asset-GC (nur der Writer, nie während einer Sitzung):** beim Öffnen (vor dem ersten Commit des Editors) und beim Schließen nach dem letzten erfolgreichen Commit (`RevisionStore.collectAssetGarbage`). Übersprungen, solange ein Bibliotheks- oder externes Backup, ein Restore oder ein Duplizieren läuft (prozessweit `BackupActivity`), nach einem noch nicht bestätigten Rückfall und ohne Manifest. Wurzeln: jede Datei unter `Revisions/`, `Quarantine/`, `Migrations/` und `Archives/` per Rohsuche nach `"<64 Hex>"` (auch beschädigte oder neuere Dateien), dazu Pending, der bestätigte und der aktuelle Stand sowie die Objekt-Zwischenablage der App. Gelöscht werden nur Dateien `^[0-9a-f]{64}$` ohne Wurzel, die älter als 15 min sind, und eigene Teildateien älter als 1 h; fremde Namen, Verzeichnisse und Symlinks bleiben. Jeder Lesefehler bricht den Lauf ab, ohne etwas zu löschen.
+- **Verzögerte Freigabe (bewusst):** „Endgültig löschen“ im Seitenpapierkorb gibt den Platz eines Bildes erst frei, wenn keine behaltene Revision, kein Zwischenstand und keine Quarantäne mehr darauf verweist, und frühestens beim nächsten Öffnen oder Schließen des Hefts. Das Checkpoint-Budget (300 MB) zählt nur die JSON-Revisionen, nicht die Assets.
+- **Ältere Builds (≤ 53):** sperren Schema-12-Hefte mit „Dokumentformat 12 … nicht unterstützt“, ohne zu schreiben; kein Rückweg. Unbekannte Dateien unter `Assets/` stören sie nicht. Vor einer Rückkehr vollständig sichern.
+- **Prüfer:** `verify_device_store.py` verlangt `Assets/` als echtes Verzeichnis ohne Symlinks, prüft jede Referenz jeder geprüften Revision auf Größe und SHA-256 und zählt unreferenzierte Assets und Teildateien (kein Fehler, der GC räumt sie). `--compare` prüft zusätzlich die Assets der früheren Dokumente.
+
+Nachweise: Core-Tests (u. a. `ImageAssetMigrationTests`, `ImageAssetCommitRecoveryTests`, `ImageAssetGarbageCollectionTests`), Host-Roundtrip, SDK-Build. **Nicht installiert, am iPad ungeprüft.**
+
 ## Ergänzung 20.10.2026 · Notebook-Schema 11 (Schreibplatz an Papierseiten)
 
 Nutzerwunsch: normale Seiten wie PDF-Seiten über den Schreibplatz erweitern, vor allem nach rechts; Linien sollen nahtlos weiterlaufen. `margins` ist ab Schema 11 auch an Papierseiten erlaubt, mit festen Regeln (Swift `Notebook.validate`, Python `notebook_format.py`): nur `right`/`bottom` (links/oben 0, damit kanonische Koordinaten und Lineatur-Ursprung unverändert bleiben), `style` = Papierart der Seite, `color` = Papierfarbe der Seite (fehlend = Weiß), nicht an `legacyTest`. Der zusätzliche Platz ist damit dasselbe Papier; Editor, Vorschau und Export zeichnen die Lineatur wie bisher über die ganze Seite. `Page.writingSpaceExtendsPaper` setzt den Schreibmaßstab auf 1 (Seiteneinheiten statt Breite/595 wie neben PDFs), auch in `PageLayout(extendsPaper:)`.
@@ -77,6 +92,8 @@ Documents/Noty/
   manifest.json                  aktueller Commit-Zeiger
   manifest-previous.json         voriger vollständiger Commit-Zeiger
   Revisions/<UUID>.json           unveränderliche vollständige Notizstände
+  Assets/<sha256>                unveränderliche Bildoriginale (ab Schema 12, je Paket)
+  Assets/<sha256>.partial-<UUID> Rest eines abgebrochenen Asset-Schreibvorgangs (nur der GC entfernt ihn)
   Archives/<UUID>/…              Altbestand früherer Import-Ersetzungen (wird nicht mehr geschrieben)
   Migrations/…                   exakte bestätigte Bytes vor Schema-Migrationen, erhalten
   checkpoints.json               ältere Zwischenstände der lokalen Historie (optional)
@@ -88,6 +105,8 @@ Paket-`formatVersion` ist unabhängig von `Notebook.schemaVersion`. Manifestform
 Jede Revision enthält das vollständige Notebook-JSON: stabile Dokument-/Seiten-UUIDs, Titel, unveränderte PDF-Quelldaten, geordnete Seiten mit optionaler Geometrie, PencilKit-Daten und Tastaturtext. Eine Dateirevisions-UUID ersetzt keine Seiten-ID. Der Inhalt einer erfolgreich geschriebenen Revision wird nie nachträglich verändert.
 
 ## Notebook-Schema 5 ab Build 19
+
+Ab Schema 12 steht statt `data` der Verweis `asset` im Bildobjekt, die Bytes liegen unter `Assets/` (siehe Ergänzung 21.10.2026); die Grenze je Heft ist dann 500 MB eindeutige Originale. Für gespeicherte Schema-5–11-Bytes gilt der folgende Absatz unverändert.
 
 `Page.images` enthält ein geordnetes Array editierbarer Bildobjekte: `id`, `data` (unveränderte importierte Dateibytes, Base64), `pixelWidth/pixelHeight` in EXIF-korrigierter Orientierung, `x/y/width/height` in kanonischen Punkten, `rotation` −180…180 Grad um den Mittelpunkt, `crop` als normalisiertes Rechteck im orientierten Original und `locked`. Array von hinten nach vorne, gesamte Bildebene unter Ink/Text. Zuschnitt lässt mindestens 2 % jeder Originaldimension stehen (numerische Toleranz); niemals Originalbytes ersetzen. IDs über aktive/gelöschte Seiten eindeutig und disjunkt zu Textobjekten. Rotierte Bounds innerhalb der erweiterten Seite; Randänderungen dürfen Bilder nicht abschneiden. Höchstens 50 Objekte/Seite, 20 MB/Original, 200 Megapixel, zusammen 40 MB über aktive/gelöschte Seiten.
 
@@ -114,7 +133,7 @@ Aktive Seiten, Papierkorb, Quellen, Ränder und Lesezeichen gehören gemeinsam z
 ## Commit und Wiederherstellung
 
 1. Repository-Actor nimmt einen vollständigen UI-Snapshot mit monotoner Änderungsnummer entgegen. Ältere Nummern werden verworfen.
-2. Notebook validieren, Revision unter neuem UUID-Dateinamen atomar schreiben, erneut lesen und Länge/CRC prüfen.
+2. Notebook validieren; ab Schema 12 zuerst fehlende Bildoriginale nach `Assets/` schreiben und per SHA-256 prüfen (Ergänzung 21.10.2026). Revision unter neuem UUID-Dateinamen atomar schreiben, erneut lesen und Länge/CRC prüfen.
 3. Voriges gültiges Manifest atomar nach `manifest-previous.json` schreiben.
 4. Neues Manifest mit neuer Revision und höchstens zwei älteren Einträgen **zuletzt** atomar nach `manifest.json` schreiben (Zwischenstände vorher nach `checkpoints.json`, siehe Ergänzung 20.10.2026). Erst jetzt darf „Lokal gespeichert“ erscheinen.
 5. Nach Commit weder von einem der beiden Manifeste noch von `checkpoints.json` referenzierte UUID-Revisionsdateien best effort entfernen; nur nach einem Rückfall-Laden unbekannte stattdessen in Quarantäne verschieben. Fremde Dateinamen, Verzeichnisse, Symlinks, Archive und Prototypdateien bleiben erhalten.
@@ -133,6 +152,6 @@ Ein bestehendes Heft wird durch Restore nie ersetzt: Heft- und Bibliotheksrestor
 
 ## Grenzen / nächster Schritt
 
-Vollständige JSON-Snapshots duplizieren PDF und Ink über Revisionen und benötigen Serialisierungs-/Prüfsummenspeicher. Noch keine deduplizierten Assets; vor großen Dokumenttests verbessern. Importarchive und Prototypkopien haben noch keine Retention. Ab Build 8 Browser älterer lokaler Stände in der UI, Öffnen immer als getrennte Kopie. Feste Revisions-UUID statt Listenposition; fehlende/ungültige Auswahl wird abgelehnt. Noch Geräteprüfung offen. Historie gestuft (drei jüngste plus Zwischenstände, etwa eine Stunde Bearbeitung), keine Tages-/Wochenfenster. Speichern wird nach Fehlern automatisch wiederholt; das tatsächliche Fehlerverhalten auf dem iPad ist noch offen.
+Vollständige JSON-Snapshots duplizieren PDF und Ink über Revisionen und benötigen Serialisierungs-/Prüfsummenspeicher. Bildoriginale sind seit Schema 12 deduplizierte Assets; PDF-Quellen bleiben bewusst eingebettet (≤ 100 MB). Importarchive und Prototypkopien haben noch keine Retention. Ab Build 8 Browser älterer lokaler Stände in der UI, Öffnen immer als getrennte Kopie. Feste Revisions-UUID statt Listenposition; fehlende/ungültige Auswahl wird abgelehnt. Noch Geräteprüfung offen. Historie gestuft (drei jüngste plus Zwischenstände, etwa eine Stunde Bearbeitung), keine Tages-/Wochenfenster. Speichern wird nach Fehlern automatisch wiederholt; das tatsächliche Fehlerverhalten auf dem iPad ist noch offen.
 
 Ab Build 7 eigenständiges versioniertes `.notybackup` für ein vollständiges aktuelles Heft, geprüfter Import über Staging und neue getrennte Kopie; Details in [BACKUPS.md](BACKUPS.md). Geräte-/PC-Roundtrip für ein Heft mit gespeicherter Textänderung und abgewiesenem beschädigtem Archiv belegt, siehe TESTING.md. Frühere reine JSON-Exporte bleiben lesbar. Gesamte Bibliothek und WebDAV/iCloud-Zielverwaltung folgen später.

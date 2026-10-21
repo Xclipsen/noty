@@ -1,5 +1,16 @@
 # Bilder und Screenshots – Build 19
 
+## Bildoriginale als Paket-Assets (Schema 12) – 21.10.2026
+
+Nutzer: Ruckeln nach zwei 20-MB-Bildern, Wunsch nach 500 MB Bildern je Notizbuch. Stand: **implementiert und erfolgreich gebaut** (`xtool dev build`, ohne Fehler und Warnungen), **nicht installiert, am iPad ungeprüft**. Format und Regeln: [STORAGE](STORAGE.md#ergänzung-21102026--notebook-schema-12-bildoriginale-als-paket-assets), Plan und Messwerte: [IMAGE-ASSETS](IMAGE-ASSETS.md).
+
+- **Grenzen:** je Notizbuch höchstens **500 MB eindeutige Bildoriginale** über aktive Seiten und Seitenpapierkorb; mehrfach verwendete Originale (duplizierte Seiten, Kopien, Randsnapshots) zählen einmal. Neue Importe höchstens **5 MB** (sonst verkleinert, unten). Gespeicherte Originale bis 20 MB bleiben gültig. Weiter 50 Bilder je Seite und 200 Megapixel je Bild.
+- **Speichern:** Das Original wird einmal als Datei `Assets/<sha256>` geschrieben und geprüft; die Revision enthält nur den Verweis. Ein Autosave kodiert und prüft also keine Megabytes Base64 mehr, Vergleiche bei Undo und Gestenende kosten nur noch den Verweis.
+- **Öffnen:** Bildoriginale werden nur auf Vorhandensein geprüft (Dateigröße). Die SHA-256-Prüfung folgt beim ersten Zeichnen eines Bildes (danach je Sitzung gemerkt), bei Backup, Restore und PDF-Export. Ein beschädigtes Original erscheint beim Zeichnen als „defekt“ mit Meldung, wie bisher bei nicht lesbaren Bildern.
+- **Alte Hefte (Schema 5–11):** öffnen ohne Schreiben; erst die erste echte Änderung sichert die exakten Altbytes unter `Migrations/` und schreibt die Originale als Assets. Builds ≤ 53 öffnen Schema-12-Hefte danach nicht mehr (gesperrt, nicht verändert).
+- **Endgültig löschen:** Der Platz eines Bildes wird verzögert frei, erst wenn keine behaltene Revision, kein Zwischenstand der lokalen Historie und keine Quarantäne mehr darauf verweist, und frühestens beim nächsten Öffnen oder Schließen des Hefts (Asset-GC). Während ein Backup oder Restore läuft, wird nicht aufgeräumt.
+- **Einfügen aus einem anderen Heft:** Kopierte Bilder bleiben auch nach dem Schließen des Quellhefts einfügbar; der Asset-GC behält Originale der Objekt-Zwischenablage.
+
 ## Bilder über Seiten ziehen – 20.10.2026
 
 Nutzer: „beim bild darf ich leider nicht über seiten ziehen fix das bitte“. Stand: **implementiert und erfolgreich gebaut** (`xtool dev build`), **nicht installiert, am iPad ungeprüft**.
@@ -20,7 +31,7 @@ Nutzer zu Build 51: „Bilder, die über 20 MB sind, sollen komprimiert werden u
 - **Passt es nicht, wird es neu kodiert** (`ImageCompression`). Seit Build 53 gilt beim Import höchstens 5 MB je Bild (Nutzer: Ruckeln nach zwei 20-MB-Bildern). Neu kodiert wird bei:
   - mehr als 5 MB (bis Build 52: 20 MB)
   - mehr als 200 Megapixeln
-  - mehr Bytes, als im Bildbudget des Notizbuchs (40 MB) noch frei ist
+  - mehr Bytes, als im Bildbudget des Notizbuchs noch frei ist (seit Schema 12: 500 MB eindeutige Originale, vorher 40 MB)
 - **Kodierung:**
   - Grundlage ist ein ImageIO-Vorschaubild mit eingerechneter Ausrichtung, längste Seite höchstens 4096 px.
   - Deckende Bilder werden JPEG (Qualität ab 0,85, dann bis 0,65), Bilder mit Transparenz PNG.
@@ -91,9 +102,9 @@ Editor, Seitenvorschau und PDF verwenden denselben Renderer für Bildorientierun
 
 ## Grenzen
 
-Höchstens 50 Bilder je Seite, 20 MB je Datei und 200 Megapixel, 40 MB Bildoriginale je Heft **einschließlich Seitenpapierkorb und duplizierter Bildobjekte**. Ganze Revision/Archive weiter höchstens 200 MB. Fehlgeschlagene Kandidaten ersetzen den vorherigen Stand nicht. Keine Dateianbieter-Downloads ohne ausgewählte Datei; Systemanbieterfehler bleiben sichtbar.
+Höchstens 50 Bilder je Seite, 20 MB je Datei und 200 Megapixel, 40 MB Bildoriginale je Heft **einschließlich Seitenpapierkorb und duplizierter Bildobjekte**. Ganze Revision/Archive weiter höchstens 200 MB. (Stand bis Build 53; seit Schema 12: 500 MB eindeutige Originale, Import 5 MB, Revision und Heftblock 200 MB ohne Bildoriginale, siehe oben.) Fehlgeschlagene Kandidaten ersetzen den vorherigen Stand nicht. Keine Dateianbieter-Downloads ohne ausgewählte Datei; Systemanbieterfehler bleiben sichtbar.
 
-Metadaten und verkleinerte Bitmaps via ImageIO, kein voller Kameraraster vor Größenprüfung. Editor nach benötigter Größe bis 2048 px, Vorschau 256 px, PDF bis 4096 px längste Kante. Gemeinsamer Bitmapcache 32 MiB/12 Einträge; Originalbytes in vollständigen JSON-Revisionen, noch keine Asset-Deduplizierung über Objekte/Revisionen. Große Heft-/Scanbestände und starker Zoom bleiben spätere Leistungsprüfungen.
+Metadaten und verkleinerte Bitmaps via ImageIO, kein voller Kameraraster vor Größenprüfung. Editor nach benötigter Größe bis 2048 px, Vorschau 256 px, PDF bis 4096 px längste Kante. Gemeinsamer Bitmapcache 32 MiB/12 Einträge (seit Build 49: 160 MB/48 Einträge, Schlüssel seit Schema 12 der Inhalt); Originalbytes bis Build 53 in vollständigen JSON-Revisionen, seit Schema 12 als deduplizierte Paket-Assets. Große Heft-/Scanbestände und starker Zoom bleiben spätere Leistungsprüfungen.
 
 ## Ein gebündelter Gerätetest nach sicherem Update
 

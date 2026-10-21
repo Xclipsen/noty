@@ -53,10 +53,14 @@ enum PDFExporter {
     /// placed unchanged (vectors, text, images) into one document. `sourcePage`
     /// reuses the editor's PDF catalogue; without it the PDFs are parsed here.
     /// Nothing is returned unless every selected page was validated and written.
+    /// `assets`: where image originals are read (nil: the registry of open
+    /// packages); each is verified before use.
     static func export(_ snapshot: Notebook, pageIDs: Set<UUID>? = nil, sourcePage: ((Page) -> PDFPage?)? = nil,
+                       assets: ImageAssetProviding? = nil,
                        progress: (Int, Int) -> Void = { _, _ in }) async throws -> Data {
         let selected = snapshot.pages.enumerated().filter { pageIDs?.contains($0.element.id) ?? true }
         guard !selected.isEmpty else { throw ExportError.invalidSource }
+        let provider: ImageAssetProviding = assets ?? ImageAssetRegistry.shared
         let catalogue = sourcePage == nil ? try NotebookPDFCatalog(snapshot) : nil
         // Resolved once: a later catalogue swap in the editor cannot change them.
         let sources: [CGPDFPage?] = try selected.map { _, page in
@@ -69,7 +73,7 @@ enum PDFExporter {
         // Validate every selected page before writing anything; overflow is never cut.
         var layouts: [PageLayout] = [], overflow: [Int] = []
         for (position, (index, page)) in selected.enumerated() {
-            for image in page.images ?? [] { try ImageRendering.validate(image) }
+            for image in page.images ?? [] { try ImageRendering.validate(image, assets: provider) }
             let layout = try PageLayout(page: page, source: sources[position])
             let bounds = layout.canonicalInkBounds.insetBy(dx: -0.01, dy: -0.01)
             if page.resolvedTextBoxes.contains(where: { box in
@@ -85,7 +89,7 @@ enum PDFExporter {
             try Task.checkCancellation()
             progress(position, selected.count)
             let layout = layouts[position]
-            let assets = try await Task.detached(priority: .userInitiated) { try Self.assets(page, layout: layout) }.value
+            let assets = try await Task.detached(priority: .userInitiated) { try Self.assets(page, layout: layout, images: provider) }.value
             try Task.checkCancellation()
             rendered.append(try autoreleasepool { try render(page, layout: layout, source: sources[position], assets: assets) })
             await Task.yield()
@@ -130,8 +134,8 @@ enum PDFExporter {
         }
     }
 
-    nonisolated private static func assets(_ page: Page, layout: PageLayout) throws -> PageAssets {
-        let images = try (page.images ?? []).map { try ImageRendering.decoded($0, limit: 4096) }
+    nonisolated private static func assets(_ page: Page, layout: PageLayout, images provider: ImageAssetProviding) throws -> PageAssets {
+        let images = try (page.images ?? []).map { try ImageRendering.decoded($0, limit: 4096, assets: provider) }
         guard !page.drawing.isEmpty else { return PageAssets(images: images, ink: nil) }
         let drawing = try PKDrawing(data: page.drawing)
         // Bound the temporary raster for unusually large PDF pages.
@@ -259,14 +263,14 @@ final class PDFExportJob: ObservableObject {
     deinit { task?.cancel() }
 
     func start(_ snapshot: Notebook, pageIDs: Set<UUID>? = nil, sourcePage: ((Page) -> PDFPage?)? = nil,
-               completion: @escaping (Result<Data, Error>) -> Void) {
+               assets: ImageAssetProviding? = nil, completion: @escaping (Result<Data, Error>) -> Void) {
         guard task == nil else { return }
         progress = Progress(done: 0, total: pageIDs.map { ids in snapshot.pages.filter { ids.contains($0.id) }.count } ?? snapshot.pages.count)
         // Weak: a closed editor releases the job, whose deinit cancels the export.
         task = Task { [weak self] in
             let result: Result<Data, Error>
             do {
-                result = .success(try await PDFExporter.export(snapshot, pageIDs: pageIDs, sourcePage: sourcePage) { done, total in
+                result = .success(try await PDFExporter.export(snapshot, pageIDs: pageIDs, sourcePage: sourcePage, assets: assets) { done, total in
                     self?.progress = Progress(done: done, total: total)
                 })
             } catch { result = .failure(error) }

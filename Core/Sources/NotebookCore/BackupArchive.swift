@@ -4,20 +4,25 @@ public enum BackupError: Error, LocalizedError {
     case invalidArchive
     case unsupportedVersion(Int)
     case sizeLimit
+    case fileTooLarge
     case checksumMismatch
     case invalidStaging
+    case verificationFailed
 
     public var errorDescription: String? {
         switch self {
         case .invalidArchive: "Die Datei ist kein vollständiges unterstütztes noty-Backup."
         case .unsupportedVersion(let version): "Backupformat \(version) benötigt eine neuere noty-Version."
-        case .sizeLimit: "Das Backup überschreitet das aktuelle Größenlimit von 200 MB."
+        case .sizeLimit: "Das Backup überschreitet das Größenlimit: höchstens 200 MB Heftdaten ohne Bildoriginale (ältere Backups im Format 1: 200 MB insgesamt). Bitte große PDFs entfernen, auch aus dem Seitenpapierkorb."
+        case .fileTooLarge: "Die Backup-Datei überschreitet die Grenze von 800 MB."
         case .checksumMismatch: "Die Backup-Prüfsumme stimmt nicht. Es wurde nichts wiederhergestellt."
         case .invalidStaging: "Die vorbereitete Wiederherstellung ist nicht mehr gültig. Bitte das Backup erneut auswählen."
+        case .verificationFailed: "Das zurückgelesene Backup stimmt nicht mit dem Heft überein. Es wurde keine Backup-Datei übergeben."
         }
     }
 }
 
+/// Format 1 header (read; written only by `encodeVersion1`).
 struct BackupManifest: Codable {
     var backupFormatVersion = 1
     var checksumAlgorithm = "crc32-iso-hdlc"
@@ -29,24 +34,144 @@ struct BackupManifest: Codable {
     var createdAt: Date
 }
 
+/// Format 2 header.
+struct BackupHeader: Codable {
+    var backupFormatVersion = 2
+    var checksumAlgorithm = "crc32-iso-hdlc"
+    var assetHashAlgorithm = "sha256"
+    var documentID: UUID
+    var notebookSchemaVersion: Int
+    var createdAt: Date
+    static let keys: Set<String> = ["backupFormatVersion", "checksumAlgorithm", "assetHashAlgorithm", "documentID",
+                                    "notebookSchemaVersion", "createdAt"]
+}
+
 public struct DecodedBackup: Sendable {
     public let document: Notebook
     public let isLegacyJSON: Bool
+    /// 0: plain notebook JSON of the prototype; 1 or 2: `.notybackup` format.
+    public let formatVersion: Int
+    /// Image originals carried as asset records (format 2), in archive order.
+    public let assets: [ImageAssetReference]
+    /// Size and CRC-32 of the exact bytes read.
+    public let file: LibraryArchiveFileInfo
+    /// Originals the notebook JSON embedded (schema 5–11; any format), by
+    /// SHA-256. A restore writes them as assets of the copy.
+    public var inlineImageBytes: [String: Data] = [:]
 }
 
-/// Open, uncompressed single-document archive: magic + header length + JSON
-/// manifest + Notebook JSON. No archive paths are extracted onto the filesystem.
+/// Upper bounds of one `.notybackup`; only tests lower them.
+struct BackupArchiveLimits: Sendable {
+    var file = BackupArchive.maximumFileBytes
+    var notebook = BackupArchive.maximumBytes
+    var asset = ImageLimits.maximumFileBytes
+    static let standard = BackupArchiveLimits()
+}
+
+/// Open, uncompressed single-document archive. No archive paths are
+/// extracted onto the filesystem; asset files are named by checked hashes.
+///
+/// Format 2 (written since C5): the record stream of `RecordDescriptor` with
+/// exactly one `notebook` record, then exactly the notebook's unique image
+/// assets (`Notebook.externalImageAssets`; none if the stored JSON is schema
+/// ≤ 11 and embeds its originals), then `end`. Format 1 (magic + header + one
+/// notebook JSON, ≤ 200 MB, read in memory) and the prototype's plain JSON
+/// stay readable; they cannot carry assets, so a schema-12 notebook with
+/// images in them is refused.
 public enum BackupArchive {
+    /// Format 1, prototype JSON and the notebook JSON of format 2.
     public static let maximumBytes = 200_000_000
+    /// A format-2 file: notebook JSON ≤ 200 MB plus assets ≤ 500 MB plus overhead.
+    public static let maximumFileBytes = 800_000_000
     static let magic = Data("NOTYBKP\n".utf8)
     static let maximumHeaderBytes = 64_000
 
-    public static func encode(_ document: Notebook, createdAt: Date = Date()) throws -> Data {
-        let payload = try JSONEncoder().encode(document)
+    // MARK: Writing (format 2)
+
+    /// Small notebooks/tests: the complete archive in memory, re-decoded and
+    /// compared before return. `assets` serves `externalImageAssets`.
+    public static func encode(_ document: Notebook, assets: ImageAssetProviding? = nil, createdAt: Date = Date()) throws -> Data {
+        var sink = DataSink()
+        try write(document, assets: assets, createdAt: createdAt, into: &sink, limits: .standard)
+        guard try decode(sink.data).document == document else { throw BackupError.verificationFailed }
+        return sink.data
+    }
+
+    /// Streams the archive into a new file at `url` (never replaced), synced,
+    /// then reads the written file back completely (CRCs, every asset's
+    /// SHA-256, structure) and compares the notebook. On any error the
+    /// unfinished file is removed. Safe off every actor.
+    @discardableResult
+    public static func write(_ document: Notebook, assets: ImageAssetProviding? = nil, to url: URL,
+                             createdAt: Date = Date()) throws -> DecodedBackup {
+        try write(document, assets: assets, to: url, createdAt: createdAt, limits: .standard)
+    }
+
+    static func write(_ document: Notebook, assets: ImageAssetProviding?, to url: URL, createdAt: Date,
+                      limits: BackupArchiveLimits) throws -> DecodedBackup {
+        try Data().write(to: url, options: .withoutOverwriting)
+        var complete = false
+        defer { if !complete { try? FileManager.default.removeItem(at: url) } }
+        let handle = try FileHandle(forWritingTo: url)
+        do {
+            var sink = FileSink(handle: handle)
+            try write(document, assets: assets, createdAt: createdAt, into: &sink, limits: limits)
+            try handle.synchronize()
+            try handle.close()
+        } catch { try? handle.close(); throw error }
+        let written = try verify(url, handling: .verify, limits: limits)
+        guard written.formatVersion == 2, written.document == document,
+              written.assets == document.externalImageAssets else { throw BackupError.verificationFailed }
+        complete = true
+        return written
+    }
+
+    static func write<S: RecordArchiveSink>(_ document: Notebook, assets: ImageAssetProviding?, createdAt: Date,
+                                             into sink: inout S, limits: BackupArchiveLimits) throws {
+        do {
+            let payload = try LibraryArchive.chunkEncoder().encode(document)
+            guard payload.count <= limits.notebook else { throw BackupError.sizeLimit }
+            _ = try Notebook.decode(payload)
+            let references = try RecordArchive.uniqueAssets(document.externalImageAssets)
+            guard references.allSatisfy({ $0.byteCount <= limits.asset }) else { throw BackupError.invalidArchive }
+            // ISO-8601 keeps whole seconds; the re-read header must compare equal.
+            let created = Date(timeIntervalSince1970: createdAt.timeIntervalSince1970.rounded(.down))
+            let header = try RecordArchive.recordEncoder().encode(BackupHeader(documentID: document.id,
+                notebookSchemaVersion: document.schemaVersion, createdAt: created))
+            guard header.count <= maximumHeaderBytes else { throw BackupError.invalidArchive }
+            var writer = RecordWriter(sink, limit: limits.file)
+            defer { sink = writer.sink }
+            try writer.header(magic: magic, header)
+            try writer.data(.notebook, id: document.id, payload: payload)
+            for reference in references {
+                if Task.isCancelled { throw CancellationError() }
+                guard let assets else { throw ImageAssetError.missing(reference.sha256) }
+                // Hashed while streaming; a mismatch aborts (no second read).
+                try writer.asset(reference, from: try assets.payload(for: reference))
+            }
+            try writer.end()
+        } catch is RecordArchiveLimitExceeded { throw BackupError.fileTooLarge }
+        catch let mismatch as RecordArchiveAssetMismatch { throw ImageAssetError.damaged(mismatch.reference.sha256) }
+        catch is RecordArchiveInvalid { throw BackupError.invalidArchive }
+    }
+
+    /// Format 1 exactly as written up to Build 53 (Dictionary key order).
+    /// Only tests and fixtures write it; the app writes format 2.
+    static func encodeVersion1(_ document: Notebook, createdAt: Date = Date()) throws -> Data {
+        // Format 1 has no asset records.
+        guard document.externalImageAssets.isEmpty else { throw BackupError.invalidArchive }
+        return try encodeVersion1(payload: JSONEncoder().encode(document), createdAt: createdAt)
+    }
+
+    /// Format 1 around exact notebook JSON bytes (fixtures with schema ≤ 11
+    /// and embedded originals, as Build 53 wrote them).
+    static func encodeVersion1(payload: Data, createdAt: Date = Date()) throws -> Data {
         guard payload.count <= maximumBytes else { throw BackupError.sizeLimit }
-        _ = try Notebook.decode(payload)
+        let decoded = try NotebookDecoding.decode(payload)
+        guard decoded.storedExternalAssets.isEmpty else { throw BackupError.invalidArchive }
+        let document = decoded.notebook
         let manifest = BackupManifest(payloadByteCount: payload.count, payloadCRC32: SnapshotChecksum.crc32(payload),
-                                      documentID: document.id, notebookSchemaVersion: document.schemaVersion,
+                                      documentID: document.id, notebookSchemaVersion: decoded.storedSchemaVersion,
                                       createdAt: createdAt)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -54,33 +179,97 @@ public enum BackupArchive {
         guard header.count <= maximumHeaderBytes, 12 + header.count + payload.count <= maximumBytes else {
             throw BackupError.sizeLimit
         }
-        let length = UInt32(header.count)
-        var archive = magic
-        archive.append(contentsOf: [UInt8((length >> 24) & 255), UInt8((length >> 16) & 255),
-                                    UInt8((length >> 8) & 255), UInt8(length & 255)])
+        var archive = magic + RecordArchive.lengthBytes(header.count)
         archive.append(header)
         archive.append(payload)
-        // Validate the exact finished bytes before handing them to the exporter.
         guard try decode(archive).document == document else { throw BackupError.invalidArchive }
         return archive
     }
 
+    // MARK: Reading
+
+    /// Any accepted backup in memory (prototype JSON, format 1 ≤ 200 MB,
+    /// format 2 with every asset verified and discarded).
     public static func decode(_ data: Data) throws -> DecodedBackup {
-        do { return try decodeValidated(data) }
+        try mapped {
+            guard data.starts(with: magic), data.count >= RecordArchive.prefixByteCount else { return try decodeInMemory(data) }
+            let version = try formatVersion(header: data.prefix(RecordArchive.prefixByteCount), data.dropFirst(RecordArchive.prefixByteCount))
+            guard version == 2 else { return try decodeInMemory(data) }
+            var source = DataSource(data: data)
+            return try readVersion2(&source, handling: .verify, limits: .standard)
+        }
+    }
+
+    /// One streaming pass over a regular file. Format 2: CRCs, structure and
+    /// every asset (`extractingAssetsTo`: verified into that existing
+    /// directory as `<sha256>`, otherwise discarded); memory is bounded by the
+    /// notebook JSON. Format 1 and prototype JSON: read in memory (≤ 200 MB).
+    public static func verify(_ url: URL, extractingAssetsTo directory: URL? = nil) throws -> DecodedBackup {
+        try verify(url, handling: directory.map { .extract($0) } ?? .verify, limits: .standard)
+    }
+
+    static func verify(_ url: URL, handling: RecordAssetHandling, limits: BackupArchiveLimits) throws -> DecodedBackup {
+        let decoded = try verifyRecords(url, handling: handling, limits: limits)
+        // Embedded originals (schema ≤ 11) join the extracted assets, written
+        // and verified the same way; names come from their computed hashes.
+        if case .extract(let directory) = handling, !decoded.inlineImageBytes.isEmpty {
+            let inline = InlineImageAssets(bytes: decoded.inlineImageBytes)
+            try NotebookAssets(directory: directory).persist(inline.references, from: inline)
+        }
+        return decoded
+    }
+
+    private static func verifyRecords(_ url: URL, handling: RecordAssetHandling, limits: BackupArchiveLimits) throws -> DecodedBackup {
+        try mapped {
+            try BoundedFile.requireRegularFile(url)
+            guard let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize else { throw BackupError.invalidArchive }
+            guard size <= limits.file else { throw BackupError.fileTooLarge }
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            let head = try handle.read(upToCount: RecordArchive.prefixByteCount) ?? Data()
+            var version = 0
+            if head.count == RecordArchive.prefixByteCount, head.starts(with: magic) {
+                let length = RecordArchive.length(prefix: head)
+                guard (1...maximumHeaderBytes).contains(length) else { throw BackupError.invalidArchive }
+                version = try formatVersion(header: head, try handle.read(upToCount: length) ?? Data())
+            }
+            guard version == 2 else { return try decodeInMemory(readBounded(url, limit: limits.notebook)) }
+            try handle.seek(toOffset: 0)
+            var source = FileSource(handle: handle, size: size)
+            return try readVersion2(&source, handling: handling, limits: limits)
+        }
+    }
+
+    private static func mapped(_ body: () throws -> DecodedBackup) throws -> DecodedBackup {
+        do { return try body() }
         catch let error as BackupError { throw error }
         catch let error as StorageError { throw error }
+        catch let error as CancellationError { throw error }
         catch { throw BackupError.invalidArchive }
     }
 
-    private static func decodeValidated(_ data: Data) throws -> DecodedBackup {
+    /// The header's format version (1 or 2), anything else unsupported.
+    private static func formatVersion(header prefix: Data, _ rest: Data) throws -> Int {
+        let length = RecordArchive.length(prefix: prefix)
+        guard (1...maximumHeaderBytes).contains(length), rest.count >= length else { throw BackupError.invalidArchive }
+        struct Version: Decodable { var backupFormatVersion: Int }
+        let version = try JSONDecoder().decode(Version.self, from: Data(rest.prefix(length))).backupFormatVersion
+        guard version == 1 || version == 2 else { throw BackupError.unsupportedVersion(version) }
+        return version
+    }
+
+    private static func decodeInMemory(_ data: Data) throws -> DecodedBackup {
+        let file = LibraryArchiveFileInfo(byteCount: data.count, crc32: StreamingCRC32.checksum(data))
         guard data.count <= maximumBytes else { throw BackupError.sizeLimit }
         guard data.starts(with: magic) else {
             // Preserve access to the prototype's explicitly exported JSON files.
-            return DecodedBackup(document: try Notebook.decode(data), isLegacyJSON: true)
+            let decoded = try NotebookDecoding.decode(data)
+            guard decoded.storedExternalAssets.isEmpty else { throw BackupError.invalidArchive }
+            return DecodedBackup(document: decoded.notebook, isLegacyJSON: true, formatVersion: 0, assets: [], file: file,
+                                 inlineImageBytes: decoded.inlineImageBytes)
         }
         guard data.count >= 12 else { throw BackupError.invalidArchive }
-        let prefix = Array(data.prefix(12))
-        let headerLength = Int(prefix[8..<12].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+        let headerLength = RecordArchive.length(prefix: data.prefix(RecordArchive.prefixByteCount))
         guard (1...maximumHeaderBytes).contains(headerLength), data.count >= 12 + headerLength else {
             throw BackupError.invalidArchive
         }
@@ -98,11 +287,56 @@ public enum BackupArchive {
         }
         let payload = Data(data.suffix(manifest.payloadByteCount))
         guard SnapshotChecksum.crc32(payload) == manifest.payloadCRC32 else { throw BackupError.checksumMismatch }
-        let document = try Notebook.decode(payload)
-        guard document.id == manifest.documentID, document.schemaVersion == manifest.notebookSchemaVersion else {
+        let decoded = try NotebookDecoding.decode(payload)
+        let document = decoded.notebook
+        // The header names the stored schema; format 1 carries no assets.
+        guard document.id == manifest.documentID, decoded.storedSchemaVersion == manifest.notebookSchemaVersion,
+              decoded.storedExternalAssets.isEmpty else {
             throw BackupError.invalidArchive
         }
-        return DecodedBackup(document: document, isLegacyJSON: false)
+        return DecodedBackup(document: document, isLegacyJSON: false, formatVersion: 1, assets: [], file: file,
+                             inlineImageBytes: decoded.inlineImageBytes)
+    }
+
+    /// Exactly one notebook, then exactly its unique external assets (each
+    /// once, any order), then `end` and the end of the file.
+    static func readVersion2<S: RecordArchiveSource>(_ source: inout S, handling: RecordAssetHandling,
+                                                     limits: BackupArchiveLimits) throws -> DecodedBackup {
+        var reader = RecordReader(source)
+        defer { source = reader.input.source }
+        do {
+            guard reader.size <= limits.file else { throw BackupError.fileTooLarge }
+            let headerData = try reader.header(magic: magic, maximumHeader: maximumHeaderBytes)
+            try RecordArchive.requireKeys(headerData, BackupHeader.keys)
+            let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+            let header = try decoder.decode(BackupHeader.self, from: headerData)
+            guard header.backupFormatVersion == 2, header.checksumAlgorithm == "crc32-iso-hdlc",
+                  header.assetHashAlgorithm == "sha256" else { throw BackupError.invalidArchive }
+            let first = try reader.descriptor()
+            guard first.kind == .notebook, first.id == header.documentID else { throw BackupError.invalidArchive }
+            let decoded = try drained { try NotebookDecoding.decode(reader.payload(first, limit: limits.notebook)) }
+            let document = decoded.notebook
+            guard document.id == header.documentID, decoded.storedSchemaVersion == header.notebookSchemaVersion else {
+                throw BackupError.invalidArchive
+            }
+            // Embedded originals (a schema ≤ 11 record) are no asset records.
+            let references = try RecordArchive.uniqueAssets(decoded.storedExternalAssets)
+            let expected = Dictionary(uniqueKeysWithValues: references.map { ($0.sha256, $0) })
+            var seen = Set<String>()
+            while true {
+                if Task.isCancelled { throw CancellationError() }
+                let descriptor = try reader.descriptor()
+                if descriptor.kind == .end { try reader.end(descriptor); break }
+                guard descriptor.kind == .asset, let reference = descriptor.assetReference,
+                      expected[reference.sha256] == reference, reference.byteCount <= limits.asset,
+                      seen.insert(reference.sha256).inserted else { throw BackupError.invalidArchive }
+                try reader.asset(reference, handling)
+            }
+            guard seen.count == expected.count else { throw BackupError.invalidArchive }
+            return DecodedBackup(document: document, isLegacyJSON: false, formatVersion: 2, assets: references, file: reader.file,
+                                 inlineImageBytes: decoded.inlineImageBytes)
+        } catch is RecordArchiveInvalid { throw BackupError.invalidArchive }
+        catch is RecordArchiveTruncated { throw BackupError.invalidArchive }
     }
 
     /// Read in bounded chunks so even a growing/provider file cannot cause an
@@ -117,120 +351,15 @@ public enum BackupArchive {
     }
 }
 
-/// Incremental CRC-32/ISO-HDLC (same values as zlib.crc32), slicing-by-8 so
-/// multi-hundred-megabyte archives can be checked block by block.
-struct StreamingCRC32 {
-    private static let table: [UInt32] = {
-        var table = [UInt32](repeating: 0, count: 8 * 256)
-        for byte in 0..<256 {
-            var value = UInt32(byte)
-            for _ in 0..<8 { value = (value >> 1) ^ (value & 1 == 1 ? 0xedb88320 : 0) }
-            table[byte] = value
-        }
-        for slice in 1..<8 {
-            for byte in 0..<256 {
-                let previous = table[(slice - 1) * 256 + byte]
-                table[slice * 256 + byte] = (previous >> 8) ^ table[Int(previous & 255)]
-            }
-        }
-        return table
-    }()
-    private var state: UInt32 = 0xffffffff
-    var value: UInt32 { state ^ 0xffffffff }
-
-    mutating func update(_ data: Data) { data.withUnsafeBytes { update($0) } }
-    mutating func update(_ bytes: UnsafeRawBufferPointer) {
-        guard let base = bytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-        var crc = state, index = 0
-        let count = bytes.count
-        Self.table.withUnsafeBufferPointer { t in
-            while index + 8 <= count {
-                let one = crc ^ (UInt32(base[index]) | UInt32(base[index + 1]) << 8 | UInt32(base[index + 2]) << 16 | UInt32(base[index + 3]) << 24)
-                let two = UInt32(base[index + 4]) | UInt32(base[index + 5]) << 8 | UInt32(base[index + 6]) << 16 | UInt32(base[index + 7]) << 24
-                crc = t[1792 + Int(one & 255)] ^ t[1536 + Int((one >> 8) & 255)] ^ t[1280 + Int((one >> 16) & 255)] ^ t[1024 + Int(one >> 24)]
-                    ^ t[768 + Int(two & 255)] ^ t[512 + Int((two >> 8) & 255)] ^ t[256 + Int((two >> 16) & 255)] ^ t[Int(two >> 24)]
-                index += 8
-            }
-            while index < count { crc = t[Int((crc ^ UInt32(base[index])) & 255)] ^ (crc >> 8); index += 1 }
-        }
-        state = crc
-    }
-    static func checksum(_ data: Data) -> UInt32 { var crc = StreamingCRC32(); crc.update(data); return crc.value }
-}
-
-/// Exact byte count and CRC-32 of a complete archive file.
-public struct LibraryArchiveFileInfo: Codable, Equatable, Sendable {
-    public let byteCount: Int
-    public let crc32: UInt32
-    public init(byteCount: Int, crc32: UInt32) { self.byteCount = byteCount; self.crc32 = crc32 }
-}
-
-/// Bounded, block-wise file access shared by backup readers and transports:
-/// no unbounded `Data(contentsOf:)` before a size check, no whole archive in memory.
-public enum BoundedFile {
-    static let block = 4 * 1024 * 1024
-
-    /// Small files only (manifests, listings): the limit is checked while reading.
-    public static func read(_ url: URL, limit: Int) throws -> Data {
-        guard limit >= 1 else { throw BackupError.sizeLimit }
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var data = Data()
-        while let chunk = try handle.read(upToCount: min(64_000, limit + 1)), !chunk.isEmpty {
-            guard chunk.count <= limit - data.count else { throw BackupError.sizeLimit }
-            data.append(chunk)
-        }
-        return data
-    }
-
-    /// Size and CRC-32 of a regular file (no symbolic link), streamed in blocks.
-    public static func checksum(_ url: URL, limit: Int = LibraryArchive.maximumBytes) throws -> LibraryArchiveFileInfo {
-        try requireRegularFile(url)
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var crc = StreamingCRC32(), count = 0
-        while let chunk = try handle.read(upToCount: block), !chunk.isEmpty {
-            guard chunk.count <= limit - count else { throw LibraryArchiveError.archiveTooLarge }
-            crc.update(chunk); count += chunk.count
-        }
-        return LibraryArchiveFileInfo(byteCount: count, crc32: crc.value)
-    }
-
-    /// Streams `source` into a newly created `destination` (never replaces an
-    /// existing file) and syncs it. A partially written destination is removed.
-    @discardableResult
-    public static func copy(from source: URL, to destination: URL, limit: Int = LibraryArchive.maximumBytes) throws -> LibraryArchiveFileInfo {
-        try requireRegularFile(source)
-        let input = try FileHandle(forReadingFrom: source)
-        defer { try? input.close() }
-        try Data().write(to: destination, options: .withoutOverwriting)
-        var complete = false
-        defer { if !complete { try? FileManager.default.removeItem(at: destination) } }
-        let output = try FileHandle(forWritingTo: destination)
-        defer { try? output.close() }
-        var crc = StreamingCRC32(), count = 0
-        while let chunk = try input.read(upToCount: block), !chunk.isEmpty {
-            guard chunk.count <= limit - count else { throw LibraryArchiveError.archiveTooLarge }
-            try output.write(contentsOf: chunk)
-            crc.update(chunk); count += chunk.count
-        }
-        try output.synchronize()
-        complete = true
-        return LibraryArchiveFileInfo(byteCount: count, crc32: crc.value)
-    }
-
-    static func requireRegularFile(_ url: URL) throws {
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-        guard values.isRegularFile == true, values.isSymbolicLink != true else { throw LibraryArchiveError.invalid }
-    }
-}
-
 public struct PreparedRestore: Sendable {
     public let id: UUID
     public let document: Notebook
     public let isLegacyJSON: Bool
+    /// The staged, verified image originals (read-only), for the UI's checks.
+    public let assets: NotebookAssets
     // Only the repository can issue a token tied to these exact staged bytes.
-    let archiveCRC32: UInt32
+    let archive: LibraryArchiveFileInfo
+    let assetReferences: [ImageAssetReference]
 }
 
 public struct RestoredPagePreview: Identifiable, Sendable {

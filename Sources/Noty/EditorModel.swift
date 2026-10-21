@@ -66,11 +66,17 @@ final class EditorModel: ObservableObject {
     private var retryAttempt = 0
     /// Last non-retryable save error already shown; cleared by a successful save.
     private var lastPermanentFailure: String?
+    /// The package's asset GC after opening (repository actor, before its
+    /// first commit; skipped there once a commit happened).
+    private var openingCleanup: Task<Void, Never>?
 
     init(storageRoot root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true),
          restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil) {
         storageRoot = root
         store = NotebookRepository(directory: root, restoreDirectory: restoreDirectory)
+        // Image layers, thumbnails and exports of this editor resolve its
+        // originals (files and pending imports) through the registry.
+        ImageAssetRegistry.shared.register(store.assets)
         // Container-independent keys (relative to Documents); the former
         // absolute-path keys stop matching when iOS moves the container on update.
         backupDateKey = StableDefaults.key("backupExport", root: root, legacyPrefix: "noty.backupExport.", pick: StableDefaults.newestDate)
@@ -89,9 +95,9 @@ final class EditorModel: ObservableObject {
                 // Opening speed: decode every PencilKit drawing and image off the
                 // UI actor; PDFKit parsing happens once (the catalogue below
                 // validates the PDFs) instead of twice on the UI actor.
-                let snapshot = loaded
+                let snapshot = loaded, assets = store.assets
                 try await Task.detached(priority: .userInitiated) {
-                    try EditorModelValidation.validateContent(snapshot)
+                    try EditorModelValidation.validateOnOpening(snapshot, assets: assets)
                 }.value
                 EditorOpenTrace.mark("document read", "pages=\(loaded.pages.count)")
                 // Keep legacy page geometry nil: existing ink is never rescaled.
@@ -121,6 +127,11 @@ final class EditorModel: ObservableObject {
                     // requiring the user to change an otherwise unchanged note.
                     save()
                 }
+                // Before any undo history can matter: the repository refuses
+                // the opening run once this editor committed anything.
+                openingCleanup = Task { [store] in
+                    _ = try? await store.collectAssetGarbage(.opening, keeping: ImageAssetRegistry.shared.clipboardHashes)
+                }
             } catch {
                 status = "Lesefehler – Originaldateien geschützt"
                 self.error = "Gespeicherte Daten sind nicht lesbar. Originaldateien bleiben erhalten. Ein exportiertes Backup kann über Dateien wiederhergestellt werden. \(error.localizedDescription)"
@@ -128,8 +139,25 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    func validate(_ document: Notebook) throws {
-        try EditorModelValidation.validate(document)
+    func validate(_ document: Notebook, assets: ImageAssetProviding? = nil) throws {
+        try EditorModelValidation.validate(document, assets: assets)
+    }
+
+    /// This notebook's image originals: committed package files plus pending
+    /// imports (staged here, written by the next commit before its revision).
+    nonisolated var imageAssets: NotebookAssets { store.assets }
+
+    /// Originals referenced by `images` that this notebook does not have yet
+    /// (objects pasted from another notebook's selection) are staged here
+    /// from the package that holds them, before the change is installed;
+    /// otherwise every later commit would fail on a missing asset. Objects
+    /// already in the notebook cost no file access.
+    private func adoptImageAssets<S: Sequence>(_ images: S) throws where S.Element == ImageObject {
+        let known = Set(notebook.allImages.map(\.asset.sha256))
+        for reference in Set(images.map(\.asset)) where !known.contains(reference.sha256) && !imageAssets.isAvailable(reference) {
+            guard let data = ImageAssetRegistry.shared.data(for: reference) else { throw ImageAssetError.missing(reference.sha256) }
+            _ = try imageAssets.stage(data)
+        }
     }
 
     var page: Page { notebook.pages[pageIndex] }
@@ -312,6 +340,7 @@ final class EditorModel: ObservableObject {
               (notebook.pages[index].images ?? []) != images else { return }
         do {
             let before = PageContent(page: notebook.pages[index])
+            try adoptImageAssets(images)
             var candidate = notebook
             try candidate.replaceImages(images, pageID: pageID)
             if candidate.schemaVersion != notebook.schemaVersion {
@@ -323,7 +352,7 @@ final class EditorModel: ObservableObject {
             recordChange(.images, pageID: pageID, before: before,
                          coalescing: .init(key: "images-\(pageID.uuidString)", window: 0.8))
             scheduleSave()
-        } catch { self.error = "Bildänderung konnte nicht übernommen werden. Höchstens 50 Bilder pro Seite und 40 MB Bildoriginale pro Heft. \(error.localizedDescription)" }
+        } catch { self.error = "Bildänderung konnte nicht übernommen werden. Höchstens 50 Bilder pro Seite und 500 MB Bildoriginale pro Heft. \(error.localizedDescription)" }
     }
 
     @discardableResult
@@ -338,6 +367,7 @@ final class EditorModel: ObservableObject {
             return false
         }
         do {
+            try adoptImageAssets(content.images)
             var candidate = notebook; try candidate.replaceContent(content, pageID: pageID)
             if candidate.schemaVersion != notebook.schemaVersion {
                 let catalogue = try NotebookPDFCatalog(candidate, reusing: sources)
@@ -361,6 +391,7 @@ final class EditorModel: ObservableObject {
         HangProbe.hit("Model.replaceContents")
         guard writable, !mutationsPaused, !busy else { return false }
         do {
+            try adoptImageAssets(changes.flatMap(\.replacement.images))
             var candidate = notebook; try candidate.replaceContents(changes)
             if candidate.schemaVersion != notebook.schemaVersion {
                 let catalogue = try NotebookPDFCatalog(candidate, reusing: sources)
@@ -578,9 +609,22 @@ final class EditorModel: ObservableObject {
             if closingRevision == revision {
                 if saveFailed { return false }
                 writable = false
+                await collectAssetGarbageAfterClosing()
                 return true
             }
         }
+    }
+
+    /// After the last successful commit, once the editor is no longer
+    /// writable: the package's asset GC (skipped by the repository while a
+    /// backup or restore runs, or if the state on disk differs). Awaited, so
+    /// a notebook opened again never overlaps it. Originals on the in-app
+    /// object clipboard are kept for pasting elsewhere.
+    func collectAssetGarbageAfterClosing() async {
+        guard !writable else { return }
+        await openingCleanup?.value
+        openingCleanup = nil
+        _ = try? await store.collectAssetGarbage(.closing, current: notebook, keeping: ImageAssetRegistry.shared.clipboardHashes)
     }
 
     func waitForSave() async -> Bool {
@@ -667,16 +711,21 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    func backupData() async -> Data? {
+    /// A verified `.notybackup` file in the app's temporary backup directory
+    /// (never inside a notebook package); the caller removes it after the
+    /// export dialog (`BackupScratch.remove`). The archive is written and
+    /// re-read on the repository actor, never held in memory as a whole.
+    func backupFile() async -> URL? {
         guard writable, !mutationsPaused, !busy else { return nil }
         busy = true
         let snapshot = notebook
         backupStatus = "Backup wird vorbereitet …"
         defer { busy = false }
         do {
-            let data = try await store.backup(snapshot)
+            let url = try BackupScratch.newFile("notybackup")
+            do { try await store.backup(snapshot, to: url) } catch { BackupScratch.remove(url); throw error }
             backupStatus = "Backup geprüft · Speicherort wählen"
-            return data
+            return url
         } catch {
             backupStatus = "Backup konnte nicht erstellt werden"
             self.error = error.localizedDescription
@@ -709,7 +758,7 @@ final class EditorModel: ObservableObject {
     }
 
     private func openPreparedRestore(_ prepared: PreparedRestore, message: String) async throws {
-        try validate(prepared.document)
+        try validate(prepared.document, assets: prepared.assets)
         var restored = try await store.commitRestore(prepared)
         restored.preferredPageID = page.id
         backupStatus = message
@@ -735,18 +784,40 @@ private final class BackgroundSaveTask {
 
 @MainActor
 enum EditorModelValidation {
-    static func validate(_ document: Notebook) throws {
+    static func validate(_ document: Notebook, assets: ImageAssetProviding? = nil) throws {
         _ = try NotebookPDFCatalog(document)
-        try validateContent(document)
+        try validateContent(document, assets: assets)
     }
     /// PencilKit drawings and images of active and trashed pages. No UI or
     /// PDFKit objects: safe off the UI actor (the PDF part is the catalogue).
-    nonisolated static func validateContent(_ document: Notebook) throws {
+    /// Image originals come from `assets` (nil: the registry); each original
+    /// (content address and pixel size) is decoded and verified once, also
+    /// when duplicated pages share it.
+    /// Opening: every PencilKit drawing, but image originals only by
+    /// presence (pending bytes, or a file of the right size: `stat`). Their
+    /// SHA-256 and ImageIO check follow when an image is first drawn
+    /// (`ImageRendering.prepare`; a mismatch shows the existing "damaged"
+    /// path), and in backup, restore and PDF export. Opening a notebook with
+    /// 500 MB of originals therefore reads none of them.
+    nonisolated static func validateOnOpening(_ document: Notebook, assets: NotebookAssets) throws {
         for page in document.pages + (document.deletedPages ?? []).map(\.page) where !page.drawing.isEmpty {
             _ = try PKDrawing(data: page.drawing)
         }
-        for page in document.pages + (document.deletedPages ?? []).map(\.page) {
-            for image in page.images ?? [] { try ImageRendering.validate(image) }
+        for reference in document.externalImageAssets where !assets.isAvailable(reference) {
+            throw ImageAssetError.missing(reference.sha256)
+        }
+    }
+
+    nonisolated static func validateContent(_ document: Notebook, assets: ImageAssetProviding? = nil) throws {
+        for page in document.pages + (document.deletedPages ?? []).map(\.page) where !page.drawing.isEmpty {
+            _ = try PKDrawing(data: page.drawing)
+        }
+        let images = document.allImages
+        guard !images.isEmpty else { return }
+        let provider: ImageAssetProviding = assets ?? ImageAssetRegistry.shared
+        var checked = Set<String>()
+        for image in images where checked.insert("\(image.asset.sha256)-\(image.pixelWidth)x\(image.pixelHeight)").inserted {
+            try ImageRendering.validate(image, assets: provider)
         }
     }
 }
@@ -756,18 +827,23 @@ extension UTType {
     static let notyLibrary = UTType(exportedAs: "de.la.noty.library", conformingTo: .data)
 }
 
+/// Editor exports: a PDF in memory or a verified backup file. A backup is
+/// handed to the system from its file (like `LibraryArchiveFile`), never
+/// loaded into memory as a whole. Export only; reading goes through the
+/// staged restore paths.
 struct ExportFile: FileDocument {
     static var readableContentTypes: [UTType] { [.notyBackup, .notyLibrary, .json, .pdf] }
-    var data: Data
-    init(backupData: Data) { data = backupData }
-    init(pdfData: Data) { data = pdfData }
-    init(libraryData: Data) { data = libraryData }
-    init(configuration: ReadConfiguration) throws {
-        data = configuration.file.regularFileContents ?? Data()
-        if configuration.contentType == .notyLibrary { _ = try LibraryArchive.decode(data) }
-        else if configuration.contentType != .pdf { _ = try BackupArchive.decode(data) }
-    }
+    private enum Content { case data(Data), file(URL) }
+    private let content: Content
+    init(pdfData: Data) { content = .data(pdfData) }
+    init(backupFile url: URL) { content = .file(url) }
+    init(configuration: ReadConfiguration) throws { throw CocoaError(.featureUnsupported) }
+    /// The scratch file behind a backup export.
+    var fileURL: URL? { if case .file(let url) = content { url } else { nil } }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: data)
+        switch content {
+        case .data(let data): FileWrapper(regularFileWithContents: data)
+        case .file(let url): try FileWrapper(url: url, options: [])
+        }
     }
 }

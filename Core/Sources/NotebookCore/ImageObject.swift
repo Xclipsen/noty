@@ -1,10 +1,18 @@
 import Foundation
 
-/// Original selected file bytes, never replaced by a crop or rotation. Crop is
+/// Original selected file, never replaced by a crop or rotation. Crop is
 /// normalized in the orientation-corrected image; position is in page points.
+///
+/// Since notebook schema 12 the original lives outside the JSON as the
+/// immutable package file `Assets/<sha256>`; the object stores only its
+/// content address (`asset`). Schema 5–11 embedded the bytes as `data`
+/// (Base64): `NotebookDecoding` reads that form, hashes the bytes and hands
+/// them over separately (`DecodedNotebook.inlineImageBytes`). There is no
+/// encoding back to `data`.
 public struct ImageObject: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
-    public let data: Data
+    /// Content address of the unchanged original.
+    public let asset: ImageAssetReference
     public let pixelWidth: Int
     public let pixelHeight: Int
     public var x: Double
@@ -15,16 +23,60 @@ public struct ImageObject: Codable, Equatable, Identifiable, Sendable {
     public var crop: PageRect
     public var locked: Bool
 
-    public init(id: UUID = UUID(), data: Data, pixelWidth: Int, pixelHeight: Int,
+    private enum CodingKeys: String, CodingKey {
+        case id, asset, data, pixelWidth, pixelHeight, x, y, width, height, rotation, crop, locked
+    }
+
+    public init(id: UUID = UUID(), asset: ImageAssetReference, pixelWidth: Int, pixelHeight: Int,
                 x: Double = 40, y: Double = 40, width: Double = 240, height: Double = 180,
                 rotation: Double = 0, crop: PageRect = .init(x: 0, y: 0, width: 1, height: 1), locked: Bool = false) {
-        self.id = id; self.data = data; self.pixelWidth = pixelWidth; self.pixelHeight = pixelHeight
+        self.id = id; self.asset = asset; self.pixelWidth = pixelWidth; self.pixelHeight = pixelHeight
         self.x = x; self.y = y; self.width = width; self.height = height
         self.rotation = rotation; self.crop = crop; self.locked = locked
     }
 
+    /// Schema 12 (and any decoder without a `NotebookDecoding` context):
+    /// `asset` required, `data` forbidden. Stored schema 5–11: exactly the
+    /// reverse; the embedded bytes are hashed and collected by the context.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        if let context = decoder.userInfo[NotebookDecodingContext.key] as? NotebookDecodingContext,
+           context.storedSchemaVersion < Notebook.imageAssetSchemaVersion {
+            guard !container.contains(.asset) else { throw StorageError.invalidDocument }
+            asset = try context.embed(container.decode(Data.self, forKey: .data))
+        } else {
+            guard !container.contains(.data) else { throw StorageError.invalidDocument }
+            asset = try container.decode(ImageAssetReference.self, forKey: .asset)
+        }
+        pixelWidth = try container.decode(Int.self, forKey: .pixelWidth)
+        pixelHeight = try container.decode(Int.self, forKey: .pixelHeight)
+        x = try container.decode(Double.self, forKey: .x)
+        y = try container.decode(Double.self, forKey: .y)
+        width = try container.decode(Double.self, forKey: .width)
+        height = try container.decode(Double.self, forKey: .height)
+        rotation = try container.decode(Double.self, forKey: .rotation)
+        crop = try container.decode(PageRect.self, forKey: .crop)
+        locked = try container.decode(Bool.self, forKey: .locked)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(asset, forKey: .asset)
+        try container.encode(pixelWidth, forKey: .pixelWidth)
+        try container.encode(pixelHeight, forKey: .pixelHeight)
+        try container.encode(x, forKey: .x)
+        try container.encode(y, forKey: .y)
+        try container.encode(width, forKey: .width)
+        try container.encode(height, forKey: .height)
+        try container.encode(rotation, forKey: .rotation)
+        try container.encode(crop, forKey: .crop)
+        try container.encode(locked, forKey: .locked)
+    }
+
     public func validate() throws {
-        guard !data.isEmpty, data.count <= ImageLimits.maximumFileBytes,
+        guard asset.isValid,
               (1...ImageLimits.maximumSide).contains(pixelWidth), (1...ImageLimits.maximumSide).contains(pixelHeight),
               Double(pixelWidth) * Double(pixelHeight) <= ImageLimits.maximumPixels,
               [x, y, width, height, rotation].allSatisfy(\.isFinite),
@@ -80,11 +132,18 @@ public struct ImageObject: Codable, Equatable, Identifiable, Sendable {
 }
 
 extension Notebook {
+    /// Image objects in memory reference assets, which needs schema 12. Every
+    /// path that can add images raises; nothing lowers.
+    mutating func raiseSchemaForImageAssets() {
+        if !allImages.isEmpty { schemaVersion = max(Self.imageAssetSchemaVersion, schemaVersion) }
+    }
+
     public mutating func replaceImages(_ images: [ImageObject], pageID: UUID) throws {
         var next = try preparedForPageEditing()
         guard let index = next.pages.firstIndex(where: { $0.id == pageID }) else { throw PageOperationError.missingPage }
         next.schemaVersion = max(5, next.schemaVersion)
         next.pages[index].images = images
+        next.raiseSchemaForImageAssets()
         try next.validate(); self = next
     }
 }

@@ -635,9 +635,9 @@ struct LibraryView: View {
         guard !item.isFolder, !pdfExport.running else { return }
         Task {
             do {
-                let notebook = try await model.committedNotebook(item.id)
+                let (notebook, assets) = try await model.committedNotebook(item.id)
                 exportedPDFName = item.title
-                pdfExport.start(notebook) { result in
+                pdfExport.start(notebook, assets: assets) { result in
                     switch result {
                     case .success(let data): exportedPDF = ExportFile(pdfData: data); exportingPDF = true
                     case .failure(let error): if !(error is CancellationError) { model.error = error.localizedDescription }

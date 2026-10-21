@@ -693,6 +693,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()
         value.drawing = PKDrawing(strokes: drawing.strokes.enumerated().filter { ink.contains($0.offset) }.map(\.element)).dataRepresentation()
         ObjectClipboard.content = value; ObjectClipboard.bounds = frame
+        // Pasting into another notebook stages the originals from this package.
+        ImageAssetRegistry.shared.pinClipboard(value.images.map(\.asset))
     }
     private func pasteSelection() {
         guard let copied = ObjectClipboard.content, let frame = ObjectClipboard.bounds else { return }

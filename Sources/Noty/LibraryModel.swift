@@ -107,6 +107,8 @@ final class LibraryModel: ObservableObject {
             throw BackupPostponed(reason: backupBlocker ?? "Notizbuch geöffnet")
         }
         archiveRunning = true; defer { archiveRunning = false }
+        // Process-wide: closing or opening editors skip their asset GC meanwhile.
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
         let plan = try await store.backupPlan()
         let url = try BackupScratch.newFile()
         let task = Task.detached(priority: .utility) { () throws -> PreparedLibraryArchive in
@@ -217,8 +219,12 @@ final class LibraryModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
 
-    /// Read-only snapshot of the last committed revision (PDF export from the library).
-    func committedNotebook(_ id: UUID) async throws -> Notebook { try await store.previewDocument(id: id) }
+    /// Read-only snapshot of the last committed revision with its image
+    /// originals (PDF export from the library).
+    func committedNotebook(_ id: UUID) async throws -> (Notebook, NotebookAssets) {
+        let package = try await store.previewPackage(id: id)
+        return (package.document, package.assets)
+    }
 
     private final class Tile {
         let stamp: String, appearance: NotebookAppearance?, image: UIImage?
@@ -234,7 +240,7 @@ final class LibraryModel: ObservableObject {
         // Read before the document: a newer commit in between only re-renders later.
         let stamp = await Task.detached(priority: .utility) { NotebookRevisionStamp.read(directory: url) }.value
         if let stamp, let tile = tiles.object(forKey: id as NSUUID), tile.stamp == stamp { return (tile.appearance, tile.image) }
-        let document = try await store.previewDocument(id: id)
+        let (document, assets) = try await store.previewPackage(id: id)
         try Task.checkCancellation()
         let result: (NotebookAppearance?, UIImage?)
         if document.appearance?.coverEnabled == true { result = (document.appearance, nil) }
@@ -245,7 +251,7 @@ final class LibraryModel: ObservableObject {
             if let reference = page.pdfReference {
                 source = document.pdfSources?.first(where: { $0.id == reference.sourceID }).map { .data($0.data, reference.pageIndex) } ?? .none
             } else { source = document.pdf.map { .data($0, 0) } ?? .none }
-            result = (nil, try await PageThumbnailCache.render(page, source: source))
+            result = (nil, try await PageThumbnailCache.render(page, source: source, assets: assets))
         }
         if let stamp {
             let pixels = result.1.map { Int($0.size.width * $0.size.height * $0.scale * $0.scale * 4) } ?? 1
@@ -428,7 +434,7 @@ final class LibraryModel: ObservableObject {
             // Use the existing staged, independently validated restore path.
             let repository = NotebookRepository(directory: root)
             let prepared = try await repository.prepareRestore(from: url)
-            try EditorModelValidation.validate(prepared.document)
+            try EditorModelValidation.validate(prepared.document, assets: prepared.assets)
             let restored = try await repository.commitRestore(prepared)
             snapshot = try await store.load().snapshot
             if let parent { snapshot = try await store.move(restored.id, to: parent) }

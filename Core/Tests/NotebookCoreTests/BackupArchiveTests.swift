@@ -73,14 +73,14 @@ final class BackupArchiveTests: XCTestCase {
     }
 
     func testFutureBackupVersionIsExplicitlyRejected() throws {
-        let archive = try rewriteHeader(BackupArchive.encode(sample())) { $0["backupFormatVersion"] = 99 }
+        let archive = try rewriteHeader(BackupArchive.encodeVersion1(sample())) { $0["backupFormatVersion"] = 99 }
         XCTAssertThrowsError(try BackupArchive.decode(archive)) { error in
             guard case BackupError.unsupportedVersion(99) = error else { return XCTFail("\(error)") }
         }
     }
 
     func testManifestIdentitySchemaAlgorithmAndPayloadLengthMustMatch() throws {
-        let archive = try BackupArchive.encode(sample())
+        let archive = try BackupArchive.encodeVersion1(sample())
         let modifications: [(inout [String: Any]) -> Void] = [
             { $0["documentID"] = UUID().uuidString },
             { $0["notebookSchemaVersion"] = 99 },
@@ -94,7 +94,7 @@ final class BackupArchiveTests: XCTestCase {
     }
 
     func testNoArchiveSuppliedPathsAreAccepted() throws {
-        let archive = try BackupArchive.encode(sample())
+        let archive = try BackupArchive.encodeVersion1(sample())
         for path in ["../notebook.json", "/tmp/notebook.json", "subdir/notebook.json", "..\\notebook.json"] {
             let unsafe = try rewriteHeader(archive) { $0["payloadName"] = path }
             XCTAssertThrowsError(try BackupArchive.decode(unsafe))
@@ -131,7 +131,7 @@ final class BackupArchiveTests: XCTestCase {
         try await repository.save(current, revision: 1)
         let manifest = try Data(contentsOf: root.appendingPathComponent("manifest.json"))
         let file = root.appendingPathComponent("external.notybackup")
-        try await repository.backup(current).write(to: file)
+        try await repository.backup(current, to: file)
         let prepared = try await repository.prepareRestore(from: file)
         XCTAssertNotEqual(prepared.document.id, current.id)
         XCTAssertEqual(prepared.document.pages, current.pages)

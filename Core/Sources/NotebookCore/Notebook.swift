@@ -22,7 +22,11 @@ public struct Notebook: Codable, Equatable, Sendable {
     /// 10: PDF sources above 20 MB (Build 46 rejects them as invalid and would
     /// fall back to an older revision; schema 10 makes it refuse the notebook).
     /// 11: writing space beside paper pages (right/below, in the page's own paper).
-    public static let currentSchemaVersion = 11
+    /// 12: image originals as package assets (`ImageObject.asset`), no longer
+    /// embedded; notebooks with images are raised to 12 in memory on load.
+    public static let currentSchemaVersion = 12
+    /// Lowest schema whose image objects reference assets instead of embedding.
+    public static let imageAssetSchemaVersion = 12
     // Existing callers retain the legacy representation until a structural edit.
     public var schemaVersion: Int = 2
     public var id: UUID = UUID()
@@ -34,16 +38,19 @@ public struct Notebook: Codable, Equatable, Sendable {
     public var appearance: NotebookAppearance?
     public init() {}
 
+    /// Validated notebook as it lives in memory (images of schema 5–11 raised
+    /// to 12). Embedded legacy bytes are dropped: only for pure checks. Paths
+    /// that keep or copy a notebook use `NotebookDecoding.decode`.
     public static func decode(_ data: Data) throws -> Notebook {
-        struct Header: Decodable { var schemaVersion: Int }
-        let version = try JSONDecoder().decode(Header.self, from: data).schemaVersion
-        guard (1...currentSchemaVersion).contains(version) else { throw StorageError.unsupportedSchema(version) }
-        let notebook = try JSONDecoder().decode(Self.self, from: data)
-        try notebook.validate()
-        return notebook
+        try NotebookDecoding.decode(data).notebook
     }
 
-    public func validate() throws {
+    /// The in-memory rules: non-empty image layers need schema 12.
+    public func validate() throws { try validate(legacyImages: false) }
+
+    /// `legacyImages`: the stored form of schema 5–11, whose image layers
+    /// embedded their originals (checked while decoding, ≤ 40 MB per object).
+    func validate(legacyImages: Bool) throws {
         guard (1...Self.currentSchemaVersion).contains(schemaVersion) else { throw StorageError.unsupportedSchema(schemaVersion) }
         let deleted = deletedPages ?? []
         let allPages = pages + deleted.map(\.page)
@@ -60,8 +67,8 @@ public struct Notebook: Codable, Equatable, Sendable {
             throw StorageError.invalidDocument
         }
         guard Set(allImages.map(\.id)).count == allImages.count,
-              Set(allImages.map(\.id)).isDisjoint(with: Set(allTextBoxes.map(\.id))),
-              allImages.reduce(0, { $0 + $1.data.count }) <= ImageLimits.maximumNotebookBytes else { throw StorageError.invalidDocument }
+              Set(allImages.map(\.id)).isDisjoint(with: Set(allTextBoxes.map(\.id))) else { throw StorageError.invalidDocument }
+        try Self.validateImageAssets(allImages)
         guard !pages.isEmpty,
               pages.count <= 500, deleted.count <= 500,
               Set(allPages.map(\.id)).count == allPages.count else { throw StorageError.invalidDocument }
@@ -74,7 +81,10 @@ public struct Notebook: Codable, Equatable, Sendable {
                 }
             }
             if let images = page.images {
-                guard schemaVersion >= 5, images.count <= ImageLimits.maximumImagesPerPage else { throw StorageError.invalidDocument }
+                guard schemaVersion >= 5, images.count <= ImageLimits.maximumImagesPerPage,
+                      legacyImages || images.isEmpty || schemaVersion >= Self.imageAssetSchemaVersion else {
+                    throw StorageError.invalidDocument
+                }
                 for image in images {
                     try image.validate()
                     guard image.fits(in: page.textBounds) else { throw StorageError.invalidDocument }
@@ -147,6 +157,27 @@ public struct Notebook: Codable, Equatable, Sendable {
     }
 }
 
+extension Notebook {
+    /// Every reference valid; the unique originals (each hash once, active
+    /// pages and page trash) at most 500 MB; objects sharing a hash agree on
+    /// byte count and pixel size, so each original is checked once.
+    static func validateImageAssets(_ images: [ImageObject]) throws {
+        var seen: [String: ImageObject] = [:]
+        var total = 0
+        for image in images {
+            guard image.asset.isValid else { throw StorageError.invalidDocument }
+            if let first = seen[image.asset.sha256] {
+                guard first.asset.byteCount == image.asset.byteCount, first.pixelWidth == image.pixelWidth,
+                      first.pixelHeight == image.pixelHeight else { throw StorageError.invalidDocument }
+                continue
+            }
+            seen[image.asset.sha256] = image
+            total += image.asset.byteCount
+            guard total <= ImageLimits.maximumNotebookBytes else { throw StorageError.invalidDocument }
+        }
+    }
+}
+
 public enum StorageError: Error, LocalizedError {
     case invalidDocument
     case unreadableCopies
@@ -172,12 +203,15 @@ public final class NotebookStore {
     private var primary: URL { directory.appendingPathComponent("notebook.json") }
     private var recovery: URL { directory.appendingPathComponent("recovery.json") }
 
-    public func load() throws -> Notebook {
+    public func load() throws -> Notebook { try loadDecoded().notebook }
+
+    /// Like `load`, with embedded legacy image bytes (if any).
+    func loadDecoded() throws -> DecodedNotebook {
         recovered = false
         for url in [primary, recovery] {
             if let data = try? Data(contentsOf: url) {
                 do {
-                    let notebook = try Notebook.decode(data)
+                    let notebook = try NotebookDecoding.decode(data)
                     recovered = url == recovery
                     return notebook
                 } catch StorageError.unsupportedSchema(let version) {
@@ -190,6 +224,7 @@ public final class NotebookStore {
         let fm = FileManager.default
         guard !fm.fileExists(atPath: primary.path),
               !fm.fileExists(atPath: recovery.path) else { throw StorageError.unreadableCopies }
-        return Notebook()
+        let empty = Notebook()
+        return DecodedNotebook(notebook: empty, storedSchemaVersion: empty.schemaVersion, inlineImageBytes: [:])
     }
 }

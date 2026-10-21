@@ -53,7 +53,7 @@ final class LibraryArchiveTests: XCTestCase {
     }
 
     func testDamagedNotebookIsRejectedBeforeRestore() throws {
-        var encoded = try LibraryArchive.encode(fixture())
+        var encoded = try LibraryArchive.encodeVersion1(fixture())
         encoded[encoded.count - 1] ^= 1
         XCTAssertThrowsError(try LibraryArchive.decode(encoded)) { error in
             guard case BackupError.checksumMismatch = error else { return XCTFail("Expected checksum failure") }
@@ -61,7 +61,7 @@ final class LibraryArchiveTests: XCTestCase {
     }
 
     func testTruncatedTrailingDataOrHugeEntryLengthsAreRejected() throws {
-        let encoded = try LibraryArchive.encode(fixture())
+        let encoded = try LibraryArchive.encodeVersion1(fixture())
         XCTAssertThrowsError(try LibraryArchive.decode(encoded.dropLast()))
         XCTAssertThrowsError(try LibraryArchive.decode(encoded + Data([0])))
         let huge = try transformHeader(encoded) { header in
@@ -73,7 +73,7 @@ final class LibraryArchiveTests: XCTestCase {
     }
 
     func testFutureArchiveVersionUnknownAlgorithmAndPathLikeKindsAreRejected() throws {
-        let data = try LibraryArchive.encode(fixture())
+        let data = try LibraryArchive.encodeVersion1(fixture())
         let future = try transformHeader(data) { $0["libraryBackupVersion"] = 99 }
         XCTAssertThrowsError(try LibraryArchive.decode(future)) { error in
             guard case LibraryArchiveError.unsupported(99) = error else { return XCTFail("future archive not protected") }
@@ -88,7 +88,7 @@ final class LibraryArchiveTests: XCTestCase {
     }
 
     func testDuplicateOrIncorrectManifestDocumentIdentityIsRejected() throws {
-        let data = try LibraryArchive.encode(fixture())
+        let data = try LibraryArchive.encodeVersion1(fixture())
         let duplicate = try transformHeader(data) { header in
             var entries = header["entries"] as! [[String: Any]]
             entries[3]["id"] = entries[2]["id"]; header["entries"] = entries

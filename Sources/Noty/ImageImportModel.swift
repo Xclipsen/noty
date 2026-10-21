@@ -135,20 +135,30 @@ extension EditorModel {
                 let source = try await read()
                 // Over 5 MB, beyond the pixel limit or larger than the notebook's
                 // remaining image budget: compressed instead of refused.
-                let room = ImageLimits.maximumNotebookBytes - notebook.imageOriginalBytes
+                let room = ImageLimits.maximumNotebookBytes - notebook.uniqueImageAssetBytes
                 // Almost no room left: the notebook-full message below explains it better.
                 let limit = room >= ImageCompression.minimumBudget ? min(ImageCompression.importTargetBytes, room) : ImageCompression.importTargetBytes
                 let fitted = try await Task.detached { try ImageCompression.fitting(source, limit: limit) }.value
                 let data = fitted.data
-                // Limits first: a clear message instead of a failed validation.
-                if let problem = notebook.imageInsertionProblem(bytes: data.count, pageID: pageID) {
+                // Limits first (an original already in the notebook adds no
+                // bytes): a clear message instead of a failed validation, and
+                // nothing staged that no object will reference.
+                let reference = try await Task.detached { () throws -> ImageAssetReference in
+                    guard (1...ImageLimits.maximumFileBytes).contains(data.count) else { throw ImageImportError.fileTooLarge }
+                    return ImageAssetReference(of: data)
+                }.value
+                if let problem = notebook.imageInsertionProblem(adding: reference, pageID: pageID) {
                     throw ImageImportError(problem)
                 }
-                let object = try await Task.detached { try ImageImport.object(data, in: target.textBounds) }.value
+                let object = try await Task.detached { try ImageImport.object(reference, data: data, in: target.textBounds) }.value
                 guard writable, generation == pageContentGeneration,
                       let current = notebook.pages.first(where: { $0.id == pageID }), current.textBounds == target.textBounds else {
                     throw PageOperationError.missingPage
                 }
+                // Pending in the package's asset store until the next commit
+                // writes it (assets first, then the revision). A full pending
+                // area (saving keeps failing) refuses with a clear message.
+                guard try imageAssets.stage(data) == reference else { throw ImageImportError.invalid }
                 updateImages((current.images ?? []) + [object], pageID: pageID)
                 if let original = fitted.originalBytes {
                     fileStatus = "Bild verkleinert eingefügt (\(ImageLimits.megabytes(original)) → \(ImageLimits.megabytes(data.count)))"

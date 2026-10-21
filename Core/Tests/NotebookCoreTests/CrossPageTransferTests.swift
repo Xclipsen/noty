@@ -40,7 +40,7 @@ final class CrossPageTransferTests: XCTestCase {
 
     func testObjectsScaleWithMoveAndInvalidFontSizesAreRejected() throws {
         let box = TextBox(x: 10, y: 20, width: 100, height: 40, text: "Notiz", style: TextBoxStyle(fontSize: 20))
-        let image = ImageObject(data: Data([1]), pixelWidth: 10, pixelHeight: 10, x: 30, y: 40, width: 60, height: 50, rotation: 15)
+        let image = ImageObject.test(bytes: Data([1]), pixelWidth: 10, pixelHeight: 10, x: 30, y: 40, width: 60, height: 50, rotation: 15)
         let shape = ShapeObject(kind: .rectangle, start: .init(x: 5, y: 5), end: .init(x: 25, y: 45), lineWidth: 3)
         let move = CrossPageMove(scale: 0.5, translation: .init(x: 100, y: -10))
         let moved = try CrossPageTransfer.move(.init(textBoxes: [box], images: [image], shapes: [shape]), by: move)
@@ -116,8 +116,8 @@ final class CrossPageTransferTests: XCTestCase {
     // Image tool: one image dragged onto the next page (writing space left of
     // the target sheet, so its canonical x starts negative).
     private func image(x: Double = 200, y: Double = 700, width: Double = 120, height: Double = 90) -> ImageObject {
-        ImageObject(data: Data([0x89, 1, 2, 3]), pixelWidth: 400, pixelHeight: 300, x: x, y: y, width: width, height: height,
-                    rotation: 30, crop: .init(x: 0.1, y: 0.2, width: 0.5, height: 0.6))
+        ImageObject(asset: ImageAssetReference(of: Data([0x89, 1, 2, 3])), pixelWidth: 400, pixelHeight: 300, x: x, y: y,
+                    width: width, height: height, rotation: 30, crop: .init(x: 0.1, y: 0.2, width: 0.5, height: 0.6))
     }
 
     func testImageDroppedOnNextPageLandsBelowFingerWithSameIdentity() throws {
@@ -130,7 +130,7 @@ final class CrossPageTransferTests: XCTestCase {
         let placed = try CrossPageTransfer.place(.init(images: [original]), by: move, into: PageContent(page: Page()), limits: limits)
         let moved = try XCTUnwrap(placed.content.images.first)
         XCTAssertEqual(placed.offset, PagePoint(x: 0, y: 0))
-        XCTAssertEqual(moved.id, original.id); XCTAssertEqual(moved.data, original.data)
+        XCTAssertEqual(moved.id, original.id); XCTAssertEqual(moved.asset, original.asset)
         XCTAssertEqual(moved.crop, original.crop); XCTAssertEqual(moved.rotation, original.rotation)
         XCTAssertEqual(moved.locked, original.locked)
         XCTAssertEqual(moved.width, original.width); XCTAssertEqual(moved.height, original.height)
@@ -199,7 +199,7 @@ final class CrossPageTransferTests: XCTestCase {
         try book.replaceContents(changes)
         XCTAssertEqual(book.pages[0].images?.map(\.id), [locked.id])
         XCTAssertEqual(book.pages[1].images?.first?.id, original.id)
-        XCTAssertEqual(book.pages[1].images?.first?.data, original.data)
+        XCTAssertEqual(book.pages[1].images?.first?.asset, original.asset)
         XCTAssertEqual(book.pages[1].images?.first?.y ?? 0, 100, accuracy: 1e-9)
         try book.replaceContents(changes.map(\.inverted))
         XCTAssertEqual(PageContent(page: book.pages[0]), sourceBefore)
