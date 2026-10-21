@@ -3,7 +3,13 @@
 Native iPad-App für Schulnotizen, entwickelt auf `la@lab` unter Omarchy.
 Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nutzer auf **noty** geändert.
 
-## Aktueller Stand
+## Native Gesetzessammlung – separater Feature-Worktree
+
+Der bestätigte Ausbau ist in `feat/native-law-library` implementiert: optionale native Gesetzessammlung als internes Slide-over oder angedockte zweite Ansicht, lokale Texte/optionale PDFs, Direktfundstellen wie `144 HGB`, Apples Tastaturen und appweites E-Mail-Konto. Drei getrennte Schalter (Aktivierung aus, persönlicher Sync an, automatische Gesetzesupdates an). Notizbücher bleiben lokal; Gesetzesmarkierungen haben eine eigene dauerhafte Warteschlange und Sicherungsdatei.
+
+Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Website und Backend sind seit 20.10.2026 auf IONOS ausgerollt und öffentlich geprüft. Mail bleibt auf Nutzerwunsch aus; E-Mail-Registrierung/Recovery sind deshalb noch nicht verfügbar, bestehende Namenslogins bleiben unterstützt. **Build 60 ist seit 21.10.2026 auf dem iPad installiert** (Gesetzesfenster per Drag & Drop andocken/schweben/parken, Position/Breite gemerkt, ✕ parkt als Pfeil-Lasche am Rand, Blätterleiste mit mitlaufendem Paragraphfeld, Markieren per Auswahl und mit Pencil über den Stiftschalter „Lesen | Markieren | Radieren“, Markierungen sofort sichtbar, gemerkte Lesestelle, direkte Schriftgröße, Registrieren mit Benutzername ohne E-Mail), einschließlich der Funktionen aus Build 53. Vorher-/Nachhervergleich: alle 14 Hefte und 101 Dateien unverändert. Bedienung am iPad weiterhin ungeprüft. Aktivierung unter Einstellungen → Gesetzessammlung. [Umfang und Architektur](docs/LAW-INTEGRATION-PLAN.md), [Prüfungen](docs/TESTING.md#native-gesetzessammlung--feature-worktree).
+
+## Aktueller Stand der bisherigen Lieferung
 
 **Branch `feat/image-assets` (21.10.2026, nicht installiert, am iPad ungeprüft):** Bildoriginale liegen als unveränderliche Dateien `Assets/<sha256>` im Heftpaket statt als Base64 in jeder Revision (Notebook-Schema 12). Je Notizbuch bis 500 MB eindeutige Bildoriginale (Mehrfachverwendung zählt einmal), Import höchstens 5 MB je Bild. Alte Hefte werden erst mit der ersten Änderung umgestellt; die exakten Altbytes bleiben unter `Migrations/`. Ein Aufräumen (Asset-GC) beim Öffnen und Schließen entfernt nicht mehr benötigte Originale verzögert, nie während eines Backups. Heft- und Bibliotheksbackup im Format 2 (Datensatzstrom mit SHA-256 je Bild, Heftbackup bis 800 MB), Format 1 bleibt lesbar. Nachweise: [TESTING](docs/TESTING.md#bild-assets-schema-12--nachweise), Plan: [IMAGE-ASSETS](docs/IMAGE-ASSETS.md).
 

@@ -47,11 +47,13 @@ enum LibrarySort: String, CaseIterable, Identifiable {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
-    case general, editor, tools, paper, backup, trash, about, diagnostics
+    case general, account, laws, editor, tools, paper, backup, trash, about, diagnostics
     var id: String { rawValue }
     var title: String {
         switch self {
         case .general: "Allgemein"
+        case .account: "Konto"
+        case .laws: "Gesetzessammlung"
         case .editor: "Editor"
         case .tools: "Stift & Werkzeuge"
         case .paper: "Papier-Standards"
@@ -64,6 +66,8 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     var symbol: String {
         switch self {
         case .general: "gearshape"
+        case .account: "person.crop.circle"
+        case .laws: "books.vertical"
         case .editor: "doc.richtext"
         case .tools: "pencil.tip.crop.circle"
         case .paper: "doc.plaintext"
@@ -77,7 +81,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     var perArea: Bool { [.tools, .paper, .backup, .trash].contains(self) }
     /// Rows of the settings root, grouped. `.diagnostics` has no own row; it
     /// opens „Über noty“, which contains the Diagnose section.
-    static let rootSections: [[SettingsPage]] = [[.general, .editor, .tools, .paper], [.backup, .trash], [.about]]
+    static let rootSections: [[SettingsPage]] = [[.general, .account, .laws, .editor, .tools, .paper], [.backup, .trash], [.about]]
 }
 
 struct SettingsRequest: Identifiable {
@@ -172,6 +176,8 @@ struct SettingsView: View {
     @ViewBuilder private func destination(_ page: SettingsPage) -> some View {
         switch page {
         case .general: GeneralSettingsPage()
+        case .account: NotyAccountSettingsPage()
+        case .laws: LawSettingsPage()
         case .editor: EditorSettingsPage(toolbox: toolbox, area: workspaces.title)
         case .tools: ToolSettingsPage(toolbox: toolbox, area: workspaces.title)
         case .paper: PaperSettingsPage(toolbox: toolbox, area: workspaces.title)

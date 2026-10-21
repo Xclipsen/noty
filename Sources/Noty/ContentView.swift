@@ -14,6 +14,9 @@ struct ContentView: View {
     var onActivatePane: (() -> Void)?
     var onCloseWorkspace: (() -> Void)?
     var onSecondView: (() -> Void)?
+    var onLaws: (() -> Void)?
+    /// Reports the selected tool, e.g. so Pencil highlights in the law reader.
+    var onToolChange: ((EditorTool) -> Void)?
     @State private var selectedPageID: UUID?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -225,6 +228,7 @@ struct ContentView: View {
             .onChange(of: selectedPageID) { _, _ in if isPaneActive() { model.pageIndex = currentPageIndex } }
             .onChange(of: model.pageContentGeneration) { _, _ in textFocus = nil; writingDraft = Page() }
             .onChange(of: tool) { _, value in if value != .text { textFocus = nil }; if value.isInk { lastInkTool = value } }
+            .onChange(of: tool, initial: true) { _, value in onToolChange?(value) }
             .onChange(of: model.notebook.id) { _, _ in selectedPageID = model.page.id; searchHighlightPageID = model.page.id }
             .onAppear {
                 selectedPageID = model.page.id; searchHighlight = initialSearchBounds; searchHighlightPageID = model.page.id
@@ -592,6 +596,7 @@ struct ContentView: View {
                 }
             }
             Section {
+                if let onLaws { Button("Gesetzessammlung", systemImage: "books.vertical", action: onLaws) }
                 Menu("Ansicht", systemImage: "eye") {
                     Toggle("Schreibscrollen bis zur Bildschirmmitte", systemImage: "arrow.left.and.right.square", isOn: $writingScroll)
                     Toggle("Blättern statt Scrollen", systemImage: "book.pages", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
