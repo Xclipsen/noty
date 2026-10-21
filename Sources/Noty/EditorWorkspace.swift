@@ -92,8 +92,8 @@ struct EditorWorkspaceView: View {
     /// that releasing now would perform (shown as a preview).
     @State private var lawDrag: LawDrag?
     @GestureState private var lawDragActive = false
-    /// Selected tool per pane; the active pane's decides Pencil in the law reader.
-    @State private var paneTools: [Int: EditorTool] = [:]
+    /// What Apple Pencil does in the law reader (`none`/`marker`/`eraser`).
+    @AppStorage("noty.laws.pencil") private var lawPencil = "none"
     /// Display preference only (global, like the sidebar): side, axis, size.
     static let arrangementKey = "noty.editor.splitArrangement"
     private static let space = "noty-split-area"
@@ -245,7 +245,16 @@ struct EditorWorkspaceView: View {
             onCloseWorkspace: { Task { if await toolbox.flush(), await workspace.closeAll() { library.notebookClosedByUser(); dismiss() } } },
             onSecondView: { choose() }, onLaws: lawsEnabled ? {
                 if laws.panelOpen && laws.stashed { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = false } } else { laws.panelOpen.toggle() }
-            } : nil, onToolChange: { paneTools[index] = $0 })
+            } : nil, onToolChange: { tool in
+                // Picking the highlighter or an eraser in the active notebook
+                // switches the law reader along; other tools leave its choice.
+                guard workspace.activePane == index else { return }
+                switch tool {
+                case .marker: lawPencil = "marker"
+                case .strokeEraser, .precisionEraser: lawPencil = "eraser"
+                default: break
+                }
+            })
     }
 
     // MARK: Law window
@@ -292,7 +301,11 @@ struct EditorWorkspaceView: View {
             if let drop = lawDrag?.drop, lawDropChanges(drop, l) {
                 lawDropPreview(drop, l).allowsHitTesting(false).transition(.opacity)
             }
-            LawPanelView(drag: lawMoveGesture(l), pen: lawPen)
+            LawPanelView(drag: lawMoveGesture(l), pen: lawPen) { next in
+                lawPencil = next.kind == .marker ? "marker" : next.kind == .eraser ? "eraser" : "none"
+                // One highlighter colour for notebook and law reader.
+                if next.color != toolbox.preferences.markerColor { toolbox.preferences.markerColor = next.color }
+            }
                 .frame(width: l.width, height: max(0, l.size.height - 2 * l.margin))
                 .opacity(shown ? 1 : 0).allowsHitTesting(visible).accessibilityHidden(!visible)
                 .scaleEffect(lifted ? 0.97 : 1)
@@ -324,17 +337,11 @@ struct EditorWorkspaceView: View {
         }
     }
 
-    /// Highlighter → Pencil marks in its colour and straightening options;
-    /// eraser → Pencil removes marks; other tools → Pencil scrolls/selects.
+    /// Marking uses the notebook highlighter's colour and straightening options.
     private var lawPen: LawPenMode {
         let preferences = toolbox.preferences
-        var pen = LawPenMode(color: preferences.markerColor, straight: preferences.markerStraight ?? false, holdStraighten: preferences.markerHoldStraighten ?? true)
-        switch paneTools[workspace.activePane] ?? .pen {
-        case .marker: pen.kind = .marker
-        case .strokeEraser, .precisionEraser: pen.kind = .eraser
-        default: pen.kind = .none
-        }
-        return pen
+        let kind: LawPenMode.Kind = lawPencil == "marker" ? .marker : lawPencil == "eraser" ? .eraser : .none
+        return LawPenMode(kind: kind, color: preferences.markerColor, straight: preferences.markerStraight ?? false, holdStraighten: preferences.markerHoldStraighten ?? true)
     }
 
     private func lawPanelOffset(_ l: LawLayout, stashed: Bool) -> CGSize {

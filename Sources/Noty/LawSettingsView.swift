@@ -34,8 +34,8 @@ struct NotyAccountSettingsPage: View {
                 }
             } else {
                 Section(recovery ? "Passwort zurücksetzen" : registering ? "Noty-Konto erstellen" : "Bei noty anmelden") {
-                    TextField(recovery || registering ? "E-Mail" : "E-Mail oder bisheriger Benutzername", text: $email)
-                        .keyboardType(.emailAddress).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    TextField(recovery ? "E-Mail" : registering ? "Benutzername" : "Benutzername oder E-Mail", text: $email)
+                        .keyboardType(recovery ? .emailAddress : .default).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled()
                     if !recovery || recoverySent {
                         SecureField(recovery ? "Neues Passwort (mindestens 12 Zeichen)" : "Passwort", text: $password)
                             .textContentType(registering || recovery ? .newPassword : .password)
@@ -52,7 +52,9 @@ struct NotyAccountSettingsPage: View {
                     }.disabled(email.isEmpty || ((!recovery || recoverySent) && password.isEmpty))
                     Button(recovery ? "Zur Anmeldung" : registering ? "Ich habe schon ein Konto" : "Konto erstellen") { recovery = false; registering.toggle(); password = "" }
                     if !registering && !recovery { Button("Passwort vergessen?") { recovery = true; password = "" } }
-                    Text("Lesen, Suchen und lokale Markierungen funktionieren auch ohne Konto. Neue Konten benötigen eine E-Mail-Adresse und mindestens 12 Passwortzeichen.").font(.caption).foregroundStyle(.secondary)
+                    Text(registering
+                        ? "Ein Konto braucht nur einen Benutzernamen (2–32 Buchstaben, Zahlen oder . _ -) und ein Passwort mit mindestens 12 Zeichen. Es wird keine E-Mail verschickt. Ohne E-Mail-Adresse lässt sich ein vergessenes Passwort nicht zurücksetzen."
+                        : "Lesen, Suchen und Markieren funktionieren ohne Konto; Markierungen bleiben dann nur auf diesem iPad. Mit Konto werden Lesezeichen und Markierungen mit law.xclipsen.de und anderen Geräten abgeglichen.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             if let error = laws.error { Section { Text(error).foregroundStyle(.orange); Button("Hinweis schließen") { laws.error = nil } } }
@@ -127,8 +129,9 @@ struct LawPanelView<Drag: Gesture>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Moves the window live; the workspace decides side, dock and stash on release.
     var drag: Drag
-    /// What Apple Pencil does in the reader (from the notebook's tool).
+    /// What Apple Pencil does in the reader, and how the reader changes it.
     var pen = LawPenMode()
+    var onPenChange: ((LawPenMode) -> Void)? = nil
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -148,7 +151,7 @@ struct LawPanelView<Drag: Gesture>: View {
                 // The whole bar is the grip, not only the small capsule.
                 .contentShape(Rectangle())
                 .gesture(drag)
-            LawReaderView(pen: pen)
+            LawReaderView(pen: pen, onPenChange: onPenChange)
         }.clipShape(RoundedRectangle(cornerRadius: laws.docked ? 0 : 16))
             .overlay(RoundedRectangle(cornerRadius: laws.docked ? 0 : 16).strokeBorder(.secondary.opacity(0.25)))
             .shadow(color: .black.opacity(laws.docked ? 0 : 0.3), radius: 16)

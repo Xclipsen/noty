@@ -201,7 +201,11 @@ final class LawLibraryModel: ObservableObject {
         guard !accountBusy else { return }
         accountBusy = true; defer { accountBusy = false }
         do {
-            if registering && !email.contains("@") { throw LawError.invalid("Bitte gib für ein neues Konto eine E-Mail-Adresse ein.") }
+            // E-mail registration needs mail delivery, which is switched off on the
+            // server; a username account is created at once without any e-mail.
+            if registering && email.contains("@") { throw LawError.invalid("Bitte wähle einen Benutzernamen ohne @. Registrieren per E-Mail ist noch nicht freigeschaltet.") }
+            if registering && email.range(of: "^[\\p{L}\\p{N}_.-]{2,32}$", options: .regularExpression) == nil { throw LawError.invalid("Der Benutzername braucht 2–32 Buchstaben, Zahlen oder . _ -") }
+            if registering && password.count < 12 { throw LawError.invalid("Das Passwort braucht mindestens 12 Zeichen.") }
             var body: [String: LawJSON] = ["password": .string(password)]
             body[email.contains("@") ? "email" : "name"] = .string(email)
             struct Response: Decodable, Sendable { var user: NotyAccountUser }

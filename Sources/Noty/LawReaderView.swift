@@ -16,7 +16,7 @@ struct LawTextMark: Hashable {
 /// notebook), an eraser removes marks, every other tool leaves Pencil to scroll
 /// and select like a finger.
 struct LawPenMode: Equatable {
-    enum Kind: Equatable { case none, marker, eraser }
+    enum Kind: Hashable { case none, marker, eraser }
     var kind = Kind.none
     var color = InkColor(1, 1, 0)
     /// „Immer gerade“ of the notebook highlighter.
@@ -24,6 +24,10 @@ struct LawPenMode: Equatable {
     /// „Linie nach Halten begradigen“ of the notebook highlighter.
     var holdStraighten = true
     var hex: String { String(format: "#%02X%02X%02X", Int((color.red * 255).rounded()), Int((color.green * 255).rounded()), Int((color.blue * 255).rounded())) }
+    static let presets: [(name: String, color: InkColor)] = [
+        ("Gelb", InkColor(1, 1, 0)), ("Grün", InkColor(0.35, 0.9, 0.35)), ("Blau", InkColor(0.35, 0.75, 1)),
+        ("Rosa", InkColor(1, 0.45, 0.8)), ("Orange", InkColor(1, 0.62, 0.15)),
+    ]
 }
 
 /// Highlight colour of a stored mark (`#RRGGBB`), yellow like the website otherwise.
@@ -70,6 +74,8 @@ private enum LawReadingPosition {
 struct LawReaderView: View {
     @EnvironmentObject private var laws: LawLibraryModel
     var pen = LawPenMode()
+    /// Lets the reader switch what Apple Pencil does; nil hides the switch.
+    var onPenChange: ((LawPenMode) -> Void)? = nil
     @StateObject private var textSelection = LawTextSelection()
     @State private var query = ""
     @State private var number = ""
@@ -119,6 +125,14 @@ struct LawReaderView: View {
             Divider()
             if loading { ProgressView("Wird geladen …").padding() }
             if !loadError.isEmpty { Text(loadError).font(.caption).foregroundStyle(.orange).padding(8) }
+            // The app-level alert cannot appear over an open notebook: show it here.
+            if let error = laws.error {
+                HStack {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                    Spacer()
+                    Button("OK") { laws.error = nil }.font(.caption)
+                }.padding(8)
+            }
             if let section, let doc = document {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -176,12 +190,6 @@ struct LawReaderView: View {
                 Menu {
                     ForEach(laws.entries) { entry in Button("\(entry.abbr) · \(entry.name)") { Task { await choose(entry) } } }
                 } label: { Label(entry?.abbr ?? "Gesetz wählen", systemImage: "books.vertical").lineLimit(1) }
-                // Shows what Apple Pencil does here (follows the notebook tool).
-                if pen.kind == .marker {
-                    Image(systemName: "highlighter").foregroundStyle(Color(lawMarkColor(pen.hex))).accessibilityLabel("Apple Pencil markiert")
-                } else if pen.kind == .eraser {
-                    Image(systemName: "eraser").foregroundStyle(.secondary).accessibilityLabel("Apple Pencil entfernt Markierungen")
-                }
                 Spacer()
                 // Directly in the bar, not in a menu: several taps in a row stay quick.
                 if !viewPDF {
@@ -202,6 +210,13 @@ struct LawReaderView: View {
                     if let last = marks.last(where: { $0.kind == "annotation" }) {
                         Button("Letzte Markierung rückgängig", systemImage: "arrow.uturn.backward") { Task { await laws.remove(last) } }
                     }
+                    Divider()
+                    // Marking never needs an account; the account only syncs.
+                    if let user = laws.user, !laws.sessionExpired {
+                        Text("Angemeldet als \(user.email ?? user.name) · \(laws.syncStatus)")
+                    } else {
+                        Text("Nicht angemeldet · Markierungen bleiben auf diesem iPad. Konto unter Einstellungen → Konto.")
+                    }
                 } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Fassung und Markierungen")
             }
             HStack {
@@ -221,7 +236,28 @@ struct LawReaderView: View {
                     .accessibilityLabel("Zwischen Zahlen- und Texttastatur wechseln")
                 Button(viewPDF ? "Lesetext" : "PDF") { Task { await togglePDF() } }.disabled(document == nil)
             }.padding(8).background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            if let onPenChange { penSwitch(onPenChange) }
         }.padding(10).buttonStyle(.borderless)
+    }
+    /// What Apple Pencil does in the law text and PDF. Fingers always scroll and
+    /// select; choosing the highlighter or an eraser in the notebook switches along.
+    private func penSwitch(_ change: @escaping (LawPenMode) -> Void) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "applepencil").foregroundStyle(.secondary).accessibilityHidden(true)
+            Picker("Apple Pencil", selection: Binding(get: { pen.kind }, set: { var next = pen; next.kind = $0; change(next) })) {
+                Text("Lesen").tag(LawPenMode.Kind.none)
+                Text("Markieren").tag(LawPenMode.Kind.marker)
+                Text("Radieren").tag(LawPenMode.Kind.eraser)
+            }.pickerStyle(.segmented)
+            Menu {
+                ForEach(LawPenMode.presets, id: \.name) { preset in
+                    Button(preset.name) { var next = pen; next.color = preset.color; next.kind = .marker; change(next) }
+                }
+            } label: {
+                Circle().fill(Color(lawMarkColor(pen.hex))).frame(width: 22, height: 22)
+                    .overlay(Circle().stroke(.secondary, lineWidth: 1)).frame(width: 32, height: 32)
+            }.accessibilityLabel("Markierfarbe")
+        }
     }
     /// Like the website's selection toolbar: mark, remove touched marks, dismiss.
     private var selectionBar: some View {
@@ -451,7 +487,10 @@ private struct NativeLawText: UIViewRepresentable {
     var onRemove: ([String]) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> UITextView {
-        let v = UITextView(); v.isEditable = false; v.isSelectable = true; v.backgroundColor = .systemBackground
+        // TextKit 1: highlights are changed in place as text attributes. TextKit 2
+        // (default since iOS 16) did not reliably redraw such changes, so new and
+        // removed marks only showed after the section was rebuilt.
+        let v = UITextView(usingTextLayoutManager: false); v.isEditable = false; v.isSelectable = true; v.backgroundColor = .systemBackground
         // Bottom room for the floating selection bar.
         v.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: 72, right: 12); v.delegate = context.coordinator
         v.scrollsToTop = false
@@ -585,6 +624,7 @@ private struct NativeLawText: UIViewRepresentable {
                 storage.addAttribute(.backgroundColor, value: color, range: preview)
             }
             storage.endEditing()
+            view?.layoutManager.invalidateDisplay(forCharacterRange: body)
         }
         private func marks(in range: NSRange) -> [String] {
             markRanges.filter { NSIntersectionRange($0.range, range).length > 0 }.map(\.id)
