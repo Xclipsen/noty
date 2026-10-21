@@ -143,6 +143,19 @@ Branch `feat/image-assets`, Schritte C1–C8 ([IMAGE-ASSETS](IMAGE-ASSETS.md)). 
 - **Messung** (Host, synthetisch, 500 MB): Werte und Grenzen in [IMAGE-ASSETS](IMAGE-ASSETS.md#c8-feinschliff). Kurz: kleiner Commit bei 500 MB Assets 0,07–0,14 s, Laden 0,15 s, Heftbackup schreiben und zurücklesen 8–10 s, Spitzenspeicher ≤ 163 MB; wiederholtes Laden eines nicht migrierten 52-MB-Althefts 0,12–0,14 s statt 1,2 s (`-O`). Am iPad nicht gemessen; dort übernimmt CryptoKit das Hashen.
 - **Geräteprüfung nach einem Update** (noch offen, gebündelt): Sicherung wie oben; danach mit `verify_device_store.py --compare` gegen den Vorher-Stand (ohne Bearbeitung bleiben alle Hefte bytegleich, Althefte schreiben beim Öffnen nichts). Nach einer Bearbeitung meldet `--compare` für dieses Heft bewusst „A previous document changed“; dann ohne `--compare` prüfen (Assets vorhanden, Größe und SHA-256 richtig, unreferenzierte Assets und Teildateien gezählt). Am iPad: Altheft mit Bildern öffnen, bearbeiten, Neustart; zwei 5-MB-Bilder ziehen (Ruckeln?), Seite duplizieren, Papierkorb endgültig leeren, Heft schließen und wieder öffnen; Heft- und Bibliotheksbackup exportieren, am PC prüfen, als Kopie zurückspielen und bearbeiten; PDF-Export mit HEIC; ein großes Heft (etwa 300–500 MB) öffnen und die Zeit messen.
 
+## Build 54 und 61 · Bild-Assets und Zusammenführung mit der Gesetzessammlung (21.10.2026)
+
+- **Build 54:** Bild-Assets, Notebook-Schema 12, Archivformat 2; Nachweise im Abschnitt „Bild-Assets (Schema 12) – Nachweise“.
+  - Installiert am 21.10.2026 um 12:24 über einen parallel installierten Build 59 aus `feat/native-law-library`.
+  - Der erste Sicherungsversuch brach ab, weil sich die Dokumente während der Sicherung änderten. Danach Sicherung unter `/home/la/Backups/noty-before-build54-2026-10-21T10-23-52-574301164Z/`.
+  - Das direkte Zurücklesen scheiterte an einem AFC-Lesefehler. Um 12:25 hat der Gesetzes-Strang Build 60 darüber installiert.
+  - Eine spätere Rücklesung (`after-update2`) bestätigt: kein `Assets/`, höchstes Schema 11, `verify_device_store.py --compare` meldet 6 + 8 unveränderte Dokumente. Build 54 hat also nichts migriert.
+- **Build 61:** `ui/menu-polish` und `feat/native-law-library` (bis Build 60) zusammengeführt.
+  - `swift test --package-path Core`: 640 Tests, 3 übersprungen, 0 Fehler. Host-Roundtrip grün. Signiert ohne Warnungen.
+  - IPA: `CFBundleVersion` 61, gleiche App-ID, Team und Zertifikat (`50f3e096…`), Profil bis 28.10.2026, SHA-256 `a0b969bb…`.
+  - **Nicht installiert:** noty war zwei Stunden geöffnet, das Installationsskript hat nur gewartet.
+- **Regel ab jetzt:** Weitere Stränge starten von `main` (enthält Schema 12) mit Build-Nummern ab 62. Ein Build ohne Schema 12 sperrt migrierte Notizbücher.
+
 ## Build 53 · Rückmeldung zu Build 52
 
 **Implementiert** auf `ui/menu-polish`. Nutzer zu Build 52:
