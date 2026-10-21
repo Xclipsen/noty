@@ -32,12 +32,23 @@ Apple-Anmeldung, 2FA, Vertrauen und Entwicklermodus übernimmt der Nutzer (`xtoo
 
 Automatischer Start scheitert am fehlenden Developer-Disk-Image. Der Nutzer startet manuell.
 
+## Bild-Assets (Schema 12) – Nachweise
+
+Branch `feat/image-assets`, Schritte C1–C8 ([IMAGE-ASSETS](IMAGE-ASSETS.md)). **Implementiert und erfolgreich gebaut; nicht installiert, auf dem iPad ungeprüft.**
+
+- **Core-Tests:** `swift test --package-path Core`: 625 Tests, 1 übersprungen (exakter Bytevergleich der Golden-Archive nur unter `SWIFT_DETERMINISTIC_HASHING=1`, dort grün), 0 Fehler; zweimal hintereinander. Neu für Schema 12 und Archivformat 2 u. a. `SHA256Tests`, `ImageAssetStoreTests`, `ImageAssetProviderTests`, `ImageAssetMigrationTests`, `ImageAssetCommitRecoveryTests`, `ImageAssetGarbageCollectionTests`, `ArchiveFormat2Tests`, `RecordArchiveCompatibilityTests`, `AcceleratedHashingTests`.
+- **GC- und Absturzmatrix:** Asset nur von Checkpoint, vorigem Manifest, Seitenpapierkorb, Quarantäne, unlesbarer Revision, Migrationsdatei oder `Archives/` referenziert → bleibt; unreferenziert und alt → weg, jung → bleibt; Teildateien nach 1 h; fremde Einträge unberührt; Lesefehler bricht ohne Löschen ab; Backup- und Restore-Sperre vor und während des Laufs; nur der Writer, nur beim Öffnen vor dem ersten Commit bzw. beim Schließen mit bestätigtem Stand; Undo nach Löschen und zwölf Commits in derselben Sitzung findet sein Asset; Absturzabbilder nach jeder Commit-Stufe und während des Asset-Schreibens verlieren nie den bestätigten Stand.
+- **Host-Roundtrip** (`bash scripts/check_page_workflow.sh`): Bild über den Asset-Bestand, genau eine Datei `Assets/<sha>` trotz duplizierter, kopierter und gelöschter Seiten; Heft- und Bibliotheksbackup im Format 2 mit echtem Asset-Datensatz, von Python unabhängig geprüft; Format 1 als Schema-11-Bytes; beschädigtes Asset im Archiv abgelehnt; Restore-Kopien mit Assets (`verify_device_store.py`); handgeschriebenes Schema-11-Paket: Öffnen samt unverändertem Speichern und Öffnungs-GC ändert kein Byte, die erste Bearbeitung legt die exakten Altbytes unter `Migrations/` ab, der Schließ-GC behält das migrierte Original. `check_verifiers.sh` mit allen Negativfällen aus Plan Abschnitt 10, auch unter `python3 -O`.
+- **SDK-Build:** `script -q -e -c "xtool dev build" LOG` ohne Fehler und ohne Warnungen.
+- **Messung** (Host, synthetisch, 500 MB): Werte und Grenzen in [IMAGE-ASSETS](IMAGE-ASSETS.md#c8-feinschliff). Kurz: kleiner Commit bei 500 MB Assets 0,07–0,14 s, Laden 0,15 s, Heftbackup schreiben und zurücklesen 8–10 s, Spitzenspeicher ≤ 163 MB; wiederholtes Laden eines nicht migrierten 52-MB-Althefts 0,12–0,14 s statt 1,2 s (`-O`). Am iPad nicht gemessen; dort übernimmt CryptoKit das Hashen.
+- **Geräteprüfung nach einem Update** (noch offen, gebündelt): Sicherung wie oben; danach mit `verify_device_store.py --compare` gegen den Vorher-Stand (ohne Bearbeitung bleiben alle Hefte bytegleich, Althefte schreiben beim Öffnen nichts). Nach einer Bearbeitung meldet `--compare` für dieses Heft bewusst „A previous document changed“; dann ohne `--compare` prüfen (Assets vorhanden, Größe und SHA-256 richtig, unreferenzierte Assets und Teildateien gezählt). Am iPad: Altheft mit Bildern öffnen, bearbeiten, Neustart; zwei 5-MB-Bilder ziehen (Ruckeln?), Seite duplizieren, Papierkorb endgültig leeren, Heft schließen und wieder öffnen; Heft- und Bibliotheksbackup exportieren, am PC prüfen, als Kopie zurückspielen und bearbeiten; PDF-Export mit HEIC; ein großes Heft (etwa 300–500 MB) öffnen und die Zeit messen.
+
 ## Build 53 · Rückmeldung zu Build 52
 
 **Implementiert** auf `ui/menu-polish`. Nutzer zu Build 52:
-- Ruckeln beim Ziehen nach zwei 20-MB-Bildern: Neue Bilder werden beim Import auf höchstens 5 MB verkleinert. Die eigentliche Ursache, Bildbytes als Base64 in jeder vollständigen Revision, wird mit einem eigenen Asset-Format behoben (Schema 12, in Arbeit).
+- Ruckeln beim Ziehen nach zwei 20-MB-Bildern: Neue Bilder werden beim Import auf höchstens 5 MB verkleinert. Die eigentliche Ursache, Bildbytes als Base64 in jeder vollständigen Revision, wird mit einem eigenen Asset-Format behoben (Schema 12, inzwischen auf `feat/image-assets` umgesetzt, siehe oben).
 - Bilder ließen sich nicht über Seiten ziehen. Umgesetzt nach dem Lasso-Vorbild, siehe [IMAGES](IMAGES.md).
-- Der Wunsch nach 500 MB pro Notizbuch kommt erst mit dem Asset-Format; bis dahin bleiben es 40 MB.
+- Der Wunsch nach 500 MB pro Notizbuch kommt erst mit dem Asset-Format; bis dahin bleiben es 40 MB (Schema 12 erlaubt 500 MB, siehe oben).
 
 Nachweise:
 - `swift test --package-path Core`: 547 Tests, 0 Fehler. Host-Roundtrip mit Prüfer-Negativtests bestanden.

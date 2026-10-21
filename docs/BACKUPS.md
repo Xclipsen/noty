@@ -1,5 +1,15 @@
 # Heft-Backup und Wiederherstellung – Format 1
 
+## Ergänzung 21.10.2026 · Format 2 (Datensatzstrom mit Bild-Assets)
+
+Stand: **implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft.** Überholt „≤ 200 MB, im Speicher geprüft“ unten.
+
+- **Schreiben:** Die App schreibt nur noch `.notybackup` Format 2: Magic, Kopf (`backupFormatVersion: 2`, `checksumAlgorithm`, `assetHashAlgorithm: "sha256"`, `documentID`, `notebookSchemaVersion`, `createdAt`, sortierte Schlüssel), dann genau ein Heft-Datensatz (CRC-32), danach jedes eindeutige Bildoriginal genau einmal als Asset-Datensatz (SHA-256 statt CRC), zuletzt ein Abschlussdatensatz mit Anzahl und Nutzlastbytes. Geschrieben wird gestreamt in eine Datei unter `tmp/NotyBackupArchives` (4-MB-Blöcke), danach vollständig zurückgelesen und geprüft; der Export übergibt die Datei, ohne sie in den Speicher zu laden. Nicht gespeicherte neue Bilder (Pending) sind enthalten.
+- **Grenzen:** Datei ≤ 800 MB (Heft-JSON ≤ 200 MB ohne Bildoriginale, Bildoriginale ≤ 500 MB, Asset ≤ 20 MB). Unbekannte Version ≥ 3 → „Backupformat 3 benötigt eine neuere noty-Version“.
+- **Lesen und Restore:** Format 1 und Prototyp-JSON bleiben lesbar (im Speicher, ≤ 200 MB). Eine Wiederherstellung kopiert die Datei blockweise ins Stage, prüft sie streamend (jedes Asset per SHA-256) und schreibt die Originale nach `BackupStaging/<id>/Assets/`; Dateinamen stammen nur aus geprüften Hashes. Vor dem Commit werden Größe und CRC der Stage-Datei und die SHA-256 jedes Originals erneut geprüft. Die Kopie entsteht als neues Paket mit Schema 12 und eigenen Assets (Assets zuerst, Manifest zuletzt), wird frisch zurückgelesen und erst dann das Stage entfernt. Auch Format-1-Backups mit eingebetteten Bildern werden so zu Schema-12-Kopien; das bestehende Heft bleibt unberührt.
+- **Rückspielbarkeit:** Builds ≤ 53 lehnen Format 2 ab („Backupformat 2 benötigt eine neuere noty-Version“); ein Backup aus diesem Stand lässt sich dort **nicht** wiederherstellen. Vor einer Rückkehr zu einem älteren Build gibt es keinen Rückweg außer einem früher erstellten Format-1-Backup.
+- **Prüfer:** `python3 -B scripts/verify_backup.py ARCHIV [--compare REVISION.json]` liest Format 1 und 2, prüft jedes Asset per `hashlib.sha256` in 1-MB-Blöcken, verlangt genau die referenzierten Assets ohne Doppelte, Zusätze oder Anhang und gibt zusätzlich `formatVersion`, `assets`, `assetBytes` aus. CRC und SHA-256 erkennen Beschädigung, schützen aber nicht vor Manipulation.
+
 ## Ergänzung 20.10.2026
 
 `.notybackup` unverändert (≤ 200 MB, im Speicher geprüft). Neu: Öffnen aus der Dateien-App („In noty öffnen“) kopiert die Datei zuerst ins App-`tmp`, prüft sie und zeigt Titel/Seitenzahl zur Bestätigung; danach derselbe Staging-/Kopie-Weg wie beim Import, bei geöffnetem Notizbuch erst nach dem Schließen. Bibliotheksbackup jetzt gestreamt bis 4 GB, externe Ziele mit Zielprüfung, Backoff und Aufräumen eigener Teilstände: [LIBRARY-BACKUP.md](LIBRARY-BACKUP.md). Implementiert und gebaut, auf dem iPad ungeprüft.

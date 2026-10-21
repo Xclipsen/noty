@@ -1,5 +1,16 @@
 # Bibliotheksbackup und getrennte Bereiche – Build 11
 
+## Ergänzung 21.10.2026 · Format 2 mit Bild-Assets
+
+Stand: **implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft.** Überholt „Format 1 unverändert“ und die Manifest-Beschreibung im folgenden Abschnitt.
+
+- **Format 2 (Datensatzstrom):** Magic, Kopf (`libraryBackupVersion: 2`, `checksumAlgorithm`, `assetHashAlgorithm`, `createdAt`), dann `index`, `toolbar`, je Heft ein `notebook`-Datensatz (CRC-32) gefolgt von seinen **noch nicht ausgegebenen** Bildoriginalen als `asset`-Datensätze (SHA-256), zuletzt `end`. Jedes Original steht genau einmal im Archiv, auch wenn mehrere Hefte es nutzen (z. B. duplizierte Hefte); jede Referenz jedes Hefts ist in seiner oder einer früheren Gruppe enthalten. Ein Reservieren des Manifests entfällt.
+- **Grenzen:** Archiv ≤ 4 GB, Heftblock ≤ 200 MB (Heft-JSON ohne Bildoriginale), Asset ≤ 20 MB, Kopf ≤ 64 KB, Deskriptor ≤ 4 KB.
+- **Schreiben:** wie bisher je Heft außerhalb jedes Actors, die Originale aus dem schreibgeschützten Asset-Bestand des Pakets (bei nicht migrierten Altheften die eingebetteten Bytes). Asset-Bytes werden in 4-MB-Blöcken gestreamt und gehasht; eine Abweichung bricht ab („Ein Bildoriginal im Notizbuch „X“ fehlt oder ist beschädigt“). Fehlt ein Asset der neuesten Revision, gilt diese wie eine beschädigte Revision: der neueste vollständige ältere Stand wird mit Hinweis gesichert. Während ein Bibliotheks- oder externes Backup läuft, räumt kein Heft seine Assets auf (`BackupActivity`).
+- **Restore:** Die Vorbereitung extrahiert alle Originale geprüft nach `Staging/<id>/AssetScratch/`. Der Commit vergleicht Größe und CRC der Stage-Datei, prüft die SHA-256 jedes Scratch-Originals und schreibt je Heft zuerst die Assets, dann Revision und Manifest in das neue Paket; frisch zurückgelesen inklusive Präsenzprüfung. Der Scratch wird vor dem Veröffentlichen entfernt. Platzbedarf in der Spitze: Archiv plus Scratch (unter APFS kosten die Klone in die Pakete nichts).
+- **Rückspielbarkeit:** Format 1 bleibt les- und wiederherstellbar. Builds ≤ 53 lehnen Format 2 ab („Bibliotheksbackup 2 benötigt eine neuere noty-Version“); ein Bibliotheksbackup aus diesem Stand lässt sich dort **nicht** wiederherstellen.
+- **Prüfer:** `verify_library_backup.py` liest Format 1 und 2, hält höchstens ein Heft-JSON gleichzeitig im Speicher, prüft die Gruppenregeln und jedes Asset per SHA-256; Ausgabe zusätzlich `formatVersion`, `assets`, `sharedAssets`.
+
 ## Ergänzung 20.10.2026 · Streaming, externe Ziele, Öffnen aus Dateien
 
 Implementiert, Core-Tests, Host-Roundtrip und SDK-Build erfolgreich; nicht installiert, auf dem iPad ungeprüft. Überholt unten „Höchstens 200.000.000 Bytes“, „mehrere vollständige Snapshots im Speicher“ und „kein Streaming großer Archive“.
@@ -67,4 +78,4 @@ Danach `workspace.json` (Version 1, neue UUID, Titel, Art, Datum) schreiben und 
 
 Separater synthetischer End-to-End-Lauf mit echter vierseitiger Test-PDF: zwei Hefte, zwei Ordner, Papierkorb und Lieblingsstift exportiert/restauriert; Kopie bearbeitet und Quellbundle unverändert. Python bestätigt alle CRCs, lehnt beschädigte Kopie ab. Keine persönlichen iPad-Dateien für diesen Lauf verwendet. Nachweise in TESTING.md.
 
-Noch keine effiziente Quelldeduplizierung/Streaming großer Archive, kein gemessener großer Bestand. Serialisierung hat mehrere vollständige Snapshots im Speicher. Begrenzung 200 MB ist kein Leistungsnachweis. Fehlgeschlagene Stages, gespeicherte Archiveingänge und Testbereiche werden noch nicht automatisch bereinigt; nicht unbegrenzt neue Bereiche anlegen. Keine endgültige Löschfunktion in diesem Paket. Tests auf dem iPad und externer Restore aus echter Geräteausgabe stehen aus.
+Noch keine effiziente Quelldeduplizierung/Streaming großer Archive, kein gemessener großer Bestand (überholt: seit 20.10.2026 gestreamt, seit Format 2 Bildoriginale dedupliziert; synthetische 500-MB-Messung in [IMAGE-ASSETS](IMAGE-ASSETS.md#c8-feinschliff)). Serialisierung hat mehrere vollständige Snapshots im Speicher. Begrenzung 200 MB ist kein Leistungsnachweis. Fehlgeschlagene Stages, gespeicherte Archiveingänge und Testbereiche werden noch nicht automatisch bereinigt; nicht unbegrenzt neue Bereiche anlegen. Keine endgültige Löschfunktion in diesem Paket. Tests auf dem iPad und externer Restore aus echter Geräteausgabe stehen aus.
