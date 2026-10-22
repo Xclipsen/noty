@@ -504,7 +504,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Topmost shape under `point` (canonical), when shapes may be picked.
     private func shapeHit(at point: CGPoint) -> ShapeObject? {
         guard tool == .shape || filter.shapes else { return nil }
-        return content.shapes.reversed().first { ShapeRendering.hit($0, at: point) }
+        return content.shapes.reversed().first { ShapeRendering.hit($0, at: point, tolerance: 10 / displayScale) }
     }
     private func selectedShape(_ value: PageContent) -> ShapeObject? {
         guard shapes.count == 1, let id = shapes.first else { return nil }

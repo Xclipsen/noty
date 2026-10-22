@@ -824,7 +824,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         let scale = Double(screenScale)
         return PageObjectHitTest.all(at: canonical(point), in: objectContent, tolerance: 10 / scale,
             textHit: { box, point in self.textLineHit(box, at: point, slack: 8 / scale) },
-            shapeHit: { shape, point in ShapeRendering.hit(shape, at: CGPoint(x: point.x, y: point.y)) })
+            shapeHit: { shape, point in ShapeRendering.hit(shape, at: CGPoint(x: point.x, y: point.y), tolerance: 10 / scale) })
     }
     func rememberTap(_ point: CGPoint) { lastTap = canonical(point) }
     /// Double-tap menu: remembers the canonical point and lets the editor

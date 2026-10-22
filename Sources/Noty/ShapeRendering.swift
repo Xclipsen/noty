@@ -82,10 +82,12 @@ enum ShapeRendering {
         case .dotted: [0.01, shape.lineWidth * 2.5]
         }
     }
-    static func hit(_ shape: ShapeObject, at point: CGPoint) -> Bool {
+    /// `tolerance`: page units around the drawn stroke, the same ~10 screen
+    /// points at any zoom as text and images (callers divide by the zoom).
+    static func hit(_ shape: ShapeObject, at point: CGPoint, tolerance: CGFloat) -> Bool {
         // Only a visible fill makes the inside count; unfilled shapes are their stroke.
         if shape.hasVisibleFill, path(shape).contains(point) { return true }
-        return path(shape).cgPath.copy(strokingWithWidth: max(16, shape.lineWidth + 8), lineCap: .round,
+        return path(shape).cgPath.copy(strokingWithWidth: shape.lineWidth + 2 * max(0, tolerance), lineCap: .round,
                                       lineJoin: .round, miterLimit: 4).contains(point)
     }
 }
