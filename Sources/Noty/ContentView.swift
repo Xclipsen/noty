@@ -875,6 +875,13 @@ struct ContentView: View {
                 guard isPaneActive(), model.pageContentGeneration == generation else { return false }
                 return model.updateContent(next, basedOn: before, pageID: page.id, inkGesture: true)
             },
+            onPasteImage: {
+                guard isPaneActive(), model.pageContentGeneration == generation, canEdit else { return }
+                if page.id == writingDraft.id, !model.notebook.pages.contains(where: { $0.id == page.id }) {
+                    guard model.materializeDraft(draftPage) else { return }
+                }
+                model.pasteImage(pageID: page.id)
+            },
             onTextFieldRequested: {
                 // Double-tap menu „Textfeld hinzufügen“ or a second tap on a selected
                 // field: the sheet opens the field once the text tool is set.

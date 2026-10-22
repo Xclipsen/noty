@@ -68,6 +68,8 @@ struct PageEditor {
     var onContent: (PageContent, PageContent) -> Bool
     /// Shapes removed by the precision eraser, merged into that gesture's ink undo step.
     var onEraseShapes: (PageContent, PageContent) -> Bool = { _, _ in false }
+    /// An image from the system pasteboard onto this page (the one paste path).
+    var onPasteImage: () -> Void = {}
     /// „Textfeld hinzufügen“ from the finger double-tap menu: the editor
     /// switches to the text tool, the sheet then opens the field itself.
     /// Also „Bearbeiten“/second tap on a selected field (caret there).
@@ -150,17 +152,16 @@ final class DrawingCanvasView: PKCanvasView {
     override var inputAccessoryView: UIView? { nil }
     // Native canvas viewport changes must never scroll the containing notebook.
     override func scrollRectToVisible(_ rect: CGRect, animated: Bool) { }
-    /// Pasting text from outside while an ink tool is active: a new text field
-    /// (set by the sheet; `WorksheetView.pasteText`).
-    var onPasteText: (() -> Void)?
-    override func paste(_ sender: Any?) { onPasteText?() }
+    /// ⌘V/„Einfügen“ while an ink tool is active: the sheet's one paste path
+    /// (`WorksheetView.pasteFromClipboard`); `canPaste`: something to paste.
+    var onPaste: (() -> Void)?
+    var canPaste: (() -> Bool)?
+    override func paste(_ sender: Any?) { onPaste?() }
     /// PencilKit's „Platz einfügen“ (insert space) is not offered (Nutzerfeedback
     /// Tag 1); the finger double tap shows „Textfeld hinzufügen“ instead.
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if NSStringFromSelector(action).lowercased().contains("insertspace") { return false }
-        if action == #selector(paste(_:)) {
-            return onPasteText != nil && UIPasteboard.general.hasStrings && !UIPasteboard.general.hasImages
-        }
+        if action == #selector(paste(_:)) { return canPaste?() ?? false }
         return super.canPerformAction(action, withSender: sender)
     }
 }
@@ -422,7 +423,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.pageContext = { [weak self] in self?.configuration?.page }
         objectLayer.fittedText = { [weak self] box in self?.textLayer.fitted(box) ?? box }
         objectLayer.onEditText = { [weak self] id, point in self?.requestTextEdit(id, at: point) }
-        canvas.onPasteText = { [weak self] in self?.pasteText() }
+        canvas.onPaste = { [weak self] in self?.pasteFromClipboard() }
+        canvas.canPaste = { [weak self] in self?.canPasteFromClipboard ?? false }
+        objectLayer.onPaste = { [weak self] in self?.pasteFromClipboard() }
         objectLayer.onPreview = { [weak self] content in self?.showObjectPreview(content) }
         objectLayer.onTouchSelectionEnded = { [weak self] in DispatchQueue.main.async { self?.claimUndoResponder() } }
         fingerObjects.install(on: self)
@@ -915,6 +918,28 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         let origin = pageLayout.contentOrigin
         textLayer.createField(at: CGPoint(x: point.x + origin.x, y: point.y + origin.y))
     }
+    /// Something can be pasted on this page (objects copied in noty, or text
+    /// or an image on the system pasteboard); never into an edited field,
+    /// which pastes natively.
+    var canPasteFromClipboard: Bool {
+        guard editable, !textLayer.isEditingField else { return false }
+        let board = UIPasteboard.general
+        return ObjectClipboard.content != nil || board.hasStrings || board.hasImages
+    }
+    /// The one paste path for every tool (⌘V, „Einfügen“, edit menu): what
+    /// was copied last wins. Objects copied in noty while the system
+    /// pasteboard is unchanged since → those objects (selected); otherwise
+    /// an image → image on this page, text → a new field. Objects copied
+    /// earlier are still pasted when the system pasteboard holds nothing usable.
+    func pasteFromClipboard() {
+        guard canPasteFromClipboard else { return }
+        let board = UIPasteboard.general
+        if ObjectClipboard.isNewest || (!board.hasStrings && !board.hasImages) {
+            syncObjectPlane(); objectLayer.pasteCopiedObjects(); return
+        }
+        if board.hasImages && !board.hasStrings { configuration?.onPasteImage(); return }
+        if board.hasStrings { pasteText() } else { configuration?.onPasteImage() }
+    }
     /// Text from outside without an edited field: a new field at the last
     /// tapped place, otherwise in the middle of the visible part, in the
     /// current (last used) style. The text tool opens it for typing.
@@ -927,12 +952,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.createField(at: point, text: text, focus: tool == .text)
     }
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if action == #selector(paste(_:)) {
-            return editable && tool == .text && !textLayer.isEditingField && UIPasteboard.general.hasStrings
-        }
+        if action == #selector(paste(_:)) { return canPasteFromClipboard }
         return super.canPerformAction(action, withSender: sender)
     }
-    override func paste(_ sender: Any?) { pasteText() }
+    override func paste(_ sender: Any?) { pasteFromClipboard() }
 
     private func showObjectPreview(_ content: PageContent) {
         guard !updating, let editor = configuration, tool == .selection || tool == .inkSelection || tool == .shape || objectLayer.hasTouchSelection,

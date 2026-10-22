@@ -20,8 +20,17 @@ private extension CGPath {
     }
 }
 
+/// App-internal copy of objects (⌘C, „Kopieren“). Pasting takes whatever was
+/// copied last: these objects while the system pasteboard is unchanged
+/// since the copy (`isNewest`), otherwise its text or image.
 @MainActor
-private enum ObjectClipboard { static var content: PageContent?; static var bounds: CGRect? }
+enum ObjectClipboard {
+    static var content: PageContent?
+    static var bounds: CGRect?
+    /// `UIPasteboard.general.changeCount` right after the copy.
+    static var changeCount: Int?
+    static var isNewest: Bool { content != nil && changeCount == UIPasteboard.general.changeCount }
+}
 
 @MainActor
 private final class SelectionHandle: UIView {
@@ -142,7 +151,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private let fieldRotation = SelectionHandle(color: .systemBlue, diameter: 12, bordered: true)
     private let angleLabel = UILabel()
     private let fieldActions = UIStackView()
-    private var active: Bool { enabled && (tool == .shape || tool == .selection || tool == .inkSelection || touchSelection) }
+    private var active: Bool { enabled && (toolActive || touchSelection) }
+    /// The tool works on this plane itself (shapes, lasso).
+    private var toolActive: Bool { tool == .shape || tool == .selection || tool == .inkSelection }
     /// Object selected by a finger tap while an ink tool stays active
     /// (`selectByTouch`). Lives exactly as long as that selection.
     private var touchSelection = false
@@ -173,14 +184,14 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         toolbar.addSubview(actions); addSubview(toolbar)
         actions.axis = .horizontal; actions.spacing = 0
         button("Stil") { [weak self] in self?.openStyle() }
-        button("Duplizieren") { [weak self] in self?.copySelection(); self?.pasteSelection() }
+        button("Duplizieren") { [weak self] in self?.duplicateSelection() }
         button("Ausschneiden") { [weak self] in self?.copySelection(); self?.deleteSelection() }
         button("Kopieren") { [weak self] in self?.copySelection() }
         let more = button("Weitere Aktionen", icon: "chevron.right") { }
         moreButton = more
         more.showsMenuAsPrimaryAction = true
         more.menu = UIMenu(children: [
-            UIAction(title: "Einfügen", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in self?.pasteSelection() },
+            UIAction(title: "Einfügen", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in self?.pasteKey() },
             UIAction(title: "Löschen", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in self?.deleteSelection() },
             UIAction(title: "Horizontal spiegeln", image: UIImage(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")) { [weak self] _ in self?.mirrorInk(horizontal: true) },
             UIAction(title: "Vertikal spiegeln", image: UIImage(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down")) { [weak self] _ in self?.mirrorInk(horizontal: false) },
@@ -213,11 +224,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         fieldButton("Ausschneiden") { [weak self] in self?.copySelection(); self?.deleteSelection() }
         fieldButton("Kopieren") { [weak self] in self?.copySelection() }
-        fieldButton("Duplizieren") { [weak self] in
-            guard let self else { return }
-            self.copySelection(); self.pasteSelection()
-            if self.texts.count == 1 && self.ink.isEmpty && self.images.isEmpty && self.shapes.isEmpty { self.fieldMode = true; self.refresh() }
-        }
+        fieldButton("Duplizieren") { [weak self] in self?.duplicateSelection() }
         fieldButton("Löschen") { [weak self] in self?.deleteSelection() }
         fieldButton("Feldstil") { [weak self] in self?.openFieldStyle() }
         fieldButton("Nach vorne", icon: "square.3.layers.3d.top.filled") { [weak self] in self?.reorderField(toFront: true) }
@@ -1162,19 +1169,52 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         content = value; adopted = nil
         return true
     }
-    private func copySelection() {
-        guard let frame = selectionBounds(content) else { return }
+    /// Only the selected members (and their bounds), as copied or duplicated.
+    private func selectedMembers() -> (content: PageContent, bounds: CGRect)? {
+        guard let frame = selectionBounds(content) else { return nil }
         var value = content
         value.textBoxes.removeAll { !texts.contains($0.id) }; value.images.removeAll { !images.contains($0.id) }
         value.shapes.removeAll { !shapes.contains($0.id) }
         let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()
         value.drawing = PKDrawing(strokes: drawing.strokes.enumerated().filter { ink.contains($0.offset) }.map(\.element)).dataRepresentation()
+        return (value, frame)
+    }
+    /// „Duplizieren“/⌘D: a copy beside the selection; the clipboards stay untouched.
+    private func duplicateSelection() {
+        guard let members = selectedMembers() else { return }
+        let field = isFieldSelection
+        paste(members.content, from: members.bounds)
+        if field, texts.count == 1, ink.isEmpty, images.isEmpty, shapes.isEmpty { fieldMode = true; refresh() }
+    }
+    private func copySelection() {
+        guard let (value, frame) = selectedMembers() else { return }
         ObjectClipboard.content = value; ObjectClipboard.bounds = frame
         // Pasting into another notebook stages the originals from this package.
         ImageAssetRegistry.shared.pinClipboard(value.images.map(\.asset))
+        // Field text also goes to the system pasteboard (other apps, text
+        // fields), in reading order; the copy stays the newest source.
+        let text = value.textBoxes.sorted { ($0.y, $0.x) < ($1.y, $1.x) }.map(\.text).filter { !$0.isEmpty }
+        if !text.isEmpty { UIPasteboard.general.string = text.joined(separator: "\n\n") }
+        ObjectClipboard.changeCount = UIPasteboard.general.changeCount
+    }
+    /// The one paste path of the sheet (`WorksheetView.pasteFromClipboard`)
+    /// for every tool: ⌘V and „Einfügen“ here end up there.
+    var onPaste: (() -> Void)?
+    /// Pastes the copied objects (also when this layer is not the tool's own
+    /// plane: the result becomes a finger selection, so it can be moved at once).
+    func pasteCopiedObjects() {
+        guard enabled, lift == nil, startContent == nil, ObjectClipboard.content != nil else { return }
+        pasteSelection()
+        if !toolActive, hasSelection {
+            touchSelection = true; isUserInteractionEnabled = active; isHidden = !active; refresh()
+        }
     }
     private func pasteSelection() {
         guard let copied = ObjectClipboard.content, let frame = ObjectClipboard.bounds else { return }
+        paste(copied, from: frame)
+    }
+    /// New copies (new IDs) of `copied`, 24 pt beside `frame` and on the page; selected.
+    private func paste(_ copied: PageContent, from frame: CGRect) {
         clearSelection()
         var value = content
         let bounds = limits.cgRect
@@ -1253,11 +1293,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         return commands
     }
     @objc private func copyKey() { copySelection() }
-    @objc private func pasteKey() { pasteSelection() }
+    @objc private func pasteKey() { if let onPaste { onPaste() } else { pasteSelection() } }
     @objc private func deleteKey() { deleteSelection() }
     @objc private func escapeKey() { adopted = nil; clearSelection(); refresh() }
     @objc private func cutKey() { guard hasSelection else { return }; copySelection(); deleteSelection() }
-    @objc private func duplicateKey() { guard hasSelection else { return }; copySelection(); pasteSelection() }
+    @objc private func duplicateKey() { guard hasSelection else { return }; duplicateSelection() }
     /// ⌘A: everything selectable on this page (the lasso's filter; shape tool: shapes).
     @objc private func selectAllKey() {
         guard active, lift == nil, startContent == nil else { return }
