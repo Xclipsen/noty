@@ -132,6 +132,11 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private var lowMemoryUntil: CFTimeInterval = 0
     /// Sideways finger drag beyond the allowed range (rubber band), see `ElasticState`.
     fileprivate var elastic: ElasticState?
+    /// Writing scroll during a pinch: how far (page units) the view stood
+    /// beyond the normal sideways range when the pinch began. A zoom keeps
+    /// that, never more: only writing (dragging the sheet) moves an edge
+    /// towards the screen middle, not the pinch (Nutzer zu Build 62).
+    private var zoomWritingExcess: (left: Double, right: Double)?
     fileprivate var elasticLink: CADisplayLink?
     /// Room made for the open tool options: the shift applied and the offset
     /// right after it (closing restores the exact previous offset when the
@@ -497,6 +502,9 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
                 selected = id; reported = id; state?.onSelect(id)
             }
         }
+        if writingScroll, zoomScale > 0, let normal = allowedHorizontalRange(writing: false) {
+            zoomWritingExcess = NotebookViewportGeometry.writingExcess(offset: Double(contentOffset.x), normal: normal, scale: Double(zoomScale))
+        } else { zoomWritingExcess = nil }
         guard let selected, let placement = placements[selected] else { return }
         userZoomPage = selected
         let range = NotebookViewportGeometry.zoomRange(viewport: PageSize(width: bounds.width, height: bounds.height),
@@ -532,6 +540,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         // (or within the writing-mode range) instead of drifting with the fingers.
         if pinch.state == .changed, !widthSnapInProgress { constrainHorizontalOffset(duringZoom: true) }
         if pinch.state == .ended || pinch.state == .cancelled {
+            zoomWritingExcess = nil
             if userZoomPage != nil { scrollViewDidEndZooming(self, with: surface, atScale: zoomScale) }
             if HangProbe.isInstalled { performanceLog.debug("Pinch ended at zoom \(Double(self.zoomScale), privacy: .public)") }
             // Full-resolution re-render once the fingers are gone.
@@ -673,9 +682,9 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
     /// Allowed content-offset x interval at the current vertical position.
     /// Glides between sheets of different width over ~35 % of the viewport.
-    fileprivate func allowedHorizontalRange(atOffsetY offsetY: CGFloat? = nil) -> ClosedRange<Double>? {
+    fileprivate func allowedHorizontalRange(atOffsetY offsetY: CGFloat? = nil, writing writingOverride: Bool? = nil) -> ClosedRange<Double>? {
         guard bounds.width > 0, !layoutKey.isEmpty, zoomScale > 0 else { return nil }
-        let pages = layoutKey, width = bounds.width, scale = zoomScale, writing = writingScroll
+        let pages = layoutKey, width = bounds.width, scale = zoomScale, writing = writingOverride ?? writingScroll
         let y = offsetY ?? contentOffset.y
         return NotebookViewportGeometry.blendedHorizontalRange(
             referenceY: (y + bounds.height * 0.4) / zoomScale, band: bounds.height * 0.35 / zoomScale,
@@ -691,7 +700,12 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         // Pure clamp into a blended interval: idempotent, so layout passes after
         // strokes/autosaves at an unchanged scroll position never move the view.
         // Only a finger dragging sideways (or its spring back) may leave it.
-        guard let allowed = allowedHorizontalRange() else { return }
+        guard var allowed = allowedHorizontalRange() else { return }
+        // A pinch in writing scroll keeps the sheet where it was relative to
+        // the normal range; it never drifts towards the writing limit.
+        if duringZoom, let excess = zoomWritingExcess, let normal = allowedHorizontalRange(writing: false) {
+            allowed = NotebookViewportGeometry.pinchRange(writing: allowed, normal: normal, excess: excess, scale: Double(zoomScale))
+        }
         let x = elasticOffset(allowed) ?? min(max(contentOffset.x, allowed.lowerBound), allowed.upperBound)
         // Sub-pixel tolerance: UIKit's pixel rounding of contentOffset must not
         // cause a write on every layout pass.

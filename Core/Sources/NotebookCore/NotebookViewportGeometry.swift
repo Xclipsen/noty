@@ -79,6 +79,23 @@ public enum NotebookViewportGeometry {
         }
         return low...max(low, high)
     }
+    /// Writing scroll while pinching (Nutzer zu Build 62): the view may stand
+    /// beyond the normal sideways range only as far (page units) as it did
+    /// when the pinch began – zooming never moves a sheet edge towards the
+    /// screen middle, only writing/dragging does. `excess`: page units
+    /// left of the normal lower / right of the normal upper bound at the start.
+    public static func pinchRange(writing: ClosedRange<Double>, normal: ClosedRange<Double>,
+                                  excess: (left: Double, right: Double), scale: Double) -> ClosedRange<Double> {
+        let s = scale.isFinite && scale > 0 ? scale : 1
+        let low = max(writing.lowerBound, normal.lowerBound - max(0, excess.left) * s)
+        let high = min(writing.upperBound, normal.upperBound + max(0, excess.right) * s)
+        return low...max(low, high)
+    }
+    /// Page units the offset `x` stands beyond `normal` at `scale`.
+    public static func writingExcess(offset x: Double, normal: ClosedRange<Double>, scale: Double) -> (left: Double, right: Double) {
+        let s = scale.isFinite && scale > 0 ? scale : 1
+        return (max(0, normal.lowerBound - x) / s, max(0, x - normal.upperBound) / s)
+    }
     /// Horizontal target of a page jump (page number, arrows, sidebar, focus
     /// after deleting): the base sheet/PDF in the middle of the screen at the
     /// current zoom. A fit (`wholeSheet`) centres PDF and writing space together.

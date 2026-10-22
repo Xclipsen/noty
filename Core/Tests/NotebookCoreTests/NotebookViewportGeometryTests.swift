@@ -170,4 +170,25 @@ final class StrokeHorizontalDriftTests: XCTestCase {
             }
         }
     }
+
+    func testPinchInWritingScrollNeverDriftsTowardsTheScreenMiddle() {
+        // Nutzer zu Build 62: zooming with writing scroll pulled the sheet edge to the middle.
+        let page = PageRect(x: 0, y: 0, width: 595, height: 842), viewport = 1000.0
+        // Zoomed out (sheet narrower than the screen): normally centred only.
+        let scale = 1.0
+        let normal = NotebookViewportGeometry.horizontalRange(viewportWidth: viewport, page: page, scale: scale)
+        let writing = NotebookViewportGeometry.horizontalRange(viewportWidth: viewport, page: page, scale: scale,
+                                                               anchors: (left: 0, right: 595))
+        XCTAssertEqual(normal.lowerBound, normal.upperBound)
+        XCTAssertLessThan(writing.lowerBound, normal.lowerBound)
+        // Pinch began centred: it stays in the normal (centred) range.
+        let none = NotebookViewportGeometry.writingExcess(offset: normal.lowerBound, normal: normal, scale: scale)
+        XCTAssertEqual(NotebookViewportGeometry.pinchRange(writing: writing, normal: normal, excess: none, scale: scale), normal)
+        // Pinch began with the sheet 100 screen points beyond (written to the side): kept, not more.
+        let beyond = NotebookViewportGeometry.writingExcess(offset: normal.lowerBound - 100, normal: normal, scale: scale)
+        XCTAssertEqual(beyond.left, 100); XCTAssertEqual(beyond.right, 0)
+        let kept = NotebookViewportGeometry.pinchRange(writing: writing, normal: normal, excess: beyond, scale: 2)
+        XCTAssertEqual(kept.upperBound, normal.upperBound)
+        XCTAssertEqual(kept.lowerBound, max(writing.lowerBound, normal.lowerBound - 200), "same page distance at the new zoom")
+    }
 }
