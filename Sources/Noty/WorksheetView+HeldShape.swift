@@ -12,17 +12,17 @@ extension WorksheetView {
         guard let recognized, let base = holdBase else { return }
         if tool == .marker { guard case .line = recognized else { return } }
         heldColor = InkColor(Color(lastColor ?? .black))
-        // One width for preview and result: what the drawn ink shows. PencilKit
-        // point sizes (learned per tool width from the last stroke) render
-        // thinner than they are; the preview layer and shape objects stroke
-        // exactly their width. Not re-measured at commit (pressure while
-        // holding made the result differ from the preview).
+        // Width of a pen shape: what the drawn ink shows (PencilKit point sizes,
+        // learned per tool width from the last stroke, render thinner than
+        // they are). Ink results use the learned point size itself and are
+        // previewed by PencilKit; neither is re-measured at commit.
         heldWidth = min(40, max(0.5, heldPointSize / InkWidthCalibration.pointScale(inkType)))
         // A stroke that left the page/canvas is clipped (lines, arrows) or
         // moved onto the page (closed shapes) instead of being dropped.
         guard let shape = fittedHeld(recognized, width: heldWidth, allowShift: true) else { return }
         heldShape = shape
         heldAdjustment = HeldShapeAdjustment(shape: shape, grab: last)
+        heldInk = (canvas.tool as? PKInkingTool)?.ink ?? PKInk(inkType, color: heldColor.uiColor)
         let frame = renderViewport?.frame.cgRect ?? bounds
         let scale = min(4, 2048 / max(1, frame.width, frame.height))
         let drawing = ((try? PKDrawing(data: base.drawing)) ?? PKDrawing()).transformed(using: pageLayout.inkTranslation)
@@ -57,33 +57,82 @@ extension WorksheetView {
     }
     /// Head length of an ink arrow, as `ShapeObject.arrowHead` draws it.
     private var heldHeadLength: Double { max(10, heldWidth * 3) }
+    /// The shape object a held pen stroke commits (nil: native ink result).
+    private func heldResultObject(_ shape: RecognizedShape) -> ShapeObject? {
+        heldObject(fittedHeld(shape, width: heldWidth, allowShift: true) ?? shape)
+    }
+    /// The PencilKit stroke a held ink result commits: along the recognised
+    /// shape with the learned point size of the tool (what its strokes draw)
+    /// and the opacity/force/tilt of a typical drawn point. Nil when it would
+    /// leave the page (the freehand ink stays).
+    private func heldInkStroke(_ shape: RecognizedShape) -> PKStroke? {
+        let ink = heldInk ?? PKInk(inkType, color: heldColor.uiColor)
+        let fitted = fittedHeld(shape, width: max(heldWidth, heldPointSize), allowShift: true) ?? shape
+        let size = CGSize(width: heldPointSize, height: heldPointSize)
+        let template = drawnPointTemplate[ink.inkType]
+        let path = fitted.outline(spacing: 8, headLength: heldHeadLength)
+        let points = path.indices.map { index in
+            PKStrokePoint(location: CGPoint(x: path[index].x, y: path[index].y), timeOffset: Double(index) * 0.01, size: size,
+                          opacity: template?.opacity ?? 1, force: template?.force ?? 1,
+                          azimuth: template?.azimuth ?? 0, altitude: template?.altitude ?? .pi / 2)
+        }
+        let stroke = PKStroke(ink: ink, path: PKStrokePath(controlPoints: points, creationDate: Date()))
+        guard pageLayout.canonicalInkBounds.insetBy(dx: -0.02, dy: -0.02).contains(stroke.renderBounds) else { return nil }
+        return stroke
+    }
+    /// Preview = result: a pen shape is drawn exactly like `ShapeRendering`
+    /// (same path, width, colour, caps, dashes); an ink result is the very
+    /// PencilKit stroke that will be committed, rendered by PencilKit at the
+    /// current zoom (no width calibration in between).
     func updateHeldPath() {
         guard let shape = heldShape else { return }
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        heldShapeLayer.frame = bounds
-        let path: UIBezierPath
-        let object = heldObject(shape)
-        // The preview is the object itself: same path, width, colour and caps
-        // as `ShapeRendering.draw` after lifting.
-        if let object { path = ShapeRendering.path(object) }
-        else {
-            path = UIBezierPath()
-            for (index, point) in shape.outline(headLength: heldHeadLength).enumerated() {
-                if index == 0 { path.move(to: CGPoint(x: point.x, y: point.y)) } else { path.addLine(to: CGPoint(x: point.x, y: point.y)) }
-            }
+        CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
+        if let object = heldResultObject(shape) {
+            heldStroke = nil; heldStrokeImage.isHidden = true; heldStrokeImage.image = nil
+            let path = ShapeRendering.path(object)
+            path.apply(pageLayout.inkTranslation)
+            heldShapeLayer.frame = bounds
+            heldShapeLayer.path = path.cgPath; heldShapeLayer.lineWidth = object.lineWidth
+            heldShapeLayer.strokeColor = object.color.uiColor.cgColor
+            heldShapeLayer.lineDashPattern = ShapeRendering.dashes(object).map { NSNumber(value: Double($0)) }
+            heldShapeLayer.isHidden = false
+            heldInkImage.isHidden = heldInkImage.image == nil; canvas.layer.opacity = 0
+            return
         }
-        path.apply(pageLayout.inkTranslation)
-        heldShapeLayer.path = path.cgPath; heldShapeLayer.lineWidth = object.map { CGFloat($0.lineWidth) } ?? heldWidth
-        heldShapeLayer.strokeColor = object.map { $0.color.uiColor.cgColor }
-            ?? heldColor.uiColor.withAlphaComponent(heldColor.alpha * (tool == .marker && markerTip == .chisel ? 0.35 : tool == .pencil ? 0.8 : 1)).cgColor
-        heldShapeLayer.isHidden = false
-        CATransaction.commit()
+        heldShapeLayer.isHidden = true; heldShapeLayer.path = nil
+        guard let stroke = heldInkStroke(shape) else {
+            // No result fits the page: the freehand ink stays, so it is shown.
+            heldStroke = nil; heldStrokeImage.isHidden = true; heldStrokeImage.image = nil
+            heldInkImage.isHidden = true; canvas.layer.opacity = 1
+            return
+        }
+        heldStroke = stroke
+        let translated = PKDrawing(strokes: [stroke]).transformed(using: pageLayout.inkTranslation)
+        let rect = translated.bounds.insetBy(dx: -2, dy: -2).integral
+        guard rect.width > 0, rect.height > 0 else { return }
+        let scale = min(screenScale * (window?.screen.scale ?? 2), 4096 / max(1, rect.width, rect.height))
+        canvas.traitCollection.performAsCurrent {
+            heldStrokeImage.image = translated.image(from: rect, scale: max(0.5, scale)).withRenderingMode(.alwaysOriginal)
+        }
+        heldStrokeImage.frame = rect
+        heldStrokeImage.isHidden = false
+        heldInkImage.isHidden = heldInkImage.image == nil; canvas.layer.opacity = 0
     }
     func clearHeldPreview() {
+        resetHeldState()
+        hideHeldVisuals()
+    }
+    private func resetHeldState() {
         heldShape = nil; heldAdjustment = nil; holdBase = nil; holdPoints = []
+        heldStroke = nil; heldInk = nil
         holdCompletion = StrokeCompletionGate()
+    }
+    func hideHeldVisuals() {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
         heldInkImage.isHidden = true; heldInkImage.image = nil
+        heldStrokeImage.isHidden = true; heldStrokeImage.image = nil
         heldShapeLayer.isHidden = true; heldShapeLayer.path = nil; canvas.layer.opacity = 1
+        CATransaction.commit()
     }
     /// A held line whose lift is done but whose final PencilKit callback never
     /// came: commit it before the next touch (or after the fallback delay)
@@ -104,19 +153,12 @@ extension WorksheetView {
         // once: same ink and drawn point attributes (never the bare tool width,
         // which rendered as a hairline), or an editable shape of the drawn width.
         var next = previous
-        // The shape keeps exactly the preview's width (and so its fit).
-        if let object = heldObject(fittedHeld(shape, width: heldWidth, allowShift: true) ?? shape) {
+        // Exactly what the preview shows: the same shape object, or the very
+        // PencilKit stroke the preview rendered.
+        if let object = heldResultObject(shape) {
             next.drawing = oldDrawing.dataRepresentation(); next.shapes.append(object)
         } else {
-            let ink = source?.ink ?? PKInk(inkType, color: heldColor.uiColor)
-            // Drawn point sizes scaled to the size the preview showed: the
-            // replacement ink is as wide as its preview, pressure variation kept.
-            let drawn = source.map(Self.drawnWidth) ?? 0
-            let sizeScale = drawn > 0.01 ? heldPointSize / drawn : 1
-            let reach = max(heldWidth, (source.map(Self.maximumDrawnWidth) ?? 0) * sizeScale)
-            let fitted = fittedHeld(shape, width: reach, allowShift: true) ?? shape
-            let stroke = inkStroke(from: source, ink: ink, path: fitted.outline(spacing: 8, headLength: heldHeadLength), sizeScale: sizeScale)
-            guard pageLayout.canonicalInkBounds.insetBy(dx: -0.02, dy: -0.02).contains(stroke.renderBounds) else {
+            guard let stroke = heldStroke ?? heldInkStroke(shape) else {
                 clearHeldPreview(); canvasViewDrawingDidChange(canvas); return
             }
             next.drawing = PKDrawing(strokes: oldDrawing.strokes + [stroke]).dataRepresentation()
@@ -148,6 +190,8 @@ extension WorksheetView {
         guard let stroke = strokes.last, configuredWidth > 0, strokes.count == previousCount + 1 else { return }
         let width = Self.drawnWidth(stroke)
         if width > 0 { drawnWidthRatio[stroke.ink.inkType] = width / configuredWidth }
+        let points = stroke.path.sorted { min($0.size.width, $0.size.height) < min($1.size.width, $1.size.height) }
+        if !points.isEmpty { drawnPointTemplate[stroke.ink.inkType] = points[points.count / 2] }
     }
     /// Rebuilds a finished stroke along `path` (page units). Size, opacity,
     /// force and tilt come from the drawn points at the same arc-length

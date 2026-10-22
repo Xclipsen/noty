@@ -70,12 +70,16 @@ enum ShapeRendering {
             }
             shape.color.uiColor.setStroke(); path.lineWidth = shape.lineWidth
             path.lineCapStyle = .round; path.lineJoinStyle = .round
-            let dashes: [CGFloat] = switch shape.pattern {
-            case .solid: []
-            case .dashed: [shape.lineWidth * 4, shape.lineWidth * 2.5]
-            case .dotted: [0.01, shape.lineWidth * 2.5]
-            }
+            let dashes = dashes(shape)
             path.setLineDash(dashes, count: dashes.count, phase: 0); path.stroke()
+        }
+    }
+    /// Dash lengths of the stroke pattern (editor, held preview, thumbnails, PDF).
+    static func dashes(_ shape: ShapeObject) -> [CGFloat] {
+        switch shape.pattern {
+        case .solid: []
+        case .dashed: [shape.lineWidth * 4, shape.lineWidth * 2.5]
+        case .dotted: [0.01, shape.lineWidth * 2.5]
         }
     }
     static func hit(_ shape: ShapeObject, at point: CGPoint) -> Bool {

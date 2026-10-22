@@ -256,6 +256,15 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var heldWidth: CGFloat = 2
     /// Ratio of PencilKit's drawn point size to the tool width, per ink type.
     var drawnWidthRatio: [PKInk.InkType: CGFloat] = [:]
+    /// Opacity, force and tilt of a typical drawn point (median size) of the
+    /// last stroke per ink type: a held ink line is drawn with them.
+    var drawnPointTemplate: [PKInk.InkType: PKStrokePoint] = [:]
+    /// Ink of the held stroke (the canvas tool when it was recognised).
+    var heldInk: PKInk?
+    /// The exact PencilKit stroke a held ink result commits; the preview is
+    /// this stroke rendered by PencilKit (`heldStrokeImage`).
+    var heldStroke: PKStroke?
+    let heldStrokeImage = UIImageView()
     var holdSerial = 0
     var holdCompletion = StrokeCompletionGate()
     let heldInkImage = UIImageView()
@@ -406,7 +415,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         insertSubview(selectionInkImage, aboveSubview: canvas)
         heldInkImage.isUserInteractionEnabled = false; heldInkImage.isHidden = true
         insertSubview(heldInkImage, aboveSubview: canvas)
-        layer.insertSublayer(heldShapeLayer, above: heldInkImage.layer)
+        heldStrokeImage.isUserInteractionEnabled = false; heldStrokeImage.isHidden = true
+        insertSubview(heldStrokeImage, aboveSubview: heldInkImage)
+        layer.insertSublayer(heldShapeLayer, above: heldStrokeImage.layer)
         heldShapeLayer.fillColor = UIColor.clear.cgColor; heldShapeLayer.lineCap = .round; heldShapeLayer.lineJoin = .round
         heldShapeLayer.isHidden = true
         layer.addSublayer(eraseTrail)
