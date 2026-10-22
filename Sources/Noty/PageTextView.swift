@@ -171,8 +171,41 @@ final class PageTextView: UITextView {
         // With the text tool the Pencil scrolls the paper; handwriting-to-text
         // (Scribble) would turn every Pencil drag over text into writing.
         addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))
+        addGestureRecognizer(touchWatcher)
+        touchWatcher.onEnded = { [weak self] touch in
+            guard let self, self.refusedDuringTouch else { return }
+            self.refusedDuringTouch = false
+            if self.lastTouchWasCleanTap { self.onCleanTapAfterRefusal?(touch.location(in: self)) }
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    /// Feedback zu Build 62: „Der Cursor sollte erst reingehen, wenn man
+    /// einmal normal gedrückt hat.“ The text view's own gestures (long press,
+    /// drag, loupe, double tap held) may only open it after a clean tap: put
+    /// down and lifted within 0.5 s, at most 10 screen points apart, just now.
+    /// Code paths that open a field on purpose (new field by tap, „Bearbeiten“,
+    /// second tap on a selected field, flow hand-off) set `openingOnPurpose`.
+    private let touchWatcher = TouchDownWatcher()
+    var openingOnPurpose = false
+    /// Editing was refused while the touch was still down; if it ends as a
+    /// clean tap after all, the field opens at the tap (own coordinates).
+    var refusedDuringTouch = false
+    var onCleanTapAfterRefusal: ((CGPoint) -> Void)?
+    var touchIsDown: Bool { touchWatcher.start.map { $0.touch.phase != .ended && $0.touch.phase != .cancelled } ?? false }
+    var lastTouchWasCleanTap: Bool {
+        guard let start = touchWatcher.start else { return false }
+        let touch = start.touch
+        guard touch.phase == .ended else { return false }
+        let point = touch.location(in: nil)
+        return hypot(point.x - start.point.x, point.y - start.point.y) <= 10
+            && touch.timestamp - start.time <= 0.5
+            && ProcessInfo.processInfo.systemUptime - touch.timestamp <= 0.6
+    }
+    /// Opens the field for typing from app code (not a native text gesture).
+    func beginEditingOnPurpose() {
+        openingOnPurpose = true; defer { openingOnPurpose = false }
+        becomeFirstResponder()
+    }
     override var undoManager: UndoManager? { historyOwner?.notebookUndo }
     override var keyCommands: [UIKeyCommand]? {
         (super.keyCommands ?? []) + (isFlow ? [
@@ -237,4 +270,30 @@ final class GlyphSelectionRect: UITextSelectionRect {
     override var containsStart: Bool { base.containsStart }
     override var containsEnd: Bool { base.containsEnd }
     override var isVertical: Bool { base.isVertical }
+}
+
+/// Notes the first touch of each sequence on a text view (also on its
+/// subviews) until it ends; never recognizes, never delays or cancels touches.
+final class TouchDownWatcher: UIGestureRecognizer, UIGestureRecognizerDelegate {
+    private(set) var start: (touch: UITouch, point: CGPoint, time: TimeInterval)?
+    init() {
+        super.init(target: nil, action: nil)
+        cancelsTouchesInView = false; delaysTouchesBegan = false; delaysTouchesEnded = false; delegate = self
+    }
+    var onEnded: ((UITouch) -> Void)?
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let touch = touches.first else { return }
+        if start.map({ $0.touch.phase == .ended || $0.touch.phase == .cancelled }) ?? true {
+            start = (touch, touch.location(in: nil), touch.timestamp)
+        }
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let start, touches.contains(start.touch) { onEnded?(start.touch); state = .failed }
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let start, touches.contains(start.touch) { state = .failed }
+    }
+    override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+    override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }

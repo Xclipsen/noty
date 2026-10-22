@@ -259,6 +259,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 field.editor.historyOwner = self; field.editor.delegate = self
                 field.editor.inputAccessoryView = accessory
                 field.editor.onEscape = { [weak self] in self?.finishFieldByUser() }
+                field.editor.onCleanTapAfterRefusal = { [weak self, weak field] point in
+                    guard let self, let field, self.active else { return }
+                    self.focusField(field.id, at: field.editor.convert(point, to: self))
+                }
                 field.editor.onBold = { [weak self] in self?.toggleBold() }
                 field.editor.onItalic = { [weak self] in self?.toggleItalic() }
                 field.editor.onUnderline = { [weak self] in self?.toggleTextUnderline() }
@@ -497,7 +501,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         if tracing { inputLog.info("[noty.text-input] Text field inserted count=\(self.boxes.count) x=\(Double(box.x)) y=\(Double(box.y))") }
         synchronize(); publish()
         if focus, let editor = fields[box.id]?.editor {
-            editor.becomeFirstResponder()
+            editor.beginEditingOnPurpose()
             editor.selectedRange = NSRange(location: (text as NSString).length, length: 0)
         }
         return box.id
@@ -523,7 +527,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         guard active, let field = fields[id], boxes.contains(where: { $0.id == id }) else { return }
         selectedID = id; synchronize(); layoutIfNeeded()
         let editor = field.editor
-        if !editor.isFirstResponder { editor.becomeFirstResponder() }
+        if !editor.isFirstResponder { editor.beginEditingOnPurpose() }
         guard editor.markedTextRange == nil else { return }
         if let point, let position = editor.closestPosition(to: convert(point, to: editor)) {
             editor.selectedTextRange = editor.textRange(from: position, to: position)
@@ -535,6 +539,14 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     func textViewShouldBeginEditing(_ textView: UITextView) -> Bool {
         guard active, let editor = textView as? PageTextView,
               boxes.contains(where: { $0.id == editor.objectID }) else { return false }
+        // Caret only after a clean tap or on purpose, never from a drag, a
+        // long press, a held Pencil or a returning menu/popover.
+        guard editor.openingOnPurpose || editor.lastTouchWasCleanTap || UIAccessibility.isVoiceOverRunning else {
+            if tracing { inputLog.info("[noty.text-input] Editing refused: no clean tap") }
+            // Still down: it may end as a clean tap after all (then the field opens there).
+            if editor.touchIsDown { editor.refusedDuringTouch = true }
+            return false
+        }
         selectedID = editor.objectID; notice.isHidden = true
         // Free fields stay free fields, also on paper and in writing margins
         // (they are opened on purpose right of the middle since Feedback 44);
@@ -628,7 +640,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         selectedID = focus.boxID; synchronize(); layoutIfNeeded()
         defer { pendingReveal = max(pendingReveal ?? .typing, .typing) } // flow hand-off while typing
         let editor = field.editor
-        if !editor.isFirstResponder { editor.becomeFirstResponder() }
+        if !editor.isFirstResponder { editor.beginEditingOnPurpose() }
         if editor.markedTextRange == nil {
             let length = editor.attributedText.length
             let range = NSRange(location: min(focus.selection.location, length), length: min(focus.selection.length, max(0, length - focus.selection.location)))
