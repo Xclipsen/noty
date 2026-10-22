@@ -36,7 +36,7 @@ final class TextRasterView: UIView {
 
 /// One text field on the page. Textneubau (docs/TEXT-REBUILD-62.md): no
 /// icons above the field. While it is being edited it shows a thin frame and
-/// one width point left and right; dragging at the frame (about 20 pt wide
+/// four corner points (width only); dragging at the frame (about 20 pt wide
 /// zone, mostly outside) moves it, dragging inside the text selects text.
 /// Not being edited, only its laid-out text lines take touches: an empty part
 /// of the frame reaches through to the field or page below.
@@ -44,9 +44,10 @@ final class TextRasterView: UIView {
 final class TextFieldContainer: UIView {
     let id: UUID
     let editor: PageTextView
-    /// Width points (left, right) while editing.
-    let leftWidth = UIView()
-    let rightWidth = UIView()
+    /// Corner points while editing (top-left, top-right, bottom-right,
+    /// bottom-left): they change only the width; left ones the left edge.
+    let widthHandles = (0..<4).map { _ in UIView() }
+    static func changesLeftEdge(_ index: Int) -> Bool { index == 0 || index == 3 }
     private let raster = TextRasterView()
     /// Feldstil (Stufe 4): fill and frame below the text; editing/overflow frame.
     private let styleLayer = CAShapeLayer()
@@ -79,21 +80,23 @@ final class TextFieldContainer: UIView {
         editor.inputAssistantItem.leadingBarButtonGroups = []; editor.inputAssistantItem.trailingBarButtonGroups = []
         editor.accessibilityLabel = "Textfeld"
         editor.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        for (handle, label) in [(leftWidth, "Textfeldbreite links ändern"), (rightWidth, "Textfeldbreite rechts ändern")] {
+        let labels = ["Textfeldbreite oben links ändern", "Textfeldbreite oben rechts ändern",
+                      "Textfeldbreite unten rechts ändern", "Textfeldbreite unten links ändern"]
+        for (handle, label) in zip(widthHandles, labels) {
             handle.backgroundColor = .clear; handle.isAccessibilityElement = true; handle.accessibilityLabel = label
-            let dot = UIView(frame: CGRect(x: 16, y: 16, width: 12, height: 12))
-            dot.backgroundColor = .systemBlue; dot.layer.cornerRadius = 6; dot.isUserInteractionEnabled = false
+            let dot = UIView(frame: CGRect(x: 17, y: 17, width: 10, height: 10))
+            dot.backgroundColor = .systemBlue; dot.layer.cornerRadius = 5; dot.isUserInteractionEnabled = false
             dot.layer.borderColor = UIColor.white.cgColor; dot.layer.borderWidth = 1.5
             handle.addSubview(dot); handle.isHidden = true
         }
         raster.editor = editor
         (editor.layoutManager as? TaskLayoutManager)?.onDisplayChange = { [weak raster] in raster?.setNeedsDisplay() }
-        [raster, editor, leftWidth, rightWidth].forEach { addSubview($0) }
+        ([raster, editor] + widthHandles).forEach { addSubview($0) }
         styleLayer.actions = ["path": NSNull(), "fillColor": NSNull(), "strokeColor": NSNull(), "lineWidth": NSNull(), "hidden": NSNull()]
         frameLayer.actions = styleLayer.actions
         layer.insertSublayer(styleLayer, at: 0)
         frameLayer.fillColor = UIColor.clear.cgColor; frameLayer.isHidden = true
-        layer.insertSublayer(frameLayer, below: leftWidth.layer)
+        layer.insertSublayer(frameLayer, below: widthHandles[0].layer)
         accessibilityLabel = "Textfeld"
     }
     /// The visible field in own coordinates: the text frame plus the style's padding.
@@ -142,20 +145,21 @@ final class TextFieldContainer: UIView {
         self.editing = editing
         frameLayer.isHidden = !(editing || overflowing)
         frameLayer.strokeColor = (overflowing ? UIColor.systemRed : .systemBlue).cgColor
-        [leftWidth, rightWidth].forEach { $0.isHidden = !editing }
+        widthHandles.forEach { $0.isHidden = !editing }
         setNeedsLayout()
     }
     override func layoutSubviews() {
         super.layoutSubviews()
         if editor.frame != bounds { editor.frame = bounds; raster.setNeedsDisplay() }
         let scale = displayScale
-        for control in [leftWidth, rightWidth] {
+        for control in widthHandles {
             control.bounds = CGRect(x: 0, y: 0, width: 44, height: 44)
             control.transform = CGAffineTransform(scaleX: 1 / scale, y: 1 / scale)
         }
         let visible = styleRect, selection = selectionRect
-        leftWidth.center = CGPoint(x: selection.minX, y: bounds.midY)
-        rightWidth.center = CGPoint(x: selection.maxX, y: bounds.midY)
+        let corners = [CGPoint(x: selection.minX, y: selection.minY), CGPoint(x: selection.maxX, y: selection.minY),
+                       CGPoint(x: selection.maxX, y: selection.maxY), CGPoint(x: selection.minX, y: selection.maxY)]
+        for (handle, corner) in zip(widthHandles, corners) { handle.center = corner }
         frameLayer.frame = bounds
         frameLayer.path = CGPath(rect: selection, transform: nil); frameLayer.lineWidth = 1 / scale
         styleLayer.frame = bounds
@@ -188,7 +192,7 @@ final class TextFieldContainer: UIView {
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         if editing {
             let scale = displayScale
-            if !leftWidth.isHidden, leftWidth.frame.contains(point) || rightWidth.frame.contains(point) { return true }
+            if widthHandles.contains(where: { !$0.isHidden && $0.frame.contains(point) }) { return true }
             return selectionRect.insetBy(dx: -Self.outerBorder / scale, dy: -Self.outerBorder / scale).contains(point)
         }
         // A filled field takes its whole surface, a framed one its frame line
@@ -202,7 +206,7 @@ final class TextFieldContainer: UIView {
     }
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard self.point(inside: point, with: event), isUserInteractionEnabled, !isHidden else { return nil }
-        for handle in [leftWidth, rightWidth] where !handle.isHidden && handle.frame.contains(point) { return handle }
+        for handle in widthHandles where !handle.isHidden && handle.frame.contains(point) { return handle }
         // The frame zone belongs to the move drag, not to text selection.
         if inBorderZone(point) { return self }
         // Padding of a styled field (not being edited): the text view sets the

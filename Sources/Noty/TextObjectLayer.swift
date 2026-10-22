@@ -274,11 +274,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                     self.onFlowBackspace?(box)
                 }
                 // Frame zone moves (only touches on the container itself, not
-                // on its text); the width points change the width.
+                // on its text); the four corner points change the width.
                 let border = SnapPanGestureRecognizer(target: self, action: #selector(moveField(_:)))
                 border.delegate = FieldBorderDrag.shared; border.maximumNumberOfTouches = 1
                 field.addGestureRecognizer(border)
-                for (handle, action) in [(field.leftWidth, #selector(widenLeft(_:))), (field.rightWidth, #selector(widenRight(_:)))] {
+                for (index, handle) in field.widthHandles.enumerated() {
+                    let action = TextFieldContainer.changesLeftEdge(index) ? #selector(widenLeft(_:)) : #selector(widenRight(_:))
                     let pan = SnapPanGestureRecognizer(target: self, action: action)
                     pan.delegate = ScrollPanPriority.shared // the notebook pan waits for field drags
                     handle.addGestureRecognizer(pan)

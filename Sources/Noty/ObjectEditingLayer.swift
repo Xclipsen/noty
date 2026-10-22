@@ -128,7 +128,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     var fittedText: ((TextBox) -> TextBox)?
     /// „Bearbeiten“ or a second tap on the selected field: caret at the point (nil: end).
     var onEditText: ((UUID, PagePoint?) -> Void)?
-    private let fieldWidthHandles = (0..<2).map { _ in SelectionHandle(color: .systemBlue) }
+    /// Four corner points of a selected field (top-left, top-right,
+    /// bottom-right, bottom-left): they change only the width, left corners
+    /// the left edge, right corners the right edge (Feedback zu Build 62).
+    private let fieldWidthHandles = (0..<4).map { _ in SelectionHandle(color: .systemBlue, diameter: 10, bordered: true) }
     /// Clearly visible on any paper (Build 62 showed a white dot on white paper).
     private let fieldRotation = SelectionHandle(color: .systemBlue, diameter: 12, bordered: true)
     private let angleLabel = UILabel()
@@ -181,8 +184,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
             handle.tag = index < 4 ? index : 6; handle.addGestureRecognizer(drag); addSubview(handle)
         }
-        // Field selection: width points (tags 9 left, 10 right) and rotation (8).
-        for (handle, tag, label) in [(fieldWidthHandles[0], 9, "Textfeldbreite links ändern"), (fieldWidthHandles[1], 10, "Textfeldbreite rechts ändern"),
+        // Field selection: corner points (tags 9 left edge, 10 right edge) and rotation (8).
+        for (handle, tag, label) in [(fieldWidthHandles[0], 9, "Textfeldbreite oben links ändern"), (fieldWidthHandles[1], 10, "Textfeldbreite oben rechts ändern"),
+                                     (fieldWidthHandles[2], 10, "Textfeldbreite unten rechts ändern"), (fieldWidthHandles[3], 9, "Textfeldbreite unten links ändern"),
                                      (fieldRotation, 8, "Textfeld drehen")] {
             handle.accessibilityLabel = label; handle.tag = tag; handle.isHidden = true
             let drag = SnapPanGestureRecognizer(target: self, action: #selector(self.handle(_:)))
@@ -422,9 +426,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             y: min(max((group?.minY ?? visible.maxY) - raise / scale, visible.minY + 26 / scale), visible.maxY - 26 / scale))
         shown.frame = CGRect(x: 4, y: 2, width: fullWidth - 8, height: 40); toolbar.contentSize = CGSize(width: fullWidth, height: 44)
         if let box = selectedField(preview ?? content) {
-            let pad = box.selectionInset
-            fieldWidthHandles[0].frame = handleFrame(display(box.pagePoint(.init(x: -pad, y: box.height / 2))))
-            fieldWidthHandles[1].frame = handleFrame(display(box.pagePoint(.init(x: box.width + pad, y: box.height / 2))))
+            for (handle, corner) in zip(fieldWidthHandles, box.selectionCorners) { handle.frame = handleFrame(display(corner)) }
             fieldRotation.frame = handleFrame(rotationHandleCenter(box))
             let handle = rotationHandleCenter(box)
             angleLabel.bounds = CGRect(x: 0, y: 0, width: 48, height: 22)
@@ -667,7 +669,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 angleLabel.text = TextFieldRotation.label(snap.angle); angleLabel.isHidden = false
             }
         case 9, 10:
-            // Width points: only the width changes (fixed from now on); the height follows the text.
+            // Corner points: only the width changes (fixed from now on), the
+            // movement across the field is ignored; the height follows the text.
             if let box = selectedField(initial) {
                 let radians = box.angle * .pi / 180
                 var along = (point.x - initialPoint.x) * cos(radians) + (point.y - initialPoint.y) * sin(radians)
