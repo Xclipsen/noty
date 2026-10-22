@@ -1,5 +1,13 @@
 # Architektur
 
+## Fingertipp-Auswahl und Doppeltipp-Menü · 22.10.2026
+
+Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung: [DESIGN](DESIGN.md).
+
+- **Core:** `PageObjectHitTest.topmost(at:in:tolerance:shapeHit:)` liefert das oberste auswählbare Objekt als `PageObjectReference` (`.text`/`.image`/`.shape` mit stabiler ID) in der Zeichenreihenfolge Text > Formen > Bilder; Seitentext und gesperrte Bilder ausgenommen, Bilder mit Drehung, Formen über den echten App-Umriss (`ShapeRendering.hit`) oder eine geometrische Näherung.
+- **App:** `FingerObjectGestures` hängt an jedem `WorksheetView` (nur Fingertouches, nur Tintenwerkzeuge ohne Fingerzeichnen): Tipp → `ObjectEditingLayer.selectByTouch`, Ziehen auf der Auswahl → `dragTouchSelection` (vor dem Notizbuch-Scrollen, `ScrollPanPriority`), Doppeltipp → eigenes `UIEditMenuInteraction`-Menü „Textfeld hinzufügen“. PencilKits eigene Finger-Doppeltipp-Erkenner warten auf diesen (`require(toFail:)`), `DrawingCanvasView` lehnt `insertSpace`-Aktionen ab. Im Fingerauswahlmodus nimmt `ObjectEditingLayer` nur über seine Bedienelemente Touches an; Pencil und Finger erreichen sonst Canvas und Viewport unverändert. Der Modus endet mit der Auswahl, beim Werkzeugwechsel und beim Schreibbeginn.
+- **Textfeld an Punkt:** Das Menü ruft `WorksheetView.requestTextField(at:)` → `PageEditor.onTextFieldRequested` (Editor wechselt zum Textwerkzeug) → nach der Konfiguration `addTextField(at:)` → `TextObjectLayer.insertText(…, freeField: true)`. Ein Neubau der Textfelder ersetzt nur `addTextField(at:)`. Kein Format-, Speicher- oder Writer-Wechsel.
+
 ## Bild-Assets (Schema 12, Archivformat 2) · 21.10.2026
 
 Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Plan, Umsetzungsnotizen und Messung: [IMAGE-ASSETS](IMAGE-ASSETS.md); Format: [STORAGE](STORAGE.md).
