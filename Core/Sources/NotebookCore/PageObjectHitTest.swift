@@ -24,6 +24,9 @@ public enum PageObjectHitTest {
     /// `textHit` likewise decides text fields: the app tests the laid-out
     /// text lines (Textneubau: an empty part of a field's frame reaches
     /// through to what lies below); without it the rotated frame counts.
+    /// Styled fields (Stufe 4) are hit like shapes in addition: a filled
+    /// field on its whole surface, a frame-only field on its frame line
+    /// (`TextBox.fieldStyleHit`).
     public static func topmost(at point: PagePoint, in content: PageContent, tolerance: Double = 0,
                                textHit: ((TextBox, PagePoint) -> Bool)? = nil,
                                shapeHit: ((ShapeObject, PagePoint) -> Bool)? = nil) -> PageObjectReference? {
@@ -38,7 +41,8 @@ public enum PageObjectHitTest {
         guard point.x.isFinite, point.y.isFinite else { return [] }
         let tolerance = tolerance.isFinite ? max(0, tolerance) : 0
         var result: [PageObjectReference] = content.textBoxes.reversed()
-            .filter { $0.allowsObjectSelection && (textHit?($0, point) ?? $0.contains(point, tolerance: tolerance)) }
+            .filter { $0.allowsObjectSelection && ($0.fieldStyleHit(point, tolerance: tolerance)
+                || (textHit?($0, point) ?? $0.contains(point, tolerance: tolerance))) }
             .map { .text($0.id) }
         result += content.shapes.reversed().filter { shapeHit?($0, point) ?? hits($0, at: point, tolerance: tolerance) }.map { .shape($0.id) }
         result += content.images.reversed().filter { !$0.locked && hits($0, at: point, tolerance: tolerance) }.map { .image($0.id) }

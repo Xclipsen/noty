@@ -8,8 +8,11 @@ extension TextBox {
     /// Lowest notebook schema for rotation, automatic width and migrated page text.
     public static let fieldSchemaVersion = 14
 
-    /// Uses a schema-14 property. Plain free fields keep their older format.
-    public var usesFieldFormat: Bool { rotation != nil || autoWidth != nil || (flowID == nil && flowRegion != nil) }
+    /// Uses a schema-14 property (also the field style of Stufe 4). Plain
+    /// free fields keep their older format.
+    public var usesFieldFormat: Bool {
+        rotation != nil || autoWidth != nil || (flowID == nil && flowRegion != nil) || fill != nil || border != nil
+    }
 
     /// Rotation in degrees, 0 when unrotated.
     public var angle: Double { rotation ?? 0 }
@@ -46,17 +49,29 @@ extension TextBox {
         return PagePoint(x: dx * u.x + dy * u.y, y: dx * v.x + dy * v.y)
     }
 
-    /// Top-left, top-right, bottom-right, bottom-left on the page.
+    /// Top-left, top-right, bottom-right, bottom-left of the visible field on
+    /// the page: the text frame widened by the field style's padding.
     public var corners: [PagePoint] {
+        let p = fieldPadding
+        return [pagePoint(.init(x: -p, y: -p)), pagePoint(.init(x: width + p, y: -p)),
+                pagePoint(.init(x: width + p, y: height + p)), pagePoint(.init(x: -p, y: height + p))]
+    }
+
+    /// Corners of the text frame itself (where the text is laid out and clipped).
+    public var textCorners: [PagePoint] {
         [pagePoint(.init(x: 0, y: 0)), pagePoint(.init(x: width, y: 0)),
          pagePoint(.init(x: width, y: height)), pagePoint(.init(x: 0, y: height))]
     }
 
     public var center: PagePoint { pagePoint(.init(x: width / 2, y: height / 2)) }
 
-    /// Axis-aligned bounds of the rotated frame (the frame itself when unrotated).
+    /// Axis-aligned bounds of the rotated visible frame (with the style's
+    /// padding): page limits, selection, lasso, snapping and transfers.
     public var rotatedBounds: PageRect {
-        guard angle != 0 else { return rect }
+        guard angle != 0 else {
+            let p = fieldPadding
+            return PageRect(x: x - p, y: y - p, width: width + 2 * p, height: height + 2 * p)
+        }
         let points = corners
         let xs = points.map(\.x), ys = points.map(\.y)
         let minX = xs.min()!, minY = ys.min()!
@@ -68,10 +83,11 @@ extension TextBox {
         bounds.contains(rotatedBounds, tolerance: tolerance)
     }
 
-    /// Inside the rotated frame, widened by `tolerance` page units.
+    /// Inside the rotated visible frame (with padding), widened by `tolerance` page units.
     public func contains(_ point: PagePoint, tolerance: Double = 0) -> Bool {
         let local = localPoint(point)
-        return local.x >= -tolerance && local.x <= width + tolerance && local.y >= -tolerance && local.y <= height + tolerance
+        let reach = tolerance + fieldPadding
+        return local.x >= -reach && local.x <= width + reach && local.y >= -reach && local.y <= height + reach
     }
 
     /// The same field turned to `degrees` about its centre (the rotation
