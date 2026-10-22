@@ -38,3 +38,31 @@ extension LassoRegion {
         return false
     }
 }
+
+/// Nutzer zu Build 62: a lasso takes a text field only when it touches or
+/// encloses the field's text (its laid-out line areas), not when it merely
+/// crosses the empty part of the frame – the same rule as a tap
+/// (`PageObjectHitTest`). Like shapes, a filled field counts by its whole
+/// surface and a field with only a frame by its frame line.
+extension LassoRegion {
+    /// - Parameter lines: used rects of the laid-out text lines in the field's
+    ///   own unrotated page units (origin: the text frame's top-left corner).
+    ///   Empty (no laid-out text): the text frame counts.
+    public func selects(_ box: TextBox, lines: [PageRect]) -> Bool {
+        let p = box.fieldPadding
+        let visible = [box.pagePoint(.init(x: -p, y: -p)), box.pagePoint(.init(x: box.width + p, y: -p)),
+                       box.pagePoint(.init(x: box.width + p, y: box.height + p)), box.pagePoint(.init(x: -p, y: box.height + p))]
+        if box.fill != nil, intersectsPolyline(visible, closed: true) { return true }
+        // The frame line only (open polyline: a lasso inside does not count).
+        if box.border != nil, intersectsPolyline(visible + [visible[0]], radius: TextBox.fieldBorderWidth / 2) { return true }
+        let areas = lines.filter { $0.width > 0.01 && $0.height > 0.01 }
+        guard !areas.isEmpty else { return intersectsPolyline(box.textCorners, closed: true) }
+        for line in areas {
+            let corners = [box.pagePoint(.init(x: line.x, y: line.y)), box.pagePoint(.init(x: line.x + line.width, y: line.y)),
+                           box.pagePoint(.init(x: line.x + line.width, y: line.y + line.height)),
+                           box.pagePoint(.init(x: line.x, y: line.y + line.height))]
+            if intersectsPolyline(corners, closed: true) { return true }
+        }
+        return false
+    }
+}

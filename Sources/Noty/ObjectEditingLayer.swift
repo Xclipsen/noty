@@ -124,6 +124,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private var isFieldSelection: Bool { fieldMode && texts.count == 1 && ink.isEmpty && images.isEmpty && shapes.isEmpty }
     /// Laid-out text lines decide a tap on a field (set by the sheet).
     var textHit: ((TextBox, PagePoint) -> Bool)?
+    /// Laid-out text lines of a field (own unrotated page units): what a lasso must touch.
+    var textLines: ((TextBox) -> [PageRect])?
     /// The field with its height (and automatic width) from the content.
     var fittedText: ((TextBox) -> TextBox)?
     /// „Bearbeiten“ or a second tap on the selected field: caret at the point (nil: end).
@@ -880,9 +882,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             return tap || region.intersects(PageRect(bounds))
         }
         func selectedField(_ box: TextBox) -> Bool {
-            guard box.rotation != nil else { return selected(box.rect.cgRect) }
             guard rect.insetBy(dx: -0.001, dy: -0.001).intersects(box.rotatedBounds.cgRect) else { return false }
-            return tap ? box.contains(PagePoint(x: rect.midX, y: rect.midY), tolerance: 2) : region.intersectsPolyline(box.corners, closed: true)
+            if tap { return box.contains(PagePoint(x: rect.midX, y: rect.midY), tolerance: 2) }
+            // Only the text (or a field style's surface/frame line), not the empty frame.
+            return region.selects(box, lines: textLines?(box) ?? [])
         }
         if filter.text { texts = Set(content.textBoxes.filter { $0.allowsObjectSelection && selectedField($0) }.map(\.id)) }
         if filter.images { images = Set(content.images.filter { !$0.locked && selected($0.rotatedBounds.cgRect) }.map(\.id)) }

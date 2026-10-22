@@ -116,6 +116,8 @@ Gerätetestpunkte (gebündelt, alles **ungeprüft**):
 
 **Korrektur nach Build 62 – Eckpunkte statt Breitenpunkten (Entscheidung des Nutzers):** Ein ausgewähltes bzw. bearbeitetes Feld zeigt statt je eines Breitenpunkts links/rechts vier Eckpunkte am Auswahlrahmen (10-pt-Kreis mit weißem Ring, 44-pt-Trefferfläche). Ziehen an einer Ecke ändert nur die Breite (linke Ecken die linke, rechte die rechte Kante, gerechnet in Feldkoordinaten, auch gedreht); die Bewegung quer zum Feld wird ignoriert, die Höhe folgt weiter dem Text, danach ist die Breite fest. Einrasten der gezogenen Kante wie bisher bei Breitenpunkten. Kein Formatwechsel. Ein Verschieben per Pencil-Hover wird bewusst nicht gebaut: der Stift schreibt über Textfeldern Tinte. **Implementiert und gebaut; am iPad ungeprüft.**
 
+**Korrektur nach Build 62 – Lasso und Textfelder (Nutzerfeedback):** Das Lasso erfasst ein Feld erst, wenn es dessen Text berührt oder umschließt (Zeilenflächen der TextKit-Zeilen, `LassoRegion.selects(_:lines:)`), nicht schon beim Schneiden des leeren Rahmenteils; auch gedrehte Felder. Gefüllte Felder zählen über ihre ganze Fläche, Felder nur mit Rahmen über die Rahmenlinie (wie Formen); ein Feld ohne gesetzte Zeilen über seinen Rahmen. Core-Test in `PageObjectHitTestTests`. **Implementiert und gebaut; am iPad ungeprüft.**
+
 ### Stufe 3 · Textdokument (22.10.2026, Branch `feat/textdokument`)
 
 **Implementiert und erfolgreich gebaut** (`xtool dev build`), **nicht installiert, auf dem iPad ungeprüft.** Core-Tests (730, 3 übersprungen; neu `TextDocumentTests`), `check_page_workflow.sh` (Host-Roundtrip mit Textdokument) und `check_verifiers.sh` bestanden. Format: Notebook-Schema 15 nur für Textdokumente, Hefte unverändert ([STORAGE](STORAGE.md)). Ohne Gliederung (Stufe 4).

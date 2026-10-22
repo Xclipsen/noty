@@ -118,4 +118,30 @@ final class PageObjectHitTestTests: XCTestCase {
         XCTAssertNil(PageObjectHitTest.topmost(at: .init(x: 50, y: 0), in: page, shapeHit: { _, _ in false }))
         XCTAssertEqual(PageObjectHitTest.topmost(at: .init(x: 500, y: 500), in: page, shapeHit: { _, _ in true }), .shape(shape.id))
     }
+
+    func testLassoTakesATextFieldOnlyByItsText() {
+        // Nutzer zu Build 62: crossing only the empty part of the frame is no selection.
+        func lasso(_ x: Double, _ y: Double, _ w: Double, _ h: Double) -> LassoRegion {
+            LassoRegion(points: [PagePoint(x: x, y: y), PagePoint(x: x + w, y: y), PagePoint(x: x + w, y: y + h), PagePoint(x: x, y: y + h)])
+        }
+        // Field 100…300 × 100…160; one text line 0…60 × 0…20 (local).
+        let box = TextBox(x: 100, y: 100, width: 200, height: 60, text: "Kurz")
+        let line = [PageRect(x: 0, y: 0, width: 60, height: 20)]
+        XCTAssertFalse(lasso(250, 130, 80, 50).selects(box, lines: line), "empty frame part only")
+        XCTAssertTrue(lasso(140, 105, 50, 10).selects(box, lines: line), "touches the text")
+        XCTAssertTrue(lasso(90, 90, 80, 40).selects(box, lines: line), "encloses the text")
+        XCTAssertTrue(lasso(120, 105, 5, 5).selects(box, lines: line), "drawn inside the text line")
+        // Empty field (no laid-out lines): its frame counts.
+        XCTAssertTrue(lasso(250, 130, 80, 50).selects(TextBox(x: 100, y: 100, width: 200, height: 60), lines: []))
+        // Rotated 90° about its top-left corner: the line lies at x 80…100, y 100…160.
+        var turned = box; turned.rotation = 90
+        XCTAssertTrue(lasso(85, 120, 10, 10).selects(turned, lines: line))
+        XCTAssertFalse(lasso(20, 120, 40, 30).selects(turned, lines: line), "empty part of the turned frame")
+        // Filled: whole surface; frame only: the frame line, not a lasso inside it.
+        var filled = box; filled.fill = .yellow
+        XCTAssertTrue(lasso(250, 130, 20, 20).selects(filled, lines: line))
+        var framed = box; framed.border = .text
+        XCTAssertFalse(lasso(250, 130, 20, 20).selects(framed, lines: line))
+        XCTAssertTrue(lasso(290, 130, 30, 20).selects(framed, lines: line))
+    }
 }

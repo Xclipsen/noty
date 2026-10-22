@@ -395,6 +395,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.onCaretChanged = { [weak self] in self?.onRevealCaret?() }
         textLayer.onLeaveField = { [weak self] in self?.configuration?.onTextEditingFinished() }
         textLayer.onTap = { [weak self] point in self?.rememberTap(point) }
+        objectLayer.textLines = { [weak self] box in self?.textLayer.lineRects(box) ?? [] }
         objectLayer.textHit = { [weak self] box, point in
             guard let self else { return box.contains(point) }
             return self.textLineHit(box, at: point, slack: 8 / max(0.001, self.screenScale))

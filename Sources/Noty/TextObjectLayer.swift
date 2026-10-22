@@ -419,6 +419,27 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         if keepOnPage, !box.fits(in: limits), let shifted = box.shifted(into: limits) { box = shifted }
         return box
     }
+    /// Used rects of the laid-out text lines of `box` in its own unrotated
+    /// page units (origin: text top-left); what a lasso has to touch.
+    func lineRects(_ box: TextBox) -> [PageRect] {
+        let scale = coordinateScale(for: box)
+        let manager: NSLayoutManager, container: NSTextContainer
+        if let field = fields[box.id], field.content?.text == box.text {
+            manager = field.editor.layoutManager; container = field.editor.textContainer
+        } else {
+            let layout = TextObjectLayout(box, coordinateScale: scale)
+            manager = layout.manager; container = layout.container
+        }
+        manager.ensureLayout(for: container)
+        guard manager.numberOfGlyphs > 0 else { return [] }
+        var rects: [PageRect] = []
+        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { _, used, _, _, _ in
+            if used.width > 0.5 {
+                rects.append(PageRect(x: used.minX * scale, y: used.minY * scale, width: used.width * scale, height: used.height * scale))
+            }
+        }
+        return rects
+    }
     /// A text line of `box` (laid out by its field) is at the canonical point;
     /// the empty rest of the frame is no hit. `slack` in page units.
     func hitsTextLine(_ box: TextBox, at point: PagePoint, slack: Double) -> Bool {
