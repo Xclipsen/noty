@@ -130,6 +130,41 @@ large = [dict(valid["pdfSources"][0], data=base64.b64encode(bytes(20_000_001)).d
 backup("large-source-schema-9.notybackup", dict(valid, schemaVersion=9, pdfSources=large))
 backup("large-source-schema-10.notybackup", dict(valid, schemaVersion=10, pdfSources=large))
 
+
+# Schema 13: polylines (line/arrow with `points`) and polygons.
+def point(x, y):
+    return {"x": x, "y": y}
+
+
+def shape(kind, vertices=None, start=None, end=None, **extra):
+    value = {"id": uid(), "kind": kind, "start": start or vertices[0], "end": end or vertices[-1],
+             "color": {"red": 0, "green": 0, "blue": 0, "alpha": 1}, "lineWidth": 2, "pattern": "solid"}
+    if vertices is not None:
+        value["points"] = vertices
+    value.update(extra)
+    return value
+
+
+def shaped(version, shapes):
+    return dict(valid, schemaVersion=version, pages=[dict(valid["pages"][0], shapes=shapes)] + valid["pages"][1:])
+
+
+bent = [point(50, 50), point(50, 200), point(200, 200)]
+triangle = [point(300, 300), point(400, 300), point(350, 380)]
+straight = shape("arrow", start=point(20, 20), end=point(120, 20))
+backup("shapes-schema-13.notybackup", shaped(13, [straight, shape("arrow", bent), shape("line", bent), shape("polygon", triangle)]))
+backup("shapes-straight-schema-12.notybackup", shaped(12, [straight]))
+backup("shapes-polyline-schema-12.notybackup", shaped(12, [shape("arrow", bent)]))
+backup("shapes-polygon-schema-12.notybackup", shaped(12, [shape("polygon", triangle)]))
+backup("shapes-start-mismatch.notybackup", shaped(13, [shape("line", bent, start=point(51, 50))]))
+backup("shapes-two-vertices.notybackup", shaped(13, [shape("line", bent[:2])]))
+backup("shapes-polygon-without-points.notybackup", shaped(13, [shape("polygon", start=point(10, 10), end=point(90, 90))]))
+backup("shapes-rectangle-points.notybackup", shaped(13, [shape("rectangle", [point(10, 10), point(50, 30), point(90, 90)])]))
+backup("shapes-arrow-without-head.notybackup", shaped(13, [shape("arrow", bent + [point(200, 200)])]))
+backup("shapes-flat-polygon.notybackup", shaped(13, [shape("polygon", [point(10, 10), point(50, 10), point(90, 10)])]))
+backup("shapes-vertex-outside.notybackup", shaped(13, [shape("line", [point(50, 50), point(700, 400), point(100, 100)])]))
+backup("shapes-vertex-type.notybackup", shaped(13, [shape("line", [point(50, 50), point("70", 400), point(100, 100)])]))
+
 store("valid")
 store("source-enum", lambda s: s["items"][2].update(source="bogus"))
 store("title-control", lambda s: s["items"][1].update(title="Ordner\u0007"))
@@ -344,7 +379,7 @@ schema_case("v2-schema12-pixel-mismatch.notybackup",
             with_images([image_object(sha, len(image)), image_object(sha, len(image), width=9, x=50)]))
 schema_case("v2-schema12-size-mismatch.notybackup",
             with_images([image_object(sha, len(image)), image_object(sha, len(image) + 1, x=50)]))
-schema_case("v2-schema13.notybackup", with_images([image_object(sha, len(image))], version=13))
+schema_case("v2-schema14.notybackup", with_images([image_object(sha, len(image))], version=14))
 # Format 1 has no asset records: a schema-12 notebook with images is refused.
 v1_document = with_images([image_object(sha, len(image))])
 v1_payload = json.dumps(v1_document).encode()
@@ -434,13 +469,19 @@ accept verify_backup.py "$work/backups/large-source-schema-10.notybackup"
 for name in schema-99 crc trailing title-type urn-page-id page-count-type source-enum large-source-schema-9; do
     reject verify_backup.py "$work/backups/$name.notybackup"
 done
+accept verify_backup.py "$work/backups/shapes-schema-13.notybackup"
+accept verify_backup.py "$work/backups/shapes-straight-schema-12.notybackup"
+for name in polyline-schema-12 polygon-schema-12 start-mismatch two-vertices polygon-without-points rectangle-points \
+            arrow-without-head flat-polygon vertex-outside vertex-type; do
+    reject verify_backup.py "$work/backups/shapes-$name.notybackup"
+done
 accept verify_backup.py "$work/backups/v2.notybackup" --compare "$work/backups/v2.json"
 for name in extra-asset asset-first no-end trailing version-3 header-key crc descriptor-key wrong-id schema-99 end-totals \
             hash-upper hash-63 hash-path asset-over-20mb; do
     reject verify_backup.py "$work/backups/v2-$name.notybackup"
 done
 for name in schema12-data-and-asset schema12-data schema11-asset schema11-data-and-asset schema12-hash-upper schema12-hash-63 \
-            schema12-hash-path schema12-asset-over-20mb schema12-over-500mb schema12-pixel-mismatch schema12-size-mismatch schema13; do
+            schema12-hash-path schema12-asset-over-20mb schema12-over-500mb schema12-pixel-mismatch schema12-size-mismatch schema14; do
     reject verify_backup.py "$work/backups/v2-$name.notybackup"
     # The notebook rule itself must refuse (not a missing asset record afterwards).
     if grep -q "Referenced asset missing" "$work/last.log"; then

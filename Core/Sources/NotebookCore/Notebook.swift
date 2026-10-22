@@ -24,7 +24,9 @@ public struct Notebook: Codable, Equatable, Sendable {
     /// 11: writing space beside paper pages (right/below, in the page's own paper).
     /// 12: image originals as package assets (`ImageObject.asset`), no longer
     /// embedded; notebooks with images are raised to 12 in memory on load.
-    public static let currentSchemaVersion = 12
+    /// 13: polyline/polygon shapes (`ShapeObject.points`, kind `polygon`);
+    /// older builds would draw them as straight lines, so they refuse them.
+    public static let currentSchemaVersion = 13
     /// Lowest schema whose image objects reference assets instead of embedding.
     public static let imageAssetSchemaVersion = 12
     // Existing callers retain the legacy representation until a structural edit.
@@ -76,6 +78,7 @@ public struct Notebook: Codable, Equatable, Sendable {
             if let shapes = page.shapes {
                 guard schemaVersion >= 6, shapes.count <= 500 else { throw StorageError.invalidDocument }
                 for shape in shapes {
+                    if shape.usesVertexFormat { guard schemaVersion >= ShapeObject.vertexSchemaVersion else { throw StorageError.invalidDocument } }
                     try shape.validate()
                     guard page.textBounds.contains(shape.bounds, tolerance: 0.02) else { throw StorageError.invalidDocument }
                 }
