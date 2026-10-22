@@ -204,3 +204,11 @@ Gerätetestpunkte (gebündelt, alles **ungeprüft**):
 4. Einrasten an Kanten eines gestylten Felds und mit ihm (Kante inkl. Innenabstand, Grundlinie bleibt am Text); Ziehen auf eine andere Seite.
 5. Heft- und Bibliotheksbackup, Seitenpapierkorb, lokale Historie und Restore-Kopie mit gestyltem Feld; älterer Teststand (Stufe 1–3) bewusst nicht mit Stufe-4-Daten öffnen.
 6. Textdokument: Gliederung beim Tippen von Überschriften (Aktualisierung nach kurzer Pause, kein Ruckeln), Einrückung, Kürzung, Sprung mit Markierung und Cursor auf späteren Seiten, schreibgeschützte Ansicht, kompakte Breite.
+
+### Build 62 installiert (22.10.2026)
+
+Gemeinsamer Teststand `feat/textneubau` (Stufen 1–4, Formen Schema 13, `.noty`, Stand von `main` mit Lasso/Fingertipp/Werkzeugleiste) als signierte IPA gebaut (SHA-256 `080a16bb…dfa8`, IPA-ID `XTL-BAFXLQ964V.de.la.noty.prototype`, CFBundleVersion 62, UTTypes `de.la.noty.document`/`backup`/`library`).
+
+- Sicherung bei geschlossener App: `/home/la/Backups/noty-before-build62-2026-10-22T17-09-51-927472029Z/` (22 Hefte in zwei Bereichsroots, 72 Revisionen, 189 Dateien, ohne Quarantäne). Ein erster Lauf (`…T17-08-45-…-abgebrochen-vor-installation`) brach nach der Sicherung im Prüfskript ab (veraltete `load_store`-Rückgabe seit Schema 12); vor dem Abbruch wurde nichts installiert.
+- **Installiert**: InstallationProxy bestätigt Build **62** unter unveränderter ID `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype`. Bei geschlossener App zurückgelesen: `verify_device_store.py --compare` für beide Bereichsroots gültig, **alle 22 Hefte und 189 Dateien unverändert**, keine neuen Dateien.
+- **Auf dem iPad ungeprüft**: sämtliche Funktionen der Stufen 1–4, Formen, `.noty` und Einrasten (Gerätetestpunkte in den Abschnitten oben). Ab der ersten Bearbeitung mit neuen Funktionen können Hefte Schema 13/14 bzw. Textdokumente Schema 15 erhalten; Build ≤ 61 öffnet diese dann nicht mehr.
