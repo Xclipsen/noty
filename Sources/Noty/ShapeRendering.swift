@@ -65,7 +65,7 @@ enum ShapeRendering {
         context.translateBy(x: origin.x, y: origin.y)
         for shape in shapes {
             let path = path(shape)
-            if let fill = shape.fill, shape.kind == .rectangle || shape.kind == .ellipse || shape.kind == .polygon {
+            if let fill = shape.fill, shape.isFillable {
                 fill.uiColor.setFill(); path.fill()
             }
             shape.color.uiColor.setStroke(); path.lineWidth = shape.lineWidth
@@ -100,4 +100,24 @@ struct ShapeToolOptions: Equatable {
     var kind = ShapeKind.line
     var pattern = StrokePattern.solid
     var filled = false
+    /// Own fill colour of new shapes; nil follows the stroke colour.
+    var fillColor: InkColor?
+    var fillOpacity = ShapeFill.defaultOpacity
+
+    init() {}
+    init(preferences: ToolbarPreferences) {
+        kind = preferences.shapeKind ?? .line; pattern = preferences.shapePattern ?? .solid
+        filled = preferences.shapeFilled ?? false; fillColor = preferences.shapeFillColor
+        fillOpacity = preferences.shapeFillOpacity ?? ShapeFill.defaultOpacity
+    }
+    func store(in preferences: inout ToolbarPreferences) {
+        preferences.shapeKind = kind; preferences.shapePattern = pattern; preferences.shapeFilled = filled
+        preferences.shapeFillColor = fillColor
+        // Untouched default stays absent, so older preference files keep their bytes.
+        preferences.shapeFillOpacity = fillOpacity == ShapeFill.defaultOpacity && preferences.shapeFillOpacity == nil ? nil : ShapeFill.rounded(fillOpacity)
+    }
+    /// Fill of a new shape drawn in `stroke` (nil when the fill is off).
+    func fill(stroke: InkColor) -> InkColor? {
+        filled ? ShapeFill.color(fillColor ?? stroke, opacity: fillOpacity) : nil
+    }
 }

@@ -67,8 +67,8 @@ struct ContentView: View {
         nonmutating set { toolbox.preferences.ruler = newValue }
     }
     private var shapeOptions: ShapeToolOptions {
-        get { ShapeToolOptions(kind: toolbox.preferences.shapeKind ?? .line, pattern: toolbox.preferences.shapePattern ?? .solid, filled: toolbox.preferences.shapeFilled ?? false) }
-        nonmutating set { toolbox.preferences.shapeKind = newValue.kind; toolbox.preferences.shapePattern = newValue.pattern; toolbox.preferences.shapeFilled = newValue.filled }
+        get { ShapeToolOptions(preferences: toolbox.preferences) }
+        nonmutating set { newValue.store(in: &toolbox.preferences) }
     }
     @State private var selectionFilter = SelectionFilter()
     @State private var lassoMode = LassoMode.freeform

@@ -402,7 +402,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 let color = automaticColor?(.init(x: initialPoint.x, y: initialPoint.y)) ?? color
                 draft = ShapeObject(kind: ShapeKind.toolKinds.contains(options.kind) ? options.kind : .line,
                     start: .init(x: initialPoint.x, y: initialPoint.y), end: .init(x: point.x, y: point.y),
-                    color: color, lineWidth: lineWidth, pattern: options.pattern, fill: options.filled ? InkColor(color.red, color.green, color.blue, 0.2) : nil)
+                    color: color, lineWidth: lineWidth, pattern: options.pattern, fill: options.fill(stroke: color))
             } else { clearSelection(); dragMode = 0; lasso = [CGPoint(x: initialPoint.x + layout.contentOrigin.x, y: initialPoint.y + layout.contentOrigin.y)] }
         }
         guard let initial = startContent else { return }
@@ -730,11 +730,31 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 guard let self, self.active else { return }; self.color = InkColor(SwiftUI.Color(color)); self.applyStyle()
             }, for: .touchUpInside); root.addSubview(button)
         }
+        if let fill = fillStyleSection() {
+            controller.addChild(fill); fill.view.backgroundColor = .clear
+            fill.view.frame = CGRect(x: 20, y: 240, width: 280, height: 170); root.addSubview(fill.view); fill.didMove(toParent: controller)
+            controller.preferredContentSize.height = 426
+        }
         if let popover = controller.popoverPresentationController {
             popover.sourceView = toolbar; popover.sourceRect = toolbar.bounds; popover.permittedArrowDirections = [.up, .down]
             popover.backgroundColor = root.backgroundColor
         }
         styleController = controller; parent.present(controller, animated: true)
+    }
+    /// „Füllung“ of selected rectangles, ellipses and polygons (`ShapeFillStyleSection`).
+    private func fillStyleSection() -> UIViewController? {
+        guard let first = content.shapes.first(where: { shapes.contains($0.id) && $0.isFillable }) else { return nil }
+        let choice = ShapeFillStyleSection.Choice(filled: first.hasVisibleFill,
+            color: first.fill.flatMap { first.fillFollowsStroke ? nil : $0.opaque },
+            opacity: first.fill.map { ShapeFill.rounded($0.alpha) } ?? options.fillOpacity)
+        return UIHostingController(rootView: ShapeFillStyleSection(choice: choice) { [weak self] choice in
+            guard let self, self.active else { return }
+            var value = self.content
+            for i in value.shapes.indices where self.shapes.contains(value.shapes[i].id) {
+                value.shapes[i] = choice.filled ? value.shapes[i].filled(color: choice.color, opacity: choice.opacity) : value.shapes[i].unfilled()
+            }
+            _ = self.commit(value, previous: self.content); self.refresh()
+        })
     }
     private func transformed(_ initial: PageContent, dx: Double, dy: Double, scale requested: Double, anchor requestedAnchor: PagePoint? = nil) -> PageContent? {
         guard let frame = selectionBounds(initial) else { return nil }
@@ -852,9 +872,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             value.textBoxes[i].runs = value.textBoxes[i].runs?.map { run in var run = run; run.style.ink = color; return run }
         }
         for i in value.shapes.indices where shapes.contains(value.shapes[i].id) {
-            value.shapes[i].color = color
+            value.shapes[i] = value.shapes[i].recolored(color)
             if changeWidth { value.shapes[i].lineWidth = lineWidth }
-            if let fill = value.shapes[i].fill { value.shapes[i].fill = InkColor(color.red, color.green, color.blue, fill.alpha) }
         }
         _ = commit(value, previous: content); refresh()
     }
