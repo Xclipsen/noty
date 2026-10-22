@@ -1,6 +1,6 @@
 # Textneubau, Textdokument und `.noty` – Plan vom 22.10.2026
 
-Ergebnis einer Abstimmung mit dem Nutzer nach dem ersten Tag echter Nutzung. Verbindlich für die Umsetzung auf `feat/textneubau`. Gemeinsamer Teststand mit den Formen (Notebook-Schema 13); erst nach iPad-Test nach `main`. Stand: **Stufen 1–3 implementiert und gebaut (am iPad ungeprüft), Stufe 4 geplant**; Umsetzungsnachweise je Stufe unten ergänzen (implementiert / gebaut / installiert / auf dem iPad getestet getrennt).
+Ergebnis einer Abstimmung mit dem Nutzer nach dem ersten Tag echter Nutzung. Verbindlich für die Umsetzung auf `feat/textneubau`. Gemeinsamer Teststand mit den Formen (Notebook-Schema 13); erst nach iPad-Test nach `main`. Stand: **Stufen 1–4 implementiert und gebaut (am iPad ungeprüft)**; Umsetzungsnachweise je Stufe unten ergänzen (implementiert / gebaut / installiert / auf dem iPad getestet getrennt).
 
 Anlass: Die bisherige Textbedienung ist „mega nervig“: Felder lassen sich nur über kleine Icons verschieben, überlappende Felder sind darunter nicht greifbar, auf Papier entscheidet die Tippstelle zwischen Zeilentext (links) und freiem Feld (rechts). Die Leiste über der Tastatur (`TextFormatBar`) bleibt; der Rest wird neu gebaut.
 
@@ -172,4 +172,35 @@ Gerätetestpunkte (gebündelt, alles **ungeprüft**):
 5. Zweiter Finger während des Ziehens (mit Finger und mit Pencil) unterdrückt; Schalter aus → kein Einrasten; Hilfslinien nie in Seitenleiste, Vorschau oder PDF; Ziehen auf eine andere Seite ohne Hilfslinien, zurück wieder mit.
 6. Undo/Redo eines eingerasteten Verschiebens als ein Schritt; Einrasten fühlt sich beim normalen Schreiben/Scrollen nicht störend an.
 
-Offen für Stufe 4 (nach Stufe 3): Gliederung aus Titel/Überschrift in der Seitenleiste des Textdokuments (Absatzstile über `TextStylePreset.matching` je Absatz des Flusses, Sprung über `TextFlowFocus`), Feldstil (Füllung/Rahmen) für Hefte und Textdokumente samt Formatanhebung; optional Papierwechsel im Textdokument und Word-Export.
+Offen für Stufe 4 (nach Stufe 3): Gliederung aus Titel/Überschrift in der Seitenleiste des Textdokuments (Absatzstile über `TextStylePreset.matching` je Absatz des Flusses, Sprung über `TextFlowFocus`), Feldstil (Füllung/Rahmen) für Hefte und Textdokumente samt Formatanhebung; optional Papierwechsel im Textdokument und Word-Export. *(Feldstil und Gliederung erledigt in Stufe 4, siehe unten; Papierwechsel und Word-Export weiter offen.)*
+
+### Stufe 4 · Feldstil und Gliederung (22.10.2026, Branch `feat/stufe4`)
+
+**Implementiert und erfolgreich gebaut** (`xtool dev build`), **nicht installiert, auf dem iPad ungeprüft.** Core-Tests (749, 3 übersprungen; neu `FieldStyleAndOutlineTests`), `check_page_workflow.sh` (Host-Roundtrip mit Feldstil in Heft und Textdokument) und `check_verifiers.sh` bestanden. Format: Feldstil in Notebook-Schema 14, kein neues Schema ([STORAGE](STORAGE.md)).
+
+**Feldstil** (Hefte und Textdokumente, nur freie Felder):
+- **Bedienung:** Menü des ausgewählten Felds: Bearbeiten, Ausschneiden, Kopieren, Duplizieren, Löschen, **Feldstil**, Nach vorne, Nach hinten. „Feldstil“ öffnet ein kleines Popover im einheitlichen Optionsstil (44-pt-Zellen, Auswahlplatte, Hover-Namen über `.notyTooltip`): Füllung „Keine“ oder Gelb, Grün, Blau, Rosa, Grau, Lila; Rahmen „Kein“, „Textfarbe“ oder „Akzentfarbe“. Jede Wahl ist ein Undo-Schritt.
+- **Darstellung:** Sobald Füllung oder Rahmen aktiv ist: 6 pt Innenabstand um den Text, 5 pt Eckenradius, Rahmen 1 pt (innen an der sichtbaren Kante). Füllfarben hell und deckend, auch auf dunklem Papier; der Textfarben-Rahmen nimmt die (aufgelöste) Grundfarbe des Felds, der Akzentrahmen ein druckfestes Blau. Automatische Textfarbe wird gegen die Füllung aufgelöst (gefülltes Feld: dunkler Text, auch auf dunklem Papier und im PDF-Rand), ein reiner Rahmen lässt das Papier entscheiden.
+- **Überall gleich:** ein Renderer (`TextFieldStyleRendering`) für PDF (Vektorfläche unter dem weiterhin echten, durchsuchbaren Text), Vorschaubilder/Seitenleiste und gehobene Auswahl; der Editor zeichnet dieselbe Geometrie als Ebene unter dem Text. Auswahlrahmen, Breitenpunkte, Drehgriff, Rahmenzone beim Bearbeiten, Lasso-Kontur und Lasso-Treffer, Seitengrenzen, Übertragen auf andere Seiten und Einrasten (Kanten/Mitten des sichtbaren Felds; Grundlinie relativ dazu; Breitenpunkte rasten mit der sichtbaren Kante) nutzen das Feld inklusive Innenabstand.
+- **Treffer:** gefülltes Feld auf der ganzen Fläche (inklusive Innenabstand), Feld nur mit Rahmen auf der Rahmenlinie (± Fingertoleranz) wie ungefüllte Formen, sonst unverändert nur Textzeilen (`TextBox.fieldStyleHit` in `PageObjectHitTest.all` und `hitsTextLine`). Mit Textwerkzeug setzt ein Tipp in den Innenabstand den Cursor an die nächste Stelle.
+- **Grenzen:** Passt der Innenabstand nicht mehr auf die Seite, rückt das Feld nach innen; ist es so breit/hoch wie die Seite, wird der Textrahmen um den Innenabstand kleiner und das sichtbare Feld deckt genau den alten Rahmen (Text bricht neu um, Überlauf bleibt rot markiert und vollständig gespeichert). Entfernen des Stils verschiebt den Text nie.
+
+**Gliederung** (Textdokumente, kein Formatwechsel):
+- Seitenleiste: Umschalter „Seiten | Gliederung“ (statt des PDF-Inhalts, den Textdokumente nicht haben). Liste der Absätze im Stil Titel, Überschrift, Unterüberschrift (`TextStylePreset.matching` des ersten Zeichens) in Leserichtung, hierarchisch eingerückt (Ebene = Zahl der übergeordneten Einträge, ohne Titel beginnen Überschriften links), Text auf 60 Zeichen gekürzt, Seitenzahl rechts; die Einträge der aktuellen Seite in Akzentfarbe. Ohne Überschriften ein Hinweis.
+- Tippen: Seite kommt in den Blick, die Überschrift wird wie beim Sprung zu einer offenen Aufgabe kurz markiert, der Cursor steht hinter der Überschrift (Textwerkzeug, `TextFlowFocus`); schreibgeschützt nur Seite und Markierung. In der kompakten Ansicht schließt die Seitenleiste.
+- Live: Jede Änderung startet eine 400-ms-Wartezeit neu; danach rechnet `Notebook.textOutline` (reine Core-Funktion) im Hintergrund. Nur bei sichtbarer Gliederung; nichts im Tippfad.
+
+Bewusste Abweichungen und Grenzen:
+- Feldstil gilt nur für freie Felder, nicht für den Fluss des Textdokuments. Neue Felder übernehmen den Feldstil nicht (nur den Zeichenstil wie bisher); Duplizieren/Kopieren behält ihn.
+- Gefüllte Felder liegen wie aller Text über der Handschrift und verdecken darunterliegende Striche (Editor, Vorschau und PDF gleich).
+- Lasso-Eckskalierung skaliert Schrift und Breite, Innenabstand und Rahmenstärke bleiben fest.
+- Ein Absatz, der über einen Seitenwechsel läuft, erscheint mit seinem Teil auf der ersten Seite; markiert wird nur dieser Teil.
+- Format: siehe STORAGE (Begründung für Schema 14 statt 16).
+
+Gerätetestpunkte (gebündelt, alles **ungeprüft**):
+1. Feld wählen › Feldstil: jede Füllfarbe, beide Rahmen, Kombination, zurück auf keine; Undo/Redo; Hover-Namen im Popover mit Pencil-Hover/Trackpad; Feld am Seitenrand und seitenbreites Feld (rückt ein bzw. wird schmaler, nichts abgeschnitten).
+2. Dunkles Papier und PDF-Rand: automatischer Text wird im gefüllten Feld dunkel, Textfarben-Rahmen passt; Vorschaubild, Seitenleiste und PDF-Export identisch (`pdftotext` findet den Text, `pdftoppm` zeigt Fläche/Rahmen an derselben Stelle, auch gedreht).
+3. Treffer: Tipp auf leere Fläche eines gefüllten Felds wählt es, beim reinen Rahmen nur auf der Linie, sonst Objekt darunter; mit Textwerkzeug Tipp in den Innenabstand setzt den Cursor; Rahmenzone/Breitenpunkte/Drehgriff an der sichtbaren Kante; Lasso-Kontur.
+4. Einrasten an Kanten eines gestylten Felds und mit ihm (Kante inkl. Innenabstand, Grundlinie bleibt am Text); Ziehen auf eine andere Seite.
+5. Heft- und Bibliotheksbackup, Seitenpapierkorb, lokale Historie und Restore-Kopie mit gestyltem Feld; älterer Teststand (Stufe 1–3) bewusst nicht mit Stufe-4-Daten öffnen.
+6. Textdokument: Gliederung beim Tippen von Überschriften (Aktualisierung nach kurzer Pause, kein Ruckeln), Einrückung, Kürzung, Sprung mit Markierung und Cursor auf späteren Seiten, schreibgeschützte Ansicht, kompakte Breite.

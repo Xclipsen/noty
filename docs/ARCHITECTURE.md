@@ -1,5 +1,12 @@
 # Architektur
 
+## Feldstil und Gliederung (Textneubau Stufe 4) · 22.10.2026
+
+Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung und Abweichungen: [TEXT-REBUILD-62](TEXT-REBUILD-62.md), Format: [STORAGE](STORAGE.md) (Schema 14).
+
+- **Core:** `TextFieldStyle.swift` (`TextFieldFill`, `TextFieldBorder`, Innenabstand, `fieldStyleHit`, `styled(fill:border:in:)`); `TextField.swift` liefert `corners`/`rotatedBounds`/`contains`/`fits` für das sichtbare Feld, `textCorners` für den Textrahmen. `EditorInteractionPolicy.automaticTextIsLight` löst gegen die Füllung auf. `TextOutline.swift`: `Notebook.textOutline` (reine Funktion über `textFlowSegments`).
+- **App:** `TextFieldStyleRendering` (gemeinsam für PDF, Vorschaubilder, gehobene Auswahl); `TextFieldContainer` zeichnet dieselbe Geometrie als `CAShapeLayer` unter dem Text. `FieldStyleOptions` im Popover der Feldauswahl (`ObjectEditingLayer`). Gliederung in `PageSidebarView` (Hintergrundberechnung nach 400 ms Ruhe), Sprung über `ContentView.jumpToOutline` → `TextFlowFocus`. Kein neuer Writer, keine neue Speicherstelle.
+
 ## Weiches Einrasten (Textneubau Stufe 2) · 22.10.2026
 
 Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung, Parameter und Abweichungen: [TEXT-REBUILD-62](TEXT-REBUILD-62.md).
