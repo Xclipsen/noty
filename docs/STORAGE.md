@@ -1,5 +1,17 @@
 # Lokaler Revisionsspeicher – Format 1
 
+## Ergänzung 22.10.2026 · Notebook-Schema 15 (Textdokumente)
+
+Textneubau Stufe 3 ([TEXT-REBUILD-62](TEXT-REBUILD-62.md) §4). Neuer Dokumenttyp im selben Paket-, Revisions-, Backup- und Bibliotheksformat; Manifest, `.noty`/`.notybackup` Format 2, Bibliotheksbackup Format 2 und Werkzeugformat unverändert.
+
+- **Formregeln (Swift `Notebook.validate`/`validateTextDocument`, Python `notebook_format.py`):** `kind` ist optional; gespeichert wird nur `"textDocument"`, und nur ab Schema 15. Ein Textdokument hat nur Papierseiten (`blank`, `lined`, `grid`, eigene Geometrie, kein `pdfReference`, keine `margins`, kein Alt-`text`), `pdfSources == []`, kein `pdf`; Flusssegmente (`flowID`) nur mit `flowRegion == page`, höchstens ein Fluss über die aktiven Seiten. Freie Felder, Bilder, Formen, Handschrift, Lesezeichen und Seitenpapierkorb wie im Heft.
+- **Schema:** Textdokumente entstehen direkt mit 15 (`Notebook.textDocument`). Hefte werden nie auf 15 gehoben und bleiben byte-gleich; nichts senkt ab. Ab 16 gesperrt (`unsupportedSchema`); „ab 15 gesperrt“ im Abschnitt zu Schema 14 ist überholt. Ältere Builds (≤ Stufe 2) sperren Textdokumente mit „Dokumentformat 15 … nicht unterstützt“, ohne zu schreiben; Bibliotheksbackups mit Textdokumenten scheitern dort, statt sie als Hefte auszugeben.
+- **Migration:** keine. Die Lese-Migration Fließtext → Felder (Schema 14) gilt nur noch für Hefte (`NotebookDecoding`: `!isTextDocument`).
+- **Seiten aus dem Text:** `reflowText` verwendet im Textdokument die nächste Seite ohne Flusssegment an ihrer Stelle weiter (Handschrift/Objekte bleiben dort) und entfernt danach leere Endseiten (`trimmingEmptyTrailingPages`: nie die erste Seite, die Cursorseite oder die Seite des ersten Segments; leer = kein Flusstext, keine Striche laut App, keine Felder/Bilder/Formen). Die Reserveseite bleibt der ungespeicherte Entwurf. Der PDF-Export „Ganzes Dokument“ lässt dieselben leeren Endseiten weg.
+- **Bibliotheksindex:** `LibraryItem.kind` optional (nur `"textDocument"`, nur an Dokumenten; Indexformat 1 unverändert, Hefte ohne Schlüssel). Nur Anzeigehinweis: ältere Builds verwerfen den Schlüssel beim Neuschreiben; das Dokument entscheidet (`setKind`-Reparatur, Restore übernimmt die Art aus den Dokumenten). `verify_device_store.py`/`verify_library_backup.py` prüfen den Hinweis, ohne ihn mit dem Dokument abzugleichen.
+
+Nachweise: Core-Tests `TextDocumentTests`, `check_verifiers.sh` (Positiv-/Negativfälle Textdokument, Index-`kind`), Host-Roundtrip `checkTextDocument` (Paket, `.noty`, Import, Bibliotheksbackup/-restore, Python-Prüfung). **Nicht installiert, am iPad ungeprüft.**
+
 ## Ergänzung 22.10.2026 · Notebook-Schema 14 (nur noch Textfelder im Heft)
 
 Textneubau Stufe 1 ([TEXT-REBUILD-62](TEXT-REBUILD-62.md)): Hefte enthalten nur noch freie Textfelder. `TextBox` erhält zwei optionale Felder; der rahmenlose Seitentext (Fluss) wird zu Feldern.
