@@ -1,5 +1,17 @@
 # Designentscheidungen für noty
 
+## Formen nach dem ersten Nutzungstag – 22.10.2026
+
+Nutzer: Die Vorschau einer gehaltenen Form ist nicht so dick wie die fertige Form; ein Pfeil mit Haken als Spitze wird nicht erkannt; eckige Formen (Pfeil mit Knick) gehen nicht; Formen sollen sich mit dem Finger anfassen lassen und beim Auswählen einzeln ziehbare Ankerpunkte zeigen statt nur eines Werkzeugs, das alles vergrößert. Umgesetzt:
+- **Gleiche Stärke:** Vorschau und Ergebnis haben dieselbe Breite und Farbe, einmal beim Erkennen bestimmt: die sichtbare Breite der gezeichneten Tinte (gelernte PencilKit-Punktgröße ÷ gemessener Darstellungsfaktor der Tinte). Die Vorschau ist der Pfad der fertigen Form. Vorher wurde beim Abheben neu gemessen (Druck beim Halten), und Linien/Vielecke wurden Tinte, die PencilKit dünner zeichnet.
+- **Pfeile:** Spitze als zwei Flügel, als einzelner Haken, offen („<“) oder zuerst gezeichnet, jeweils im selben Strich; der Schaft rastet wie Linien ein.
+- **Ecken:** Ein Strich mit deutlichen Ecken (≥ 28°, beim fast geraden Strich ≥ 40°) wird eine gerade Polylinie mit Ankerpunkten an den Ecken, mit erkannter Spitze ein Knickpfeil. Gedrehte Rechtecke, Dreiecke, Vielecke und Sterne werden bearbeitbare Vielecke. Geschlossene Umrisse (auch mit Überschwinger) haben Vorrang; Bögen und Wellen bleiben frei bzw. werden beim Halten eine gerade Linie.
+- **Stift:** Alle Halteformen werden Formobjekte (auch Linien). Bleistift/Marker bleiben Tinte; Bleistiftpfeile behalten ihre Spitze.
+- **Ankerpunkte:** Eine einzeln ausgewählte Form zeigt Punkte an Endpunkten, Ecken und Pfeilspitze, beim Rechteck an den vier Ecken (Gegenecke bleibt), bei Kreis/Ellipse an den vier Seiten. Jeder Punkt lässt sich einzeln ziehen; die Skaliergriffe erscheinen nur noch bei Mehrfachauswahl.
+- **Finger:** Im Formen- und Auswahlwerkzeug greift ein Finger eine Form direkt und verschiebt sie. Im Stiftmodus hängt das an der Finger-Auswahl (eigener Strang).
+
+Format: Notebook-Schema 13 nur für Polylinien/Vielecke ([STORAGE](STORAGE.md)). Stand: implementiert, Core-Tests, Host-Roundtrip, SDK-Build. Nicht installiert; Erkennung echter Striche, Stärke im Vergleich zur Tinte und Griffbedienung am iPad ungeprüft.
+
 ## Gesetzessammlung – bestätigte Bedienung, 20.10.2026
 
 Appweites **Konto** in den Einstellungen, eigener Punkt **Gesetzessammlung** mit drei unabhängigen Schaltern: Aktivierung (aus), persönlicher Abgleich (an), automatische neue Gesetzesfassungen (an). Ohne Anmeldung lesen/markieren; nach Logout bleiben Markierungen sichtbar. Gesetzesfenster über das Editor-Optionenmenü öffnen. Griff ziehen für Seite bzw. Andock-/Schwebemodus, Menü für explizite Anordnung, seitlicher Griff für Breite. Angedockt erhält das Heft eigenen Platz; das zweite Heft wird erhalten, schwebend sind zwei Hefte plus Gesetzesfenster möglich. Bei zu geringer Breite schwebend anzeigen.
