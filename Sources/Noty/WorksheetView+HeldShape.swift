@@ -20,18 +20,23 @@ extension WorksheetView {
         // A stroke that left the page/canvas is clipped (lines, arrows) or
         // moved onto the page (closed shapes) instead of being dropped.
         guard let shape = fittedHeld(recognized, width: heldWidth, allowShift: true) else { return }
+        hideHeldVisuals() // a previous result still waiting for PencilKit
         heldShape = shape
         heldAdjustment = HeldShapeAdjustment(shape: shape, grab: last)
         heldInk = (canvas.tool as? PKInkingTool)?.ink ?? PKInk(inkType, color: heldColor.uiColor)
+        // The ink below at screen resolution (a coarser image flashed when it replaced the canvas).
         let frame = renderViewport?.frame.cgRect ?? bounds
-        let scale = min(4, 2048 / max(1, frame.width, frame.height))
+        let scale = min(screenScale * (window?.screen.scale ?? 2), 4096 / max(1, frame.width, frame.height))
         let drawing = ((try? PKDrawing(data: base.drawing)) ?? PKDrawing()).transformed(using: pageLayout.inkTranslation)
-        heldInkImage.frame = frame
         canvas.traitCollection.performAsCurrent {
-            heldInkImage.image = drawing.image(from: frame, scale: scale).withRenderingMode(.alwaysOriginal)
+            heldInkImage.image = drawing.image(from: frame, scale: max(0.5, scale)).withRenderingMode(.alwaysOriginal)
         }
+        // Freehand stroke out, preview in: one transaction, one frame.
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        heldInkImage.frame = frame
         heldInkImage.isHidden = false; canvas.layer.opacity = 0
         updateHeldPath()
+        CATransaction.commit()
         if #available(iOS 17.5, *), let feedback = holdFeedback as? UICanvasFeedbackGenerator, let end = shape.outline().last {
             feedback.pathCompleted(at: CGPoint(x: end.x + pageLayout.contentOrigin.x, y: end.y + pageLayout.contentOrigin.y))
         }
@@ -128,11 +133,24 @@ extension WorksheetView {
         holdCompletion = StrokeCompletionGate()
     }
     func hideHeldVisuals() {
+        heldVisualsPending = nil
         CATransaction.begin(); CATransaction.setDisableActions(true)
         heldInkImage.isHidden = true; heldInkImage.image = nil
         heldStrokeImage.isHidden = true; heldStrokeImage.image = nil
         heldShapeLayer.isHidden = true; heldShapeLayer.path = nil; canvas.layer.opacity = 1
         CATransaction.commit()
+    }
+    /// The result is committed (canvas drawing/shape layer set). PencilKit
+    /// draws its new drawing asynchronously: the preview stays on top until
+    /// it reports the rendering (`canvasViewDidFinishRendering`), at most a
+    /// short fallback time, so neither the freehand stroke flashes up nor a
+    /// frame shows nothing.
+    private func hideHeldVisualsAfterRendering() {
+        let token = UUID(); heldVisualsPending = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self, self.heldVisualsPending == token else { return }
+            self.hideHeldVisuals()
+        }
     }
     /// A held line whose lift is done but whose final PencilKit callback never
     /// came: commit it before the next touch (or after the fallback delay)
@@ -167,7 +185,8 @@ extension WorksheetView {
         if onContent?(next, previous) == true {
             installContent(next)
             shapeLayer.configure(next.shapes, origin: pageLayout.contentOrigin)
-            clearHeldPreview()
+            resetHeldState()
+            hideHeldVisualsAfterRendering()
         } else {
             clearHeldPreview()
             if currentData != previous.drawing { canvasViewDrawingDidChange(canvas) }

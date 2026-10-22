@@ -265,6 +265,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// this stroke rendered by PencilKit (`heldStrokeImage`).
     var heldStroke: PKStroke?
     let heldStrokeImage = UIImageView()
+    /// The result is committed; the preview stays until PencilKit has drawn it.
+    var heldVisualsPending: UUID?
     var holdSerial = 0
     var holdCompletion = StrokeCompletionGate()
     let heldInkImage = UIImageView()
@@ -1038,7 +1040,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         inkActive = true
         objectLayer.endTouchSelection() // writing again ends a finger selection
         onInkSession?()
+        if heldVisualsPending != nil { hideHeldVisuals() } // a new stroke is never hidden
         if heldShape == nil { holdBase = pageContent }
+    }
+    /// A committed held result is on the canvas now: the preview may go
+    /// (no frame without either, no flash of the freehand stroke).
+    func canvasViewDidFinishRendering(_ canvasView: PKCanvasView) {
+        if heldVisualsPending != nil { hideHeldVisuals() }
     }
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
         inkActive = false
