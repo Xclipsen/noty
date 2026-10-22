@@ -4,6 +4,16 @@
 
 Hefte kennen nur noch Textfelder; der bisherige Seitentext wird beim Öffnen verlustfrei zu Feldern an derselben Stelle. Anlegen per Tipp mit dem Textwerkzeug, Doppeltipp-Menü oder Einsetzen; Schloss „Textwerkzeug fixieren“ in den Textoptionen. Auswahl per Fingertipp (mit Stift/Lasso) zeigt Rahmen, Breitenpunkte und Drehgriff statt Icons; zweiter Tipp setzt den Cursor. Verbindliche Bedienung, Abweichungen und Gerätetestpunkte: [TEXT-REBUILD-62](TEXT-REBUILD-62.md). Ältere Abschnitte zu Seitentext, Griff oben links und X über dem Feld sind damit überholt. Implementiert und gebaut, am iPad ungeprüft.
 
+## Formen: Start beim Aufsetzen, Füllung, Auswahl in Formen – 22.10.2026
+
+Nutzer: Das Formenwerkzeug fängt erst an, wenn man den Stift bewegt; gefüllte Formen sollen eine eigene Füllfarbe und -stärke haben; wer innerhalb einer ungefüllten Form etwas auswählt, wählt die Form mit. Umgesetzt:
+
+- **Start beim Aufsetzen.** Neue Formen hingen an einer normalen Ziehgeste, die erst nach etwa 10 pt Bewegung beginnt. Jetzt beginnt die Form mit dem Pencil im Formenwerkzeug genau am Aufsetzpunkt; sofort erscheint dort ein Punkt in Farbe und Breite der Form, bis sie groß genug ist, dann die Vorschau der fertigen Form (Gerade, Pfeil, Rechteck, Ellipse). Ein Pencil-Tippen ohne Bewegung wählt weiter die Form darunter aus; auf der aktuellen Auswahl verschiebt der Pencil sie wie bisher. Finger behalten die Schwelle: Scrollen, Zoomen und das Greifen von Formen bleiben unverändert, der Startpunkt ist aber auch hier der erste Kontakt.
+- **Füllung.** Bisher: Füllung an/aus, Füllfarbe immer Strichfarbe mit 20 %. Neu in den Optionen des Formenwerkzeugs (bei eingeschalteter Füllung): eigene Füllfarbe oder „wie Strich“ (Kettensymbol) und Deckkraft 10–100 %. Für ausgewählte Rechtecke, Ellipsen und Vielecke unter „Stil“: Füllung an/aus, „wie Strich“ oder eine von 12 Farben, Deckkraft-Regler. Ein Strichfarbwechsel zieht nur eine Füllung in Strichfarbe mit, eine eigene Füllfarbe bleibt.
+- **Auswahl in Formen.** Ungefüllte Formen zählen nur mit ihrem Strich (halbe Strichbreite wie bei Tinte): Ein Lasso um Schrift innerhalb eines Rechtecks, einer Ellipse oder eines Vielecks wählt die Form nicht mehr mit; Lasso über den Rand oder um die ganze Form wählt sie. Ein Tippen innen trifft das Objekt darunter. Gefüllte Formen (sichtbare Füllung, Deckkraft > 0) zählen mit ihrer Fläche.
+
+Format: keine Heftänderung, nur optionale Werkzeugschlüssel ([STORAGE](STORAGE.md)). Stand: implementiert, Core-Tests, SDK-Build; nicht installiert, am iPad ungeprüft (Aufsetzgefühl mit dem Pencil, Pencil-Tippen auf Formen, Finger-Scrollen/Zoomen im Formenwerkzeug, Füllregler und Farbwähler).
+
 ## Fingertipp auf Objekte und Doppeltipp-Menü – 22.10.2026
 
 Nutzer nach dem ersten Tag: Mit dem Stift aktiv lassen sich Textfelder nicht mit dem Finger antippen und auswählen. Beim Doppeltippen erscheint eine Option zum Einfügen von Leerraum („Platz einfügen“), die unverständlich und sinnlos ist. Umgesetzt:

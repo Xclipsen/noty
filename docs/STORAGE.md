@@ -12,6 +12,10 @@ Textneubau Stufe 1 ([TEXT-REBUILD-62](TEXT-REBUILD-62.md)): Hefte enthalten nur 
 
 Nachweise: Core-Tests (`TextFieldRebuildTests`), `check_verifiers.sh` mit Schema-14-Positiv-/Negativfällen, Host-Roundtrip mit Swift-geschriebenem Schema-13-Seitentextpaket (Öffnen schreibt nichts, Altbytes exakt, Schema-14-Backup und Paket von Python geprüft). **Nicht installiert, am iPad ungeprüft.**
 
+## Ergänzung 22.10.2026 · Formfüllung mit eigener Farbe und Deckkraft (kein neues Schema)
+
+Füllfarbe unabhängig vom Strich und Deckkraft 10–100 % brauchen kein neues Heftfeld: `ShapeObject.fill` ist seit Schema 6 eine vollständige `InkColor` mit Alpha und wird von Editor, Vorschau, PDF (`ShapeRendering.draw`), Papierkorb, Revisionen und Backups unverändert getragen. Hefte bleiben byte-gleich und auf ihrem Schema; Swift-Validierung und `notebook_format.py` prüfen `fill` wie bisher (Komponenten 0…1). Als gefüllt gilt eine Form nur mit sichtbarer Füllung (`hasVisibleFill`: Rechteck/Ellipse/Vieleck, Alpha > 0); nur dann zählt ihre Fläche für Fingertipp, Lasso, Radierer und Lasso-Kontur. Werkzeugformat 8 erhält optional `shapeFillColor` (nil = Strichfarbe) und `shapeFillOpacity` (0,1…1, nil = 0,2); ältere Builds ignorieren die Schlüssel, unberührte Einstellungen schreiben sie nicht. Prüfer: `verify_library_backup.py` validiert beide, `check_verifiers.sh` mit Positiv-/Negativfällen. Die Linienart „gepunktet“ (`dotted`) gibt es bereits seit Schema 6. Stand: implementiert, Core-Tests (`ShapeFillTests`, `ShapeLassoSelectionTests`), SDK-Build; **nicht installiert, am iPad ungeprüft.**
+
 ## Ergänzung 22.10.2026 · Notebook-Schema 13 (Polylinien und Polygone)
 
 Nutzerwunsch nach dem ersten Nutzungstag: Pfeile mit Knick, eckige Formen und einzeln ziehbare Ankerpunkte. `ShapeObject` erhält optional `points` (Eckpunkte in kanonischen Seitenkoordinaten) und die Art `polygon`.

@@ -74,6 +74,9 @@ def verify_toolbar(toolbar):
     require(toolbar.get("laserFade") is None or (format8 and toolbar["laserFade"] in ("short", "medium", "long", "untilLift")), "Invalid laserFade")
     # Build 45: optional highlighter tip (format 8, absent = round).
     require(toolbar.get("markerTip") is None or (format8 and toolbar["markerTip"] in ("round", "chisel")), "Invalid markerTip")
+    # 22.10.2026: optional fill of new shapes (own colour, strength 10-100 %).
+    require(toolbar.get("shapeFillColor") is None or (format8 and color(toolbar["shapeFillColor"])), "Invalid shapeFillColor")
+    require(toolbar.get("shapeFillOpacity") is None or (format8 and number(toolbar["shapeFillOpacity"], 0.1, 1)), "Invalid shapeFillOpacity")
     widths = {"pen": (1, 12), "marker": (4, 40), "pencil": (1, 16)} if format8 else {"pen": (1, 12), "marker": (4, 40)}
     require(len(toolbar["presets"]) <= 12, "Too many presets")
     for preset in toolbar["presets"]:

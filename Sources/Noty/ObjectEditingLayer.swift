@@ -93,7 +93,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private let contourLayer = CAShapeLayer()
     private var contourAnimationScale: CGFloat?
     private weak var styleController: UIViewController?
-    private lazy var pan = UIPanGestureRecognizer(target: self, action: #selector(drag(_:)))
+    private lazy var pan = TouchDownPanGestureRecognizer(target: self, action: #selector(drag(_:)))
+    /// A shape begun on touch-down that has not moved yet: lifting it is a tap.
+    private var shapeTapCandidate = false
     /// Apple Pencil Pro haptics (iOS 17.5+); older Pencils simply get none.
     private var feedback: UIFeedbackGenerator?
     /// Frequent light ticks while drawing a lasso or dragging a selection.
@@ -135,6 +137,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         contourLayer.lineCap = .round; contourLayer.lineJoin = .round
         layer.addSublayer(contourLayer)
         pan.delegate = self; pan.maximumNumberOfTouches = 1; addGestureRecognizer(pan)
+        pan.beginsImmediately = { [weak self] touch in self?.drawsShapeOnTouchDown(touch) ?? false }
         let tap = UITapGestureRecognizer(target: self, action: #selector(tap(_:))); tap.delegate = self
         tap.require(toFail: pan); addGestureRecognizer(tap)
         toolbar.overrideUserInterfaceStyle = .dark
@@ -312,6 +315,14 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             path.lineCapStyle = .round; path.lineJoinStyle = .round
             path.setLineDash([6 / scale, 4 / scale], count: 2, phase: 0); path.stroke()
         }
+        // Visible from touch-down: a new shape too small to show yet marks its
+        // start point in its colour and width (at least 5 screen points wide).
+        if dragMode == 3, startContent != nil, let draft, (try? draft.validate()) == nil {
+            let radius = max(draft.lineWidth / 2, 2.5 / displayScale)
+            let center = CGPoint(x: draft.start.x + layout.contentOrigin.x, y: draft.start.y + layout.contentOrigin.y)
+            draft.color.uiColor.withAlphaComponent(1).setFill()
+            UIBezierPath(ovalIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius)).fill()
+        }
     }
     private func canonical(_ point: CGPoint) -> CGPoint {
         CGPoint(x: point.x - layout.contentOrigin.x, y: point.y - layout.contentOrigin.y)
@@ -488,6 +499,14 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             handle.accessibilityLabel = "Formpunkt \(index + 1) verschieben"
         }
     }
+    /// The Pencil starts a new shape where it touches, without a movement
+    /// threshold: shape tool, outside the current selection (that one is
+    /// dragged as before). Fingers keep scrolling/zooming/grabbing first.
+    private func drawsShapeOnTouchDown(_ touch: UITouch) -> Bool {
+        guard active, tool == .shape, !touchSelection, touch.type == .pencil else { return false }
+        let inset = -8 / displayScale
+        return selectionBounds(content).map(display)?.insetBy(dx: inset, dy: inset).contains(touch.location(in: self)) != true
+    }
     @objc private func tap(_ gesture: UITapGestureRecognizer) {
         let point = canonical(gesture.location(in: self))
         // Lasso tool: a tap on a field's text selects that field (second tap: caret).
@@ -498,6 +517,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 adopted = nil; clearSelection(); texts = [first]; fieldMode = true; refresh(); return
             }
         }
+        selectByTap(at: point)
+    }
+    /// Tap in the shape/selection tool (canonical point): picks what lies there.
+    private func selectByTap(at point: CGPoint) {
         adopted = nil; clearSelection()
         if (tool == .shape || filter.shapes), let shape = content.shapes.reversed().first(where: { ShapeRendering.hit($0, at: point) }) { shapes.insert(shape.id) }
         else if tool == .selection || tool == .inkSelection {
@@ -521,8 +544,13 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             feedback?.prepare()
             let screen = gesture.location(in: nil)
             motionTicks.begin(at: .init(x: screen.x, y: screen.y), time: CACurrentMediaTime())
-            let translation = gesture.translation(in: self)
-            initialPoint = CGPoint(x: point.x - translation.x, y: point.y - translation.y)
+            // The exact first contact, not where the movement threshold was crossed.
+            if gesture === pan, let down = pan.touchDownLocation { initialPoint = canonical(down) }
+            else {
+                let translation = gesture.translation(in: self)
+                initialPoint = CGPoint(x: point.x - translation.x, y: point.y - translation.y)
+            }
+            shapeTapCandidate = false
             startContent = content; preview = nil; inkTransform = nil; groupTransform = nil
             if let requestedMode { dragMode = requestedMode }
             else if selectionBounds(content)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale).contains(initialPoint) == true { dragMode = 1 }
@@ -535,7 +563,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 let color = automaticColor?(.init(x: initialPoint.x, y: initialPoint.y)) ?? color
                 draft = ShapeObject(kind: ShapeKind.toolKinds.contains(options.kind) ? options.kind : .line,
                     start: .init(x: initialPoint.x, y: initialPoint.y), end: .init(x: point.x, y: point.y),
-                    color: color, lineWidth: lineWidth, pattern: options.pattern, fill: options.filled ? InkColor(color.red, color.green, color.blue, 0.2) : nil)
+                    color: color, lineWidth: lineWidth, pattern: options.pattern, fill: options.fill(stroke: color))
+                shapeTapCandidate = gesture === pan && pan.beganOnTouchDown
             } else { clearSelection(); dragMode = 0; lasso = [CGPoint(x: initialPoint.x + layout.contentOrigin.x, y: initialPoint.y + layout.contentOrigin.y)] }
         }
         guard let initial = startContent else { return }
@@ -587,7 +616,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                     .concatenating(CGAffineTransform(translationX: frame.midX, y: frame.midY))
                 preview = initial; inkTransform = t; groupTransform = t
             }
-        case 3: draft?.end = .init(x: point.x, y: point.y)
+        case 3:
+            draft?.end = .init(x: point.x, y: point.y)
+            // About 4 screen points of travel make it a drawn shape, not a tap.
+            if shapeTapCandidate, let down = pan.touchDownLocation,
+               hypot(gesture.location(in: self).x - down.x, gesture.location(in: self).y - down.y) * displayScale > 4 { shapeTapCandidate = false }
         case 8:
             // Field rotation about its centre; soft snapping (TextFieldRotation), small degree label.
             if let box = selectedField(initial) {
@@ -649,6 +682,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                     // The closed loop selected something: confirm on Apple Pencil Pro.
                     if hasSelection { haptic(completed: true, at: gesture.location(in: self)) }
                 }
+            } else if dragMode == 3, shapeTapCandidate {
+                // A Pencil tap in the shape tool selects as before (the tap
+                // recognizer waits for this pan, which began on touch-down).
+                preview = nil; inkTransform = nil; draft = nil; startContent = nil; lasso = []; shapeTapCandidate = false
+                selectByTap(at: initialPoint); return
             } else if dragMode == 3, let draft, (try? draft.validate()) != nil, limits.contains(draft.bounds, tolerance: 0.02) {
                 var value = initial; value.shapes.append(draft)
                 if commit(value, previous: initial) { shapes = [draft.id] }
@@ -790,7 +828,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         if filter.text { texts = Set(content.textBoxes.filter { $0.allowsObjectSelection && selectedField($0) }.map(\.id)) }
         if filter.images { images = Set(content.images.filter { !$0.locked && selected($0.rotatedBounds.cgRect) }.map(\.id)) }
-        if filter.shapes { shapes = Set(content.shapes.filter { selected($0.bounds.cgRect) }.map(\.id)) }
+        // Shapes count by their stroke (and a visible fill), not their bounds:
+        // a lasso or tap inside an unfilled outline leaves the shape alone.
+        if filter.shapes {
+            let point = CGPoint(x: rect.midX, y: rect.midY)
+            shapes = Set(content.shapes.filter { shape in
+                guard rect.insetBy(dx: -0.001, dy: -0.001).intersects(shape.bounds.cgRect) || tap else { return false }
+                return tap ? ShapeRendering.hit(shape, at: point) : region.selects(shape)
+            }.map(\.id))
+        }
         if filter.ink, let drawing = try? PKDrawing(data: content.drawing) {
             ink = Set(drawing.strokes.indices.filter { index in
                 let stroke = drawing.strokes[index]
@@ -903,11 +949,31 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 guard let self, self.active else { return }; self.color = InkColor(SwiftUI.Color(color)); self.applyStyle()
             }, for: .touchUpInside); root.addSubview(button)
         }
+        if let fill = fillStyleSection() {
+            controller.addChild(fill); fill.view.backgroundColor = .clear
+            fill.view.frame = CGRect(x: 20, y: 240, width: 280, height: 170); root.addSubview(fill.view); fill.didMove(toParent: controller)
+            controller.preferredContentSize.height = 426
+        }
         if let popover = controller.popoverPresentationController {
             popover.sourceView = toolbar; popover.sourceRect = toolbar.bounds; popover.permittedArrowDirections = [.up, .down]
             popover.backgroundColor = root.backgroundColor
         }
         styleController = controller; parent.present(controller, animated: true)
+    }
+    /// „Füllung“ of selected rectangles, ellipses and polygons (`ShapeFillStyleSection`).
+    private func fillStyleSection() -> UIViewController? {
+        guard let first = content.shapes.first(where: { shapes.contains($0.id) && $0.isFillable }) else { return nil }
+        let choice = ShapeFillStyleSection.Choice(filled: first.hasVisibleFill,
+            color: first.fill.flatMap { first.fillFollowsStroke ? nil : $0.opaque },
+            opacity: first.fill.map { ShapeFill.rounded($0.alpha) } ?? options.fillOpacity)
+        return UIHostingController(rootView: ShapeFillStyleSection(choice: choice) { [weak self] choice in
+            guard let self, self.active else { return }
+            var value = self.content
+            for i in value.shapes.indices where self.shapes.contains(value.shapes[i].id) {
+                value.shapes[i] = choice.filled ? value.shapes[i].filled(color: choice.color, opacity: choice.opacity) : value.shapes[i].unfilled()
+            }
+            _ = self.commit(value, previous: self.content); self.refresh()
+        })
     }
     private func transformed(_ initial: PageContent, dx: Double, dy: Double, scale requested: Double, anchor requestedAnchor: PagePoint? = nil) -> PageContent? {
         guard let frame = selectionBounds(initial) else { return nil }
@@ -1026,9 +1092,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             value.textBoxes[i].runs = value.textBoxes[i].runs?.map { run in var run = run; run.style.ink = color; return run }
         }
         for i in value.shapes.indices where shapes.contains(value.shapes[i].id) {
-            value.shapes[i].color = color
+            value.shapes[i] = value.shapes[i].recolored(color)
             if changeWidth { value.shapes[i].lineWidth = lineWidth }
-            if let fill = value.shapes[i].fill { value.shapes[i].fill = InkColor(color.red, color.green, color.blue, fill.alpha) }
         }
         _ = commit(value, previous: content); refresh()
     }

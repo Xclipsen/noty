@@ -126,6 +126,7 @@ struct EditorToolOptions: View {
             Picker("Strich", selection: $shapeOptions.pattern) { ForEach(StrokePattern.allCases, id: \.self) { Text($0.title).tag($0) } }
                 .pickerStyle(.menu).labelsHidden().frame(minHeight: 44)
             option("Füllung", symbol: "square.fill", selected: shapeOptions.filled) { shapeOptions.filled.toggle() }
+            if shapeOptions.filled { ShapeFillOptions(options: $shapeOptions, strokeColor: preferences.inkColor(for: .shape)) }
         }
         if tool == .selection || tool == .inkSelection {
             option("Freiform", symbol: "lasso", selected: lassoMode == .freeform) { lassoMode = .freeform }

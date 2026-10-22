@@ -164,6 +164,12 @@ backup("shapes-arrow-without-head.notybackup", shaped(13, [shape("arrow", bent +
 backup("shapes-flat-polygon.notybackup", shaped(13, [shape("polygon", [point(10, 10), point(50, 10), point(90, 10)])]))
 backup("shapes-vertex-outside.notybackup", shaped(13, [shape("line", [point(50, 50), point(700, 400), point(100, 100)])]))
 backup("shapes-vertex-type.notybackup", shaped(13, [shape("line", [point(50, 50), point("70", 400), point(100, 100)])]))
+# 22.10.2026: fill with its own colour and strength stays in `fill` (schema 6, no raise).
+own_fill = {"red": 0.2, "green": 0.5, "blue": 1, "alpha": 0.65}
+backup("shapes-fill-schema-12.notybackup", shaped(12, [shape("rectangle", start=point(20, 20), end=point(120, 90), fill=own_fill),
+                                                      shape("ellipse", start=point(150, 20), end=point(250, 90), fill=dict(own_fill, alpha=1))]))
+backup("shapes-fill-alpha.notybackup", shaped(12, [shape("rectangle", start=point(20, 20), end=point(120, 90), fill=dict(own_fill, alpha=1.5))]))
+backup("shapes-fill-type.notybackup", shaped(12, [shape("ellipse", start=point(20, 20), end=point(120, 90), fill=dict(own_fill, red="1"))]))
 
 
 # Schema 14: free text fields (rotation, automatic width, page text migrated to a field).
@@ -500,8 +506,9 @@ for name in schema-99 crc trailing title-type urn-page-id page-count-type source
 done
 accept verify_backup.py "$work/backups/shapes-schema-13.notybackup"
 accept verify_backup.py "$work/backups/shapes-straight-schema-12.notybackup"
+accept verify_backup.py "$work/backups/shapes-fill-schema-12.notybackup"
 for name in polyline-schema-12 polygon-schema-12 start-mismatch two-vertices polygon-without-points rectangle-points \
-            arrow-without-head flat-polygon vertex-outside vertex-type; do
+            arrow-without-head flat-polygon vertex-outside vertex-type fill-alpha fill-type; do
     reject verify_backup.py "$work/backups/shapes-$name.notybackup"
 done
 for name in fields-schema-14 plain-schema-13 flow-schema-14; do
@@ -643,6 +650,14 @@ expect("library reference never carried", False, library("missing.notylibrary", 
 expect("library same hash twice", False, library("twice.notylibrary", [n1, asset(a), n2, asset(a), asset(b), n3]))
 expect("library SHA-256 mismatch", False, library("sha.notylibrary", [n1, asset(a), n2, asset(b, flip=True), n3]))
 expect("library asset after the last notebook's group", False, library("unreferenced.notylibrary", [n1, asset(a), n2, asset(b), n3, asset(b"x")]))
+# Toolbar: optional fill of new shapes (format 8).
+format8 = {"formatVersion": 8, "dock": "top", "presets": [],
+           "order": ["pen", "pencil", "marker", "strokeEraser", "text", "selection", "shape", "image", "read", "laser", "precisionEraser", "inkSelection"]}
+fill_color = {"red": 1, "green": 0.5, "blue": 0, "alpha": 1}
+expect("toolbar shape fill", True, lambda: verify_library_backup.verify_toolbar(dict(format8, shapeFillColor=fill_color, shapeFillOpacity=0.35)))
+expect("toolbar shape fill below 10 %", False, lambda: verify_library_backup.verify_toolbar(dict(format8, shapeFillOpacity=0.05)))
+expect("toolbar shape fill colour type", False, lambda: verify_library_backup.verify_toolbar(dict(format8, shapeFillColor="orange")))
+expect("toolbar shape fill before format 8", False, lambda: verify_library_backup.verify_toolbar(dict(toolbar, shapeFillOpacity=0.5)))
 # Notebook rules directly (declared sizes, no bytes needed).
 from notebook_format import validate_notebook
 def declared(n, count=20_000_000, width=8):

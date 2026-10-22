@@ -102,7 +102,7 @@ extension WorksheetView {
         for shape in shapes {
             let path = ShapeRendering.path(shape)
             let outline = path.cgPath.copy(strokingWithWidth: shape.lineWidth + 2 * radius, lineCap: .round, lineJoin: .round, miterLimit: 4)
-            if samples.contains(where: { outline.contains($0) || (shape.fill != nil && path.contains($0)) }) { hit.insert(shape.id) }
+            if samples.contains(where: { outline.contains($0) || (shape.hasVisibleFill && path.contains($0)) }) { hit.insert(shape.id) }
         }
         return hit
     }
