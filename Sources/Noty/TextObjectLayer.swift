@@ -335,7 +335,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     private func updateRaster(_ field: TextFieldContainer, for box: TextBox) {
         guard let viewport = textViewport else { field.setRaster(nil, scale: 1); return }
-        let local = field.convert(viewport.frame.cgRect, from: self).intersection(field.bounds)
+        // A little beyond the frame: glyph overhang (italics, first letter) is drawn, not cut.
+        let overhang = field.glyphOverhang
+        let local = field.convert(viewport.frame.cgRect, from: self).intersection(field.bounds.insetBy(dx: -overhang, dy: -overhang))
         let area = local.isNull ? CGRect.zero : local
         let pointScale = coordinateScale(for: box)
         let scale = EditorRenderGeometry.contentScale(size: PageSize(width: area.width, height: area.height),

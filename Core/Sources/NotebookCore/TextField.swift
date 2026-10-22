@@ -57,6 +57,18 @@ extension TextBox {
                 pagePoint(.init(x: width + p, y: height + p)), pagePoint(.init(x: -p, y: height + p))]
     }
 
+    /// Selection frame around a selected or edited field (Feedback zu Build
+    /// 62): visibly larger than the text on every side; a styled field's
+    /// visible edge counts when it reaches further. Only drawn, never stored;
+    /// the text keeps its position.
+    public static let selectionPadding = 7.0
+    public var selectionInset: Double { max(fieldPadding, Self.selectionPadding) }
+    public var selectionCorners: [PagePoint] {
+        let p = selectionInset
+        return [pagePoint(.init(x: -p, y: -p)), pagePoint(.init(x: width + p, y: -p)),
+                pagePoint(.init(x: width + p, y: height + p)), pagePoint(.init(x: -p, y: height + p))]
+    }
+
     /// Corners of the text frame itself (where the text is laid out and clipped).
     public var textCorners: [PagePoint] {
         [pagePoint(.init(x: 0, y: 0)), pagePoint(.init(x: width, y: 0)),

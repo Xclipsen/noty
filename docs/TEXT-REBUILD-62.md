@@ -110,6 +110,8 @@ Gerätetestpunkte (gebündelt, alles **ungeprüft**):
 5. Undo/Redo für Anlegen, Tippen, Verschieben, Breite, Drehen; Zoom; zweite Ansicht.
 6. Einsetzen von außen mit Stift und mit Textwerkzeug; Vorschau, PDF-Export (`pdftotext` findet gedrehten Text, Lage stimmt), Heft- und Bibliotheksbackup mit gedrehtem Feld.
 
+**Korrektur nach Build 62 – Aussehen des Felds (Nutzerfeedback):** Der Auswahl- bzw. Bearbeitungsrahmen liegt jetzt 7 pt um den Text (bei gestylten Feldern mindestens an der sichtbaren Feldkante, `TextBox.selectionInset`), Breitenpunkte sitzen an diesem Rahmen; nur gezeichnet, Textposition und Format unverändert. Ursache für den „abgeschnittenen“ ersten Buchstaben: die UITextView (eine Scrollansicht) schnitt Glyphen links von x = 0 und den Cursor am linken Rand ab, das Zoom-Raster zeichnete nur innerhalb des Textrahmens; jetzt kein Abschneiden mehr (Raster mit Überhang je nach größter Schrift). Drehgriff: war ein weißer 10-pt-Punkt (auf weißem Papier unsichtbar); jetzt ein blauer 12-pt-Kreis mit weißem Ring und Schatten (44-pt-Trefferfläche) an einem 1,5-pt-Strich über der Rahmenmitte, unterhalb des Felds, wenn oben kein Platz ist. **Implementiert und gebaut; am iPad ungeprüft.**
+
 ### Stufe 3 · Textdokument (22.10.2026, Branch `feat/textdokument`)
 
 **Implementiert und erfolgreich gebaut** (`xtool dev build`), **nicht installiert, auf dem iPad ungeprüft.** Core-Tests (730, 3 übersprungen; neu `TextDocumentTests`), `check_page_workflow.sh` (Host-Roundtrip mit Textdokument) und `check_verifiers.sh` bestanden. Format: Notebook-Schema 15 nur für Textdokumente, Hefte unverändert ([STORAGE](STORAGE.md)). Ohne Gliederung (Stufe 4).

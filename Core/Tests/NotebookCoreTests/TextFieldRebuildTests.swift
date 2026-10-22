@@ -321,4 +321,18 @@ final class TextFieldRebuildTests: XCTestCase {
         XCTAssertEqual(TextFieldPlacement.frame(tap: p(101.3, 150.7), limits: limits, width: 14, lineHeight: 17),
                        PageRect(x: 101.3, y: 142.2, width: 14, height: 17))
     }
+
+    func testSelectionFrameIsLargerThanTheTextWithoutMovingIt() {
+        // Feedback zu Build 62: the frame needs room around the text; the text stays.
+        let plain = TextBox(x: 100, y: 200, width: 80, height: 20, text: "Abc")
+        XCTAssertEqual(plain.selectionInset, 7)
+        XCTAssertEqual(plain.selectionCorners[0], p(93, 193))
+        XCTAssertEqual(plain.selectionCorners[2], p(187, 227))
+        XCTAssertEqual(plain.textCorners[0], p(100, 200), "text position unchanged")
+        var styled = plain; styled.fill = .yellow
+        XCTAssertEqual(styled.selectionInset, max(styled.fieldPadding, 7))
+        var turned = plain; turned.rotation = 90
+        XCTAssertEqual(turned.selectionCorners[0].x, 107, accuracy: 1e-9)
+        XCTAssertEqual(turned.selectionCorners[0].y, 193, accuracy: 1e-9)
+    }
 }

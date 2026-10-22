@@ -26,14 +26,25 @@ private enum ObjectClipboard { static var content: PageContent?; static var boun
 @MainActor
 private final class SelectionHandle: UIView {
     private let dot = UIView()
-    init(color: UIColor) {
+    private let diameter: CGFloat
+    /// `bordered`: white ring, visible on white and dark paper alike.
+    init(color: UIColor, diameter: CGFloat = 10, bordered: Bool = false) {
+        self.diameter = diameter
         super.init(frame: .zero); backgroundColor = .clear
         dot.backgroundColor = color; dot.isUserInteractionEnabled = false
-        dot.layer.cornerRadius = 5; addSubview(dot)
+        dot.layer.cornerRadius = diameter / 2; addSubview(dot)
+        if bordered {
+            dot.layer.borderColor = UIColor.white.cgColor; dot.layer.borderWidth = 1.5
+            dot.layer.shadowColor = UIColor.black.cgColor; dot.layer.shadowOpacity = 0.25
+            dot.layer.shadowRadius = 1.5; dot.layer.shadowOffset = .zero
+        }
         isAccessibilityElement = true
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func layoutSubviews() { super.layoutSubviews(); dot.frame = CGRect(x: 17, y: 17, width: 10, height: 10) }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        dot.frame = CGRect(x: 22 - diameter / 2, y: 22 - diameter / 2, width: diameter, height: diameter)
+    }
 }
 
 /// Shapes and mixed selections are independent of app chrome. Commits compare
@@ -118,7 +129,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// „Bearbeiten“ or a second tap on the selected field: caret at the point (nil: end).
     var onEditText: ((UUID, PagePoint?) -> Void)?
     private let fieldWidthHandles = (0..<2).map { _ in SelectionHandle(color: .systemBlue) }
-    private let fieldRotation = SelectionHandle(color: .white)
+    /// Clearly visible on any paper (Build 62 showed a white dot on white paper).
+    private let fieldRotation = SelectionHandle(color: .systemBlue, diameter: 12, bordered: true)
     private let angleLabel = UILabel()
     private let fieldActions = UIStackView()
     private var active: Bool { enabled && (tool == .shape || tool == .selection || tool == .inkSelection || touchSelection) }
@@ -226,12 +238,21 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     /// Display point of a canonical page point.
     private func display(_ point: PagePoint) -> CGPoint { CGPoint(x: point.x + layout.contentOrigin.x, y: point.y + layout.contentOrigin.y) }
-    /// Rotation handle: a short line above the middle of the field's top edge.
-    private func rotationHandleCenter(_ box: TextBox) -> CGPoint {
-        let top = display(box.pagePoint(.init(x: box.width / 2, y: -box.fieldPadding)))
-        let radians = box.angle * .pi / 180, reach = 30 / displayScale
-        return CGPoint(x: top.x + sin(radians) * reach, y: top.y - cos(radians) * reach)
+    /// Rotation handle: on a short line above the middle of the selection
+    /// frame; below it when there is no room above (field at the top of the
+    /// page, the handle would be clamped onto the field).
+    private func rotationHandle(_ box: TextBox) -> (base: CGPoint, center: CGPoint) {
+        let inset = box.selectionInset, scale = displayScale
+        let radians = box.angle * .pi / 180, reach = 30 / scale
+        let top = display(box.pagePoint(.init(x: box.width / 2, y: -inset)))
+        let above = CGPoint(x: top.x + sin(radians) * reach, y: top.y - cos(radians) * reach)
+        let room = bounds.insetBy(dx: 22 / scale, dy: 22 / scale)
+        if room.contains(above) { return (top, above) }
+        let bottom = display(box.pagePoint(.init(x: box.width / 2, y: box.height + inset)))
+        let below = CGPoint(x: bottom.x - sin(radians) * reach, y: bottom.y + cos(radians) * reach)
+        return room.contains(below) ? (bottom, below) : (top, above)
     }
+    private func rotationHandleCenter(_ box: TextBox) -> CGPoint { rotationHandle(box).center }
 
     /// A tap on the text of the selected field: with another field's line at
     /// the same place the next one below is selected, otherwise the caret is
@@ -300,9 +321,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     override func draw(_ rect: CGRect) {
         let visible = preview ?? content
         if active, lift == nil, let box = selectedField(visible) {
-            let line = UIBezierPath(); line.move(to: display(box.pagePoint(.init(x: box.width / 2, y: -box.fieldPadding))))
-            line.addLine(to: rotationHandleCenter(box))
-            UIColor.systemBlue.setStroke(); line.lineWidth = 1 / displayScale; line.stroke()
+            let handle = rotationHandle(box)
+            let line = UIBezierPath(); line.move(to: handle.base); line.addLine(to: handle.center)
+            UIColor.systemBlue.setStroke(); line.lineWidth = 1.5 / displayScale; line.stroke()
         }
         if active, let rect = selectionBounds(visible, applyingPreview: true) {
             if !rotation.isHidden {
@@ -401,7 +422,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             y: min(max((group?.minY ?? visible.maxY) - raise / scale, visible.minY + 26 / scale), visible.maxY - 26 / scale))
         shown.frame = CGRect(x: 4, y: 2, width: fullWidth - 8, height: 40); toolbar.contentSize = CGSize(width: fullWidth, height: 44)
         if let box = selectedField(preview ?? content) {
-            let pad = box.fieldPadding
+            let pad = box.selectionInset
             fieldWidthHandles[0].frame = handleFrame(display(box.pagePoint(.init(x: -pad, y: box.height / 2))))
             fieldWidthHandles[1].frame = handleFrame(display(box.pagePoint(.init(x: box.width + pad, y: box.height / 2))))
             fieldRotation.frame = handleFrame(rotationHandleCenter(box))
@@ -436,8 +457,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         let scale = displayScale
         contourLayer.bounds = bounds; contourLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
         if let box = selectedField(preview ?? content) {
-            // A selected field: thin solid frame exactly around it (rotated).
-            let outline = CGMutablePath(); outline.addLines(between: box.corners.map(display)); outline.closeSubpath()
+            // A selected field: thin solid frame around it with some room (rotated).
+            let outline = CGMutablePath(); outline.addLines(between: box.selectionCorners.map(display)); outline.closeSubpath()
             contourLayer.path = outline; contourLayer.lineWidth = 1 / scale; contourLayer.lineDashPattern = nil
             contourLayer.fillColor = UIColor.clear.cgColor
             contourLayer.removeAllAnimations(); contourAnimationScale = nil; contourLayer.isHidden = false

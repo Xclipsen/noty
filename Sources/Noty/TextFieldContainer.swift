@@ -58,6 +58,8 @@ final class TextFieldContainer: UIView {
     private var styleLineWidth: CGFloat = 0
     private var styleFilled = false
     private var styleFramed = false
+    /// Page points per own point (margin text units).
+    private var unitScale: CGFloat = 1
     var content: TextBox?
     var automaticLight: Bool?
     private(set) var editing = false
@@ -70,6 +72,9 @@ final class TextFieldContainer: UIView {
         clipsToBounds = false
         editor.backgroundColor = .clear; editor.linkTextAttributes = [:]; editor.textContainerInset = .zero
         editor.textContainer.lineFragmentPadding = 0; editor.isScrollEnabled = false
+        // Glyphs may reach left of x = 0 (italics, „J“, „f“) and the caret sits
+        // on the left edge: never clipped (the text does not scroll).
+        editor.clipsToBounds = false
         editor.keyboardAppearance = .dark; editor.overrideUserInterfaceStyle = .dark
         editor.inputAssistantItem.leadingBarButtonGroups = []; editor.inputAssistantItem.trailingBarButtonGroups = []
         editor.accessibilityLabel = "Textfeld"
@@ -93,11 +98,23 @@ final class TextFieldContainer: UIView {
     }
     /// The visible field in own coordinates: the text frame plus the style's padding.
     var styleRect: CGRect { bounds.insetBy(dx: -stylePadding, dy: -stylePadding) }
+    /// The editing frame: visibly larger than the text (`TextBox.selectionInset`).
+    var selectionRect: CGRect {
+        let pad = max(stylePadding, CGFloat(TextBox.selectionPadding) / unitScale)
+        return bounds.insetBy(dx: -pad, dy: -pad)
+    }
+    /// Room beyond the frame where glyphs may still draw (italic overhang).
+    var glyphOverhang: CGFloat {
+        guard let box = content else { return 4 }
+        let largest = ([box.style.fontSize] + (box.runs ?? []).map(\.style.fontSize)).max() ?? box.style.fontSize
+        return CGFloat(largest) * 0.35 + 2
+    }
     /// Feldstil from the resolved box (automatic colours as shown);
     /// `unitScale`: page points per own point (margin text units).
     private var appliedStyle: (TextFieldFill?, TextFieldBorder?, TextColor, InkColor?, CGFloat)?
     func applyFieldStyle(_ resolved: TextBox, unitScale: CGFloat) {
         let scale = max(0.001, unitScale)
+        if self.unitScale != scale { self.unitScale = scale; setNeedsLayout() }
         if let applied = appliedStyle, applied.0 == resolved.fill, applied.1 == resolved.border,
            applied.2 == resolved.style.color, applied.3 == resolved.style.ink, applied.4 == scale { return }
         appliedStyle = (resolved.fill, resolved.border, resolved.style.color, resolved.style.ink, scale)
@@ -136,11 +153,11 @@ final class TextFieldContainer: UIView {
             control.bounds = CGRect(x: 0, y: 0, width: 44, height: 44)
             control.transform = CGAffineTransform(scaleX: 1 / scale, y: 1 / scale)
         }
-        let visible = styleRect
-        leftWidth.center = CGPoint(x: visible.minX, y: bounds.midY)
-        rightWidth.center = CGPoint(x: visible.maxX, y: bounds.midY)
+        let visible = styleRect, selection = selectionRect
+        leftWidth.center = CGPoint(x: selection.minX, y: bounds.midY)
+        rightWidth.center = CGPoint(x: selection.maxX, y: bounds.midY)
         frameLayer.frame = bounds
-        frameLayer.path = CGPath(rect: visible, transform: nil); frameLayer.lineWidth = 1 / scale
+        frameLayer.path = CGPath(rect: selection, transform: nil); frameLayer.lineWidth = 1 / scale
         styleLayer.frame = bounds
         if !styleLayer.isHidden {
             // Stroked inside the visible edge like the PDF (`TextFieldStyleRendering.draw`).
@@ -161,7 +178,7 @@ final class TextFieldContainer: UIView {
     func inBorderZone(_ point: CGPoint) -> Bool {
         guard editing else { return false }
         let scale = displayScale
-        let outer = styleRect.insetBy(dx: -Self.outerBorder / scale, dy: -Self.outerBorder / scale)
+        let outer = selectionRect.insetBy(dx: -Self.outerBorder / scale, dy: -Self.outerBorder / scale)
         let inner = bounds.insetBy(dx: min(bounds.width / 3, Self.innerBorder / scale), dy: min(bounds.height / 3, Self.innerBorder / scale))
         return outer.contains(point) && !inner.contains(point)
     }
@@ -172,7 +189,7 @@ final class TextFieldContainer: UIView {
         if editing {
             let scale = displayScale
             if !leftWidth.isHidden, leftWidth.frame.contains(point) || rightWidth.frame.contains(point) { return true }
-            return styleRect.insetBy(dx: -Self.outerBorder / scale, dy: -Self.outerBorder / scale).contains(point)
+            return selectionRect.insetBy(dx: -Self.outerBorder / scale, dy: -Self.outerBorder / scale).contains(point)
         }
         // A filled field takes its whole surface, a framed one its frame line
         // (like shapes); otherwise only real text lines, the empty rest of the
