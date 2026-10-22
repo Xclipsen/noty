@@ -323,6 +323,8 @@ struct ContentView: View {
     }
 
     private var canEdit: Bool { model.writable && !model.busy && !model.mutationsPaused && isPaneActive() }
+    /// Text document (TEXT-REBUILD-62 §4): no manual pages, taps go into the flow.
+    private var isTextDocument: Bool { model.notebook.isTextDocument }
 
     // Palette chrome uses viewport points. The native notebook remains child zero.
     private var editorSurface: some View {
@@ -504,7 +506,8 @@ struct ContentView: View {
                         .accessibilityHint("Seitlich scrollen, bis der Blattrand die Bildschirmmitte erreicht, um bequemer am Rand zu schreiben.")
                 }
                 optionsMenu(layout: layout)
-                if !layout.compactHeader {
+                // Text documents get their pages from the text only.
+                if !layout.compactHeader, !isTextDocument {
                     Menu { pageInsertionActions } label: {
                         Image(systemName: "doc.badge.plus").frame(width: 44, height: 44).contentShape(Rectangle())
                     }.accessibilityLabel("Neue Seite")
@@ -598,15 +601,24 @@ struct ContentView: View {
             Section {
                 // ⌘F/⌘S live in the app menu (NotyCommands): shortcuts inside a closed Menu do not register.
                 Button("Im Notizbuch suchen", systemImage: "magnifyingglass") { contentSearch = true }
-                if layout.compactHeader {
+                if layout.compactHeader, !isTextDocument {
                     Menu("Seite hinzufügen", systemImage: "doc.badge.plus") { pageInsertionActions }
                 }
                 Menu("Teilen und exportieren", systemImage: "square.and.arrow.up") {
                     Section("PDF") {
                         Button("Diese Seite", systemImage: "doc") { startPDFExport(pageOnly: true) }
                             .disabled(!model.writable || currentPage.id == writingDraft.id || pdfExport.running)
-                        Button("Ganzes Notizbuch", systemImage: "book.closed") { startPDFExport(pageOnly: false) }
-                            .disabled(!model.writable || pdfExport.running)
+                        Button(isTextDocument ? "Ganzes Dokument" : "Ganzes Notizbuch", systemImage: isTextDocument ? "doc.text" : "book.closed") {
+                            startPDFExport(pageOnly: false)
+                        }.disabled(!model.writable || pdfExport.running)
+                    }
+                    if isTextDocument {
+                        Section("Text") {
+                            Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(.plainText) }
+                                .disabled(!model.writable)
+                            Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(.markdown) }
+                                .disabled(!model.writable)
+                        }
                     }
                     Section(model.backupStatus) {
                         Button("Teilen als .noty …", systemImage: "square.and.arrow.up") { shareNoty() }
@@ -624,12 +636,14 @@ struct ContentView: View {
                     Toggle("PDFs einheitlich anzeigen", systemImage: "rectangle.split.3x1", isOn: Binding(get: { toolbox.preferences.normalizePageWidths ?? false }, set: { toolbox.preferences.normalizePageWidths = $0 }))
                         .accessibilityHint("Gleiche Arbeitsblattbreite mit Schreibraum daneben. Ändert nur die Anzeige.")
                 }
-                Button("Diese Seite anpassen …", systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") {
-                    marginsPage = MarginPage(id: currentPage.id)
-                }.disabled(!canEdit || !model.notebook.pages.contains(where: { $0.id == currentPage.id })
-                           || (model.sourcePage(for: currentPage) == nil && !currentPage.writingSpaceExtendsPaper))
-                Button("Papier für neue Seiten …", systemImage: "doc.richtext") { editingDefaults = true }
-                    .disabled(!canEdit)
+                if !isTextDocument {
+                    Button("Diese Seite anpassen …", systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") {
+                        marginsPage = MarginPage(id: currentPage.id)
+                    }.disabled(!canEdit || !model.notebook.pages.contains(where: { $0.id == currentPage.id })
+                               || (model.sourcePage(for: currentPage) == nil && !currentPage.writingSpaceExtendsPaper))
+                    Button("Papier für neue Seiten …", systemImage: "doc.richtext") { editingDefaults = true }
+                        .disabled(!canEdit)
+                }
                 Button("Lokale Wiederherstellungspunkte …", systemImage: "clock.arrow.circlepath") { showingHistory = true }
                     .disabled(!model.writable)
             }
@@ -651,6 +665,16 @@ struct ContentView: View {
             }
         }
     }
+    /// Text document: the flow as plain text or Markdown (`TextDocumentExport`)
+    /// in the share sheet, named `<Titel>.txt`/`.md`; removed after sharing.
+    private func shareText(_ format: TextDocumentExport.Format) {
+        let text = TextDocumentExport.export(model.notebook, as: format)
+        do {
+            let url = try BackupScratch.newShareFile(title: model.notebook.title, fileExtension: format.fileExtension)
+            try Data(text.utf8).write(to: url, options: .atomic)
+            NotyShare.present(url)
+        } catch { model.error = "Teilen nicht möglich: \(error.localizedDescription)" }
+    }
     /// The checked `<Titel>.noty` of the current state in the share sheet.
     private func shareNoty() {
         Task { if let url = await model.backupFile(sharing: true) { NotyShare.present(url) } }
@@ -658,7 +682,9 @@ struct ContentView: View {
     /// Page by page with a progress badge; the snapshot is fixed at the start.
     private func startPDFExport(pageOnly: Bool) {
         guard canEdit, !pdfExport.running, !(pageOnly && currentPage.id == writingDraft.id) else { return }
-        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : nil, sourcePage: { model.sourcePage(for: $0) },
+        // A text document leaves out trailing pages without content (the reserve page is never part of it).
+        let whole: Set<UUID>? = isTextDocument ? Set(model.exportedPageIDs) : nil
+        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : whole, sourcePage: { model.sourcePage(for: $0) },
                         assets: model.imageAssets) { result in
             switch result {
             case .success(let data): exportFile = ExportFile(pdfData: data); exportType = .pdf; exporting = true
@@ -818,6 +844,14 @@ struct ContentView: View {
                 tool = .text; toolbarOptions = false
             },
             textToolLocked: textToolLocked,
+            flowDocument: model.notebook.isTextDocument,
+            onFlowEnd: {
+                // Below the text, on a page after it or on the reserve page: caret behind the last character.
+                guard isPaneActive(), model.pageContentGeneration == generation, canEdit,
+                      var focus = model.textFlowEnd() else { return }
+                if tool != .text { tool = .text; toolbarOptions = false }
+                focus.requestID = UUID(); textFocus = focus; selectedPageID = focus.pageID
+            },
             onTextEditingFinished: {
                 // Leaving a field returns to the tool before the text tool (Textneubau).
                 guard isPaneActive(), tool == .text, !textToolLocked else { return }

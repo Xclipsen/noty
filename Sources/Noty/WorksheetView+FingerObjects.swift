@@ -27,6 +27,8 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
     private var menuTarget: (pageID: UUID, point: PagePoint)?
     /// PencilKit double-tap recognizers already waiting for `doubleTap`.
     private let linked = NSHashTable<UIGestureRecognizer>.weakObjects()
+    /// Pending flow caret of a single tap in a text document (cancelled by a double tap).
+    private var flowTapToken = 0
 
     func install(on sheet: WorksheetView) {
         self.sheet = sheet
@@ -88,11 +90,25 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
         let texts = hits.compactMap { hit -> UUID? in if case .text(let id) = hit { return id }; return nil }
         if sheet.objectLayer.tapOnSelectedField(textHits: texts, at: sheet.canonical(point)) { return }
         if let hit = hits.first { sheet.objectLayer.selectByTouch(hit) }
-        else { sheet.objectLayer.endTouchSelection() }
+        else {
+            sheet.objectLayer.endTouchSelection()
+            // Text document: a tap beside every object puts the caret into the
+            // flow – after the double-tap window, so „Textfeld hinzufügen“ stays reachable.
+            if sheet.flowDocument {
+                flowTapToken += 1
+                let token = flowTapToken, target = sheet.canonical(point), page = sheet.objectPageID
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak sheet] in
+                    guard let self, let sheet, self.flowTapToken == token, sheet.objectPageID == page,
+                          sheet.acceptsFingerObjectTaps else { return }
+                    sheet.requestFlowCaret(at: target)
+                }
+            }
+        }
     }
 
     @objc private func doubleTapped(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended, let sheet, let pageID = sheet.objectPageID else { return }
+        flowTapToken += 1 // the double tap's menu wins over the flow caret of its first tap
         let point = gesture.location(in: sheet)
         dismissForeignMenus(in: sheet.canvas)
         sheet.syncObjectPlane()

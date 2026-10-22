@@ -68,6 +68,11 @@ struct PageEditor {
     var onTextFieldRequested: () -> Void = {}
     /// „Textwerkzeug fixieren“ (lock in the text tool's options).
     var textToolLocked = false
+    /// Text document (TEXT-REBUILD-62 §4): a tap beside every object puts the
+    /// caret into the flow, also a finger tap while an ink tool is active.
+    var flowDocument = false
+    /// Caret behind the flow's last character (page without flow segment).
+    var onFlowEnd: () -> Void = {}
     /// The user left a field while the text tool is not fixed: back to the previous tool.
     var onTextEditingFinished: () -> Void = {}
 }
@@ -81,7 +86,7 @@ extension PageEditor {
         guard paper == other.paper, paperColor == other.paperColor, margins == other.margins else { return false }
         guard tool == other.tool, width == other.width, Self.sameColor(color, other.color), enabled == other.enabled,
               focused == other.focused, autoPen == other.autoPen, fingerDrawing == other.fingerDrawing, ruler == other.ruler,
-              textToolLocked == other.textToolLocked else { return false }
+              textToolLocked == other.textToolLocked, flowDocument == other.flowDocument else { return false }
         return shapeOptions == other.shapeOptions && selectionFilter == other.selectionFilter && lassoMode == other.lassoMode
             && recognizeShapes == other.recognizeShapes && markerStraight == other.markerStraight && markerTip == other.markerTip
             && scribbleErase == other.scribbleErase
@@ -260,7 +265,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private let fingerObjects = FingerObjectGestures()
     /// A requested new field (point) or caret in a field (box ID, point or
     /// nil: end of text) until the text tool is configured.
-    private var pendingTextField: (pageID: UUID, point: PagePoint?, box: UUID?, deadline: CFTimeInterval)?
+    /// `flow`: caret into the text document's flow at `point` instead of a new field.
+    private var pendingTextField: (pageID: UUID, point: PagePoint?, box: UUID?, deadline: CFTimeInterval, flow: Bool)?
     /// Last tap on this page (canonical) and the visible part (sheet
     /// coordinates): where pasted text opens its new field.
     private var lastTap: PagePoint?
@@ -582,6 +588,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.onFlowChange = editor.onFlowEdit; textLayer.onFlowUndo = editor.onFlowUndo
         textLayer.onFlowBackspace = editor.onFlowBackspace; textLayer.onUndoBoundary = editor.onUndoBoundary
         textLayer.readCurrentBoxes = editor.readTextBoxes; textLayer.readFlowText = editor.readFlowText
+        textLayer.onFlowEnd = editor.onFlowEnd
         textLayer.adoptCallback(editor.onTextBoxes)
         imageLayer.adoptCallbacks(onChange: editor.onImages, onError: editor.onError)
         objectLayer.adoptCommit(editor.onContent)
@@ -726,11 +733,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.onUndoBoundary = editor.onUndoBoundary
         textLayer.readCurrentBoxes = editor.readTextBoxes
         textLayer.readFlowText = editor.readFlowText
+        textLayer.onFlowEnd = editor.onFlowEnd
         textLayer.configure(boxes: editor.textBoxes, pageID: editor.pageID, layout: editor.layout,
                             contentGeneration: editor.contentGeneration, active: editable && tool == .text, readOnly: editable && tool == .read,
                             darkPaper: editor.paperColor == .dark, darkMargins: editor.margins?.color == .dark,
                             hasPDF: editor.sourcePage != nil, paperStyle: editor.paper, marginStyle: editor.margins?.style ?? .blank,
-                            locked: editor.textToolLocked, onChange: editor.onTextBoxes)
+                            locked: editor.textToolLocked, flowDocument: editor.flowDocument, onChange: editor.onTextBoxes)
         imageLayer.configure(objects: editor.images, pageID: editor.pageID, layout: editor.layout,
                              contentGeneration: editor.contentGeneration, active: editable && tool == .image,
                              onChange: editor.onImages, onError: editor.onError)
@@ -793,14 +801,23 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// switch to the text tool; the next configuration opens the field.
     func requestTextField(at point: PagePoint) {
         guard editable, let pageID, let request = configuration?.onTextFieldRequested else { return }
-        pendingTextField = (pageID, point, nil, CACurrentMediaTime() + 2)
+        pendingTextField = (pageID, point, nil, CACurrentMediaTime() + 2, false)
         request()
     }
     /// „Bearbeiten“ or a second tap on a selected field: the text tool takes
     /// over (temporarily unless fixed) and sets the caret at `point`.
     func requestTextEdit(_ id: UUID, at point: PagePoint?) {
         guard editable, let pageID else { return }
-        pendingTextField = (pageID, point, id, CACurrentMediaTime() + 2)
+        pendingTextField = (pageID, point, id, CACurrentMediaTime() + 2, false)
+        if tool == .text { openPendingTextField() } else { configuration?.onTextFieldRequested() }
+    }
+    /// Text document: a finger tap beside every object while an ink tool is
+    /// active puts the caret into the flow (text tool temporarily, back to
+    /// the ink tool when the user leaves it). The Pencil keeps drawing.
+    var flowDocument: Bool { configuration?.flowDocument == true }
+    func requestFlowCaret(at point: PagePoint) {
+        guard editable, flowDocument, let pageID else { return }
+        pendingTextField = (pageID, point, nil, CACurrentMediaTime() + 2, true)
         if tool == .text { openPendingTextField() } else { configuration?.onTextFieldRequested() }
     }
     private func openPendingTextField() {
@@ -814,6 +831,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             let origin = self.pageLayout.contentOrigin
             let display = pending.point.map { CGPoint(x: $0.x + origin.x, y: $0.y + origin.y) }
             if let box = pending.box { self.textLayer.focusField(box, at: display) }
+            else if pending.flow, let display { self.textLayer.focusFlow(at: display) }
             else if let point = pending.point { self.addTextField(at: point) }
         }
     }

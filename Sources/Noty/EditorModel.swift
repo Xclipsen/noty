@@ -208,6 +208,7 @@ final class EditorModel: ObservableObject {
         do {
             let (candidate, focus) = try notebook.reflowText(pageID: pageID, previous: previous,
                 replacement: replacement, selection: selection, trailingDraft: trailingDraft,
+                drawingIsEmpty: Self.drawingIsEmpty,
                 pageCapacity: { page, box in TextFlowEditing.capacity(box, page: page) })
             let beforeFocus = TextFlowFocus(pageID: pageID, boxID: previous.id,
                 selection: NSRange(location: TextListEditing.caret(before: previous.text, after: replacement.text, selection: selection.location), length: 0),
@@ -234,6 +235,30 @@ final class EditorModel: ObservableObject {
             return nil
         }
     }
+    /// No strokes (also ink whose strokes were all erased): such a page holds
+    /// nothing in a text document and is neither kept after the text nor exported.
+    nonisolated static func drawingIsEmpty(_ data: Data) -> Bool {
+        data.isEmpty || ((try? PKDrawing(data: data))?.strokes.isEmpty ?? false)
+    }
+
+    /// Text documents: where a tap below the text, on a page after it or on
+    /// the reserve page puts the caret (end of the flow). A document without
+    /// flow (not written by this build) gets one on its first page first.
+    func textFlowEnd() -> TextFlowFocus? {
+        guard notebook.isTextDocument, writable, !busy, !mutationsPaused else { return nil }
+        if let focus = notebook.textFlowEndFocus { return focus }
+        do {
+            guard let (candidate, focus) = try notebook.addingTextFlow() else { return nil }
+            let before = notebook
+            try installFlow(candidate)
+            recordPageOperation(before: before, undoPageID: focus.pageID)
+            return focus
+        } catch { self.error = "Textfluss: \(error.localizedDescription)"; return nil }
+    }
+
+    /// Pages of a whole-document PDF: text documents without trailing empty pages.
+    var exportedPageIDs: [UUID] { notebook.exportedPageIDs(drawingIsEmpty: Self.drawingIsEmpty) }
+
     /// Reverts (or re-applies) the most recent change on any page, in order.
     /// Steps whose page was deleted, replaced or changed elsewhere are dropped;
     /// they never overwrite newer content. Returns the page to reveal.
