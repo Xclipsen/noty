@@ -2,6 +2,22 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Nutzungsfeedback Tag 1 (22.10.2026)
+
+Lasso-Kontur (`SelectionContour`) sowie Fingertipp-Auswahl bei aktivem Stift und Doppeltipp „Textfeld hinzufügen“ (`PageObjectHitTest`, `FingerObjectGestures`) als zwei Merge-Commits nach `main`. Bedienung: [DESIGN](DESIGN.md), Technik: [ARCHITECTURE](ARCHITECTURE.md).
+
+- **Implementiert**, kein Notebook-/Archivformatwechsel, Buildnummer unverändert 61.
+- **Erfolgreich gebaut:** `swift test --package-path Core` mit **648 Tests, 3 übersprungen, 0 Fehler** (inkl. `PageObjectHitTestTests`, Lasso-Konturfall in `LassoTouchAndHighZoomTests`); `xtool dev build` in PTY ohne Warnungen gegen das iPad-SDK. Kein signiertes IPA.
+- **Nicht installiert, auf dem iPad ungeprüft.** Core-Tests und SDK-Build belegen weder Gesten noch PencilKit-Verhalten.
+
+Gerätetests (gebündelt, isolierter Bereich/Testheft):
+
+1. Lasso: reine Handschrift, gemischte Auswahl (Strich + Form + Textfeld + Bild) und weit entfernte Teile – Kontur mit Abstand, Inseln getrennt; bei hohem und niedrigem Zoom gleich breiter Abstand; Verschieben, Skalieren, Drehen bewegen die Kontur flüssig mit; Griffe/Leiste am Konturrahmen; laufendes Lasso gestrichelt; Bewegung reduzieren.
+2. Fingertipp mit Stift, Bleistift, Marker und Radierer auf Textfeld, Bild, Form: Auswahl mit Griffen und Leiste, Werkzeug bleibt; Tipp ins Leere, Pencil-Schreiben, „Auswahl aufheben“ und Werkzeugwechsel heben auf.
+3. Fingerziehen auf der Auswahl verschiebt (auch über Seitengrenzen im fortlaufenden Heft), außerhalb scrollt/zoomt der Finger unverändert; Seitentext und gesperrte Bilder werden nicht gewählt; Checkboxen bleiben antippbar; mit „Auch mit dem Finger zeichnen“ keine Fingerauswahl.
+4. Doppeltipp auf freie Fläche (Papier- und PDF-Seite): nur „Textfeld hinzufügen“, kein „Platz einfügen“; neues freies Textfeld an der Tippstelle mit Tastatur; Doppeltipp auf ein Objekt zeigt kein Menü.
+5. Undo/Redo nach Fingerverschiebung, Neustart der App: Stand erhalten.
+
 ## Native Gesetzessammlung – Feature-Worktree
 
 Implementiert in `noty-law-integration` / `feat/native-law-library`, getrennt vom laufenden anderen Featurestrang. Die Website-/Backendseite liegt in `gesetzessammlung-noty` / `feat/noty-law-integration`. **Website/Backend am 20.10.2026 produktiv auf IONOS ausgerollt. Native Erweiterung als Build 54 installiert; Bedienung noch nicht auf dem iPad getestet. Mail auf Nutzerwunsch deaktiviert.**
