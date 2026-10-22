@@ -83,6 +83,12 @@ final class SelectionActionBar: UIScrollView {
     private var pendingHover: DispatchWorkItem?
     /// Full width of the shown buttons and dividers.
     private(set) var contentWidth: CGFloat = 0
+    private struct State: Equatable {
+        var groups: [[SelectionAction]]
+        var disabled: Set<SelectionAction>, on: Set<SelectionAction>
+        var titles: [SelectionAction: String], symbols: [SelectionAction: String]
+    }
+    private var lastState: State?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -126,6 +132,10 @@ final class SelectionActionBar: UIScrollView {
     func show(_ groups: [[SelectionAction]], disabled: Set<SelectionAction> = [], on: Set<SelectionAction> = [],
               titles: [SelectionAction: String] = [:], symbols: [SelectionAction: String] = [:]) {
         let groups = groups.filter { !$0.isEmpty }
+        // Called on every refresh (also per drag event): nothing to do when unchanged.
+        let state = State(groups: groups, disabled: disabled, on: on, titles: titles, symbols: symbols)
+        guard state != lastState else { return }
+        lastState = state
         if groups != shown {
             shown = groups
             stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
@@ -141,8 +151,7 @@ final class SelectionActionBar: UIScrollView {
             button.isEnabled = !disabled.contains(action)
             let title = titles[action] ?? action.title
             if button.accessibilityLabel != title { button.accessibilityLabel = title; button.toolTip = "\(title) – \(action.detail)" }
-            let symbol = symbols[action] ?? action.symbol
-            if button.configuration?.image != UIImage(systemName: symbol) { button.configuration?.image = UIImage(systemName: symbol) }
+            button.configuration?.image = UIImage(systemName: symbols[action] ?? action.symbol)
             button.setNeedsUpdateConfiguration()
         }
         stack.frame = CGRect(x: 4, y: 4, width: contentWidth - 8, height: 44)

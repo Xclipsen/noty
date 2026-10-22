@@ -157,10 +157,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     let snapping = DragSnapping()
     private var hasSelection: Bool { !ink.isEmpty || !texts.isEmpty || !images.isEmpty || !shapes.isEmpty }
     // MARK: Textneubau – a single text field selected by a tap
-    /// The selection is one text field picked by a tap (finger with any ink
-    /// tool, or the lasso tool's tap): thin frame, a width point left and
-    /// right, rotation handle above the middle, its own action bar. Lasso
-    /// selections keep the corner scaling (font size scales along).
+    /// The selection is one text field picked by a tap (finger with any
+    /// tool, or the tap of the lasso/shape/image tool): thin frame, four
+    /// corner points that change the width, the rotation handle above the
+    /// middle, „Bearbeiten“ and „Feldstil“ in the bar. Lasso selections keep
+    /// the corner scaling (font size scales along).
     private var fieldMode = false
     private var isFieldSelection: Bool { fieldMode && texts.count == 1 && ink.isEmpty && images.isEmpty && shapes.isEmpty }
     /// Every selectable object at a point (layer coordinates), topmost first:
