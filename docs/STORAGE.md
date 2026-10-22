@@ -1,5 +1,16 @@
 # Lokaler Revisionsspeicher – Format 1
 
+## Ergänzung 22.10.2026 · Notebook-Schema 13 (Polylinien und Polygone)
+
+Nutzerwunsch nach dem ersten Nutzungstag: Pfeile mit Knick, eckige Formen und einzeln ziehbare Ankerpunkte. `ShapeObject` erhält optional `points` (Eckpunkte in kanonischen Seitenkoordinaten) und die Art `polygon`.
+
+- **Formregeln (Swift `ShapeObject.validate`/`Notebook.validate`, Python `notebook_format.py`):** `line`/`arrow` ohne `points` wie bisher (Schema 6, Länge ≥ 1); mit `points` eine Polylinie aus 3–64 Punkten, `start`/`end` exakt erster/letzter Punkt, Gesamtlänge ≥ 1, beim Pfeil letztes Segment ≥ 1 (Richtung der Spitze). `polygon` verlangt `points` (3–64, geschlossen gedacht, `start`/`end` erster/letzter Punkt) und eine Ausdehnung ≥ 1 in beiden Richtungen. `rectangle`/`ellipse` tragen nie `points`. Grenzen über alle Punkte plus Rand (Pfeil: max(10, 3 × Breite), sonst halbe Breite) innerhalb der Seite einschließlich Schreibplatz.
+- **Schema:** `points` oder `polygon` nur ab 13. Erst eine solche Form hebt das Heft an (`raiseSchemaForShapes` in `replaceShapes`, `replaceContent`, `replaceContents`); gerade Formen, Rechtecke und Ellipsen bleiben byte-gleich im Schema-6-Format, Entfernen senkt nie. Exakte bestätigte Altbytes sichert der bestehende Migrationspfad vor dem ersten Schema-13-Commit (`Migrations/<UUID>/notebook-v<alt>.json`, Test `testFirstSchemaThirteenCommitArchivesExactConfirmedOldBytes`, Host-Roundtrip). Ab 14 gesperrt (`unsupportedSchema`); die Aussage „ab 13 gesperrt“ im Abschnitt zu Schema 12 ist damit überholt.
+- **Ältere Builds (≤ 61):** sperren Schema-13-Hefte mit „Dokumentformat 13 … nicht unterstützt“, ohne zu schreiben. Ohne die Sperre hätten sie `points` ignoriert und Knickpfeile als gerade Pfeile gezeigt.
+- **Layer:** Formen gehören wie bisher zu Papierkorb, Revisionen, Heft-/Bibliotheksbackup, Vorschau und PDF (gemeinsamer Pfad `ShapeRendering.path` über `ShapeObject.strokeLines`, auch für den Präzisionsradierer). Archiv-, Manifest- und Werkzeugformat unverändert; `ShapeKind.polygon` wird vom Formwerkzeug nicht angeboten.
+
+Nachweise: Core-Tests (`HeldPolylineAndArrowTests`), `check_verifiers.sh` mit Schema-13-Positiv-/Negativfällen, Host-Roundtrip mit Swift-geschriebenem Schema-13-Backup. **Nicht installiert, am iPad ungeprüft.** Bedienung: [DESIGN](DESIGN.md).
+
 ## Ergänzung 21.10.2026 · Notebook-Schema 12 (Bildoriginale als Paket-Assets)
 
 Bildbytes stehen nicht mehr im Heft-JSON. Jedes Original ist eine unveränderliche Datei `Assets/<sha256>` (64 Hex-Zeichen klein, ohne Endung) im eigenen Paket; `ImageObject` hält nur `asset: {sha256, byteCount}`. Gleiches Original (duplizierte Seite, Kopie, Randsnapshot, Papierkorb) = eine Datei. Pakete sind getrennt, auch `Restores/*` und `Library/Documents/*` haben ihr eigenes `Assets/`. Manifestformat 1 und `checkpoints.json` bleiben unverändert. Plan und Umsetzungsnotizen: [IMAGE-ASSETS](IMAGE-ASSETS.md).

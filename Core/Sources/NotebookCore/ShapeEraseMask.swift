@@ -80,18 +80,7 @@ public struct ShapeEraseMask: Equatable, Sendable {
     static func lines(of shape: ShapeObject) -> [(points: [PagePoint], closed: Bool)] {
         let frame = shape.frame
         switch shape.kind {
-        case .line: return [([shape.start, shape.end], false)]
-        case .arrow:
-            let angle = atan2(shape.end.y - shape.start.y, shape.end.x - shape.start.x)
-            let length = max(10, shape.lineWidth * 3)
-            let heads = [-0.5, 0.5].map { side -> (points: [PagePoint], closed: Bool) in
-                ([PagePoint(x: shape.end.x - length * cos(angle + side), y: shape.end.y - length * sin(angle + side)), shape.end], false)
-            }
-            return [([shape.start, shape.end], false)] + heads
-        case .rectangle:
-            let a = PagePoint(x: frame.x, y: frame.y), b = PagePoint(x: frame.x + frame.width, y: frame.y)
-            let c = PagePoint(x: frame.x + frame.width, y: frame.y + frame.height), d = PagePoint(x: frame.x, y: frame.y + frame.height)
-            return [([a, b, c, d], true)]
+        case .line, .arrow, .rectangle, .polygon: return shape.strokeLines
         case .ellipse:
             let rx = frame.width / 2, ry = frame.height / 2
             let center = PagePoint(x: frame.x + rx, y: frame.y + ry)

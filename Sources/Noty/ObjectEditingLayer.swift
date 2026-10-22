@@ -63,7 +63,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Move/scale/rotation of the whole group during a drag; the cached
     /// contour follows it instead of being rebuilt per touch event.
     private var groupTransform: CGAffineTransform?
-    private var dragMode = 0 // 0 lasso, 1 move, 2 scale, 3 new shape, 4/5 endpoints
+    private var dragMode = 0 // 0 lasso, 1 move, 2 scale, 3 new shape, 6 rotate, 7 shape anchor
     private var draft: ShapeObject?
     /// Selection dragged off its page (continuous notebook only).
     private var lift: SelectionLift?
@@ -79,9 +79,14 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private let toolbar = UIScrollView()
     private let actions = UIStackView()
     private let corners = (0..<4).map { _ in SelectionHandle(color: .systemBlue) }
-    private let first = SelectionHandle(color: .systemBlue), last = SelectionHandle(color: .systemBlue)
+    /// One handle per anchor of a single selected shape (`ShapeObject.anchors`):
+    /// line ends, polyline/polygon corners, rectangle corners, ellipse sides.
+    private var anchorHandles: [SelectionHandle] = []
     private let rotation = SelectionHandle(color: .white)
     private var activeCorner = 2
+    private var activeAnchor = 0
+    /// The current pan began with a finger (not the Pencil).
+    private var fingerPan = false
     private var cachedDrawing: (Data, PKDrawing)?
     private var cachedOutline: (SelectionContour.Key, CGPath?)?
     private weak var moreButton: UIButton?
@@ -136,11 +141,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             UIAction(title: "Vertikal spiegeln", image: UIImage(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down")) { [weak self] _ in self?.mirrorInk(horizontal: false) },
             UIAction(title: "Auswahl aufheben", image: UIImage(systemName: "xmark")) { [weak self] _ in self?.adopted = nil; self?.clearSelection(); self?.refresh() }
         ])
-        for (index, handle) in (corners + [first, last, rotation]).enumerated() {
-            handle.accessibilityLabel = index < 4 ? "Auswahl proportional skalieren" : index == 6 ? "Handschrift drehen" : "Formpunkt verschieben"
+        for (index, handle) in (corners + [rotation]).enumerated() {
+            handle.accessibilityLabel = index < 4 ? "Auswahl proportional skalieren" : "Handschrift drehen"
             let drag = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
             drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
-            handle.tag = index; handle.addGestureRecognizer(drag); addSubview(handle)
+            handle.tag = index < 4 ? index : 6; handle.addGestureRecognizer(drag); addSubview(handle)
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -241,8 +246,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         toolbar.isHidden = !active || lifted || (!hasSelection && ObjectClipboard.content == nil)
         for corner in corners { corner.isHidden = !active || lifted || !hasSelection }
         rotation.isHidden = !active || lifted || ink.isEmpty || !texts.isEmpty || !images.isEmpty || !shapes.isEmpty
+        // A single shape is edited by its own anchors, not the scale corners.
         let editableShape = active && !lifted && shapes.count == 1 && ink.isEmpty && texts.isEmpty && images.isEmpty
-        first.isHidden = !editableShape; last.isHidden = !editableShape
+        if editableShape { for corner in corners { corner.isHidden = true } }
+        updateAnchorHandles(count: editableShape ? (selectedShape(preview ?? content)?.anchors.count ?? 0) : 0)
         if let menu = moreButton?.menu {
             let onlyInk = !ink.isEmpty && texts.isEmpty && images.isEmpty && shapes.isEmpty
             for action in menu.children.compactMap({ $0 as? UIAction }) where action.title.contains("spiegeln") {
@@ -257,7 +264,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         HangProbe.hit("Object.layoutSubviews")
-        let controls: [UIView] = [toolbar] + corners + [first, last, rotation]
+        let controls: [UIView] = [toolbar] + corners + anchorHandles + [rotation]
         for control in controls { control.transform = .identity }
         // Controls frame the contour, which keeps a small gap around the content.
         let group = selectionBounds(preview ?? content, applyingPreview: true).map { display($0).insetBy(dx: -contourGap, dy: -contourGap) }
@@ -277,9 +284,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             for (handle, point) in zip(corners, points) { handle.frame = handleFrame(point) }
             rotation.frame = handleFrame(CGPoint(x: group.maxX + 38 / scale, y: group.midY))
         }
-        if let id = shapes.first, let shape = (preview ?? content).shapes.first(where: { $0.id == id }) {
-            first.frame = handleFrame(CGPoint(x: shape.start.x + layout.contentOrigin.x, y: shape.start.y + layout.contentOrigin.y))
-            last.frame = handleFrame(CGPoint(x: shape.end.x + layout.contentOrigin.x, y: shape.end.y + layout.contentOrigin.y))
+        if let shape = selectedShape(preview ?? content) {
+            for (handle, anchor) in zip(anchorHandles, shape.anchors) {
+                handle.frame = handleFrame(CGPoint(x: anchor.x + layout.contentOrigin.x, y: anchor.y + layout.contentOrigin.y))
+            }
         }
         for control in controls {
             let center = control.center
@@ -323,11 +331,37 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         guard active, touch.view === self else { return false }
+        if gestureRecognizer === pan { fingerPan = touch.type != .pencil }
         if gestureRecognizer === pan, touch.type != .pencil, !allowsFingerDrawing {
+            // A finger grabs the selection or any shape below it; elsewhere it scrolls.
             return selectionBounds(content).map(display)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale)
-                .contains(touch.location(in: self)) == true
+                .contains(touch.location(in: self)) == true || shapeHit(at: canonical(touch.location(in: self))) != nil
         }
         return true
+    }
+    /// Topmost shape under `point` (canonical), when shapes may be picked.
+    private func shapeHit(at point: CGPoint) -> ShapeObject? {
+        guard tool == .shape || filter.shapes else { return nil }
+        return content.shapes.reversed().first { ShapeRendering.hit($0, at: point) }
+    }
+    private func selectedShape(_ value: PageContent) -> ShapeObject? {
+        guard shapes.count == 1, let id = shapes.first else { return nil }
+        return value.shapes.first { $0.id == id }
+    }
+    /// Shows `count` anchor handles (created on demand, extra ones hidden).
+    private func updateAnchorHandles(count: Int) {
+        while anchorHandles.count < count {
+            let anchor = SelectionHandle(color: .systemBlue)
+            let drag = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
+            drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
+            anchor.tag = 100 + anchorHandles.count; anchor.addGestureRecognizer(drag)
+            insertSubview(anchor, belowSubview: rotation)
+            anchorHandles.append(anchor)
+        }
+        for (index, handle) in anchorHandles.enumerated() {
+            handle.isHidden = index >= count
+            handle.accessibilityLabel = "Formpunkt \(index + 1) verschieben"
+        }
     }
     @objc private func tap(_ gesture: UITapGestureRecognizer) {
         adopted = nil; clearSelection()
@@ -342,8 +376,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     @objc private func drag(_ gesture: UIPanGestureRecognizer) { self.gesture(gesture, requestedMode: nil) }
     @objc private func handle(_ gesture: UIPanGestureRecognizer) {
         let tag = gesture.view?.tag ?? 2
-        if gesture.state == .began { activeCorner = tag }
-        self.gesture(gesture, requestedMode: tag < 4 ? 2 : tag == 6 ? 6 : tag == 4 ? 4 : 5)
+        if gesture.state == .began { if tag >= 100 { activeAnchor = tag - 100 } else { activeCorner = tag } }
+        self.gesture(gesture, requestedMode: tag >= 100 ? 7 : tag < 4 ? 2 : 6)
     }
     private func gesture(_ gesture: UIPanGestureRecognizer, requestedMode: Int?) {
         guard active else { return }
@@ -359,10 +393,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             startContent = content; preview = nil; inkTransform = nil; groupTransform = nil
             if let requestedMode { dragMode = requestedMode }
             else if selectionBounds(content)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale).contains(initialPoint) == true { dragMode = 1 }
+            else if fingerPan, !allowsFingerDrawing, let hit = shapeHit(at: initialPoint) {
+                // A finger on a shape picks it up and moves it at once.
+                clearSelection(); shapes = [hit.id]; dragMode = 1
+            }
             else if tool == .shape {
                 clearSelection(); dragMode = 3
                 let color = automaticColor?(.init(x: initialPoint.x, y: initialPoint.y)) ?? color
-                draft = ShapeObject(kind: options.kind, start: .init(x: initialPoint.x, y: initialPoint.y), end: .init(x: point.x, y: point.y),
+                draft = ShapeObject(kind: ShapeKind.toolKinds.contains(options.kind) ? options.kind : .line,
+                    start: .init(x: initialPoint.x, y: initialPoint.y), end: .init(x: point.x, y: point.y),
                     color: color, lineWidth: lineWidth, pattern: options.pattern, fill: options.filled ? InkColor(color.red, color.green, color.blue, 0.2) : nil)
             } else { clearSelection(); dragMode = 0; lasso = [CGPoint(x: initialPoint.x + layout.contentOrigin.x, y: initialPoint.y + layout.contentOrigin.y)] }
         }
@@ -413,11 +452,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             }
         case 3: draft?.end = .init(x: point.x, y: point.y)
         default:
-            if let id = shapes.first, let index = initial.shapes.firstIndex(where: { $0.id == id }) {
-                var value = initial
-                if dragMode == 4 { value.shapes[index].start = .init(x: point.x, y: point.y) }
-                else { value.shapes[index].end = .init(x: point.x, y: point.y) }
-                if (try? value.shapes[index].validate()) != nil, limits.contains(value.shapes[index].bounds, tolerance: 0.02) { preview = value }
+            // One anchor follows the touch; the rest of the shape stays.
+            if let id = shapes.first, let index = initial.shapes.firstIndex(where: { $0.id == id }),
+               let moved = initial.shapes[index].movingAnchor(activeAnchor, to: .init(x: point.x, y: point.y)),
+               limits.contains(moved.bounds, tolerance: 0.02) {
+                var value = initial; value.shapes[index] = moved; preview = value
             }
         }
         // Lasso being drawn or selection being dragged (also lifted across
@@ -707,9 +746,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             minimum = max(minimum, 1 / box.width, 1 / box.height)
         }
         for shape in initial.shapes where shapes.contains(shape.id) {
-            minimum = max(minimum, 0.5 / shape.lineWidth, 1 / hypot(shape.end.x - shape.start.x, shape.end.y - shape.start.y))
+            minimum = max(minimum, 0.5 / shape.lineWidth, 1 / max(1e-6, shape.frame.width, shape.frame.height))
             maximum = min(maximum, 40 / shape.lineWidth)
-            if shape.kind == .rectangle || shape.kind == .ellipse { minimum = max(minimum, 1 / shape.frame.width, 1 / shape.frame.height) }
+            if shape.kind == .rectangle || shape.kind == .ellipse || shape.kind == .polygon {
+                minimum = max(minimum, 1 / shape.frame.width, 1 / shape.frame.height)
+            }
         }
         for image in initial.images where images.contains(image.id) { minimum = max(minimum, 1 / image.width, 1 / image.height) }
         let change = SelectionTransform(frame: PageRect(frame), anchor: requestedAnchor ?? .init(x: frame.minX, y: frame.minY),
@@ -731,7 +772,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             guard (try? value.images[i].validate()) != nil, value.images[i].fits(in: limits) else { return nil }
         }
         for i in value.shapes.indices where shapes.contains(value.shapes[i].id) {
-            value.shapes[i].start = point(value.shapes[i].start); value.shapes[i].end = point(value.shapes[i].end)
+            value.shapes[i] = value.shapes[i].mapped(point)
             value.shapes[i].lineWidth *= scale
             guard (try? value.shapes[i].validate()) != nil, limits.contains(value.shapes[i].bounds, tolerance: 0.02) else { return nil }
         }

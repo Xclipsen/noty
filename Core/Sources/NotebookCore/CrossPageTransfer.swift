@@ -115,8 +115,7 @@ public enum CrossPageTransfer {
             guard (try? result.images[i].validate()) != nil else { throw CrossPageTransferError.invalidObject }
         }
         for i in result.shapes.indices {
-            result.shapes[i].start = move.apply(result.shapes[i].start)
-            result.shapes[i].end = move.apply(result.shapes[i].end)
+            result.shapes[i] = result.shapes[i].mapped(move.apply)
             result.shapes[i].lineWidth *= move.scale
             guard (try? result.shapes[i].validate()) != nil else { throw CrossPageTransferError.invalidObject }
         }
@@ -229,6 +228,7 @@ extension Notebook {
             next.pages[index].textBoxes = content.textBoxes
             next.pages[index].images = content.images
             next.pages[index].shapes = content.shapes
+            next.raiseSchemaForShapes(content.shapes)
             let bounds = next.pages[index].textBounds
             guard content.textBoxes.allSatisfy({ bounds.contains($0.rect) }) else { throw StorageError.invalidDocument }
         }

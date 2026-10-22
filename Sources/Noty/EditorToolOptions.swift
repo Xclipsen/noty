@@ -47,8 +47,8 @@ struct EditorToolOptions: View {
 
     @ViewBuilder private var controls: some View {
         if tool == .shape {
-            ForEach(ShapeKind.allCases, id: \.self) { kind in
-                let symbol = switch kind { case .line: "line.diagonal"; case .arrow: "arrow.up.right"; case .rectangle: "rectangle"; case .ellipse: "circle" }
+            ForEach(ShapeKind.toolKinds, id: \.self) { kind in
+                let symbol = switch kind { case .line: "line.diagonal"; case .arrow: "arrow.up.right"; case .rectangle: "rectangle"; case .ellipse: "circle"; case .polygon: "triangle" }
                 option(kind.title, symbol: symbol, selected: shapeOptions.kind == kind) { shapeOptions.kind = kind }
             }
         }

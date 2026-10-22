@@ -19,7 +19,9 @@ IMAGE_LIMIT = 20_000_000  # per stored original
 IMAGES_TOTAL_LIMIT = 500_000_000  # unique originals (each hash once), schema 12
 LEGACY_IMAGES_TOTAL_LIMIT = 40_000_000  # embedded originals summed per object, schema <= 11
 IMAGE_ASSET_SCHEMA = 12  # image objects reference package assets instead of embedding
-CURRENT_SCHEMA = 12
+VERTEX_SHAPE_SCHEMA = 13  # polyline/polygon shapes (`points`, kind "polygon")
+MAX_SHAPE_VERTICES = 64
+CURRENT_SCHEMA = 13
 ASSET_HASH = re.compile(r"[0-9a-f]{64}")
 # Foundation dates: seconds since 2001 (JSONEncoder default); Swift accepts years 1…9999.
 REFERENCE_DATE_UNIX = 978_307_200
@@ -214,24 +216,44 @@ def _shapes(page, version, shape_ids):
         shape_id = uuid_string(shape["id"])
         check(shape_id not in shape_ids, "Duplicate shape identities")
         shape_ids.add(shape_id)
-        check(shape["kind"] in ("line", "arrow", "rectangle", "ellipse"), "Unknown shape kind")
+        kind = shape["kind"]
+        check(kind in ("line", "arrow", "rectangle", "ellipse", "polygon"), "Unknown shape kind")
         check(shape["pattern"] in ("solid", "dashed", "dotted"), "Unknown stroke pattern")
-        points = [shape[p][k] for p in ("start", "end") for k in ("x", "y")]
-        check(all(number(v) and abs(v) <= 14_400 for v in points), "Invalid shape points")
+        vertices = shape.get("points")
+        # Schema 13: polylines (line/arrow with >= 3 vertices) and polygons carry
+        # `points`; start/end are their first/last vertex.
+        if vertices is not None or kind == "polygon":
+            check(version >= VERTEX_SHAPE_SCHEMA, "Polyline/polygon shapes need schema 13")
+            check(kind != "rectangle" and kind != "ellipse", "Rectangles and ellipses have no vertices")
+            check(isinstance(vertices, list) and 3 <= len(vertices) <= MAX_SHAPE_VERTICES, "Invalid shape vertices")
+        corners = [shape["start"], shape["end"]] + (vertices or [])
+        check(all(isinstance(c, dict) and number(c["x"]) and number(c["y"])
+                  and abs(c["x"]) <= 14_400 and abs(c["y"]) <= 14_400 for c in corners), "Invalid shape points")
         width = shape["lineWidth"]
         check(number(width) and 0.5 <= width <= 40, "Invalid line width")
         a, b = shape["start"], shape["end"]
-        check(math.hypot(a["x"] - b["x"], a["y"] - b["y"]) >= 1, "Shape too small")
-        if shape["kind"] in ("rectangle", "ellipse"):
-            check(abs(a["x"] - b["x"]) >= 1 and abs(a["y"] - b["y"]) >= 1, "Shape too small")
+        if vertices is None:
+            check(math.hypot(a["x"] - b["x"], a["y"] - b["y"]) >= 1, "Shape too small")
+        else:
+            check(vertices[0]["x"] == a["x"] and vertices[0]["y"] == a["y"]
+                  and vertices[-1]["x"] == b["x"] and vertices[-1]["y"] == b["y"], "Shape ends differ from its vertices")
+            length = sum(math.hypot(q["x"] - p["x"], q["y"] - p["y"]) for p, q in zip(vertices, vertices[1:]))
+            check(length >= 1, "Shape too small")
+            if kind == "arrow":
+                c = vertices[-2]
+                check(math.hypot(b["x"] - c["x"], b["y"] - c["y"]) >= 1, "Arrow head without direction")
+        outline = [a, b] if vertices is None or kind in ("rectangle", "ellipse") else vertices
+        xs, ys = [c["x"] for c in outline], [c["y"] for c in outline]
+        if kind in ("rectangle", "ellipse", "polygon"):
+            check(max(xs) - min(xs) >= 1 and max(ys) - min(ys) >= 1, "Shape too small")
         color(shape["color"])
         if shape.get("fill") is not None:
             color(shape["fill"])
-        pad = max(10, width * 3) if shape["kind"] == "arrow" else width / 2
-        check(min(a["x"], b["x"]) - pad >= -m.get("left", 0) - 0.02, "Shape outside page")
-        check(min(a["y"], b["y"]) - pad >= -m.get("top", 0) - 0.02, "Shape outside page")
-        check(max(a["x"], b["x"]) + pad <= w + m.get("right", 0) + 0.02, "Shape outside page")
-        check(max(a["y"], b["y"]) + pad <= h + m.get("bottom", 0) + 0.02, "Shape outside page")
+        pad = max(10, width * 3) if kind == "arrow" else width / 2
+        check(min(xs) - pad >= -m.get("left", 0) - 0.02, "Shape outside page")
+        check(min(ys) - pad >= -m.get("top", 0) - 0.02, "Shape outside page")
+        check(max(xs) + pad <= w + m.get("right", 0) + 0.02, "Shape outside page")
+        check(max(ys) + pad <= h + m.get("bottom", 0) + 0.02, "Shape outside page")
 
 
 def asset_reference(value):

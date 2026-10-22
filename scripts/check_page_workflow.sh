@@ -10,6 +10,8 @@ swiftc -swift-version 6 -parse-as-library Core/Sources/NotebookCore/*.swift scri
 python3 -B scripts/verify_backup.py "$task_check/results/heft.notybackup" --compare "$task_check/results/current.json"
 # Format 1 as Build 53 wrote it (schema 11, embedded original).
 python3 -B scripts/verify_backup.py "$task_check/results/heft-v1.notybackup" --compare "$task_check/results/current-v11.json"
+# Schema 13 (polyline/polygon shapes) written by Swift.
+python3 -B scripts/verify_backup.py "$task_check/results/heft-v13.notybackup" --compare "$task_check/results/current-v13.json"
 python3 -B scripts/verify_library_backup.py "$task_check/results/bibliothek.notylibrary"
 python3 -B scripts/verify_device_store.py "$task_check/results/Source"
 # Restore copies (Restores/*) and the migrated schema-11 package carry their assets.

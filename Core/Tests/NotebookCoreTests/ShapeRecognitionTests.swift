@@ -57,13 +57,13 @@ final class ShapeRecognitionTests: XCTestCase {
         let rectangle = ShapeRecognition.shape(stroke([.init(x: 100, y: 100), .init(x: 300, y: 100), .init(x: 300, y: 180), .init(x: 100, y: 180)]))
         XCTAssertEqual(kind(rectangle), .rectangle)
         XCTAssertEqual(rectangle.flatMap { $0.object(color: InkColor(0, 0, 0), lineWidth: 2) }?.kind, .rectangle)
-        // 20° stays rotated: native outline, not an axis-aligned object.
+        // 20° stays rotated: an editable polygon (schema 13), not an axis-aligned rectangle.
         let rotated = ShapeRecognition.shape(stroke(regular(4, radius: 1, start: 0).enumerated().map { i, _ in
             let corners = [(-100.0, -40.0), (100, -40), (100, 40), (-100, 40)], r = 20 * Double.pi / 180, c = corners[i]
             return PagePoint(x: 300 + c.0 * cos(r) - c.1 * sin(r), y: 300 + c.0 * sin(r) + c.1 * cos(r))
         }))
         XCTAssertEqual(kind(rotated), .rectangle)
-        XCTAssertNil(rotated?.object(color: InkColor(0, 0, 0), lineWidth: 2))
+        XCTAssertEqual(rotated?.object(color: InkColor(0, 0, 0), lineWidth: 2)?.kind, .polygon)
         XCTAssertEqual(ShapeRecognition.recognize([.init(x: 50, y: 50), .init(x: 150, y: 50), .init(x: 150, y: 150), .init(x: 50, y: 150), .init(x: 50, y: 50)]), .rectangle)
     }
     private func sideLengths(_ shape: RecognizedShape?) -> [Double] {

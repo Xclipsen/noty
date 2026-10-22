@@ -4,19 +4,26 @@ public enum PolygonKind: String, Sendable {
     case triangle, rightTriangle, equilateralTriangle, isoscelesTriangle, rectangle, square, rhombus, parallelogram, trapezoid, quadrilateral, pentagon, hexagon, heptagon, octagon, polygon, star
 }
 
-/// Result of an explicit hold. Rotations snap with `LineSnapping`; only
-/// axis-aligned rectangles/ellipses and arrows map to editable `ShapeObject`s,
-/// everything else becomes a native ink outline (no format change).
+/// Result of an explicit hold. Rotations snap with `LineSnapping`. Every
+/// result maps to an editable `ShapeObject` (pen); axis-aligned rectangles
+/// stay `rectangle`, other polygons and polylines need schema 13. Pencil and
+/// highlighter results become native ink outlines instead.
 public enum RecognizedShape: Equatable, Sendable {
     case line(start: PagePoint, end: PagePoint)
     case arrow(start: PagePoint, tip: PagePoint)
     case ellipse(center: PagePoint, radiusX: Double, radiusY: Double, degrees: Double)
     case polygon(PolygonKind, [PagePoint])
+    /// Open polyline with at least one corner (three or more vertices); with
+    /// `arrow` its last segment carries the head.
+    case polyline([PagePoint], arrow: Bool)
 
     public func object(color: InkColor, lineWidth: Double) -> ShapeObject? {
         switch self {
-        case .line: return nil
+        case let .line(start, end): return ShapeObject(kind: .line, start: start, end: end, color: color, lineWidth: lineWidth)
         case let .arrow(start, tip): return ShapeObject(kind: .arrow, start: start, end: tip, color: color, lineWidth: lineWidth)
+        case let .polyline(vertices, arrow):
+            guard vertices.count >= 2 else { return nil }
+            return ShapeObject(kind: arrow ? .arrow : .line, vertices: vertices, color: color, lineWidth: lineWidth)
         case let .ellipse(center, rx, ry, degrees):
             let quarter = degrees / 90
             guard quarter == quarter.rounded() else { return nil }
@@ -25,23 +32,43 @@ public enum RecognizedShape: Equatable, Sendable {
             return ShapeObject(kind: .ellipse, start: .init(x: center.x - w, y: center.y - h), end: .init(x: center.x + w, y: center.y + h),
                                color: color, lineWidth: lineWidth)
         case let .polygon(kind, vertices):
+            guard vertices.count >= 3 else { return nil }
             guard kind == .rectangle || kind == .square, vertices.count == 4,
-                  zip(vertices, vertices.dropFirst() + [vertices[0]]).allSatisfy({ abs($0.x - $1.x) < 1e-6 || abs($0.y - $1.y) < 1e-6 }) else { return nil }
+                  zip(vertices, vertices.dropFirst() + [vertices[0]]).allSatisfy({ abs($0.x - $1.x) < 1e-6 || abs($0.y - $1.y) < 1e-6 }) else {
+                return ShapeObject(kind: .polygon, vertices: vertices, color: color, lineWidth: lineWidth)
+            }
             let xs = vertices.map(\.x), ys = vertices.map(\.y)
             return ShapeObject(kind: .rectangle, start: .init(x: xs.min()!, y: ys.min()!), end: .init(x: xs.max()!, y: ys.max()!),
                                color: color, lineWidth: lineWidth)
         }
     }
-    /// Dense path for a native stroke. Polygon corners repeat, so the stroke's
-    /// spline keeps them sharp; closed outlines end at their start.
-    public func outline(spacing: Double = 8) -> [PagePoint] {
+    /// Dense path for a native stroke. Corners repeat, so the stroke's spline
+    /// keeps them sharp; closed outlines end at their start. Arrows end with
+    /// their head (`headLength`, as `ShapeObject.arrowHead` draws it): tip →
+    /// wing → tip → wing in the same stroke.
+    public func outline(spacing: Double = 8, headLength: Double = 10) -> [PagePoint] {
         let step = max(1, spacing.isFinite ? spacing : 8)
         func segment(_ a: PagePoint, _ b: PagePoint) -> [PagePoint] {
             let count = max(1, Int((hypot(b.x - a.x, b.y - a.y) / step).rounded(.up)))
             return (0..<count).map { i in let t = Double(i) / Double(count); return .init(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t) }
         }
+        func head(from a: PagePoint, to tip: PagePoint) -> [PagePoint] {
+            let angle = atan2(tip.y - a.y, tip.x - a.x), length = max(1, headLength.isFinite ? headLength : 10)
+            let wings = [-0.5, 0.5].map { PagePoint(x: tip.x - length * cos(angle + $0), y: tip.y - length * sin(angle + $0)) }
+            return [tip, tip] + segment(tip, wings[0]) + [wings[0], wings[0]] + segment(wings[0], tip) + [tip, tip]
+                + segment(tip, wings[1]) + [wings[1]]
+        }
         switch self {
-        case let .line(start, end), let .arrow(start, end): return segment(start, end) + [end]
+        case let .line(start, end): return segment(start, end) + [end]
+        case let .arrow(start, end): return segment(start, end) + head(from: start, to: end)
+        case let .polyline(vertices, arrow):
+            guard let first = vertices.first, let last = vertices.last else { return [] }
+            var path: [PagePoint] = []
+            for (index, (a, b)) in zip(vertices, vertices.dropFirst()).enumerated() {
+                path += (index == 0 ? [first] : [a, a]) + segment(a, b)
+            }
+            guard arrow, vertices.count >= 2 else { return path + [last] }
+            return path + head(from: vertices[vertices.count - 2], to: last)
         case let .ellipse(center, rx, ry, degrees):
             let perimeter = .pi * (3 * (rx + ry) - sqrt((3 * rx + ry) * (rx + 3 * ry)))
             let count = min(160, max(24, Int(perimeter / step)))
@@ -73,6 +100,9 @@ public enum RecognizedShape: Equatable, Sendable {
 ///   centre by the tip's distance from the centre relative to where the
 ///   shape was recognised. Pulling outward enlarges, pushing inward shrinks;
 ///   circles stay circles, axis-aligned rectangles stay editable rectangles.
+/// - Polylines (also bent arrows): the corners stay, the last vertex moves
+///   with the tip (by the tip's offset from where it rested, so a head drawn
+///   after the tip does not jump) and its segment snaps like a line.
 public struct HeldShapeAdjustment: Equatable, Sendable {
     public let base: RecognizedShape
     /// Tip position (canonical page points) when the shape was recognised.
@@ -87,6 +117,7 @@ public struct HeldShapeAdjustment: Equatable, Sendable {
         switch base {
         case let .line(start, _), let .arrow(start, _): start
         case let .ellipse(center, _, _, _): center
+        case let .polyline(vertices, _): vertices.last ?? grab
         case let .polygon(_, vertices):
             vertices.isEmpty ? grab : PagePoint(x: vertices.map(\.x).reduce(0, +) / Double(vertices.count),
                                                 y: vertices.map(\.y).reduce(0, +) / Double(vertices.count))
@@ -98,6 +129,15 @@ public struct HeldShapeAdjustment: Equatable, Sendable {
     public func shape(at tip: PagePoint) -> RecognizedShape {
         guard tip.x.isFinite, tip.y.isFinite, hypot(tip.x - grab.x, tip.y - grab.y) >= 2 else { return base }
         if case let .line(start, _) = base { return .line(start: start, end: LineSnapping.end(from: start, to: tip)) }
+        if case let .polyline(vertices, arrow) = base {
+            guard vertices.count >= 2 else { return base }
+            var moved = vertices
+            let corner = vertices[vertices.count - 2], last = vertices[vertices.count - 1]
+            let end = LineSnapping.end(from: corner, to: .init(x: last.x + tip.x - grab.x, y: last.y + tip.y - grab.y))
+            guard hypot(end.x - corner.x, end.y - corner.y) >= Self.minimumExtent else { return base }
+            moved[moved.count - 1] = end
+            return .polyline(moved, arrow: arrow)
+        }
         let pivot = anchor
         let reach = hypot(grab.x - pivot.x, grab.y - pivot.y)
         guard reach >= 8 else { return base }
@@ -111,6 +151,7 @@ public struct HeldShapeAdjustment: Equatable, Sendable {
         switch shape {
         case let .line(a, b), let .arrow(a, b): return hypot(b.x - a.x, b.y - a.y)
         case let .ellipse(_, rx, ry, _): return 2 * min(rx, ry)
+        case let .polyline(vertices, _): return ShapeObject.length(vertices)
         case let .polygon(_, vertices):
             guard let minX = vertices.map(\.x).min(), let maxX = vertices.map(\.x).max(),
                   let minY = vertices.map(\.y).min(), let maxY = vertices.map(\.y).max() else { return 0 }
@@ -125,6 +166,7 @@ public struct HeldShapeAdjustment: Equatable, Sendable {
         case let .arrow(a, b): return .arrow(start: map(a), tip: map(b))
         case let .ellipse(center, rx, ry, degrees): return .ellipse(center: map(center), radiusX: rx * factor, radiusY: ry * factor, degrees: degrees)
         case let .polygon(kind, vertices): return .polygon(kind, vertices.map(map))
+        case let .polyline(vertices, arrow): return .polyline(vertices.map(map), arrow: arrow)
         }
     }
 }
@@ -152,6 +194,7 @@ public enum ShapeRecognition {
         switch shape(points) {
         case .line: return .line
         case .arrow: return .arrow
+        case let .polyline(_, arrow): return arrow ? .arrow : .line
         case .ellipse: return .ellipse
         case let .polygon(kind, _): return kind == .rectangle || kind == .square ? .rectangle : nil
         case nil: return nil
@@ -164,30 +207,25 @@ public enum ShapeRecognition {
         let width = xs.max()! - xs.min()!, height = ys.max()! - ys.min()!, diagonal = hypot(width, height)
         guard diagonal >= 24 else { return nil }
         let distance = hypot(last.x - first.x, last.y - first.y)
-        // A single-stroke arrow: straight shaft, then two short wings around its tip.
-        if let tipIndex = points.indices.max(by: { hypot(points[$0].x-first.x, points[$0].y-first.y) < hypot(points[$1].x-first.x, points[$1].y-first.y) }),
-           tipIndex >= points.count / 2, tipIndex < points.count - 2 {
-            let tip = points[tipIndex], length = hypot(tip.x-first.x, tip.y-first.y)
-            if length >= 40 {
-                let shaft = points[0...tipIndex]
-                let deviations = shaft.map { abs((tip.y-first.y)*$0.x - (tip.x-first.x)*$0.y + tip.x*first.y-tip.y*first.x) / length }
-                let wings = points[(tipIndex+1)...]
-                let sides = wings.map { ((tip.x-first.x)*($0.y-tip.y) - (tip.y-first.y)*($0.x-tip.x)) / length }
-                if deviations.max()! <= max(3, length*0.035),
-                   wings.allSatisfy({ hypot($0.x-tip.x, $0.y-tip.y) <= length*0.38 }),
-                   sides.min()! < -4, sides.max()! > 4 { return .arrow(start: first, tip: LineSnapping.end(from: first, to: tip)) }
-            }
-        }
-        if distance > diagonal * 0.75 {
-            let deviation = points.map { abs((last.y - first.y) * $0.x - (last.x - first.x) * $0.y + last.x * first.y - last.y * first.x) / distance }.max()!
-            return deviation <= max(3, diagonal * 0.035) ? .line(start: first, end: LineSnapping.end(from: first, to: last)) : nil
-        }
-        guard width >= 12, height >= 12 else { return nil }
         // Forgiving closure: an overshoot past the start is cut off, a gap of
-        // up to a fifth of the outline is closed.
+        // up to a fifth of the outline is closed. A long "overshoot" is none
+        // (an open Z, or an arrow whose head was drawn before its shaft).
         let loop = trimmedOvershoot(points)
         let length = zip(loop, loop.dropFirst()).reduce(0) { $0 + hypot($1.1.x - $1.0.x, $1.1.y - $1.0.y) }
-        guard let end = loop.last, hypot(end.x - first.x, end.y - first.y) <= max(diagonal * 0.2, length * 0.2) else { return nil }
+        let overshoot = zip(points, points.dropFirst()).reduce(0) { $0 + hypot($1.1.x - $1.0.x, $1.1.y - $1.0.y) } - length
+        let closes = width >= 12 && height >= 12 && distance <= diagonal * 0.75 && overshoot <= length * 0.3
+            && loop.last.map { hypot($0.x - first.x, $0.y - first.y) <= max(diagonal * 0.2, length * 0.2) } == true
+        // A single-stroke arrow: shaft (straight or with corners), then its
+        // head as wings or a single hook around the tip. Closed outlines
+        // first: their last side (or overshoot) would look like a hook.
+        if !closes, let arrow = arrowShape(points) { return arrow }
+        if distance > diagonal * 0.75 {
+            let deviation = points.map { abs((last.y - first.y) * $0.x - (last.x - first.x) * $0.y + last.x * first.y - last.y * first.x) / distance }.max()!
+            if deviation <= max(3, diagonal * 0.035) { return .line(start: first, end: LineSnapping.end(from: first, to: last)) }
+            return openPolyline(points)
+        }
+        guard width >= 12, height >= 12 else { return nil }
+        guard closes else { return openPolyline(points) }
         return closedShape(loop, diagonal: diagonal)
     }
     /// Cuts a closing overshoot at the point (in the last part) nearest the start.
@@ -294,7 +332,7 @@ public enum ShapeRecognition {
         let t = min(1, max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / length))
         return hypot(p.x - a.x - t * dx, p.y - a.y - t * dy)
     }
-    private static func turn(_ a: PagePoint, _ b: PagePoint, _ c: PagePoint) -> Double {
+    static func turn(_ a: PagePoint, _ b: PagePoint, _ c: PagePoint) -> Double {
         let u = (x: b.x - a.x, y: b.y - a.y), v = (x: c.x - b.x, y: c.y - b.y)
         let lengths = hypot(u.x, u.y) * hypot(v.x, v.y)
         guard lengths > 0 else { return 0 }
