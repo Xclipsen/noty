@@ -156,6 +156,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private var active: Bool { enabled && (toolActive || touchSelection) }
     /// The tool works on this plane itself (shapes, lasso).
     private var toolActive: Bool { tool == .shape || tool == .selection || tool == .inkSelection }
+    /// Finger and Pencil taps select through this plane's own tap.
+    var handlesTapsItself: Bool { enabled && toolActive }
     /// Object selected by a finger tap while an ink tool stays active
     /// (`selectByTouch`). Lives exactly as long as that selection.
     private var touchSelection = false

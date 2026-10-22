@@ -825,9 +825,11 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
 
     // MARK: Finger taps on objects and „Textfeld hinzufügen“
 
-    /// Ink tool active and the finger does not draw itself.
+    /// Finger taps select objects and double taps offer „Textfeld
+    /// hinzufügen“ with every tool except the text tool (its taps set the
+    /// caret or open fields), unless the finger draws itself.
     var acceptsFingerObjectTaps: Bool {
-        editable && [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(tool) && configuration?.fingerDrawing != true
+        editable && tool != .text && (configuration?.fingerDrawing != true || tool == .image || tool == .read)
     }
     /// Before a finger selection: the object plane gets the sheet's current
     /// content (ink and held shapes do not reconfigure it).

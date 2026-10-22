@@ -69,6 +69,9 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
 
     @objc private func tapped(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended, let sheet, sheet.acceptsFingerObjectTaps else { return }
+        // Shape and lasso tools select through their own plane's tap (same
+        // hit test); the image tool still through its image plane.
+        guard !sheet.objectLayer.handlesTapsItself, sheet.tool != .image else { return }
         let point = gesture.location(in: sheet)
         sheet.rememberTap(point)
         sheet.claimSelectionFocus()
@@ -138,10 +141,14 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         guard let sheet else { return false }
-        // Selection controls, text views and buttons keep their own touches.
+        // Selection controls and buttons keep their own touches, text views
+        // only while they are being edited (text tool); the object plane's
+        // own surface (shape/lasso tools) reaches the double tap.
         var view = touch.view
         while let current = view, current !== sheet {
-            if current === sheet.objectLayer || current is UIControl || current is UITextView || current is TextFieldContainer { return false }
+            if current is UIControl { return false }
+            if current !== sheet.objectLayer, current.superview === sheet.objectLayer { return false }
+            if sheet.tool == .text, current is UITextView || current is TextFieldContainer { return false }
             view = current.superview
         }
         let point = touch.location(in: sheet)
