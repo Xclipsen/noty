@@ -122,8 +122,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// selections keep the corner scaling (font size scales along).
     private var fieldMode = false
     private var isFieldSelection: Bool { fieldMode && texts.count == 1 && ink.isEmpty && images.isEmpty && shapes.isEmpty }
-    /// Laid-out text lines decide a tap on a field (set by the sheet).
-    var textHit: ((TextBox, PagePoint) -> Bool)?
+    /// Every selectable object at a point (layer coordinates), topmost first:
+    /// the sheet's finger hit test (`PageObjectHitTest`, screen tolerance).
+    var objectHits: ((CGPoint) -> [PageObjectReference])?
     /// Laid-out text lines of a field (own unrotated page units): what a lasso must touch.
     var textLines: ((TextBox) -> [PageRect])?
     /// The field with its height (and automatic width) from the content.
@@ -272,10 +273,6 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             onEditText?(current, point)
         }
         return true
-    }
-    /// Text fields whose laid-out text lines are at `point`, topmost first.
-    func textFields(at point: PagePoint) -> [UUID] {
-        content.textBoxes.reversed().filter { $0.allowsObjectSelection && (textHit?($0, point) ?? $0.contains(point)) }.map(\.id)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -536,27 +533,59 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         let inset = -8 / displayScale
         return selectionBounds(content).map(display)?.insetBy(dx: inset, dy: inset).contains(touch.location(in: self)) != true
     }
-    @objc private func tap(_ gesture: UITapGestureRecognizer) {
-        let point = canonical(gesture.location(in: self))
-        // Lasso tool: a tap on a field's text selects that field (second tap: caret).
-        if tool == .selection, filter.text {
-            let hits = textFields(at: PagePoint(x: point.x, y: point.y))
-            if tapOnSelectedField(textHits: hits, at: PagePoint(x: point.x, y: point.y)) { return }
-            if let first = hits.first {
-                adopted = nil; clearSelection(); texts = [first]; fieldMode = true; refresh(); return
-            }
-        }
-        selectByTap(at: point)
-    }
-    /// Tap in the shape/selection tool (canonical point): picks what lies there.
-    private func selectByTap(at point: CGPoint) {
+    @objc private func tap(_ gesture: UITapGestureRecognizer) { selectAtTap(gesture.location(in: self)) }
+    private var lassoTool: Bool { tool == .selection || tool == .inkSelection }
+    /// A tap picks the topmost single object like a finger tap with an ink
+    /// tool (`PageObjectHitTest` through the sheet, screen-constant
+    /// tolerance): a field's text lines (an empty frame reaches through, a
+    /// field above a shape wins), with the lasso next a stroke, then a shape
+    /// or an image. The lasso keeps its filter. A second tap on the selected
+    /// field sets the caret or picks the next field below. `location`: layer
+    /// coordinates (the sheet's).
+    private func selectAtTap(_ location: CGPoint) {
+        let point = canonical(location), page = PagePoint(x: point.x, y: point.y)
+        var hits = objectHits?(location) ?? []
+        if lassoTool { hits = hits.filter(filterAllows) }
+        let texts = hits.compactMap { hit -> UUID? in if case .text(let id) = hit { return id }; return nil }
+        if tapOnSelectedField(textHits: texts, at: page) { return }
         adopted = nil; clearSelection()
-        if (tool == .shape || filter.shapes), let shape = content.shapes.reversed().first(where: { ShapeRendering.hit($0, at: point) }) { shapes.insert(shape.id) }
-        else if tool == .selection || tool == .inkSelection {
-            let rect = CGRect(x: point.x - 2, y: point.y - 2, width: 4, height: 4)
-            select(path: UIBezierPath(rect: rect), rect: rect, tap: true)
-        }
+        if let first = hits.first, case .text = first { select(first) }
+        else if lassoTool, filter.ink, let stroke = strokeHit(at: point) { ink = [stroke] }
+        else if let first = hits.first { select(first) }
         refresh()
+    }
+    private func filterAllows(_ object: PageObjectReference) -> Bool {
+        switch object {
+        case .text: filter.text
+        case .image: filter.images
+        case .shape: filter.shapes
+        }
+    }
+    private func select(_ object: PageObjectReference) {
+        switch object {
+        case .text(let id): texts = [id]; fieldMode = true
+        case .image(let id): images = [id]
+        case .shape(let id): shapes = [id]
+        }
+    }
+    /// Topmost stroke under `point` (canonical), within about 10 screen points.
+    private func strokeHit(at point: CGPoint) -> Int? {
+        guard let drawing = drawing(content.drawing) else { return nil }
+        let tolerance = 10 / displayScale, target = PagePoint(x: point.x, y: point.y)
+        for index in drawing.strokes.indices.reversed() {
+            let stroke = drawing.strokes[index]
+            guard stroke.renderBounds.insetBy(dx: -tolerance, dy: -tolerance).contains(point) else { continue }
+            var points = stroke.path.interpolatedPoints(by: .distance(3)).map { sample -> PagePoint in
+                let location = sample.location.applying(stroke.transform); return PagePoint(x: location.x, y: location.y)
+            }
+            if points.isEmpty, let sample = stroke.path.first {
+                let location = sample.location.applying(stroke.transform); points = [PagePoint(x: location.x, y: location.y)]
+            }
+            let width = stroke.path.map { max($0.size.width, $0.size.height) }.max() ?? 0
+            let transformScale = max(hypot(stroke.transform.a, stroke.transform.b), hypot(stroke.transform.c, stroke.transform.d))
+            if StrokeHitTest.hits(sweep: target, target, radius: width * transformScale / 2 + tolerance, stroke: points) { return index }
+        }
+        return nil
     }
     @objc private func drag(_ gesture: UIPanGestureRecognizer) { self.gesture(gesture, requestedMode: nil) }
     @objc private func handle(_ gesture: UIPanGestureRecognizer) {
@@ -722,7 +751,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 let points = lasso.map(canonical)
                 if points.count > 2 {
                     let path = UIBezierPath(); path.move(to: points[0]); points.dropFirst().forEach { path.addLine(to: $0) }; path.close()
-                    select(path: path, rect: path.bounds, tap: false)
+                    select(path: path, rect: path.bounds)
                     // The closed loop selected something: confirm on Apple Pencil Pro.
                     if hasSelection { haptic(completed: true, at: gesture.location(in: self)) }
                 }
@@ -730,7 +759,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 // A Pencil tap in the shape tool selects as before (the tap
                 // recognizer waits for this pan, which began on touch-down).
                 preview = nil; inkTransform = nil; draft = nil; startContent = nil; lasso = []; shapeTapCandidate = false
-                selectByTap(at: initialPoint); return
+                selectAtTap(CGPoint(x: initialPoint.x + layout.contentOrigin.x, y: initialPoint.y + layout.contentOrigin.y)); return
             } else if dragMode == 3, let draft, (try? draft.validate()) != nil, limits.contains(draft.bounds, tolerance: 0.02) {
                 var value = initial; value.shapes.append(draft)
                 if commit(value, previous: initial) { shapes = [draft.id] }
@@ -875,15 +904,14 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         images = selection.images.intersection(value.images.map(\.id))
         shapes = selection.shapes.intersection(value.shapes.map(\.id))
     }
-    private func select(path: UIBezierPath, rect: CGRect, tap: Bool) {
+    private func select(path: UIBezierPath, rect: CGRect) {
         let region = LassoRegion(points: path.cgPath.lassoPoints)
         func selected(_ bounds: CGRect) -> Bool {
             guard rect.insetBy(dx: -0.001, dy: -0.001).intersects(bounds) else { return false }
-            return tap || region.intersects(PageRect(bounds))
+            return region.intersects(PageRect(bounds))
         }
         func selectedField(_ box: TextBox) -> Bool {
             guard rect.insetBy(dx: -0.001, dy: -0.001).intersects(box.rotatedBounds.cgRect) else { return false }
-            if tap { return box.contains(PagePoint(x: rect.midX, y: rect.midY), tolerance: 2) }
             // Only the text (or a field style's surface/frame line), not the empty frame.
             return region.selects(box, lines: textLines?(box) ?? [])
         }
@@ -892,10 +920,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         // Shapes count by their stroke (and a visible fill), not their bounds:
         // a lasso or tap inside an unfilled outline leaves the shape alone.
         if filter.shapes {
-            let point = CGPoint(x: rect.midX, y: rect.midY)
             shapes = Set(content.shapes.filter { shape in
-                guard rect.insetBy(dx: -0.001, dy: -0.001).intersects(shape.bounds.cgRect) || tap else { return false }
-                return tap ? ShapeRendering.hit(shape, at: point) : region.selects(shape)
+                rect.insetBy(dx: -0.001, dy: -0.001).intersects(shape.bounds.cgRect) && region.selects(shape)
             }.map(\.id))
         }
         if filter.ink, let drawing = try? PKDrawing(data: content.drawing) {

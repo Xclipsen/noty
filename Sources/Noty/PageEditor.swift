@@ -400,10 +400,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.onLeaveField = { [weak self] in self?.configuration?.onTextEditingFinished() }
         textLayer.onTap = { [weak self] point in self?.rememberTap(point) }
         objectLayer.textLines = { [weak self] box in self?.textLayer.lineRects(box) ?? [] }
-        objectLayer.textHit = { [weak self] box, point in
-            guard let self else { return box.contains(point) }
-            return self.textLineHit(box, at: point, slack: 8 / max(0.001, self.screenScale))
-        }
+        objectLayer.objectHits = { [weak self] point in self?.objectHits(at: point) ?? [] }
         objectLayer.fittedText = { [weak self] box in self?.textLayer.fitted(box) ?? box }
         objectLayer.onEditText = { [weak self] id, point in self?.requestTextEdit(id, at: point) }
         canvas.onPasteText = { [weak self] in self?.pasteText() }
@@ -818,6 +815,16 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// the empty rest of a field's frame is no hit).
     func textLineHit(_ box: TextBox, at point: PagePoint, slack: Double) -> Bool {
         textLayer.hitsTextLine(box, at: point, slack: slack)
+    }
+    /// Every selectable object under a tap at `point` (sheet coordinates),
+    /// topmost first: one hit test for finger taps with any tool and for
+    /// lasso/shape/image taps. About 10 screen points of slack at any zoom
+    /// (8 around text lines); an empty part of a field's frame reaches through.
+    func objectHits(at point: CGPoint) -> [PageObjectReference] {
+        let scale = Double(screenScale)
+        return PageObjectHitTest.all(at: canonical(point), in: objectContent, tolerance: 10 / scale,
+            textHit: { box, point in self.textLineHit(box, at: point, slack: 8 / scale) },
+            shapeHit: { shape, point in ShapeRendering.hit(shape, at: CGPoint(x: point.x, y: point.y)) })
     }
     func rememberTap(_ point: CGPoint) { lastTap = canonical(point) }
     /// Double-tap menu: remembers the canonical point and lets the editor
