@@ -100,6 +100,7 @@ def main() -> None:
     args = parser.parse_args()
     notebook, info = verify(args.archive)
     result = {"valid": True, "formatVersion": info["formatVersion"], "schemaVersion": notebook["schemaVersion"],
+              "kind": notebook.get("kind") or "notebook",
               "pageCount": len(notebook["pages"]), "assets": info["assets"], "assetBytes": info["assetBytes"]}
     if args.compare:
         result["complete_contents_match"] = notebook == json.loads(args.compare.read_bytes())

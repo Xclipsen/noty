@@ -121,10 +121,10 @@ enum BackupScratch {
     }
     /// `<Titel>.noty` for the share sheet: the name must be the title, so
     /// each file gets its own UUID folder (no collisions between shares).
-    nonisolated static func newShareFile(title: String) throws -> URL {
+    nonisolated static func newShareFile(title: String, fileExtension: String = NotyFile.fileExtension) throws -> URL {
         let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return folder.appendingPathComponent(NotyFile.fileName(for: title))
+        return folder.appendingPathComponent(NotyFile.fileStem(for: title) + "." + fileExtension)
     }
     /// Removes a share file with its UUID folder; nothing outside our directory.
     nonisolated static func removeShare(_ url: URL) {

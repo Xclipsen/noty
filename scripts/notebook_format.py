@@ -21,8 +21,9 @@ LEGACY_IMAGES_TOTAL_LIMIT = 40_000_000  # embedded originals summed per object, 
 IMAGE_ASSET_SCHEMA = 12  # image objects reference package assets instead of embedding
 VERTEX_SHAPE_SCHEMA = 13  # polyline/polygon shapes (`points`, kind "polygon")
 TEXT_FIELD_SCHEMA = 14  # free text fields only: rotation, autoWidth, migrated page text
+TEXT_DOCUMENT_SCHEMA = 15  # text documents (`kind: "textDocument"`): one flow over paper pages
 MAX_SHAPE_VERTICES = 64
-CURRENT_SCHEMA = 14
+CURRENT_SCHEMA = 15
 ASSET_HASH = re.compile(r"[0-9a-f]{64}")
 # Foundation dates: seconds since 2001 (JSONEncoder default); Swift accepts years 1…9999.
 REFERENCE_DATE_UNIX = 978_307_200
@@ -269,6 +270,21 @@ def _shapes(page, version, shape_ids):
         check(max(ys) + pad <= h + m.get("bottom", 0) + 0.02, "Shape outside page")
 
 
+def _text_document(active, pages, sources):
+    """Text documents: only paper pages with their own geometry, no writing
+    space, no PDF originals; flow segments only in the page region; at most
+    one flow over the active pages (Swift `Notebook.validateTextDocument`)."""
+    check(isinstance(sources, list) and len(sources) == 0, "Text documents hold no PDF originals")
+    for page in pages:
+        check(page.get("pdfReference") is None and page.get("margins") is None and page.get("geometry") is not None
+              and page["text"] == "" and page.get("paper") in ("blank", "lined", "grid"), "Invalid text document page")
+        for box in page.get("textBoxes") or []:
+            if box.get("flowID") is not None:
+                check(box.get("flowRegion") == "page", "Text document flow outside the page region")
+    flows = {uuid_string(box["flowID"]) for page in active for box in page.get("textBoxes") or [] if box.get("flowID") is not None}
+    check(len(flows) <= 1, "More than one flow in a text document")
+
+
 def asset_reference(value):
     """{"sha256": 64 lowercase hex, "byteCount": 1 ... 20 MB} -> (sha256, byteCount)."""
     check(isinstance(value, dict), "Invalid image asset reference")
@@ -333,6 +349,11 @@ def validate_notebook(document):
     if document.get("appearance") is not None:
         check(version >= 7, "Appearance needs schema 7")
         appearance(document["appearance"])
+    kind = document.get("kind")
+    # Notebooks store no kind; text documents need schema 15.
+    check(kind in (None, "textDocument"), "Unknown document kind")
+    if kind is not None:
+        check(version >= TEXT_DOCUMENT_SCHEMA, "Text documents need schema 15")
     active = document["pages"]
     deleted = document.get("deletedPages") or []
     check(isinstance(active, list) and isinstance(deleted, list), "Invalid page list")
@@ -368,6 +389,8 @@ def validate_notebook(document):
         return references
     check(version >= 3 and document.get("pdf") is None, "Invalid PDF source representation")
     sources = document["pdfSources"]
+    if kind == "textDocument":
+        _text_document(active, pages, sources)
     check(isinstance(sources, list) and len(sources) <= 500, "Too many PDF sources")
     lookup = {}
     total = 0

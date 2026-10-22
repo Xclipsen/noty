@@ -242,6 +242,11 @@ final class LibraryModel: ObservableObject {
         if let stamp, let tile = tiles.object(forKey: id as NSUUID), tile.stamp == stamp { return (tile.appearance, tile.image) }
         let (document, assets) = try await store.previewPackage(id: id)
         try Task.checkCancellation()
+        // The document's own kind decides; an index rewritten by an older build lost the hint.
+        if let item = snapshot.items.first(where: { $0.id == id }), item.isTextDocument != document.isTextDocument,
+           let repaired = try? await store.setKind(id, kind: document.documentKind) {
+            snapshot = repaired
+        }
         let result: (NotebookAppearance?, UIImage?)
         if document.appearance?.coverEnabled == true { result = (document.appearance, nil) }
         else {
@@ -269,6 +274,16 @@ final class LibraryModel: ObservableObject {
         do {
             let notebook = try Notebook.blank(title: title, appearance: appearance)
             snapshot = try await store.createDocument(notebook, parentID: parent)
+            return true
+        } catch { self.error = error.localizedDescription; return false }
+    }
+    func createTextDocument(_ title: String, landscape: Bool, paper: PaperStyle, parent: UUID?) async -> Bool {
+        await settle()
+        guard ready, !busy, opened == nil else { return false }
+        busy = true; defer { busy = false }
+        do {
+            let document = try Notebook.textDocument(title: try LibraryStore.validTitle(title), landscape: landscape, paper: paper)
+            snapshot = try await store.createDocument(document, parentID: parent)
             return true
         } catch { self.error = error.localizedDescription; return false }
     }

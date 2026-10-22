@@ -136,7 +136,9 @@ public enum NotebookImport {
         let title = NotebookTitles.unique(prepared.document.title, taken: current.activeNotebookTitles(excluding: replacing))
         let documents = library.root.appendingPathComponent("Library/Documents", isDirectory: true)
         let committed = try await repository.commitRestore(prepared, title: title, into: documents)
-        let snapshot = try await library.adoptImported(committed.id, title: title, parentID: parentID, replacing: replacing)
+        // The file's document kind decides the entry (notebook or text document).
+        let snapshot = try await library.adoptImported(committed.id, title: title, parentID: parentID, replacing: replacing,
+                                                       kind: prepared.document.documentKind)
         return Result(snapshot: snapshot, id: committed.id, title: title)
     }
 }

@@ -528,7 +528,7 @@ private struct TrashSettingsPage: View {
 
     private func row(_ item: NotebookCore.LibraryItem) -> some View {
         HStack(spacing: 14) {
-            Image(systemName: item.isFolder ? "folder" : "book.closed").font(.title3).foregroundStyle(.secondary).frame(width: 28)
+            Image(systemName: item.librarySymbol(filled: false)).font(.title3).foregroundStyle(.secondary).frame(width: 28)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.title)

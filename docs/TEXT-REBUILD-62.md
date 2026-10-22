@@ -1,6 +1,6 @@
 # Textneubau, Textdokument und `.noty` – Plan vom 22.10.2026
 
-Ergebnis einer Abstimmung mit dem Nutzer nach dem ersten Tag echter Nutzung. Verbindlich für die Umsetzung auf `feat/textneubau`. Gemeinsamer Teststand mit den Formen (Notebook-Schema 13); erst nach iPad-Test nach `main`. Stand: **Stufen 1 und 2 implementiert und gebaut (am iPad ungeprüft), Stufen 3–4 geplant**; Umsetzungsnachweise je Stufe unten ergänzen (implementiert / gebaut / installiert / auf dem iPad getestet getrennt).
+Ergebnis einer Abstimmung mit dem Nutzer nach dem ersten Tag echter Nutzung. Verbindlich für die Umsetzung auf `feat/textneubau`. Gemeinsamer Teststand mit den Formen (Notebook-Schema 13); erst nach iPad-Test nach `main`. Stand: **Stufen 1–3 implementiert und gebaut (am iPad ungeprüft), Stufe 4 geplant**; Umsetzungsnachweise je Stufe unten ergänzen (implementiert / gebaut / installiert / auf dem iPad getestet getrennt).
 
 Anlass: Die bisherige Textbedienung ist „mega nervig“: Felder lassen sich nur über kleine Icons verschieben, überlappende Felder sind darunter nicht greifbar, auf Papier entscheidet die Tippstelle zwischen Zeilentext (links) und freiem Feld (rechts). Die Leiste über der Tastatur (`TextFormatBar`) bleibt; der Rest wird neu gebaut.
 
@@ -100,7 +100,7 @@ Bewusste Abweichungen und Grenzen:
 - Erneuter Tipp auf ein ausgewähltes Feld schaltet nur dann zum Feld darunter, wenn dort ebenfalls Text liegt; sonst setzt er den Cursor (beide Wünsche lassen sich sonst nicht unterscheiden).
 - Migrierter Seitentext behält bis zur ersten Änderung die Höhe seines früheren Schreibbereichs; Auswahlrahmen, Ziehen, Breite und Drehung verwenden sofort die Inhaltshöhe und speichern sie dabei; im Bearbeitungsmodus ist der Rahmen bis zum ersten Tastendruck noch hoch.
 - Migrierte Randfelder behalten Randeinheiten und Linienraster ihrer Region, auch wenn sie später verschoben oder auf eine andere Seite gezogen werden.
-- Die Lese-Migration gilt für jedes dekodierte Dokument; Stufe 3 muss sie auf Hefte beschränken, sobald es Textdokumente gibt.
+- Die Lese-Migration gilt für jedes dekodierte Dokument; Stufe 3 muss sie auf Hefte beschränken, sobald es Textdokumente gibt. *(Erledigt in Stufe 3: Textdokumente behalten ihren Fluss.)*
 
 Gerätetestpunkte (gebündelt, alles **ungeprüft**):
 1. Altes Heft mit Seitentext (auch mehrseitig, auf liniertem/kariertem Papier und im PDF-Rand) nur öffnen: Text an exakt derselben Stelle, keine neue Revision. Dann ein Feld ändern, App schließen/öffnen; `Migrations/…/notebook-v13.json` (bzw. alte Zahl) im Geräteabzug.
@@ -109,6 +109,32 @@ Gerätetestpunkte (gebündelt, alles **ungeprüft**):
 4. Breitenpunkte (danach feste Breite), Drehen mit Einrasten/Gradanzeige, Bearbeiten im gedrehten Feld (Cursor, Auswahlgriffe, Tastatur), Ziehen am Rahmen im Bearbeitungsmodus, Rand der Seite als Grenze.
 5. Undo/Redo für Anlegen, Tippen, Verschieben, Breite, Drehen; Zoom; zweite Ansicht.
 6. Einsetzen von außen mit Stift und mit Textwerkzeug; Vorschau, PDF-Export (`pdftotext` findet gedrehten Text, Lage stimmt), Heft- und Bibliotheksbackup mit gedrehtem Feld.
+
+### Stufe 3 · Textdokument (22.10.2026, Branch `feat/textdokument`)
+
+**Implementiert und erfolgreich gebaut** (`xtool dev build`), **nicht installiert, auf dem iPad ungeprüft.** Core-Tests (730, 3 übersprungen; neu `TextDocumentTests`), `check_page_workflow.sh` (Host-Roundtrip mit Textdokument) und `check_verifiers.sh` bestanden. Format: Notebook-Schema 15 nur für Textdokumente, Hefte unverändert ([STORAGE](STORAGE.md)). Ohne Gliederung (Stufe 4).
+
+- **Dokumentart:** `Notebook.kind` (gespeichert nur `"textDocument"`, ab Schema 15); Hefte tragen keinen Schlüssel und werden nie auf 15 gehoben. Builds ≤ Stufe 2 sperren Textdokumente („Dokumentformat 15 … nicht unterstützt“), statt sie als Heft zu öffnen. Die Lese-Migration Fließtext → Felder läuft nur noch für Hefte. Bibliotheksindex: optionaler Anzeigehinweis `kind` am Eintrag (nur Dokumente); maßgeblich ist das Dokument selbst (Reparatur beim Vorschaubild, Bibliotheks-Restore übernimmt die Art aus den Dokumenten).
+- **Bibliothek:** „Neu“ › Heft | Textdokument | Ordner; „.noty importieren …“ (Import erkennt die Art aus der Datei). Eigenes Symbol `doc.text` in Seitenleiste, Angeheftet, Raster/Liste, Papierkorb. Ordner, Suche (inkl. offene Aufgaben, über die Textfelder des Flusses), Papierkorb, Anheften, Duplizieren, Bibliotheksbackup, Teilen als `.noty` und PDF-Export wie bei Heften.
+- **Anlegen:** Titel, A4 hoch oder quer, Papier blanko (Standard), liniert, kariert. Ohne Umschlag; der Fluss beginnt leer im Schreibbereich des bisherigen Seitentexts (`writingRect(.page)`: 32 pt links/rechts, 16 pt oben/unten), Fließtext 14 pt in automatischer Farbe.
+- **Editor:** Fließtext mit dem erhaltenen Wortmodus (`reflowText`, `TextFlowEditing`, Linienraster auf liniertem/kariertem Papier, Formatleiste mit Absatzstilen, Listen, Checkboxen, Wortzähler über den ganzen Text, Schreibmaschine). Seiten entstehen nur durch den Text: Überlauf führt auf die nächste Seite, eine vorhandene Folgeseite ohne Fluss (z. B. mit Handschrift) wird an ihrer Stelle weiterverwendet; leere Endseiten verschwinden nach dem Kürzen (nie die erste, nie die Cursorseite, nie eine mit Tinte/Objekten). Dahinter steht immer die leere Reserveseite (bisheriger Entwurf, erst beim Beschreiben gespeichert). Keine manuellen Seiten (Hinzufügen, Anordnen, Kopieren, Löschen, Seite anpassen, Papier für neue Seiten entfallen; Lesezeichen bleiben).
+- **Ebenen:** Handschrift (PencilKit) bleibt fest auf ihrer Seite und wandert nicht mit. Freie Textfelder (Stufe 1, über „Textfeld hinzufügen“ in den Optionen oder Doppeltipp-Menü), Bilder und Formen wie im Heft.
+- **Tippen:** Mit Textwerkzeug setzt ein Tipp außerhalb von Objekten den Cursor an die nächstgelegene Stelle des Flusses; auf Seiten ohne Fluss und auf der Reserveseite hinter das letzte Zeichen. Mit Stift/Bleistift/Marker/Radierer setzt ein Fingertipp neben Objekten den Cursor (Textwerkzeug vorübergehend, Rückkehr wie bei Feldern); der Stift zeichnet weiter.
+- **Export:** PDF mit durchsuchbarem Text (bestehender `PDFExporter`, alle Ebenen; „Ganzes Dokument“ ohne leere Endseiten, die Reserveseite ist nie Teil des Dokuments), `.noty`, „Als Text teilen (.txt)“ und „Als Markdown teilen (.md)“ (`TextDocumentExport`: Titel `#`, Überschrift `##`, Unterüberschrift `###`, Listen `-`/`1.`/`- [ ]`/`- [x]` mit vier Leerzeichen je Ebene, fett `**`, kursiv `_`, Sonderzeichen maskiert).
+- **Seitenleiste/Vorschau:** unverändert über die gemeinsamen Renderer; Seitenaktionen nur Lesezeichen.
+
+Bewusste Abweichungen und Grenzen:
+- Stifttipp neben dem bearbeiteten Text beendet wie im Heft die Bearbeitung und kehrt zum vorherigen Werkzeug zurück (nur fixiertes Textwerkzeug setzt den Cursor); ein Fingertipp setzt immer den Cursor. Ein Fingertipp mit Stiftwerkzeug wirkt erst nach dem Doppeltipp-Fenster (0,3 s), damit „Textfeld hinzufügen“ erreichbar bleibt.
+- Mit Textwerkzeug setzt ein Tipp auf ein Bild oder eine Form im Schreibbereich den Cursor (der Fluss liegt darüber); Bilder/Formen wählt man mit dem Finger bei Stiftwerkzeug oder mit Bild-/Lassowerkzeug.
+- Text/Markdown enthalten nur den Fluss; Handschrift, freie Felder, Bilder und Formen nur im PDF. Unterstreichung, Markierung, Farben und Links gehen im Markdown verloren.
+- Papier ist nach dem Anlegen fest (kein Umstellen im Dokument).
+
+Gerätetestpunkte (gebündelt, alles **ungeprüft**):
+1. Neu › Textdokument (hoch/quer, blanko/liniert/kariert); Symbol, Titel, Vorschau in Raster/Liste/Seitenleiste/Angeheftet; ein älterer Build zeigt „Dokumentformat 15 … nicht unterstützt“.
+2. Tippen über mehrere Seiten (Absatzstile, Listen, Checkboxen, Wortzähler, Schreibmaschine); Seitenwechsel beim Überlauf, Reserveseite, Kürzen entfernt leere Endseiten; Undo/Redo über Seiten.
+3. Handschrift auf der Reserveseite, danach Text bis dorthin schreiben: Handschrift bleibt fest; mit Stift Fingertipp neben Objekten setzt Cursor, Doppeltipp-Menü weiter erreichbar; Tipp unter dem Text/auf leerer Seite → Textende.
+4. Freies Feld, Bild, Form im Textdokument; Lasso; Suche und offene Aufgaben.
+5. Teilen als .txt/.md/.noty, PDF (`pdftotext` findet den Fluss, keine leere Endseite), `.noty`-Import als Textdokument, Bibliotheksbackup/-restore.
 
 ### Integration 22.10.2026
 
@@ -146,3 +172,4 @@ Gerätetestpunkte (gebündelt, alles **ungeprüft**):
 5. Zweiter Finger während des Ziehens (mit Finger und mit Pencil) unterdrückt; Schalter aus → kein Einrasten; Hilfslinien nie in Seitenleiste, Vorschau oder PDF; Ziehen auf eine andere Seite ohne Hilfslinien, zurück wieder mit.
 6. Undo/Redo eines eingerasteten Verschiebens als ein Schritt; Einrasten fühlt sich beim normalen Schreiben/Scrollen nicht störend an.
 
+Offen für Stufe 4 (nach Stufe 3): Gliederung aus Titel/Überschrift in der Seitenleiste des Textdokuments (Absatzstile über `TextStylePreset.matching` je Absatz des Flusses, Sprung über `TextFlowFocus`), Feldstil (Füllung/Rahmen) für Hefte und Textdokumente samt Formatanhebung; optional Papierwechsel im Textdokument und Word-Export.

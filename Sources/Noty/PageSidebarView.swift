@@ -46,6 +46,9 @@ struct PageSidebarView: View {
         let before: Bool
     }
     private var canEdit: Bool { model.writable && !model.mutationsPaused && !model.busy }
+    /// Text documents get their pages from the text: no adding, ordering,
+    /// copying or deleting pages by hand (TEXT-REBUILD-62 §4).
+    private var manualPages: Bool { !model.notebook.isTextDocument }
     private var deletedCount: Int { model.notebook.deletedPages?.count ?? 0 }
     private var currentPageIndex: Int { model.notebook.pages.firstIndex { $0.id == selectedPageID } ?? min(model.pageIndex, model.notebook.pages.count - 1) }
     private var currentPage: Page { model.notebook.pages[currentPageIndex] }
@@ -55,20 +58,24 @@ struct PageSidebarView: View {
         VStack(spacing: 0) {
             HStack {
                 Menu {
-                    Section {
-                        Button("Seite hinzufügen …", systemImage: "doc.badge.plus") {
-                            addingPage = AddRequest(anchor: currentPage.id, position: .after)
-                        }.disabled(!canEdit)
-                        Button(editMode.isEditing ? "Anordnen beenden" : "Seiten anordnen", systemImage: "arrow.up.arrow.down") {
-                            withAnimation(NotyMotion.panel(reduceMotion)) {
-                                selectedTab = .pages; filter = .all
-                                editMode = editMode.isEditing ? .inactive : .active
-                            }
-                        }.disabled(!canEdit)
+                    if manualPages {
+                        Section {
+                            Button("Seite hinzufügen …", systemImage: "doc.badge.plus") {
+                                addingPage = AddRequest(anchor: currentPage.id, position: .after)
+                            }.disabled(!canEdit)
+                            Button(editMode.isEditing ? "Anordnen beenden" : "Seiten anordnen", systemImage: "arrow.up.arrow.down") {
+                                withAnimation(NotyMotion.panel(reduceMotion)) {
+                                    selectedTab = .pages; filter = .all
+                                    editMode = editMode.isEditing ? .inactive : .active
+                                }
+                            }.disabled(!canEdit)
+                        }
                     }
                     Section {
-                        Button("Seitenpapierkorb (\(deletedCount)) …", systemImage: "trash") { showingTrash = true }
-                            .disabled(!canEdit)
+                        if manualPages || deletedCount > 0 {
+                            Button("Seitenpapierkorb (\(deletedCount)) …", systemImage: "trash") { showingTrash = true }
+                                .disabled(!canEdit)
+                        }
                         Button("Zu den Notizbüchern", systemImage: "books.vertical", action: onBack)
                             .disabled(model.busy)
                     }
@@ -137,7 +144,7 @@ struct PageSidebarView: View {
                                         draggablePage(entry.page, index: entry.index)
                                             .id(entry.page.id)
                                     }
-                                    insertionCard(height: width * 842 / 595)
+                                    if manualPages { insertionCard(height: width * 842 / 595) }
                                 }.padding(.horizontal, 20).padding(.vertical, 12)
                             }
                         }
@@ -157,9 +164,11 @@ struct PageSidebarView: View {
                     scrollRequest += 1
                 }.font(.caption).frame(minHeight: 44).contentShape(Rectangle()).accessibilityLabel("Zur aktuellen Seite in der Seitenleiste")
                 Spacer()
-                Button { showingTrash = true } label: {
-                    Label("\(deletedCount)", systemImage: "trash").font(.caption).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-                }.accessibilityLabel("Seitenpapierkorb, \(deletedCount) Seiten").disabled(!canEdit)
+                if manualPages || deletedCount > 0 {
+                    Button { showingTrash = true } label: {
+                        Label("\(deletedCount)", systemImage: "trash").font(.caption).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    }.accessibilityLabel("Seitenpapierkorb, \(deletedCount) Seiten").disabled(!canEdit)
+                }
             }.padding(.horizontal, 16)
         }
         .animation(NotyMotion.panel(reduceMotion), value: selectedTab)
@@ -228,7 +237,7 @@ struct PageSidebarView: View {
 
     @ViewBuilder
     private func draggablePage(_ page: Page, index: Int) -> some View {
-        if filter == .all {
+        if filter == .all, manualPages {
             reorderablePage(page, index: index)
         } else {
             pageRow(page, index: index)
@@ -327,6 +336,15 @@ struct PageSidebarView: View {
     /// extras sit between „Duplizieren“ and the destructive actions at the end.
     @ViewBuilder
     private func pageActions(_ page: Page, index: Int) -> some View {
+        if manualPages { manualPageActions(page, index: index) }
+        else {
+            Button(page.bookmarked == true ? "Lesezeichen entfernen" : "Lesezeichen setzen",
+                   systemImage: page.bookmarked == true ? "bookmark.slash" : "bookmark") { model.toggleBookmark(page.id) }
+        }
+    }
+
+    @ViewBuilder
+    private func manualPageActions(_ page: Page, index: Int) -> some View {
         Section {
             Button("Seite hinzufügen …", systemImage: "doc.badge.plus") {
                 addingPage = AddRequest(anchor: page.id, position: .after)

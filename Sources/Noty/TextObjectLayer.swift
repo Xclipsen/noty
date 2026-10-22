@@ -24,6 +24,14 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var onTap: ((CGPoint) -> Void)?
     /// „Textwerkzeug fixieren“: leaving a field keeps the tool, a tap beside opens a new field.
     private(set) var locked = false
+    /// Text document (TEXT-REBUILD-62 §4): a tap beside every object puts the
+    /// caret into the flow at the nearest place instead of opening a field.
+    private(set) var flowDocument = false
+    /// Text document page without a flow segment (after the text, reserve
+    /// page): the editor puts the caret behind the flow's last character.
+    var onFlowEnd: (() -> Void)?
+    /// Touch type of the last tap that reached the layer itself.
+    private var lastTapByPencil = false
     var onFlowChange: ((TextBox, TextBox, NSRange) -> TextFlowFocus?)?
     var onFlowUndo: ((Bool) -> Void)?
     var onFlowBackspace: ((TextBox) -> Void)?
@@ -127,8 +135,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     func configure(boxes incoming: [TextBox], pageID: UUID, layout: PageLayout,
                    contentGeneration: Int, active: Bool, readOnly: Bool = false, darkPaper: Bool, darkMargins: Bool, hasPDF: Bool,
                    paperStyle: PaperStyle = .blank, marginStyle: PaperStyle = .blank, locked: Bool? = nil,
-                   onChange: @escaping ([TextBox]) -> Void) {
+                   flowDocument: Bool? = nil, onChange: @escaping ([TextBox]) -> Void) {
         if let locked { self.locked = locked }
+        if let flowDocument { self.flowDocument = flowDocument }
         let reset = self.pageID != pageID || self.contentGeneration != contentGeneration || self.pageLayout != layout
         // A field drag keeps its live frame locally and commits once when it
         // ends; the unchanged model state meanwhile is no conflicting update.
@@ -420,6 +429,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             view = current.superview
         }
         let accepted = view === self && active
+        if accepted { lastTapByPencil = touch.type == .pencil }
         if tracing { inputLog.info("[noty.text-input] Insertion touch type=\(touch.type.rawValue) accepted=\(accepted)") }
         return accepted
     }
@@ -427,6 +437,14 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         guard active, tap.state == .ended else { return }
         let point = tap.location(in: self)
         onTap?(point)
+        if flowDocument {
+            // Text document: always text. A Pencil tap beside the edited text
+            // still ends it and returns to the pen (as in a notebook) unless
+            // the text tool is fixed; a finger tap moves the caret.
+            if isEditingField, lastTapByPencil, !locked { finishFieldByUser(); return }
+            focusFlow(at: point)
+            return
+        }
         // A tap beside the field being edited ends it; fixed tool: new field at once.
         if isEditingField {
             finishFieldByUser()
@@ -474,6 +492,20 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             editor.selectedRange = NSRange(location: (text as NSString).length, length: 0)
         }
         return box.id
+    }
+
+    /// Text document: the caret goes into this page's flow segment at the
+    /// place nearest to `point` (layer coordinates); a page without one
+    /// (after the text, reserve page) asks for the end of the flow.
+    func focusFlow(at point: CGPoint) {
+        guard active else { return }
+        if let flow = boxes.first(where: { $0.flowID != nil }) {
+            if let selectedID, selectedID != flow.id, isEditingField { fields[selectedID]?.editor.resignFirstResponder() }
+            focusField(flow.id, at: point)
+        } else {
+            if isEditingField { endTextEditing() }
+            onFlowEnd?()
+        }
     }
 
     /// Opens an existing field for typing; the caret goes to `point` (layer
@@ -703,7 +735,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         grow(index); synchronize()
         updating = wasUpdating
         // New fields take over the last used style; „Formatierung entfernen“ leads back.
-        if let used = selectionStyle { TextStyleMemory.remember(used) }
+        if boxes[index].flowID == nil, let used = selectionStyle { TextStyleMemory.remember(used) }
         if boxes[index].flowID != nil { commitFlow(previous: previous[index], editor: editor) }
         else { publish() }
         layoutIfNeeded(); requestCaretReveal(.typing)

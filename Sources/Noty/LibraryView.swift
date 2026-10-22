@@ -27,6 +27,7 @@ struct LibraryView: View {
     @State private var importingBackup = false
     @State private var showingName = false
     @State private var creatingNotebook = false
+    @State private var creatingTextDocument = false
     @State private var libraryEditMode: EditMode = .inactive
     @State private var name = ""
     @State private var nameAction = NameAction.folder
@@ -60,7 +61,7 @@ struct LibraryView: View {
     }
     /// Menu shortcuts pause while a sheet/dialog is shown: a second presentation would not appear.
     private var presenting: Bool {
-        creatingNotebook || settingsRequest != nil || contentSearch != nil || moving != nil || showingAreas || showingCopies
+        creatingNotebook || creatingTextDocument || settingsRequest != nil || contentSearch != nil || moving != nil || showingAreas || showingCopies
             || showingName || trashing != nil || importingPDF || importingBackup || exportingPDF
     }
     private var normalFolder: Bool { location == .root || parentID != nil }
@@ -108,6 +109,11 @@ struct LibraryView: View {
         .sheet(isPresented: $creatingNotebook) {
             NotebookCreationView(defaultAppearance: toolbox.preferences.defaultAppearance) { title, appearance in
                 await model.createNotebook(title, appearance: appearance, parent: parentID)
+            }
+        }
+        .sheet(isPresented: $creatingTextDocument) {
+            TextDocumentCreationView { title, landscape, paper in
+                await model.createTextDocument(title, landscape: landscape, paper: paper, parent: parentID)
             }
         }
         .sheet(item: $settingsRequest, onDismiss: switchAreaIfRequested) { request in
@@ -273,7 +279,7 @@ struct LibraryView: View {
         let selected = location == .folder(item.id)
         return Button { activate(item) } label: {
             VStack(alignment: .leading, spacing: 6) {
-                Image(systemName: item.isFolder ? "folder.fill" : "book.closed.fill")
+                Image(systemName: item.librarySymbol(filled: true))
                     .font(.title3).foregroundStyle(Color.accentColor)
                 Text(item.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
                     .lineLimit(2).multilineTextAlignment(.leading)
@@ -287,7 +293,7 @@ struct LibraryView: View {
         .buttonStyle(NotyPressStyle())
         .overlay { if dropMark == DropMark(zone: .pinned, target: .into(item.id)) { dropHighlight } }
         .accessibilityLabel(accessibilityName(item))
-        .accessibilityHint(item.isFolder ? "Zeigt den Ordner" : "Öffnet das Notizbuch")
+        .accessibilityHint(item.isFolder ? "Zeigt den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Notizbuch")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(LibrarySpace.sidebar)) } action: { frames.pinned[item.id] = $0 }
         .onDrag { dragProvider(item.id) }
@@ -337,7 +343,7 @@ struct LibraryView: View {
                 Label {
                     Text(item.title).lineLimit(1).foregroundStyle(.primary)
                 } icon: {
-                    Image(systemName: item.isFolder ? "folder" : "book.closed")
+                    Image(systemName: item.librarySymbol(filled: false))
                         .foregroundStyle(item.isFolder ? Color.accentColor : Color.secondary)
                 }
                 .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -345,7 +351,7 @@ struct LibraryView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(accessibilityName(item))
-            .accessibilityHint(item.isFolder ? "Zeigt den Ordner" : "Öffnet das Notizbuch")
+            .accessibilityHint(item.isFolder ? "Zeigt den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Notizbuch")
             .accessibilityAddTraits(selected ? .isSelected : [])
         }
         .padding(.leading, CGFloat(entry.depth) * LibrarySpace.indent)
@@ -601,12 +607,13 @@ struct LibraryView: View {
             // One primary entry point for creating and importing.
             Menu {
                 Section {
-                    Button("Notizbuch", systemImage: "square.and.pencil") { creatingNotebook = true }
+                    Button("Heft", systemImage: "book.closed") { creatingNotebook = true }
+                    Button("Textdokument", systemImage: "doc.text") { creatingTextDocument = true }
                     Button("Ordner", systemImage: "folder.badge.plus") { prompt(.folder) }
                 }
                 Section {
                     Button("PDF importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
-                    Button("Heft importieren (.noty) …", systemImage: "arrow.down.doc") { importingBackup = true }
+                    Button(".noty importieren …", systemImage: "arrow.down.doc") { importingBackup = true }
                     if !activeCopies.isEmpty {
                         Button("Wiederhergestellte Kopien …", systemImage: "clock.arrow.circlepath") { showingCopies = true }
                     }
@@ -750,11 +757,12 @@ struct LibraryView: View {
 
     @ViewBuilder private var createButtons: some View {
         Button("Neuer Ordner", systemImage: "folder.badge.plus") { prompt(.folder) }.disabled(!editable)
-        Button("Neues Notizbuch", systemImage: "square.and.pencil") { creatingNotebook = true }.disabled(!editable)
+        Button("Neues Heft", systemImage: "book.closed") { creatingNotebook = true }.disabled(!editable)
+        Button("Neues Textdokument", systemImage: "doc.text") { creatingTextDocument = true }.disabled(!editable)
     }
 
     private func accessibilityName(_ item: NotebookCore.LibraryItem) -> String {
-        var parts = [item.isFolder ? "Ordner \(item.title)" : "Notizbuch \(item.title)"]
+        var parts = ["\(item.libraryKindName) \(item.title)"]
         if item.favorite { parts.append("angeheftet") }
         if item.source == .restored { parts.append("wiederhergestellte Kopie") }
         if let date = item.lastOpened, !item.isFolder { parts.append("zuletzt geöffnet \(date.formatted(date: .abbreviated, time: .omitted))") }
@@ -787,7 +795,7 @@ struct LibraryView: View {
                 }.aspectRatio(0.72, contentMode: .fit)
             }.buttonStyle(NotyPressStyle()).disabled(!editable)
                 .accessibilityLabel(accessibilityName(item))
-                .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : "Öffnet das Notizbuch")
+                .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Notizbuch")
             VStack(spacing: 2) {
                 HStack(spacing: 4) {
                     if item.favorite { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary) }
@@ -809,7 +817,7 @@ struct LibraryView: View {
     private func documentRow(_ item: NotebookCore.LibraryItem) -> some View {
         Button { activate(item) } label: {
             HStack(spacing: 14) {
-                Image(systemName: item.isFolder ? "folder.fill" : "book.closed")
+                Image(systemName: item.isFolder ? "folder.fill" : item.librarySymbol(filled: false))
                     .font(.title2).foregroundStyle(item.isFolder ? Color.accentColor : .secondary).frame(width: 32)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title).foregroundStyle(.primary)
@@ -825,7 +833,7 @@ struct LibraryView: View {
             }.padding(.vertical, 4).contentShape(Rectangle())
         }.buttonStyle(NotyPressStyle()).disabled(!editable)
             .accessibilityLabel(accessibilityName(item))
-            .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : "Öffnet das Notizbuch")
+            .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Notizbuch")
             .contextMenu { itemActions(item, showsEnclosing: location == .recent || !search.isEmpty) }
     }
 

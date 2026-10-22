@@ -1,5 +1,9 @@
 # Heft-Backup und Wiederherstellung – Format 1
 
+## Ergänzung 22.10.2026 · Textdokumente in `.noty` und Bibliotheksbackup
+
+Kein neues Archivformat: `.noty`/`.notybackup` Format 2 und `.notylibrary` Format 2 tragen Textdokumente als Notebook-Datensatz mit `notebookSchemaVersion` 15 und `kind: "textDocument"`. Der Import legt sie als Textdokument an (Index-Hinweis aus der Datei), der Bibliotheks-Restore übernimmt die Art aus den Dokumenten, auch wenn das archivierte Index-`kind` fehlt. Ältere Builds lehnen solche Dateien als „Dokumentformat 15“ ab. `verify_backup.py` gibt zusätzlich `kind` aus, `verify_library_backup.py` zählt `textDocuments`. Host-Roundtrip und Prüfer-Negativtests bestanden; am iPad ungeprüft.
+
 ## Ergänzung 22.10.2026 · `.noty`-Datei
 
 Stand: **implementiert und erfolgreich gebaut (`xtool dev build`), nicht installiert, auf dem iPad ungeprüft.** Spezifikation: [TEXT-REBUILD-62](TEXT-REBUILD-62.md) Abschnitt 5. Überholt unten „Titelzusatz (Wiederhergestellt)“ und für Heftdateien „Restore als getrennte Kopie unter `Restores/`“ sowie in [LIBRARY-BACKUP](LIBRARY-BACKUP.md) „Heft als getrennte Kopie“.

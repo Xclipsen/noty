@@ -13,7 +13,14 @@ public struct LibraryItem: Codable, Equatable, Identifiable, Sendable {
     public var favorite = false
     public var lastOpened: Date?
     public var deletedAt: Date?
+    /// `.textDocument` for text documents (Textneubau Stufe 3); nil for
+    /// notebooks and folders (index entries of notebooks stay byte-identical).
+    /// A display hint for icons and menus: the document's own `kind` is
+    /// authoritative (older builds drop this key when they rewrite the index;
+    /// `setKind` repairs it, a library restore takes it from the documents).
+    public var kind: DocumentKind?
     public var isFolder: Bool { source == nil }
+    public var isTextDocument: Bool { kind == .textDocument }
 
     public init(id: UUID = UUID(), title: String, parentID: UUID? = nil, source: LibrarySource? = nil) {
         self.id = id; self.title = title; self.parentID = parentID; self.source = source
@@ -47,6 +54,7 @@ public struct LibrarySnapshot: Codable, Equatable, Sendable {
         let lookup = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
         for item in items {
             _ = try LibraryStore.validTitle(item.title)
+            if let kind = item.kind { guard kind == .textDocument, !item.isFolder else { throw LibraryError.invalidIndex } }
             for date in [item.deletedAt, item.lastOpened].compactMap({ $0 }) {
                 guard date.timeIntervalSince1970.isFinite,
                       (-62_135_596_800...253_402_300_799).contains(date.timeIntervalSince1970) else {
@@ -165,8 +173,10 @@ public actor LibraryStore {
             guard notebook.id.uuidString == url.lastPathComponent else { throw LibraryError.invalidIndex }
         }
         guard !candidate.items.contains(where: { $0.id == notebook.id }) else { throw LibraryError.invalidIndex }
-        let title = (try? Self.validTitle(notebook.title)) ?? "Unbenanntes Heft"
-        candidate.items.append(LibraryItem(id: notebook.id, title: title, source: source))
+        let title = (try? Self.validTitle(notebook.title)) ?? (notebook.isTextDocument ? "Unbenanntes Dokument" : "Unbenanntes Heft")
+        var item = LibraryItem(id: notebook.id, title: title, source: source)
+        item.kind = notebook.isTextDocument ? .textDocument : nil
+        candidate.items.append(item)
     }
 
     /// Read-only view of the committed index (falls back to `index-previous.json`
@@ -228,7 +238,8 @@ public actor LibraryStore {
     /// The package is written before this index commit; an interruption in
     /// between leaves a discoverable orphan (like `createDocument`). If a
     /// `load()` already adopted the orphan, that entry is placed instead.
-    public func adoptImported(_ id: UUID, title: String, parentID: UUID?, replacing: UUID?) throws -> LibrarySnapshot {
+    public func adoptImported(_ id: UUID, title: String, parentID: UUID?, replacing: UUID?,
+                              kind: DocumentKind = .notebook) throws -> LibrarySnapshot {
         var next = try current()
         let name = try Self.validTitle(title)
         let url = packageURL(id: id, source: .library)
@@ -239,6 +250,7 @@ public actor LibraryStore {
             next.items.remove(at: existing)
         }
         var item = LibraryItem(id: id, title: name, parentID: parentID, source: .library)
+        item.kind = kind == .textDocument ? .textDocument : nil
         if let replacing {
             guard replacing != id else { throw LibraryError.invalidIndex }
             let index = try activeIndex(replacing, in: next)
@@ -300,7 +312,8 @@ public actor LibraryStore {
         try bundle.validate()
         guard !fm.fileExists(atPath: root.path) else { throw LibraryArchiveError.destinationExists }
         for document in bundle.documents { try Self.populatePackage(document, root: root) }
-        try populateIndex(bundle.snapshot, toolbar: bundle.toolbar)
+        try populateIndex(bundle.snapshot, toolbar: bundle.toolbar,
+                          kinds: Dictionary(bundle.documents.map { ($0.id, $0.documentKind) }, uniquingKeysWith: { a, _ in a }))
     }
 
     /// Restore stage only: writes one complete package and reads it back. A
@@ -324,7 +337,9 @@ public actor LibraryStore {
 
     /// Restore stage only, after every package: preferences, then the portable
     /// index (all documents as `library` packages) as the last commit.
-    func populateIndex(_ value: LibrarySnapshot, toolbar: ToolbarPreferences) throws {
+    /// `kinds`: the restored documents' own kinds, authoritative over the
+    /// archived index (an index rewritten by an older build lost them).
+    func populateIndex(_ value: LibrarySnapshot, toolbar: ToolbarPreferences, kinds: [UUID: DocumentKind] = [:]) throws {
         try value.validate(); try toolbar.validate()
         guard snapshot == nil, !fm.fileExists(atPath: primary.path), !fm.fileExists(atPath: previous.path) else {
             throw LibraryArchiveError.destinationExists
@@ -334,6 +349,7 @@ public actor LibraryStore {
             var copy = LibraryItem(id: item.id, title: item.title, parentID: item.parentID,
                                    source: item.isFolder ? nil : .library)
             copy.favorite = item.favorite; copy.lastOpened = item.lastOpened; copy.deletedAt = item.deletedAt
+            if !item.isFolder { copy.kind = (kinds[item.id].map { $0 == .textDocument } ?? item.isTextDocument) ? .textDocument : nil }
             return copy
         }
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
@@ -363,7 +379,9 @@ public actor LibraryStore {
         var next = try current()
         try checkParent(parentID, in: next)
         let title = try writePackage(notebook, in: next)
-        next.items.append(LibraryItem(id: notebook.id, title: title, parentID: parentID, source: .library))
+        var item = LibraryItem(id: notebook.id, title: title, parentID: parentID, source: .library)
+        item.kind = notebook.isTextDocument ? .textDocument : nil
+        next.items.append(item)
         try commit(next)
         return next
     }
@@ -390,7 +408,9 @@ public actor LibraryStore {
         copy.id = UUID()
         copy.title = try Self.validTitle(title)
         let name = try writePackage(copy, in: next, assetsFrom: source.assets)
-        next.items.insert(LibraryItem(id: copy.id, title: name, parentID: original.parentID, source: .library), at: index + 1)
+        var item = LibraryItem(id: copy.id, title: name, parentID: original.parentID, source: .library)
+        item.kind = copy.isTextDocument ? .textDocument : nil
+        next.items.insert(item, at: index + 1)
         try commit(next)
         return (next, copy.id)
     }
@@ -466,6 +486,17 @@ public actor LibraryStore {
             guard lookup[item.id] != nil, let id = iterator.next() else { return item }
             return lookup[id]!
         }
+        try commit(next); return next
+    }
+
+    /// Repairs the index hint when a document's own kind differs (index
+    /// rewritten by an older build). No commit if nothing changes.
+    public func setKind(_ id: UUID, kind: DocumentKind) throws -> LibrarySnapshot {
+        var next = try current()
+        guard let index = next.items.firstIndex(where: { $0.id == id }), !next.items[index].isFolder else { throw LibraryError.unavailable }
+        let value: DocumentKind? = kind == .textDocument ? .textDocument : nil
+        guard next.items[index].kind != value else { return next }
+        next.items[index].kind = value
         try commit(next); return next
     }
 
