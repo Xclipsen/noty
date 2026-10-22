@@ -514,6 +514,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             } else { self.adopted = nil }
         }
         if self.tool != tool || !enabled { endLift(); preview = nil; inkTransform = nil; startContent = nil; draft = nil; lasso = [] }
+        // A tool change ends every selection (lasso, image, finger): none
+        // reappears when switching back.
+        if self.tool != tool { adopted = nil; clearSelection() }
         if touchSelection, self.tool != tool || !enabled { clearSelection(); endTouchSelectionMode() }
         self.content = incoming; self.pageID = pageID; self.layout = layout; self.generation = generation
         let touches = [UITouch.TouchType.pencil, .direct, .indirectPointer].map { NSNumber(value: $0.rawValue) }
