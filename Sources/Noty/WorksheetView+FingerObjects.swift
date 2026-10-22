@@ -12,7 +12,10 @@ import NotebookCore
 ///
 /// What a tap hits is decided by `PageObjectHitTest` over all object types;
 /// showing and editing the selection stays with `ObjectEditingLayer`. Text
-/// fields are reached only through `WorksheetView.addTextField(at:)`.
+/// fields count only on their laid-out text lines (Textneubau): the empty
+/// rest of a frame reaches through. A tap on the selected field sets the
+/// caret there (`WorksheetView.requestTextEdit`), or – with another field's
+/// text at the same place – selects the next field below.
 @MainActor
 final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainActor UIEditMenuInteractionDelegate {
     private weak var sheet: WorksheetView?
@@ -62,24 +65,29 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
 
     // MARK: Hit test
 
-    /// Topmost selectable object under a finger at `point` (sheet coordinates).
-    private func object(at point: CGPoint, in sheet: WorksheetView) -> PageObjectReference? {
-        let origin = sheet.pageLayout.contentOrigin
-        let canonical = PagePoint(x: point.x - origin.x, y: point.y - origin.y)
-        // About 10 screen points of slack at any zoom.
+    /// Every selectable object under a finger at `point` (sheet coordinates), topmost first.
+    private func objects(at point: CGPoint, in sheet: WorksheetView) -> [PageObjectReference] {
+        let canonical = sheet.canonical(point)
+        // About 10 screen points of slack at any zoom (8 around text lines).
         let a = sheet.convert(CGPoint.zero, to: nil), b = sheet.convert(CGPoint(x: 100, y: 0), to: nil)
         let scale = max(0.001, hypot(b.x - a.x, b.y - a.y) / 100)
-        return PageObjectHitTest.topmost(at: canonical, in: sheet.objectContent, tolerance: 10 / scale) { shape, point in
-            ShapeRendering.hit(shape, at: CGPoint(x: point.x, y: point.y))
-        }
+        return PageObjectHitTest.all(at: canonical, in: sheet.objectContent, tolerance: 10 / scale,
+            textHit: { box, point in sheet.textLineHit(box, at: point, slack: 8 / scale) },
+            shapeHit: { shape, point in ShapeRendering.hit(shape, at: CGPoint(x: point.x, y: point.y)) })
     }
 
     // MARK: Actions
 
     @objc private func tapped(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended, let sheet, sheet.acceptsFingerObjectTaps else { return }
+        let point = gesture.location(in: sheet)
+        sheet.rememberTap(point)
         sheet.syncObjectPlane()
-        if let hit = object(at: gesture.location(in: sheet), in: sheet) { sheet.objectLayer.selectByTouch(hit) }
+        let hits = objects(at: point, in: sheet)
+        // Second tap on the selected field: caret there, or the next field below.
+        let texts = hits.compactMap { hit -> UUID? in if case .text(let id) = hit { return id }; return nil }
+        if sheet.objectLayer.tapOnSelectedField(textHits: texts, at: sheet.canonical(point)) { return }
+        if let hit = hits.first { sheet.objectLayer.selectByTouch(hit) }
         else { sheet.objectLayer.endTouchSelection() }
     }
 
@@ -89,7 +97,7 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
         dismissForeignMenus(in: sheet.canvas)
         sheet.syncObjectPlane()
         // On an object the first tap already selected it; no menu there.
-        guard object(at: point, in: sheet) == nil else { menuTarget = nil; return }
+        guard objects(at: point, in: sheet).isEmpty else { menuTarget = nil; return }
         let origin = sheet.pageLayout.contentOrigin
         menuTarget = (pageID, PagePoint(x: point.x - origin.x, y: point.y - origin.y))
         // A menu PencilKit still presents in this turn is closed before ours.

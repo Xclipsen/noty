@@ -10,6 +10,8 @@ enum AppSettingsKey {
     static let typewriter = "noty.editor.typewriter"
     static let sidebarVisible = "noty.sidebar.visible"
     static let hangProbe = "noty.diagnostics.hangProbe"
+    /// „Textwerkzeug fixieren“ (lock in the text tool's options).
+    static let textToolLocked = "noty.text.toolLocked"
 }
 
 enum LibraryLayout: String, CaseIterable, Identifiable {

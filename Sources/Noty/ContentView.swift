@@ -33,6 +33,9 @@ struct ContentView: View {
     @StateObject private var pdfExport = PDFExportJob()
     @State private var tool: EditorTool = .pen
     @State private var lastInkTool: EditorTool = .pen
+    /// The tool before the text tool: leaving a field returns there unless the text tool is fixed.
+    @State private var toolBeforeText: EditorTool?
+    @AppStorage(AppSettingsKey.textToolLocked) private var textToolLocked = false
     @State private var pencilPalette: PencilPalettePresentation?
     @State private var pencilSqueeze = PencilSqueezeTracker()
     /// Undo/redo changed another page: select it, scrolling only if it is not visible.
@@ -227,7 +230,10 @@ struct ContentView: View {
             }
             .onChange(of: selectedPageID) { _, _ in if isPaneActive() { model.pageIndex = currentPageIndex } }
             .onChange(of: model.pageContentGeneration) { _, _ in textFocus = nil; writingDraft = Page() }
-            .onChange(of: tool) { _, value in if value != .text { textFocus = nil }; if value.isInk { lastInkTool = value } }
+            .onChange(of: tool) { old, value in
+                if value != .text { textFocus = nil }; if value.isInk { lastInkTool = value }
+                if value == .text, old != .text { toolBeforeText = old }
+            }
             .onChange(of: tool, initial: true) { _, value in onToolChange?(value) }
             .onChange(of: model.notebook.id) { _, _ in selectedPageID = model.page.id; searchHighlightPageID = model.page.id }
             .onAppear {
@@ -339,7 +345,7 @@ struct ContentView: View {
                     enabled: canEdit, fingerDrawing: toolbox.preferences.fingerDrawing, writingScroll: writingScroll,
                     // No separate header strip: pages use the full height and
                     // merely start below the floating header/palette.
-                    topObstruction: layout.topInset + (toolbarOptions && tool != .text && toolbox.preferences.effectiveDock == .top ? 60 : 0),
+                    topObstruction: layout.topInset + (toolbarOptions && toolbox.preferences.effectiveDock == .top ? 60 : 0),
                     // A freely placed palette covers part of the page: the caret is kept clear of it.
                     obstructions: toolbox.preferences.effectiveDock == .floating ? [layout.frame.cgRect.offsetBy(dx: -layout.leftInset, dy: 0)] : [],
                     configuration: pageConfiguration, onSelect: { id in
@@ -349,7 +355,7 @@ struct ContentView: View {
                     onError: { model.error = $0 }, revealRequest: revealRequest,
                     laser: tool == .laser ? toolbox.preferences.laserStyle : nil)
                     .ignoresSafeArea(.container, edges: .bottom)
-                    .padding(.bottom, layout.bottomInset + (toolbarOptions && tool != .text && toolbox.preferences.effectiveDock == .bottom ? 60 : 0))
+                    .padding(.bottom, layout.bottomInset + (toolbarOptions && toolbox.preferences.effectiveDock == .bottom ? 60 : 0))
                     .padding(.leading, layout.leftInset)
                     .padding(.trailing, layout.rightInset)
                 }
@@ -357,12 +363,13 @@ struct ContentView: View {
                     .frame(height: 60)
                 ToolbarPaletteHost(layout: layout, preferences: $toolbox.preferences, more: $toolbarMore,
                     secondView: onSecondView != nil, enabled: canEdit && toolbox.writable,
-                    showingOptions: toolbarOptions && tool != .text, optionsWidth: optionsWidths[tool] ?? EditorToolOptions.preferredWidth(for: tool)) { axis in
+                    showingOptions: toolbarOptions, optionsWidth: optionsWidths[tool] ?? EditorToolOptions.preferredWidth(for: tool)) { axis in
                     palette(axis: axis)
                 } options: {
                     EditorToolOptions(tool: $tool, preferences: $toolbox.preferences, showing: $toolbarOptions,
                         shapeOptions: Binding(get: { shapeOptions }, set: { shapeOptions = $0 }), selectionFilter: $selectionFilter, lassoMode: $lassoMode,
                         recognizeShapes: Binding(get: { recognizeShapes }, set: { recognizeShapes = $0 }),
+                        textToolLocked: $textToolLocked,
                         onInsertText: { textInsertRequest += 1 },
                         onPhoto: { imageTarget = currentPage.id; choosingPhoto = true },
                         onImageFile: { imageTarget = currentPage.id; importingImage = true },
@@ -787,9 +794,16 @@ struct ContentView: View {
                 return model.updateContent(next, basedOn: before, pageID: page.id, inkGesture: true)
             },
             onTextFieldRequested: {
-                // Double-tap menu „Textfeld hinzufügen“: the sheet opens its field once the text tool is set.
+                // Double-tap menu „Textfeld hinzufügen“ or a second tap on a selected
+                // field: the sheet opens the field once the text tool is set.
                 guard canEdit else { return }
                 tool = .text; toolbarOptions = false
+            },
+            textToolLocked: textToolLocked,
+            onTextEditingFinished: {
+                // Leaving a field returns to the tool before the text tool (Textneubau).
+                guard isPaneActive(), tool == .text, !textToolLocked else { return }
+                tool = toolBeforeText.flatMap { $0 == .text ? nil : $0 } ?? lastInkTool
             })
     }
 

@@ -64,7 +64,12 @@ struct PageEditor {
     var onEraseShapes: (PageContent, PageContent) -> Bool = { _, _ in false }
     /// „Textfeld hinzufügen“ from the finger double-tap menu: the editor
     /// switches to the text tool, the sheet then opens the field itself.
+    /// Also „Bearbeiten“/second tap on a selected field (caret there).
     var onTextFieldRequested: () -> Void = {}
+    /// „Textwerkzeug fixieren“ (lock in the text tool's options).
+    var textToolLocked = false
+    /// The user left a field while the text tool is not fixed: back to the previous tool.
+    var onTextEditingFinished: () -> Void = {}
 }
 
 extension PageEditor {
@@ -75,7 +80,8 @@ extension PageEditor {
               contentGeneration == other.contentGeneration, searchHighlight == other.searchHighlight else { return false }
         guard paper == other.paper, paperColor == other.paperColor, margins == other.margins else { return false }
         guard tool == other.tool, width == other.width, Self.sameColor(color, other.color), enabled == other.enabled,
-              focused == other.focused, autoPen == other.autoPen, fingerDrawing == other.fingerDrawing, ruler == other.ruler else { return false }
+              focused == other.focused, autoPen == other.autoPen, fingerDrawing == other.fingerDrawing, ruler == other.ruler,
+              textToolLocked == other.textToolLocked else { return false }
         return shapeOptions == other.shapeOptions && selectionFilter == other.selectionFilter && lassoMode == other.lassoMode
             && recognizeShapes == other.recognizeShapes && markerStraight == other.markerStraight && markerTip == other.markerTip
             && scribbleErase == other.scribbleErase
@@ -130,10 +136,17 @@ final class DrawingCanvasView: PKCanvasView {
     override var inputAccessoryView: UIView? { nil }
     // Native canvas viewport changes must never scroll the containing notebook.
     override func scrollRectToVisible(_ rect: CGRect, animated: Bool) { }
+    /// Pasting text from outside while an ink tool is active: a new text field
+    /// (set by the sheet; `WorksheetView.pasteText`).
+    var onPasteText: (() -> Void)?
+    override func paste(_ sender: Any?) { onPasteText?() }
     /// PencilKit's „Platz einfügen“ (insert space) is not offered (Nutzerfeedback
     /// Tag 1); the finger double tap shows „Textfeld hinzufügen“ instead.
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if NSStringFromSelector(action).lowercased().contains("insertspace") { return false }
+        if action == #selector(paste(_:)) {
+            return onPasteText != nil && UIPasteboard.general.hasStrings && !UIPasteboard.general.hasImages
+        }
         return super.canPerformAction(action, withSender: sender)
     }
 }
@@ -245,8 +258,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// Finger taps select objects while an ink tool stays active; double tap
     /// offers „Textfeld hinzufügen“ (WorksheetView+FingerObjects.swift).
     private let fingerObjects = FingerObjectGestures()
-    /// Point of a requested text field until the text tool is configured.
-    private var pendingTextField: (pageID: UUID, point: PagePoint, deadline: CFTimeInterval)?
+    /// A requested new field (point) or caret in a field (box ID, point or
+    /// nil: end of text) until the text tool is configured.
+    private var pendingTextField: (pageID: UUID, point: PagePoint?, box: UUID?, deadline: CFTimeInterval)?
+    /// Last tap on this page (canonical) and the visible part (sheet
+    /// coordinates): where pasted text opens its new field.
+    private var lastTap: PagePoint?
+    private var lastVisible: CGRect?
     private let interactionID = UUID()
     private let textInteractionID = UUID()
     private var onInteraction: ((UUID, Bool) -> Void)?
@@ -354,6 +372,15 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             if !active { DispatchQueue.main.async { [weak self] in self?.claimUndoResponder() } }
         }
         textLayer.onCaretChanged = { [weak self] in self?.onRevealCaret?() }
+        textLayer.onLeaveField = { [weak self] in self?.configuration?.onTextEditingFinished() }
+        textLayer.onTap = { [weak self] point in self?.rememberTap(point) }
+        objectLayer.textHit = { [weak self] box, point in
+            guard let self else { return box.contains(point) }
+            return self.textLineHit(box, at: point, slack: 8 / max(0.001, self.screenScale))
+        }
+        objectLayer.fittedText = { [weak self] box in self?.textLayer.fitted(box) ?? box }
+        objectLayer.onEditText = { [weak self] id, point in self?.requestTextEdit(id, at: point) }
+        canvas.onPasteText = { [weak self] in self?.pasteText() }
         objectLayer.onPreview = { [weak self] content in self?.showObjectPreview(content) }
         objectLayer.onTouchSelectionEnded = { [weak self] in DispatchQueue.main.async { self?.claimUndoResponder() } }
         fingerObjects.install(on: self)
@@ -450,6 +477,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// resolution step mid-gesture showed stale, shifted ink; keep the raster
     /// (magnified) unless the visible area is no longer covered at all.
     func updateRendering(visible: CGRect, scale: CGFloat, live: Bool = false) {
+        if bounds.intersects(visible) { lastVisible = visible.intersection(bounds) }
         guard !inkActive, bounds.intersects(visible), bounds.width > 0, bounds.height > 0 else { return }
         // Text keeps its own zoom-resolution viewport (not capped like ink).
         textLayer.updateDisplay(visible: visible, scale: scale, screenScale: window?.screen.scale ?? 2, live: live)
@@ -702,7 +730,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
                             contentGeneration: editor.contentGeneration, active: editable && tool == .text, readOnly: editable && tool == .read,
                             darkPaper: editor.paperColor == .dark, darkMargins: editor.margins?.color == .dark,
                             hasPDF: editor.sourcePage != nil, paperStyle: editor.paper, marginStyle: editor.margins?.style ?? .blank,
-                            onChange: editor.onTextBoxes)
+                            locked: editor.textToolLocked, onChange: editor.onTextBoxes)
         imageLayer.configure(objects: editor.images, pageID: editor.pageID, layout: editor.layout,
                              contentGeneration: editor.contentGeneration, active: editable && tool == .image,
                              onChange: editor.onImages, onError: editor.onError)
@@ -746,12 +774,34 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     func syncObjectPlane() { objectLayer.adoptCurrentContent(pageContent) }
     /// Checkbox glyphs keep their own tap (`CheckboxTapGesture`).
     func fingerTapHitsCheckbox(_ point: CGPoint) -> Bool { textLayer.hasCheckbox(at: convert(point, to: textLayer)) }
+    /// Canonical page point of a sheet point.
+    func canonical(_ point: CGPoint) -> PagePoint {
+        PagePoint(x: point.x - pageLayout.contentOrigin.x, y: point.y - pageLayout.contentOrigin.y)
+    }
+    /// Screen points per page point (current zoom).
+    var screenScale: CGFloat {
+        let a = convert(CGPoint.zero, to: nil), b = convert(CGPoint(x: 100, y: 0), to: nil)
+        return max(0.001, hypot(b.x - a.x, b.y - a.y) / 100)
+    }
+    /// A laid-out text line of `box` is at the canonical point (Textneubau:
+    /// the empty rest of a field's frame is no hit).
+    func textLineHit(_ box: TextBox, at point: PagePoint, slack: Double) -> Bool {
+        textLayer.hitsTextLine(box, at: point, slack: slack)
+    }
+    func rememberTap(_ point: CGPoint) { lastTap = canonical(point) }
     /// Double-tap menu: remembers the canonical point and lets the editor
     /// switch to the text tool; the next configuration opens the field.
     func requestTextField(at point: PagePoint) {
         guard editable, let pageID, let request = configuration?.onTextFieldRequested else { return }
-        pendingTextField = (pageID, point, CACurrentMediaTime() + 2)
+        pendingTextField = (pageID, point, nil, CACurrentMediaTime() + 2)
         request()
+    }
+    /// „Bearbeiten“ or a second tap on a selected field: the text tool takes
+    /// over (temporarily unless fixed) and sets the caret at `point`.
+    func requestTextEdit(_ id: UUID, at point: PagePoint?) {
+        guard editable, let pageID else { return }
+        pendingTextField = (pageID, point, id, CACurrentMediaTime() + 2)
+        if tool == .text { openPendingTextField() } else { configuration?.onTextFieldRequested() }
     }
     private func openPendingTextField() {
         guard let pending = pendingTextField else { return }
@@ -761,16 +811,37 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         // After this configuration pass: the text plane is active by then.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.pageID == pending.pageID, self.editable, self.tool == .text else { return }
-            self.addTextField(at: pending.point)
+            let origin = self.pageLayout.contentOrigin
+            let display = pending.point.map { CGPoint(x: $0.x + origin.x, y: $0.y + origin.y) }
+            if let box = pending.box { self.textLayer.focusField(box, at: display) }
+            else if let point = pending.point { self.addTextField(at: point) }
         }
     }
     /// „Textfeld an Punkt anlegen“: the only way the double-tap menu reaches
     /// the text system. A new free field at `point` (canonical page
-    /// coordinates), opened for typing. A rebuilt text system replaces this body.
+    /// coordinates), opened for typing.
     func addTextField(at point: PagePoint) {
         let origin = pageLayout.contentOrigin
-        textLayer.insertText(at: CGPoint(x: point.x + origin.x, y: point.y + origin.y), freeField: true)
+        textLayer.createField(at: CGPoint(x: point.x + origin.x, y: point.y + origin.y))
     }
+    /// Text from outside without an edited field: a new field at the last
+    /// tapped place, otherwise in the middle of the visible part, in the
+    /// current (last used) style. The text tool opens it for typing.
+    func pasteText() {
+        guard editable, !textLayer.isEditingField, let text = UIPasteboard.general.string, !text.isEmpty,
+              text.utf8.count <= 1_000_000 else { return }
+        let origin = pageLayout.contentOrigin
+        let visible = lastVisible ?? bounds
+        let point = lastTap.map { CGPoint(x: $0.x + origin.x, y: $0.y + origin.y) } ?? CGPoint(x: visible.midX, y: visible.midY)
+        textLayer.createField(at: point, text: text, focus: tool == .text)
+    }
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)) {
+            return editable && tool == .text && !textLayer.isEditingField && UIPasteboard.general.hasStrings
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+    override func paste(_ sender: Any?) { pasteText() }
 
     private func showObjectPreview(_ content: PageContent) {
         guard !updating, let editor = configuration, tool == .selection || tool == .inkSelection || tool == .shape || objectLayer.hasTouchSelection,

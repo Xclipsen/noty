@@ -283,7 +283,7 @@ extension TextObjectLayer {
         })
         controller.present(alert, animated: true)
     }
-    @objc private func finishEditing() { endTextEditing() }
+    @objc private func finishEditing() { finishFieldByUser() }
     private func swatch(_ color: UIColor) -> UIImage {
         UIGraphicsImageRenderer(size: CGSize(width: 22, height: 22)).image { context in
             context.cgContext.setFillColor(color.cgColor); context.cgContext.fillEllipse(in: CGRect(x: 2, y: 2, width: 18, height: 18))

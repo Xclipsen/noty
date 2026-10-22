@@ -34,18 +34,26 @@ final class TextRasterView: UIView {
     }
 }
 
+/// One text field on the page. Textneubau (docs/TEXT-REBUILD-62.md): no
+/// icons above the field. While it is being edited it shows a thin frame and
+/// one width point left and right; dragging at the frame (about 20 pt wide
+/// zone, mostly outside) moves it, dragging inside the text selects text.
+/// Not being edited, only its laid-out text lines take touches: an empty part
+/// of the frame reaches through to the field or page below.
 @MainActor
 final class TextFieldContainer: UIView {
     let id: UUID
     let editor: PageTextView
-    let move = UIView()
-    let resize = UIView()
-    let delete = UIButton(type: .system)
+    /// Width points (left, right) while editing.
+    let leftWidth = UIView()
+    let rightWidth = UIView()
     private let raster = TextRasterView()
     var content: TextBox?
     var automaticLight: Bool?
-    private var selected = false
-    private var floating = false
+    private(set) var editing = false
+    /// Frame drag zone in screen points: outside the frame and inside it.
+    static let outerBorder: CGFloat = 14
+    static let innerBorder: CGFloat = 6
     init(id: UUID) {
         self.id = id; editor = PageTextView(id: id)
         super.init(frame: .zero)
@@ -54,22 +62,19 @@ final class TextFieldContainer: UIView {
         editor.textContainer.lineFragmentPadding = 0; editor.isScrollEnabled = false
         editor.keyboardAppearance = .dark; editor.overrideUserInterfaceStyle = .dark
         editor.inputAssistantItem.leadingBarButtonGroups = []; editor.inputAssistantItem.trailingBarButtonGroups = []
-        editor.accessibilityLabel = "Frei platziertes Textfeld"
+        editor.accessibilityLabel = "Textfeld"
         editor.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        move.backgroundColor = .clear; resize.backgroundColor = .clear
-        move.isAccessibilityElement = true; resize.isAccessibilityElement = true
-        move.accessibilityLabel = "Textfeld verschieben"; resize.accessibilityLabel = "Textfeldbreite ändern"
-        let icon = UIImageView(image: UIImage(systemName: "arrow.up.and.down.and.arrow.left.and.right"))
-        icon.tintColor = .systemBlue; icon.frame = CGRect(x: 12, y: 12, width: 20, height: 20)
-        icon.isUserInteractionEnabled = false; move.addSubview(icon)
-        let dot = UIView(frame: CGRect(x: 16, y: 16, width: 12, height: 12))
-        dot.backgroundColor = .systemBlue; dot.layer.cornerRadius = 6; dot.isUserInteractionEnabled = false
-        resize.addSubview(dot)
-        delete.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
-        delete.accessibilityLabel = "Textfeld löschen"
+        for (handle, label) in [(leftWidth, "Textfeldbreite links ändern"), (rightWidth, "Textfeldbreite rechts ändern")] {
+            handle.backgroundColor = .clear; handle.isAccessibilityElement = true; handle.accessibilityLabel = label
+            let dot = UIView(frame: CGRect(x: 16, y: 16, width: 12, height: 12))
+            dot.backgroundColor = .systemBlue; dot.layer.cornerRadius = 6; dot.isUserInteractionEnabled = false
+            dot.layer.borderColor = UIColor.white.cgColor; dot.layer.borderWidth = 1.5
+            handle.addSubview(dot); handle.isHidden = true
+        }
         raster.editor = editor
         (editor.layoutManager as? TaskLayoutManager)?.onDisplayChange = { [weak raster] in raster?.setNeedsDisplay() }
-        [raster, editor, move, resize, delete].forEach { addSubview($0) }
+        [raster, editor, leftWidth, rightWidth].forEach { addSubview($0) }
+        accessibilityLabel = "Textfeld"
     }
     /// `rect`: visible part in own coordinates; nil: no viewport yet, native text.
     func setRaster(_ rect: CGRect?, scale: CGFloat) {
@@ -80,36 +85,93 @@ final class TextFieldContainer: UIView {
         if abs(raster.contentScaleFactor - scale) > 0.001 { raster.contentScaleFactor = scale; raster.setNeedsDisplay() }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func configure(selected: Bool, overflowing: Bool, floating: Bool) {
-        self.selected = selected; self.floating = floating
-        layer.borderWidth = (selected && floating) || overflowing ? 1 : 0
+    func configure(editing: Bool, overflowing: Bool) {
+        self.editing = editing
+        layer.borderWidth = editing || overflowing ? 1 : 0
         layer.borderColor = (overflowing ? UIColor.systemRed : .systemBlue).cgColor
-        [move, resize, delete].forEach { $0.isHidden = !(selected && floating) }
+        [leftWidth, rightWidth].forEach { $0.isHidden = !editing }
         setNeedsLayout()
     }
     override func layoutSubviews() {
         super.layoutSubviews()
         if editor.frame != bounds { editor.frame = bounds; raster.setNeedsDisplay() }
         let scale = displayScale
-        let top: CGFloat = frame.minY >= 48 / scale ? -24 / scale : bounds.height + 24 / scale
-        for control in [move, resize, delete] {
+        for control in [leftWidth, rightWidth] {
             control.bounds = CGRect(x: 0, y: 0, width: 44, height: 44)
             control.transform = CGAffineTransform(scaleX: 1 / scale, y: 1 / scale)
         }
-        move.center = CGPoint(x: 22 / scale, y: top)
-        resize.center = CGPoint(x: bounds.width, y: bounds.height)
-        delete.center = CGPoint(x: max(22 / scale, bounds.width - 22 / scale), y: top)
+        leftWidth.center = CGPoint(x: 0, y: bounds.midY)
+        rightWidth.center = CGPoint(x: bounds.width, y: bounds.midY)
         if layer.borderWidth > 0 { layer.borderWidth = 1 / scale }
     }
-    private var displayScale: CGFloat {
+    /// Screen points per own point (zoom, field units, not the rotation).
+    var displayScale: CGFloat {
         guard let window else { return 1 }
         let a = convert(CGPoint.zero, to: window), b = convert(CGPoint(x: 100, y: 0), to: window)
         return max(0.001, hypot(b.x - a.x, b.y - a.y) / 100)
     }
+    /// In the frame drag zone (own coordinates) while editing.
+    func inBorderZone(_ point: CGPoint) -> Bool {
+        guard editing else { return false }
+        let scale = displayScale
+        let outer = bounds.insetBy(dx: -Self.outerBorder / scale, dy: -Self.outerBorder / scale)
+        let inner = bounds.insetBy(dx: min(bounds.width / 3, Self.innerBorder / scale), dy: min(bounds.height / 3, Self.innerBorder / scale))
+        return outer.contains(point) && !inner.contains(point)
+    }
+    /// Touch slack around text lines (about 8 screen points).
+    var lineSlack: CGFloat { 8 / displayScale }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        // Right of the middle beside/below page text: the layer opens a free field there.
-        if editor.isFlow, editor.opensFreeField(at: convert(point, to: editor)) { return false }
-        return bounds.insetBy(dx: selected && floating ? -48 / displayScale : 0, dy: selected && floating ? -48 / displayScale : 0).contains(point)
+        if editing {
+            let scale = displayScale
+            if !leftWidth.isHidden, leftWidth.frame.contains(point) || rightWidth.frame.contains(point) { return true }
+            return bounds.insetBy(dx: -Self.outerBorder / scale, dy: -Self.outerBorder / scale).contains(point)
+        }
+        // Only real text lines; the empty rest of the frame reaches through.
+        return editor.hitsLine(at: convert(point, to: editor), slack: lineSlack)
+    }
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard self.point(inside: point, with: event), isUserInteractionEnabled, !isHidden else { return nil }
+        for handle in [leftWidth, rightWidth] where !handle.isHidden && handle.frame.contains(point) { return handle }
+        // The frame zone belongs to the move drag, not to text selection.
+        if inBorderZone(point) { return self }
+        return super.hitTest(point, with: event)
+    }
+}
+
+/// The frame-zone drag of a field: only touches whose hit view is the
+/// container itself (its border zone, `TextFieldContainer.hitTest`), never
+/// text selection inside it; wins over notebook scrolling.
+final class FieldBorderDrag: NSObject, UIGestureRecognizerDelegate {
+    static let shared = FieldBorderDrag()
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        touch.view === gestureRecognizer.view
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        ScrollPanPriority.outranksScrolling(gestureRecognizer, other)
+    }
+}
+
+/// „Neue Felder übernehmen den zuletzt benutzten Stil; Formatierung entfernen
+/// führt zurück“: the character style of the last formatting change (font,
+/// size, bold/italic, colour). Emphasis of single words (marker, underline,
+/// strikethrough, links, raised text) and paragraph settings stay behind.
+@MainActor
+enum TextStyleMemory {
+    private static let key = "noty.text.lastStyle"
+    static func remember(_ style: TextBoxStyle) {
+        var kept = TextBoxStyle(font: style.font, fontSize: style.fontSize, bold: style.bold, italic: style.italic, color: style.color)
+        kept.fontName = style.fontName; kept.ink = style.ink; kept.automaticColor = style.automaticColor
+        guard (try? kept.validate()) != nil, let data = try? JSONEncoder().encode(kept) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+    /// Style of a new field; `light`: automatic colour on a dark background.
+    static func style(light: Bool) -> TextBoxStyle {
+        if let data = UserDefaults.standard.data(forKey: key), var style = try? JSONDecoder().decode(TextBoxStyle.self, from: data),
+           (try? style.validate()) != nil {
+            if style.automaticColor == true { style.color = light ? .white : .black; style.ink = nil }
+            return style
+        }
+        return TextBoxStyle().clearingCharacterFormatting(light: light)
     }
 }

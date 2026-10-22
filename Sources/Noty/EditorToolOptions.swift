@@ -10,6 +10,8 @@ struct EditorToolOptions: View {
     @Binding var selectionFilter: SelectionFilter
     @Binding var lassoMode: LassoMode
     @Binding var recognizeShapes: Bool
+    /// „Textwerkzeug fixieren“: after leaving a field the text tool stays and a tap beside opens the next field.
+    @Binding var textToolLocked: Bool
     let onInsertText: () -> Void
     let onPhoto: () -> Void
     let onImageFile: () -> Void
@@ -107,6 +109,9 @@ struct EditorToolOptions: View {
             }
         }
         if tool == .text {
+            option(textToolLocked ? "Textwerkzeug fixiert – lösen" : "Textwerkzeug fixieren",
+                   symbol: textToolLocked ? "lock.fill" : "lock.open", selected: textToolLocked) { textToolLocked.toggle() }
+            // Fallback; the main ways are a tap with the text tool and the double-tap menu.
             Button("Textfeld +", systemImage: "text.badge.plus") { showing = false; onInsertText() }.frame(minHeight: 44).contentShape(Rectangle())
         }
         if tool == .image {

@@ -133,7 +133,8 @@ struct EditorToolbar: View {
     private func toolButton(_ item: WritingTool) -> some View {
         let selected = tool == item || (item == .strokeEraser && tool == .precisionEraser)
         return Button {
-            if selected { if item == .text { settings = false } else { settings.toggle() } }
+            // The text tool's options (lock, „Textfeld +“) open like every other tool's.
+            if selected { settings.toggle() }
             else {
                 let choice = Self.choice(item, preferences: preferences)
                 tool = choice.tool; settings = choice.options

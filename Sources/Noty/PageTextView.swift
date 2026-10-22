@@ -40,6 +40,20 @@ final class PageTextView: UITextView {
         let used = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: characters, actualCharacterRange: nil), in: textContainer)
         return local.x >= used.minX - 16 && local.x <= used.maxX + 16
     }
+    /// A laid-out text line (its used glyph area, widened by `slack`) is at
+    /// `point` (own coordinates). Empty lines count as no text; an empty field
+    /// is hit inside its frame (it only exists while being edited).
+    func hitsLine(at point: CGPoint, slack: CGFloat) -> Bool {
+        let manager = layoutManager, inset = textContainerInset
+        manager.ensureLayout(for: textContainer)
+        guard manager.numberOfGlyphs > 0 else { return bounds.insetBy(dx: -slack, dy: -slack).contains(point) }
+        let local = CGPoint(x: point.x - inset.left, y: point.y - inset.top)
+        var hit = false
+        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { _, used, _, _, stop in
+            if used.width > 0.5, used.insetBy(dx: -slack, dy: -slack).contains(local) { hit = true; stop.pointee = true }
+        }
+        return hit
+    }
     /// Text tool on page/margin text: from the middle rightwards, a tap beside
     /// or below the text belongs to a new free field, not to these lines.
     func opensFreeField(at point: CGPoint) -> Bool {

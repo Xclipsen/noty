@@ -100,6 +100,23 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private var motionTicks = MotionTicks()
     private var rotationSnap: Double?
     private var hasSelection: Bool { !ink.isEmpty || !texts.isEmpty || !images.isEmpty || !shapes.isEmpty }
+    // MARK: Textneubau – a single text field selected by a tap
+    /// The selection is one text field picked by a tap (finger with any ink
+    /// tool, or the lasso tool's tap): thin frame, a width point left and
+    /// right, rotation handle above the middle, its own action bar. Lasso
+    /// selections keep the corner scaling (font size scales along).
+    private var fieldMode = false
+    private var isFieldSelection: Bool { fieldMode && texts.count == 1 && ink.isEmpty && images.isEmpty && shapes.isEmpty }
+    /// Laid-out text lines decide a tap on a field (set by the sheet).
+    var textHit: ((TextBox, PagePoint) -> Bool)?
+    /// The field with its height (and automatic width) from the content.
+    var fittedText: ((TextBox) -> TextBox)?
+    /// „Bearbeiten“ or a second tap on the selected field: caret at the point (nil: end).
+    var onEditText: ((UUID, PagePoint?) -> Void)?
+    private let fieldWidthHandles = (0..<2).map { _ in SelectionHandle(color: .systemBlue) }
+    private let fieldRotation = SelectionHandle(color: .white)
+    private let angleLabel = UILabel()
+    private let fieldActions = UIStackView()
     private var active: Bool { enabled && (tool == .shape || tool == .selection || tool == .inkSelection || touchSelection) }
     /// Object selected by a finger tap while an ink tool stays active
     /// (`selectByTouch`). Lives exactly as long as that selection.
@@ -147,6 +164,85 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
             handle.tag = index < 4 ? index : 6; handle.addGestureRecognizer(drag); addSubview(handle)
         }
+        // Field selection: width points (tags 9 left, 10 right) and rotation (8).
+        for (handle, tag, label) in [(fieldWidthHandles[0], 9, "Textfeldbreite links ändern"), (fieldWidthHandles[1], 10, "Textfeldbreite rechts ändern"),
+                                     (fieldRotation, 8, "Textfeld drehen")] {
+            handle.accessibilityLabel = label; handle.tag = tag; handle.isHidden = true
+            let drag = UIPanGestureRecognizer(target: self, action: #selector(self.handle(_:)))
+            drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
+            handle.addGestureRecognizer(drag); addSubview(handle)
+        }
+        angleLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold); angleLabel.textColor = .white
+        angleLabel.backgroundColor = UIColor(white: 0.13, alpha: 0.92); angleLabel.textAlignment = .center
+        angleLabel.layer.cornerRadius = 8; angleLabel.clipsToBounds = true; angleLabel.isHidden = true
+        angleLabel.isUserInteractionEnabled = false; addSubview(angleLabel)
+        fieldActions.axis = .horizontal; fieldActions.spacing = 0; fieldActions.isHidden = true
+        toolbar.addSubview(fieldActions)
+        fieldButton("Bearbeiten") { [weak self] in
+            guard let self, let id = self.texts.first else { return }
+            self.onEditText?(id, nil)
+        }
+        fieldButton("Ausschneiden") { [weak self] in self?.copySelection(); self?.deleteSelection() }
+        fieldButton("Kopieren") { [weak self] in self?.copySelection() }
+        fieldButton("Duplizieren") { [weak self] in
+            guard let self else { return }
+            self.copySelection(); self.pasteSelection()
+            if self.texts.count == 1 && self.ink.isEmpty && self.images.isEmpty && self.shapes.isEmpty { self.fieldMode = true; self.refresh() }
+        }
+        fieldButton("Löschen") { [weak self] in self?.deleteSelection() }
+        fieldButton("Nach vorne", icon: "square.3.layers.3d.top.filled") { [weak self] in self?.reorderField(toFront: true) }
+        fieldButton("Nach hinten", icon: "square.3.layers.3d.bottom.filled") { [weak self] in self?.reorderField(toFront: false) }
+    }
+    @discardableResult private func fieldButton(_ name: String, icon: String? = nil, action: @escaping () -> Void) -> UIButton {
+        let created = button(name, icon: icon, action: action)
+        actions.removeArrangedSubview(created); fieldActions.addArrangedSubview(created)
+        return created
+    }
+    /// „Nach vorne“/„Nach hinten“: draw order among the page's text fields.
+    private func reorderField(toFront: Bool) {
+        guard isFieldSelection, let id = texts.first else { return }
+        var value = content; value.textBoxes = content.textBoxes.movingField(id, toFront: toFront)
+        _ = commit(value, previous: content); refresh()
+    }
+    /// The selected field with its height from the content („Höhe immer aus
+    /// dem Inhalt“): page text migrated to a field still has the height of its
+    /// former writing area until it is changed; frame, handles and every drag
+    /// use (and commit) the fitted frame.
+    private func selectedField(_ value: PageContent) -> TextBox? {
+        guard isFieldSelection, let id = texts.first, let box = value.textBoxes.first(where: { $0.id == id }) else { return nil }
+        return fitted(box)
+    }
+    private func fitted(_ box: TextBox) -> TextBox { fittedText?(box) ?? box }
+    private func replacing(_ value: PageContent, with box: TextBox) -> PageContent {
+        var result = value
+        if let index = result.textBoxes.firstIndex(where: { $0.id == box.id }) { result.textBoxes[index] = box }
+        return result
+    }
+    /// Display point of a canonical page point.
+    private func display(_ point: PagePoint) -> CGPoint { CGPoint(x: point.x + layout.contentOrigin.x, y: point.y + layout.contentOrigin.y) }
+    /// Rotation handle: a short line above the middle of the field's top edge.
+    private func rotationHandleCenter(_ box: TextBox) -> CGPoint {
+        let top = display(box.pagePoint(.init(x: box.width / 2, y: 0)))
+        let radians = box.angle * .pi / 180, reach = 30 / displayScale
+        return CGPoint(x: top.x + sin(radians) * reach, y: top.y - cos(radians) * reach)
+    }
+
+    /// A tap on the text of the selected field: with another field's line at
+    /// the same place the next one below is selected, otherwise the caret is
+    /// set there. Returns false when the tap is not on the selected field.
+    /// `textHits`: fields whose text is at the point, topmost first.
+    func tapOnSelectedField(textHits: [UUID], at point: PagePoint) -> Bool {
+        guard isFieldSelection, lift == nil, startContent == nil, let current = texts.first, textHits.contains(current) else { return false }
+        if let next = PageObjectHitTest.next(after: .text(current), in: textHits.map { .text($0) }), case .text(let id) = next {
+            adopted = nil; clearSelection(); texts = [id]; fieldMode = true; refresh()
+        } else {
+            onEditText?(current, point)
+        }
+        return true
+    }
+    /// Text fields whose laid-out text lines are at `point`, topmost first.
+    func textFields(at point: PagePoint) -> [UUID] {
+        content.textBoxes.reversed().filter { $0.allowsObjectSelection && (textHit?($0, point) ?? $0.contains(point)) }.map(\.id)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -197,6 +293,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
 
     override func draw(_ rect: CGRect) {
         let visible = preview ?? content
+        if active, lift == nil, let box = selectedField(visible) {
+            let line = UIBezierPath(); line.move(to: display(box.pagePoint(.init(x: box.width / 2, y: 0))))
+            line.addLine(to: rotationHandleCenter(box))
+            UIColor.systemBlue.setStroke(); line.lineWidth = 1 / displayScale; line.stroke()
+        }
         if active, let rect = selectionBounds(visible, applyingPreview: true) {
             if !rotation.isHidden {
                 let r = display(rect).insetBy(dx: -contourGap, dy: -contourGap); let connector = UIBezierPath()
@@ -216,7 +317,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         CGPoint(x: point.x - layout.contentOrigin.x, y: point.y - layout.contentOrigin.y)
     }
     private func display(_ rect: CGRect) -> CGRect { rect.offsetBy(dx: layout.contentOrigin.x, dy: layout.contentOrigin.y) }
-    private func clearSelection() { ink = []; texts = []; images = []; shapes = []; styleController?.dismiss(animated: false) }
+    private func clearSelection() { ink = []; texts = []; images = []; shapes = []; fieldMode = false; styleController?.dismiss(animated: false) }
     @discardableResult private func button(_ name: String, icon: String? = nil, action: @escaping () -> Void) -> UIButton {
         let button = UIButton(type: .system)
         if let icon { button.setImage(UIImage(systemName: icon), for: .normal) }
@@ -244,7 +345,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         let lifted = lift != nil
         toolbar.isHidden = !active || lifted || (!hasSelection && ObjectClipboard.content == nil)
-        for corner in corners { corner.isHidden = !active || lifted || !hasSelection }
+        for corner in corners { corner.isHidden = !active || lifted || !hasSelection || isFieldSelection }
+        let field = active && !lifted && isFieldSelection
+        (fieldWidthHandles + [fieldRotation]).forEach { $0.isHidden = !field }
+        if !field || startContent == nil { angleLabel.isHidden = true }
+        actions.isHidden = field; fieldActions.isHidden = !field
         rotation.isHidden = !active || lifted || ink.isEmpty || !texts.isEmpty || !images.isEmpty || !shapes.isEmpty
         // A single shape is edited by its own anchors, not the scale corners.
         let editableShape = active && !lifted && shapes.count == 1 && ink.isEmpty && texts.isEmpty && images.isEmpty
@@ -264,20 +369,31 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         HangProbe.hit("Object.layoutSubviews")
-        let controls: [UIView] = [toolbar] + corners + anchorHandles + [rotation]
+        let controls: [UIView] = [toolbar] + corners + anchorHandles + [rotation] + fieldWidthHandles + [fieldRotation, angleLabel]
         for control in controls { control.transform = .identity }
         // Controls frame the contour, which keeps a small gap around the content.
         let group = selectionBounds(preview ?? content, applyingPreview: true).map { display($0).insetBy(dx: -contourGap, dy: -contourGap) }
         let scale = displayScale
         let intersection = window.map { convert($0.bounds, from: $0).intersection(bounds) } ?? bounds
         let visible = intersection.isNull || intersection.isEmpty ? bounds : intersection
-        let fullWidth = actions.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width + 8
+        let shown = isFieldSelection ? fieldActions : actions
+        let fullWidth = shown.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width + 8
+        // Above a field's rotation handle, otherwise just above the selection.
+        let raise: CGFloat = isFieldSelection ? 76 : 30
         let width = min(fullWidth, max(44, visible.width * scale - 8))
         toolbar.bounds = CGRect(x: 0, y: 0, width: width, height: 44)
         toolbar.center = CGPoint(x: min(max((group?.midX ?? visible.midX), visible.minX + (width / 2 + 4) / scale),
             visible.maxX - (width / 2 + 4) / scale),
-            y: min(max((group?.minY ?? visible.maxY) - 30 / scale, visible.minY + 26 / scale), visible.maxY - 26 / scale))
-        actions.frame = CGRect(x: 4, y: 2, width: fullWidth - 8, height: 40); toolbar.contentSize = CGSize(width: fullWidth, height: 44)
+            y: min(max((group?.minY ?? visible.maxY) - raise / scale, visible.minY + 26 / scale), visible.maxY - 26 / scale))
+        shown.frame = CGRect(x: 4, y: 2, width: fullWidth - 8, height: 40); toolbar.contentSize = CGSize(width: fullWidth, height: 44)
+        if let box = selectedField(preview ?? content) {
+            fieldWidthHandles[0].frame = handleFrame(display(box.pagePoint(.init(x: 0, y: box.height / 2))))
+            fieldWidthHandles[1].frame = handleFrame(display(box.pagePoint(.init(x: box.width, y: box.height / 2))))
+            fieldRotation.frame = handleFrame(rotationHandleCenter(box))
+            let handle = rotationHandleCenter(box)
+            angleLabel.bounds = CGRect(x: 0, y: 0, width: 48, height: 22)
+            angleLabel.center = CGPoint(x: handle.x + 40 / scale, y: handle.y - 4 / scale)
+        }
         if let group {
             let points = [CGPoint(x: group.minX, y: group.minY), CGPoint(x: group.maxX, y: group.minY),
                           CGPoint(x: group.maxX, y: group.maxY), CGPoint(x: group.minX, y: group.maxY)]
@@ -304,6 +420,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         let scale = displayScale
         contourLayer.bounds = bounds; contourLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        if let box = selectedField(preview ?? content) {
+            // A selected field: thin solid frame exactly around it (rotated).
+            let outline = CGMutablePath(); outline.addLines(between: box.corners.map(display)); outline.closeSubpath()
+            contourLayer.path = outline; contourLayer.lineWidth = 1 / scale; contourLayer.lineDashPattern = nil
+            contourLayer.fillColor = UIColor.clear.cgColor
+            contourLayer.removeAllAnimations(); contourAnimationScale = nil; contourLayer.isHidden = false
+            return
+        }
+        contourLayer.fillColor = UIColor.systemBlue.withAlphaComponent(0.06).cgColor
         contourLayer.path = selectionOutline() ?? UIBezierPath(roundedRect: display(frame).insetBy(dx: -contourGap, dy: -contourGap),
                                                                cornerRadius: contourGap).cgPath
         contourLayer.lineWidth = 1.5 / scale; contourLayer.lineDashPattern = [NSNumber(value: 5 / scale), NSNumber(value: 5 / scale)]
@@ -364,8 +489,16 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
     }
     @objc private func tap(_ gesture: UITapGestureRecognizer) {
-        adopted = nil; clearSelection()
         let point = canonical(gesture.location(in: self))
+        // Lasso tool: a tap on a field's text selects that field (second tap: caret).
+        if tool == .selection, filter.text {
+            let hits = textFields(at: PagePoint(x: point.x, y: point.y))
+            if tapOnSelectedField(textHits: hits, at: PagePoint(x: point.x, y: point.y)) { return }
+            if let first = hits.first {
+                adopted = nil; clearSelection(); texts = [first]; fieldMode = true; refresh(); return
+            }
+        }
+        adopted = nil; clearSelection()
         if (tool == .shape || filter.shapes), let shape = content.shapes.reversed().first(where: { ShapeRendering.hit($0, at: point) }) { shapes.insert(shape.id) }
         else if tool == .selection || tool == .inkSelection {
             let rect = CGRect(x: point.x - 2, y: point.y - 2, width: 4, height: 4)
@@ -377,7 +510,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     @objc private func handle(_ gesture: UIPanGestureRecognizer) {
         let tag = gesture.view?.tag ?? 2
         if gesture.state == .began { if tag >= 100 { activeAnchor = tag - 100 } else { activeCorner = tag } }
-        self.gesture(gesture, requestedMode: tag >= 100 ? 7 : tag < 4 ? 2 : 6)
+        self.gesture(gesture, requestedMode: tag >= 100 ? 7 : tag < 4 ? 2 : tag)
     }
     private func gesture(_ gesture: UIPanGestureRecognizer, requestedMode: Int?) {
         guard active else { return }
@@ -407,6 +540,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         guard let initial = startContent else { return }
         if gesture.state == .cancelled || gesture.state == .failed {
+            angleLabel.isHidden = true
             endLift(); preview = nil; inkTransform = nil; draft = nil; startContent = nil; lasso = []; refresh(); return
         }
         switch dragMode {
@@ -426,7 +560,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             }
             if !lifted {
                 if lift != nil { endLift(); preview = initial; inkTransform = nil; groupTransform = nil }
-                if let value = transformed(initial, dx: point.x - initialPoint.x, dy: point.y - initialPoint.y, scale: 1) { preview = value }
+                // The one move path (`ObjectMovement`): weiches Einrasten (Stufe 2) plugs in there.
+                let proposed = PagePoint(x: point.x - initialPoint.x, y: point.y - initialPoint.y)
+                let shift = selectionBounds(initial).map { ObjectMovement.translation(moving: PageRect($0), by: proposed, within: limits) } ?? proposed
+                if let value = transformed(initial, dx: shift.x, dy: shift.y, scale: 1) { preview = value }
             }
         case 2:
             if let frame = selectionBounds(initial) {
@@ -451,6 +588,34 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 preview = initial; inkTransform = t; groupTransform = t
             }
         case 3: draft?.end = .init(x: point.x, y: point.y)
+        case 8:
+            // Field rotation about its centre; soft snapping (TextFieldRotation), small degree label.
+            if let box = selectedField(initial) {
+                let middle = box.center
+                let turn = atan2(point.y - middle.y, point.x - middle.x) - atan2(initialPoint.y - middle.y, initialPoint.x - middle.x)
+                let snap = TextFieldRotation.snapped(box.angle + turn * 180 / .pi)
+                if let target = snap.target, target != rotationSnap { haptic(completed: false, at: gesture.location(in: self)) }
+                rotationSnap = snap.target
+                var turned = box.rotated(to: snap.angle)
+                if !turned.fits(in: limits), let shifted = turned.shifted(into: limits) { turned = shifted }
+                if turned.fits(in: limits) { preview = replacing(initial, with: turned) }
+                angleLabel.text = TextFieldRotation.label(snap.angle); angleLabel.isHidden = false
+            }
+        case 9, 10:
+            // Width points: only the width changes (fixed from now on); the height follows the text.
+            if let box = selectedField(initial) {
+                let radians = box.angle * .pi / 180
+                let along = (point.x - initialPoint.x) * cos(radians) + (point.y - initialPoint.y) * sin(radians)
+                let minimum = max(16, box.style.fontSize)
+                var next = box; next.autoWidth = nil
+                if dragMode == 10 { next.width = max(minimum, box.width + along) }
+                else {
+                    let width = max(minimum, box.width - along), moved = box.width - width
+                    next.width = width; next.x += moved * cos(radians); next.y += moved * sin(radians)
+                }
+                next = fittedText?(next) ?? next
+                if next.fits(in: limits), (try? next.validate()) != nil { preview = replacing(initial, with: next) }
+            }
         default:
             // One anchor follows the touch; the rest of the shape stays.
             if let id = shapes.first, let index = initial.shapes.firstIndex(where: { $0.id == id }),
@@ -495,6 +660,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 _ = commit(preview, previous: initial)
             }
             preview = nil; inkTransform = nil; draft = nil; startContent = nil; lasso = []
+            angleLabel.isHidden = true
         }
         refresh()
     }
@@ -567,7 +733,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         guard enabled, lift == nil, startContent == nil, !(tool == .shape || tool == .selection || tool == .inkSelection) else { return }
         adopted = nil; clearSelection()
         switch object {
-        case .text(let id)?: if content.textBoxes.contains(where: { $0.id == id && $0.allowsObjectSelection }) { texts = [id] }
+        case .text(let id)?: if content.textBoxes.contains(where: { $0.id == id && $0.allowsObjectSelection }) { texts = [id]; fieldMode = true }
         case .image(let id)?: if content.images.contains(where: { $0.id == id && !$0.locked }) { images = [id] }
         case .shape(let id)?: if content.shapes.contains(where: { $0.id == id }) { shapes = [id] }
         case nil: break
@@ -580,6 +746,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     func touchSelectionContains(_ point: CGPoint) -> Bool {
         guard hasTouchSelection, lift == nil, let frame = selectionBounds(content).map(display) else { return false }
         let margin = 8 / displayScale
+        // A selected field moves when dragged anywhere inside its (rotated) frame.
+        if let box = selectedField(content) { return box.contains(PagePoint(x: canonical(point).x, y: canonical(point).y), tolerance: margin) }
         return frame.insetBy(dx: -margin, dy: -margin).contains(point)
     }
     /// A finger drag that began on the finger selection moves it (also across pages).
@@ -615,7 +783,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             guard rect.insetBy(dx: -0.001, dy: -0.001).intersects(bounds) else { return false }
             return tap || region.intersects(PageRect(bounds))
         }
-        if filter.text { texts = Set(content.textBoxes.filter { $0.allowsObjectSelection && selected($0.rect.cgRect) }.map(\.id)) }
+        func selectedField(_ box: TextBox) -> Bool {
+            guard box.rotation != nil else { return selected(box.rect.cgRect) }
+            guard rect.insetBy(dx: -0.001, dy: -0.001).intersects(box.rotatedBounds.cgRect) else { return false }
+            return tap ? box.contains(PagePoint(x: rect.midX, y: rect.midY), tolerance: 2) : region.intersectsPolyline(box.corners, closed: true)
+        }
+        if filter.text { texts = Set(content.textBoxes.filter { $0.allowsObjectSelection && selectedField($0) }.map(\.id)) }
         if filter.images { images = Set(content.images.filter { !$0.locked && selected($0.rotatedBounds.cgRect) }.map(\.id)) }
         if filter.shapes { shapes = Set(content.shapes.filter { selected($0.bounds.cgRect) }.map(\.id)) }
         if filter.ink, let drawing = try? PKDrawing(data: content.drawing) {
@@ -642,7 +815,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     private func selectionBounds(_ value: PageContent, applyingPreview: Bool = false) -> CGRect? {
         guard hasSelection, !(applyingPreview && lift != nil) else { return nil }
-        var rects = value.textBoxes.filter { texts.contains($0.id) }.map { $0.rect.cgRect }
+        var rects = value.textBoxes.filter { texts.contains($0.id) }.map { (isFieldSelection ? fitted($0) : $0).rotatedBounds.cgRect }
         rects += value.images.filter { images.contains($0.id) }.map { $0.rotatedBounds.cgRect }
         rects += value.shapes.filter { shapes.contains($0.id) }.map { $0.bounds.cgRect }
         if !ink.isEmpty, let drawing = drawing(value.drawing) {
@@ -761,8 +934,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         var value = initial
         func point(_ p: PagePoint) -> PagePoint { let p = CGPoint(x: p.x, y: p.y).applying(transform); return .init(x: p.x, y: p.y) }
         for i in value.textBoxes.indices where texts.contains(value.textBoxes[i].id) {
+            if isFieldSelection { value.textBoxes[i] = fitted(value.textBoxes[i]) }
             guard let box = try? value.textBoxes[i].scaled(by: scale, around: anchor,
-                translation: .init(x: dx, y: dy)), limits.contains(box.rect) else { return nil }
+                translation: .init(x: dx, y: dy)), box.fits(in: limits) else { return nil }
             value.textBoxes[i] = box
         }
         for i in value.images.indices where images.contains(value.images[i].id) {
