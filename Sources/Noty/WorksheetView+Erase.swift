@@ -202,26 +202,44 @@ extension WorksheetView {
         if onContent?(next, session.base) == true { installContent(next) } else { installContent(pageContent) }
         shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin)
     }
-    /// "Durchkritzeln löscht": a finished pen scribble over existing ink
-    /// removes the strokes it covers together with itself. The scribble was
-    /// never published, so the change is one ink step from before it.
-    func eraseByScribble(previousCount: Int) {
+    /// "Durchkritzeln löscht": a finished pen scribble over existing ink and
+    /// shapes removes the strokes it covers together with itself; the shapes
+    /// it covers are returned and removed by the caller after the ink is
+    /// published, in the same ink undo step (`onEraseShapes`, like the
+    /// eraser). The scribble was never published, so the change is one ink
+    /// step from before it.
+    @discardableResult
+    func eraseByScribble(previousCount: Int) -> Set<UUID> {
         let strokes = canonicalCanvasDrawing.strokes
         guard strokes.count == previousCount + 1, let scribble = strokes.last,
-              scribble.ink.inkType != .marker else { return }
+              scribble.ink.inkType != .marker else { return [] }
         let points = Self.polyline(scribble)
-        guard ScribbleErase.isScribble(points) else { return }
+        guard ScribbleErase.isScribble(points) else { return [] }
         let others = Array(strokes.dropLast())
         let hull = CGRect(x: points.map(\.x).min()!, y: points.map(\.y).min()!, width: 0, height: 0)
             .union(CGRect(x: points.map(\.x).max()!, y: points.map(\.y).max()!, width: 0, height: 0)).insetBy(dx: -8, dy: -8)
         let candidates = others.indices.filter { others[$0].renderBounds.intersects(hull) }
+        let padding = max(4, Self.drawnWidth(scribble))
         let covered = ScribbleErase.coveredStrokes(scribble: points, strokes: candidates.map { Self.polyline(others[$0]) },
-                                                   padding: max(4, Self.drawnWidth(scribble))).map { candidates[$0] }
-        guard !covered.isEmpty else { return }
+                                                   padding: padding).map { candidates[$0] }
+        let shapes = pageContent.shapes.filter { $0.bounds.cgRect.intersects(hull) }
+        let coveredShapes = Set(ScribbleErase.coveredShapes(scribble: points, shapes: shapes, padding: padding))
+        guard !covered.isEmpty || !coveredShapes.isEmpty else { return [] }
         let removed = Set(covered)
         let wasUpdating = updating; updating = true
         canvas.drawing = PKDrawing(strokes: others.enumerated().filter { !removed.contains($0.offset) }.map(\.element))
             .transformed(using: pageLayout.inkTranslation)
         canvasSource = nil; updating = wasUpdating
+        return coveredShapes
+    }
+    /// Shapes covered by a scribble, after its ink change was published: one
+    /// content change merged into the same ink undo step.
+    func removeScribbledShapes(_ ids: Set<UUID>) {
+        guard !ids.isEmpty, editable else { return }
+        var next = pageContent
+        next.shapes.removeAll { ids.contains($0.id) }
+        guard next.shapes != pageContent.shapes, onEraseShapes?(next, pageContent) == true else { return }
+        pageContent.shapes = next.shapes
+        shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin)
     }
 }

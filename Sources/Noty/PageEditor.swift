@@ -1051,7 +1051,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         // bytes) and exactly one encode of the result.
         let previousCount = publishedStrokeCount
         if tool == .marker, markerStraight { straightenLastMarkerStroke(previousCount: previousCount) }
-        if tool == .pen, scribbleErase { eraseByScribble(previousCount: previousCount) }
+        let scribbled = tool == .pen && scribbleErase ? eraseByScribble(previousCount: previousCount) : []
         let drawing = canvas.drawing, strokes = drawing.strokes
         // A precision eraser that splits a stroke also adds one: no pen width.
         if tool == .pen || tool == .pencil || tool == .marker { recordDrawnWidth(strokes, previousCount: previousCount) }
@@ -1059,6 +1059,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if eraseSession == nil { strokeCountCache = (lastDrawing, strokes.count); canvasSource = lastDrawing }
         pageContent.drawing = lastDrawing
         onDrawing?(lastDrawing)
+        removeScribbledShapes(scribbled)
     }
     /// Stroke count of `pageContent.drawing`; decoded at most once per distinct value.
     private var publishedStrokeCount: Int {
