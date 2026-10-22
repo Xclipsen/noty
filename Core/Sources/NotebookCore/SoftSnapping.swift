@@ -4,8 +4,9 @@ import Foundation
 //
 // Moving text fields, images, shapes and lasso selections clicks softly onto
 // edges and centres of other objects, the first baseline of other text fields,
-// equal gaps between three or more objects, paper lines/grid and the page
-// edges and centre. Only a slow movement within a few screen points engages;
+// equal gaps between three or more objects and the page edges and centre.
+// Paper lines and grid squares are deliberately no targets (Feedback zu
+// Build 62: nothing may click onto lined or squared paper). Only a slow movement within a few screen points engages;
 // fast dragging never snaps, a small movement past the threshold releases.
 // Pure geometry here; the UI only reports touches and draws the guides.
 
@@ -14,7 +15,7 @@ public enum SnapAxis: Hashable, Sendable { case x, y }
 
 /// What a guide aligns to. Lower raw values win an exact tie.
 public enum SnapKind: Int, Comparable, Sendable {
-    case edge, center, baseline, spacing, page, ruling
+    case edge, center, baseline, spacing, page
     public static func < (lhs: SnapKind, rhs: SnapKind) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
@@ -27,58 +28,6 @@ public struct SnapObject: Equatable, Sendable {
     public init(frame: PageRect, baseline: Double? = nil) { self.frame = frame; self.baseline = baseline }
 }
 
-/// One straight paper line: `value` across the axis, `span` along it.
-public struct SnapLine: Equatable, Sendable {
-    public var value: Double
-    public var span: ClosedRange<Double>
-    public init(value: Double, span: ClosedRange<Double>) { self.value = value; self.span = span }
-}
-
-/// Paper lines of a sheet, exactly where `PDFExporter.drawPaper` rules them
-/// (same spacing, insets and bands beside a PDF).
-public struct PaperLines: Equatable, Sendable {
-    /// Horizontal lines (y) and vertical grid lines (x).
-    public var rows: [SnapLine]
-    public var columns: [SnapLine]
-    /// Text stands this far above a ruled line (`TextRuling.lift`).
-    public var lift: Double
-
-    public init(rows: [SnapLine] = [], columns: [SnapLine] = [], lift: Double = 0) {
-        self.rows = rows; self.columns = columns; self.lift = lift
-    }
-
-    /// - Parameters: size: the sheet (canvas incl. writing margins) in its
-    ///   drawing coordinates; columns: x bands ruled separately (beside a PDF),
-    ///   nil rules the whole width.
-    public init(style: PaperStyle, size: PageSize, coordinateScale: Double = 1, columns bands: [ClosedRange<Double>]? = nil) {
-        self.init()
-        guard style == .lined || style == .grid, size.width > 0, size.height > 0, coordinateScale > 0 else { return }
-        let s = coordinateScale
-        let spacing = (style == .lined ? PaperRuling.spacing : 16) * s
-        let bottomInset = (style == .lined ? 16 : 40) * s, inset = 32 * s
-        lift = (TextRuling(paper: style)?.lift ?? 0) * s
-        for band in bands ?? [0...size.width] {
-            let from = band.lowerBound + inset, to = band.upperBound - inset
-            guard to - from >= 8 * s else { continue }
-            for y in stride(from: PaperRuling.firstBaseline * s, through: size.height - bottomInset, by: spacing) {
-                rows.append(SnapLine(value: y, span: from...to))
-            }
-            if style == .grid, size.height - 40 * s >= 40 * s {
-                for x in stride(from: from, through: to, by: spacing) {
-                    columns.append(SnapLine(value: x, span: (40 * s)...(size.height - 40 * s)))
-                }
-            }
-        }
-    }
-
-    /// The same lines in coordinates shifted by `delta` (sheet → canonical: −contentOrigin).
-    public func offset(by delta: PagePoint) -> PaperLines {
-        PaperLines(rows: rows.map { SnapLine(value: $0.value + delta.y, span: ($0.span.lowerBound + delta.x)...($0.span.upperBound + delta.x)) },
-                   columns: columns.map { SnapLine(value: $0.value + delta.x, span: ($0.span.lowerBound + delta.y)...($0.span.upperBound + delta.y)) },
-                   lift: lift)
-    }
-}
-
 /// Everything a drag may snap to, collected once when the drag begins.
 public struct SnapScene: Equatable, Sendable {
     /// Other objects (never the moved ones).
@@ -86,9 +35,8 @@ public struct SnapScene: Equatable, Sendable {
     /// The page (edges and centre); `limits`: the whole writing space when it is larger.
     public var page: PageRect?
     public var limits: PageRect?
-    public var lines: PaperLines
-    public init(objects: [SnapObject] = [], page: PageRect? = nil, limits: PageRect? = nil, lines: PaperLines = PaperLines()) {
-        self.objects = objects; self.page = page; self.limits = limits; self.lines = lines
+    public init(objects: [SnapObject] = [], page: PageRect? = nil, limits: PageRect? = nil) {
+        self.objects = objects; self.page = page; self.limits = limits
     }
 }
 
@@ -312,44 +260,20 @@ public struct SoftSnapper: Equatable, Sendable {
                 targets.append((value, .page, span))
             }
         }
-        let lines = scene.lines
-        let ruled = axis == .y ? lines.rows : lines.columns
-        for line in ruled { targets.append((line.value, .ruling, line.span)) }
-        if axis == .x {
-            // Where ruled lines begin and end: the paper's writing margins.
-            var ends: [(Double, ClosedRange<Double>)] = []
-            for row in lines.rows {
-                for value in [row.span.lowerBound, row.span.upperBound] {
-                    if let index = ends.firstIndex(where: { abs($0.0 - value) < 0.01 }) {
-                        ends[index].1 = Self.union(ends[index].1, row.value...row.value)
-                    } else { ends.append((value, row.value...row.value)) }
-                }
-            }
-            for (value, span) in ends { targets.append((value, .ruling, span)) }
-        }
 
         var result: [Engagement] = []
-        let movesText = moving.baselineOffset != nil
         for feature in features(moving, axis) {
             for target in targets {
                 let accepts: Bool
                 switch (feature.role, target.kind) {
                 case (.point, _): accepts = true
                 case (.edge, .edge), (.edge, .page): accepts = true
-                // Text stands on ruled lines with its baseline, not its frame.
-                case (.edge, .ruling): accepts = !(axis == .y && movesText)
                 case (.center, .center): accepts = true
                 case (.baseline, .baseline): accepts = true
                 default: accepts = false
                 }
                 guard accepts else { continue }
                 result.append(Engagement(offset: feature.offset, target: target.value, kind: target.kind, role: feature.role, span: target.span))
-            }
-            // Baselines stand slightly above a ruled line, like page text.
-            if feature.role == .baseline {
-                for row in lines.rows {
-                    result.append(Engagement(offset: feature.offset, target: row.value - lines.lift, kind: .ruling, role: .baseline, span: row.span))
-                }
             }
         }
         if !moving.isPoint { result += spacingCandidates(axis, frame: Self.moved(moving.frame, by: translation)) }

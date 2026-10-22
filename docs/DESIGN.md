@@ -2,7 +2,7 @@
 
 ## Weiches Einrasten – 22.10.2026
 
-Textfelder, Bilder, Formen und Lasso-Auswahlen rasten beim langsamen Verschieben (innerhalb von 5 Bildschirmpunkten, unter 250 pt/s) an Kanten, Mitten, ersten Grundlinien, gleichen Abständen, Papierlinien/Karos, Seitenrändern und Seitenmitte ein; nach 8 Bildschirmpunkten löst es wieder. Blaue Hilfslinien nur auf dem Bildschirm. Ein zweiter Finger unterdrückt es, Schalter „Einrasten“ unter Einstellungen › Editor. Details: [TEXT-REBUILD-62](TEXT-REBUILD-62.md). Implementiert und gebaut, am iPad ungeprüft.
+Textfelder, Bilder, Formen und Lasso-Auswahlen rasten beim langsamen Verschieben (innerhalb von 5 Bildschirmpunkten, unter 250 pt/s) an Kanten, Mitten, ersten Grundlinien und gleichen Abständen anderer Objekte sowie an Seitenrändern und Seitenmitte ein (nie an Papierlinien/Karos, Feedback zu Build 62); nach 8 Bildschirmpunkten löst es wieder. Blaue Hilfslinien nur auf dem Bildschirm. Ein zweiter Finger unterdrückt es, Schalter „Einrasten“ unter Einstellungen › Editor. Details: [TEXT-REBUILD-62](TEXT-REBUILD-62.md). Implementiert und gebaut, am iPad ungeprüft.
 
 ## Textneubau Stufe 1 – 22.10.2026
 

@@ -220,6 +220,29 @@ extension Page {
     }
 }
 
+extension Page {
+    /// Top (page y) of each writing region that exists on this page.
+    public var writingRegionTops: [TextFlowRegion: Double] {
+        var tops: [TextFlowRegion: Double] = [:]
+        for region in [TextFlowRegion.page, .left, .right, .top, .bottom] { tops[region] = writingRect(region)?.y }
+        return tops
+    }
+}
+
+extension TextBox {
+    /// Page y the ruled line layout of this box is anchored at (nil: no
+    /// ruling). Flow segments stand on the paper lines from their own top.
+    /// Fields migrated from page text keep the layout they had at the top of
+    /// their former region, wherever they are moved: their lines move with
+    /// the field instead of jumping onto the paper lines (Feedback zu Build
+    /// 62). Unmoved, this is exactly the old layout (segments start there).
+    public func rulingAnchorY(regionTops: [TextFlowRegion: Double]) -> Double? {
+        guard let region = flowRegion else { return nil }
+        if flowID != nil { return y }
+        return regionTops[region] ?? y
+    }
+}
+
 extension Notebook {
     /// Any stored flow segment (active pages or page trash).
     public var containsTextFlow: Bool {

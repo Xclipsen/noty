@@ -191,7 +191,8 @@ extension Page {
         return TextRuling(paper: box.flowRegion == .page ? paper : margins?.style)
     }
     func ruledTextOrigin(for box: TextBox) -> CGFloat? {
-        textRuling(for: box) == nil ? nil : (box.y + (margins?.top ?? 0)) / writingCoordinateScale(for: box)
+        guard textRuling(for: box) != nil, let anchor = box.rulingAnchorY(regionTops: writingRegionTops) else { return nil }
+        return (anchor + (margins?.top ?? 0)) / writingCoordinateScale(for: box)
     }
 }
 

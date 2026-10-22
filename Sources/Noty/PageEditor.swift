@@ -18,6 +18,8 @@ struct PageEditor {
     var paper: PaperStyle = .blank
     var paperColor: PaperColor = .white
     var margins: PageMargins?
+    /// Tops of the page's writing regions: migrated page text keeps its line layout there (`TextBox.rulingAnchorY`).
+    var writingRegionTops: [TextFlowRegion: Double] = [:]
     var tool: EditorTool
     var color: UIColor
     var width: CGFloat
@@ -741,7 +743,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
                             contentGeneration: editor.contentGeneration, active: editable && tool == .text, readOnly: editable && tool == .read,
                             darkPaper: editor.paperColor == .dark, darkMargins: editor.margins?.color == .dark,
                             hasPDF: editor.sourcePage != nil, paperStyle: editor.paper, marginStyle: editor.margins?.style ?? .blank,
-                            locked: editor.textToolLocked, flowDocument: editor.flowDocument, onChange: editor.onTextBoxes)
+                            regionTops: editor.writingRegionTops, locked: editor.textToolLocked, flowDocument: editor.flowDocument, onChange: editor.onTextBoxes)
         imageLayer.configure(objects: editor.images, pageID: editor.pageID, layout: editor.layout,
                              contentGeneration: editor.contentGeneration, active: editable && tool == .image,
                              onChange: editor.onImages, onError: editor.onError)
@@ -879,7 +881,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             contentGeneration: editor.contentGeneration, active: false,
             darkPaper: editor.paperColor == .dark, darkMargins: editor.margins?.color == .dark,
             hasPDF: editor.sourcePage != nil, paperStyle: editor.paper, marginStyle: editor.margins?.style ?? .blank,
-            onChange: editor.onTextBoxes)
+            regionTops: editor.writingRegionTops, onChange: editor.onTextBoxes)
         imageLayer.configure(objects: content.images, pageID: editor.pageID, layout: editor.layout,
             contentGeneration: editor.contentGeneration, active: false, onChange: editor.onImages, onError: editor.onError)
     }

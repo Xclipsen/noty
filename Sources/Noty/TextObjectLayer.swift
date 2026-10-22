@@ -95,6 +95,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     private var hasPDF = false
     private var paperStyle = PaperStyle.blank
     private var marginStyle = PaperStyle.blank
+    private var regionTops: [TextFlowRegion: Double] = [:]
     private let notice = UILabel()
     private var onChange: (([TextBox]) -> Void)?
     private var dragStart: (boxes: [TextBox], box: TextBox, generation: Int)?
@@ -134,7 +135,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
 
     func configure(boxes incoming: [TextBox], pageID: UUID, layout: PageLayout,
                    contentGeneration: Int, active: Bool, readOnly: Bool = false, darkPaper: Bool, darkMargins: Bool, hasPDF: Bool,
-                   paperStyle: PaperStyle = .blank, marginStyle: PaperStyle = .blank, locked: Bool? = nil,
+                   paperStyle: PaperStyle = .blank, marginStyle: PaperStyle = .blank,
+                   regionTops: [TextFlowRegion: Double] = [:], locked: Bool? = nil,
                    flowDocument: Bool? = nil, onChange: @escaping ([TextBox]) -> Void) {
         if let locked { self.locked = locked }
         if let flowDocument { self.flowDocument = flowDocument }
@@ -145,7 +147,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         if !reset, active, self.active, let start = dragStart, start.generation == generation, start.boxes == incoming { incoming = boxes }
         if !reset, boxes == incoming, self.active == active, self.readOnly == readOnly,
            self.darkPaper == darkPaper, self.darkMargins == darkMargins, self.hasPDF == hasPDF,
-           self.paperStyle == paperStyle, self.marginStyle == marginStyle {
+           self.paperStyle == paperStyle, self.marginStyle == marginStyle, self.regionTops == regionTops {
             self.onChange = onChange
             return
         }
@@ -170,7 +172,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         self.pageID = pageID; self.contentGeneration = contentGeneration
         self.pageLayout = layout; self.active = active; self.readOnly = readOnly; self.darkPaper = darkPaper
         self.darkMargins = darkMargins; self.hasPDF = hasPDF
-        self.paperStyle = paperStyle; self.marginStyle = marginStyle
+        self.paperStyle = paperStyle; self.marginStyle = marginStyle; self.regionTops = regionTops
         self.onChange = onChange
         if !fields.values.contains(where: { $0.editor.markedTextRange != nil }) { boxes = incoming }
         isUserInteractionEnabled = active || readOnly
@@ -294,10 +296,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             field.content = box; field.automaticLight = light
             field.applyFieldStyle(box.resolvingAutomaticColor(light: light), unitScale: coordinateScale(for: box))
             editor.isFlow = box.flowID != nil
-            // Flow segments and the fields migrated from page text keep the ruling of their region.
+            // Flow segments and the fields migrated from page text keep the ruling of their region;
+            // migrated fields anchored at their former region (lines move with the field).
             let lines = box.flowRegion.flatMap { TextRuling(paper: $0 == .page ? paperStyle : marginStyle) }
             let pointScale = coordinateScale(for: box)
-            editor.setRulingOrigin(lines == nil ? nil : (box.y + pageLayout.contentOrigin.y) / pointScale, lines: lines ?? .lined)
+            let anchor = lines == nil ? nil : box.rulingAnchorY(regionTops: regionTops)
+            editor.setRulingOrigin(anchor.map { ($0 + pageLayout.contentOrigin.y) / pointScale }, lines: lines ?? .lined)
             editor.isEditable = active; editor.isSelectable = active || readOnly
             editor.isUserInteractionEnabled = active || readOnly
             position(field, for: box); updateRaster(field, for: box)

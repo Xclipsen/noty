@@ -162,7 +162,7 @@ extension WorksheetView: SnapHost {
         addSubview(snapGuides)
     }
     func snapScene(excluding excluded: Set<UUID>) -> SnapScene? {
-        guard SnapSettings.enabled, let editor = configuration else { return nil }
+        guard SnapSettings.enabled, configuration != nil else { return nil }
         let content = pageContent
         var objects: [SnapObject] = []
         for box in content.textBoxes where !excluded.contains(box.id) && box.flowID == nil && !box.text.isEmpty {
@@ -172,20 +172,17 @@ extension WorksheetView: SnapHost {
         objects += content.images.filter { !excluded.contains($0.id) }.map { SnapObject(frame: $0.rotatedBounds) }
         objects += content.shapes.filter { !excluded.contains($0.id) }.map { SnapObject(frame: $0.snapFrame) }
         let layout = pageLayout
-        // Same paper lines as the background (`PaperBackgroundView`), in canonical coordinates.
-        let style = editor.margins?.style ?? (editor.sourcePage == nil ? editor.paper : .blank)
-        let lines = PaperLines(style: style, size: layout.canvas, coordinateScale: layout.writingCoordinateScale,
-                               columns: editor.sourcePage == nil ? nil : layout.ruledColumnsBesidePDF)
-            .offset(by: PagePoint(x: -layout.contentOrigin.x, y: -layout.contentOrigin.y))
+        // Paper lines and grid squares are no targets (Feedback zu Build 62).
         return SnapScene(objects: objects, page: PageRect(x: 0, y: 0, width: layout.contentCanvas.width, height: layout.contentCanvas.height),
-                         limits: PageRect(layout.canonicalInkBounds), lines: lines)
+                         limits: PageRect(layout.canonicalInkBounds))
     }
     func snapBaseline(of box: TextBox) -> Double? {
         guard box.angle == 0, box.flowID == nil, !box.text.isEmpty, let editor = configuration else { return nil }
         var page = Page(); page.paper = editor.paper; page.margins = editor.margins
         let scale = textLayer.coordinateScale(for: box)
         let ruling = page.textRuling(for: box)
-        let origin: CGFloat? = ruling == nil ? nil : (box.y + pageLayout.contentOrigin.y) / scale
+        let anchor = ruling == nil ? nil : box.rulingAnchorY(regionTops: editor.writingRegionTops)
+        let origin: CGFloat? = anchor.map { CGFloat($0 + pageLayout.contentOrigin.y) / scale }
         guard let first = TextObjectLayout(box, ruledOrigin: origin, ruling: ruling ?? .lined, coordinateScale: scale).firstBaseline else { return nil }
         return box.y + Double(first * scale)
     }

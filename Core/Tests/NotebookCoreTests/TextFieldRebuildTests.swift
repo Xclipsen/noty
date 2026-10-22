@@ -300,4 +300,25 @@ final class TextFieldRebuildTests: XCTestCase {
         margin.flowID = UUID() // a real flow segment keeps following its region
         XCTAssertTrue(EditorInteractionPolicy.automaticTextIsLight(box: margin, pageSize: .a4, hasPDF: true, darkPaper: false, darkMargins: true))
     }
+
+    func testMigratedPageTextKeepsItsLineLayoutWhenMovedAndNewFieldsHaveNone() throws {
+        // Feedback zu Build 62: nothing aligns to lined or squared paper. A
+        // migrated field keeps the layout of its former region top (unmoved:
+        // exactly the old page text), moved anywhere its lines move along.
+        var page = Page(); page.paper = .lined
+        let tops = page.writingRegionTops
+        let top = try XCTUnwrap(tops[.page])
+        XCTAssertEqual(top, 16)
+        var migrated = TextBox(x: 32, y: top, width: 531, height: 810, text: "Alt"); migrated.flowRegion = .page
+        XCTAssertEqual(migrated.rulingAnchorY(regionTops: tops), top)
+        migrated.y = 123.4 // moved by the user: same anchor, the lines do not jump
+        XCTAssertEqual(migrated.rulingAnchorY(regionTops: tops), top)
+        var flow = migrated; flow.flowID = UUID() // text document flow stands on the paper lines
+        XCTAssertEqual(flow.rulingAnchorY(regionTops: tops), 123.4)
+        XCTAssertNil(TextBox(x: 50, y: 77, text: "neu").rulingAnchorY(regionTops: tops), "new fields: no ruling")
+        // A new field starts exactly at the tap (no line or grid alignment).
+        let limits = PageRect(x: 0, y: 0, width: 595, height: 842)
+        XCTAssertEqual(TextFieldPlacement.frame(tap: p(101.3, 150.7), limits: limits, width: 14, lineHeight: 17),
+                       PageRect(x: 101.3, y: 142.2, width: 14, height: 17))
+    }
 }

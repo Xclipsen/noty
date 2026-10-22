@@ -82,7 +82,7 @@ final class SoftSnappingTests: XCTestCase {
         XCTAssertEqual(snapper.snap(p(-198, 0), moving: moving, scale: 1, speed: slow).x, -200, "lifting the finger allows it again")
     }
 
-    func testBaselinesOfTextFieldsAndRuledLines() {
+    func testBaselinesOfOtherTextFields() {
         // Other field: baseline at 132. Moved field: baseline 14 below its top.
         let other = SnapObject(frame: r(100, 118, 120, 20), baseline: 132)
         var snapper = SoftSnapper(scene: SnapScene(objects: [other]))
@@ -90,39 +90,25 @@ final class SoftSnappingTests: XCTestCase {
         // Baseline 300 + 14 − 184 = 130 → 132 (top, centre and bottom are 2 off as well: same result).
         let snapped = snapper.snap(p(0, -184), moving: moving, scale: 1, speed: slow)
         XCTAssertEqual(snapped.y, -182)
-        // Text on ruled paper: baseline stands `lift` above the line; frame edges ignore ruled lines.
-        let lines = PaperLines(style: .lined, size: PageSize(width: 595, height: 842))
-        XCTAssertEqual(lines.rows.first?.value, 40); XCTAssertEqual(lines.rows.dropFirst().first?.value, 64)
-        XCTAssertEqual(lines.lift, 2.5)
-        var ruled = SoftSnapper(scene: SnapScene(lines: lines))
-        // Baseline 300 + 14 − 163 = 151 → line 160 − 2.5 = 157.5 is 6.5 away (no); − 157 = 157 → 157.5.
-        XCTAssertEqual(ruled.snap(p(0, -163), moving: moving, scale: 1, speed: slow).y, -163)
-        XCTAssertEqual(ruled.snap(p(0, -157), moving: moving, scale: 1, speed: slow).y, -156.5)
-        let guide = ruled.feedback(for: p(0, -156.5), moving: moving).guides.first
-        XCTAssertEqual(guide?.kind, .ruling); XCTAssertEqual(guide?.value, 157.5)
-        // Top edge of a text field 2 pt from a line does not snap (only the baseline does).
-        var top = SoftSnapper(scene: SnapScene(lines: lines))
-        XCTAssertEqual(top.snap(p(0, -138), moving: moving, scale: 1, speed: slow).y, -138)
-        // Other objects (no baseline) snap their edges onto ruled lines.
-        var image = SoftSnapper(scene: SnapScene(lines: lines))
-        XCTAssertEqual(image.snap(p(0, -138), moving: SnapMoving(frame: r(400, 300, 80, 20)), scale: 1, speed: slow).y, -140)
     }
 
-    func testGridLinesPageEdgesCentreAndWritingSpace() {
-        let grid = PaperLines(style: .grid, size: PageSize(width: 595, height: 842))
-        XCTAssertEqual(grid.columns.first?.value, 32); XCTAssertEqual(grid.columns.dropFirst().first?.value, 48)
-        XCTAssertEqual(grid.columns.first?.span, 40...802)
-        XCTAssertEqual(grid.rows.first?.span, 32...563)
-        XCTAssertEqual(grid.lift, 1.5)
-        XCTAssertTrue(PaperLines(style: .blank, size: PageSize(width: 595, height: 842)).rows.isEmpty)
-        // Beside a PDF: each band ruled separately, then shifted into canonical coordinates.
-        let beside = PaperLines(style: .lined, size: PageSize(width: 1190, height: 842), columns: [0...595, 595...1190]).offset(by: p(-595, 0))
-        XCTAssertEqual(Set(beside.rows.map(\.span)), [-563.0 ... -32.0, 32.0...563.0])
+    func testPaperLinesAndGridAreNoTargets() {
+        // Feedback zu Build 62: nothing clicks onto lined or squared paper.
+        // Where lined paper has a line (y 160, baseline 157.5) or grid paper a
+        // column (x 48), and where ruled lines begin (x 32), nothing engages.
+        var paper = SoftSnapper(scene: SnapScene())
+        let field = SnapMoving(frame: r(400, 300, 80, 20), baselineOffset: 14)
+        XCTAssertEqual(paper.snap(p(0, -157), moving: field, scale: 1, speed: slow), p(0, -157))
+        XCTAssertFalse(paper.isEngaged)
+        let image = SnapMoving(frame: r(200, 200, 100, 50))
+        XCTAssertEqual(paper.snap(p(-151, -39), moving: image, scale: 1, speed: slow), p(-151, -39))
+        XCTAssertEqual(paper.snap(p(-167, 7), moving: image, scale: 1, speed: slow), p(-167, 7))
+        XCTAssertTrue(paper.feedback(for: p(-167, 7), moving: image).isEmpty)
+        XCTAssertEqual(MoveSnapSession(scene: SnapScene()).adjusted(point: p(31, 159)), p(31, 159), "width points and anchors stay where they are")
+    }
 
-        var page = SoftSnapper(scene: SnapScene(page: r(0, 0, 595, 842), lines: grid))
+    func testPageEdgesCentreAndWritingSpace() {
         let moving = SnapMoving(frame: r(200, 200, 100, 50))
-        // Grid column 48: left edge 200 − 151 = 49 → 48.
-        XCTAssertEqual(page.snap(p(-151, 0), moving: moving, scale: 1, speed: slow).x, -152)
         // Page centre: 250 + 46 = 296 → 297.5.
         var centre = SoftSnapper(scene: SnapScene(page: r(0, 0, 595, 842)))
         XCTAssertEqual(centre.snap(p(46, 0), moving: moving, scale: 1, speed: slow).x, 47.5)
@@ -131,9 +117,6 @@ final class SoftSnappingTests: XCTestCase {
         var edges = SoftSnapper(scene: SnapScene(page: r(0, 0, 595, 842), limits: r(-300, 0, 895, 842)))
         XCTAssertEqual(edges.snap(p(-497, 0), moving: moving, scale: 1, speed: slow).x, -500)
         XCTAssertEqual(edges.feedback(for: p(-500, 0), moving: moving).guides.first?.kind, .page)
-        // Ruled line ends are the paper's margins (x 32 on lined paper).
-        var margin = SoftSnapper(scene: SnapScene(lines: PaperLines(style: .lined, size: PageSize(width: 595, height: 842))))
-        XCTAssertEqual(margin.snap(p(-166, 7), moving: moving, scale: 1, speed: slow).x, -168)
     }
 
     func testEqualGapsBetweenThreeAndMoreObjects() {

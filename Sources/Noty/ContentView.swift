@@ -781,7 +781,7 @@ struct ContentView: View {
         return PageEditor(sourcePage: sourcePage, layout: layout, pageID: page.id,
             drawing: page.drawing, textBoxes: page.effectiveTextBoxes, images: page.images ?? [], shapes: page.shapes ?? [],
             searchHighlight: searchHighlightPageID == page.id ? searchHighlight : nil, paper: page.paper ?? (sourcePage == nil ? .legacyTest : .blank),
-            paperColor: page.paperColor ?? .white, margins: page.margins,
+            paperColor: page.paperColor ?? .white, margins: page.margins, writingRegionTops: page.writingRegionTops,
             tool: tool, color: tool == .marker
                 ? UIColor(preferences.markerColor.color).withAlphaComponent(preferences.markerStrokeColor.alpha)
                 : UIColor(preferences.inkColor(for: tool).color),
