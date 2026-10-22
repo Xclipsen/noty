@@ -72,6 +72,24 @@ public struct LassoRegion: Sendable {
 }
 
 public enum SelectionOutline {
+    /// Visible gap between selected content and its contour, in screen points.
+    /// Like the native PencilKit lasso of the early builds: every stroke and
+    /// object is encircled at a small distance instead of a box or one hull.
+    public static let screenGap = 7.0
+
+    /// Zoom in steps of ~20 %, so pinching does not rebuild the contour per frame.
+    public static func zoomBucket(_ displayScale: Double) -> Double {
+        guard displayScale.isFinite, displayScale > 0 else { return 1 }
+        return pow(1.2, (log(displayScale) / log(1.2)).rounded())
+    }
+
+    /// The gap in page points for the current zoom (constant on screen).
+    public static func gap(displayScale: Double) -> Double { screenGap / zoomBucket(displayScale) }
+
+    /// Spacing of centre-line samples: fine enough that the rounded offset
+    /// contour stays smooth, coarse enough for large selections.
+    public static func sampleSpacing(gap: Double) -> Double { max(1, gap * 0.6) }
+
     /// A tight outer contour for handwriting; no rectangular empty selection box.
     public static func hull(_ points: [PagePoint]) -> [PagePoint] {
         let sorted = points.filter { $0.x.isFinite && $0.y.isFinite }.sorted { $0.x == $1.x ? $0.y < $1.y : $0.x < $1.x }

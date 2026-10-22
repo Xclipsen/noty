@@ -60,6 +60,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private var startContent: PageContent?
     private var preview: PageContent?
     private var inkTransform: CGAffineTransform?
+    /// Move/scale/rotation of the whole group during a drag; the cached
+    /// contour follows it instead of being rebuilt per touch event.
+    private var groupTransform: CGAffineTransform?
     private var dragMode = 0 // 0 lasso, 1 move, 2 scale, 3 new shape, 4/5 endpoints
     private var draft: ShapeObject?
     /// Selection dragged off its page (continuous notebook only).
@@ -80,7 +83,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private let rotation = SelectionHandle(color: .white)
     private var activeCorner = 2
     private var cachedDrawing: (Data, PKDrawing)?
-    private var cachedOutline: (Data, Set<Int>, CGFloat, [PagePoint])?
+    private var cachedOutline: (SelectionContour.Key, CGPath?)?
     private weak var moreButton: UIButton?
     private let contourLayer = CAShapeLayer()
     private var contourAnimationScale: CGFloat?
@@ -100,7 +103,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     override init(frame: CGRect) {
         super.init(frame: frame); backgroundColor = .clear; isOpaque = false; clipsToBounds = true
         overrideUserInterfaceStyle = .dark
-        contourLayer.fillColor = UIColor.systemBlue.withAlphaComponent(0.035).cgColor
+        contourLayer.fillColor = UIColor.systemBlue.withAlphaComponent(0.06).cgColor
         contourLayer.strokeColor = UIColor.systemBlue.cgColor
         contourLayer.lineCap = .round; contourLayer.lineJoin = .round
         layer.addSublayer(contourLayer)
@@ -185,14 +188,17 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         let visible = preview ?? content
         if active, let rect = selectionBounds(visible, applyingPreview: true) {
             if !rotation.isHidden {
-                let r = display(rect); let connector = UIBezierPath()
+                let r = display(rect).insetBy(dx: -contourGap, dy: -contourGap); let connector = UIBezierPath()
                 connector.move(to: CGPoint(x: r.maxX, y: r.midY)); connector.addLine(to: rotation.center)
                 UIColor.white.withAlphaComponent(0.8).setStroke(); connector.lineWidth = 1.5 / displayScale; connector.stroke()
             }
         }
         if lasso.count > 1 {
             let path = UIBezierPath(); path.move(to: lasso[0]); lasso.dropFirst().forEach { path.addLine(to: $0) }
-            UIColor.systemBlue.setStroke(); path.lineWidth = 1.5; path.stroke()
+            let scale = displayScale
+            UIColor.systemBlue.setStroke(); path.lineWidth = 1.5 / scale
+            path.lineCapStyle = .round; path.lineJoinStyle = .round
+            path.setLineDash([6 / scale, 4 / scale], count: 2, phase: 0); path.stroke()
         }
     }
     private func canonical(_ point: CGPoint) -> CGPoint {
@@ -244,7 +250,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         HangProbe.hit("Object.layoutSubviews")
         let controls: [UIView] = [toolbar] + corners + [first, last, rotation]
         for control in controls { control.transform = .identity }
-        let group = selectionBounds(preview ?? content, applyingPreview: true).map(display)
+        // Controls frame the contour, which keeps a small gap around the content.
+        let group = selectionBounds(preview ?? content, applyingPreview: true).map { display($0).insetBy(dx: -contourGap, dy: -contourGap) }
         let scale = displayScale
         let intersection = window.map { convert($0.bounds, from: $0).intersection(bounds) } ?? bounds
         let visible = intersection.isNull || intersection.isEmpty ? bounds : intersection
@@ -280,7 +287,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         let scale = displayScale
         contourLayer.bounds = bounds; contourLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
-        contourLayer.path = (selectionOutline(preview ?? content) ?? UIBezierPath(roundedRect: display(frame), cornerRadius: 5 / scale)).cgPath
+        contourLayer.path = selectionOutline() ?? UIBezierPath(roundedRect: display(frame).insetBy(dx: -contourGap, dy: -contourGap),
+                                                               cornerRadius: contourGap).cgPath
         contourLayer.lineWidth = 1.5 / scale; contourLayer.lineDashPattern = [NSNumber(value: 5 / scale), NSNumber(value: 5 / scale)]
         contourLayer.isHidden = false
         if UIAccessibility.isReduceMotionEnabled {
@@ -339,7 +347,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             motionTicks.begin(at: .init(x: screen.x, y: screen.y), time: CACurrentMediaTime())
             let translation = gesture.translation(in: self)
             initialPoint = CGPoint(x: point.x - translation.x, y: point.y - translation.y)
-            startContent = content; preview = nil; inkTransform = nil
+            startContent = content; preview = nil; inkTransform = nil; groupTransform = nil
             if let requestedMode { dragMode = requestedMode }
             else if selectionBounds(content)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale).contains(initialPoint) == true { dragMode = 1 }
             else if tool == .shape {
@@ -369,7 +377,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 if let lift { lifted = true; preview = lift.remainder; inkTransform = nil; host.floatSelection(lift, gesture: gesture) }
             }
             if !lifted {
-                if lift != nil { endLift(); preview = initial; inkTransform = nil }
+                if lift != nil { endLift(); preview = initial; inkTransform = nil; groupTransform = nil }
                 if let value = transformed(initial, dx: point.x - initialPoint.x, dy: point.y - initialPoint.y, scale: 1) { preview = value }
             }
         case 2:
@@ -392,7 +400,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 let t = CGAffineTransform(translationX: -frame.midX, y: -frame.midY)
                     .concatenating(CGAffineTransform(rotationAngle: degrees * .pi / 180))
                     .concatenating(CGAffineTransform(translationX: frame.midX, y: frame.midY))
-                preview = initial; inkTransform = t
+                preview = initial; inkTransform = t; groupTransform = t
             }
         case 3: draft?.end = .init(x: point.x, y: point.y)
         default:
@@ -541,43 +549,29 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         return rects.reduce(nil) { $0?.union($1) ?? $1 }
     }
-    private func selectionOutline(_ value: PageContent) -> UIBezierPath? {
-        guard lift == nil, !ink.isEmpty, texts.isEmpty, images.isEmpty, shapes.isEmpty,
-              let drawing = drawing(value.drawing) else { return nil }
-        let hull: [PagePoint]
-        if let cached = cachedOutline, cached.0 == value.drawing, cached.1 == ink, cached.2 == displayScale {
-            hull = cached.3
-        } else {
-          var edge: [PagePoint] = []
-          for index in ink where drawing.strokes.indices.contains(index) {
-            let stroke = drawing.strokes[index]
-            let width = stroke.path.map { max($0.size.width, $0.size.height) }.max() ?? 1
-            let radius = width * max(hypot(stroke.transform.a, stroke.transform.b), hypot(stroke.transform.c, stroke.transform.d)) / 2 + 6 / displayScale
-            let samples = Array(stroke.path.interpolatedPoints(by: .distance(6)))
-            let locations = samples.isEmpty ? stroke.path.map(\.location) : samples.map(\.location)
-            for location in locations {
-                let p = location.applying(stroke.transform)
-                for i in 0..<8 {
-                    let angle = Double(i) * .pi / 4
-                    edge.append(.init(x: p.x + cos(angle) * radius, y: p.y + sin(angle) * radius))
-                }
-            }
-          }
-          hull = SelectionOutline.hull(edge)
-          cachedOutline = (value.drawing, ink, displayScale, hull)
+    /// Contour gap in page points: a constant few screen points at any zoom.
+    private var contourGap: CGFloat { SelectionOutline.gap(displayScale: displayScale) }
+    /// Native-lasso style contour around every selected member (`SelectionContour`),
+    /// in display coordinates. During move/scale/rotate the contour of the
+    /// starting state follows the group transform; shape point drags rebuild it.
+    private func selectionOutline() -> CGPath? {
+        guard lift == nil, hasSelection else { return nil }
+        var base = preview ?? content, transform = CGAffineTransform.identity
+        if preview != nil, let start = startContent, let groupTransform, [1, 2, 6].contains(dragMode) {
+            base = start; transform = groupTransform
         }
-        guard hull.count > 2 else { return nil }
-        let path = UIBezierPath()
-        let first = hull[0], last = hull[hull.count - 1]
-        path.move(to: CGPoint(x: (first.x + last.x) / 2, y: (first.y + last.y) / 2))
-        for i in hull.indices {
-            let a = hull[i], b = hull[(i + 1) % hull.count]
-            path.addQuadCurve(to: CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2), controlPoint: CGPoint(x: a.x, y: a.y))
+        let gap = Double(contourGap)
+        let key = SelectionContour.key(base, ink: ink, texts: texts, images: images, shapes: shapes, gap: gap)
+        let path: CGPath?
+        if let cached = cachedOutline, cached.0 == key { path = cached.1 }
+        else {
+            path = SelectionContour.path(base, drawing: ink.isEmpty ? nil : drawing(base.drawing), ink: ink, texts: texts,
+                                         images: images, shapes: shapes, gap: gap)
+            cachedOutline = (key, path)
         }
-        path.close()
-        if preview != nil { path.apply(inkTransform ?? .identity) }
-        path.apply(CGAffineTransform(translationX: layout.contentOrigin.x, y: layout.contentOrigin.y))
-        return path
+        guard let path else { return nil }
+        var display = transform.concatenating(CGAffineTransform(translationX: layout.contentOrigin.x, y: layout.contentOrigin.y))
+        return path.copy(using: &display)
     }
     private func transformedInk(_ initial: PageContent, using transform: CGAffineTransform, inkOnly: Bool = true) -> PageContent? {
         guard (!inkOnly || (texts.isEmpty && images.isEmpty && shapes.isEmpty)), !ink.isEmpty,
@@ -677,6 +671,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             guard (try? value.shapes[i].validate()) != nil, limits.contains(value.shapes[i].bounds, tolerance: 0.02) else { return nil }
         }
         inkTransform = ink.isEmpty ? nil : transform
+        groupTransform = transform
         return value
     }
     /// The notebook records the change as one notebook-wide undo step.

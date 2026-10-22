@@ -53,6 +53,19 @@ final class LassoTouchAndHighZoomTests: XCTestCase {
         XCTAssertTrue(LassoRegion(points: hull).contains(.init(x: 50, y: 50)))
         XCTAssertFalse(LassoRegion(points: hull).contains(.init(x: 0, y: 0)))
     }
+    func testSelectionContourGapStaysConstantOnScreenInZoomSteps() {
+        XCTAssertEqual(SelectionOutline.gap(displayScale: 1), 7)
+        XCTAssertEqual(SelectionOutline.zoomBucket(0), 1)
+        XCTAssertEqual(SelectionOutline.zoomBucket(.nan), 1)
+        // Small pinch movements share one bucket, so the cached contour is reused.
+        XCTAssertEqual(SelectionOutline.zoomBucket(2.0), SelectionOutline.zoomBucket(2.05))
+        for scale in [0.3, 0.8, 1.0, 2.5, 6, 16] {
+            let onScreen = SelectionOutline.gap(displayScale: scale) * scale
+            XCTAssertGreaterThan(onScreen, 7 / 1.1); XCTAssertLessThan(onScreen, 7 * 1.1)
+            XCTAssertGreaterThanOrEqual(SelectionOutline.sampleSpacing(gap: SelectionOutline.gap(displayScale: scale)), 1)
+        }
+        XCTAssertLessThan(SelectionOutline.sampleSpacing(gap: 7), 7)
+    }
     func testNarrowPageCannotScrollIntoWritingAreaOfNextPage() {
         let narrow = PageRect(x: 0, y: 0, width: 595, height: 842)
         let wide = PageRect(x: 0, y: 866, width: 1190, height: 842)
