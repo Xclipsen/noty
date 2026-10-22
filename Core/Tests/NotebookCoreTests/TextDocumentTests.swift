@@ -52,6 +52,24 @@ final class TextDocumentTests: XCTestCase {
         XCTAssertEqual(try json(document)["kind"] as? String, "textDocument")
     }
 
+    func testDarkTextDocumentKeepsItsPaperColourOnEveryPageWithoutNewFormat() throws {
+        // Feedback zu Build 62: text documents offer the notebook paper colours.
+        let document = try Notebook.textDocument(title: "Nacht", paper: .grid, color: .dark)
+        XCTAssertEqual(document.schemaVersion, 15)
+        XCTAssertEqual(document.pages[0].paperColor, .dark)
+        XCTAssertEqual(document.appearance?.color, .dark)
+        let flow = try XCTUnwrap(document.pages[0].textBoxes?.first)
+        XCTAssertEqual(flow.style.automaticColor, true)
+        XCTAssertEqual(flow.style.color, .white, "automatic text resolves light on dark paper")
+        XCTAssertEqual(document.writingDraft().paperColor, .dark, "reserve page")
+        let (grown, _) = try typed(document, String(repeating: "n", count: 25))
+        XCTAssertEqual(grown.pages.map(\.paperColor), [.dark, .dark, .dark], "pages from the text")
+        XCTAssertNoThrow(try grown.validate())
+        let decoded = try NotebookDecoding.decode(JSONEncoder().encode(grown))
+        XCTAssertEqual(decoded.notebook, grown)
+        XCTAssertEqual(decoded.storedSchemaVersion, 15)
+    }
+
     func testNotebookPageTextStillMigratesAndNotebooksStoreNoKind() throws {
         var book = try Notebook.blank(title: "Heft", appearance: NotebookAppearance())
         let rect = try XCTUnwrap(book.pages[0].writingRect(.page))

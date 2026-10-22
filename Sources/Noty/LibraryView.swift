@@ -112,8 +112,8 @@ struct LibraryView: View {
             }
         }
         .sheet(isPresented: $creatingTextDocument) {
-            TextDocumentCreationView { title, landscape, paper in
-                await model.createTextDocument(title, landscape: landscape, paper: paper, parent: parentID)
+            TextDocumentCreationView { title, landscape, paper, color in
+                await model.createTextDocument(title, landscape: landscape, paper: paper, color: color, parent: parentID)
             }
         }
         .sheet(item: $settingsRequest, onDismiss: switchAreaIfRequested) { request in

@@ -233,6 +233,7 @@ def text_document_with(change):
 
 
 backup("textdoc-valid.notybackup", text_document())
+backup("textdoc-dark.notybackup", text_document_with(lambda d: [page.update(paperColor="dark") for page in d["pages"]]))
 backup("textdoc-schema-14.notybackup", text_document(version=14))
 backup("textdoc-kind-notebook.notybackup", text_document(kind="notebook"))
 backup("textdoc-kind-enum.notybackup", text_document(kind="essay"))
@@ -575,6 +576,7 @@ for name in rotation-schema-13 autowidth-schema-13 region-schema-13 rotation-ran
     reject verify_backup.py "$work/backups/text-$name.notybackup"
 done
 accept verify_backup.py "$work/backups/textdoc-valid.notybackup"
+accept verify_backup.py "$work/backups/textdoc-dark.notybackup"
 for name in schema-14 kind-notebook kind-enum pdf-source pdf-page margins two-flows margin-flow legacy-paper schema-16; do
     reject verify_backup.py "$work/backups/textdoc-$name.notybackup"
 done

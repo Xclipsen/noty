@@ -277,12 +277,12 @@ final class LibraryModel: ObservableObject {
             return true
         } catch { self.error = error.localizedDescription; return false }
     }
-    func createTextDocument(_ title: String, landscape: Bool, paper: PaperStyle, parent: UUID?) async -> Bool {
+    func createTextDocument(_ title: String, landscape: Bool, paper: PaperStyle, color: PaperColor = .white, parent: UUID?) async -> Bool {
         await settle()
         guard ready, !busy, opened == nil else { return false }
         busy = true; defer { busy = false }
         do {
-            let document = try Notebook.textDocument(title: try LibraryStore.validTitle(title), landscape: landscape, paper: paper)
+            let document = try Notebook.textDocument(title: try LibraryStore.validTitle(title), landscape: landscape, paper: paper, color: color)
             snapshot = try await store.createDocument(document, parentID: parent)
             return true
         } catch { self.error = error.localizedDescription; return false }

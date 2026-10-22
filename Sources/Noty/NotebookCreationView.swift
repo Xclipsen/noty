@@ -133,14 +133,17 @@ extension NotebookCore.LibraryItem {
 }
 
 /// „Neu › Textdokument“ (TEXT-REBUILD-62 §4): title, A4 portrait or
-/// landscape, paper blank (default), lined or grid. Pages come from the text.
+/// landscape, paper blank (default), lined or grid, white or dark like a
+/// notebook (automatic text and ink colours turn light on dark paper).
+/// Pages come from the text.
 struct TextDocumentCreationView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
     @State private var landscape = false
     @State private var paper: PaperStyle = .blank
+    @State private var color: PaperColor = .white
     @State private var creating = false
-    let onCreate: (String, Bool, PaperStyle) async -> Bool
+    let onCreate: (String, Bool, PaperStyle, PaperColor) async -> Bool
     var body: some View {
         NavigationStack {
             Form {
@@ -153,6 +156,8 @@ struct TextDocumentCreationView: View {
                     Picker("Papier", selection: $paper) {
                         Text("Blanko").tag(PaperStyle.blank); Text("Liniert").tag(PaperStyle.lined); Text("Kariert").tag(PaperStyle.grid)
                     }.pickerStyle(.segmented)
+                    Picker("Papierfarbe", selection: $color) { Text("Weiß").tag(PaperColor.white); Text("Dunkel").tag(PaperColor.dark) }
+                        .pickerStyle(.segmented)
                 }
                 Section {
                     Text("Seiten entstehen beim Schreiben; am Ende steht immer eine leere Seite für Handschrift bereit. Handschrift bleibt fest auf ihrer Seite.")
@@ -165,7 +170,7 @@ struct TextDocumentCreationView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Erstellen") {
                         creating = true
-                        Task { if await onCreate(title, landscape, paper) { dismiss() }; creating = false }
+                        Task { if await onCreate(title, landscape, paper, color) { dismiss() }; creating = false }
                     }.disabled(creating || (try? LibraryStore.validTitle(title)) == nil)
                 }
             }
