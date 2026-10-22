@@ -165,13 +165,26 @@ struct PageWorkflowCheck {
         var editedImage = image; editedImage.locked = false; editedImage.rotation = -45
         try independent.replaceImages([editedImage], pageID: beforeTrim.id)
         var changedShapes = shapes; changedShapes[0] = changedShapes[0].translated(x: 20, y: 10)
+        // Schema 13: a bent arrow and a polygon as held shapes with corners.
+        changedShapes += [ShapeObject(kind: .arrow, vertices: [.init(x: 20, y: 250), .init(x: 20, y: 290), .init(x: 150, y: 290)], lineWidth: 2.5),
+                          ShapeObject(kind: .polygon, vertices: [.init(x: 60, y: 300), .init(x: 160, y: 300), .init(x: 110, y: 380)], color: InkColor(0.8, 0, 0))]
+        let schemaBeforeVertices = independent.schemaVersion
         try independent.replaceShapes(changedShapes, pageID: beforeTrim.id)
         let independentURL = try await restoredLibrary.documentURL(id: independent.id)
-        try RevisionStore(directory: independentURL).save(independent)
+        let independentStore = RevisionStore(directory: independentURL)
+        try independentStore.save(independent)
         guard try RevisionStore(directory: storeRoot).load() == document,
               try RevisionStore(directory: independentURL).load() == independent,
+              schemaBeforeVertices == 12, independent.schemaVersion == 13,
               independent.pages.count == document.pages.count + 1,
               old.pages[0].text == "BULK-12 · Seite 1" else { throw StorageError.invalidDocument }
+        // The schema-13 copy as a format-2 backup, checked by the Python verifier.
+        _ = try BackupArchive.write(independent, assets: independentStore.assets, to: root.appendingPathComponent("heft-v13.notybackup"))
+        try JSONEncoder().encode(independent).write(to: root.appendingPathComponent("current-v13.json"))
+        let migrated = try FileManager.default.contentsOfDirectory(at: independentURL.appendingPathComponent("Migrations"), includingPropertiesForKeys: nil)
+        guard migrated.contains(where: { FileManager.default.fileExists(atPath: $0.appendingPathComponent("notebook-v12.json").path) }) else {
+            throw StorageError.invalidDocument
+        }
         let legacyPackage = try await Self.checkLegacyPackage(root: root, image: imageData)
         let report: [String: Any] = ["schemaVersion": document.schemaVersion,
             "textFlowSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first?.flowID == continuation.flowID,
