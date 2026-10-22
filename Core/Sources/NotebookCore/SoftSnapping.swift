@@ -474,3 +474,12 @@ public final class MoveSnapSession: MoveSnapping {
         snapper.feedback(for: PagePoint(x: 0, y: 0), moving: .point(point, axes: axes))
     }
 }
+
+extension ShapeObject {
+    /// What a shape aligns by: its drawn outline (geometry plus half the
+    /// stroke), not the larger touch padding of `bounds` (arrows).
+    public var snapFrame: PageRect {
+        let f = frame, half = lineWidth / 2
+        return PageRect(x: f.x - half, y: f.y - half, width: f.width + lineWidth, height: f.height + lineWidth)
+    }
+}

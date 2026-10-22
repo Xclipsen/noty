@@ -189,6 +189,8 @@ final class SoftSnappingTests: XCTestCase {
         let padded = MoveSnapSession(scene: SnapScene(objects: [SnapObject(frame: r(300, 0, 10, 10))]))
         padded.snapFrame = r(110, 300, 40, 20)
         XCTAssertEqual(padded.adjusted(p(188, 0), moving: frame), p(190, 0))
+        let arrow = ShapeObject(kind: .arrow, start: p(10, 10), end: p(110, 10), lineWidth: 4)
+        XCTAssertEqual(arrow.snapFrame, r(8, 8, 104, 4), "shapes align by their outline, not the arrow's touch padding")
         // Suppressed sessions leave the move alone.
         padded.suppressed = true
         XCTAssertEqual(padded.adjusted(p(188, 0), moving: frame), p(188, 0))

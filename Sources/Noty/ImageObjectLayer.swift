@@ -74,7 +74,9 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
     private var rotationSnap: Double?
     private let rotationFeedback = UISelectionFeedbackGenerator()
     private weak var cropController: UIViewController?
-    private lazy var moveGesture = UIPanGestureRecognizer(target: self, action: #selector(moveImage(_:)))
+    private lazy var moveGesture = SnapPanGestureRecognizer(target: self, action: #selector(moveImage(_:)))
+    /// Weiches Einrasten while moving an image.
+    let snapping = DragSnapping()
     private let liveLayer = CALayer()
     private var liveID: UUID?
     /// Failed decodes per image (retry pause), and originals validation rejected.
@@ -412,19 +414,29 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
             if kind == 0 { selectedID = hitObject(point)?.id }
             guard let object = selected, !object.locked else { return }
             dragStart = (objects, object, point, generation)
+            if kind == 0 { snapping.begin(excluding: [object.id], in: self) }
         }
         guard let start = dragStart, start.generation == generation,
-              let index = objects.firstIndex(where: { $0.id == start.object.id }) else { return }
+              let index = objects.firstIndex(where: { $0.id == start.object.id }) else { snapping.end(); return }
         if pan.state == .cancelled || pan.state == .failed {
+            snapping.end()
             objects = start.objects; dragStart = nil; rotationSnap = nil; endLive(); endLift(); refresh(); onChange?(objects); return
         }
         var object = start.object
         let delta = pan.translation(in: self)
         if kind == 0, updateLift(pan, start: start) {
-            if pan.state == .ended { drop(pan, start: start, index: index) }
+            snapping.hide()
+            if pan.state == .ended { snapping.end(); drop(pan, start: start, index: index) }
             return
         }
-        if kind == 0 { object.x += delta.x; object.y += delta.y }
+        if kind == 0 {
+            // The one move path (`ObjectMovement`) with weiches Einrasten.
+            let frame = start.object.rotatedBounds
+            let shift = ObjectMovement.translation(moving: frame, by: PagePoint(x: delta.x, y: delta.y), within: limits,
+                                                   snapping: snapping.track(pan, in: self))
+            snapping.show(translation: shift, frame: frame, gesture: pan, in: self)
+            object.x += shift.x; object.y += shift.y
+        }
         else if kind == 1 {
             let distance = max(1, hypot(start.point.x - displayBounds(object).midX, start.point.y - displayBounds(object).midY))
             let scale = max(1 / min(object.width, object.height), hypot(point.x - displayBounds(object).midX, point.y - displayBounds(object).midY) / distance)
@@ -445,7 +457,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         // when the gesture ends instead of an autosave round trip per frame.
         let ended = pan.state == .ended
         var redraw = ended
-        if ended { dragStart = nil; rotationSnap = nil; endLive() } else { redraw = showLive(objects[index]) }
+        if ended { dragStart = nil; rotationSnap = nil; snapping.end(); endLive() } else { redraw = showLive(objects[index]) }
         refresh(redraw: redraw)
         if ended { onChange?(objects) }
     }

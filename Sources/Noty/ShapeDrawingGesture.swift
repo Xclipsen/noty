@@ -8,7 +8,7 @@ import UIKit.UIGestureRecognizerSubclass
 /// `beginsImmediately` accepts (Pencil drawing a new shape) this one begins at
 /// once; all others (fingers: scrolling, zooming, grabbing shapes) keep the
 /// normal threshold. `touchDownLocation` is the exact first contact either way.
-final class TouchDownPanGestureRecognizer: UIPanGestureRecognizer {
+final class TouchDownPanGestureRecognizer: SnapPanGestureRecognizer {
     var beginsImmediately: ((UITouch) -> Bool)?
     /// First contact of the current gesture, in the recognizer's view.
     private(set) var touchDownLocation: CGPoint?

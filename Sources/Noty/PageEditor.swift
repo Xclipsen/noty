@@ -161,10 +161,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private let pdfRaster = PDFSourceRasterView()
     private var pdfDocument: PDFDocument?
     let canvas = DrawingCanvasView()
-    private let imageLayer = ImageObjectLayer()
+    let imageLayer = ImageObjectLayer()
     let shapeLayer = ShapeObjectLayer()
     let objectLayer = ObjectEditingLayer()
-    private let textLayer = TextObjectLayer()
+    let textLayer = TextObjectLayer()
+    /// Guides of weiches Einrasten above everything (SoftSnapping.swift).
+    let snapGuides = SnapGuideView()
     private let hitHighlight = UIView()
     private var sourceDark = false
     private var sourceDarkCalculated = false
@@ -270,7 +272,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private var onInteraction: ((UUID, Bool) -> Void)?
     var inkActive = false
     var renderViewport: InkRenderViewport?
-    private var configuration: PageEditor?
+    private(set) var configuration: PageEditor?
     private var lastObjectPreview: PageContent?
     private let selectionInkImage = UIImageView()
     private var selectionInkSource: Data?
@@ -391,6 +393,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         let interaction = UIPencilInteraction(); interaction.delegate = self; addInteraction(interaction)
         PencilLocationTracker.shared.observe(self)
         [paperBackground, pdfRaster, imageLayer, shapeLayer, canvas, textLayer, objectLayer, hitHighlight].forEach { addSubview($0) }
+        installSnapping()
         selectionInkImage.isUserInteractionEnabled = false; selectionInkImage.isHidden = true
         insertSubview(selectionInkImage, aboveSubview: canvas)
         heldInkImage.isUserInteractionEnabled = false; heldInkImage.isHidden = true

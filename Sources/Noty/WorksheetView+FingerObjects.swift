@@ -21,7 +21,7 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
     private weak var sheet: WorksheetView?
     private let tap = UITapGestureRecognizer()
     private let doubleTap = UITapGestureRecognizer()
-    private let drag = UIPanGestureRecognizer()
+    private let drag = SnapPanGestureRecognizer() // a second finger pauses snapping
     private var menu: UIEditMenuInteraction?
     /// Page and canonical point of the shown double-tap menu.
     private var menuTarget: (pageID: UUID, point: PagePoint)?

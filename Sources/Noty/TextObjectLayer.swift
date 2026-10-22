@@ -91,6 +91,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     private var onChange: (([TextBox]) -> Void)?
     private var dragStart: (boxes: [TextBox], box: TextBox, generation: Int)?
     private enum FieldDrag { case move, left, right }
+    /// Weiches Einrasten for frame-zone moves and width points.
+    let snapping = DragSnapping()
     private lazy var accessory = makeAccessory()
     var buttons: [String: UIButton] = [:]
     /// BUG-18 input diagnosis (category `text-input`), only with Settings › Diagnose.
@@ -258,11 +260,11 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 }
                 // Frame zone moves (only touches on the container itself, not
                 // on its text); the width points change the width.
-                let border = UIPanGestureRecognizer(target: self, action: #selector(moveField(_:)))
+                let border = SnapPanGestureRecognizer(target: self, action: #selector(moveField(_:)))
                 border.delegate = FieldBorderDrag.shared; border.maximumNumberOfTouches = 1
                 field.addGestureRecognizer(border)
                 for (handle, action) in [(field.leftWidth, #selector(widenLeft(_:))), (field.rightWidth, #selector(widenRight(_:)))] {
-                    let pan = UIPanGestureRecognizer(target: self, action: action)
+                    let pan = SnapPanGestureRecognizer(target: self, action: action)
                     pan.delegate = ScrollPanPriority.shared // the notebook pan waits for field drags
                     handle.addGestureRecognizer(pan)
                 }
@@ -607,8 +609,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         if gesture.state == .began {
             selectedID = field.id
             dragStart = (boxes, boxes[index], generation)
+            let box = boxes[index]
+            snapping.begin(excluding: [box.id], baselineOffset: kind == .move ? snapping.host?.snapBaseline(of: box).map { $0 - box.y } : nil, in: self)
         }
-        guard let start = dragStart, start.generation == generation else { return }
+        guard let start = dragStart, start.generation == generation else { snapping.end(); return }
         let delta = gesture.translation(in: self)
         let limits = PageRect(canonicalBounds)
         switch gesture.state {
@@ -616,11 +620,18 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             var box = start.box
             switch kind {
             case .move:
-                let shift = ObjectMovement.translation(moving: box.rotatedBounds, by: PagePoint(x: delta.x, y: delta.y), within: limits)
+                let snap = snapping.track(gesture, in: self)
+                let shift = ObjectMovement.translation(moving: box.rotatedBounds, by: PagePoint(x: delta.x, y: delta.y), within: limits, snapping: snap)
+                snapping.show(translation: shift, frame: box.rotatedBounds, gesture: gesture, in: self)
                 box.x += shift.x; box.y += shift.y
             case .left, .right:
                 let radians = box.angle * .pi / 180
-                let along = Double(delta.x) * cos(radians) + Double(delta.y) * sin(radians)
+                var along = Double(delta.x) * cos(radians) + Double(delta.y) * sin(radians)
+                if box.angle == 0 {
+                    // The dragged edge snaps to vertical targets (edges, centres, grid, margins).
+                    let edge = kind == .right ? start.box.x + start.box.width + along : start.box.x + along
+                    along += snapping.point(PagePoint(x: edge, y: box.y + box.height / 2), axes: [.x], gesture: gesture, in: self).x - edge
+                }
                 let minimum = minimumWidth(box)
                 box.autoWidth = nil // a dragged width stays fixed
                 if kind == .right { box.width = max(minimum, start.box.width + along) }
@@ -636,9 +647,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             boxes[index] = box
             if gesture.state == .began { synchronize() } else { showDragged(index) }
         case .ended:
-            dragStart = nil; synchronize(); publish()
+            dragStart = nil; snapping.end(); synchronize(); publish()
         case .cancelled, .failed:
-            boxes = start.boxes; dragStart = nil; synchronize(); publish()
+            boxes = start.boxes; dragStart = nil; snapping.end(); synchronize(); publish()
         default: break
         }
     }
