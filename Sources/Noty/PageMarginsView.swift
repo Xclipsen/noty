@@ -231,8 +231,6 @@ struct PageMarginsView: View {
     private func paperPreview(_ preview: Page) -> some View {
         let canvas = PageSize(width: base.width + margins.right, height: base.height + margins.bottom)
         let stored = PageSize(width: base.width + (page?.margins?.right ?? 0), height: base.height + (page?.margins?.bottom ?? 0))
-        var rendered = page; rendered?.paper = paperStyle; rendered?.paperColor = paperColor
-        if var extra = rendered?.margins { extra.style = paperStyle; extra.color = paperColor; rendered?.margins = extra }
         return Canvas { context, size in
             let k = size.width / canvas.width
             context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(paperColor == .dark ? .black : .white))
@@ -251,7 +249,7 @@ struct PageMarginsView: View {
         }
             .aspectRatio(canvas.width / canvas.height, contentMode: .fit)
             .task(id: "\(paperStyle.rawValue)-\(paperColor.rawValue)") {
-                guard let rendered else { return }
+                guard let rendered = convertedPage() else { return }
                 pageImage = try? await PageThumbnailCache.render(rendered, source: .none, longestSide: 900)
             }
             .frame(maxWidth: .infinity).frame(height: 240)
@@ -259,6 +257,20 @@ struct PageMarginsView: View {
             .background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             .allowsHitTesting(false)
             .accessibilityElement().accessibilityLabel("Vorschau der Seite mit zusätzlichem Platz")
+    }
+
+    /// The stored page with the chosen paper, converted exactly like applying
+    /// it (`Notebook.setPaper` with the app's ink step): on a colour flip the
+    /// neutral ink, text and shapes swap too, so dark paper never previews
+    /// black writing.
+    private func convertedPage() -> Page? {
+        guard var page else { return nil }
+        var candidate = model.notebook
+        if (try? candidate.setPaper(paperStyle, color: paperColor, pageID: pageID, recolorDrawing: model.inkRecolorStep)) != nil,
+           let converted = candidate.pages.first(where: { $0.id == pageID }) { return converted }
+        page.paper = paperStyle; page.paperColor = paperColor
+        if var extra = page.margins { extra.style = paperStyle; extra.color = paperColor; page.margins = extra }
+        return page
     }
 
     /// Same lines as `PDFExporter.drawPaper` for a paper page (one sheet,
