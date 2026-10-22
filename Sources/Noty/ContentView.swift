@@ -35,6 +35,10 @@ struct ContentView: View {
     @State private var lastInkTool: EditorTool = .pen
     /// The tool before the text tool: leaving a field returns there unless the text tool is fixed.
     @State private var toolBeforeText: EditorTool?
+    /// The tool before the eraser: Pencil double tap/squeeze returns there (any tool).
+    @State private var toolBeforeEraser: EditorTool?
+    /// The tool used before the current one (system setting „Vorheriges Werkzeug“).
+    @State private var previousTool: EditorTool?
     @AppStorage(AppSettingsKey.textToolLocked) private var textToolLocked = false
     @State private var pencilPalette: PencilPalettePresentation?
     @State private var pencilSqueeze = PencilSqueezeTracker()
@@ -234,6 +238,7 @@ struct ContentView: View {
             .onChange(of: tool) { old, value in
                 if value != .text { textFocus = nil }; if value.isInk { lastInkTool = value }
                 if value == .text, old != .text { toolBeforeText = old }
+                previousTool = old
             }
             .onChange(of: tool, initial: true) { _, value in onToolChange?(value) }
             .onChange(of: model.notebook.id) { _, _ in selectedPageID = model.page.id; searchHighlightPageID = model.page.id }
@@ -719,16 +724,32 @@ struct ContentView: View {
         revealRequest = PageRevealRequest(pageID: outcome.pageID)
         selectedPageID = outcome.pageID
     }
-    /// Pencil double tap / double squeeze: eraser ↔ the ink tool used before
-    /// (pen, pencil or marker), honouring the eraser preference. From the laser
-    /// pointer it returns straight to that ink tool.
+    /// Pencil double tap / double squeeze („Radierer“): eraser ↔ exactly the
+    /// tool used before it, whatever it was (laser, lasso, shapes …),
+    /// honouring the eraser preference.
     private func togglePencilEraser() {
         guard canEdit else { return }
         pencilPalette = nil
-        if tool == .strokeEraser || tool == .precisionEraser || tool == .laser { tool = lastInkTool }
-        else {
-            if tool.isInk { lastInkTool = tool }
+        if tool == .strokeEraser || tool == .precisionEraser {
+            tool = toolBeforeEraser.flatMap { $0 == .strokeEraser || $0 == .precisionEraser ? nil : $0 } ?? lastInkTool
+        } else {
+            toolBeforeEraser = tool
             tool = toolbox.preferences.eraserPrecision == true ? .precisionEraser : .strokeEraser
+        }
+    }
+    /// System setting „Vorheriges Werkzeug“: back to the tool used before the
+    /// current one (a second time returns again); without one like the eraser toggle.
+    private func switchToPreviousTool() {
+        guard canEdit else { return }
+        pencilPalette = nil
+        guard let previous = previousTool, previous != tool else { togglePencilEraser(); return }
+        if tool == .strokeEraser || tool == .precisionEraser { toolBeforeEraser = nil }
+        tool = previous
+    }
+    private func pencilToolSwitch(_ action: PencilToolSwitch) {
+        switch action {
+        case .eraser: togglePencilEraser()
+        case .previous: switchToPreviousTool()
         }
     }
     /// Apple Pencil Pro: one squeeze opens the tool palette at the Pencil; a
@@ -746,7 +767,9 @@ struct ContentView: View {
                 pencilPalette = presentation
             }
         case .dismiss: withAnimation(NotyMotion.highlight(reduceMotion)) { pencilPalette = nil }
-        case .toggle: togglePencilEraser()
+        case .toggle:
+            if #available(iOS 17.5, *), UIPencilInteraction.preferredSqueezeAction == .switchPrevious { switchToPreviousTool() }
+            else { togglePencilEraser() }
         }
     }
     /// Same selection path as the toolbar buttons.
@@ -788,7 +811,7 @@ struct ContentView: View {
             enabled: canEdit, autoPen: preferences.automaticInk(for: tool),
             fingerDrawing: preferences.fingerDrawing, ruler: ruler, shapeOptions: shapeOptions, selectionFilter: selectionFilter, lassoMode: lassoMode,
             recognizeShapes: tool == .marker ? preferences.markerHoldStraighten ?? true : recognizeShapes, markerStraight: preferences.markerStraight ?? false, markerTip: preferences.effectiveMarkerTip, scribbleErase: preferences.scribbleErase ?? true,
-            onPencilAction: { togglePencilEraser() },
+            onPencilAction: { pencilToolSwitch($0) },
             onPencilSqueeze: { handlePencilSqueeze($0) },
             onInteraction: { id, active in
                 model.setInteraction(id, active: active)

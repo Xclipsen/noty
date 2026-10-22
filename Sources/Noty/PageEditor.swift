@@ -40,7 +40,8 @@ struct PageEditor {
     /// Round tip: PencilKit monoline ink (colour already at highlighter opacity).
     var markerTip = MarkerTip.round
     var scribbleErase = true
-    var onPencilAction: () -> Void
+    /// Pencil double tap/squeeze per system setting: eraser ↔ the tool before it, or the previous tool.
+    var onPencilAction: (PencilToolSwitch) -> Void
     /// Apple Pencil Pro squeeze phases (palette / double squeeze); nil keeps the plain toggle.
     var onPencilSqueeze: ((PencilSqueezeEvent) -> Void)? = nil
     var onInteraction: (UUID, Bool) -> Void
@@ -105,6 +106,9 @@ extension PageEditor {
 }
 
 struct UndoAvailability: Equatable { var undo = false, redo = false }
+
+/// What a Pencil double tap/squeeze switches to (system setting).
+enum PencilToolSwitch { case eraser, previous }
 
 /// Responder undo manager of a sheet. The system undo gesture/shortcut runs the
 /// notebook-wide history in `EditorModel` (stable page IDs, expected states).
@@ -250,7 +254,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var pageContent = PageContent(page: Page())
     var onContent: ((PageContent, PageContent) -> Bool)?
     var onEraseShapes: ((PageContent, PageContent) -> Bool)?
-    private var onPencilAction: (() -> Void)?
+    private var onPencilAction: ((PencilToolSwitch) -> Void)?
     private var onPencilSqueeze: ((PencilSqueezeEvent) -> Void)?
     var holdEnabled = true
     var holdPoints: [PagePoint] = []
@@ -1094,17 +1098,19 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     }
     /// Every preloaded sheet owns an interaction; only the focused one may act,
     /// otherwise an even number of sheets toggles the tool back and forth.
-    private func pencilAction() { if worksheetFocused, window != nil { onPencilAction?() } }
+    private func pencilAction(_ action: PencilToolSwitch) { if worksheetFocused, window != nil { onPencilAction?(action) } }
     /// Double tap follows the system setting (Einstellungen › Apple Pencil):
-    /// eraser or previous tool → the app's eraser toggle; colour palette or
-    /// ink attributes → the app's own tool palette at the Pencil; off → nothing.
+    /// „Radierer“ → eraser and back to the tool used before it, „Vorheriges
+    /// Werkzeug“ → the previously used tool; colour palette or ink attributes
+    /// → the app's own tool palette at the Pencil; off → nothing.
     private func pencilTap(palette: () -> PencilSqueezeEvent) {
         guard worksheetFocused, window != nil else { return }
         switch UIPencilInteraction.preferredTapAction {
         case .ignore: return
-        case .switchEraser, .switchPrevious: onPencilAction?()
+        case .switchEraser: onPencilAction?(.eraser)
+        case .switchPrevious: onPencilAction?(.previous)
         case .showColorPalette, .showInkAttributes:
-            if let onPencilSqueeze { onPencilSqueeze(palette()) } else { onPencilAction?() }
+            if let onPencilSqueeze { onPencilSqueeze(palette()) } else { onPencilAction?(.eraser) }
         default: return // system shortcuts and future actions are handled by iPadOS
         }
     }
@@ -1115,7 +1121,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     }
     @available(iOS 17.5, *)
     func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
-        guard let onPencilSqueeze else { if squeeze.phase == .ended { pencilAction() }; return }
+        guard let onPencilSqueeze else {
+            if squeeze.phase == .ended { pencilAction(UIPencilInteraction.preferredSqueezeAction == .switchPrevious ? .previous : .eraser) }
+            return
+        }
         if worksheetFocused, window != nil { onPencilSqueeze(PencilSqueezeEvent(squeeze, in: self)) }
     }
     /// Automatic pen colour after a late PDF darkness result (same rule as configure).
