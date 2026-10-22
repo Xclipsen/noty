@@ -110,4 +110,12 @@ Gerätetestpunkte (gebündelt, alles **ungeprüft**):
 5. Undo/Redo für Anlegen, Tippen, Verschieben, Breite, Drehen; Zoom; zweite Ansicht.
 6. Einsetzen von außen mit Stift und mit Textwerkzeug; Vorschau, PDF-Export (`pdftotext` findet gedrehten Text, Lage stimmt), Heft- und Bibliotheksbackup mit gedrehtem Feld.
 
+### Integration 22.10.2026
+
+Zusammengeführt in `feat/textneubau` (Merge-Commits): `feat/noty-datei` (`.noty`-Datei, Importnamen „Titel (n)“, Teilen als `.noty`), `feat/formen-tag2` (Form beginnt beim Aufsetzen, eigene Füllfarbe/Deckkraft, ungefüllte Formen zählen nur über ihren Strich) und `main` (einheitliche Werkzeugoptionen, Seitenausweichen und seitliches Federn, Gesetzesfenster an drei Kanten, Hover-Namen).
+- Formate: Notebook-Schema 14 (Formen 13 enthalten), Werkzeugeinstellungen bleiben Format 8 (`shapeFillColor`/`shapeFillOpacity` nur optional), `.noty` = `.notybackup` Format 2. Keine weitere Anhebung.
+- Treffer: Textfelder nur auf Textzeilen, ungefüllte Formen nur über den Strich (`PageObjectHitTest`, Lasso `LassoRegion.selects`); gemeinsamer Test in `PageObjectHitTestTests`. Lasso-Tipp prüft zuerst Textfeld-Treffer, sonst `selectByTap` wie der Pencil-Tipp im Formenwerkzeug.
+- Optionen: Textwerkzeug zeigt Schloss „Textwerkzeug fixieren“ | „Textfeld hinzufügen“ (ersetzt „Textfeld +“); Formen mit Vieleck, nach „Füllung“ folgen Füllfarbe, „wie Strich“ und Deckkraft im einheitlichen Stil mit Hover-Namen. Die Optionszeile des Textwerkzeugs weicht wie die übrigen über `optionsAvoidance` aus (statt fester 60 pt).
+- Prüfungen: Core-Tests (716, 3 übersprungen), `check_page_workflow.sh`, `check_verifiers.sh`, `xtool dev build` bestanden. **Nicht installiert, am iPad ungeprüft** (zusätzlich zu den Punkten oben: Seitenausweichen und seitliches Federn zusammen mit Feldauswahl/-ziehen, Pencil-Tipp im Formenwerkzeug neben Textfeldern, Füllregler in der Optionszeile).
+
 Offen für Stufe 2/3: Snapping an `MoveSnapping` andocken (auch für Lasso-Skalierung/Drehung nach Bedarf); Textdokument als eigener Typ mit Fluss und Lese-Migration nur für Hefte; Feldstil und Gliederung (Stufe 4).
