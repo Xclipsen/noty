@@ -107,11 +107,7 @@ final class TextFieldContainer: UIView {
         return bounds.insetBy(dx: -pad, dy: -pad)
     }
     /// Room beyond the frame where glyphs may still draw (italic overhang).
-    var glyphOverhang: CGFloat {
-        guard let box = content else { return 4 }
-        let largest = ([box.style.fontSize] + (box.runs ?? []).map(\.style.fontSize)).max() ?? box.style.fontSize
-        return CGFloat(largest) * 0.35 + 2
-    }
+    var glyphOverhang: CGFloat { content.map(TextObjectLayout.glyphOverhang) ?? 4 }
     /// Feldstil from the resolved box (automatic colours as shown);
     /// `unitScale`: page points per own point (margin text units).
     private var appliedStyle: (TextFieldFill?, TextFieldBorder?, TextColor, InkColor?, CGFloat)?

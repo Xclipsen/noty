@@ -361,6 +361,13 @@ struct TextObjectLayout {
         manager.ensureLayout(for: container)
     }
     var usedHeight: CGFloat { ceil(manager.usedRect(for: container).height * coordinateScale) }
+    /// Room beyond a field's text frame where glyphs still draw (italics, „J“,
+    /// the caret at the left edge), in the field's own units: the editor's
+    /// zoom raster and the previews clip the same way.
+    static func glyphOverhang(_ box: TextBox) -> CGFloat {
+        let largest = ([box.style.fontSize] + (box.runs ?? []).map(\.style.fontSize)).max() ?? box.style.fontSize
+        return CGFloat(largest) * 0.35 + 2
+    }
     /// The field's text does not fit its height on `page` (`TextBox.overflows`):
     /// previews mark it red like the editor, the PDF export refuses it.
     static func overflows(_ box: TextBox, on page: Page) -> Bool {
