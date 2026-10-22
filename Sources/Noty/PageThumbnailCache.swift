@@ -110,10 +110,11 @@ final class PageThumbnailCache: ObservableObject {
             ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)
             parts.ink?.draw(in: bounds)
             for box in page.resolvedTextBoxes {
-                // The (possibly rotated) field frame clips like the editor's text view.
                 let origin = layout.contentOrigin
+                TextFieldStyleRendering.draw(box, at: CGPoint(x: box.x + origin.x, y: box.y + origin.y), context: context)
+                // The (possibly rotated) text frame clips like the editor's text view.
                 let outline = CGMutablePath()
-                outline.addLines(between: box.corners.map { CGPoint(x: $0.x + origin.x, y: $0.y + origin.y) }); outline.closeSubpath()
+                outline.addLines(between: box.textCorners.map { CGPoint(x: $0.x + origin.x, y: $0.y + origin.y) }); outline.closeSubpath()
                 context.saveGState(); context.addPath(outline); context.clip()
                 TextObjectLayout(box, on: page).draw(at: CGPoint(x: box.x + origin.x, y: box.y + origin.y))
                 context.restoreGState()

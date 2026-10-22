@@ -388,3 +388,69 @@ struct TextObjectLayout {
         manager.drawGlyphs(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs), at: .zero)
     }
 }
+
+extension TextBoxStyle {
+    /// The visible text colour of this style (palette colour or own ink).
+    var foregroundUIColor: UIColor {
+        if let ink { return UIColor(red: ink.red, green: ink.green, blue: ink.blue, alpha: ink.alpha) }
+        return switch color {
+        case .black: .black
+        case .white: .white
+        case .blue: UIColor(red: 0.10, green: 0.35, blue: 0.80, alpha: 1)
+        case .red: UIColor(red: 0.80, green: 0.12, blue: 0.12, alpha: 1)
+        }
+    }
+}
+
+extension TextFieldFill {
+    var uiColor: UIColor { UIColor(red: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1) }
+}
+
+/// Feldstil (Textneubau Stufe 4): fill and frame of a free field, drawn
+/// below its text by the one geometry of `TextBox.fieldStyleRect` (page
+/// points, rounded corners, turned about the text's top-left corner). PDF,
+/// thumbnails and lifted selections draw through `draw`; the editor's field
+/// view uses `path`/`borderColor` for its layer (same values).
+@MainActor
+enum TextFieldStyleRendering {
+    /// Rounded visible field in the field's own unrotated page units
+    /// (origin: text top-left), divided by `unitScale` (margin text units).
+    static func localPath(_ box: TextBox, unitScale: CGFloat = 1) -> CGPath? {
+        guard box.hasFieldStyle else { return nil }
+        let frame = box.fieldStyleRect
+        let rect = CGRect(x: frame.x / unitScale, y: frame.y / unitScale, width: frame.width / unitScale, height: frame.height / unitScale)
+        let radius = min(TextBox.fieldCornerRadius / unitScale, rect.width / 2, rect.height / 2)
+        return CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+    }
+
+    /// Frame colour: the field's (resolved) base text colour or the accent blue.
+    static func borderColor(_ resolved: TextBox) -> UIColor? {
+        switch resolved.border {
+        case nil: nil
+        case .text: resolved.style.foregroundUIColor
+        case .accent: UIColor(red: TextFieldBorder.accentRGB.red, green: TextFieldBorder.accentRGB.green,
+                              blue: TextFieldBorder.accentRGB.blue, alpha: 1)
+        }
+    }
+
+    /// `resolved`: automatic colours already resolved for the page
+    /// (`Page.resolvedTextBoxes`). `origin`: the text's top-left corner in
+    /// drawing coordinates (as for `TextObjectLayout.draw`).
+    static func draw(_ resolved: TextBox, at origin: CGPoint, context: CGContext) {
+        guard let path = localPath(resolved) else { return }
+        context.saveGState(); defer { context.restoreGState() }
+        context.translateBy(x: origin.x, y: origin.y)
+        context.rotate(by: CGFloat(resolved.angle * .pi / 180))
+        if let fill = resolved.fill {
+            context.addPath(path); context.setFillColor(fill.uiColor.cgColor); context.fillPath()
+        }
+        if let stroke = borderColor(resolved) {
+            // Stroked inside the visible edge, so the frame never leaves the page.
+            let inset = CGFloat(TextBox.fieldBorderWidth) / 2
+            let frame = path.boundingBoxOfPath.insetBy(dx: inset, dy: inset)
+            let radius = max(0, min(CGFloat(TextBox.fieldCornerRadius) - inset, frame.width / 2, frame.height / 2))
+            context.addPath(CGPath(roundedRect: frame, cornerWidth: radius, cornerHeight: radius, transform: nil))
+            context.setStrokeColor(stroke.cgColor); context.setLineWidth(CGFloat(TextBox.fieldBorderWidth)); context.strokePath()
+        }
+    }
+}

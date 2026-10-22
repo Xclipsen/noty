@@ -292,6 +292,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                                                length: min(selectedRange.length, max(0, length - min(selectedRange.location, length))))
             }
             field.content = box; field.automaticLight = light
+            field.applyFieldStyle(box.resolvingAutomaticColor(light: light), unitScale: coordinateScale(for: box))
             editor.isFlow = box.flowID != nil
             // Flow segments and the fields migrated from page text keep the ruling of their region.
             let lines = box.flowRegion.flatMap { TextRuling(paper: $0 == .page ? paperStyle : marginStyle) }
@@ -410,6 +411,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     /// A text line of `box` (laid out by its field) is at the canonical point;
     /// the empty rest of the frame is no hit. `slack` in page units.
     func hitsTextLine(_ box: TextBox, at point: PagePoint, slack: Double) -> Bool {
+        // Feldstil: a filled field's whole surface, a framed field's frame line.
+        if box.fieldStyleHit(point, tolerance: slack) { return true }
         guard let field = fields[box.id], field.content?.text == box.text else { return box.contains(point, tolerance: slack) }
         let display = CGPoint(x: point.x + pageLayout.contentOrigin.x, y: point.y + pageLayout.contentOrigin.y)
         let scale = Double(coordinateScale(for: box))
@@ -642,7 +645,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             selectedID = field.id
             dragStart = (boxes, boxes[index], generation)
             let box = boxes[index]
-            snapping.begin(excluding: [box.id], baselineOffset: kind == .move ? snapping.host?.snapBaseline(of: box).map { $0 - box.y } : nil, in: self)
+            snapping.begin(excluding: [box.id], baselineOffset: kind == .move ? snapping.host?.snapBaseline(of: box).map { $0 - box.rotatedBounds.y } : nil, in: self)
         }
         guard let start = dragStart, start.generation == generation else { snapping.end(); return }
         let delta = gesture.translation(in: self)
@@ -661,7 +664,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 var along = Double(delta.x) * cos(radians) + Double(delta.y) * sin(radians)
                 if box.angle == 0 {
                     // The dragged edge snaps to vertical targets (edges, centres, grid, margins).
-                    let edge = kind == .right ? start.box.x + start.box.width + along : start.box.x + along
+                    // The visible edge (with a styled field's padding) snaps.
+                    let pad = start.box.fieldPadding
+                    let edge = kind == .right ? start.box.x + start.box.width + pad + along : start.box.x - pad + along
                     along += snapping.point(PagePoint(x: edge, y: box.y + box.height / 2), axes: [.x], gesture: gesture, in: self).x - edge
                 }
                 let minimum = minimumWidth(box)

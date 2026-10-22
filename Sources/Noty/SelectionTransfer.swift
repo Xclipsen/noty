@@ -73,6 +73,7 @@ enum SelectionTransfer {
             ShapeRendering.draw(objects.shapes, origin: .init(x: 0, y: 0), context: cg)
             inkImage?.draw(in: frame)
             for box in objects.textBoxes {
+                TextFieldStyleRendering.draw(box, at: CGPoint(x: box.x, y: box.y), context: cg)
                 TextObjectLayout(box).draw(at: CGPoint(x: box.x, y: box.y))
             }
         }
