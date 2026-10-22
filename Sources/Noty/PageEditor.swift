@@ -400,12 +400,17 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         addGestureRecognizer(interactionObserver)
         textLayer.onEditingActive = { [weak self] active in
             guard let self else { return }; self.textEditing = active; self.onInteraction?(self.textInteractionID, active)
+            if active { self.claimSelectionFocus() }
             // A field that stopped editing leaves no first responder; ⌘Z keeps working.
             if !active { DispatchQueue.main.async { [weak self] in self?.claimUndoResponder() } }
         }
         textLayer.onCaretChanged = { [weak self] in self?.onRevealCaret?() }
         textLayer.onLeaveField = { [weak self] in self?.configuration?.onTextEditingFinished() }
-        textLayer.onTap = { [weak self] point in self?.rememberTap(point); self?.objectLayer.endTouchSelection() }
+        textLayer.onTap = { [weak self] point in
+            self?.rememberTap(point); self?.objectLayer.endTouchSelection(); self?.claimSelectionFocus()
+        }
+        objectLayer.onInteractionBegan = { [weak self] in self?.claimSelectionFocus() }
+        imageLayer.onInteractionBegan = { [weak self] in self?.claimSelectionFocus() }
         textLayer.objectAt = { [weak self] point in self?.objectHits(at: point).first }
         textLayer.onSelectObject = { [weak self] object in
             guard let self else { return }
@@ -821,6 +826,23 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// Before a finger selection: the object plane gets the sheet's current
     /// content (ink and held shapes do not reconfigure it).
     func syncObjectPlane() { objectLayer.adoptCurrentContent(pageContent) }
+    /// This page is being worked on: selections on every other page end
+    /// (`SelectionTransferHost.sheetBecameActive`).
+    func claimSelectionFocus() {
+        var view = superview
+        while let current = view {
+            if let host = current as? SelectionTransferHost { host.sheetBecameActive(self); break }
+            view = current.superview
+        }
+        // Key commands (⌘C/⌘V/⌫ …) follow the page being worked on.
+        DispatchQueue.main.async { [weak self] in self?.claimUndoResponder() }
+    }
+    /// Another page is being worked on: drop this page's selection (and its
+    /// claim on key commands); a drag in progress here is left alone.
+    func dropSelectionForOtherPage() {
+        objectLayer.dropSelection()
+        imageLayer.deselect()
+    }
     /// Checkbox glyphs keep their own tap (`CheckboxTapGesture`).
     func fingerTapHitsCheckbox(_ point: CGPoint) -> Bool { textLayer.hasCheckbox(at: convert(point, to: textLayer)) }
     /// Canonical page point of a sheet point.
@@ -1072,6 +1094,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
         inkActive = true
         objectLayer.endTouchSelection() // writing again ends a finger selection
+        claimSelectionFocus()
         onInkSession?()
         if heldVisualsPending != nil { hideHeldVisuals() } // a new stroke is never hidden
         if heldShape == nil { holdBase = pageContent }

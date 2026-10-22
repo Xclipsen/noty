@@ -148,6 +148,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private var touchSelection = false
     /// The finger selection ended (the sheet gives the canvas its focus back).
     var onTouchSelectionEnded: (() -> Void)?
+    /// A drag or tap began on this layer (selections on other pages end).
+    var onInteractionBegan: (() -> Void)?
     override var canBecomeFirstResponder: Bool { active }
     override var inputView: UIView? { UIView(frame: .zero) }
     override var undoManager: UndoManager? { notebookUndo }
@@ -546,6 +548,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// field sets the caret or picks the next field below. `location`: layer
     /// coordinates (the sheet's).
     private func selectAtTap(_ location: CGPoint) {
+        onInteractionBegan?()
         let point = canonical(location), page = PagePoint(x: point.x, y: point.y)
         var hits = objectHits?(location) ?? []
         if lassoTool { hits = hits.filter(filterAllows) }
@@ -600,6 +603,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         guard active else { return }
         let point = canonical(gesture.location(in: self))
         if gesture.state == .began {
+            onInteractionBegan?()
             adopted = nil; rotationSnap = nil
             if #available(iOS 17.5, *), feedback == nil { feedback = UICanvasFeedbackGenerator(view: self) }
             feedback?.prepare()
@@ -888,6 +892,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     func endTouchSelection() {
         guard touchSelection, lift == nil, startContent == nil else { return }
         adopted = nil; clearSelection(); refresh()
+    }
+    /// Another page is being worked on: no selection (and no key commands) here.
+    func dropSelection() {
+        guard lift == nil, startContent == nil else { return }
+        if hasSelection || adopted != nil { adopted = nil; clearSelection(); refresh() }
+        if isFirstResponder { resignFirstResponder() }
     }
     private func endTouchSelectionMode() {
         guard touchSelection else { return }

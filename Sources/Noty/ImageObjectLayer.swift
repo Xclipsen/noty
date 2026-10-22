@@ -171,6 +171,11 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         defer { insertedID = nil }
         return insertedID.flatMap { id in objects.first { $0.id == id } }.map(displayBounds)
     }
+    /// Another page is being worked on: no selected image here.
+    func deselect() {
+        guard dragStart == nil, lift == nil, selectedID != nil else { return }
+        selectedID = nil; refresh()
+    }
     /// The plane shows exactly these objects (no local drag pending).
     func shows(_ incoming: [ImageObject]) -> Bool { objects == incoming }
     func adoptCallbacks(onChange: @escaping ([ImageObject]) -> Void, onError: @escaping (String) -> Void) {
@@ -399,8 +404,11 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         return active && hitObject(gestureRecognizer.location(in: self))?.locked == false
     }
     @objc private func selectImage(_ tap: UITapGestureRecognizer) {
+        onInteractionBegan?()
         selectedID = hitObject(tap.location(in: self))?.id; refresh()
     }
+    /// A tap or drag began here (selections on other pages end).
+    var onInteractionBegan: (() -> Void)?
 
     @objc private func moveImage(_ pan: UIPanGestureRecognizer) { drag(pan, kind: 0) }
     @objc private func resizeImage(_ pan: UIPanGestureRecognizer) { drag(pan, kind: 1) }
@@ -409,6 +417,7 @@ final class ImageObjectLayer: UIView, UIGestureRecognizerDelegate {
         guard active else { return }
         let point = pan.location(in: self)
         if pan.state == .began {
+            onInteractionBegan?()
             rotationSnap = nil
             if kind == 2 { rotationFeedback.prepare() }
             if kind == 0 { selectedID = hitObject(point)?.id }

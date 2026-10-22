@@ -71,6 +71,7 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
         guard gesture.state == .ended, let sheet, sheet.acceptsFingerObjectTaps else { return }
         let point = gesture.location(in: sheet)
         sheet.rememberTap(point)
+        sheet.claimSelectionFocus()
         sheet.syncObjectPlane()
         let hits = sheet.objectHits(at: point)
         // Second tap on the selected field: caret there, or the next field below.

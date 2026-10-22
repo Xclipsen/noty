@@ -1042,6 +1042,10 @@ extension NotebookViewport: SelectionTransferHost {
         return true
     }
 
+    func sheetBecameActive(_ sheet: WorksheetView) {
+        for other in sheets.values where other !== sheet { other.dropSelectionForOtherPage() }
+    }
+
     func transferTarget(for gesture: UIGestureRecognizer) -> UUID? {
         guard state?.enabled == true, state?.onTransfer != nil, !liveZoom else { return nil }
         return dropTarget(at: gesture.location(in: surface))?.id

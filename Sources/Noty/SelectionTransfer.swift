@@ -41,6 +41,10 @@ protocol SelectionTransferHost: AnyObject {
     /// Page below the touch that would accept a drop (nil: gap, beside the
     /// pages, editor locked or zooming).
     func transferTarget(for gesture: UIGestureRecognizer) -> UUID?
+    /// Someone works on `sheet` (stroke, tap, lasso, field editing): every
+    /// other page drops its selection, so only one selection, one action bar
+    /// and one target for key commands exist at a time.
+    func sheetBecameActive(_ sheet: WorksheetView)
 }
 
 @MainActor
