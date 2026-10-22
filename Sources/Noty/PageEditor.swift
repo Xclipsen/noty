@@ -426,6 +426,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.pageContext = { [weak self] in self?.configuration?.page }
         objectLayer.fittedText = { [weak self] box in self?.textLayer.fitted(box) ?? box }
         objectLayer.onEditText = { [weak self] id, point in self?.requestTextEdit(id, at: point) }
+        objectLayer.onError = { [weak self] message in self?.configuration?.onError(message) }
         canvas.onPaste = { [weak self] in self?.pasteFromClipboard() }
         canvas.canPaste = { [weak self] in self?.canPasteFromClipboard ?? false }
         objectLayer.onPaste = { [weak self] in self?.pasteFromClipboard() }

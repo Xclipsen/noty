@@ -102,8 +102,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     var onInkPreview: ((Data, Set<Int>, CGAffineTransform?) -> Void)?
     /// Notebook-wide undo (set by the sheet); this layer keeps no own history.
     weak var notebookUndo: UndoManager?
-    private let toolbar = UIScrollView()
-    private let actions = UIStackView()
+    /// One action bar for every kind of selection (`SelectionActionBar`).
+    private let bar = SelectionActionBar()
+    /// Name and description of a hovered bar button.
+    private let hoverBubble = UILabel()
+    private weak var cropController: UIViewController?
     private let corners = (0..<4).map { _ in SelectionHandle(color: .systemBlue) }
     /// One handle per anchor of a single selected shape (`ShapeObject.anchors`):
     /// line ends, polyline/polygon corners, rectangle corners, ellipse sides.
@@ -115,7 +118,6 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private var fingerPan = false
     private var cachedDrawing: (Data, PKDrawing)?
     private var cachedOutline: (SelectionContour.Key, CGPath?)?
-    private weak var moreButton: UIButton?
     private let contourLayer = CAShapeLayer()
     private var contourAnimationScale: CGFloat?
     private weak var styleController: UIViewController?
@@ -149,6 +151,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     var textLines: ((TextBox) -> [PageRect])?
     /// The field with its height (and automatic width) from the content.
     var fittedText: ((TextBox) -> TextBox)?
+    /// Errors of image actions (crop).
+    var onError: ((String) -> Void)?
     /// „Bearbeiten“ or a second tap on the selected field: caret at the point (nil: end).
     var onEditText: ((UUID, PagePoint?) -> Void)?
     /// Four corner points of a selected field (top-left, top-right,
@@ -158,7 +162,6 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Clearly visible on any paper (Build 62 showed a white dot on white paper).
     private let fieldRotation = SelectionHandle(color: .systemBlue, diameter: 12, bordered: true)
     private let angleLabel = UILabel()
-    private let fieldActions = UIStackView()
     private var active: Bool { enabled && (toolActive || touchSelection) }
     /// The tool works on this plane itself (shapes, lasso).
     private var toolActive: Bool { tool == .shape || tool == .selection || tool == .inkSelection }
@@ -186,27 +189,22 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         pan.beginsImmediately = { [weak self] touch in self?.drawsShapeOnTouchDown(touch) ?? false }
         let tap = UITapGestureRecognizer(target: self, action: #selector(tap(_:))); tap.delegate = self
         tap.require(toFail: pan); addGestureRecognizer(tap)
-        toolbar.overrideUserInterfaceStyle = .dark
-        toolbar.backgroundColor = UIColor(white: 0.13, alpha: 0.98)
-        toolbar.layer.cornerRadius = 22; toolbar.layer.borderWidth = 0.5
-        toolbar.layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
-        toolbar.showsHorizontalScrollIndicator = false
-        toolbar.addSubview(actions); addSubview(toolbar)
-        actions.axis = .horizontal; actions.spacing = 0
-        button("Stil") { [weak self] in self?.openStyle() }
-        button("Duplizieren") { [weak self] in self?.duplicateSelection() }
-        button("Ausschneiden") { [weak self] in self?.copySelection(); self?.deleteSelection() }
-        button("Kopieren") { [weak self] in self?.copySelection() }
-        let more = button("Weitere Aktionen", icon: "chevron.right") { }
-        moreButton = more
-        more.showsMenuAsPrimaryAction = true
-        more.menu = UIMenu(children: [
+        addSubview(bar)
+        bar.onAction = { [weak self] action in self?.perform(action) }
+        bar.onHover = { [weak self] button, text in self?.showHover(button, text: text) }
+        bar.setMenu(UIMenu(children: [
             UIAction(title: "Einfügen", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in self?.pasteKey() },
-            UIAction(title: "Löschen", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in self?.deleteSelection() },
-            UIAction(title: "Horizontal spiegeln", image: UIImage(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")) { [weak self] _ in self?.mirrorInk(horizontal: true) },
-            UIAction(title: "Vertikal spiegeln", image: UIImage(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down")) { [weak self] _ in self?.mirrorInk(horizontal: false) },
             UIAction(title: "Auswahl aufheben", image: UIImage(systemName: "xmark")) { [weak self] _ in self?.adopted = nil; self?.clearSelection(); self?.refresh() }
-        ])
+        ]), for: .more)
+        bar.setMenu(UIMenu(children: [
+            UIAction(title: "Waagerecht spiegeln", image: UIImage(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")) { [weak self] _ in self?.mirrorInk(horizontal: true) },
+            UIAction(title: "Senkrecht spiegeln", image: UIImage(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down")) { [weak self] _ in self?.mirrorInk(horizontal: false) }
+        ]), for: .mirror)
+        hoverBubble.font = .systemFont(ofSize: 13, weight: .medium); hoverBubble.textColor = .white
+        hoverBubble.backgroundColor = UIColor(white: 0.08, alpha: 0.94); hoverBubble.textAlignment = .center
+        hoverBubble.numberOfLines = 2; hoverBubble.layer.cornerRadius = 8; hoverBubble.clipsToBounds = true
+        hoverBubble.isUserInteractionEnabled = false; hoverBubble.isHidden = true; hoverBubble.isAccessibilityElement = false
+        addSubview(hoverBubble)
         for (index, handle) in (corners + [rotation]).enumerated() {
             handle.accessibilityLabel = index < 4 ? "Auswahl proportional skalieren" : "Handschrift drehen"
             let drag = SnapPanGestureRecognizer(target: self, action: #selector(handle(_:)))
@@ -226,30 +224,131 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         angleLabel.backgroundColor = UIColor(white: 0.13, alpha: 0.92); angleLabel.textAlignment = .center
         angleLabel.layer.cornerRadius = 8; angleLabel.clipsToBounds = true; angleLabel.isHidden = true
         angleLabel.isUserInteractionEnabled = false; addSubview(angleLabel)
-        fieldActions.axis = .horizontal; fieldActions.spacing = 0; fieldActions.isHidden = true
-        toolbar.addSubview(fieldActions)
-        fieldButton("Bearbeiten") { [weak self] in
-            guard let self, let id = self.texts.first else { return }
-            self.onEditText?(id, nil)
+    }
+
+    // MARK: Action bar (one for every selection)
+
+    private func perform(_ action: SelectionAction) {
+        guard active else { return }
+        hideHover()
+        switch action {
+        case .edit: if let id = texts.first { onEditText?(id, nil) }
+        case .style: openStyle()
+        case .cut: copySelection(); deleteSelection()
+        case .copy: copySelection()
+        case .duplicate: duplicateSelection()
+        case .front: reorderSelection(toFront: true)
+        case .back: reorderSelection(toFront: false)
+        case .crop: openCrop()
+        case .turn: editImage { $0.rotation = ImageObject.nextRightAngle(after: $0.rotation) }
+        case .lock: editImage(allowLocked: true) { $0.locked.toggle() }
+        case .fieldStyle: openFieldStyle()
+        case .delete: deleteSelection()
+        case .paste: pasteKey()
+        case .more, .mirror: break // menus
         }
-        fieldButton("Ausschneiden") { [weak self] in self?.copySelection(); self?.deleteSelection() }
-        fieldButton("Kopieren") { [weak self] in self?.copySelection() }
-        fieldButton("Duplizieren") { [weak self] in self?.duplicateSelection() }
-        fieldButton("Löschen") { [weak self] in self?.deleteSelection() }
-        fieldButton("Feldstil") { [weak self] in self?.openFieldStyle() }
-        fieldButton("Nach vorne", icon: "square.3.layers.3d.top.filled") { [weak self] in self?.reorderField(toFront: true) }
-        fieldButton("Nach hinten", icon: "square.3.layers.3d.bottom.filled") { [weak self] in self?.reorderField(toFront: false) }
     }
-    @discardableResult private func fieldButton(_ name: String, icon: String? = nil, action: @escaping () -> Void) -> UIButton {
-        let created = button(name, icon: icon, action: action)
-        actions.removeArrangedSubview(created); fieldActions.addArrangedSubview(created)
-        return created
+    /// A selected image is locked (only the image tool selects those): it
+    /// can only be unlocked, never moved, changed, duplicated or deleted.
+    private var selectionLocked: Bool {
+        !images.isEmpty && content.images.contains { images.contains($0.id) && $0.locked }
     }
-    /// „Nach vorne“/„Nach hinten“: draw order among the page's text fields.
-    private func reorderField(toFront: Bool) {
-        guard isFieldSelection, let id = texts.first else { return }
-        var value = content; value.textBoxes = content.textBoxes.movingField(id, toFront: toFront)
+    /// The one selected image (nothing else selected).
+    private var selectedImage: ImageObject? {
+        guard images.count == 1, ink.isEmpty, texts.isEmpty, shapes.isEmpty, let id = images.first else { return nil }
+        return content.images.first { $0.id == id }
+    }
+    /// Fixed order for every kind of selection: Bearbeiten/Stil · Ausschneiden,
+    /// Kopieren, Duplizieren · Nach vorne, Nach hinten · what only this kind
+    /// has (Feldstil; Zuschneiden, 90°, Sperren; Spiegeln) · Weitere · Löschen.
+    /// „Stil“ only where it changes something (not for images alone); a
+    /// locked image offers only „Entsperren“.
+    private func updateBar() {
+        guard hasSelection else {
+            bar.show(toolActive && ObjectClipboard.content != nil ? [[.paste]] : [])
+            return
+        }
+        let onlyImages = !images.isEmpty && ink.isEmpty && texts.isEmpty && shapes.isEmpty
+        let onlyInk = !ink.isEmpty && texts.isEmpty && images.isEmpty && shapes.isEmpty
+        let lead: [SelectionAction] = isFieldSelection ? [.edit] : onlyImages ? [] : [.style]
+        var specific: [SelectionAction] = []
+        if isFieldSelection { specific = [.fieldStyle] }
+        else if selectedImage != nil { specific = [.crop, .turn, .lock] }
+        else if onlyInk { specific = [.mirror] }
+        let locked = selectedImage?.locked == true
+        bar.show([lead, [.cut, .copy, .duplicate], [.front, .back], specific, [.more, .delete]],
+                 disabled: locked ? Set(SelectionAction.allCases).subtracting([.lock, .more]) : [],
+                 on: locked ? [.lock] : [], titles: [.lock: locked ? "Entsperren" : "Sperren"],
+                 symbols: [.lock: locked ? "lock.fill" : "lock.open"])
+    }
+    private func showHover(_ button: UIButton?, text: String?) {
+        guard let button, let text, active, !bar.isHidden else { hideHover(); return }
+        let scale = displayScale
+        hoverBubble.text = text
+        let size = hoverBubble.sizeThatFits(CGSize(width: 260, height: 80))
+        hoverBubble.transform = .identity
+        hoverBubble.bounds = CGRect(x: 0, y: 0, width: min(280, size.width + 20), height: size.height + 12)
+        let anchor = button.convert(CGPoint(x: button.bounds.midX, y: button.bounds.midY), to: self)
+        let half = (SelectionActionBar.height / 2 + 8 + hoverBubble.bounds.height / 2) / scale
+        let above = CGPoint(x: anchor.x, y: anchor.y - half), below = CGPoint(x: anchor.x, y: anchor.y + half)
+        hoverBubble.center = above.y - hoverBubble.bounds.height / 2 / scale >= bounds.minY ? above : below
+        hoverBubble.transform = CGAffineTransform(scaleX: 1 / scale, y: 1 / scale)
+        hoverBubble.isHidden = false; bringSubviewToFront(hoverBubble)
+    }
+    private func hideHover() { hoverBubble.isHidden = true }
+    /// „Nach vorne“/„Nach hinten“ for any selection: the selected members of
+    /// each kind move to the top/bottom of their kind's drawing order
+    /// (fields among fields, strokes among strokes …); kinds keep their
+    /// layer order (text over ink over shapes over images).
+    private func reorderSelection(toFront: Bool) {
+        guard hasSelection, !selectionLocked else { return }
+        func order<T: Identifiable>(_ items: [T], _ selected: Set<T.ID>) -> [T] {
+            let picked = items.filter { selected.contains($0.id) }, rest = items.filter { !selected.contains($0.id) }
+            return toFront ? rest + picked : picked + rest
+        }
+        var value = content
+        value.textBoxes = order(content.textBoxes, texts)
+        value.images = order(content.images, images)
+        value.shapes = order(content.shapes, shapes)
+        var movedInk = ink
+        if !ink.isEmpty, let drawing = drawing(content.drawing) {
+            let picked = drawing.strokes.indices.filter { ink.contains($0) }, rest = drawing.strokes.indices.filter { !ink.contains($0) }
+            let indices = toFront ? rest + picked : picked + rest
+            value.drawing = PKDrawing(strokes: indices.map { drawing.strokes[$0] }).dataRepresentation()
+            movedInk = Set(toFront ? (rest.count..<indices.count) : (0..<picked.count))
+        }
+        guard value != content else { return }
+        if commit(value, previous: content) { ink = movedInk }
+        refresh()
+    }
+    /// One change of the single selected image (fitted onto the page).
+    private func editImage(allowLocked: Bool = false, _ change: (inout ImageObject) -> Void) {
+        guard active, let image = selectedImage, allowLocked || !image.locked,
+              let index = content.images.firstIndex(where: { $0.id == image.id }) else { return }
+        var value = content
+        change(&value.images[index]); value.images[index] = value.images[index].fitted(in: limits)
+        guard value != content, (try? value.images[index].validate()) != nil else { return }
         _ = commit(value, previous: content); refresh()
+    }
+    /// „Zuschneiden“ of the selected image (`ImageCropView`).
+    private func openCrop() {
+        guard let object = selectedImage, !object.locked else { return }
+        var responder: UIResponder? = self
+        while let current = responder, !(current is UIViewController) { responder = current.next }
+        guard let parent = responder as? UIViewController, parent.presentedViewController == nil else { return }
+        do {
+            let image = try ImageRendering.image(object)
+            let page = pageID, expected = generation
+            let controller = UIHostingController(rootView: ImageCropView(image: image, crop: object.crop) { [weak self] crop in
+                guard let self, self.active, self.pageID == page, self.generation == expected, self.selectedImage?.id == object.id else { return }
+                do {
+                    let cropped = try object.cropped(to: crop, in: self.limits)
+                    self.editImage { $0 = cropped }
+                } catch { self.onError?(error.localizedDescription) }
+            })
+            controller.modalPresentationStyle = .formSheet
+            cropController = controller; parent.present(controller, animated: true)
+        } catch { onError?(error.localizedDescription) }
     }
     /// The selected field with its height from the content („Höhe immer aus
     /// dem Inhalt“): page text migrated to a field still has the height of its
@@ -377,18 +476,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         CGPoint(x: point.x - layout.contentOrigin.x, y: point.y - layout.contentOrigin.y)
     }
     private func display(_ rect: CGRect) -> CGRect { rect.offsetBy(dx: layout.contentOrigin.x, dy: layout.contentOrigin.y) }
-    private func clearSelection() { ink = []; texts = []; images = []; shapes = []; fieldMode = false; styleController?.dismiss(animated: false) }
-    @discardableResult private func button(_ name: String, icon: String? = nil, action: @escaping () -> Void) -> UIButton {
-        let button = UIButton(type: .system)
-        if let icon { button.setImage(UIImage(systemName: icon), for: .normal) }
-        else { button.setTitle(name, for: .normal) }
-        button.tintColor = .white; button.setTitleColor(.white, for: .normal)
-        button.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
-        button.accessibilityLabel = name; button.toolTip = name
-        button.addAction(UIAction { _ in action() }, for: .touchUpInside)
-        button.widthAnchor.constraint(equalToConstant: icon == nil ? max(56, (name as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: 15, weight: .semibold)]).width + 28) : 40).isActive = true
-        actions.addArrangedSubview(button)
-        return button
+    private func clearSelection() {
+        ink = []; texts = []; images = []; shapes = []; fieldMode = false
+        styleController?.dismiss(animated: false); cropController?.dismiss(animated: false); hideHover()
     }
     func publishPreview(ifTransientOnly: Bool = false) {
         if ifTransientOnly && preview == nil && draft == nil { return }
@@ -404,23 +494,18 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             endTouchSelectionMode(); isUserInteractionEnabled = active; isHidden = !active
         }
         let lifted = lift != nil
-        toolbar.isHidden = !active || lifted || (!hasSelection && ObjectClipboard.content == nil)
+        updateBar()
+        bar.isHidden = !active || lifted || bar.isEmpty
+        if bar.isHidden { hideHover() }
         for corner in corners { corner.isHidden = !active || lifted || !hasSelection || isFieldSelection }
         let field = active && !lifted && isFieldSelection
         (fieldWidthHandles + [fieldRotation]).forEach { $0.isHidden = !field }
         if !field || startContent == nil { angleLabel.isHidden = true }
-        actions.isHidden = field; fieldActions.isHidden = !field
         rotation.isHidden = !active || lifted || ink.isEmpty || !texts.isEmpty || !images.isEmpty || !shapes.isEmpty
         // A single shape is edited by its own anchors, not the scale corners.
         let editableShape = active && !lifted && shapes.count == 1 && ink.isEmpty && texts.isEmpty && images.isEmpty
         if editableShape { for corner in corners { corner.isHidden = true } }
         updateAnchorHandles(count: editableShape ? (selectedShape(preview ?? content)?.anchors.count ?? 0) : 0)
-        if let menu = moreButton?.menu {
-            let onlyInk = !ink.isEmpty && texts.isEmpty && images.isEmpty && shapes.isEmpty
-            for action in menu.children.compactMap({ $0 as? UIAction }) where action.title.contains("spiegeln") {
-                action.attributes = onlyInk ? [] : .disabled
-            }
-        }
         if active && (hasSelection || startContent != nil) { becomeFirstResponder() }
         else if !active { resignFirstResponder() }
         setNeedsLayout(); setNeedsDisplay()
@@ -429,23 +514,13 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         HangProbe.hit("Object.layoutSubviews")
-        let controls: [UIView] = [toolbar] + corners + anchorHandles + [rotation] + fieldWidthHandles + [fieldRotation, angleLabel]
+        let controls: [UIView] = [bar] + corners + anchorHandles + [rotation] + fieldWidthHandles + [fieldRotation, angleLabel]
         for control in controls { control.transform = .identity }
         // Controls frame the contour, which keeps a small gap around the content.
         let group = selectionBounds(preview ?? content, applyingPreview: true).map { display($0).insetBy(dx: -contourGap, dy: -contourGap) }
         let scale = displayScale
         let intersection = window.map { convert($0.bounds, from: $0).intersection(bounds) } ?? bounds
         let visible = intersection.isNull || intersection.isEmpty ? bounds : intersection
-        let shown = isFieldSelection ? fieldActions : actions
-        let fullWidth = shown.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width + 8
-        // Above a field's rotation handle, otherwise just above the selection.
-        let raise: CGFloat = isFieldSelection ? 76 : 30
-        let width = min(fullWidth, max(44, visible.width * scale - 8))
-        toolbar.bounds = CGRect(x: 0, y: 0, width: width, height: 44)
-        toolbar.center = CGPoint(x: min(max((group?.midX ?? visible.midX), visible.minX + (width / 2 + 4) / scale),
-            visible.maxX - (width / 2 + 4) / scale),
-            y: min(max((group?.minY ?? visible.maxY) - raise / scale, visible.minY + 26 / scale), visible.maxY - 26 / scale))
-        shown.frame = CGRect(x: 4, y: 2, width: fullWidth - 8, height: 40); toolbar.contentSize = CGSize(width: fullWidth, height: 44)
         if let box = selectedField(preview ?? content) {
             for (handle, corner) in zip(fieldWidthHandles, box.selectionCorners) { handle.frame = handleFrame(display(corner)) }
             fieldRotation.frame = handleFrame(rotationHandleCenter(box))
@@ -464,12 +539,29 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 handle.frame = handleFrame(CGPoint(x: anchor.x + layout.contentOrigin.x, y: anchor.y + layout.contentOrigin.y))
             }
         }
+        placeBar(around: group, visible: visible, scale: scale)
         for control in controls {
             let center = control.center
             control.transform = CGAffineTransform(scaleX: 1 / scale, y: 1 / scale)
             control.center = center
         }
         updateContour()
+    }
+    /// The bar sits above the selection and its handles; below them only
+    /// when there is no room above; inside the visible part in any case.
+    private func placeBar(around group: CGRect?, visible: CGRect, scale: CGFloat) {
+        let width = min(bar.contentWidth, max(44, visible.width * scale - 8))
+        bar.bounds = CGRect(x: 0, y: 0, width: width, height: SelectionActionBar.height)
+        let half = SelectionActionBar.height / 2 / scale, margin = 10 / scale, reach = 22 / scale
+        var top = (group?.minY ?? visible.maxY) - reach, bottom = (group?.maxY ?? visible.maxY) + reach
+        for handle in [rotation, fieldRotation] + fieldWidthHandles + anchorHandles where !handle.isHidden {
+            top = min(top, handle.center.y - reach); bottom = max(bottom, handle.center.y + reach)
+        }
+        let low = visible.minY + half + 4 / scale, high = visible.maxY - half - 4 / scale
+        let above = top - margin - half, below = bottom + margin + half
+        let y = group == nil ? high : above >= low ? above : below <= high ? below : min(max(above, low), high)
+        let sideways = (width / 2 + 4) / scale
+        bar.center = CGPoint(x: min(max(group?.midX ?? visible.midX, visible.minX + sideways), visible.maxX - sideways), y: y)
     }
     private func updateContour() {
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -1076,7 +1168,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             controller.preferredContentSize.height = 426
         }
         if let popover = controller.popoverPresentationController {
-            popover.sourceView = toolbar; popover.sourceRect = toolbar.bounds; popover.permittedArrowDirections = [.up, .down]
+            popover.sourceView = bar; popover.sourceRect = bar.bounds; popover.permittedArrowDirections = [.up, .down]
             popover.backgroundColor = root.backgroundColor
         }
         styleController = controller; parent.present(controller, animated: true)
@@ -1097,7 +1189,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         controller.modalPresentationStyle = .popover
         controller.preferredContentSize = CGSize(width: 384, height: 196)
         if let popover = controller.popoverPresentationController {
-            popover.sourceView = toolbar; popover.sourceRect = toolbar.bounds; popover.permittedArrowDirections = [.up, .down]
+            popover.sourceView = bar; popover.sourceRect = bar.bounds; popover.permittedArrowDirections = [.up, .down]
             popover.backgroundColor = controller.view.backgroundColor
         }
         styleController = controller; parent.present(controller, animated: true)
@@ -1194,7 +1286,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     /// „Duplizieren“/⌘D: a copy beside the selection; the clipboards stay untouched.
     private func duplicateSelection() {
-        guard let members = selectedMembers() else { return }
+        guard !selectionLocked, let members = selectedMembers() else { return }
         let field = isFieldSelection
         paste(members.content, from: members.bounds)
         if field, texts.count == 1, ink.isEmpty, images.isEmpty, shapes.isEmpty { fieldMode = true; refresh() }
@@ -1246,7 +1338,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private func deleteSelection() {
         // Without a selection Backspace/„Löschen“ must not re-encode the ink
         // into an invisible undo step.
-        guard hasSelection else { return }
+        guard hasSelection, !selectionLocked else { return }
         var value = content
         value.textBoxes.removeAll { texts.contains($0.id) }; value.images.removeAll { images.contains($0.id) }
         value.shapes.removeAll { shapes.contains($0.id) }
@@ -1309,7 +1401,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     @objc private func pasteKey() { if let onPaste { onPaste() } else { pasteSelection() } }
     @objc private func deleteKey() { deleteSelection() }
     @objc private func escapeKey() { adopted = nil; clearSelection(); refresh() }
-    @objc private func cutKey() { guard hasSelection else { return }; copySelection(); deleteSelection() }
+    @objc private func cutKey() { guard hasSelection, !selectionLocked else { return }; copySelection(); deleteSelection() }
     @objc private func duplicateKey() { guard hasSelection else { return }; duplicateSelection() }
     /// ⌘A: everything selectable on this page (the lasso's filter; shape tool: shapes).
     @objc private func selectAllKey() {
@@ -1333,7 +1425,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         default: (0, step)
         }
         // Same clamped move and ink transform as a drag; one model change per key.
-        guard active, hasSelection, lift == nil, startContent == nil, var value = transformed(content, dx: dx, dy: dy, scale: 1) else { return }
+        guard active, hasSelection, !selectionLocked, lift == nil, startContent == nil,
+              var value = transformed(content, dx: dx, dy: dy, scale: 1) else { return }
         if let inkTransform {
             guard let moved = transformedInk(content, using: inkTransform, inkOnly: false) else { self.inkTransform = nil; return }
             value.drawing = moved.drawing
