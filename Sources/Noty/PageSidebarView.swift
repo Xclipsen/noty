@@ -13,7 +13,13 @@ struct PageSidebarView: View {
     var onCollapse: () -> Void
     var onSelect: (() -> Void)? = nil
     var onMargins: ((UUID) -> Void)? = nil
+    /// Text document: a tap on an entry of the Gliederung (caret behind the heading).
+    var onOutline: ((TextOutlineEntry) -> Void)? = nil
     @StateObject private var cache = PageThumbnailCache()
+    /// Gliederung of a text document; recomputed off the main thread after
+    /// the text rests briefly (`refreshTextOutline`), never per keystroke.
+    @State private var textOutline: [TextOutlineEntry] = []
+    @State private var outlineTask: Task<Void, Never>?
     @State private var editMode: EditMode = .inactive
     @State private var showingTrash = false
     @State private var addingPage: AddRequest?
@@ -25,6 +31,8 @@ struct PageSidebarView: View {
     private enum SidebarTab: String, CaseIterable, Identifiable {
         case pages = "Seiten", outline = "Inhalt"
         var id: Self { self }
+        /// Text documents show their Gliederung instead of a PDF outline.
+        func title(textDocument: Bool) -> String { self == .outline && textDocument ? "Gliederung" : rawValue }
     }
     private enum PageFilter: String, CaseIterable, Identifiable {
         case all = "Alle Seiten", bookmarks = "Lesezeichen"
@@ -93,10 +101,12 @@ struct PageSidebarView: View {
             }.padding(12)
             Picker("Seitenbereich", selection: $selectedTab) {
                 ForEach(SidebarTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
+                    Text(tab.title(textDocument: !manualPages)).tag(tab)
                 }
             }.pickerStyle(.segmented).padding(.horizontal, 16).padding(.bottom, 12)
-            .onChange(of: selectedTab) { _, tab in if tab == .outline { editMode = .inactive } }
+            .onChange(of: selectedTab) { _, tab in
+                if tab == .outline { editMode = .inactive; refreshTextOutline(model.notebook) }
+            }
             if selectedTab == .pages && !editMode.isEditing {
                 HStack {
                     Menu {
@@ -130,7 +140,7 @@ struct PageSidebarView: View {
                 ScrollViewReader { proxy in
                     ZStack {
                         if selectedTab == .outline {
-                            outlineList
+                            if manualPages { outlineList } else { textOutlineList }
                         } else if editMode.isEditing {
                             reorderList
                         } else if filter == .bookmarks && visiblePages.isEmpty {
@@ -173,6 +183,10 @@ struct PageSidebarView: View {
         }
         .animation(NotyMotion.panel(reduceMotion), value: selectedTab)
         .animation(NotyMotion.panel(reduceMotion), value: filter)
+        // Live while typing, but debounced: one extraction after the text rests.
+        .onReceive(model.$notebook) { notebook in refreshTextOutline(notebook, after: .milliseconds(400)) }
+        .onAppear { refreshTextOutline(model.notebook) }
+        .onDisappear { outlineTask?.cancel(); outlineTask = nil }
         .background(Color(white: 0.065))
         .environment(\.colorScheme, .dark)
         .sheet(isPresented: $showingTrash) {
@@ -206,6 +220,52 @@ struct PageSidebarView: View {
                 .listRowBackground(Color.clear)
             }.listStyle(.plain).scrollContentBackground(.hidden)
                 .disabled(!canEdit)
+        }
+    }
+
+    /// Gliederung (text documents): titles, headings and subheadings of the
+    /// flow, indented by level, shortened; a tap jumps there (`onOutline`).
+    @ViewBuilder
+    private var textOutlineList: some View {
+        if textOutline.isEmpty {
+            ContentUnavailableView("Keine Überschriften", systemImage: "list.bullet.indent",
+                                   description: Text("Absätze im Stil Titel, Überschrift oder Unterüberschrift erscheinen hier."))
+        } else {
+            List(textOutline) { entry in
+                Button {
+                    onOutline?(entry); onSelect?()
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(entry.text)
+                            .font(entry.preset == .title ? .headline : entry.preset == .heading ? .subheadline.weight(.semibold) : .subheadline)
+                            .foregroundStyle(entry.pageID == currentPage.id ? Color.accentColor : .primary)
+                            .lineLimit(2).multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text("\(entry.pageIndex + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    .padding(.leading, CGFloat(min(entry.depth, 4)) * 16)
+                    .frame(minHeight: 36).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(entry.preset.title): \(entry.text), Seite \(entry.pageIndex + 1)")
+                .listRowBackground(Color.clear)
+            }.listStyle(.plain).scrollContentBackground(.hidden)
+        }
+    }
+
+    /// Extracts the Gliederung on a background task (pure Core function);
+    /// only for text documents while the tab is shown. Each change restarts
+    /// the short wait, so typing costs no extraction; older results never
+    /// overwrite newer ones (the previous task is cancelled).
+    private func refreshTextOutline(_ notebook: Notebook, after wait: Duration = .zero) {
+        guard notebook.isTextDocument, selectedTab == .outline else { return }
+        outlineTask?.cancel()
+        outlineTask = Task {
+            if wait > .zero { try? await Task.sleep(for: wait) }
+            guard !Task.isCancelled else { return }
+            let entries = await Task.detached(priority: .userInitiated) { notebook.textOutline }.value
+            guard !Task.isCancelled else { return }
+            if entries != textOutline { textOutline = entries }
         }
     }
 
@@ -652,5 +712,22 @@ private struct PageTrashView: View {
                 Text("Alle Seiten im Papierkorb, auch gesicherte Seitenstände, werden endgültig entfernt, ebenso nicht mehr verwendete PDF-Originale. \(Self.undoNote)")
             }
         }
+    }
+}
+
+extension TextOutlineEntry {
+    /// Page rectangle of the heading's own lines (same native layout as
+    /// editor and PDF), for the short jump marker; the segment frame if the
+    /// text changed meanwhile.
+    @MainActor func markerBounds(box: TextBox, page: Page) -> PageRect {
+        let length = (box.text as NSString).length
+        guard NSMaxRange(range) <= length, range.length > 0, box.rotation == nil else { return box.rotatedBounds }
+        let layout = TextObjectLayout(box, on: page)
+        let glyphs = layout.manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        let rect = layout.manager.boundingRect(forGlyphRange: glyphs, in: layout.container)
+        guard !rect.isEmpty, rect.minX.isFinite else { return box.rotatedBounds }
+        let scale = Double(layout.coordinateScale)
+        return PageRect(x: box.x + Double(rect.minX) * scale, y: box.y + Double(rect.minY) * scale,
+                        width: max(1, Double(rect.width) * scale), height: max(1, Double(rect.height) * scale))
     }
 }
