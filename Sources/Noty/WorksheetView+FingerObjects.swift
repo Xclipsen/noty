@@ -69,9 +69,8 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
 
     @objc private func tapped(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended, let sheet, sheet.acceptsFingerObjectTaps else { return }
-        // Shape and lasso tools select through their own plane's tap (same
-        // hit test); the image tool still through its image plane.
-        guard !sheet.objectLayer.handlesTapsItself, sheet.tool != .image else { return }
+        // Shape, lasso and image tools select through their own plane's tap (same hit test).
+        guard !sheet.objectLayer.handlesTapsItself else { return }
         let point = gesture.location(in: sheet)
         sheet.rememberTap(point)
         sheet.claimSelectionFocus()

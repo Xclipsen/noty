@@ -413,7 +413,6 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             self?.rememberTap(point); self?.objectLayer.endTouchSelection(); self?.claimSelectionFocus()
         }
         objectLayer.onInteractionBegan = { [weak self] in self?.claimSelectionFocus() }
-        imageLayer.onInteractionBegan = { [weak self] in self?.claimSelectionFocus() }
         textLayer.objectAt = { [weak self] point in self?.objectHits(at: point).first }
         textLayer.onSelectObject = { [weak self] object in
             guard let self else { return }
@@ -433,7 +432,6 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         objectLayer.onPreview = { [weak self] content in self?.showObjectPreview(content) }
         objectLayer.onTouchSelectionEnded = { [weak self] in DispatchQueue.main.async { self?.claimUndoResponder() } }
         fingerObjects.install(on: self)
-        imageLayer.pageContent = { [weak self] in self?.objectContent }
         objectLayer.onInkPreview = { [weak self] data, indices, transform in
             self?.showSelectionInk(data, indices: indices, transform: transform)
         }
@@ -465,14 +463,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var objectLayout: PageLayout { pageLayout }
     var objectPageID: UUID? { pageID }
     /// Installs the result of an atomic cross-page transfer before SwiftUI
-    /// publishes it, so the next configure keeps the object history.
-    /// With the image tool the moved image is selected on the image plane
-    /// (it can be dragged on at once), otherwise the lasso selection is.
+    /// publishes it, so the next configure keeps the object history. The
+    /// moved members stay selected (they can be dragged on at once).
     func adoptTransfer(_ value: PageContent, selecting selection: TransferredSelection? = nil) {
         pageContent = value
-        let imageTool = tool == .image
-        imageLayer.adoptTransfer(value.images, selecting: imageTool ? selection?.images.first : nil)
-        objectLayer.adoptTransfer(value, selecting: imageTool ? nil : selection)
+        imageLayer.adoptTransfer(value.images)
+        objectLayer.adoptTransfer(value, selecting: selection)
     }
     func insertText(at point: CGPoint) { textLayer.insertText(at: point) }
     /// Frame (sheet coordinates) of an image just added with the image tool.
@@ -850,7 +846,6 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// claim on key commands); a drag in progress here is left alone.
     func dropSelectionForOtherPage() {
         objectLayer.dropSelection()
-        imageLayer.deselect()
     }
     /// Checkbox glyphs keep their own tap (`CheckboxTapGesture`).
     func fingerTapHitsCheckbox(_ point: CGPoint) -> Bool { textLayer.hasCheckbox(at: convert(point, to: textLayer)) }
@@ -964,7 +959,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     override func paste(_ sender: Any?) { pasteFromClipboard() }
 
     private func showObjectPreview(_ content: PageContent) {
-        guard !updating, let editor = configuration, tool == .selection || tool == .inkSelection || tool == .shape || objectLayer.hasTouchSelection,
+        guard !updating, let editor = configuration, objectLayer.handlesTapsItself || objectLayer.hasTouchSelection,
               lastObjectPreview != content else { return }
         lastObjectPreview = content
         shapeLayer.configure(content.shapes, origin: pageLayout.contentOrigin)

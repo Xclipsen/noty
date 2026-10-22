@@ -163,8 +163,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private let fieldRotation = SelectionHandle(color: .systemBlue, diameter: 12, bordered: true)
     private let angleLabel = UILabel()
     private var active: Bool { enabled && (toolActive || touchSelection) }
-    /// The tool works on this plane itself (shapes, lasso).
-    private var toolActive: Bool { tool == .shape || tool == .selection || tool == .inkSelection }
+    /// The tool works on this plane itself (shapes, lasso, images).
+    private var toolActive: Bool { Self.planeTool(tool) }
+    private static func planeTool(_ tool: EditorTool) -> Bool { [.shape, .selection, .inkSelection, .image].contains(tool) }
     /// Finger and Pencil taps select through this plane's own tap.
     var handlesTapsItself: Bool { enabled && toolActive }
     /// Object selected by a finger tap while an ink tool stays active
@@ -402,11 +403,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                    onCommit: @escaping (PageContent, PageContent) -> Bool) {
         let samePage = self.pageID == pageID
         let reset = !samePage || self.layout != layout || self.generation != generation
-        let needsRefresh = reset || incoming.shapes != content.shapes || active || (enabled && (tool == .shape || tool == .selection || tool == .inkSelection))
+        let needsRefresh = reset || incoming.shapes != content.shapes || active || (enabled && Self.planeTool(tool))
+        // Image tool: an image added from outside (import, paste) is selected at once.
+        let added = !reset && enabled && tool == .image && self.tool == .image
+            ? incoming.images.last(where: { image in !content.images.contains { $0.id == image.id } }) : nil
         if reset || incoming != content {
             clearSelection(); endLift()
             preview = nil; inkTransform = nil; startContent = nil; draft = nil; lasso = []
         }
+        if let added { images = [added.id] }
         if let adopted {
             if samePage, adopted.content == incoming {
                 if !hasSelection { select(adopted.selection, in: incoming) }
@@ -497,7 +502,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         updateBar()
         bar.isHidden = !active || lifted || bar.isEmpty
         if bar.isHidden { hideHover() }
-        for corner in corners { corner.isHidden = !active || lifted || !hasSelection || isFieldSelection }
+        for corner in corners { corner.isHidden = !active || lifted || !hasSelection || isFieldSelection || selectionLocked }
         let field = active && !lifted && isFieldSelection
         (fieldWidthHandles + [fieldRotation]).forEach { $0.isHidden = !field }
         if !field || startContent == nil { angleLabel.isHidden = true }
@@ -608,12 +613,23 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         guard active, touch.view === self else { return false }
         if gestureRecognizer === pan { fingerPan = touch.type != .pencil }
-        if gestureRecognizer === pan, touch.type != .pencil, !allowsFingerDrawing {
-            // A finger grabs the selection or any shape below it; elsewhere it scrolls.
-            return selectionBounds(content).map(display)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale)
-                .contains(touch.location(in: self)) == true || shapeHit(at: canonical(touch.location(in: self))) != nil
+        if gestureRecognizer === pan, tool == .image || (touch.type != .pencil && !allowsFingerDrawing) {
+            // A finger (any touch in the image tool) grabs the selection or an
+            // object below it; elsewhere it scrolls.
+            return grabsObject(at: touch.location(in: self))
         }
         return true
+    }
+    /// A drag at `location` moves the (unlocked) selection or picks up a
+    /// shape, in the image tool also an unlocked image.
+    private func grabsObject(at location: CGPoint) -> Bool {
+        let point = canonical(location)
+        if !selectionLocked, selectionBounds(content).map(display)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale).contains(location) == true { return true }
+        return shapeHit(at: point) != nil || (tool == .image && imageHit(at: point) != nil)
+    }
+    /// Topmost unlocked image under `point` (canonical), with the touch tolerance.
+    private func imageHit(at point: CGPoint) -> ImageObject? {
+        content.images.reversed().first { !$0.locked && PageObjectHitTest.hits($0, at: PagePoint(x: point.x, y: point.y), tolerance: 10 / displayScale) }
     }
     /// Topmost shape under `point` (canonical), when shapes may be picked.
     private func shapeHit(at point: CGPoint) -> ShapeObject? {
@@ -670,6 +686,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         if let first = hits.first, case .text = first { select(first) }
         else if lassoTool, filter.ink, let stroke = strokeHit(at: point) { ink = [stroke] }
         else if let first = hits.first { select(first) }
+        // Only the image tool reaches locked images (background), to unlock them.
+        else if tool == .image, let locked = content.images.reversed().first(where: {
+            $0.locked && PageObjectHitTest.hits($0, at: page, tolerance: 10 / displayScale) }) { images = [locked.id] }
         refresh()
     }
     private func filterAllows(_ object: PageObjectReference) -> Bool {
@@ -730,10 +749,14 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             shapeTapCandidate = false
             startContent = content; preview = nil; inkTransform = nil; groupTransform = nil
             if let requestedMode { dragMode = requestedMode }
-            else if selectionBounds(content)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale).contains(initialPoint) == true { dragMode = 1 }
-            else if fingerPan, !allowsFingerDrawing, let hit = shapeHit(at: initialPoint) {
+            else if !selectionLocked, selectionBounds(content)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale).contains(initialPoint) == true { dragMode = 1 }
+            else if (fingerPan && !allowsFingerDrawing) || tool == .image, let hit = shapeHit(at: initialPoint) {
                 // A finger on a shape picks it up and moves it at once.
                 clearSelection(); shapes = [hit.id]; dragMode = 1
+            }
+            else if tool == .image, let hit = imageHit(at: initialPoint) {
+                // Image tool: finger or Pencil on an image picks it up.
+                clearSelection(); images = [hit.id]; dragMode = 1
             }
             else if tool == .shape {
                 clearSelection(); dragMode = 3
@@ -976,7 +999,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     /// Selects exactly `object` (nil: clears a finger selection).
     func selectByTouch(_ object: PageObjectReference?) {
-        guard enabled, lift == nil, startContent == nil, !(tool == .shape || tool == .selection || tool == .inkSelection) else { return }
+        guard enabled, lift == nil, startContent == nil, !toolActive else { return }
         adopted = nil; clearSelection()
         switch object {
         case .text(let id)?: if content.textBoxes.contains(where: { $0.id == id && $0.allowsObjectSelection }) { texts = [id]; fieldMode = true }
@@ -1408,6 +1431,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         guard active, lift == nil, startContent == nil else { return }
         adopted = nil; clearSelection()
         if tool == .shape { shapes = Set(content.shapes.map(\.id)) }
+        else if tool == .image { images = Set(content.images.filter { !$0.locked }.map(\.id)) }
         else {
             if filter.text { texts = Set(content.textBoxes.filter(\.allowsObjectSelection).map(\.id)) }
             if filter.images { images = Set(content.images.filter { !$0.locked }.map(\.id)) }

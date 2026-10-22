@@ -158,7 +158,7 @@ extension TextObjectLayout {
 
 extension WorksheetView: SnapHost {
     func installSnapping() {
-        for snapping in [objectLayer.snapping, textLayer.snapping, imageLayer.snapping] { snapping.host = self }
+        for snapping in [objectLayer.snapping, textLayer.snapping] { snapping.host = self }
         addSubview(snapGuides)
     }
     func snapScene(excluding excluded: Set<UUID>) -> SnapScene? {

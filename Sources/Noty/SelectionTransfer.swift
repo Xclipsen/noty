@@ -18,7 +18,7 @@ struct SelectionLift {
     let start: CGPoint
     let snapshot: UIImage?
 
-    /// A single image dragged with the image tool (image-specific messages).
+    /// A single image (image-specific messages).
     var isSingleImage: Bool {
         ink.isEmpty && objects.textBoxes.isEmpty && objects.shapes.isEmpty && objects.images.count == 1
     }
@@ -87,20 +87,6 @@ enum SelectionTransfer {
                 TextFieldStyleRendering.draw(box, at: CGPoint(x: box.x, y: box.y), context: cg)
                 TextObjectLayout(box, on: context).draw(at: CGPoint(x: box.x, y: box.y))
             }
-        }
-    }
-
-    /// Preview of one image dragged with the image tool. Uses an already
-    /// decoded rendition (`rendition`, nil: neutral placeholder), so starting
-    /// the lift never decodes a camera original on the main thread.
-    static func snapshot(image object: ImageObject, rendition: UIImage?, pixelScale: CGFloat) -> UIImage? {
-        let frame = object.rotatedBounds.cgRect
-        guard frame.width.isFinite, frame.height.isFinite, frame.width > 0, frame.height > 0 else { return nil }
-        let format = UIGraphicsImageRendererFormat()
-        format.opaque = false
-        format.scale = max(0.05, min(pixelScale, 4, (4_000_000 / (frame.width * frame.height)).squareRoot()))
-        return UIGraphicsImageRenderer(bounds: frame, format: format).image { context in
-            ImageRendering.draw(rendition, for: object, context: context.cgContext, origin: .init(x: 0, y: 0))
         }
     }
 
