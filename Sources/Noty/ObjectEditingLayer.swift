@@ -134,6 +134,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Every selectable object at a point (layer coordinates), topmost first:
     /// the sheet's finger hit test (`PageObjectHitTest`, screen tolerance).
     var objectHits: ((CGPoint) -> [PageObjectReference])?
+    /// A checkbox glyph at a point (layer coordinates): its own tap toggles it.
+    var hitsCheckbox: ((CGPoint) -> Bool)?
     /// The configured page (paper, margins, PDF): lifted text is drawn with
     /// its automatic colours and ruled layout like in the editor.
     var pageContext: (() -> Page?)?
@@ -542,6 +544,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// dragged as before). Fingers keep scrolling/zooming/grabbing first.
     private func drawsShapeOnTouchDown(_ touch: UITouch) -> Bool {
         guard active, tool == .shape, !touchSelection, touch.type == .pencil else { return false }
+        // On a checkbox the Pencil taps it; a real drag still draws after the threshold.
+        if hitsCheckbox?(touch.location(in: self)) == true { return false }
         let inset = -8 / displayScale
         return selectionBounds(content).map(display)?.insetBy(dx: inset, dy: inset).contains(touch.location(in: self)) != true
     }
@@ -555,6 +559,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// field sets the caret or picks the next field below. `location`: layer
     /// coordinates (the sheet's).
     private func selectAtTap(_ location: CGPoint) {
+        if hitsCheckbox?(location) == true { return } // the sheet's checkbox tap toggles it
         onInteractionBegan?()
         let point = canonical(location), page = PagePoint(x: point.x, y: point.y)
         var hits = objectHits?(location) ?? []

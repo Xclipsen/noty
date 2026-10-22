@@ -383,8 +383,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             }
         }
         canvas.addGestureRecognizer(holdGesture)
+        // A checkbox toggles with every tool (finger or Pencil tap); only a
+        // stroke being drawn never does.
         checkboxTap.accepts = { [weak self] point in
-            guard let self, self.editable, [.pen, .pencil, .marker, .text, .read].contains(self.tool) else { return false }
+            guard let self, self.editable, !self.inkActive else { return false }
             return self.textLayer.hasCheckbox(at: self.convert(point, to: self.textLayer))
         }
         checkboxTap.onTap = { [weak self] point in
@@ -419,6 +421,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         objectLayer.textLines = { [weak self] box in self?.textLayer.lineRects(box) ?? [] }
         objectLayer.objectHits = { [weak self] point in self?.objectHits(at: point) ?? [] }
+        objectLayer.hitsCheckbox = { [weak self] point in self?.fingerTapHitsCheckbox(point) ?? false }
         objectLayer.pageContext = { [weak self] in self?.configuration?.page }
         textLayer.pageContext = { [weak self] in self?.configuration?.page }
         objectLayer.fittedText = { [weak self] box in self?.textLayer.fitted(box) ?? box }
