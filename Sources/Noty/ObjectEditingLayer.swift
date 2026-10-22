@@ -93,7 +93,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private let contourLayer = CAShapeLayer()
     private var contourAnimationScale: CGFloat?
     private weak var styleController: UIViewController?
-    private lazy var pan = UIPanGestureRecognizer(target: self, action: #selector(drag(_:)))
+    private lazy var pan = TouchDownPanGestureRecognizer(target: self, action: #selector(drag(_:)))
+    /// A shape begun on touch-down that has not moved yet: lifting it is a tap.
+    private var shapeTapCandidate = false
     /// Apple Pencil Pro haptics (iOS 17.5+); older Pencils simply get none.
     private var feedback: UIFeedbackGenerator?
     /// Frequent light ticks while drawing a lasso or dragging a selection.
@@ -118,6 +120,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         contourLayer.lineCap = .round; contourLayer.lineJoin = .round
         layer.addSublayer(contourLayer)
         pan.delegate = self; pan.maximumNumberOfTouches = 1; addGestureRecognizer(pan)
+        pan.beginsImmediately = { [weak self] touch in self?.drawsShapeOnTouchDown(touch) ?? false }
         let tap = UITapGestureRecognizer(target: self, action: #selector(tap(_:))); tap.delegate = self
         tap.require(toFail: pan); addGestureRecognizer(tap)
         toolbar.overrideUserInterfaceStyle = .dark
@@ -210,6 +213,14 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             UIColor.systemBlue.setStroke(); path.lineWidth = 1.5 / scale
             path.lineCapStyle = .round; path.lineJoinStyle = .round
             path.setLineDash([6 / scale, 4 / scale], count: 2, phase: 0); path.stroke()
+        }
+        // Visible from touch-down: a new shape too small to show yet marks its
+        // start point in its colour and width (at least 5 screen points wide).
+        if dragMode == 3, startContent != nil, let draft, (try? draft.validate()) == nil {
+            let radius = max(draft.lineWidth / 2, 2.5 / displayScale)
+            let center = CGPoint(x: draft.start.x + layout.contentOrigin.x, y: draft.start.y + layout.contentOrigin.y)
+            draft.color.uiColor.withAlphaComponent(1).setFill()
+            UIBezierPath(ovalIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius)).fill()
         }
     }
     private func canonical(_ point: CGPoint) -> CGPoint {
@@ -363,9 +374,18 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             handle.accessibilityLabel = "Formpunkt \(index + 1) verschieben"
         }
     }
-    @objc private func tap(_ gesture: UITapGestureRecognizer) {
+    /// The Pencil starts a new shape where it touches, without a movement
+    /// threshold: shape tool, outside the current selection (that one is
+    /// dragged as before). Fingers keep scrolling/zooming/grabbing first.
+    private func drawsShapeOnTouchDown(_ touch: UITouch) -> Bool {
+        guard active, tool == .shape, !touchSelection, touch.type == .pencil else { return false }
+        let inset = -8 / displayScale
+        return selectionBounds(content).map(display)?.insetBy(dx: inset, dy: inset).contains(touch.location(in: self)) != true
+    }
+    @objc private func tap(_ gesture: UITapGestureRecognizer) { selectByTap(at: canonical(gesture.location(in: self))) }
+    /// Tap in the shape/selection tool (canonical point): picks what lies there.
+    private func selectByTap(at point: CGPoint) {
         adopted = nil; clearSelection()
-        let point = canonical(gesture.location(in: self))
         if (tool == .shape || filter.shapes), let shape = content.shapes.reversed().first(where: { ShapeRendering.hit($0, at: point) }) { shapes.insert(shape.id) }
         else if tool == .selection || tool == .inkSelection {
             let rect = CGRect(x: point.x - 2, y: point.y - 2, width: 4, height: 4)
@@ -388,8 +408,13 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             feedback?.prepare()
             let screen = gesture.location(in: nil)
             motionTicks.begin(at: .init(x: screen.x, y: screen.y), time: CACurrentMediaTime())
-            let translation = gesture.translation(in: self)
-            initialPoint = CGPoint(x: point.x - translation.x, y: point.y - translation.y)
+            // The exact first contact, not where the movement threshold was crossed.
+            if gesture === pan, let down = pan.touchDownLocation { initialPoint = canonical(down) }
+            else {
+                let translation = gesture.translation(in: self)
+                initialPoint = CGPoint(x: point.x - translation.x, y: point.y - translation.y)
+            }
+            shapeTapCandidate = false
             startContent = content; preview = nil; inkTransform = nil; groupTransform = nil
             if let requestedMode { dragMode = requestedMode }
             else if selectionBounds(content)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale).contains(initialPoint) == true { dragMode = 1 }
@@ -403,6 +428,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 draft = ShapeObject(kind: ShapeKind.toolKinds.contains(options.kind) ? options.kind : .line,
                     start: .init(x: initialPoint.x, y: initialPoint.y), end: .init(x: point.x, y: point.y),
                     color: color, lineWidth: lineWidth, pattern: options.pattern, fill: options.fill(stroke: color))
+                shapeTapCandidate = gesture === pan && pan.beganOnTouchDown
             } else { clearSelection(); dragMode = 0; lasso = [CGPoint(x: initialPoint.x + layout.contentOrigin.x, y: initialPoint.y + layout.contentOrigin.y)] }
         }
         guard let initial = startContent else { return }
@@ -450,7 +476,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                     .concatenating(CGAffineTransform(translationX: frame.midX, y: frame.midY))
                 preview = initial; inkTransform = t; groupTransform = t
             }
-        case 3: draft?.end = .init(x: point.x, y: point.y)
+        case 3:
+            draft?.end = .init(x: point.x, y: point.y)
+            // About 4 screen points of travel make it a drawn shape, not a tap.
+            if shapeTapCandidate, let down = pan.touchDownLocation,
+               hypot(gesture.location(in: self).x - down.x, gesture.location(in: self).y - down.y) * displayScale > 4 { shapeTapCandidate = false }
         default:
             // One anchor follows the touch; the rest of the shape stays.
             if let id = shapes.first, let index = initial.shapes.firstIndex(where: { $0.id == id }),
@@ -484,6 +514,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                     // The closed loop selected something: confirm on Apple Pencil Pro.
                     if hasSelection { haptic(completed: true, at: gesture.location(in: self)) }
                 }
+            } else if dragMode == 3, shapeTapCandidate {
+                // A Pencil tap in the shape tool selects as before (the tap
+                // recognizer waits for this pan, which began on touch-down).
+                preview = nil; inkTransform = nil; draft = nil; startContent = nil; lasso = []; shapeTapCandidate = false
+                selectByTap(at: initialPoint); return
             } else if dragMode == 3, let draft, (try? draft.validate()) != nil, limits.contains(draft.bounds, tolerance: 0.02) {
                 var value = initial; value.shapes.append(draft)
                 if commit(value, previous: initial) { shapes = [draft.id] }
