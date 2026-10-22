@@ -22,6 +22,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var onLeaveField: (() -> Void)?
     /// A tap of the text tool (layer coordinates), remembered for pasting.
     var onTap: ((CGPoint) -> Void)?
+    /// Topmost selectable object at a point (layer coordinates, the sheet's hit test).
+    var objectAt: ((CGPoint) -> PageObjectReference?)?
+    /// A text-tool tap on an image or shape selects it (finger selection).
+    var onSelectObject: ((PageObjectReference) -> Void)?
     /// „Textwerkzeug fixieren“: leaving a field keeps the tool, a tap beside opens a new field.
     private(set) var locked = false
     /// Text document (TEXT-REBUILD-62 §4): a tap beside every object puts the
@@ -483,10 +487,24 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         // A tap beside the field being edited ends it; fixed tool: new field at once.
         if isEditingField {
             finishFieldByUser()
-            if locked { createField(at: point) }
+            if locked, !selectObject(at: point) { createField(at: point) }
             return
         }
+        if selectObject(at: point) { return }
         createField(at: point)
+    }
+    /// The topmost object at a text-tool tap (`objectAt`, the sheet's finger
+    /// hit test): an image or a shape is selected like by a finger tap instead
+    /// of getting a new field on top; a field's text (within the touch slack)
+    /// gets the caret. False: nothing there, a new field may open.
+    private func selectObject(at point: CGPoint) -> Bool {
+        guard let hit = objectAt?(point) else { return false }
+        if case .text(let id) = hit {
+            guard boxes.contains(where: { $0.id == id && $0.flowID == nil }) else { return false }
+            focusField(id, at: point); return true
+        }
+        onSelectObject?(hit)
+        return true
     }
 
     /// Option „Textfeld hinzufügen“ and the double-tap menu entry: a new field at `point` (layer coordinates).

@@ -398,7 +398,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         textLayer.onCaretChanged = { [weak self] in self?.onRevealCaret?() }
         textLayer.onLeaveField = { [weak self] in self?.configuration?.onTextEditingFinished() }
-        textLayer.onTap = { [weak self] point in self?.rememberTap(point) }
+        textLayer.onTap = { [weak self] point in self?.rememberTap(point); self?.objectLayer.endTouchSelection() }
+        textLayer.objectAt = { [weak self] point in self?.objectHits(at: point).first }
+        textLayer.onSelectObject = { [weak self] object in
+            guard let self else { return }
+            self.syncObjectPlane(); self.objectLayer.selectByTouch(object)
+        }
         objectLayer.textLines = { [weak self] box in self?.textLayer.lineRects(box) ?? [] }
         objectLayer.objectHits = { [weak self] point in self?.objectHits(at: point) ?? [] }
         objectLayer.fittedText = { [weak self] box in self?.textLayer.fitted(box) ?? box }
