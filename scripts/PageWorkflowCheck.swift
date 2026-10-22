@@ -188,6 +188,7 @@ struct PageWorkflowCheck {
         }
         let legacyPackage = try await Self.checkLegacyPackage(root: root, image: imageData)
         let flowPackage = try await Self.checkTextFlowMigration(root: root)
+        let textDocument = try await Self.checkTextDocument(root: root)
         let report: [String: Any] = ["schemaVersion": document.schemaVersion,
             "textFieldSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first == continuation,
             "unmaterializedDraftExcludedFromNotebookArchive": !roundTrip.documents[0].pages.contains(where: { $0.id == document.writingDraft().id }),
@@ -210,7 +211,10 @@ struct PageWorkflowCheck {
             "legacySchema11EditWritesAssetThenSchema12": legacyPackage.assetWritten,
             "pageTextSchema13OpenWritesNothing": flowPackage.openWritesNothing,
             "pageTextSchema13EditKeepsExactBytesUnderMigrations": flowPackage.exactBytesArchived,
-            "pageTextBecomesFieldsAtSameFrameInSchema14": flowPackage.sameFrames]
+            "pageTextBecomesFieldsAtSameFrameInSchema14": flowPackage.sameFrames,
+            "textDocumentSchema15KeepsFlowAndHandwritingPage": textDocument.flowKept,
+            "textDocumentKindSurvivesNotyImportAndLibraryRestore": textDocument.kindKept,
+            "textDocumentMarkdownExport": textDocument.markdown]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
     }
@@ -308,6 +312,62 @@ struct PageWorkflowCheck {
             && reopened == notebook && repository.assets.pendingReferences.isEmpty
         guard openWritesNothing, exactBytesArchived, assetWritten else { throw StorageError.invalidDocument }
         return (openWritesNothing, exactBytesArchived, assetWritten)
+    }
+
+    /// Text document (schema 15, Textneubau Stufe 3): created in a library,
+    /// text flowing over three pages around a page with handwriting, a free
+    /// field; shared as `.noty`, imported again (kind recognised), backed up
+    /// with the library and restored into a new area (kind taken from the
+    /// document even though the archived index lost the hint). Python checks
+    /// the package, the `.noty` file and the library archive.
+    static func checkTextDocument(root: URL) async throws -> (flowKept: Bool, kindKept: Bool, markdown: Bool) {
+        let libraryRoot = root.appendingPathComponent("TextDocument", isDirectory: true)
+        let library = LibraryStore(root: libraryRoot); _ = try await library.load()
+        var document = try Notebook.textDocument(title: "Referat Ökologie", landscape: false, paper: .lined)
+        var draft = document.writingDraft(); draft.drawing = Data([7, 7, 7])
+        try document.materializeWritingDraft(draft)
+        let first = document.textFlowSegments[0]
+        var typed = first.box
+        typed.text = "Einleitung\n• Punkt eins\n☐ offen\n" + String(repeating: "Text ", count: 40)
+        var heading = typed.style; TextStylePreset.title.apply(to: &heading)
+        typed.runs = [TextRun(location: 0, length: 10, style: heading)]
+        (document, _) = try document.reflowText(pageID: first.pageID, previous: first.box, replacement: typed,
+            selection: NSRange(location: (typed.text as NSString).length, length: 0),
+            pageCapacity: { _, box in min(90, (box.text as NSString).length) })
+        var boxes = document.pages[0].effectiveTextBoxes
+        var field = TextBox(x: 300, y: 600, width: 120, height: 24, text: "Randnotiz"); field.autoWidth = true
+        boxes.append(field)
+        try document.replaceTextBoxes(boxes, pageID: document.pages[0].id)
+        let flowKept = document.schemaVersion == 15 && document.isTextDocument && document.pages.count == 3
+            && document.pages[1].id == draft.id && document.pages[1].drawing == Data([7, 7, 7])
+            && document.textFlowSegments.count == 3 && document.textFlowContent?.text == typed.text
+        _ = try await library.createDocument(document, parentID: nil)
+        let package = try await library.documentURL(id: document.id)
+        let reopened = try RevisionStore(directory: package, readOnly: true).load()
+        let shareURL = root.appendingPathComponent("textdokument.noty")
+        _ = try BackupArchive.write(reopened, to: shareURL)
+        try JSONEncoder().encode(reopened).write(to: root.appendingPathComponent("current-textdokument.json"))
+        let repository = NotebookRepository(directory: libraryRoot)
+        let prepared = try await repository.prepareRestore(from: shareURL)
+        let imported = try await NotebookImport.commit(prepared, repository: repository, library: library, parentID: nil, replacing: nil)
+        // An older build rewrote the index without the hint: the restore takes the kind from the documents.
+        var plan = try await library.backupBundle()
+        plan.snapshot.items = plan.snapshot.items.map { var item = $0; item.kind = nil; return item }
+        let archiveURL = root.appendingPathComponent("textdokument.notylibrary")
+        try LibraryArchive.encode(plan).write(to: archiveURL)
+        let written = try LibraryArchive.write(try await library.backupPlan(), to: root.appendingPathComponent("textdokument-index.notylibrary"))
+        let workspaces = WorkspaceStore(root: root.appendingPathComponent("TextDocumentWorkspaces"))
+        let staged = try await workspaces.prepareRestore(file: archiveURL)
+        let restored = try await workspaces.commitRestore(staged, title: "Textdokument-Restore")
+        let restoredSnapshot = try await LibraryStore(root: try await workspaces.directory(for: restored.id)).load().snapshot
+        let kindKept = reopened == document
+            && imported.snapshot.items.first(where: { $0.id == imported.id })?.kind == .textDocument
+            && written.notebooks.count == 2
+            && restoredSnapshot.items.filter { !$0.isFolder }.allSatisfy { $0.kind == .textDocument }
+            && restoredSnapshot.items.filter { !$0.isFolder }.count == 2
+        let markdown = TextDocumentExport.markdown(document).hasPrefix("# Einleitung\n\n- Punkt eins\n- [ ] offen\n\nText Text")
+        guard flowKept, kindKept, markdown else { throw StorageError.invalidDocument }
+        return (flowKept, kindKept, markdown)
     }
 
     /// Page text as Build ≤ 62 stored it (schema 13, flow segments over two

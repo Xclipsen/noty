@@ -16,6 +16,11 @@ python3 -B scripts/verify_backup.py "$task_check/results/heft-v13.notybackup" --
 # Schema 14 (page text migrated to free fields, rotated/automatic-width field) written by Swift.
 python3 -B scripts/verify_backup.py "$task_check/results/heft-v14.notybackup" --compare "$task_check/results/current-v14.json"
 python3 -B scripts/verify_device_store.py "$task_check/results/FlowMigration"
+# Schema 15: text document as package, `.noty` and library archive (kind hint lost / kept).
+python3 -B scripts/verify_device_store.py "$task_check/results/TextDocument"
+python3 -B scripts/verify_backup.py "$task_check/results/textdokument.noty" --compare "$task_check/results/current-textdokument.json"
+python3 -B scripts/verify_library_backup.py "$task_check/results/textdokument.notylibrary"
+python3 -B scripts/verify_library_backup.py "$task_check/results/textdokument-index.notylibrary"
 python3 -B scripts/verify_library_backup.py "$task_check/results/bibliothek.notylibrary"
 python3 -B scripts/verify_device_store.py "$task_check/results/Source"
 # Restore copies (Restores/*) and the migrated schema-11 package carry their assets.
@@ -45,6 +50,9 @@ _, legacy = verify_device_store.load_store(results / "Legacy")
 _, restores = verify_device_store.load_store(results / "RestoreCheck")
 check(backup["assets"] == 1 and library["assets"] == 1 and store["assets"] == 1, "Asset records missing")
 check(legacy["assets"] == 1 and restores["assets"] == 2, "Assets of the migrated package or the restore copies missing")
+text_notebook, _ = verify_backup.verify(results / "textdokument.noty")
+text_library = verify_library_backup.verify(results / "textdokument-index.notylibrary")
+check(text_notebook.get("kind") == "textDocument" and text_library["textDocuments"] == 2, "Text documents not recognised")
 print(json.dumps({"swiftAssetRecordsVerifiedByPython": True, "backupAssets": backup["assets"], "libraryAssets": library["assets"],
                   "assetBytes": backup["assetBytes"], "storeAssets": store["assets"], "legacyPackageAssets": legacy["assets"],
                   "restoredCopyAssets": restores["assets"]}))
