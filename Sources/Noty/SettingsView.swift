@@ -12,6 +12,8 @@ enum AppSettingsKey {
     static let hangProbe = "noty.diagnostics.hangProbe"
     /// „Textwerkzeug fixieren“ (lock in the text tool's options).
     static let textToolLocked = "noty.text.toolLocked"
+    /// Weiches Einrasten beim Verschieben (default on).
+    static let snapping = "noty.editor.snapping"
 }
 
 enum LibraryLayout: String, CaseIterable, Identifiable {
@@ -219,14 +221,17 @@ private struct EditorSettingsPage: View {
     @AppStorage(AppSettingsKey.writingScroll) private var writingScroll = false
     @AppStorage(AppSettingsKey.sidebarVisible) private var sidebarVisible = true
     @AppStorage(AppSettingsKey.typewriter) private var typewriter = false
+    @AppStorage(AppSettingsKey.snapping) private var snapping = true
     var body: some View {
         Form {
             Section {
                 Toggle("Schreibscrollen bis zur Bildschirmmitte", isOn: $writingScroll)
                 Toggle("Seitenleiste beim Öffnen zeigen", isOn: $sidebarVisible)
                 Toggle("Schreibmaschinen-Modus beim Tippen", isOn: $typewriter)
+                Toggle("Einrasten", isOn: $snapping)
+                    .accessibilityHint("Textfelder, Bilder, Formen und Auswahlen rasten beim langsamen Verschieben an Kanten, Mitten, Linien und Seitenrändern ein.")
             } header: { Text("Alle Bereiche") } footer: {
-                Text("Die Seitenleiste merkt sich auch das letzte Ein- oder Ausblenden im Editor. Der Schreibmaschinen-Modus hält die Schreibzeile beim Tippen im oberen Drittel, auch mit schwebender oder externer Tastatur.")
+                Text("Die Seitenleiste merkt sich auch das letzte Ein- oder Ausblenden im Editor. Der Schreibmaschinen-Modus hält die Schreibzeile beim Tippen im oberen Drittel, auch mit schwebender oder externer Tastatur. Einrasten wirkt nur bei langsamer Bewegung; ein zweiter Finger auf dem Bildschirm unterdrückt es beim Ziehen.")
             }
             Section {
                 Toggle("Blättern statt vertikal scrollen", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))

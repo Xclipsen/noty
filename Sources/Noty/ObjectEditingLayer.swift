@@ -101,6 +101,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Frequent light ticks while drawing a lasso or dragging a selection.
     private var motionTicks = MotionTicks()
     private var rotationSnap: Double?
+    /// Weiches Einrasten for moves, field width points and shape anchors.
+    let snapping = DragSnapping()
     private var hasSelection: Bool { !ink.isEmpty || !texts.isEmpty || !images.isEmpty || !shapes.isEmpty }
     // MARK: Textneubau – a single text field selected by a tap
     /// The selection is one text field picked by a tap (finger with any ink
@@ -163,7 +165,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         ])
         for (index, handle) in (corners + [rotation]).enumerated() {
             handle.accessibilityLabel = index < 4 ? "Auswahl proportional skalieren" : "Handschrift drehen"
-            let drag = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
+            let drag = SnapPanGestureRecognizer(target: self, action: #selector(handle(_:)))
             drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
             handle.tag = index < 4 ? index : 6; handle.addGestureRecognizer(drag); addSubview(handle)
         }
@@ -171,7 +173,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         for (handle, tag, label) in [(fieldWidthHandles[0], 9, "Textfeldbreite links ändern"), (fieldWidthHandles[1], 10, "Textfeldbreite rechts ändern"),
                                      (fieldRotation, 8, "Textfeld drehen")] {
             handle.accessibilityLabel = label; handle.tag = tag; handle.isHidden = true
-            let drag = UIPanGestureRecognizer(target: self, action: #selector(self.handle(_:)))
+            let drag = SnapPanGestureRecognizer(target: self, action: #selector(self.handle(_:)))
             drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
             handle.addGestureRecognizer(drag); addSubview(handle)
         }
@@ -488,7 +490,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private func updateAnchorHandles(count: Int) {
         while anchorHandles.count < count {
             let anchor = SelectionHandle(color: .systemBlue)
-            let drag = UIPanGestureRecognizer(target: self, action: #selector(handle(_:)))
+            let drag = SnapPanGestureRecognizer(target: self, action: #selector(handle(_:)))
             drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
             anchor.tag = 100 + anchorHandles.count; anchor.addGestureRecognizer(drag)
             insertSubview(anchor, belowSubview: rotation)
@@ -566,10 +568,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                     color: color, lineWidth: lineWidth, pattern: options.pattern, fill: options.fill(stroke: color))
                 shapeTapCandidate = gesture === pan && pan.beganOnTouchDown
             } else { clearSelection(); dragMode = 0; lasso = [CGPoint(x: initialPoint.x + layout.contentOrigin.x, y: initialPoint.y + layout.contentOrigin.y)] }
+            beginSnapping(content)
         }
         guard let initial = startContent else { return }
         if gesture.state == .cancelled || gesture.state == .failed {
-            angleLabel.isHidden = true
+            angleLabel.isHidden = true; snapping.end()
             endLift(); preview = nil; inkTransform = nil; draft = nil; startContent = nil; lasso = []; refresh(); return
         }
         switch dragMode {
@@ -585,13 +588,19 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             var lifted = false
             if let host = transferHost, !CGRect(origin: .zero, size: layout.canvas.cgSize).contains(gesture.location(in: self)) {
                 if lift == nil { lift = makeLift(initial) }
-                if let lift { lifted = true; preview = lift.remainder; inkTransform = nil; host.floatSelection(lift, gesture: gesture) }
+                if let lift { lifted = true; preview = lift.remainder; inkTransform = nil; host.floatSelection(lift, gesture: gesture); snapping.hide() }
             }
             if !lifted {
                 if lift != nil { endLift(); preview = initial; inkTransform = nil; groupTransform = nil }
-                // The one move path (`ObjectMovement`): weiches Einrasten (Stufe 2) plugs in there.
+                // The one move path (`ObjectMovement`) with weiches Einrasten.
                 let proposed = PagePoint(x: point.x - initialPoint.x, y: point.y - initialPoint.y)
-                let shift = selectionBounds(initial).map { ObjectMovement.translation(moving: PageRect($0), by: proposed, within: limits) } ?? proposed
+                let snap = snapping.track(gesture, in: self)
+                let shift = selectionBounds(initial).map { bounds -> PagePoint in
+                    let frame = PageRect(bounds)
+                    let shift = ObjectMovement.translation(moving: frame, by: proposed, within: limits, snapping: snap)
+                    snapping.show(translation: shift, frame: frame, gesture: gesture, in: self)
+                    return shift
+                } ?? proposed
                 if let value = transformed(initial, dx: shift.x, dy: shift.y, scale: 1) { preview = value }
             }
         case 2:
@@ -638,7 +647,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             // Width points: only the width changes (fixed from now on); the height follows the text.
             if let box = selectedField(initial) {
                 let radians = box.angle * .pi / 180
-                let along = (point.x - initialPoint.x) * cos(radians) + (point.y - initialPoint.y) * sin(radians)
+                var along = (point.x - initialPoint.x) * cos(radians) + (point.y - initialPoint.y) * sin(radians)
+                if box.angle == 0 {
+                    // The dragged edge snaps to vertical targets (edges, centres, grid, margins).
+                    let edge = dragMode == 10 ? box.x + box.width + along : box.x + along
+                    along += snapping.point(PagePoint(x: edge, y: box.y + box.height / 2), axes: [.x], gesture: gesture, in: self).x - edge
+                }
                 let minimum = max(16, box.style.fontSize)
                 var next = box; next.autoWidth = nil
                 if dragMode == 10 { next.width = max(minimum, box.width + along) }
@@ -651,8 +665,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             }
         default:
             // One anchor follows the touch; the rest of the shape stays.
+            let target = snapping.point(PagePoint(x: point.x, y: point.y), gesture: gesture, in: self)
             if let id = shapes.first, let index = initial.shapes.firstIndex(where: { $0.id == id }),
-               let moved = initial.shapes[index].movingAnchor(activeAnchor, to: .init(x: point.x, y: point.y)),
+               let moved = initial.shapes[index].movingAnchor(activeAnchor, to: target),
                limits.contains(moved.bounds, tolerance: 0.02) {
                 var value = initial; value.shapes[index] = moved; preview = value
             }
@@ -698,9 +713,24 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 _ = commit(preview, previous: initial)
             }
             preview = nil; inkTransform = nil; draft = nil; startContent = nil; lasso = []
-            angleLabel.isHidden = true
+            angleLabel.isHidden = true; snapping.end()
         }
         refresh()
+    }
+    /// Weiches Einrasten for this drag: moves (the selection as a whole,
+    /// other objects as targets), a field's width points and shape anchors.
+    private func beginSnapping(_ initial: PageContent) {
+        snapping.end()
+        let members = texts.union(images).union(shapes)
+        switch dragMode {
+        case 1:
+            let field = selectedField(initial)
+            let offset = field.flatMap { box in snapping.host?.snapBaseline(of: box).map { $0 - box.y } }
+            snapping.begin(excluding: members, snapFrame: selectionBounds(initial, forSnapping: true).map { PageRect($0) },
+                           baselineOffset: offset, in: self)
+        case 7, 9, 10: snapping.begin(excluding: members, in: self)
+        default: break
+        }
     }
     private var limits: PageRect { PageRect(layout.canonicalInkBounds) }
     private func haptic(completed: Bool, at point: CGPoint) {
@@ -859,11 +889,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         guard let drawing = data.isEmpty ? PKDrawing() : try? PKDrawing(data: data) else { return nil }
         cachedDrawing = (data, drawing); return drawing
     }
-    private func selectionBounds(_ value: PageContent, applyingPreview: Bool = false) -> CGRect? {
+    /// `forSnapping`: shapes by their drawn outline instead of their touch padding.
+    private func selectionBounds(_ value: PageContent, applyingPreview: Bool = false, forSnapping: Bool = false) -> CGRect? {
         guard hasSelection, !(applyingPreview && lift != nil) else { return nil }
         var rects = value.textBoxes.filter { texts.contains($0.id) }.map { (isFieldSelection ? fitted($0) : $0).rotatedBounds.cgRect }
         rects += value.images.filter { images.contains($0.id) }.map { $0.rotatedBounds.cgRect }
-        rects += value.shapes.filter { shapes.contains($0.id) }.map { $0.bounds.cgRect }
+        rects += value.shapes.filter { shapes.contains($0.id) }.map { (forSnapping ? $0.snapFrame : $0.bounds).cgRect }
         if !ink.isEmpty, let drawing = drawing(value.drawing) {
             rects += drawing.strokes.enumerated().filter { ink.contains($0.offset) }.map {
                 let frame = $0.element.renderBounds

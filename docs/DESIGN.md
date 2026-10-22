@@ -1,5 +1,9 @@
 # Designentscheidungen für noty
 
+## Weiches Einrasten – 22.10.2026
+
+Textfelder, Bilder, Formen und Lasso-Auswahlen rasten beim langsamen Verschieben (innerhalb von 5 Bildschirmpunkten, unter 250 pt/s) an Kanten, Mitten, ersten Grundlinien, gleichen Abständen, Papierlinien/Karos, Seitenrändern und Seitenmitte ein; nach 8 Bildschirmpunkten löst es wieder. Blaue Hilfslinien nur auf dem Bildschirm. Ein zweiter Finger unterdrückt es, Schalter „Einrasten“ unter Einstellungen › Editor. Details: [TEXT-REBUILD-62](TEXT-REBUILD-62.md). Implementiert und gebaut, am iPad ungeprüft.
+
 ## Textneubau Stufe 1 – 22.10.2026
 
 Hefte kennen nur noch Textfelder; der bisherige Seitentext wird beim Öffnen verlustfrei zu Feldern an derselben Stelle. Anlegen per Tipp mit dem Textwerkzeug, Doppeltipp-Menü oder Einsetzen; Schloss „Textwerkzeug fixieren“ in den Textoptionen. Auswahl per Fingertipp (mit Stift/Lasso) zeigt Rahmen, Breitenpunkte und Drehgriff statt Icons; zweiter Tipp setzt den Cursor. Verbindliche Bedienung, Abweichungen und Gerätetestpunkte: [TEXT-REBUILD-62](TEXT-REBUILD-62.md). Ältere Abschnitte zu Seitentext, Griff oben links und X über dem Feld sind damit überholt. Implementiert und gebaut, am iPad ungeprüft.
