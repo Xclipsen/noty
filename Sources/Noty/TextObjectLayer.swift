@@ -22,6 +22,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var onLeaveField: (() -> Void)?
     /// A tap of the text tool (layer coordinates), remembered for pasting.
     var onTap: ((CGPoint) -> Void)?
+    /// The configured page (paper, margins, region tops) for the shared text layout.
+    var pageContext: (() -> Page?)?
     /// Topmost selectable object at a point (layer coordinates, the sheet's hit test).
     var objectAt: ((CGPoint) -> PageObjectReference?)?
     /// A text-tool tap on an image or shape selects it (finger selection).
@@ -314,7 +316,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             editor.isEditable = active; editor.isSelectable = active || readOnly
             editor.isUserInteractionEnabled = active || readOnly
             position(field, for: box); updateRaster(field, for: box)
-            let overflowing = neededHeight(editor, width: box.width / pointScale) * pointScale > box.height + 1
+            let overflowing = box.overflows(textHeight: neededHeight(editor, width: box.width / pointScale) * pointScale)
             field.configure(editing: active && selectedID == box.id && box.flowID == nil, overflowing: overflowing)
         }
         // Later fields lie on top („Nach vorne“/„Nach hinten“ reorder the array).
@@ -395,7 +397,18 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         if let editor = fields[box.id]?.editor, editor.attributedText.string == box.text {
             return neededHeight(editor, width: box.width / scale) * scale
         }
-        return Double(TextObjectLayout(box, coordinateScale: scale).usedHeight)
+        return Double(layout(box).usedHeight)
+    }
+    /// The shared layout of `box` on this page, ruled like its text view
+    /// (`TextObjectLayout(box, on:)` with the configured page; without it
+    /// the same ruling from this layer's own paper and region tops).
+    func layout(_ box: TextBox) -> TextObjectLayout {
+        if let page = pageContext?() { return TextObjectLayout(box, on: page) }
+        let scale = coordinateScale(for: box)
+        let lines = box.flowRegion.flatMap { TextRuling(paper: $0 == .page ? paperStyle : marginStyle) }
+        let anchor = lines == nil ? nil : box.rulingAnchorY(regionTops: regionTops)
+        return TextObjectLayout(box, ruledOrigin: anchor.map { CGFloat($0 + pageLayout.contentOrigin.y) / scale },
+                                ruling: lines ?? .lined, coordinateScale: scale)
     }
     /// Textneubau: the height follows the content (never beyond the page, more
     /// text stays stored and is marked as overflow); with `autoWidth` the width
@@ -431,7 +444,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         if let field = fields[box.id], field.content?.text == box.text {
             manager = field.editor.layoutManager; container = field.editor.textContainer
         } else {
-            let layout = TextObjectLayout(box, coordinateScale: scale)
+            let layout = layout(box)
             manager = layout.manager; container = layout.container
         }
         manager.ensureLayout(for: container)
@@ -755,7 +768,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         guard let field = fields[box.id] else { return }
         position(field, for: box); updateRaster(field, for: box)
         let pointScale = coordinateScale(for: box)
-        let overflowing = neededHeight(field.editor, width: box.width / pointScale) * pointScale > box.height + 1
+        let overflowing = box.overflows(textHeight: neededHeight(field.editor, width: box.width / pointScale) * pointScale)
         field.configure(editing: active && selectedID == box.id, overflowing: overflowing)
     }
 

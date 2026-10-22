@@ -86,7 +86,7 @@ enum PDFExporter {
             let layout = try PageLayout(page: page, source: sources[position])
             let bounds = PageRect(layout.canonicalInkBounds)
             if page.resolvedTextBoxes.contains(where: { box in
-                TextObjectLayout(box, on: page).usedHeight > box.height + 0.5 || !box.fits(in: bounds)
+                TextObjectLayout.overflows(box, on: page) || !box.fits(in: bounds)
             }) { overflow.append(index + 1) }
             layouts.append(layout)
             if position % 16 == 15 { await Task.yield(); try Task.checkCancellation() }

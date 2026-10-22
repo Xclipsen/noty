@@ -361,6 +361,11 @@ struct TextObjectLayout {
         manager.ensureLayout(for: container)
     }
     var usedHeight: CGFloat { ceil(manager.usedRect(for: container).height * coordinateScale) }
+    /// The field's text does not fit its height on `page` (`TextBox.overflows`):
+    /// previews mark it red like the editor, the PDF export refuses it.
+    static func overflows(_ box: TextBox, on page: Page) -> Bool {
+        box.overflows(textHeight: Double(TextObjectLayout(box, on: page).usedHeight))
+    }
     /// Widest laid-out line in canonical units (automatic field width).
     var usedWidth: CGFloat { manager.usedRect(for: container).width * coordinateScale }
     /// Local (unrotated, unscaled) → drawing coordinates for a field at `origin`.

@@ -77,6 +77,16 @@ extension TextBox {
 
     public var center: PagePoint { pagePoint(.init(x: width / 2, y: height / 2)) }
 
+    /// Page units by which laid-out text may exceed the field's height and
+    /// still count as fitting (rounding of the text layout).
+    public static let overflowTolerance = 1.0
+    /// The laid-out text (its height in page units) needs more room than the
+    /// field has: one rule for the editor's red frame, previews and the PDF
+    /// export, which refuses instead of cutting it.
+    public func overflows(textHeight: Double) -> Bool {
+        textHeight.isFinite && textHeight > height + Self.overflowTolerance
+    }
+
     /// Axis-aligned bounds of the rotated visible frame (with the style's
     /// padding): page limits, selection, lasso, snapping and transfers.
     public var rotatedBounds: PageRect {
