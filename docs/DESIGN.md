@@ -1,5 +1,9 @@
 # Designentscheidungen für noty
 
+## Textneubau Stufe 1 – 22.10.2026
+
+Hefte kennen nur noch Textfelder; der bisherige Seitentext wird beim Öffnen verlustfrei zu Feldern an derselben Stelle. Anlegen per Tipp mit dem Textwerkzeug, Doppeltipp-Menü oder Einsetzen; Schloss „Textwerkzeug fixieren“ in den Textoptionen. Auswahl per Fingertipp (mit Stift/Lasso) zeigt Rahmen, Breitenpunkte und Drehgriff statt Icons; zweiter Tipp setzt den Cursor. Verbindliche Bedienung, Abweichungen und Gerätetestpunkte: [TEXT-REBUILD-62](TEXT-REBUILD-62.md). Ältere Abschnitte zu Seitentext, Griff oben links und X über dem Feld sind damit überholt. Implementiert und gebaut, am iPad ungeprüft.
+
 ## Fingertipp auf Objekte und Doppeltipp-Menü – 22.10.2026
 
 Nutzer nach dem ersten Tag: Mit dem Stift aktiv lassen sich Textfelder nicht mit dem Finger antippen und auswählen. Beim Doppeltippen erscheint eine Option zum Einfügen von Leerraum („Platz einfügen“), die unverständlich und sinnlos ist. Umgesetzt:

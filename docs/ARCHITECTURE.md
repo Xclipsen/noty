@@ -1,12 +1,19 @@
 # Architektur
 
+## Textneubau Stufe 1 · 22.10.2026
+
+Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung und Abweichungen: [TEXT-REBUILD-62](TEXT-REBUILD-62.md), Format: [STORAGE](STORAGE.md) (Schema 14).
+
+- **Core:** `TextField.swift` (Drehung um die linke obere Ecke, `rotatedBounds`/`fits`/`contains`, automatische Breite bis zum Rand, `TextFieldRotation`, `TextFieldPlacement`, `ObjectMovement` + `MoveSnapping` als einzige Bewegungsstelle, `movingField`, Lese-Migration `migratedTextFlow`). `PageObjectHitTest.all/next` mit `textHit`-Closure für Zeilentreffer.
+- **App:** `TextObjectLayer` legt nur noch freie Felder an (Tipp, „Textfeld +“, Doppeltippmenü, Einsetzen), passt Breite/Höhe über `fitted` an, verschiebt/verbreitert beim Bearbeiten über Rahmenzone und Breitenpunkte (`TextFieldContainer`, `FieldBorderDrag`) und meldet das Verlassen (`onLeaveField` → `PageEditor.onTextEditingFinished` → `ContentView` setzt das vorherige Werkzeug, außer `textToolLocked`). `ObjectEditingLayer` zeigt eine per Tipp gewählte Einzelauswahl als Feldauswahl (Rahmen, Breitenpunkte, Drehgriff, eigenes Menü) und ruft für Bearbeiten `WorksheetView.requestTextEdit`. Treffer auf Textzeilen kommen aus den vorhandenen `PageTextView`-Instanzen (`hitsLine`). Vorschau, PDF und Lasso-Kontur drehen über `TextObjectLayout.transform(at:)` bzw. `SelectionContour`. Kein neuer Writer, keine neue Speicherstelle.
+
 ## Fingertipp-Auswahl und Doppeltipp-Menü · 22.10.2026
 
 Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung: [DESIGN](DESIGN.md).
 
 - **Core:** `PageObjectHitTest.topmost(at:in:tolerance:shapeHit:)` liefert das oberste auswählbare Objekt als `PageObjectReference` (`.text`/`.image`/`.shape` mit stabiler ID) in der Zeichenreihenfolge Text > Formen > Bilder; Seitentext und gesperrte Bilder ausgenommen, Bilder mit Drehung, Formen über den echten App-Umriss (`ShapeRendering.hit`) oder eine geometrische Näherung.
 - **App:** `FingerObjectGestures` hängt an jedem `WorksheetView` (nur Fingertouches, nur Tintenwerkzeuge ohne Fingerzeichnen): Tipp → `ObjectEditingLayer.selectByTouch`, Ziehen auf der Auswahl → `dragTouchSelection` (vor dem Notizbuch-Scrollen, `ScrollPanPriority`), Doppeltipp → eigenes `UIEditMenuInteraction`-Menü „Textfeld hinzufügen“. PencilKits eigene Finger-Doppeltipp-Erkenner warten auf diesen (`require(toFail:)`), `DrawingCanvasView` lehnt `insertSpace`-Aktionen ab. Im Fingerauswahlmodus nimmt `ObjectEditingLayer` nur über seine Bedienelemente Touches an; Pencil und Finger erreichen sonst Canvas und Viewport unverändert. Der Modus endet mit der Auswahl, beim Werkzeugwechsel und beim Schreibbeginn.
-- **Textfeld an Punkt:** Das Menü ruft `WorksheetView.requestTextField(at:)` → `PageEditor.onTextFieldRequested` (Editor wechselt zum Textwerkzeug) → nach der Konfiguration `addTextField(at:)` → `TextObjectLayer.insertText(…, freeField: true)`. Ein Neubau der Textfelder ersetzt nur `addTextField(at:)`. Kein Format-, Speicher- oder Writer-Wechsel.
+- **Textfeld an Punkt:** Das Menü ruft `WorksheetView.requestTextField(at:)` → `PageEditor.onTextFieldRequested` (Editor wechselt zum Textwerkzeug) → nach der Konfiguration `addTextField(at:)` → `TextObjectLayer.createField(at:)` (seit dem Textneubau, siehe oben). Kein Format-, Speicher- oder Writer-Wechsel.
 
 ## Bild-Assets (Schema 12, Archivformat 2) · 21.10.2026
 
