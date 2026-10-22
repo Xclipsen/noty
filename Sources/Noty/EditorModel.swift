@@ -32,6 +32,9 @@ final class EditorModel: ObservableObject {
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
     private var history = NotebookUndoHistory()
+    /// The trailing writing draft just turned into a page and the notebook
+    /// before it: its first content joins that step (`recordMaterialization`).
+    private var pendingDraft: (pageID: UUID, before: Notebook)?
     /// One counter per page; each PencilKit tool use (stroke, eraser gesture)
     /// becomes one undo step even when it reports several drawing changes.
     private var inkSessions: [UUID: Int] = [:]
@@ -214,6 +217,7 @@ final class EditorModel: ObservableObject {
                 selection: NSRange(location: TextListEditing.caret(before: previous.text, after: replacement.text, selection: selection.location), length: 0),
                 typingStyle: previous.style)
             try installFlow(candidate)
+            pendingDraft = nil
             history.record(.textFlow, before: before, after: candidate, beforeFocus: beforeFocus, afterFocus: focus,
                            coalescing: Self.flowCoalescing)
             publishHistory()
@@ -262,6 +266,7 @@ final class EditorModel: ObservableObject {
     func undo(redo: Bool) -> NotebookUndoHistory.Outcome? {
         guard writable, !busy, !mutationsPaused else { return nil }
         defer { publishHistory() }
+        pendingDraft = nil
         guard let outcome = redo ? history.redo(notebook) : history.undo(notebook) else { return nil }
         do {
             let previous = notebook
@@ -290,6 +295,7 @@ final class EditorModel: ObservableObject {
     private func recordChange(_ kind: NotebookUndoHistory.Kind, pageID: UUID, before: PageContent,
                               coalescing: NotebookUndoHistory.Coalescing? = nil) {
         guard let page = notebook.pages.first(where: { $0.id == pageID }) else { return }
+        if recordWithMaterializedDraft(kind, pageIDs: [pageID], coalescing: coalescing) { return }
         history.record(kind, changes: [PageContentReplacement(pageID: pageID, expected: before, replacement: PageContent(page: page))],
                        coalescing: coalescing)
         publishHistory()
@@ -297,6 +303,21 @@ final class EditorModel: ObservableObject {
     private func publishHistory() {
         if canUndo != history.canUndo { canUndo = history.canUndo }
         if canRedo != history.canRedo { canRedo = history.canRedo }
+    }
+    /// The first content on a page that was the trailing writing draft a
+    /// moment ago (and its continuation in the same burst): one undo step
+    /// with the page itself, so undoing the first stroke/text/object removes
+    /// the then empty page again and redo restores both. True when recorded.
+    private func recordWithMaterializedDraft(_ kind: NotebookUndoHistory.Kind, pageIDs: Set<UUID>,
+                                             coalescing: NotebookUndoHistory.Coalescing?) -> Bool {
+        guard let pending = pendingDraft else { return false }
+        if pageIDs.contains(pending.pageID), history.continuesMaterialization(of: pending.pageID, kind: kind, coalescing: coalescing),
+           history.recordMaterialization(kind, before: pending.before, after: notebook, pageID: pending.pageID,
+                                         touching: pageIDs, coalescing: coalescing) {
+            publishHistory(); return true
+        }
+        pendingDraft = nil
+        return false
     }
     /// After edits outside the history: drop steps that no longer match so the
     /// buttons stay truthful.
@@ -306,6 +327,7 @@ final class EditorModel: ObservableObject {
     /// A change that cannot be recorded safely (legacy notebook migrated by
     /// this very operation) only prunes, as before.
     private func recordPageOperation(before: Notebook, undoPageID: UUID) {
+        pendingDraft = nil
         let redoPageID = notebook.pages.indices.contains(pageIndex) ? notebook.pages[pageIndex].id : undoPageID
         if history.recordPages(before: before, after: notebook, undoPageID: undoPageID, redoPageID: redoPageID) {
             publishHistory()
@@ -344,7 +366,14 @@ final class EditorModel: ObservableObject {
         guard writable, !mutationsPaused, !busy else { return false }
         do {
             var candidate = notebook; try candidate.materializeWritingDraft(draft)
-            if candidate != notebook { try installFlow(candidate) }
+            if candidate != notebook {
+                let before = notebook
+                try installFlow(candidate)
+                // Its own undo step until the first content joins it (`recordWithMaterializedDraft`).
+                if history.recordMaterialization(.pages, before: before, after: notebook, pageID: draft.id) {
+                    pendingDraft = (draft.id, before); publishHistory()
+                } else { pendingDraft = nil }
+            }
             return true
         } catch { self.error = error.localizedDescription; return false }
     }
@@ -427,7 +456,10 @@ final class EditorModel: ObservableObject {
             }
             notebook = candidate
             // One step for both pages; undo reveals the source, redo the target.
-            history.record(.transfer, changes: changes); publishHistory()
+            // A drop onto the just materialised writing draft joins that step.
+            if !recordWithMaterializedDraft(.transfer, pageIDs: Set(changes.map(\.pageID)), coalescing: nil) {
+                history.record(.transfer, changes: changes); publishHistory()
+            }
             scheduleSave(); return true
         } catch CrossPageTransferError.conflict {
             error = "Die Seiten wurden inzwischen geändert. Bitte die Auswahl erneut setzen."; return false

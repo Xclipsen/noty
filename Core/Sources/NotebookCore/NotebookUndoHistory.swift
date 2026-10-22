@@ -43,10 +43,16 @@ public struct NotebookUndoHistory: Sendable {
         let coalescing: Coalescing?
         var updated: Date
         var cost: Int
+        /// The trailing writing draft this step turned into a page (with the
+        /// first content written on it): undoing removes the page again.
+        var materializedPage: UUID? = nil
     }
     struct Snapshot: Sendable { var before: Notebook; var after: Notebook }
 
     public static let maximumSteps = 100
+    /// How long a page materialised from the writing draft waits for the
+    /// first content to join its step.
+    public static let materializationWindow: TimeInterval = 30
     public static let maximumCost = 80_000_000
 
     private var undoSteps: [Step] = []
@@ -119,6 +125,49 @@ public struct NotebookUndoHistory: Sendable {
                  undoPageID: undoPageID, redoPageID: redoPageID, coalescing: nil, updated: now, cost: change.cost))
         canCoalesce = false
         return true
+    }
+
+    /// The trailing writing draft `pageID` became a page by the first content
+    /// written on it (stroke, text, object, image, moved selection): one step
+    /// from `before` (no such page) to `after` (the page with that content),
+    /// so a single undo removes the page together with its first content and
+    /// redo restores both. While the writing goes on in the same burst
+    /// (`continuesMaterialization`), the step is extended instead of a second
+    /// one being added. `kind`: the content change (`.pages` for the bare
+    /// page). Returns false when the change cannot be recorded as a page
+    /// operation (legacy notebook); the caller records normally then.
+    /// `touching`: further pages the content change may touch (the source
+    /// of a moved selection); any other difference refuses the step.
+    @discardableResult
+    public mutating func recordMaterialization(_ kind: Kind, before: Notebook, after: Notebook, pageID: UUID,
+                                               touching: Set<UUID> = [], coalescing: Coalescing? = nil, now: Date = Date()) -> Bool {
+        guard let change = PageStructureChange(before: before, after: after), !change.isEmpty,
+              change.pageIDs.contains(pageID), change.pageIDs.isSubset(of: touching.union([pageID])), change.trashIDs.isEmpty,
+              after.pages.contains(where: { $0.id == pageID }),
+              !before.pages.contains(where: { $0.id == pageID }) else { return false }
+        let step = Step(kind: kind, changes: [], snapshot: nil, structure: change, beforeFocus: nil, afterFocus: nil,
+                        undoPageID: pageID, redoPageID: pageID, coalescing: coalescing, updated: now, cost: change.cost,
+                        materializedPage: pageID)
+        if continuesMaterialization(of: pageID, kind: kind, coalescing: coalescing, now: now) {
+            undoSteps[undoSteps.count - 1] = step
+            redoSteps = []
+        } else {
+            add(step)
+        }
+        canCoalesce = true
+        return true
+    }
+
+    /// The newest step materialised `pageID` and a change of `kind` may
+    /// still extend it: nothing was recorded since, and the step is either the
+    /// bare page (within `materializationWindow`) or the same burst (kind,
+    /// coalescing key, within its window).
+    public func continuesMaterialization(of pageID: UUID, kind: Kind, coalescing: Coalescing?, now: Date = Date()) -> Bool {
+        guard canCoalesce, let top = undoSteps.last, top.materializedPage == pageID else { return false }
+        // The bare page waits for its first content (an image import may take a while).
+        if top.kind == .pages { return now.timeIntervalSince(top.updated) <= Self.materializationWindow }
+        guard let key = coalescing, top.kind == kind, top.coalescing == key else { return false }
+        return now.timeIntervalSince(top.updated) <= key.window
     }
 
     /// Reverts the newest still applicable step. Stale steps on top are dropped.

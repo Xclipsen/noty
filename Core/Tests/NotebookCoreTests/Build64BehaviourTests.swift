@@ -39,3 +39,67 @@ extension Build64BehaviourTests {
         XCTAssertEqual(covered, [line.id, box.id])
     }
 }
+
+extension Build64BehaviourTests {
+    /// Writing on the reserve page materialises it; undo of that first content
+    /// removes the page again in the same step, redo restores both.
+    func testUndoOfFirstContentOnTheWritingDraftRemovesThePage() throws {
+        var notebook = try Notebook.blank(title: "Reserve").preparedForPageEditing()
+        let start = notebook
+        var history = NotebookUndoHistory()
+        let now = Date()
+        // First stroke: the draft becomes a page (bare step), then its ink joins.
+        let draft = notebook.writingDraft()
+        try notebook.materializeWritingDraft(draft)
+        XCTAssertTrue(history.recordMaterialization(.pages, before: start, after: notebook, pageID: draft.id, now: now))
+        let key = NotebookUndoHistory.Coalescing(key: "ink-\(draft.id.uuidString)-1", window: 120)
+        XCTAssertTrue(history.continuesMaterialization(of: draft.id, kind: .ink, coalescing: key, now: now))
+        let index = try XCTUnwrap(notebook.pages.firstIndex { $0.id == draft.id })
+        notebook.pages[index].drawing = Data([1, 2, 3])
+        XCTAssertTrue(history.recordMaterialization(.ink, before: start, after: notebook, pageID: draft.id, coalescing: key, now: now))
+        XCTAssertEqual(history.undoCount, 1)
+        // A second stroke (new ink session) is its own step.
+        XCTAssertFalse(history.continuesMaterialization(of: draft.id, kind: .ink,
+            coalescing: .init(key: "ink-\(draft.id.uuidString)-2", window: 120), now: now))
+        let written = notebook
+
+        let undone = try XCTUnwrap(history.undo(notebook))
+        XCTAssertEqual(undone.notebook.pages.map(\.id), start.pages.map(\.id))
+        XCTAssertEqual(undone.pageID, draft.id)
+        let redone = try XCTUnwrap(history.redo(undone.notebook))
+        XCTAssertEqual(redone.notebook.pages.map(\.id), written.pages.map(\.id))
+        XCTAssertEqual(redone.notebook.pages.last?.drawing, Data([1, 2, 3]))
+        XCTAssertGreaterThanOrEqual(redone.notebook.schemaVersion, written.schemaVersion)
+    }
+
+    func testBarePageStepStopsWaitingAfterItsWindow() throws {
+        var notebook = try Notebook.blank(title: "Reserve").preparedForPageEditing()
+        let start = notebook
+        var history = NotebookUndoHistory()
+        let draft = notebook.writingDraft()
+        try notebook.materializeWritingDraft(draft)
+        let now = Date()
+        XCTAssertTrue(history.recordMaterialization(.pages, before: start, after: notebook, pageID: draft.id, now: now))
+        XCTAssertTrue(history.continuesMaterialization(of: draft.id, kind: .objects, coalescing: nil, now: now.addingTimeInterval(5)))
+        XCTAssertFalse(history.continuesMaterialization(of: draft.id, kind: .objects, coalescing: nil,
+            now: now.addingTimeInterval(NotebookUndoHistory.materializationWindow + 1)))
+        // Another step in between ends it.
+        history.separateNextStep()
+        XCTAssertFalse(history.continuesMaterialization(of: draft.id, kind: .objects, coalescing: nil, now: now))
+    }
+}
+
+extension Build64BehaviourTests {
+    func testMaterializationStepNeverCoversOtherPagesChangedMeanwhile() throws {
+        var notebook = try Notebook.blank(title: "Reserve").preparedForPageEditing()
+        let start = notebook
+        var history = NotebookUndoHistory()
+        let draft = notebook.writingDraft()
+        try notebook.materializeWritingDraft(draft)
+        XCTAssertTrue(history.recordMaterialization(.pages, before: start, after: notebook, pageID: draft.id))
+        notebook.pages[0].drawing = Data([9])
+        XCTAssertFalse(history.recordMaterialization(.ink, before: start, after: notebook, pageID: draft.id))
+        XCTAssertTrue(history.recordMaterialization(.transfer, before: start, after: notebook, pageID: draft.id,
+                                                    touching: [notebook.pages[0].id]))
+    }
+}

@@ -717,6 +717,12 @@ struct ContentView: View {
     /// order (by stable page ID) and brings that page into view.
     private func performUndo(redo: Bool) {
         guard canEdit, let outcome = model.undo(redo: redo) else { return }
+        // Undoing the first content on the former writing draft removed that
+        // page again: the (new) writing draft takes its place, without a jump.
+        if outcome.pageID == selectedPageID, !model.notebook.pages.contains(where: { $0.id == outcome.pageID }) {
+            selectedPageID = writingDraft.id; revealRequest = PageRevealRequest(pageID: writingDraft.id)
+            return
+        }
         if tool == .text, var focus = outcome.focus, model.notebook.pages.contains(where: { $0.id == focus.pageID }) {
             focus.requestID = UUID(); textFocus = focus
         }
