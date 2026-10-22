@@ -149,7 +149,11 @@ final class TextFlowTests: XCTestCase {
             })
         XCTAssertEqual(next.pages.map { $0.textBoxes![0].text }.joined(), replacement.text)
         XCTAssertEqual(next.pages[1].textBoxes![0].runs?.first?.style, style)
-        XCTAssertEqual(try BackupArchive.decode(BackupArchive.encode(next)).document, next)
+        // Notebooks keep page text as free fields (schema 14): same text and runs per page.
+        let fields = try next.migratedTextFlow()
+        XCTAssertEqual(try BackupArchive.decode(BackupArchive.encode(fields)).document, fields)
+        XCTAssertEqual(fields.pages.map { $0.textBoxes![0].text }, next.pages.map { $0.textBoxes![0].text })
+        XCTAssertEqual(fields.pages.map { $0.textBoxes![0].runs }, next.pages.map { $0.textBoxes![0].runs })
         book = next
         let copyID = try book.duplicatePage(book.pages[1].id)
         let copied = try XCTUnwrap(book.pages.first { $0.id == copyID }?.textBoxes?.first)
@@ -218,7 +222,7 @@ final class TextFlowTests: XCTestCase {
         try new.replaceTextBoxes([box], pageID: id); try store.save(new)
         let folders = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Migrations"), includingPropertiesForKeys: nil)
         XCTAssertEqual(try Data(contentsOf: folders[0].appendingPathComponent("notebook-v7.json")), original)
-        XCTAssertEqual(try RevisionStore(directory: root).load(), new)
+        XCTAssertEqual(try RevisionStore(directory: root).load(), try new.migratedTextFlow())
         XCTAssertEqual(new.deletedPages, try old.preparedForTextEditing().deletedPages)
     }
     func testCaretRevealMovesOnlyEnoughAndLeavesVisibleCaretStill() {

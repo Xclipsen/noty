@@ -254,14 +254,14 @@ final class HeldPolylineAndArrowTests: XCTestCase {
         XCTAssertEqual(other.schemaVersion, 13)
         var old = other; old.schemaVersion = 12
         XCTAssertThrowsError(try old.validate())
-        // Stored schema-12 bytes with a polygon are invalid, schema 14 stays locked.
+        // Stored schema-12 bytes with a polygon are invalid, schema 15 stays locked.
         let data = try JSONEncoder().encode(other)
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         json["schemaVersion"] = 12
         XCTAssertThrowsError(try Notebook.decode(JSONSerialization.data(withJSONObject: json)))
-        json["schemaVersion"] = 14
+        json["schemaVersion"] = 15
         XCTAssertThrowsError(try Notebook.decode(JSONSerialization.data(withJSONObject: json))) { error in
-            guard case StorageError.unsupportedSchema(14) = error else { return XCTFail("\(error)") }
+            guard case StorageError.unsupportedSchema(15) = error else { return XCTFail("\(error)") }
         }
         XCTAssertEqual(try Notebook.decode(data), other)
     }

@@ -26,7 +26,9 @@ public struct Notebook: Codable, Equatable, Sendable {
     /// embedded; notebooks with images are raised to 12 in memory on load.
     /// 13: polyline/polygon shapes (`ShapeObject.points`, kind `polygon`);
     /// older builds would draw them as straight lines, so they refuse them.
-    public static let currentSchemaVersion = 13
+    /// 14: free text fields only (Textneubau): rotation, automatic width and
+    /// page text migrated to fields (`flowRegion` without `flowID`).
+    public static let currentSchemaVersion = 14
     /// Lowest schema whose image objects reference assets instead of embedding.
     public static let imageAssetSchemaVersion = 12
     // Existing callers retain the legacy representation until a structural edit.
@@ -101,6 +103,7 @@ public struct Notebook: Codable, Equatable, Sendable {
                     if box.usesTextFlowFormat { guard schemaVersion >= 8 else { throw StorageError.invalidDocument } }
                     if box.usesRichText { guard schemaVersion >= 7 else { throw StorageError.invalidDocument } }
                     if box.usesColorFormat { guard schemaVersion >= 9 else { throw StorageError.invalidDocument } }
+                    if box.usesFieldFormat { guard schemaVersion >= TextBox.fieldSchemaVersion else { throw StorageError.invalidDocument } }
                     try box.validate()
                 }
             }

@@ -86,7 +86,7 @@ public struct MovedObjects: Equatable, Sendable {
     public var isEmpty: Bool { textBoxes.isEmpty && images.isEmpty && shapes.isEmpty }
     /// Union of the outer bounds used for page-limit checks.
     public var bounds: PageRect? {
-        let rects = textBoxes.map(\.rect) + images.map(\.rotatedBounds) + shapes.map(\.bounds)
+        let rects = textBoxes.map(\.rotatedBounds) + images.map(\.rotatedBounds) + shapes.map(\.bounds)
         return rects.dropFirst().reduce(rects.first) { $0?.union($1) }
     }
     public func translated(by offset: PagePoint) -> MovedObjects {
@@ -176,7 +176,7 @@ public enum CrossPageTransfer {
         }
         var inserted = objects
         for i in inserted.textBoxes.indices {
-            guard limits.contains(inserted.textBoxes[i].rect), inserted.textBoxes[i].allowsObjectSelection else {
+            guard inserted.textBoxes[i].fits(in: limits), inserted.textBoxes[i].allowsObjectSelection else {
                 throw CrossPageTransferError.doesNotFit
             }
             inserted.textBoxes[i].id = unique(inserted.textBoxes[i].id)
@@ -224,13 +224,14 @@ extension Notebook {
             if content.textBoxes.contains(where: \.usesTextFlowFormat) { next.schemaVersion = max(8, next.schemaVersion) }
             if content.textBoxes.contains(where: \.usesRichText) { next.schemaVersion = max(7, next.schemaVersion) }
             next.raiseSchemaForTextColors(content.textBoxes)
+            next.raiseSchemaForTextFields(content.textBoxes)
             next.pages[index].drawing = content.drawing
             next.pages[index].textBoxes = content.textBoxes
             next.pages[index].images = content.images
             next.pages[index].shapes = content.shapes
             next.raiseSchemaForShapes(content.shapes)
             let bounds = next.pages[index].textBounds
-            guard content.textBoxes.allSatisfy({ bounds.contains($0.rect) }) else { throw StorageError.invalidDocument }
+            guard content.textBoxes.allSatisfy({ $0.fits(in: bounds) }) else { throw StorageError.invalidDocument }
         }
         next.raiseSchemaForImageAssets()
         try next.validate(); self = next

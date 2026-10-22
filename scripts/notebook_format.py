@@ -20,8 +20,9 @@ IMAGES_TOTAL_LIMIT = 500_000_000  # unique originals (each hash once), schema 12
 LEGACY_IMAGES_TOTAL_LIMIT = 40_000_000  # embedded originals summed per object, schema <= 11
 IMAGE_ASSET_SCHEMA = 12  # image objects reference package assets instead of embedding
 VERTEX_SHAPE_SCHEMA = 13  # polyline/polygon shapes (`points`, kind "polygon")
+TEXT_FIELD_SCHEMA = 14  # free text fields only: rotation, autoWidth, migrated page text
 MAX_SHAPE_VERTICES = 64
-CURRENT_SCHEMA = 13
+CURRENT_SCHEMA = 14
 ASSET_HASH = re.compile(r"[0-9a-f]{64}")
 # Foundation dates: seconds since 2001 (JSONEncoder default); Swift accepts years 1…9999.
 REFERENCE_DATE_UNIX = 978_307_200
@@ -172,12 +173,24 @@ def _text_boxes(page, version, text_ids):
     for box in page["textBoxes"]:
         flow = box.get("flowID")
         region = box.get("flowRegion")
-        check((flow is None) == (region is None), "Invalid text flow")
+        check(flow is None or region is not None, "Invalid text flow")
+        if region is not None:
+            check(region in ("page", "left", "right", "top", "bottom"), "Invalid text flow")
         if flow is not None:
-            check(version >= 8 and region in ("page", "left", "right", "top", "bottom"), "Invalid text flow")
+            check(version >= 8, "Invalid text flow")
             flow = uuid_string(flow)
             check(flow not in flow_ids, "Duplicate text flow on one page")
             flow_ids.add(flow)
+        elif region is not None:
+            # Schema 14: page text migrated to a free field keeps its region as layout.
+            check(version >= TEXT_FIELD_SCHEMA, "Migrated page text needs schema 14")
+        rotation, auto_width = box.get("rotation"), box.get("autoWidth")
+        if rotation is not None or auto_width is not None:
+            check(version >= TEXT_FIELD_SCHEMA, "Text field rotation/automatic width needs schema 14")
+            check(flow is None, "Flow segments neither rotate nor change width automatically")
+        if rotation is not None:
+            check(number(rotation) and -180 <= rotation <= 180, "Invalid text field rotation")
+        check(auto_width is None or auto_width is True, "Invalid automatic text width")
         box_id = uuid_string(box["id"])
         check(box_id not in text_ids, "Duplicate text object identities")
         text_ids.add(box_id)

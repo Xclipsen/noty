@@ -68,7 +68,18 @@ public struct TextBox: Codable, Equatable, Identifiable, Sendable {
     public var style: TextBoxStyle
     public var runs: [TextRun]?
     public var flowID: UUID?
+    /// With `flowID`: the writing region of a flow segment. Without (schema 14):
+    /// a free field migrated from page text that keeps that region's line
+    /// ruling and coordinate units, so it stays exactly where it was.
     public var flowRegion: TextFlowRegion?
+    /// Schema 14: degrees (−180…180, clockwise on screen) about the frame's
+    /// top-left corner (x, y), so a field growing downwards never moves its
+    /// first line. nil: unrotated (0 is never stored).
+    public var rotation: Double?
+    /// Schema 14: the width follows the text while typing (up to the page
+    /// edge, then wrapping). nil: fixed width (older fields, or after a width
+    /// handle was dragged).
+    public var autoWidth: Bool?
     public init(id: UUID = UUID(), x: Double = 40, y: Double = 40, width: Double = 220,
                 height: Double = 28, text: String = "", style: TextBoxStyle = TextBoxStyle()) {
         self.id = id; self.x = x; self.y = y; self.width = width; self.height = height
@@ -85,7 +96,11 @@ public struct TextBox: Codable, Equatable, Identifiable, Sendable {
               abs(x) <= 14_400, abs(y) <= 14_400, (1...14_400).contains(width),
               (1...14_400).contains(height), (8...96).contains(style.fontSize),
               text.utf8.count <= 1_000_000 else { throw StorageError.invalidDocument }
-        guard (flowID == nil) == (flowRegion == nil) else { throw StorageError.invalidDocument }
+        // Flow segments always name their region; a region without a flow is a
+        // migrated free field (schema 14, checked by `Notebook.validate`).
+        guard flowID == nil || flowRegion != nil else { throw StorageError.invalidDocument }
+        guard rotation.map({ $0.isFinite && (-180...180).contains($0) }) ?? true, autoWidth != false,
+              flowID == nil || (rotation == nil && autoWidth == nil) else { throw StorageError.invalidDocument }
         try style.validate()
         let units = Array(text.utf16)
         func boundary(_ i: Int) -> Bool {
@@ -160,13 +175,12 @@ extension Notebook {
         if boxes.contains(where: \.usesTextFlowFormat) { next.schemaVersion = max(8, next.schemaVersion) }
         if boxes.contains(where: \.usesRichText) { next.schemaVersion = max(7, next.schemaVersion) }
         next.raiseSchemaForTextColors(boxes)
+        next.raiseSchemaForTextFields(boxes)
         guard let index = next.pages.firstIndex(where: { $0.id == pageID }) else { throw PageOperationError.missingPage }
         let bounds = next.pages[index].textBounds
         for box in boxes {
             try box.validate()
-            guard box.x >= bounds.x - 0.01, box.y >= bounds.y - 0.01,
-                  box.x + box.width <= bounds.x + bounds.width + 0.01,
-                  box.y + box.height <= bounds.y + bounds.height + 0.01 else { throw StorageError.invalidDocument }
+            guard box.fits(in: bounds) else { throw StorageError.invalidDocument }
         }
         next.pages[index].textBoxes = boxes
         try next.validate(); self = next

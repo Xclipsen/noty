@@ -158,7 +158,7 @@ public enum ContentSearchPlanner {
             var start = box.text.startIndex
             while start < box.text.endIndex {
                 let end = box.text.index(start, offsetBy: 2_000, limitedBy: box.text.endIndex) ?? box.text.endIndex
-                lines.append(SearchLine(text: String(box.text[start..<end]), kind: .text, bounds: box.rect))
+                lines.append(SearchLine(text: String(box.text[start..<end]), kind: .text, bounds: box.rotatedBounds))
                 if end == box.text.endIndex { break }
                 start = box.text.index(end, offsetBy: -160)
             }

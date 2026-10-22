@@ -2,9 +2,11 @@ import Foundation
 
 /// A stored notebook as decoded, with what the in-memory model no longer holds.
 public struct DecodedNotebook: Sendable {
-    /// Validated in-memory form; images of schema 5–11 are raised to 12.
+    /// Validated in-memory form; images of schema 5–11 are raised to 12,
+    /// page text (flow segments) becomes free fields of schema 14.
     public let notebook: Notebook
-    /// The schema of the bytes (≤ 11 although `notebook` may be 12).
+    /// The schema of the bytes (e.g. ≤ 11 although `notebook` may be 12, or
+    /// ≤ 13 with page text although `notebook` is 14).
     public let storedSchemaVersion: Int
     /// Originals the stored form embedded (schema 5–11), by SHA-256. Empty
     /// for schema 12, whose originals are package assets.
@@ -21,7 +23,7 @@ public struct DecodedNotebook: Sendable {
 
 /// The only decoder of stored notebook bytes (revisions, prototype files,
 /// archives). Checks the schema header before anything else: unknown newer
-/// schemas (≥ 14) stay `unsupportedSchema`, never a fallback.
+/// schemas (≥ 15) stay `unsupportedSchema`, never a fallback.
 ///
 /// Schema 5–11 embedded image originals as `data`: each is hashed and kept
 /// in `inlineImageBytes`, the object gets its content address. The legacy
@@ -31,6 +33,10 @@ public struct DecodedNotebook: Sendable {
 /// validated again. Notebooks without images keep their schema. Nothing is
 /// written here: the first real change commits schema 12 (RevisionStore keeps
 /// the exact old bytes under `Migrations/`).
+///
+/// Page text (flow segments, schema 8–13) becomes free fields in memory and
+/// the notebook schema 14 (`Notebook.migratedTextFlow`); the same rule: the
+/// first real change commits it after the exact old bytes were archived.
 public enum NotebookDecoding {
     public static func decode(_ data: Data) throws -> DecodedNotebook { try decode(data, storedFile: nil) }
 
@@ -78,6 +84,7 @@ public enum NotebookDecoding {
         } else {
             try notebook.validate()
         }
+        if notebook.containsTextFlow { notebook = try notebook.migratedTextFlow() }
         return (DecodedNotebook(notebook: notebook, storedSchemaVersion: version, inlineImageBytes: context.inline), context.order)
     }
 }

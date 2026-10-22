@@ -13,28 +13,43 @@ public enum PageObjectReference: Hashable, Sendable {
 /// active, a finger tap selects the object, the Pencil keeps drawing).
 ///
 /// Order follows the drawn layers (`Page.exportLayers`): text above shapes
-/// above images; within a type the later entry lies on top. Page text
-/// (`flowID`/`flowRegion`) is no object and locked images stay background,
-/// exactly as for the lasso.
+/// above images; within a type the later entry lies on top. Flow segments
+/// (`flowID`) are no objects and locked images stay background, exactly as
+/// for the lasso.
 public enum PageObjectHitTest {
     /// `point` in canonical page coordinates (no margins, no screen zoom);
     /// `tolerance` widens every object by that many page units (finger size
     /// divided by the current zoom). `shapeHit` lets the app use its real
     /// drawn outline; without it a geometric approximation applies.
+    /// `textHit` likewise decides text fields: the app tests the laid-out
+    /// text lines (Textneubau: an empty part of a field's frame reaches
+    /// through to what lies below); without it the rotated frame counts.
     public static func topmost(at point: PagePoint, in content: PageContent, tolerance: Double = 0,
+                               textHit: ((TextBox, PagePoint) -> Bool)? = nil,
                                shapeHit: ((ShapeObject, PagePoint) -> Bool)? = nil) -> PageObjectReference? {
-        guard point.x.isFinite, point.y.isFinite else { return nil }
+        all(at: point, in: content, tolerance: tolerance, textHit: textHit, shapeHit: shapeHit).first
+    }
+
+    /// Every selectable object under `point`, topmost first (same order and
+    /// rules as `topmost`).
+    public static func all(at point: PagePoint, in content: PageContent, tolerance: Double = 0,
+                           textHit: ((TextBox, PagePoint) -> Bool)? = nil,
+                           shapeHit: ((ShapeObject, PagePoint) -> Bool)? = nil) -> [PageObjectReference] {
+        guard point.x.isFinite, point.y.isFinite else { return [] }
         let tolerance = tolerance.isFinite ? max(0, tolerance) : 0
-        if let box = content.textBoxes.reversed().first(where: { $0.allowsObjectSelection && contains($0.rect, point, tolerance) }) {
-            return .text(box.id)
-        }
-        if let shape = content.shapes.reversed().first(where: { shapeHit?($0, point) ?? hits($0, at: point, tolerance: tolerance) }) {
-            return .shape(shape.id)
-        }
-        if let image = content.images.reversed().first(where: { !$0.locked && hits($0, at: point, tolerance: tolerance) }) {
-            return .image(image.id)
-        }
-        return nil
+        var result: [PageObjectReference] = content.textBoxes.reversed()
+            .filter { $0.allowsObjectSelection && (textHit?($0, point) ?? $0.contains(point, tolerance: tolerance)) }
+            .map { .text($0.id) }
+        result += content.shapes.reversed().filter { shapeHit?($0, point) ?? hits($0, at: point, tolerance: tolerance) }.map { .shape($0.id) }
+        result += content.images.reversed().filter { !$0.locked && hits($0, at: point, tolerance: tolerance) }.map { .image($0.id) }
+        return result
+    }
+
+    /// A repeated tap at the same place: the next object below `current`
+    /// among `hits` (topmost first), wrapping around; nil if nothing else is there.
+    public static func next(after current: PageObjectReference, in hits: [PageObjectReference]) -> PageObjectReference? {
+        guard hits.count > 1, let index = hits.firstIndex(of: current) else { return nil }
+        return hits[(index + 1) % hits.count]
     }
 
     /// Inside the rotated image rectangle (rotation in degrees about its centre).

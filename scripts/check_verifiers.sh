@@ -165,6 +165,35 @@ backup("shapes-flat-polygon.notybackup", shaped(13, [shape("polygon", [point(10,
 backup("shapes-vertex-outside.notybackup", shaped(13, [shape("line", [point(50, 50), point(700, 400), point(100, 100)])]))
 backup("shapes-vertex-type.notybackup", shaped(13, [shape("line", [point(50, 50), point("70", 400), point(100, 100)])]))
 
+
+# Schema 14: free text fields (rotation, automatic width, page text migrated to a field).
+def text_box(**extra):
+    value = {"id": uid(), "x": 40, "y": 40, "width": 200, "height": 30, "text": "Feld",
+             "style": {"font": "system", "fontSize": 17, "bold": False, "italic": False, "underline": False, "color": "black"}}
+    value.update(extra)
+    return value
+
+
+def texted(version, boxes):
+    return dict(valid, schemaVersion=version, pages=[dict(valid["pages"][0], textBoxes=boxes)] + valid["pages"][1:])
+
+
+backup("text-fields-schema-14.notybackup",
+       texted(14, [text_box(), text_box(rotation=30.5), text_box(rotation=-180), text_box(autoWidth=True), text_box(flowRegion="left")]))
+backup("text-plain-schema-13.notybackup", texted(13, [text_box()]))
+backup("text-flow-schema-14.notybackup", texted(14, [text_box(flowID=uid(), flowRegion="page")]))
+backup("text-rotation-schema-13.notybackup", texted(13, [text_box(rotation=30)]))
+backup("text-autowidth-schema-13.notybackup", texted(13, [text_box(autoWidth=True)]))
+backup("text-region-schema-13.notybackup", texted(13, [text_box(flowRegion="page")]))
+backup("text-rotation-range.notybackup", texted(14, [text_box(rotation=200)]))
+backup("text-rotation-type.notybackup", texted(14, [text_box(rotation="30")]))
+backup("text-autowidth-false.notybackup", texted(14, [text_box(autoWidth=False)]))
+backup("text-flow-rotated.notybackup", texted(14, [text_box(flowID=uid(), flowRegion="page", rotation=10)]))
+backup("text-flow-autowidth.notybackup", texted(14, [text_box(flowID=uid(), flowRegion="page", autoWidth=True)]))
+backup("text-flow-without-region.notybackup", texted(14, [text_box(flowID=uid())]))
+backup("text-region-enum.notybackup", texted(14, [text_box(flowRegion="middle")]))
+backup("text-schema-15.notybackup", texted(15, [text_box(rotation=30)]))
+
 store("valid")
 store("source-enum", lambda s: s["items"][2].update(source="bogus"))
 store("title-control", lambda s: s["items"][1].update(title="Ordner\u0007"))
@@ -379,7 +408,7 @@ schema_case("v2-schema12-pixel-mismatch.notybackup",
             with_images([image_object(sha, len(image)), image_object(sha, len(image), width=9, x=50)]))
 schema_case("v2-schema12-size-mismatch.notybackup",
             with_images([image_object(sha, len(image)), image_object(sha, len(image) + 1, x=50)]))
-schema_case("v2-schema14.notybackup", with_images([image_object(sha, len(image))], version=14))
+schema_case("v2-schema15.notybackup", with_images([image_object(sha, len(image))], version=15))
 # Format 1 has no asset records: a schema-12 notebook with images is refused.
 v1_document = with_images([image_object(sha, len(image))])
 v1_payload = json.dumps(v1_document).encode()
@@ -475,13 +504,20 @@ for name in polyline-schema-12 polygon-schema-12 start-mismatch two-vertices pol
             arrow-without-head flat-polygon vertex-outside vertex-type; do
     reject verify_backup.py "$work/backups/shapes-$name.notybackup"
 done
+for name in fields-schema-14 plain-schema-13 flow-schema-14; do
+    accept verify_backup.py "$work/backups/text-$name.notybackup"
+done
+for name in rotation-schema-13 autowidth-schema-13 region-schema-13 rotation-range rotation-type autowidth-false \
+            flow-rotated flow-autowidth flow-without-region region-enum schema-15; do
+    reject verify_backup.py "$work/backups/text-$name.notybackup"
+done
 accept verify_backup.py "$work/backups/v2.notybackup" --compare "$work/backups/v2.json"
 for name in extra-asset asset-first no-end trailing version-3 header-key crc descriptor-key wrong-id schema-99 end-totals \
             hash-upper hash-63 hash-path asset-over-20mb; do
     reject verify_backup.py "$work/backups/v2-$name.notybackup"
 done
 for name in schema12-data-and-asset schema12-data schema11-asset schema11-data-and-asset schema12-hash-upper schema12-hash-63 \
-            schema12-hash-path schema12-asset-over-20mb schema12-over-500mb schema12-pixel-mismatch schema12-size-mismatch schema14; do
+            schema12-hash-path schema12-asset-over-20mb schema12-over-500mb schema12-pixel-mismatch schema12-size-mismatch schema15; do
     reject verify_backup.py "$work/backups/v2-$name.notybackup"
     # The notebook rule itself must refuse (not a missing asset record afterwards).
     if grep -q "Referenced asset missing" "$work/last.log"; then

@@ -25,8 +25,10 @@ extension Page {
     public var inkWidthScale: Double {
         max(0.1, (geometry?.displaySize.width ?? PageSize.a4.width) / PageSize.a4.width)
     }
+    /// Margin text keeps normal-page units: flow segments and the free fields
+    /// migrated from them (their `flowRegion` stays as layout).
     public func writingCoordinateScale(for box: TextBox) -> Double {
-        box.flowID != nil && box.flowRegion != .page ? writingCoordinateScale : 1
+        box.flowRegion != nil && box.flowRegion != .page ? writingCoordinateScale : 1
     }
 }
 

@@ -30,7 +30,9 @@ extension EditorInteractionPolicy {
     /// or the writing margin beside a PDF. The PDF itself renders light.
     public static func automaticTextIsLight(box: TextBox, pageSize: PageSize, hasPDF: Bool, darkPaper: Bool, darkMargins: Bool) -> Bool {
         guard hasPDF else { return darkPaper }
-        if let region = box.flowRegion { return region != .page && darkMargins }
+        // Flow segments follow their region; free fields (also migrated page
+        // text, which may have been moved) their position.
+        if box.flowID != nil, let region = box.flowRegion { return region != .page && darkMargins }
         let onSource = box.x >= 0 && box.x < pageSize.width && box.y >= 0 && box.y < pageSize.height
         return !onSource && darkMargins
     }
@@ -63,8 +65,9 @@ extension TextBox {
         return result
     }
 
-    /// Flow segments belong to the page. Only independent annotations transform.
-    public var allowsObjectSelection: Bool { flowID == nil && flowRegion == nil }
+    /// Flow segments belong to the page. Free fields (also migrated page text
+    /// with its layout region) are objects.
+    public var allowsObjectSelection: Bool { flowID == nil }
 
     public func scaled(by scale: Double, around origin: PagePoint, translation: PagePoint) throws -> TextBox {
         guard allowsObjectSelection, scale.isFinite, scale > 0 else { throw StorageError.invalidDocument }

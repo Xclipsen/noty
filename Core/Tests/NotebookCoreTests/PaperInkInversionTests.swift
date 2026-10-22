@@ -124,7 +124,8 @@ final class PaperInkInversionTests: XCTestCase {
         XCTAssertEqual(pdf.shapes?.map(\.color), [white, black])
         XCTAssertEqual(notebook.pages[3], before.pages[3], "PDF without writing space unchanged")
         XCTAssertNoThrow(try notebook.validate())
-        XCTAssertEqual(try Notebook.decode(JSONEncoder().encode(notebook)), notebook)
+        // Stored page text comes back as free fields (schema 14, Textneubau).
+        XCTAssertEqual(try Notebook.decode(JSONEncoder().encode(notebook)), try notebook.migratedTextFlow())
 
         // And back: white ink becomes black again, red stays.
         let back = try notebook.setPageDefaults(paper: .lined, color: .white, scope: .wholeNotebook, recolorDrawing: fakeRecolor)

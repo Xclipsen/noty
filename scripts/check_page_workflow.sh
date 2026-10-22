@@ -12,6 +12,9 @@ python3 -B scripts/verify_backup.py "$task_check/results/heft.notybackup" --comp
 python3 -B scripts/verify_backup.py "$task_check/results/heft-v1.notybackup" --compare "$task_check/results/current-v11.json"
 # Schema 13 (polyline/polygon shapes) written by Swift.
 python3 -B scripts/verify_backup.py "$task_check/results/heft-v13.notybackup" --compare "$task_check/results/current-v13.json"
+# Schema 14 (page text migrated to free fields, rotated/automatic-width field) written by Swift.
+python3 -B scripts/verify_backup.py "$task_check/results/heft-v14.notybackup" --compare "$task_check/results/current-v14.json"
+python3 -B scripts/verify_device_store.py "$task_check/results/FlowMigration"
 python3 -B scripts/verify_library_backup.py "$task_check/results/bibliothek.notylibrary"
 python3 -B scripts/verify_device_store.py "$task_check/results/Source"
 # Restore copies (Restores/*) and the migrated schema-11 package carry their assets.

@@ -52,7 +52,6 @@ struct PageWorkflowCheck {
         richStyle.link = "https://example.org"; richStyle.indent = 12
         richStyle.fontName = "Courier"; richStyle.ink = InkColor(0.2, 0.6, 0.3)
         richStyle.strikethrough = true; richStyle.baseline = 1
-        textObjects[1].flowID = UUID(); textObjects[1].flowRegion = .left
         var colorStyle = textObjects[1].style; colorStyle.color = .black; colorStyle.automaticColor = true
         colorStyle.highlighted = true; colorStyle.highlightColor = .green
         textObjects[1].runs = [TextRun(location: 0, length: 3, style: richStyle), TextRun(location: 3, length: 2, style: colorStyle)]
@@ -61,8 +60,9 @@ struct PageWorkflowCheck {
         document.appearance = appearance
         document.pages[1].geometry = appearance.geometry
         let flowRect = document.pages[1].writingRect(.page)!
-        var continuation = TextBox(x: flowRect.x, y: flowRect.y, width: flowRect.width, height: flowRect.height, text: "Fortsetzung")
-        continuation.flowID = textObjects[1].flowID; continuation.flowRegion = .page
+        // Page text (flows) no longer exists in notebooks (Textneubau, schema 14):
+        // a plain free field here; the flow migration is checked separately.
+        let continuation = TextBox(x: flowRect.x, y: flowRect.y, width: flowRect.width, height: flowRect.height, text: "Fortsetzung")
         try document.replaceTextBoxes([continuation], pageID: document.pages[1].id)
         // Schema 11: the paper sheet grows right/down in its own paper (seamless lines).
         try document.applyMargins(PageMargins(right: 300, bottom: 120, style: .blank, color: .white), pageIDs: [document.pages[1].id])
@@ -186,8 +186,9 @@ struct PageWorkflowCheck {
             throw StorageError.invalidDocument
         }
         let legacyPackage = try await Self.checkLegacyPackage(root: root, image: imageData)
+        let flowPackage = try await Self.checkTextFlowMigration(root: root)
         let report: [String: Any] = ["schemaVersion": document.schemaVersion,
-            "textFlowSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first?.flowID == continuation.flowID,
+            "textFieldSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first == continuation,
             "unmaterializedDraftExcludedFromNotebookArchive": !roundTrip.documents[0].pages.contains(where: { $0.id == document.writingDraft().id }),
             "richFormattingSurvivesLibraryRestore": roundTrip.documents[0].pages.first(where: { $0.id == beforeTrim.id })?.textBoxes?[1].runs == textObjects[1].runs,
             "automaticColorAndHighlightSurviveLibraryRestore": roundTrip.documents[0].pages.first(where: { $0.id == beforeTrim.id })?.textBoxes?[1].runs?.last?.style == colorStyle,
@@ -205,7 +206,10 @@ struct PageWorkflowCheck {
             "archiveAssets": written.assetCount + writtenBackup.assets.count,
             "legacySchema11OpenWritesNothing": legacyPackage.openWritesNothing,
             "legacySchema11EditKeepsExactBytesUnderMigrations": legacyPackage.exactBytesArchived,
-            "legacySchema11EditWritesAssetThenSchema12": legacyPackage.assetWritten]
+            "legacySchema11EditWritesAssetThenSchema12": legacyPackage.assetWritten,
+            "pageTextSchema13OpenWritesNothing": flowPackage.openWritesNothing,
+            "pageTextSchema13EditKeepsExactBytesUnderMigrations": flowPackage.exactBytesArchived,
+            "pageTextBecomesFieldsAtSameFrameInSchema14": flowPackage.sameFrames]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
     }
@@ -303,5 +307,77 @@ struct PageWorkflowCheck {
             && reopened == notebook && repository.assets.pendingReferences.isEmpty
         guard openWritesNothing, exactBytesArchived, assetWritten else { throw StorageError.invalidDocument }
         return (openWritesNothing, exactBytesArchived, assetWritten)
+    }
+
+    /// Page text as Build ≤ 62 stored it (schema 13, flow segments over two
+    /// pages and in the page trash). Opening writes nothing; the notebook is
+    /// shown with free fields at exactly the same frames (schema 14 in
+    /// memory). The first edit keeps the exact old bytes under Migrations/
+    /// and commits schema 14; Python verifies the package and a backup.
+    static func checkTextFlowMigration(root: URL) async throws -> (openWritesNothing: Bool, exactBytesArchived: Bool, sameFrames: Bool) {
+        let fm = FileManager.default
+        let package = root.appendingPathComponent("FlowMigration", isDirectory: true)
+        let revisions = package.appendingPathComponent("Revisions", isDirectory: true)
+        try fm.createDirectory(at: revisions, withIntermediateDirectories: true)
+        var appearance = NotebookAppearance(); appearance.paper = .lined
+        var old = try Notebook.blank(title: "Seitentext", appearance: appearance)
+        _ = try old.insertPaper(.lined, at: 1, geometry: PaperStyle.geometry)
+        old = try old.preparedForTextEditing()
+        let rect = old.pages[0].writingRect(.page)!
+        let flow = UUID()
+        var first = TextBox(x: rect.x, y: rect.y, width: rect.width, height: rect.height, text: "Mitschrift ÄÖÜ ß\n• Punkt")
+        first.flowID = flow; first.flowRegion = .page
+        var bold = first.style; bold.bold = true
+        first.runs = [TextRun(location: 0, length: 10, style: bold)]
+        var second = first; second.id = UUID(); second.text = "Fortsetzung"; second.runs = nil
+        try old.replaceTextBoxes([first], pageID: old.pages[0].id)
+        try old.replaceTextBoxes([second], pageID: old.pages[1].id)
+        let trashed = try old.duplicatePage(old.pages[0].id)
+        try old.trashPage(trashed)
+        old.schemaVersion = 13
+        let bytes = try JSONEncoder().encode(old)
+        guard try NotebookDecoding.decode(bytes).storedSchemaVersion == 13 else { throw StorageError.invalidDocument }
+        let file = "21111111-2222-4333-8444-555555555555.json"
+        try bytes.write(to: revisions.appendingPathComponent(file))
+        let manifest = """
+        {"formatVersion":1,"checksumAlgorithm":"crc32-iso-hdlc","revisions":[{"file":"\(file)","byteCount":\(bytes.count),"crc32":\(SnapshotChecksum.crc32(bytes)),"savedAtUnix":1800000000}]}
+        """
+        try Data(manifest.utf8).write(to: package.appendingPathComponent("manifest.json"))
+        func inventory() throws -> [String: Data] {
+            var result: [String: Data] = [:]
+            let enumerator = fm.enumerator(at: package, includingPropertiesForKeys: nil)!
+            for case let url as URL in enumerator {
+                let isFile = (try url.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true
+                result[String(url.path.dropFirst(package.path.count))] = isFile ? try Data(contentsOf: url) : Data()
+            }
+            return result
+        }
+        let before = try inventory()
+        let repository = NotebookRepository(directory: package)
+        var (notebook, recovered) = try await repository.load()
+        try await repository.save(notebook, revision: 1) // the editor's save right after opening
+        let openWritesNothing = try inventory() == before
+        let fields = notebook.pages.compactMap { $0.textBoxes?.first }
+        let trashedField = notebook.deletedPages?.first?.page.textBoxes?.first
+        let sameFrames = !recovered && notebook.schemaVersion == 14 && !notebook.containsTextFlow
+            && fields.map(\.rect) == [first.rect, second.rect] && fields.map(\.text) == [first.text, second.text]
+            && fields[0].runs == first.runs && fields.allSatisfy { $0.flowRegion == .page && $0.flowID == nil }
+            && trashedField?.text == first.text && trashedField?.flowID == nil
+        // A typical first edit after the update: a rotated, automatically wide field.
+        var boxes = notebook.pages[0].effectiveTextBoxes
+        var turned = TextBox(x: 300, y: 500, width: 120, height: 24, text: "Gedreht")
+        turned.rotation = -30; turned.autoWidth = true
+        boxes.append(turned)
+        try notebook.replaceTextBoxes(boxes, pageID: notebook.pages[0].id)
+        try await repository.save(notebook, revision: 2)
+        let archived = try fm.contentsOfDirectory(at: package.appendingPathComponent("Migrations"), includingPropertiesForKeys: nil)
+            .map { $0.appendingPathComponent("notebook-v13.json") }.filter { fm.fileExists(atPath: $0.path) }
+        let exactBytesArchived = try archived.count == 1 && Data(contentsOf: archived[0]) == bytes
+        let reopened = try RevisionStore(directory: package).load()
+        guard openWritesNothing, sameFrames, exactBytesArchived, reopened == notebook else { throw StorageError.invalidDocument }
+        // Schema 14 written by Swift, verified independently by Python.
+        _ = try BackupArchive.write(notebook, assets: repository.assets, to: root.appendingPathComponent("heft-v14.notybackup"))
+        try JSONEncoder().encode(notebook).write(to: root.appendingPathComponent("current-v14.json"))
+        return (openWritesNothing, exactBytesArchived, sameFrames)
     }
 }

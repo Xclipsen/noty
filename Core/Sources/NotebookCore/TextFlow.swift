@@ -135,6 +135,7 @@ extension Notebook {
         next.pages.append(page)
         if page.effectiveTextBoxes.contains(where: \.usesTextFlowFormat) { next.schemaVersion = max(8, next.schemaVersion) }
         next.raiseSchemaForTextColors(page.effectiveTextBoxes)
+        next.raiseSchemaForTextFields(page.effectiveTextBoxes)
         try next.validate(); self = next
     }
 
@@ -272,6 +273,7 @@ extension Notebook {
             if focus != nil, consumed < total, nodeIndex < existing.count, storedTailMatches(from: nodeIndex, at: consumed) { break }
         } while consumed < total || nodeIndex < existing.count
         next.raiseSchemaForTextColors(next.pages.flatMap { $0.textBoxes ?? [] })
+        next.raiseSchemaForTextFields(next.pages.flatMap { $0.textBoxes ?? [] })
         try next.validate()
         return (next, focus ?? TextFlowFocus(pageID: pageID, boxID: replacement.id, selection: .init(location: 0, length: 0), typingStyle: replacement.style))
     }
