@@ -92,7 +92,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private var motionTicks = MotionTicks()
     private var rotationSnap: Double?
     private var hasSelection: Bool { !ink.isEmpty || !texts.isEmpty || !images.isEmpty || !shapes.isEmpty }
-    private var active: Bool { enabled && (tool == .shape || tool == .selection || tool == .inkSelection) }
+    private var active: Bool { enabled && (tool == .shape || tool == .selection || tool == .inkSelection || touchSelection) }
+    /// Object selected by a finger tap while an ink tool stays active
+    /// (`selectByTouch`). Lives exactly as long as that selection.
+    private var touchSelection = false
+    /// The finger selection ended (the sheet gives the canvas its focus back).
+    var onTouchSelectionEnded: (() -> Void)?
     override var canBecomeFirstResponder: Bool { active }
     override var inputView: UIView? { UIView(frame: .zero) }
     override var undoManager: UndoManager? { notebookUndo }
@@ -153,6 +158,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             } else { self.adopted = nil }
         }
         if self.tool != tool || !enabled { endLift(); preview = nil; inkTransform = nil; startContent = nil; draft = nil; lasso = [] }
+        if touchSelection, self.tool != tool || !enabled { clearSelection(); endTouchSelectionMode() }
         self.content = incoming; self.pageID = pageID; self.layout = layout; self.generation = generation
         let touches = [UITouch.TouchType.pencil, .direct, .indirectPointer].map { NSNumber(value: $0.rawValue) }
         if pan.allowedTouchTypes != touches { pan.allowedTouchTypes = touches }
@@ -222,6 +228,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         else { onInkPreview?((startContent ?? content).drawing, ink, inkTransform) }
     }
     private func refresh() {
+        if touchSelection, !hasSelection, startContent == nil {
+            endTouchSelectionMode(); isUserInteractionEnabled = active; isHidden = !active
+        }
         let lifted = lift != nil
         toolbar.isHidden = !active || lifted || (!hasSelection && ObjectClipboard.content == nil)
         for corner in corners { corner.isHidden = !active || lifted || !hasSelection }
@@ -489,6 +498,62 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         if let selection { select(selection, in: value) }
         refresh()
     }
+    // MARK: Finger selection with an ink tool (Nutzerfeedback Tag 1)
+    // The sheet decides what a finger tap hits (`PageObjectHitTest`) and owns
+    // the finger gestures; this layer only shows and edits the selection.
+    // Meanwhile only its controls (action bar, handles) take touches: Pencil
+    // and finger elsewhere reach the canvas and the notebook as before.
+
+    var hasTouchSelection: Bool { touchSelection && hasSelection }
+    /// Ink tools change ink and held shapes without a full configuration
+    /// (`WorksheetView.matches`), so this layer's copy can be older. Finger
+    /// selection takes the sheet's current content first; otherwise its
+    /// previews would show (and its commits expect) a stale page.
+    func adoptCurrentContent(_ value: PageContent) {
+        guard value != content, lift == nil, startContent == nil, preview == nil, draft == nil else { return }
+        content = value; adopted = nil; ink = []
+        texts.formIntersection(value.textBoxes.map(\.id)); images.formIntersection(value.images.map(\.id))
+        shapes.formIntersection(value.shapes.map(\.id))
+    }
+    /// Selects exactly `object` (nil: clears a finger selection).
+    func selectByTouch(_ object: PageObjectReference?) {
+        guard enabled, lift == nil, startContent == nil, !(tool == .shape || tool == .selection || tool == .inkSelection) else { return }
+        adopted = nil; clearSelection()
+        switch object {
+        case .text(let id)?: if content.textBoxes.contains(where: { $0.id == id && $0.allowsObjectSelection }) { texts = [id] }
+        case .image(let id)?: if content.images.contains(where: { $0.id == id && !$0.locked }) { images = [id] }
+        case .shape(let id)?: if content.shapes.contains(where: { $0.id == id }) { shapes = [id] }
+        case nil: break
+        }
+        touchSelection = touchSelection || hasSelection
+        isUserInteractionEnabled = active; isHidden = !active
+        refresh()
+    }
+    /// `point` in this layer's coordinates (same as the sheet's).
+    func touchSelectionContains(_ point: CGPoint) -> Bool {
+        guard hasTouchSelection, lift == nil, let frame = selectionBounds(content).map(display) else { return false }
+        let margin = 8 / displayScale
+        return frame.insetBy(dx: -margin, dy: -margin).contains(point)
+    }
+    /// A finger drag that began on the finger selection moves it (also across pages).
+    func dragTouchSelection(_ gesture: UIPanGestureRecognizer) {
+        guard touchSelection else { return }
+        self.gesture(gesture, requestedMode: 1)
+    }
+    func endTouchSelection() {
+        guard touchSelection, lift == nil, startContent == nil else { return }
+        adopted = nil; clearSelection(); refresh()
+    }
+    private func endTouchSelectionMode() {
+        guard touchSelection else { return }
+        touchSelection = false; onTouchSelectionEnded?()
+    }
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        // Finger selection: the layer's own surface passes everything through.
+        return touchSelection && hit === self ? nil : hit
+    }
+
     /// Applies only members that exist in `value` (stroke indices, object IDs).
     private func select(_ selection: TransferredSelection, in value: PageContent) {
         let strokes = selection.ink.isEmpty ? 0 : (drawing(value.drawing)?.strokes.count ?? 0)

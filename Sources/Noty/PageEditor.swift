@@ -62,6 +62,9 @@ struct PageEditor {
     var onContent: (PageContent, PageContent) -> Bool
     /// Shapes removed by the precision eraser, merged into that gesture's ink undo step.
     var onEraseShapes: (PageContent, PageContent) -> Bool = { _, _ in false }
+    /// „Textfeld hinzufügen“ from the finger double-tap menu: the editor
+    /// switches to the text tool, the sheet then opens the field itself.
+    var onTextFieldRequested: () -> Void = {}
 }
 
 extension PageEditor {
@@ -127,6 +130,12 @@ final class DrawingCanvasView: PKCanvasView {
     override var inputAccessoryView: UIView? { nil }
     // Native canvas viewport changes must never scroll the containing notebook.
     override func scrollRectToVisible(_ rect: CGRect, animated: Bool) { }
+    /// PencilKit's „Platz einfügen“ (insert space) is not offered (Nutzerfeedback
+    /// Tag 1); the finger double tap shows „Textfeld hinzufügen“ instead.
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if NSStringFromSelector(action).lowercased().contains("insertspace") { return false }
+        return super.canPerformAction(action, withSender: sender)
+    }
 }
 
 final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDelegate {
@@ -141,7 +150,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     let canvas = DrawingCanvasView()
     private let imageLayer = ImageObjectLayer()
     let shapeLayer = ShapeObjectLayer()
-    private let objectLayer = ObjectEditingLayer()
+    let objectLayer = ObjectEditingLayer()
     private let textLayer = TextObjectLayer()
     private let hitHighlight = UIView()
     private var sourceDark = false
@@ -233,6 +242,11 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private let holdGesture = PencilHoldGesture()
     private let checkboxTap = CheckboxTapGesture()
     private let interactionObserver = PageInteractionObserver()
+    /// Finger taps select objects while an ink tool stays active; double tap
+    /// offers „Textfeld hinzufügen“ (WorksheetView+FingerObjects.swift).
+    private let fingerObjects = FingerObjectGestures()
+    /// Point of a requested text field until the text tool is configured.
+    private var pendingTextField: (pageID: UUID, point: PagePoint, deadline: CFTimeInterval)?
     private let interactionID = UUID()
     private let textInteractionID = UUID()
     private var onInteraction: ((UUID, Bool) -> Void)?
@@ -341,6 +355,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         textLayer.onCaretChanged = { [weak self] in self?.onRevealCaret?() }
         objectLayer.onPreview = { [weak self] content in self?.showObjectPreview(content) }
+        objectLayer.onTouchSelectionEnded = { [weak self] in DispatchQueue.main.async { self?.claimUndoResponder() } }
+        fingerObjects.install(on: self)
         imageLayer.pageContent = { [weak self] in self?.objectContent }
         objectLayer.onInkPreview = { [weak self] data, indices, transform in
             self?.showSelectionInk(data, indices: indices, transform: transform)
@@ -514,6 +530,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         interactionObserver.isEnabled = window != nil
         if window == nil { cancelErase(); cancelShapeErase() }
         if window == nil { onInteraction?(textInteractionID, false) }
+        if window != nil { fingerObjects.linkNativeDoubleTaps(in: canvas) }
         updateInputMode()
     }
 
@@ -713,12 +730,50 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if canvas.drawingGestureRecognizer.isEnabled != nativeDrawing { canvas.drawingGestureRecognizer.isEnabled = nativeDrawing }
         if eraseSession != nil || shapeErase != nil { dimErasedShapes() }
         pdfView?.isUserInteractionEnabled = tool == .read
-        if modeChanged || focusChanged || first { updateInputMode() }
+        if modeChanged || focusChanged || first { updateInputMode(); fingerObjects.linkNativeDoubleTaps(in: canvas) }
+        if pendingTextField != nil { openPendingTextField() }
         setNeedsLayout()
     }
 
+    // MARK: Finger taps on objects and „Textfeld hinzufügen“
+
+    /// Ink tool active and the finger does not draw itself.
+    var acceptsFingerObjectTaps: Bool {
+        editable && [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(tool) && configuration?.fingerDrawing != true
+    }
+    /// Before a finger selection: the object plane gets the sheet's current
+    /// content (ink and held shapes do not reconfigure it).
+    func syncObjectPlane() { objectLayer.adoptCurrentContent(pageContent) }
+    /// Checkbox glyphs keep their own tap (`CheckboxTapGesture`).
+    func fingerTapHitsCheckbox(_ point: CGPoint) -> Bool { textLayer.hasCheckbox(at: convert(point, to: textLayer)) }
+    /// Double-tap menu: remembers the canonical point and lets the editor
+    /// switch to the text tool; the next configuration opens the field.
+    func requestTextField(at point: PagePoint) {
+        guard editable, let pageID, let request = configuration?.onTextFieldRequested else { return }
+        pendingTextField = (pageID, point, CACurrentMediaTime() + 2)
+        request()
+    }
+    private func openPendingTextField() {
+        guard let pending = pendingTextField else { return }
+        guard pending.pageID == pageID, pending.deadline > CACurrentMediaTime() else { pendingTextField = nil; return }
+        guard editable, tool == .text else { return }
+        pendingTextField = nil
+        // After this configuration pass: the text plane is active by then.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.pageID == pending.pageID, self.editable, self.tool == .text else { return }
+            self.addTextField(at: pending.point)
+        }
+    }
+    /// „Textfeld an Punkt anlegen“: the only way the double-tap menu reaches
+    /// the text system. A new free field at `point` (canonical page
+    /// coordinates), opened for typing. A rebuilt text system replaces this body.
+    func addTextField(at point: PagePoint) {
+        let origin = pageLayout.contentOrigin
+        textLayer.insertText(at: CGPoint(x: point.x + origin.x, y: point.y + origin.y), freeField: true)
+    }
+
     private func showObjectPreview(_ content: PageContent) {
-        guard !updating, let editor = configuration, tool == .selection || tool == .inkSelection || tool == .shape,
+        guard !updating, let editor = configuration, tool == .selection || tool == .inkSelection || tool == .shape || objectLayer.hasTouchSelection,
               lastObjectPreview != content else { return }
         lastObjectPreview = content
         shapeLayer.configure(content.shapes, origin: pageLayout.contentOrigin)
@@ -811,7 +866,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// the other modes (image, laser, read, text tool between fields) the
     /// focused sheet itself. Text input anywhere and this page's own layers
     /// keep their focus.
-    private func claimUndoResponder() {
+    func claimUndoResponder() {
         guard window != nil else { return }
         guard editable, worksheetFocused else { if isFirstResponder { resignFirstResponder() }; return }
         let target: UIResponder = [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(tool) ? canvas
@@ -876,6 +931,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     }
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
         inkActive = true
+        objectLayer.endTouchSelection() // writing again ends a finger selection
         onInkSession?()
         if heldShape == nil { holdBase = pageContent }
     }

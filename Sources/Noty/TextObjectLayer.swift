@@ -351,7 +351,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
 
     /// `placing`: a real tap also sets a click-and-type caret (not the „+“ button).
-    func insertText(at point: CGPoint, placing: Bool = false) {
+    /// `freeField`: always a new free field at `point`, never page text.
+    func insertText(at point: CGPoint, placing: Bool = false, freeField: Bool = false) {
         guard active else { if tracing { inputLog.info("[noty.text-input] Insertion ignored: text mode inactive") }; return }
         guard boxes.count < 200 else {
             notice.text = "Höchstens 200 Textfelder pro Seite."
@@ -372,7 +373,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             top: -limits.minY, bottom: limits.maxY - pageLayout.contentCanvas.height)
         // Writing space beside paper keeps the sheet's units (`writingSpaceExtendsPaper`).
         if !hasPDF { page.paper = .blank }
-        var region = page.writingRegion(at: canonical, hasPDF: hasPDF)
+        var region = freeField ? nil : page.writingRegion(at: canonical, hasPDF: hasPDF)
         // Click-and-type (Feedback 44): the left half of a writing region always
         // offers the flowing lines; from the middle rightwards a tap beside or
         // below the text opens a separate free field instead of indenting.

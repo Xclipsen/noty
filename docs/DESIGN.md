@@ -1,5 +1,14 @@
 # Designentscheidungen für noty
 
+## Fingertipp auf Objekte und Doppeltipp-Menü – 22.10.2026
+
+Nutzer nach dem ersten Tag: Mit dem Stift aktiv lassen sich Textfelder nicht mit dem Finger antippen und auswählen. Beim Doppeltippen erscheint eine Option zum Einfügen von Leerraum („Platz einfügen“), die unverständlich und sinnlos ist. Umgesetzt:
+
+- **Fingertipp wählt aus, Stift bleibt aktiv.** Bei Stift, Bleistift, Marker oder Radierer wählt ein Fingertipp auf ein Textfeld, Bild oder eine Form genau dieses Objekt aus: Auswahlrahmen, Griffe und die dunkle Aktionsleiste wie beim Lasso. Das Werkzeug wechselt nicht. Ein Fingertipp ins Leere, Schreiben mit dem Pencil, „Auswahl aufheben“ oder ein Werkzeugwechsel heben die Auswahl auf. Mit dem Finger lässt sich die Auswahl ziehen, Griffe skalieren. Außerhalb der Auswahl scrollt und zoomt der Finger wie bisher; nur ein Tippen ohne Bewegung wählt. Seitentext und gesperrte Bilder sind wie beim Lasso keine Objekte. Mit „Auch mit dem Finger zeichnen“ zeichnet der Finger weiter, dann gibt es keine Fingerauswahl.
+- **Doppeltipp: „Textfeld hinzufügen“ statt „Platz einfügen“.** Das bisherige Menü kam nicht aus noty, sondern aus PencilKit (natives Einfügen von Leerraum, `PKSpaceInsertionController`). Ein Finger-Doppeltipp auf freie Fläche zeigt jetzt nur „Textfeld hinzufügen“. Das wechselt zum Textwerkzeug und öffnet an der getippten Stelle ein neues freies Textfeld zum Schreiben, auch auf Papierseiten (dort sonst Seitentext). Auf einem Objekt gibt es kein Menü, der erste Tipp hat es ausgewählt.
+
+Technik: Die Trefferprüfung über alle Objekttypen liegt in `PageObjectHitTest` (Core), die Fingergesten in `FingerObjectGestures` (`WorksheetView+FingerObjects.swift`), Anzeige und Bearbeitung bleiben in `ObjectEditingLayer`. Das Textsystem wird nur über `WorksheetView.addTextField(at:)` erreicht. Stand: implementiert, Core-Tests und SDK-Build; nicht installiert, am iPad ungeprüft.
+
 ## Gesetzessammlung – bestätigte Bedienung, 20.10.2026
 
 Appweites **Konto** in den Einstellungen, eigener Punkt **Gesetzessammlung** mit drei unabhängigen Schaltern: Aktivierung (aus), persönlicher Abgleich (an), automatische neue Gesetzesfassungen (an). Ohne Anmeldung lesen/markieren; nach Logout bleiben Markierungen sichtbar. Gesetzesfenster über das Editor-Optionenmenü öffnen. Griff ziehen für Seite bzw. Andock-/Schwebemodus, Menü für explizite Anordnung, seitlicher Griff für Breite. Angedockt erhält das Heft eigenen Platz; das zweite Heft wird erhalten, schwebend sind zwei Hefte plus Gesetzesfenster möglich. Bei zu geringer Breite schwebend anzeigen.

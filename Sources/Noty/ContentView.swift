@@ -785,6 +785,11 @@ struct ContentView: View {
                 // Only existing pages carry shapes; the draft page has none.
                 guard isPaneActive(), model.pageContentGeneration == generation else { return false }
                 return model.updateContent(next, basedOn: before, pageID: page.id, inkGesture: true)
+            },
+            onTextFieldRequested: {
+                // Double-tap menu „Textfeld hinzufügen“: the sheet opens its field once the text tool is set.
+                guard canEdit else { return }
+                tool = .text; toolbarOptions = false
             })
     }
 
