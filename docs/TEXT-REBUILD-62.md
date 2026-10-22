@@ -228,3 +228,12 @@ Gemeinsamer Teststand `feat/textneubau` (Stufen 1–4, Formen Schema 13, `.noty`
 - Sicherung bei geschlossener App: `/home/la/Backups/noty-before-build62-2026-10-22T17-09-51-927472029Z/` (22 Hefte in zwei Bereichsroots, 72 Revisionen, 189 Dateien, ohne Quarantäne). Ein erster Lauf (`…T17-08-45-…-abgebrochen-vor-installation`) brach nach der Sicherung im Prüfskript ab (veraltete `load_store`-Rückgabe seit Schema 12); vor dem Abbruch wurde nichts installiert.
 - **Installiert**: InstallationProxy bestätigt Build **62** unter unveränderter ID `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype`. Bei geschlossener App zurückgelesen: `verify_device_store.py --compare` für beide Bereichsroots gültig, **alle 22 Hefte und 189 Dateien unverändert**, keine neuen Dateien.
 - **Auf dem iPad ungeprüft**: sämtliche Funktionen der Stufen 1–4, Formen, `.noty` und Einrasten (Gerätetestpunkte in den Abschnitten oben). Ab der ersten Bearbeitung mit neuen Funktionen können Hefte Schema 13/14 bzw. Textdokumente Schema 15 erhalten; Build ≤ 61 öffnet diese dann nicht mehr.
+
+### Build 63 installiert (22.10.2026)
+
+Bugfixes nach dem Nutzertest von Build 62 (Punkte 1–11 oben), keine Formatänderung. Signierte IPA SHA-256 `afe5d8bf…7bcd`, CFBundleVersion 63, gleiche IPA-ID.
+
+- Zwei Sicherungsversuche brachen ab, weil sich `Library/index.json` bzw. ein Manifest während des Lesens änderte (noty speicherte nach dem Schließen bzw. wurde kurz wieder geöffnet): `…T18-18-03-…` und `…T18-18-50-…`, beide `-abgebrochen-datei-geaendert`, unvollständig, nicht verwenden; vor dem Abbruch wurde nichts installiert. Das Installationsskript wartet seitdem 20 s nach dem Schließen.
+- Gültige Sicherung: `/home/la/Backups/noty-before-build63-2026-10-22T18-21-33-723586626Z/` (24 Hefte/Dokumente in zwei Bereichsroots, 81 Revisionen, 210 Dateien, 3 Bild-Assets, ohne Quarantäne).
+- **Installiert**: InstallationProxy bestätigt Build **63** unter unveränderter ID. Zurückgelesen: `verify_device_store.py --compare` für beide Bereichsroots gültig, **alle 24 Dokumente und 210 Dateien unverändert**, keine neuen Dateien.
+- **Auf dem iPad ungeprüft**: alle Korrekturen 1–11 (Prüfliste im Abschnitt der Korrekturen); höchstes Risiko: Stift-Tipp öffnet ein Textfeld zuverlässig.
