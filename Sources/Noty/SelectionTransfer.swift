@@ -52,8 +52,11 @@ enum SelectionTransfer {
     }
 
     /// Transparent preview of only the selected members, composed with the
-    /// export renderers. Bounded to about 4 megapixels.
-    static func snapshot(objects: MovedObjects, ink: [PKStroke], frame: CGRect, pixelScale: CGFloat) -> UIImage? {
+    /// export renderers like the page itself: text with its automatic colours
+    /// resolved and its ruled layout (`page`: paper, margins and PDF of the
+    /// source page), images from their decoded renditions or – never left
+    /// out – as the neutral placeholder. Bounded to about 4 megapixels.
+    static func snapshot(objects: MovedObjects, ink: [PKStroke], frame: CGRect, pixelScale: CGFloat, page: Page? = nil) -> UIImage? {
         guard frame.width.isFinite, frame.height.isFinite, frame.width > 0, frame.height > 0 else { return nil }
         let scale = max(0.05, min(pixelScale, 4, (4_000_000 / (frame.width * frame.height)).squareRoot()))
         let format = UIGraphicsImageRendererFormat()
@@ -68,13 +71,17 @@ enum SelectionTransfer {
         return UIGraphicsImageRenderer(bounds: frame, format: format).image { context in
             let cg = context.cgContext
             for image in objects.images {
-                try? ImageRendering.draw(image, context: cg, origin: .init(x: 0, y: 0))
+                // Never decodes an original here: the rendition the page shows.
+                let rendition = ImageRendering.cached(image, limit: 1024) ?? ImageRendering.anyCached(image, near: 1024)
+                ImageRendering.draw(rendition, for: image, context: cg, origin: .init(x: 0, y: 0))
             }
             ShapeRendering.draw(objects.shapes, origin: .init(x: 0, y: 0), context: cg)
             inkImage?.draw(in: frame)
-            for box in objects.textBoxes {
+            var context = page ?? Page()
+            context.textBoxes = objects.textBoxes
+            for box in context.resolvedTextBoxes {
                 TextFieldStyleRendering.draw(box, at: CGPoint(x: box.x, y: box.y), context: cg)
-                TextObjectLayout(box).draw(at: CGPoint(x: box.x, y: box.y))
+                TextObjectLayout(box, on: context).draw(at: CGPoint(x: box.x, y: box.y))
             }
         }
     }

@@ -125,6 +125,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Every selectable object at a point (layer coordinates), topmost first:
     /// the sheet's finger hit test (`PageObjectHitTest`, screen tolerance).
     var objectHits: ((CGPoint) -> [PageObjectReference])?
+    /// The configured page (paper, margins, PDF): lifted text is drawn with
+    /// its automatic colours and ruled layout like in the editor.
+    var pageContext: (() -> Page?)?
     /// Laid-out text lines of a field (own unrotated page units): what a lasso must touch.
     var textLines: ((TextBox) -> [PageRect])?
     /// The field with its height (and automatic width) from the content.
@@ -823,7 +826,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             images: initial.images.filter { images.contains($0.id) && !$0.locked }, shapes: initial.shapes.filter { shapes.contains($0.id) })
         guard !objects.isEmpty || !strokes.isEmpty else { return nil }
         let snapshot = SelectionTransfer.snapshot(objects: objects, ink: strokes, frame: frame,
-            pixelScale: displayScale * (window?.screen.scale ?? 2))
+            pixelScale: displayScale * (window?.screen.scale ?? 2), page: pageContext?())
         return SelectionLift(pageID: pageID, content: initial, remainder: remainder, ink: strokes, objects: objects,
             frame: frame, start: initialPoint, snapshot: snapshot)
     }

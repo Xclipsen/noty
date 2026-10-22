@@ -10,6 +10,9 @@ struct PageEditor {
     var sourcePage: PDFPage?
     var layout: PageLayout
     var pageID: UUID
+    /// The page as configured (paper, margins, geometry, PDF reference):
+    /// context for automatic text colours and ruled layout of lifted text.
+    var page = Page()
     var drawing: Data
     var textBoxes: [TextBox]
     var images: [ImageObject]
@@ -406,6 +409,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         objectLayer.textLines = { [weak self] box in self?.textLayer.lineRects(box) ?? [] }
         objectLayer.objectHits = { [weak self] point in self?.objectHits(at: point) ?? [] }
+        objectLayer.pageContext = { [weak self] in self?.configuration?.page }
         objectLayer.fittedText = { [weak self] box in self?.textLayer.fitted(box) ?? box }
         objectLayer.onEditText = { [weak self] id, point in self?.requestTextEdit(id, at: point) }
         canvas.onPasteText = { [weak self] in self?.pasteText() }

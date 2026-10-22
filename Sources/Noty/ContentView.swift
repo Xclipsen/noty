@@ -778,7 +778,7 @@ struct ContentView: View {
         let layout = (try? PageLayout(page: page, source: sourcePage?.pageRef)) ?? model.pageLayout
         let generation = model.pageContentGeneration
         let preferences = toolbox.preferences
-        return PageEditor(sourcePage: sourcePage, layout: layout, pageID: page.id,
+        return PageEditor(sourcePage: sourcePage, layout: layout, pageID: page.id, page: page,
             drawing: page.drawing, textBoxes: page.effectiveTextBoxes, images: page.images ?? [], shapes: page.shapes ?? [],
             searchHighlight: searchHighlightPageID == page.id ? searchHighlight : nil, paper: page.paper ?? (sourcePage == nil ? .legacyTest : .blank),
             paperColor: page.paperColor ?? .white, margins: page.margins, writingRegionTops: page.writingRegionTops,
