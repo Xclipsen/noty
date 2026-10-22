@@ -20,6 +20,30 @@ final class PageObjectHitTestTests: XCTestCase {
         XCTAssertNil(PageObjectHitTest.topmost(at: .init(x: 300, y: 300), in: all))
     }
 
+    /// Integration 22.10.2026: text fields count only on their text lines
+    /// (Textneubau Stufe 1) and unfilled shapes only on their stroke (Formen
+    /// Tag 2), so a tap on an empty field part inside an unfilled outline
+    /// reaches the image below; a visible fill still takes the tap.
+    func testEmptyFieldPartAndUnfilledShapeReachThrough() {
+        let image = ImageObject.test(bytes: Data([4]), x: 0, y: 0, width: 300, height: 300)
+        var outline = ShapeObject(kind: .rectangle, start: .init(x: 20, y: 20), end: .init(x: 280, y: 280), lineWidth: 2)
+        let field = TextBox(x: 40, y: 40, width: 200, height: 200, text: "oben")
+        let lines: (TextBox, PagePoint) -> Bool = { box, point in point.y >= box.y && point.y <= box.y + 20 }
+        let inner = PagePoint(x: 120, y: 150)
+        XCTAssertEqual(PageObjectHitTest.all(at: inner, in: content(texts: [field], images: [image], shapes: [outline]), textHit: lines),
+                       [.image(image.id)])
+        XCTAssertEqual(PageObjectHitTest.topmost(at: .init(x: 120, y: 50), in: content(texts: [field], images: [image], shapes: [outline]), textHit: lines),
+                       .text(field.id))
+        XCTAssertEqual(PageObjectHitTest.topmost(at: .init(x: 20, y: 150), in: content(texts: [field], images: [image], shapes: [outline]), textHit: lines),
+                       .shape(outline.id), "the stroke still counts")
+        outline.fill = InkColor(0, 0, 1, 0)
+        XCTAssertEqual(PageObjectHitTest.topmost(at: inner, in: content(texts: [field], images: [image], shapes: [outline]), textHit: lines),
+                       .image(image.id), "an invisible fill (0 %) is no fill")
+        outline.fill = InkColor(0, 0, 1, 0.35)
+        XCTAssertEqual(PageObjectHitTest.all(at: inner, in: content(texts: [field], images: [image], shapes: [outline]), textHit: lines),
+                       [.shape(outline.id), .image(image.id)])
+    }
+
     func testLaterEntryOfTheSameTypeWins() {
         let lower = TextBox(x: 0, y: 0, width: 100, height: 40), upper = TextBox(x: 50, y: 0, width: 100, height: 40)
         XCTAssertEqual(PageObjectHitTest.topmost(at: .init(x: 70, y: 20), in: content(texts: [lower, upper])), .text(upper.id))
