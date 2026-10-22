@@ -873,14 +873,20 @@ extension NotebookViewport {
 
     private func releaseAvoidance() {
         guard let applied = avoidance else { return }
+        // Read before the inset shrinks: UIKit clamps the offset into the new
+        // inset right away, and taking the shift back from that clamped value
+        // moved the page twice (Build 62: page under the toolbar).
+        let current = contentOffset
+        let previous = changing; changing = true
         avoidance = nil; avoidanceInset = .zero; updateInsets()
         // The user is moving the view right now: leave it to the gesture.
-        guard !isDragging, !isDecelerating, !isZooming, !widthSnapInProgress else { return }
-        let untouched = abs(contentOffset.y - applied.after.y) < 0.5 && abs(contentOffset.x - applied.after.x) < 0.5
-        let x = untouched ? applied.after.x : contentOffset.x
-        let y = (untouched ? applied.after.y : contentOffset.y) - applied.shift
-        let limit = max(-contentInset.top, contentSize.height - bounds.height + contentInset.bottom)
-        slide(to: CGPoint(x: x, y: min(max(y, -contentInset.top), limit)))
+        guard !isDragging, !isDecelerating, !isZooming, !widthSnapInProgress else { changing = previous; return }
+        if contentOffset != current { contentOffset = current } // glide from where it was
+        changing = previous
+        let target = NotebookViewportGeometry.avoidanceReleaseOffset(current: PagePoint(x: current.x, y: current.y),
+            after: PagePoint(x: applied.after.x, y: applied.after.y), shift: Double(applied.shift),
+            minY: Double(-contentInset.top), maxY: Double(contentSize.height - bounds.height + contentInset.bottom))
+        slide(to: CGPoint(x: target.x, y: target.y))
     }
 
     /// Brief glide with the panel motion; immediate with Reduce Motion.

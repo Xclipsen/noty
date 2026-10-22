@@ -49,6 +49,20 @@ public extension NotebookViewportGeometry {
         return spring * (1 - elapsed / duration)
     }
 
+    /// Content offset after the options bar closes. `current` must be read
+    /// before the avoidance inset is removed: UIKit clamps the offset into
+    /// the smaller inset at once, and taking back the shift from that clamped
+    /// offset moved the page twice (Nutzer zu Build 62: at the document start
+    /// the page ended up under the toolbar). Untouched since opening: exactly
+    /// the offset before opening; scrolled meanwhile: the shift taken back
+    /// from where the user is. `minY`/`maxY`: offset limits without the inset.
+    static func avoidanceReleaseOffset(current: PagePoint, after: PagePoint, shift: Double,
+                                       minY: Double, maxY: Double) -> PagePoint {
+        let untouched = abs(current.y - after.y) < 0.5 && abs(current.x - after.x) < 0.5
+        let base = untouched ? after : current
+        return PagePoint(x: base.x, y: min(max(base.y - shift, minY), max(minY, maxY)))
+    }
+
     /// Vertical distance the visible pages move so the attached options bar
     /// next to a top or bottom toolbar covers none of them (positive: content
     /// moves up, as for a bottom toolbar; negative: down). Everything is in
