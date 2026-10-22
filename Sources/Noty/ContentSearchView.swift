@@ -89,7 +89,7 @@ final class ContentSearchModel: ObservableObject {
             let glyphs = layout.manager.glyphRange(forCharacterRange: NSRange(location: start, length: NSMaxRange(task.body) - start), actualCharacterRange: nil)
             let rect = layout.manager.boundingRect(forGlyphRange: glyphs, in: layout.container)
             let scale = Double(layout.coordinateScale)
-            let bounds = rect.isEmpty || !rect.minX.isFinite ? box.rect
+            let bounds = rect.isEmpty || !rect.minX.isFinite || box.rotation != nil ? box.rotatedBounds
                 : PageRect(x: box.x + Double(rect.minX) * scale, y: box.y + Double(rect.minY) * scale,
                            width: max(1, Double(rect.width) * scale), height: max(1, Double(rect.height) * scale))
             return ContentSearchHit(documentID: document.id, pageID: task.pageID, pageNumber: task.pageIndex + 1,

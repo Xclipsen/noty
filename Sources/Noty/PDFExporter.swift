@@ -75,9 +75,9 @@ enum PDFExporter {
         for (position, (index, page)) in selected.enumerated() {
             for image in page.images ?? [] { try ImageRendering.validate(image, assets: provider) }
             let layout = try PageLayout(page: page, source: sources[position])
-            let bounds = layout.canonicalInkBounds.insetBy(dx: -0.01, dy: -0.01)
+            let bounds = PageRect(layout.canonicalInkBounds)
             if page.resolvedTextBoxes.contains(where: { box in
-                TextObjectLayout(box, on: page).usedHeight > box.height + 0.5 || !bounds.contains(box.rect.cgRect)
+                TextObjectLayout(box, on: page).usedHeight > box.height + 0.5 || !box.fits(in: bounds)
             }) { overflow.append(index + 1) }
             layouts.append(layout)
             if position % 16 == 15 { await Task.yield(); try Task.checkCancellation() }

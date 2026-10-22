@@ -33,7 +33,7 @@ extension EditorModel {
             guard let value = assignments[page.id] else { throw StorageError.invalidDocument }
             var resized = page; resized.margins = value.isEmpty ? nil : value
             let allowed = resized.textBounds.cgRect.insetBy(dx: -0.01, dy: -0.01)
-            if page.effectiveTextBoxes.contains(where: { !allowed.contains($0.rect.cgRect) }) {
+            if page.effectiveTextBoxes.contains(where: { !$0.fits(in: PageRect(allowed)) }) {
                 throw NSError(domain: "noty", code: 3, userInfo: [NSLocalizedDescriptionKey:
                     "Ein Textfeld liegt im entfernten Schreibplatz. Bitte das Feld zuerst verschieben oder löschen; der Rand wurde nicht verändert."])
             }
@@ -322,7 +322,7 @@ struct PageMarginsView: View {
         if !page.drawing.isEmpty, let drawing = try? PKDrawing(data: page.drawing) {
             for stroke in drawing.strokes where !stroke.renderBounds.isNull { include(PageRect(stroke.renderBounds)) }
         }
-        page.effectiveTextBoxes.forEach { include($0.rect) }
+        page.effectiveTextBoxes.forEach { include($0.rotatedBounds) }
         (page.images ?? []).forEach { include($0.rotatedBounds) }
         (page.shapes ?? []).forEach { include($0.bounds) }
         return PageSize(width: max(0, (maxX - base.width).rounded(.up)), height: max(0, (maxY - base.height).rounded(.up)))

@@ -15,7 +15,7 @@ enum SelectionContour {
     struct Key: Equatable {
         var drawing: Data
         var ink: Set<Int>
-        var texts: [PageRect]
+        var texts: [[Double]]
         var images: [[Double]]
         var shapes: [ShapeObject]
         var gap: Double
@@ -23,7 +23,7 @@ enum SelectionContour {
 
     static func key(_ content: PageContent, ink: Set<Int>, texts: Set<UUID>, images: Set<UUID>, shapes: Set<UUID>, gap: Double) -> Key {
         Key(drawing: ink.isEmpty ? Data() : content.drawing, ink: ink,
-            texts: content.textBoxes.filter { texts.contains($0.id) }.map(\.rect),
+            texts: content.textBoxes.filter { texts.contains($0.id) }.map { [$0.x, $0.y, $0.width, $0.height, $0.angle] },
             images: content.images.filter { images.contains($0.id) }.map { [$0.x, $0.y, $0.width, $0.height, $0.rotation] },
             shapes: content.shapes.filter { shapes.contains($0.id) }, gap: gap)
     }
@@ -56,7 +56,10 @@ enum SelectionContour {
             if shape.fill != nil { pieces.addPath(outline) }
         }
         for box in content.textBoxes where texts.contains(box.id) {
-            pieces.addPath(CGPath(roundedRect: box.rect.cgRect.insetBy(dx: -gap, dy: -gap), cornerWidth: gap, cornerHeight: gap, transform: nil))
+            // Turned about its top-left corner like in editor, preview and PDF.
+            var turn = CGAffineTransform(translationX: box.x, y: box.y).rotated(by: box.angle * .pi / 180)
+            let local = CGRect(x: 0, y: 0, width: box.width, height: box.height).insetBy(dx: -gap, dy: -gap)
+            pieces.addPath(CGPath(roundedRect: local, cornerWidth: gap, cornerHeight: gap, transform: &turn))
         }
         for image in content.images where images.contains(image.id) {
             let frame = CGRect(x: image.x, y: image.y, width: image.width, height: image.height)

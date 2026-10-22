@@ -184,9 +184,10 @@ final class RuledTextLayout: NSObject, @preconcurrency NSLayoutManagerDelegate {
 
 extension Page {
     /// Page-bound text stands on lined rows and on grid rows (same baselines
-    /// in editor, previews, PDF and flow capacity).
+    /// in editor, previews, PDF and flow capacity): flow segments and the free
+    /// fields migrated from them (schema 14 keeps their region as layout).
     func textRuling(for box: TextBox) -> TextRuling? {
-        guard box.flowID != nil else { return nil }
+        guard box.flowRegion != nil else { return nil }
         return TextRuling(paper: box.flowRegion == .page ? paper : margins?.style)
     }
     func ruledTextOrigin(for box: TextBox) -> CGFloat? {
@@ -341,12 +342,15 @@ struct TextObjectLayout {
     let container: NSTextContainer
     private let ruling: RuledTextLayout
     let coordinateScale: CGFloat
+    /// The field's rotation (radians) about its top-left corner, the drawing origin.
+    let rotation: CGFloat
     init(_ box: TextBox, on page: Page) {
         self.init(box, ruledOrigin: page.ruledTextOrigin(for: box), ruling: page.textRuling(for: box) ?? .lined,
             coordinateScale: page.writingCoordinateScale(for: box))
     }
     init(_ box: TextBox, ruledOrigin: CGFloat? = nil, ruling lines: TextRuling = .lined, coordinateScale: CGFloat = 1) {
         self.coordinateScale = coordinateScale
+        rotation = CGFloat(box.angle * .pi / 180)
         storage = NSTextStorage(attributedString: box.attributedText)
         manager = TaskLayoutManager()
         ruling = RuledTextLayout(); ruling.originY = ruledOrigin; ruling.lines = lines; manager.delegate = ruling
@@ -356,21 +360,30 @@ struct TextObjectLayout {
         manager.ensureLayout(for: container)
     }
     var usedHeight: CGFloat { ceil(manager.usedRect(for: container).height * coordinateScale) }
+    /// Widest laid-out line in canonical units (automatic field width).
+    var usedWidth: CGFloat { manager.usedRect(for: container).width * coordinateScale }
+    /// Local (unrotated, unscaled) → drawing coordinates for a field at `origin`.
+    func transform(at origin: CGPoint) -> CGAffineTransform {
+        CGAffineTransform(translationX: origin.x, y: origin.y).rotated(by: rotation).scaledBy(x: coordinateScale, y: coordinateScale)
+    }
     func links(at origin: CGPoint) -> [(URL, CGRect)] {
         var links: [(URL, CGRect)] = []
+        let transform = transform(at: origin)
         storage.enumerateAttribute(.link, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
             guard let value = value as? String, let url = URL(string: value) else { return }
             let glyphs = manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
             manager.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: NSRange(location: NSNotFound, length: 0), in: container) { rect, _ in
-                links.append((url, rect.applying(CGAffineTransform(scaleX: coordinateScale, y: coordinateScale)).offsetBy(dx: origin.x, dy: origin.y)))
+                // A rotated field's link area is the bounding box of its turned rectangle.
+                links.append((url, rect.applying(transform)))
             }
         }
         return links
     }
+    /// `origin`: the field's top-left corner (its rotation pivot) in drawing coordinates.
     func draw(at origin: CGPoint) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
         context.saveGState(); defer { context.restoreGState() }
-        context.translateBy(x: origin.x, y: origin.y); context.scaleBy(x: coordinateScale, y: coordinateScale)
+        context.concatenate(transform(at: origin))
         manager.drawBackground(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs), at: .zero)
         manager.drawGlyphs(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs), at: .zero)
     }
