@@ -74,6 +74,10 @@ final class LawLibraryModel: ObservableObject {
     static let panelDockedKey = "noty.laws.panelDocked"
     static let panelLeftKey = "noty.laws.panelLeft"
     static let panelWidthKey = "noty.laws.panelWidth"
+    /// Edge of the window: `left`, `right` or `bottom` (22.10.2026). Older
+    /// builds only know `panelLeftKey`, which stays in step for the sides.
+    static let panelEdgeKey = "noty.laws.panelEdge"
+    static let panelHeightKey = "noty.laws.panelHeight"
     @Published var panelOpen = UserDefaults.standard.bool(forKey: LawLibraryModel.panelOpenKey) {
         didSet { if !panelOpen { stashed = false }; UserDefaults.standard.set(panelOpen, forKey: Self.panelOpenKey) }
     }
@@ -85,9 +89,14 @@ final class LawLibraryModel: ObservableObject {
     @Published var docked = UserDefaults.standard.bool(forKey: LawLibraryModel.panelDockedKey) {
         didSet { UserDefaults.standard.set(docked, forKey: Self.panelDockedKey) }
     }
-    @Published var panelOnLeft = UserDefaults.standard.bool(forKey: LawLibraryModel.panelLeftKey) {
-        didSet { UserDefaults.standard.set(panelOnLeft, forKey: Self.panelLeftKey) }
+    @Published var panelEdge: LawPanelEdge = UserDefaults.standard.string(forKey: LawLibraryModel.panelEdgeKey).flatMap(LawPanelEdge.init(rawValue:))
+        ?? (UserDefaults.standard.bool(forKey: LawLibraryModel.panelLeftKey) ? .left : .right) {
+        didSet {
+            UserDefaults.standard.set(panelEdge.rawValue, forKey: Self.panelEdgeKey)
+            if panelEdge.isSide { UserDefaults.standard.set(panelEdge == .left, forKey: Self.panelLeftKey) }
+        }
     }
+    var panelOnLeft: Bool { panelEdge == .left }
     var sceneActive = true
     private var started = false
     private var epoch = 0

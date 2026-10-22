@@ -1,4 +1,5 @@
 import SwiftUI
+import NotebookCore
 import UniformTypeIdentifiers
 
 struct NotyAccountSettingsPage: View {
@@ -136,9 +137,19 @@ struct LawPanelView<Drag: Gesture>: View {
         VStack(spacing: 0) {
             HStack {
                 Menu {
-                    Button(laws.docked ? "Über Notizbüchern schweben" : "Neben Notizbuch andocken", systemImage: laws.docked ? "rectangle.on.rectangle" : "rectangle.split.2x1") { laws.docked.toggle() }
-                    Button(laws.panelOnLeft ? "Nach rechts" : "Nach links") { laws.panelOnLeft.toggle() }
-                    Button("An den Rand schieben", systemImage: laws.panelOnLeft ? "arrow.left.to.line" : "arrow.right.to.line") {
+                    Button(laws.docked ? "Über Notizbüchern schweben" : laws.panelEdge == .bottom ? "Unter Notizbuch andocken" : "Neben Notizbuch andocken",
+                           systemImage: laws.docked ? "rectangle.on.rectangle" : laws.panelEdge == .bottom ? "rectangle.split.1x2" : "rectangle.split.2x1") {
+                        withAnimation(NotyMotion.panel(reduceMotion)) { laws.docked.toggle() }
+                    }
+                    // Left, right or along the bottom edge (also by dragging the bar).
+                    Picker("Position", selection: Binding(get: { laws.panelEdge }, set: { edge in
+                        withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelEdge = edge }
+                    })) {
+                        Label("Links", systemImage: "rectangle.lefthalf.inset.filled").tag(LawPanelEdge.left)
+                        Label("Rechts", systemImage: "rectangle.righthalf.inset.filled").tag(LawPanelEdge.right)
+                        Label("Unten", systemImage: "rectangle.bottomhalf.inset.filled").tag(LawPanelEdge.bottom)
+                    }.pickerStyle(.menu)
+                    Button("An den Rand schieben", systemImage: laws.panelEdge == .left ? "arrow.left.to.line" : laws.panelEdge == .right ? "arrow.right.to.line" : "arrow.down.to.line") {
                         withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = true }
                     }
                     // The only way to remove the edge tab as well; the notebook
@@ -152,7 +163,8 @@ struct LawPanelView<Drag: Gesture>: View {
                 // Closing slides the window past its edge and leaves the arrow
                 // tab, like iPad Slide Over; the reader keeps its state.
                 Button { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = true } } label: { Image(systemName: "xmark").frame(width: 44, height: 36) }
-                    .accessibilityLabel("Gesetzesfenster schließen").accessibilityHint("Bleibt als Pfeil am Bildschirmrand")
+                    .accessibilityLabel("Gesetzesfenster schließen").accessibilityHint("Bleibt als Pfeil am Bildschirmrand; das ✕ daneben schließt es ganz.")
+                    .help("Schließen – bleibt als Pfeil am Rand, erneut ✕ schließt ganz")
             }.background(.ultraThinMaterial)
                 // The whole bar is the grip, not only the small capsule.
                 .contentShape(Rectangle())
