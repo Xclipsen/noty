@@ -419,9 +419,20 @@ final class LibraryModel: ObservableObject {
         } catch { self.error = "PDF-Import fehlgeschlagen: \(error.localizedDescription)" }
     }
 
-    /// Restores a notebook backup as a new separate copy; nil on failure (alert shown).
+    enum ImportCollision: Sendable { case replace, keepBoth }
+    struct ImportedNotebook { let id: UUID; let title: String; let replaced: Bool }
+    /// The last import ended because the user cancelled the collision question.
+    private(set) var importDeclined = false
+
+    /// Imports a `.noty`/`.notybackup` file as a normal notebook (exact title
+    /// or „Titel (n)“, new identity, not a restored copy) through the staged,
+    /// independently validated restore path. If the file's notebook already
+    /// exists in this area: `collision` decides, nil asks („Vorhandenes
+    /// ersetzen“ moves its current state to the trash; „Beide behalten“).
+    /// nil on failure (`error` set) or when declined (`importDeclined`).
     @discardableResult
-    func importBackup(_ url: URL, parent: UUID?) async -> RestoredNotebook? {
+    func importBackup(_ url: URL, parent: UUID?, collision: ImportCollision? = nil) async -> ImportedNotebook? {
+        importDeclined = false
         await settle()
         guard ready, !busy, opened == nil else { return nil }
         busy = true
@@ -430,16 +441,62 @@ final class LibraryModel: ObservableObject {
             if access { url.stopAccessingSecurityScopedResource() }
             busy = false
         }
+        let repository = NotebookRepository(directory: root)
         do {
-            // Use the existing staged, independently validated restore path.
-            let repository = NotebookRepository(directory: root)
             let prepared = try await repository.prepareRestore(from: url)
             try EditorModelValidation.validate(prepared.document, assets: prepared.assets)
-            let restored = try await repository.commitRestore(prepared)
             snapshot = try await store.load().snapshot
-            if let parent { snapshot = try await store.move(restored.id, to: parent) }
-            return restored
-        } catch { self.error = "Wiederherstellung fehlgeschlagen: \(error.localizedDescription)"; return nil }
+            var replacing: UUID?
+            if let existing = snapshot.activeNotebook(prepared.sourceDocumentID) {
+                var choice = collision
+                if choice == nil {
+                    choice = await TopAlert.choose("Heft schon vorhanden",
+                        "„\(prepared.document.title)“ liegt bereits als „\(existing.title)“ in der Bibliothek. „Vorhandenes ersetzen“ legt dessen aktuellen Stand vorher in den Papierkorb.",
+                        actions: [("Vorhandenes ersetzen", .destructive, ImportCollision.replace), ("Beide behalten", .default, .keepBoth)])
+                }
+                guard let choice else {
+                    await repository.discardRestore(prepared)
+                    importDeclined = true
+                    return nil
+                }
+                if choice == .replace { replacing = existing.id }
+            }
+            let result = try await NotebookImport.commit(prepared, repository: repository, library: store,
+                                                         parentID: parent, replacing: replacing)
+            snapshot = result.snapshot
+            if let replacing, let pin = pinOrder.firstIndex(of: replacing) { pinOrder[pin] = result.id }
+            return ImportedNotebook(id: result.id, title: result.title, replaced: replacing != nil)
+        } catch {
+            // A failed validation or commit keeps its stage for analysis (BACKUPS.md).
+            self.error = "Import fehlgeschlagen: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// `<Titel>.noty` of the last committed revision for the share sheet,
+    /// written and re-read off the UI actor (same archive as the editor's
+    /// backup; the library title is the file's title). A notebook whose newest
+    /// revision is unreadable is refused instead of sharing an older state.
+    func shareFile(for item: NotebookCore.LibraryItem) async -> URL? {
+        guard !item.isFolder else { return nil }
+        do {
+            let package = try await store.sharePackage(id: item.id), assets = package.assets
+            var document = package.document
+            document.title = item.title
+            let url = try BackupScratch.newShareFile(title: item.title)
+            let snapshot = document
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    // Reads the package's originals: no asset GC meanwhile.
+                    let activity = BackupActivity.shared.begin(); defer { activity.end() }
+                    _ = try BackupArchive.write(snapshot, assets: assets, to: url)
+                }.value
+            } catch { BackupScratch.removeShare(url); throw error }
+            return url
+        } catch {
+            self.error = "Teilen nicht möglich: \(error.localizedDescription)"
+            return nil
+        }
     }
 
     nonisolated static func readPDF(_ url: URL) throws -> Data {

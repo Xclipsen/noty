@@ -176,7 +176,7 @@ struct LibraryView: View {
                 }
             }, onError: { model.error = $0 })
         }
-        .fileImporter(isPresented: $importingBackup, allowedContentTypes: [.notyBackup, .json, .data]) { result in
+        .fileImporter(isPresented: $importingBackup, allowedContentTypes: [.noty, .notyBackup, .json, .data]) { result in
             switch result {
             case .success(let url): Task { await model.importBackup(url, parent: parentID) }
             case .failure(let error): model.error = error.localizedDescription
@@ -606,7 +606,7 @@ struct LibraryView: View {
                 }
                 Section {
                     Button("PDF importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
-                    Button("Backup als Kopie importieren …", systemImage: "arrow.down.doc") { importingBackup = true }
+                    Button("Heft importieren (.noty) …", systemImage: "arrow.down.doc") { importingBackup = true }
                     if !activeCopies.isEmpty {
                         Button("Wiederhergestellte Kopien …", systemImage: "clock.arrow.circlepath") { showingCopies = true }
                     }
@@ -645,6 +645,11 @@ struct LibraryView: View {
                 }
             } catch { model.error = error.localizedDescription }
         }
+    }
+
+    /// `<Titel>.noty` of the last committed revision in the share sheet.
+    private func shareNoty(_ item: NotebookCore.LibraryItem) {
+        Task { if let url = await model.shareFile(for: item) { NotyShare.present(url) } }
     }
 
     private func searchAllNotebooks() {
@@ -836,6 +841,7 @@ struct LibraryView: View {
             if !item.isFolder {
                 Button("Duplizieren", systemImage: "plus.square.on.square") { Task { await model.duplicate(item) } }
                 Button("Als PDF exportieren", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
+                Button("Teilen als .noty …", systemImage: "square.and.arrow.up") { shareNoty(item) }
             }
             if showsEnclosing {
                 Button("Im Ordner zeigen", systemImage: "arrow.up.forward.square") {

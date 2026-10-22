@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Verify a notybackup independently, without extracting or printing note text.
+"""Verify a noty notebook file independently, without extracting or printing note text.
+
+The same format is written as `.noty` (since 22.10.2026) and `.notybackup`
+(older builds); the file extension is not checked.
 
 Format 1: magic + header + one notebook JSON (<= 200 MB). Format 2: record
 stream (record_archive.py) with exactly one notebook, then exactly its unique

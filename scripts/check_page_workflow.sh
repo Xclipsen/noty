@@ -7,7 +7,8 @@ mkdir -p .tools
 task_check="$(mktemp -d "$task_root/.tools/page-workflow-XXXXXX")"
 swiftc -swift-version 6 -parse-as-library Core/Sources/NotebookCore/*.swift scripts/PageWorkflowCheck.swift -o "$task_check/check"
 "$task_check/check" "$task_root/fixtures/Seitenformate.pdf" "$task_check/results"
-python3 -B scripts/verify_backup.py "$task_check/results/heft.notybackup" --compare "$task_check/results/current.json"
+# `.noty` (format 2) written by Swift; the verifier ignores the extension.
+python3 -B scripts/verify_backup.py "$task_check/results/heft.noty" --compare "$task_check/results/current.json"
 # Format 1 as Build 53 wrote it (schema 11, embedded original).
 python3 -B scripts/verify_backup.py "$task_check/results/heft-v1.notybackup" --compare "$task_check/results/current-v11.json"
 # Schema 13 (polyline/polygon shapes) written by Swift.
@@ -20,7 +21,7 @@ python3 -B scripts/verify_device_store.py "$task_check/results/Source"
 # Restore copies (Restores/*) and the migrated schema-11 package carry their assets.
 python3 -B scripts/verify_device_store.py "$task_check/results/RestoreCheck"
 python3 -B scripts/verify_device_store.py "$task_check/results/Legacy"
-if python3 -B scripts/verify_backup.py "$task_check/results/corrupt.notybackup" > "$task_check/expected-corruption.log" 2>&1; then
+if python3 -B scripts/verify_backup.py "$task_check/results/corrupt.noty" > "$task_check/expected-corruption.log" 2>&1; then
     echo 'FEHLER: beschädigtes Backup wurde akzeptiert' >&2
     exit 1
 fi
@@ -37,7 +38,7 @@ import verify_backup, verify_device_store, verify_library_backup
 from notebook_format import check
 
 results = Path(sys.argv[2])
-_, backup = verify_backup.verify(results / "heft.notybackup")
+_, backup = verify_backup.verify(results / "heft.noty")
 library = verify_library_backup.verify(results / "bibliothek.notylibrary")
 _, store = verify_device_store.load_store(results / "Source")
 _, legacy = verify_device_store.load_store(results / "Legacy")

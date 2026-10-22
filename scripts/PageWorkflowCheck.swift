@@ -103,7 +103,8 @@ struct PageWorkflowCheck {
         let legacyCurrent = try Self.legacyJSON(document, originals: [imageAsset.sha256: imageData])
         try legacyCurrent.write(to: root.appendingPathComponent("current-v11.json"))
         // Format 2 through the app's streaming file writer; format 1 as older builds wrote it.
-        let backupURL = root.appendingPathComponent("heft.notybackup")
+        // Written as `.noty` (TEXT-REBUILD-62 §5): same format-2 content as `.notybackup`.
+        let backupURL = root.appendingPathComponent("heft.noty")
         let writtenBackup = try BackupArchive.write(document, assets: revisionStore.assets, to: backupURL)
         let backup = try Data(contentsOf: backupURL)
         guard writtenBackup.formatVersion == 2, writtenBackup.file == (try BoundedFile.checksum(backupURL)),
@@ -114,7 +115,7 @@ struct PageWorkflowCheck {
         // One flipped byte inside the asset record (SHA-256) must be refused.
         guard let assetRange = backup.range(of: imageData) else { throw StorageError.invalidDocument }
         var corrupt = backup; corrupt[assetRange.lowerBound + imageData.count / 2] ^= 1
-        try corrupt.write(to: root.appendingPathComponent("corrupt.notybackup"))
+        try corrupt.write(to: root.appendingPathComponent("corrupt.noty"))
         // Format 1 as Build 53 wrote it: schema 11 with the embedded original.
         let legacyBackupURL = root.appendingPathComponent("heft-v1.notybackup")
         try BackupArchive.encodeVersion1(payload: legacyCurrent).write(to: legacyBackupURL)
@@ -128,7 +129,7 @@ struct PageWorkflowCheck {
             let restoredOriginal = try Data(contentsOf: restoredCopy.directory.appendingPathComponent("Assets/\(imageAsset.sha256)"))
             guard reopened.id != document.id, reopened.pages == document.pages, reopened.deletedPages == document.deletedPages,
                   reopened.schemaVersion == 12, restoredOriginal == imageData,
-                  reopened.title == document.title + " (Wiederhergestellt)" else { throw StorageError.invalidDocument }
+                  reopened.title == document.title else { throw StorageError.invalidDocument }
             restoredBackups.append(try BackupArchive.verify(url).formatVersion)
         }
         let library = LibraryStore(root: storeRoot)

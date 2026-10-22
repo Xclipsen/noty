@@ -525,6 +525,11 @@ for name in schema12-data-and-asset schema12-data schema11-asset schema11-data-a
     fi
 done
 reject verify_backup.py "$work/backups/v1-schema12-asset.notybackup"
+# `.noty` is the same format under another extension: the verifier must not depend on it.
+cp "$work/backups/v2.notybackup" "$work/backups/v2.noty"
+cp "$work/backups/v2-crc.notybackup" "$work/backups/v2-crc.noty"
+accept verify_backup.py "$work/backups/v2.noty" --compare "$work/backups/v2.json"
+reject verify_backup.py "$work/backups/v2-crc.noty"
 accept verify_backup.py "$work/backups/v2-schema11-embedded.notybackup"
 accept verify_library_backup.py "$work/libraries/v2.notylibrary"
 accept verify_library_backup.py "$work/libraries/v1.notylibrary"
