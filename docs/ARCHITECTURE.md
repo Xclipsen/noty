@@ -1,5 +1,12 @@
 # Architektur
 
+## Weiches Einrasten (Textneubau Stufe 2) · 22.10.2026
+
+Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung, Parameter und Abweichungen: [TEXT-REBUILD-62](TEXT-REBUILD-62.md).
+
+- **Core:** `SoftSnapping.swift` – `SoftSnapper` (Kandidaten, Reichweite in Bildschirmpunkten, Geschwindigkeitsschwelle, Hysterese, Hilfslinien/Abstandsmarken als `SnapFeedback`), `MoveSnapSession` als `MoveSnapping` für `ObjectMovement` und für Einzelpunkte, `PaperLines` (gleiche Linien wie `PDFExporter.drawPaper`), `DragSpeed`, `ShapeObject.snapFrame`.
+- **App:** `Sources/Noty/SoftSnapping.swift` – `DragSnapping` je Ebene (`ObjectEditingLayer`, `TextObjectLayer`, `ImageObjectLayer`) mit `begin/track/show/point/end`; `WorksheetView` ist `SnapHost` (sammelt Ziele aus `pageContent`, Grundlinien über `TextObjectLayout.firstBaseline`, zeigt `SnapGuideView` als oberste, nicht interaktive Ebene); `SnapPanGestureRecognizer` (auch Basis von `TouchDownPanGestureRecognizer`) meldet einen zweiten Touch. Einstellung `AppSettingsKey.snapping`. Kein Format, Writer oder Export betroffen.
+
 ## Textneubau Stufe 1 · 22.10.2026
 
 Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung und Abweichungen: [TEXT-REBUILD-62](TEXT-REBUILD-62.md), Format: [STORAGE](STORAGE.md) (Schema 14).
