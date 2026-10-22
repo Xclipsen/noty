@@ -145,7 +145,8 @@ struct ContentView: View {
                 model.insertPhoto(item, pageID: target)
             }
             .fileExporter(isPresented: $exporting, document: exportFile,
-                          contentType: exportType, defaultFilename: "noty-\(exportType == .pdf ? "export" : "backup")-\(Date().formatted(.iso8601).replacingOccurrences(of: ":", with: "-"))") { result in
+                          contentType: exportType, defaultFilename: exportType == .noty ? NotyFile.fileStem(for: model.notebook.title)
+                            : "noty-\(exportType == .pdf ? "export" : "backup")-\(Date().formatted(.iso8601).replacingOccurrences(of: ":", with: "-"))") { result in
                 // The system wrote its copy: the scratch archive is no longer needed.
                 if let scratch = exportFile?.fileURL { BackupScratch.remove(scratch) }
                 switch result {
@@ -153,7 +154,7 @@ struct ContentView: View {
                     if exportType == .pdf { model.fileStatus = "PDF-Datei exportiert" }
                     else { model.backupExported() }
                 case .failure(let error):
-                    if exportType == .notyBackup { model.backupStatus = "Backup-Export nicht abgeschlossen" }
+                    if exportType == .noty { model.backupStatus = "Backup-Export nicht abgeschlossen" }
                     model.error = error.localizedDescription
                 }
             }
@@ -590,6 +591,8 @@ struct ContentView: View {
                             .disabled(!model.writable || pdfExport.running)
                     }
                     Section(model.backupStatus) {
+                        Button("Teilen als .noty …", systemImage: "square.and.arrow.up") { shareNoty() }
+                            .disabled(!model.writable)
                         Button("Vollständiges Backup …", systemImage: "archivebox") { exportBackup() }
                             .disabled(!model.writable)
                     }
@@ -625,10 +628,14 @@ struct ContentView: View {
             if let url = await model.backupFile() {
                 if let previous = exportFile?.fileURL { BackupScratch.remove(previous) }
                 exportFile = ExportFile(backupFile: url)
-                exportType = .notyBackup
+                exportType = .noty
                 exporting = true
             }
         }
+    }
+    /// The checked `<Titel>.noty` of the current state in the share sheet.
+    private func shareNoty() {
+        Task { if let url = await model.backupFile(sharing: true) { NotyShare.present(url) } }
     }
     /// Page by page with a progress badge; the snapshot is fixed at the start.
     private func startPDFExport(pageOnly: Bool) {

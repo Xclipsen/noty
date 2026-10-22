@@ -119,6 +119,20 @@ enum BackupScratch {
         guard url.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path else { return }
         try? FileManager.default.removeItem(at: url)
     }
+    /// `<Titel>.noty` for the share sheet: the name must be the title, so
+    /// each file gets its own UUID folder (no collisions between shares).
+    nonisolated static func newShareFile(title: String) throws -> URL {
+        let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent(NotyFile.fileName(for: title))
+    }
+    /// Removes a share file with its UUID folder; nothing outside our directory.
+    nonisolated static func removeShare(_ url: URL) {
+        let folder = url.deletingLastPathComponent()
+        guard UUID(uuidString: folder.lastPathComponent) != nil,
+              folder.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path else { return }
+        try? FileManager.default.removeItem(at: folder)
+    }
     /// Leftovers of interrupted runs, e.g. after the app was terminated mid-backup.
     nonisolated static func removeStale(olderThan age: TimeInterval = 24 * 3600) {
         let fm = FileManager.default

@@ -36,6 +36,11 @@ final class EditorModel: ObservableObject {
     /// becomes one undo step even when it reports several drawing changes.
     private var inkSessions: [UUID: Int] = [:]
     let storageRoot: URL
+    /// Root of the library area this notebook belongs to: the restore
+    /// collection is always `<area root>/Restores` (library notebooks and
+    /// restored copies), the legacy main notebook lives in the area root.
+    /// Local history copies get titles unique in this area.
+    private let libraryRoot: URL
     @Published private(set) var mutationsPaused = false
     private var activeInteractions = Set<UUID>()
     private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -73,6 +78,7 @@ final class EditorModel: ObservableObject {
     init(storageRoot root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true),
          restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil) {
         storageRoot = root
+        libraryRoot = restoreDirectory?.deletingLastPathComponent() ?? root
         store = NotebookRepository(directory: root, restoreDirectory: restoreDirectory)
         // Image layers, thumbnails and exports of this editor resolve its
         // originals (files and pending imports) through the registry.
@@ -711,23 +717,27 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    /// A verified `.notybackup` file in the app's temporary backup directory
-    /// (never inside a notebook package); the caller removes it after the
-    /// export dialog (`BackupScratch.remove`). The archive is written and
+    /// A verified `.noty` file (`.notybackup` format 2, unchanged content) in
+    /// the app's temporary backup directory (never inside a notebook package);
+    /// the caller removes it after the export dialog (`BackupScratch.remove`)
+    /// or the share sheet (`BackupScratch.removeShare`). `sharing`: named
+    /// `<Titel>.noty` in its own scratch folder. The archive is written and
     /// re-read on the repository actor, never held in memory as a whole.
-    func backupFile() async -> URL? {
+    func backupFile(sharing: Bool = false) async -> URL? {
         guard writable, !mutationsPaused, !busy else { return nil }
         busy = true
         let snapshot = notebook
-        backupStatus = "Backup wird vorbereitet …"
+        // Sharing is no backup confirmation: the backup status stays as it is.
+        if !sharing { backupStatus = "Backup wird vorbereitet …" }
         defer { busy = false }
         do {
-            let url = try BackupScratch.newFile("notybackup")
-            do { try await store.backup(snapshot, to: url) } catch { BackupScratch.remove(url); throw error }
-            backupStatus = "Backup geprüft · Speicherort wählen"
+            let url = try sharing ? BackupScratch.newShareFile(title: snapshot.title) : BackupScratch.newFile(NotyFile.fileExtension)
+            let discard = { sharing ? BackupScratch.removeShare(url) : BackupScratch.remove(url) }
+            do { try await store.backup(snapshot, to: url) } catch { discard(); throw error }
+            if !sharing { backupStatus = "Backup geprüft · Speicherort wählen" }
             return url
         } catch {
-            backupStatus = "Backup konnte nicht erstellt werden"
+            if !sharing { backupStatus = "Backup konnte nicht erstellt werden" }
             self.error = error.localizedDescription
             return nil
         }
@@ -759,7 +769,7 @@ final class EditorModel: ObservableObject {
 
     private func openPreparedRestore(_ prepared: PreparedRestore, message: String) async throws {
         try validate(prepared.document, assets: prepared.assets)
-        var restored = try await store.commitRestore(prepared)
+        var restored = try await store.commitRestoreCopy(prepared, libraryRoot: libraryRoot)
         restored.preferredPageID = page.id
         backupStatus = message
         openedRestore = restored
@@ -823,6 +833,9 @@ enum EditorModelValidation {
 }
 
 extension UTType {
+    /// `.noty`: shared/exported notebook (content = `.notybackup` format 2).
+    static let noty = UTType(exportedAs: "de.la.noty.document", conformingTo: .data)
+    /// Former extension of the same format; stays importable.
     static let notyBackup = UTType(exportedAs: "de.la.noty.backup", conformingTo: .data)
     static let notyLibrary = UTType(exportedAs: "de.la.noty.library", conformingTo: .data)
 }
@@ -832,7 +845,7 @@ extension UTType {
 /// loaded into memory as a whole. Export only; reading goes through the
 /// staged restore paths.
 struct ExportFile: FileDocument {
-    static var readableContentTypes: [UTType] { [.notyBackup, .notyLibrary, .json, .pdf] }
+    static var readableContentTypes: [UTType] { [.noty, .notyBackup, .notyLibrary, .json, .pdf] }
     private enum Content { case data(Data), file(URL) }
     private let content: Content
     init(pdfData: Data) { content = .data(pdfData) }

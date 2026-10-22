@@ -10,6 +10,13 @@
     <key>CFBundleIcons</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon</string></array></dict></dict>
     <key>CFBundleIcons~ipad</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon</string></array></dict></dict>
     <key>UTExportedTypeDeclarations</key><array><dict>
+        <key>UTTypeIdentifier</key><string>de.la.noty.document</string>
+        <key>UTTypeDescription</key><string>noty-Datei</string>
+        <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+        <key>UTTypeTagSpecification</key><dict>
+            <key>public.filename-extension</key><array><string>noty</string></array>
+        </dict>
+    </dict><dict>
         <key>UTTypeIdentifier</key><string>de.la.noty.backup</string>
         <key>UTTypeDescription</key><string>noty Notizbuch-Backup</string>
         <key>UTTypeConformsTo</key><array><string>public.data</string></array>
@@ -25,10 +32,10 @@
         </dict>
     </dict></array>
     <key>CFBundleDocumentTypes</key><array><dict>
-        <key>CFBundleTypeName</key><string>noty Heft-Backup</string>
+        <key>CFBundleTypeName</key><string>noty-Datei</string>
         <key>CFBundleTypeRole</key><string>Viewer</string>
         <key>LSHandlerRank</key><string>Owner</string>
-        <key>LSItemContentTypes</key><array><string>de.la.noty.backup</string></array>
+        <key>LSItemContentTypes</key><array><string>de.la.noty.document</string><string>de.la.noty.backup</string></array>
     </dict><dict>
         <key>CFBundleTypeName</key><string>noty Bibliotheksbackup</string>
         <key>CFBundleTypeRole</key><string>Viewer</string>
