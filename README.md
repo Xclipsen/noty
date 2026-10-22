@@ -11,6 +11,14 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Nutzungsfeedback Tag 1 (22.10.2026) – auf `main`, implementiert und erfolgreich gebaut, nicht installiert, auf dem iPad ungeprüft:**
+
+- **Lasso-Kontur:** Auswahlen werden wieder wie beim frühen nativen Lasso mit Abstand umrandet (`SelectionContour`); nahe Inhalte verschmelzen, entfernte bleiben Inseln, Griffe und Leiste sitzen am Konturrahmen.
+- **Fingertipp bei aktivem Stift:** Mit Stift/Bleistift/Marker/Radierer wählt ein Fingertipp ein Textfeld, Bild oder eine Form, ohne Werkzeugwechsel; ziehen auf der Auswahl verschiebt, Tipp ins Leere, Schreiben oder Werkzeugwechsel hebt auf.
+- **Doppeltipp:** Statt PencilKits „Platz einfügen“ nur noch „Textfeld hinzufügen“ an der getippten Stelle.
+
+Kein Formatwechsel, Buildnummer unverändert 61. Nachweise und offene Gerätetests: [TESTING](docs/TESTING.md#nutzungsfeedback-tag-1-22102026). Formen (Polylinien/Vielecke, Ankerpunkte, Notebook-Schema 13) liegen getrennt auf `feat/formen-schema13`, nicht in `main`.
+
 **Branch `feat/image-assets` (21.10.2026, nicht installiert, am iPad ungeprüft):** Bildoriginale liegen als unveränderliche Dateien `Assets/<sha256>` im Heftpaket statt als Base64 in jeder Revision (Notebook-Schema 12). Je Notizbuch bis 500 MB eindeutige Bildoriginale (Mehrfachverwendung zählt einmal), Import höchstens 5 MB je Bild. Alte Hefte werden erst mit der ersten Änderung umgestellt; die exakten Altbytes bleiben unter `Migrations/`. Ein Aufräumen (Asset-GC) beim Öffnen und Schließen entfernt nicht mehr benötigte Originale verzögert, nie während eines Backups. Heft- und Bibliotheksbackup im Format 2 (Datensatzstrom mit SHA-256 je Bild, Heftbackup bis 800 MB), Format 1 bleibt lesbar. Nachweise: [TESTING](docs/TESTING.md#bild-assets-schema-12--nachweise), Plan: [IMAGE-ASSETS](docs/IMAGE-ASSETS.md).
 
 **Achtung:** Builds ≤ 53 sperren Schema-12-Hefte und lehnen Backups im Format 2 ab; ein Rückweg auf Build 53 ist nur mit einer vorher erstellten vollständigen Sicherung möglich.
