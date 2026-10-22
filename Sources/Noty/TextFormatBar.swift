@@ -284,6 +284,18 @@ extension TextObjectLayer {
         controller.present(alert, animated: true)
     }
     @objc private func finishEditing() { endTextEditing() }
+    /// White highlighter symbol with a short stroke in the current marker colour.
+    private func highlightIcon(_ color: UIColor) -> UIImage? {
+        guard let symbol = UIImage(systemName: "highlighter", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)) else { return nil }
+        return UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
+            let scale = min(20 / max(1, symbol.size.width), 18 / max(1, symbol.size.height))
+            let size = CGSize(width: symbol.size.width * scale, height: symbol.size.height * scale)
+            symbol.withTintColor(.white, renderingMode: .alwaysOriginal)
+                .draw(in: CGRect(x: (24 - size.width) / 2, y: (19 - size.height) / 2, width: size.width, height: size.height))
+            context.cgContext.setFillColor(color.withAlphaComponent(1).cgColor)
+            context.cgContext.fill(CGRect(x: 6, y: 21, width: 12, height: 2.5))
+        }.withRenderingMode(.alwaysOriginal)
+    }
     private func swatch(_ color: UIColor) -> UIImage {
         UIGraphicsImageRenderer(size: CGSize(width: 22, height: 22)).image { context in
             context.cgContext.setFillColor(color.cgColor); context.cgContext.fillEllipse(in: CGRect(x: 2, y: 2, width: 18, height: 18))
@@ -342,8 +354,11 @@ extension TextObjectLayer {
             }.withRenderingMode(.alwaysOriginal)
             buttons["Farbe"]?.setImage(swatch, for: .normal)
         }
-        buttons["Markieren"]?.backgroundColor = style.highlighted == true ? (style.highlightColor?.uiColor ?? .systemYellow).withAlphaComponent(0.3) : .clear
-        buttons["Markieren"]?.configuration?.baseForegroundColor = lastHighlight == .yellow ? .white : lastHighlight.uiColor
+        // Monochrome like its neighbours; the chosen colour is only a small
+        // stroke under the symbol, the active state the common blue tint.
+        buttons["Markieren"]?.backgroundColor = style.highlighted == true ? UIColor.systemBlue.withAlphaComponent(0.15) : .clear
+        buttons["Markieren"]?.configuration?.image = highlightIcon(lastHighlight.uiColor)
+        buttons["Markieren"]?.accessibilityValue = lastHighlight.title
         buttons["Schreibmaschinen-Modus"]?.backgroundColor = Self.typewriterEnabled ? UIColor.systemBlue.withAlphaComponent(0.2) : .clear
         buttons["Schreibmaschinen-Modus"]?.accessibilityValue = Self.typewriterEnabled ? "Ein" : "Aus"
         scheduleCounter()
