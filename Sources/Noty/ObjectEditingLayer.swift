@@ -106,7 +106,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Move/scale/rotation of the whole group during a drag; the cached
     /// contour follows it instead of being rebuilt per touch event.
     private var groupTransform: CGAffineTransform?
-    private var dragMode = 0 // 0 lasso, 1 move, 2 scale, 3 new shape, 6 rotate, 7 shape anchor
+    private var dragMode = 0 // 0 lasso, 1 move, 2 scale, 3 new shape, 6 rotate, 7 shape anchor, 9/10 field width
     private var draft: ShapeObject?
     /// Selection dragged off its page (continuous notebook only).
     private var lift: SelectionLift?
@@ -146,6 +146,13 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Frequent light ticks while drawing a lasso or dragging a selection.
     private var motionTicks = MotionTicks()
     private var rotationSnap: Double?
+    /// The rotation in progress: pivot (canonical), angle of the frame when it
+    /// began (a single field or image: its own angle, otherwise 0), frame size
+    /// with the gap, and the turn applied so far (degrees).
+    private struct RotationDrag { var pivot: CGPoint; var base: Double; var size: CGSize; var turn = 0.0 }
+    private var rotationDrag: RotationDrag?
+    /// Light tick on devices without Pencil Pro haptics (rotation snapping).
+    private let rotationImpact = UIImpactFeedbackGenerator(style: .light)
     /// Weiches Einrasten for moves, field width points and shape anchors.
     let snapping = DragSnapping()
     private var hasSelection: Bool { !ink.isEmpty || !texts.isEmpty || !images.isEmpty || !shapes.isEmpty }
@@ -176,8 +183,6 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// bottom-right, bottom-left): they change only the width, left corners
     /// the left edge, right corners the right edge (Feedback zu Build 62).
     private let fieldWidthHandles = (0..<4).map { _ in SelectionHandle() }
-    /// Clearly visible on any paper (Build 62 showed a white dot on white paper).
-    private let fieldRotation = SelectionHandle()
     private let angleLabel = UILabel()
     private var active: Bool { enabled && (toolActive || touchSelection) }
     /// The tool works on this plane itself (shapes, lasso, images).
@@ -224,15 +229,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         hoverBubble.isUserInteractionEnabled = false; hoverBubble.isHidden = true; hoverBubble.isAccessibilityElement = false
         addSubview(hoverBubble)
         for (index, handle) in (corners + [rotation]).enumerated() {
-            handle.accessibilityLabel = index < 4 ? "Auswahl proportional skalieren" : "Handschrift drehen"
+            handle.accessibilityLabel = index < 4 ? "Auswahl proportional skalieren" : "Auswahl drehen"
             let drag = SnapPanGestureRecognizer(target: self, action: #selector(handle(_:)))
             drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
             handle.tag = index < 4 ? index : 6; handle.addGestureRecognizer(drag); addSubview(handle)
         }
-        // Field selection: corner points (tags 9 left edge, 10 right edge) and rotation (8).
+        // Field selection: corner points (tags 9 left edge, 10 right edge);
+        // it turns with the one rotation handle like every selection.
         for (handle, tag, label) in [(fieldWidthHandles[0], 9, "Textfeldbreite oben links ändern"), (fieldWidthHandles[1], 10, "Textfeldbreite oben rechts ändern"),
-                                     (fieldWidthHandles[2], 10, "Textfeldbreite unten rechts ändern"), (fieldWidthHandles[3], 9, "Textfeldbreite unten links ändern"),
-                                     (fieldRotation, 8, "Textfeld drehen")] {
+                                     (fieldWidthHandles[2], 10, "Textfeldbreite unten rechts ändern"), (fieldWidthHandles[3], 9, "Textfeldbreite unten links ändern")] {
             handle.accessibilityLabel = label; handle.tag = tag; handle.isHidden = true
             let drag = SnapPanGestureRecognizer(target: self, action: #selector(self.handle(_:)))
             drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
@@ -384,21 +389,95 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     /// Display point of a canonical page point.
     private func display(_ point: PagePoint) -> CGPoint { CGPoint(x: point.x + layout.contentOrigin.x, y: point.y + layout.contentOrigin.y) }
+    // MARK: Rotation (one handle, one snapping for fields, images, shapes, ink and groups)
+
+    /// The frame the rotation handle belongs to (canonical centre, angle in
+    /// degrees, size with the selection gap): a single field or image in its
+    /// own orientation, everything else the selection's bounds (turning with
+    /// the group while it is rotated).
+    private func rotationFrame(_ value: PageContent) -> (center: CGPoint, angle: Double, size: CGSize)? {
+        let gap = contourGap
+        if let box = selectedField(value) {
+            let rect = box.fieldStyleRect, middle = box.center
+            return (CGPoint(x: middle.x, y: middle.y), box.angle, CGSize(width: rect.width + 2 * gap, height: rect.height + 2 * gap))
+        }
+        if images.count == 1, ink.isEmpty, texts.isEmpty, shapes.isEmpty, let id = images.first,
+           let image = value.images.first(where: { $0.id == id }) {
+            return (CGPoint(x: image.x + image.width / 2, y: image.y + image.height / 2), image.rotation,
+                    CGSize(width: image.width + 2 * gap, height: image.height + 2 * gap))
+        }
+        if dragMode == 6, startContent != nil, let drag = rotationDrag { return (drag.pivot, drag.turn, drag.size) }
+        guard let frame = selectionBounds(value, applyingPreview: true) else { return nil }
+        return (CGPoint(x: frame.midX, y: frame.midY), 0, CGSize(width: frame.width + 2 * gap, height: frame.height + 2 * gap))
+    }
     /// Rotation handle: on a short line above the middle of the selection
-    /// frame; below it when there is no room above (field at the top of the
-    /// page, the handle would be clamped onto the field).
-    private func rotationHandle(_ box: TextBox) -> (base: CGPoint, center: CGPoint) {
-        let inset = box.fieldPadding + contourGap, scale = displayScale
-        let radians = box.angle * .pi / 180, reach = 30 / scale
-        let top = display(box.pagePoint(.init(x: box.width / 2, y: -inset)))
-        let above = CGPoint(x: top.x + sin(radians) * reach, y: top.y - cos(radians) * reach)
+    /// frame (turned with it); below it when there is no room above.
+    private func rotationHandle(_ value: PageContent) -> (base: CGPoint, center: CGPoint)? {
+        guard let frame = rotationFrame(value) else { return nil }
+        let scale = displayScale, radians = frame.angle * .pi / 180, reach = 30 / scale
+        let up = CGPoint(x: sin(radians), y: -cos(radians)), half = frame.size.height / 2
+        let middle = CGPoint(x: frame.center.x + layout.contentOrigin.x, y: frame.center.y + layout.contentOrigin.y)
+        let top = CGPoint(x: middle.x + up.x * half, y: middle.y + up.y * half)
+        let above = CGPoint(x: top.x + up.x * reach, y: top.y + up.y * reach)
         let room = bounds.insetBy(dx: 22 / scale, dy: 22 / scale)
         if room.contains(above) { return (top, above) }
-        let bottom = display(box.pagePoint(.init(x: box.width / 2, y: box.height + inset)))
-        let below = CGPoint(x: bottom.x - sin(radians) * reach, y: bottom.y + cos(radians) * reach)
+        let bottom = CGPoint(x: middle.x - up.x * half, y: middle.y - up.y * half)
+        let below = CGPoint(x: bottom.x - up.x * reach, y: bottom.y - up.y * reach)
         return room.contains(below) ? (bottom, below) : (top, above)
     }
-    private func rotationHandleCenter(_ box: TextBox) -> CGPoint { rotationHandle(box).center }
+    /// Every member can turn: fields, images (unlocked), handwriting and
+    /// shapes made of points (lines, arrows, polylines, polygons). Rectangles
+    /// and ellipses have no rotation in the format and would have to become
+    /// polygons, so a selection with one of them does not turn.
+    private var canRotate: Bool {
+        guard hasSelection, !selectionLocked else { return false }
+        return content.shapes.allSatisfy { !shapes.contains($0.id) || ($0.kind != .rectangle && $0.kind != .ellipse) }
+    }
+    /// The selection turned by `degrees` about `pivot` (canonical). nil when
+    /// a member would leave the page; a single field or image is moved back
+    /// onto it instead. Handwriting follows through `inkTransform`.
+    private func rotated(_ initial: PageContent, by degrees: Double, around pivot: CGPoint) -> PageContent? {
+        let transform = CGAffineTransform(translationX: pivot.x, y: pivot.y).rotated(by: degrees * .pi / 180)
+            .translatedBy(x: -pivot.x, y: -pivot.y)
+        func turn(_ point: PagePoint) -> PagePoint { let p = CGPoint(x: point.x, y: point.y).applying(transform); return .init(x: p.x, y: p.y) }
+        let single = ink.isEmpty && texts.count + images.count + shapes.count == 1
+        var value = initial
+        for i in value.textBoxes.indices where texts.contains(value.textBoxes[i].id) {
+            let box = isFieldSelection ? fitted(value.textBoxes[i]) : value.textBoxes[i]
+            var turned = box.rotated(to: box.angle + degrees)
+            let target = turn(box.center), now = turned.center
+            turned.x += target.x - now.x; turned.y += target.y - now.y
+            if !turned.fits(in: limits) { guard single, let shifted = turned.shifted(into: limits) else { return nil }; turned = shifted }
+            guard (try? turned.validate()) != nil else { return nil }
+            value.textBoxes[i] = turned
+        }
+        for i in value.images.indices where images.contains(value.images[i].id) {
+            var image = value.images[i]
+            let center = turn(PagePoint(x: image.x + image.width / 2, y: image.y + image.height / 2))
+            var angle = (image.rotation + degrees).truncatingRemainder(dividingBy: 360)
+            if angle > 180 { angle -= 360 }; if angle < -180 { angle += 360 }
+            image.rotation = abs(angle) < 0.01 ? 0 : angle
+            image.x = center.x - image.width / 2; image.y = center.y - image.height / 2
+            if !image.fits(in: limits) { guard single else { return nil }; image = image.fitted(in: limits) }
+            guard (try? image.validate()) != nil else { return nil }
+            value.images[i] = image
+        }
+        for i in value.shapes.indices where shapes.contains(value.shapes[i].id) {
+            let shape = value.shapes[i].mapped(turn)
+            guard (try? shape.validate()) != nil, limits.contains(shape.bounds, tolerance: 0.02) else { return nil }
+            value.shapes[i] = shape
+        }
+        inkTransform = ink.isEmpty ? nil : transform
+        // Objects only: the contour follows the preview itself.
+        groupTransform = ink.isEmpty ? nil : transform
+        return value
+    }
+    /// A rotation clicked into a snap angle: Pencil Pro haptics where
+    /// available, otherwise a light tick.
+    private func rotationTick(at point: CGPoint) {
+        haptic(completed: false, at: point)
+        rotationImpact.impactOccurred(intensity: 0.6); rotationImpact.prepare()
+    }
 
     /// A tap on the text of the selected field: with another field's line at
     /// the same place the next one below is selected, otherwise the caret is
@@ -466,17 +545,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
 
     override func draw(_ rect: CGRect) {
         let visible = preview ?? content
-        if active, lift == nil, let box = selectedField(visible) {
-            let handle = rotationHandle(box)
+        // The rotation handle's short line above the middle of the frame.
+        if active, lift == nil, !rotation.isHidden, let handle = rotationHandle(visible) {
             let line = UIBezierPath(); line.move(to: handle.base); line.addLine(to: handle.center)
-            UIColor.systemBlue.setStroke(); line.lineWidth = 1.5 / displayScale; line.stroke()
-        }
-        if active, let rect = selectionBounds(visible, applyingPreview: true) {
-            if !rotation.isHidden {
-                let r = display(rect).insetBy(dx: -contourGap, dy: -contourGap); let connector = UIBezierPath()
-                connector.move(to: CGPoint(x: r.maxX, y: r.midY)); connector.addLine(to: rotation.center)
-                UIColor.white.withAlphaComponent(0.8).setStroke(); connector.lineWidth = 1.5 / displayScale; connector.stroke()
-            }
+            SelectionStyle.color.setStroke(); line.lineWidth = 1.5 / displayScale; line.stroke()
         }
         if lasso.count > 1 {
             let path = UIBezierPath(); path.move(to: lasso[0]); lasso.dropFirst().forEach { path.addLine(to: $0) }
@@ -521,9 +593,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         if bar.isHidden { hideHover() }
         for corner in corners { corner.isHidden = !active || lifted || !hasSelection || isFieldSelection || selectionLocked }
         let field = active && !lifted && isFieldSelection
-        (fieldWidthHandles + [fieldRotation]).forEach { $0.isHidden = !field }
-        if !field || startContent == nil { angleLabel.isHidden = true }
-        rotation.isHidden = !active || lifted || ink.isEmpty || !texts.isEmpty || !images.isEmpty || !shapes.isEmpty
+        fieldWidthHandles.forEach { $0.isHidden = !field }
+        if dragMode != 6 || startContent == nil { angleLabel.isHidden = true }
+        rotation.isHidden = !active || lifted || !canRotate
         // A single shape is edited by its own anchors, not the scale corners.
         let editableShape = active && !lifted && shapes.count == 1 && ink.isEmpty && texts.isEmpty && images.isEmpty
         if editableShape { for corner in corners { corner.isHidden = true } }
@@ -536,7 +608,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     override func layoutSubviews() {
         super.layoutSubviews()
         HangProbe.hit("Object.layoutSubviews")
-        let controls: [UIView] = [bar] + corners + anchorHandles + [rotation] + fieldWidthHandles + [fieldRotation, angleLabel]
+        let controls: [UIView] = [bar] + corners + anchorHandles + [rotation] + fieldWidthHandles + [angleLabel]
         for control in controls { control.transform = .identity }
         // Controls frame the contour, which keeps a small gap around the content.
         let group = selectionBounds(preview ?? content, applyingPreview: true).map { display($0).insetBy(dx: -contourGap, dy: -contourGap) }
@@ -545,16 +617,16 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         let visible = intersection.isNull || intersection.isEmpty ? bounds : intersection
         if let box = selectedField(preview ?? content) {
             for (handle, corner) in zip(fieldWidthHandles, box.frameCorners(outset: contourGap)) { handle.frame = handleFrame(display(corner)) }
-            fieldRotation.frame = handleFrame(rotationHandleCenter(box))
-            let handle = rotationHandleCenter(box)
-            angleLabel.bounds = CGRect(x: 0, y: 0, width: 48, height: 22)
-            angleLabel.center = CGPoint(x: handle.x + 40 / scale, y: handle.y - 4 / scale)
         }
         if let group {
             let points = [CGPoint(x: group.minX, y: group.minY), CGPoint(x: group.maxX, y: group.minY),
                           CGPoint(x: group.maxX, y: group.maxY), CGPoint(x: group.minX, y: group.maxY)]
             for (handle, point) in zip(corners, points) { handle.frame = handleFrame(point) }
-            rotation.frame = handleFrame(CGPoint(x: group.maxX + 38 / scale, y: group.midY))
+        }
+        if let handle = rotationHandle(preview ?? content)?.center {
+            rotation.frame = handleFrame(handle)
+            angleLabel.bounds = CGRect(x: 0, y: 0, width: 48, height: 22)
+            angleLabel.center = CGPoint(x: handle.x + 40 / scale, y: handle.y - 4 / scale)
         }
         if let shape = selectedShape(preview ?? content) {
             for (handle, anchor) in zip(anchorHandles, shape.anchors) {
@@ -576,7 +648,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         bar.bounds = CGRect(x: 0, y: 0, width: width, height: SelectionActionBar.height)
         let half = SelectionActionBar.height / 2 / scale, margin = 10 / scale, reach = 22 / scale
         var top = (group?.minY ?? visible.maxY) - reach, bottom = (group?.maxY ?? visible.maxY) + reach
-        for handle in [rotation, fieldRotation] + fieldWidthHandles + anchorHandles where !handle.isHidden {
+        for handle in [rotation] + fieldWidthHandles + anchorHandles where !handle.isHidden {
             top = min(top, handle.center.y - reach); bottom = max(bottom, handle.center.y + reach)
         }
         let low = visible.minY + half + 4 / scale, high = visible.maxY - half - 4 / scale
@@ -775,7 +847,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 initialPoint = CGPoint(x: point.x - translation.x, y: point.y - translation.y)
             }
             shapeTapCandidate = false
-            startContent = content; preview = nil; inkTransform = nil; groupTransform = nil
+            startContent = content; preview = nil; inkTransform = nil; groupTransform = nil; rotationDrag = nil
             if let requestedMode { dragMode = requestedMode }
             else if !selectionLocked, selectionBounds(content)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale).contains(initialPoint) == true { dragMode = 1 }
             else if (fingerPan && !allowsFingerDrawing) || tool == .image, let hit = shapeHit(at: initialPoint) {
@@ -798,7 +870,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         guard let initial = startContent else { return }
         if gesture.state == .cancelled || gesture.state == .failed {
-            angleLabel.isHidden = true; snapping.end()
+            angleLabel.isHidden = true; snapping.end(); rotationDrag = nil; groupTransform = nil
             endLift(); preview = nil; inkTransform = nil; draft = nil; startContent = nil; lasso = []; refresh(); return
         }
         switch dragMode {
@@ -839,36 +911,34 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 if let value = transformed(initial, dx: 0, dy: 0, scale: scale, anchor: anchor) { preview = value }
             }
         case 6:
-            if let frame = selectionBounds(initial) {
-                let angle = atan2(point.y - frame.midY, point.x - frame.midX) - atan2(initialPoint.y - frame.midY, initialPoint.x - frame.midX)
-                let degrees = ImageObject.snappedRotation(angle * 180 / .pi)
-                // Tick once when the handwriting clicks into another right angle.
-                let snap: Double? = degrees != 0 && (degrees / 90).rounded() * 90 == degrees ? degrees : nil
-                if let snap, snap != rotationSnap { haptic(completed: false, at: gesture.location(in: self)) }
-                rotationSnap = snap
-                let t = CGAffineTransform(translationX: -frame.midX, y: -frame.midY)
-                    .concatenating(CGAffineTransform(rotationAngle: degrees * .pi / 180))
-                    .concatenating(CGAffineTransform(translationX: frame.midX, y: frame.midY))
-                preview = initial; inkTransform = t; groupTransform = t
+            // One rotation for every selection: about the middle of a single
+            // field/image or of the group's frame; weich einrasten at
+            // 0/90/180/270° (and weaker at 45°) of the absolute angle of a
+            // single field/image, of the turn otherwise; small degree label.
+            if rotationDrag == nil, let frame = rotationFrame(initial) {
+                rotationDrag = RotationDrag(pivot: frame.center, base: frame.angle, size: frame.size)
+                rotationImpact.prepare()
+            }
+            if var drag = rotationDrag {
+                let pivot = drag.pivot
+                let turn = (atan2(point.y - pivot.y, point.x - pivot.x) - atan2(initialPoint.y - pivot.y, initialPoint.x - pivot.x)) * 180 / .pi
+                let snap = TextFieldRotation.snapped(drag.base + turn)
+                if let target = snap.target, target != rotationSnap { rotationTick(at: gesture.location(in: self)) }
+                rotationSnap = snap.target
+                let delta = snap.angle - drag.base
+                if let value = rotated(initial, by: delta, around: pivot) {
+                    preview = value; drag.turn = delta; rotationDrag = drag
+                }
+                angleLabel.text = TextFieldRotation.label(drag.base + drag.turn); angleLabel.isHidden = false
             }
         case 3:
-            draft?.end = .init(x: point.x, y: point.y)
+            // Lines and arrows snap their angle like held lines (`LineSnapping`).
+            if let current = draft, current.kind == .line || current.kind == .arrow {
+                draft?.end = LineSnapping.end(from: current.start, to: .init(x: point.x, y: point.y))
+            } else { draft?.end = .init(x: point.x, y: point.y) }
             // About 4 screen points of travel make it a drawn shape, not a tap.
             if shapeTapCandidate, let down = pan.touchDownLocation,
                hypot(gesture.location(in: self).x - down.x, gesture.location(in: self).y - down.y) * displayScale > 4 { shapeTapCandidate = false }
-        case 8:
-            // Field rotation about its centre; soft snapping (TextFieldRotation), small degree label.
-            if let box = selectedField(initial) {
-                let middle = box.center
-                let turn = atan2(point.y - middle.y, point.x - middle.x) - atan2(initialPoint.y - middle.y, initialPoint.x - middle.x)
-                let snap = TextFieldRotation.snapped(box.angle + turn * 180 / .pi)
-                if let target = snap.target, target != rotationSnap { haptic(completed: false, at: gesture.location(in: self)) }
-                rotationSnap = snap.target
-                var turned = box.rotated(to: snap.angle)
-                if !turned.fits(in: limits), let shifted = turned.shifted(into: limits) { turned = shifted }
-                if turned.fits(in: limits) { preview = replacing(initial, with: turned) }
-                angleLabel.text = TextFieldRotation.label(snap.angle); angleLabel.isHidden = false
-            }
         case 9, 10:
             // Corner points: only the width changes (fixed from now on), the
             // movement across the field is ignored; the height follows the text.
@@ -941,7 +1011,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 _ = commit(preview, previous: initial)
             }
             preview = nil; inkTransform = nil; draft = nil; startContent = nil; lasso = []
-            angleLabel.isHidden = true; snapping.end()
+            angleLabel.isHidden = true; snapping.end(); rotationDrag = nil; groupTransform = nil
         }
         refresh()
     }
