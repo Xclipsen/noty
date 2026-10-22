@@ -24,6 +24,12 @@ enum EditorOpenTrace {
 
 /// One viewport; only visible pages and their immediate neighbours own native
 /// canvases. Ordinary SwiftUI/autosave updates keep those worksheet instances.
+/// Options bar the pages make room for, in viewport points.
+struct ToolbarOptionsAvoidance: Equatable {
+    let edge: ToolbarAvoidanceEdge
+    let bar: CGRect
+}
+
 struct PageRevealRequest: Equatable {
     let id = UUID()
     let pageID: UUID
@@ -55,6 +61,9 @@ struct NotebookEditor: UIViewRepresentable {
     var revealRequest: PageRevealRequest? = nil
     /// Laser pointer tool active: viewport-level overlay above all pages (display only).
     var laser: LaserPointerStyle? = nil
+    /// Attached tool options next to a top/bottom toolbar: the pages slide
+    /// out from under them while they are open (viewport points).
+    var optionsAvoidance: ToolbarOptionsAvoidance? = nil
     func makeUIView(context: Context) -> NotebookViewport { NotebookViewport() }
     func updateUIView(_ view: NotebookViewport, context: Context) { view.configure(self) }
 }
@@ -121,6 +130,15 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private var swipes: [UISwipeGestureRecognizer] = []
     /// After a memory warning only on-screen pages get native sheets for a while.
     private var lowMemoryUntil: CFTimeInterval = 0
+    /// Sideways finger drag beyond the allowed range (rubber band), see `ElasticState`.
+    fileprivate var elastic: ElasticState?
+    fileprivate var elasticLink: CADisplayLink?
+    /// Room made for the open tool options: the shift applied and the offset
+    /// right after it (closing restores the exact previous offset when the
+    /// user did not scroll meanwhile).
+    fileprivate var avoidance: (edge: ToolbarAvoidanceEdge, shift: CGFloat, after: CGPoint)?
+    fileprivate var avoidanceRequest: ToolbarOptionsAvoidance?
+    fileprivate var avoidanceInset = UIEdgeInsets.zero
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -235,6 +253,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         if first { textRequest = next.textInsertRequest }
         setNeedsLayout(); layoutIfNeeded()
         if scrollModeChanged { constrainHorizontalOffset(animated: true) }
+        if !first { updateOptionsAvoidance(next.optionsAvoidance) } else { avoidanceRequest = next.optionsAvoidance }
         refreshSheets()
         if let deletion { slideAfterDeletion(from: slide, deletion: deletion) }
         if oldSelection != selected { queueCaretReveal() }
@@ -281,6 +300,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         }
         updateInsets()
         if pendingJump {
+            stopElastic()
             contentOffset = jumpOffset(placement, wholeSheet: fitting)
             pendingJump = false; reported = selected
             EditorOpenTrace.mark("first page positioned", "zoom=\(String(format: "%.2f", Double(zoomScale)))")
@@ -334,7 +354,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
     private func updateInsets() {
         let side = NotebookViewportGeometry.horizontalInset(viewportWidth: bounds.width, contentWidth: contentSize.width)
-        let inset = UIEdgeInsets(top: topObstruction + 12, left: side, bottom: 32 + keyboardOverlap, right: side)
+        let inset = UIEdgeInsets(top: topObstruction + 12 + avoidanceInset.top, left: side,
+                                 bottom: 32 + keyboardOverlap + avoidanceInset.bottom, right: side)
         if contentInset != inset { contentInset = inset }
     }
     private func refreshSheets() {
@@ -469,7 +490,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { surface }
     func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
         guard pinchGestureRecognizer?.state == .began || pinchGestureRecognizer?.state == .changed else { return }
-        stopZoomTransition()
+        stopZoomTransition(); stopElastic()
         if !sheets.values.contains(where: { $0.editingCaret != nil }), let pinch = pinchGestureRecognizer {
             let point = pinch.location(in: surface)
             if let id = frames.first(where: { $0.value.contains(point) })?.key, id != selected {
@@ -545,7 +566,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { stopZoomTransition(); userZoomPage = nil; hideFloatingSelection(); laser.reset() }
+        if window == nil { stopZoomTransition(); stopElastic(); userZoomPage = nil; hideFloatingSelection(); laser.reset() }
     }
     private var keyboardOverlap: CGFloat {
         guard let window, let screenFrame = keyboardScreenFrame else { return 0 }
@@ -650,19 +671,28 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             return da == db ? a.value.minY < b.value.minY : da < db
         }?.key
     }
-    private func constrainHorizontalOffset(duringZoom: Bool = false, animated: Bool = false) {
-        guard duringZoom || !isZooming, !widthSnapInProgress, bounds.width > 0, !layoutKey.isEmpty else { return }
+    /// Allowed content-offset x interval at the current vertical position.
+    /// Glides between sheets of different width over ~35 % of the viewport.
+    fileprivate func allowedHorizontalRange(atOffsetY offsetY: CGFloat? = nil) -> ClosedRange<Double>? {
+        guard bounds.width > 0, !layoutKey.isEmpty, zoomScale > 0 else { return nil }
         let pages = layoutKey, width = bounds.width, scale = zoomScale, writing = writingScroll
-        // Glide between sheets of different width over ~35 % of the viewport.
-        // Pure clamp into a blended interval: idempotent, so layout passes after
-        // strokes/autosaves at an unchanged scroll position never move the view.
-        guard let x = NotebookViewportGeometry.blendedHorizontalOffset(contentOffset.x,
-            referenceY: (contentOffset.y + bounds.height * 0.4) / zoomScale, band: bounds.height * 0.35 / zoomScale,
+        let y = offsetY ?? contentOffset.y
+        return NotebookViewportGeometry.blendedHorizontalRange(
+            referenceY: (y + bounds.height * 0.4) / zoomScale, band: bounds.height * 0.35 / zoomScale,
             pages: pages.map(\.frame), range: { index in
                 NotebookViewportGeometry.horizontalRange(viewportWidth: width, page: pages[index].frame,
                     scale: scale, anchors: writing ? pages[index].writingScrollAnchors : nil,
                     centre: pages[index].contentFrame.x + pages[index].contentFrame.width / 2)
-            }) else { return }
+            })
+    }
+    private func constrainHorizontalOffset(duringZoom: Bool = false, animated: Bool = false) {
+        guard duringZoom || !isZooming, !widthSnapInProgress, bounds.width > 0, !layoutKey.isEmpty else { return }
+        if duringZoom { stopElastic() }
+        // Pure clamp into a blended interval: idempotent, so layout passes after
+        // strokes/autosaves at an unchanged scroll position never move the view.
+        // Only a finger dragging sideways (or its spring back) may leave it.
+        guard let allowed = allowedHorizontalRange() else { return }
+        let x = elasticOffset(allowed) ?? min(max(contentOffset.x, allowed.lowerBound), allowed.upperBound)
         // Sub-pixel tolerance: UIKit's pixel rounding of contentOffset must not
         // cause a write on every layout pass.
         guard abs(x - contentOffset.x) > 0.5 else { return }
@@ -685,6 +715,172 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         guard let state, let index = state.pages.firstIndex(where: { $0.id == selected }) else { return }
         let next = index + (gesture.direction == .left ? 1 : -1)
         if state.pages.indices.contains(next) { state.onSelect(state.pages[next].id) }
+    }
+}
+
+/// Sideways rubber band (feedback 22.10.2026: dragging the sheet left/right
+/// felt rigid). Within the allowed range a finger scrolls as before; beyond it
+/// the sheet follows with growing resistance and springs back on release.
+/// The range itself is unchanged, so pen strokes and layout passes at rest
+/// still meet the idempotent clamp (no drift while writing).
+extension NotebookViewport {
+    struct ElasticState {
+        /// In-range part of the offset and the raw finger distance beyond it.
+        var base: Double
+        var excess: Double
+        /// Last horizontal finger translation (window points) and the start.
+        var translation: CGFloat
+        var start: CGPoint
+        /// Decided after 10 pt: a clearly vertical drag never pulls the sheet
+        /// sideways beyond its range (no wobble while scrolling through pages).
+        var vertical: Bool?
+        /// Spring back after release: overshoot shown at release and start time.
+        var returning: (shown: Double, start: CFTimeInterval)?
+    }
+    private static var elasticReturnDuration: Double { UIAccessibility.isReduceMotionEnabled ? 0.18 : 0.45 }
+
+    /// Offset while a sideways drag or its spring back is active, nil otherwise.
+    fileprivate func elasticOffset(_ allowed: ClosedRange<Double>) -> CGFloat? {
+        guard var state = elastic else { return nil }
+        let base = min(max(state.base, allowed.lowerBound), allowed.upperBound)
+        if let returning = state.returning {
+            let fraction = NotebookViewportGeometry.elasticReturnFraction(elapsed: CACurrentMediaTime() - returning.start,
+                                                                          duration: Self.elasticReturnDuration)
+            guard fraction > 0 else { elastic = nil; return nil }
+            state.base = base; elastic = state
+            return CGFloat(base + returning.shown * fraction)
+        }
+        let pan = panGestureRecognizer
+        guard pan.state == .began || pan.state == .changed else {
+            // The drag ended without the usual callback: settle like a release.
+            beginElasticReturn(); return elastic == nil ? nil : elasticOffset(allowed)
+        }
+        let moved = pan.translation(in: nil), translation = moved.x
+        if state.vertical == nil {
+            let dx = abs(moved.x - state.start.x), dy = abs(moved.y - state.start.y)
+            if dx + dy > 10 { state.vertical = dy > 2 * dx }
+        }
+        var step = NotebookViewportGeometry.elasticDragStep(base: state.base, excess: state.excess,
+            delta: Double(state.translation - translation), range: allowed)
+        if state.vertical != false, abs(step.excess) > abs(state.excess) { step.excess = state.excess }
+        state.base = step.base; state.excess = step.excess; state.translation = translation
+        elastic = state
+        return CGFloat(step.base + NotebookViewportGeometry.rubberBand(step.excess, dimension: Double(bounds.width)))
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        stopElastic()
+        guard !isZooming, !widthSnapInProgress, !focusScrolling, let allowed = allowedHorizontalRange() else { return }
+        // A drag may catch a sheet that is still springing back.
+        let x = Double(contentOffset.x), base = min(max(x, allowed.lowerBound), allowed.upperBound)
+        elastic = ElasticState(base: base,
+            excess: NotebookViewportGeometry.rubberBandExcess(displayed: x - base, dimension: Double(bounds.width)),
+            translation: panGestureRecognizer.translation(in: nil).x, start: panGestureRecognizer.translation(in: nil),
+            vertical: nil, returning: nil)
+    }
+
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
+                                   targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        if let state = elastic, state.returning == nil, let allowed = allowedHorizontalRange() {
+            let base = min(max(state.base, allowed.lowerBound), allowed.upperBound)
+            if abs(Double(contentOffset.x) - base) > 0.5 {
+                // Overshoot: no sideways deceleration, the sheet springs back.
+                targetContentOffset.pointee.x = contentOffset.x
+                beginElasticReturn(); return
+            }
+        }
+        stopElastic()
+        // Inside the range a flick glides out and comes to rest softly at the
+        // edge instead of hitting the clamp.
+        guard !isZooming, !widthSnapInProgress,
+              let range = allowedHorizontalRange(atOffsetY: targetContentOffset.pointee.y) else { return }
+        targetContentOffset.pointee.x = min(max(targetContentOffset.pointee.x, range.lowerBound), range.upperBound)
+    }
+
+    private func beginElasticReturn() {
+        guard var state = elastic, let allowed = allowedHorizontalRange() else { stopElastic(); return }
+        let base = min(max(state.base, allowed.lowerBound), allowed.upperBound)
+        let shown = Double(contentOffset.x) - base
+        guard abs(shown) > 0.5 else { stopElastic(); return }
+        state.base = base; state.excess = 0; state.returning = (shown, CACurrentMediaTime())
+        elastic = state
+        if elasticLink == nil {
+            let link = CADisplayLink(target: self, selector: #selector(elasticTick(_:)))
+            link.add(to: .main, forMode: .common); elasticLink = link
+        }
+    }
+
+    @objc private func elasticTick(_ link: CADisplayLink) {
+        guard elastic?.returning != nil else { stopElastic(); constrainHorizontalOffset(); return }
+        constrainHorizontalOffset()
+        laser.refresh(); queueRefresh()
+    }
+
+    func stopElastic() {
+        elastic = nil
+        elasticLink?.invalidate(); elasticLink = nil
+    }
+}
+
+/// The attached tool options of a top/bottom toolbar no longer cover the
+/// page (feedback 22.10.2026): while they are open the pages slide away by
+/// exactly the covered part, through the content offset (plus a matching
+/// inset so the first/last page can move too). Closing slides back to the
+/// previous offset. Canvases, zoom and the page stay untouched.
+extension NotebookViewport {
+    fileprivate func updateOptionsAvoidance(_ request: ToolbarOptionsAvoidance?) {
+        guard request != avoidanceRequest else { return }
+        let previous = avoidanceRequest
+        avoidanceRequest = request
+        if let applied = avoidance, request?.edge != applied.edge { releaseAvoidance() }
+        // Width changes of an open bar (measured content) keep the shift.
+        guard let request, avoidance == nil, previous?.edge != request.edge else { return }
+        applyAvoidance(request)
+    }
+
+    private func applyAvoidance(_ request: ToolbarOptionsAvoidance) {
+        guard window != nil, !isDragging, !isZooming, !widthSnapInProgress, userZoomPage == nil,
+              bounds.height > 40, zoomScale > 0 else { return }
+        let scale = zoomScale, offset = contentOffset
+        let pages = layoutKey.map { placement in
+            PageRect(x: placement.frame.x * scale - offset.x, y: placement.frame.y * scale - offset.y,
+                     width: placement.frame.width * scale, height: placement.frame.height * scale)
+        }
+        let shift = CGFloat(NotebookViewportGeometry.chromeAvoidanceShift(edge: request.edge, bar: PageRect(request.bar),
+            pages: pages, freeTop: topObstruction, freeBottom: bounds.height - keyboardOverlap))
+        guard abs(shift) > 0.5 else { return }
+        avoidanceInset = request.edge == .top ? UIEdgeInsets(top: -shift, left: 0, bottom: 0, right: 0)
+                                              : UIEdgeInsets(top: 0, left: 0, bottom: shift, right: 0)
+        updateInsets()
+        let target = CGPoint(x: offset.x, y: offset.y + shift)
+        avoidance = (request.edge, shift, target)
+        slide(to: target)
+    }
+
+    private func releaseAvoidance() {
+        guard let applied = avoidance else { return }
+        avoidance = nil; avoidanceInset = .zero; updateInsets()
+        // The user is moving the view right now: leave it to the gesture.
+        guard !isDragging, !isDecelerating, !isZooming, !widthSnapInProgress else { return }
+        let untouched = abs(contentOffset.y - applied.after.y) < 0.5 && abs(contentOffset.x - applied.after.x) < 0.5
+        let x = untouched ? applied.after.x : contentOffset.x
+        let y = (untouched ? applied.after.y : contentOffset.y) - applied.shift
+        let limit = max(-contentInset.top, contentSize.height - bounds.height + contentInset.bottom)
+        slide(to: CGPoint(x: x, y: min(max(y, -contentInset.top), limit)))
+    }
+
+    /// Brief glide with the panel motion; immediate with Reduce Motion.
+    private func slide(to target: CGPoint) {
+        guard abs(target.y - contentOffset.y) > 0.5 || abs(target.x - contentOffset.x) > 0.5 else { return }
+        let previous = changing; changing = true
+        if UIAccessibility.isReduceMotionEnabled {
+            contentOffset = target
+        } else {
+            UIView.animate(withDuration: 0.32, delay: 0, usingSpringWithDamping: 0.94, initialSpringVelocity: 0,
+                           options: [.beginFromCurrentState, .allowUserInteraction]) { self.contentOffset = target }
+        }
+        changing = previous
+        laser.refresh(); queueRefresh()
     }
 }
 
