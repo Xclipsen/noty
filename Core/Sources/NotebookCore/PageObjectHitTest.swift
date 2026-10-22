@@ -52,9 +52,17 @@ public enum PageObjectHitTest {
         let reach = shape.lineWidth / 2 + tolerance
         let frame = shape.frame
         if shape.kind == .line || shape.kind == .arrow {
-            // The arrowhead reaches `padding` around the tip.
-            return distance(point, shape.start, shape.end) <= reach
+            // Every segment of a polyline (schema 13); the arrowhead reaches
+            // `padding` around the tip.
+            let v = shape.vertices
+            return zip(v, v.dropFirst()).contains { distance(point, $0, $1) <= reach }
                 || (shape.kind == .arrow && hypot(point.x - shape.end.x, point.y - shape.end.y) <= shape.padding + tolerance)
+        } else if shape.kind == .polygon {
+            // Closed outline through its vertices (schema 13); filled: also inside.
+            let v = shape.vertices
+            guard v.count > 1 else { return contains(shape.bounds, point, tolerance) }
+            if shape.fill != nil && inside(point, polygon: v) { return true }
+            return v.indices.contains { distance(point, v[$0], v[($0 + 1) % v.count]) <= reach }
         } else if shape.kind == .rectangle {
             let inside = point.x >= frame.x && point.x <= frame.x + frame.width && point.y >= frame.y && point.y <= frame.y + frame.height
             if inside && shape.fill != nil { return true }
@@ -78,6 +86,17 @@ public enum PageObjectHitTest {
     static func contains(_ rect: PageRect, _ point: PagePoint, _ tolerance: Double) -> Bool {
         point.x >= rect.x - tolerance && point.x <= rect.x + rect.width + tolerance
             && point.y >= rect.y - tolerance && point.y <= rect.y + rect.height + tolerance
+    }
+
+    /// Even-odd point-in-polygon test.
+    private static func inside(_ point: PagePoint, polygon v: [PagePoint]) -> Bool {
+        var result = false, j = v.count - 1
+        for i in v.indices {
+            if (v[i].y > point.y) != (v[j].y > point.y),
+               point.x < (v[j].x - v[i].x) * (point.y - v[i].y) / (v[j].y - v[i].y) + v[i].x { result.toggle() }
+            j = i
+        }
+        return result
     }
 
     private static func distance(_ point: PagePoint, _ a: PagePoint, _ b: PagePoint) -> Double {

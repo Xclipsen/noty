@@ -70,6 +70,24 @@ final class PageObjectHitTestTests: XCTestCase {
         XCTAssertFalse(PageObjectHitTest.hits(ellipse, at: .init(x: 5, y: 5)), "corner of the frame is outside")
     }
 
+    func testPolylineAndPolygonFollowTheirVertices() {
+        // Knickpfeil: right, then down; the straight start-end chord is empty.
+        let bent = ShapeObject(kind: .arrow, vertices: [.init(x: 0, y: 0), .init(x: 100, y: 0), .init(x: 100, y: 100)], lineWidth: 2)
+        XCTAssertTrue(PageObjectHitTest.hits(bent, at: .init(x: 50, y: 0.5)))
+        XCTAssertTrue(PageObjectHitTest.hits(bent, at: .init(x: 100.5, y: 60)))
+        XCTAssertFalse(PageObjectHitTest.hits(bent, at: .init(x: 50, y: 50)), "chord from start to end is no stroke")
+        XCTAssertTrue(PageObjectHitTest.hits(bent, at: .init(x: 95, y: 92)), "arrowhead on the last segment")
+        let triangle = ShapeObject(kind: .polygon, vertices: [.init(x: 0, y: 0), .init(x: 100, y: 0), .init(x: 0, y: 100)], lineWidth: 2)
+        XCTAssertTrue(PageObjectHitTest.hits(triangle, at: .init(x: 50, y: 50.5)), "slanted edge")
+        XCTAssertTrue(PageObjectHitTest.hits(triangle, at: .init(x: 0.5, y: 50)), "closing edge back to the first vertex")
+        XCTAssertFalse(PageObjectHitTest.hits(triangle, at: .init(x: 20, y: 20)), "an unfilled inside stays empty")
+        XCTAssertFalse(PageObjectHitTest.hits(triangle, at: .init(x: 90, y: 90)), "outside, though inside the frame")
+        var filled = triangle; filled.fill = InkColor(0, 0, 1, 0.2)
+        XCTAssertTrue(PageObjectHitTest.hits(filled, at: .init(x: 20, y: 20)))
+        XCTAssertFalse(PageObjectHitTest.hits(filled, at: .init(x: 90, y: 90)))
+        XCTAssertEqual(PageObjectHitTest.topmost(at: .init(x: 20, y: 20), in: content(shapes: [filled])), .shape(filled.id))
+    }
+
     func testAppOutlineOverridesTheApproximation() {
         let shape = ShapeObject(kind: .line, start: .init(x: 0, y: 0), end: .init(x: 100, y: 0))
         let page = content(shapes: [shape])
