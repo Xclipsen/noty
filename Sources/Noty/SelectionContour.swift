@@ -53,7 +53,7 @@ enum SelectionContour {
         for shape in content.shapes where shapes.contains(shape.id) {
             let outline = ShapeRendering.path(shape).cgPath
             pieces.addPath(outline.copy(strokingWithWidth: shape.lineWidth + 2 * gap, lineCap: .round, lineJoin: .round, miterLimit: 4))
-            if shape.fill != nil { pieces.addPath(outline) }
+            if shape.hasVisibleFill { pieces.addPath(outline) }
         }
         for box in content.textBoxes where texts.contains(box.id) {
             pieces.addPath(CGPath(roundedRect: box.rect.cgRect.insetBy(dx: -gap, dy: -gap), cornerWidth: gap, cornerHeight: gap, transform: nil))

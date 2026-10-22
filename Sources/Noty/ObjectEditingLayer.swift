@@ -617,7 +617,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         if filter.text { texts = Set(content.textBoxes.filter { $0.allowsObjectSelection && selected($0.rect.cgRect) }.map(\.id)) }
         if filter.images { images = Set(content.images.filter { !$0.locked && selected($0.rotatedBounds.cgRect) }.map(\.id)) }
-        if filter.shapes { shapes = Set(content.shapes.filter { selected($0.bounds.cgRect) }.map(\.id)) }
+        // Shapes count by their stroke (and a visible fill), not their bounds:
+        // a lasso or tap inside an unfilled outline leaves the shape alone.
+        if filter.shapes {
+            let point = CGPoint(x: rect.midX, y: rect.midY)
+            shapes = Set(content.shapes.filter { shape in
+                guard rect.insetBy(dx: -0.001, dy: -0.001).intersects(shape.bounds.cgRect) || tap else { return false }
+                return tap ? ShapeRendering.hit(shape, at: point) : region.selects(shape)
+            }.map(\.id))
+        }
         if filter.ink, let drawing = try? PKDrawing(data: content.drawing) {
             ink = Set(drawing.strokes.indices.filter { index in
                 let stroke = drawing.strokes[index]

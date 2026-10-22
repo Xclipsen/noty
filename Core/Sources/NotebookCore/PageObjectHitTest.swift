@@ -61,11 +61,11 @@ public enum PageObjectHitTest {
             // Closed outline through its vertices (schema 13); filled: also inside.
             let v = shape.vertices
             guard v.count > 1 else { return contains(shape.bounds, point, tolerance) }
-            if shape.fill != nil && inside(point, polygon: v) { return true }
+            if shape.hasVisibleFill && inside(point, polygon: v) { return true }
             return v.indices.contains { distance(point, v[$0], v[($0 + 1) % v.count]) <= reach }
         } else if shape.kind == .rectangle {
             let inside = point.x >= frame.x && point.x <= frame.x + frame.width && point.y >= frame.y && point.y <= frame.y + frame.height
-            if inside && shape.fill != nil { return true }
+            if inside && shape.hasVisibleFill { return true }
             let corners = [PagePoint(x: frame.x, y: frame.y), PagePoint(x: frame.x + frame.width, y: frame.y),
                            PagePoint(x: frame.x + frame.width, y: frame.y + frame.height), PagePoint(x: frame.x, y: frame.y + frame.height)]
             return corners.indices.contains { distance(point, corners[$0], corners[($0 + 1) % 4]) <= reach }
@@ -74,7 +74,7 @@ public enum PageObjectHitTest {
             guard rx > 0, ry > 0 else { return contains(shape.bounds, point, tolerance) }
             let nx = (point.x - (frame.x + rx)) / rx, ny = (point.y - (frame.y + ry)) / ry
             let radial = hypot(nx, ny)
-            if radial <= 1 && shape.fill != nil { return true }
+            if radial <= 1 && shape.hasVisibleFill { return true }
             // Radial distance scaled back by the radius in that direction.
             let length = hypot(nx * rx, ny * ry)
             let outline = radial > 0 ? length / radial : min(rx, ry)

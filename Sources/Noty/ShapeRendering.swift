@@ -79,7 +79,8 @@ enum ShapeRendering {
         }
     }
     static func hit(_ shape: ShapeObject, at point: CGPoint) -> Bool {
-        if shape.fill != nil, path(shape).contains(point) { return true }
+        // Only a visible fill makes the inside count; unfilled shapes are their stroke.
+        if shape.hasVisibleFill, path(shape).contains(point) { return true }
         return path(shape).cgPath.copy(strokingWithWidth: max(16, shape.lineWidth + 8), lineCap: .round,
                                       lineJoin: .round, miterLimit: 4).contains(point)
     }
