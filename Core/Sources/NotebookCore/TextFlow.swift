@@ -148,8 +148,14 @@ extension Notebook {
             trailingDraft: trailingDraft, pageCapacity: { _, box in try capacity(box) })
     }
 
+    /// Text documents (`isTextDocument`): the flow continues on the next page
+    /// whenever that page has no flow segment yet, even if it holds
+    /// handwriting or objects (they stay fixed on their page, the text runs
+    /// below them); afterwards trailing pages that hold nothing are removed
+    /// (`trimmingEmptyTrailingPages`, `drawingIsEmpty` decodes ink in the app).
     public func reflowText(pageID: UUID, previous: TextBox, replacement: TextBox, selection: NSRange,
-                           trailingDraft: Page? = nil, pageCapacity: (Page, TextBox) throws -> Int) throws -> (Notebook, TextFlowFocus) {
+                           trailingDraft: Page? = nil, drawingIsEmpty: (Data) -> Bool = { $0.isEmpty },
+                           pageCapacity: (Page, TextBox) throws -> Int) throws -> (Notebook, TextFlowFocus) {
         guard let start = pages.firstIndex(where: { $0.id == pageID }),
               pages[start].effectiveTextBoxes.contains(previous), previous.id == replacement.id,
               let flow = replacement.flowID, let region = replacement.flowRegion,
@@ -224,11 +230,15 @@ extension Notebook {
                 }
             } else {
                 let after = currentIndex + 1
-                let canReuse = next.pages.indices.contains(after) && next.pages[after].drawing.isEmpty
-                    && (next.pages[after].images ?? []).isEmpty && (next.pages[after].shapes ?? []).isEmpty
-                    && next.pages[after].effectiveTextBoxes.isEmpty
-                    && (continuationRegion != .page || next.pages[after].pdfReference == nil)
-                    && next.pages[after].writingRect(continuationRegion) != nil
+                let canReuse = isTextDocument
+                    ? next.pages.indices.contains(after) && next.pages[after].pdfReference == nil
+                        && !next.pages[after].effectiveTextBoxes.contains(where: { $0.flowID != nil })
+                        && next.pages[after].writingRect(continuationRegion) != nil
+                    : next.pages.indices.contains(after) && next.pages[after].drawing.isEmpty
+                        && (next.pages[after].images ?? []).isEmpty && (next.pages[after].shapes ?? []).isEmpty
+                        && next.pages[after].effectiveTextBoxes.isEmpty
+                        && (continuationRegion != .page || next.pages[after].pdfReference == nil)
+                        && next.pages[after].writingRect(continuationRegion) != nil
                 if canReuse { currentIndex = after }
                 else {
                     guard next.pages.count < 500 else { throw PageOperationError.pageLimit }
@@ -274,6 +284,10 @@ extension Notebook {
         } while consumed < total || nodeIndex < existing.count
         next.raiseSchemaForTextColors(next.pages.flatMap { $0.textBoxes ?? [] })
         next.raiseSchemaForTextFields(next.pages.flatMap { $0.textBoxes ?? [] })
+        if isTextDocument {
+            // The caret's page stays; an emptied page behind it disappears.
+            next = next.trimmingEmptyTrailingPages(keeping: Set([focus?.pageID ?? pageID]), drawingIsEmpty: drawingIsEmpty)
+        }
         try next.validate()
         return (next, focus ?? TextFlowFocus(pageID: pageID, boxID: replacement.id, selection: .init(location: 0, length: 0), typingStyle: replacement.style))
     }

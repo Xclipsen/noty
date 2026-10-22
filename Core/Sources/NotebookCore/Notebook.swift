@@ -17,6 +17,13 @@ public struct Page: Codable, Equatable, Identifiable, Sendable {
     public init() {}
 }
 
+/// What a library document is (Textneubau Stufe 3, docs/TEXT-REBUILD-62.md §4).
+/// Stored only as `textDocument` (schema 15); a missing `kind` is a notebook,
+/// so notebooks stay byte-identical in their former schema.
+public enum DocumentKind: String, Codable, CaseIterable, Sendable {
+    case notebook, textDocument
+}
+
 /// One worksheet; each PDF page has its own PencilKit drawing and fixed text box.
 public struct Notebook: Codable, Equatable, Sendable {
     /// 10: PDF sources above 20 MB (Build 46 rejects them as invalid and would
@@ -28,7 +35,13 @@ public struct Notebook: Codable, Equatable, Sendable {
     /// older builds would draw them as straight lines, so they refuse them.
     /// 14: free text fields only (Textneubau): rotation, automatic width and
     /// page text migrated to fields (`flowRegion` without `flowID`).
-    public static let currentSchemaVersion = 14
+    /// 15: text documents (`kind == .textDocument`): one text flow over paper
+    /// pages, handwriting and objects fixed on their page. Notebooks are never
+    /// raised to 15; older builds refuse text documents instead of showing
+    /// them as notebooks.
+    public static let currentSchemaVersion = 15
+    /// Lowest schema of a text document.
+    public static let textDocumentSchemaVersion = 15
     /// Lowest schema whose image objects reference assets instead of embedding.
     public static let imageAssetSchemaVersion = 12
     // Existing callers retain the legacy representation until a structural edit.
@@ -40,7 +53,12 @@ public struct Notebook: Codable, Equatable, Sendable {
     public var pdfSources: [PDFSource]?
     public var deletedPages: [DeletedPage]?
     public var appearance: NotebookAppearance?
+    /// nil: a notebook (Heft). `.textDocument` only from schema 15.
+    public var kind: DocumentKind?
     public init() {}
+
+    public var documentKind: DocumentKind { kind ?? .notebook }
+    public var isTextDocument: Bool { kind == .textDocument }
 
     /// Validated notebook as it lives in memory (images of schema 5–11 raised
     /// to 12). Embedded legacy bytes are dropped: only for pure checks. Paths
@@ -61,6 +79,11 @@ public struct Notebook: Codable, Equatable, Sendable {
         if let appearance {
             guard schemaVersion >= 7 else { throw StorageError.invalidDocument }
             try appearance.validate()
+        }
+        if let kind {
+            // Notebooks never store a kind; text documents need schema 15.
+            guard kind == .textDocument, schemaVersion >= Self.textDocumentSchemaVersion else { throw StorageError.invalidDocument }
+            try validateTextDocument()
         }
         let allTextBoxes = allPages.flatMap { $0.textBoxes ?? [] }
         guard Set(allTextBoxes.map(\.id)).count == allTextBoxes.count else { throw StorageError.invalidDocument }
