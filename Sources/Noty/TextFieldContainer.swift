@@ -46,7 +46,7 @@ final class TextFieldContainer: UIView {
     let editor: PageTextView
     /// Corner points while editing (top-left, top-right, bottom-right,
     /// bottom-left): they change only the width; left ones the left edge.
-    let widthHandles = (0..<4).map { _ in UIView() }
+    let widthHandles = (0..<4).map { _ in SelectionHandle() }
     static func changesLeftEdge(_ index: Int) -> Bool { index == 0 || index == 3 }
     private let raster = TextRasterView()
     /// Feldstil (Stufe 4): fill and frame below the text; editing/overflow frame.
@@ -82,13 +82,7 @@ final class TextFieldContainer: UIView {
         editor.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         let labels = ["Textfeldbreite oben links ändern", "Textfeldbreite oben rechts ändern",
                       "Textfeldbreite unten rechts ändern", "Textfeldbreite unten links ändern"]
-        for (handle, label) in zip(widthHandles, labels) {
-            handle.backgroundColor = .clear; handle.isAccessibilityElement = true; handle.accessibilityLabel = label
-            let dot = UIView(frame: CGRect(x: 17, y: 17, width: 10, height: 10))
-            dot.backgroundColor = .systemBlue; dot.layer.cornerRadius = 5; dot.isUserInteractionEnabled = false
-            dot.layer.borderColor = UIColor.white.cgColor; dot.layer.borderWidth = 1.5
-            handle.addSubview(dot); handle.isHidden = true
-        }
+        for (handle, label) in zip(widthHandles, labels) { handle.accessibilityLabel = label; handle.isHidden = true }
         raster.editor = editor
         (editor.layoutManager as? TaskLayoutManager)?.onDisplayChange = { [weak raster] in raster?.setNeedsDisplay() }
         ([raster, editor] + widthHandles).forEach { addSubview($0) }
@@ -101,11 +95,14 @@ final class TextFieldContainer: UIView {
     }
     /// The visible field in own coordinates: the text frame plus the style's padding.
     var styleRect: CGRect { bounds.insetBy(dx: -stylePadding, dy: -stylePadding) }
-    /// The editing frame: visibly larger than the text (`TextBox.selectionInset`).
-    var selectionRect: CGRect {
-        let pad = max(stylePadding, CGFloat(TextBox.selectionPadding) / unitScale)
-        return bounds.insetBy(dx: -pad, dy: -pad)
+    /// The editing frame: the visible field widened by the same
+    /// screen-constant gap as every selection (`SelectionOutline.gap`, the
+    /// selected field's frame in `ObjectEditingLayer`), in own units.
+    var selectionGap: CGFloat {
+        let pageScale = displayScale / unitScale
+        return CGFloat(SelectionOutline.gap(displayScale: Double(pageScale))) / unitScale
     }
+    var selectionRect: CGRect { styleRect.insetBy(dx: -selectionGap, dy: -selectionGap) }
     /// Room beyond the frame where glyphs may still draw (italic overhang).
     var glyphOverhang: CGFloat { content.map(TextObjectLayout.glyphOverhang) ?? 4 }
     /// Feldstil from the resolved box (automatic colours as shown);
@@ -140,7 +137,7 @@ final class TextFieldContainer: UIView {
     func configure(editing: Bool, overflowing: Bool) {
         self.editing = editing
         frameLayer.isHidden = !(editing || overflowing)
-        frameLayer.strokeColor = (overflowing ? UIColor.systemRed : .systemBlue).cgColor
+        frameLayer.strokeColor = (overflowing ? UIColor.systemRed : SelectionStyle.color).cgColor
         widthHandles.forEach { $0.isHidden = !editing }
         setNeedsLayout()
     }
@@ -157,7 +154,9 @@ final class TextFieldContainer: UIView {
                        CGPoint(x: selection.maxX, y: selection.maxY), CGPoint(x: selection.minX, y: selection.maxY)]
         for (handle, corner) in zip(widthHandles, corners) { handle.center = corner }
         frameLayer.frame = bounds
-        frameLayer.path = CGPath(rect: selection, transform: nil); frameLayer.lineWidth = 1 / scale
+        let gap = selectionGap
+        frameLayer.path = CGPath(roundedRect: selection, cornerWidth: gap, cornerHeight: gap, transform: nil)
+        frameLayer.lineWidth = SelectionStyle.lineWidth / scale
         styleLayer.frame = bounds
         if !styleLayer.isHidden {
             // Stroked inside the visible edge like the PDF (`TextFieldStyleRendering.draw`).

@@ -38,27 +38,44 @@ enum ObjectClipboard {
     static var isNewest: Bool { content != nil && changeCount == UIPasteboard.general.changeCount }
 }
 
+/// The one look of every selection (Build 64): system blue, one line width
+/// for single objects, dashed only for groups and lasso selections, the
+/// same screen-constant gap and corner radius around everything.
+enum SelectionStyle {
+    static let color = UIColor.systemBlue
+    /// Frame of one field, image or shape (screen points, solid).
+    static let lineWidth: CGFloat = 1
+    /// Contour of groups and lasso selections (screen points, dashed, light fill).
+    static let groupLineWidth: CGFloat = 1.5
+    static let groupDash: [CGFloat] = [5, 5]
+    static let groupFill = UIColor.systemBlue.withAlphaComponent(0.06)
+    /// Handle dot (screen points) inside its 44-pt target.
+    static let handleDiameter: CGFloat = 12
+}
+
+/// The one handle of every selection: blue dot with a white ring and a
+/// light shadow (visible on white and dark paper and on PDFs), 12 pt, in a
+/// 44 × 44-pt target. Image corners, field corners (selected and while
+/// editing), lasso corners, shape anchors and every rotation handle.
 @MainActor
-private final class SelectionHandle: UIView {
+final class SelectionHandle: UIView {
     private let dot = UIView()
-    private let diameter: CGFloat
-    /// `bordered`: white ring, visible on white and dark paper alike.
-    init(color: UIColor, diameter: CGFloat = 10, bordered: Bool = false) {
-        self.diameter = diameter
-        super.init(frame: .zero); backgroundColor = .clear
-        dot.backgroundColor = color; dot.isUserInteractionEnabled = false
+    override init(frame: CGRect) {
+        super.init(frame: frame); backgroundColor = .clear
+        let diameter = SelectionStyle.handleDiameter
+        dot.backgroundColor = SelectionStyle.color; dot.isUserInteractionEnabled = false
         dot.layer.cornerRadius = diameter / 2; addSubview(dot)
-        if bordered {
-            dot.layer.borderColor = UIColor.white.cgColor; dot.layer.borderWidth = 1.5
-            dot.layer.shadowColor = UIColor.black.cgColor; dot.layer.shadowOpacity = 0.25
-            dot.layer.shadowRadius = 1.5; dot.layer.shadowOffset = .zero
-        }
+        dot.layer.borderColor = UIColor.white.cgColor; dot.layer.borderWidth = 1.5
+        dot.layer.shadowColor = UIColor.black.cgColor; dot.layer.shadowOpacity = 0.3
+        dot.layer.shadowRadius = 1.5; dot.layer.shadowOffset = CGSize(width: 0, height: 0.5)
         isAccessibilityElement = true
     }
+    convenience init() { self.init(frame: CGRect(x: 0, y: 0, width: 44, height: 44)) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layoutSubviews() {
         super.layoutSubviews()
-        dot.frame = CGRect(x: 22 - diameter / 2, y: 22 - diameter / 2, width: diameter, height: diameter)
+        let diameter = SelectionStyle.handleDiameter
+        dot.frame = CGRect(x: bounds.midX - diameter / 2, y: bounds.midY - diameter / 2, width: diameter, height: diameter)
     }
 }
 
@@ -107,11 +124,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Name and description of a hovered bar button.
     private let hoverBubble = UILabel()
     private weak var cropController: UIViewController?
-    private let corners = (0..<4).map { _ in SelectionHandle(color: .systemBlue) }
+    private let corners = (0..<4).map { _ in SelectionHandle() }
     /// One handle per anchor of a single selected shape (`ShapeObject.anchors`):
     /// line ends, polyline/polygon corners, rectangle corners, ellipse sides.
     private var anchorHandles: [SelectionHandle] = []
-    private let rotation = SelectionHandle(color: .white)
+    private let rotation = SelectionHandle()
     private var activeCorner = 2
     private var activeAnchor = 0
     /// The current pan began with a finger (not the Pencil).
@@ -158,9 +175,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Four corner points of a selected field (top-left, top-right,
     /// bottom-right, bottom-left): they change only the width, left corners
     /// the left edge, right corners the right edge (Feedback zu Build 62).
-    private let fieldWidthHandles = (0..<4).map { _ in SelectionHandle(color: .systemBlue, diameter: 10, bordered: true) }
+    private let fieldWidthHandles = (0..<4).map { _ in SelectionHandle() }
     /// Clearly visible on any paper (Build 62 showed a white dot on white paper).
-    private let fieldRotation = SelectionHandle(color: .systemBlue, diameter: 12, bordered: true)
+    private let fieldRotation = SelectionHandle()
     private let angleLabel = UILabel()
     private var active: Bool { enabled && (toolActive || touchSelection) }
     /// The tool works on this plane itself (shapes, lasso, images).
@@ -182,8 +199,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     override init(frame: CGRect) {
         super.init(frame: frame); backgroundColor = .clear; isOpaque = false; clipsToBounds = true
         overrideUserInterfaceStyle = .dark
-        contourLayer.fillColor = UIColor.systemBlue.withAlphaComponent(0.06).cgColor
-        contourLayer.strokeColor = UIColor.systemBlue.cgColor
+        contourLayer.fillColor = SelectionStyle.groupFill.cgColor
+        contourLayer.strokeColor = SelectionStyle.color.cgColor
         contourLayer.lineCap = .round; contourLayer.lineJoin = .round
         layer.addSublayer(contourLayer)
         pan.delegate = self; pan.maximumNumberOfTouches = 1; addGestureRecognizer(pan)
@@ -371,7 +388,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// frame; below it when there is no room above (field at the top of the
     /// page, the handle would be clamped onto the field).
     private func rotationHandle(_ box: TextBox) -> (base: CGPoint, center: CGPoint) {
-        let inset = box.selectionInset, scale = displayScale
+        let inset = box.fieldPadding + contourGap, scale = displayScale
         let radians = box.angle * .pi / 180, reach = 30 / scale
         let top = display(box.pagePoint(.init(x: box.width / 2, y: -inset)))
         let above = CGPoint(x: top.x + sin(radians) * reach, y: top.y - cos(radians) * reach)
@@ -527,7 +544,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         let intersection = window.map { convert($0.bounds, from: $0).intersection(bounds) } ?? bounds
         let visible = intersection.isNull || intersection.isEmpty ? bounds : intersection
         if let box = selectedField(preview ?? content) {
-            for (handle, corner) in zip(fieldWidthHandles, box.selectionCorners) { handle.frame = handleFrame(display(corner)) }
+            for (handle, corner) in zip(fieldWidthHandles, box.frameCorners(outset: contourGap)) { handle.frame = handleFrame(display(corner)) }
             fieldRotation.frame = handleFrame(rotationHandleCenter(box))
             let handle = rotationHandleCenter(box)
             angleLabel.bounds = CGRect(x: 0, y: 0, width: 48, height: 22)
@@ -576,19 +593,30 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         let scale = displayScale
         contourLayer.bounds = bounds; contourLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        // One field, image or shape: thin solid frame at the selection gap.
+        // Groups and lasso selections (and any handwriting): dashed contour.
+        let single = ink.isEmpty && texts.count + images.count + shapes.count == 1
         if let box = selectedField(preview ?? content) {
-            // A selected field: thin solid frame around it with some room (rotated).
-            let outline = CGMutablePath(); outline.addLines(between: box.selectionCorners.map(display)); outline.closeSubpath()
-            contourLayer.path = outline; contourLayer.lineWidth = 1 / scale; contourLayer.lineDashPattern = nil
+            // A selected field (fitted height, rotated about its top-left corner).
+            let gap = contourGap, frame = box.fieldStyleRect
+            var turn = CGAffineTransform(translationX: box.x + layout.contentOrigin.x, y: box.y + layout.contentOrigin.y)
+                .rotated(by: box.angle * .pi / 180)
+            contourLayer.path = CGPath(roundedRect: CGRect(x: frame.x, y: frame.y, width: frame.width, height: frame.height).insetBy(dx: -gap, dy: -gap),
+                                       cornerWidth: gap, cornerHeight: gap, transform: &turn)
+        } else {
+            contourLayer.path = selectionOutline() ?? UIBezierPath(roundedRect: display(frame).insetBy(dx: -contourGap, dy: -contourGap),
+                                                                   cornerRadius: contourGap).cgPath
+        }
+        contourLayer.isHidden = false
+        if single {
+            contourLayer.lineWidth = SelectionStyle.lineWidth / scale; contourLayer.lineDashPattern = nil
             contourLayer.fillColor = UIColor.clear.cgColor
-            contourLayer.removeAllAnimations(); contourAnimationScale = nil; contourLayer.isHidden = false
+            contourLayer.removeAllAnimations(); contourAnimationScale = nil
             return
         }
-        contourLayer.fillColor = UIColor.systemBlue.withAlphaComponent(0.06).cgColor
-        contourLayer.path = selectionOutline() ?? UIBezierPath(roundedRect: display(frame).insetBy(dx: -contourGap, dy: -contourGap),
-                                                               cornerRadius: contourGap).cgPath
-        contourLayer.lineWidth = 1.5 / scale; contourLayer.lineDashPattern = [NSNumber(value: 5 / scale), NSNumber(value: 5 / scale)]
-        contourLayer.isHidden = false
+        contourLayer.fillColor = SelectionStyle.groupFill.cgColor
+        contourLayer.lineWidth = SelectionStyle.groupLineWidth / scale
+        contourLayer.lineDashPattern = SelectionStyle.groupDash.map { NSNumber(value: Double($0 / scale)) }
         if UIAccessibility.isReduceMotionEnabled {
             contourLayer.removeAllAnimations(); contourAnimationScale = nil
         } else if window != nil, contourAnimationScale != scale {
@@ -643,7 +671,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Shows `count` anchor handles (created on demand, extra ones hidden).
     private func updateAnchorHandles(count: Int) {
         while anchorHandles.count < count {
-            let anchor = SelectionHandle(color: .systemBlue)
+            let anchor = SelectionHandle()
             let drag = SnapPanGestureRecognizer(target: self, action: #selector(handle(_:)))
             drag.maximumNumberOfTouches = 1; drag.delegate = ScrollPanPriority.shared
             anchor.tag = 100 + anchorHandles.count; anchor.addGestureRecognizer(drag)

@@ -69,6 +69,16 @@ extension TextBox {
                 pagePoint(.init(x: width + p, y: height + p)), pagePoint(.init(x: -p, y: height + p))]
     }
 
+    /// Corners of the visible field (with the style's padding) widened by
+    /// `outset` page units on every side: the selection frame and its
+    /// handles in the editor, where `outset` is the screen-constant selection
+    /// gap (`SelectionOutline.gap`), the same as for images, shapes and lasso.
+    public func frameCorners(outset: Double) -> [PagePoint] {
+        let r = fieldStyleRect, o = outset
+        return [pagePoint(.init(x: r.x - o, y: r.y - o)), pagePoint(.init(x: r.x + r.width + o, y: r.y - o)),
+                pagePoint(.init(x: r.x + r.width + o, y: r.y + r.height + o)), pagePoint(.init(x: r.x - o, y: r.y + r.height + o))]
+    }
+
     /// Corners of the text frame itself (where the text is laid out and clipped).
     public var textCorners: [PagePoint] {
         [pagePoint(.init(x: 0, y: 0)), pagePoint(.init(x: width, y: 0)),
