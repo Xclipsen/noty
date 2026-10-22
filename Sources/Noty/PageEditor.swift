@@ -466,7 +466,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// Frame (sheet coordinates) of an image just added with the image tool.
     func takeInsertedImage() -> CGRect? { imageLayer.takeInsertedImage().map { imageLayer.convert($0, to: self) } }
     func focusText(_ focus: TextFlowFocus) { textLayer.applyTextFocus(focus) }
-    func finishTextEditing() { textLayer.endTextEditing() }
+    /// The viewport left this page (sidebar, ⌘↑/↓, search, page number):
+    /// a field being edited ends like with Esc/„Fertig“ – back to the
+    /// previous tool unless the text tool is fixed.
+    func finishTextEditing() {
+        if textLayer.isEditingField { textLayer.finishFieldByUser() } else { textLayer.endTextEditing() }
+    }
     /// PencilKit's private ruler recognizers (moved/rotated with two fingers).
     /// The notebook's own pan/pinch must wait for them, otherwise the outer
     /// scroll view swallows every ruler gesture.
