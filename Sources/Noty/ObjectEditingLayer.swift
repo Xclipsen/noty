@@ -5,6 +5,12 @@ import NotebookCore
 
 struct SelectionFilter: Equatable {
     var ink = true, text = true, images = true, shapes = true
+    /// Stored form (`AppSettingsKey.lassoFilter`): ink 1, text 2, images 4, shapes 8.
+    var bits: Int { (ink ? 1 : 0) | (text ? 2 : 0) | (images ? 4 : 0) | (shapes ? 8 : 0) }
+    init() {}
+    init(bits: Int) {
+        ink = bits & 1 != 0; text = bits & 2 != 0; images = bits & 4 != 0; shapes = bits & 8 != 0
+    }
 }
 
 private extension CGPath {

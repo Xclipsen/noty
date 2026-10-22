@@ -14,6 +14,9 @@ enum AppSettingsKey {
     static let textToolLocked = "noty.text.toolLocked"
     /// Weiches Einrasten beim Verschieben (default on).
     static let snapping = "noty.editor.snapping"
+    /// Lasso: what it selects (`SelectionFilter.bits`) and freeform/rectangle.
+    static let lassoFilter = "noty.lasso.filter"
+    static let lassoMode = "noty.lasso.mode"
 }
 
 enum LibraryLayout: String, CaseIterable, Identifiable {

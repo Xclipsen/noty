@@ -77,8 +77,18 @@ struct ContentView: View {
         get { ShapeToolOptions(preferences: toolbox.preferences) }
         nonmutating set { newValue.store(in: &toolbox.preferences) }
     }
-    @State private var selectionFilter = SelectionFilter()
-    @State private var lassoMode = LassoMode.freeform
+    /// Lasso filter and freeform/rectangle stay as last chosen (app-wide,
+    /// UserDefaults like the other editor settings; `toolbar.json` unchanged).
+    @AppStorage(AppSettingsKey.lassoFilter) private var lassoFilterBits = SelectionFilter().bits
+    @AppStorage(AppSettingsKey.lassoMode) private var lassoModeRaw = LassoMode.freeform.rawValue
+    private var selectionFilter: SelectionFilter {
+        get { SelectionFilter(bits: lassoFilterBits) }
+        nonmutating set { lassoFilterBits = newValue.bits }
+    }
+    private var lassoMode: LassoMode {
+        get { LassoMode(rawValue: lassoModeRaw) ?? .freeform }
+        nonmutating set { lassoModeRaw = newValue.rawValue }
+    }
     private var recognizeShapes: Bool {
         get { toolbox.preferences.recognizeShapes ?? true }
         nonmutating set { toolbox.preferences.recognizeShapes = newValue }
@@ -395,7 +405,8 @@ struct ContentView: View {
                     palette(axis: axis)
                 } options: {
                     EditorToolOptions(tool: $tool, preferences: $toolbox.preferences, showing: $toolbarOptions,
-                        shapeOptions: Binding(get: { shapeOptions }, set: { shapeOptions = $0 }), selectionFilter: $selectionFilter, lassoMode: $lassoMode,
+                        shapeOptions: Binding(get: { shapeOptions }, set: { shapeOptions = $0 }), selectionFilter: Binding(get: { selectionFilter }, set: { selectionFilter = $0 }),
+                        lassoMode: Binding(get: { lassoMode }, set: { lassoMode = $0 }),
                         recognizeShapes: Binding(get: { recognizeShapes }, set: { recognizeShapes = $0 }),
                         textToolLocked: $textToolLocked,
                         onInsertText: { textInsertRequest += 1 },
