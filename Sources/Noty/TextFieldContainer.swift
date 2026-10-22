@@ -48,6 +48,16 @@ final class TextFieldContainer: UIView {
     let leftWidth = UIView()
     let rightWidth = UIView()
     private let raster = TextRasterView()
+    /// Feldstil (Stufe 4): fill and frame below the text; editing/overflow frame.
+    private let styleLayer = CAShapeLayer()
+    private let frameLayer = CAShapeLayer()
+    /// Padding, corner radius and frame width of the field style in own
+    /// units (page points divided by the field's unit scale); 0 without style.
+    private(set) var stylePadding: CGFloat = 0
+    private var styleRadius: CGFloat = 0
+    private var styleLineWidth: CGFloat = 0
+    private var styleFilled = false
+    private var styleFramed = false
     var content: TextBox?
     var automaticLight: Bool?
     private(set) var editing = false
@@ -74,7 +84,33 @@ final class TextFieldContainer: UIView {
         raster.editor = editor
         (editor.layoutManager as? TaskLayoutManager)?.onDisplayChange = { [weak raster] in raster?.setNeedsDisplay() }
         [raster, editor, leftWidth, rightWidth].forEach { addSubview($0) }
+        styleLayer.actions = ["path": NSNull(), "fillColor": NSNull(), "strokeColor": NSNull(), "lineWidth": NSNull(), "hidden": NSNull()]
+        frameLayer.actions = styleLayer.actions
+        layer.insertSublayer(styleLayer, at: 0)
+        frameLayer.fillColor = UIColor.clear.cgColor; frameLayer.isHidden = true
+        layer.insertSublayer(frameLayer, below: leftWidth.layer)
         accessibilityLabel = "Textfeld"
+    }
+    /// The visible field in own coordinates: the text frame plus the style's padding.
+    var styleRect: CGRect { bounds.insetBy(dx: -stylePadding, dy: -stylePadding) }
+    /// Feldstil from the resolved box (automatic colours as shown);
+    /// `unitScale`: page points per own point (margin text units).
+    private var appliedStyle: (TextFieldFill?, TextFieldBorder?, TextColor, InkColor?, CGFloat)?
+    func applyFieldStyle(_ resolved: TextBox, unitScale: CGFloat) {
+        let scale = max(0.001, unitScale)
+        if let applied = appliedStyle, applied.0 == resolved.fill, applied.1 == resolved.border,
+           applied.2 == resolved.style.color, applied.3 == resolved.style.ink, applied.4 == scale { return }
+        appliedStyle = (resolved.fill, resolved.border, resolved.style.color, resolved.style.ink, scale)
+        stylePadding = CGFloat(resolved.fieldPadding) / scale
+        styleRadius = CGFloat(TextBox.fieldCornerRadius) / scale
+        styleLineWidth = CGFloat(TextBox.fieldBorderWidth) / scale
+        styleFilled = resolved.fill != nil
+        styleFramed = resolved.border != nil
+        styleLayer.fillColor = resolved.fill?.uiColor.cgColor ?? UIColor.clear.cgColor
+        styleLayer.strokeColor = TextFieldStyleRendering.borderColor(resolved)?.cgColor
+        styleLayer.isHidden = !resolved.hasFieldStyle
+        accessibilityValue = resolved.fill.map { "Füllung \($0.title)" }
+        setNeedsLayout()
     }
     /// `rect`: visible part in own coordinates; nil: no viewport yet, native text.
     func setRaster(_ rect: CGRect?, scale: CGFloat) {
@@ -87,8 +123,8 @@ final class TextFieldContainer: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func configure(editing: Bool, overflowing: Bool) {
         self.editing = editing
-        layer.borderWidth = editing || overflowing ? 1 : 0
-        layer.borderColor = (overflowing ? UIColor.systemRed : .systemBlue).cgColor
+        frameLayer.isHidden = !(editing || overflowing)
+        frameLayer.strokeColor = (overflowing ? UIColor.systemRed : .systemBlue).cgColor
         [leftWidth, rightWidth].forEach { $0.isHidden = !editing }
         setNeedsLayout()
     }
@@ -100,9 +136,20 @@ final class TextFieldContainer: UIView {
             control.bounds = CGRect(x: 0, y: 0, width: 44, height: 44)
             control.transform = CGAffineTransform(scaleX: 1 / scale, y: 1 / scale)
         }
-        leftWidth.center = CGPoint(x: 0, y: bounds.midY)
-        rightWidth.center = CGPoint(x: bounds.width, y: bounds.midY)
-        if layer.borderWidth > 0 { layer.borderWidth = 1 / scale }
+        let visible = styleRect
+        leftWidth.center = CGPoint(x: visible.minX, y: bounds.midY)
+        rightWidth.center = CGPoint(x: visible.maxX, y: bounds.midY)
+        frameLayer.frame = bounds
+        frameLayer.path = CGPath(rect: visible, transform: nil); frameLayer.lineWidth = 1 / scale
+        styleLayer.frame = bounds
+        if !styleLayer.isHidden {
+            // Stroked inside the visible edge like the PDF (`TextFieldStyleRendering.draw`).
+            let inset = styleFramed ? styleLineWidth / 2 : 0
+            let rect = visible.insetBy(dx: inset, dy: inset)
+            let radius = max(0, min(styleRadius - inset, rect.width / 2, rect.height / 2))
+            styleLayer.path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+            styleLayer.lineWidth = styleFramed ? styleLineWidth : 0
+        }
     }
     /// Screen points per own point (zoom, field units, not the rotation).
     var displayScale: CGFloat {
@@ -114,7 +161,7 @@ final class TextFieldContainer: UIView {
     func inBorderZone(_ point: CGPoint) -> Bool {
         guard editing else { return false }
         let scale = displayScale
-        let outer = bounds.insetBy(dx: -Self.outerBorder / scale, dy: -Self.outerBorder / scale)
+        let outer = styleRect.insetBy(dx: -Self.outerBorder / scale, dy: -Self.outerBorder / scale)
         let inner = bounds.insetBy(dx: min(bounds.width / 3, Self.innerBorder / scale), dy: min(bounds.height / 3, Self.innerBorder / scale))
         return outer.contains(point) && !inner.contains(point)
     }
@@ -125,16 +172,25 @@ final class TextFieldContainer: UIView {
         if editing {
             let scale = displayScale
             if !leftWidth.isHidden, leftWidth.frame.contains(point) || rightWidth.frame.contains(point) { return true }
-            return bounds.insetBy(dx: -Self.outerBorder / scale, dy: -Self.outerBorder / scale).contains(point)
+            return styleRect.insetBy(dx: -Self.outerBorder / scale, dy: -Self.outerBorder / scale).contains(point)
         }
-        // Only real text lines; the empty rest of the frame reaches through.
-        return editor.hitsLine(at: convert(point, to: editor), slack: lineSlack)
+        // A filled field takes its whole surface, a framed one its frame line
+        // (like shapes); otherwise only real text lines, the empty rest of the
+        // frame reaches through.
+        let slack = lineSlack, visible = styleRect
+        if styleFilled, visible.insetBy(dx: -slack, dy: -slack).contains(point) { return true }
+        if styleFramed, visible.insetBy(dx: -slack, dy: -slack).contains(point),
+           !visible.insetBy(dx: min(slack, visible.width / 2), dy: min(slack, visible.height / 2)).contains(point) { return true }
+        return editor.hitsLine(at: convert(point, to: editor), slack: slack)
     }
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard self.point(inside: point, with: event), isUserInteractionEnabled, !isHidden else { return nil }
         for handle in [leftWidth, rightWidth] where !handle.isHidden && handle.frame.contains(point) { return handle }
         // The frame zone belongs to the move drag, not to text selection.
         if inBorderZone(point) { return self }
+        // Padding of a styled field (not being edited): the text view sets the
+        // caret at the nearest place, like a tap on its text.
+        if !editing, !bounds.contains(point), !editor.isHidden { return editor }
         return super.hitTest(point, with: event)
     }
 }

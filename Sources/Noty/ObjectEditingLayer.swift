@@ -195,6 +195,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             if self.texts.count == 1 && self.ink.isEmpty && self.images.isEmpty && self.shapes.isEmpty { self.fieldMode = true; self.refresh() }
         }
         fieldButton("Löschen") { [weak self] in self?.deleteSelection() }
+        fieldButton("Feldstil") { [weak self] in self?.openFieldStyle() }
         fieldButton("Nach vorne", icon: "square.3.layers.3d.top.filled") { [weak self] in self?.reorderField(toFront: true) }
         fieldButton("Nach hinten", icon: "square.3.layers.3d.bottom.filled") { [weak self] in self?.reorderField(toFront: false) }
     }
@@ -227,7 +228,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private func display(_ point: PagePoint) -> CGPoint { CGPoint(x: point.x + layout.contentOrigin.x, y: point.y + layout.contentOrigin.y) }
     /// Rotation handle: a short line above the middle of the field's top edge.
     private func rotationHandleCenter(_ box: TextBox) -> CGPoint {
-        let top = display(box.pagePoint(.init(x: box.width / 2, y: 0)))
+        let top = display(box.pagePoint(.init(x: box.width / 2, y: -box.fieldPadding)))
         let radians = box.angle * .pi / 180, reach = 30 / displayScale
         return CGPoint(x: top.x + sin(radians) * reach, y: top.y - cos(radians) * reach)
     }
@@ -299,7 +300,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     override func draw(_ rect: CGRect) {
         let visible = preview ?? content
         if active, lift == nil, let box = selectedField(visible) {
-            let line = UIBezierPath(); line.move(to: display(box.pagePoint(.init(x: box.width / 2, y: 0))))
+            let line = UIBezierPath(); line.move(to: display(box.pagePoint(.init(x: box.width / 2, y: -box.fieldPadding))))
             line.addLine(to: rotationHandleCenter(box))
             UIColor.systemBlue.setStroke(); line.lineWidth = 1 / displayScale; line.stroke()
         }
@@ -400,8 +401,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             y: min(max((group?.minY ?? visible.maxY) - raise / scale, visible.minY + 26 / scale), visible.maxY - 26 / scale))
         shown.frame = CGRect(x: 4, y: 2, width: fullWidth - 8, height: 40); toolbar.contentSize = CGSize(width: fullWidth, height: 44)
         if let box = selectedField(preview ?? content) {
-            fieldWidthHandles[0].frame = handleFrame(display(box.pagePoint(.init(x: 0, y: box.height / 2))))
-            fieldWidthHandles[1].frame = handleFrame(display(box.pagePoint(.init(x: box.width, y: box.height / 2))))
+            let pad = box.fieldPadding
+            fieldWidthHandles[0].frame = handleFrame(display(box.pagePoint(.init(x: -pad, y: box.height / 2))))
+            fieldWidthHandles[1].frame = handleFrame(display(box.pagePoint(.init(x: box.width + pad, y: box.height / 2))))
             fieldRotation.frame = handleFrame(rotationHandleCenter(box))
             let handle = rotationHandleCenter(box)
             angleLabel.bounds = CGRect(x: 0, y: 0, width: 48, height: 22)
@@ -650,7 +652,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 var along = (point.x - initialPoint.x) * cos(radians) + (point.y - initialPoint.y) * sin(radians)
                 if box.angle == 0 {
                     // The dragged edge snaps to vertical targets (edges, centres, grid, margins).
-                    let edge = dragMode == 10 ? box.x + box.width + along : box.x + along
+                    let pad = box.fieldPadding // the visible edge of a styled field snaps
+                    let edge = dragMode == 10 ? box.x + box.width + pad + along : box.x - pad + along
                     along += snapping.point(PagePoint(x: edge, y: box.y + box.height / 2), axes: [.x], gesture: gesture, in: self).x - edge
                 }
                 let minimum = max(16, box.style.fontSize)
@@ -725,7 +728,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         switch dragMode {
         case 1:
             let field = selectedField(initial)
-            let offset = field.flatMap { box in snapping.host?.snapBaseline(of: box).map { $0 - box.y } }
+            // Below the top of the moved (visible, padded) frame.
+            let offset = field.flatMap { box in snapping.host?.snapBaseline(of: box).map { $0 - box.rotatedBounds.y } }
             snapping.begin(excluding: members, snapFrame: selectionBounds(initial, forSnapping: true).map { PageRect($0) },
                            baselineOffset: offset, in: self)
         case 7, 9, 10: snapping.begin(excluding: members, in: self)
@@ -990,6 +994,41 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             popover.backgroundColor = root.backgroundColor
         }
         styleController = controller; parent.present(controller, animated: true)
+    }
+    /// „Feldstil“ of the selected field (Stufe 4): small popover with fill
+    /// and frame (`FieldStyleOptions`); each choice is one undo step.
+    private func openFieldStyle() {
+        guard isFieldSelection, let id = texts.first, let box = content.textBoxes.first(where: { $0.id == id }) else { return }
+        var responder: UIResponder? = self
+        while responder != nil && !(responder is UIViewController) { responder = responder?.next }
+        guard let parent = responder as? UIViewController else { return }
+        styleController?.dismiss(animated: false)
+        let controller = UIHostingController(rootView: FieldStyleOptions(choice: .init(fill: box.fill, border: box.border)) { [weak self] choice in
+            self?.applyFieldStyle(choice)
+        })
+        controller.overrideUserInterfaceStyle = .dark
+        controller.view.backgroundColor = UIColor(white: 0.055, alpha: 1)
+        controller.modalPresentationStyle = .popover
+        controller.preferredContentSize = CGSize(width: 384, height: 196)
+        if let popover = controller.popoverPresentationController {
+            popover.sourceView = toolbar; popover.sourceRect = toolbar.bounds; popover.permittedArrowDirections = [.up, .down]
+            popover.backgroundColor = controller.view.backgroundColor
+        }
+        styleController = controller; parent.present(controller, animated: true)
+    }
+    /// The selected field with fill/frame; it stays completely on the page
+    /// (`TextBox.styled`: padding outwards, else moved inwards, else narrower).
+    private func applyFieldStyle(_ choice: FieldStyleOptions.Choice) {
+        guard active, isFieldSelection, let id = texts.first,
+              let index = content.textBoxes.firstIndex(where: { $0.id == id }) else { return }
+        let box = fitted(content.textBoxes[index])
+        guard box.fill != choice.fill || box.border != choice.border else { return }
+        guard var styled = box.styled(fill: choice.fill, border: choice.border, in: limits) else { return }
+        styled = fitted(styled)
+        if !styled.fits(in: limits), let shifted = styled.shifted(into: limits) { styled = shifted }
+        guard styled.fits(in: limits), (try? styled.validate()) != nil else { return }
+        var value = content; value.textBoxes[index] = styled
+        _ = commit(value, previous: content); refresh()
     }
     /// „Füllung“ of selected rectangles, ellipses and polygons (`ShapeFillStyleSection`).
     private func fillStyleSection() -> UIViewController? {

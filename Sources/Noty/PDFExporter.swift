@@ -179,6 +179,8 @@ enum PDFExporter {
                 for box in page.resolvedTextBoxes {
                     let text = TextObjectLayout(box, on: page)
                     let origin = CGPoint(x: box.x + layout.contentOrigin.x, y: box.y + layout.contentOrigin.y)
+                    // Feldstil below its own text (vector fill/frame; the text stays real, searchable text).
+                    TextFieldStyleRendering.draw(box, at: origin, context: context)
                     text.draw(at: origin)
                     links += text.links(at: origin)
                 }

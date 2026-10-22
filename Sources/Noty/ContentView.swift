@@ -272,6 +272,21 @@ struct ContentView: View {
         fadeSearchHighlightLater()
     }
 
+    /// Gliederung of a text document: the heading's page comes into view,
+    /// the heading is marked briefly like a jump to an open task, and the
+    /// caret goes behind it (text tool, `TextFlowFocus`). Read-only: only
+    /// page and marker.
+    private func jumpToOutline(_ entry: TextOutlineEntry) {
+        guard let page = model.notebook.pages.first(where: { $0.id == entry.pageID }),
+              let box = page.effectiveTextBoxes.first(where: { $0.id == entry.boxID }) else { return }
+        searchHighlight = entry.markerBounds(box: box, page: page); searchHighlightPageID = page.id
+        fadeSearchHighlightLater()
+        selectedPageID = page.id
+        guard canEdit else { return }
+        if tool != .text { tool = .text; toolbarOptions = false }
+        var focus = entry.focus; focus.requestID = UUID(); textFocus = focus
+    }
+
     /// The jump marker of a search hit/open task stays 3 s (plus the closing
     /// sheet animation), then fades; a newer jump restarts the time.
     private func fadeSearchHighlightLater() {
@@ -308,7 +323,8 @@ struct ContentView: View {
                         if notebookLoaded {
                             PageSidebarView(model: model, selectedPageID: $selectedPageID, onBack: closeEditor, onCollapse: { showingPages = false },
                                 onSelect: { if compact { showingPages = false } },
-                                onMargins: { id in marginsPage = MarginPage(id: id) })
+                                onMargins: { id in marginsPage = MarginPage(id: id) },
+                                onOutline: { jumpToOutline($0) })
                         } else {
                             // Same width and tone while loading: no placeholder thumbnail, no layout jump.
                             Color(white: 0.065).ignoresSafeArea().accessibilityHidden(true)

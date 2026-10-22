@@ -1,5 +1,13 @@
 # Lokaler Revisionsspeicher – Format 1
 
+## Ergänzung 22.10.2026 · Feldstil in Schema 14 (Textneubau Stufe 4)
+
+Kein neues Schema. Freie Textfelder tragen optional `fill` (`yellow`, `green`, `blue`, `pink`, `gray`, `purple`) und `border` (`text`, `accent`); fehlt = keine Füllung/kein Rahmen. Beide gehören zu Schema 14 (`TextBox.usesFieldFormat`): erst ein Feld mit Stil hebt ein Heft an (`raiseSchemaForTextFields` auf allen Textschreibwegen), Entfernen senkt nie; Textdokumente (15) enthalten sie ohne weitere Anhebung. Flusssegmente tragen keinen Stil (Swift `TextBox.validate`, Python `notebook_format.py`). Gespeichert bleibt der Textrahmen; Innenabstand (6 pt), Eckenradius (5 pt) und Rahmenstärke (1 pt) sind feste Darstellung. Seitengrenzen gelten für das sichtbare Feld mit Innenabstand (`corners`/`rotatedBounds`/`fits`).
+
+Entscheidung gegen Schema 16: Schema 14 und 15 sind nur auf unveröffentlichten Branchständen (`feat/textneubau`) und auf keinem Gerät installiert; `main` ist auf 12. Ein Build der Stufen 1–3 würde den Stil zwar ohne Sperre verwerfen, kann aber nur durch Rückinstallation eines älteren Teststands an solche Daten kommen. Nach einer Installation von Stufe 1–3 auf ein Gerät gilt diese Begründung nicht mehr; weitere Formateigenschaften brauchen dann ein neues Schema.
+
+Nachweise: Core-Tests `FieldStyleAndOutlineTests`, `check_verifiers.sh` (Stil in 14 und im Textdokument, Stil unter 13, unbekannte Werte, Stil am Fluss), Host-Roundtrip (Schema-14-Heft mit gefülltem, gerahmtem, gedrehtem Feld; Textdokument mit Feldstil durch `.noty`-Import und Bibliotheksrestore). **Nicht installiert, am iPad ungeprüft.**
+
 ## Ergänzung 22.10.2026 · Notebook-Schema 15 (Textdokumente)
 
 Textneubau Stufe 3 ([TEXT-REBUILD-62](TEXT-REBUILD-62.md) §4). Neuer Dokumenttyp im selben Paket-, Revisions-, Backup- und Bibliotheksformat; Manifest, `.noty`/`.notybackup` Format 2, Bibliotheksbackup Format 2 und Werkzeugformat unverändert.

@@ -20,7 +20,9 @@ IMAGES_TOTAL_LIMIT = 500_000_000  # unique originals (each hash once), schema 12
 LEGACY_IMAGES_TOTAL_LIMIT = 40_000_000  # embedded originals summed per object, schema <= 11
 IMAGE_ASSET_SCHEMA = 12  # image objects reference package assets instead of embedding
 VERTEX_SHAPE_SCHEMA = 13  # polyline/polygon shapes (`points`, kind "polygon")
-TEXT_FIELD_SCHEMA = 14  # free text fields only: rotation, autoWidth, migrated page text
+TEXT_FIELD_SCHEMA = 14  # free text fields only: rotation, autoWidth, migrated page text, field style (fill/border)
+FIELD_FILLS = ("yellow", "green", "blue", "pink", "gray", "purple")
+FIELD_BORDERS = ("text", "accent")
 TEXT_DOCUMENT_SCHEMA = 15  # text documents (`kind: "textDocument"`): one flow over paper pages
 MAX_SHAPE_VERTICES = 64
 CURRENT_SCHEMA = 15
@@ -192,6 +194,13 @@ def _text_boxes(page, version, text_ids):
         if rotation is not None:
             check(number(rotation) and -180 <= rotation <= 180, "Invalid text field rotation")
         check(auto_width is None or auto_width is True, "Invalid automatic text width")
+        # Schema 14 (Stufe 4): field style of free fields; padding/corners follow from it.
+        fill, border = box.get("fill"), box.get("border")
+        if fill is not None or border is not None:
+            check(version >= TEXT_FIELD_SCHEMA, "Text field style needs schema 14")
+            check(flow is None, "Flow segments carry no field style")
+        check(fill is None or fill in FIELD_FILLS, "Unknown text field fill")
+        check(border is None or border in FIELD_BORDERS, "Unknown text field border")
         box_id = uuid_string(box["id"])
         check(box_id not in text_ids, "Duplicate text object identities")
         text_ids.add(box_id)

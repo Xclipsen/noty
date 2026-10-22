@@ -23,7 +23,7 @@ enum SelectionContour {
 
     static func key(_ content: PageContent, ink: Set<Int>, texts: Set<UUID>, images: Set<UUID>, shapes: Set<UUID>, gap: Double) -> Key {
         Key(drawing: ink.isEmpty ? Data() : content.drawing, ink: ink,
-            texts: content.textBoxes.filter { texts.contains($0.id) }.map { [$0.x, $0.y, $0.width, $0.height, $0.angle] },
+            texts: content.textBoxes.filter { texts.contains($0.id) }.map { [$0.x, $0.y, $0.width, $0.height, $0.angle, $0.fieldPadding] },
             images: content.images.filter { images.contains($0.id) }.map { [$0.x, $0.y, $0.width, $0.height, $0.rotation] },
             shapes: content.shapes.filter { shapes.contains($0.id) }, gap: gap)
     }
@@ -56,9 +56,11 @@ enum SelectionContour {
             if shape.hasVisibleFill { pieces.addPath(outline) }
         }
         for box in content.textBoxes where texts.contains(box.id) {
-            // Turned about its top-left corner like in editor, preview and PDF.
+            // Turned about its top-left corner like in editor, preview and PDF;
+            // a styled field (Feldstil) with its padding.
             var turn = CGAffineTransform(translationX: box.x, y: box.y).rotated(by: box.angle * .pi / 180)
-            let local = CGRect(x: 0, y: 0, width: box.width, height: box.height).insetBy(dx: -gap, dy: -gap)
+            let frame = box.fieldStyleRect
+            let local = CGRect(x: frame.x, y: frame.y, width: frame.width, height: frame.height).insetBy(dx: -gap, dy: -gap)
             pieces.addPath(CGPath(roundedRect: local, cornerWidth: gap, cornerHeight: gap, transform: &turn))
         }
         for image in content.images where images.contains(image.id) {

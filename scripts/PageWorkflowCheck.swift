@@ -213,7 +213,7 @@ struct PageWorkflowCheck {
             "pageTextSchema13EditKeepsExactBytesUnderMigrations": flowPackage.exactBytesArchived,
             "pageTextBecomesFieldsAtSameFrameInSchema14": flowPackage.sameFrames,
             "textDocumentSchema15KeepsFlowAndHandwritingPage": textDocument.flowKept,
-            "textDocumentKindSurvivesNotyImportAndLibraryRestore": textDocument.kindKept,
+            "textDocumentKindAndFieldStyleSurviveNotyImportAndLibraryRestore": textDocument.kindKept,
             "textDocumentMarkdownExport": textDocument.markdown]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
@@ -336,6 +336,7 @@ struct PageWorkflowCheck {
             pageCapacity: { _, box in min(90, (box.text as NSString).length) })
         var boxes = document.pages[0].effectiveTextBoxes
         var field = TextBox(x: 300, y: 600, width: 120, height: 24, text: "Randnotiz"); field.autoWidth = true
+        field.fill = .blue; field.border = .accent // Feldstil (Stufe 4), schema 14 inside the text document's 15
         boxes.append(field)
         try document.replaceTextBoxes(boxes, pageID: document.pages[0].id)
         let flowKept = document.schemaVersion == 15 && document.isTextDocument && document.pages.count == 3
@@ -360,7 +361,16 @@ struct PageWorkflowCheck {
         let staged = try await workspaces.prepareRestore(file: archiveURL)
         let restored = try await workspaces.commitRestore(staged, title: "Textdokument-Restore")
         let restoredSnapshot = try await LibraryStore(root: try await workspaces.directory(for: restored.id)).load().snapshot
-        let kindKept = reopened == document
+        let importedDocument = try RevisionStore(directory: try await library.documentURL(id: imported.id), readOnly: true).load()
+        let restoredLibrary = LibraryStore(root: try await workspaces.directory(for: restored.id))
+        var restoredStyles: [TextBox?] = []
+        for item in try await restoredLibrary.load().snapshot.items where !item.isFolder {
+            let restoredDocument = try RevisionStore(directory: try await restoredLibrary.documentURL(id: item.id), readOnly: true).load()
+            restoredStyles.append(restoredDocument.pages[0].textBoxes?.first(where: { $0.flowID == nil }))
+        }
+        let styleKept = importedDocument.pages[0].textBoxes?.first(where: { $0.flowID == nil })?.fill == .blue
+            && restoredStyles.count == 2 && restoredStyles.allSatisfy { $0?.fill == .blue && $0?.border == .accent }
+        let kindKept = reopened == document && styleKept
             && imported.snapshot.items.first(where: { $0.id == imported.id })?.kind == .textDocument
             && written.notebooks.count == 2
             && restoredSnapshot.items.filter { !$0.isFolder }.allSatisfy { $0.kind == .textDocument }
@@ -428,6 +438,7 @@ struct PageWorkflowCheck {
         var boxes = notebook.pages[0].effectiveTextBoxes
         var turned = TextBox(x: 300, y: 500, width: 120, height: 24, text: "Gedreht")
         turned.rotation = -30; turned.autoWidth = true
+        turned.fill = .yellow; turned.border = .text // Feldstil (Stufe 4): schema 14, no further raise
         boxes.append(turned)
         try notebook.replaceTextBoxes(boxes, pageID: notebook.pages[0].id)
         try await repository.save(notebook, revision: 2)
@@ -442,3 +453,4 @@ struct PageWorkflowCheck {
         return (openWritesNothing, exactBytesArchived, sameFrames)
     }
 }
+

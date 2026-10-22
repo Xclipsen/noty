@@ -199,6 +199,15 @@ backup("text-flow-autowidth.notybackup", texted(14, [text_box(flowID=uid(), flow
 backup("text-flow-without-region.notybackup", texted(14, [text_box(flowID=uid())]))
 backup("text-region-enum.notybackup", texted(14, [text_box(flowRegion="middle")]))
 backup("text-schema-16.notybackup", texted(16, [text_box(rotation=30)]))
+# Schema 14, Stufe 4: field style (fill, border) of free fields.
+backup("text-style-schema-14.notybackup",
+       texted(14, [text_box(fill="yellow"), text_box(border="accent"), text_box(fill="purple", border="text", rotation=12, autoWidth=True)]))
+backup("text-style-fill-schema-13.notybackup", texted(13, [text_box(fill="blue")]))
+backup("text-style-border-schema-13.notybackup", texted(13, [text_box(border="text")]))
+backup("text-style-fill-enum.notybackup", texted(14, [text_box(fill="orange")]))
+backup("text-style-fill-type.notybackup", texted(14, [text_box(fill=True)]))
+backup("text-style-border-enum.notybackup", texted(14, [text_box(border="thick")]))
+backup("text-style-flow.notybackup", texted(14, [text_box(flowID=uid(), flowRegion="page", fill="green")]))
 
 
 # Schema 15: text documents (one flow over paper pages, Textneubau Stufe 3).
@@ -208,7 +217,7 @@ def text_document(version=15, kind="textDocument", **changes):
         return {"id": uid(), "drawing": "", "text": "", "paper": "lined", "paperColor": "white",
                 "geometry": {"mediaBox": A4, "cropBox": A4, "rotation": 0},
                 "textBoxes": [text_box(flowID=flow, flowRegion="page", x=32, y=16, width=531, height=810, text=text),
-                              text_box(text="freies Feld", rotation=12, autoWidth=True)]}
+                              text_box(text="freies Feld", rotation=12, autoWidth=True, fill="gray", border="accent")]}
     document = {"schemaVersion": version, "id": uid(), "title": "Textdokument", "kind": kind,
                 "pages": [page("Erster Teil "), page("Fortsetzung")], "pdfSources": [], "deletedPages": []}
     if kind is None:
@@ -557,11 +566,12 @@ for name in polyline-schema-12 polygon-schema-12 start-mismatch two-vertices pol
             arrow-without-head flat-polygon vertex-outside vertex-type fill-alpha fill-type; do
     reject verify_backup.py "$work/backups/shapes-$name.notybackup"
 done
-for name in fields-schema-14 plain-schema-13 flow-schema-14; do
+for name in fields-schema-14 plain-schema-13 flow-schema-14 style-schema-14; do
     accept verify_backup.py "$work/backups/text-$name.notybackup"
 done
 for name in rotation-schema-13 autowidth-schema-13 region-schema-13 rotation-range rotation-type autowidth-false \
-            flow-rotated flow-autowidth flow-without-region region-enum schema-16; do
+            flow-rotated flow-autowidth flow-without-region region-enum schema-16 style-fill-schema-13 \
+            style-border-schema-13 style-fill-enum style-fill-type style-border-enum style-flow; do
     reject verify_backup.py "$work/backups/text-$name.notybackup"
 done
 accept verify_backup.py "$work/backups/textdoc-valid.notybackup"

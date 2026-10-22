@@ -28,7 +28,9 @@ public enum EditorInteractionPolicy {
 extension EditorInteractionPolicy {
     /// Background behind a text object, like the automatic pen: paper colour,
     /// or the writing margin beside a PDF. The PDF itself renders light.
+    /// A field with a fill (Feldstil, always light) resolves against the fill.
     public static func automaticTextIsLight(box: TextBox, pageSize: PageSize, hasPDF: Bool, darkPaper: Bool, darkMargins: Bool) -> Bool {
+        if box.fill != nil { return false }
         guard hasPDF else { return darkPaper }
         // Flow segments follow their region; free fields (also migrated page
         // text, which may have been moved) their position.

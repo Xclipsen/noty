@@ -80,6 +80,12 @@ public struct TextBox: Codable, Equatable, Identifiable, Sendable {
     /// edge, then wrapping). nil: fixed width (older fields, or after a width
     /// handle was dragged).
     public var autoWidth: Bool?
+    /// Schema 14, Feldstil (Stufe 4): light background of a free field; nil: none.
+    public var fill: TextFieldFill?
+    /// Schema 14, Feldstil (Stufe 4): thin frame in text or accent colour; nil: none.
+    /// With fill or border the field shows rounded corners and an inner
+    /// padding around the text (`TextBox.fieldPadding`).
+    public var border: TextFieldBorder?
     public init(id: UUID = UUID(), x: Double = 40, y: Double = 40, width: Double = 220,
                 height: Double = 28, text: String = "", style: TextBoxStyle = TextBoxStyle()) {
         self.id = id; self.x = x; self.y = y; self.width = width; self.height = height
@@ -100,7 +106,7 @@ public struct TextBox: Codable, Equatable, Identifiable, Sendable {
         // migrated free field (schema 14, checked by `Notebook.validate`).
         guard flowID == nil || flowRegion != nil else { throw StorageError.invalidDocument }
         guard rotation.map({ $0.isFinite && (-180...180).contains($0) }) ?? true, autoWidth != false,
-              flowID == nil || (rotation == nil && autoWidth == nil) else { throw StorageError.invalidDocument }
+              flowID == nil || (rotation == nil && autoWidth == nil && fill == nil && border == nil) else { throw StorageError.invalidDocument }
         try style.validate()
         let units = Array(text.utf16)
         func boundary(_ i: Int) -> Bool {
