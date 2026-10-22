@@ -346,17 +346,21 @@ struct ContentView: View {
                     enabled: canEdit, fingerDrawing: toolbox.preferences.fingerDrawing, writingScroll: writingScroll,
                     // No separate header strip: pages use the full height and
                     // merely start below the floating header/palette.
-                    topObstruction: layout.topInset + (toolbarOptions && toolbox.preferences.effectiveDock == .top ? 60 : 0),
-                    // A freely placed palette covers part of the page: the caret is kept clear of it.
-                    obstructions: toolbox.preferences.effectiveDock == .floating ? [layout.frame.cgRect.offsetBy(dx: -layout.leftInset, dy: 0)] : [],
+                    topObstruction: layout.topInset,
+                    // A freely placed palette and open tool options cover part of the page: the caret is kept clear of them.
+                    obstructions: (toolbox.preferences.effectiveDock == .floating ? [layout.frame.cgRect.offsetBy(dx: -layout.leftInset, dy: 0)] : [])
+                        + (optionsBar(layout).map { [$0] } ?? []),
                     configuration: pageConfiguration, onSelect: { id in
                         HangProbe.hit("ContentView.onSelect")
                         guard canEdit else { return }; selectedPageID = id
                     }, onTransfer: transferContents(generation: model.pageContentGeneration),
                     onError: { model.error = $0 }, revealRequest: revealRequest,
-                    laser: tool == .laser ? toolbox.preferences.laserStyle : nil)
+                    laser: tool == .laser ? toolbox.preferences.laserStyle : nil,
+                    optionsAvoidance: optionsBar(layout).flatMap { bar in
+                        ToolbarAvoidanceEdge(dock: toolbox.preferences.effectiveDock).map { ToolbarOptionsAvoidance(edge: $0, bar: bar) }
+                    })
                     .ignoresSafeArea(.container, edges: .bottom)
-                    .padding(.bottom, layout.bottomInset + (toolbarOptions && toolbox.preferences.effectiveDock == .bottom ? 60 : 0))
+                    .padding(.bottom, layout.bottomInset)
                     .padding(.leading, layout.leftInset)
                     .padding(.trailing, layout.rightInset)
                 }
@@ -437,6 +441,13 @@ struct ContentView: View {
         recentNote = note; recentNoteToken += 1
         let token = recentNoteToken
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { if recentNoteToken == token { recentNote = nil } }
+    }
+    /// Open attached tool options in viewport points (the notebook viewport
+    /// starts at the top edge and after the left toolbar inset).
+    private func optionsBar(_ layout: ToolbarLayout) -> CGRect? {
+        guard toolbarOptions, notebookLoaded else { return nil }
+        return layout.optionsFrame(preferredWidth: optionsWidths[tool] ?? EditorToolOptions.preferredWidth(for: tool))
+            .cgRect.offsetBy(dx: -layout.leftInset, dy: 0)
     }
     private func toolbarLayout(_ size: CGSize) -> ToolbarLayout {
         let count = ToolbarLayout.itemCount(more: toolbarMore, preferences: toolbox.preferences, secondView: onSecondView != nil)

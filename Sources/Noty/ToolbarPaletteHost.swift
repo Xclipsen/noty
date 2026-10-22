@@ -50,6 +50,8 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .coordinateSpace(name: "toolbar-drag-area")
+        // Hover names for toolbar and options, drawn above both.
+        .notyTooltipHost()
         .environment(\.colorScheme, .dark)
         .sensoryFeedback(.selection, trigger: candidate)
         .animation(NotyMotion.highlight(reduceMotion), value: drag != nil)
@@ -77,6 +79,8 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
                    height: axis == .vertical ? ToolbarLayout.grip : ToolbarLayout.thickness)
             .contentShape(Rectangle())
             .accessibilityLabel("Werkzeugleiste bewegen")
+            .notyTooltip("Werkzeugleiste bewegen – ziehen zum Andocken")
+            .environment(\.notyTooltipAxis, axis)
             .accessibilityHint(preferences.dockOnly == false ? "Ziehen zum Andocken oder freien Platzieren. Doppeltippen wechselt die Ausrichtung." : "Zu einem der vier hervorgehobenen Andockpunkte ziehen.")
             .accessibilityActions {
                 if preferences.dockOnly == false {

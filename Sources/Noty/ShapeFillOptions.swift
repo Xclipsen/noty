@@ -2,27 +2,32 @@ import SwiftUI
 import NotebookCore
 
 /// Fill of new shapes in the shape tool's options (22.10.2026): own colour
-/// (or „wie Strich“) and strength 10–100 %. Shown while „Füllung“ is on.
+/// (or „wie Strich“) and strength 10–100 %. Shown after the „Füllung“ toggle
+/// while it is on, in the common option grammar of `EditorToolOptions`
+/// (44-pt cells, 18-pt symbols, selection plate, slider with its value, tooltips).
 struct ShapeFillOptions: View {
     @Binding var options: ShapeToolOptions
     /// Current stroke colour of the tool (the fill follows it without own colour).
     let strokeColor: InkColor
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: EditorToolOptions.itemSpacing) {
             ColorPicker("Füllfarbe", selection: Binding(get: { (options.fillColor ?? strokeColor).opaque.color }, set: {
                 options.fillColor = InkColor($0).opaque
             }), supportsOpacity: false).labelsHidden().frame(width: 44, height: 44)
-                .accessibilityLabel("Füllfarbe")
+                .accessibilityLabel("Füllfarbe").notyTooltip("Füllfarbe – eigene Farbe der Füllung")
             Button { options.fillColor = nil } label: {
                 Image(systemName: "link").font(.system(size: 18))
                     .frame(width: 44, height: 44).contentShape(Rectangle())
                     .background(options.fillColor == nil ? .white.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 10))
             }.accessibilityLabel("Füllung in Strichfarbe").accessibilityAddTraits(options.fillColor == nil ? .isSelected : [])
-                .help("Füllung in Strichfarbe")
-            Slider(value: Binding(get: { options.fillOpacity }, set: { options.fillOpacity = ShapeFill.rounded($0) }),
-                   in: ShapeFill.opacityRange, step: 0.05) { Text("Deckkraft der Füllung") }.frame(width: 90, height: 44)
-            Text(ShapeFill.percent(options.fillOpacity)).monospacedDigit().frame(minWidth: 38)
+                .notyTooltip("Wie Strich – Füllung in Strichfarbe")
+            HStack(spacing: 6) {
+                Slider(value: Binding(get: { options.fillOpacity }, set: { options.fillOpacity = ShapeFill.rounded($0) }),
+                       in: ShapeFill.opacityRange, step: 0.05) { Text("Deckkraft der Füllung") }.frame(width: 90, height: 44)
+                Text(ShapeFill.percent(options.fillOpacity)).monospacedDigit().frame(minWidth: 38, alignment: .leading)
+                    .accessibilityHidden(true)
+            }.notyTooltip("Deckkraft der Füllung")
         }
     }
 }
@@ -49,7 +54,7 @@ struct ShapeFillStyleSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle("Füllung", isOn: Binding(get: { choice.filled }, set: { choice.filled = $0; apply(choice) }))
-                .font(.system(size: 17, weight: .semibold)).tint(.blue)
+                .font(.system(size: 17, weight: .semibold)).tint(.blue).notyTooltip("Füllung an oder aus")
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(34), spacing: 6), count: 7), alignment: .leading, spacing: 6) {
                 swatch(nil, name: "Wie Strich")
                 ForEach(Self.palette, id: \.1) { swatch($0.0, name: $0.1) }
@@ -61,7 +66,7 @@ struct ShapeFillStyleSection: View {
                     if !editing { apply(choice) }
                 }
                 Text(ShapeFill.percent(choice.opacity)).monospacedDigit().frame(minWidth: 42, alignment: .trailing)
-            }.disabled(!choice.filled).opacity(choice.filled ? 1 : 0.4)
+            }.notyTooltip("Deckkraft der Füllung").disabled(!choice.filled).opacity(choice.filled ? 1 : 0.4)
         }.foregroundStyle(.white)
     }
 
@@ -77,6 +82,7 @@ struct ShapeFillStyleSection: View {
             .frame(width: 34, height: 34).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityLabel(color == nil ? "Füllung in Strichfarbe" : "Füllfarbe \(name)")
             .accessibilityAddTraits(selected ? .isSelected : [])
+            .notyTooltip(color == nil ? "Wie Strich – Füllung in Strichfarbe" : "Füllfarbe \(name)")
     }
 }
 

@@ -36,6 +36,24 @@ extension WritingTool {
         case .laser: "cursorarrow.rays"
         }
     }
+    /// Name and very short description, shown after lingering over the tool
+    /// (Pencil hover or pointer) and as `.help`.
+    var hoverText: String {
+        switch self {
+        case .pen: "Stift – schreibt mit Druckstärke"
+        case .pencil: "Bleistift – Graphit, Neigen schattiert"
+        case .marker: "Textmarker – durchscheinend hervorheben"
+        case .strokeEraser: "Radierer – löscht ganze Striche"
+        case .precisionEraser: "Präzisionsradierer – löscht nur berührte Teile"
+        case .inkSelection: "Lasso – Handschrift, Text, Bilder, Formen auswählen"
+        case .selection: "Gemischtes Lasso – alles Berührte auswählen"
+        case .text: "Text – Textfeld antippen oder anlegen"
+        case .image: "Bilder – Foto, Datei oder Zwischenablage"
+        case .shape: "Formen – Linie, Pfeil, Rechteck, Ellipse, Vieleck"
+        case .read: "PDF lesen – Text auswählen, ohne zu schreiben"
+        case .laser: "Laserpointer – zeigen, wird nicht gespeichert"
+        }
+    }
 }
 
 struct EditorToolbar: View {
@@ -81,7 +99,9 @@ struct EditorToolbar: View {
                     }
             }.buttonStyle(NotyToolStyle())
                 .accessibilityLabel(more ? "Hauptwerkzeuge" : "Weitere Werkzeuge")
+                .notyTooltip(more ? "Hauptwerkzeuge – zurück zur ersten Ebene" : "Weitere Werkzeuge – Lineal, Suche, Anpassen …")
         }
+        .environment(\.notyTooltipAxis, axis)
         .padding(ToolbarLayout.padding)
         .animation(NotyMotion.palette(reduceMotion), value: more)
         .animation(NotyMotion.highlight(reduceMotion), value: tool)
@@ -96,12 +116,15 @@ struct EditorToolbar: View {
     @ViewBuilder private var buttons: some View {
         if more {
             ForEach(secondaryTools) { item in toolButton(item) }
-            utility(ruler ? "Lineal ausblenden" : "Lineal einblenden", symbol: "ruler", selected: ruler) { ruler.toggle() }
+            utility(ruler ? "Lineal ausblenden" : "Lineal einblenden", symbol: "ruler", selected: ruler,
+                    detail: ruler ? "Lineal ausblenden" : "Lineal – gerade Linien am Lineal ziehen") { ruler.toggle() }
                 .overlay(alignment: vertical ? .top : .leading) { if !secondaryTools.isEmpty { separator } }
-            utility("Seitenbreite einpassen", symbol: "arrow.up.left.and.arrow.down.right", action: onFit)
-            utility("Inhalte suchen", symbol: "magnifyingglass", action: onSearch)
-            if let onSecondView { utility("Zweite Ansicht", symbol: "rectangle.split.2x1", action: onSecondView) }
-            utility("Werkzeugleiste anpassen", symbol: "slider.horizontal.3", action: onCustomize)
+            utility("Seitenbreite einpassen", symbol: "arrow.up.left.and.arrow.down.right",
+                    detail: "Seitenbreite einpassen – ganze Breite zeigen", action: onFit)
+            utility("Inhalte suchen", symbol: "magnifyingglass", detail: "Suchen – Text im Notizbuch finden", action: onSearch)
+            if let onSecondView { utility("Zweite Ansicht", symbol: "rectangle.split.2x1", detail: "Zweite Ansicht – weiteres Notizbuch daneben", action: onSecondView) }
+            utility("Werkzeugleiste anpassen", symbol: "slider.horizontal.3",
+                    detail: "Anpassen – Reihenfolge, Position, Lieblingsstifte", action: onCustomize)
                 .overlay(alignment: vertical ? .top : .leading) { separator }
         } else {
             ForEach(primaryTools) { item in toolButton(item) }
@@ -121,6 +144,7 @@ struct EditorToolbar: View {
                                 .overlay(Circle().stroke(.white.opacity(0.8), lineWidth: 1)).offset(y: -1)
                         }
                 }.buttonStyle(NotyToolStyle()).accessibilityLabel("Lieblingsstift, Breite \(preset.width.formatted())")
+                    .notyTooltip("Lieblingsstift – \(preset.tool.title), Breite \(preset.width.formatted())")
             }
         }
     }
@@ -133,7 +157,7 @@ struct EditorToolbar: View {
     private func toolButton(_ item: WritingTool) -> some View {
         let selected = tool == item || (item == .strokeEraser && tool == .precisionEraser)
         return Button {
-            // The text tool's options (lock, „Textfeld +“) open like every other tool's.
+            // The text tool's options (lock, „Textfeld hinzufügen“) open like every other tool's.
             if selected { settings.toggle() }
             else {
                 let choice = Self.choice(item, preferences: preferences)
@@ -147,6 +171,8 @@ struct EditorToolbar: View {
                 .frame(width: ToolbarLayout.cell, height: ToolbarLayout.cell).contentShape(Rectangle())
         }.buttonStyle(NotyToolStyle()).accessibilityLabel(item == .strokeEraser ? "Radierer" : item.title)
             .accessibilityAddTraits(selected ? .isSelected : [])
+            // The eraser button stands for the eraser kind last chosen.
+            .notyTooltip(item == .strokeEraser && preferences.eraserPrecision == true ? WritingTool.precisionEraser.hoverText : item.hoverText)
     }
     /// Colour of the active pen: ink tools their own, the laser its beam,
     /// every other tool the last used pen/pencil/marker (full opacity).
@@ -155,14 +181,14 @@ struct EditorToolbar: View {
         ink.alpha = 1
         return ink.color
     }
-    private func utility(_ title: String, symbol: String, selected: Bool = false, action: @escaping () -> Void) -> some View {
+    private func utility(_ title: String, symbol: String, selected: Bool = false, detail: String? = nil, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 23, weight: .regular)).symbolRenderingMode(.hierarchical)
                 .foregroundStyle(selected ? AnyShapeStyle(Color.notyAccent)
                                  : AnyShapeStyle(LinearGradient(colors: [.white, .white.opacity(0.72)], startPoint: .topLeading, endPoint: .bottomTrailing)))
                 .scaleEffect(selected ? 1.15 : 1)
                 .frame(width: ToolbarLayout.cell, height: ToolbarLayout.cell).contentShape(Rectangle())
-        }.buttonStyle(NotyToolStyle()).accessibilityLabel(title).help(title)
+        }.buttonStyle(NotyToolStyle()).accessibilityLabel(title).notyTooltip(detail ?? title)
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
 

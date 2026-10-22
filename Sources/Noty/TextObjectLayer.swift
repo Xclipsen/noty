@@ -434,7 +434,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         createField(at: point)
     }
 
-    /// „Textfeld +“ and „Textfeld hinzufügen“: a new field at `point` (layer coordinates).
+    /// Option „Textfeld hinzufügen“ and the double-tap menu entry: a new field at `point` (layer coordinates).
     func insertText(at point: CGPoint) { createField(at: point) }
 
     /// A new free field at `point` (layer coordinates) with the caret at the
