@@ -902,12 +902,21 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 if let value = transformed(initial, dx: shift.x, dy: shift.y, scale: 1) { preview = value }
             }
         case 2:
+            // Scaling keeps the opposite corner in place (every selection, images
+            // included); the dragged corner snaps to object edges like width
+            // points and shape anchors (weiches Einrasten).
             if let frame = selectionBounds(initial) {
                 let anchors = [PagePoint(x: frame.maxX, y: frame.maxY), .init(x: frame.minX, y: frame.maxY),
                                .init(x: frame.minX, y: frame.minY), .init(x: frame.maxX, y: frame.minY)]
-                let anchor = anchors[min(3, activeCorner)]
-                let scale = SelectionTransform.projectedScale(start: .init(x: initialPoint.x, y: initialPoint.y),
-                    current: .init(x: point.x, y: point.y), anchor: anchor)
+                let cornerPoints = [PagePoint(x: frame.minX, y: frame.minY), .init(x: frame.maxX, y: frame.minY),
+                                    .init(x: frame.maxX, y: frame.maxY), .init(x: frame.minX, y: frame.maxY)]
+                let index = min(3, activeCorner), anchor = anchors[index], corner = cornerPoints[index]
+                let moved = PagePoint(x: corner.x + point.x - initialPoint.x, y: corner.y + point.y - initialPoint.y)
+                let target = snapping.point(moved, gesture: gesture, in: self)
+                var scale = SelectionTransform.projectedScale(start: corner, current: moved, anchor: anchor)
+                // A snapped edge lands exactly on its target.
+                if target.x != moved.x, abs(corner.x - anchor.x) > 0.5 { scale = max(0.001, (target.x - anchor.x) / (corner.x - anchor.x)) }
+                else if target.y != moved.y, abs(corner.y - anchor.y) > 0.5 { scale = max(0.001, (target.y - anchor.y) / (corner.y - anchor.y)) }
                 if let value = transformed(initial, dx: 0, dy: 0, scale: scale, anchor: anchor) { preview = value }
             }
         case 6:
@@ -1027,7 +1036,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             let offset = field.flatMap { box in snapping.host?.snapBaseline(of: box).map { $0 - box.rotatedBounds.y } }
             snapping.begin(excluding: members, snapFrame: selectionBounds(initial, forSnapping: true).map { PageRect($0) },
                            baselineOffset: offset, in: self)
-        case 7, 9, 10: snapping.begin(excluding: members, in: self)
+        case 2, 7, 9, 10: snapping.begin(excluding: members, in: self)
         default: break
         }
     }
