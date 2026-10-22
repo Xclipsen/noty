@@ -115,3 +115,34 @@ public struct ShapeEraseMask: Equatable, Sendable {
         return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))
     }
 }
+
+/// Nutzer zu Build 62: a shape's fill counts as a thing of its own for both
+/// erasers. Sweeping only over the filled area removes just the fill (the
+/// shape stays with its outline, unfilled); touching the outline keeps the
+/// former behaviour for the shape; inside an unfilled shape nothing happens.
+public enum ShapeEraseTarget: Equatable, Sendable { case none, fill, stroke }
+
+extension ShapeObject {
+    /// What the eraser capsule `from → to` with `radius` (half the eraser
+    /// width) touches: the drawn outline (half the line width counts, any
+    /// dash pattern as solid), otherwise a visible fill, otherwise nothing.
+    public func eraseTarget(from: PagePoint, to: PagePoint, radius: Double) -> ShapeEraseTarget {
+        guard [from.x, from.y, to.x, to.y, radius].allSatisfy(\.isFinite) else { return .none }
+        let reach = max(0, radius) + lineWidth / 2
+        for line in outlinePolylines where !line.points.isEmpty {
+            let path = line.closed ? line.points + [line.points[0]] : line.points
+            if StrokeHitTest.hits(sweep: from, to, radius: reach, stroke: path) { return .stroke }
+        }
+        guard hasVisibleFill, let area = outlinePolylines.first?.points, area.count >= 3 else { return .none }
+        let inside = LassoRegion(points: area)
+        let steps = max(1, Int((hypot(to.x - from.x, to.y - from.y) / max(radius, 0.5)).rounded(.up)))
+        for step in 0...steps {
+            let t = Double(step) / Double(steps)
+            if inside.contains(PagePoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t)) { return .fill }
+        }
+        return .none
+    }
+
+    /// The same shape without its fill (the eraser took only the fill).
+    public var removingFill: ShapeObject { var result = self; result.fill = nil; return result }
+}

@@ -191,6 +191,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         var polylines: [Int: [PagePoint]] = [:]
         var marked = Set<Int>()
         var shapes = Set<UUID>()
+        /// Filled shapes swept only inside: they lose their fill, not themselves.
+        var unfilled = Set<UUID>()
         var last: PagePoint?
     }
     var eraseSession: EraseSession?
@@ -198,6 +200,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     struct ShapeEraseSession {
         var shapes: [ShapeObject]
         var hit = Set<UUID>()
+        /// Filled shapes swept only inside: they lose their fill, not themselves.
+        var unfilled = Set<UUID>()
         /// Solid, unfilled shapes the eraser cut: they become ink pieces.
         var masks: [UUID: ShapeEraseMask] = [:]
         var last: PagePoint?

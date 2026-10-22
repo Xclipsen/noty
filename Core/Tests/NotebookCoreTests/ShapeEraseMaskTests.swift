@@ -74,4 +74,32 @@ final class ShapeEraseMaskTests: XCTestCase {
         var dashed = rectangle; dashed.pattern = .dashed
         XCTAssertFalse(ShapeEraseMask.canErasePartially(dashed))
     }
+
+    func testEraserOverOnlyTheFillRemovesTheFillAndTheOutlineKeepsTheShape() {
+        // Nutzer zu Build 62: the fill is a thing of its own for the erasers.
+        func q(_ x: Double, _ y: Double) -> PagePoint { PagePoint(x: x, y: y) }
+        var filled = ShapeObject(kind: .rectangle, start: q(100, 100), end: q(300, 200), lineWidth: 2)
+        filled.fill = InkColor(0.2, 0.4, 0.9, 0.3)
+        // Inside only (eraser radius 3 stays 10+ pt from the outline).
+        XCTAssertEqual(filled.eraseTarget(from: q(150, 150), to: q(250, 150), radius: 3), .fill)
+        XCTAssertNil(filled.removingFill.fill)
+        XCTAssertEqual(filled.removingFill.kind, filled.kind)
+        // Touching the outline (also coming from inside): the shape as before.
+        XCTAssertEqual(filled.eraseTarget(from: q(150, 150), to: q(150, 205), radius: 3), .stroke)
+        XCTAssertEqual(filled.eraseTarget(from: q(50, 101), to: q(80, 101), radius: 20), .stroke)
+        // Outside: nothing.
+        XCTAssertEqual(filled.eraseTarget(from: q(10, 10), to: q(50, 10), radius: 3), .none)
+        // Unfilled shape swept inside: nothing; invisible fill counts as none.
+        let empty = ShapeObject(kind: .ellipse, start: q(100, 100), end: q(300, 200), lineWidth: 2)
+        XCTAssertEqual(empty.eraseTarget(from: q(180, 150), to: q(220, 150), radius: 3), .none)
+        var clear = empty; clear.fill = InkColor(0, 0, 0, 0)
+        XCTAssertEqual(clear.eraseTarget(from: q(180, 150), to: q(220, 150), radius: 3), .none)
+        var ellipse = empty; ellipse.fill = InkColor(0, 0, 0, 0.5)
+        XCTAssertEqual(ellipse.eraseTarget(from: q(180, 150), to: q(220, 150), radius: 3), .fill)
+        XCTAssertEqual(ellipse.eraseTarget(from: q(200, 150), to: q(200, 230), radius: 3), .stroke)
+        // A line has no inside.
+        let line = ShapeObject(kind: .line, start: q(0, 0), end: q(100, 0), lineWidth: 4)
+        XCTAssertEqual(line.eraseTarget(from: q(50, 30), to: q(50, 2.5), radius: 1), .stroke)
+        XCTAssertEqual(line.eraseTarget(from: q(50, 30), to: q(50, 10), radius: 1), .none)
+    }
 }

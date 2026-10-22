@@ -123,6 +123,7 @@ Nutzer zu Build 50: Der Präzisionsradierer entfernte eine berührte Form ganz, 
 - **Undo:** Radieren der Tinte und Schneiden der Formen sind ein Schritt.
 - **Strich-Radierer („Ganz“):** entfernt Formen weiterhin ganz.
 - **Strichbreite der Reste (Nutzer zu Build 51: „sehr dünner Strich“):** PencilKit zeichnet einen Stift-Punkt dünner als seine Größe. Beim ersten Schneiden misst noty die tatsächlich gezeichnete Breite eines Teststrichs (Alpha-Abdeckung im Bild) und vergrößert die Punkte entsprechend, damit der Rest so breit bleibt wie die Form.
+- **Füllung als eigenes Ding (Nutzer zu Build 62):** Streichen beide Radierer nur über die Füllfläche einer gefüllten Form, wird nur die Füllung entfernt; die Form bleibt mit Umriss (ungefüllt). Berührt der Radierer den Umriss, gilt das bisherige Verhalten (Form ganz entfernt bzw. geschnitten). In einer ungefüllten Form passiert innen nichts. Während des Radierens wird nur die Füllung abgeblendet; ein Undo-Schritt je Radiervorgang (`ShapeObject.eraseTarget`, kein Formatwechsel). Implementiert und gebaut, am iPad ungeprüft.
 
 ## Pencil-Schnellmenü – 20.10.2026
 
