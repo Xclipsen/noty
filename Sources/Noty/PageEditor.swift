@@ -431,7 +431,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         insertSubview(heldInkImage, aboveSubview: canvas)
         heldStrokeImage.isUserInteractionEnabled = false; heldStrokeImage.isHidden = true
         insertSubview(heldStrokeImage, aboveSubview: heldInkImage)
-        layer.insertSublayer(heldShapeLayer, above: heldStrokeImage.layer)
+        // A held shape previews where the finished shape lies: above the
+        // shapes, below the ink (`Page.exportLayers`, `heldInkImage` shows it).
+        layer.insertSublayer(heldShapeLayer, above: shapeLayer.layer)
         heldShapeLayer.fillColor = UIColor.clear.cgColor; heldShapeLayer.lineCap = .round; heldShapeLayer.lineJoin = .round
         heldShapeLayer.isHidden = true
         layer.addSublayer(eraseTrail)
