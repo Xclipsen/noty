@@ -93,7 +93,8 @@ public actor NotebookRepository {
             try fm.createDirectory(at: assetDirectory, withIntermediateDirectories: false)
             let decoded = try BackupArchive.verify(input, extractingAssetsTo: assetDirectory)
             guard decoded.file == copied else { throw BackupError.invalidStaging }
-            return PreparedRestore(id: id, document: Self.restoredCopy(of: decoded.document, id: id), isLegacyJSON: decoded.isLegacyJSON,
+            return PreparedRestore(id: id, sourceDocumentID: decoded.document.id,
+                                   document: Self.restoredCopy(of: decoded.document, id: id), isLegacyJSON: decoded.isLegacyJSON,
                                    assets: NotebookAssets(directory: assetDirectory, readOnly: true),
                                    archive: copied, assetReferences: decoded.assets)
         } catch {
@@ -105,13 +106,38 @@ public actor NotebookRepository {
     }
 
     /// Separate document identity; the original stays untouched. Image asset
-    /// references stay (content addresses).
+    /// references stay (content addresses). The title stays exactly as in the
+    /// file; a colliding name is resolved on commit (`NotebookTitles.unique`).
     private static func restoredCopy(of document: Notebook, id: UUID) -> Notebook {
         var copy = document
         copy.id = id
         copy.schemaVersion = max(2, copy.schemaVersion)
-        copy.title += " (Wiederhergestellt)"
         return copy
+    }
+
+    /// Removes the unpublished stage of a preparation the user declined
+    /// (cancelled import). Only a UUID-named directory directly in our
+    /// staging root; nothing else is touched.
+    public func discardRestore(_ prepared: PreparedRestore) {
+        let stage = stagingRoot.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
+        let fm = FileManager.default
+        guard let values = try? stage.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              values.isDirectory == true, values.isSymbolicLink != true else { return }
+        try? fm.removeItem(at: stage)
+        if (try? fm.contentsOfDirectory(atPath: stagingRoot.path))?.isEmpty == true { try? fm.removeItem(at: stagingRoot) }
+    }
+
+    /// A copy (local history) into this repository's restore collection with
+    /// a title that is unique in the library area at `libraryRoot`: the
+    /// active notebooks of its committed index plus copies in the collection
+    /// that the index does not list yet (created earlier in the same editor
+    /// session; the library adopts them on its next load).
+    public func commitRestoreCopy(_ prepared: PreparedRestore, libraryRoot: URL) throws -> RestoredNotebook {
+        let index = LibraryStore.committedIndex(root: libraryRoot)
+        let indexed = Set(index?.items.map(\.id) ?? [])
+        var taken = index?.activeNotebookTitles() ?? []
+        taken += ((try? restoredCopies().notebooks) ?? []).filter { !indexed.contains($0.id) }.map(\.title)
+        return try commitRestore(prepared, title: NotebookTitles.unique(prepared.document.title, taken: taken))
     }
 
     /// Call only after the UI actor validates PDFKit/PencilKit contents of the
@@ -121,7 +147,11 @@ public actor NotebookRepository {
     /// original the copy references. Then `RevisionStore.save` writes the
     /// assets first, revision and manifest last, into a new empty package;
     /// read back before the stage is removed. A failure keeps the stage.
-    public func commitRestore(_ prepared: PreparedRestore) throws -> RestoredNotebook {
+    /// `title`: the final (unique) title of the copy, nil keeps the file's
+    /// title. `collection`: parent of the new package (an import into the
+    /// library uses `Library/Documents`, then `LibraryStore.adoptImported`);
+    /// nil is this repository's restore collection.
+    public func commitRestore(_ prepared: PreparedRestore, title: String? = nil, into collection: URL? = nil) throws -> RestoredNotebook {
         let activity = BackupActivity.shared.begin(); defer { activity.end() }
         let fm = FileManager.default
         let stage = stagingRoot.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
@@ -130,21 +160,24 @@ public actor NotebookRepository {
         do { decoded = try BackupArchive.verify(input, handling: .skip, limits: .standard) }
         catch { throw BackupError.invalidStaging }
         guard decoded.file == prepared.archive, decoded.assets == prepared.assetReferences else { throw BackupError.invalidStaging }
-        let copy = Self.restoredCopy(of: decoded.document, id: prepared.id)
+        var copy = Self.restoredCopy(of: decoded.document, id: prepared.id)
         guard copy == prepared.document else { throw BackupError.invalidStaging }
+        if let title { copy.title = try LibraryStore.validTitle(title) }
         let staged = NotebookAssets(directory: stage.appendingPathComponent(NotebookAssets.directoryName, isDirectory: true), readOnly: true)
         for reference in copy.externalImageAssets {
             guard case .file = try staged.verifiedPayload(for: reference) else { throw BackupError.invalidStaging }
         }
-        let destination = restoreDirectory.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
+        let parent = collection ?? restoreDirectory
+        let destination = parent.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
         guard !fm.fileExists(atPath: destination.path) else { throw BackupError.invalidStaging }
+        if collection != nil { try fm.createDirectory(at: parent, withIntermediateDirectories: true) }
         try RevisionStore(directory: destination).save(copy, importingAssetsFrom: staged)
         let reopened = RevisionStore(directory: destination, readOnly: true)
         guard try reopened.load() == copy, reopened.assets.presentOnDisk(copy.externalImageAssets) else {
             throw BackupError.invalidStaging
         }
         try? fm.removeItem(at: stage)
-        return restoredEntry(copy, directory: destination)
+        return restoredEntry(copy, directory: destination, collection: parent)
     }
 
     /// Listing for the library. A copy is decoded again only after its
@@ -190,7 +223,7 @@ public actor NotebookRepository {
         return ManifestStamp(modified: modified, size: size)
     }
 
-    private func restoredEntry(_ document: Notebook, directory: URL) -> RestoredNotebook {
+    private func restoredEntry(_ document: Notebook, directory: URL, collection: URL? = nil) -> RestoredNotebook {
         let date = (try? directory.appendingPathComponent("manifest.json")
             .resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
         var previews: [RestoredPagePreview] = []
@@ -201,6 +234,6 @@ public actor NotebookRepository {
             if previews.count == 4 { break }
         }
         return RestoredNotebook(id: document.id, title: document.title, directory: directory,
-                                collectionDirectory: restoreDirectory, modifiedAt: date, textPages: previews)
+                                collectionDirectory: collection ?? restoreDirectory, modifiedAt: date, textPages: previews)
     }
 }

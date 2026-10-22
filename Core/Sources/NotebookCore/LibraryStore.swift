@@ -84,7 +84,7 @@ public struct LibraryPurgeResult: Equatable, Sendable {
 }
 
 public enum LibraryError: Error, LocalizedError {
-    case invalidIndex, unavailable, invalidDestination, invalidTitle, unsupportedVersion(Int), notPurgeable
+    case invalidIndex, unavailable, invalidDestination, invalidTitle, unsupportedVersion(Int), notPurgeable, olderStateOnly
     public var errorDescription: String? {
         switch self {
         case .invalidIndex: "Der Bibliotheksindex ist nicht lesbar. Vorhandene Hefte bleiben erhalten."
@@ -93,6 +93,7 @@ public enum LibraryError: Error, LocalizedError {
         case .invalidTitle: "Bitte einen Namen mit 1 bis 120 Zeichen ohne Zeilenumbrüche eingeben."
         case .unsupportedVersion(let version): "Bibliotheksformat \(version) benötigt eine neuere noty-Version."
         case .notPurgeable: "Das ursprüngliche Notizbuch liegt direkt im App-Ordner und kann nicht endgültig gelöscht werden. Es bleibt im Papierkorb wiederherstellbar."
+        case .olderStateOnly: "Der neueste Stand dieses Notizbuchs ist nicht lesbar. Bitte das Notizbuch öffnen und prüfen; es wurde nichts geteilt."
         }
     }
 }
@@ -187,6 +188,71 @@ public actor LibraryStore {
     public func previewPackage(id: UUID) throws -> (document: Notebook, assets: NotebookAssets) {
         let store = RevisionStore(directory: try documentURL(id: id), readOnly: true)
         return (try store.load(), store.assets)
+    }
+
+    /// The last committed revision for sharing as `.noty`: refuses a package
+    /// whose newest revision is unreadable instead of silently sharing an
+    /// older state (like `duplicateDocument`).
+    public func sharePackage(id: UUID) throws -> (document: Notebook, assets: NotebookAssets) {
+        let store = RevisionStore(directory: try documentURL(id: id), readOnly: true)
+        let document = try store.load()
+        guard !store.recovered else { throw LibraryError.olderStateOnly }
+        return (document, store.assets)
+    }
+
+    /// Read-only, without an actor: the committed index of the library at
+    /// `root` (primary, else the previous copy), nil if there is none or it
+    /// is unreadable. For title collisions of copies created outside the
+    /// library's own actor (local history in the editor).
+    public static func committedIndex(root: URL) -> LibrarySnapshot? {
+        let directory = root.appendingPathComponent("Library", isDirectory: true)
+        for name in ["index.json", "index-previous.json"] {
+            if let value = try? readIndexPayload(at: directory.appendingPathComponent(name)) { return value }
+        }
+        return nil
+    }
+
+    /// Adopts a package that an import committed and read back at
+    /// `Library/Documents/<id>` (`NotebookRepository.commitRestore(into:)`)
+    /// as a normal library notebook (`source == .library`, never a restored
+    /// copy). `title` is the unique title the package was written with.
+    ///
+    /// `replacing`: an active notebook with the file's document ID. In one
+    /// index commit the import takes its place (same folder, same position,
+    /// pin) and the existing notebook moves to the library trash with its
+    /// last committed state; its package is not touched and stays
+    /// restorable. The import keeps its own new identity: the old entry
+    /// needs its ID in the trash, and overwriting a package in place would
+    /// be a second writer of an existing notebook.
+    ///
+    /// The package is written before this index commit; an interruption in
+    /// between leaves a discoverable orphan (like `createDocument`). If a
+    /// `load()` already adopted the orphan, that entry is placed instead.
+    public func adoptImported(_ id: UUID, title: String, parentID: UUID?, replacing: UUID?) throws -> LibrarySnapshot {
+        var next = try current()
+        let name = try Self.validTitle(title)
+        let url = packageURL(id: id, source: .library)
+        try requireDirectory(url)
+        guard hasDocument(at: url) else { throw LibraryError.unavailable }
+        if let existing = next.items.firstIndex(where: { $0.id == id }) {
+            guard next.items[existing].source == .library else { throw LibraryError.invalidIndex }
+            next.items.remove(at: existing)
+        }
+        var item = LibraryItem(id: id, title: name, parentID: parentID, source: .library)
+        if let replacing {
+            guard replacing != id else { throw LibraryError.invalidIndex }
+            let index = try activeIndex(replacing, in: next)
+            guard !next.items[index].isFolder else { throw LibraryError.unavailable }
+            item.parentID = next.items[index].parentID
+            item.favorite = next.items[index].favorite
+            next.items[index].deletedAt = Date()
+            next.items.insert(item, at: index)
+        } else {
+            try checkParent(parentID, in: next)
+            next.items.append(item)
+        }
+        try commit(next)
+        return next
     }
 
     public func documentURL(id: UUID) throws -> URL {

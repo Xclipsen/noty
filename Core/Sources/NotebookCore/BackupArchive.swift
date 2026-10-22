@@ -353,6 +353,8 @@ public enum BackupArchive {
 
 public struct PreparedRestore: Sendable {
     public let id: UUID
+    /// Document ID inside the file; the copy itself always gets `id`.
+    public let sourceDocumentID: UUID
     public let document: Notebook
     public let isLegacyJSON: Bool
     /// The staged, verified image originals (read-only), for the UI's checks.
