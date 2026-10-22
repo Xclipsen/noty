@@ -16,6 +16,15 @@ import NotebookCore
 enum PDFExporter {
     static let pageBounds = CGRect(x: 0, y: 0, width: 595, height: 842)
 
+    /// Pages of a whole-document PDF, the same from the editor and the
+    /// library: a text document without its trailing pages that hold nothing
+    /// (the reserve page is never part of it), a notebook every page (nil).
+    static func wholeDocumentPages(_ notebook: Notebook) -> Set<UUID>? {
+        notebook.isTextDocument ? Set(notebook.exportedPageIDs(drawingIsEmpty: EditorModel.drawingIsEmpty)) : nil
+    }
+    /// File name of an exported PDF (whole document or one page): the document title.
+    static func fileName(for title: String) -> String { NotyFile.fileStem(for: title) }
+
     enum ExportError: LocalizedError {
         case invalidSource
         case textOverflow([Int])

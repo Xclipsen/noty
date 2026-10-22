@@ -256,9 +256,6 @@ final class EditorModel: ObservableObject {
         } catch { self.error = "Textfluss: \(error.localizedDescription)"; return nil }
     }
 
-    /// Pages of a whole-document PDF: text documents without trailing empty pages.
-    var exportedPageIDs: [UUID] { notebook.exportedPageIDs(drawingIsEmpty: Self.drawingIsEmpty) }
-
     /// Reverts (or re-applies) the most recent change on any page, in order.
     /// Steps whose page was deleted, replaced or changed elsewhere are dropped;
     /// they never overwrite newer content. Returns the page to reveal.

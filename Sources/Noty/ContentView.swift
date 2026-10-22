@@ -148,8 +148,8 @@ struct ContentView: View {
                 model.insertPhoto(item, pageID: target)
             }
             .fileExporter(isPresented: $exporting, document: exportFile,
-                          contentType: exportType, defaultFilename: exportType == .noty ? NotyFile.fileStem(for: model.notebook.title)
-                            : "noty-\(exportType == .pdf ? "export" : "backup")-\(Date().formatted(.iso8601).replacingOccurrences(of: ":", with: "-"))") { result in
+                          contentType: exportType, defaultFilename: exportType == .pdf ? PDFExporter.fileName(for: model.notebook.title)
+                            : NotyFile.fileStem(for: model.notebook.title)) { result in
                 // The system wrote its copy: the scratch archive is no longer needed.
                 if let scratch = exportFile?.fileURL { BackupScratch.remove(scratch) }
                 switch result {
@@ -699,8 +699,7 @@ struct ContentView: View {
     private func startPDFExport(pageOnly: Bool) {
         guard canEdit, !pdfExport.running, !(pageOnly && currentPage.id == writingDraft.id) else { return }
         // A text document leaves out trailing pages without content (the reserve page is never part of it).
-        let whole: Set<UUID>? = isTextDocument ? Set(model.exportedPageIDs) : nil
-        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : whole, sourcePage: { model.sourcePage(for: $0) },
+        pdfExport.start(model.notebook, pageIDs: pageOnly ? [currentPage.id] : PDFExporter.wholeDocumentPages(model.notebook), sourcePage: { model.sourcePage(for: $0) },
                         assets: model.imageAssets) { result in
             switch result {
             case .success(let data): exportFile = ExportFile(pdfData: data); exportType = .pdf; exporting = true

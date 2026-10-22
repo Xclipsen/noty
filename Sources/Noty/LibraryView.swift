@@ -643,8 +643,9 @@ struct LibraryView: View {
         Task {
             do {
                 let (notebook, assets) = try await model.committedNotebook(item.id)
-                exportedPDFName = item.title
-                pdfExport.start(notebook, assets: assets) { result in
+                exportedPDFName = PDFExporter.fileName(for: notebook.title)
+                // Same pages as from the editor: a text document without empty trailing pages.
+                pdfExport.start(notebook, pageIDs: PDFExporter.wholeDocumentPages(notebook), assets: assets) { result in
                     switch result {
                     case .success(let data): exportedPDF = ExportFile(pdfData: data); exportingPDF = true
                     case .failure(let error): if !(error is CancellationError) { model.error = error.localizedDescription }
