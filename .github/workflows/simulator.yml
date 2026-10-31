@@ -1,0 +1,120 @@
+# iPad simulator: builds the app without signing and runs the hardware-key
+# smoke test (ci/simulator). Fresh simulator, no user data. docs/TESTING.md.
+name: Simulator
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ci/**']
+    paths:
+      - 'Sources/**'
+      - 'Core/Sources/**'
+      - 'Core/Package.swift'
+      - 'Package.swift'
+      - 'Info.plist'
+      - 'Resources/**'
+      - 'ci/simulator/**'
+      - '.github/workflows/simulator.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: simulator-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  XCODEGEN_VERSION: '2.46.0'
+  DEVICE: iPad Pro 11-inch (M5)
+  DERIVED: ${{ github.workspace }}/.simulator/DerivedData
+  OUT: ${{ github.workspace }}/.simulator/out
+
+jobs:
+  smoke:
+    # The app uses the iOS 27 SDK; this image has Xcode 27 and iOS 27 simulators.
+    runs-on: xcode-27
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Xcode und Simulator wählen
+        run: |
+          xcodebuild -version
+          udid=$(xcrun simctl list devices available -j | python3 -c "
+          import json, os, sys
+          runtimes = json.load(sys.stdin)['devices']
+          ios = sorted((r for r in runtimes if '.iOS-' in r), key=lambda r: [int(x) for x in r.rsplit('iOS-', 1)[1].split('-')])
+          print(next(d['udid'] for r in reversed(ios) for d in runtimes[r] if d['name'] == os.environ['DEVICE']))")
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl list devices available | grep "$udid"
+          mkdir -p "$OUT"
+
+      - name: XcodeGen laden
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen"
+          echo "$RUNNER_TEMP/xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Projekt erzeugen
+        working-directory: ci/simulator
+        run: xcodegen generate
+
+      - uses: actions/cache@v6
+        with:
+          path: ${{ env.DERIVED }}
+          key: deriveddata-${{ runner.arch }}-${{ hashFiles('Sources/**', 'Core/Sources/**', 'ci/simulator/**') }}
+          restore-keys: deriveddata-${{ runner.arch }}-
+
+      - name: Bauen
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project ci/simulator/NotySim.xcodeproj -scheme NotySim \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -derivedDataPath "$DERIVED" \
+            CODE_SIGNING_ALLOWED=YES \
+            | tee "$OUT/build.log" | grep -E "^(error|warning: unable)|error:|\*\* BUILD|Compiling .* failed" || true
+          grep -q "TEST BUILD SUCCEEDED" "$OUT/build.log"
+
+      - name: Simulator starten
+        run: |
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b >/dev/null
+
+      - name: Smoke-Test
+        id: smoke
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building \
+            -project ci/simulator/NotySim.xcodeproj -scheme NotySim \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            -derivedDataPath "$DERIVED" \
+            -resultBundlePath "$OUT/KeyboardSmoke.xcresult" \
+            | tee "$OUT/test.log" | grep -E "Test Case|error:|\*\* TEST|Executed "
+
+      - name: Ergebnisse und Screenshots auspacken
+        if: always()
+        run: |
+          mkdir -p "$OUT/attachments"
+          xcrun simctl spawn "$UDID" log show --last 40m --style compact \
+            --predicate 'subsystem == "de.la.noty" AND category == "keyboard"' > "$OUT/keyboard.log" || true
+          xcrun simctl io "$UDID" screenshot "$OUT/letzter-stand.png" || true
+          if [ -d "$OUT/KeyboardSmoke.xcresult" ]; then
+            xcrun xcresulttool export attachments --path "$OUT/KeyboardSmoke.xcresult" --output-path "$OUT/attachments" || true
+            xcrun xcresulttool get test-results tests --path "$OUT/KeyboardSmoke.xcresult" > "$OUT/tests.json" || true
+          fi
+          python3 ci/simulator/summary.py "$OUT" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: simulator-smoke
+          retention-days: 14
+          path: |
+            ${{ env.OUT }}/KeyboardSmoke.xcresult
+            ${{ env.OUT }}/attachments
+            ${{ env.OUT }}/keyboard.log
+            ${{ env.OUT }}/build.log
+            ${{ env.OUT }}/test.log
+            ${{ env.OUT }}/tests.json
+            ${{ env.OUT }}/letzter-stand.png

@@ -1,0 +1,61 @@
+# Xcode project for the simulator run only (.github/workflows/simulator.yml):
+# XcodeGen creates it on the runner, nothing generated is committed. The app
+# compiles from the same sources and Info.plist as the xtool build; the root
+# Package.swift stays what it is. Without signing identity: ad hoc for the simulator.
+name: NotySim
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+packages:
+  Core:
+    path: ../../Core
+settings:
+  base:
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    TARGETED_DEVICE_FAMILY: "2"
+targets:
+  Noty:
+    type: application
+    platform: iOS
+    sources:
+      - path: ../../Sources/Noty
+      - path: ../../Resources
+        buildPhase: resources
+    dependencies:
+      - package: Core
+        product: NotebookCore
+    settings:
+      base:
+        PRODUCT_NAME: Noty
+        PRODUCT_BUNDLE_IDENTIFIER: de.la.noty.prototype
+        # The tools version 6.0 of the package means language mode 6.
+        SWIFT_VERSION: "6.0"
+        INFOPLIST_FILE: ../../Info.plist
+        # Adds what xtool adds: executable, identifier, launch screen.
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_UILaunchScreen_Generation: true
+  NotyUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: Noty
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.la.noty.prototype.uitests
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: true
+schemes:
+  NotySim:
+    build:
+      targets:
+        Noty: all
+        NotyUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - NotyUITests
