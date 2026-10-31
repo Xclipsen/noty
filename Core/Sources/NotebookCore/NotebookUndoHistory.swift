@@ -93,6 +93,8 @@ public struct NotebookUndoHistory: Sendable {
     /// The next record starts its own step (e.g. an automatic list conversion
     /// stays separately undoable from the typing that triggered it).
     public mutating func separateNextStep() { canCoalesce = false }
+    /// The next step belongs to the last one despite a separation, if key and window allow.
+    public mutating func joinNextStep() { canCoalesce = true }
 
     /// Page-content change on one or more pages. `undoPageID`/`redoPageID`
     /// default to the first/last changed page (a transfer lists source first).

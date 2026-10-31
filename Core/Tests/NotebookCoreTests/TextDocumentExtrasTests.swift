@@ -228,7 +228,7 @@ final class TextDocumentExtrasTests: XCTestCase {
         let rtf = TextDocumentExport.rtf(try office())
         XCTAssertTrue(rtf.hasPrefix("{\\rtf1"))
         XCTAssertTrue(rtf.hasSuffix("}\n"))
-        for part in ["\\page", "\\b", "\\i", "\\ul", "\\strike", "\\highlight", "\\red204\\green31\\blue31;", "HYPERLINK", "\\u9744?", "\\tab ", "Weiter & <mehr>"] {
+        for part in ["\\par\\page", "\\b", "\\i", "\\ul", "\\strike", "\\highlight", "\\red204\\green31\\blue31;", "HYPERLINK", "\\u9744?", "\\tab ", "Weiter & <mehr>"] {
             XCTAssertTrue(rtf.contains(part), part)
         }
         XCTAssertEqual(rtf.filter { $0 == "{" }.count, rtf.filter { $0 == "}" }.count)
@@ -386,6 +386,40 @@ final class TextDocumentExtrasTests: XCTestCase {
         XCTAssertEqual(focus.pageID, settled.pages[0].id, "the caret stays behind its word")
         XCTAssertEqual(settled.textFlowOffset(boxID: focus.boxID, location: focus.selection.location), 10)
         XCTAssertNoThrow(try settled.validate())
+    }
+
+    func testACaretBeforeTheRewrittenPageStaysThere() throws {
+        var document = try flowing("aaaa bbbb cccc dd eeeeee")
+        XCTAssertEqual(texts(document), ["aaaa bbbb ", "cccc dd ", "eeeeee"])
+        let third = document.textFlowSegments[2]
+        var shorter = third.box; shorter.text = "ee"; shorter.runs = nil
+        (document, _) = try document.reflowText(pageID: third.pageID, previous: third.box, replacement: shorter,
+            selection: NSRange(location: 2, length: 0), pageCapacity: Self.words(10))
+        // Esc and `gg` within the pause: the caret left for page one.
+        let (settled, focus) = try XCTUnwrap(try document.settlingTextFlow(boxID: third.box.id, selection: NSRange(location: 2, length: 0), layout: layout))
+        XCTAssertEqual(texts(settled).prefix(2), ["aaaa bbbb ", "cccc dd ee"])
+        XCTAssertEqual(focus.pageID, settled.pages[0].id)
+        XCTAssertEqual(focus.selection.location, 2)
+    }
+
+    func testSettlingJoinsTheStepBeforeItDespiteASeparation() throws {
+        let first = try flowing("eins")
+        var second = first; second.pages[0].textBoxes?[0].text = "zwei"
+        var third = second; third.pages[0].textBoxes?[0].text = "drei"
+        var history = NotebookUndoHistory()
+        let key = NotebookUndoHistory.Coalescing(key: "flow", window: 1.5)
+        history.record(.textFlow, before: first, after: second, coalescing: key)
+        history.separateNextStep(); history.joinNextStep()
+        history.record(.textFlow, before: second, after: third, coalescing: key)
+        XCTAssertEqual(history.undoCount, 1)
+    }
+
+    func testALinkWithASpaceStaysAValidTarget() throws {
+        var document = try flowing("Link")
+        let range = NSRange(location: 0, length: 4)
+        document = try document.restylingTextFlow(range: range, layout: layout) { $0.link = "https://example.org/a b" }.0
+        let archive = TextDocumentExport.data(document, as: .word)
+        XCTAssertTrue(String(decoding: archive, as: UTF8.self).contains("Target=\"https://example.org/a%20b\""))
     }
 
     func testNothingMovesWhenTheWordStillDoesNotFitAndNothingMoreIsMeasured() throws {

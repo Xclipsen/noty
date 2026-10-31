@@ -104,6 +104,12 @@ extension TextDocumentExport {
 
     // MARK: Word
 
+    /// A link as typed can hold spaces; a relationship target must be a URI.
+    private static func uri(_ link: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.insert(charactersIn: "#[]%")
+        return link.addingPercentEncoding(withAllowedCharacters: allowed) ?? link
+    }
     private static func xml(_ text: String) -> String {
         var result = ""
         for scalar in text.unicodeScalars {
@@ -287,7 +293,7 @@ extension TextDocumentExport {
                 + "<Relationship Id=\"rId1\" Type=\"\(office)/styles\" Target=\"styles.xml\"/>"
                 + "<Relationship Id=\"rId2\" Type=\"\(office)/numbering\" Target=\"numbering.xml\"/>"
                 + "<Relationship Id=\"rId3\" Type=\"\(office)/settings\" Target=\"settings.xml\"/>"
-                + links.enumerated().map { "<Relationship Id=\"rIdLink\($0.offset + 1)\" Type=\"\(office)/hyperlink\" Target=\"\(xml($0.element))\" TargetMode=\"External\"/>" }.joined()
+                + links.enumerated().map { "<Relationship Id=\"rIdLink\($0.offset + 1)\" Type=\"\(office)/hyperlink\" Target=\"\(xml(uri($0.element)))\" TargetMode=\"External\"/>" }.joined()
                 + "</Relationships>"),
             ("word/document.xml", document),
             ("word/styles.xml", stylesXML),
@@ -364,7 +370,7 @@ extension TextDocumentExport {
                 paragraph += span(text, block.style)
             }
             paragraph += block.spans.map { span($0.text, $0.style) }.joined()
-            body += paragraph + (block.pageBreak ? "\\page\n" : "\\par\n")
+            body += paragraph + (block.pageBreak ? "\\par\\page\n" : "\\par\n")
         }
         let page = page(of: notebook)
         let table = colors.map { value -> String in

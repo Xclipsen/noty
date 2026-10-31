@@ -807,7 +807,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     func applyTextFocus(_ focus: TextFlowFocus) {
         guard active, focus.pageID == pageID, let field = fields[focus.boxID],
-              boxes.contains(where: { $0.id == focus.boxID }) else { return }
+              boxes.contains(where: { $0.id == focus.boxID }) else {
+            KeyboardRouter.shared.trace("applyTextFocus refused")
+            return
+        }
         selectedID = focus.boxID; synchronize(); layoutIfNeeded()
         defer { pendingReveal = max(pendingReveal ?? .typing, .typing) } // flow hand-off while typing
         let editor = field.editor

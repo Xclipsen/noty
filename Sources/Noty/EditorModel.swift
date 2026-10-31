@@ -310,6 +310,8 @@ final class EditorModel: ObservableObject {
         guard let (candidate, focus) = try? notebook.settlingTextFlow(boxID: boxID, selection: selection, layout: flowLayout(trailingDraft)),
               (try? installFlow(candidate)) != nil else { return nil }
         pendingDraft = nil
+        // The edit that made the room ended its step (`d`, a macro): this is still it.
+        history.joinNextStep()
         history.record(.textFlow, before: before, after: candidate, beforeFocus: nil, afterFocus: focus, coalescing: Self.flowCoalescing)
         publishHistory()
         return focus

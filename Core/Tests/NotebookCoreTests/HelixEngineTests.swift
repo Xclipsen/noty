@@ -788,6 +788,16 @@ final class HelixEngineTests: XCTestCase {
         press("Q", on: &engine, parser: &parser)
         XCTAssertEqual(engine.macros["@"], [.key("l")])
     }
+    func testACancelledSequenceLeavesNothingInTheRecording() {
+        var engine = TextEngine(text: "ab\n"), parser = HelixParser()
+        press("Q", on: &engine, parser: &parser)
+        _ = engine.record("g", .pending(menu: nil))
+        // Esc in a text never reaches the parser: `KeyboardRouter.escape(in:)` reports it.
+        _ = engine.record("<Esc>", .cancelled)
+        _ = engine.record("l", .action(.text(.move(.right)), count: nil, repeats: true))
+        press("Q", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.macros["@"], [.key("l")])
+    }
     func testLeavingTheTextEndsARecordingAndKeepsIt() {
         var engine = TextEngine(text: "ab\n"), parser = HelixParser()
         press("\" a Q l", on: &engine, parser: &parser)

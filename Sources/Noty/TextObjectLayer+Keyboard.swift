@@ -201,7 +201,7 @@ extension TextObjectLayer {
         let router = KeyboardRouter.shared
         // A focus request is on its way: the view is behind the engine.
         if router.handoff, router.mode != .insert { return router.engine.selectedRange }
-        if let range = TextFlowSelection.shared.range, NSMaxRange(range) <= buffer.text.length { return range }
+        if isFlow(editor), let range = TextFlowSelection.shared.range, NSMaxRange(range) <= buffer.text.length { return range }
         return NSRange(location: buffer.base + editor.selectedRange.location, length: editor.selectedRange.length)
     }
     /// Undo, taps and typing happen outside the engine: it takes over what the view shows.

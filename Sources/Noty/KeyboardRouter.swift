@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import OSLog
+import GameController
 import NotebookCore
 
 /// One entry of the command palette.
@@ -220,6 +221,7 @@ final class KeyboardRouter: ObservableObject {
         Self.log.notice("[noty.keys] claim scope=\(self.scope == .library ? "library" : "editor", privacy: .public) responder=\(Self.responderName, privacy: .public)")
     }
     func textBegan() {
+        trace("textBegan")
         let entering = !editing
         editing = true
         // `applyTextFocus` ends a hand-off, once the selection is in place.
@@ -232,16 +234,32 @@ final class KeyboardRouter: ObservableObject {
     }
     func textEnded() {
         DispatchQueue.main.async { [self] in
-            guard !(UIResponder.currentFirstResponder is any KeyboardTextTarget), heldEditor == nil else { return }
+            guard !(UIResponder.currentFirstResponder is any KeyboardTextTarget), heldEditor == nil else {
+                trace("textEnded kept")
+                return
+            }
             // A focus request is on its way to another page: it decides, or runs out.
             if handoff {
+                trace("textEnded waits")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [self] in textEnded() }
                 return
             }
             editing = false; TextFlowSelection.shared.set(nil)
             endTextState()
             refreshLabel()
+            trace("textEnded")
+            // Nothing else takes the keys when no text view let go of them.
+            reclaim()
         }
+    }
+    /// Touch alone again: sheets and the search field behave as without a keyboard.
+    func keyboardDisconnected() {
+        if GCKeyboard.coalesced == nil { keyboardSeen = false }
+    }
+    /// Diagnose: the states between two keys (`idevicesyslog | grep noty.keys`).
+    func trace(_ event: String) {
+        guard HangProbe.isInstalled else { return }
+        Self.log.notice("[noty.keys] \(event, privacy: .public) mode=\(self.label, privacy: .public) editing=\(self.editing, privacy: .public) handoff=\(self.handoff, privacy: .public) responder=\(Self.responderName, privacy: .public)")
     }
     /// No text any more: the registers stay, everything else goes.
     private func endTextState() {
@@ -265,6 +283,7 @@ final class KeyboardRouter: ObservableObject {
     }
     /// A tap in the text writes, also out of NOR and SEL.
     func tappedText(_ editor: any KeyboardTextTarget) {
+        pageTouched()
         dropPrompt()
         setMode(.insert, editor: editor)
         insertRun = nil; typedSinceInsert = false
@@ -538,7 +557,10 @@ final class KeyboardRouter: ObservableObject {
         guard isEnabled || helpVisible else { return false }
         if !keyboardSeen { keyboardSeen = true }
         cancelRepeat()
-        guard latch.allows(token, by: .keyCommand, now: Self.now) else { return true }
+        guard latch.allows(token, by: .keyCommand, now: Self.now) else {
+            trace("command token=\(token) second-way")
+            return true
+        }
         outcome = ""
         let used = dispatch(token, key: nil, text: text)
         if used { latch.used(token, by: .keyCommand, now: Self.now) }
@@ -558,8 +580,19 @@ final class KeyboardRouter: ObservableObject {
         }
         if let activePanel, activePanel.typing { return panelKey(token, activePanel) }
         if textPrompt != nil { promptKey(token, editor: text); return true }
-        if token == "<Esc>", activePanel == nil, editing, scope == .editor, let editor = text ?? UIResponder.currentFirstResponder as? any KeyboardTextTarget {
-            if !escape(in: editor) { editor.finishByEscape() }
+        if token == "<Esc>", activePanel == nil, editing, scope == .editor {
+            guard let editor = text ?? UIResponder.currentFirstResponder as? any KeyboardTextTarget else {
+                // The text is gone, a focus request that never came still holds `editing`.
+                outcome = "text gone"
+                handoff = false; textEnded()
+                return true
+            }
+            if escape(in: editor) { outcome = "one level" } else {
+                outcome = "leaves text"
+                // Nothing may hold the text open any more: leaving is the last word.
+                handoff = false
+                editor.finishByEscape()
+            }
             return true
         }
         return feed(token, key: key, text: text)
@@ -627,7 +660,11 @@ final class KeyboardRouter: ObservableObject {
         guard isEnabled, scope == .editor else { return false }
         if textPrompt != nil { closePrompt(restoring: true, editor: editor); return true }
         // First Esc only drops a started sequence (`g`, `3`).
-        if !parser.isIdle { dropSequence(); return true }
+        if !parser.isIdle {
+            _ = engine.record("<Esc>", .cancelled)
+            dropSequence()
+            return true
+        }
         return editor.keyboardEscape()
     }
 
@@ -720,8 +757,10 @@ final class KeyboardHostView: UIView {
                      UIWindow.didBecomeKeyNotification, UIApplication.didBecomeActiveNotification] {
             NotificationCenter.default.addObserver(self, selector: #selector(focusChanged), name: name, object: nil)
         }
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardGone), name: .GCKeyboardDidDisconnect, object: nil)
     }
     @objc private func focusChanged() { KeyboardRouter.shared.reclaim() }
+    @objc private func keyboardGone() { KeyboardRouter.shared.keyboardDisconnected() }
     /// Takes the keys unless text is being typed; the sheets and the editor
     /// cover above the library have to be gone first.
     func claim() {

@@ -221,9 +221,12 @@ extension Notebook {
         var replacement = previous
         replacement.text = tail.text; replacement.runs = tail.runs
         let local = selection.map { NSRange(location: max(0, $0.location - start), length: $0.length) } ?? NSRange(location: 0, length: 0)
-        return try reflowText(pageID: segments[index - 1].pageID, previous: previous, replacement: replacement, selection: local,
+        let settled = try reflowText(pageID: segments[index - 1].pageID, previous: previous, replacement: replacement, selection: local,
             trailingDraft: layout.trailingDraft, drawingIsEmpty: layout.drawingIsEmpty,
             trailingLineFits: layout.trailingLineFits, holdsTail: true, pageCapacity: layout.capacity)
+        // The caret left for a place before the rewritten part: it stays there.
+        guard let selection, selection.location < start else { return settled }
+        return (settled.0, settled.0.textFlowFocus(selection: selection) ?? settled.1)
     }
 
     /// Writes `content` as the whole flow. Pages before the change keep their
