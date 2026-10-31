@@ -16,7 +16,7 @@ struct NotyApp: App {
         // 500 MB per notebook; the portable digest reaches only a few MB/s in debug builds.
         NotebookCore.SHA256.installAcceleratedStreaming { CryptoKitStream() }
         // Read once at launch, off unless chosen; the settings toggle documents that it applies after a restart.
-        if UserDefaults.standard.object(forKey: AppSettingsKey.hangProbe) as? Bool ?? false { HangProbe.install() }
+        if UserDefaults.standard.bool(forKey: AppSettingsKey.hangProbe) { HangProbe.install() }
     }
     var body: some Scene {
         WindowGroup {
