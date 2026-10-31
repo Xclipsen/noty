@@ -100,6 +100,8 @@ private struct DocumentCreationForm: View {
     @Binding var title: String
     @Binding var appearance: NotebookAppearance
     let textDocument: Bool
+    let onSubmit: () -> Void
+    @FocusState private var titleFocused: Bool
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -110,6 +112,7 @@ private struct DocumentCreationForm: View {
                     VStack(alignment: .leading, spacing: 18) {
                         TextField("Titel", text: $title).font(.title3).textFieldStyle(.roundedBorder)
                             .accessibilityLabel("Titel \(kind == "Heft" ? "des Hefts" : "des Textdokuments")")
+                            .focused($titleFocused).onSubmit(onSubmit)
                         if textDocument {
                             Text("Seiten entstehen beim Schreiben; am Ende steht immer eine leere Seite für Handschrift bereit. Handschrift bleibt fest auf ihrer Seite.")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -127,6 +130,12 @@ private struct DocumentCreationForm: View {
                 }
             }.padding(24)
         }
+        // With a hardware keyboard the sheet goes on by keys alone; a field
+        // focused during the presentation would not take.
+        .task {
+            guard KeyboardRouter.shared.keyboardSeen, (try? await Task.sleep(for: .milliseconds(450))) != nil else { return }
+            titleFocused = true
+        }
     }
 }
 
@@ -143,19 +152,23 @@ struct NotebookCreationView: View {
     }
     var body: some View {
         NavigationStack {
-            DocumentCreationForm(kind: "Heft", title: $title, appearance: $appearance, textDocument: false)
+            DocumentCreationForm(kind: "Heft", title: $title, appearance: $appearance, textDocument: false, onSubmit: create)
             .navigationTitle("Neues Heft").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.disabled(creating) }
+                ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.keyboardShortcut(.cancelAction).disabled(creating) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Erstellen") {
-                        creating = true
-                        Task { if await onCreate(title, appearance) { dismiss() }; creating = false }
-                    }.disabled(creating || (try? LibraryStore.validTitle(title)) == nil)
+                    Button("Erstellen", action: create).keyboardShortcut(.defaultAction)
+                        .disabled(creating || (try? LibraryStore.validTitle(title)) == nil)
                 }
             }
             .disabled(creating)
         }.preferredColorScheme(.dark)
+    }
+    /// Enter reaches this from the field as well as from the button.
+    private func create() {
+        guard !creating, (try? LibraryStore.validTitle(title)) != nil else { return }
+        creating = true
+        Task { if await onCreate(title, appearance) { dismiss() }; creating = false }
     }
 }
 
@@ -189,18 +202,21 @@ struct TextDocumentCreationView: View {
     }
     var body: some View {
         NavigationStack {
-            DocumentCreationForm(kind: "Textdokument", title: $title, appearance: $appearance, textDocument: true)
+            DocumentCreationForm(kind: "Textdokument", title: $title, appearance: $appearance, textDocument: true, onSubmit: create)
             .navigationTitle("Neues Textdokument").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.disabled(creating) }
+                ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.keyboardShortcut(.cancelAction).disabled(creating) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Erstellen") {
-                        creating = true
-                        Task { if await onCreate(title, appearance.landscape, appearance.paper, appearance.color) { dismiss() }; creating = false }
-                    }.disabled(creating || (try? LibraryStore.validTitle(title)) == nil)
+                    Button("Erstellen", action: create).keyboardShortcut(.defaultAction)
+                        .disabled(creating || (try? LibraryStore.validTitle(title)) == nil)
                 }
             }
             .disabled(creating)
         }.preferredColorScheme(.dark)
+    }
+    private func create() {
+        guard !creating, (try? LibraryStore.validTitle(title)) != nil else { return }
+        creating = true
+        Task { if await onCreate(title, appearance.landscape, appearance.paper, appearance.color) { dismiss() }; creating = false }
     }
 }
