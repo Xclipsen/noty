@@ -21,6 +21,7 @@ final class ImageObjectLayer: UIView {
     /// Failed decodes per image (retry pause), and originals validation rejected.
     private var failures: [UUID: (count: Int, retryAt: CFTimeInterval)] = [:]
     private var broken = Set<UUID>()
+    private static var reportedDamage = Set<String>()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -113,7 +114,13 @@ final class ImageObjectLayer: UIView {
     }
     private func validated(_ id: UUID, generation expected: Int, rejected: Error?, retry: TimeInterval?) {
         guard generation == expected, objects.contains(where: { $0.id == id }) else { return }
-        if let rejected { broken.insert(id); onError?(rejected.localizedDescription) }
+        if let rejected {
+            broken.insert(id)
+            // One notice per damaged original, not one per page visit.
+            if let asset = objects.first(where: { $0.id == id })?.asset.sha256, Self.reportedDamage.insert(asset).inserted {
+                onError?(rejected.localizedDescription)
+            }
+        }
         else if let retry { redraw(id, after: retry) }
     }
     private func redraw(_ id: UUID, after delay: TimeInterval) {

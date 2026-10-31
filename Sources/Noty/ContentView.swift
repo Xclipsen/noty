@@ -248,6 +248,8 @@ struct ContentView: View {
             .onChange(of: tool) { old, value in
                 if value != .text { textFocus = nil }; if value.isInk { lastInkTool = value }
                 if value == .text, old != .text { toolBeforeText = old }
+                // Every way into the eraser (bar, palette, Pencil) counts, not only the toggle.
+                if value.isEraser, !old.isEraser { toolBeforeEraser = old }
                 previousTool = old
             }
             .onChange(of: tool, initial: true) { _, value in onToolChange?(value) }
@@ -412,7 +414,7 @@ struct ContentView: View {
                         onInsertText: { textInsertRequest += 1 },
                         onPhoto: { imageTarget = currentPage.id; choosingPhoto = true },
                         onImageFile: { imageTarget = currentPage.id; importingImage = true },
-                        onPasteImage: { if currentPage.id == writingDraft.id { guard model.materializeDraft(draftPage) else { return } }; model.pasteImage(pageID: currentPage.id) },
+                        onPasteImage: { if currentPage.id == writingDraft.id { guard model.materializeDraft(draftPage) else { return } }; model.pasteImage(pageID: currentPage.id, near: nil) },
                         onContentWidth: { width in if optionsWidths[tool] != width { optionsWidths[tool] = width } })
                 }
                 if notebookLoaded, canEdit, let pencilPalette {
@@ -747,10 +749,9 @@ struct ContentView: View {
     private func togglePencilEraser() {
         guard canEdit else { return }
         pencilPalette = nil
-        if tool == .strokeEraser || tool == .precisionEraser {
-            tool = toolBeforeEraser.flatMap { $0 == .strokeEraser || $0 == .precisionEraser ? nil : $0 } ?? lastInkTool
+        if tool.isEraser {
+            tool = toolBeforeEraser.flatMap { $0.isEraser ? nil : $0 } ?? lastInkTool
         } else {
-            toolBeforeEraser = tool
             tool = toolbox.preferences.eraserPrecision == true ? .precisionEraser : .strokeEraser
         }
     }
@@ -760,7 +761,6 @@ struct ContentView: View {
         guard canEdit else { return }
         pencilPalette = nil
         guard let previous = previousTool, previous != tool else { togglePencilEraser(); return }
-        if tool == .strokeEraser || tool == .precisionEraser { toolBeforeEraser = nil }
         tool = previous
     }
     private func pencilToolSwitch(_ action: PencilToolSwitch) {
@@ -892,12 +892,12 @@ struct ContentView: View {
                 guard isPaneActive(), model.pageContentGeneration == generation else { return false }
                 return model.updateContent(next, basedOn: before, pageID: page.id, inkGesture: true)
             },
-            onPasteImage: {
+            onPasteImage: { place in
                 guard isPaneActive(), model.pageContentGeneration == generation, canEdit else { return }
                 if page.id == writingDraft.id, !model.notebook.pages.contains(where: { $0.id == page.id }) {
                     guard model.materializeDraft(draftPage) else { return }
                 }
-                model.pasteImage(pageID: page.id)
+                model.pasteImage(pageID: page.id, near: place)
             },
             onTextFieldRequested: {
                 // Double-tap menu „Textfeld hinzufügen“ or a second tap on a selected

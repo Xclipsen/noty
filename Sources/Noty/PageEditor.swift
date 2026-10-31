@@ -3,6 +3,7 @@ import PDFKit
 import PencilKit
 import NotebookCore
 import OSLog
+import UniformTypeIdentifiers
 
 /// Configuration of one native page (`WorksheetView`), built per page by the
 /// editor and applied by `NotebookViewport`.
@@ -69,7 +70,8 @@ struct PageEditor {
     /// Shapes removed by the precision eraser, merged into that gesture's ink undo step.
     var onEraseShapes: (PageContent, PageContent) -> Bool = { _, _ in false }
     /// An image from the system pasteboard onto this page (the one paste path).
-    var onPasteImage: () -> Void = {}
+    /// `near`: where the image should land (canonical), nil for the page's text area.
+    var onPasteImage: (PagePoint?) -> Void = { _ in }
     /// „Textfeld hinzufügen“ from the finger double-tap menu: the editor
     /// switches to the text tool, the sheet then opens the field itself.
     /// Also „Bearbeiten“/second tap on a selected field (caret there).
@@ -653,6 +655,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         onInkSession = editor.onInkSession
         let focusChanged = worksheetFocused != editor.focused
         worksheetFocused = editor.focused
+        objectLayer.offersPaste = editor.focused
         let policy: PKCanvasViewDrawingPolicy = editor.fingerDrawing ? .anyInput : .pencilOnly
         if canvas.drawingPolicy != policy { canvas.drawingPolicy = policy }
         holdGesture.allowFinger = editor.fingerDrawing
@@ -938,8 +941,19 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if ObjectClipboard.isNewest || (!board.hasStrings && !board.hasImages) {
             syncObjectPlane(); objectLayer.pasteCopiedObjects(); return
         }
-        if board.hasImages && !board.hasStrings { configuration?.onPasteImage(); return }
-        if board.hasStrings { pasteText() } else { configuration?.onPasteImage() }
+        // Both on the board (a copied web image with its address, or an Office
+        // text with a picture of it): what the source offers first is what it means.
+        let imageFirst = board.types.first.flatMap(UTType.init)?.conforms(to: .image) == true
+        if board.hasImages, imageFirst || !board.hasStrings { pasteImageHere(); return }
+        if board.hasStrings { pasteText() } else { pasteImageHere() }
+    }
+    /// In the middle of what is visible, like pasted text, and selected: on a
+    /// long page the text-area centre could be out of sight.
+    private func pasteImageHere() {
+        let origin = pageLayout.contentOrigin
+        let visible = lastVisible ?? bounds
+        objectLayer.awaitingPastedImage = true
+        configuration?.onPasteImage(PagePoint(x: visible.midX - origin.x, y: visible.midY - origin.y))
     }
     /// Text from outside without an edited field: a new field at the last
     /// tapped place, otherwise in the middle of the visible part, in the

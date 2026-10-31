@@ -263,11 +263,11 @@ private struct ToolSettingsPage: View {
             Section {
                 Toggle("Autostift für neue Striche", isOn: Binding(get: { toolbox.preferences.autoPen ?? false }, set: { toolbox.preferences.setAutomaticInk($0, for: .pen) }))
                 Toggle("Stift/Bleistift: Formen nach Halten erkennen", isOn: Binding(get: { toolbox.preferences.recognizeShapes ?? true }, set: { toolbox.preferences.recognizeShapes = $0 }))
-                Toggle("Marker: Linie nach Halten begradigen", isOn: Binding(get: { toolbox.preferences.markerHoldStraighten ?? true }, set: { toolbox.preferences.markerHoldStraighten = $0 }))
-                Picker("Markerspitze", selection: Binding(get: { toolbox.preferences.effectiveMarkerTip }, set: { toolbox.preferences.markerTip = $0 })) {
+                Toggle("Textmarker: Linie nach Halten begradigen", isOn: Binding(get: { toolbox.preferences.markerHoldStraighten ?? true }, set: { toolbox.preferences.markerHoldStraighten = $0 }))
+                Picker("Textmarkerspitze", selection: Binding(get: { toolbox.preferences.effectiveMarkerTip }, set: { toolbox.preferences.markerTip = $0 })) {
                     Text("Rund").tag(MarkerTip.round); Text("Keil").tag(MarkerTip.chisel)
                 }
-                Toggle("Marker immer gerade (rastet bei 0°/90°, 45°, 30° ein)", isOn: Binding(get: { toolbox.preferences.markerStraight ?? false }, set: { toolbox.preferences.markerStraight = $0 }))
+                Toggle("Textmarker immer gerade (rastet bei 0°/90°, 45°, 30° ein)", isOn: Binding(get: { toolbox.preferences.markerStraight ?? false }, set: { toolbox.preferences.markerStraight = $0 }))
                 Picker("Radierer-Standard", selection: Binding(get: { toolbox.preferences.eraserPrecision ?? false }, set: { toolbox.preferences.eraserPrecision = $0 })) {
                     Text("Ganzer Strich").tag(false); Text("Präzise").tag(true)
                 }
@@ -593,7 +593,7 @@ private struct AboutSettingsPage: View {
                 LabeledContent("Test-/Restore-Bereiche", value: "Auf meinem iPad › noty › NotyWorkspaces")
                 LabeledContent("Aktueller Bereich", value: workspaces.title)
             } header: { Text("Datenablage") } footer: {
-                Text("Alle Unterlagen liegen lokal im App-Container und sind über die Dateien-App sichtbar. Dort bitte nichts umbenennen oder verschieben. noty hat kein Konto und keinen eigenen Server; Daten verlassen das iPad nur über ein selbst eingerichtetes Backup oder einen Export.")
+                Text("Alle Unterlagen liegen lokal im App-Container und sind über die Dateien-App sichtbar. Dort bitte nichts umbenennen oder verschieben. Hefte und Textdokumente verlassen das iPad nur über ein selbst eingerichtetes Backup, einen Export oder Teilen. Das freiwillige noty-Konto gleicht nur Lesezeichen und Markierungen der Gesetzessammlung mit law.xclipsen.de ab; Gesetzestexte werden von dort geladen.")
             }
             SigningRenewalSection()
             Section {

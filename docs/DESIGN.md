@@ -31,6 +31,20 @@ Nutzer: Das Formenwerkzeug fängt erst an, wenn man den Stift bewegt; gefüllte 
 
 Format: keine Heftänderung, nur optionale Werkzeugschlüssel ([STORAGE](STORAGE.md)). Stand: implementiert, Core-Tests, SDK-Build; nicht installiert, am iPad ungeprüft (Aufsetzgefühl mit dem Pencil, Pencil-Tippen auf Formen, Finger-Scrollen/Zoomen im Formenwerkzeug, Füllregler und Farbwähler).
 
+## Bedienfluss-Durchsicht – 31.10.2026
+
+Durchsicht aller Bereiche außer Textfeldern und Textdokumenten, kein Format- oder Speicherwechsel:
+
+- **Radierer zurück.** Doppeltipp führt zum Werkzeug direkt davor, egal wie der Radierer gewählt wurde.
+- **Hilfslinien.** Bricht ein Werkzeugwechsel den Zug ab, verschwinden Einrastlinien und Gradanzeige sofort.
+- **Fingerkontakt beim Schreiben.** Ein aufgelegter Finger oder Handballen beendet Halten-zur-Form und Radieren nicht mehr. Der zweite Finger beim Fingermalen bleibt der Beginn der Navigation.
+- **Einfügen.** Ein Bild erscheint mit jedem Werkzeug mitten im sichtbaren Teil der Seite und ist ausgewählt. Liegen Bild und Text in der Zwischenablage, entscheidet, was die Quelle zuerst anbietet. Zu große Auswahlen und Tinte, die beim Drehen über den Rand ragen würde, melden das, statt wortlos zu verwerfen. „Einfügen“ erscheint nur auf der bearbeiteten Seite.
+- **Lasso-Filter.** Mindestens eine Art bleibt an. Das Formenwerkzeug bestätigt eine fertige Form mit Haptik.
+- **Drehen.** Ein eingerasteter Winkel löst sich 2° später, als er greift.
+- **Gesetzessammlung.** Beim Tippen springt nur eine vollständige Fundstelle wie `144 HGB`; eine bloße Zahl sucht erst mit Return. Ein vom Server abgelehnter Eintrag hält die Übrigen nicht auf. Beschädigte Fassungen ersetzt der geprüfte Download. Abgelaufene Anmeldung zeigt Hinweis und „Abmelden“, ohne weiter gegen den Server zu laufen. Mailabhängige Wege bleiben verborgen, solange der Server keine Mails verschickt (`LawLibraryModel.mailDelivery`). Die Lasche weicht einer Leiste am selben Rand aus, ein unteres Fenster parkt immer unten.
+
+Stand: implementiert und mit SDK-Build geprüft; am iPad ungeprüft.
+
 ## Werkzeugleiste, Seitenbewegung, Gesetzesfenster – 22.10.2026
 
 Nutzungsfeedback Tag 2, nur Oberfläche, kein Format- oder Speicherwechsel:

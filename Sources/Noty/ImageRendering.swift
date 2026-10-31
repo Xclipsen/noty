@@ -3,7 +3,7 @@ import ImageIO
 import NotebookCore
 
 enum ImageImportError: LocalizedError {
-    case invalid, fileTooLarge, tooManyPixels, missingClipboard, video, pageFull
+    case invalid, fileTooLarge, tooManyPixels, missingClipboard, video, pageFull, pageChanged
     case notebookFull(used: Int, adding: Int)
     /// Photos delivered no still image; `offered`: its content types (diagnosis).
     case unsupportedPhoto(offered: String)
@@ -22,7 +22,8 @@ enum ImageImportError: LocalizedError {
         switch self {
         case .invalid: "Dieses Bild konnte nicht gelesen werden. Unterstützt sind Fotos und Bilder als HEIC/HEIF, JPEG, PNG, TIFF, GIF, WebP oder BMP."
         case .fileTooLarge: "Das Bild ist zu groß und ließ sich nicht ausreichend verkleinern (höchstens 250 MB als Quelle). Bitte eine kleinere Fassung wählen, z. B. in Fotos als HEIC oder JPEG sichern."
-        case .tooManyPixels: "Das Bild hat mehr als 200 Megapixel. noty übernimmt Bilder unverändert im Original und erlaubt höchstens 200 Megapixel je Bild."
+        case .tooManyPixels: "Das Bild hat mehr als 200 Megapixel, das ist für noty zu groß."
+        case .pageChanged: "Die Seite hat sich währenddessen geändert. Bitte das Bild erneut einfügen."
         case .missingClipboard: "Die Zwischenablage enthält kein unterstütztes Bild. Bitte zuerst einen Screenshot oder ein Bild kopieren."
         case .video: "Die ausgewählte Datei ist ein Video. Bitte ein Foto oder Bild auswählen."
         case .pageFull: "Auf dieser Seite liegen bereits 50 Bilder, mehr sind je Seite nicht möglich. Bitte eine andere Seite verwenden."
@@ -134,13 +135,16 @@ enum ImageImport {
 
     /// Off the main actor: the new object for `data`, already staged as
     /// `reference` (decodes its metadata and a small thumbnail once).
-    static func object(_ reference: ImageAssetReference, data: Data, in bounds: PageRect) throws -> ImageObject {
+    /// `near`: centre of the image if it fits there, otherwise as close as the bounds allow.
+    static func object(_ reference: ImageAssetReference, data: Data, in bounds: PageRect, near place: PagePoint? = nil) throws -> ImageObject {
         let (width, height) = try dimensions(data)
         _ = try thumbnail(data, limit: 32)
         let scale = min(1, min(320, bounds.width * 0.7) / Double(width), bounds.height * 0.7 / Double(height))
         let w = max(1, Double(width) * scale), h = max(1, Double(height) * scale)
+        let centre = place ?? PagePoint(x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2)
         let object = ImageObject(asset: reference, pixelWidth: width, pixelHeight: height,
-            x: bounds.x + (bounds.width - w) / 2, y: bounds.y + (bounds.height - h) / 2, width: w, height: h)
+            x: max(bounds.x, min(centre.x - w / 2, bounds.x + bounds.width - w)),
+            y: max(bounds.y, min(centre.y - h / 2, bounds.y + bounds.height - h)), width: w, height: h)
         try object.validate()
         return object
     }
@@ -238,6 +242,15 @@ enum ImageRendering {
     /// Uncached decode for background rasterisation; same pixels as `image(_:limit:)`.
     nonisolated static func decoded(_ object: ImageObject, limit: Int, assets: ImageAssetProviding? = nil) throws -> UIImage {
         UIImage(cgImage: try ImageImport.thumbnail(payload(object, assets: assets), limit: limit))
+    }
+
+    /// Rendition size for one output page. A page with many photos must not
+    /// hold them all at the maximum at once: from the third image on each
+    /// gets what its printed size needs, which looks the same on the page.
+    nonisolated static func outputLimit(_ object: ImageObject, imagesOnPage count: Int, maximum: Int, pixelsPerPoint: Double) -> Int {
+        guard count > 2 else { return maximum }
+        let whole = max(object.width / max(object.crop.width, 0.01), object.height / max(object.crop.height, 0.01))
+        return min(maximum, max(1024, Int((whole * pixelsPerPoint).rounded(.up))))
     }
 
     /// Background rasterisation with an already decoded rendition.

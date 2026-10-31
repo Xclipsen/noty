@@ -7,8 +7,8 @@ extension WritingTool {
     var title: String {
         switch self {
         case .pen: "Stift"
-        case .marker: "Marker"
-        case .strokeEraser: "Ganzer Strich"
+        case .marker: "Textmarker"
+        case .strokeEraser: "Radierer"
         case .precisionEraser: "Präzisionsradierer"
         case .inkSelection: "Lasso"
         case .text: "Text"
