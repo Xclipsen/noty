@@ -34,6 +34,16 @@ public struct TextRuling: Equatable, Sendable {
         let highest = pageTop + ascent
         return max(highest, nextBaseline(atOrAfter: highest) - lift)
     }
+    /// Baseline in container coordinates of a line starting at `top` of a
+    /// container at page y `origin`; the one rule of editor, previews, PDF and
+    /// flow capacity. `pageTop`: only for flow segments (`firstLineBaseline`).
+    public func lineBaseline(top: Double, ascent: Double, origin: Double, pageTop: Double?) -> Double {
+        if top < 0.5, let pageTop { return firstLineBaseline(ascent: ascent, pageTop: pageTop) - origin }
+        let natural = origin + top + ascent
+        let ruled = baseline(forNatural: natural)
+        // Grid rows may tighten a line slightly, never the first one (no clipping).
+        return (top < 0.5 ? max(natural, ruled) : ruled) - origin
+    }
 }
 
 /// Click-and-type below existing text: the empty lines a tap needs and the

@@ -23,6 +23,22 @@ public struct TextFlowLayout {
     }
 }
 
+/// Text editor 2: one change of the whole text, one undo step (or part of
+/// one, while typing). Offsets are UTF-16 units of `Notebook.textFlowContent`.
+public struct TextFlowChange: Equatable, Sendable {
+    /// Ascending, in offsets of the text before the change.
+    public var edits: [TextListEditing.Edit]
+    public var style: TextBoxStyle?
+    public var selection: NSRange
+    public var selectionBefore: NSRange
+    /// A step of its own; otherwise it joins the typing before it.
+    public var separateStep: Bool
+    public init(edits: [TextListEditing.Edit], style: TextBoxStyle? = nil, selection: NSRange, selectionBefore: NSRange, separateStep: Bool = false) {
+        self.edits = edits; self.style = style; self.selection = selection
+        self.selectionBefore = selectionBefore; self.separateStep = separateStep
+    }
+}
+
 extension Notebook {
     /// The flow offset of `location` in the segment `boxID`.
     public func textFlowOffset(boxID: UUID, location: Int) -> Int? {
@@ -98,6 +114,35 @@ extension Notebook {
         var content = whole.restyled([range], change)
         if range.length == whole.text.utf16.count { change(&content.style) }
         return try rewritingTextFlow(content, from: range.location, selection: NSRange(location: range.location, length: 0), layout: layout)
+    }
+
+    /// Text editor 2: the buffer changed, the model follows. `style` is what
+    /// typing wrote, without it the replacements take over their neighbour's
+    /// format. The layout's page ranges come in through `layout.capacity`.
+    public func changingTextFlow(_ change: TextFlowChange, layout: TextFlowLayout) throws -> (Notebook, TextFlowFocus) {
+        let length = textFlowContent.map { ($0.text as NSString).length } ?? -1
+        guard let whole = textFlowContent, let first = change.edits.first,
+              change.edits.allSatisfy({ NSMaxRange($0.range) <= length }) else { throw TextFlowError.stale }
+        var content = whole.applying(change.edits)
+        if let style = change.style {
+            var ranges: [NSRange] = [], shift = 0
+            for edit in change.edits {
+                let inserted = (edit.replacement as NSString).length
+                if inserted > 0 { ranges.append(NSRange(location: edit.range.location + shift, length: inserted)) }
+                shift += inserted - edit.range.length
+            }
+            content = content.restyled(ranges) { $0 = style }
+            if content.text.isEmpty { content.style = style }
+        }
+        return try rewritingTextFlow(content, from: first.range.location, selection: change.selection, layout: layout)
+    }
+
+    /// A caret at a flow offset as a focus (undo returns there).
+    public func textFlowFocus(selection: NSRange) -> TextFlowFocus? {
+        guard let place = textFlowPlace(at: selection.location), let content = textFlowContent else { return nil }
+        let length = (content.text as NSString).length
+        return TextFlowFocus(pageID: place.pageID, boxID: place.boxID, selection: NSRange(location: place.location, length: 0),
+                             typingStyle: length == 0 ? content.style : content.style(at: min(selection.location, length - 1)))
     }
 
     /// Writes `content` as the whole flow. Pages before the change keep their

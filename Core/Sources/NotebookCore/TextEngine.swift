@@ -195,6 +195,23 @@ public struct TextEngine {
     /// The same for the primary selection, the one the app shows.
     public var primaryIsWide: Bool { isWide(primary) }
 
+    /// One selection as the app has to show it (text editor 2 shows all of them).
+    public struct ShownSelection: Equatable, Sendable {
+        public var range: NSRange
+        public var cursor: Int
+        public var isPrimary: Bool
+        /// More than the grapheme under the cursor: marked, not only a block cursor.
+        public var isWide: Bool
+        public init(range: NSRange, cursor: Int, isPrimary: Bool, isWide: Bool) {
+            self.range = range; self.cursor = cursor; self.isPrimary = isPrimary; self.isWide = isWide
+        }
+    }
+    public var shownSelections: [ShownSelection] {
+        selections.enumerated().map { index, selection in
+            ShownSelection(range: selection.range, cursor: cursor(of: selection), isPrimary: index == primaryIndex, isWide: isWide(selection))
+        }
+    }
+
     /// The app's text and selection before a command: undo, tapping and native
     /// typing happen outside. An unchanged state keeps all selections; a caret
     /// on the primary cursor counts as unchanged, the app may show it that way.
