@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 import UserNotifications
 import NotebookCore
 
-/// Standalone sheet; the same form is pushed from Settings › Backup & Daten.
+/// Standalone sheet; the same form is pushed from Settings › Backup.
 struct ExternalBackupView: View {
     @ObservedObject var model: ExternalBackupModel
     @ObservedObject var library: LibraryModel
@@ -12,7 +12,7 @@ struct ExternalBackupView: View {
     var body: some View {
         NavigationStack {
             ExternalBackupForm(model: model, library: library, workspaces: workspaces, showsSigning: true)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Schließen") { dismiss() }.disabled(model.busy) } }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() }.disabled(model.busy) } }
                 .interactiveDismissDisabled(model.busy)
         }
     }
@@ -32,30 +32,31 @@ struct ExternalBackupForm: View {
     @State private var file: LibraryArchiveFile?
     @State private var restored = false
     @State private var confirmingRemoval = false
+    @State private var confirmingDisable = false
     var body: some View {
         Form {
             Section("Aktives Ziel · Bereich „\(workspaces.title)“") {
                 LabeledContent("Ziel", value: targetTitle)
                 Text(model.status).font(.subheadline).foregroundStyle(model.folderUnreachable ? Color.orange : Color.secondary)
-                LabeledContent("Letzte erfolgreiche Sicherung",
-                               value: model.policy.lastSuccess.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Noch keine")
+                LabeledContent("Letztes Backup", value: model.policy.lastSuccess.map(NotyText.statusDate) ?? NotyText.never)
                 if let warning = model.policy.lastWarning, model.policy.lastOutcome == .succeeded {
-                    Text("Hinweis: \(warning). Das Notizbuch öffnen und prüfen; die beschädigten neueren Daten bleiben im Heftordner.")
+                    Text("Hinweis: \(warning). Das Heft öffnen und prüfen; die beschädigten neueren Daten bleiben im Heftordner.")
                         .font(.caption).foregroundStyle(.orange)
                 }
                 if let attempt = model.policy.lastAttempt, model.policy.lastOutcome != .succeeded {
-                    LabeledContent("Letzter Versuch", value: "\(attempt.formatted(date: .abbreviated, time: .shortened)) · \(outcomeTitle)")
+                    LabeledContent("Letzter Versuch", value: "\(NotyText.statusDate(attempt)) · \(outcomeTitle)")
                     if let next = model.policy.nextAttempt, next > Date() {
-                        LabeledContent("Nächster automatischer Versuch", value: next.formatted(date: .abbreviated, time: .shortened))
+                        LabeledContent("Nächster automatischer Versuch", value: NotyText.statusDate(next))
                     }
                 }
                 Stepper("\(model.policy.keep) automatische Stände behalten", value: Binding(get: { model.policy.keep }, set: { model.setRetention($0) }), in: 3...30)
-                Button("Jetzt vollständig sichern") { Task { await model.attempt(library: library, toolbox: toolbox, manual: true) } }
+                Button("Jetzt sichern") { Task { await model.attempt(library: library, toolbox: toolbox, manual: true) } }
                     .disabled(model.policy.target == .disabled || !library.ready)
-                Button("Automatisches Backup ausschalten") { model.disable() }
+                Button("Automatisches Backup ausschalten …") { confirmingDisable = true }
+                    .disabled(model.policy.target == .disabled)
             }
-            Section("iCloud Drive / Dateien-Ordner") {
-                Button(model.policy.target == .folder ? "Anderen Backupordner wählen" : "Backupordner wählen") { folderPicker = true }
+            Section("Backup-Ordner (Dateien, iCloud Drive)") {
+                Button(model.policy.target == .folder ? "Anderen Backup-Ordner wählen …" : "Backup-Ordner wählen …") { folderPicker = true }
             }
             Section {
                 TextField("HTTPS-Adresse des vorhandenen Ordners", text: $endpoint).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
@@ -65,17 +66,17 @@ struct ExternalBackupForm: View {
                     model.useWebDAV(endpoint: endpoint, username: username, password: password); password = ""
                 }
                 if model.hasStoredCredentials {
-                    Button("Zugangsdaten entfernen", role: .destructive) { confirmingRemoval = true }
+                    Button("Zugangsdaten entfernen …", role: .destructive) { confirmingRemoval = true }
                 }
             } header: { Text("WebDAV") } footer: {
                 Text("Zugangsdaten nur im Schlüsselbund dieses iPads, nie im Backup. Der Ordner muss bereits existieren. Ein leeres Passwortfeld behält das gespeicherte Passwort.")
             }
-            Section("Ältere vollständige Stände") {
-                Button("Liste vom Ziel neu laden") { Task { do { try await model.reloadHistory() } catch { model.error = "Liste konnte nicht geladen werden. Backupziel prüfen." } } }
+            Section("Ältere Backups") {
+                Button("Liste vom Ziel neu laden") { Task { do { try await model.reloadHistory() } catch { model.error = "Liste konnte nicht geladen werden. Backup-Ziel prüfen." } } }
                 ForEach(model.history, id: \.self) { name in
                     VStack(alignment: .leading) {
                         HStack {
-                            Text(Date(timeIntervalSince1970: model.policy.timestamp(name) ?? 0), format: .dateTime.day().month().year().hour().minute().second())
+                            Text(NotyText.listDate(Date(timeIntervalSince1970: model.policy.timestamp(name) ?? 0), seconds: true))
                             if model.placeholders.contains(name) {
                                 Image(systemName: "icloud.and.arrow.down").foregroundStyle(.secondary).accessibilityLabel("Nur in iCloud, wird beim Öffnen geladen")
                             }
@@ -87,37 +88,40 @@ struct ExternalBackupForm: View {
                                 restored = await workspaces.restoreLibrary(archive.url)
                                 if !restored { model.error = workspaces.error ?? "Wiederherstellung fehlgeschlagen."; workspaces.error = nil }
                             } }
-                            Button("Datei exportieren") { Task {
+                            Button("Datei exportieren …") { Task {
                                 if let archive = await model.retrieve(name) { file = LibraryArchiveFile(url: archive.url); exporting = true }
                             } }
                         }.font(.caption)
                     }.padding(.vertical, 4)
                 }
-                if model.history.isEmpty { Text("Noch keine Stände vom aktiven Ziel geladen.").foregroundStyle(.secondary) }
+                if model.history.isEmpty { Text("Noch keine Backups vom aktiven Ziel geladen.").foregroundStyle(.secondary) }
             }
             if showsSigning { SigningRenewalSection() }
         }
         .disabled(model.busy || workspaces.busy)
-        .overlay { if model.busy { ProgressView("Sicherung wird geprüft …").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
-        .navigationTitle("Externes Backup")
+        .overlay { if model.busy { ProgressView("Backup wird geprüft …").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+        .navigationTitle("Automatisches Backup")
         .onAppear { endpoint = model.policy.endpoint; username = model.username; model.checkFolder() }
         .fileImporter(isPresented: $folderPicker, allowedContentTypes: [.folder]) { result in
-            switch result { case .success(let url): model.useFolder(url); case .failure: model.error = "Kein Backupordner gewählt." }
+            switch result { case .success(let url): model.useFolder(url); case .failure: model.error = "Kein Backup-Ordner gewählt." }
         }
-        .fileExporter(isPresented: $exporting, document: file, contentType: .notyLibrary, defaultFilename: "noty-gepruefte-bibliothek") { result in
+        .fileExporter(isPresented: $exporting, document: file, contentType: .notyLibrary, defaultFilename: NotyText.libraryFileName()) { result in
             if let url = file?.url { BackupScratch.remove(url) }
             file = nil
-            if case .failure = result { model.error = "Dateiexport nicht abgeschlossen." }
+            if case .failure = result { model.error = "Export nicht abgeschlossen." }
         }
         .confirmationDialog("WebDAV-Zugangsdaten entfernen?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
             Button("Zugangsdaten entfernen", role: .destructive) { model.removeCredentials(); username = "" }
-        } message: { Text("Benutzername und Passwort werden aus dem Schlüsselbund gelöscht. Automatische WebDAV-Sicherungen schlagen fehl, bis neue Zugangsdaten gespeichert sind.") }
-        .alert("Externes Backup", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
+        } message: { Text("Benutzername und Passwort werden aus dem Schlüsselbund gelöscht. Automatische WebDAV-Backups schlagen fehl, bis neue Zugangsdaten gespeichert sind.") }
+        .confirmationDialog("Automatisches Backup ausschalten?", isPresented: $confirmingDisable, titleVisibility: .visible) {
+            Button("Ausschalten", role: .destructive) { model.disable() }
+        } message: { Text("Es entstehen keine neuen automatischen Backups mehr. Vorhandene Backups im Backup-Ordner bzw. auf dem WebDAV-Ziel bleiben erhalten.") }
+        .alert("Backup", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
         .alert("Als neuen Bereich wiederhergestellt", isPresented: $restored) {
             Button("OK", role: .cancel) { }
-        } message: { Text("Der neue Bereich ist unter Bereiche verfügbar. Die aktuelle Bibliothek bleibt erhalten.") }
+        } message: { Text(NotyText.restoredAreaMessage) }
     }
     private var targetTitle: String {
         switch model.policy.target {
@@ -135,14 +139,14 @@ struct ExternalBackupForm: View {
     }
 }
 
-/// Free-signing renewal hint; shown in Settings › Über and the standalone backup sheet.
+/// Free-signing renewal hint; shown in Settings › Über noty and the standalone backup sheet.
 struct SigningRenewalSection: View {
     @State private var reminderStatus = ""
     @State private var enabled = SigningReminder.enabled
     var body: some View {
         Section("Signierung erneuern") {
             if let expiration = SigningReminder.expiration {
-                LabeledContent("Signatur gültig bis", value: expiration.formatted(date: .abbreviated, time: .shortened))
+                LabeledContent("Signatur gültig bis", value: NotyText.statusDate(expiration))
                 if expiration < Date() { Text("Abgelaufen – am PC neu signieren und als Update installieren.").foregroundStyle(.orange) }
                 Toggle("Erinnerung einen Tag vorher", isOn: Binding(get: { enabled }, set: { value in
                     enabled = value
@@ -206,7 +210,7 @@ enum SigningReminder {
             let trigger = UNCalendarNotificationTrigger(dateMatching: Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date), repeats: false)
             center.removePendingNotificationRequests(withIdentifiers: [identifier])
             try await center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger))
-            return "Erinnerung für \(date.formatted()) gesetzt; nach jedem Signierungsupdate automatisch neu."
+            return "Erinnerung für \(NotyText.statusDate(date)) gesetzt; nach jedem Signierungsupdate automatisch neu."
         } catch { return "Erinnerung konnte nicht gespeichert werden." }
     }
 }

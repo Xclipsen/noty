@@ -28,24 +28,24 @@ struct NotebookDefaultsView: View {
                         Text("Liniert").tag(PaperStyle.lined)
                         Text("Kariert").tag(PaperStyle.grid)
                     }.pickerStyle(.segmented)
-                    Picker("Farbe", selection: $color) {
+                    Picker("Papierfarbe", selection: $color) {
                         Text("Weiß").tag(PaperColor.white)
                         Text("Dunkel").tag(PaperColor.dark)
                     }.pickerStyle(.segmented)
-                } header: { Text("Neue Standardseiten") } footer: {
-                    Text("Gilt für jede neue Standardseite und die leere Seite am Ende des Notizbuchs.")
+                } header: { Text("Neue Seiten") } footer: {
+                    Text("Gilt für jede neue Papierseite und die leere Seite am Ende des Hefts.")
                 }
                 Section {
                     Picker("Bestehende Seiten", selection: $scope) {
                         Text("Nur neue Seiten").tag(PageDefaultsScope.newPagesOnly)
                         Text("Leere Papierseiten").tag(PageDefaultsScope.emptyPages)
-                        Text("Ganzes Notizbuch umstellen").tag(PageDefaultsScope.wholeNotebook)
+                        Text("Ganzes Heft umstellen").tag(PageDefaultsScope.wholeNotebook)
                     }
                     .pickerStyle(.inline)
                     .labelsHidden()
                 } header: { Text("Bestehende Seiten") } footer: { Text(footer) }
             }
-            .navigationTitle("Seitenstandard")
+            .navigationTitle("Papier für neue Seiten")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

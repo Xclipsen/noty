@@ -15,7 +15,7 @@ struct LocalHistoryView: View {
         NavigationStack {
             List {
                 Section {
-                    Text("Notizbuch: \(model.notebook.title)").font(.headline)
+                    Text(model.notebook.isTextDocument ? "Textdokument: \(model.notebook.title)" : "Heft: \(model.notebook.title)").font(.headline)
                     Text("Geöffnete Seite: \(model.pageIndex + 1)")
                     if !model.page.searchableText.isEmpty {
                         Text("Aktueller Text: \(String(model.page.searchableText.prefix(120)))")
@@ -30,19 +30,19 @@ struct LocalHistoryView: View {
                                 if selectedID == revision.id { Label("Ausgewählt", systemImage: "checkmark.circle.fill") }
                                 Text(revision.title).foregroundStyle(.primary)
                                 if let date = revision.savedAt {
-                                    Text("\(date.formatted(.dateTime.day().month().year().hour().minute().second())) · \(date.formatted(.relative(presentation: .named)))")
+                                    Text(NotyText.listDate(date, seconds: true))
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
-                                Text("\(revision.pageCount) Seite(n) · als Kopie öffnen")
+                                Text("\(NotyText.count(revision.pageCount, "Seite", "Seiten")) · als Kopie öffnen")
                                     .font(.caption).foregroundStyle(.secondary)
                             }.padding(.vertical, 4)
                         }.disabled(loading)
                     }
                 } footer: {
-                    Text("Aufbewahrt werden die drei jüngsten Stände und bis zu fünf ältere Zwischenstände im Abstand von mindestens 10 Minuten (zusammen höchstens 300 MB). Ein älterer Stand enthält spätere Änderungen noch nicht. Er öffnet sich als neue Kopie; das hier genannte Notizbuch bleibt erhalten. Lokale Wiederherstellungspunkte ersetzen kein externes Backup.")
+                    Text("Aufbewahrt werden die drei jüngsten Stände und bis zu fünf ältere Zwischenstände im Abstand von mindestens 10 Minuten (zusammen höchstens 300 MB). Ein älterer Stand enthält spätere Änderungen noch nicht. Er öffnet sich als neue Kopie; das hier genannte Heft bleibt erhalten. Lokale Wiederherstellungspunkte ersetzen kein externes Backup.")
                 }
                 if unreadableCount > 0 {
-                    Text("\(unreadableCount) Stand/Stände nicht lesbar. Dateien bleiben erhalten.")
+                    Text("\(NotyText.count(unreadableCount, "Stand", "Stände")) nicht lesbar. Dateien bleiben erhalten.")
                 }
                 if let error { Text(error).foregroundStyle(.red) }
                 if !loading && entries.isEmpty && error == nil {

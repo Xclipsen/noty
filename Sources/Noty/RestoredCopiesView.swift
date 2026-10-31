@@ -19,7 +19,7 @@ struct RestoredCopiesView: View {
             List {
                 ForEach(filtered) { copy in
                     Section {
-                        Button("Notizbuch öffnen") { onSelect(copy) }
+                        Button("Öffnen") { onSelect(copy) }
                         ForEach(copy.textPages) { preview in
                             Button {
                                 var selected = copy

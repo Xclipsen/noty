@@ -16,7 +16,7 @@ public enum BackupError: Error, LocalizedError {
         case .sizeLimit: "Das Backup überschreitet das Größenlimit: höchstens 200 MB Heftdaten ohne Bildoriginale (ältere Backups im Format 1: 200 MB insgesamt). Bitte große PDFs entfernen, auch aus dem Seitenpapierkorb."
         case .fileTooLarge: "Die Backup-Datei überschreitet die Grenze von 800 MB."
         case .checksumMismatch: "Die Backup-Prüfsumme stimmt nicht. Es wurde nichts wiederhergestellt."
-        case .invalidStaging: "Die vorbereitete Wiederherstellung ist nicht mehr gültig. Bitte das Backup erneut auswählen."
+        case .invalidStaging: "Die vorbereitete Wiederherstellung ist nicht mehr gültig. Bitte das Backup erneut wählen."
         case .verificationFailed: "Das zurückgelesene Backup stimmt nicht mit dem Heft überein. Es wurde keine Backup-Datei übergeben."
         }
     }

@@ -112,7 +112,7 @@ struct LibraryView: View {
             }
         }
         .sheet(isPresented: $creatingTextDocument) {
-            TextDocumentCreationView { title, landscape, paper, color in
+            TextDocumentCreationView(defaultAppearance: toolbox.preferences.defaultAppearance) { title, landscape, paper, color in
                 await model.createTextDocument(title, landscape: landscape, paper: paper, color: color, parent: parentID)
             }
         }
@@ -192,7 +192,7 @@ struct LibraryView: View {
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
         // Settings and the area sheet show these errors themselves.
-        .alert("Test- und Restore-Bereiche", isPresented: Binding(get: { workspaces.error != nil && settingsRequest == nil && !showingAreas }, set: { if !$0 { workspaces.error = nil } })) {
+        .alert("Bereiche", isPresented: Binding(get: { workspaces.error != nil && settingsRequest == nil && !showingAreas }, set: { if !$0 { workspaces.error = nil } })) {
             Button("OK") { workspaces.error = nil }
         } message: { Text(workspaces.error ?? "") }
         .onChange(of: location) { _, value in
@@ -293,7 +293,7 @@ struct LibraryView: View {
         .buttonStyle(NotyPressStyle())
         .overlay { if dropMark == DropMark(zone: .pinned, target: .into(item.id)) { dropHighlight } }
         .accessibilityLabel(accessibilityName(item))
-        .accessibilityHint(item.isFolder ? "Zeigt den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Notizbuch")
+        .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(LibrarySpace.sidebar)) } action: { frames.pinned[item.id] = $0 }
         .onDrag { dragProvider(item.id) }
@@ -351,7 +351,7 @@ struct LibraryView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(accessibilityName(item))
-            .accessibilityHint(item.isFolder ? "Zeigt den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Notizbuch")
+            .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
             .accessibilityAddTraits(selected ? .isSelected : [])
         }
         .padding(.leading, CGFloat(entry.depth) * LibrarySpace.indent)
@@ -555,7 +555,7 @@ struct LibraryView: View {
                 }
             }
             .navigationTitle(title)
-            .searchable(text: $search, prompt: "Ordner- oder Notizbuchname")
+            .searchable(text: $search, prompt: "Name suchen")
             .toolbar { libraryToolbar }
     }
 
@@ -585,7 +585,7 @@ struct LibraryView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Button { searchAllNotebooks() } label: {
-                Label("Inhalte suchen", systemImage: "doc.text.magnifyingglass")
+                Label("In allen Heften suchen", systemImage: "magnifyingglass")
             }.disabled(!editable)
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -607,9 +607,9 @@ struct LibraryView: View {
             // One primary entry point for creating and importing.
             Menu {
                 Section {
-                    Button("Heft", systemImage: "book.closed") { creatingNotebook = true }
-                    Button("Textdokument", systemImage: "doc.text") { creatingTextDocument = true }
-                    Button("Ordner", systemImage: "folder.badge.plus") { prompt(.folder) }
+                    Button("Neues Heft …", systemImage: "book.closed") { creatingNotebook = true }
+                    Button("Neues Textdokument …", systemImage: "doc.text") { creatingTextDocument = true }
+                    Button("Neuer Ordner …", systemImage: "folder.badge.plus") { prompt(.folder) }
                 }
                 Section {
                     Button("PDF importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
@@ -658,6 +658,19 @@ struct LibraryView: View {
     /// `<Titel>.noty` of the last committed revision in the share sheet.
     private func shareNoty(_ item: NotebookCore.LibraryItem) {
         Task { if let url = await model.shareFile(for: item) { NotyShare.present(url) } }
+    }
+
+    /// Text document as `<Titel>.txt`/`.md` of the last committed revision,
+    /// the same export as in the editor (`TextDocumentExport`).
+    private func shareText(_ item: NotebookCore.LibraryItem, as format: TextDocumentExport.Format) {
+        Task {
+            do {
+                let (notebook, _) = try await model.committedNotebook(item.id)
+                let url = try BackupScratch.newShareFile(title: notebook.title, fileExtension: format.fileExtension)
+                try Data(TextDocumentExport.export(notebook, as: format).utf8).write(to: url, options: .atomic)
+                NotyShare.present(url)
+            } catch { model.error = "Teilen nicht möglich: \(error.localizedDescription)" }
+        }
     }
 
     private func searchAllNotebooks() {
@@ -757,16 +770,17 @@ struct LibraryView: View {
     }
 
     @ViewBuilder private var createButtons: some View {
-        Button("Neuer Ordner", systemImage: "folder.badge.plus") { prompt(.folder) }.disabled(!editable)
-        Button("Neues Heft", systemImage: "book.closed") { creatingNotebook = true }.disabled(!editable)
-        Button("Neues Textdokument", systemImage: "doc.text") { creatingTextDocument = true }.disabled(!editable)
+        // Same order and labels as the „+“ menu: Heft, Textdokument, Ordner.
+        Button("Neues Heft …", systemImage: "book.closed") { creatingNotebook = true }.disabled(!editable)
+        Button("Neues Textdokument …", systemImage: "doc.text") { creatingTextDocument = true }.disabled(!editable)
+        Button("Neuer Ordner …", systemImage: "folder.badge.plus") { prompt(.folder) }.disabled(!editable)
     }
 
     private func accessibilityName(_ item: NotebookCore.LibraryItem) -> String {
         var parts = ["\(item.libraryKindName) \(item.title)"]
         if item.favorite { parts.append("angeheftet") }
         if item.source == .restored { parts.append("wiederhergestellte Kopie") }
-        if let date = item.lastOpened, !item.isFolder { parts.append("zuletzt geöffnet \(date.formatted(date: .abbreviated, time: .omitted))") }
+        if let date = item.lastOpened, !item.isFolder { parts.append("zuletzt geöffnet \(NotyText.listDate(date))") }
         return parts.joined(separator: ", ")
     }
 
@@ -779,10 +793,10 @@ struct LibraryView: View {
         if !search.isEmpty { return path(of: item) }
         if item.isFolder {
             let count = model.snapshot.children(of: item.id).count
-            return count == 1 ? "1 Objekt" : "\(count) Objekte"
+            return NotyText.count(count, "Objekt", "Objekte")
         }
         guard let date = item.lastOpened else { return nil }
-        return location == .recent ? date.formatted(.relative(presentation: .named)) : date.formatted(date: .abbreviated, time: .omitted)
+        return NotyText.listDate(date)
     }
 
     private func documentCard(_ item: NotebookCore.LibraryItem) -> some View {
@@ -796,7 +810,7 @@ struct LibraryView: View {
                 }.aspectRatio(0.72, contentMode: .fit)
             }.buttonStyle(NotyPressStyle()).disabled(!editable)
                 .accessibilityLabel(accessibilityName(item))
-                .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Notizbuch")
+                .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
             VStack(spacing: 2) {
                 HStack(spacing: 4) {
                     if item.favorite { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary) }
@@ -824,7 +838,7 @@ struct LibraryView: View {
                     Text(item.title).foregroundStyle(.primary)
                     HStack {
                         if item.source == .restored { Text("Wiederhergestellte Kopie") }
-                        if item.source == .legacyMain { Text("Ursprüngliches Notizbuch") }
+                        if item.source == .legacyMain { Text("Ursprüngliches Heft") }
                         if let detail = subtitle(item) { Text(detail) }
                     }.font(.caption).foregroundStyle(.secondary)
                 }
@@ -834,7 +848,7 @@ struct LibraryView: View {
             }.padding(.vertical, 4).contentShape(Rectangle())
         }.buttonStyle(NotyPressStyle()).disabled(!editable)
             .accessibilityLabel(accessibilityName(item))
-            .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Notizbuch")
+            .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
             .contextMenu { itemActions(item, showsEnclosing: location == .recent || !search.isEmpty) }
     }
 
@@ -845,12 +859,16 @@ struct LibraryView: View {
             Button(item.favorite ? "Nicht mehr anheften" : "Anheften", systemImage: item.favorite ? "pin.slash" : "pin") {
                 Task { await model.favorite(item) }
             }
-            Button("Umbenennen", systemImage: "pencil") { prompt(.rename(item.id), value: item.title) }
-            Button("Verschieben", systemImage: "folder") { moving = item }
+            Button("Umbenennen …", systemImage: "pencil") { prompt(.rename(item.id), value: item.title) }
+            Button("Verschieben …", systemImage: "folder") { moving = item }
             if !item.isFolder {
                 Button("Duplizieren", systemImage: "plus.square.on.square") { Task { await model.duplicate(item) } }
-                Button("Als PDF exportieren", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
-                Button("Teilen als .noty …", systemImage: "square.and.arrow.up") { shareNoty(item) }
+                Button("Als PDF exportieren …", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
+                Button("Als .noty teilen …", systemImage: "square.and.arrow.up") { shareNoty(item) }
+                if item.isTextDocument {
+                    Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(item, as: .plainText) }
+                    Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(item, as: .markdown) }
+                }
             }
             if showsEnclosing {
                 Button("Im Ordner zeigen", systemImage: "arrow.up.forward.square") {
@@ -858,7 +876,7 @@ struct LibraryView: View {
                 }
             }
             Divider()
-            Button("In den Papierkorb", systemImage: "trash", role: .destructive) { trashing = item }
+            Button("In den Papierkorb …", systemImage: "trash", role: .destructive) { trashing = item }
         }
     }
 

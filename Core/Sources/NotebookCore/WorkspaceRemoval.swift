@@ -20,7 +20,7 @@ public enum WorkspaceRemovalError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .mainLibrary: "„Meine Bibliothek“ enthält deine eigentlichen Notizbücher und kann nicht entfernt werden."
+        case .mainLibrary: "„Meine Bibliothek“ enthält die eigentlichen Hefte und kann nicht entfernt werden."
         case .lastArea: "Der letzte Bereich kann nicht entfernt werden."
         case .activeArea: "Der geöffnete Bereich kann nicht entfernt werden. Bitte zuerst zu „Meine Bibliothek“ wechseln."
         case .unavailable: "Dieser Bereich ist nicht mehr verfügbar. Bitte die Liste neu laden."

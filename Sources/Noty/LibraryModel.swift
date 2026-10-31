@@ -69,7 +69,7 @@ final class LibraryModel: ObservableObject {
         pinOrder = (UserDefaults.standard.stringArray(forKey: pinOrderKey) ?? []).compactMap(UUID.init(uuidString:))
         if let date = UserDefaults.standard.object(forKey: libraryBackupKey) as? Date {
             lastLibraryExport = date
-            backupStatus = "Letzter Bibliotheksexport: \(date.formatted(date: .abbreviated, time: .shortened))"
+            backupStatus = "Letztes Bibliotheksbackup: \(NotyText.statusDate(date))"
         }
         let reopen = Self.launchReopenPending
         Self.launchReopenPending = false
@@ -104,7 +104,7 @@ final class LibraryModel: ObservableObject {
     /// editor would open (`olderStates`), so it never blocks the whole backup.
     func buildArchive(editorsCommitted: Bool = false) async throws -> PreparedLibraryArchive {
         guard ready, opened == nil || editorsCommitted, !archiveRunning else {
-            throw BackupPostponed(reason: backupBlocker ?? "Notizbuch geöffnet")
+            throw BackupPostponed(reason: backupBlocker ?? "Heft geöffnet")
         }
         archiveRunning = true; defer { archiveRunning = false }
         // Process-wide: closing or opening editors skip their asset GC meanwhile.
@@ -142,9 +142,9 @@ final class LibraryModel: ObservableObject {
         let date = Date()
         UserDefaults.standard.set(date, forKey: libraryBackupKey)
         lastLibraryExport = date
-        backupStatus = "Bibliotheksdatei exportiert: \(date.formatted(date: .omitted, time: .shortened))"
+        backupStatus = "Bibliotheksbackup exportiert: \(NotyText.statusDate(date))"
         // Success with warning: shown in the library banner, not as an error.
-        if let preparedExportWarning { warning = "Bibliotheksdatei exportiert; \(preparedExportWarning). Notizbuch öffnen und prüfen." }
+        if let preparedExportWarning { warning = "Bibliotheksbackup exportiert; \(preparedExportWarning). Heft öffnen und prüfen." }
         discardPreparedExport()
     }
 
@@ -336,7 +336,7 @@ final class LibraryModel: ObservableObject {
             restoredCopies.removeAll { result.purgedIDs.contains($0.id) }
             var parts = [result.purgedIDs.count == 1 ? "1 Eintrag endgültig gelöscht." : "\(result.purgedIDs.count) Einträge endgültig gelöscht."]
             if !result.retainedIDs.isEmpty {
-                parts.append("Das ursprüngliche Notizbuch liegt direkt im App-Ordner und bleibt im Papierkorb.")
+                parts.append("Das ursprüngliche Heft liegt direkt im App-Ordner und bleibt im Papierkorb.")
             }
             if result.leftoverDirectories > 0 {
                 parts.append("\(result.leftoverDirectories) Ordner konnten nicht vom Speicher entfernt werden; ihre Dateien bleiben erhalten und erscheinen nach dem Neuladen eventuell wieder in der Bibliothek.")

@@ -16,7 +16,7 @@ struct NotyAccountSettingsPage: View {
             if let user = laws.user, !laws.sessionExpired {
                 Section("Noty-Konto") {
                     LabeledContent("Angemeldet", value: user.email ?? user.name)
-                    Text("Dasselbe Konto gilt für noty und law.xclipsen.de. Deine Notizbücher werden nicht hochgeladen.").font(.caption).foregroundStyle(.secondary)
+                    Text("Dasselbe Konto gilt für noty und law.xclipsen.de. Hefte und Textdokumente werden nicht hochgeladen.").font(.caption).foregroundStyle(.secondary)
                     if user.emailVerified != true {
                         if user.email == nil {
                             TextField("E-Mail ergänzen", text: $email).keyboardType(.emailAddress).textContentType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -47,7 +47,7 @@ struct NotyAccountSettingsPage: View {
                             if recovery {
                                 if recoverySent {
                                     if await laws.accountAction("/api/password/reset", password: password, code: code) { password = ""; code = ""; recovery = false; recoverySent = false; message = "Passwort geändert. Bitte anmelden." }
-                                } else if await laws.accountAction("/api/password/request", email: email) { recoverySent = true; message = "Falls ein bestätigtes Konto existiert, erhältst du eine E-Mail." }
+                                } else if await laws.accountAction("/api/password/request", email: email) { recoverySent = true; message = "Falls ein bestätigtes Konto existiert, wird eine E-Mail verschickt." }
                             } else { await laws.login(email: email, password: password, registering: registering); password = "" }
                         }
                     }.disabled(email.isEmpty || ((!recovery || recoverySent) && password.isEmpty))
@@ -91,7 +91,7 @@ struct LawSettingsPage: View {
                 Toggle("Lesezeichen und Markierungen synchronisieren", isOn: $sync)
                 Toggle("Neue Gesetzesfassungen automatisch laden", isOn: $updates)
             } footer: {
-                Text("Der Kontoabgleich und öffentliche Gesetzesupdates sind unabhängig. Ohne Konto bleiben deine Markierungen lokal. Nach einem vollständigen Erstdownload sind die Texte offline verfügbar; PDFs kannst du einzeln laden.")
+                Text("Der Kontoabgleich und öffentliche Gesetzesupdates sind unabhängig. Ohne Konto bleiben Markierungen lokal. Nach einem vollständigen Erstdownload sind die Texte offline verfügbar; PDFs lassen sich einzeln laden.")
             }
             if let error = laws.error { Section { Text(error).foregroundStyle(.orange); Button("Hinweis schließen") { laws.error = nil } } }
             if enabled {
@@ -106,12 +106,12 @@ struct LawSettingsPage: View {
                 Section("Persönliche Daten") {
                     Text(laws.syncStatus).font(.caption)
                     Button("Jetzt synchronisieren") { Task { await laws.synchronize() } }.disabled(laws.syncing || !sync || laws.user == nil)
-                    Button("Markierungen und Lesezeichen sichern …") {
+                    Button("Markierungen und Lesezeichen sichern") {
                         Task { do { exported = try await laws.exportPersonal() } catch { laws.error = error.localizedDescription } }
                     }
-                    if let exported { ShareLink("Sicherungsdatei teilen", item: exported) }
+                    if let exported { ShareLink("Sicherungsdatei teilen …", item: exported) }
                     Button("Markierungen aus Sicherung ergänzen …") { restoring = true }
-                    Text("Diese Sicherung enthält persönliche Gesetzesdaten, keine Anmeldeschlüssel. Sie ergänzt Notizbuchbackups und bleibt von Gesetzesdownloads getrennt.").font(.caption).foregroundStyle(.secondary)
+                    Text("Diese Sicherung enthält persönliche Gesetzesdaten, keine Anmeldeschlüssel. Sie ergänzt Heft- und Bibliotheksbackups und bleibt von Gesetzesdownloads getrennt.").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }.navigationTitle("Gesetzessammlung")
@@ -137,7 +137,7 @@ struct LawPanelView<Drag: Gesture>: View {
         VStack(spacing: 0) {
             HStack {
                 Menu {
-                    Button(laws.docked ? "Über Notizbüchern schweben" : laws.panelEdge == .bottom ? "Unter Notizbuch andocken" : "Neben Notizbuch andocken",
+                    Button(laws.docked ? "Über dem Heft schweben" : laws.panelEdge == .bottom ? "Unter dem Heft andocken" : "Neben dem Heft andocken",
                            systemImage: laws.docked ? "rectangle.on.rectangle" : laws.panelEdge == .bottom ? "rectangle.split.1x2" : "rectangle.split.2x1") {
                         withAnimation(NotyMotion.panel(reduceMotion)) { laws.docked.toggle() }
                     }

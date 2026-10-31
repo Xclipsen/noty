@@ -58,7 +58,7 @@ struct PDFImportSheet: View {
                 } footer: {
                     Text("Die PDF wird vollständig lokal kopiert; das Original bleibt unverändert. 100 % entspricht einer normalen Seitenbreite.")
                 }
-                Section { Button("PDF aus Dateien auswählen", systemImage: "doc.badge.plus") { choosingFile = true } }
+                Section { Button("PDF aus Dateien wählen …", systemImage: "doc.badge.plus") { choosingFile = true } }
             }
             .navigationTitle("PDF importieren").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }

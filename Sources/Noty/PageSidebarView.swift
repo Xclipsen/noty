@@ -84,7 +84,7 @@ struct PageSidebarView: View {
                             Button("Seitenpapierkorb (\(deletedCount)) …", systemImage: "trash") { showingTrash = true }
                                 .disabled(!canEdit)
                         }
-                        Button("Zu den Notizbüchern", systemImage: "books.vertical", action: onBack)
+                        Button("Zur Bibliothek", systemImage: "books.vertical", action: onBack)
                             .disabled(model.busy)
                     }
                 } label: {
@@ -145,7 +145,7 @@ struct PageSidebarView: View {
                             reorderList
                         } else if filter == .bookmarks && visiblePages.isEmpty {
                             ContentUnavailableView("Keine Lesezeichen", systemImage: "bookmark",
-                                                   description: Text("Markiere eine Seite über das Lesezeichensymbol in der Vorschau."))
+                                                   description: Text("Seiten lassen sich über das Lesezeichensymbol in der Vorschau markieren."))
                         } else {
                             ScrollView {
                                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 20, alignment: .top), count: count),
@@ -177,7 +177,7 @@ struct PageSidebarView: View {
                 if manualPages || deletedCount > 0 {
                     Button { showingTrash = true } label: {
                         Label("\(deletedCount)", systemImage: "trash").font(.caption).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-                    }.accessibilityLabel("Seitenpapierkorb, \(deletedCount) Seiten").disabled(!canEdit)
+                    }.accessibilityLabel("Seitenpapierkorb, \(NotyText.count(deletedCount, "Seite", "Seiten"))").disabled(!canEdit)
                 }
             }.padding(.horizontal, 16)
         }
@@ -420,7 +420,7 @@ struct PageSidebarView: View {
             Button(page.bookmarked == true ? "Lesezeichen entfernen" : "Lesezeichen setzen",
                    systemImage: page.bookmarked == true ? "bookmark.slash" : "bookmark") { model.toggleBookmark(page.id) }
             if let onMargins, model.sourcePage(for: page) != nil || page.writingSpaceExtendsPaper {
-                Button(page.writingSpaceExtendsPaper ? "Seite anpassen …" : "Schreibplatz …",
+                Button("Seite anpassen …",
                        systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") { onMargins(page.id) }
             }
             Menu("Verschieben", systemImage: "arrow.up.arrow.down.square") {
@@ -437,7 +437,7 @@ struct PageSidebarView: View {
         }
         Section {
             Button("Seite leeren", systemImage: "clear", role: .destructive) { model.clearPage(page.id) }
-            Button("Löschen", systemImage: "trash", role: .destructive) { model.trashPage(page.id) }
+            Button("In den Seitenpapierkorb", systemImage: "trash", role: .destructive) { model.trashPage(page.id) }
                 .disabled(model.notebook.pages.count <= 1)
         }
     }
@@ -572,7 +572,7 @@ struct AddPageSheet: View {
                         }.buttonStyle(.plain)
                             .contentShape(RoundedRectangle(cornerRadius: 16))
                             .accessibilityHint("Öffnet die Dateiauswahl.")
-                        Text("Die Originaldatei wird vollständig in dieses Notizbuch kopiert.")
+                        Text("Die Originaldatei wird vollständig in dieses Heft kopiert.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(20)
@@ -652,7 +652,7 @@ private struct PageTrashView: View {
             Group {
                 if deleted.isEmpty {
                     ContentUnavailableView("Keine gelöschten Seiten", systemImage: "trash",
-                                           description: Text("Gelöschte Seiten dieses Notizbuchs können hier wiederhergestellt werden."))
+                                           description: Text("Gelöschte Seiten dieses Hefts können hier wiederhergestellt werden."))
                 } else {
                     List(deleted.sorted { $0.deletedAt > $1.deletedAt }, id: \.page.id) { entry in
                         HStack(spacing: 16) {
@@ -668,7 +668,7 @@ private struct PageTrashView: View {
                                          : "Die ursprüngliche Seite ist nicht mehr verfügbar. Dieser Stand wird als zusätzliche Seite wiederhergestellt.")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
-                                Text(entry.deletedAt, format: .dateTime.day().month().hour().minute())
+                                Text("Gelöscht \(NotyText.listDate(entry.deletedAt))")
                                     .font(.caption).foregroundStyle(.secondary)
                                 if !entry.page.searchableText.isEmpty {
                                     Text(String(entry.page.searchableText.prefix(100))).font(.caption).lineLimit(2)
@@ -679,7 +679,7 @@ private struct PageTrashView: View {
                                            systemImage: "arrow.uturn.backward") {
                                         model.restorePage(entry.page.id)
                                     }
-                                    Button("Endgültig löschen", systemImage: "trash", role: .destructive) {
+                                    Button("Endgültig löschen …", systemImage: "trash.slash", role: .destructive) {
                                         pendingDeletion = entry
                                     }
                                 }.buttonStyle(.borderless).disabled(!canEdit)
@@ -691,20 +691,20 @@ private struct PageTrashView: View {
             .navigationTitle("Seitenpapierkorb")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Papierkorb leeren", role: .destructive) { confirmingEmpty = true }
+                    Button("Papierkorb leeren …", systemImage: "trash.slash", role: .destructive) { confirmingEmpty = true }
                         .disabled(deleted.isEmpty || !canEdit)
                 }
                 ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } }
             }
             .confirmationDialog("Seite endgültig löschen?", isPresented: Binding(get: { pendingDeletion != nil },
                                 set: { if !$0 { pendingDeletion = nil } }), titleVisibility: .visible, presenting: pendingDeletion) { entry in
-                Button("Endgültig löschen", role: .destructive) { model.deleteTrashedPage(entry.page.id) }
+                Button("Seite endgültig löschen", role: .destructive) { model.deleteTrashedPage(entry.page.id) }
                 Button("Abbrechen", role: .cancel) {}
             } message: { _ in
                 Text("Die Seite wird aus dem Heft entfernt, ebenso PDF-Originale, die keine Seite mehr verwendet. \(Self.undoNote)")
             }
             .confirmationDialog("Seitenpapierkorb leeren?", isPresented: $confirmingEmpty, titleVisibility: .visible) {
-                Button(deleted.count == 1 ? "1 Seite endgültig löschen" : "\(deleted.count) Seiten endgültig löschen", role: .destructive) {
+                Button("\(NotyText.count(deleted.count, "Seite", "Seiten")) endgültig löschen", role: .destructive) {
                     model.emptyPageTrash()
                 }
                 Button("Abbrechen", role: .cancel) {}

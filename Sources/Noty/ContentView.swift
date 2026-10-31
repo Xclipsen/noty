@@ -168,10 +168,10 @@ struct ContentView: View {
                 if let scratch = exportFile?.fileURL { BackupScratch.remove(scratch) }
                 switch result {
                 case .success:
-                    if exportType == .pdf { model.fileStatus = "PDF-Datei exportiert" }
+                    if exportType == .pdf { model.fileStatus = "Als PDF exportiert" }
                     else { model.backupExported() }
                 case .failure(let error):
-                    if exportType == .noty { model.backupStatus = "Backup-Export nicht abgeschlossen" }
+                    if exportType == .noty { model.backupStatus = "In Dateien sichern nicht abgeschlossen" }
                     model.error = error.localizedDescription
                 }
             }
@@ -215,7 +215,7 @@ struct ContentView: View {
                     showingHistory = false
                 }
             }
-            .alert("Hinweis", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
+            .alert(isTextDocument ? "Textdokument" : "Heft", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
                 if model.saveFailed && model.writable {
                     Button("Erneut speichern") { model.save() }
                 }
@@ -275,7 +275,7 @@ struct ContentView: View {
             || marginsPage != nil || exporting || importingImage || choosingPhoto || pageEntry
         return EditorCommandActions(owner: ObjectIdentifier(model), canEdit: canEdit && !presenting,
             canExportPage: model.writable && !onDraft, exporting: pdfExport.running,
-            hasPrevious: onDraft || currentPageIndex > 0, hasNext: !onDraft && currentPageIndex < model.notebook.pages.count - 1,
+            hasPrevious: onDraft || currentPageIndex > 0, hasNext: !onDraft && currentPageIndex < model.notebook.pages.count - 1, isTextDocument: isTextDocument,
             search: { if canEdit { contentSearch = true } }, save: { model.save() },
             exportNotebook: { startPDFExport(pageOnly: false) }, exportPage: { startPDFExport(pageOnly: true) },
             previousPage: { stepPage(-1) }, nextPage: { stepPage(1) })
@@ -509,7 +509,7 @@ struct ContentView: View {
                             .padding(.trailing, 14)
                     }
                 }.contentShape(Rectangle())
-            }.accessibilityLabel("Zurück zu den Notizbüchern").accessibilityValue(notebookLoaded ? model.notebook.title : "")
+            }.accessibilityLabel("Zur Bibliothek").accessibilityValue(notebookLoaded ? model.notebook.title : "")
                 .padding(.horizontal, 4).frame(height: 44).notyGlass()
                 .frame(maxWidth: max(52, layout.headerLeadingFrame.width), alignment: .leading)
                 .frame(width: max(52, layout.headerLeadingFrame.width), height: 44, alignment: .leading)
@@ -558,7 +558,7 @@ struct ContentView: View {
             let defaults = model.notebook.pageDefaults
             model.insertPaper(defaults.paper, color: defaults.color, relativeTo: anchorPageID)
         }
-        Button("Papier oder PDF auswählen …", systemImage: "doc.on.doc") { addingPage = true }
+        Button("Papier oder PDF wählen …", systemImage: "doc.on.doc") { addingPage = true }
     }
 
     private var pageNavigator: some View {
@@ -632,30 +632,29 @@ struct ContentView: View {
             }
             Section {
                 // ⌘F/⌘S live in the app menu (NotyCommands): shortcuts inside a closed Menu do not register.
-                Button("Im Notizbuch suchen", systemImage: "magnifyingglass") { contentSearch = true }
+                Button(isTextDocument ? "Im Dokument suchen" : "Im Heft suchen", systemImage: "magnifyingglass") { contentSearch = true }
                 if layout.compactHeader, !isTextDocument {
                     Menu("Seite hinzufügen", systemImage: "doc.badge.plus") { pageInsertionActions }
                 }
                 Menu("Teilen und exportieren", systemImage: "square.and.arrow.up") {
                     Section("PDF") {
-                        Button("Diese Seite", systemImage: "doc") { startPDFExport(pageOnly: true) }
+                        Button("Als PDF exportieren …", systemImage: "doc.richtext") { startPDFExport(pageOnly: false) }
+                            .disabled(!model.writable || pdfExport.running)
+                        Button("Diese Seite als PDF exportieren …", systemImage: "doc") { startPDFExport(pageOnly: true) }
                             .disabled(!model.writable || currentPage.id == writingDraft.id || pdfExport.running)
-                        Button(isTextDocument ? "Ganzes Dokument" : "Ganzes Notizbuch", systemImage: isTextDocument ? "doc.text" : "book.closed") {
-                            startPDFExport(pageOnly: false)
-                        }.disabled(!model.writable || pdfExport.running)
                     }
-                    if isTextDocument {
-                        Section("Text") {
+                    Section(model.backupStatus) {
+                        Button("Als .noty teilen …", systemImage: "square.and.arrow.up") { shareNoty() }
+                            .disabled(!model.writable)
+                        if isTextDocument {
                             Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(.plainText) }
                                 .disabled(!model.writable)
                             Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(.markdown) }
                                 .disabled(!model.writable)
                         }
-                    }
-                    Section(model.backupStatus) {
-                        Button("Teilen als .noty …", systemImage: "square.and.arrow.up") { shareNoty() }
-                            .disabled(!model.writable)
-                        Button("Vollständiges Backup …", systemImage: "archivebox") { exportBackup() }
+                        // Same checked archive as „Als .noty teilen“, but saved via
+                        // the file dialog and counted as backup (status, date).
+                        Button("In Dateien sichern …", systemImage: "archivebox") { exportBackup() }
                             .disabled(!model.writable)
                     }
                 }
@@ -669,11 +668,11 @@ struct ContentView: View {
                         .accessibilityHint("Gleiche Arbeitsblattbreite mit Schreibraum daneben. Ändert nur die Anzeige.")
                 }
                 if !isTextDocument {
-                    Button("Diese Seite anpassen …", systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") {
+                    Button("Seite anpassen …", systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") {
                         marginsPage = MarginPage(id: currentPage.id)
                     }.disabled(!canEdit || !model.notebook.pages.contains(where: { $0.id == currentPage.id })
                                || (model.sourcePage(for: currentPage) == nil && !currentPage.writingSpaceExtendsPaper))
-                    Button("Papier für neue Seiten …", systemImage: "doc.richtext") { editingDefaults = true }
+                    Button("Papier für neue Seiten …", systemImage: "squareshape.split.3x3") { editingDefaults = true }
                         .disabled(!canEdit)
                 }
                 Button("Lokale Wiederherstellungspunkte …", systemImage: "clock.arrow.circlepath") { showingHistory = true }
@@ -1019,11 +1018,11 @@ private struct NotebookLoadingView: View {
         ZStack {
             Color.clear
             if failed {
-                Text("Notizbuch konnte nicht geöffnet werden").font(.callout).foregroundStyle(.secondary)
+                Text("Öffnen fehlgeschlagen").font(.callout).foregroundStyle(.secondary)
             } else {
                 ProgressView().controlSize(.regular).tint(Color(white: 0.6))
                     .opacity(visible ? 1 : 0)
-                    .accessibilityLabel("Notizbuch wird geöffnet")
+                    .accessibilityLabel("Wird geöffnet")
             }
         }
         .allowsHitTesting(false)

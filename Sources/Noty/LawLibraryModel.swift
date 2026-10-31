@@ -195,7 +195,7 @@ final class LawLibraryModel: ObservableObject {
             next.laws = merged(next.laws, old: catalog?.laws ?? [])
             next.administrative = merged(next.administrative ?? [], old: catalog?.administrative ?? [])
             try await offline.publish(next)
-            catalog = next; lastCheck = Date(); progress = "\(next.entries.count) Dokumente offline verfügbar"
+            catalog = next; lastCheck = Date(); progress = "\(NotyText.count(next.entries.count, "Dokument", "Dokumente")) offline verfügbar"
             byteCount = await offline.byteCount()
         } catch is CancellationError { progress = "Download pausiert; vorhandene Fassungen bleiben verfügbar." }
         catch { if manual { self.error = error.localizedDescription }; progress = "Aktualisierung fehlgeschlagen; vorhandene Fassungen bleiben verfügbar. \(error.localizedDescription)" }
@@ -227,7 +227,7 @@ final class LawLibraryModel: ObservableObject {
         do {
             // E-mail registration needs mail delivery, which is switched off on the
             // server; a username account is created at once without any e-mail.
-            if registering && email.contains("@") { throw LawError.invalid("Bitte wähle einen Benutzernamen ohne @. Registrieren per E-Mail ist noch nicht freigeschaltet.") }
+            if registering && email.contains("@") { throw LawError.invalid("Bitte einen Benutzernamen ohne @ wählen. Registrieren per E-Mail ist noch nicht freigeschaltet.") }
             if registering && email.range(of: "^[\\p{L}\\p{N}_.-]{2,32}$", options: .regularExpression) == nil { throw LawError.invalid("Der Benutzername braucht 2–32 Buchstaben, Zahlen oder . _ -") }
             if registering && password.count < 12 { throw LawError.invalid("Das Passwort braucht mindestens 12 Zeichen.") }
             var body: [String: LawJSON] = ["password": .string(password)]
@@ -324,10 +324,10 @@ final class LawLibraryModel: ObservableObject {
                 }
             }
             try await pull(); lastSync = Date(); await refreshItems()
-            syncStatus = "Synchronisiert · \(Date().formatted(date: .omitted, time: .shortened))"
+            syncStatus = "Synchronisiert · \(NotyText.statusDate(Date()))"
         } catch is CancellationError { syncStatus = "Synchronisierung pausiert" }
         catch let error as LawAPIError where error.status == 401 {
-            sessionExpired = true; syncStatus = "Anmeldung abgelaufen · Unter Konto erneut anmelden; Änderungen bleiben lokal"
+            sessionExpired = true; syncStatus = "Anmeldung abgelaufen · Unter Einstellungen › Konto erneut anmelden; Änderungen bleiben lokal"
         } catch { syncStatus = "Offline/Fehler · Änderungen bleiben lokal: \(error.localizedDescription)" }
     }
     func exportPersonal() async throws -> URL {

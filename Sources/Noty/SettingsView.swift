@@ -63,8 +63,8 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .laws: "Gesetzessammlung"
         case .editor: "Editor"
         case .tools: "Stift & Werkzeuge"
-        case .paper: "Papier-Standards"
-        case .backup: "Backup & Daten"
+        case .paper: "Papier für neue Hefte"
+        case .backup: "Backup"
         case .trash: "Papierkorb"
         case .about: "Über noty"
         case .diagnostics: "Diagnose"
@@ -75,9 +75,9 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .general: "gearshape"
         case .account: "person.crop.circle"
         case .laws: "books.vertical"
-        case .editor: "doc.richtext"
+        case .editor: "rectangle.and.pencil.and.ellipsis"
         case .tools: "pencil.tip.crop.circle"
-        case .paper: "doc.plaintext"
+        case .paper: "squareshape.split.3x3"
         case .backup: "externaldrive"
         case .trash: "trash"
         case .about: "info.circle"
@@ -159,7 +159,7 @@ struct SettingsView: View {
         .alert("Bibliothek", isPresented: Binding(get: { library.error != nil }, set: { if !$0 { library.error = nil } })) {
             Button("OK") { library.error = nil }
         } message: { Text(library.error ?? "") }
-        .alert("Test- und Restore-Bereiche", isPresented: Binding(get: { workspaces.error != nil }, set: { if !$0 { workspaces.error = nil } })) {
+        .alert("Bereiche", isPresented: Binding(get: { workspaces.error != nil }, set: { if !$0 { workspaces.error = nil } })) {
             Button("OK") { workspaces.error = nil }
         } message: { Text(workspaces.error ?? "") }
         .preferredColorScheme(.dark)
@@ -314,7 +314,7 @@ private struct PaperSettingsPage: View {
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 10) {
                         Toggle("Umschlag", isOn: appearance.coverEnabled)
-                        Text("Startwerte für neue Notizbücher. Beim Anlegen weiterhin änderbar; bestehende Notizbücher bleiben unverändert.")
+                        Text("Startwerte für neue Hefte und Textdokumente. Beim Anlegen weiterhin änderbar; bestehende bleiben unverändert.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -326,7 +326,7 @@ private struct PaperSettingsPage: View {
             }
         }
         .disabled(!toolbox.writable)
-        .navigationTitle("Papier-Standards")
+        .navigationTitle("Papier für neue Hefte")
     }
 }
 
@@ -360,22 +360,22 @@ private struct BackupSettingsPage: View {
     }
     private var lastBackup: String {
         if externalBackup.busy { return "Läuft …" }
-        return policy.lastSuccess.map { $0.formatted(.relative(presentation: .named)) } ?? "Noch keins"
+        return policy.lastSuccess.map(NotyText.statusDate) ?? NotyText.never
     }
     var body: some View {
         Form {
-            Section("Externes Backup") {
+            Section("Automatisches Backup") {
                 if policy.target == .disabled {
-                    Button("Backup-Ordner wählen", systemImage: "folder.badge.plus") { pick(.backupFolder) }
+                    Button("Backup-Ordner wählen …", systemImage: "folder.badge.plus") { pick(.backupFolder) }
                         .disabled(externalBackup.busy)
                 } else {
-                    LabeledContent(policy.target == .webDAV ? "WebDAV" : "Ordner", value: targetName)
+                    LabeledContent(policy.target == .webDAV ? "WebDAV" : "Backup-Ordner", value: targetName)
                     LabeledContent("Letztes Backup", value: lastBackup)
                     Button("Jetzt sichern", systemImage: "arrow.clockwise") {
                         Task { await externalBackup.attempt(library: library, toolbox: toolbox, manual: true) }
                     }.disabled(externalBackup.busy || !library.ready)
                     if policy.target == .folder {
-                        Button(health == .folderUnreachable ? "Ordner neu wählen" : "Ordner ändern", systemImage: "folder") { pick(.backupFolder) }
+                        Button(health == .folderUnreachable ? "Backup-Ordner neu wählen …" : "Backup-Ordner ändern …", systemImage: "folder") { pick(.backupFolder) }
                             .disabled(externalBackup.busy)
                     }
                 }
@@ -384,8 +384,8 @@ private struct BackupSettingsPage: View {
                         .onAppear { formVisible = true }.onDisappear { formVisible = false }
                 }
             }
-            Section("Bibliotheksdatei") {
-                LabeledContent("Letzter Export", value: library.lastLibraryExport.map { $0.formatted(.relative(presentation: .named)) } ?? "Nie")
+            Section("Bibliotheksbackup") {
+                LabeledContent("Letzter Export", value: library.lastLibraryExport.map(NotyText.statusDate) ?? NotyText.never)
                 Button("Exportieren …", systemImage: "square.and.arrow.up") {
                     Task {
                         guard await toolbox.flush() else { library.error = toolbox.status; return }
@@ -399,13 +399,13 @@ private struct BackupSettingsPage: View {
                 NavigationLink {
                     WorkspacePickerList(model: workspaces, onSelect: onSelectArea)
                 } label: {
-                    LabeledContent("Bereich", value: workspaces.title)
+                    LabeledContent("Bereiche", value: workspaces.title)
                 }
             } footer: {
-                if library.opened != nil { Text("Export und Wiederherstellen erst nach dem Schließen des Notizbuchs.") }
+                if library.opened != nil { Text("Export und Wiederherstellen erst nach dem Schließen des Hefts.") }
             }
         }
-        .navigationTitle("Backup & Daten")
+        .navigationTitle("Backup")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showingInfo = true } label: {
@@ -431,7 +431,7 @@ private struct BackupSettingsPage: View {
             switch result {
             case .success(let url): Task {
                 if await workspaces.restoreLibrary(url) {
-                    library.backupStatus = "Bibliothek als neuen Bereich wiederhergestellt · unter Bereiche öffnen"
+                    library.backupStatus = "Bibliothek als neuen Bereich wiederhergestellt · Einstellungen › Backup › Bereiche"
                     restoredArea = true
                 }
             }
@@ -439,7 +439,7 @@ private struct BackupSettingsPage: View {
             }
         }
         .fileExporter(isPresented: $exporting, document: file, contentType: .notyLibrary,
-                      defaultFilename: "noty-bibliothek-\(Date().formatted(.iso8601).replacingOccurrences(of: ":", with: "-"))") { result in
+                      defaultFilename: NotyText.libraryFileName()) { result in
             switch result {
             case .success: library.libraryBackupExported()
             case .failure(let error):
@@ -447,12 +447,12 @@ private struct BackupSettingsPage: View {
                 library.error = error.localizedDescription
             }
         }
-        .alert("Externes Backup", isPresented: Binding(get: { externalBackup.error != nil && !formVisible }, set: { if !$0 { externalBackup.error = nil } })) {
+        .alert("Backup", isPresented: Binding(get: { externalBackup.error != nil && !formVisible }, set: { if !$0 { externalBackup.error = nil } })) {
             Button("OK") { externalBackup.error = nil }
         } message: { Text(externalBackup.error ?? "") }
         .alert("Als neuen Bereich wiederhergestellt", isPresented: $restoredArea) {
             Button("OK", role: .cancel) { }
-        } message: { Text("Unter „Bereich“ verfügbar. Die aktuelle Bibliothek bleibt erhalten.") }
+        } message: { Text(NotyText.restoredAreaMessage) }
     }
 
     private func pick(_ purpose: ImportPurpose) { importPurpose = purpose; importing = true }
@@ -462,8 +462,8 @@ private struct BackupSettingsPage: View {
         VStack(alignment: .leading, spacing: 10) {
             Label(health.shortTitle, systemImage: health.isSetUp ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                 .font(.headline).foregroundStyle(health.isSetUp ? Color.green : Color.orange)
-            LabeledContent("Letztes Backup", value: policy.lastSuccess.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Noch keins")
-            LabeledContent(policy.target == .webDAV ? "WebDAV" : "Ordner", value: targetName)
+            LabeledContent("Letztes Backup", value: policy.lastSuccess.map(NotyText.statusDate) ?? NotyText.never)
+            LabeledContent(policy.target == .webDAV ? "WebDAV" : "Backup-Ordner", value: targetName)
             if !health.isSetUp, policy.target != .disabled {
                 Text(externalBackup.status).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
             }
@@ -485,7 +485,7 @@ private struct TrashSettingsPage: View {
     var body: some View {
         List {
             if library.opened != nil {
-                Section { Label("Bei geöffnetem Notizbuch kann der Papierkorb nicht bearbeitet werden.", systemImage: "info.circle").font(.callout) }
+                Section { Label("Bei geöffnetem Heft kann der Papierkorb nicht bearbeitet werden.", systemImage: "info.circle").font(.callout) }
             }
             if let status = library.trashStatus {
                 Section { Text(status).font(.callout) }
@@ -505,7 +505,7 @@ private struct TrashSettingsPage: View {
         .overlay {
             if items.isEmpty {
                 ContentUnavailableView("Papierkorb ist leer", systemImage: "trash",
-                                       description: Text("Gelöschte Notizbücher und Ordner erscheinen hier, bis du sie wiederherstellst oder endgültig löschst."))
+                                       description: Text("Gelöschte Hefte, Textdokumente und Ordner erscheinen hier, bis sie wiederhergestellt oder endgültig gelöscht werden."))
             } else if library.busy { ProgressView() }
         }
         .navigationTitle("Papierkorb · \(area)")
@@ -521,7 +521,7 @@ private struct TrashSettingsPage: View {
             Text(purgeMessage(item))
         }
         .confirmationDialog("Papierkorb leeren?", isPresented: $confirmingEmpty, titleVisibility: .visible) {
-            Button("Alle \(items.count) Einträge endgültig löschen", role: .destructive) { Task { await library.emptyTrash() } }
+            Button("\(NotyText.count(items.count, "Eintrag", "Einträge")) endgültig löschen", role: .destructive) { Task { await library.emptyTrash() } }
             Button("Abbrechen", role: .cancel) { }
         } message: {
             Text("Alle Einträge im Papierkorb einschließlich enthaltener Ordnerinhalte werden vom iPad entfernt. Das kann nicht rückgängig gemacht werden. Ältere Backups enthalten diese Einträge weiterhin.")
@@ -536,10 +536,10 @@ private struct TrashSettingsPage: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.title)
                 HStack(spacing: 6) {
-                    if let date = item.deletedAt { Text("Gelöscht \(date.formatted(date: .abbreviated, time: .shortened))") }
+                    if let date = item.deletedAt { Text("Gelöscht \(NotyText.listDate(date))") }
                     let count = library.purgeCount(item) - 1
-                    if item.isFolder { Text(count == 1 ? "· 1 enthaltener Eintrag" : "· \(count) enthaltene Einträge") }
-                    if item.source == .legacyMain { Text("· Ursprüngliches Notizbuch") }
+                    if item.isFolder { Text("· \(NotyText.count(count, "enthaltener Eintrag", "enthaltene Einträge"))") }
+                    if item.source == .legacyMain { Text("· Ursprüngliches Heft") }
                 }.font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -554,7 +554,7 @@ private struct TrashSettingsPage: View {
         }
         .swipeActions(edge: .trailing) {
             if item.source != .legacyMain {
-                Button("Endgültig löschen", systemImage: "trash.slash", role: .destructive) { purging = item }.disabled(!editable)
+                Button("Endgültig löschen …", systemImage: "trash.slash", role: .destructive) { purging = item }.disabled(!editable)
             }
             Button("Wiederherstellen", systemImage: "arrow.uturn.backward") { Task { await library.restore(item.id) } }
                 .tint(.blue).disabled(!editable)
@@ -592,7 +592,7 @@ private struct AboutSettingsPage: View {
                 LabeledContent("Test-/Restore-Bereiche", value: "Auf meinem iPad › noty › NotyWorkspaces")
                 LabeledContent("Aktueller Bereich", value: workspaces.title)
             } header: { Text("Datenablage") } footer: {
-                Text("Alle Unterlagen liegen lokal im App-Container und sind über die Dateien-App sichtbar. Dort bitte nichts umbenennen oder verschieben. noty hat kein Konto und keinen eigenen Server; Daten verlassen das iPad nur über ein selbst eingerichtetes Backup oder einen Export.")
+                Text("Alle Unterlagen liegen lokal im App-Container und sind über die Dateien-App sichtbar. Dort bitte nichts umbenennen oder verschieben. Hefte und Textdokumente verlassen das iPad nur über ein selbst eingerichtetes Backup, einen Export oder Teilen. Das freiwillige noty-Konto gleicht nur Lesezeichen und Markierungen der Gesetzessammlung mit law.xclipsen.de ab; Gesetzestexte werden von dort geladen.")
             }
             SigningRenewalSection()
             Section {

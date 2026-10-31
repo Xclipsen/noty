@@ -100,8 +100,8 @@ public enum LibraryError: Error, LocalizedError {
         case .invalidDestination: "Dieses Ziel ist nicht möglich. Ein Ordner kann nicht in sich selbst oder einen Unterordner verschoben werden."
         case .invalidTitle: "Bitte einen Namen mit 1 bis 120 Zeichen ohne Zeilenumbrüche eingeben."
         case .unsupportedVersion(let version): "Bibliotheksformat \(version) benötigt eine neuere noty-Version."
-        case .notPurgeable: "Das ursprüngliche Notizbuch liegt direkt im App-Ordner und kann nicht endgültig gelöscht werden. Es bleibt im Papierkorb wiederherstellbar."
-        case .olderStateOnly: "Der neueste Stand dieses Notizbuchs ist nicht lesbar. Bitte das Notizbuch öffnen und prüfen; es wurde nichts geteilt."
+        case .notPurgeable: "Das ursprüngliche Heft liegt direkt im App-Ordner und kann nicht endgültig gelöscht werden. Es bleibt im Papierkorb wiederherstellbar."
+        case .olderStateOnly: "Der neueste Stand dieses Hefts ist nicht lesbar. Bitte das Heft öffnen und prüfen; es wurde nichts geteilt."
         }
     }
 }

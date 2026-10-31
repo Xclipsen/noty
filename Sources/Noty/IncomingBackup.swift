@@ -50,7 +50,7 @@ enum IncomingBackup {
         await TopAlert.dismiss(progress)
         let summary = prepared.summary
         let size = ByteCountFormatter.string(fromByteCount: Int64(summary.file.byteCount), countStyle: .file)
-        let message = "Gesichert am \(summary.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(summary.notebooks.count) Notizbücher, \(summary.folderCount) Ordner, \(summary.trashedCount) Einträge im Papierkorb · \(size).\n\nWird als neuer getrennter Bereich wiederhergestellt. Die aktuelle Bibliothek bleibt unverändert."
+        let message = "Gesichert am \(NotyText.listDate(summary.createdAt)) · \(NotyText.count(summary.notebooks.count, "Heft", "Hefte")), \(summary.folderCount) Ordner, \(NotyText.count(summary.trashedCount, "Eintrag", "Einträge")) im Papierkorb · \(size).\n\nWird als neuer getrennter Bereich wiederhergestellt. Die aktuelle Bibliothek bleibt unverändert."
         guard await TopAlert.ask("Bibliotheksbackup wiederherstellen?", message, confirm: "Als neuen Bereich wiederherstellen") else {
             await workspaces.discardLibraryRestore(prepared); return
         }
@@ -58,7 +58,7 @@ enum IncomingBackup {
         do {
             let area = try await workspaces.commitLibraryRestore(prepared)
             await TopAlert.dismiss(running)
-            TopAlert.show("Als neuen Bereich wiederhergestellt", "„\(area.title)“ ist unter Einstellungen › Backup & Daten › Bereich verfügbar. Die aktuelle Bibliothek bleibt erhalten.")
+            TopAlert.show("Als neuen Bereich wiederhergestellt", "„\(area.title)“: " + NotyText.restoredAreaMessage)
         } catch {
             await TopAlert.dismiss(running)
             TopAlert.show("Wiederherstellung fehlgeschlagen", error.localizedDescription)
@@ -71,34 +71,35 @@ enum IncomingBackup {
         do { decoded = try await Task.detached(priority: .userInitiated) { try BackupArchive.verify(copy) }.value }
         catch {
             await TopAlert.dismiss(progress)
-            TopAlert.show("Heft-Datei abgelehnt", error.localizedDescription + " Es wurde nichts verändert.")
+            TopAlert.show(".noty-Datei abgelehnt", error.localizedDescription + " Es wurde nichts verändert.")
             return
         }
         await TopAlert.dismiss(progress)
         let document = decoded.document, trashed = document.deletedPages?.count ?? 0
-        let summary = "„\(document.title)“ · \(document.pages.count) Seiten" + (trashed > 0 ? ", \(trashed) im Seitenpapierkorb" : "")
+        let kind = document.isTextDocument ? "Textdokument" : "Heft"
+        let summary = "„\(document.title)“ · \(NotyText.count(document.pages.count, "Seite", "Seiten"))" + (trashed > 0 ? ", \(trashed) im Seitenpapierkorb" : "")
             + (decoded.isLegacyJSON ? " · altes Format ohne Prüfsumme" : "")
         let collision: LibraryModel.ImportCollision?
         if let existing = library.snapshot.activeNotebook(document.id) {
-            let message = summary + ".\n\nDieses Heft liegt bereits als „\(existing.title)“ in der Bibliothek. "
+            let message = summary + ".\n\nDieses \(kind) liegt bereits als „\(existing.title)“ in der Bibliothek. "
                 + "„Vorhandenes ersetzen“ legt dessen aktuellen Stand vorher in den Papierkorb, die Datei kommt an seine Stelle. "
                 + "„Beide behalten“ legt die Datei als „\(NotebookTitles.unique(document.title, taken: library.snapshot.activeNotebookTitles()))“ daneben."
-            guard let choice = await TopAlert.choose("Heft schon vorhanden", message, actions: [
+            guard let choice = await TopAlert.choose("\(kind) schon vorhanden", message, actions: [
                 ("Vorhandenes ersetzen", .destructive, LibraryModel.ImportCollision.replace),
                 ("Beide behalten", .default, .keepBoth)]) else { return }
             collision = choice
         } else {
             let title = NotebookTitles.unique(document.title, taken: library.snapshot.activeNotebookTitles())
-            let message = summary + ".\n\nWird als Heft „\(title)“ in die Bibliothek übernommen. Vorhandene Notizbücher bleiben unverändert."
-            guard await TopAlert.ask("Heft öffnen?", message, confirm: "In Bibliothek übernehmen") else { return }
+            let message = summary + ".\n\nWird als \(kind) „\(title)“ in die Bibliothek übernommen. Vorhandene Hefte und Textdokumente bleiben unverändert."
+            guard await TopAlert.ask("\(kind) übernehmen?", message, confirm: "In Bibliothek übernehmen") else { return }
             collision = nil
         }
         guard library.opened == nil else {
-            TopAlert.show("Notizbuch geöffnet", "Bitte zuerst das Notizbuch schließen und die Datei danach erneut aus der Dateien-App öffnen.")
+            TopAlert.show("Noch geöffnet", "Bitte zuerst das geöffnete Heft bzw. Textdokument schließen und die Datei danach erneut aus der Dateien-App öffnen.")
             return
         }
         if let imported = await library.importBackup(copy, parent: nil, collision: collision) {
-            TopAlert.show("Heft übernommen", "„\(imported.title)“ liegt jetzt in der Bibliothek."
+            TopAlert.show("\(kind) übernommen", "„\(imported.title)“ liegt jetzt in der Bibliothek."
                 + (imported.replaced ? " Der vorherige Stand liegt im Papierkorb." : ""))
         } else if library.error == nil, !library.importDeclined {
             TopAlert.show("Bibliothek beschäftigt", "Bitte die Datei gleich noch einmal öffnen. Es wurde nichts verändert.")

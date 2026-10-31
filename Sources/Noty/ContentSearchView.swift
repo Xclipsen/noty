@@ -72,9 +72,9 @@ final class ContentSearchModel: ObservableObject {
                 tasks = found
                 await Task.yield()
             }
-            let count = found.count == 1 ? "1 offene Aufgabe" : "\(found.count) offene Aufgaben"
+            let count = NotyText.count(found.count, "offene Aufgabe", "offene Aufgaben")
             taskStatus = found.isEmpty ? "Keine offenen Aufgaben" : count
-            if failed > 0 { taskStatus += " · \(failed) Heft(e) nicht lesbar" }
+            if failed > 0 { taskStatus += " · \(NotyText.count(failed, "Heft", "Hefte")) nicht lesbar" }
             collectingTasks = false
         }
     }
@@ -103,8 +103,8 @@ final class ContentSearchModel: ObservableObject {
             var text = "\(records) Textstellen erfasst"
             if total >= ContentSearchIndexFormat.hitLimit { text += " · Grenze 50.000 erreicht" }
             text += pages == 0 ? " · Suchindex aktuell" : pages == 1 ? " · 1 Seite neu erfasst" : " · \(pages) Seiten neu erfasst"
-            if failed > 0 { text += " · \(failed) Erkennung(en) fehlgeschlagen" }
-            if unreadable > 0 { text += " · \(unreadable) Heft(e) nicht lesbar" }
+            if failed > 0 { text += " · \(NotyText.count(failed, "Erkennung", "Erkennungen")) fehlgeschlagen" }
+            if unreadable > 0 { text += " · \(NotyText.count(unreadable, "Heft", "Hefte")) nicht lesbar" }
             return text + " · lokal, Deutsch/Englisch"
         }
     }
@@ -368,7 +368,7 @@ struct ContentSearchView: View {
                 Text(openTasks ? model.taskStatus : model.status).font(.caption).padding(.horizontal)
                 if openTasks ? model.collectingTasks : model.running { ProgressView().padding(.horizontal) }
                 if !openTasks {
-                    Text("Handschrift und Scan-/Bild-OCR sind lokal. Erkanntes bleibt als abgeleiteter Suchindex auf diesem iPad gespeichert und wird nur für geänderte Seiten neu erfasst. Die Erkennungsqualität muss mit deinen Unterlagen geprüft werden.")
+                    Text("Handschrift und Scan-/Bild-OCR sind lokal. Erkanntes bleibt als abgeleiteter Suchindex auf diesem iPad gespeichert und wird nur für geänderte Seiten neu erfasst. Die Erkennungsqualität muss mit den eigenen Unterlagen geprüft werden.")
                         .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
                 }
                 if let error = model.error { Text(error).foregroundStyle(.red).font(.caption).padding(.horizontal) }
@@ -390,9 +390,9 @@ struct ContentSearchView: View {
                 .onChange(of: openTasks) { _, tasks in
                     if tasks && !model.tasksCollected { model.collectTasks(documents: documents, current: current) }
                 }
-                .navigationTitle(current == nil ? "In allen Heften suchen" : "Im Heft suchen")
+                .navigationTitle(current == nil ? "In allen Heften suchen" : current?.isTextDocument == true ? "Im Dokument suchen" : "Im Heft suchen")
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Schließen") { dismiss() } }
+                    ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } }
                     ToolbarItem(placement: .primaryAction) {
                         if openTasks { Button("Aktualisieren") { model.collectTasks(documents: documents, current: current) }.disabled(model.collectingTasks) }
                         else if model.running { Button("Anhalten") { model.cancel() } }

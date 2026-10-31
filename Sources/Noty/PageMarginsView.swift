@@ -140,7 +140,7 @@ struct PageMarginsView: View {
                     .frame(maxWidth: .infinity)
             }
             .background(Color(white: 0.055))
-            .navigationTitle(extendsPaper ? "Seite anpassen" : "Schreibplatz")
+            .navigationTitle("Seite anpassen")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } }
@@ -163,9 +163,9 @@ struct PageMarginsView: View {
                     catch { self.error = error.localizedDescription }
                 }
             } message: {
-                Text("\(pending?.removedStrokes ?? 0) betroffene Striche werden ganz entfernt. \(pending?.archivedPages ?? 0) vollständige Seitenstände mit dem bisherigen Schreibplatz bleiben im Seitenpapierkorb. Wiederherstellen setzt die bestehende Seite zurück und sichert ihren aktuellen Stand vorher im Papierkorb.")
+                Text("\(NotyText.count(pending?.removedStrokes ?? 0, "betroffener Strich wird", "betroffene Striche werden")) ganz entfernt. \(NotyText.count(pending?.archivedPages ?? 0, "vollständiger Seitenstand bleibt", "vollständige Seitenstände bleiben")) mit dem bisherigen Schreibplatz im Seitenpapierkorb. Wiederherstellen setzt die bestehende Seite zurück und sichert ihren aktuellen Stand vorher im Papierkorb.")
             }
-            .alert(extendsPaper ? "Seite nicht geändert" : "Schreibplatz nicht geändert", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            .alert("Seite nicht geändert", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK") { error = nil }
             } message: { Text(error ?? "") }
         }

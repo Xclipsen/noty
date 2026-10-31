@@ -21,7 +21,7 @@ final class EditorModel: ObservableObject {
     @Published private(set) var documentLoaded = false
     @Published var busy = true
     @Published var saveFailed = false
-    @Published var backupStatus = "Noch kein Backup exportiert"
+    @Published var backupStatus = "Noch nicht in Dateien gesichert"
     @Published var fileStatus: String?
     @Published var openedRestore: RestoredNotebook?
     @Published private(set) var copiedPage: CopiedPage?
@@ -95,7 +95,7 @@ final class EditorModel: ObservableObject {
         self.preferredPageID = preferredPageID
         let legacyDate = legacyPageKeysAllowed ? UserDefaults.standard.object(forKey: "noty.backupExport.\(root.lastPathComponent)") as? Date : nil
         if let date = UserDefaults.standard.object(forKey: backupDateKey) as? Date ?? legacyDate {
-            backupStatus = "Letzter Datei-Export: \(date.formatted(date: .abbreviated, time: .shortened))"
+            backupStatus = "Zuletzt in Dateien gesichert: \(NotyText.statusDate(date))"
         }
         Task {
             defer { busy = false }
@@ -548,11 +548,11 @@ final class EditorModel: ObservableObject {
         }
         let converted = editPages(resetEditor: scope == .wholeNotebook, action)
         guard converted else { return false }
-        let pages = "\(changed) Seite\(changed == 1 ? "" : "n")"
+        let pages = NotyText.count(changed, "Seite", "Seiten")
         switch scope {
-        case .wholeNotebook: fileStatus = "Notizbuch auf \(color == .dark ? "Dunkel" : "Weiß") umgestellt: \(pages)"
-        case .emptyPages: fileStatus = changed > 0 ? "Seitenstandard geändert, \(changed) leere Seite\(changed == 1 ? "" : "n") umgestellt" : "Seitenstandard geändert"
-        case .newPagesOnly: fileStatus = "Seitenstandard geändert"
+        case .wholeNotebook: fileStatus = "Heft auf \(color == .dark ? "Dunkel" : "Weiß") umgestellt: \(pages)"
+        case .emptyPages: fileStatus = changed > 0 ? "Papier für neue Seiten geändert, \(NotyText.count(changed, "leere Seite", "leere Seiten")) umgestellt" : "Papier für neue Seiten geändert"
+        case .newPagesOnly: fileStatus = "Papier für neue Seiten geändert"
         }
         return true
     }
@@ -800,7 +800,7 @@ final class EditorModel: ObservableObject {
     func backupExported() {
         let date = Date()
         UserDefaults.standard.set(date, forKey: backupDateKey)
-        backupStatus = "Backup-Datei exportiert: \(date.formatted(date: .omitted, time: .shortened))"
+        backupStatus = "In Dateien gesichert: \(NotyText.statusDate(date))"
     }
 
     func localHistory() async throws -> LocalHistory {

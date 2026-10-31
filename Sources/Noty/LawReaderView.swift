@@ -165,7 +165,7 @@ struct LawReaderView: View {
                 }
                 footer(doc, section: section)
             } else if !loading {
-                ContentUnavailableView(laws.entries.isEmpty ? "Noch keine Gesetze geladen" : "Gesetz auswählen", systemImage: "books.vertical", description: Text(laws.entries.isEmpty ? "Unter Einstellungen → Gesetzessammlung den Offlinebestand laden." : "Tippe ein Gesetz an oder suche zum Beispiel nach 144 HGB."))
+                ContentUnavailableView(laws.entries.isEmpty ? "Noch keine Gesetze geladen" : "Gesetz wählen", systemImage: "books.vertical", description: Text(laws.entries.isEmpty ? "Unter Einstellungen › Gesetzessammlung den Offlinebestand laden." : "Ein Gesetz antippen oder zum Beispiel nach 144 HGB suchen."))
             }
         }
         .background(Color(uiColor: .systemBackground))
@@ -221,7 +221,7 @@ struct LawReaderView: View {
                     if let user = laws.user, !laws.sessionExpired {
                         Text("Angemeldet als \(user.email ?? user.name) · \(laws.syncStatus)")
                     } else {
-                        Text("Nicht angemeldet · Markierungen bleiben auf diesem iPad. Konto unter Einstellungen → Konto.")
+                        Text("Nicht angemeldet · Markierungen bleiben auf diesem iPad. Konto unter Einstellungen › Konto.")
                     }
                 } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Fassung und Markierungen")
             }
@@ -351,7 +351,7 @@ struct LawReaderView: View {
               let data = try? JSONEncoder().encode(anchor), let value = try? JSONDecoder().decode(LawJSON.self, from: data) else {
             loadError = "Diese Auswahl lässt sich nicht eindeutig zuordnen."; return
         }
-        guard (anchor.quote as NSString).length <= 4000 else { loadError = "Bitte wähle eine kürzere Textstelle aus."; return }
+        guard (anchor.quote as NSString).length <= 4000 else { loadError = "Bitte eine kürzere Textstelle markieren."; return }
         var payload = basePayload(doc); payload["kind"] = .string("text"); payload["page"] = .number(0); payload["anchor"] = value
         payload["color"] = .string(pen.hex)
         loadError = ""

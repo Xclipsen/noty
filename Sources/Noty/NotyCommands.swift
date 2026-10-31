@@ -16,6 +16,7 @@ struct EditorCommandActions: Equatable {
     var exporting: Bool
     var hasPrevious: Bool
     var hasNext: Bool
+    var isTextDocument = false
     let search: () -> Void
     let save: () -> Void
     let exportNotebook: () -> Void
@@ -26,6 +27,7 @@ struct EditorCommandActions: Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.owner == rhs.owner && lhs.canEdit == rhs.canEdit && lhs.canExportPage == rhs.canExportPage
             && lhs.exporting == rhs.exporting && lhs.hasPrevious == rhs.hasPrevious && lhs.hasNext == rhs.hasNext
+            && lhs.isTextDocument == rhs.isTextDocument
     }
 }
 
@@ -74,12 +76,12 @@ struct NotyCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("Neues Notizbuch") { library?.newNotebook?() }
+            Button("Neues Heft …") { library?.newNotebook?() }
                 .keyboardShortcut("n", modifiers: .command)
                 .disabled(editor != nil || library?.newNotebook == nil)
         }
         CommandMenu("Heft") {
-            Button(editor == nil ? "In allen Heften suchen" : "Im Heft suchen") {
+            Button(editor == nil ? "In allen Heften suchen" : editor?.isTextDocument == true ? "Im Dokument suchen" : "Im Heft suchen") {
                 if let editor { editor.search() } else { library?.search?() }
             }
             .keyboardShortcut("f", modifiers: .command)
@@ -88,10 +90,10 @@ struct NotyCommands: Commands {
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(editor == nil)
             Divider()
-            Button("Heft als PDF exportieren") { editor?.exportNotebook() }
+            Button("Als PDF exportieren …") { editor?.exportNotebook() }
                 .keyboardShortcut("e", modifiers: .command)
                 .disabled(editor.map { !$0.canEdit || $0.exporting } ?? true)
-            Button("Aktuelle Seite als PDF exportieren") { editor?.exportPage() }
+            Button("Diese Seite als PDF exportieren …") { editor?.exportPage() }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
                 .disabled(editor.map { !$0.canEdit || $0.exporting || !$0.canExportPage } ?? true)
             Divider()
