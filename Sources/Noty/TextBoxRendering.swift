@@ -167,14 +167,24 @@ final class TaskLayoutManager: NSLayoutManager {
 final class RuledTextLayout: NSObject, @preconcurrency NSLayoutManagerDelegate {
     var originY: CGFloat?
     var lines = TextRuling.lined
+    /// Top edge of the page (ruling coordinates) for a flow segment, whose
+    /// first line may reach above the writing area (`firstLineBaseline`).
+    var pageTop: CGFloat?
+    /// Baseline in container coordinates of a line starting at `top`; the one
+    /// rule of editor, previews, PDF and flow capacity. Nil without ruling.
+    func baseline(top: CGFloat, ascent: CGFloat) -> CGFloat? {
+        guard let originY else { return nil }
+        if top < 0.5, let pageTop { return CGFloat(lines.firstLineBaseline(ascent: Double(ascent), pageTop: Double(pageTop))) - originY }
+        let natural = originY + top + ascent
+        let ruled = CGFloat(lines.baseline(forNatural: Double(natural)))
+        // Grid rows may tighten a line slightly, never the first one (no clipping).
+        return (top < 0.5 ? max(natural, ruled) : ruled) - originY
+    }
     func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect rect: UnsafeMutablePointer<CGRect>,
                        lineFragmentUsedRect used: UnsafeMutablePointer<CGRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
                        in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
-        guard let originY else { return false }
-        let current = originY + rect.pointee.minY + baselineOffset.pointee
-        // Grid rows may tighten a line slightly, never the first one (no clipping).
-        var delta = CGFloat(lines.baseline(forNatural: Double(current))) - current
-        if rect.pointee.minY < 0.5 { delta = max(0, delta) }
+        guard let baseline = baseline(top: rect.pointee.minY, ascent: baselineOffset.pointee) else { return false }
+        let delta = baseline - rect.pointee.minY - baselineOffset.pointee
         rect.pointee.size.height += delta
         used.pointee.size.height += delta
         baselineOffset.pointee += delta
@@ -193,6 +203,12 @@ extension Page {
     func ruledTextOrigin(for box: TextBox) -> CGFloat? {
         guard textRuling(for: box) != nil, let anchor = box.rulingAnchorY(regionTops: writingRegionTops) else { return nil }
         return (anchor + (margins?.top ?? 0)) / writingCoordinateScale(for: box)
+    }
+    /// Page top in the coordinates of `ruledTextOrigin`, for the segments of a
+    /// text flow only: migrated fields keep their laid-out lines.
+    func ruledPageTop(for box: TextBox) -> CGFloat? {
+        guard box.flowID != nil, textRuling(for: box) != nil else { return nil }
+        return (margins?.top ?? 0) / writingCoordinateScale(for: box)
     }
 }
 
@@ -348,15 +364,15 @@ struct TextObjectLayout {
     /// `limitedTo`: only as many lines as this height (page units) holds, for
     /// measuring a page of a long flow; the rest stays without layout.
     init(_ box: TextBox, on page: Page, limitedTo limit: Double? = nil) {
-        self.init(box, ruledOrigin: page.ruledTextOrigin(for: box), ruling: page.textRuling(for: box) ?? .lined,
+        self.init(box, ruledOrigin: page.ruledTextOrigin(for: box), ruling: page.textRuling(for: box) ?? .lined, pageTop: page.ruledPageTop(for: box),
             coordinateScale: page.writingCoordinateScale(for: box), limitedTo: limit)
     }
-    init(_ box: TextBox, ruledOrigin: CGFloat? = nil, ruling lines: TextRuling = .lined, coordinateScale: CGFloat = 1, limitedTo limit: Double? = nil) {
+    init(_ box: TextBox, ruledOrigin: CGFloat? = nil, ruling lines: TextRuling = .lined, pageTop: CGFloat? = nil, coordinateScale: CGFloat = 1, limitedTo limit: Double? = nil) {
         self.coordinateScale = coordinateScale
         rotation = CGFloat(box.angle * .pi / 180)
         storage = NSTextStorage(attributedString: box.attributedText)
         manager = TaskLayoutManager()
-        ruling = RuledTextLayout(); ruling.originY = ruledOrigin; ruling.lines = lines; manager.delegate = ruling
+        ruling = RuledTextLayout(); ruling.originY = ruledOrigin; ruling.lines = lines; ruling.pageTop = pageTop; manager.delegate = ruling
         // A line of the largest size more than the page, so the last one is never cut off by the container.
         let height = limit.map { CGFloat($0) / coordinateScale + Self.glyphOverhang(box) * 4 } ?? .greatestFiniteMagnitude
         container = NSTextContainer(size: CGSize(width: box.width / coordinateScale, height: height))
@@ -376,7 +392,9 @@ struct TextObjectLayout {
     /// zoom raster and the previews clip the same way.
     static func glyphOverhang(_ box: TextBox) -> CGFloat {
         let largest = ([box.style.fontSize] + (box.runs ?? []).map(\.style.fontSize)).max() ?? box.style.fontSize
-        return CGFloat(largest) * 0.35 + 2
+        let reach = CGFloat(largest) * 0.35 + 2
+        // A page's first line reaches up to the page edge (`firstLineBaseline`).
+        return box.flowID == nil ? reach : max(reach, CGFloat(box.y) + 2)
     }
     /// The field's text does not fit its height on `page` (`TextBox.overflows`):
     /// previews mark it red like the editor, the PDF export refuses it.

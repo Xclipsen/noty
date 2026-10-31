@@ -318,7 +318,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             let lines = box.flowRegion.flatMap { TextRuling(paper: $0 == .page ? paperStyle : marginStyle) }
             let pointScale = coordinateScale(for: box)
             let anchor = lines == nil ? nil : box.rulingAnchorY(regionTops: regionTops)
-            editor.setRulingOrigin(anchor.map { ($0 + pageLayout.contentOrigin.y) / pointScale }, lines: lines ?? .lined)
+            editor.setRulingOrigin(anchor.map { ($0 + pageLayout.contentOrigin.y) / pointScale }, lines: lines ?? .lined,
+                                   pageTop: box.flowID == nil || lines == nil ? nil : pageLayout.contentOrigin.y / pointScale)
             editor.isEditable = active; editor.isSelectable = active || readOnly
             editor.isUserInteractionEnabled = active || readOnly
             position(field, for: box); updateRaster(field, for: box)
@@ -420,8 +421,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         let scale = coordinateScale(for: box)
         let lines = box.flowRegion.flatMap { TextRuling(paper: $0 == .page ? paperStyle : marginStyle) }
         let anchor = lines == nil ? nil : box.rulingAnchorY(regionTops: regionTops)
-        return TextObjectLayout(box, ruledOrigin: anchor.map { CGFloat($0 + pageLayout.contentOrigin.y) / scale },
-                                ruling: lines ?? .lined, coordinateScale: scale)
+        return TextObjectLayout(box, ruledOrigin: anchor.map { CGFloat($0 + pageLayout.contentOrigin.y) / scale }, ruling: lines ?? .lined,
+                                pageTop: box.flowID == nil || lines == nil ? nil : pageLayout.contentOrigin.y / scale, coordinateScale: scale)
     }
     /// Textneubau: the height follows the content (never beyond the page, more
     /// text stays stored and is marked as overflow); with `autoWidth` the width

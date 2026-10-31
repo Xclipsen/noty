@@ -6,9 +6,10 @@ final class PageTextView: UITextView {
     private let ruling = RuledTextLayout()
     var rulingOrigin: CGFloat? { ruling.originY }
     var rulingLines: TextRuling { ruling.lines }
-    func setRulingOrigin(_ y: CGFloat?, lines: TextRuling = .lined) {
-        guard ruling.originY != y || ruling.lines != lines else { return }
-        ruling.originY = y; ruling.lines = lines
+    var rulingPageTop: CGFloat? { ruling.pageTop }
+    func setRulingOrigin(_ y: CGFloat?, lines: TextRuling = .lined, pageTop: CGFloat? = nil) {
+        guard ruling.originY != y || ruling.lines != lines || ruling.pageTop != pageTop else { return }
+        ruling.originY = y; ruling.lines = lines; ruling.pageTop = pageTop
         layoutManager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: textStorage.length), actualCharacterRange: nil)
         (layoutManager as? TaskLayoutManager)?.onDisplayChange?()
     }
@@ -168,8 +169,7 @@ final class PageTextView: UITextView {
             // Empty trailing line: not laid out as glyphs; place where typed text will land.
             let extra = manager.extraLineFragmentRect
             guard let font = fonts.first, length == 0 || extra.height > 0 else { return nil }
-            let natural = extra.minY + font.ascender
-            baseline = ruling.originY.map { CGFloat(ruling.lines.baseline(forNatural: Double($0 + natural))) - $0 } ?? natural
+            baseline = ruling.baseline(top: extra.minY, ascent: font.ascender) ?? extra.minY + font.ascender
         } else {
             guard manager.numberOfGlyphs > 0 else { return nil }
             let point = CGPoint(x: rect.midX - inset.left, y: rect.midY - inset.top)

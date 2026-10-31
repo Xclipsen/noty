@@ -70,7 +70,8 @@ extension TextObjectLayer {
         guard let result = TextPlacement.below(tap: .init(x: Double(local.x), y: Double(local.y)), top: Double(top), endsWithBreak: ends,
                 width: width, height: Double(editor.bounds.height - inset.top - inset.bottom),
                 lineHeight: Double(font.lineHeight), ascent: ascent, descent: descent,
-                ruling: editor.rulingOrigin == nil ? nil : editor.rulingLines, origin: Double(editor.rulingOrigin ?? 0)),
+                ruling: editor.rulingOrigin == nil ? nil : editor.rulingLines, origin: Double(editor.rulingOrigin ?? 0),
+                pageTop: editor.rulingPageTop.map(Double.init)),
               result.newlines > 0 else { return nil }
         return CaretPlacement(location: length, newlines: result.newlines,
             caret: CGRect(x: Double(inset.left), y: result.baseline - ascent + Double(inset.top), width: 2, height: ascent + descent))
