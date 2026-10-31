@@ -171,6 +171,7 @@ extension DocumentTextSurface: KeyboardTextTarget {
         case "heading": restyle(paragraph: true) { TextStylePreset.heading.apply(to: &$0) }
         case "subheading": restyle(paragraph: true) { TextStylePreset.subheading.apply(to: &$0) }
         case "body": restyle(paragraph: true) { TextStylePreset.body.apply(to: &$0) }
+        case "pagebreak": insertPageBreak()
         default: break
         }
     }

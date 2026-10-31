@@ -22,6 +22,12 @@ python3 -B scripts/verify_backup.py "$task_check/results/textdokument.noty" --co
 python3 -B scripts/verify_library_backup.py "$task_check/results/textdokument.notylibrary"
 python3 -B scripts/verify_library_backup.py "$task_check/results/textdokument-index.notylibrary"
 python3 -B scripts/verify_library_backup.py "$task_check/results/bibliothek.notylibrary"
+# Manual page break (U+000C in schema 15), changed paper, Word and RTF of that document.
+python3 -B scripts/verify_device_store.py "$task_check/results/TextDocumentExtras"
+python3 -B scripts/verify_backup.py "$task_check/results/textdokument-umbruch.noty" --compare "$task_check/results/current-textdokument-umbruch.json"
+python3 -B scripts/verify_library_backup.py "$task_check/results/textdokument-umbruch.notylibrary"
+python3 -B scripts/verify_office_export.py "$task_check/results/textdokument.docx" --expect '{"pageBreaks": 1, "styles": ["Heading1"], "links": 1, "listParagraphs": 3, "formats": ["b", "color", "highlight", "i", "strike", "u"]}'
+python3 -B scripts/verify_office_export.py "$task_check/results/textdokument.rtf" --expect '{"pageBreaks": 1, "links": 1}'
 python3 -B scripts/verify_device_store.py "$task_check/results/Source"
 # Restore copies (Restores/*) and the migrated schema-11 package carry their assets.
 python3 -B scripts/verify_device_store.py "$task_check/results/RestoreCheck"

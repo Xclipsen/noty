@@ -178,10 +178,10 @@ public enum TextDocumentExport {
         }
     }
 
-    /// Also on the page beside the text: handwriting, images, shapes. These
-    /// files hold text only, the PDF export holds everything.
+    /// Also on the pages beside the text: handwriting, images, shapes, PDFs.
+    /// These files hold text only, the PDF export holds everything.
     public static func leavesOutContent(of notebook: Notebook, drawingIsEmpty: (Data) -> Bool = { $0.isEmpty }) -> Bool {
-        notebook.pages.contains { !drawingIsEmpty($0.drawing) || !($0.images ?? []).isEmpty || !($0.shapes ?? []).isEmpty }
+        notebook.pages.contains { !drawingIsEmpty($0.drawing) || !($0.images ?? []).isEmpty || !($0.shapes ?? []).isEmpty || $0.pdfReference != nil }
     }
 
     /// Each text as written (list markers stay), line separators as line

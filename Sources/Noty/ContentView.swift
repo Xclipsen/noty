@@ -10,6 +10,8 @@ struct ContentView: View {
     var isRestoredCopy = false
     var isLibraryDocument = false
     var initialSearchBounds: PageRect? = nil
+    /// A search hit over a page change: marked in the flow once the document stands.
+    var initialFlowRange: NSRange? = nil
     var isPaneActive: () -> Bool = { true }
     var onActivatePane: (() -> Void)?
     var onCloseWorkspace: (() -> Void)?
@@ -186,22 +188,21 @@ struct ContentView: View {
                                   area: searchIndexArea ?? StableDefaults.scope(model.storageRoot)) { hit in
                     selectedPageID = hit.pageID; searchHighlight = hit.bounds; searchHighlightPageID = hit.pageID; fitRequest += 1
                     fadeSearchHighlightLater()
+                    if let range = hit.flowRange { selectFlowLater(range) }
                 }
             }
             .sheet(isPresented: $customizingTools) { ToolbarCustomizationView(settings: toolbox) }
             .sheet(isPresented: $showingSettings) { editorSettings?.make() }
             .sheet(isPresented: $editingDefaults) {
-                NotebookDefaultsView(current: model.notebook.pageDefaults) { paper, color, scope in
-                    guard model.setPageDefaults(paper: paper, color: color, convertEmptyPages: scope),
-                          scope == .wholeNotebook else { return }
-                    // The whole notebook now has this paper colour: a neutral pen
-                    // or marker of the old contrast colour would write invisibly
-                    // (white on white). Same direction-aware rule as the ink.
-                    if let pen = PaperInkInversion.converted(toolbox.preferences.penColor, to: color) {
-                        toolbox.preferences.penColor = pen
+                if isTextDocument {
+                    TextDocumentPaperView(current: model.notebook.pageDefaults) { paper, color in
+                        if model.setDocumentPaper(paper: paper, color: color, trailingDraft: draftPage) { toolsFollowPaper(color) }
                     }
-                    if let marker = PaperInkInversion.converted(toolbox.preferences.markerColor, to: color) {
-                        toolbox.preferences.markerColor = marker
+                } else {
+                    NotebookDefaultsView(current: model.notebook.pageDefaults) { paper, color, scope in
+                        guard model.setPageDefaults(paper: paper, color: color, convertEmptyPages: scope),
+                              scope == .wholeNotebook else { return }
+                        toolsFollowPaper(color)
                     }
                 }
             }
@@ -270,6 +271,18 @@ struct ContentView: View {
         .preference(key: EditorCommandsPreference.self, value: editorCommands)
     }
 
+    /// The whole document now has this paper colour: a neutral pen or marker
+    /// of the old contrast colour would write invisibly (white on white).
+    /// Same direction-aware rule as the ink.
+    private func toolsFollowPaper(_ color: PaperColor) {
+        if let pen = PaperInkInversion.converted(toolbox.preferences.penColor, to: color) {
+            toolbox.preferences.penColor = pen
+        }
+        if let marker = PaperInkInversion.converted(toolbox.preferences.markerColor, to: color) {
+            toolbox.preferences.markerColor = marker
+        }
+    }
+
     /// App menu / ⌘ shortcuts of this pane while it is the active one.
     private var editorCommands: EditorCommandActions? {
         guard isPaneActive(), notebookLoaded else { return nil }
@@ -312,6 +325,8 @@ struct ContentView: View {
         case .export(.markdown): shareText(.markdown)
         case .export(.plainText): shareText(.plainText)
         case .export(.noty): shareNoty()
+        case .export(.word): shareText(.word)
+        case .export(.rtf): shareText(.rtf)
         case .undo: performUndo(redo: false)
         case .redo: performUndo(redo: true)
         default: break
@@ -335,7 +350,9 @@ struct ContentView: View {
                      PaletteCommand(title: "Textwerkzeug fixieren umschalten") { textToolLocked.toggle() },
                      PaletteCommand(title: "Werkzeugleiste anpassen") { customizingTools = true },
                      PaletteCommand(title: "Tastaturmodus ausschalten") { UserDefaults.standard.set(false, forKey: AppSettingsKey.keyboardMode) }]
-        if !isTextDocument {
+        if isTextDocument {
+            items.append(PaletteCommand(title: "Papier ändern") { editingDefaults = true })
+        } else {
             let page = currentPage
             items += [PaletteCommand(title: "Seite hinzufügen") { let defaults = model.notebook.pageDefaults; model.insertPaper(defaults.paper, color: defaults.color, relativeTo: anchorPageID) },
                       PaletteCommand(title: "Seite duplizieren") { model.duplicatePage(page.id) },
@@ -377,13 +394,45 @@ struct ContentView: View {
                 let pages = Dictionary(model.notebook.pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                 return model.notebook.textFlowSegments.compactMap { segment in pages[segment.pageID].map { ($0, segment.box) } }
             },
-            change: { change, capacity in model.changeFlow(change, capacity: capacity, trailingDraft: draftPage) })
+            change: { change, capacity in model.changeFlow(change, capacity: capacity, trailingDraft: draftPage) },
+            settle: { id, selection in
+                // Undone meanwhile: a new step would take away the redo.
+                guard !model.canRedo, let focus = model.settleFlow(boxID: id, selection: selection, trailingDraft: draftPage),
+                      selection != nil else { return }
+                // As typing into the next page, the other way round.
+                if focus.pageID != currentPage.id { KeyboardRouter.shared.handoff = true }
+                show(focus)
+            })
+    }
+
+    /// After the search sheet: its field holds the focus until it is gone.
+    private func selectFlowLater(_ range: NSRange) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { selectFlow(range) }
+    }
+    /// A search hit over a page change: marked on both pages (`TextFlowSelection`,
+    /// the surface of text editor 2 takes the whole range), the caret at its start.
+    private func selectFlow(_ range: NSRange) {
+        guard canEdit, let content = model.notebook.textFlowContent, NSMaxRange(range) <= (content.text as NSString).length,
+              let place = model.notebook.textFlowPlace(at: range.location) else { return }
+        if tool != .text { tool = .text; toolbarOptions = false }
+        let router = KeyboardRouter.shared
+        router.handoff = true
+        TextFlowSelection.shared.set(range, parts: model.notebook.textFlowParts(of: range))
+        if let page = model.notebook.pages.first(where: { $0.id == place.pageID }),
+           let box = page.effectiveTextBoxes.first(where: { $0.id == place.boxID }), let part = model.notebook.textFlowParts(of: range)[box.id] {
+            searchHighlight = box.markerBounds(part, on: page); searchHighlightPageID = page.id
+            fadeSearchHighlightLater()
+        }
+        var focus = TextFlowFocus(pageID: place.pageID, boxID: place.boxID, selection: NSRange(location: place.location, length: range.length),
+                                  typingStyle: content.style(at: range.location))
+        focus.requestID = UUID(); textFocus = focus; selectedPageID = focus.pageID
     }
 
     private func markNotebookShown() {
         // Logged once per open (EditorOpenTrace de-duplicates events).
         EditorOpenTrace.mark("model loaded", "pages=\(model.notebook.pages.count)")
         fadeSearchHighlightLater()
+        if let initialFlowRange { selectFlowLater(initialFlowRange) }
     }
 
     /// Gliederung of a text document: the heading's page comes into view,
@@ -751,6 +800,10 @@ struct ContentView: View {
                             .disabled(!model.writable)
                         Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(.plainText) }
                             .disabled(!model.writable)
+                        Button("Als Word teilen (.docx) …", systemImage: "doc.text") { shareText(.word) }
+                            .disabled(!model.writable)
+                        Button("Als RTF teilen (.rtf) …", systemImage: "doc.richtext") { shareText(.rtf) }
+                            .disabled(!model.writable)
                     }
                     Section(model.backupStatus) {
                         Button("Als .noty teilen …", systemImage: "square.and.arrow.up") { shareNoty() }
@@ -777,6 +830,11 @@ struct ContentView: View {
                                || (model.sourcePage(for: currentPage) == nil && !currentPage.writingSpaceExtendsPaper))
                     Button("Papier für neue Seiten …", systemImage: "squareshape.split.3x3") { editingDefaults = true }
                         .disabled(!canEdit)
+                } else {
+                    Button("Seitenumbruch einfügen", systemImage: "arrow.down.to.line.compact") { insertPageBreak() }
+                        .disabled(!canEdit)
+                    Button("Papier ändern …", systemImage: "squareshape.split.3x3") { editingDefaults = true }
+                        .disabled(!canEdit)
                 }
                 Button("Lokale Wiederherstellungspunkte …", systemImage: "clock.arrow.circlepath") { showingHistory = true }
                     .disabled(!model.writable)
@@ -799,16 +857,26 @@ struct ContentView: View {
             }
         }
     }
-    /// The text of this notebook or document as plain text or Markdown
-    /// (`TextDocumentExport`) in the share sheet, named `<Titel>.txt`/`.md`;
-    /// removed after sharing. Without any text nothing is shared.
+    /// At the caret; without one behind the text.
+    private func insertPageBreak() {
+        if let text = UIResponder.currentFirstResponder as? any KeyboardTextTarget { text.insertPageBreak(); return }
+        guard let length = model.notebook.textFlowContent.map({ ($0.text as NSString).length }) else { return }
+        if tool != .text { tool = .text; toolbarOptions = false }
+        flowActions?.edit([TextListEditing.Edit(range: NSRange(location: length, length: 0), replacement: TextLines.pageBreakText)], nil)
+    }
+    /// The text of this notebook or document (`TextDocumentExport`) in the
+    /// share sheet, named `<Titel>.txt`/`.md`/`.rtf`/`.docx`; removed after
+    /// sharing. Without any text nothing is shared.
     private func shareText(_ format: TextDocumentExport.Format) {
-        let text = TextDocumentExport.export(model.notebook, as: format)
-        guard !text.isEmpty else { model.error = "Hier gibt es noch keinen Text zum Teilen."; return }
+        let data = TextDocumentExport.data(model.notebook, as: format)
+        guard !data.isEmpty else { model.error = "Hier gibt es noch keinen Text zum Teilen."; return }
         do {
             let url = try BackupScratch.newShareFile(title: model.notebook.title, fileExtension: format.fileExtension)
-            try Data(text.utf8).write(to: url, options: .atomic)
+            try data.write(to: url, options: .atomic)
             NotyShare.present(url)
+            if format == .word || format == .rtf, TextDocumentExport.leavesOutContent(of: model.notebook, drawingIsEmpty: EditorModel.drawingIsEmpty) {
+                model.fileStatus = "Nur Text: Handschrift, Bilder und Formen stehen im PDF-Export"
+            }
         } catch { model.error = "Teilen nicht möglich: \(error.localizedDescription)" }
     }
     /// The checked `<Titel>.noty` of the current state in the share sheet.

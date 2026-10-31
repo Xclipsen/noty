@@ -148,7 +148,7 @@ struct LibraryView: View {
         }
         .sheet(item: $contentSearch, onDismiss: {
             if let hit = searchHit, let item = model.snapshot.items.first(where: { $0.id == hit.documentID }) {
-                searchHit = nil; Task { await model.open(item, pageID: hit.pageID, searchBounds: hit.bounds) }
+                searchHit = nil; Task { await model.open(item, pageID: hit.pageID, searchBounds: hit.bounds, flowRange: hit.flowRange) }
             }
         }) { search in
             ContentSearchView(documents: search.documents, area: StableDefaults.scope(model.root), retain: search.retain) { searchHit = $0 }
@@ -273,6 +273,8 @@ struct LibraryView: View {
         case .export(.markdown): if !item.isFolder { shareText(item, as: .markdown) }
         case .export(.plainText): if !item.isFolder { shareText(item, as: .plainText) }
         case .export(.noty): if !item.isFolder { shareNoty(item) }
+        case .export(.word): if !item.isFolder { shareText(item, as: .word) }
+        case .export(.rtf): if !item.isFolder { shareText(item, as: .rtf) }
         default: break
         }
     }
@@ -745,16 +747,16 @@ struct LibraryView: View {
         Task { if let url = await model.shareFile(for: item) { NotyShare.present(url) } }
     }
 
-    /// Notebook or text document as `<Titel>.txt`/`.md` of the last committed
+    /// Notebook or text document as `<Titel>.txt`/`.md`/`.rtf`/`.docx` of the last committed
     /// revision, the same export as in the editor (`TextDocumentExport`).
     private func shareText(_ item: NotebookCore.LibraryItem, as format: TextDocumentExport.Format) {
         Task {
             do {
                 let (notebook, _) = try await model.committedNotebook(item.id)
-                let text = TextDocumentExport.export(notebook, as: format)
-                guard !text.isEmpty else { model.error = "Hier gibt es noch keinen Text zum Teilen."; return }
+                let data = TextDocumentExport.data(notebook, as: format)
+                guard !data.isEmpty else { model.error = "Hier gibt es noch keinen Text zum Teilen."; return }
                 let url = try BackupScratch.newShareFile(title: notebook.title, fileExtension: format.fileExtension)
-                try Data(text.utf8).write(to: url, options: .atomic)
+                try data.write(to: url, options: .atomic)
                 NotyShare.present(url)
             } catch { model.error = "Teilen nicht möglich: \(error.localizedDescription)" }
         }
@@ -967,6 +969,8 @@ struct LibraryView: View {
                 Button("Als .noty teilen …", systemImage: "square.and.arrow.up") { shareNoty(item) }
                 Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(item, as: .markdown) }
                 Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(item, as: .plainText) }
+                Button("Als Word teilen (.docx) …", systemImage: "doc.text") { shareText(item, as: .word) }
+                Button("Als RTF teilen (.rtf) …", systemImage: "doc.richtext") { shareText(item, as: .rtf) }
             }
             if showsEnclosing {
                 Button("Im Ordner zeigen", systemImage: "arrow.up.forward.square") {

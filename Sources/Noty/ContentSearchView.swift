@@ -401,7 +401,12 @@ struct ContentSearchView: View {
                 }
                 if let error = model.error { Text(error).foregroundStyle(.red).font(.caption).padding(.horizontal) }
                 List(hits) { hit in
-                    Button { model.cancel(); model.cancelTasks(); onSelect(hit); dismiss() } label: {
+                    Button {
+                        model.cancel(); model.cancelTasks()
+                        var chosen = hit
+                        chosen.flowRange = hit.crossingRange(query)
+                        onSelect(chosen); dismiss()
+                    } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("\(hit.title) · Seite \(hit.pageNumber)").font(.headline)
                             Text(hit.text).lineLimit(3)

@@ -113,6 +113,16 @@ final class TextDocumentExtrasTests: XCTestCase {
         XCTAssertEqual(document.textFlowContent?.text, "")
     }
 
+    func testTheNewCommandsHaveTheirKeys() {
+        XCTAssertEqual(HelixKeymap.binding("<Space> b", in: .text)?.action, .pageBreak)
+        XCTAssertNil(HelixKeymap.binding("<Space> b", in: .page))
+        for context in HelixContext.allCases {
+            XCTAssertEqual(HelixKeymap.binding("<Space> e w", in: context)?.action, .export(.word))
+            XCTAssertEqual(HelixKeymap.binding("<Space> e r", in: context)?.action, .export(.rtf))
+        }
+        XCTAssertTrue(HelixKeymap.commands(in: .text).contains { $0.action == .pageBreak }, "the palette lists it")
+    }
+
     // MARK: Word and RTF
 
     private func office() throws -> Notebook {
@@ -133,8 +143,9 @@ final class TextDocumentExtrasTests: XCTestCase {
         try format("rot") { $0.color = .red; $0.automaticColor = nil }
         try format("gelb") { $0.highlighted = true }
         try format("Link") { $0.link = "https://example.org/?a=1&b=2" }
-        try format("    ◦ tief") { $0.indent = TextPlacement.indentStep }
-        return document
+        let content = try XCTUnwrap(document.textFlowContent), tief = (content.text as NSString).range(of: "tief")
+        let line = TextLines.lineRange(content.text as NSString, tief)
+        return try document.restylingTextFlow(range: line, layout: layout) { $0.indent = TextPlacement.indentStep }.0
     }
     /// Entries of a stored ZIP, walked by its central directory.
     private func entries(_ data: Data) throws -> [String: String] {

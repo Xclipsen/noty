@@ -255,6 +255,7 @@ struct EditorWorkspaceView: View {
 
     private func pane(_ model: EditorModel, index: Int) -> some View {
         ContentView(model: model, isRestoredCopy: false, isLibraryDocument: true, initialSearchBounds: index == 0 ? workspace.primaryDocument.searchBounds : nil,
+            initialFlowRange: index == 0 ? workspace.primaryDocument.searchFlowRange : nil,
             isPaneActive: { workspace.activePane == index && !workspace.closing }, onActivatePane: { workspace.activePane = index },
             onCloseWorkspace: { Task { if await toolbox.flush(), await workspace.closeAll() { library.notebookClosedByUser(); dismiss() } } },
             onSecondView: { choose() }, onLaws: lawsEnabled ? {

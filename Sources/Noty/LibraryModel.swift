@@ -9,6 +9,8 @@ struct OpenNotebook: Identifiable {
     let isRestored: Bool
     var preferredPageID: UUID?
     var searchBounds: PageRect?
+    /// A search hit over a page change, in flow offsets.
+    var searchFlowRange: NSRange?
 }
 
 @MainActor
@@ -402,7 +404,7 @@ final class LibraryModel: ObservableObject {
     }
     func reorder(_ ids: [UUID], parent: UUID?) async { await change { try await store.reorder(ids, parentID: parent) } }
 
-    func open(_ item: NotebookCore.LibraryItem, pageID: UUID? = nil, searchBounds: PageRect? = nil) async {
+    func open(_ item: NotebookCore.LibraryItem, pageID: UUID? = nil, searchBounds: PageRect? = nil, flowRange: NSRange? = nil) async {
         // A second tap on the notebook being opened is no second request.
         guard opening != item.id else { return }
         await settle()
@@ -413,7 +415,7 @@ final class LibraryModel: ObservableObject {
             let url = try await store.documentURL(id: item.id)
             snapshot = try await store.markOpened(item.id)
             opened = OpenNotebook(id: item.id, directory: url, title: item.title,
-                                  isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds)
+                                  isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds, searchFlowRange: flowRange)
             lastEditedID = item.id
             UserDefaults.standard.set(item.id.uuidString, forKey: lastOpenedKey)
         } catch { self.error = error.localizedDescription }

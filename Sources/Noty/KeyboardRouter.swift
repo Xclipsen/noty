@@ -55,6 +55,7 @@ protocol KeyboardTextTarget: UIResponder {
     func keyboardEscape() -> Bool
     func keyboardShowSelection()
     func keyboardUndo(redo: Bool)
+    func insertPageBreak()
     /// Ends a composition: its text stays (Esc).
     func unmarkText()
 }
@@ -581,6 +582,7 @@ final class KeyboardRouter: ObservableObject {
         case .text(let command):
             if let text { text.keyboardRun(command, count: count) }
             return
+        case .pageBreak: text?.insertPageBreak(); return
         default: break
         }
         if context == .library { libraryActions?.run(action, count); return }

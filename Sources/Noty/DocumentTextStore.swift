@@ -41,6 +41,13 @@ final class DocumentRuledLayout: NSObject, @preconcurrency NSLayoutManagerDelega
         baselineOffset.pointee += delta
         return true
     }
+    /// The next page's container takes the text behind a page break.
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction,
+                       forControlCharacterAt charIndex: Int) -> NSLayoutManager.ControlCharacterAction {
+        guard let storage = layoutManager.textStorage, charIndex < storage.length,
+              (storage.string as NSString).character(at: charIndex) == TextLines.pageBreak else { return action }
+        return .containerBreak
+    }
 }
 
 /// A page the flow can stand on.
@@ -186,6 +193,7 @@ final class DocumentTextStore: @preconcurrency DocumentTextMetrics {
             if length == 0 { manager.ensureLayout(for: containers[0]) }
             else { manager.ensureLayout(forCharacterRange: NSRange(location: length - 1, length: 1)) }
             if let extra = manager.extraLineFragmentTextContainer as? DocumentPageContainer { return extra.index }
+            if let opened = pageAfterFinalBreak { return opened }
         }
         guard length > 0, manager.numberOfGlyphs > 0 else { return 0 }
         let glyph = manager.glyphIndexForCharacter(at: min(offset, length - 1))
@@ -196,6 +204,7 @@ final class DocumentTextStore: @preconcurrency DocumentTextMetrics {
         guard containers.indices.contains(page) else { return [] }
         if let cached = lineCache[page] { return cached }
         let container = containers[page]
+        let opened = pageAfterFinalBreak
         let glyphs = manager.glyphRange(for: container)
         var result: [DocumentTextLine] = []
         if glyphs.length > 0 {
@@ -210,9 +219,26 @@ final class DocumentTextStore: @preconcurrency DocumentTextMetrics {
             result.append(DocumentTextLine(page: page, range: NSRange(location: storage.length, length: 0),
                 rect: PageRect(extra), used: PageRect(x: Double(extra.minX), y: Double(extra.minY), width: 0, height: Double(extra.height)),
                 baseline: baseline, ascent: ascent, descent: descent))
+        } else if page == opened {
+            // The caret's line behind a final page break, where TextKit knows none.
+            let font = typingFont, height = Double(font.lineHeight)
+            let ascent = Double(font.ascender), descent = Double(-font.descender)
+            result.append(DocumentTextLine(page: page, range: NSRange(location: storage.length, length: 0),
+                rect: PageRect(x: 0, y: 0, width: Double(container.size.width), height: height),
+                used: PageRect(x: 0, y: 0, width: 0, height: height),
+                baseline: container.rule.baseline(top: 0, ascent: ascent) ?? ascent, ascent: ascent, descent: descent))
         }
         lineCache[page] = result
         return result
+    }
+    /// The page a final page break opens, if the layout has it.
+    private var pageAfterFinalBreak: Int? {
+        let length = storage.length
+        guard length > 0, (storage.string as NSString).character(at: length - 1) == TextLines.pageBreak else { return nil }
+        let glyph = manager.glyphIndexForCharacter(at: length - 1)
+        guard let page = (manager.textContainer(forGlyphAt: glyph, effectiveRange: nil) as? DocumentPageContainer)?.index,
+              page + 1 < containers.count else { return nil }
+        return page + 1
     }
     /// TextKit spans a fragment over the gap up to the previous ruled line:
     /// the band runs ascender to descender around the baseline, as in `PageTextView`.

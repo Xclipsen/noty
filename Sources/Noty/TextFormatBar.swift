@@ -106,6 +106,8 @@ extension TextObjectLayer {
         var symbol: String
         var selected: Bool
         var change: (inout TextBoxStyle) -> Void
+        /// Not a format: an action at the caret.
+        var action: (() -> Void)?
     }
     /// Fixed-size vector canvases keep differently shaped SF symbols centered.
     private func formatIcon(_ name: String) -> UIImage? {
@@ -127,7 +129,10 @@ extension TextObjectLayer {
                 change: { $0.baseline = $0.baseline == -1 ? nil : -1 }),
             .init(label: "Formatierung entfernen", symbol: "eraser", selected: false,
                 change: { [light = selectedLight] in $0 = $0.clearingCharacterFormatting(light: light) })
-        ])
+        ] + (flowActions == nil ? [] : [
+            .init(label: "Seitenumbruch", symbol: "arrow.down.to.line.compact", selected: false, change: { _ in },
+                action: { [weak self] in self?.insertPageBreak() })
+        ]))
     }
     @objc private func showAlignment() {
         guard let style = selectionStyle else { return }
@@ -159,6 +164,7 @@ extension TextObjectLayer {
             button.addAction(UIAction { [weak self, weak popover, weak editor] _ in
                 defer { popover?.dismiss(animated: true) }
                 guard let self, let editor, editor.attributedText.isEqual(to: original), self.restoreFormatSelection() else { return }
+                if let action = choice.action { action(); return }
                 if editor.selectedRange.length == 0 { editor.typingAttributes = insertion }
                 self.changeStyle(choice.change, paragraph: paragraph)
             }, for: .touchUpInside)

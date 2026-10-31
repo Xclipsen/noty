@@ -45,6 +45,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var onUndoBoundary: (() -> Void)?
     var readCurrentBoxes: (() -> [TextBox])?
     private var applyingFlow = false
+    /// A segment whose first word changed, until the typing pauses.
+    private var pendingSettle: UUID?
+    private var settleWork: DispatchWorkItem?
     private var compositionBase: TextBox?
     weak var colorPopover: UIViewController?
     weak var iconPopover: UIViewController?
@@ -775,7 +778,28 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             if focus.pageID == pageID, focus.boxID == editor.objectID {
                 applyTextFocus(focus)
             }
+            if Notebook.reachesFirstWord(from: previous.text, to: current.text) { pendingSettle = current.id }
+            scheduleFlowSettle()
         }
+    }
+    /// Text moving back onto the page before waits for a pause: while a word
+    /// is being typed or shortened the caret must not jump between the pages.
+    /// Every further keystroke starts the wait anew; the step joins the typing.
+    private func scheduleFlowSettle() {
+        guard pendingSettle != nil else { return }
+        settleWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.settleFlow() }
+        settleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+    }
+    private func settleFlow() {
+        guard let id = pendingSettle, let flow = flowActions, fields[id]?.editor.markedTextRange == nil else { return }
+        pendingSettle = nil
+        var selection: NSRange?
+        if let editor = fields[id]?.editor, editor.isFirstResponder, let start = flow.offset(id, editor.selectedRange.location) {
+            selection = NSRange(location: start, length: editor.selectedRange.length)
+        }
+        flow.settle(id, selection)
     }
     func applyTextFocus(_ focus: TextFlowFocus) {
         guard active, focus.pageID == pageID, let field = fields[focus.boxID],
@@ -979,6 +1003,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         case "checkbox": toggleList(.checkbox)
         case "link": editLink()
         case "highlight": toggleHighlight()
+        case "pagebreak": insertPageBreak()
         default: break
         }
     }

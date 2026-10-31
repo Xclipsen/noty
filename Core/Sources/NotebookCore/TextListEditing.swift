@@ -14,7 +14,7 @@ public enum TextListEditing {
             guard matches(.checkbox, line.prefix) else { return nil }
             let range = TextLines.lineRange(source, NSRange(location: line.location, length: 0))
             var end = NSMaxRange(range)
-            while end > line.location && [10, 13].contains(source.character(at: end - 1)) { end -= 1 }
+            while end > line.location && [10, TextLines.pageBreak, 13].contains(source.character(at: end - 1)) { end -= 1 }
             let start = line.location + (line.prefix as NSString).length
             return TaskItem(marker: NSRange(location: line.location, length: 1),
                 body: NSRange(location: start, length: max(0, end - start)), checked: line.prefix == "☑ ")

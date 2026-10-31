@@ -234,6 +234,8 @@ def text_document_with(change):
 
 backup("textdoc-valid.notybackup", text_document())
 backup("textdoc-dark.notybackup", text_document_with(lambda d: [page.update(paperColor="dark") for page in d["pages"]]))
+# A manual page break is a character of the flow, in schema 15 as it is.
+backup("textdoc-page-break.notybackup", text_document_with(lambda d: d["pages"][0]["textBoxes"][0].update(text="Erster Teil\f")))
 backup("textdoc-schema-14.notybackup", text_document(version=14))
 backup("textdoc-kind-notebook.notybackup", text_document(kind="notebook"))
 backup("textdoc-kind-enum.notybackup", text_document(kind="essay"))
@@ -555,6 +557,52 @@ reject() {
     done
 }
 
+
+# Office exports: `verify_office_export.py` must refuse what Word would stumble over.
+python3 -B - "$work" <<'PY'
+import sys, zipfile
+from pathlib import Path
+
+out = Path(sys.argv[1]) / "office"
+out.mkdir()
+W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+HEAD = '<?xml version="1.0" encoding="UTF-8"?>'
+TYPES = HEAD + ('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                '<Default Extension="xml" ContentType="application/xml"/></Types>')
+RELS = HEAD + ('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+               '<Relationship Id="rId1" Type="office" Target="word/document.xml"/></Relationships>')
+DOC = HEAD + f'<w:document {W}><w:body><w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>a</w:t></w:r></w:p><w:sectPr/></w:body></w:document>'
+STYLES = HEAD + f'<w:styles {W}><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/></w:style></w:styles>'
+NUMBERING = HEAD + f'<w:numbering {W}></w:numbering>'
+
+
+def write(name, **changes):
+    parts = {"[Content_Types].xml": TYPES, "_rels/.rels": RELS, "word/document.xml": DOC, "word/styles.xml": STYLES, "word/numbering.xml": NUMBERING}
+    parts.update(changes)
+    with zipfile.ZipFile(out / name, "w") as archive:
+        for key, value in parts.items():
+            if value is not None:
+                archive.writestr(key, value)
+
+
+write("valid.docx")
+write("malformed.docx", **{"word/document.xml": DOC.replace("</w:body>", "")})
+write("no-styles.docx", **{"word/styles.xml": None})
+write("unknown-style.docx", **{"word/document.xml": DOC.replace('w:val="Title"', 'w:val="Ghost"')})
+write("broken-relation.docx", **{"_rels/.rels": RELS.replace("word/document.xml", "word/fehlt.xml")})
+write("undefined-list.docx", **{"word/document.xml": DOC.replace('<w:pStyle w:val="Title"/>', '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="9"/></w:numPr>')})
+(out / "no-zip.docx").write_bytes(b"PK nichts")
+(out / "valid.rtf").write_bytes(b"{\\rtf1\\ansi {\\b a}\\par\n}\n")
+(out / "open.rtf").write_bytes(b"{\\rtf1\\ansi {\\b a\\par\n}\n")
+(out / "umlaut.rtf").write_bytes("{\\rtf1 ä}".encode())
+PY
+accept verify_office_export.py "$work/office/valid.docx"
+accept verify_office_export.py "$work/office/valid.rtf"
+for name in malformed.docx no-styles.docx unknown-style.docx broken-relation.docx undefined-list.docx no-zip.docx open.rtf umlaut.rtf; do
+    reject verify_office_export.py "$work/office/$name"
+done
+
 accept verify_backup.py "$work/backups/valid.notybackup" --compare "$work/backups/valid.json"
 accept verify_backup.py "$work/backups/large-source-schema-10.notybackup"
 for name in schema-99 crc trailing title-type urn-page-id page-count-type source-enum large-source-schema-9; do
@@ -577,6 +625,7 @@ for name in rotation-schema-13 autowidth-schema-13 region-schema-13 rotation-ran
 done
 accept verify_backup.py "$work/backups/textdoc-valid.notybackup"
 accept verify_backup.py "$work/backups/textdoc-dark.notybackup"
+accept verify_backup.py "$work/backups/textdoc-page-break.notybackup"
 for name in schema-14 kind-notebook kind-enum pdf-source pdf-page margins two-flows margin-flow legacy-paper schema-16; do
     reject verify_backup.py "$work/backups/textdoc-$name.notybackup"
 done

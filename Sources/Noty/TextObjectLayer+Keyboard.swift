@@ -36,6 +36,9 @@ struct TextFlowActions {
     /// Text editor 2: the model follows its buffer. The closure gives the
     /// layout's page length for a page and the text from there on (nil: unknown).
     var change: ((TextFlowChange, @escaping (Page, TextBox) -> Int?) -> TextFlowFocus?)? = nil
+    /// The start of a segment moves back onto the page before, if it fits.
+    /// The selection (flow offsets) goes with its text.
+    var settle: (UUID, NSRange?) -> Void = { _, _ in }
 }
 
 /// `j`/`k` go by the lines on screen, measured by the same layout that draws them.
@@ -145,6 +148,19 @@ extension TextObjectLayer {
         KeyboardRouter.shared.handoff = true
         flow.edit([TextListEditing.Edit(range: range, replacement: text)], nil)
         return true
+    }
+    /// A manual page break, one undo step. In NOR and SEL it goes before the
+    /// selection, which stays text.
+    func insertPageBreak() {
+        guard let selectedID, boxes.first(where: { $0.id == selectedID })?.flowID != nil, let flow = flowActions,
+              let editor = fields[selectedID]?.editor, editor.markedTextRange == nil,
+              let caret = flow.offset(selectedID, editor.selectedRange.location) else { return }
+        let router = KeyboardRouter.shared
+        var range = TextFlowSelection.shared.range ?? NSRange(location: caret, length: editor.selectedRange.length)
+        if !router.allowsTyping { range.length = 0 }
+        router.textChangedElsewhere()
+        router.handoff = true
+        flow.edit([TextListEditing.Edit(range: range, replacement: TextLines.pageBreakText)], nil)
     }
     func showFlowSelection() {
         let selection = TextFlowSelection.shared
