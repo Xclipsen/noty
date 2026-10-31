@@ -47,6 +47,7 @@ final class HelixKeymapTests: XCTestCase {
             XCTAssertEqual(HelixKeymap.binding("g", in: context)?.target, .menu)
             XCTAssertEqual(HelixKeymap.binding("<Space>", in: context)?.target, .menu)
             XCTAssertEqual(HelixKeymap.binding("<Space> ?", in: context)?.action, .palette)
+            XCTAssertEqual(HelixKeymap.binding("<Space> h", in: context)?.action, .help, "the overview needs one way in every context")
             XCTAssertEqual(HelixKeymap.binding("<Space> f", in: context)?.action, .searchAll)
             XCTAssertEqual(HelixKeymap.binding("<Space> e", in: context)?.target, .menu)
             XCTAssertEqual(HelixKeymap.binding("<Space> e p", in: context)?.action, .export(.pdf))

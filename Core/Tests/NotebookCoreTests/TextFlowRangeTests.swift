@@ -29,6 +29,23 @@ final class TextFlowRangeTests: XCTestCase {
         XCTAssertEqual(document.textFlowPlace(at: 25)?.location, 5)
     }
 
+    func testSeveralEditsOverPagesAreOneChangeAndKeepTheFormatBetweenThem() throws {
+        var document = try flowing("0123456789abcdefghijKLMNO")
+        document = try document.restylingTextFlow(range: NSRange(location: 5, length: 10), layout: layout) { $0.bold = true }.0
+        let edits = [TextListEditing.Edit(range: NSRange(location: 2, length: 0), replacement: "("),
+                     TextListEditing.Edit(range: NSRange(location: 18, length: 2), replacement: ")")]
+        let (next, focus) = try document.editingTextFlow(edits, caret: 12, layout: layout)
+        let content = try XCTUnwrap(next.textFlowContent)
+        XCTAssertEqual(content.text, "01(23456789abcdefgh)KLMNO")
+        XCTAssertTrue(content.style(at: 6).bold, "the format between the edits stays")
+        XCTAssertFalse(content.style(at: 3).bold)
+        XCTAssertEqual(next.textFlowOffset(boxID: focus.boxID, location: focus.selection.location), 12)
+        XCTAssertThrowsError(try document.editingTextFlow([TextListEditing.Edit(range: NSRange(location: 30, length: 0), replacement: "x")], layout: layout))
+        // Without a caret it goes behind the last replacement.
+        let (end, tail) = try document.editingTextFlow(edits, layout: layout)
+        XCTAssertEqual(end.textFlowOffset(boxID: tail.boxID, location: tail.selection.location), 20)
+    }
+
     func testRangePartsPerSegment() throws {
         let document = try flowing("0123456789abcdefghijKLMNO")
         let parts = document.textFlowParts(of: NSRange(location: 8, length: 14))

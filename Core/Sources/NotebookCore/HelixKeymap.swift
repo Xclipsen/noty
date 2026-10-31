@@ -185,6 +185,7 @@ public enum HelixKeymap {
             act("<Space> f", .searchAll, "Alle Hefte suchen", "Menü", all),
             act("<Space> q", .close, "Schließen", "Menü", editor),
             act("<Space> ?", .palette, "Befehlspalette", "Menü", all),
+            act("<Space> h", .help, "Tastenübersicht", "Menü", all),
             act("<Space> e p", .export(.pdf), "Als PDF exportieren", "Export und Teilen", all),
             act("<Space> e c", .export(.pagePDF), "Diese Seite als PDF", "Export und Teilen", editor),
             act("<Space> e m", .export(.markdown), "Als Markdown teilen", "Export und Teilen", all),

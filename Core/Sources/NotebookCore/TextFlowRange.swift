@@ -74,10 +74,20 @@ extension Notebook {
     /// flow offset afterwards, by default behind the replacement.
     public func editingTextFlow(range: NSRange, replacement: String, caret: Int? = nil,
                                 layout: TextFlowLayout) throws -> (Notebook, TextFlowFocus) {
-        guard let whole = textFlowContent, NSMaxRange(range) <= (whole.text as NSString).length else { throw TextFlowError.stale }
-        let content = whole.applying([TextListEditing.Edit(range: range, replacement: replacement)])
-        let end = caret ?? (range.location + (replacement as NSString).length)
-        return try rewritingTextFlow(content, from: range.location, selection: NSRange(location: end, length: 0), layout: layout)
+        try editingTextFlow([TextListEditing.Edit(range: range, replacement: replacement)], caret: caret, layout: layout)
+    }
+
+    /// Several replacements in ascending order as one change, formats between
+    /// them stay (keyboard mode: `>`, `ms(` or several selections over pages).
+    /// By default the caret goes behind the last replacement.
+    public func editingTextFlow(_ edits: [TextListEditing.Edit], caret: Int? = nil,
+                                layout: TextFlowLayout) throws -> (Notebook, TextFlowFocus) {
+        let length = textFlowContent.map { ($0.text as NSString).length } ?? -1
+        guard let whole = textFlowContent, let first = edits.first, let last = edits.last,
+              edits.allSatisfy({ NSMaxRange($0.range) <= length }) else { throw TextFlowError.stale }
+        let shift = edits.dropLast().reduce(0) { $0 + ($1.replacement as NSString).length - $1.range.length }
+        let end = caret ?? (last.range.location + shift + (last.replacement as NSString).length)
+        return try rewritingTextFlow(whole.applying(edits), from: first.range.location, selection: NSRange(location: end, length: 0), layout: layout)
     }
 
     /// Applies a format to a flow range over any number of pages; the text
