@@ -373,6 +373,18 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         let router = KeyboardRouter.shared
         if router.isEnabled, router.keyboardSeen, router.mode == .insert { router.typed(caret: selection.location) }
     }
+    /// A manual page break, one undo step. In NOR and SEL it goes before the
+    /// selection, which stays text.
+    func insertPageBreak() {
+        guard isActive, marked == nil else { return }
+        let router = KeyboardRouter.shared, typing = router.allowsTyping
+        if typing, hasSeveralCarets { applyEngine(router.engine.insertText(TextLines.pageBreakText)); return }
+        let range = typing ? selection : NSRange(location: selection.location, length: 0)
+        inputDelegate?.textWillChange(self)
+        type(TextLines.pageBreakText, over: range, before: selection, separate: true)
+        inputDelegate?.textDidChange(self)
+        if !typing { keyboardSync(); keyboardShowSelection() }
+    }
     /// "- ", "1. " … at a paragraph start become a list, a step of its own.
     private func finishAutomaticList() {
         let text = store.string, caret = selection.location
@@ -553,7 +565,8 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         let formats: [(String, String, UIKeyModifierFlags, String)] = [
             ("Fett", "b", .command, "bold"), ("Kursiv", "i", .command, "italic"), ("Unterstrichen", "u", .command, "underline"),
             ("Titel", "1", .command, "title"), ("Überschrift", "2", .command, "heading"), ("Unterüberschrift", "3", .command, "subheading"),
-            ("Text", "4", .command, "body"), ("Durchstreichen", "x", [.command, .shift], "strike")]
+            ("Text", "4", .command, "body"), ("Durchstreichen", "x", [.command, .shift], "strike"),
+            ("Seitenumbruch", "\r", .command, "pagebreak")]
         return plain.map { input, flags, action in
             let command = UIKeyCommand(input: input, modifierFlags: flags, action: action)
             command.wantsPriorityOverSystemBehavior = true

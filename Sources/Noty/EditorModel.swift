@@ -302,6 +302,19 @@ final class EditorModel: ObservableObject {
         rewriteFlow { try notebook.restylingTextFlow(range: range, layout: flowLayout(trailingDraft), change: change) }
     }
 
+    /// The typing paused: the start of `boxID` moves back onto the page before
+    /// if it fits there now. Joins the typing's undo step.
+    func settleFlow(boxID: UUID, selection: NSRange?, trailingDraft: Page?) -> TextFlowFocus? {
+        guard writable, !busy, !mutationsPaused else { return nil }
+        let before = notebook
+        guard let (candidate, focus) = try? notebook.settlingTextFlow(boxID: boxID, selection: selection, layout: flowLayout(trailingDraft)),
+              (try? installFlow(candidate)) != nil else { return nil }
+        pendingDraft = nil
+        history.record(.textFlow, before: before, after: candidate, beforeFocus: nil, afterFocus: focus, coalescing: Self.flowCoalescing)
+        publishHistory()
+        return focus
+    }
+
     /// No strokes (also ink whose strokes were all erased): such a page holds
     /// nothing in a text document and is neither kept after the text nor exported.
     nonisolated static func drawingIsEmpty(_ data: Data) -> Bool {
@@ -636,6 +649,18 @@ final class EditorModel: ObservableObject {
         case .emptyPages: fileStatus = changed > 0 ? "Papier für neue Seiten geändert, \(NotyText.count(changed, "leere Seite", "leere Seiten")) umgestellt" : "Papier für neue Seiten geändert"
         case .newPagesOnly: fileStatus = "Papier für neue Seiten geändert"
         }
+        return true
+    }
+    /// Text documents: paper and colour of all pages together, the text flows
+    /// anew. One undo step; refused when the text finds no room.
+    @discardableResult
+    func setDocumentPaper(paper: PaperStyle, color: PaperColor, trailingDraft: Page?) -> Bool {
+        let step = inkRecolorStep, layout = flowLayout(trailingDraft)
+        guard editPages(resetEditor: true, { document in
+            document = try document.changingTextDocumentPaper(paper, color: color, layout: layout, recolorDrawing: step)
+            return nil
+        }) else { return false }
+        fileStatus = "Papier geändert"
         return true
     }
     /// Thin PencilKit step for paper colour flips: path, transform, mask, ink

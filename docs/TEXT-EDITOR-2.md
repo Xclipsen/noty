@@ -31,6 +31,7 @@ Core: DocumentTextLayout.swift, reine Regeln gegen `DocumentTextMetrics`
 - **Zeichnen.** `DocumentPageRaster` liegt in der Seite, im Zoom-Raster von `TextObjectLayer`, über der Tinte und unter freien Feldern. Es zeichnet nur den sichtbaren Glyphenbereich über den gemeinsamen Layout-Manager. Das Segment-Feld bleibt konfiguriert, aber versteckt: `boxes` muss alle Modellboxen behalten, sonst löscht `publish` den Fluss.
 - **Cursor und Auswahl.** In INS zeichnet UIKit. In NOR, SEL und bei mehreren Cursorn ist `TextEngine` die Quelle: `refreshOverlay` zeichnet alle `shownSelections`, `caretRect`/`selectionRects` geben UIKit nichts zu zeichnen. Beim Tippen an mehreren Cursorn wirken `engine.insertText`/`deleteBackward`.
 - **Stift.** `point(inside:)` nur bei aktivem Textwerkzeug. Tinte erreicht PencilKit, freie Felder und Griffe einer Fingerauswahl ihre Ebene. Mit dem Textwerkzeug bleibt der Stift wie heute Tippen und Scrollen.
+- **Seitenumbruch.** U+000C im Puffer. `DocumentRuledLayout` meldet dafür `containerBreak`, die Folgeseite nimmt den Text; `DocumentPageContainer` bleibt unberührt. Das Modell schneidet unabhängig davon hinter dem Zeichen (`reflowText`). Steht es am Textende, gibt es nach TextKit-Lesart keine Zeile dahinter: `DocumentTextStore` legt dem Cursor eine an (`pageAfterFinalBreak`). Die Marke zeichnet `TaskLayoutManager` im Rasterdurchlauf.
 - **Tastatur.** `KeyboardTextTarget` statt `PageTextView` im Router; `PageTextView` reicht an `TextObjectLayer` weiter wie zuvor. Pfeile laufen in INS über `UIKeyCommand` (Wiederholung, Spalte über Seiten), in NOR/SEL über den Router.
 
 ### Was in Core getestet ist (`DocumentTextLayoutTests`)
@@ -45,12 +46,13 @@ Seitenregel gegen `capacity` auf Blanko, Liniert, Kariert; Grundlinienformel; Ei
 | Blocksatz, letzte Zeile einer Seite mitten im Absatz | Editor: Blocksatz. PDF/Vorschau: Segmentende, also linksbündig. Umbrüche gleich, Abstände nicht. |
 | Aufgabe über eine Seitengrenze | Editor sieht eine Aufgabe, PDF/Vorschau erkennen die Folgezeilen auf der nächsten Seite nicht als Aufgabe (Durchstreichen, Abblenden fehlen dort). |
 | `trailingLineFits` | Weiter über `TextObjectLayout`, nicht aus dem gemeinsamen Layout. |
+| Zurückrücken beim Kürzen | Sofort, TextKit setzt um. Der alte Weg wartet auf eine Tipppause, weil dort der Fokus die Textansicht wechseln müsste (`settlingTextFlow`). |
 
 Mit Hänger-Diagnose schreibt `logDeviations` Seiten mit abweichender Länge ins Protokoll (`idevicesyslog | grep noty.editor2`). Eine Abweichung ist am Gerät zu klären, sie darf nicht still bleiben.
 
 ## Fehlt im Prototyp
 
-- **Formatleiste** samt Wortzähler. Da sind ⌘B/I/U, ⌘1–4, ⇧⌘X; es fehlen ⌘+/−, Listenkürzel, Link, Markieren.
+- **Formatleiste** samt Wortzähler. Da sind ⌘B/I/U, ⌘1–4, ⇧⌘X, ⌘↩ (Seitenumbruch, auch über ⋯ und die Palette); es fehlen ⌘+/−, Listenkürzel, Link, Markieren.
 - **Klick-und-Schreiben** unter dem Text (`CaretPlacement`): Ein Tipp darunter geht auf die letzte Zeile.
 - **Listen:** Fortsetzen mit Return, automatische Liste und Checkbox-Tipp sind da; Einrücken mit Tab und Return auf leerer verschachtelter Zeile fehlen.
 - **Gesten der Seite bei aktivem Textwerkzeug:** Die Touches enden auf der Fläche, die Erkenner der Seite sehen sie nicht (Doppeltipp-Menü, Fingerauswahl von Bildern).
@@ -67,7 +69,7 @@ Mit Hänger-Diagnose schreibt `logDeviations` Seiten mit abweichender Länge ins
 1. **`UITextInteraction` auf einer etwa 40.000 pt hohen Ansicht in einem gezoomten Scrollview.** Griffe, Lupe und Gestenkonflikte mit Pan/Pinch waren nie zu sehen. Größtes Risiko, keine Linux-Absicherung möglich.
 2. **Eingabesystem.** Autokorrektur, Diktat und Tottasten verlangen exakte `inputDelegate`-Meldungen und `text(in:)`. Fehler zeigen sich als verschluckte oder verdoppelte Zeichen.
 3. **Verhalten von TextKit:** ob die `lineFragmentRect`-Absage zuverlässig den Container wechselt, die Vorschlagshöhe beim ersten Aufruf stimmt und die Leerzeile hinter dem letzten Umbruch im richtigen Container landet. Annahmen aus der Dokumentation, nicht gemessen.
-4. **Leistung.** Je Taste: `taskItems` über den ganzen Text pro gezeichneter Seite, Segmente und Vergleich O(Text), Neuladen bei Umnummerierung. TextKit layoutet lazy, Sprünge ans Ende aber bis dorthin. Bei 50 Seiten zu messen.
+4. **Leistung.** Je Taste: `taskItems` über den ganzen Text pro gezeichneter Seite, Segmente und Vergleich O(Text), Neuladen bei Umnummerierung. TextKit layoutet lazy, Sprünge ans Ende aber bis dorthin. `capacity` läuft nur noch für die erreichten Seiten, nicht mehr für alle (Core-Test), `lines(onPage:)` misst diese aber nach jeder Änderung neu. Bei 50 Seiten zu messen.
 5. **Zwei Stände während der Eingabe.** Der Puffer ist vor dem Modell, bei Marked Text über mehrere Aufrufe. Späte Modellupdates in dieser Zeit laden nicht neu.
 6. **Tastenbefehle.** `⌘↑/↓` und Pfeile mit `wantsPriorityOverSystemBehavior` können mit Menübefehlen oder dem Systemverhalten kollidieren.
 
@@ -94,6 +96,7 @@ Nur in einem isolierten Bereich oder einer Kopie (AGENTS: Geräteupdates). Schal
 | **Freie Felder, Bilder, Tinte** | Felder bleiben bedienbar, Tinte bleibt auf der Seite, Text fließt darunter | Inhalte verschwinden |
 | **VoiceOver** | Fläche erreichbar, Text vorlesbar | Dokument nicht erreichbar (für Go nachzubauen) |
 | **50-Seiten-Dokument** | Tippen ohne spürbaren Verzug auf Seite 1, 25, 50, Sprung ans Ende unter 0,5 s, Öffnen ohne Hänger | Spürbarer Verzug je Taste |
+| **Seitenumbruch** | ⌘↩ mitten im Text und am Ende: Text steht auf der Folgeseite, Cursor dort, Marke sichtbar, ⌫ und ⌘Z wirken, Pfeile laufen darüber, keine Abweichung im Protokoll | Text bleibt auf der Seite, Abweichungen oder Cursor weg |
 | **Speichern und neu öffnen** | Schalter aus: dasselbe Dokument öffnet identisch, PDF-Export ohne Überlauf; `python3 -B scripts/verify_device_store.py BEREICHSROOT --compare VORHER_ROOT` bestanden | Prüfer meldet Fehler oder Export verweigert |
 
 Dazu: `noty.editor2`-Protokoll auswerten. Abweichungen beim 50-Seiten-Dokument auf allen drei Papieren notieren.

@@ -45,6 +45,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var onUndoBoundary: (() -> Void)?
     var readCurrentBoxes: (() -> [TextBox])?
     private var applyingFlow = false
+    /// A segment whose first word changed, until the typing pauses.
+    private var pendingSettle: UUID?
+    private var settleWork: DispatchWorkItem?
     private var compositionBase: TextBox?
     weak var colorPopover: UIViewController?
     weak var iconPopover: UIViewController?
@@ -775,7 +778,30 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             if focus.pageID == pageID, focus.boxID == editor.objectID {
                 applyTextFocus(focus)
             }
+            if Notebook.reachesFirstWord(from: previous.text, to: current.text) { pendingSettle = current.id }
+            scheduleFlowSettle()
         }
+    }
+    /// Text moving back onto the page before waits for a pause: while a word
+    /// is being typed or shortened the caret must not jump between the pages.
+    /// Every further keystroke starts the wait anew; the step joins the typing.
+    private func scheduleFlowSettle() {
+        guard pendingSettle != nil else { return }
+        settleWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.settleFlow() }
+        settleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+    }
+    private func settleFlow() {
+        guard let id = pendingSettle, let flow = flowActions, fields[id]?.editor.markedTextRange == nil else { return }
+        pendingSettle = nil
+        // The caret may stand on another page by now: it stays with its text there, too.
+        var selection: NSRange?
+        if let editor = UIResponder.currentFirstResponder as? PageTextView, editor.isFlow,
+           let start = flow.offset(editor.objectID, editor.selectedRange.location) {
+            selection = NSRange(location: start, length: editor.selectedRange.length)
+        }
+        flow.settle(id, selection)
     }
     func applyTextFocus(_ focus: TextFlowFocus) {
         guard active, focus.pageID == pageID, let field = fields[focus.boxID],
@@ -901,7 +927,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         let wasUpdating = updating; updating = true
         var range = EditorInteractionPolicy.formattingRange(selection: selection, textLength: editor.attributedText.length,
             floating: boxes[index].allowsObjectSelection, wholeField: wholeFloatingField)
-        if paragraph, !boxes[index].text.isEmpty { range = (boxes[index].text as NSString).paragraphRange(for: selection) }
+        if paragraph, !boxes[index].text.isEmpty { range = TextLines.paragraphRange(boxes[index].text as NSString, selection) }
         if range.length > 0 {
             let formatted = NSMutableAttributedString(attributedString: editor.attributedText)
             editor.attributedText.enumerateAttributes(in: range) { attributes, subrange, _ in
@@ -979,6 +1005,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         case "checkbox": toggleList(.checkbox)
         case "link": editLink()
         case "highlight": toggleHighlight()
+        case "pagebreak": insertPageBreak()
         default: break
         }
     }

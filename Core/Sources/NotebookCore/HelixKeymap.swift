@@ -58,6 +58,8 @@ public enum HelixAction: Equatable, Sendable {
     case lawField(HelixLawField), lawContents, lawBookmarks, lawChoose, lawView
     /// The touch selection in the law text: mark it, or remove what it covers.
     case lawMark(Bool)
+    /// A manual page break at the caret (text documents).
+    case pageBreak
 }
 
 /// What the sidebar does to the chosen page.
@@ -67,7 +69,7 @@ public enum HelixPageItem: String, Sendable, CaseIterable {
 
 public enum HelixLawField: String, Sendable { case query, paragraph }
 
-public enum HelixExport: String, Sendable, CaseIterable { case pdf, pagePDF, markdown, plainText, noty }
+public enum HelixExport: String, Sendable, CaseIterable { case pdf, pagePDF, markdown, plainText, noty, word, rtf }
 
 /// A key that waits for a character (`f`, `r`, `mi`).
 public enum HelixPrompt: String, Sendable, CaseIterable {
@@ -230,6 +232,9 @@ public enum HelixKeymap {
             act("<Space> e m", .export(.markdown), "Als Markdown teilen", "Export und Teilen", all),
             act("<Space> e t", .export(.plainText), "Als Text teilen", "Export und Teilen", all),
             act("<Space> e n", .export(.noty), "Als .noty teilen", "Export und Teilen", all),
+            act("<Space> e w", .export(.word), "Als Word teilen", "Export und Teilen", all),
+            act("<Space> e r", .export(.rtf), "Als RTF teilen", "Export und Teilen", all),
+            act("<Space> b", .pageBreak, "Seitenumbruch einfügen", "Menü", text),
 
             act("z z", .fit, "Einpassen", "Ansicht", editor),
             act("z +", .zoom(1), "Vergrößern", "Ansicht", editor, repeats: true),

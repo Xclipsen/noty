@@ -882,7 +882,13 @@ extension TextOutlineEntry {
     /// Page rectangle of the heading's own lines (same native layout as
     /// editor and PDF), for the short jump marker; the segment frame if the
     /// text changed meanwhile.
-    @MainActor func markerBounds(box: TextBox, page: Page) -> PageRect {
+    @MainActor func markerBounds(box: TextBox, page: Page) -> PageRect { box.markerBounds(range, on: page) }
+}
+
+extension TextBox {
+    /// Page rectangle of `range`'s lines; the frame if the text changed meanwhile.
+    @MainActor func markerBounds(_ range: NSRange, on page: Page) -> PageRect {
+        let box = self
         let length = (box.text as NSString).length
         guard NSMaxRange(range) <= length, range.length > 0, box.rotation == nil else { return box.rotatedBounds }
         let layout = TextObjectLayout(box, on: page)

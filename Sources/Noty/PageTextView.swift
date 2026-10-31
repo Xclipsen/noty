@@ -268,12 +268,17 @@ final class PageTextView: UITextView {
     override var keyCommands: [UIKeyCommand]? {
         (super.keyCommands ?? []) + (isFlow ? [
             UIKeyCommand(input: "z", modifierFlags: .command, action: #selector(undoFlow)),
-            UIKeyCommand(input: "z", modifierFlags: [.command, .shift], action: #selector(redoFlow))] : []) + [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escape)),
+            UIKeyCommand(input: "z", modifierFlags: [.command, .shift], action: #selector(redoFlow)), Self.pageBreakCommand] : []) + [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escape)),
             Self.selectAllCommand,
             UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(bold)),
             UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(italic)),
             UIKeyCommand(input: "u", modifierFlags: .command, action: #selector(underline))] + Self.formatCommands + Self.listCommands
     }
+    private static let pageBreakCommand: UIKeyCommand = {
+        let command = UIKeyCommand(title: "Seitenumbruch", action: #selector(shortcut(_:)), input: "\r", modifierFlags: .command, propertyList: "pagebreak")
+        command.wantsPriorityOverSystemBehavior = true
+        return command
+    }()
     /// Tab/⇧Tab nest list items; elsewhere Tab stays a tab character.
     private static let listCommands: [UIKeyCommand] = [UIKeyModifierFlags(), .shift].map { flags in
         let command = UIKeyCommand(input: "\t", modifierFlags: flags, action: #selector(listTab(_:)))
@@ -327,6 +332,7 @@ extension PageTextView: KeyboardTextTarget {
     func keyboardEscape() -> Bool { historyOwner?.keyboardEscape(self) ?? false }
     func keyboardShowSelection() { historyOwner?.keyboardShowSelection(self) }
     func keyboardUndo(redo: Bool) { historyOwner?.keyboardUndo(redo: redo, editor: self) }
+    func insertPageBreak() { historyOwner?.insertPageBreak() }
 }
 
 struct CaretPlacement: Equatable {

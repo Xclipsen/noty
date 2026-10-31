@@ -85,6 +85,7 @@ final class TaskLayoutManager: NSLayoutManager {
     }
     override func drawGlyphs(forGlyphRange requested: NSRange, at origin: CGPoint) {
         if suppressed { nativeDrawRequested(); return }
+        if rasterPass { drawPageBreaks(requested, at: origin) }
         // Several containers: text editor 2, one per page of a document.
         let page = textContainers.count > 1 ? textContainer(forGlyphAt: requested.location, effectiveRange: nil) : nil
         guard let storage = textStorage, let container = page ?? textContainers.first,
@@ -133,6 +134,33 @@ final class TaskLayoutManager: NSLayoutManager {
             cursor = NSMaxRange(part)
         }
         if cursor < NSMaxRange(requested) { super.drawGlyphs(forGlyphRange: .init(location: cursor, length: NSMaxRange(requested) - cursor), at: origin) }
+    }
+    /// A manual page break, on its line behind the text. Only the editor's
+    /// raster draws it: previews and the PDF show the break by the page itself.
+    nonisolated private func drawPageBreaks(_ glyphs: NSRange, at origin: CGPoint) {
+        guard let storage = textStorage else { return }
+        let text = storage.string as NSString
+        var search = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        while search.length > 0 {
+            let found = text.range(of: TextLines.pageBreakText, options: .literal, range: search)
+            guard found.location != NSNotFound else { return }
+            search = NSRange(location: NSMaxRange(found), length: NSMaxRange(search) - NSMaxRange(found))
+            let glyph = glyphIndexForCharacter(at: found.location)
+            let line = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let font = storage.attribute(.font, at: found.location, effectiveRange: nil) as? UIFont ?? .systemFont(ofSize: 14)
+            let y = origin.y + baseline(forGlyphAt: glyph) - font.xHeight / 2
+            let ink = UIColor.gray.withAlphaComponent(0.7)
+            let name = NSAttributedString(string: "Seitenumbruch", attributes: [.font: UIFont.systemFont(ofSize: 8), .foregroundColor: ink])
+            let label = name.size()
+            let start = origin.x + line.minX + location(forGlyphAt: glyph).x + 4, end = origin.x + line.maxX - label.width - 4
+            if end > start {
+                let mark = UIBezierPath(); mark.lineWidth = 0.6
+                mark.setLineDash([3, 2], count: 2, phase: 0)
+                mark.move(to: CGPoint(x: start, y: y)); mark.addLine(to: CGPoint(x: end, y: y))
+                ink.setStroke(); mark.stroke()
+            }
+            name.draw(at: CGPoint(x: max(start, end + 4), y: y - label.height / 2))
+        }
     }
     /// Done tasks: one line per laid-out line through the middle of the
     /// lowercase letters (x-height), from the first to the last visible glyph.
@@ -187,6 +215,14 @@ final class RuledTextLayout: NSObject, @preconcurrency NSLayoutManagerDelegate {
         used.pointee.size.height += delta
         baselineOffset.pointee += delta
         return true
+    }
+    /// A page break takes no room in a page's own layout: it ends a segment,
+    /// and text behind it (a field, a kept overflow) must stay visible.
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction,
+                       forControlCharacterAt charIndex: Int) -> NSLayoutManager.ControlCharacterAction {
+        guard let storage = layoutManager.textStorage, charIndex < storage.length,
+              (storage.string as NSString).character(at: charIndex) == TextLines.pageBreak else { return action }
+        return .zeroAdvancement
     }
 }
 

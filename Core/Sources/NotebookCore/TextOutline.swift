@@ -69,6 +69,8 @@ extension Notebook {
             while location < length {
                 var start = 0, end = 0, contentsEnd = 0
                 text.getParagraphStart(&start, end: &end, contentsEnd: &contentsEnd, for: NSRange(location: location, length: 0))
+                // Foundation keeps a page break in the paragraph: the caret stays before it.
+                if contentsEnd > start, text.character(at: contentsEnd - 1) == TextLines.pageBreak { contentsEnd -= 1 }
                 defer { location = max(end, location + 1) }
                 let continuing = location == 0 && !atParagraphStart
                 guard !continuing, contentsEnd > start else { continue }
@@ -84,7 +86,7 @@ extension Notebook {
                 open.append(rank)
             }
             let last = text.character(at: length - 1)
-            atParagraphStart = last == 0x0A || last == 0x0D || last == 0x2029
+            atParagraphStart = last == 0x0A || last == 0x0D || last == 0x2029 || last == TextLines.pageBreak
         }
         return result
     }

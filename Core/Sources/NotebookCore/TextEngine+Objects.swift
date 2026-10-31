@@ -323,7 +323,9 @@ extension TextEngine {
     }
     func matches(_ pattern: String, in range: NSRange) -> [Selection] {
         guard let expression = expression(pattern) else { return [] }
-        return expression.matches(in: string, options: [.withTransparentBounds, .withoutAnchoringBounds], range: range)
+        // A phrase reads on over a page break as over a space; the offsets stay.
+        let subject = string.replacingOccurrences(of: TextLines.pageBreakText, with: " ")
+        return expression.matches(in: subject, options: [.withTransparentBounds, .withoutAnchoringBounds], range: range)
             .map { Selection(anchor: $0.range.location, head: NSMaxRange($0.range)) }
     }
 

@@ -61,6 +61,7 @@ extension Notebook {
             if offset < consumed + length { return TextFlowPlace(pageID: segment.pageID, boxID: segment.box.id, location: max(0, offset - consumed)) }
             consumed += length
         }
+        if let opened = pageAfterFinalBreak { return TextFlowPlace(pageID: opened.pageID, boxID: opened.box.id, location: 0) }
         guard let last = segments.last(where: { !$0.box.text.isEmpty }) ?? segments.first else { return nil }
         return TextFlowPlace(pageID: last.pageID, boxID: last.box.id, location: (last.box.text as NSString).length)
     }
@@ -82,7 +83,7 @@ extension Notebook {
         guard let whole = textFlowContent else { return nil }
         let text = whole.text as NSString
         guard NSMaxRange(range) <= text.length else { return nil }
-        return text.paragraphRange(for: range)
+        return TextLines.paragraphRange(text, range)
     }
 
     /// Replaces a flow range (delete, type over, paste) and reflows from the
@@ -187,8 +188,47 @@ extension Notebook {
                              typingStyle: length == 0 ? content.style : content.style(at: min(selection.location, length - 1)))
     }
 
+    /// An edit brings text back onto the page before only by changing the
+    /// first word of a segment: that word was what no longer fit. Every other
+    /// keystroke measures nothing for it.
+    public static func reachesFirstWord(from old: String, to new: String) -> Bool {
+        func wordEnd(_ text: NSString) -> Int {
+            func space(_ index: Int) -> Bool {
+                UnicodeScalar(text.character(at: index)).map(CharacterSet.whitespacesAndNewlines.contains) ?? false
+            }
+            var index = 0
+            while index < text.length, space(index) { index += 1 }
+            while index < text.length, !space(index) { index += 1 }
+            return index
+        }
+        guard let changed = TextListEditing.changedRange(from: old, to: new) else { return false }
+        return changed.location <= max(wordEnd(old as NSString), wordEnd(new as NSString))
+    }
+
+    /// The start of the segment `boxID` moves back onto the page before it, if
+    /// it fits there now. Only that page is measured for this; nil: nothing
+    /// moves. `selection`: flow offsets, the caret stays with its text.
+    public func settlingTextFlow(boxID: UUID, selection: NSRange?, layout: TextFlowLayout) throws -> (Notebook, TextFlowFocus)? {
+        let segments = textFlowSegments
+        guard let index = segments.firstIndex(where: { $0.box.id == boxID }), index > 0, !segments[index].box.text.isEmpty,
+              let page = pages.first(where: { $0.id == segments[index - 1].pageID }),
+              let start = textFlowOffset(boxID: segments[index - 1].box.id, location: 0), let content = textFlowContent else { return nil }
+        let previous = segments[index - 1].box, text = previous.text as NSString
+        // A page break ends the page whatever room it has.
+        guard text.length == 0 || text.character(at: text.length - 1) != TextLines.pageBreak,
+              try layout.capacity(page, previous.appending(segments[index].box)) > text.length else { return nil }
+        let tail = try content.fragment(NSRange(location: start, length: (content.text as NSString).length - start))
+        var replacement = previous
+        replacement.text = tail.text; replacement.runs = tail.runs
+        let local = selection.map { NSRange(location: max(0, $0.location - start), length: $0.length) } ?? NSRange(location: 0, length: 0)
+        return try reflowText(pageID: segments[index - 1].pageID, previous: previous, replacement: replacement, selection: local,
+            trailingDraft: layout.trailingDraft, drawingIsEmpty: layout.drawingIsEmpty,
+            trailingLineFits: layout.trailingLineFits, holdsTail: true, pageCapacity: layout.capacity)
+    }
+
     /// Writes `content` as the whole flow. Pages before the change keep their
-    /// segment untouched; the later segments are emptied and filled again.
+    /// segment untouched; the reflow stops where the stored segments fit again,
+    /// so only the pages the change reaches are measured.
     private func rewritingTextFlow(_ content: TextBox, from offset: Int, selection: NSRange,
                                    layout: TextFlowLayout) throws -> (Notebook, TextFlowFocus) {
         let segments = textFlowSegments
@@ -200,14 +240,6 @@ extension Notebook {
             consumed += length
         }
         if start > 0 { start -= 1; consumed -= (segments[start].box.text as NSString).length }
-        var next = self
-        for segment in segments[(start + 1)...] {
-            guard let page = next.pages.firstIndex(where: { $0.id == segment.pageID }) else { throw TextFlowError.stale }
-            var boxes = next.pages[page].effectiveTextBoxes
-            guard let box = boxes.firstIndex(where: { $0.id == segment.box.id }) else { throw TextFlowError.stale }
-            boxes[box].text = ""; boxes[box].runs = nil
-            next.pages[page].textBoxes = boxes
-        }
         let previous = segments[start].box
         let total = (content.text as NSString).length
         let tail = try content.fragment(NSRange(location: consumed, length: total - consumed))
@@ -215,8 +247,8 @@ extension Notebook {
         replacement.text = tail.text; replacement.runs = tail.runs
         if tail.text.isEmpty { replacement.style = content.style }
         let local = NSRange(location: max(0, selection.location - consumed), length: selection.length)
-        return try next.reflowText(pageID: segments[start].pageID, previous: previous, replacement: replacement, selection: local,
+        return try reflowText(pageID: segments[start].pageID, previous: previous, replacement: replacement, selection: local,
             trailingDraft: layout.trailingDraft, drawingIsEmpty: layout.drawingIsEmpty,
-            trailingLineFits: layout.trailingLineFits, pageCapacity: layout.capacity)
+            trailingLineFits: layout.trailingLineFits, holdsTail: true, pageCapacity: layout.capacity)
     }
 }

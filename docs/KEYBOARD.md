@@ -22,6 +22,7 @@ Stand: Build 68 auf `phase1/fixes` (Review-Befunde zu Build 67). **Implementiert
 | ⌘+ ⌘- | Schrift größer / kleiner | Text |
 | ⇧⌘7 ⇧⌘8 ⇧⌘9 | Aufzählung, Nummerierung, Checkliste | Text |
 | ⌘K, ⇧⌘H | Link, Markieren | Text |
+| ⌘↩ | Seitenumbruch (in NOR und SEL vor die Auswahl) | Textdokument |
 | Tab, ⇧Tab | Listenebene | Text |
 | ⇧⌘P, ⌘/ | Befehlspalette, Tastenübersicht (ohne Tastaturmodus enthält die Palette keine Textbefehle und keine Eingabezeile, beides braucht die Engine) | überall |
 
@@ -53,7 +54,7 @@ Eine Zahl davor wiederholt: `5j`, `3w`, `2gn`. Auf der Seite meint sie bei `G`, 
 | `n`, `N`, `f` | Neues Heft, Textdokument, Ordner |
 | `r`, `m`, `P` | Umbenennen, Verschieben, Anheften |
 | `y`, `d` | Duplizieren, Papierkorb (mit Rückfrage) |
-| `Space e p/m/t/n` | PDF, Markdown, Text, `.noty` des gewählten Eintrags |
+| `Space e p/m/t/n/w/r` | PDF, Markdown, Text, `.noty`, Word, RTF des gewählten Eintrags |
 
 ### Seite
 
@@ -74,7 +75,7 @@ Eine Zahl davor wiederholt: `5j`, `3w`, `2gn`. Auf der Seite meint sie bei `G`, 
 | `Space M` | Lesezeichen dieser Seite setzen oder entfernen |
 | `Space l`, `Space c` | Gesetzessammlung, Farbe und Strich |
 | `Space q` | Schließen |
-| `Space e p/c/m/t/n` | PDF, diese Seite als PDF, Markdown, Text, `.noty` |
+| `Space e p/c/m/t/n/w/r` | PDF, diese Seite als PDF, Markdown, Text, `.noty`, Word, RTF |
 
 ### Text (NOR und SEL)
 
@@ -94,7 +95,8 @@ Eine Zahl davor wiederholt: `5j`, `3w`, `2gn`. Auf der Seite meint sie bei `G`, 
 | `p P R`, `r` + Zeichen | Einfügen dahinter, davor, Auswahl durch Kopiertes ersetzen, jedes Zeichen ersetzen |
 | `~`, `` ` ``, `J`, `> <` | Groß/klein tauschen, klein, Zeilen verbinden, ein-/ausrücken |
 | `i a I A o O` | Schreiben vor, hinter der Auswahl, am Zeilenanfang, -ende, neue Zeile darunter, darüber (siehe „Mehrere Auswahlen“) |
-| `/`, `?`, `n`, `N`, `*` | Suchen, rückwärts, nächster, vorheriger Treffer, Auswahl als Suchbegriff |
+| `/`, `?`, `n`, `N`, `*` | Suchen (über Seiten, ein manueller Umbruch liest sich wie ein Leerzeichen), rückwärts, nächster, vorheriger Treffer, Auswahl als Suchbegriff |
+| `Space b` | Seitenumbruch vor der Auswahl (Textdokument) |
 | `u`, `U` | Rückgängig, Wiederholen |
 | `Space …` | Wie auf der Seite, Werkzeuge unter `Space t` (`t` ist im Text eine Bewegung), `zz z+ z-` ebenso |
 

@@ -394,7 +394,10 @@ struct ContentSearchView: View {
         router.setTyping(keys, true)
     }
     private func select(_ hit: ContentSearchHit) {
-        model.cancel(); model.cancelTasks(); onSelect(hit); dismiss()
+        model.cancel(); model.cancelTasks()
+        var chosen = hit
+        chosen.flowRange = hit.crossingRange(query)
+        onSelect(chosen); dismiss()
     }
     /// Filtered off the main actor: the index can hold 50 000 lines and
     /// changes while it is built, typing must stay fluid.
