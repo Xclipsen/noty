@@ -99,6 +99,9 @@ jobs:
           set -o pipefail
           export HID_DIR="$OUT/hid"
           mkdir -p "$HID_DIR"
+          # The first AXe call of a run takes minutes: not during the test.
+          # Usage 0 is no key.
+          axe key 0 --udid "$UDID" > "$OUT/axe-warmup.log" 2>&1 || cat "$OUT/axe-warmup.log"
           bash ci/simulator/hid-bridge.sh "$HID_DIR" "$UDID" &
           # CPU of the app every 5 s: shows a busy loop behind a missing idle.
           (while true; do date +%T; ps -axo %cpu=,comm= | grep '/Noty$' || true; sleep 5; done > "$OUT/cpu.log") &

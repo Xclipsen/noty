@@ -239,7 +239,7 @@ final class KeyboardSmokeTests: XCTestCase {
         guard let folder = ProcessInfo.processInfo.environment["HID_DIR"] else { return XCTFail("HID_DIR fehlt") }
         let file = "\(folder)/\(UUID().uuidString).key"
         XCTAssertNoThrow(try String(usage).write(toFile: file, atomically: true, encoding: .utf8))
-        XCTAssertTrue(poll(20) { !FileManager.default.fileExists(atPath: file) }, "HID-Brücke drückt \(usage)")
+        XCTAssertTrue(poll(90) { !FileManager.default.fileExists(atPath: file) }, "HID-Brücke drückt \(usage)")
     }
     /// The test no longer waits for an idle app: about a person's pace.
     private func keyPause() { RunLoop.current.run(until: Date().addingTimeInterval(0.25)) }
