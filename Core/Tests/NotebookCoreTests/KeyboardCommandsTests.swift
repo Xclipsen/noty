@@ -96,7 +96,7 @@ final class KeyboardCommandsTests: XCTestCase {
         }
         guard case .pending(let menu)? = press("g", key: keyG, time: 1.0) else { return XCTFail("g opens a menu") }
         XCTAssertEqual(menu?.title, "Gehe zu")
-        guard case .action(.focusFirstItem, _, _)? = press("g", key: keyG, time: 1.1) else { return XCTFail("gg") }
+        guard case .action(.focusFirstItem, _, _, _)? = press("g", key: keyG, time: 1.1) else { return XCTFail("gg") }
         XCTAssertTrue(parser.isIdle)
     }
 

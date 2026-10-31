@@ -39,6 +39,8 @@ final class HelixKeymapTests: XCTestCase {
             }
         }
         for keys in ["w", "j", "x", "n"] { XCTAssertEqual(HelixKeymap.binding(keys, in: .text)?.repeats, true, keys) }
+        // A held key must not replay an edit or a macro.
+        for keys in [".", "q", "Q", "^o", "^i", "^s"] { XCTAssertEqual(HelixKeymap.binding(keys, in: .text)?.repeats, false, keys) }
     }
 
     func testKeysThatMeanTheSameEverywhere() {
@@ -101,6 +103,12 @@ final class HelixKeymapTests: XCTestCase {
             ("I", .insert(.lineStart)), ("A", .insert(.lineEnd)), ("o", .insert(.lineBelow)), ("O", .insert(.lineAbove)), ("v", .toggleSelect), ("m m", .matchBracket),
             ("n", .searchNext), ("N", .searchPrevious), ("*", .searchSelection), ("^d", .screen(0.5)), ("^u", .screen(-0.5)), ("^f", .screen(1)), ("^b", .screen(-1))]
         for (keys, command) in commands { XCTAssertEqual(HelixKeymap.binding(keys, in: .text)?.action, .text(command), keys) }
+        let added: [(String, TextEngine.Command)] = [
+            (".", .repeatInsert), ("Q", .toggleRecording), ("q", .playMacro), ("^s", .saveSelection), ("^o", .jumpBackward), ("^i", .jumpForward),
+            ("<A-C>", .copyToPreviousLine), ("<A-s>", .splitOnLines), ("[ p", .paragraph(forward: false)), ("] p", .paragraph(forward: true))]
+        for (keys, command) in added { XCTAssertEqual(HelixKeymap.binding(keys, in: .text)?.action, .text(command), keys) }
+        XCTAssertEqual(HelixKeymap.binding("\"", in: .text)?.target, .prompt(.register))
+        XCTAssertEqual(HelixKeymap.binding("S", in: .text)?.action, .splitPrompt)
         XCTAssertEqual(HelixKeymap.binding("s", in: .text)?.action, .selectPrompt)
         XCTAssertEqual(HelixKeymap.binding("?", in: .text)?.action, .searchPrompt(backward: true))
         XCTAssertEqual(HelixKeymap.binding("t", in: .text)?.target, .prompt(.tillForward))
@@ -130,6 +138,10 @@ final class HelixKeymapTests: XCTestCase {
         XCTAssertTrue(groups.map(\.name).contains("Auswählen und umschließen"))
         XCTAssertFalse(groups.contains { $0.rows.contains { $0.target == .menu } })
         XCTAssertTrue(groups.flatMap(\.rows).contains { $0.keys == "f" })
+        XCTAssertTrue(groups.map(\.name).contains("Makros"))
+        XCTAssertTrue(groups.map(\.name).contains("Sprünge"))
+        // One row per command: the German keys of `[` `]` stay out of the overview.
+        XCTAssertFalse(groups.flatMap(\.rows).contains { $0.keys == "ü p" || $0.keys == "+ p" })
     }
 
     func testLabels() {
@@ -138,5 +150,8 @@ final class HelixKeymapTests: XCTestCase {
         XCTAssertEqual(HelixKeymap.binding("<A-;>", in: .text)?.label, "⌥;")
         XCTAssertEqual(HelixKeymap.binding("<Space> t p", in: .page)?.label, "Space tp")
         XCTAssertEqual(HelixKeymap.binding("<Esc>", in: .text)?.label, "Esc")
+        XCTAssertEqual(HelixKeymap.binding("<A-C>", in: .text)?.label, "⌥C")
+        XCTAssertEqual(HelixKeymap.binding("^o", in: .text)?.label, "⌃o")
+        XCTAssertEqual(HelixKeymap.binding("] p", in: .text)?.label, "]p")
     }
 }

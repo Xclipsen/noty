@@ -208,7 +208,9 @@ extension TextObjectLayer {
     @discardableResult
     func keyboardSync(_ editor: PageTextView) -> Bool {
         guard let buffer = keyboardBuffer(editor) else { return false }
-        KeyboardRouter.shared.engine.sync(text: buffer.text as String, selection: shownSelection(editor, buffer: buffer))
+        let router = KeyboardRouter.shared
+        router.engine.useJumps(of: boxes.first(where: { $0.id == editor.objectID })?.flowID ?? editor.objectID)
+        router.engine.sync(text: buffer.text as String, selection: shownSelection(editor, buffer: buffer))
         return true
     }
 
@@ -217,7 +219,7 @@ extension TextObjectLayer {
         guard keyboardSync(editor) else { return }
         let router = KeyboardRouter.shared
         switch command {
-        case .paste, .replaceWithRegister: router.adoptPasteboard()
+        case .paste, .replaceWithRegister, .playMacro: router.adoptPasteboard()
         default: break
         }
         router.engine.layout = KeyboardLineLayout(layer: self, editor: editor)
@@ -341,6 +343,36 @@ extension TextObjectLayer {
         guard router.isEnabled, router.keyboardSeen, router.mode == .insert else { return }
         let local = editor.selectedRange.location
         router.typed(caret: isFlow(editor) ? flowActions?.offset(editor.objectID, local) ?? local : local)
+    }
+    /// Automatic pairs: a typed character at a plain caret. Marked text,
+    /// autocorrection and dictation replace ranges or bring more than one
+    /// character, they stay native. Only this page's text counts here, the
+    /// neighbour of a caret on the page's edge is unknown.
+    func handlePairInput(_ textView: UITextView, range: NSRange, text: String) -> Bool? {
+        guard let editor = textView as? PageTextView, !insertingList, KeyboardRouter.shared.pairsTyping,
+              editor.markedTextRange == nil, editor.selectedRange.length == 0, NSMaxRange(range) == editor.selectedRange.location else { return nil }
+        let source = (editor.text ?? "") as NSString
+        if text.isEmpty, range.length == 1 {
+            guard let pair = TextTyping.pairDeletion(in: source, at: NSMaxRange(range)),
+                  let index = boxes.firstIndex(where: { $0.id == editor.objectID }) else { return nil }
+            applyListEdits([TextListEditing.Edit(range: pair, replacement: "")], at: index, editor: editor)
+            keyboardTyped(editor)
+            return false
+        }
+        guard range.length == 0, let pairing = TextTyping.pairing(text, in: source, at: range.location) else { return nil }
+        if !pairing.insert.isEmpty {
+            insertingList = true; defer { insertingList = false }
+            editor.insertText(pairing.insert)
+        }
+        let caret = range.location + pairing.advance
+        editor.selectedRange = NSRange(location: caret, length: 0)
+        // The edit left a focus behind the pair: this newer one replaces it.
+        if let flow = isFlow(editor) ? flowActions : nil, let offset = flow.offset(editor.objectID, caret) {
+            KeyboardRouter.shared.handoff = true
+            flow.moveCaret(NSRange(location: offset, length: 0))
+        }
+        keyboardTyped(editor)
+        return false
     }
     /// ⌘V outside typing: replaces a marked text, otherwise `P`. The register takes the pasteboard.
     func keyboardPaste(_ editor: PageTextView) {

@@ -60,6 +60,8 @@ public enum HelixAction: Equatable, Sendable {
     case lawMark(Bool)
     /// A manual page break at the caret (text documents).
     case pageBreak
+    /// Asks for a pattern, then `TextEngine.splitMatches`.
+    case splitPrompt
 }
 
 /// What the sidebar does to the chosen page.
@@ -75,6 +77,8 @@ public enum HelixExport: String, Sendable, CaseIterable { case pdf, pagePDF, mar
 public enum HelixPrompt: String, Sendable, CaseIterable {
     case findForward, tillForward, findBackward, tillBackward, replace
     case inside, around, surroundAdd, surroundDelete, surroundReplace
+    /// `"a` before a command.
+    case register
 
     public var title: String {
         switch self {
@@ -88,6 +92,7 @@ public enum HelixPrompt: String, Sendable, CaseIterable {
         case .surroundAdd: "Umschließen mit"
         case .surroundDelete: "Umschließung entfernen"
         case .surroundReplace: "Umschließung ersetzen"
+        case .register: "Register wählen"
         }
     }
 
@@ -103,6 +108,9 @@ public enum HelixPrompt: String, Sendable, CaseIterable {
             [.init(key: "w", title: "Wort"), .init(key: "W", title: "Langes Wort"), .init(key: "p", title: "Absatz"), Self.closest] + Self.pairs
         case .surroundAdd: Self.pairs
         case .surroundDelete, .surroundReplace: [Self.closest] + Self.pairs
+        case .register:
+            [.init(key: "a…z", title: "Eigenes Register, nur im Speicher"), .init(key: "_", title: "Nichts merken"),
+             .init(key: "+", title: "Systemzwischenablage (wie ohne Register)")]
         default: []
         }
     }
@@ -132,7 +140,7 @@ public enum HelixPrompt: String, Sendable, CaseIterable {
         case .around: return object(true)
         case .surroundAdd: return .text(.surroundAdd(character))
         case .surroundDelete: return .text(.surroundDelete(character == "m" ? nil : character))
-        case .surroundReplace: return nil // two characters, see `HelixParser`
+        case .surroundReplace, .register: return nil // see `HelixParser`
         }
     }
 }
@@ -211,6 +219,11 @@ public enum HelixKeymap {
             menu("g", "Gehe zu", all.union(panels)),
             menu("z", "Ansicht", editor),
             menu("m", "Auswählen und umschließen", text),
+            menu("[", "Zurück zu", text),
+            menu("]", "Vor zu", text),
+            // The keys at those places on a German keyboard (docs/KEYBOARD.md, Grenzen).
+            menu("ü", "Zurück zu", text),
+            menu("+", "Vor zu", text),
             menu("t", "Werkzeug", page),
             // In a dialog the space bar switches the option instead.
             menu("<Space>", "Menü", all.union([.sidebar, .list, .law])),
@@ -297,6 +310,13 @@ public enum HelixKeymap {
             edit("g l", .gotoLineEnd, "Zeilenende", "Gehe zu"),
             edit("g s", .gotoFirstNonBlank, "Erstes Zeichen der Zeile", "Gehe zu"),
             edit("G", .gotoLine, "Zur Zeile (5G: Zeile 5)", "Gehe zu"),
+            edit("[ p", .paragraph(forward: false), "Vorheriger Absatz", "Gehe zu"),
+            edit("] p", .paragraph(forward: true), "Nächster Absatz", "Gehe zu"),
+            edit("ü p", .paragraph(forward: false), "Vorheriger Absatz", "Gehe zu"),
+            edit("+ p", .paragraph(forward: true), "Nächster Absatz", "Gehe zu"),
+            edit("^s", .saveSelection, "Position merken", "Sprünge"),
+            edit("^o", .jumpBackward, "Zurück springen", "Sprünge"),
+            edit("^i", .jumpForward, "Vor springen", "Sprünge"),
 
             // Text: selections
             edit("%", .selectAll, "Alles wählen", "Auswahl"),
@@ -306,7 +326,10 @@ public enum HelixKeymap {
             edit("<A-;>", .flip, "Auswahl umdrehen", "Auswahl"),
             edit(",", .keepPrimary, "Nur Hauptauswahl", "Auswahl"),
             edit("C", .copyToNextLine, "Auswahl in die nächste Zeile kopieren", "Auswahl", repeats: true),
+            edit("<A-C>", .copyToPreviousLine, "Auswahl in die vorige Zeile kopieren", "Auswahl", repeats: true),
             act("s", .selectPrompt, "Treffer in der Auswahl wählen", "Auswahl", text),
+            act("S", .splitPrompt, "Auswahl an Treffern teilen", "Auswahl", text),
+            edit("<A-s>", .splitOnLines, "Auswahl an Zeilenumbrüchen teilen", "Auswahl"),
             edit("v", .toggleSelect, "Auswahlmodus", "Auswahl"),
 
             // Text: edits
@@ -316,6 +339,7 @@ public enum HelixKeymap {
             edit("p", .paste(before: false), "Einfügen dahinter", "Ändern"),
             edit("P", .paste(before: true), "Einfügen davor", "Ändern"),
             edit("R", .replaceWithRegister, "Durch Kopiertes ersetzen", "Ändern"),
+            prompt("\"", .register),
             prompt("r", .replace),
             edit("~", .switchCase, "Groß/klein tauschen", "Ändern"),
             edit("`", .lowercase, "Kleinschreiben", "Ändern"),
@@ -330,6 +354,9 @@ public enum HelixKeymap {
             edit("A", .insert(.lineEnd), "Schreiben am Zeilenende", "Schreiben"),
             edit("o", .insert(.lineBelow), "Neue Zeile darunter", "Schreiben"),
             edit("O", .insert(.lineAbove), "Neue Zeile darüber", "Schreiben"),
+            edit(".", .repeatInsert, "Letzte Einfügung wiederholen", "Schreiben"),
+            edit("Q", .toggleRecording, "Makro aufnehmen an/aus", "Makros"),
+            edit("q", .playMacro, "Makro abspielen", "Makros"),
 
             // Text: search
             act("/", .searchPrompt(backward: false), "Im Text suchen", "Suchen", text),

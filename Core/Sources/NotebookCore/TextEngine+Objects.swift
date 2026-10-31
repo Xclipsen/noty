@@ -93,6 +93,43 @@ extension TextEngine {
     /// `cursor(of:)` regardless of the mode.
     private func blockCursor(of range: Selection) -> Int { range.head > range.anchor ? text.previousBoundary(range.head) : range.head }
 
+    // MARK: Paragraphs
+
+    /// `]p`, `[p` (`move_next_paragraph`, `move_prev_paragraph`): only lines
+    /// without any character separate, white space counts as text.
+    func moveParagraph(_ range: Selection, forward: Bool, count: Int, extend: Bool) -> Selection {
+        let starts = lineStarts, position = blockCursor(of: range)
+        func offset(_ line: Int) -> Int { line < starts.count ? starts[line] : text.length }
+        func blank(_ line: Int) -> Bool { line < starts.count && TextLines.end(text, starts[line]) == starts[line] }
+        var line = starts.lastIndex { $0 <= position } ?? 0
+        let skips: Bool, atEdge: Bool
+        if forward {
+            atEdge = text.previousBoundary(offset(line + 1)) == position
+            skips = blank(line) && !blank(min(starts.count - 1, line + 1))
+        } else {
+            atEdge = starts[line] == position
+            skips = blank(max(0, line - 1)) && !blank(line)
+        }
+        // Past the character at the paragraph's edge.
+        if skips, forward ? atEdge : !atEdge { line += 1 }
+        var previous = line
+        for _ in 0..<count {
+            if forward {
+                while line < starts.count, !blank(line) { line += 1 }
+                while line < starts.count, blank(line) { line += 1 }
+            } else {
+                while line > 0, blank(line - 1) { line -= 1 }
+                while line > 0, !blank(line - 1) { line -= 1 }
+            }
+            if line == previous { break }
+            previous = line
+        }
+        let head = offset(line)
+        if extend { return Selection(anchor: put(range, head, extend: true).anchor, head: head) }
+        let fromHead = forward ? skips && atEdge : !(skips && atEdge)
+        return Selection(anchor: fromHead ? range.head : position, head: head)
+    }
+
     // MARK: Find
 
     private func nextOccurrence(_ character: String, from start: Int, count: Int) -> Int? {

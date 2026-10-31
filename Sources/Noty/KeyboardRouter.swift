@@ -24,12 +24,12 @@ struct LibraryKeyActions {
     var commands: () -> [PaletteCommand]
 }
 
-/// The input line of `/`, `?` and `s`. Display only: its keys keep coming
+/// The input line of `/`, `?`, `s` and `S`. Display only: its keys keep coming
 /// through the router, because the text view has to stay first responder.
 /// Selection, caret reveal and format bar then work as during every other
 /// command; focus moving to a field would end the text for all of them.
 struct TextPrompt: Equatable {
-    enum Kind: Equatable { case search(backward: Bool), select }
+    enum Kind: Equatable { case search(backward: Bool), select, split }
     let kind: Kind
     var query = ""
     var noMatch = false
@@ -37,6 +37,15 @@ struct TextPrompt: Equatable {
         switch kind {
         case .search(let backward): backward ? "?" : "/"
         case .select: "s"
+        case .split: "S"
+        }
+    }
+    /// The same as a key of a macro.
+    var action: HelixAction {
+        switch kind {
+        case .search(let backward): .searchPrompt(backward: backward)
+        case .select: .selectPrompt
+        case .split: .splitPrompt
         }
     }
 }
@@ -84,6 +93,8 @@ final class KeyboardRouter: ObservableObject {
     /// Selections of the engine: the app shows only the primary one, so the
     /// mode indicator has to say that `d` will take more than that.
     @Published private(set) var selectionCount = 1
+    /// `Q`: the register a macro is being recorded into.
+    @Published private(set) var recordingRegister: String?
     /// The mode indicator only appears once a hardware key was pressed.
     @Published private(set) var keyboardSeen = false
     @Published var helpVisible = false
@@ -151,6 +162,12 @@ final class KeyboardRouter: ObservableObject {
 
     var isEnabled: Bool { UserDefaults.standard.object(forKey: AppSettingsKey.keyboardMode) as? Bool ?? true }
     var allowsTyping: Bool { !isEnabled || mode == .insert }
+    /// INS closes pairs by itself (Settings › Editor).
+    var pairsTyping: Bool { isEnabled && UserDefaults.standard.bool(forKey: AppSettingsKey.autoPairs) }
+    /// Enter keeps the indent of the line; lists go first (`TextListEditing`).
+    func indentedNewline(in text: String, range: NSRange) -> TextListEditing.Edit? {
+        isEnabled ? TextTyping.newline(in: text, range: range) : nil
+    }
 
     // MARK: State from the views
 
@@ -226,10 +243,11 @@ final class KeyboardRouter: ObservableObject {
             refreshLabel()
         }
     }
-    /// No text any more: the register stays, everything else goes.
+    /// No text any more: the registers stay, everything else goes.
     private func endTextState() {
         dropSequence()
         dropPrompt()
+        engine.textEnded()
         engine.sync(text: "", selection: NSRange(location: 0, length: 0), mode: .insert)
     }
     func setMode(_ mode: TextEngine.Mode, editor: (any KeyboardTextTarget)? = nil) {
@@ -285,6 +303,7 @@ final class KeyboardRouter: ObservableObject {
         if label != value { label = value }
         if contextLabel != place { contextLabel = place }
         if selectionCount != count { selectionCount = count }
+        if recordingRegister != engine.recordingRegister { recordingRegister = engine.recordingRegister }
     }
 
     // MARK: Register and messages
@@ -308,6 +327,9 @@ final class KeyboardRouter: ObservableObject {
         case .noMatch: "Kein Treffer"
         case .pairNotFound: "Kein Paar gefunden"
         case .primaryOnly: "Nur Hauptauswahl"
+        case .registerEmpty: "Register leer"
+        case .macroStopped: "Makro abgebrochen"
+        case .notInMacro: "Nicht im Makro"
         }
         show(note: note)
     }
@@ -367,6 +389,7 @@ final class KeyboardRouter: ObservableObject {
             switch prompt.kind {
             case .search(let backward): outcome = engine.search(query, backward: backward)
             case .select: outcome = engine.selectMatches(query)
+            case .split: outcome = engine.splitMatches(query)
             }
             prompt.noMatch = outcome.notice == .noMatch
         } else { prompt.noMatch = false }
@@ -376,6 +399,10 @@ final class KeyboardRouter: ObservableObject {
     private func closePrompt(restoring: Bool, editor: (any KeyboardTextTarget)?) {
         guard let prompt = textPrompt else { return }
         if restoring, let promptStart { engine = promptStart }
+        else if !prompt.query.isEmpty, let promptStart {
+            engine.rememberJump(from: promptStart)
+            engine.recordPrompt(prompt.action, query: prompt.query)
+        }
         textPrompt = nil; promptStart = nil
         if restoring { showSelection(in: editor) }
         else if prompt.noMatch { show(.noMatch) }
@@ -418,7 +445,8 @@ final class KeyboardRouter: ObservableObject {
     var shownContext: HelixContext { context ?? (scope == .library ? .library : editing ? .text : .page) }
 
     /// The token of a key press; nil for ⌘ shortcuts and keys without meaning here.
-    private static func token(for key: UIKey) -> String? {
+    /// `commands`: ⌥ with a letter is a command there, otherwise it types.
+    private static func token(for key: UIKey, commands: Bool) -> String? {
         let flags = key.modifierFlags
         guard !flags.contains(.command) else { return nil }
         let shift = flags.contains(.shift)
@@ -442,6 +470,11 @@ final class KeyboardRouter: ObservableObject {
         }
         // Everything else with ⌥ stays what it types: `[ ] { } | ~ @` on German layouts.
         if flags.contains(.alternate), key.charactersIgnoringModifiers == ";" || (shift && key.charactersIgnoringModifiers == ",") { return "<A-;>" }
+        if flags.contains(.alternate), commands {
+            let letter = key.charactersIgnoringModifiers.lowercased()
+            if letter == "c", shift { return "<A-C>" }
+            if letter == "s", !shift { return "<A-s>" }
+        }
         let characters = key.characters
         return characters.count == 1 ? characters : nil
     }
@@ -458,7 +491,7 @@ final class KeyboardRouter: ObservableObject {
         return used
     }
     private func handle(_ key: UIKey, time: TimeInterval, text: (any KeyboardTextTarget)?) -> Bool {
-        let code = key.keyCode.rawValue, token = Self.token(for: key), tracing = HangProbe.isInstalled
+        let code = key.keyCode.rawValue, token = Self.token(for: key, commands: context == .text && textPrompt == nil), tracing = HangProbe.isInstalled
         let before = context, typing = (editing && mode == .insert) || textPrompt != nil || activePanel?.input != nil
         outcome = ""
         // The responder chain walked on with an unused press: nothing new happened.
@@ -539,6 +572,7 @@ final class KeyboardRouter: ObservableObject {
         let editor = editing ? (text ?? UIResponder.currentFirstResponder as? any KeyboardTextTarget) : nil
         let result = parser.feed(token, context: context)
         if HangProbe.isInstalled { outcome = "\(result)" }
+        defer { if context == .text, !engine.record(token, result) { show(.notInMacro) } }
         switch result {
         case .pending(let node):
             pending = parser.display; menu = node
@@ -552,12 +586,13 @@ final class KeyboardRouter: ObservableObject {
             // In a text no stray letter may be typed; arrows with ⇧ and the like stay native.
             // A panel keeps its keys, too: the responder behind it means nothing now.
             return context == .text || activePanel != nil
-        case .action(let action, let count, let repeats):
+        case .action(let action, let count, let repeats, let register):
             pending = ""; menu = nil
-            perform(action, count: count, context: context, text: editor)
+            perform(action, count: count, register: register, context: context, text: editor)
             // A page or tool change can take the responder away with its sheet.
             if context == .page { reclaim() }
-            if repeats, let key {
+            // A recording takes each key once: a held key would run ahead of it.
+            if repeats, let key, engine.recordingRegister == nil {
                 repeatKey = key
                 repeatTask = Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .milliseconds(320))
@@ -596,13 +631,16 @@ final class KeyboardRouter: ObservableObject {
         return editor.keyboardEscape()
     }
 
-    private func perform(_ action: HelixAction, count: Int?, context: HelixContext, text: (any KeyboardTextTarget)?) {
+    private func perform(_ action: HelixAction, count: Int?, register: String? = nil, context: HelixContext, text: (any KeyboardTextTarget)?) {
         switch action {
         case .help: helpVisible = true; return
         case .palette: paletteVisible = true; return
         case .searchPrompt(let backward): openPrompt(.search(backward: backward), editor: text); return
         case .selectPrompt: openPrompt(.select, editor: text); return
+        case .splitPrompt: openPrompt(.split, editor: text); return
         case .text(let command):
+            engine.selectedRegister = register
+            engine.autoPairs = pairsTyping
             if let text { text.keyboardRun(command, count: count) }
             return
         case .pageBreak: text?.insertPageBreak(); return
@@ -652,7 +690,7 @@ final class KeyboardRouter: ObservableObject {
     /// line: these would do nothing.
     private func reachable(_ action: HelixAction) -> Bool {
         switch action {
-        case .text, .searchPrompt, .selectPrompt: isEnabled
+        case .text, .searchPrompt, .selectPrompt, .splitPrompt: isEnabled
         default: true
         }
     }

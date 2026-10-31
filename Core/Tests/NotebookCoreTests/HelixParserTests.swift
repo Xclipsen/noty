@@ -120,10 +120,10 @@ final class HelixParserTests: XCTestCase {
     func testUnboundDropsTheSequence() {
         var parser = HelixParser()
         XCTAssertEqual(parser.feed("3", context: .text), .pending(menu: nil))
-        XCTAssertEqual(parser.feed("Q", context: .text), .unbound)
+        XCTAssertEqual(parser.feed("Z", context: .text), .unbound)
         XCTAssertTrue(parser.isIdle)
         XCTAssertEqual(parser.feed("g", context: .text), .pending(menu: HelixKeymap.menu("g", in: .text)))
-        XCTAssertEqual(parser.feed("Q", context: .text), .unbound)
+        XCTAssertEqual(parser.feed("Z", context: .text), .unbound)
         XCTAssertEqual(parser.feed("w", context: .text), text(.word(.nextStart, long: false), repeats: true))
     }
 
@@ -158,5 +158,46 @@ final class HelixParserTests: XCTestCase {
         XCTAssertEqual(feed("m", .library).result, .action(.moveItem, count: nil, repeats: false))
         XCTAssertEqual(feed("m", .page).result, .unbound)
         XCTAssertEqual(feed("<Space> M", .page).result, .action(.bookmark, count: nil, repeats: false))
+    }
+
+    // MARK: Registers
+
+    func testARegisterGoesWithTheNextCommand() {
+        XCTAssertEqual(feed("\" a y").result, .action(.text(.yank), count: nil, repeats: false, register: "a"))
+        XCTAssertEqual(feed("\" a 3 p").result, .action(.text(.paste(before: false)), count: 3, repeats: false, register: "a"))
+        XCTAssertEqual(feed("\" a g g").result, .action(.text(.gotoFileStart), count: nil, repeats: false, register: "a"))
+        XCTAssertEqual(feed("\" a f x").result, .action(.text(.find("x", forward: true, inclusive: true)), count: nil, repeats: false, register: "a"))
+    }
+    func testACountBeforeARegisterFallsAway() {
+        XCTAssertEqual(feed("3 \" a p").result, .action(.text(.paste(before: false)), count: nil, repeats: false, register: "a"))
+    }
+    func testARegisterWaitsVisiblyAndEscDropsIt() {
+        XCTAssertEqual(feed("\"").parser.display, "\"")
+        XCTAssertEqual(feed("\" a").parser.display, "\"a")
+        XCTAssertFalse(feed("\" a").parser.isIdle)
+        XCTAssertEqual(feed("\" a <Esc>").result, .cancelled)
+        XCTAssertTrue(feed("\" a <Esc>").parser.isIdle)
+        guard case .pending(let menu?) = feed("\"").result else { return XCTFail("no menu") }
+        XCTAssertEqual(menu.title, HelixPrompt.register.title)
+        XCTAssertFalse(menu.entries.isEmpty)
+    }
+    func testAnUnboundKeyDropsTheRegister() {
+        var parser = HelixParser()
+        _ = parser.feed("\"", context: .text); _ = parser.feed("a", context: .text)
+        XCTAssertEqual(parser.feed("<F1>", context: .text), .unbound)
+        XCTAssertEqual(parser.feed("y", context: .text), .action(.text(.yank), count: nil, repeats: false))
+    }
+    func testBracketMenus() {
+        for (keys, forward) in [("[ p", false), ("] p", true), ("ü p", false), ("+ p", true)] {
+            XCTAssertEqual(feed(keys).result, text(.paragraph(forward: forward)), keys)
+        }
+        XCTAssertEqual(feed("3 ] p").result, text(.paragraph(forward: true), count: 3))
+        for first in ["[", "]", "ü", "+"] {
+            guard case .pending(let menu?) = feed(first).result else { return XCTFail(first) }
+            XCTAssertEqual(menu.entries.map(\.key), ["p"], first)
+        }
+        // The German keys stay what they are behind a key that takes a character.
+        XCTAssertEqual(feed("f ü").result, text(.find("ü", forward: true, inclusive: true)))
+        XCTAssertEqual(feed("r +").result, text(.replace("+")))
     }
 }

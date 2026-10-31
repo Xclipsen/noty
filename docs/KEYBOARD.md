@@ -2,6 +2,8 @@
 
 Stand: Build 68 auf `phase1/fixes` (Review-Befunde zu Build 67). **Implementiert, erfolgreich gebaut, Core-Tests bestanden, installiert, am iPad ungeprüft.** Darauf aufbauend Branch `extras/tastatur-ui` (Seitenleiste, Suchsheet, Gesetze, Dialoge, Farbe): **implementiert, erfolgreich gebaut, Core-Tests bestanden, nicht installiert, am iPad ungeprüft.** Linux hat keinen iOS-Simulator: Engine, Tastentabelle, Parser, Bereichsbearbeitung und die Tastensperre sind getestet (`HelixEngineTests`, `HelixKeymapTests`, `HelixParserTests`, `KeyboardCommandsTests`, `TextFlowRangeTests`), Tastenzustellung, Fokus, Anzeige und TextKit-Messung **nicht**. Der Zustellweg (`KeyPressGate`, `KeyDeliveryLatch`, Rückholen des Fokus) ist selbst noch ungeprüft.
 
+Branch `extras/helix` (auf `feat/tastatur`, kein Build-Stand): Register, `.`, Makros, Sprungliste, ⌥C, `S`, ⌥s, `[`/`]`, Klammerpaare und Einzug. **Implementiert, erfolgreich gebaut, Core-Tests bestanden, nicht installiert, am iPad ungeprüft** (Gerätetest 23–32).
+
 ## ⌘-Kürzel (immer aktiv, auch ohne Tastaturmodus)
 
 | Taste | Wirkung | Wo |
@@ -34,11 +36,11 @@ Außerhalb von INS: ⌘V ersetzt eine breite Auswahl, sonst wie `P`; ⌘X schnei
 
 Einstellungen › Editor › „Tastaturmodus (wie Helix)“, Standard an. Wirkt nur auf Hardware-Tastaturen. Modell wie [Helix](https://helix-editor.com): **erst auswählen, dann handeln**. `w` wählt ein Wort, `d` löscht es.
 
-**Modus:** `NOR` (Buchstaben sind Befehle), `INS` (natives Tippen), `SEL` (Bewegungen erweitern die Auswahl, `v` schaltet um). Auf Seite und Bibliothek steht `NOR` mit `SEITE`/`BIBLIOTHEK` als Kontext. Die Anzeige erscheint, sobald eine Taste gedrückt wurde: im Editor oben links unter der Zurück-Taste, in der Bibliothek unten links. Daneben stehen Zähler und angefangene Folge (`3g`), „n Auswahlen“ und kurze Hinweise (`Kein Treffer`, `Suche von vorn`, `Kein Paar gefunden`, `Nur Hauptauswahl`).
+**Modus:** `NOR` (Buchstaben sind Befehle), `INS` (natives Tippen), `SEL` (Bewegungen erweitern die Auswahl, `v` schaltet um). Auf Seite und Bibliothek steht `NOR` mit `SEITE`/`BIBLIOTHEK` als Kontext. Die Anzeige erscheint, sobald eine Taste gedrückt wurde: im Editor oben links unter der Zurück-Taste, in der Bibliothek unten links. Daneben stehen eine laufende Makroaufnahme (`REC @`, rot), Zähler und angefangene Folge (`3g`, `"a`), „n Auswahlen“ und kurze Hinweise (`Kein Treffer`, `Suche von vorn`, `Kein Paar gefunden`, `Nur Hauptauswahl`, `Register leer`, `Makro abgebrochen`, `Nicht im Makro`).
 
 **Wege:** `i` führt von der Seite immer in den Text (Textdokument: Cursor auf der sichtbaren Seite; Heft: gewähltes Feld, sonst neues Feld). Esc führt Schritt für Schritt zurück: INS → NOR, SEL → NOR, breite Auswahl → Cursor, mehrere Auswahlen → Hauptauswahl, zuletzt Text verlassen; auf der Seite hebt es die Objektauswahl auf. Ein Druck wirkt genau eine Ebene: Offene Übersicht, Eingabezeile oder angefangene Folge gehen zuerst, Marked Text wird vorher abgeschlossen. ⌃[ und ⌃C wirken wie Esc (Tastaturen ohne Esc-Taste; alternativ iPadOS: Modifikatortasten › Feststelltaste → Escape). Antippen eines Texts schreibt immer, auch aus NOR und SEL heraus; eine offene Eingabezeile geht dabei zu, die Auswahl bleibt, wie sie ist. Ein Fokuswechsel der App (⌘Z, Rückgängig-Knopf, ⌘+ oder ⌘1 mit Sprung auf eine andere Seite, Gliederung) lässt den Modus stehen. Öffnet Rückgängig einen Text von der Seite aus, steht er in NOR.
 
-**Hilfe:** In jedem Kontext `Space h` und ⌘/ (Tastenübersicht, aktueller Kontext zuerst), `:` und ⇧⌘P (Befehlspalette: alle Befehle des Kontexts und die Menüfunktionen per Suche, im geöffneten Dokument dazu `:w`, `:q`, `:wq`, Seitenzahl; in der Bibliothek sind das Suchwörter). Bei offenem Menü (`g`, `m`, `z`, `t`, `Space` und Untermenüs) und bei Tasten, die ein Zeichen erwarten (`mi`, `f`), zeigt ein Popup unter der Modusanzeige sofort die nächsten Tasten; es nimmt keinen Fokus und geht bei Ausführung oder Esc.
+**Hilfe:** In jedem Kontext `Space h` und ⌘/ (Tastenübersicht, aktueller Kontext zuerst), `:` und ⇧⌘P (Befehlspalette: alle Befehle des Kontexts und die Menüfunktionen per Suche, im geöffneten Dokument dazu `:w`, `:q`, `:wq`, Seitenzahl; in der Bibliothek sind das Suchwörter). Bei offenem Menü (`g`, `m`, `z`, `t`, `[`, `]`, `Space` und Untermenüs) und bei Tasten, die ein Zeichen erwarten (`mi`, `f`, `"`), zeigt ein Popup unter der Modusanzeige sofort die nächsten Tasten; es nimmt keinen Fokus und geht bei Ausführung oder Esc.
 
 Eine Zahl davor wiederholt: `5j`, `3w`, `2gn`. Auf der Seite meint sie bei `G`, `gg` und `ge` die Seite (`5G`).
 
@@ -85,16 +87,22 @@ Eine Zahl davor wiederholt: `5j`, `3w`, `2gn`. Auf der Seite meint sie bei `G`, 
 | `w b e`, `W B E` | Wort, Ende; groß: langes Wort bis Leerraum. Die Auswahl läuft mit |
 | `f t F T` + Zeichen | Bis zum Zeichen, einschließlich oder davor, vorwärts oder zurück |
 | `gg ge gh gl gs`, `5G` | Textanfang, letzte Zeile, Zeilenanfang, -ende, erstes Zeichen, Zeile 5 (im Textdokument: ganzes Dokument) |
+| `]p`, `[p` | Nächster, vorheriger Absatz; `ü` und `+` gehen auch (deutsche Tastatur, siehe Grenzen) |
+| ⌃s, ⌃o, ⌃i | Position merken, zurück, vor (Sprungliste, siehe unten) |
 | ⌃d ⌃u ⌃f ⌃b | Halbe/ganze Ansicht |
 | `%`, `x`, `X` | Alles, Zeile (wiederholt erweitert), auf ganze Zeilen erweitern |
 | `;`, `⌥;`, `,`, `v` | Zusammenziehen, Auswahl umdrehen, nur Hauptauswahl, SEL |
-| `C`, `s` | Auswahl in die nächste Zeile kopieren, Treffer in der Auswahl wählen |
+| `C`, ⌥C | Auswahl in die nächste, vorige Zeile kopieren |
+| `s`, `S`, ⌥s | Treffer in der Auswahl wählen, Auswahl an Treffern teilen, an Zeilenumbrüchen teilen |
 | `mi`, `ma` + Zeichen | Innerhalb, mitsamt: `w` Wort, `W` langes Wort, `p` Absatz, `m` nächstes Paar, sonst Klammer oder Anführungszeichen |
 | `mm`, `ms`, `md`, `mr` | Passende Klammer, umschließen, Umschließung entfernen, ersetzen |
 | `d c y` | Auswahl löschen, ändern, kopieren |
+| `"` + Zeichen davor | Register für `y d c p P R` (`"ay`, `"ap`) und für `Q q` |
 | `p P R`, `r` + Zeichen | Einfügen dahinter, davor, Auswahl durch Kopiertes ersetzen, jedes Zeichen ersetzen |
 | `~`, `` ` ``, `J`, `> <` | Groß/klein tauschen, klein, Zeilen verbinden, ein-/ausrücken |
 | `i a I A o O` | Schreiben vor, hinter der Auswahl, am Zeilenanfang, -ende, neue Zeile darunter, darüber (siehe „Mehrere Auswahlen“) |
+| `.` | Letzte Einfügung wiederholen (`3.` dreimal) |
+| `Q`, `q` | Makro aufnehmen an/aus, abspielen (`"aQ`, `"aq`, `"a3q`) |
 | `/`, `?`, `n`, `N`, `*` | Suchen (über Seiten, ein manueller Umbruch liest sich wie ein Leerzeichen), rückwärts, nächster, vorheriger Treffer, Auswahl als Suchbegriff |
 | `Space b` | Seitenumbruch vor der Auswahl (Textdokument) |
 | `u`, `U` | Rückgängig, Wiederholen |
@@ -173,9 +181,19 @@ Ein Titelfeld ist eine Option wie jede andere: Steht der Rahmen darauf, tippen a
 
 `Space c` zeigt die Tafel unter der Modusanzeige: im Text Textfarben und Marker, sonst Farben, Strichstärke, beim Formwerkzeug Linienart, beim genauen Radierer die Breite, beim Laser die Farben. `hjkl` oder Pfeile wandern, Tab wechselt die Reihe, `1`–`9` wählen in der Reihe sofort, Enter wählt, Esc bricht ab. Bis zur Wahl ändert sich nichts.
 
-**Suche:** `/`, `?` und `s` öffnen die Eingabezeile unter der Modusanzeige. Treffer erscheinen beim Tippen als Auswahl, Enter bestätigt, Esc stellt die Auswahl und den vorigen Suchbegriff wieder her. Der Suchbegriff ist ein regulärer Ausdruck (Kleinschreibung ignoriert Groß/klein), was keiner ist, gilt wörtlich. Auf Seite und Bibliothek öffnet `/` weiter die bestehende Suche, ⌘F ebenso überall.
+**Suche:** `/`, `?`, `s` und `S` öffnen die Eingabezeile unter der Modusanzeige. Treffer erscheinen beim Tippen als Auswahl, Enter bestätigt, Esc stellt die Auswahl und den vorigen Suchbegriff wieder her. Der Suchbegriff ist ein regulärer Ausdruck (Kleinschreibung ignoriert Groß/klein), was keiner ist, gilt wörtlich. Auf Seite und Bibliothek öffnet `/` weiter die bestehende Suche, ⌘F ebenso überall.
 
 **Zwischenablage:** `y`, `d`, `c` füllen Register und Systemzwischenablage. Beim Einfügen gewinnt, was seitdem woanders kopiert wurde; ein Text mit Zeilenumbruch am Ende gilt als ganze Zeilen.
+
+**Register:** `"a` vor `y`, `d`, `c`, `p`, `P`, `R` nimmt ein eigenes Register, jedes Zeichen geht. Es bleibt neben dem Standardregister stehen, berührt die Systemzwischenablage nicht und lebt nur im Speicher, also bis zum Beenden der App, über Texte hinweg. `"_` merkt nichts, `"+`, `"*` und `""` meinen das Standardregister. Ein Zähler gehört hinter das Register: `"a3p`; `3"ap` verliert ihn, wie in Helix.
+
+**`.`** wiederholt den Befehl, der zuletzt in INS führte (`i a I A o O c`), mit dem dabei entstandenen Text. Grundlage ist das Ergebnis, nicht die Tasten: Autokorrektur, Diktat und Tottasten wirken mit, Pfeile und Tippen außerhalb des Laufs nicht. Der Zähler des ersten Befehls (`2o`) zählt nicht mit, Antippen startet keinen neuen Lauf. Das Ergebnis ist ein Undo-Schritt.
+
+**Makros:** `Q` nimmt in Register `@` auf (`"aQ` in `a`), noch ein `Q` beendet, Verlassen des Texts auch. `q` spielt ab, `"a2q` zweimal. Aufgenommen wird, was den Text betrifft: Tasten in NOR und SEL, bestätigte Eingabezeilen, das Ergebnis von INS wie bei `.`. `u`, Paletten- und Menübefehle bleiben draußen, die Anzeige sagt `Nicht im Makro`. Abgespielt wird rein in der Engine: Ein Makro ist **ein** Undo-Schritt, `j`/`k` zählen darin Textzeilen statt angezeigter Zeilen, weil die Ansicht den neuen Stand noch nicht kennt. Ein Makro ruft sich nie selbst auf, auch nicht über ein anderes; ein `q` nach dem Muster bleibt wirkungslos. Insgesamt laufen je `q` höchstens 5000 Schritte und 2 Sekunden, danach `Makro abgebrochen`; was bis dahin geschah, bleibt als ein Undo-Schritt.
+
+**Sprungliste:** `gg`, `ge`, `5G`, bestätigte `/`, `?`, `s`, `S` und ⌃s merken die Stelle davor, höchstens 30. ⌃o geht zurück und merkt beim ersten Mal die aktuelle Stelle, ⌃i wieder vor. Die Einträge wandern mit Änderungen mit, auch mit nativem Tippen; was gelöscht wurde, wird geklemmt. Die Liste gehört zum offenen Text, mit dem Verlassen des Texts ist sie weg. `n`, `N`, `*` tragen nichts ein. Die Gliederung auch nicht: Ihr Sprung läuft am Tastaturmodus vorbei, ein Eintrag davor wäre nicht einfach zu haben.
+
+**Schreiben in INS:** `o`, `O` und Enter übernehmen den führenden Leerraum der Zeile (Tastaturmodus an). Listen gehen vor (`TextListEditing`). Esc auf einer neuen Zeile, auf der nichts entstand, nimmt den Einzug wieder weg. Einstellungen › Editor › „Klammern automatisch schließen“ (`noty.keyboard.autoPairs`, Standard aus): `( [ {` und `" '` schließen sich selbst, außer vor einem Wortzeichen, Anführungszeichen auch nicht dahinter (`don't`). Eine getippte schließende Hälfte läuft über die vorhandene, ⌫ zwischen beiden löscht beide. Nur ein getipptes Zeichen an einem einfachen Cursor zählt: Marked Text, Autokorrektur und Diktat ersetzen Bereiche oder bringen mehr als ein Zeichen und bleiben unberührt. Typografische Anführungszeichen (`„`, `“`) schließen nichts. Auf einer Seite sieht der bisherige Textweg nur den Text dieser Seite: Am Seitenrand gilt das Nachbarzeichen der nächsten Seite als nicht vorhanden.
 
 ## Grenzen
 
@@ -184,10 +202,11 @@ Ein Titelfeld ist eine Option wie jede andere: Steht der Rahmen darauf, tippen a
 - Felder, die Tasten über den Router füllen (Suchsheet, Titel, Paragraph, Namen), haben keinen Cursor und keine Tottasten, wie die Eingabezeile von `/`. Nach dem Antippen sind sie nativ. ⌘V geht im Sheet und über die Objektauswahl; mit Stiftwerkzeug fehlt es in der Eingabezeile der Gesetze.
 - Markieren im Gesetzestext: nur eine Touch-Auswahl (`m`, `M`). Der Leser hat keinen Tastaturcursor; ihn zu bauen hieße, einen zweiten Texteditor in einem schreibgeschützten Text zu pflegen.
 - Sehr lange Listen in Dialogen (Inhaltsverzeichnis) wandern nur durch sichtbare Zeilen und scrollen dann weiter; `ge` meint dort die letzte sichtbare Zeile.
-- Die App zeigt nur die Hauptauswahl (`C`, `s` bilden die übrigen in der Engine); Register nur als Klartext. **Mehrere Auswahlen:** `d`, `y`, `~`, `r` usw. wirken auf alle. Getippt wird im bisherigen Weg nur an einem Cursor: `c`, `i`, `a`, `I`, `A`, `o`, `O` behalten deshalb vorher nur die Hauptauswahl, die Anzeige meldet `Nur Hauptauswahl`. Texteditor 2 tippt an allen Cursorn und zeigt „n Auswahlen“ auch in INS.
+- Die App zeigt nur die Hauptauswahl (`C`, ⌥C, `s`, `S`, ⌥s bilden die übrigen in der Engine); Register nur als Klartext. **Mehrere Auswahlen:** `d`, `y`, `~`, `r` usw. wirken auf alle. Getippt wird im bisherigen Weg nur an einem Cursor: `c`, `i`, `a`, `I`, `A`, `o`, `O` und ebenso `.` und dieselben Befehle in einem Makro behalten deshalb vorher nur die Hauptauswahl, die Anzeige meldet `Nur Hauptauswahl`. Texteditor 2 tippt an allen Cursorn und zeigt „n Auswahlen“ auch in INS.
 - `~`, `` ` `` und `r` erhalten die Formatierung in der Auswahl, solange die Ersetzung gleich lang ist. Ändert sie die UTF-16-Länge (`ß` zu `SS`, `r` mit einem Emoji über einfachen Buchstaben), wird die Auswahl einheitlich im Format ihres Anfangs.
 - Esc als Key Command wiederholt sich beim Halten womöglich (abschalten geht erst ab iOS 26); gehalten kann es also mehrere Ebenen wirken. Ungeprüft.
-- Auf einer deutschen Tastatur sind `^`, `` ` `` und je nach Layout `~` Tottasten: Der Router sieht sie nicht als Zeichen, in der Eingabezeile gehen auch `é`-artige Kompositionen nicht. ⌥ tippt weiter, was es tippt (`[ ] { } | @`), nur `⌥;` ist ein Befehl.
+- Auf einer deutschen Tastatur sind `^`, `` ` `` und je nach Layout `~` Tottasten: Der Router sieht sie nicht als Zeichen, in der Eingabezeile gehen auch `é`-artige Kompositionen nicht. ⌥ tippt weiter, was es tippt (`[ ] { } | @`), Befehle sind nur ⌥;, in NOR und SEL außerdem ⌥C und ⌥s.
+- **`[` und `]` auf einer deutschen Tastatur:** ⌥5 und ⌥6 ergeben dort `[` und `]`, und genau dieses Zeichen geht an den Parser: `⌥6 p` ist `]p`. Für Tastaturen, auf denen das unbequem ist oder das Layout anders meldet, sind `ü` und `+` gleichwertig (`üp`, `+p`): Sie liegen dort, wo auf der US-Tastatur `[` und `]` liegen, und sind im Text sonst unbelegt. Der Parser fragt sie nur am Befehlsanfang ab; hinter `f`, `r`, `ms` bleiben sie das Zeichen selbst. Sie stehen in `HelixKeymap.bindings` und im Which-Key, in der Übersicht nur `[p`, `]p`. Welche Variante iPadOS bei ⌥5 meldet, ist ungeprüft.
 - ⇧⌘7/8/9 sind zusätzlich als `/ ( )` hinterlegt (deutsche Belegung); welche Variante iPadOS meldet, ist ungeprüft.
 - Die Formatleiste liegt im Fenster der Tastatur, kein App-Overlay kann über ihr liegen. Popup und Eingabezeile stehen deshalb oben links, wo sie nicht hinreicht.
 
@@ -226,14 +245,26 @@ Ein Titelfeld ist eine Option wie jede andere: Steht der Rahmen darauf, tippen a
 30. **Ohne Tastatur:** Heft, Suche (Feld fokussiert, Softwaretastatur), Neues Heft (kein Rahmen, kein Autofokus), Einstellungen, Seitenleiste per Touch wie bisher. Tastaturmodus aus: Sheets wie bisher, Esc schließt.
 
 **Diagnose:** Mit Einstellungen › Diagnose (ab Neustart) protokolliert `KeyboardRouter` jede Taste mit Kontext, Ergebnis und First Responder: `idevicesyslog | rg noty.keys`. Getippter Text erscheint nur als `(typing)`, auch in der Eingabezeile, im Suchsheet und in Dialogfeldern. Kommt zu einer Taste keine Zeile, hat sie keinen unserer Responder erreicht.
+31. **Register:** `w"ay`, `w"by`, `"ap`, `"bP`, `"aR`, dazwischen in einer anderen App kopieren: Die benannten Register bleiben, `p` nimmt die fremde Zwischenablage. `"_d` lässt `p` unverändert. `"zp` zeigt `Register leer`. `"a` zeigt die Anzeige, Esc nimmt es zurück, ohne dass etwas anderes passiert. Beide Textwege, auch über eine Seitengrenze.
+32. **`.`:** `o`, tippen, Esc, `j`, `.`; `c`, tippen, Esc, `w`, `.`; `A`, tippen, Esc, `3.`. Je Schritt ein `u`, Formate daneben bleiben. Mit Autokorrektur (ein korrigiertes Wort tippen), Diktat und Tottaste: `.` wiederholt das Ergebnis. In einem Text am Seitenende: Der Text läuft auf die nächste Seite, Cursor stimmt.
+33. **Makros:** `Q`, `REC @` erscheint, `A;`, Esc, `j`, `Q`, dann `5q` über eine Seitengrenze: alles ein `u`, fette Wörter dazwischen bleiben fett. `"aQ`/`"aq`. `Q`, `u`, `Nicht im Makro` erscheint. `q` im eigenen Makro: `Q`, `q`, `Q`, `q` endet sofort. `9999q` auf einem Makro: spürbar höchstens 2 s, `Makro abgebrochen`, `u` stellt alles her. Während der Aufnahme den Text per Antippen oder Esc verlassen: `REC` geht weg, das Makro ist da.
+34. **Sprungliste:** `ge`, ⌃o, ⌃i; ⌃s, Wandern, ⌃o; über Seiten (Hand-off zur anderen Seite, Modus bleibt NOR); `/` Enter, ⌃o; tippen über der gemerkten Stelle, dann ⌃o; vom Text in ein anderes Feld: ⌃o tut dort nichts Fremdes. Kommt ⌃i als ⌃i an und nicht als Tab? Fängt iPadOS ⌃s oder ⌃o ab?
+35. **Teilen:** `%`, `S`, `, `, Enter: „n Auswahlen“, Esc in der Zeile stellt her; ⌥s auf mehreren Zeilen; ⌥C und `C`; `d` wirkt auf alle; in Texteditor 2 alle sichtbar.
+36. **`[` `]`:** `]p`, `[p`, `3]p` mit ⌥6/⌥5 und mit `+`/`ü`, Popup zeigt `p`; `v]p` erweitert. `fü`, `r+` tippen das Zeichen. ⌥s und ⌥C tippen in INS und in der Eingabezeile weiter ihr Zeichen.
+37. **Klammerpaare:** Einstellung an: `(`, Cursor dazwischen, `x`, `)` läuft drüber; `(` `⌫` löscht beide; `(` vor einem Wort einzeln; `"` nach einem Wort einzeln; `(` am Seitenende (beide Textwege, Cursor springt nicht hinter die Klammer). Autokorrektur auf ein Wort direkt vor `)`, Marked Text mit `(` darin (japanische Eingabe), Diktat: nichts verdoppelt, nichts verschwindet. Einstellung aus: nichts davon. Tastaturmodus aus: nichts davon.
+38. **Einzug:** Zeile mit Leerzeichen: Enter, `o`, `O`, je tippen; Enter, Esc nimmt den Einzug weg, `u`; Liste mit Enter und `o` wie bisher (kein doppeltes Listenzeichen); Marked Text und Enter; `o` auf der letzten Seitenzeile einer eingerückten Zeile.
+39. **Texteditor 2:** `.`, `q`, `c` mit mehreren Cursorn, Klammerpaar an mehreren Cursorn, ⌫ dort; Undo je ein Schritt.
+40. **Tasten bei gehaltenem Makro:** Während `REC` wiederholt gehaltenes `j` nicht (ein Schritt je Druck). `Q` in der Palette, `Makro abspielen` in der Palette.
+
+**Diagnose:** Mit Einstellungen › Diagnose (ab Neustart) protokolliert `KeyboardRouter` jede Taste mit Kontext, Ergebnis und First Responder: `idevicesyslog | rg noty.keys`. Getippter Text erscheint nur als `(typing)`, auch in der Eingabezeile. Kommt zu einer Taste keine Zeile, hat sie keinen unserer Responder erreicht.
 
 ## Helix-Modell
 
 Die Engine ist in Core gegen das echte Helix geprüft, die App bildet sie ab.
 
-- `TextEngine` ist reiner Zustand aus Text (UTF-16 auf Graphemgrenzen), mehreren Auswahlen (`anchor`, `head`, Hauptauswahl), Modus, Register und Suche. `perform` liefert Edits von hinten nach vorn in Versätzen des alten Texts, zusätzlich `combinedEdit` als eine Ersetzung. `sync` übernimmt natives Tippen, Antippen und Undo aus der App. Angezeigte Zeilen kommen über `TextEngineLayout`.
+- `TextEngine` ist reiner Zustand aus Text (UTF-16 auf Graphemgrenzen), mehreren Auswahlen (`anchor`, `head`, Hauptauswahl), Modus, Registern, Suche, Sprungliste, letzter Einfügung und Makros. `perform` liefert Edits von hinten nach vorn in Versätzen des alten Texts, zusätzlich `combinedEdit` als eine Ersetzung. `sync` übernimmt natives Tippen, Antippen und Undo aus der App. Angezeigte Zeilen kommen über `TextEngineLayout`.
 - `HelixKeymap.bindings` ist die einzige Tabelle für Parser, Übersicht (`groups`), Palette (`commands`) und Which-Key (`menu`). `HelixParser.feed` liefert `.pending(menu:)` mit dem aktuellen Knoten.
-- Geprüft gegen das echte Helix 25.07.1 im PTY: rund 3600 Abläufe (Zufall und Randfälle) inklusive Auswahl, Cursor und Hauptauswahl, abgeglichen mit dessen Quelltext; 389 davon stehen als `HelixGoldenCases` in den Tests.
+- Geprüft gegen das echte Helix 25.07.1 im PTY: rund 3600 Abläufe (Zufall und Randfälle) inklusive Auswahl, Cursor und Hauptauswahl, abgeglichen mit dessen Quelltext; für die Erweiterungen im Schlusslauf 2400 Zufallsabläufe mit neuen Folgen (300 je Gruppe: Register, Absätze, Teilen, Sprünge, `.`, Makros, gemischt, Paare), 37 Differenzen, jede einer Zeile der Tabelle zugeordnet, Sprünge und Teilen 0. Zusammen 911 Zeilen stehen als `HelixGoldenCases` in den Tests, 106 mit `auto-pairs = true` in `pairRows`.
 
 **Abweichungen von Helix**, alle wegen der App:
 
@@ -244,7 +275,21 @@ Die Engine ist in Core gegen das echte Helix geprüft, die App bildet sie ab.
 | `xxc` über alle Zeilen ohne Schlussumbruch | lässt `"\n"` | leerer Text | wie oben |
 | `a` mit Auswahl bis zum Textende | fügt einen Umbruch ein | fügt nichts ein | kein Platzhalter nötig, Caret darf am Ende stehen |
 | `mi(`, `md(` usw. mit Auswahl am Textende | Fehler `RangeExceedsText` | funktioniert | wie oben |
-| `o`, `O`, Enter, `c` auf Zeilen | rücken automatisch ein, Paare schließen selbst | kein Auto-Einzug, keine Auto-Paare | INS ist natives Tippen; Listen regelt `TextListEditing` |
+| Einzug bei `o`, `O`, Enter, `xc` | rundet auf die erkannte Einzugbreite und schreibt sie im erkannten Stil (6 Leerzeichen bei Breite 4 werden 4, bei Tabs 1 Tab) | übernimmt den Leerraum der Zeile genau | proportionale Schrift, Notizen haben keinen Einzugsstil |
+| Enter hinter Leerzeichen auf einer Zeile ohne Einzug | entfernt sie | bleiben stehen, natives Tippen | Enter nach einem Wort mit Leerzeichen ist alltäglich, kein Eingriff in Autokorrektur; auf eingerückten Zeilen wie Helix |
+| ⌫ im Einzug | löscht bis zum Tabstopp | löscht ein Zeichen | natives Löschen |
+| Paare für `` ` `` | schließt | nicht | Auftrag: nur `( [ {` und Anführungszeichen |
+| Auswahl nach `i(`, Esc mit automatischem Paar | nur die schließende Hälfte | an einem Cursor bleibt auch die alte Auswahl dahinter gewählt; mehrere Cursor wie Helix | natives Tippen meldet nur Text und Cursor |
+| `.` nach wirkungslosen Tasten (⌫ am Textanfang), nach Pfeilen in INS | spielt die Tasten | wiederholt das Ergebnis | natives Tippen liefert keine Tasten, dafür gehen Autokorrektur und Diktat |
+| Makro in Register und Text in Register | dasselbe Register: `"ap` fügt die Tasten ein, Text läuft als Tasten | getrennte Speicher je Zeichen | Notizen sollen nie als Tasten laufen |
+| Undo nach einem Makro | je Befehl ein Schritt | ein Schritt | Engine läuft allein, die Ansichten folgen danach |
+| `u` und Menüs im Makro, `j`/`k` im Makro | alles läuft | nur Textbefehle, logische Zeilen | Engine kennt kein Undo und keine Ansicht |
+| Unbegrenzte Zähler im Makro | laufen | 5000 Schritte, 2 s | Hauptthread |
+| `]g`, `[g` und die übrigen `[`/`]`-Einträge | Git, Syntaxbaum, Diagnosen | nicht belegt | Notizen haben nichts davon |
+| Sonderregister `# . % : /` | Lesewerte | gewöhnliche Register | in Notizen ohne Nutzen |
+| `"+`, `"*` | eigene Register der Zwischenablage, getrennt vom Standard `"` | dasselbe wie `"` | das Standardregister folgt hier ohnehin der Systemzwischenablage |
+| `xc` mit mehreren Auswahlen auf direkt benachbarten Zeilen | eine neue Zeile | je Auswahl eine | vorhandenes Verhalten der Engine, nur Texteditor 2 kann daran tippen |
+| ⌃i, Tab | beide vor in der Sprungliste | nur ⌃i | Tab bleibt Listenebene |
 | Spalten bei `C` und im logischen `j`/`k` | Terminalzellen (Tab 4, Emoji 2) | Grapheme; in der App entscheidet das Layout | proportionale Schrift |
 | Wortklassen, `f`/`t`, `r` | Unicode-Zeichen | Grapheme | „Grapheme respektieren“ |
 | ⌃f ⌃b | Ansicht blättert, Cursor bleibt möglichst | Cursor bewegt sich eine Ansicht (wie ⌃d ⌃u) | Engine kennt keine Ansicht |
@@ -261,11 +306,12 @@ Bewusst wie Helix, obwohl es überrascht: `w` wählt auch die Leerzeichen dahint
 
 Bewusst anders als bisher: `Space m` zeigt jetzt die Lesezeichen (setzen: `Space M`, in der Leiste `b`), `Space s` gibt der Leiste die Tasten statt sie umzuschalten (einklappen: `Space s` in der Leiste).
 
-Nicht enthalten: benannte Register, `.`, Makros, Sprungliste, ⌥C, `S`, ⌥s, `[`/`]`.
+Bewusst wie Helix, ebenso überraschend: `.` ohne vorherige Einfügung verlässt nur SEL; `S` ohne Treffer richtet die Auswahlen vorwärts; `S` setzt wie `s` die Suche für `n`; ⌃o bleibt am Listenanfang stehen, ohne die aktuelle Stelle zu verlieren.
 
 ## Aufbau
 
-**Core:** `HelixKeymap`, `HelixParser`, `TextEngine`, `KeyPressGate`, `KeyDeliveryLatch` und `KeyPalette` (`KeyboardCommands.swift`), `TextLines`, `Notebook.editingTextFlow`/`restylingTextFlow` (`TextFlowRange.swift`). `KeyboardPanels.swift`: `KeyList`, `KeyOptionRing`, `KeyChoice`, `KeyChoiceCursor`, `KeyInputLine`, `KeyPanelStack`, `KeyFocusTarget` (`KeyboardPanelsTests`).
+**Core:** `HelixKeymap`, `HelixParser`, `TextEngine` (Sprungliste, `.`, Makros und `EditComposer` in `TextEngine+Macros.swift`), `TextTyping` (Einzug und Paare, für Engine und beide Textwege), `KeyPressGate`, `KeyDeliveryLatch` und `KeyPalette` (`KeyboardCommands.swift`), `TextLines`, `Notebook.editingTextFlow`/`restylingTextFlow` (`TextFlowRange.swift`). `KeyboardPanels.swift`: `KeyList`, `KeyOptionRing`, `KeyChoice`, `KeyChoiceCursor`, `KeyInputLine`, `KeyPanelStack`, `KeyFocusTarget` (`KeyboardPanelsTests`).
+
 
 **App:** `KeyboardRouter` nimmt die Tastendrücke entgegen (`pressesBegan` in `PageTextView`, `DrawingCanvasView`, `WorksheetView`, `KeyboardHostView`), ⌘-Kürzel bleiben bei Menü und Key Commands. Er hält Parser und Engine und bindet `HelixAction` an `ContentView.runKey`, `LibraryView.runKey` und `ObjectEditingLayer`. INS läuft am Parser vorbei, nur Esc geht an die Engine.
 
@@ -275,6 +321,8 @@ Nicht enthalten: benannte Register, `.`, Makros, Sprungliste, ⌥C, `S`, ⌥s, `
 
 **Text** (`TextObjectLayer+Keyboard.swift`): Vor jedem Befehl übernimmt die Engine Text und Auswahl des Bildschirms (`keyboardSync`: ganzer Fluss oder Feld). Danach zeigt `keyboardShowSelection` die Hauptauswahl: innerhalb einer Seite native `selectedRange`, über Seiten `TextFlowSelection` mit dem Caret am Cursor, ein Cursor auf einem Zeichen als breiter Caret (`normalCaret`). Edits gehen auf einer Seite über `applyListEdits`, über Seiten über `TextFlowActions.edit`, beides ein Undo-Schritt; die einzelnen Edits statt `combinedEdit` erhalten Formate dazwischen, `Outcome.textEdits(in:)` teilt `~`, `` ` ``, `r` zusätzlich an den Formatwechseln (`keepsFormat`). `j`/`k` messen im `NSLayoutManager` der Textansicht, auf anderen Seiten in `TextObjectLayout` (`KeyboardLineLayout`).
 
+**`.` und Makros** schreiben in der Engine und geben ein zusammengesetztes `Outcome` ab: `EditComposer` führt die Edits aller Schritte auf den Text vor dem ersten zurück, Unberührtes bleibt außerhalb und behält sein Format, die gleich langen Ersetzungen laufen wie `keepsFormat`. Die Ansichten dazwischen sind deshalb egal (`viewIsCurrent`, Hand-off), `apply`/`applyEngine` sehen einen normalen Befehl. Das Getippte eines Laufs kommt aus `sync`: `InsertRun` merkt Text und Cursor beim Eintritt, `typedText` bildet beim Esc die Differenz. Mehrere Cursor tippen über die Engine, dort protokolliert `logTyping`. Ein `sync` mit `mode` (Antippen, Fokus von außen) beendet den Lauf. `KeyboardRouter.feed` meldet jede Taste per `engine.record`, die Eingabezeile `recordPrompt`.
+
 **Fallstricke, die der Code absichert:** Nach einem lokalen Edit im Fluss liegt noch eine Fokusanforderung des Edits an, eine neuere ersetzt sie (`moveCaret`). Wechselt der Cursor die Seite, erhält `handoff` den Modus: `applyTextFocus` und `DocumentTextSurface.show` setzen es vor jedem programmatischen Fokus, Undo nur, wenn es wirklich einen Fokus anfordert (`undoRequestedFocus`), und `textEnded` wartet eine laufende Anforderung ab. Nur `writingRequested` (Tipp unter den Text, `i`) geht ausdrücklich nach INS. Läuft eine Anforderung, ist die Ansicht hinter der Engine, also zählt deren Auswahl (die Anforderung läuft nach 1,5 s aus, falls sie nie ankommt). Auf einer neuen leeren letzten Zeile (`o` am Dokumentende) kennt nur der Reflow die Seite: `moveCaret` geht vom geschriebenen Text aus, `apply` schickt den Cursor deshalb mit dem Flussedit und überschreibt dessen Fokus nicht. Ein Flussedit über Seiten ändert das Modell sofort, die Ansichten erst beim nächsten Update: Bis dahin setzt `viewIsCurrent` keine Auswahl und nimmt keinen lokalen Edit, sonst würde `textViewDidChangeSelection` den alten Text über den neuen schreiben. Die Palette nimmt den Fokus: `holdText`/`returnToHeldText` halten den Text so lange, damit ihre Textbefehle ihn finden; ein leeres freies Feld verschwindet dabei und beendet den Text. Undo setzt `TextFlowSelection` zurück (`textChangedElsewhere`), Offsets werden geklemmt.
 
-Kein Formatwechsel; einzige Einstellung `noty.keyboard.mode` in UserDefaults.
+Kein Formatwechsel; Einstellungen `noty.keyboard.mode` und `noty.keyboard.autoPairs` in UserDefaults. Register, Makros und Sprungliste leben nur im Speicher.
