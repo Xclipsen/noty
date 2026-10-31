@@ -90,6 +90,7 @@ final class TextFieldContainer: UIView {
         editor.keyboardAppearance = .dark; editor.overrideUserInterfaceStyle = .dark
         editor.inputAssistantItem.leadingBarButtonGroups = []; editor.inputAssistantItem.trailingBarButtonGroups = []
         editor.accessibilityLabel = "Textfeld"
+        editor.accessibilityIdentifier = "page.text"
         editor.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         let labels = ["Textfeldbreite oben links ändern", "Textfeldbreite oben rechts ändern",
                       "Textfeldbreite unten rechts ändern", "Textfeldbreite unten links ändern"]

@@ -77,6 +77,8 @@ enum HangProbe {
     /// Suspends main only while copying raw return addresses into a
     /// preallocated buffer: no allocation or locks while it is stopped.
     private static func sampleMainThread() -> Int {
+        // The registers below exist on arm64 only; an Intel simulator build samples nothing.
+        #if arch(arm64)
         guard mainThread != 0, thread_suspend(mainThread) == KERN_SUCCESS else { return 0 }
         defer { thread_resume(mainThread) }
         var state = arm_thread_state64_t()
@@ -104,6 +106,9 @@ enum HangProbe {
             fp = pair.0
         }
         return n
+        #else
+        return 0
+        #endif
     }
 
     private static func symbolizeAndLog(count: Int, elapsed: Double, sample: Int, counts: [String: Int]) {

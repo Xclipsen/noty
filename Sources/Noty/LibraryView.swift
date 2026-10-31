@@ -907,6 +907,7 @@ struct LibraryView: View {
             }.buttonStyle(NotyPressStyle()).disabled(!editable)
                 .accessibilityLabel(accessibilityName(item))
                 .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
+                .accessibilityIdentifier(keyboardFocus == item.id ? "library.focused" : "library.item")
             VStack(spacing: 2) {
                 HStack(spacing: 4) {
                     if item.favorite { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary) }
@@ -949,6 +950,7 @@ struct LibraryView: View {
         .id(item.id)
             .accessibilityLabel(accessibilityName(item))
             .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
+            .accessibilityIdentifier(keyboardFocus == item.id ? "library.focused" : "library.item")
             .contextMenu { itemActions(item, showsEnclosing: location == .recent || !search.isEmpty) }
     }
 

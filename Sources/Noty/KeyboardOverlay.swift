@@ -15,6 +15,9 @@ struct KeyboardOverlay: View {
     /// The format bar lives in the keyboard's own window: only the place
     /// keeps popup and input line clear of it.
     private var inEditor: Bool { scope == .editor }
+    /// VoiceOver never hears this overlay. The simulator's UI test
+    /// (ci/simulator) asks for it and reads mode and menu from here.
+    private static let exposedToUITest = ProcessInfo.processInfo.arguments.contains("-notyUITest")
 
     var body: some View {
         ZStack(alignment: inEditor ? .topLeading : .bottomLeading) {
@@ -27,7 +30,7 @@ struct KeyboardOverlay: View {
                 }
                 .padding(.leading, 10).padding(inEditor ? .top : .bottom, inEditor ? 54 : 8)
                 .allowsHitTesting(false)
-                .accessibilityHidden(true)
+                .accessibilityHidden(!Self.exposedToUITest)
                 if router.helpVisible { KeyboardHelpView(context: router.shownContext, onClose: { router.helpVisible = false }) }
                 if router.paletteVisible { KeyboardPaletteView(commands: router.paletteCommands()) { router.paletteVisible = false } }
             }
@@ -44,6 +47,8 @@ struct KeyboardOverlay: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(.ultraThinMaterial, in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("keyboard.indicator")
     }
     @ViewBuilder private var panels: some View {
         if let prompt = router.textPrompt { KeyboardPromptView(prompt: prompt) }
@@ -82,6 +87,8 @@ private struct KeyboardMenuView: View {
         }
         .padding(10)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("keyboard.menu")
     }
 }
 
