@@ -212,6 +212,11 @@ final class TextFieldContainer: UIView {
     }
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard self.point(inside: point, with: event), isUserInteractionEnabled, !isHidden else { return nil }
+        // Text comes first: the width points cover a short field completely
+        // and the frame zone most of a single line.
+        if editing, bounds.contains(point), !editor.isHidden, editor.hitsLine(at: convert(point, to: editor), slack: 0) {
+            return editor.hitTest(convert(point, to: editor), with: event) ?? editor
+        }
         for handle in widthHandles where !handle.isHidden && handle.frame.contains(point) { return handle }
         // The frame zone belongs to the move drag, not to text selection.
         if inBorderZone(point) { return self }
@@ -232,6 +237,14 @@ final class FieldBorderDrag: NSObject, UIGestureRecognizerDelegate {
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
         ScrollPanPriority.outranksScrolling(gestureRecognizer, other)
+    }
+}
+
+/// A tap on the frame zone or a width point: everything but the text itself.
+final class FieldFrameTap: NSObject, UIGestureRecognizerDelegate {
+    static let shared = FieldFrameTap()
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        touch.view === gestureRecognizer.view || touch.view is SelectionHandle
     }
 }
 
