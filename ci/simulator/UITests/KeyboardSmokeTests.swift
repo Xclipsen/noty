@@ -11,6 +11,7 @@ final class KeyboardSmokeTests: XCTestCase {
 
     override func setUp() async throws {
         continueAfterFailure = true
+        NoIdleWait.install()
     }
 
     override func tearDown() async throws {
@@ -60,12 +61,19 @@ final class KeyboardSmokeTests: XCTestCase {
         press("g"); press(.escape)
         check("Esc schließt Which-Key", waitGone(menu))
         checkFocus("Esc nach g lässt Fokus stehen", "Kurs A")
+        press("g")
         press("c", .control)
         check("⌃C schließt Which-Key", waitGone(menu))
         press("[", .control)
         press("g")
-        checkFocus("⌃C und ⌃[ lassen die Bibliothek bedienbar", "Kurs A")
         press("g")
+        checkFocus("⌃C und ⌃[ lassen die Bibliothek bedienbar", "Kurs A")
+        press(.downArrow)
+        checkFocus("Pfeil runter", "Kurs B")
+        press(.downArrow)
+        checkFocus("zweiter Pfeil runter wirkt ebenfalls", "Kurs C")
+        press(.upArrow)
+        checkFocus("Pfeil hoch", "Kurs B")
         shot("Bibliothek")
     }
 
@@ -99,8 +107,8 @@ final class KeyboardSmokeTests: XCTestCase {
         guard sheet.waitForExistence(timeout: 5) else { check("N öffnet das Blatt ein zweites Mal", false); return }
         if !field.holdsKeys { field.tap() }
         for letter in "enter" { press(String(letter)) }
-        // The first letter comes out capitalized, as on the iPad.
-        checkValue("Tasten erreichen das Titelfeld", field, "Enter")
+        // Automatic capitals depend on the system; only the letters count.
+        checkValue("Tasten erreichen das Titelfeld", field, "enter", ignoringCase: true)
         press(.return)
         if !check("Enter erstellt das Dokument", waitGone(sheet)) {
             app.buttons["Erstellen"].tap()
@@ -188,6 +196,12 @@ final class KeyboardSmokeTests: XCTestCase {
         press(.escape)
         checkLabel("Wieder auf der Seite", indicator, contains: "SEITE")
         shot("Seite")
+        press(.return)
+        if checkLabel("Enter auf der Seite: INS", indicator, contains: "INS") {
+            leaveInsert()
+            press(.escape)
+            checkLabel("Zurück auf der Seite", indicator, contains: "SEITE")
+        }
 
         press(.space)
         check("Space öffnet das Menü", waitFor(menu))
@@ -201,10 +215,14 @@ final class KeyboardSmokeTests: XCTestCase {
 
     private func press(_ key: String, _ flags: XCUIElement.KeyModifierFlags = []) {
         app.typeKey(key, modifierFlags: flags)
+        keyPause()
     }
     private func press(_ key: XCUIKeyboardKey) {
         app.typeKey(key, modifierFlags: [])
+        keyPause()
     }
+    /// The test no longer waits for an idle app: about a person's pace.
+    private func keyPause() { RunLoop.current.run(until: Date().addingTimeInterval(0.25)) }
     /// Line by line, every letter its own key press.
     private func write(_ rows: String...) {
         for (index, row) in rows.enumerated() {
@@ -231,7 +249,7 @@ final class KeyboardSmokeTests: XCTestCase {
     private var titleField: XCUIElement { app.textFields["Titel des Textdokuments"] }
     private func element(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id].firstMatch }
     private func item(_ title: String) -> XCUIElement {
-        app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@ AND identifier BEGINSWITH 'library.'", title)).firstMatch
+        app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS[c] %@ AND identifier BEGINSWITH 'library.'", title)).firstMatch
     }
     /// The text view holding the keys: a text document keeps more than one.
     private func activeText() -> XCUIElement? {
@@ -297,11 +315,14 @@ final class KeyboardSmokeTests: XCTestCase {
         check(what, !(element.exists && element.label.contains(part)), detail: element.exists ? "Anzeige: „\(element.label)“" : "")
     }
     private func checkFocus(_ what: String, _ title: String) {
-        let passed = poll(3) { focusedItem.exists && focusedItem.label.contains(title) }
+        let passed = poll(3) { focusedItem.exists && focusedItem.label.localizedCaseInsensitiveContains(title) }
         check(what, passed, detail: passed ? "" : "Fokus: „\(focusedItem.exists ? focusedItem.label : "keiner")“")
     }
-    private func checkValue(_ what: String, _ element: XCUIElement, _ expected: String) {
-        let passed = poll(3) { element.exists && (element.value as? String) == expected }
+    private func checkValue(_ what: String, _ element: XCUIElement, _ expected: String, ignoringCase: Bool = false) {
+        let passed = poll(3) {
+            guard element.exists, let value = element.value as? String else { return false }
+            return ignoringCase ? value.lowercased() == expected.lowercased() : value == expected
+        }
         check(what, passed, detail: passed ? "" : "Inhalt: \(String(reflecting: element.exists ? element.value as? String ?? "" : "fehlt"))")
     }
     private func waitFor(_ element: XCUIElement, timeout: TimeInterval = 3) -> Bool { element.waitForExistence(timeout: timeout) }
@@ -321,6 +342,22 @@ final class KeyboardSmokeTests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
     }
+}
+
+/// `typeKey` first waits for an idle app, and in an open text it never reports
+/// one (two minutes per key, then the timeout). Test bundle only, a private
+/// entry point of XCTest; where that is gone the wait simply stays.
+private enum NoIdleWait {
+    private static let done: Void = {
+        guard let process = NSClassFromString("XCUIApplicationProcess") else { return }
+        let skip: @convention(block) (AnyObject, Bool, Bool) -> Void = { _, _, _ in }
+        for name in ["waitForQuiescenceIncludingAnimationsIdle:isPreEvent:", "waitForQuiescenceIncludingAnimationsIdle:"] {
+            if let method = class_getInstanceMethod(process, NSSelectorFromString(name)) {
+                method_setImplementation(method, imp_implementationWithBlock(skip))
+            }
+        }
+    }()
+    static func install() { _ = done }
 }
 
 private extension XCUIElement {

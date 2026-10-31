@@ -83,13 +83,18 @@ jobs:
 
       - name: Smoke-Test
         id: smoke
+        timeout-minutes: 15
         run: |
           set -o pipefail
+          # CPU of the app every 5 s: shows a busy loop behind a missing idle.
+          (while true; do date +%T; ps -axo %cpu=,comm= | grep '/Noty$' || true; sleep 5; done > "$OUT/cpu.log") &
           xcodebuild test-without-building \
             -project ci/simulator/NotySim.xcodeproj -scheme NotySim \
             -destination "platform=iOS Simulator,id=$UDID" \
             -derivedDataPath "$DERIVED" \
             -resultBundlePath "$OUT/KeyboardSmoke.xcresult" \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 240 -maximum-test-execution-time-allowance 300 \
             | tee "$OUT/test.log" | grep -E "Test Case|error:|\*\* TEST|Executed "
 
       - name: Ergebnisse und Screenshots auspacken
@@ -97,7 +102,7 @@ jobs:
         run: |
           mkdir -p "$OUT/attachments"
           xcrun simctl spawn "$UDID" log show --last 40m --style compact \
-            --predicate 'subsystem == "de.la.noty" AND category == "keyboard"' > "$OUT/keyboard.log" || true
+            --predicate 'subsystem == "de.la.noty"' > "$OUT/keyboard.log" || true
           xcrun simctl io "$UDID" screenshot "$OUT/letzter-stand.png" || true
           if [ -d "$OUT/KeyboardSmoke.xcresult" ]; then
             xcrun xcresulttool export attachments --path "$OUT/KeyboardSmoke.xcresult" --output-path "$OUT/attachments" || true
@@ -114,6 +119,7 @@ jobs:
             ${{ env.OUT }}/KeyboardSmoke.xcresult
             ${{ env.OUT }}/attachments
             ${{ env.OUT }}/keyboard.log
+            ${{ env.OUT }}/cpu.log
             ${{ env.OUT }}/build.log
             ${{ env.OUT }}/test.log
             ${{ env.OUT }}/tests.json
