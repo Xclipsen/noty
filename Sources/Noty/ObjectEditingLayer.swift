@@ -1570,8 +1570,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         return commands
     }
     @objc private func copyKey() { copySelection() }
-    @objc private func pasteKey() { if let onPaste { onPaste() } else { pasteSelection() } }
-    @objc private func deleteKey() { deleteSelection() }
+    @objc private func pasteKey() {
+        if KeyboardRouter.shared.activePanel?.typing == true { KeyboardRouter.shared.pasteIntoPanel(); return }
+        if let onPaste { onPaste() } else { pasteSelection() }
+    }
+    @objc private func deleteKey() {
+        // A panel or its line has the keys: the selection behind it stays.
+        if KeyboardRouter.shared.activePanel != nil { KeyboardRouter.shared.handle(token: "<BS>"); return }
+        deleteSelection()
+    }
     /// An open menu goes first, the router comes back to `escapeKey` otherwise.
     @objc private func escapeCommand() { if !KeyboardRouter.shared.handle(token: "<Esc>") { escapeKey() } }
     private func escapeKey() { adopted = nil; clearSelection(); refresh() }
@@ -1592,6 +1599,16 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         refresh()
     }
     @objc private func nudgeKey(_ command: UIKeyCommand) {
+        if KeyboardRouter.shared.activePanel != nil {
+            let token = switch command.input ?? "" {
+            case UIKeyCommand.inputLeftArrow: "<Left>"
+            case UIKeyCommand.inputRightArrow: "<Right>"
+            case UIKeyCommand.inputUpArrow: "<Up>"
+            default: "<Down>"
+            }
+            if !command.modifierFlags.contains(.shift) { KeyboardRouter.shared.handle(token: token) }
+            return
+        }
         let step = command.modifierFlags.contains(.shift) ? 10.0 : 1.0
         let (dx, dy): (Double, Double) = switch command.input ?? "" {
         case UIKeyCommand.inputLeftArrow: (-step, 0)

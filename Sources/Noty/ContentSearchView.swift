@@ -364,6 +364,38 @@ struct ContentSearchView: View {
     @State private var searching = false
     @State private var openTasks = false
     @Environment(\.dismiss) private var dismiss
+    /// Keyboard mode: the hit `j`/`k` stand on. With a keyboard the keys stay
+    /// with the router and fill the field, so that `j` can move here.
+    @State private var keys = KeyPanel(context: .list, label: "SUCHE", ownsResponder: true)
+    @State private var keyIndex: Int?
+    private var keyHit: UUID? { keyIndex.flatMap { hits.indices.contains($0) ? hits[$0].id : nil } }
+    private func keyRun(_ action: HelixAction, count: Int) {
+        let router = KeyboardRouter.shared
+        func move(_ delta: Int) { keyIndex = KeyList.moved(keyIndex, dy: delta, count: hits.count); router.setTyping(keys, false) }
+        switch action {
+        case .listMove(let delta): move(delta * count)
+        case .listScreen(let delta): move(delta * 8)
+        case .listFirst: move(-hits.count)
+        case .listLast: move(hits.count)
+        case .confirm: if let hit = hits.indices.contains(keyIndex ?? 0) ? hits[keyIndex ?? 0] : nil { select(hit) }
+        case .cancelPanel: dismiss()
+        case .typeFilter: router.setTyping(keys, true)
+        case .panelTab: openTasks.toggle(); keyIndex = nil
+        default: break
+        }
+    }
+    private func startKeys() {
+        keys.input = $query
+        keys.typesUnbound = true
+        keys.run = { keyRun($0, count: $1 ?? 1) }
+        keys.commands = { [PaletteCommand(title: "Suchindex neu erfassen") { start(rebuild: true) }] }
+        let router = KeyboardRouter.shared
+        router.enter(keys)
+        router.setTyping(keys, true)
+    }
+    private func select(_ hit: ContentSearchHit) {
+        model.cancel(); model.cancelTasks(); onSelect(hit); dismiss()
+    }
     /// Filtered off the main actor: the index can hold 50 000 lines and
     /// changes while it is built, typing must stay fluid.
     @State private var hits: [ContentSearchHit] = []
@@ -380,6 +412,7 @@ struct ContentSearchView: View {
     /// The field takes the focus only once the sheet stands; iOS 17 has no
     /// `searchFocused`, and a refused `isPresented` gives no signal, so look.
     private func focusField() async {
+        guard !(KeyboardRouter.shared.isEnabled && KeyboardRouter.shared.hasKeyboard) else { return }
         for delay in [50, 300, 500] {
             try? await Task.sleep(for: .milliseconds(delay))
             if Task.isCancelled || UIResponder.currentFirstResponder is UISearchTextField { return }
@@ -400,14 +433,19 @@ struct ContentSearchView: View {
                         .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
                 }
                 if let error = model.error { Text(error).foregroundStyle(.red).font(.caption).padding(.horizontal) }
-                List(hits) { hit in
-                    Button { model.cancel(); model.cancelTasks(); onSelect(hit); dismiss() } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("\(hit.title) · Seite \(hit.pageNumber)").font(.headline)
-                            Text(hit.text).lineLimit(3)
-                            Text(label(hit.kind)).font(.caption).foregroundStyle(.secondary)
+                ScrollViewReader { proxy in
+                    List(hits) { hit in
+                        Button { select(hit) } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(hit.title) · Seite \(hit.pageNumber)").font(.headline)
+                                Text(hit.text).lineLimit(3)
+                                Text(label(hit.kind)).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
+                        .listRowBackground(hit.id == keyHit ? Color.accentColor.opacity(0.28) : nil)
                     }
+                    .onChange(of: keyIndex) { _, _ in if let keyHit { proxy.scrollTo(keyHit) } }
+                    .onChange(of: hits.count) { _, count in keyIndex = KeyList.clamped(keyIndex, count: count) }
                 }.overlay {
                     if openTasks, !model.collectingTasks, model.tasks.isEmpty {
                         ContentUnavailableView("Keine offenen Aufgaben", systemImage: "checkmark.circle",
@@ -432,6 +470,11 @@ struct ContentSearchView: View {
                 .task(id: "\(query)|\(openTasks)|\(model.hitRevision)") { await refreshHits() }
                 .onDisappear { model.cancel(); model.cancelTasks() }
         }
+        .background(KeyPanelHost(panel: keys).frame(width: 0, height: 0).accessibilityHidden(true))
+        .background { KeyEscapeButton { dismiss() } }
+        .overlay { KeyboardOverlay(scope: .library, panel: keys.id) }
+        .onAppear { startKeys() }
+        .onDisappear { KeyboardRouter.shared.leave(keys) }
     }
     private func start(rebuild: Bool) {
         model.start(documents: documents, current: current, currentSources: currentSources, area: area, retain: retain, rebuild: rebuild)

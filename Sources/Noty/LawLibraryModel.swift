@@ -69,6 +69,8 @@ final class LawLibraryModel: ObservableObject {
     @Published var error: String?
     /// Visible pages that show `error` themselves; the app alert stays silent then.
     @Published var inlineErrorPages = 0
+    /// Counts `Space l`: the open reader takes the keys.
+    @Published var keyFocus = 0
     /// Mail delivery is switched off on the server (user decision, see
     /// LAW-INTEGRATION-PLAN). Everything waiting for an e-mail stays hidden until then.
     static let mailDelivery = false

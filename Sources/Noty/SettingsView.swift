@@ -154,6 +154,7 @@ struct SettingsView: View {
             .navigationTitle("Einstellungen")
             .navigationDestination(for: SettingsPage.self) { page in destination(page) }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
+            .keyboardSheet()
         }
         .environmentObject(toolbox)
         .environmentObject(externalBackup)
@@ -182,6 +183,7 @@ struct SettingsView: View {
             }
         }
         .accessibilityHint(page.perArea ? "Gilt nur für den aktuellen Bereich" : "Gilt für die ganze App")
+        .keyOption(.action { path.append(page) })
     }
 
     @ViewBuilder private func destination(_ page: SettingsPage) -> some View {
@@ -212,13 +214,14 @@ private struct GeneralSettingsPage: View {
             Section("Bibliothek") {
                 Picker("Darstellung", selection: $layout) {
                     ForEach(LibraryLayout.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
-                }
+                }.keyOption(.choice($layout, LibraryLayout.allCases))
                 Picker("Sortierung", selection: $sort) {
                     ForEach(LibrarySort.allCases) { Text($0.title).tag($0) }
-                }
+                }.keyOption(.choice($sort, LibrarySort.allCases))
             }
         }
         .navigationTitle("Allgemein")
+        .keyboardSheet()
     }
 }
 
@@ -233,21 +236,21 @@ private struct EditorSettingsPage: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Schreibscrollen bis zur Bildschirmmitte", isOn: $writingScroll)
-                Toggle("Seitenleiste beim Öffnen zeigen", isOn: $sidebarVisible)
-                Toggle("Schreibmaschinen-Modus beim Tippen", isOn: $typewriter)
-                Toggle("Einrasten", isOn: $snapping)
+                keyToggle("Schreibscrollen bis zur Bildschirmmitte", isOn: $writingScroll)
+                keyToggle("Seitenleiste beim Öffnen zeigen", isOn: $sidebarVisible)
+                keyToggle("Schreibmaschinen-Modus beim Tippen", isOn: $typewriter)
+                keyToggle("Einrasten", isOn: $snapping)
                     .accessibilityHint("Textfelder, Bilder, Formen und Auswahlen rasten beim langsamen Verschieben an Kanten, Mitten, Linien und Seitenrändern ein.")
-                Toggle("Tastaturmodus (wie Helix)", isOn: $keyboardMode)
+                keyToggle("Tastaturmodus (wie Helix)", isOn: $keyboardMode)
                     .accessibilityHint("Steuert die App mit einer Hardware-Tastatur: Erst auswählen, dann handeln. i schreibt, Esc geht eine Ebene zurück, die Leertaste öffnet das Menü, Leertaste und h zeigen alle Tasten.")
             } header: { Text("Alle Bereiche") } footer: {
                 Text("Die Seitenleiste merkt sich auch das letzte Ein- oder Ausblenden im Editor. Der Schreibmaschinen-Modus hält die Schreibzeile beim Tippen im oberen Drittel, auch mit schwebender oder externer Tastatur. Einrasten wirkt nur bei langsamer Bewegung; ein zweiter Finger auf dem Bildschirm unterdrückt es beim Ziehen.")
             }
             Section {
-                Toggle("Blättern statt vertikal scrollen", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
-                Toggle("PDFs einheitlich anzeigen", isOn: Binding(get: { toolbox.preferences.normalizePageWidths ?? false }, set: { toolbox.preferences.normalizePageWidths = $0 }))
+                keyToggle("Blättern statt vertikal scrollen", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
+                keyToggle("PDFs einheitlich anzeigen", isOn: Binding(get: { toolbox.preferences.normalizePageWidths ?? false }, set: { toolbox.preferences.normalizePageWidths = $0 }))
                     .accessibilityHint("Gleiche Arbeitsblattbreite mit Schreibraum daneben. Ändert nur die Anzeige.")
-                Toggle("Auch mit dem Finger zeichnen", isOn: $toolbox.preferences.fingerDrawing)
+                keyToggle("Auch mit dem Finger zeichnen", isOn: $toolbox.preferences.fingerDrawing)
             } header: { Text("Bereich „\(area)“") } footer: {
                 Text("„PDFs einheitlich anzeigen“ ändert nur die Anzeige; PDF-Originale und Export bleiben unverändert. Beim Fingerzeichnen mit zwei Fingern navigieren.")
             }
@@ -255,12 +258,15 @@ private struct EditorSettingsPage: View {
             if !toolbox.status.isEmpty { Section { Text(toolbox.status).font(.caption) } }
         }
         .navigationTitle("Editor")
+        .keyboardSheet()
     }
 }
 
 private struct ToolSettingsPage: View {
     @ObservedObject var toolbox: ToolbarSettingsModel
     let area: String
+    /// A link has no action a key could run.
+    @State private var customizing = false
     private var hoverPreviewState: String {
         if #available(iOS 17.5, *) { return UIPencilInteraction.prefersHoverToolPreview ? "System: ein" : "System: aus" }
         return "Systemeinstellung"
@@ -268,16 +274,18 @@ private struct ToolSettingsPage: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Autostift für neue Striche", isOn: Binding(get: { toolbox.preferences.autoPen ?? false }, set: { toolbox.preferences.setAutomaticInk($0, for: .pen) }))
-                Toggle("Stift/Bleistift: Formen nach Halten erkennen", isOn: Binding(get: { toolbox.preferences.recognizeShapes ?? true }, set: { toolbox.preferences.recognizeShapes = $0 }))
-                Toggle("Textmarker: Linie nach Halten begradigen", isOn: Binding(get: { toolbox.preferences.markerHoldStraighten ?? true }, set: { toolbox.preferences.markerHoldStraighten = $0 }))
-                Picker("Textmarkerspitze", selection: Binding(get: { toolbox.preferences.effectiveMarkerTip }, set: { toolbox.preferences.markerTip = $0 })) {
+                keyToggle("Autostift für neue Striche", isOn: Binding(get: { toolbox.preferences.autoPen ?? false }, set: { toolbox.preferences.setAutomaticInk($0, for: .pen) }))
+                keyToggle("Stift/Bleistift: Formen nach Halten erkennen", isOn: Binding(get: { toolbox.preferences.recognizeShapes ?? true }, set: { toolbox.preferences.recognizeShapes = $0 }))
+                keyToggle("Textmarker: Linie nach Halten begradigen", isOn: Binding(get: { toolbox.preferences.markerHoldStraighten ?? true }, set: { toolbox.preferences.markerHoldStraighten = $0 }))
+                let tip = Binding(get: { toolbox.preferences.effectiveMarkerTip }, set: { toolbox.preferences.markerTip = $0 })
+                Picker("Textmarkerspitze", selection: tip) {
                     Text("Rund").tag(MarkerTip.round); Text("Keil").tag(MarkerTip.chisel)
-                }
-                Toggle("Textmarker immer gerade (rastet bei 0°/90°, 45°, 30° ein)", isOn: Binding(get: { toolbox.preferences.markerStraight ?? false }, set: { toolbox.preferences.markerStraight = $0 }))
-                Picker("Radierer-Standard", selection: Binding(get: { toolbox.preferences.eraserPrecision ?? false }, set: { toolbox.preferences.eraserPrecision = $0 })) {
+                }.keyOption(.choice(tip, [.round, .chisel]))
+                keyToggle("Textmarker immer gerade (rastet bei 0°/90°, 45°, 30° ein)", isOn: Binding(get: { toolbox.preferences.markerStraight ?? false }, set: { toolbox.preferences.markerStraight = $0 }))
+                let precise = Binding(get: { toolbox.preferences.eraserPrecision ?? false }, set: { toolbox.preferences.eraserPrecision = $0 })
+                Picker("Radierer-Standard", selection: precise) {
                     Text("Ganzer Strich").tag(false); Text("Präzise").tag(true)
-                }
+                }.keyOption(.toggle(precise))
             } header: { Text("Stift, Marker, Radierer") } footer: {
                 Text("Autostift wählt für neue Striche eine zur Seitenhelligkeit passende Farbe. Runde Markerspitze: gleichmäßig breit und durchscheinend; Keil: klassischer Marker. Vorhandene Striche bleiben unverändert.")
             }
@@ -290,19 +298,23 @@ private struct ToolSettingsPage: View {
                 Text("Die Werkzeugvorschau beim Schweben folgt der Systemeinstellung unter Einstellungen › Apple Pencil. iPadOS bietet Apps keine Möglichkeit, sie nur in noty abzuschalten.")
             }
             Section {
-                Picker("Leistenposition", selection: Binding(get: { toolbox.preferences.effectiveDock }, set: { toolbox.preferences.dock = $0 })) {
+                let dock = Binding(get: { toolbox.preferences.effectiveDock }, set: { toolbox.preferences.dock = $0 })
+                Picker("Leistenposition", selection: dock) {
                     Text("Oben").tag(ToolbarDock.top)
                     Text("Unten").tag(ToolbarDock.bottom)
                     Text("Links").tag(ToolbarDock.left)
                     Text("Rechts").tag(ToolbarDock.right)
                     if toolbox.preferences.dockOnly == false { Text("Schwebend").tag(ToolbarDock.floating) }
-                }
-                NavigationLink("Werkzeugleiste anpassen") { ToolbarCustomizationList(settings: toolbox) }
+                }.keyOption(.choice(dock, toolbox.preferences.dockOnly == false ? [.top, .bottom, .left, .right, .floating] : [.top, .bottom, .left, .right]))
+                NavigationLink("Werkzeugleiste anpassen") { ToolbarCustomizationList(settings: toolbox).keyboardSheet() }
+                    .keyOption(.action { customizing = true })
             } header: { Text("Werkzeugleiste") } footer: { areaFooter(area) }
             if !toolbox.status.isEmpty { Section { Text(toolbox.status).font(.caption) } }
         }
         .disabled(!toolbox.writable)
         .navigationTitle("Stift & Werkzeuge")
+        .navigationDestination(isPresented: $customizing) { ToolbarCustomizationList(settings: toolbox).keyboardSheet() }
+        .keyboardSheet()
     }
 }
 
@@ -320,7 +332,7 @@ private struct PaperSettingsPage: View {
                     NotebookCoverPreview(appearance: appearance.wrappedValue).aspectRatio(0.71, contentMode: .fit).frame(maxWidth: 110)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Umschlag", isOn: appearance.coverEnabled)
+                        keyToggle("Umschlag", isOn: appearance.coverEnabled)
                         Text("Startwerte für neue Hefte und Textdokumente. Beim Anlegen weiterhin änderbar; bestehende bleiben unverändert.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -330,10 +342,12 @@ private struct PaperSettingsPage: View {
             Section {
                 Button("Auf noty-Standard zurücksetzen") { toolbox.preferences.defaultAppearance = nil }
                     .disabled(toolbox.preferences.defaultAppearance == nil)
+                    .keyOption(.action { toolbox.preferences.defaultAppearance = nil })
             }
         }
         .disabled(!toolbox.writable)
         .navigationTitle("Papier für neue Hefte")
+        .keyboardSheet()
     }
 }
 
@@ -351,6 +365,8 @@ private struct BackupSettingsPage: View {
     @State private var importing = false
     @State private var importPurpose = ImportPurpose.libraryArchive
     @State private var showingInfo = false
+    @State private var showingForm = false
+    @State private var showingAreas = false
     @State private var restoredArea = false
     /// The pushed form shows backup errors itself; avoid a second alert.
     @State private var formVisible = false
@@ -374,46 +390,44 @@ private struct BackupSettingsPage: View {
             Section("Automatisches Backup") {
                 if policy.target == .disabled {
                     Button("Backup-Ordner wählen …", systemImage: "folder.badge.plus") { pick(.backupFolder) }
-                        .disabled(externalBackup.busy)
+                        .disabled(externalBackup.busy).keyOption(.action { pick(.backupFolder) })
                 } else {
                     LabeledContent(policy.target == .webDAV ? "WebDAV" : "Backup-Ordner", value: targetName)
                     LabeledContent("Letztes Backup", value: lastBackup)
                     Button("Jetzt sichern", systemImage: "arrow.clockwise") {
                         Task { await externalBackup.attempt(library: library, toolbox: toolbox, manual: true) }
                     }.disabled(externalBackup.busy || !library.ready)
+                        .keyOption(.action { Task { await externalBackup.attempt(library: library, toolbox: toolbox, manual: true) } })
                     if policy.target == .folder {
                         Button(health == .folderUnreachable ? "Backup-Ordner neu wählen …" : "Backup-Ordner ändern …", systemImage: "folder") { pick(.backupFolder) }
-                            .disabled(externalBackup.busy)
+                            .disabled(externalBackup.busy).keyOption(.action { pick(.backupFolder) })
                     }
                 }
-                NavigationLink("Weitere Optionen") {
-                    ExternalBackupForm(model: externalBackup, library: library, workspaces: workspaces)
-                        .onAppear { formVisible = true }.onDisappear { formVisible = false }
-                }
+                NavigationLink("Weitere Optionen") { backupForm }.keyOption(.action { showingForm = true })
             }
             Section("Bibliotheksbackup") {
                 LabeledContent("Letzter Export", value: library.lastLibraryExport.map(NotyText.statusDate) ?? NotyText.never)
-                Button("Exportieren …", systemImage: "square.and.arrow.up") {
-                    Task {
-                        guard await toolbox.flush() else { library.error = toolbox.status; return }
-                        if let archive = await library.libraryBackup() { file = LibraryArchiveFile(url: archive.url); exporting = true }
-                    }
-                }.disabled(!libraryIdle)
+                Button("Exportieren …", systemImage: "square.and.arrow.up", action: exportLibrary).disabled(!libraryIdle)
+                    .keyOption(.action(exportLibrary))
                 Button("Als neuen Bereich wiederherstellen …", systemImage: "arrow.down.doc") { pick(.libraryArchive) }
-                    .disabled(!libraryIdle)
+                    .disabled(!libraryIdle).keyOption(.action { pick(.libraryArchive) })
             }
             Section {
                 NavigationLink {
-                    WorkspacePickerList(model: workspaces, onSelect: onSelectArea)
+                    WorkspacePickerList(model: workspaces, onSelect: onSelectArea).keyboardSheet()
                 } label: {
                     LabeledContent("Bereiche", value: workspaces.title)
                 }
                 .disabled(library.busy && !library.backgroundBusy)
+                .keyOption(.action { showingAreas = true })
             } footer: {
                 if library.opened != nil { Text("Export und Wiederherstellen erst nach dem Schließen des Hefts.") }
             }
         }
         .navigationTitle("Backup")
+        .navigationDestination(isPresented: $showingForm) { backupForm }
+        .navigationDestination(isPresented: $showingAreas) { WorkspacePickerList(model: workspaces, onSelect: onSelectArea).keyboardSheet() }
+        .keyboardSheet()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showingInfo = true } label: {
@@ -464,6 +478,17 @@ private struct BackupSettingsPage: View {
     }
 
     private func pick(_ purpose: ImportPurpose) { importPurpose = purpose; importing = true }
+    private func exportLibrary() {
+        Task {
+            guard await toolbox.flush() else { library.error = toolbox.status; return }
+            if let archive = await library.libraryBackup() { file = LibraryArchiveFile(url: archive.url); exporting = true }
+        }
+    }
+    private var backupForm: some View {
+        ExternalBackupForm(model: externalBackup, library: library, workspaces: workspaces)
+            .onAppear { formVisible = true }.onDisappear { formVisible = false }
+            .keyboardSheet()
+    }
 
     /// A few short lines only: status, last backup, target.
     private var info: some View {
@@ -499,7 +524,7 @@ private struct TrashSettingsPage: View {
                 Section { Text(status).font(.callout) }
             }
             Section {
-                ForEach(items) { item in row(item) }
+                ForEach(items) { item in row(item).keyOption(.action { ask(item) }) }
             } footer: {
                 Text("Einträge im Papierkorb bleiben vollständig gespeichert und sind in Bibliotheksbackups enthalten. noty leert den Papierkorb nie automatisch. Ordner stellen ihren Inhalt mit wieder her.")
             }
@@ -507,6 +532,10 @@ private struct TrashSettingsPage: View {
                 Section {
                     Button("Papierkorb leeren …", systemImage: "trash.slash", role: .destructive) { confirmingEmpty = true }
                         .disabled(!editable)
+                        .keyOption(.action {
+                            KeyboardRouter.shared.ask("Papierkorb leeren?", message: "Alle Einträge im Papierkorb einschließlich enthaltener Ordnerinhalte werden vom iPad entfernt. Das kann nicht rückgängig gemacht werden.",
+                                                      confirm: "\(NotyText.count(items.count, "Eintrag", "Einträge")) endgültig löschen", safe: true) { Task { await library.emptyTrash() } }
+                        })
                 }
             }
         }
@@ -518,6 +547,7 @@ private struct TrashSettingsPage: View {
         }
         .navigationTitle("Papierkorb · \(area)")
         .navigationBarTitleDisplayMode(.inline)
+        .keyboardSheet()
         .confirmationDialog("Endgültig löschen?", isPresented: Binding(get: { purging != nil }, set: { if !$0 { purging = nil } }),
                             titleVisibility: .visible, presenting: purging) { item in
             Button("„\(item.title)“ endgültig löschen", role: .destructive) {
@@ -537,6 +567,20 @@ private struct TrashSettingsPage: View {
         .onDisappear { library.trashStatus = nil }
     }
 
+    /// Enter on a row: what its menu offers, the final step with its own question.
+    private func ask(_ item: NotebookCore.LibraryItem) {
+        guard editable else { return }
+        var options = [KeyQuestion.Option(title: "Wiederherstellen") { Task { await library.restore(item.id) } }]
+        if item.source != .legacyMain {
+            options.append(KeyQuestion.Option(title: "Endgültig löschen …", destructive: true) {
+                KeyboardRouter.shared.ask("Endgültig löschen?", message: purgeMessage(item), confirm: "„\(item.title)“ endgültig löschen", safe: true) {
+                    Task { await library.purge([item.id]) }
+                }
+            })
+        }
+        options.append(KeyQuestion.Option(title: "Abbrechen"))
+        KeyboardRouter.shared.present(KeyQuestion(title: item.title, message: "", options: options, chosen: options[0].id))
+    }
     private func row(_ item: NotebookCore.LibraryItem) -> some View {
         HStack(spacing: 14) {
             Image(systemName: item.librarySymbol(filled: false)).font(.title3).foregroundStyle(.secondary).frame(width: 28)
@@ -605,12 +649,13 @@ private struct AboutSettingsPage: View {
             }
             SigningRenewalSection()
             Section {
-                Toggle("Hänger-Diagnose", isOn: $hangProbe)
-                Toggle("Neuer Texteditor (Test)", isOn: $textEditor2)
+                keyToggle("Hänger-Diagnose", isOn: $hangProbe)
+                keyToggle("Neuer Texteditor (Test)", isOn: $textEditor2)
             } header: { Text("Diagnose") } footer: {
                 Text("Hänger-Diagnose: protokolliert bei längeren Hängern nur Codeadressen und Zähler im Systemprotokoll, keine Inhalte. Wirkt nach einem Neustart der App. Neuer Texteditor: ein Text über alle Seiten eines Textdokuments, im Blättermodus aus; noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.")
             }
         }
         .navigationTitle("Über noty")
+        .keyboardSheet()
     }
 }

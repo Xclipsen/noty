@@ -42,7 +42,7 @@ final class HelixKeymapTests: XCTestCase {
     }
 
     func testKeysThatMeanTheSameEverywhere() {
-        for context in HelixContext.allCases {
+        for context in HelixContext.places {
             XCTAssertEqual(HelixKeymap.binding(":", in: context)?.action, .palette)
             XCTAssertEqual(HelixKeymap.binding("g", in: context)?.target, .menu)
             XCTAssertEqual(HelixKeymap.binding("<Space>", in: context)?.target, .menu)
@@ -75,7 +75,8 @@ final class HelixKeymapTests: XCTestCase {
             ("j", .scroll(x: 0, y: 1)), ("<Up>", .scroll(x: 0, y: -1)), ("^d", .scrollScreen(0.5)), ("^b", .scrollScreen(-0.9)),
             ("g g", .firstPage), ("g e", .lastPage), ("g n", .page(1)), ("g p", .page(-1)), ("G", .gotoPage), ("+", .zoom(1)), ("-", .zoom(-1)),
             ("t t", .tool(.text)), ("<Tab>", .nextObject(1)), ("<S-Tab>", .nextObject(-1)), ("<CR>", .write), ("i", .write),
-            ("d", .deleteObject), ("y", .copyObject), ("p", .pasteObject), ("%", .selectAll), ("D", .duplicateObject), ("<Space> m", .bookmark)]
+            ("d", .deleteObject), ("y", .copyObject), ("p", .pasteObject), ("%", .selectAll), ("D", .duplicateObject), ("<Space> m", .bookmarks), ("<Space> M", .bookmark),
+            ("<Space> l", .laws), ("<Space> c", .colors)]
         for (keys, action) in expected { XCTAssertEqual(HelixKeymap.binding(keys, in: .page)?.action, action, keys) }
         // The space bar belongs to the menu now.
         XCTAssertEqual(HelixKeymap.binding("<Space>", in: .page)?.target, .menu)

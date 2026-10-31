@@ -25,8 +25,12 @@ struct PageSidebarView: View {
     @State private var addingPage: AddRequest?
     @State private var dropTarget: UUID?
     @State private var selectedTab: SidebarTab = .pages
-    /// Counts `g o` of the keyboard mode: shows the outline tab.
-    var outlineRequest = 0
+    /// `Space s`, `Space o`, `Space m`: the keys come here, and which list (`KeyPanel`).
+    @Binding var keyRequest: SidebarKeyRequest?
+    @State private var keyPanel: KeyPanel?
+    /// Keyboard: the entry `j`/`k` stand on, in the shown list.
+    @State private var keyCursor: Int?
+    @State private var keyColumns = 2
     @State private var filter: PageFilter = .all
     @State private var scrollRequest = 0
 
@@ -161,6 +165,11 @@ struct PageSidebarView: View {
                             }
                         }
                     }
+                    .onChange(of: count, initial: true) { _, value in keyColumns = value }
+                    .onChange(of: keyCursor) { _, _ in
+                        guard let id = keyScrollTarget else { return }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { proxy.scrollTo(id, anchor: .center) }
+                    }
                     .onChange(of: currentPage.id) { _, id in
                         guard selectedTab == .pages, filter == .all, !editMode.isEditing else { return }
                         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) }
@@ -188,8 +197,19 @@ struct PageSidebarView: View {
         // Live while typing, but debounced: one extraction after the text rests.
         .onReceive(model.$notebook) { notebook in refreshTextOutline(notebook, after: .milliseconds(400)) }
         .onAppear { refreshTextOutline(model.notebook) }
-        .onChange(of: outlineRequest, initial: true) { _, request in if request > 0 { selectedTab = .outline } }
-        .onDisappear { outlineTask?.cancel(); outlineTask = nil }
+        .onChange(of: keyRequest, initial: true) { _, request in
+            guard let request else { return }
+            keyRequest = nil
+            startKeys(request.target)
+        }
+        .onChange(of: selectedTab) { _, _ in resetKeyCursor() }
+        .onChange(of: filter) { _, _ in resetKeyCursor() }
+        .onChange(of: textOutline.count) { _, count in if selectedTab == .outline, !manualPages { keyCursor = KeyList.clamped(keyCursor, count: count) } }
+        .onChange(of: visiblePages.count) { _, count in if selectedTab == .pages { keyCursor = KeyList.clamped(keyCursor, count: count) } }
+        .onDisappear {
+            outlineTask?.cancel(); outlineTask = nil
+            if let keyPanel { KeyboardRouter.shared.leave(keyPanel) }
+        }
         .background(Color(white: 0.065))
         .environment(\.colorScheme, .dark)
         .sheet(isPresented: $showingTrash) {
@@ -216,7 +236,7 @@ struct PageSidebarView: View {
                                    description: Text("Die enthaltenen PDFs haben kein Inhaltsverzeichnis mit erreichbaren Seiten."))
         } else {
             List(model.pdfOutline) { item in
-                NotebookOutlineRow(item: item, selectedPage: currentPage.id) { id in
+                NotebookOutlineRow(item: item, selectedPage: currentPage.id, keyItem: keyOutlineItem?.id) { id in
                     guard canEdit else { return }
                     selectPage(id); onSelect?()
                 }
@@ -251,7 +271,7 @@ struct PageSidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(entry.preset.title): \(entry.text), Seite \(entry.pageIndex + 1)")
-                .listRowBackground(Color.clear)
+                .listRowBackground(keyEntry == entry.id ? Color.accentColor.opacity(0.28) : Color.clear)
             }.listStyle(.plain).scrollContentBackground(.hidden)
         }
     }
@@ -392,6 +412,7 @@ struct PageSidebarView: View {
         }
         .background(dropTarget == page.id ? Color.accentColor.opacity(0.15) : .clear,
                     in: RoundedRectangle(cornerRadius: 8))
+        .overlay { if keyPage == page.id { RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 2).allowsHitTesting(false) } }
         .contextMenu { pageActions(page, index: index).disabled(!canEdit) }
     }
 
@@ -445,6 +466,121 @@ struct PageSidebarView: View {
         }
     }
 
+    // MARK: Keyboard mode (docs/KEYBOARD.md)
+
+    private var keysActive: Bool { keyPanel != nil && keyCursor != nil }
+    private var keyPage: UUID? {
+        guard keysActive, selectedTab == .pages, let keyCursor, visiblePages.indices.contains(keyCursor) else { return nil }
+        return visiblePages[keyCursor].page.id
+    }
+    private var keyEntry: TextOutlineEntry.ID? {
+        guard keysActive, selectedTab == .outline, !manualPages, let keyCursor, textOutline.indices.contains(keyCursor) else { return nil }
+        return textOutline[keyCursor].id
+    }
+    /// A PDF outline as one list, closed entries included: `NotebookOutlineRow` opens the way there.
+    private var flatOutline: [NotebookOutlineItem] {
+        func flat(_ items: [NotebookOutlineItem]) -> [NotebookOutlineItem] { items.flatMap { [$0] + flat($0.children ?? []) } }
+        return flat(model.pdfOutline).filter { $0.pageID != nil }
+    }
+    private var keyOutlineItem: NotebookOutlineItem? {
+        guard keysActive, selectedTab == .outline, manualPages, let keyCursor else { return nil }
+        let items = flatOutline
+        return items.indices.contains(keyCursor) ? items[keyCursor] : nil
+    }
+    private var keyScrollTarget: AnyHashable? {
+        if let keyPage { return keyPage }
+        if let keyEntry { return keyEntry }
+        return keyOutlineItem?.id
+    }
+    private var keyCount: Int {
+        guard selectedTab == .outline else { return visiblePages.count }
+        return manualPages ? flatOutline.count : textOutline.count
+    }
+    private func resetKeyCursor() {
+        guard keyPanel != nil else { return }
+        keyCursor = selectedTab == .pages ? visiblePages.firstIndex { $0.page.id == currentPage.id } ?? (visiblePages.isEmpty ? nil : 0) : (keyCount > 0 ? 0 : nil)
+    }
+    private func startKeys(_ target: SidebarKeyTarget) {
+        editMode = .inactive
+        switch target {
+        case .pages: selectedTab = .pages
+        case .outline: selectedTab = .outline; refreshTextOutline(model.notebook)
+        case .bookmarks: selectedTab = .pages; filter = .bookmarks
+        }
+        let panel = keyPanel ?? KeyPanel(context: .sidebar, label: "SEITENLEISTE")
+        panel.leavesOnPageTouch = true
+        panel.run = { runKey($0, count: $1 ?? 1) }
+        panel.onLeave = { keyPanel = nil; keyCursor = nil }
+        keyPanel = panel
+        resetKeyCursor()
+        KeyboardRouter.shared.enter(panel)
+    }
+    private func leaveKeys() { if let keyPanel { KeyboardRouter.shared.leave(keyPanel) } }
+    private func runKey(_ action: HelixAction, count: Int) {
+        let total = keyCount
+        let columns = selectedTab == .pages ? keyColumns : 1
+        switch action {
+        case .listMove(let delta): keyCursor = KeyList.moved(keyCursor, dy: delta * count, columns: columns, count: total)
+        case .listColumn(let delta): if columns > 1 { keyCursor = KeyList.moved(keyCursor, dx: delta * count, count: total) }
+        case .listScreen(let delta): keyCursor = KeyList.moved(keyCursor, dy: delta * 4, columns: columns, count: total)
+        case .listFirst: keyCursor = total > 0 ? 0 : nil
+        case .listLast: keyCursor = total > 0 ? total - 1 : nil
+        case .panelTab: selectedTab = selectedTab == .pages ? .outline : .pages
+        case .panelFilter: selectedTab = .pages; filter = filter == .all ? .bookmarks : .all
+        case .confirm: openKeyEntry()
+        case .cancelPanel: leaveKeys()
+        case .sidebar: leaveKeys(); onCollapse()
+        case .pageItem(let item): if let keyCursor, visiblePages.indices.contains(keyCursor), selectedTab == .pages { runPageItem(item, entry: visiblePages[keyCursor]) }
+        default: break
+        }
+    }
+    private func openKeyEntry() {
+        if let keyPage {
+            guard canEdit else { return }
+            selectPage(keyPage)
+        } else if let keyOutlineItem, let page = keyOutlineItem.pageID {
+            guard canEdit else { return }
+            selectPage(page)
+        } else if let keyEntry, let entry = textOutline.first(where: { $0.id == keyEntry }) {
+            leaveKeys()
+            onOutline?(entry); onSelect?()
+            return
+        } else { return }
+        leaveKeys()
+        onSelect?()
+    }
+    private func runPageItem(_ item: HelixPageItem, entry: (index: Int, page: Page)) {
+        guard canEdit else { return }
+        let id = entry.page.id, router = KeyboardRouter.shared
+        if item == .bookmark { model.toggleBookmark(id); return }
+        guard manualPages else {
+            if item == .showTrash, deletedCount > 0 { showingTrash = true }
+            return
+        }
+        switch item {
+        case .bookmark: break
+        case .copy: model.copyPage(id)
+        case .cut: model.copyPage(id, cut: true)
+        case .paste: if model.copiedPage != nil { model.pastePage(after: id) }
+        case .duplicate: model.duplicatePage(id)
+        case .add: addingPage = AddRequest(anchor: id, position: .after)
+        case .showTrash: showingTrash = true
+        case .trash:
+            guard model.notebook.pages.count > 1 else { router.show(note: "Die letzte Seite bleibt"); return }
+            router.ask("Seite \(entry.index + 1) in den Papierkorb?", message: "Sie bleibt im Seitenpapierkorb und lässt sich dort wiederherstellen.",
+                       confirm: "In den Seitenpapierkorb") { model.trashPage(id) }
+        case .clear:
+            router.ask("Seite \(entry.index + 1) leeren?", message: "Der bisherige Stand bleibt im Seitenpapierkorb.", confirm: "Seite leeren") { model.clearPage(id) }
+        case .moveUp, .moveDown:
+            guard filter == .all else { return }
+            let target = entry.index + (item == .moveUp ? -1 : 1)
+            guard model.notebook.pages.indices.contains(target) else { return }
+            model.movePage(id, to: target); keyCursor = target
+        case .margins:
+            if let onMargins, model.sourcePage(for: entry.page) != nil || entry.page.writingSpaceExtendsPaper { onMargins(id) }
+        }
+    }
+
     private func placement(anchor: UUID, position: PageInsertionPosition) -> Insertion {
         Insertion(anchor: position == .end ? (model.notebook.pages.last?.id ?? anchor) : anchor,
                   before: position == .before)
@@ -466,14 +602,20 @@ struct PageSidebarView: View {
 private struct NotebookOutlineRow: View {
     let item: NotebookOutlineItem
     let selectedPage: UUID
+    /// The entry the keys stand on: the way to it stays open.
+    var keyItem: String? = nil
     let onSelect: (UUID) -> Void
+    @State private var expanded = false
 
+    private func holds(_ id: String?, _ item: NotebookOutlineItem) -> Bool {
+        id != nil && (item.children ?? []).contains { $0.id == id || holds(id, $0) }
+    }
     var body: some View {
         Group {
             if let children = item.children, !children.isEmpty {
-                DisclosureGroup {
+                DisclosureGroup(isExpanded: Binding(get: { expanded || holds(keyItem, item) }, set: { expanded = $0 })) {
                     ForEach(children) { child in
-                        NotebookOutlineRow(item: child, selectedPage: selectedPage, onSelect: onSelect)
+                        NotebookOutlineRow(item: child, selectedPage: selectedPage, keyItem: keyItem, onSelect: onSelect)
                     }
                 } label: { title }
             } else { title }
@@ -487,11 +629,19 @@ private struct NotebookOutlineRow: View {
                 Text(item.title).font(.subheadline).multilineTextAlignment(.leading)
                     .foregroundStyle(pageID == selectedPage ? Color.accentColor : .primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(keyItem == item.id ? Color.accentColor.opacity(0.28) : .clear)
             }.buttonStyle(.plain)
         } else {
             Text(item.title).font(.subheadline).foregroundStyle(.secondary)
         }
     }
+}
+
+/// Which list of the sidebar the keys go to.
+enum SidebarKeyTarget: Equatable { case pages, outline, bookmarks }
+struct SidebarKeyRequest: Equatable {
+    let id = UUID()
+    let target: SidebarKeyTarget
 }
 
 enum PageInsertionPosition: String, CaseIterable, Identifiable {
@@ -540,15 +690,15 @@ struct AddPageSheet: View {
                         ForEach(PageInsertionPosition.allCases) { position in
                             Text(position.rawValue).tag(position)
                         }
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.choice($position, PageInsertionPosition.allCases))
                     HStack(spacing: 12) {
                         Picker("Größe", selection: $format) { ForEach(PaperFormat.allCases, id: \.self) { Text($0.title).tag($0) } }
-                            .pickerStyle(.segmented)
-                        Toggle("Quer", isOn: $landscape).fixedSize()
+                            .pickerStyle(.segmented).keyOption(.choice($format, PaperFormat.allCases))
+                        keyToggle("Quer", isOn: $landscape).fixedSize()
                         Picker("Papierfarbe", selection: $paperColor) {
                             Text("Weiß").tag(PaperColor.white)
                             Text("Dunkel").tag(PaperColor.dark)
-                        }.pickerStyle(.segmented).frame(maxWidth: 170)
+                        }.pickerStyle(.segmented).frame(maxWidth: 170).keyOption(.choice($paperColor, [.white, .dark]))
                     }
                     HStack(alignment: .top, spacing: 12) {
                         template(.blank, title: "Blanko")
@@ -575,6 +725,7 @@ struct AddPageSheet: View {
                         }.buttonStyle(.plain)
                             .contentShape(RoundedRectangle(cornerRadius: 16))
                             .accessibilityHint("Öffnet die Dateiauswahl.")
+                            .keyOption(.action { choosingPDF = true })
                         Text("Die Originaldatei wird vollständig in dieses Heft kopiert.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -603,12 +754,16 @@ struct AddPageSheet: View {
         .preferredColorScheme(.dark)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .keyboardSheet()
     }
 
+    private func insert(_ style: PaperStyle) {
+        var settings = NotebookAppearance(); settings.format = format; settings.landscape = landscape
+        onPaper(style, paperColor, settings.geometry, position)
+    }
     private func template(_ style: PaperStyle, title: String) -> some View {
         Button {
-            var settings = NotebookAppearance(); settings.format = format; settings.landscape = landscape
-            onPaper(style, paperColor, settings.geometry, position)
+            insert(style)
         } label: {
             VStack(spacing: 12) {
                 PaperTemplatePreview(style: style, color: paperColor)
@@ -619,6 +774,7 @@ struct AddPageSheet: View {
                 Text(title).font(.subheadline).foregroundStyle(.primary)
             }.frame(maxWidth: .infinity)
         }.buttonStyle(.plain).accessibilityLabel("\(title) einfügen, \(position.rawValue)")
+            .keyOption(.action { insert(style) })
     }
 }
 
@@ -681,10 +837,13 @@ private struct PageTrashView: View {
                                     Button(entry.reason != nil ? "Seitenstand wiederherstellen" : "Wiederherstellen",
                                            systemImage: "arrow.uturn.backward") {
                                         model.restorePage(entry.page.id)
-                                    }
+                                    }.keyOption(.action { model.restorePage(entry.page.id) })
                                     Button("Endgültig löschen …", systemImage: "trash.slash", role: .destructive) {
                                         pendingDeletion = entry
-                                    }
+                                    }.keyOption(.action {
+                                        KeyboardRouter.shared.ask("Seite endgültig löschen?", message: "Die Seite wird aus dem Heft entfernt, ebenso PDF-Originale, die keine Seite mehr verwendet. \(Self.undoNote)",
+                                                                  confirm: "Seite endgültig löschen", safe: true) { model.deleteTrashedPage(entry.page.id) }
+                                    })
                                 }.buttonStyle(.borderless).disabled(!canEdit)
                             }
                         }.padding(.vertical, 4)
@@ -715,6 +874,7 @@ private struct PageTrashView: View {
                 Text("Alle Seiten im Papierkorb, auch gesicherte Seitenstände, werden endgültig entfernt, ebenso nicht mehr verwendete PDF-Originale. \(Self.undoNote)")
             }
         }
+        .keyboardSheet()
     }
 }
 

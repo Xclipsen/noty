@@ -27,11 +27,11 @@ struct NotebookDefaultsView: View {
                         Text("Blanko").tag(PaperStyle.blank)
                         Text("Liniert").tag(PaperStyle.lined)
                         Text("Kariert").tag(PaperStyle.grid)
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.choice($paper, [.blank, .lined, .grid]))
                     Picker("Papierfarbe", selection: $color) {
                         Text("Weiß").tag(PaperColor.white)
                         Text("Dunkel").tag(PaperColor.dark)
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.choice($color, [.white, .dark]))
                 } header: { Text("Neue Seiten") } footer: {
                     Text("Gilt für jede neue Papierseite und die leere Seite am Ende des Hefts.")
                 }
@@ -43,6 +43,7 @@ struct NotebookDefaultsView: View {
                     }
                     .pickerStyle(.inline)
                     .labelsHidden()
+                    .keyOption(.choice($scope, [.newPagesOnly, .emptyPages, .wholeNotebook]))
                 } header: { Text("Bestehende Seiten") } footer: { Text(footer) }
             }
             .navigationTitle("Papier für neue Seiten")
@@ -53,6 +54,7 @@ struct NotebookDefaultsView: View {
                 }
             }
         }.preferredColorScheme(.dark)
+        .keyboardSheet(onDefault: { onApply(paper, color, scope); dismiss() })
     }
 
     private var footer: String {

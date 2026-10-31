@@ -35,7 +35,9 @@ public struct HelixParser: Sendable {
     public mutating func feed(_ token: String, context: HelixContext) -> HelixParseResult {
         if ["<Esc>", "^[", "^c"].contains(token), !isIdle { reset(); return .cancelled }
         if let prompt { return feedCharacter(token, prompt) }
-        if keys.isEmpty, token.count == 1, token.first?.isASCII == true, let digit = token.first?.wholeNumberValue, digit > 0 || count != nil {
+        // A digit with a meaning of its own (colour panel) counts nothing.
+        if keys.isEmpty, token.count == 1, token.first?.isASCII == true, let digit = token.first?.wholeNumberValue, digit > 0 || count != nil,
+           HelixKeymap.binding(token, in: context) == nil {
             count = min(9_999, (count ?? 0) * 10 + digit)
             return .pending(menu: nil)
         }

@@ -208,6 +208,7 @@ struct ToolbarCustomizationView: View {
             ToolbarCustomizationList(settings: settings)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
         }
+        .keyboardSheet()
     }
 }
 
@@ -223,27 +224,29 @@ struct ToolbarCustomizationList: View {
                 }
             }
             Section("Position und Eingabe") {
-                Picker("Werkzeugleiste", selection: Binding(get: { settings.preferences.effectiveDock }, set: { settings.preferences.dock = $0 })) {
+                let dock = Binding(get: { settings.preferences.effectiveDock }, set: { settings.preferences.dock = $0 })
+                Picker("Werkzeugleiste", selection: dock) {
                     Text("Oben").tag(ToolbarDock.top)
                     Text("Unten").tag(ToolbarDock.bottom)
                     Text("Links").tag(ToolbarDock.left)
                     Text("Rechts").tag(ToolbarDock.right)
                     if settings.preferences.dockOnly == false { Text("Schwebend").tag(ToolbarDock.floating) }
-                }
-                Toggle("Nur an Andockpunkten", isOn: Binding(get: { settings.preferences.dockOnly ?? true }, set: {
+                }.keyOption(.choice(dock, settings.preferences.dockOnly == false ? [.top, .bottom, .left, .right, .floating] : [.top, .bottom, .left, .right]))
+                keyToggle("Nur an Andockpunkten", isOn: Binding(get: { settings.preferences.dockOnly ?? true }, set: {
                     settings.preferences.dockOnly = $0
                     if $0 && settings.preferences.dock == .floating { settings.preferences.dock = .top }
                 }))
                 if settings.preferences.dockOnly == false {
-                    Picker("Schwebende Ausrichtung", selection: Binding(get: { settings.preferences.floatingAxis ?? .horizontal }, set: {
+                    let axis = Binding(get: { settings.preferences.floatingAxis ?? .horizontal }, set: {
                         settings.preferences.floatingAxis = $0; settings.preferences.dock = .floating
-                    })) {
+                    })
+                    Picker("Schwebende Ausrichtung", selection: axis) {
                         Text("Horizontal").tag(ToolbarAxis.horizontal)
                         Text("Vertikal").tag(ToolbarAxis.vertical)
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.choice(axis, [.horizontal, .vertical]))
                 }
                 Text("Standard: nur die vier Andockpunkte. Für freies Verschieben ausschalten; dann wechselt ein Doppeltipp auf den Griff die Ausrichtung.").font(.caption).foregroundStyle(.secondary)
-                Toggle("Auch mit dem Finger zeichnen", isOn: $settings.preferences.fingerDrawing)
+                keyToggle("Auch mit dem Finger zeichnen", isOn: $settings.preferences.fingerDrawing)
                 Text("Standard: Pencil schreibt, Finger navigiert. Bei Fingermalen mit zwei Fingern navigieren.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Werkzeuge umordnen") {

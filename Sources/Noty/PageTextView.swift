@@ -321,6 +321,7 @@ final class PageTextView: UITextView {
 
 extension PageTextView: KeyboardTextTarget {
     var keepsTextFocus: Bool { window != nil && isEditable && historyOwner != nil }
+    func keyboardColorRows() -> [KeyChoiceRow] { historyOwner?.keyboardColorRows() ?? [] }
     @discardableResult func keyboardSync() -> Bool { historyOwner?.keyboardSync(self) == true }
     func keyboardRun(_ command: TextEngine.Command, count: Int?) { historyOwner?.keyboardRun(command, count: count, editor: self) }
     func keyboardEscape() -> Bool { historyOwner?.keyboardEscape(self) ?? false }

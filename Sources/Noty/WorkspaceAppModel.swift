@@ -147,6 +147,7 @@ struct WorkspacePickerView: View {
             WorkspacePickerList(model: model, onSelect: onSelect)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
         }
+        .keyboardSheet()
         // The library's own alert cannot appear while this sheet is shown.
         .alert("Bereiche", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }
@@ -166,6 +167,7 @@ struct WorkspacePickerList: View {
         List {
             Section {
                 areaButton("Meine Bibliothek", icon: "books.vertical", current: model.areaID == nil) { onSelect?(nil) }
+                    .keyOption(.action { onSelect?(nil) })
                 Text("Test- und Restore-Bereiche haben eigene Unterlagen und Werkzeugeinstellungen. Alle liegen im App-Container; ein Backup außerhalb des iPads bleibt nötig.")
                     .font(.caption).foregroundStyle(.secondary)
                 if onSelect == nil {
@@ -188,6 +190,7 @@ struct WorkspacePickerList: View {
                         }
                     }
                     .disabled(onSelect == nil)
+                    .keyOption(.action { onSelect?(area) })
                     // Only asks; the confirmation deletes. No destructive role here,
                     // so the row is not animated away before the user confirmed.
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -204,6 +207,7 @@ struct WorkspacePickerList: View {
                 }
                 if model.areas.isEmpty { Text("Noch keine getrennten Bereiche.").foregroundStyle(.secondary) }
                 Button("Neuen Testbereich anlegen", systemImage: "plus") { Task { await model.createTest() } }
+                    .keyOption(.action { Task { await model.createTest() } })
                 if model.busy { ProgressView() }
             } header: { Text("Getrennte Bereiche") } footer: {
                 if onSelect != nil && !model.areas.isEmpty {

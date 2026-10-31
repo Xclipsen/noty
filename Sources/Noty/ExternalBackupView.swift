@@ -148,7 +148,7 @@ struct SigningRenewalSection: View {
             if let expiration = SigningReminder.expiration {
                 LabeledContent("Signatur gültig bis", value: NotyText.statusDate(expiration))
                 if expiration < Date() { Text("Abgelaufen – am PC neu signieren und als Update installieren.").foregroundStyle(.orange) }
-                Toggle("Erinnerung einen Tag vorher", isOn: Binding(get: { enabled }, set: { value in
+                keyToggle("Erinnerung einen Tag vorher", isOn: Binding(get: { enabled }, set: { value in
                     enabled = value
                     Task { reminderStatus = value ? await SigningReminder.enable() : SigningReminder.disable(); enabled = SigningReminder.enabled }
                 }))

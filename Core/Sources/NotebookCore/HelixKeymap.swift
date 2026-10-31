@@ -10,6 +10,19 @@ public enum HelixContext: String, Sendable, CaseIterable {
     case page
     /// A text in NOR or SEL; which of them only the engine has to know.
     case text
+    /// The focused page sidebar with its outline and bookmarks.
+    case sidebar
+    /// The hits of a search sheet.
+    case list
+    /// A sheet or question of the app.
+    case dialog
+    /// The law reader.
+    case law
+    /// The colour and stroke panel.
+    case color
+
+    /// Where the app stands without any panel open.
+    public static let places: [HelixContext] = [.library, .page, .text]
 }
 
 /// What a command means to the app; `text` goes to `TextEngine.perform`.
@@ -33,7 +46,26 @@ public enum HelixAction: Equatable, Sendable {
     case searchPrompt(backward: Bool)
     /// Asks for a pattern, then `TextEngine.selectMatches`.
     case selectPrompt
+    // Panels (`KeyPanel`). `sidebar` focuses the sidebar, `outline` and
+    // `bookmarks` its lists; a panel decides what these mean for it.
+    case laws, bookmarks, colors
+    case listMove(Int), listColumn(Int), listFirst, listLast, listScreen(Int)
+    case confirm, cancelPanel, toggleOption, adjustOption(Int), pickEntry(Int)
+    /// Back to the line a list filters by.
+    case typeFilter
+    case panelTab, panelFilter
+    case pageItem(HelixPageItem)
+    case lawField(HelixLawField), lawContents, lawBookmarks, lawChoose, lawView
+    /// The touch selection in the law text: mark it, or remove what it covers.
+    case lawMark(Bool)
 }
+
+/// What the sidebar does to the chosen page.
+public enum HelixPageItem: String, Sendable, CaseIterable {
+    case bookmark, copy, cut, paste, duplicate, add, trash, clear, moveUp, moveDown, margins, showTrash
+}
+
+public enum HelixLawField: String, Sendable { case query, paragraph }
 
 public enum HelixExport: String, Sendable, CaseIterable { case pdf, pagePDF, markdown, plainText, noty }
 
@@ -148,6 +180,9 @@ public enum HelixKeymap {
     public static let bindings: [HelixBinding] = {
         let all: Set<HelixContext> = [.library, .page, .text], editor: Set<HelixContext> = [.page, .text]
         let library: Set<HelixContext> = [.library], page: Set<HelixContext> = [.page], text: Set<HelixContext> = [.text]
+        // Every panel but the small colour panel has the palette, a menu and the overview.
+        let panels: Set<HelixContext> = [.sidebar, .list, .dialog, .law], lists: Set<HelixContext> = [.sidebar, .list, .dialog]
+        let sidebar: Set<HelixContext> = [.sidebar], dialog: Set<HelixContext> = [.dialog], law: Set<HelixContext> = [.law], color: Set<HelixContext> = [.color]
         func act(_ keys: String, _ action: HelixAction, _ title: String, _ group: String, _ contexts: Set<HelixContext>, repeats: Bool = false) -> HelixBinding {
             HelixBinding(keys, .action(action), title, group, contexts, repeats: repeats)
         }
@@ -162,8 +197,8 @@ public enum HelixKeymap {
         }
 
         var rows: [HelixBinding] = [
-            act(":", .palette, "Befehle", "Überall", all),
-            act("?", .help, "Tastenübersicht", "Überall", [.library, .page]),
+            act(":", .palette, "Befehle", "Überall", all.union(panels)),
+            act("?", .help, "Tastenübersicht", "Überall", [.library, .page, .sidebar, .dialog, .law]),
             act("/", .search, "Suchen", "Überall", [.library, .page]),
             act("u", .undo, "Rückgängig", "Überall", editor),
             act("U", .redo, "Wiederholen", "Überall", editor),
@@ -171,21 +206,25 @@ public enum HelixKeymap {
             act("^[", .escape, "Eine Ebene zurück (wie Esc)", "Überall", editor),
             act("^c", .escape, "Eine Ebene zurück (wie Esc)", "Überall", editor),
 
-            menu("g", "Gehe zu", all),
+            menu("g", "Gehe zu", all.union(panels)),
             menu("z", "Ansicht", editor),
             menu("m", "Auswählen und umschließen", text),
             menu("t", "Werkzeug", page),
-            menu("<Space>", "Menü", all),
+            // In a dialog the space bar switches the option instead.
+            menu("<Space>", "Menü", all.union([.sidebar, .list, .law])),
             menu("<Space> t", "Werkzeuge", editor),
             menu("<Space> e", "Export und Teilen", all),
 
-            act("<Space> s", .sidebar, "Seitenleiste", "Menü", editor),
+            act("<Space> s", .sidebar, "Seitenleiste", "Menü", editor.union(sidebar)),
             act("<Space> o", .outline, "Gliederung", "Menü", editor),
-            act("<Space> m", .bookmark, "Lesezeichen", "Menü", editor),
+            act("<Space> m", .bookmarks, "Lesezeichen", "Menü", editor),
+            act("<Space> M", .bookmark, "Lesezeichen setzen/entfernen", "Menü", editor),
+            act("<Space> l", .laws, "Gesetzessammlung", "Menü", editor.union(law)),
+            act("<Space> c", .colors, "Farbe und Strich", "Menü", editor),
             act("<Space> f", .searchAll, "Alle Hefte suchen", "Menü", all),
             act("<Space> q", .close, "Schließen", "Menü", editor),
-            act("<Space> ?", .palette, "Befehlspalette", "Menü", all),
-            act("<Space> h", .help, "Tastenübersicht", "Menü", all),
+            act("<Space> ?", .palette, "Befehlspalette", "Menü", all.union([.sidebar, .list, .law])),
+            act("<Space> h", .help, "Tastenübersicht", "Menü", all.union([.sidebar, .list, .law])),
             act("<Space> e p", .export(.pdf), "Als PDF exportieren", "Export und Teilen", all),
             act("<Space> e c", .export(.pagePDF), "Diese Seite als PDF", "Export und Teilen", editor),
             act("<Space> e m", .export(.markdown), "Als Markdown teilen", "Export und Teilen", all),
@@ -213,10 +252,10 @@ public enum HelixKeymap {
             act("m", .moveItem, "Verschieben", "Bibliothek", library),
 
             // Page
-            act("^d", .scrollScreen(0.5), "Halbe Ansicht runter", "Bewegen", page, repeats: true),
-            act("^u", .scrollScreen(-0.5), "Halbe Ansicht hoch", "Bewegen", page, repeats: true),
-            act("^f", .scrollScreen(0.9), "Ganze Ansicht runter", "Bewegen", page, repeats: true),
-            act("^b", .scrollScreen(-0.9), "Ganze Ansicht hoch", "Bewegen", page, repeats: true),
+            act("^d", .scrollScreen(0.5), "Halbe Ansicht runter", "Bewegen", page.union(law), repeats: true),
+            act("^u", .scrollScreen(-0.5), "Halbe Ansicht hoch", "Bewegen", page.union(law), repeats: true),
+            act("^f", .scrollScreen(0.9), "Ganze Ansicht runter", "Bewegen", page.union(law), repeats: true),
+            act("^b", .scrollScreen(-0.9), "Ganze Ansicht hoch", "Bewegen", page.union(law), repeats: true),
             act("g g", .firstPage, "Erste Seite", "Gehe zu", page),
             act("g e", .lastPage, "Letzte Seite", "Gehe zu", page),
             act("g n", .page(1), "Nächste Seite", "Gehe zu", page, repeats: true),
@@ -297,7 +336,73 @@ public enum HelixKeymap {
             // Text: the `m` menu
             edit("m m", .matchBracket, "Passende Klammer", "Auswählen und umschließen"),
             prompt("m i", .inside), prompt("m a", .around),
-            prompt("m s", .surroundAdd), prompt("m d", .surroundDelete), prompt("m r", .surroundReplace)
+            prompt("m s", .surroundAdd), prompt("m d", .surroundDelete), prompt("m r", .surroundReplace),
+
+            // Panels: what lists and dialogs share
+            act("^n", .listMove(1), "Nächster Eintrag", "Liste", lists, repeats: true),
+            act("^p", .listMove(-1), "Vorheriger Eintrag", "Liste", lists, repeats: true),
+            act("g g", .listFirst, "Erster Eintrag", "Liste", lists),
+            act("g e", .listLast, "Letzter Eintrag", "Liste", lists),
+            act("^d", .listScreen(1), "Einige Einträge weiter", "Liste", [.sidebar, .list], repeats: true),
+            act("^u", .listScreen(-1), "Einige Einträge zurück", "Liste", [.sidebar, .list], repeats: true),
+            act("<CR>", .confirm, "Öffnen", "Liste", [.sidebar, .list]),
+            act("<CR>", .confirm, "Bestätigen", "Dialog", dialog),
+            act("<Esc>", .cancelPanel, "Zurück", "Liste", [.sidebar, .list]),
+            act("<Esc>", .cancelPanel, "Abbrechen", "Dialog", dialog),
+
+            // Sidebar
+            act("<Tab>", .panelTab, "Seiten oder Inhalt", "Seitenleiste", sidebar),
+            act("<S-Tab>", .panelTab, "Seiten oder Inhalt", "Seitenleiste", sidebar),
+            act("f", .panelFilter, "Alle Seiten oder Lesezeichen", "Seitenleiste", sidebar),
+            act("b", .pageItem(.bookmark), "Lesezeichen setzen/entfernen", "Seitenleiste", sidebar),
+            act("y", .pageItem(.copy), "Seite kopieren", "Seitenleiste", sidebar),
+            act("x", .pageItem(.cut), "Seite ausschneiden", "Seitenleiste", sidebar),
+            act("p", .pageItem(.paste), "Seite einfügen", "Seitenleiste", sidebar),
+            act("D", .pageItem(.duplicate), "Seite duplizieren", "Seitenleiste", sidebar),
+            act("a", .pageItem(.add), "Seite hinzufügen", "Seitenleiste", sidebar),
+            act("d", .pageItem(.trash), "In den Seitenpapierkorb (mit Rückfrage)", "Seitenleiste", sidebar),
+            act("X", .pageItem(.clear), "Seite leeren (mit Rückfrage)", "Seitenleiste", sidebar),
+            act("K", .pageItem(.moveUp), "Seite nach oben", "Seitenleiste", sidebar),
+            act("J", .pageItem(.moveDown), "Seite nach unten", "Seitenleiste", sidebar),
+            act("r", .pageItem(.margins), "Seite anpassen", "Seitenleiste", sidebar),
+            act("t", .pageItem(.showTrash), "Seitenpapierkorb öffnen", "Seitenleiste", sidebar),
+
+            // Search sheet: other letters go on into the search line
+            act("/", .typeFilter, "Zurück ins Suchfeld", "Liste", [.list]),
+            act("<Tab>", .panelTab, "Alle Inhalte oder offene Aufgaben", "Liste", [.list]),
+            act("<S-Tab>", .panelTab, "Alle Inhalte oder offene Aufgaben", "Liste", [.list]),
+
+            // Dialog
+            act("<Tab>", .listMove(1), "Nächste Option", "Dialog", dialog),
+            act("<S-Tab>", .listMove(-1), "Vorherige Option", "Dialog", dialog),
+            act("<Space>", .toggleOption, "Schalten oder auslösen", "Dialog", dialog),
+
+            // Law reader
+            act("n", .page(1), "Nächste Vorschrift", "Gesetze", law, repeats: true),
+            act("N", .page(-1), "Vorherige Vorschrift", "Gesetze", law, repeats: true),
+            act("g g", .firstPage, "Anfang der Vorschrift", "Gesetze", law),
+            act("g e", .lastPage, "Ende der Vorschrift", "Gesetze", law),
+            act("G", .gotoPage, "Paragraph (144G: § 144)", "Gesetze", law),
+            act("p", .lawField(.paragraph), "Paragraph eingeben", "Gesetze", law),
+            act("/", .lawField(.query), "Schnellsuche (144 HGB oder Volltext)", "Gesetze", law),
+            act("<CR>", .confirm, "Nächstem Treffer folgen", "Gesetze", law),
+            act("<Esc>", .cancelPanel, "Schließen", "Gesetze", law),
+            act("t", .lawChoose, "Gesetz wählen", "Gesetze", law),
+            act("o", .lawContents, "Inhaltsverzeichnis", "Gesetze", law),
+            act("B", .lawBookmarks, "Lesezeichen und Markierungen", "Gesetze", law),
+            act("b", .bookmark, "Lesezeichen setzen/entfernen", "Gesetze", law),
+            act("v", .lawView, "Lesetext oder PDF", "Gesetze", law),
+            act("+", .zoom(1), "Schrift größer", "Gesetze", law, repeats: true),
+            act("=", .zoom(1), "Schrift größer", "Gesetze", law, repeats: true),
+            act("-", .zoom(-1), "Schrift kleiner", "Gesetze", law, repeats: true),
+            act("m", .lawMark(true), "Auswahl markieren", "Gesetze", law),
+            act("M", .lawMark(false), "Markierung in der Auswahl entfernen", "Gesetze", law),
+
+            // Colour panel
+            act("<CR>", .confirm, "Wählen", "Farbe", color),
+            act("<Esc>", .cancelPanel, "Abbrechen", "Farbe", color),
+            act("<Tab>", .focusItem(dx: 0, dy: 1), "Nächste Reihe", "Farbe", color),
+            act("<S-Tab>", .focusItem(dx: 0, dy: -1), "Vorherige Reihe", "Farbe", color)
         ]
 
         // `hjkl` and the arrows in every context.
@@ -307,8 +412,15 @@ public enum HelixKeymap {
         for (letter, arrow, direction, x, y, name) in directions {
             for key in [letter, arrow] {
                 rows.append(act(key, .focusItem(dx: x, dy: y), "Nach \(name)", "Bibliothek", library, repeats: true))
-                rows.append(act(key, .scroll(x: x, y: y), "Nach \(name)", "Bewegen", page, repeats: true))
+                rows.append(act(key, .scroll(x: x, y: y), "Nach \(name)", "Bewegen", page.union(law), repeats: true))
                 rows.append(edit(key, .move(direction), "Nach \(name)", "Bewegen", repeats: true))
+                rows.append(act(key, .focusItem(dx: x, dy: y), "Nach \(name)", "Farbe", color, repeats: true))
+                if x == 0 {
+                    rows.append(act(key, .listMove(y), y > 0 ? "Nächster Eintrag" : "Vorheriger Eintrag", "Liste", lists, repeats: true))
+                } else {
+                    rows.append(act(key, .listColumn(x), "Nach \(name)", "Seitenleiste", sidebar, repeats: true))
+                    rows.append(act(key, .adjustOption(x), x > 0 ? "Wert weiter" : "Wert zurück", "Dialog", dialog, repeats: true))
+                }
             }
         }
         // The same tools under `t` (page only: in a text `t` is a motion) and `Space t`.
@@ -320,6 +432,8 @@ public enum HelixKeymap {
             rows.append(act("t \(key)", .tool(tool), title, "Werkzeuge", page))
             rows.append(act("<Space> t \(key)", .tool(tool), title, "Werkzeuge", editor))
         }
+        // One line in the overview: the digits choose, they count nothing here.
+        for number in 1...9 { rows.append(act("\(number)", .pickEntry(number), "Eintrag 1–9 der Reihe wählen", "Farbe", color)) }
         return rows
     }()
 
@@ -350,7 +464,7 @@ public enum HelixKeymap {
     public static func commands(in context: HelixContext) -> [HelixBinding] {
         var seen = Set<String>()
         return rows(in: context).filter { row in
-            guard let action = row.action, action != .palette, action != .escape else { return false }
+            guard let action = row.action, action != .palette, action != .escape, action != .cancelPanel else { return false }
             return seen.insert(row.title).inserted
         }
     }

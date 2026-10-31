@@ -6,6 +6,8 @@ import NotebookCore
 /// library, so each has its own.
 struct KeyboardOverlay: View {
     let scope: KeyboardRouter.Scope
+    /// In a sheet: the sheet's panel. The overlays below it would stay hidden.
+    var panel: KeyPanel.ID? = nil
     @ObservedObject private var router = KeyboardRouter.shared
     @AppStorage(AppSettingsKey.keyboardMode) private var enabled = true
 
@@ -14,12 +16,13 @@ struct KeyboardOverlay: View {
     /// format bar can reach, whatever height the system reports for them.
     /// The format bar lives in the keyboard's own window: only the place
     /// keeps popup and input line clear of it.
-    private var inEditor: Bool { scope == .editor }
+    private var inEditor: Bool { scope == .editor && panel == nil }
+    private var isCurrent: Bool { panel.map { $0 == router.sheetPanel?.id } ?? (router.scope == scope && router.sheetPanel == nil) }
 
     var body: some View {
         ZStack(alignment: inEditor ? .topLeading : .bottomLeading) {
             Color.clear.allowsHitTesting(false)
-            if router.scope == scope {
+            if isCurrent {
                 if enabled {
                     VStack(alignment: .leading, spacing: 6) {
                         if !inEditor { panels }
@@ -33,6 +36,7 @@ struct KeyboardOverlay: View {
                 // ⌘/ and ⇧⌘P work without the keyboard mode, too.
                 if router.helpVisible { KeyboardHelpView(context: router.shownContext, onClose: { router.helpVisible = false }) }
                 if router.paletteVisible { KeyboardPaletteView(commands: router.paletteCommands()) { router.paletteVisible = false } }
+                if let question = router.question { KeyboardQuestionView(question: question) }
             }
         }
     }
@@ -49,24 +53,101 @@ struct KeyboardOverlay: View {
         .background(.ultraThinMaterial, in: Capsule())
     }
     @ViewBuilder private var panels: some View {
-        if let prompt = router.textPrompt { KeyboardPromptView(prompt: prompt) }
+        if let prompt = router.textPrompt { KeyboardPromptView(symbol: prompt.symbol, query: prompt.query, noMatch: prompt.noMatch) }
+        if let line = router.activePanel, line.typing, let symbol = line.inputSymbol {
+            KeyboardPromptView(symbol: symbol, query: line.input?.wrappedValue ?? "", noMatch: false)
+        }
+        if let choices = router.choices { KeyboardChoicesView(choices: choices) }
         if let menu = router.menu { KeyboardMenuView(menu: menu) }
     }
 }
 
 /// The input line: shows what the router collects, it never takes the focus.
 private struct KeyboardPromptView: View {
-    let prompt: TextPrompt
+    let symbol: String
+    let query: String
+    let noMatch: Bool
     var body: some View {
         HStack(spacing: 6) {
-            Text(prompt.symbol).font(.callout.weight(.bold).monospaced()).foregroundStyle(.secondary)
-            Text(prompt.query + "▏").font(.callout.monospaced()).lineLimit(1).truncationMode(.head)
+            Text(symbol).font(.callout.weight(.bold).monospaced()).foregroundStyle(.secondary)
+            Text(query + "▏").font(.callout.monospaced()).lineLimit(1).truncationMode(.head)
             Spacer(minLength: 12)
-            if prompt.noMatch { Text("Kein Treffer").font(.caption).foregroundStyle(.secondary) }
+            if noMatch { Text("Kein Treffer").font(.caption).foregroundStyle(.secondary) }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(width: 320, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// Colours and strokes of `Space c`: never takes the focus or a touch.
+private struct KeyboardChoicesView: View {
+    let choices: KeyChoices
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(choices.title).font(.caption.weight(.semibold))
+            ForEach(Array(choices.rows.enumerated()), id: \.element.id) { row, line in
+                VStack(alignment: .leading, spacing: 3) {
+                    if !line.title.isEmpty { Text(line.title).font(.caption).foregroundStyle(.secondary) }
+                    HStack(spacing: 6) {
+                        ForEach(Array(line.items.enumerated()), id: \.element.id) { column, item in
+                            cell(item, number: column + 1, chosen: choices.cursor.row == row && choices.cursor.column == column)
+                        }
+                    }
+                }
+            }
+            if let line = choices.rows[safe: choices.cursor.row], let item = line.items[safe: choices.cursor.column] {
+                Text(item.title).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+    }
+    @ViewBuilder private func cell(_ item: KeyChoiceItem, number: Int, chosen: Bool) -> some View {
+        Group {
+            if let color = item.color {
+                Circle().fill(color).frame(width: 24, height: 24).overlay(Circle().strokeBorder(.white.opacity(0.3), lineWidth: 1))
+            } else {
+                Text(item.title).font(.caption).lineLimit(1).frame(minHeight: 24)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if number < 10, item.color != nil { Text("\(number)").font(.system(size: 9, weight: .bold).monospaced()).foregroundStyle(.secondary).offset(x: 3, y: 3) }
+        }
+        .padding(4)
+        .background(RoundedRectangle(cornerRadius: 7).strokeBorder(chosen ? Color.accentColor : .clear, lineWidth: 2))
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
+/// A question raised by a key. The system dialog stays for touch.
+private struct KeyboardQuestionView: View {
+    let question: KeyQuestion
+    private func close() { KeyboardRouter.shared.handleQuestionTap(nil) }
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.35).ignoresSafeArea().onTapGesture(perform: close)
+            VStack(alignment: .leading, spacing: 12) {
+                Text(question.title).font(.headline)
+                if !question.message.isEmpty { Text(question.message).font(.callout).foregroundStyle(.secondary) }
+                VStack(spacing: 6) {
+                    ForEach(question.options) { option in
+                        Button { KeyboardRouter.shared.handleQuestionTap(option.id) } label: {
+                            Text(option.title).frame(maxWidth: .infinity, minHeight: 34)
+                                .foregroundStyle(option.destructive ? Color.red : .primary)
+                                .background(option.id == question.chosen ? Color.accentColor.opacity(0.28) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                                .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(18).frame(maxWidth: 380)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .padding(24)
+        }
     }
 }
 
@@ -96,6 +177,11 @@ private struct KeyboardHelpView: View {
         case .library: "Bibliothek"
         case .page: "Seite"
         case .text: "Text"
+        case .sidebar: "Seitenleiste"
+        case .list: "Trefferliste"
+        case .dialog: "Dialog"
+        case .law: "Gesetze"
+        case .color: "Farbe und Strich"
         }
     }
     /// The current context first.

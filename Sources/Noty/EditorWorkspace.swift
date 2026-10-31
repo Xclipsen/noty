@@ -239,7 +239,7 @@ struct EditorWorkspaceView: View {
             }
         }
         .alert("Ansichten", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
-            Button("OK") { workspace.error = nil }
+            Button("OK") { workspace.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspace.error ?? "") }
         .onAppear { library.editorCommit = { await workspace.commitForBackup(toolbox: toolbox) } }
         .onDisappear { library.editorCommit = nil }
@@ -261,6 +261,9 @@ struct EditorWorkspaceView: View {
                 // Shows the window; a visible one goes to its edge tab like its ✕.
                 if !laws.panelOpen { laws.panelOpen = true; laws.stashed = false }
                 else { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed.toggle() } }
+            } : nil, onLawKeys: lawsEnabled ? {
+                withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelOpen = true; laws.stashed = false }
+                laws.keyFocus += 1
             } : nil, onToolChange: { tool in
                 // Picking the highlighter or an eraser in the active notebook
                 // switches the law reader along; other tools leave its choice.
@@ -735,11 +738,11 @@ private struct SecondViewPicker: View {
                     Picker("Anordnung", selection: $vertical) {
                         Label("Nebeneinander", systemImage: "rectangle.split.2x1").tag(false)
                         Label("Untereinander", systemImage: "rectangle.split.1x2").tag(true)
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.toggle($vertical))
                     Picker("Position", selection: $slot) {
                         Text(vertical ? "Oben" : "Links").tag(SplitSlot.first)
                         Text(vertical ? "Unten" : "Rechts").tag(SplitSlot.second)
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.choice($slot, SplitSlot.allCases))
                 } header: { Text("Zweite Ansicht") }
                 if let documents {
                     let recent = recentDocuments(documents)
@@ -761,6 +764,7 @@ private struct SecondViewPicker: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
             .task { if documents == nil { documents = await library.editorChoices() } }
         }
+        .keyboardSheet()
     }
 
     private func recentDocuments(_ documents: [OpenNotebook]) -> [OpenNotebook] {
@@ -782,5 +786,6 @@ private struct SecondViewPicker: View {
             }
         }
         .accessibilityValue(document.id == primaryID ? "gleiches Heft" : "")
+        .keyOption(.action { onPick(document, slot, vertical) })
     }
 }

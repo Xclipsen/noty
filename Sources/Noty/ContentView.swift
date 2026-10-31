@@ -15,6 +15,8 @@ struct ContentView: View {
     var onCloseWorkspace: (() -> Void)?
     var onSecondView: (() -> Void)?
     var onLaws: (() -> Void)?
+    /// `Space l`: shows the law window and hands it the keys.
+    var onLawKeys: (() -> Void)?
     /// Reports the selected tool, e.g. so Pencil highlights in the law reader.
     var onToolChange: ((EditorTool) -> Void)?
     @State private var selectedPageID: UUID?
@@ -48,7 +50,7 @@ struct ContentView: View {
     @State private var textFocus: TextFlowFocus?
     @State private var writingDraft = Page()
     @State private var fitRequest = 0
-    @State private var outlineRequest = 0
+    @State private var sidebarKeys: SidebarKeyRequest?
     @State private var paneID = UUID()
     @State private var showingHistory = false
     @State private var selectedLocalRevision: UUID?
@@ -221,7 +223,7 @@ struct ContentView: View {
                 if model.saveFailed && model.writable {
                     Button("Erneut speichern") { model.save() }
                 }
-                Button("OK") { model.error = nil }
+                Button("OK") { model.error = nil }.keyboardShortcut(.defaultAction)
             } message: { Text(model.error ?? "") }
             .onChange(of: scenePhase) { _, phase in
                 if phase != .active { model.save(); toolbox.save() }
@@ -299,8 +301,12 @@ struct ContentView: View {
         case .lastPage: go(to: count ?? pages.count)
         case .gotoPage: if let count { go(to: count) } else { openPageEntry() }
         case .fit: fitRequest += 1
-        case .sidebar: showingPages.toggle()
-        case .outline: showingPages = true; outlineRequest += 1
+        case .sidebar: showingPages = true; sidebarKeys = SidebarKeyRequest(target: .pages)
+        case .outline: showingPages = true; sidebarKeys = SidebarKeyRequest(target: .outline)
+        case .bookmarks: showingPages = true; sidebarKeys = SidebarKeyRequest(target: .bookmarks)
+        case .laws:
+            if let onLawKeys { onLawKeys() } else { KeyboardRouter.shared.show(note: "Gesetzessammlung ist ausgeschaltet") }
+        case .colors: openKeyColors()
         case .close: closeEditor()
         case .bookmark: if pages.contains(where: { $0.id == currentPage.id }) { model.toggleBookmark(currentPage.id) }
         case .search: contentSearch = true
@@ -316,6 +322,39 @@ struct ContentView: View {
         case .redo: performUndo(redo: true)
         default: break
         }
+    }
+    /// `Space c`: in a text its colours and marker, otherwise what the tool has.
+    private func openKeyColors() {
+        let router = KeyboardRouter.shared
+        if router.editing {
+            let rows = (UIResponder.currentFirstResponder as? any KeyboardTextTarget)?.keyboardColorRows() ?? []
+            if rows.isEmpty { router.show(note: "Hier gibt es keine Textfarben") } else { router.openChoices("Text", rows: rows) }
+            return
+        }
+        let current = tool
+        var rows: [KeyChoiceRow] = []
+        if [.pen, .pencil, .marker, .shape].contains(current) {
+            let inks = ShapeFillStyleSection.palette.map { ink, name in
+                KeyChoiceItem(title: name, color: ink.color) { toolbox.preferences.setInkColor(ink, for: current) }
+            }
+            rows += KeyChoiceRow.rows("Farbe", inks, width: 6)
+        }
+        if current == .laser {
+            let colors = LaserPointerView.colors.map { item in KeyChoiceItem(title: item.name, color: item.color.color) { toolbox.preferences.laserColor = item.color } }
+            rows.append(KeyChoiceRow(title: "Farbe", items: colors))
+        }
+        if let range = ToolbarPreferences.widthRange(for: current) {
+            let stops = KeyChoice.widths(in: range).map { width in KeyChoiceItem(title: width.formatted()) { toolbox.preferences.setInkWidth(width, for: current) } }
+            rows.append(KeyChoiceRow(title: "Strichstärke", items: stops))
+        } else if current == .precisionEraser {
+            let stops = KeyChoice.widths(in: 4...60).map { width in KeyChoiceItem(title: width.formatted()) { toolbox.preferences.eraserWidth = width } }
+            rows.append(KeyChoiceRow(title: "Radiererbreite", items: stops))
+        }
+        if current == .shape {
+            let patterns = StrokePattern.allCases.map { pattern in KeyChoiceItem(title: pattern.title) { shapeOptions.pattern = pattern } }
+            rows.append(KeyChoiceRow(title: "Linienart", items: patterns))
+        }
+        if rows.isEmpty { router.show(note: "Dieses Werkzeug hat keine Farbe") } else { router.openChoices(current.title, rows: rows) }
     }
     private func runDirect(_ command: KeyPalette.Direct) {
         switch command {
@@ -442,7 +481,7 @@ struct ContentView: View {
                             PageSidebarView(model: model, selectedPageID: $selectedPageID, onBack: closeEditor, onCollapse: { showingPages = false },
                                 onSelect: { if compact { showingPages = false } },
                                 onMargins: { id in marginsPage = MarginPage(id: id) },
-                                onOutline: { jumpToOutline($0) }, outlineRequest: outlineRequest)
+                                onOutline: { jumpToOutline($0) }, keyRequest: $sidebarKeys)
                         } else {
                             // Same width and tone while loading: no placeholder thumbnail, no layout jump.
                             Color(white: 0.065).ignoresSafeArea().accessibilityHidden(true)
@@ -942,6 +981,7 @@ struct ContentView: View {
             onPencilSqueeze: { handlePencilSqueeze($0) },
             onInteraction: { id, active in
                 model.setInteraction(id, active: active)
+                if active { KeyboardRouter.shared.pageTouched() }
             },
             onUndo: { redo in performUndo(redo: redo) },
             undoState: UndoAvailability(undo: model.canUndo, redo: model.canRedo),

@@ -191,6 +191,7 @@ struct LibraryView: View {
             TextField("Name", text: $name)
             Button("Abbrechen", role: .cancel) { }
             Button("Speichern") { submitName() }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.defaultAction)
         }
         .confirmationDialog("In den Papierkorb verschieben?", isPresented: Binding(
             get: { trashing != nil }, set: { if !$0 { trashing = nil } }), titleVisibility: .visible) {
@@ -200,7 +201,7 @@ struct LibraryView: View {
                     trashing = nil
                 }
             }
-        } message: { Text("Wiederherstellen ist unter Einstellungen › Papierkorb möglich. Enthaltene Unterlagen eines Ordners werden ebenfalls ausgeblendet.") }
+        } message: { Text(Self.trashNote) }
         .sheet(isPresented: $importingPDF) {
             PDFImportSheet(defaults: toolbox.preferences.defaultAppearance, onImport: { url, margins in
                 let access = url.startAccessingSecurityScopedResource()
@@ -219,11 +220,11 @@ struct LibraryView: View {
         }
         // The creation sheets show errors over themselves, this one would wait behind them.
         .alert("Bibliothek", isPresented: Binding(get: { model.error != nil && settingsRequest == nil && !creatingNotebook && !creatingTextDocument }, set: { if !$0 { model.error = nil } })) {
-            Button("OK") { model.error = nil }
+            Button("OK") { model.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(model.error ?? "") }
         // Settings and the area sheet show these errors themselves.
         .alert("Bereiche", isPresented: Binding(get: { workspaces.error != nil && settingsRequest == nil && !showingAreas }, set: { if !$0 { workspaces.error = nil } })) {
-            Button("OK") { workspaces.error = nil }
+            Button("OK") { workspaces.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspaces.error ?? "") }
         .onChange(of: location) { _, value in
             search = ""; libraryEditMode = .inactive
@@ -232,6 +233,8 @@ struct LibraryView: View {
         // Search or another sort removes the „Fertig“ button with `canReorder`:
         // editing must not stay on without a way out.
         .onChange(of: canReorder) { _, reorder in if !reorder { libraryEditMode = .inactive } }
+        // No sheet changes with these alerts: the keys have to come back by themselves.
+        .onChange(of: model.error == nil && workspaces.error == nil) { _, _ in KeyboardRouter.shared.reclaim() }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
         .focusedSceneValue(\.libraryCommands, model.opened == nil && !presenting ? LibraryCommandActions(
             newNotebook: editable ? { creatingNotebook = true } : nil,
@@ -258,14 +261,17 @@ struct LibraryView: View {
         case .search, .searchAll: searchAllNotebooks()
         case .newNotebook: creatingNotebook = true
         case .newTextDocument: creatingTextDocument = true
-        case .newFolder: prompt(.folder)
+        case .newFolder: askName(.folder, title: "Neuer Ordner")
         default: break
         }
         guard editable, let item else { return }
         switch action {
         case .openItem: activate(item)
-        case .renameItem: prompt(.rename(item.id), value: item.title)
-        case .trashItem: trashing = item
+        case .renameItem: askName(.rename(item.id), title: "Umbenennen", value: item.title)
+        case .trashItem:
+            KeyboardRouter.shared.ask("„\(item.title)“ in den Papierkorb?", message: Self.trashNote, confirm: "In den Papierkorb") {
+                Task { await model.trash(item.id) }
+            }
         case .pinItem: Task { await model.favorite(item) }
         case .moveItem: moving = item
         case .duplicateItem: if !item.isFolder { Task { await model.duplicate(item) } }
@@ -274,6 +280,14 @@ struct LibraryView: View {
         case .export(.plainText): if !item.isFolder { shareText(item, as: .plainText) }
         case .export(.noty): if !item.isFolder { shareNoty(item) }
         default: break
+        }
+    }
+    private static let trashNote = "Wiederherstellen ist unter Einstellungen › Papierkorb möglich. Enthaltene Unterlagen eines Ordners werden ebenfalls ausgeblendet."
+    /// The name by key: the input line, the responder stays (the alert is for touch).
+    private func askName(_ action: NameAction, title: String, value: String = "") {
+        KeyboardRouter.shared.askText(title, value: value) { text in
+            nameAction = action; name = text
+            submitName()
         }
     }
     /// What only the menus offer; the palette adds every key binding by name.
@@ -1155,19 +1169,20 @@ private struct MoveDestinationView: View {
     var body: some View {
         NavigationStack {
             List {
-                Button("Alle Unterlagen") { onSelect(nil) }.disabled(item.parentID == nil)
+                Button("Alle Unterlagen") { onSelect(nil) }.disabled(item.parentID == nil).keyOption(.action { onSelect(nil) })
                 ForEach(folders) { folder in
                     Button { onSelect(folder.id) } label: {
                         VStack(alignment: .leading) {
                             Label(folder.title, systemImage: "folder")
                             Text(libraryPath(folder, in: snapshot)).font(.caption).foregroundStyle(.secondary)
                         }
-                    }.disabled(folder.id == item.parentID)
+                    }.disabled(folder.id == item.parentID).keyOption(.action { onSelect(folder.id) })
                 }
             }
             .navigationTitle("\(item.title) verschieben")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
         }
+        .keyboardSheet()
     }
 }
 

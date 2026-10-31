@@ -63,9 +63,9 @@ public enum KeyPalette {
         }
     }
     /// Only an open document can be saved, closed or paged: in the library
-    /// `w` or `12` are search words.
+    /// and in a dialog `w` or `12` are search words.
     public static func direct(_ query: String, in context: HelixContext) -> Direct? {
-        context == .library ? nil : direct(query)
+        [.page, .text, .sidebar, .law].contains(context) ? direct(query) : nil
     }
     /// Fuzzy match of `query` in `title`: nil if its letters are not in that
     /// order; a smaller value is better (word starts and neighbours win).

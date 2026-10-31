@@ -45,7 +45,27 @@ final class LawTextSelection: ObservableObject {
     @Published var marks: [String] = []
     var text = ""
     weak var view: UITextView?
+    weak var pdf: PDFView?
     var active: Bool { range.length > 0 || !marks.isEmpty }
+    /// Whatever shows the section now; PDFKit keeps its scroll view inside.
+    private var scroller: UIScrollView? {
+        if let view, view.window != nil { return view }
+        func find(_ root: UIView) -> UIScrollView? {
+            for sub in root.subviews { if let found = sub as? UIScrollView ?? find(sub) { return found } }
+            return nil
+        }
+        return pdf.flatMap(find)
+    }
+    func scroll(lines: Int) { scroll(by: CGFloat(lines) * 44) }
+    func scroll(screens: Double) { scroll(by: CGFloat(screens) * (scroller?.bounds.height ?? 0)) }
+    /// To the start, or past everything to the end.
+    func scrollToEdge(end: Bool) { scroll(by: end ? .greatestFiniteMagnitude / 2 : -.greatestFiniteMagnitude / 2) }
+    private func scroll(by distance: CGFloat) {
+        guard let scroller else { return }
+        let inset = scroller.adjustedContentInset
+        let limit = max(-inset.top, scroller.contentSize.height - scroller.bounds.height + inset.bottom)
+        scroller.setContentOffset(CGPoint(x: scroller.contentOffset.x, y: min(limit, max(-inset.top, scroller.contentOffset.y + distance))), animated: false)
+    }
     func clear() {
         view?.selectedTextRange = nil
         if range.length > 0 { range = NSRange(location: 0, length: 0) }
@@ -76,6 +96,7 @@ private enum LawLookupField { case query, number }
 
 struct LawReaderView: View {
     @EnvironmentObject private var laws: LawLibraryModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Shown in the notebook's law window, which can be closed or stashed.
     var inPanel = false
     var pen = LawPenMode()
@@ -97,6 +118,11 @@ struct LawReaderView: View {
     @State private var loading = false
     @State private var showContents = false
     @State private var showBookmarks = false
+    /// `t`: the law list, otherwise the bar's menu.
+    @State private var showLaws = false
+    /// Keyboard mode: set while the reader has the keys.
+    @State private var keyPanel: KeyPanel?
+    @State private var inputField = HelixLawField.query
     /// Reading size of the law text, kept across sections, notebooks and launches.
     @AppStorage("noty.laws.fontSize") private var fontSize = 18.0
     @State private var jumpParagraph: String?
@@ -156,7 +182,7 @@ struct LawReaderView: View {
                         .accessibilityLabel(bookmarkItem == nil ? "Fundstelle als Lesezeichen speichern" : "Lesezeichen entfernen")
                 }.padding(.leading, 12).padding(.trailing, 4).padding(.vertical, 2)
                 if viewPDF, let pdfURL {
-                    NativeLawPDF(url: pdfURL, page: pdfTarget ?? section.pdf?.page ?? 1, top: pdfTarget == nil ? (section.pdf?.top ?? 0) : 0, onPage: { pdfPage = $0 },
+                    NativeLawPDF(url: pdfURL, page: pdfTarget ?? section.pdf?.page ?? 1, top: pdfTarget == nil ? (section.pdf?.top ?? 0) : 0, selection: textSelection, onPage: { pdfPage = $0 },
                         items: marks.filter { $0.kind == "annotation" }, pen: pen,
                         onMark: { payload in
                             var payload = payload.merging(basePayload(doc)) { _, new in new }
@@ -198,13 +224,107 @@ struct LawReaderView: View {
             await search(number, from: .number)
         }
         .onChange(of: hidden) { _, hidden in
-            if hidden { queryFocused = false; textSelection.clear() }
+            if hidden { queryFocused = false; textSelection.clear(); leaveKeys() }
             showErrors(!hidden)
         }
+        .onChange(of: laws.keyFocus) { _, _ in if inPanel { startKeys() } }
         .onAppear { showErrors(!hidden) }
-        .onDisappear { showErrors(false) }
-        .sheet(isPresented: $showContents) { contents }
-        .sheet(isPresented: $showBookmarks) { bookmarks }
+        .onDisappear { showErrors(false); leaveKeys() }
+        .sheet(isPresented: $showContents) { contents.keyboardSheet() }
+        .sheet(isPresented: $showBookmarks) { bookmarks.keyboardSheet() }
+        .sheet(isPresented: $showLaws) { lawList.keyboardSheet() }
+    }
+
+    // MARK: Keyboard mode (docs/KEYBOARD.md)
+
+    private func startKeys() {
+        let router = KeyboardRouter.shared
+        if let keyPanel { router.setTyping(keyPanel, false); return }
+        let panel = KeyPanel(context: .law, label: "GESETZE")
+        panel.leavesOnPageTouch = true
+        panel.run = { runKey($0, count: $1) }
+        panel.onLeave = { keyPanel = nil }
+        keyPanel = panel
+        router.enter(panel)
+    }
+    private func leaveKeys() { if let keyPanel { KeyboardRouter.shared.leave(keyPanel) } }
+    private func close() {
+        leaveKeys()
+        withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = true }
+    }
+    /// Quick search and paragraph are typed through the router into the
+    /// reader's own fields, whose live lookup then does the rest.
+    private func startInput(_ field: HelixLawField) {
+        guard let keyPanel else { return }
+        keyPanel.input = field == .query ? $query : $number
+        keyPanel.inputSymbol = field == .query ? "/" : "§"
+        if field == .paragraph { number = "" }
+        inputField = field
+        KeyboardRouter.shared.setTyping(keyPanel, true)
+    }
+    private func runKey(_ action: HelixAction, count: Int?) {
+        let times = count ?? 1
+        if let keyPanel, keyPanel.typing {
+            switch action {
+            case .confirm:
+                KeyboardRouter.shared.setTyping(keyPanel, false)
+                let field: LawLookupField = inputField == .query ? .query : .number
+                let value = inputField == .query ? query : number
+                Task { await search(value, allowFullText: true, from: field) }
+            case .cancelPanel:
+                KeyboardRouter.shared.setTyping(keyPanel, false)
+                // The field follows the reader again, as after any lookup.
+                if inputField == .paragraph { number = section?.keys.first ?? "" }
+            default: break
+            }
+            return
+        }
+        switch action {
+        case .scroll(_, let y): textSelection.scroll(lines: y * times)
+        case .scrollScreen(let fraction): textSelection.scroll(screens: fraction * Double(times))
+        case .firstPage: textSelection.scrollToEdge(end: false)
+        case .lastPage: textSelection.scrollToEdge(end: true)
+        case .page(let delta): for _ in 0..<times { move(delta) }
+        case .gotoPage:
+            if let count { Task { await search(String(count), from: .number) } } else { startInput(.paragraph) }
+        case .lawField(let field): startInput(field)
+        case .confirm: followNextHit()
+        case .cancelPanel, .laws: close()
+        case .lawChoose: showLaws = true
+        case .lawContents: showContents = true
+        case .lawBookmarks: showBookmarks = true
+        case .bookmark: toggleBookmark()
+        case .lawView: Task { await togglePDF() }
+        case .zoom(let step): if !viewPDF { fontSize = min(32, max(12, fontSize + Double(step * 2))) }
+        case .lawMark(let on):
+            if on, textSelection.range.length > 0 { mark(textSelection.range) }
+            else if !on, !textSelection.marks.isEmpty { unmark(textSelection.marks) }
+        default: break
+        }
+    }
+    /// Enter in the reader: the next section with the searched words.
+    private func followNextHit() {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !term.isEmpty, let sections = document?.sections, let index = sections.firstIndex(where: { $0.id == sectionID }) else { return }
+        let order = sections[(index + 1)...] + sections[...index]
+        guard let found = order.first(where: { "\($0.label) \($0.title) \($0.text) \($0.notes)".lowercased().contains(term) }) else {
+            KeyboardRouter.shared.show(note: "Kein Treffer"); return
+        }
+        textSelection.clear()
+        pdfTarget = nil; sectionID = found.id; jumpParagraph = nil; loadError = ""
+        if found.id == sections[index].id { KeyboardRouter.shared.show(note: "Suche von vorn") }
+    }
+    private var lawList: some View {
+        NavigationStack {
+            List(laws.entries) { entry in
+                Button("\(entry.abbr) · \(entry.name)") { pick(entry) }.keyOption(.action { pick(entry) })
+            }.navigationTitle("Gesetz wählen")
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { showLaws = false } } }
+        }
+    }
+    private func pick(_ entry: LawEntry) {
+        showLaws = false
+        Task { await choose(entry) }
     }
     private var controls: some View {
         VStack(spacing: 8) {
@@ -444,9 +564,10 @@ struct LawReaderView: View {
     private var contents: some View {
         NavigationStack {
             List(document?.sections ?? []) { s in
-                Button { textSelection.clear(); pdfTarget = nil; sectionID = s.id; jumpParagraph = nil; follow(s); showContents = false } label: {
+                let open = { textSelection.clear(); pdfTarget = nil; sectionID = s.id; jumpParagraph = nil; follow(s); showContents = false }
+                Button(action: open) {
                     VStack(alignment: .leading) { Text(s.label).font(.headline); Text(s.title).font(.caption) }
-                }
+                }.keyOption(.action(open))
             }.navigationTitle("Inhaltsverzeichnis")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { showContents = false } } }
         }
@@ -455,7 +576,7 @@ struct LawReaderView: View {
         NavigationStack {
             List(laws.items.filter { !$0.deleted }) { item in
                 HStack {
-                    Button {
+                    let go = {
                         guard let id = item.payload["lawId"]?.string, let entry = laws.entries.first(where: { $0.id == id }) else { return }
                         var target = item.payload["sectionId"]?.string
                         if case let .object(a) = item.payload["anchor"] { target = a["sectionId"]?.string }
@@ -469,13 +590,14 @@ struct LawReaderView: View {
                                 catch { loadError = error.localizedDescription }
                             }
                         }
-                    } label: {
+                    }
+                    Button(action: go) {
                         VStack(alignment: .leading) {
                             Text(item.payload["label"]?.string ?? "Markierung · \(item.payload["lawId"]?.string?.uppercased() ?? "")")
                             if case let .object(a) = item.payload["anchor"], let quote = a["quote"]?.string { Text(quote).font(.caption).lineLimit(2).foregroundStyle(.secondary) }
                             if item.dirty { Text("Lokal gespeichert").font(.caption2).foregroundStyle(.secondary) }
                         }
-                    }
+                    }.keyOption(.action(go))
                     Spacer()
                     Button(role: .destructive) { Task { await laws.remove(item) } } label: { Image(systemName: "trash") }.accessibilityLabel("Eintrag löschen")
                 }
@@ -781,6 +903,7 @@ private struct NativeLawPDF: UIViewRepresentable {
     let url: URL
     let page: Int
     let top: Double
+    var selection: LawTextSelection
     var onPage: (Int) -> Void
     var items: [LawPersonalItem]
     var pen: LawPenMode
@@ -816,6 +939,7 @@ private struct NativeLawPDF: UIViewRepresentable {
     func updateUIView(_ v: PDFView, context: Context) {
         let c = context.coordinator
         c.parent = self
+        selection.pdf = v
         c.stroke?.isEnabled = pen.kind != .none
         // PDFKit builds its scroll view lazily; route Pencil on every update.
         c.routePencil(in: v)

@@ -36,7 +36,7 @@ struct LocalHistoryView: View {
                                 Text("\(NotyText.count(revision.pageCount, "Seite", "Seiten")) · als Kopie öffnen")
                                     .font(.caption).foregroundStyle(.secondary)
                             }.padding(.vertical, 4)
-                        }.disabled(loading)
+                        }.disabled(loading).keyOption(.action { selectedID = revision.id })
                     }
                 } footer: {
                     Text("Aufbewahrt werden die drei jüngsten Stände und bis zu fünf ältere Zwischenstände im Abstand von mindestens 10 Minuten (zusammen höchstens 300 MB). Ein älterer Stand enthält spätere Änderungen noch nicht. Er öffnet sich als neue Kopie; das hier genannte Heft bleibt erhalten. Lokale Wiederherstellungspunkte ersetzen kein externes Backup.")
@@ -66,6 +66,7 @@ struct LocalHistoryView: View {
             }
             .task { await load() }
         }
+        .keyboardSheet(onDefault: { if let id = selectedID, !loading { onSelect(id) } })
     }
 
     private func load() async {
