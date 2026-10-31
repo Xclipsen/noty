@@ -1,6 +1,6 @@
 # Tastatur: Kürzel und Tastaturmodus
 
-Stand: Build 68 auf `phase1/fixes` (Review-Befunde zu Build 67). **Implementiert, erfolgreich gebaut, Core-Tests bestanden, installiert, am iPad ungeprüft.** Linux hat keinen iOS-Simulator: Engine, Tastentabelle, Parser, Bereichsbearbeitung und die Tastensperre sind getestet (`HelixEngineTests`, `HelixKeymapTests`, `HelixParserTests`, `KeyboardCommandsTests`, `TextFlowRangeTests`), Tastenzustellung, Fokus, Anzeige und TextKit-Messung **nicht**. Der Zustellweg (`KeyPressGate`, `KeyDeliveryLatch`, Rückholen des Fokus) ist selbst noch ungeprüft.
+Stand: Build 68 auf `phase1/fixes` (Review-Befunde zu Build 67). **Implementiert, erfolgreich gebaut, Core-Tests bestanden, installiert, am iPad ungeprüft.** Darauf aufbauend Branch `extras/tastatur-ui` (Seitenleiste, Suchsheet, Gesetze, Dialoge, Farbe): **implementiert, erfolgreich gebaut, Core-Tests bestanden, nicht installiert, am iPad ungeprüft.** Linux hat keinen iOS-Simulator: Engine, Tastentabelle, Parser, Bereichsbearbeitung und die Tastensperre sind getestet (`HelixEngineTests`, `HelixKeymapTests`, `HelixParserTests`, `KeyboardCommandsTests`, `TextFlowRangeTests`), Tastenzustellung, Fokus, Anzeige und TextKit-Messung **nicht**. Der Zustellweg (`KeyPressGate`, `KeyDeliveryLatch`, Rückholen des Fokus) ist selbst noch ungeprüft.
 
 ## ⌘-Kürzel (immer aktiv, auch ohne Tastaturmodus)
 
@@ -70,7 +70,10 @@ Eine Zahl davor wiederholt: `5j`, `3w`, `2gn`. Auf der Seite meint sie bei `G`, 
 | `d`, `y`, `p`, `D`, `%` | Löschen, Kopieren, Einfügen, Duplizieren, alles wählen |
 | `u`, `U` | Rückgängig, Wiederholen |
 | `/`, `Space f` | Im Heft suchen, alle Hefte suchen (schließt das Heft, die Suche über alles lebt in der Bibliothek) |
-| `Space s o m q` | Seitenleiste, Gliederung, Lesezeichen, Schließen |
+| `Space s o m` | Seitenleiste, Gliederung, Lesezeichen: zeigen und Tasten dorthin |
+| `Space M` | Lesezeichen dieser Seite setzen oder entfernen |
+| `Space l`, `Space c` | Gesetzessammlung, Farbe und Strich |
+| `Space q` | Schließen |
 | `Space e p/c/m/t/n` | PDF, diese Seite als PDF, Markdown, Text, `.noty` |
 
 ### Text (NOR und SEL)
@@ -97,14 +100,88 @@ Eine Zahl davor wiederholt: `5j`, `3w`, `2gn`. Auf der Seite meint sie bei `G`, 
 
 Eine „Zeile“ reicht wie in Helix bis zum Zeilenumbruch; nur `j`/`k` folgen den angezeigten Zeilen.
 
+### Seitenleiste (`SEITENLEISTE`)
+
+`Space s` zeigt die Seitenleiste und gibt ihr die Tasten, `Space o` die Gliederung (Textdokument) oder das PDF-Inhaltsverzeichnis, `Space m` die Lesezeichen. Der Rahmen zeigt die gewählte Seite. Die Tasten gehen zurück bei Esc, Enter, Antippen eines Texts sowie Schreiben auf der Seite.
+
+| Taste | |
+| --- | --- |
+| `hjkl`, Pfeile, ⌃n ⌃p, ⌃d ⌃u, `gg`, `ge` | Eintrag wählen |
+| Enter | Seite öffnen, Tasten zurück auf die Seite |
+| Esc, `Space s` | Zurück auf die Seite; `Space s` klappt die Leiste dazu ein |
+| Tab, ⇧Tab, `f` | Seiten oder Inhalt, alle Seiten oder Lesezeichen |
+| `b` | Lesezeichen setzen oder entfernen |
+| `y`, `x`, `p`, `D` | Seite kopieren, ausschneiden, dahinter einfügen, duplizieren |
+| `a`, `r`, `t` | Seite hinzufügen, anpassen, Seitenpapierkorb |
+| `K`, `J` | Seite nach oben, nach unten |
+| `d`, `X` | In den Seitenpapierkorb, Seite leeren (beide mit Rückfrage) |
+
+Textdokumente haben davon nur `b` und `t`: ihre Seiten entstehen aus dem Text.
+
+### Trefferliste (`SUCHE`)
+
+Gilt für die Heftsuche und die Suche über alle Hefte. Mit Tastatur bleiben die Tasten beim Router, das Suchfeld wird nur befüllt; so kann dieselbe Taste tippen oder wandern, und es entsteht kein Fokuswechsel, von dem Tasten zurückkommen müssten.
+
+| Taste | |
+| --- | --- |
+| Tippen, ⌫, ⌘V | Suchbegriff; `j`/`k` sind dabei Buchstaben |
+| ↓ ↑, ⌃n ⌃p, Tab | In die Liste wechseln und wandern |
+| `j k`, Pfeile, ⌃n ⌃p, ⌃d ⌃u, `gg`, `ge` | In der Liste wandern |
+| Enter | Zum gewählten Treffer, ohne Wahl zum ersten |
+| Esc | Schließen |
+| `/` oder jeder andere Buchstabe, jede Ziffer, ⌫ | Zurück ins Suchfeld, das Zeichen zählt mit |
+| Tab in der Liste | Alle Inhalte oder offene Aufgaben |
+
+Ein angetippter Text im Suchfeld bleibt nativ (Tottasten gehen dort), dann wirken nur Esc und das normale Tippen. Wandern geht erst wieder, wenn das Feld den Fokus abgibt.
+
+### Gesetzessammlung (`GESETZE`)
+
+`Space l` öffnet das Fenster und gibt ihm die Tasten. Esc oder `Space l` schiebt es wie das ✕ an den Rand, die Tasten gehen an die Seite, der Text bleibt, wo er war. Fokus wandert dabei nie: Die Tasten kommen weiter über den Responder der Seite.
+
+| Taste | |
+| --- | --- |
+| `j k`, Pfeile, ⌃d ⌃u ⌃f ⌃b | Scrollen |
+| `gg`, `ge` | Anfang, Ende der Vorschrift |
+| `n`, `N` | Nächste, vorherige Vorschrift |
+| `p`, `144G` | Paragraph eingeben (Eingabezeile `§`), Paragraph direkt |
+| `/` | Schnellsuche: `144 HGB` oder Volltext; die Felder des Lesers zeigen mit und suchen wie beim Tippen |
+| Enter | In der Eingabezeile suchen, danach nächster Volltexttreffer |
+| `t`, `o`, `B` | Gesetz wählen, Inhaltsverzeichnis, Lesezeichen und Markierungen |
+| `b`, `v`, `+ = -` | Lesezeichen, Lesetext oder PDF, Schrift |
+| `m`, `M` | Touch-Auswahl markieren, Markierung darin entfernen |
+
+### Dialoge (`DIALOG`)
+
+Gilt für die Sheets der App und jede Seite der Einstellungen, gemeinsam über `keyboardSheet()` und `keyOption()`. Der Rahmen erscheint erst mit dem ersten Tastendruck.
+
+| Taste | |
+| --- | --- |
+| Tab, ⇧Tab, `j k`, ↑ ↓, ⌃n ⌃p | Zur nächsten, vorherigen Option, reihum; `gg`, `ge` Anfang, Ende |
+| `h l`, ← → | Wert ändern (Auswahl, Regler) |
+| Leertaste | Schalten oder auslösen |
+| Enter | Gewählte Aktion, sonst Standardaktion (`Erstellen`, `Übernehmen`, `Anwenden`) |
+| Esc | Abbrechen; auf einer Einstellungsseite eine Ebene zurück |
+| `?`, `:` | Übersicht, Palette, im Sheet selbst |
+
+Ein Titelfeld ist eine Option wie jede andere: Steht der Rahmen darauf, tippen alle Zeichen hinein (mit ⌫ und ⌘V, ohne Cursor und Tottasten), Tab verlässt es. Dialoge, die mit einem Feld beginnen, stehen mit Tastatur sofort darin.
+
+**Rückfragen:** Was eine Taste auslöst (`d` in der Bibliothek, Seite löschen), fragt in der App: `j k` oder Tab wählen, Enter bestätigt, Esc bricht ab. Bei Endgültigem (Seite oder Eintrag endgültig löschen, Papierkorb leeren) steht die Wahl auf `Abbrechen`, Enter allein löscht nichts. **Namen** (`r`, `f`) laufen in der Eingabezeile. Touch behält die Systemdialoge.
+
+### Farbe und Strich (`FARBE`)
+
+`Space c` zeigt die Tafel unter der Modusanzeige: im Text Textfarben und Marker, sonst Farben, Strichstärke, beim Formwerkzeug Linienart, beim genauen Radierer die Breite, beim Laser die Farben. `hjkl` oder Pfeile wandern, Tab wechselt die Reihe, `1`–`9` wählen in der Reihe sofort, Enter wählt, Esc bricht ab. Bis zur Wahl ändert sich nichts.
+
 **Suche:** `/`, `?` und `s` öffnen die Eingabezeile unter der Modusanzeige. Treffer erscheinen beim Tippen als Auswahl, Enter bestätigt, Esc stellt die Auswahl und den vorigen Suchbegriff wieder her. Der Suchbegriff ist ein regulärer Ausdruck (Kleinschreibung ignoriert Groß/klein), was keiner ist, gilt wörtlich. Auf Seite und Bibliothek öffnet `/` weiter die bestehende Suche, ⌘F ebenso überall.
 
 **Zwischenablage:** `y`, `d`, `c` füllen Register und Systemzwischenablage. Beim Einfügen gewinnt, was seitdem woanders kopiert wurde; ein Text mit Zeilenumbruch am Ende gilt als ganze Zeilen.
 
 ## Grenzen
 
-- Nicht per Tastenbelegung erreichbar: Inhalte von Sheets und Systemdialogen, Farbauswahl, Zeichnen. Die Palette öffnet die Sheets; darin hilft iPadOS: Bedienungshilfen › Tastaturen › „Voller Tastaturzugriff“ (Tab/Pfeile/Leertaste für jedes Element).
-- Gesetzessammlung, Seitenleiste und Suchsheet haben keine eigene Belegung.
+- Nicht per Tastenbelegung erreichbar: Systemdialoge (Dateiauswahl, Teilen, Fotos, Farbkreis des Systems) und Zeichnen; dazu Anmeldung und Zugangsdaten (Einstellungen › Konto, Backup › Weitere Optionen: nur Esc und natives Tippen, Passwörter laufen bewusst nicht über den Router), Menüs der Werkzeugoptionen außer Farbe, Strichstärke und Linienart, das Umordnen in „Werkzeugleiste anpassen“ und „Seiten anordnen“, Bereich entfernen, Gesetzesfenster andocken. Dort hilft iPadOS: Bedienungshilfen › Tastaturen › „Voller Tastaturzugriff“ (Tab/Pfeile/Leertaste für jedes Element).
+- Systemalerts und `confirmationDialog` (Fehler, Touch-Rückfragen): OK und Speichern sind als Standardaktion hinterlegt, Abbrechen kommt vom System. Ob Enter und Esc dort wirken, ist ungeprüft.
+- Felder, die Tasten über den Router füllen (Suchsheet, Titel, Paragraph, Namen), haben keinen Cursor und keine Tottasten, wie die Eingabezeile von `/`. Nach dem Antippen sind sie nativ. ⌘V geht im Sheet und über die Objektauswahl; mit Stiftwerkzeug fehlt es in der Eingabezeile der Gesetze.
+- Markieren im Gesetzestext: nur eine Touch-Auswahl (`m`, `M`). Der Leser hat keinen Tastaturcursor; ihn zu bauen hieße, einen zweiten Texteditor in einem schreibgeschützten Text zu pflegen.
+- Sehr lange Listen in Dialogen (Inhaltsverzeichnis) wandern nur durch sichtbare Zeilen und scrollen dann weiter; `ge` meint dort die letzte sichtbare Zeile.
 - Die App zeigt nur die Hauptauswahl (`C`, `s` bilden die übrigen in der Engine); Register nur als Klartext. **Mehrere Auswahlen:** `d`, `y`, `~`, `r` usw. wirken auf alle. Getippt wird im bisherigen Weg nur an einem Cursor: `c`, `i`, `a`, `I`, `A`, `o`, `O` behalten deshalb vorher nur die Hauptauswahl, die Anzeige meldet `Nur Hauptauswahl`. Texteditor 2 tippt an allen Cursorn und zeigt „n Auswahlen“ auch in INS.
 - `~`, `` ` `` und `r` erhalten die Formatierung in der Auswahl, solange die Ersetzung gleich lang ist. Ändert sie die UTF-16-Länge (`ß` zu `SS`, `r` mit einem Emoji über einfachen Buchstaben), wird die Auswahl einheitlich im Format ihres Anfangs.
 - Esc als Key Command wiederholt sich beim Halten womöglich (abschalten geht erst ab iOS 26); gehalten kann es also mehrere Ebenen wirken. Ungeprüft.
@@ -137,7 +214,16 @@ Eine „Zeile“ reicht wie in Helix bis zum Zeilenumbruch; nur `j`/`k` folgen d
 21. **Palette in der Bibliothek:** ⇧⌘P, `q` oder `12` und Enter führt den Treffer der Suche aus, nichts schließt.
 22. **`Space f` bei Fehler:** Nur mit Testheft und provoziertem Speicherfehler prüfbar: Heft bleibt offen, ein späteres normales Schließen öffnet keine Suche.
 
-**Diagnose:** Mit Einstellungen › Diagnose (ab Neustart) protokolliert `KeyboardRouter` jede Taste mit Kontext, Ergebnis und First Responder: `idevicesyslog | rg noty.keys`. Getippter Text erscheint nur als `(typing)`, auch in der Eingabezeile. Kommt zu einer Taste keine Zeile, hat sie keinen unserer Responder erreicht.
+23. **Seitenleiste:** `Space s`, `j k h l`, `gg`, `ge`, Enter öffnet und `j` scrollt sofort die Seite; `Space s`, Esc; `Space s` zweimal klappt ein. `b`, `y`, `p`, `D`, `K`, `J`, `a` (Sheet, Esc, Tasten stehen wieder in der Leiste), `d` und `X` fragen, Enter und Esc. Dasselbe aus einem Text in NOR: Esc lässt ihn weiterlaufen. Während die Leiste die Tasten hat, schreibt `p` nichts in den Text, `⌫` und Pfeile lassen ein gewähltes Objekt stehen. Schreiben mit dem Stift gibt die Tasten an die Seite zurück.
+24. **Gliederung, Lesezeichen:** `Space o` im Textdokument und in einem Heft mit PDF-Inhalt (geschlossene Zweige öffnen sich beim Wandern), `Space m`, Enter springt; `Space M` setzt; leere Listen: Esc führt zurück.
+25. **Suchsheet:** ⌘F und `/` im Heft, `Space f` und `/` in der Bibliothek, auch als allererste Taste nach dem Start. Tippen füllt das Feld, ⌫, ⌘V; ↓ wählt, `j k`, ⌃n ⌃p, `gg`, `ge`, ein Buchstabe oder eine Ziffer geht zurück ins Feld; Enter springt, danach `j` auf der Seite; Esc schließt, danach `j`. Feld antippen, tippen, Esc schließt.
+26. **Gesetze:** `Space l` geschlossen, am Rand, offen und ohne aktivierte Sammlung (Hinweis). `j k`, `n N`, `144G`, `p` 144 Enter, `/` `144 HGB`, `/` Wort Enter, Enter wandert zum nächsten Treffer; `t`, `o`, `B` je mit `j`, Enter, Esc; `v`; `+ -`. Esc und `Space l` schließen, `j` wirkt sofort auf der Seite, auch mit Stiftwerkzeug und aus einem Text in NOR. ⌫ in der Eingabezeile löscht kein gewähltes Objekt.
+27. **Dialoge:** Neues Heft mit `n`: Titel tippen, Tab, `j`, Leertaste auf Umschlag, `h l` auf Papier, Enter erstellt, im neuen Heft wirken Tasten. Esc bricht ab, in der Bibliothek geht `j` weiter. `N`, `m` (Enter wählt Ordner), PDF importieren aus der Palette, Seite anpassen, Papier für neue Seiten, Lokale Wiederherstellungspunkte, zweite Ansicht. Rahmen läuft mit, auch nach unten scrollend. Einstellungen: `j`, Enter, Toggle per Leertaste, Esc eine Ebene, Esc schließt; aus Bibliothek und aus dem Heft.
+28. **Rückfragen:** `d` in der Bibliothek, Enter; `d`, Esc; Einstellungen › Papierkorb: Enter auf Eintrag, Endgültig löschen: Enter allein bricht ab. `r` und `f`: Name, ⌫, Enter, Esc, in der Bibliothek geht es danach weiter. Fehleralert: Enter, Esc, danach Tasten. **Ohne Antippen:** nach jedem Punkt dieser Liste muss die nächste Taste wirken.
+29. **Farbe:** `Space c` mit Stift, Marker, Formen (Linienart), genauem Radierer, Laser, Lasso (Hinweis), im Text (Farbe, Marker auf der Auswahl, `Aus`); `1`, `hjkl`, Enter, Esc ändert nichts. Tafel offen, Text antippen: Tippen schreibt.
+30. **Ohne Tastatur:** Heft, Suche (Feld fokussiert, Softwaretastatur), Neues Heft (kein Rahmen, kein Autofokus), Einstellungen, Seitenleiste per Touch wie bisher. Tastaturmodus aus: Sheets wie bisher, Esc schließt.
+
+**Diagnose:** Mit Einstellungen › Diagnose (ab Neustart) protokolliert `KeyboardRouter` jede Taste mit Kontext, Ergebnis und First Responder: `idevicesyslog | rg noty.keys`. Getippter Text erscheint nur als `(typing)`, auch in der Eingabezeile, im Suchsheet und in Dialogfeldern. Kommt zu einer Taste keine Zeile, hat sie keinen unserer Responder erreicht.
 
 ## Helix-Modell
 
@@ -171,13 +257,17 @@ Die Engine ist in Core gegen das echte Helix geprüft, die App bildet sie ab.
 
 Bewusst wie Helix, obwohl es überrascht: `w` wählt auch die Leerzeichen dahinter, `ge` geht an den Anfang der letzten Zeile, `G` ohne Zähler tut nichts, `5G` in SEL zieht die Auswahl zusammen, `r` ersetzt auch Zeilenumbrüche, `n` geht auch nach `?` vorwärts, `p` in SEL lässt die Auswahl stehen, `>` fügt einen Tab ein (`TextEngine.indentUnit`).
 
+Bewusst anders als bisher: `Space m` zeigt jetzt die Lesezeichen (setzen: `Space M`, in der Leiste `b`), `Space s` gibt der Leiste die Tasten statt sie umzuschalten (einklappen: `Space s` in der Leiste).
+
 Nicht enthalten: benannte Register, `.`, Makros, Sprungliste, ⌥C, `S`, ⌥s, `[`/`]`.
 
 ## Aufbau
 
-**Core:** `HelixKeymap`, `HelixParser`, `TextEngine`, `KeyPressGate`, `KeyDeliveryLatch` und `KeyPalette` (`KeyboardCommands.swift`), `TextLines`, `Notebook.editingTextFlow`/`restylingTextFlow` (`TextFlowRange.swift`).
+**Core:** `HelixKeymap`, `HelixParser`, `TextEngine`, `KeyPressGate`, `KeyDeliveryLatch` und `KeyPalette` (`KeyboardCommands.swift`), `TextLines`, `Notebook.editingTextFlow`/`restylingTextFlow` (`TextFlowRange.swift`). `KeyboardPanels.swift`: `KeyList`, `KeyOptionRing`, `KeyChoice`, `KeyChoiceCursor`, `KeyInputLine`, `KeyPanelStack`, `KeyFocusTarget` (`KeyboardPanelsTests`).
 
 **App:** `KeyboardRouter` nimmt die Tastendrücke entgegen (`pressesBegan` in `PageTextView`, `DrawingCanvasView`, `WorksheetView`, `KeyboardHostView`), ⌘-Kürzel bleiben bei Menü und Key Commands. Er hält Parser und Engine und bindet `HelixAction` an `ContentView.runKey`, `LibraryView.runKey` und `ObjectEditingLayer`. INS läuft am Parser vorbei, nur Esc geht an die Engine.
+
+**Panels** (`KeyboardPanels.swift`): Alles außer Seite, Text und Bibliothek ist ein `KeyPanel` mit eigenem `HelixContext` auf einem Stapel; das neueste hat die Tasten, sein `run` bindet die Aktionen. Seitenleiste, Gesetze, Rückfragen und Farbe nehmen keinen Fokus, die Tasten kommen weiter über den bisherigen Responder. Nur Sheets bringen mit `KeyPanelHostView` einen eigenen mit; er hält auch Esc, Tab, Enter, Leertaste und Pfeile als Key Commands, weil das Fokussystem einer Liste sie sonst nehmen könnte. Wer den Fokus zu holen hat, entscheidet `KeyFocusTarget`, ausgeführt von `reclaim()`: jedes Schließen eines Panels läuft über `leave` und holt zurück, auch was nicht durch `presenting` geht (Sheets der Seitenleiste und des Lesers). Eine neue Option braucht nur `keyOption`; die Reihenfolge ergibt sich aus der Lage (`KeyOptionRing`). Ein neuer Dialog braucht `keyboardSheet()`. Sheets legen ihre Overlays selbst darüber (`KeyboardOverlay(panel:)`), die der Bibliothek lägen darunter. Ohne Tastatur (`hasKeyboard`) übernimmt nichts den Fokus, es erscheint kein Rahmen.
 
 **Esc und Tab** können auf beiden Wegen kommen: über `pressesBegan` oder als Key Command, wenn das System die Taste sonst nähme (`PageTextView`, `DocumentTextSurface`, `WorksheetView`, `ObjectEditingLayer`; die Übersicht hat dazu eine `cancelAction`). Welcher Weg kommt oder ob beide, ist nicht festgestellt. Beide enden in `KeyboardRouter.dispatch`, der Key-Command-Weg über `handle(token:text:)`. `KeyPressGate` trennt nur Zustellungen desselben Tastendrucks über `pressesBegan`; ein Key Command hat keine Druckzeit, deshalb sperrt `KeyDeliveryLatch` eine Taste, die der eine Weg benutzt hat, für 0,12 s einmal für den anderen. Eine unbenutzte Taste bleibt frei, so kommt Tab in INS beim Listeneinzug an. `handle(token:)` gibt false zurück, wenn der Aufrufer die Taste selbst behandeln soll (Tab einfügen, Text verlassen). Neue Key Commands für Router-Tasten laufen über diese Funktion.
 
