@@ -134,7 +134,7 @@ Gerätetestpunkte (gebündelt, alles **ungeprüft**):
 Bewusste Abweichungen und Grenzen:
 - Stifttipp neben dem bearbeiteten Text beendet wie im Heft die Bearbeitung und kehrt zum vorherigen Werkzeug zurück (nur fixiertes Textwerkzeug setzt den Cursor); ein Fingertipp setzt immer den Cursor. Ein Fingertipp mit Stiftwerkzeug wirkt erst nach dem Doppeltipp-Fenster (0,3 s), damit „Textfeld hinzufügen“ erreichbar bleibt.
 - Mit Textwerkzeug setzt ein Tipp auf ein Bild oder eine Form im Schreibbereich den Cursor (der Fluss liegt darüber); Bilder/Formen wählt man mit dem Finger bei Stiftwerkzeug oder mit Bild-/Lassowerkzeug.
-- Text/Markdown enthalten nur den Fluss; Handschrift, freie Felder, Bilder und Formen nur im PDF. Unterstreichung, Markierung, Farben und Links gehen im Markdown verloren.
+- Text/Markdown enthalten den Fluss und dahinter die freien Felder (Regel unter „Feedback zu Build 65“); Handschrift, Bilder und Formen nur im PDF. Unterstreichung, Markierung, Farben und Links gehen im Markdown verloren.
 - Papier und Papierfarbe sind nach dem Anlegen fest (kein Umstellen im Dokument; ein nachträglicher Wechsel müsste alle Seiten, die Reserveseite, den Standard und die Tintenfarben gemeinsam umstellen und bleibt offen).
 
 Gerätetestpunkte (gebündelt, alles **ungeprüft**):
@@ -316,3 +316,22 @@ Gerätetestpunkte (gebündelt nach Risiko, alles **ungeprüft**):
 10. Pencil: Doppeltipp/-drücken von Lasso, Formen, Laser zum Radierer und zurück; Systemeinstellung „Vorheriges Werkzeug“.
 11. Durchkritzeln über Form und Tinte entfernt beides (ein Undo); Checkbox-Tipp mit Radierer, Lasso, Formen- und Bildwerkzeug; Werkzeugwechsel hebt Auswahl auf.
 12. Darstellung/Export: „Seite anpassen“ auf dunkles Papier (Vorschau mit heller Schrift); Seitenvorschau kursiver Text ohne abgeschnittene Kanten, überlaufendes Feld rot und PDF-Export verweigert; PDF eines Textdokuments aus der Bibliothek ohne leere Endseiten, Dateiname = Titel; gehaltene Form erscheint beim Halten unter kreuzender Tinte; gehobene Auswahl mit weißem Text auf dunklem Papier.
+
+## Feedback zu Build 65 (31.10.2026, Branch `phase0/text`)
+
+**Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft.** Core-Tests bestanden; Klickwege laufen unter Linux nicht.
+
+**Cursor setzen.** Jeder saubere Tipp auf Text (Finger, Pencil, Trackpad) endet jetzt im selben eigenen Weg (`PageTextView.onCleanTap` → `TextObjectLayer.caretAfterTap`): Er öffnet das Feld, falls UIKit es nicht getan hat, und setzt den Cursor auf die getippte Stelle statt ans Wortende. Doppeltipp (Wort markieren), Tipp in eine Markierung und Checkboxen bleiben unverändert. Die Regel der Korrektur nach Build 62 bleibt: höchstens 10 pt und 0,5 s, nur bei gehaltenen Trackpad-Klicks ohne Zeitgrenze; Ziehen und Halten öffnen nichts.
+- Im bearbeiteten Feld geht echter Text vor Breitenpunkten und Rahmenzone (`TextFieldContainer.hitTest`). Vorher deckten die 44-pt-Punkte ein kurzes Feld ganz und die Rahmenzone den Großteil einer Einzelzeile ab, und der Tipp verpuffte. Ein Tipp auf den Rest der Zone setzt den Cursor an die nächste Stelle (`FieldFrameTap`); Ziehen dort verschiebt wie bisher, die Punkte bleiben außerhalb des Texts greifbar.
+- `TouchDownWatcher` nennt seine Eingabearten ausdrücklich, weil der Standard laut `UIGestureRecognizer.h` plattformabhängig ist. `UIApplicationSupportsIndirectInputEvents` steht nun in der `Info.plist`; das ändert nichts, denn ohne Schlüssel gilt ab iOS 17 schon `YES`.
+
+**Erste Zeile einer Seite.** Das Segment eines Textflusses beginnt 16 pt unter der Seitenkante; ab etwa 26 pt Schrift lag die natürliche Grundlinie damit unter der ersten Linie (40), und die Zeile rutschte auf die zweite. Jetzt steht sie auf der ersten Linie, die ihre Oberlängen auf der Seite hält (`TextRuling.firstLineBaseline`), und darf dafür in den oberen Rand reichen. Über 40 pt Oberlänge folgt die nächste passende Linie. `RuledTextLayout.baseline(top:ascent:)` ist die eine Regel für Editor, Vorschau, PDF, Kapazität und Cursor auf leerer Zeile; `TextPlacement.below` nutzt dieselbe Core-Rechnung. Nur Flusssegmente: migrierte Felder behalten ihr Layout. Vorhandene Dokumente zeigen große erste Zeilen sofort höher; umbrochen wird wie immer erst bei der nächsten Änderung. Kein Formatwechsel.
+
+**Teilen als Text.** „Als Markdown teilen (.md)“ und „Als Text teilen (.txt)“ stehen in Heften und Textdokumenten im Menü ⋯ › Teilen und exportieren › Nur Text, im Kontextmenü der Bibliothek und in der Befehlspalette (Bibliothek: für den per Tastatur gewählten Eintrag). `TextDocumentExport` nimmt allen Text: im Textdokument zuerst den Fluss als ein Stück, dann die freien Felder Seite für Seite (Grund: Der Fluss läuft über Seitenwechsel, Felder hätten zwischen seinen Absätzen keinen festen Platz, und Text soll nicht still fehlen). Hefte: alle Seiten der Reihe nach. Felder von oben nach unten, innerhalb einer Reihe (12 pt Spielraum ab dem ersten Feld der Reihe) von links nach rechts, nach dem sichtbaren Rahmen. Tinte, Bilder, Formen und PDF-Inhalte entfallen. Ohne Text erscheint ein Hinweis statt einer leeren Datei.
+
+Gerätetestpunkte (gebündelt, alles **ungeprüft**):
+1. Trackpad, Finger und Pencil mit Textwerkzeug: Klick in fremdes Feld, ins bearbeitete Feld (erstes und letztes Zeichen, kurzes Wort), mitten ins Wort; Cursor exakt dort. Doppelklick markiert das Wort, Klick-Ziehen markiert auch in einer Einzelzeile.
+2. Schutz: Ziehen und Halten über Text öffnen nichts, Scrollen über Text bleibt Scrollen; Breitenpunkte und Rahmen ziehen weiter.
+3. Stiftwerkzeug: erster Klick wählt, zweiter setzt den Cursor; Textdokument: Klick setzt ihn nach 0,3 s; Hardware-Tastatur im NORMAL-Modus: Tipp schreibt.
+4. Textdokument liniert und kariert: 30-pt-Zeile am Seitenende erzeugen, Größe rauf und runter: erste Linie im Editor, in Seitenleiste und PDF (Oberlängen vollständig, auch beim Zoomen); leere erste Zeile mit großer Schrift: Cursor an derselben Stelle wie der getippte Text.
+5. .md und .txt aus Heft mit Tinte, Textdokument mit Feld und Bibliothek; reine Tintenseite zeigt den Hinweis.
