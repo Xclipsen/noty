@@ -170,8 +170,32 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    // MARK: Keyboard mode
+    /// Scrolling by key reports the page like a drag: page commands must not
+    /// act on a page that scrolled out of view.
+    private var keyboardScrolling = false
+    var activeSheet: WorksheetView? { selected.flatMap { sheets[$0] } }
+    private func keyboardOffset(_ target: CGPoint) -> CGPoint {
+        CGPoint(x: min(max(target.x, -contentInset.left), max(-contentInset.left, contentSize.width - bounds.width + contentInset.right)),
+                y: min(max(target.y, -contentInset.top), max(-contentInset.top, contentSize.height - bounds.height + contentInset.bottom)))
+    }
+    func keyboardScroll(x: Int, y: Int) {
+        keyboardScrolling = true; defer { keyboardScrolling = false }
+        setContentOffset(keyboardOffset(CGPoint(x: contentOffset.x + CGFloat(x) * 48, y: contentOffset.y + CGFloat(y) * 48)), animated: false)
+    }
+    func keyboardScreen(_ fraction: Double) {
+        let height = max(1, bounds.height - topObstruction)
+        keyboardScrolling = true
+        setContentOffset(keyboardOffset(CGPoint(x: contentOffset.x, y: contentOffset.y + CGFloat(fraction) * height)), animated: true)
+    }
+    func keyboardZoom(_ steps: Int) {
+        let scale = zoomScale * pow(1.15, CGFloat(steps))
+        setZoomScale(min(max(scale, minimumZoomScale), maximumZoomScale), animated: true)
+    }
+
     func configure(_ next: NotebookEditor) {
         HangProbe.hit("Viewport.configure")
+        if next.enabled { KeyboardRouter.shared.viewport = self }
         let first = state == nil
         configurationRevision += 1
         let oldSelection = selected
@@ -650,7 +674,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         if focusScrolling && (isDragging || isZooming) { focusScrolling = false }
         if !isZooming && !widthSnapInProgress && !focusScrolling { constrainHorizontalOffset() }
         queueRefresh()
-        guard !mode, !isZooming, !widthSnapInProgress, !sheets.values.contains(where: { $0.editingCaret != nil }), isDragging || isDecelerating else { return }
+        guard !mode, !isZooming, !widthSnapInProgress, !sheets.values.contains(where: { $0.editingCaret != nil }), isDragging || isDecelerating || keyboardScrolling else { return }
         let center = (contentOffset.y + bounds.height * 0.4) / zoomScale
         if let id = pageAt(vertical: center), id != reported {
             reported = id
@@ -955,6 +979,7 @@ extension NotebookViewport {
     }
 
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        keyboardScrolling = false
         guard focusScrolling else { return }
         focusScrolling = false
         constrainHorizontalOffset(); refreshSheets()

@@ -124,9 +124,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     override var undoManager: UndoManager? { notebookUndo }
     override var inputView: UIView? { UIView(frame: .zero) }
 
+    /// The whole text of a text document (⌘A, keyboard mode); nil in notebooks.
+    var flowActions: TextFlowActions?
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear; clipsToBounds = true
+        NotificationCenter.default.addObserver(self, selector: #selector(flowSelectionChanged), name: TextFlowSelection.changed, object: nil)
         notice.font = .systemFont(ofSize: 14); notice.textColor = .systemRed
         notice.backgroundColor = .systemBackground; notice.layer.cornerRadius = 6
         notice.clipsToBounds = true; notice.numberOfLines = 2; notice.isHidden = true
@@ -138,6 +141,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         addGestureRecognizer(tap)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func flowSelectionChanged() { showFlowSelection() }
 
     func configure(boxes incoming: [TextBox], pageID: UUID, layout: PageLayout,
                    contentGeneration: Int, active: Bool, readOnly: Bool = false, darkPaper: Bool, darkMargins: Bool, hasPDF: Bool,
@@ -168,6 +172,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             onEditingActive?(false)
             compositionBase = nil
             generation += 1; dragStart = nil; notice.isHidden = true
+            // The delegate goes first: `textViewDidEndEditing` will not report this.
+            if isEditingField { KeyboardRouter.shared.textEnded() }
             for field in fields.values {
                 field.editor.delegate = nil; field.editor.resignFirstResponder()
                 field.editor.historyOwner = nil
@@ -316,13 +322,14 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             editor.isEditable = active; editor.isSelectable = active || readOnly
             editor.isUserInteractionEnabled = active || readOnly
             position(field, for: box); updateRaster(field, for: box)
-            let overflowing = box.overflows(textHeight: neededHeight(editor, width: box.width / pointScale) * pointScale)
+            let overflowing = box.overflows(textHeight: overflowHeight(box, editor: editor, width: box.width / pointScale) * pointScale)
             field.configure(editing: active && selectedID == box.id && box.flowID == nil, overflowing: overflowing)
         }
         // Later fields lie on top („Nach vorne“/„Nach hinten“ reorder the array).
         for box in boxes { if let field = fields[box.id] { bringSubviewToFront(field) } }
         bringSubviewToFront(notice)
         updateAccessory()
+        if TextFlowSelection.shared.range != nil { showFlowSelection() }
         setNeedsLayout()
     }
 
@@ -381,6 +388,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     private var canonicalBounds: CGRect { pageLayout.canonicalInkBounds }
     func publish() { if !updating { HangProbe.hit("Text.publish"); onChange?(boxes) } }
+    /// Like `neededHeight`, but the empty line behind a page's final line
+    /// break is no content of a flow segment: the text continues on the next page.
+    func overflowHeight(_ box: TextBox, editor: UITextView, width: Double) -> Double {
+        let needed = neededHeight(editor, width: width), extra = editor.layoutManager.extraLineFragmentRect
+        return box.flowID != nil && extra.height > 0 ? min(needed, ceil(extra.minY)) : needed
+    }
     func neededHeight(_ editor: UITextView, width: Double) -> Double {
         ceil(editor.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
     }
@@ -609,6 +622,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
         guard active else { return false }
+        // Normal mode: a key that reached the text view anyway must not type.
+        guard KeyboardRouter.shared.allowsTyping else { return false }
+        if replaceFlowSelection(with: text) { return false }
         if let handled = handleListInput(textView, range: range, text: text) { return handled }
         guard !insertingList, text == "\n", let edit = TextListEditing.newline(in: textView.text ?? "", range: range) else { return true }
         insertingList = true; defer { insertingList = false }
@@ -616,10 +632,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         return false
     }
     func textViewDidBeginEditing(_ textView: UITextView) {
+        KeyboardRouter.shared.textBegan()
         guard !updating, active else { return }
         onEditingActive?(true); layoutIfNeeded(); requestCaretReveal(.navigation)
     }
     func textViewDidEndEditing(_ textView: UITextView) {
+        KeyboardRouter.shared.textEnded()
         (textView as? PageTextView)?.placement = nil
         onEditingActive?(fields.values.contains { $0.editor.isFirstResponder })
         removeIfEmptyFreeField(textView)
@@ -701,6 +719,15 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             let light = boxes.first(where: { $0.id == focus.boxID }).map(automaticLight) ?? false
             editor.typingAttributes = focus.typingStyle.resolvingAutomaticColor(light: light).attributes
         }
+        KeyboardRouter.shared.handoff = false
+        editor.normalCaret = KeyboardRouter.shared.isEnabled && KeyboardRouter.shared.textMode != .insert
+        if TextFlowSelection.shared.selectAllWhenFocused {
+            TextFlowSelection.shared.selectAllWhenFocused = false
+            // Not in typing: the next letter (`x`, `y`) would replace everything.
+            let router = KeyboardRouter.shared
+            if router.isEnabled, router.textMode == .insert, flowActions?.content()?.text.isEmpty == false { router.setTextMode(.normal, editor: editor) }
+            editor.selectEverything()
+        }
     }
 
     @objc private func moveField(_ gesture: UIPanGestureRecognizer) { drag(gesture, kind: .move) }
@@ -768,7 +795,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         guard let field = fields[box.id] else { return }
         position(field, for: box); updateRaster(field, for: box)
         let pointScale = coordinateScale(for: box)
-        let overflowing = box.overflows(textHeight: neededHeight(field.editor, width: box.width / pointScale) * pointScale)
+        let overflowing = box.overflows(textHeight: overflowHeight(box, editor: field.editor, width: box.width / pointScale) * pointScale)
         field.configure(editing: active && selectedID == box.id, overflowing: overflowing)
     }
 
@@ -782,6 +809,14 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     func changeStyle(_ action: (inout TextBoxStyle) -> Void, paragraph: Bool = false, wholeFloatingField: Bool = false) {
         guard let selectedID, let index = boxes.firstIndex(where: { $0.id == selectedID }),
               let editor = fields[selectedID]?.editor else { return }
+        // Over pages: a selection there, or a paragraph that runs over a page change.
+        if boxes[index].flowID != nil, let flow = flowActions {
+            if let range = TextFlowSelection.shared.range { flow.restyle(range, action); return }
+            if paragraph, !boxes[index].text.isEmpty, let start = flow.offset(selectedID, editor.selectedRange.location),
+               let whole = flow.paragraph(NSRange(location: start, length: editor.selectedRange.length)), flow.parts(whole).count > 1 {
+                flow.restyle(whole, action); return
+            }
+        }
         let previous = boxes
         let selection = editor.selectedRange
         let wasUpdating = updating; updating = true
@@ -817,6 +852,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         layoutIfNeeded(); requestCaretReveal(.typing)
     }
     func textViewDidChangeSelection(_ textView: UITextView) {
+        if !updating, !applyingFlow, !KeyboardRouter.shared.isVisual { TextFlowSelection.shared.set(nil) }
         if let editor = textView as? PageTextView, let placement = editor.placement,
            editor.selectedRange != NSRange(location: placement.location, length: 0) { editor.placement = nil }
         if !updating, !applyingFlow, active {
@@ -860,6 +896,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         case "bullet": toggleList(.bullet)
         case "numbered": toggleList(.numbered)
         case "checkbox": toggleList(.checkbox)
+        case "link": editLink()
+        case "highlight": toggleHighlight()
         default: break
         }
     }

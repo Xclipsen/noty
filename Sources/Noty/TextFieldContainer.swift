@@ -63,6 +63,17 @@ final class TextFieldContainer: UIView {
     private var unitScale: CGFloat = 1
     var content: TextBox?
     var automaticLight: Bool?
+    /// This field's part of a selection over several pages (`TextFlowSelection`).
+    private var flowHighlight: CAShapeLayer?
+    func setFlowHighlight(_ path: CGPath?) {
+        guard let path else { flowHighlight?.removeFromSuperlayer(); flowHighlight = nil; return }
+        let shape = flowHighlight ?? CAShapeLayer()
+        if flowHighlight == nil {
+            shape.fillColor = UIColor.systemBlue.withAlphaComponent(0.28).cgColor
+            layer.addSublayer(shape); flowHighlight = shape
+        }
+        shape.frame = editor.frame; shape.path = path
+    }
     private(set) var editing = false
     /// Frame drag zone in screen points: outside the frame and inside it.
     static let outerBorder: CGFloat = 14

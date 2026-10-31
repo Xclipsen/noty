@@ -211,7 +211,7 @@ final class EditorModel: ObservableObject {
         do {
             let (candidate, focus) = try notebook.reflowText(pageID: pageID, previous: previous,
                 replacement: replacement, selection: selection, trailingDraft: trailingDraft,
-                drawingIsEmpty: Self.drawingIsEmpty,
+                drawingIsEmpty: Self.drawingIsEmpty, trailingLineFits: { page, box in TextFlowEditing.trailingLineFits(box, page: page) },
                 pageCapacity: { page, box in TextFlowEditing.capacity(box, page: page) })
             let beforeFocus = TextFlowFocus(pageID: pageID, boxID: previous.id,
                 selection: NSRange(location: TextListEditing.caret(before: previous.text, after: replacement.text, selection: selection.location), length: 0),
@@ -239,6 +239,35 @@ final class EditorModel: ObservableObject {
             return nil
         }
     }
+    // Edits of the whole text: over several pages (⌘A, keyboard mode, a
+    // paragraph across a page change). Each is one undo step of its own.
+    private func flowLayout(_ draft: Page?) -> TextFlowLayout {
+        TextFlowLayout(capacity: { page, box in TextFlowEditing.capacity(box, page: page) }, trailingDraft: draft,
+                       drawingIsEmpty: Self.drawingIsEmpty, trailingLineFits: { page, box in TextFlowEditing.trailingLineFits(box, page: page) })
+    }
+    private func rewriteFlow(_ rewrite: () throws -> (Notebook, TextFlowFocus)) -> TextFlowFocus? {
+        guard writable, !busy, !mutationsPaused else { return nil }
+        let before = notebook
+        do {
+            let (candidate, focus) = try rewrite()
+            try installFlow(candidate)
+            pendingDraft = nil
+            history.separateNextStep()
+            history.record(.textFlow, before: before, after: candidate, beforeFocus: nil, afterFocus: focus)
+            publishHistory()
+            return focus
+        } catch {
+            self.error = "Textfluss: \(error.localizedDescription)"
+            return nil
+        }
+    }
+    func editFlow(range: NSRange, replacement: String, caret: Int?, trailingDraft: Page?) -> TextFlowFocus? {
+        rewriteFlow { try notebook.editingTextFlow(range: range, replacement: replacement, caret: caret, layout: flowLayout(trailingDraft)) }
+    }
+    func restyleFlow(range: NSRange, trailingDraft: Page?, change: (inout TextBoxStyle) -> Void) -> TextFlowFocus? {
+        rewriteFlow { try notebook.restylingTextFlow(range: range, layout: flowLayout(trailingDraft), change: change) }
+    }
+
     /// No strokes (also ink whose strokes were all erased): such a page holds
     /// nothing in a text document and is neither kept after the text nor exported.
     nonisolated static func drawingIsEmpty(_ data: Data) -> Bool {

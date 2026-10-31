@@ -345,22 +345,32 @@ struct TextObjectLayout {
     let coordinateScale: CGFloat
     /// The field's rotation (radians) about its top-left corner, the drawing origin.
     let rotation: CGFloat
-    init(_ box: TextBox, on page: Page) {
+    /// `limitedTo`: only as many lines as this height (page units) holds, for
+    /// measuring a page of a long flow; the rest stays without layout.
+    init(_ box: TextBox, on page: Page, limitedTo limit: Double? = nil) {
         self.init(box, ruledOrigin: page.ruledTextOrigin(for: box), ruling: page.textRuling(for: box) ?? .lined,
-            coordinateScale: page.writingCoordinateScale(for: box))
+            coordinateScale: page.writingCoordinateScale(for: box), limitedTo: limit)
     }
-    init(_ box: TextBox, ruledOrigin: CGFloat? = nil, ruling lines: TextRuling = .lined, coordinateScale: CGFloat = 1) {
+    init(_ box: TextBox, ruledOrigin: CGFloat? = nil, ruling lines: TextRuling = .lined, coordinateScale: CGFloat = 1, limitedTo limit: Double? = nil) {
         self.coordinateScale = coordinateScale
         rotation = CGFloat(box.angle * .pi / 180)
         storage = NSTextStorage(attributedString: box.attributedText)
         manager = TaskLayoutManager()
         ruling = RuledTextLayout(); ruling.originY = ruledOrigin; ruling.lines = lines; manager.delegate = ruling
-        container = NSTextContainer(size: CGSize(width: box.width / coordinateScale, height: .greatestFiniteMagnitude))
+        // A line of the largest size more than the page, so the last one is never cut off by the container.
+        let height = limit.map { CGFloat($0) / coordinateScale + Self.glyphOverhang(box) * 4 } ?? .greatestFiniteMagnitude
+        container = NSTextContainer(size: CGSize(width: box.width / coordinateScale, height: height))
         container.lineFragmentPadding = 0
         storage.addLayoutManager(manager); manager.addTextContainer(container)
         manager.ensureLayout(for: container)
     }
     var usedHeight: CGFloat { ceil(manager.usedRect(for: container).height * coordinateScale) }
+    /// `usedHeight` without the empty line behind a final line break: in a
+    /// flow that line belongs to the next page, it is no overflow.
+    func contentHeight(_ box: TextBox) -> CGFloat {
+        let extra = manager.extraLineFragmentRect
+        return box.flowID != nil && extra.height > 0 ? min(usedHeight, ceil(extra.minY * coordinateScale)) : usedHeight
+    }
     /// Room beyond a field's text frame where glyphs still draw (italics, „J“,
     /// the caret at the left edge), in the field's own units: the editor's
     /// zoom raster and the previews clip the same way.
@@ -371,7 +381,7 @@ struct TextObjectLayout {
     /// The field's text does not fit its height on `page` (`TextBox.overflows`):
     /// previews mark it red like the editor, the PDF export refuses it.
     static func overflows(_ box: TextBox, on page: Page) -> Bool {
-        box.overflows(textHeight: Double(TextObjectLayout(box, on: page).usedHeight))
+        box.overflows(textHeight: Double(TextObjectLayout(box, on: page).contentHeight(box)))
     }
     /// Widest laid-out line in canonical units (automatic field width).
     var usedWidth: CGFloat { manager.usedRect(for: container).width * coordinateScale }
