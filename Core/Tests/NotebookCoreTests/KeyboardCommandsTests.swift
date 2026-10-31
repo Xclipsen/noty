@@ -5,6 +5,47 @@ import XCTest
 final class KeyboardCommandsTests: XCTestCase {
     private let keyG = 10, keyJ = 13, keyShift = 225
 
+    func testLatchLetsOnePressWorkOnceWhicheverWayComesFirst() {
+        for (first, second) in [(KeyDeliveryLatch.Route.press, KeyDeliveryLatch.Route.keyCommand), (.keyCommand, .press)] {
+            var latch = KeyDeliveryLatch()
+            XCTAssertTrue(latch.allows("<Esc>", by: first, now: 10))
+            latch.used("<Esc>", by: first, now: 10)
+            XCTAssertFalse(latch.allows("<Esc>", by: second, now: 10.01), "the same press, the other way")
+            // Only that one delivery: a fast next press may come either way.
+            XCTAssertTrue(latch.allows("<Esc>", by: second, now: 10.02))
+        }
+    }
+
+    func testLatchKeepsPressesOfTheSameWayAndLaterOnes() {
+        var latch = KeyDeliveryLatch()
+        latch.used("<Esc>", by: .press, now: 10)
+        XCTAssertTrue(latch.allows("<Esc>", by: .press, now: 10.01), "two presses, one way")
+        latch.used("<Esc>", by: .press, now: 10.01)
+        XCTAssertTrue(latch.allows("<Esc>", by: .keyCommand, now: 10.01 + 2 * KeyDeliveryLatch.window), "the lock is short")
+    }
+
+    func testLatchLeavesAnUnusedPressToTheOtherWay() {
+        var latch = KeyDeliveryLatch()
+        // Tab in INS: the router has no use for the press, the key command nests the list.
+        XCTAssertTrue(latch.allows("<Tab>", by: .press, now: 10))
+        XCTAssertTrue(latch.allows("<Tab>", by: .keyCommand, now: 10.01))
+    }
+
+    func testLatchSeparatesKeys() {
+        var latch = KeyDeliveryLatch()
+        latch.used("<Esc>", by: .press, now: 10)
+        XCTAssertTrue(latch.allows("<Tab>", by: .keyCommand, now: 10.01))
+        XCTAssertTrue(latch.allows("<S-Tab>", by: .keyCommand, now: 10.01))
+    }
+
+    func testDirectCommandsOnlyInADocument() {
+        for query in ["q", "w", "x", "12"] {
+            XCTAssertNil(KeyPalette.direct(query, in: .library), query)
+            XCTAssertNotNil(KeyPalette.direct(query, in: .page), query)
+            XCTAssertNotNil(KeyPalette.direct(query, in: .text), query)
+        }
+    }
+
     func testGateLetsEveryNewPressOfOneKeyThrough() {
         var gate = KeyPressGate()
         XCTAssertTrue(gate.began(key: keyJ, time: 1.0))

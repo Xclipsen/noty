@@ -199,7 +199,42 @@ extension TextListEditing {
     }
 }
 
+extension TextEngine.Outcome {
+    /// `edits` in text order, as both edit paths want them. A replacement takes
+    /// one format from its place: what must keep its formats (`keepsFormat`)
+    /// is cut at the format changes of `source`, the text before the command.
+    public func textEdits(in source: @autoclosure () -> TextBox?) -> [TextListEditing.Edit] {
+        let ordered = edits.reversed().map { TextListEditing.Edit(range: $0.range, replacement: $0.replacement) }
+        guard keepsFormat, let source = source() else { return ordered }
+        return TextListEditing.split(ordered, at: source.formatChanges)
+    }
+}
+
+extension TextListEditing {
+    /// Cuts each replacement of the same UTF-16 length at `offsets` (ascending,
+    /// in the text before the edits). Not grapheme by grapheme: a run stays one
+    /// edit. Another length (`ß` to `SS`) has no such places and stays whole,
+    /// no cut falls inside a composed character of the new text.
+    public static func split(_ edits: [Edit], at offsets: [Int]) -> [Edit] {
+        edits.flatMap { edit -> [Edit] in
+            let value = edit.replacement as NSString, length = edit.range.length, origin = edit.range.location
+            guard length > 0, value.length == length else { return [edit] }
+            var parts: [Edit] = [], start = 0
+            for cut in offsets.map({ $0 - origin }).filter({ $0 > 0 && $0 < length }) + [length] {
+                guard cut == length || value.rangeOfComposedCharacterSequence(at: cut).location == cut else { continue }
+                let part = NSRange(location: start, length: cut - start)
+                parts.append(Edit(range: NSRange(location: origin + start, length: part.length), replacement: value.substring(with: part)))
+                start = cut
+            }
+            return parts
+        }
+    }
+}
+
 extension TextBox {
+    /// Where the format changes, in UTF-16 offsets.
+    public var formatChanges: [Int] { styleRuns.dropFirst().map(\.location) }
+
     /// Style at a UTF-16 location (runs are sorted and nonoverlapping).
     public func style(at location: Int) -> TextBoxStyle {
         guard let runs, !runs.isEmpty else { return style }

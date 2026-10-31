@@ -170,6 +170,81 @@ final class TextFlowRangeTests: XCTestCase {
         XCTAssertEqual(original.notebook.textFlowContent?.text, "0123456789")
     }
 
+    func testANewLastLineTakesTheCaretOnToTheNextPage() throws {
+        // `o` on a page's last line: the flow edit carries the engine's caret.
+        let document = try Notebook.textDocument(title: "Umbruch")
+        let first = try XCTUnwrap(document.textFlowSegments.first)
+        var written = first.box; written.text = "letzte"; written.runs = nil
+        let start = try document.reflowText(pageID: first.pageID, previous: first.box, replacement: written,
+            selection: NSRange(location: 6, length: 0), pageCapacity: { _, box in (box.text as NSString).length }).0
+        let full = TextFlowLayout(capacity: { _, box in (box.text as NSString).length }, trailingDraft: start.writingDraft(), trailingLineFits: { _, _ in false })
+        let (next, focus) = try start.editingTextFlow(range: NSRange(location: 6, length: 0), replacement: "\n", caret: 7, layout: full)
+        XCTAssertEqual(next.pages.count, 2)
+        XCTAssertEqual(focus.pageID, next.pages[1].id)
+        XCTAssertEqual(focus.selection, NSRange(location: 0, length: 0))
+        // `moveCaret` goes by this place, which is why it must not overwrite that focus.
+        XCTAssertEqual(next.textFlowPlace(at: 7)?.pageID, first.pageID)
+    }
+
+    // MARK: Text editor 2: no room
+
+    private let noRoom = TextFlowLayout(capacity: { _, _ in 0 })
+
+    func testARefusedChangeKeepsTheTypedTextOnItsPage() throws {
+        let document = try flowing("0123456789abcde")
+        let change = TextFlowChange(edits: [TextListEditing.Edit(range: NSRange(location: 12, length: 0), replacement: "NEU")],
+                                    selection: NSRange(location: 15, length: 0), selectionBefore: NSRange(location: 12, length: 0))
+        XCTAssertThrowsError(try document.changingTextFlow(change, layout: noRoom))
+        let (kept, focus) = try document.keepingTextFlowChange(change)
+        XCTAssertEqual(kept.textFlowContent?.text, "0123456789abNEUcde")
+        XCTAssertEqual(kept.pages.count, document.pages.count)
+        XCTAssertEqual(kept.textFlowSegments[0].box, document.textFlowSegments[0].box, "the page before stays")
+        XCTAssertEqual(kept.textFlowSegments[1].box.text, "abNEUcde")
+        XCTAssertEqual(focus.pageID, kept.textFlowSegments[1].pageID)
+        XCTAssertEqual(focus.selection, NSRange(location: 5, length: 0))
+        XCTAssertNoThrow(try kept.validate())
+    }
+
+    func testARefusedChangeKeepsItsStyleAndTheFormatsAround() throws {
+        var document = try flowing("0123456789abcde")
+        document = try document.restylingTextFlow(range: NSRange(location: 11, length: 2), layout: layout) { $0.italic = true }.0
+        var typed = TextBoxStyle(); typed.bold = true
+        let change = TextFlowChange(edits: [TextListEditing.Edit(range: NSRange(location: 15, length: 0), replacement: "z")], style: typed,
+                                    selection: NSRange(location: 16, length: 0), selectionBefore: NSRange(location: 15, length: 0))
+        let (kept, _) = try document.keepingTextFlowChange(change)
+        let content = try XCTUnwrap(kept.textFlowContent)
+        XCTAssertEqual(content.text, "0123456789abcdez")
+        XCTAssertTrue(content.style(at: 15).bold)
+        XCTAssertTrue(content.style(at: 11).italic)
+        XCTAssertFalse(content.style(at: 14).italic)
+    }
+
+    func testARefusedChangeOverPagesLosesNothing() throws {
+        let document = try flowing("0123456789abcdefghijKLMNO")
+        let edits = [TextListEditing.Edit(range: NSRange(location: 5, length: 0), replacement: "x"),
+                     TextListEditing.Edit(range: NSRange(location: 15, length: 0), replacement: "y")]
+        let change = TextFlowChange(edits: edits, selection: NSRange(location: 17, length: 0), selectionBefore: NSRange(location: 15, length: 0))
+        let (kept, focus) = try document.keepingTextFlowChange(change)
+        XCTAssertEqual(kept.textFlowContent?.text, "01234x56789abcdeyfghijKLMNO")
+        XCTAssertEqual(kept.textFlowSegments[2].box, document.textFlowSegments[2].box, "the page behind stays")
+        XCTAssertEqual(kept.textFlowOffset(boxID: focus.boxID, location: focus.selection.location), 17)
+        XCTAssertNoThrow(try kept.validate())
+    }
+
+    func testARefusedDeletionOverABoundaryWorksToo() throws {
+        let document = try flowing("0123456789abcdefghij")
+        let change = TextFlowChange(edits: [TextListEditing.Edit(range: NSRange(location: 8, length: 4), replacement: "")],
+                                    selection: NSRange(location: 8, length: 0), selectionBefore: NSRange(location: 8, length: 4))
+        XCTAssertEqual(try document.keepingTextFlowChange(change).0.textFlowContent?.text, "01234567cdefghij")
+    }
+
+    func testAStaleChangeIsNotKept() throws {
+        let document = try flowing("0123456789")
+        let change = TextFlowChange(edits: [TextListEditing.Edit(range: NSRange(location: 40, length: 0), replacement: "x")],
+                                    selection: NSRange(location: 41, length: 0), selectionBefore: NSRange(location: 40, length: 0))
+        XCTAssertThrowsError(try document.keepingTextFlowChange(change))
+    }
+
     func testAnEditWithAStaleRangeFails() throws {
         let document = try flowing("kurz")
         XCTAssertThrowsError(try document.editingTextFlow(range: NSRange(location: 2, length: 9), replacement: "", layout: layout))

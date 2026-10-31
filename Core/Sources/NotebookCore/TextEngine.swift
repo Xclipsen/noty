@@ -147,7 +147,11 @@ public struct TextEngine {
         case searchNext, searchPrevious, searchSelection
     }
 
-    public enum Notice: Sendable { case wrapped, noMatch, pairNotFound }
+    public enum Notice: Sendable {
+        case wrapped, noMatch, pairNotFound
+        /// `performAtPrimary` gave up the other selections.
+        case primaryOnly
+    }
 
     public struct Outcome: Equatable, Sendable {
         /// Back to front and in offsets of the text before the command:
@@ -159,6 +163,9 @@ public struct TextEngine {
         public var yanked = false
         /// Esc found nothing left to undo in the text: the app leaves it.
         public var leavesText = false
+        /// `~`, `` ` ``, `r`: the characters stay where they are, so does
+        /// their format (`textEdits(in:)`).
+        public var keepsFormat = false
         public var notice: Notice?
         public init() {}
     }
@@ -476,6 +483,21 @@ public struct TextEngine {
         return outcome
     }
 
+    /// `perform` for an app that types at one caret only (a page's text view):
+    /// `c`, `i`, `a`, `o` … would otherwise work on selections it cannot show
+    /// or type at, so these keep the primary selection first.
+    public mutating func performAtPrimary(_ command: Command, count: Int? = nil) -> Outcome {
+        var reduced = false
+        switch command {
+        case .change, .insert:
+            if mode != .insert, selections.count > 1 { selections = [primary]; primaryIndex = 0; reduced = true }
+        default: break
+        }
+        var outcome = perform(command, count: count)
+        if reduced, outcome.notice == nil { outcome.notice = .primaryOnly }
+        return outcome
+    }
+
     /// `/` and `?`: remembers the query (a regular expression, literal if it
     /// is none; lower case ignores case) and goes to its next match.
     @discardableResult
@@ -704,6 +726,7 @@ public struct TextEngine {
     private mutating func replaceSelections(_ change: (String) -> String, into outcome: inout Outcome) {
         let edits = selections.filter { !$0.isEmpty }.map { Edit(range: $0.range, replacement: change(text.substring(with: $0.range))) }
         commit(edits, into: &outcome)
+        outcome.keepsFormat = true
     }
     private static func switchedCase(_ value: String) -> String {
         var result = ""

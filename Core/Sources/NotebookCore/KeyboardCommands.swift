@@ -26,6 +26,31 @@ public struct KeyPressGate: Sendable {
     }
 }
 
+/// One press, whichever way UIKit brings it. Esc and Tab can arrive through
+/// `pressesBegan` or as a key command, and which one (or both) is UIKit's
+/// choice: nothing ties the two together, a key command has no press time. So
+/// a key the one way used is refused to the other way for a moment, once. Two
+/// presses that take the same way both count, a held key's repeats too.
+public struct KeyDeliveryLatch: Sendable {
+    public enum Route: Sendable { case press, keyCommand }
+    /// Longer than one main thread cycle, shorter than two deliberate presses.
+    public static let window = 0.12
+    private var last: [String: Delivery] = [:]
+    private struct Delivery: Sendable { var route: Route; var time: Double }
+    public init() {}
+
+    /// False: this is the second way of a press the other way already used.
+    public mutating func allows(_ token: String, by route: Route, now: Double) -> Bool {
+        guard let delivery = last[token], delivery.route != route else { return true }
+        last[token] = nil
+        return now - delivery.time >= Self.window
+    }
+    /// The press did something. An unused one stays free for the other way.
+    public mutating func used(_ token: String, by route: Route, now: Double) {
+        last[token] = Delivery(route: route, time: now)
+    }
+}
+
 /// Command palette: every action by name, plus `:w`, `:q`, `:wq`, `:12`.
 public enum KeyPalette {
     public enum Direct: Equatable, Sendable { case save, close, page(Int) }
@@ -36,6 +61,11 @@ public enum KeyPalette {
         case "q", "wq", "x": return .close
         default: return Int(value).flatMap { $0 > 0 ? .page($0) : nil }
         }
+    }
+    /// Only an open document can be saved, closed or paged: in the library
+    /// `w` or `12` are search words.
+    public static func direct(_ query: String, in context: HelixContext) -> Direct? {
+        context == .library ? nil : direct(query)
     }
     /// Fuzzy match of `query` in `title`: nil if its letters are not in that
     /// order; a smaller value is better (word starts and neighbours win).

@@ -120,8 +120,14 @@ extension Notebook {
     /// typing wrote, without it the replacements take over their neighbour's
     /// format. The layout's page ranges come in through `layout.capacity`.
     public func changingTextFlow(_ change: TextFlowChange, layout: TextFlowLayout) throws -> (Notebook, TextFlowFocus) {
+        let content = try changedTextFlow(change)
+        return try rewritingTextFlow(content, from: change.edits[0].range.location, selection: change.selection, layout: layout)
+    }
+
+    /// The whole text with `change` in it.
+    private func changedTextFlow(_ change: TextFlowChange) throws -> TextBox {
         let length = textFlowContent.map { ($0.text as NSString).length } ?? -1
-        guard let whole = textFlowContent, let first = change.edits.first,
+        guard let whole = textFlowContent, !change.edits.isEmpty,
               change.edits.allSatisfy({ NSMaxRange($0.range) <= length }) else { throw TextFlowError.stale }
         var content = whole.applying(change.edits)
         if let style = change.style {
@@ -134,7 +140,43 @@ extension Notebook {
             content = content.restyled(ranges) { $0 = style }
             if content.text.isEmpty { content.style = style }
         }
-        return try rewritingTextFlow(content, from: first.range.location, selection: change.selection, layout: layout)
+        return content
+    }
+
+    /// Text editor 2: `changingTextFlow` found no room (page limit, no space).
+    /// What was typed must not get lost: it stays where it was written, in the
+    /// segments it touches, as an overflowing page does on the old path
+    /// (`EditorModel.updateFlowText`); the text before and behind stays as it is.
+    public func keepingTextFlowChange(_ change: TextFlowChange) throws -> (Notebook, TextFlowFocus) {
+        let content = try changedTextFlow(change)
+        let segments = textFlowSegments
+        guard let edit = change.edits.first, let end = change.edits.map({ NSMaxRange($0.range) }).max(),
+              !segments.isEmpty else { throw TextFlowError.stale }
+        var first: Int?, last = segments.count - 1, firstStart = 0, lastEnd = 0, consumed = 0
+        for (index, segment) in segments.enumerated() {
+            let length = (segment.box.text as NSString).length
+            if first == nil, edit.range.location < consumed + length || index == segments.count - 1 { first = index; firstStart = consumed }
+            consumed += length; lastEnd = consumed
+            if first != nil, end <= consumed { last = index; break }
+        }
+        guard let first else { throw TextFlowError.stale }
+        let delta = (content.text as NSString).length - segments.reduce(0) { $0 + ($1.box.text as NSString).length }
+        let kept = try content.fragment(NSRange(location: firstStart, length: lastEnd + delta - firstStart))
+        var next = try preparedForTextEditing(); next.schemaVersion = max(8, next.schemaVersion)
+        for (index, segment) in segments.enumerated() where index >= first && index <= last {
+            guard let page = next.pages.firstIndex(where: { $0.id == segment.pageID }) else { throw TextFlowError.stale }
+            var boxes = next.pages[page].effectiveTextBoxes
+            guard let box = boxes.firstIndex(where: { $0.id == segment.box.id }) else { throw TextFlowError.stale }
+            boxes[box].text = index == first ? kept.text : ""
+            boxes[box].runs = index == first ? kept.runs : nil
+            next.pages[page].textBoxes = boxes
+        }
+        let touched = next.pages.flatMap { $0.textBoxes ?? [] }
+        next.raiseSchemaForTextColors(touched)
+        next.raiseSchemaForTextFields(touched)
+        try next.validate()
+        guard let focus = next.textFlowFocus(selection: change.selection) else { throw TextFlowError.stale }
+        return (next, focus)
     }
 
     /// A caret at a flow offset as a focus (undo returns there).

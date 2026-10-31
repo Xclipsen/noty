@@ -494,4 +494,112 @@ final class HelixEngineTests: XCTestCase {
         XCTAssertEqual(run("a\r\nb", "j").cursor, 3)
         XCTAssertEqual(run("a\r\nb", "x d").string, "b")
     }
+
+    // MARK: One caret (a page's text view)
+
+    /// `%`, `s` foo: three selections, the primary on the first match.
+    private func threeMatches() -> TextEngine {
+        var engine = TextEngine(text: "foo x foo y foo")
+        engine.perform(.selectAll)
+        engine.selectMatches("foo")
+        XCTAssertEqual(engine.selections.count, 3)
+        return engine
+    }
+
+    func testChangeAtPrimaryLeavesTheHiddenSelections() {
+        var engine = threeMatches()
+        let outcome = engine.performAtPrimary(.change)
+        XCTAssertEqual(engine.string, " x foo y foo")
+        XCTAssertEqual(engine.mode, .insert)
+        XCTAssertEqual(engine.selections.count, 1)
+        XCTAssertEqual(engine.register?.values, ["foo"], "only what was deleted")
+        XCTAssertEqual(outcome.notice, .primaryOnly)
+    }
+
+    func testOpeningALineAtPrimaryLeavesTheHiddenSelections() {
+        for (command, expected) in [(TextEngine.Command.insert(.lineBelow), "foo x foo y foo\n"), (.insert(.lineAbove), "\nfoo x foo y foo")] {
+            var engine = threeMatches()
+            XCTAssertEqual(engine.performAtPrimary(command).notice, .primaryOnly)
+            XCTAssertEqual(engine.string, expected)
+            XCTAssertEqual(engine.selections.count, 1)
+        }
+        var engine = threeMatches()
+        XCTAssertEqual(engine.performAtPrimary(.insert(.before)).notice, .primaryOnly)
+        XCTAssertEqual(engine.selections.count, 1)
+    }
+
+    func testEverythingElseStillWorksOnAllSelections() {
+        var engine = threeMatches()
+        XCTAssertNil(engine.performAtPrimary(.delete).notice)
+        XCTAssertEqual(engine.string, " x  y ")
+    }
+
+    func testOneSelectionHasNothingToGiveUp() {
+        var engine = TextEngine(text: "foo")
+        engine.perform(.selectAll)
+        XCTAssertNil(engine.performAtPrimary(.change).notice)
+        XCTAssertEqual(engine.string, "")
+    }
+
+    func testPlainPerformKeepsTypingAtAllCarets() {
+        // Text editor 2 shows and types at all of them.
+        var engine = threeMatches()
+        engine.perform(.change)
+        XCTAssertEqual(engine.selections.count, 3)
+        engine.insertText("b")
+        XCTAssertEqual(engine.string, "b x b y b")
+    }
+
+    // MARK: Formats under `~`, `` ` ``, `r`
+
+    private func formatted() -> TextBox {
+        var box = TextBox(x: 0, y: 0, width: 100, height: 100, text: "ab cd ef")
+        var bold = box.style; bold.bold = true
+        box.runs = [TextRun(location: 3, length: 2, style: bold)]
+        return box
+    }
+    private func boldRanges(_ box: TextBox) -> [NSRange] {
+        box.styleRuns.filter(\.style.bold).map { NSRange(location: $0.location, length: $0.length) }
+    }
+
+    func testCaseAndReplaceKeepFormatsInsideASelection() {
+        for (command, expected) in [(TextEngine.Command.switchCase, "AB CD EF"), (.replace("x"), "xxxxxxxx")] {
+            let box = formatted()
+            var engine = TextEngine(text: box.text)
+            engine.perform(.selectAll)
+            let edits = engine.perform(command).textEdits(in: box)
+            XCTAssertEqual(edits.count, 3, "cut at the runs, not per grapheme")
+            let result = box.applying(edits)
+            XCTAssertEqual(result.text, expected)
+            XCTAssertEqual(boldRanges(result), [NSRange(location: 3, length: 2)])
+        }
+    }
+
+    func testLowercaseKeepsFormatsAndSeveralSelectionsStayApart() {
+        var box = formatted(); box.text = "AB CD EF"
+        var engine = TextEngine(text: box.text)
+        engine.perform(.selectAll)
+        engine.selectMatches("[A-Z]+")
+        let edits = engine.perform(.lowercase).textEdits(in: box)
+        XCTAssertEqual(edits.map(\.range.location), [0, 3, 6])
+        XCTAssertEqual(boldRanges(box.applying(edits)), [NSRange(location: 3, length: 2)])
+    }
+
+    func testOtherEditsAndOtherLengthsStayWhole() {
+        var box = formatted(); box.text = "ßb cd ef"
+        var engine = TextEngine(text: box.text)
+        engine.perform(.selectAll)
+        XCTAssertEqual(engine.perform(.switchCase).textEdits(in: box).count, 1, "`ß` to `SS` has no same places")
+        // `R` writes a new text, also of the same length.
+        box.text = "ab cd ef"
+        var replacing = TextEngine(text: box.text)
+        replacing.register = TextEngine.Register("12345678")
+        replacing.perform(.selectAll)
+        XCTAssertEqual(replacing.perform(.replaceWithRegister).textEdits(in: box).count, 1)
+    }
+
+    func testNoCutInsideAComposedCharacter() {
+        let edit = TextListEditing.Edit(range: NSRange(location: 0, length: 4), replacement: "😀😀")
+        XCTAssertEqual(TextListEditing.split([edit], at: [1, 2, 3]).map(\.replacement), ["😀", "😀"])
+    }
 }
