@@ -238,6 +238,29 @@ Bugfixes nach dem Nutzertest von Build 62 (Punkte 1–11 oben), keine Formatänd
 - **Installiert**: InstallationProxy bestätigt Build **63** unter unveränderter ID. Zurückgelesen: `verify_device_store.py --compare` für beide Bereichsroots gültig, **alle 24 Dokumente und 210 Dateien unverändert**, keine neuen Dateien.
 - **Auf dem iPad ungeprüft**: alle Korrekturen 1–11 (Prüfliste im Abschnitt der Korrekturen); höchstes Risiko: Stift-Tipp öffnet ein Textfeld zuverlässig.
 
+### Build 65 · Prüfung Textdokument, ⌘A, Tastaturmodus (31.10.2026, Branch `feat/tastatur`)
+
+Code-Prüfung des Textdokuments und aller Tastenkürzel, Auslöser: Hardware-Tastatur. **Implementiert, erfolgreich gebaut** (`xtool dev build`) **und installiert (unten), am iPad ungeprüft.** Core-Tests (791, 3 übersprungen; neu `TextFlowRangeTests`, `KeyboardCommandsTests`, `TextMotionsTests`), `check_page_workflow.sh` und `check_verifiers.sh` bestanden. Kein Formatwechsel. Bedienung und alle Tasten: [KEYBOARD](KEYBOARD.md).
+
+- **⌘A im Textdokument:** griff nur die aktuelle Seite (jede Seite ist eine eigene Textansicht); ⌘A + ⌫ löschte also nur eine Seite. Jetzt ganzer Text über alle Seiten: `TextFlowSelection` markiert auf jeder Seite ihren Teil, Kopieren, Ausschneiden, Einfügen, Tippen, ⌫ und Formatieren laufen als ein Undo-Schritt über `Notebook.editingTextFlow`/`restylingTextFlow`.
+- **⌘A sonst:** wirkte nur mit Lasso, Formen, Bild oder bestehender Fingerauswahl; mit Stift, Bleistift, Marker, Radierer, Laser, Lesen und dem Textwerkzeug zwischen Feldern passierte nichts. Jetzt in jedem Werkzeug.
+- **Absatzstile und Ausrichtung** rissen an einem Seitenwechsel ab (nur der Teil auf dieser Seite wurde Überschrift). Jetzt der ganze Absatz (`textFlowParagraph`).
+- **Zeilenumbruch auf der letzten Zeile einer Seite:** Die leere Zeile dahinter zählte als Überlauf: roter Rahmen, PDF-Export verweigert, Cursor unter dem Schreibbereich. Jetzt keine Überlaufmessung für diese Zeile (`TextObjectLayout.contentHeight`), der Cursor geht auf die nächste Seite (`trailingLineFits`), die leere Seite wird nicht exportiert. Aus dem Code hergeleitet (Linux hat kein TextKit); am Gerät prüfen.
+- **Lange Dokumente:** Die Seitenmessung legte bei jedem Tastendruck den gesamten Resttext aus, beim Einfügen einmal je Seite. Jetzt nur bis zur Seitenhöhe (`TextObjectLayout(limitedTo:)`).
+- **Markdown:** kursiv als `*` statt `_`, weil `_` mitten im Wort kein Kursiv ist.
+- **Reflow beim Bereichslöschen** beginnt eine Seite früher, damit Text über die Seitengrenze zurückrückt.
+
+Geprüft ohne Befund: Fluss-Reflow, Kürzen leerer Endseiten, Seitenoperationen in Dokumenten (Bedienung in Seitenleiste, Menü und Kürzeln gesperrt), `.noty`-Import und Restore-Kopien mehrseitiger Dokumente (Fluss bleibt eins), Undo über Seiten zusammen mit Lesezeichen, Gliederung, Text-/Markdown-Export.
+
+Bekannte Grenzen:
+- Eine Phrase über einen Seitenwechsel findet die Suche nicht (Suche je Seite).
+- Beim normalen Tippen rückt Text nur vorwärts: Wird das erste Wort einer Folgeseite so kurz, dass es auf die Vorseite passte, bleibt es bis zur nächsten Änderung auf der Vorseite stehen.
+- Auswählen mit Finger oder ⇧Pfeil bleibt je Seite; über Seiten nur ⌘A und `v`/`V`.
+
+Gerätetestpunkte siehe [KEYBOARD](KEYBOARD.md) und TESTING.
+
+**Installiert** (31.10.2026, 11:16, iPadOS 27.0.1): IPA SHA-256 `0ad24b9b…e255`, CFBundleVersion 65, gleiche ID, Team `BAFXLQ964V` und Zertifikat (`50f3e096…`), Profil bis 31.10.2027. Sicherung vor dem Update: `/home/la/Backups/noty-before-build65-2026-10-31T10-15-58-197949174Z/` (28 Dokumente in zwei Bereichsroots, 103 Revisionen, 248 Dateien). Rücklesen mit `verify_device_store.py --compare`: alle 28 Dokumente und 248 Dateien unverändert, keine neuen Dateien. **Auf dem iPad ungeprüft.**
+
 ### Build 64 · Verhalten und Objektbedienung vereinheitlicht (22.10.2026)
 
 Ein Audit (nur Code-Lesen) fand Ungleichheiten zwischen Werkzeugen, Objektarten, Editor und Export; der Nutzer hat entschieden, sie zu beheben. **Implementiert und erfolgreich gebaut** (`xtool dev build`, ohne Warnungen), **nicht installiert, auf dem iPad ungeprüft.** Core-Tests (763, 3 übersprungen; neu `Build64BehaviourTests`), `check_page_workflow.sh` und `check_verifiers.sh` bestanden. **Kein Formatwechsel** (Notebook-Schema, Archive, `toolbar.json` unverändert; neue App-Einstellungen nur in UserDefaults). Optik/Texte (Farben „aktiv“, Paletten, Begriffe) folgen in einem eigenen Build.

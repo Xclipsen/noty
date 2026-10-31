@@ -245,7 +245,7 @@ final class TextDocumentTests: XCTestCase {
 
         **fett**
 
-        _kursiv_
+        *kursiv*
 
         """)
     }
@@ -260,7 +260,7 @@ final class TextDocumentTests: XCTestCase {
         box.runs = [TextRun(location: 4, length: 7, style: bold), TextRun(location: 11, length: 3, style: both),
                     TextRun(location: 15, length: 8, style: italic)]
         doc.pages[0].textBoxes = [box]
-        XCTAssertEqual(TextDocumentExport.markdown(doc), "Ein **fetter** **_und_** _kursiver_ Satz\n")
+        XCTAssertEqual(TextDocumentExport.markdown(doc), "Ein **fetter** ***und*** *kursiver* Satz\n")
         // A flow over two pages is one text.
         (doc, _) = try typed(try Notebook.textDocument(title: "Zwei"), "Erste Zeile\nZweite", capacity: 12)
         XCTAssertEqual(doc.pages.count, 2)

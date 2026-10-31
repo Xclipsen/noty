@@ -1595,6 +1595,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         case UIKeyCommand.inputUpArrow: (0, -step)
         default: (0, step)
         }
+        nudge(dx: dx, dy: dy)
+    }
+    private func nudge(dx: Double, dy: Double) {
         // Same clamped move and ink transform as a drag; one model change per key.
         guard active, hasSelection, !selectionLocked, lift == nil, startContent == nil,
               var value = transformed(content, dx: dx, dy: dy, scale: 1) else { return }
@@ -1605,4 +1608,58 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         inkTransform = nil
         _ = commit(value, previous: content); refresh()
     }
+
+    // MARK: Keyboard mode
+    /// With an ink or the text tool this plane rests: like a finger selection, it wakes up for the selection.
+    private func wakeForKeyboard() {
+        guard !active, enabled else { return }
+        touchSelection = true
+        isUserInteractionEnabled = active; isHidden = !active
+    }
+    /// ⌘A from any tool: everything selectable on this page.
+    func keyboardSelectAll() {
+        wakeForKeyboard()
+        selectAllKey()
+        isUserInteractionEnabled = active; isHidden = !active
+    }
+    /// The page's objects in reading order: Tab goes through them.
+    private var keyboardObjects: [(reference: PageObjectReference, bounds: PageRect)] {
+        var items: [(reference: PageObjectReference, bounds: PageRect)] = content.textBoxes.filter(\.allowsObjectSelection).map { (.text($0.id), $0.rotatedBounds) }
+        items += content.images.filter { !$0.locked }.map { (.image($0.id), $0.rotatedBounds) }
+        items += content.shapes.map { (.shape($0.id), $0.bounds) }
+        return items.sorted { $0.bounds.y != $1.bounds.y ? $0.bounds.y < $1.bounds.y : $0.bounds.x < $1.bounds.x }
+    }
+    func keyboardCycle(_ step: Int) {
+        let items = keyboardObjects
+        guard !items.isEmpty, lift == nil, startContent == nil else { return }
+        let current = items.firstIndex { item in
+            switch item.reference {
+            case .text(let id): return texts == [id] && images.isEmpty && shapes.isEmpty
+            case .image(let id): return images == [id] && texts.isEmpty && shapes.isEmpty
+            case .shape(let id): return shapes == [id] && texts.isEmpty && images.isEmpty
+            }
+        }
+        let target = items[((current ?? (step > 0 ? -1 : 0)) + step % items.count + items.count) % items.count].reference
+        if toolActive {
+            adopted = nil; clearSelection()
+            switch target {
+            case .text(let id): texts = [id]; fieldMode = true
+            case .image(let id): images = [id]
+            case .shape(let id): shapes = [id]
+            }
+            refresh()
+        } else { selectByTouch(target) }
+    }
+    /// hjkl on a selection move it (1 pt, like the arrow keys). False: nothing selected.
+    func keyboardNudge(dx: Double, dy: Double) -> Bool {
+        guard active, hasSelection else { return false }
+        nudge(dx: dx, dy: dy)
+        return true
+    }
+    func keyboardDelete() { if active, hasSelection, !selectionLocked { deleteSelection() } }
+    func keyboardCopy() { if active, hasSelection { copySelection() } }
+    func keyboardCut() { if active { cutKey() } }
+    func keyboardDuplicate() { if active { duplicateKey() } }
+    func keyboardClearSelection() { if active { escapeKey() } }
+    func keyboardEditSelected() { if isFieldSelection, let id = texts.first { onEditText?(id, nil) } }
 }

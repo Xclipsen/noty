@@ -14,6 +14,8 @@ enum AppSettingsKey {
     static let textToolLocked = "noty.text.toolLocked"
     /// Weiches Einrasten beim Verschieben (default on).
     static let snapping = "noty.editor.snapping"
+    /// Keyboard mode (docs/KEYBOARD.md): on unless switched off.
+    static let keyboardMode = "noty.keyboard.mode"
     /// Lasso: what it selects (`SelectionFilter.bits`) and freeform/rectangle.
     static let lassoFilter = "noty.lasso.filter"
     static let lassoMode = "noty.lasso.mode"
@@ -225,6 +227,7 @@ private struct EditorSettingsPage: View {
     @AppStorage(AppSettingsKey.sidebarVisible) private var sidebarVisible = true
     @AppStorage(AppSettingsKey.typewriter) private var typewriter = false
     @AppStorage(AppSettingsKey.snapping) private var snapping = true
+    @AppStorage(AppSettingsKey.keyboardMode) private var keyboardMode = true
     var body: some View {
         Form {
             Section {
@@ -233,6 +236,8 @@ private struct EditorSettingsPage: View {
                 Toggle("Schreibmaschinen-Modus beim Tippen", isOn: $typewriter)
                 Toggle("Einrasten", isOn: $snapping)
                     .accessibilityHint("Textfelder, Bilder, Formen und Auswahlen rasten beim langsamen Verschieben an Kanten, Mitten, Linien und Seitenrändern ein.")
+                Toggle("Tastaturmodus (wie vim)", isOn: $keyboardMode)
+                    .accessibilityHint("Steuert die App mit einer Hardware-Tastatur: Buchstaben sind Befehle, i schreibt, Esc beendet das Schreiben, ? zeigt alle Tasten.")
             } header: { Text("Alle Bereiche") } footer: {
                 Text("Die Seitenleiste merkt sich auch das letzte Ein- oder Ausblenden im Editor. Der Schreibmaschinen-Modus hält die Schreibzeile beim Tippen im oberen Drittel, auch mit schwebender oder externer Tastatur. Einrasten wirkt nur bei langsamer Bewegung; ein zweiter Finger auf dem Bildschirm unterdrückt es beim Ziehen.")
             }

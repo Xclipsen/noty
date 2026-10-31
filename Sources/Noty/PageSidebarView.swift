@@ -25,6 +25,8 @@ struct PageSidebarView: View {
     @State private var addingPage: AddRequest?
     @State private var dropTarget: UUID?
     @State private var selectedTab: SidebarTab = .pages
+    /// Counts `g o` of the keyboard mode: shows the outline tab.
+    var outlineRequest = 0
     @State private var filter: PageFilter = .all
     @State private var scrollRequest = 0
 
@@ -186,6 +188,7 @@ struct PageSidebarView: View {
         // Live while typing, but debounced: one extraction after the text rests.
         .onReceive(model.$notebook) { notebook in refreshTextOutline(notebook, after: .milliseconds(400)) }
         .onAppear { refreshTextOutline(model.notebook) }
+        .onChange(of: outlineRequest, initial: true) { _, request in if request > 0 { selectedTab = .outline } }
         .onDisappear { outlineTask?.cancel(); outlineTask = nil }
         .background(Color(white: 0.065))
         .environment(\.colorScheme, .dark)

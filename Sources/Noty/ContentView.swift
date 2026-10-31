@@ -48,6 +48,8 @@ struct ContentView: View {
     @State private var textFocus: TextFlowFocus?
     @State private var writingDraft = Page()
     @State private var fitRequest = 0
+    @State private var outlineRequest = 0
+    @State private var paneID = UUID()
     @State private var showingHistory = false
     @State private var selectedLocalRevision: UUID?
     @AppStorage(AppSettingsKey.sidebarVisible) private var showingPages = true
@@ -275,12 +277,97 @@ struct ContentView: View {
         // A second presentation over an open sheet would never appear.
         let presenting = contentSearch || showingSettings || editingDefaults || addingPage || customizingTools || showingHistory || model.openedRestore != nil
             || marginsPage != nil || exporting || importingImage || choosingPhoto || pageEntry
-        return EditorCommandActions(owner: ObjectIdentifier(model), canEdit: canEdit && !presenting,
+        return EditorCommandActions(owner: ObjectIdentifier(model), pane: paneID, canEdit: canEdit && !presenting,
             canExportPage: model.writable && !onDraft, exporting: pdfExport.running,
             hasPrevious: onDraft || currentPageIndex > 0, hasNext: !onDraft && currentPageIndex < model.notebook.pages.count - 1, isTextDocument: isTextDocument,
             search: { if canEdit { contentSearch = true } }, save: { model.save() },
             exportNotebook: { startPDFExport(pageOnly: false) }, exportPage: { startPDFExport(pageOnly: true) },
-            previousPage: { stepPage(-1) }, nextPage: { stepPage(1) })
+            previousPage: { stepPage(-1) }, nextPage: { stepPage(1) }, close: { closeEditor() },
+            keys: EditorKeyActions(run: { runKey($0, count: $1, explicit: $2) }, commands: { keyCommands }, direct: { runDirect($0) }))
+    }
+
+    // MARK: Keyboard mode (docs/KEYBOARD.md)
+    private func runKey(_ action: KeyAction, count: Int, explicit: Bool) {
+        guard canEdit else { return }
+        let pages = model.notebook.pages
+        func go(to number: Int) { selectedPageID = pages[min(max(1, number), pages.count) - 1].id }
+        switch action {
+        case .tool(let value): tool = value; toolbarOptions = false
+        case .page(let delta): for _ in 0..<count { stepPage(delta) }
+        case .firstPage: go(to: explicit ? count : 1)
+        case .lastPage: go(to: explicit ? count : pages.count)
+        case .fit: fitRequest += 1
+        case .sidebar: showingPages.toggle()
+        case .outline: showingPages = true; outlineRequest += 1
+        case .close: closeEditor()
+        case .bookmark: if pages.contains(where: { $0.id == currentPage.id }) { model.toggleBookmark(currentPage.id) }
+        case .pageEntry: openPageEntry()
+        case .save: model.save()
+        case .search: contentSearch = true
+        case .undo: performUndo(redo: false)
+        case .redo: performUndo(redo: true)
+        default: break
+        }
+    }
+    private func runDirect(_ command: KeyPalette.Direct) {
+        switch command {
+        case .save: model.save()
+        case .close: closeEditor()
+        case .page(let number): runKey(.lastPage, count: number, explicit: true)
+        }
+    }
+    /// What only the menus offer; the palette adds every key binding by name.
+    private var keyCommands: [PaletteCommand] {
+        var items = [PaletteCommand(title: "Als PDF exportieren (ganz)") { startPDFExport(pageOnly: false) },
+                     PaletteCommand(title: "Diese Seite als PDF exportieren") { startPDFExport(pageOnly: true) },
+                     PaletteCommand(title: "Teilen als .noty") { shareNoty() },
+                     PaletteCommand(title: "Vollständiges Backup") { exportBackup() },
+                     PaletteCommand(title: "Lokale Wiederherstellungspunkte") { showingHistory = true },
+                     PaletteCommand(title: "Speichern", keys: ":w") { model.save() },
+                     PaletteCommand(title: "Blättern statt Scrollen umschalten") { toolbox.preferences.paging = !(toolbox.preferences.paging ?? false) },
+                     PaletteCommand(title: "Schreibmaschinen-Modus umschalten") { TextObjectLayer.typewriterEnabled.toggle() },
+                     PaletteCommand(title: "Lineal umschalten") { ruler.toggle() },
+                     PaletteCommand(title: "Textwerkzeug fixieren umschalten") { textToolLocked.toggle() },
+                     PaletteCommand(title: "Werkzeugleiste anpassen") { customizingTools = true },
+                     PaletteCommand(title: "Tastaturmodus ausschalten") { UserDefaults.standard.set(false, forKey: AppSettingsKey.keyboardMode) }]
+        if isTextDocument {
+            items += [PaletteCommand(title: "Als Text teilen (.txt)") { shareText(.plainText) },
+                      PaletteCommand(title: "Als Markdown teilen (.md)") { shareText(.markdown) }]
+        } else {
+            let page = currentPage
+            items += [PaletteCommand(title: "Seite hinzufügen") { let defaults = model.notebook.pageDefaults; model.insertPaper(defaults.paper, color: defaults.color, relativeTo: anchorPageID) },
+                      PaletteCommand(title: "Seite duplizieren") { model.duplicatePage(page.id) },
+                      PaletteCommand(title: "Seite leeren") { model.clearPage(page.id) },
+                      PaletteCommand(title: "Seite in den Papierkorb") { model.trashPage(page.id) },
+                      PaletteCommand(title: "Seite anpassen") { marginsPage = MarginPage(id: page.id) },
+                      PaletteCommand(title: "Papier für neue Seiten") { editingDefaults = true }]
+        }
+        if let onLaws { items.append(PaletteCommand(title: "Gesetzessammlung", run: onLaws)) }
+        if editorSettings != nil { items.append(PaletteCommand(title: "Einstellungen") { showingSettings = true }) }
+        return items
+    }
+    private var flowActions: TextFlowActions? {
+        guard model.notebook.isTextDocument else { return nil }
+        func show(_ focus: TextFlowFocus?) {
+            guard var focus else { return }
+            focus.requestID = UUID(); textFocus = focus; selectedPageID = focus.pageID
+        }
+        return TextFlowActions(content: { model.notebook.textFlowContent },
+            offset: { model.notebook.textFlowOffset(boxID: $0, location: $1) },
+            parts: { model.notebook.textFlowParts(of: $0) },
+            paragraph: { model.notebook.textFlowParagraph(of: $0) },
+            edit: { range, text, caret in show(model.editFlow(range: range, replacement: text, caret: caret, trailingDraft: draftPage)) },
+            restyle: { range, change in
+                guard model.restyleFlow(range: range, trailingDraft: draftPage, change: change) != nil else { return }
+                // Sizes may have moved text over pages: the same range, new parts.
+                if TextFlowSelection.shared.range != nil { TextFlowSelection.shared.set(range, parts: model.notebook.textFlowParts(of: range)) }
+            },
+            moveCaret: { offset in
+                guard let place = model.notebook.textFlowPlace(at: offset), let content = model.notebook.textFlowContent else { return }
+                let length = (content.text as NSString).length
+                show(TextFlowFocus(pageID: place.pageID, boxID: place.boxID, selection: NSRange(location: place.location, length: 0),
+                                   typingStyle: length == 0 ? content.style : content.style(at: min(offset, length - 1))))
+            })
     }
 
     private func markNotebookShown() {
@@ -341,7 +428,7 @@ struct ContentView: View {
                             PageSidebarView(model: model, selectedPageID: $selectedPageID, onBack: closeEditor, onCollapse: { showingPages = false },
                                 onSelect: { if compact { showingPages = false } },
                                 onMargins: { id in marginsPage = MarginPage(id: id) },
-                                onOutline: { jumpToOutline($0) })
+                                onOutline: { jumpToOutline($0) }, outlineRequest: outlineRequest)
                         } else {
                             // Same width and tone while loading: no placeholder thumbnail, no layout jump.
                             Color(white: 0.065).ignoresSafeArea().accessibilityHidden(true)
@@ -729,6 +816,7 @@ struct ContentView: View {
     /// order (by stable page ID) and brings that page into view.
     private func performUndo(redo: Bool) {
         guard canEdit, let outcome = model.undo(redo: redo) else { return }
+        KeyboardRouter.shared.textChangedElsewhere()
         // Undoing the first content on the former writing draft removed that
         // page again: the (new) writing draft takes its place, without a jump.
         if outcome.pageID == selectedPageID, !model.notebook.pages.contains(where: { $0.id == outcome.pageID }) {
@@ -913,6 +1001,16 @@ struct ContentView: View {
                 if tool != .text { tool = .text; toolbarOptions = false }
                 focus.requestID = UUID(); textFocus = focus; selectedPageID = focus.pageID
             },
+            onSelectWholeFlow: {
+                // ⌘A with a pen or between fields: the caret first (on this page), then the selection.
+                guard isPaneActive(), model.pageContentGeneration == generation, canEdit else { return }
+                let here = model.notebook.textFlowSegments.first { $0.pageID == currentPage.id }
+                guard var focus = here.map({ TextFlowFocus(pageID: $0.pageID, boxID: $0.box.id, selection: NSRange(location: ($0.box.text as NSString).length, length: 0), typingStyle: $0.box.style) }) ?? model.textFlowEnd() else { return }
+                TextFlowSelection.shared.selectAllWhenFocused = true
+                if tool != .text { tool = .text; toolbarOptions = false }
+                focus.requestID = UUID(); textFocus = focus; selectedPageID = focus.pageID
+            },
+            flowActions: flowActions,
             onTextEditingFinished: {
                 // Leaving a field returns to the tool before the text tool (Textneubau).
                 guard isPaneActive(), tool == .text, !textToolLocked else { return }

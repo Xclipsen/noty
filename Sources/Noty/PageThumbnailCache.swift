@@ -127,7 +127,7 @@ final class PageThumbnailCache: ObservableObject {
                 text.draw(at: CGPoint(x: box.x + origin.x, y: box.y + origin.y))
                 context.restoreGState()
                 // Overflowing text: the red frame of the editor (`TextBox.overflows`).
-                if box.overflows(textHeight: Double(text.usedHeight)) {
+                if box.overflows(textHeight: Double(text.contentHeight(box))) {
                     let frame = CGMutablePath()
                     frame.addLines(between: box.selectionCorners.map(shown)); frame.closeSubpath()
                     context.saveGState()

@@ -250,7 +250,7 @@ extension TextObjectLayer {
         changeStyle { $0.font = .system; $0.fontName = name }
         viewController.dismiss(animated: true)
     }
-    private func editLink() {
+    func editLink() {
         var responder: UIResponder? = self
         while responder != nil && !(responder is UIViewController) { responder = responder?.next }
         guard let controller = responder as? UIViewController else { return }

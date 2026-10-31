@@ -125,7 +125,8 @@ extension Page {
 /// flow is exported; handwriting, free fields, images and shapes are in the
 /// PDF. Paragraph styles become headings (Titel `#`, Überschrift `##`,
 /// Unterüberschrift `###`), list markers Markdown lists (`-`, `1.`,
-/// `- [ ]`, `- [x]`, nesting four spaces per level), bold `**`, italic `_`.
+/// `- [ ]`, `- [x]`, nesting four spaces per level), bold `**`, italic `*`
+/// (unlike `_` it also works inside a word).
 public enum TextDocumentExport {
     public enum Format: Sendable { case plainText, markdown
         public var fileExtension: String { self == .markdown ? "md" : "txt" }
@@ -212,7 +213,7 @@ public enum TextDocumentExport {
     }
 
     /// Text of `range` with Markdown escapes; bold/italic runs wrapped in
-    /// `**`/`_` (headings are bold by their preset: `emphasis == false`
+    /// `**`/`*` (headings are bold by their preset: `emphasis == false`
     /// keeps only italics). White space stays outside the markers.
     static func inline(_ box: TextBox, _ range: NSRange, emphasis: Bool) -> String {
         guard range.length > 0 else { return "" }
@@ -234,7 +235,7 @@ public enum TextDocumentExport {
             let head = span.text.prefix { $0 == " " || $0 == "\t" }
             let tail = String(span.text.reversed().prefix { $0 == " " || $0 == "\t" })
             var text = escape(core)
-            if span.italic { text = "_" + text + "_" }
+            if span.italic { text = "*" + text + "*" }
             if span.bold { text = "**" + text + "**" }
             result += String(head) + text + tail
         }

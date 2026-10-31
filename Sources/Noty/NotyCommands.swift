@@ -5,12 +5,15 @@ import SwiftUI
 struct LibraryCommandActions {
     var newNotebook: (() -> Void)?
     var search: (() -> Void)?
+    var newTextDocument: (() -> Void)?
 }
 
 /// Actions of the active editor pane. Equality ignores the closures: they act on
 /// the pane's persistent state and model; the flags drive the menu's state.
 struct EditorCommandActions: Equatable {
     let owner: ObjectIdentifier
+    /// Two panes can show one notebook (same owner, other page and closures).
+    let pane: UUID
     var canEdit: Bool
     var canExportPage: Bool
     var exporting: Bool
@@ -23,9 +26,12 @@ struct EditorCommandActions: Equatable {
     let exportPage: () -> Void
     let previousPage: () -> Void
     let nextPage: () -> Void
+    let close: () -> Void
+    /// Everything the keyboard mode (`KeyboardRouter`) asks of this pane.
+    let keys: EditorKeyActions
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.owner == rhs.owner && lhs.canEdit == rhs.canEdit && lhs.canExportPage == rhs.canExportPage
+        lhs.owner == rhs.owner && lhs.pane == rhs.pane && lhs.canEdit == rhs.canEdit && lhs.canExportPage == rhs.canExportPage
             && lhs.exporting == rhs.exporting && lhs.hasPrevious == rhs.hasPrevious && lhs.hasNext == rhs.hasNext
             && lhs.isTextDocument == rhs.isTextDocument
     }
@@ -59,6 +65,8 @@ private struct EditorCommandPublisher: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onPreferenceChange(EditorCommandsPreference.self) { actions = $0 }
+            .onChange(of: actions, initial: true) { _, value in KeyboardRouter.shared.setEditor(value) }
+            .onDisappear { KeyboardRouter.shared.setEditor(nil) }
             .focusedSceneValue(\.editorCommands, actions)
     }
 }
@@ -79,6 +87,9 @@ struct NotyCommands: Commands {
             Button("Neues Heft …") { library?.newNotebook?() }
                 .keyboardShortcut("n", modifiers: .command)
                 .disabled(editor != nil || library?.newNotebook == nil)
+            Button("Neues Textdokument") { library?.newTextDocument?() }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(editor != nil || library?.newTextDocument == nil)
         }
         CommandMenu("Heft") {
             Button(editor == nil ? "In allen Heften suchen" : editor?.isTextDocument == true ? "Im Dokument suchen" : "Im Heft suchen") {
@@ -103,6 +114,14 @@ struct NotyCommands: Commands {
             Button("Nächste Seite") { editor?.nextPage() }
                 .keyboardShortcut(.downArrow, modifiers: .command)
                 .disabled(!(editor.map { $0.canEdit && $0.hasNext } ?? false))
+            Divider()
+            Button("Schließen") { editor?.close() }
+                .keyboardShortcut("w", modifiers: .command)
+                .disabled(editor.map { !$0.canEdit } ?? true)
+            Button("Befehlspalette") { KeyboardRouter.shared.togglePalette() }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+            Button("Tastenübersicht") { KeyboardRouter.shared.helpVisible.toggle() }
+                .keyboardShortcut("/", modifiers: .command)
         }
     }
 }

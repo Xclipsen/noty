@@ -30,6 +30,8 @@ struct LibraryView: View {
     @State private var creatingTextDocument = false
     @State private var libraryEditMode: EditMode = .inactive
     @State private var name = ""
+    /// Keyboard mode: the item `hjkl` stands on.
+    @State private var keyboardFocus: UUID?
     @State private var nameAction = NameAction.folder
     @State private var moving: NotebookCore.LibraryItem?
     @State private var trashing: NotebookCore.LibraryItem?
@@ -115,6 +117,11 @@ struct LibraryView: View {
         .animation(NotyMotion.panel(reduceMotion), value: libraryEditMode)
         .animation(NotyMotion.highlight(reduceMotion), value: location)
         .environment(\.editMode, $libraryEditMode)
+        .background(KeyboardHost().frame(width: 0, height: 0).accessibilityHidden(true))
+        .overlay { KeyboardOverlay(scope: .library) }
+        .onChange(of: model.opened == nil && !presenting, initial: true) { _, free in
+            KeyboardRouter.shared.setLibrary(free ? LibraryKeyActions(run: { runKey($0, count: $1) }, commands: { keyCommands }) : nil)
+        }
         .sheet(isPresented: $creatingNotebook) {
             NotebookCreationView(defaultAppearance: toolbox.preferences.defaultAppearance) { title, appearance in
                 let created = await model.createNotebook(title, appearance: appearance, parent: parentID)
@@ -151,6 +158,7 @@ struct LibraryView: View {
             LibraryNotebookView(document: document, root: model.root, library: model).id(document.id)
                 .environment(\.searchIndexArea, StableDefaults.scope(model.root))
                 .publishesEditorCommands()
+                .overlay { KeyboardOverlay(scope: .editor) }
                 .environment(\.editorSettings, EditorSettingsPresenter { [model, toolbox, externalBackup, workspaces] in
                     AnyView(SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces))
                 })
@@ -224,7 +232,52 @@ struct LibraryView: View {
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
         .focusedSceneValue(\.libraryCommands, model.opened == nil && !presenting ? LibraryCommandActions(
             newNotebook: editable ? { creatingNotebook = true } : nil,
-            search: editable ? { searchAllNotebooks() } : nil) : nil)
+            search: editable ? { searchAllNotebooks() } : nil,
+            newTextDocument: editable ? { creatingTextDocument = true } : nil) : nil)
+    }
+
+    // MARK: Keyboard mode (docs/KEYBOARD.md)
+    /// Items per row of the grid (`gridColumns`); the lists have one.
+    private var keyboardColumns: Int {
+        layout == .list ? 1 : max(1, Int((detailSize.width - 56 + 32) / (140 + 32)))
+    }
+    private func runKey(_ action: KeyAction, count: Int) {
+        let items = rows
+        let index = items.firstIndex { $0.id == keyboardFocus }
+        func focus(_ target: Int) { if !items.isEmpty { keyboardFocus = items[min(max(0, target), items.count - 1)].id } }
+        let item = index.map { items[$0] }
+        switch action {
+        case .focusItem(let dx, let dy): focus((index ?? (dx + dy > 0 ? -1 : 0)) + (dx + dy * keyboardColumns) * count)
+        case .focusFirstItem: focus(0)
+        case .focusLastItem: focus(items.count - 1)
+        case .parentFolder: if case .folder(let id) = location { goUp(from: id) }
+        case .search: searchAllNotebooks()
+        case .newNotebook: creatingNotebook = true
+        case .newTextDocument: creatingTextDocument = true
+        case .newFolder: prompt(.folder)
+        default: break
+        }
+        guard editable, let item else { return }
+        switch action {
+        case .openItem: activate(item)
+        case .renameItem: prompt(.rename(item.id), value: item.title)
+        case .trashItem: trashing = item
+        case .pinItem: Task { await model.favorite(item) }
+        case .moveItem: moving = item
+        case .duplicateItem: if !item.isFolder { Task { await model.duplicate(item) } }
+        case .exportItem: if !item.isFolder { exportPDF(item) }
+        case .shareItem: if !item.isFolder { shareNoty(item) }
+        default: break
+        }
+    }
+    /// What only the menus offer; the palette adds every key binding by name.
+    private var keyCommands: [PaletteCommand] {
+        [PaletteCommand(title: "PDF importieren") { importingPDF = true },
+         PaletteCommand(title: "Backup importieren") { importingBackup = true },
+         PaletteCommand(title: "Wiederhergestellte Kopien") { showingCopies = true },
+         PaletteCommand(title: "Bereiche") { showingAreas = true },
+         PaletteCommand(title: "Einstellungen") { settingsRequest = SettingsRequest() },
+         PaletteCommand(title: "Tastaturmodus ausschalten") { UserDefaults.standard.set(false, forKey: AppSettingsKey.keyboardMode) }]
     }
 
     // MARK: Sidebar
@@ -732,6 +785,7 @@ struct LibraryView: View {
                         .moveDisabled(!canReorder || !editable)
                 }
             } else {
+                ScrollViewReader { proxy in
                 ScrollView {
                     Group {
                         if layout == .list {
@@ -757,6 +811,8 @@ struct LibraryView: View {
                                                                        resolve: { detailDrop(at: $0) }, perform: { performDrop($0, id: $1) }))
                 }
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { detailSize = $0 }
+                .onChange(of: keyboardFocus) { _, id in if let id { withAnimation(NotyMotion.highlight(reduceMotion)) { proxy.scrollTo(id) } } }
+                }
             }
         }
         .overlay {
@@ -827,6 +883,10 @@ struct LibraryView: View {
         return NotyText.listDate(date)
     }
 
+    private var keyboardFocusRing: some View {
+        RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2).allowsHitTesting(false)
+    }
+
     private func documentCard(_ item: NotebookCore.LibraryItem) -> some View {
         VStack(spacing: 8) {
             Button { activate(item) } label: {
@@ -852,6 +912,8 @@ struct LibraryView: View {
         .background {
             if dropMark == DropMark(zone: .detail, target: .into(item.id)) { dropHighlight.padding(-8) }
         }
+        .overlay { if keyboardFocus == item.id { keyboardFocusRing.padding(-6) } }
+        .id(item.id)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(LibrarySpace.detail)) } action: { frames.grid[item.id] = $0 }
         .onDrag { dragProvider(item.id) }
         .contextMenu { itemActions(item, showsEnclosing: location == .recent || !search.isEmpty) }
@@ -875,6 +937,8 @@ struct LibraryView: View {
                 if item.isFolder { Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary) }
             }.padding(.vertical, 4).contentShape(Rectangle())
         }.buttonStyle(NotyPressStyle()).disabled(!editable)
+        .overlay { if keyboardFocus == item.id { keyboardFocusRing.padding(-3) } }
+        .id(item.id)
             .accessibilityLabel(accessibilityName(item))
             .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
             .contextMenu { itemActions(item, showsEnclosing: location == .recent || !search.isEmpty) }

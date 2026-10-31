@@ -83,6 +83,9 @@ struct PageEditor {
     var flowDocument = false
     /// Caret behind the flow's last character (page without flow segment).
     var onFlowEnd: () -> Void = {}
+    /// ⌘A with no caret in a text document: the whole text.
+    var onSelectWholeFlow: () -> Void = {}
+    var flowActions: TextFlowActions? = nil
     /// The user left a field while the text tool is not fixed: back to the previous tool.
     var onTextEditingFinished: () -> Void = {}
 }
@@ -159,6 +162,16 @@ final class DrawingCanvasView: PKCanvasView {
     var onPaste: (() -> Void)?
     var canPaste: (() -> Bool)?
     override func paste(_ sender: Any?) { onPaste?() }
+    // The canvas is a scroll view: keys go to the keyboard mode before it scrolls by them.
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.handle(presses) { super.pressesBegan(presses, with: event) }
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesEnded(presses, with: event) }
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesCancelled(presses, with: event) }
+    }
     /// PencilKit's „Platz einfügen“ (insert space) is not offered (Nutzerfeedback
     /// Tag 1); the finger double tap shows „Textfeld hinzufügen“ instead.
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
@@ -639,7 +652,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.onFlowChange = editor.onFlowEdit; textLayer.onFlowUndo = editor.onFlowUndo
         textLayer.onFlowBackspace = editor.onFlowBackspace; textLayer.onUndoBoundary = editor.onUndoBoundary
         textLayer.readCurrentBoxes = editor.readTextBoxes; textLayer.readFlowText = editor.readFlowText
-        textLayer.onFlowEnd = editor.onFlowEnd
+        textLayer.onFlowEnd = editor.onFlowEnd; textLayer.flowActions = editor.flowActions
         textLayer.adoptCallback(editor.onTextBoxes)
         imageLayer.adoptCallbacks(onChange: editor.onImages, onError: editor.onError)
         objectLayer.adoptCommit(editor.onContent)
@@ -786,6 +799,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.readCurrentBoxes = editor.readTextBoxes
         textLayer.readFlowText = editor.readFlowText
         textLayer.onFlowEnd = editor.onFlowEnd
+        textLayer.flowActions = editor.flowActions
         textLayer.configure(boxes: editor.textBoxes, pageID: editor.pageID, layout: editor.layout,
                             contentGeneration: editor.contentGeneration, active: editable && tool == .text, readOnly: editable && tool == .read,
                             darkPaper: editor.paperColor == .dark, darkMargins: editor.margins?.color == .dark,
@@ -971,6 +985,58 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         return super.canPerformAction(action, withSender: sender)
     }
     override func paste(_ sender: Any?) { pasteFromClipboard() }
+
+    // MARK: Keyboard (⌘A, keyboard mode)
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.handle(presses) { super.pressesBegan(presses, with: event) }
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesEnded(presses, with: event) }
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesCancelled(presses, with: event) }
+    }
+    /// ⌘A in every tool: ink tools and the text tool between fields end up
+    /// here. Tab reaches the keyboard mode before the system's focus moves.
+    override var keyCommands: [UIKeyCommand]? {
+        var commands = [UIKeyCommand(title: "Alles auswählen", action: #selector(selectAllKey), input: "a", modifierFlags: .command)]
+        guard editable, KeyboardRouter.shared.isEnabled else { return commands }
+        for flags in [UIKeyModifierFlags(), .shift] {
+            let command = UIKeyCommand(input: "\t", modifierFlags: flags, action: #selector(tabKey(_:)))
+            command.wantsPriorityOverSystemBehavior = true
+            commands.append(command)
+        }
+        return commands
+    }
+    @objc private func selectAllKey() { keyboardSelectAll() }
+    @objc private func tabKey(_ command: UIKeyCommand) {
+        KeyboardRouter.shared.handle(token: command.modifierFlags.contains(.shift) ? "<S-Tab>" : "<Tab>")
+    }
+    func keyboardSelectAll() {
+        guard editable else { return }
+        if flowDocument { configuration?.onSelectWholeFlow(); return }
+        claimSelectionFocus(); syncObjectPlane()
+        objectLayer.keyboardSelectAll()
+    }
+    func keyboardCycleObject(_ step: Int) {
+        guard editable else { return }
+        claimSelectionFocus(); syncObjectPlane()
+        objectLayer.keyboardCycle(step)
+    }
+    /// `i`, `a`: a text document's flow on this page or at its end; a notebook gets a new field.
+    func keyboardWrite(_ entry: TextInsertEntry) {
+        guard editable else { return }
+        let size = pageLayout.contentCanvas
+        if flowDocument {
+            if entry == .here, pageContent.textBoxes.contains(where: { $0.flowID != nil && !$0.text.isEmpty }) {
+                requestFlowCaret(at: PagePoint(x: size.width, y: size.height))
+            } else { configuration?.onFlowEnd() }
+            return
+        }
+        let origin = pageLayout.contentOrigin, visible = lastVisible ?? bounds
+        let point = lastTap ?? PagePoint(x: visible.midX - origin.x, y: visible.midY - origin.y)
+        if tool == .text { addTextField(at: point) } else { requestTextField(at: point) }
+    }
 
     private func showObjectPreview(_ content: PageContent) {
         guard !updating, let editor = configuration, objectLayer.handlesTapsItself || objectLayer.hasTouchSelection,

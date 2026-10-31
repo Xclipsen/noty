@@ -80,10 +80,61 @@ final class PageTextView: UITextView {
     override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
         materializePlacement(); super.setMarkedText(markedText, selectedRange: selectedRange)
     }
-    override func paste(_ sender: Any?) { materializePlacement(); super.paste(sender) }
+    override func paste(_ sender: Any?) {
+        // Normal mode: ⌘V like `P`, the text view itself does not take text there.
+        if KeyboardRouter.shared.isVisual {
+            if let text = UIPasteboard.general.string { historyOwner?.keyboardReplaceSelection(with: text, editor: self) }
+            return
+        }
+        if !KeyboardRouter.shared.allowsTyping {
+            _ = historyOwner?.keyboardPerform(.paste(before: true), count: 1, explicit: false, editor: self); return
+        }
+        if let text = UIPasteboard.general.string, historyOwner?.replaceFlowSelection(with: text) == true { return }
+        materializePlacement(); super.paste(sender)
+    }
+    override func copy(_ sender: Any?) {
+        if let text = historyOwner?.flowSelectionText { UIPasteboard.general.string = text } else { super.copy(sender) }
+    }
+    override func cut(_ sender: Any?) {
+        if KeyboardRouter.shared.isVisual {
+            _ = historyOwner?.keyboardPerform(.operateSelection(.delete), count: 1, explicit: false, editor: self); return
+        }
+        if let text = historyOwner?.flowSelectionText {
+            UIPasteboard.general.string = text
+            _ = historyOwner?.replaceFlowSelection(with: "")
+        } else { super.cut(sender) }
+    }
+    /// ⌘A: the whole text document, not only this page's part of it. The
+    /// edit menu's „Alles auswählen“ keeps the native selection with its handles.
+    func selectEverything() {
+        if historyOwner?.keyboardSelectAll(self) == true || historyOwner?.selectWholeFlow() == true { return }
+        selectAll(nil)
+    }
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if TextFlowSelection.shared.range != nil, [#selector(copy(_:)), #selector(cut(_:)), #selector(paste(_:))].contains(action) { return true }
+        return super.canPerformAction(action, withSender: sender)
+    }
+    // MARK: Keyboard mode
+    /// Normal mode: a wide caret on the character (vim's block cursor).
+    var normalCaret = false { didSet { if normalCaret != oldValue { refreshCaret() } } }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.handle(presses, text: self) { super.pressesBegan(presses, with: event) }
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesEnded(presses, with: event) }
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesCancelled(presses, with: event) }
+    }
+    func finishByEscape() { onEscape?() }
     /// TextKit spans caret/selection over the whole line fragment, which on ruled
     /// paper includes the gap up to the previous line. Use the glyph band instead.
     override func caretRect(for position: UITextPosition) -> CGRect {
+        var rect = textCaretRect(for: position)
+        if normalCaret { rect.size.width = max(rect.width, rect.height * 0.5) }
+        return rect
+    }
+    private func textCaretRect(for position: UITextPosition) -> CGRect {
         if let placement, selectedRange == NSRange(location: placement.location, length: 0),
            offset(from: beginningOfDocument, to: position) == placement.location { return placement.caret }
         let rect = super.caretRect(for: position)
@@ -157,6 +208,7 @@ final class PageTextView: UITextView {
     override func scrollRectToVisible(_ rect: CGRect, animated: Bool) { }
     override func deleteBackward() {
         if placement != nil { placement = nil; return }
+        if historyOwner?.replaceFlowSelection(with: "") == true { return }
         if isFlow, selectedRange.location == 0, selectedRange.length == 0 { onFlowBackspace?() }
         else { super.deleteBackward() }
     }
@@ -173,7 +225,13 @@ final class PageTextView: UITextView {
         addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))
         addGestureRecognizer(touchWatcher)
         touchWatcher.onEnded = { [weak self] touch in
-            guard let self, self.refusedDuringTouch else { return }
+            guard let self else { return }
+            // A tap in the text writes, also with the keyboard gone (no Esc then).
+            if self.isFirstResponder, self.lastTouchWasCleanTap, !KeyboardRouter.shared.allowsTyping {
+                TextFlowSelection.shared.set(nil)
+                KeyboardRouter.shared.setTextMode(.insert, editor: self)
+            }
+            guard self.refusedDuringTouch else { return }
             self.refusedDuringTouch = false
             if self.lastTouchWasCleanTap { self.onCleanTapAfterRefusal?(touch.location(in: self)) }
         }
@@ -211,6 +269,7 @@ final class PageTextView: UITextView {
         (super.keyCommands ?? []) + (isFlow ? [
             UIKeyCommand(input: "z", modifierFlags: .command, action: #selector(undoFlow)),
             UIKeyCommand(input: "z", modifierFlags: [.command, .shift], action: #selector(redoFlow))] : []) + [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escape)),
+            Self.selectAllCommand,
             UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(bold)),
             UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(italic)),
             UIKeyCommand(input: "u", modifierFlags: .command, action: #selector(underline))] + Self.formatCommands + Self.listCommands
@@ -222,6 +281,7 @@ final class PageTextView: UITextView {
         return command
     }
     @objc private func listTab(_ command: UIKeyCommand) {
+        guard KeyboardRouter.shared.allowsTyping else { return }
         let outdent = command.modifierFlags.contains(.shift)
         if onListTab?(outdent) != true, !outdent { insertText("\t") }
     }
@@ -232,18 +292,27 @@ final class PageTextView: UITextView {
             ("Schrift größer", "+", .command, "larger"), ("Schrift größer", "=", .command, "larger"),
             ("Schrift kleiner", "-", .command, "smaller"), ("Durchstreichen", "x", [.command, .shift], "strike"),
             ("Aufzählung", "7", [.command, .shift], "bullet"), ("Nummerierung", "8", [.command, .shift], "numbered"),
-            ("Checkliste", "9", [.command, .shift], "checkbox")]
+            ("Checkliste", "9", [.command, .shift], "checkbox"), ("Link", "k", .command, "link"), ("Markieren", "h", [.command, .shift], "highlight"),
+            // German layouts report ⇧7/8/9 as their shifted characters.
+            ("Aufzählung", "/", [.command, .shift], "bullet"), ("Nummerierung", "(", [.command, .shift], "numbered"), ("Checkliste", ")", [.command, .shift], "checkbox")]
+        let aliases: Set<String> = ["=", "/", "(", ")"]
         return items.map { title, input, flags, id in
             let command = UIKeyCommand(title: title, action: #selector(shortcut(_:)), input: input, modifierFlags: flags, propertyList: id)
             command.wantsPriorityOverSystemBehavior = true
-            if input == "=" { command.attributes = .hidden }
+            if aliases.contains(input) { command.attributes = .hidden }
             return command
         }
     }()
     @objc private func shortcut(_ command: UIKeyCommand) { (command.propertyList as? String).map { onShortcut?($0) } }
     @objc private func undoFlow() { onFlowUndo?(false) }
     @objc private func redoFlow() { onFlowUndo?(true) }
-    @objc private func escape() { onEscape?() }
+    @objc private func escape() { if !KeyboardRouter.shared.escape(in: self) { onEscape?() } }
+    private static let selectAllCommand: UIKeyCommand = {
+        let command = UIKeyCommand(input: "a", modifierFlags: .command, action: #selector(selectAllKey))
+        command.wantsPriorityOverSystemBehavior = true
+        return command
+    }()
+    @objc private func selectAllKey() { selectEverything() }
     @objc private func bold() { onBold?() }
     @objc private func italic() { onItalic?() }
     @objc private func underline() { onUnderline?() }
