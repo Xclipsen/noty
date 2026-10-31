@@ -320,6 +320,8 @@ struct ContentView: View {
     private var keyCommands: [PaletteCommand] {
         var items = [PaletteCommand(title: "Als PDF exportieren (ganz)") { startPDFExport(pageOnly: false) },
                      PaletteCommand(title: "Diese Seite als PDF exportieren") { startPDFExport(pageOnly: true) },
+                     PaletteCommand(title: "Als Markdown teilen (.md)") { shareText(.markdown) },
+                     PaletteCommand(title: "Als Text teilen (.txt)") { shareText(.plainText) },
                      PaletteCommand(title: "Teilen als .noty") { shareNoty() },
                      PaletteCommand(title: "Vollständiges Backup") { exportBackup() },
                      PaletteCommand(title: "Lokale Wiederherstellungspunkte") { showingHistory = true },
@@ -330,10 +332,7 @@ struct ContentView: View {
                      PaletteCommand(title: "Textwerkzeug fixieren umschalten") { textToolLocked.toggle() },
                      PaletteCommand(title: "Werkzeugleiste anpassen") { customizingTools = true },
                      PaletteCommand(title: "Tastaturmodus ausschalten") { UserDefaults.standard.set(false, forKey: AppSettingsKey.keyboardMode) }]
-        if isTextDocument {
-            items += [PaletteCommand(title: "Als Text teilen (.txt)") { shareText(.plainText) },
-                      PaletteCommand(title: "Als Markdown teilen (.md)") { shareText(.markdown) }]
-        } else {
+        if !isTextDocument {
             let page = currentPage
             items += [PaletteCommand(title: "Seite hinzufügen") { let defaults = model.notebook.pageDefaults; model.insertPaper(defaults.paper, color: defaults.color, relativeTo: anchorPageID) },
                       PaletteCommand(title: "Seite duplizieren") { model.duplicatePage(page.id) },
@@ -732,15 +731,15 @@ struct ContentView: View {
                         Button("Diese Seite als PDF exportieren …", systemImage: "doc") { startPDFExport(pageOnly: true) }
                             .disabled(!model.writable || currentPage.id == writingDraft.id || pdfExport.running)
                     }
+                    Section("Nur Text") {
+                        Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(.markdown) }
+                            .disabled(!model.writable)
+                        Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(.plainText) }
+                            .disabled(!model.writable)
+                    }
                     Section(model.backupStatus) {
                         Button("Als .noty teilen …", systemImage: "square.and.arrow.up") { shareNoty() }
                             .disabled(!model.writable)
-                        if isTextDocument {
-                            Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(.plainText) }
-                                .disabled(!model.writable)
-                            Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(.markdown) }
-                                .disabled(!model.writable)
-                        }
                         // Same checked archive as „Als .noty teilen“, but saved via
                         // the file dialog and counted as backup (status, date).
                         Button("In Dateien sichern …", systemImage: "archivebox") { exportBackup() }
@@ -785,10 +784,12 @@ struct ContentView: View {
             }
         }
     }
-    /// Text document: the flow as plain text or Markdown (`TextDocumentExport`)
-    /// in the share sheet, named `<Titel>.txt`/`.md`; removed after sharing.
+    /// The text of this notebook or document as plain text or Markdown
+    /// (`TextDocumentExport`) in the share sheet, named `<Titel>.txt`/`.md`;
+    /// removed after sharing. Without any text nothing is shared.
     private func shareText(_ format: TextDocumentExport.Format) {
         let text = TextDocumentExport.export(model.notebook, as: format)
+        guard !text.isEmpty else { model.error = "Hier gibt es noch keinen Text zum Teilen."; return }
         do {
             let url = try BackupScratch.newShareFile(title: model.notebook.title, fileExtension: format.fileExtension)
             try Data(text.utf8).write(to: url, options: .atomic)

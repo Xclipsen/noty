@@ -273,12 +273,18 @@ struct LibraryView: View {
     }
     /// What only the menus offer; the palette adds every key binding by name.
     private var keyCommands: [PaletteCommand] {
-        [PaletteCommand(title: "PDF importieren") { importingPDF = true },
+        var items = [PaletteCommand(title: "PDF importieren") { importingPDF = true },
          PaletteCommand(title: "Backup importieren") { importingBackup = true },
          PaletteCommand(title: "Wiederhergestellte Kopien") { showingCopies = true },
          PaletteCommand(title: "Bereiche") { showingAreas = true },
          PaletteCommand(title: "Einstellungen") { settingsRequest = SettingsRequest() },
          PaletteCommand(title: "Tastaturmodus ausschalten") { UserDefaults.standard.set(false, forKey: AppSettingsKey.keyboardMode) }]
+        // The item the keyboard stands on, like `e` and `s`.
+        if let item = rows.first(where: { $0.id == keyboardFocus }), !item.isFolder, editable {
+            items += [PaletteCommand(title: "Als Markdown teilen (.md)") { shareText(item, as: .markdown) },
+                      PaletteCommand(title: "Als Text teilen (.txt)") { shareText(item, as: .plainText) }]
+        }
+        return items
     }
 
     // MARK: Sidebar
@@ -740,14 +746,16 @@ struct LibraryView: View {
         Task { if let url = await model.shareFile(for: item) { NotyShare.present(url) } }
     }
 
-    /// Text document as `<Titel>.txt`/`.md` of the last committed revision,
-    /// the same export as in the editor (`TextDocumentExport`).
+    /// Notebook or text document as `<Titel>.txt`/`.md` of the last committed
+    /// revision, the same export as in the editor (`TextDocumentExport`).
     private func shareText(_ item: NotebookCore.LibraryItem, as format: TextDocumentExport.Format) {
         Task {
             do {
                 let (notebook, _) = try await model.committedNotebook(item.id)
+                let text = TextDocumentExport.export(notebook, as: format)
+                guard !text.isEmpty else { model.error = "Hier gibt es noch keinen Text zum Teilen."; return }
                 let url = try BackupScratch.newShareFile(title: notebook.title, fileExtension: format.fileExtension)
-                try Data(TextDocumentExport.export(notebook, as: format).utf8).write(to: url, options: .atomic)
+                try Data(text.utf8).write(to: url, options: .atomic)
                 NotyShare.present(url)
             } catch { model.error = "Teilen nicht möglich: \(error.localizedDescription)" }
         }
@@ -958,10 +966,8 @@ struct LibraryView: View {
                 Button("Duplizieren", systemImage: "plus.square.on.square") { Task { await model.duplicate(item) } }
                 Button("Als PDF exportieren …", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
                 Button("Als .noty teilen …", systemImage: "square.and.arrow.up") { shareNoty(item) }
-                if item.isTextDocument {
-                    Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(item, as: .plainText) }
-                    Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(item, as: .markdown) }
-                }
+                Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(item, as: .markdown) }
+                Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(item, as: .plainText) }
             }
             if showsEnclosing {
                 Button("Im Ordner zeigen", systemImage: "arrow.up.forward.square") {

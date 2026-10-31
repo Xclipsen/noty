@@ -271,9 +271,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 field.editor.historyOwner = self; field.editor.delegate = self
                 field.editor.inputAccessoryView = accessory
                 field.editor.onEscape = { [weak self] in self?.finishFieldByUser() }
-                field.editor.onCleanTapAfterRefusal = { [weak self, weak field] point in
-                    guard let self, let field, self.active else { return }
-                    self.focusField(field.id, at: field.editor.convert(point, to: self))
+                field.editor.onCleanTap = { [weak self, weak field] point, tapCount in
+                    guard let self, let field else { return }
+                    self.caretAfterTap(in: field, at: point, tapCount: tapCount)
                 }
                 field.editor.onBold = { [weak self] in self?.toggleBold() }
                 field.editor.onItalic = { [weak self] in self?.toggleItalic() }
@@ -290,6 +290,11 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 let border = SnapPanGestureRecognizer(target: self, action: #selector(moveField(_:)))
                 border.delegate = FieldBorderDrag.shared; border.maximumNumberOfTouches = 1
                 field.addGestureRecognizer(border)
+                // Only drags belong to frame and points; a tap there sets the caret.
+                let frameTap = UITapGestureRecognizer(target: self, action: #selector(frameTapped(_:)))
+                frameTap.delegate = FieldFrameTap.shared; frameTap.cancelsTouchesInView = false
+                frameTap.allowedTouchTypes = [UITouch.TouchType.direct, .indirectPointer, .pencil].map { NSNumber(value: $0.rawValue) }
+                field.addGestureRecognizer(frameTap)
                 for (index, handle) in field.widthHandles.enumerated() {
                     let action = TextFieldContainer.changesLeftEdge(index) ? #selector(widenLeft(_:)) : #selector(widenRight(_:))
                     let pan = SnapPanGestureRecognizer(target: self, action: action)
@@ -318,7 +323,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             let lines = box.flowRegion.flatMap { TextRuling(paper: $0 == .page ? paperStyle : marginStyle) }
             let pointScale = coordinateScale(for: box)
             let anchor = lines == nil ? nil : box.rulingAnchorY(regionTops: regionTops)
-            editor.setRulingOrigin(anchor.map { ($0 + pageLayout.contentOrigin.y) / pointScale }, lines: lines ?? .lined)
+            editor.setRulingOrigin(anchor.map { ($0 + pageLayout.contentOrigin.y) / pointScale }, lines: lines ?? .lined,
+                                   pageTop: box.flowID == nil || lines == nil ? nil : pageLayout.contentOrigin.y / pointScale)
             editor.isEditable = active; editor.isSelectable = active || readOnly
             editor.isUserInteractionEnabled = active || readOnly
             position(field, for: box); updateRaster(field, for: box)
@@ -420,8 +426,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         let scale = coordinateScale(for: box)
         let lines = box.flowRegion.flatMap { TextRuling(paper: $0 == .page ? paperStyle : marginStyle) }
         let anchor = lines == nil ? nil : box.rulingAnchorY(regionTops: regionTops)
-        return TextObjectLayout(box, ruledOrigin: anchor.map { CGFloat($0 + pageLayout.contentOrigin.y) / scale },
-                                ruling: lines ?? .lined, coordinateScale: scale)
+        return TextObjectLayout(box, ruledOrigin: anchor.map { CGFloat($0 + pageLayout.contentOrigin.y) / scale }, ruling: lines ?? .lined,
+                                pageTop: box.flowID == nil || lines == nil ? nil : pageLayout.contentOrigin.y / scale, coordinateScale: scale)
     }
     /// Textneubau: the height follows the content (never beyond the page, more
     /// text stays stored and is marked as overflow); with `autoWidth` the width
@@ -602,15 +608,35 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         }
     }
 
+    /// The end of every clean tap on a field's text, whatever UIKit made of
+    /// it: a refused or never started opening happens here, and the caret
+    /// goes exactly to the tap instead of UIKit's word end. After UIKit's own
+    /// handling of the same tap. Double taps and taps on a selection stay
+    /// native (word selection, edit menu), checkboxes toggle.
+    private func caretAfterTap(in field: TextFieldContainer, at point: CGPoint, tapCount: Int) {
+        let page = pageID, expected = generation
+        DispatchQueue.main.async { [weak self, weak field] in
+            guard let self, let field, self.active, self.pageID == page, self.generation == expected else { return }
+            let editor = field.editor, location = editor.convert(point, to: self)
+            guard !self.hasCheckbox(at: location) else { return }
+            if editor.isFirstResponder, tapCount > 1 || editor.selectedRange.length > 0 { return }
+            self.focusField(field.id, at: location)
+        }
+    }
+    @objc private func frameTapped(_ tap: UITapGestureRecognizer) {
+        guard tap.state == .ended, active, let field = tap.view as? TextFieldContainer else { return }
+        field.editor.writeAfterTap()
+        focusField(field.id, at: tap.location(in: self))
+    }
+
     func textViewShouldBeginEditing(_ textView: UITextView) -> Bool {
         guard active, let editor = textView as? PageTextView,
               boxes.contains(where: { $0.id == editor.objectID }) else { return false }
         // Caret only after a clean tap or on purpose, never from a drag, a
         // long press, a held Pencil or a returning menu/popover.
         guard editor.openingOnPurpose || editor.lastTouchWasCleanTap || UIAccessibility.isVoiceOverRunning else {
+            // If the touch still ends as a clean tap, `caretAfterTap` opens the field.
             if tracing { inputLog.info("[noty.text-input] Editing refused: no clean tap") }
-            // Still down: it may end as a clean tap after all (then the field opens there).
-            if editor.touchIsDown { editor.refusedDuringTouch = true }
             return false
         }
         selectedID = editor.objectID; notice.isHidden = true

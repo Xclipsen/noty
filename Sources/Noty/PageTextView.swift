@@ -6,9 +6,10 @@ final class PageTextView: UITextView {
     private let ruling = RuledTextLayout()
     var rulingOrigin: CGFloat? { ruling.originY }
     var rulingLines: TextRuling { ruling.lines }
-    func setRulingOrigin(_ y: CGFloat?, lines: TextRuling = .lined) {
-        guard ruling.originY != y || ruling.lines != lines else { return }
-        ruling.originY = y; ruling.lines = lines
+    var rulingPageTop: CGFloat? { ruling.pageTop }
+    func setRulingOrigin(_ y: CGFloat?, lines: TextRuling = .lined, pageTop: CGFloat? = nil) {
+        guard ruling.originY != y || ruling.lines != lines || ruling.pageTop != pageTop else { return }
+        ruling.originY = y; ruling.lines = lines; ruling.pageTop = pageTop
         layoutManager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: textStorage.length), actualCharacterRange: nil)
         (layoutManager as? TaskLayoutManager)?.onDisplayChange?()
     }
@@ -168,8 +169,7 @@ final class PageTextView: UITextView {
             // Empty trailing line: not laid out as glyphs; place where typed text will land.
             let extra = manager.extraLineFragmentRect
             guard let font = fonts.first, length == 0 || extra.height > 0 else { return nil }
-            let natural = extra.minY + font.ascender
-            baseline = ruling.originY.map { CGFloat(ruling.lines.baseline(forNatural: Double($0 + natural))) - $0 } ?? natural
+            baseline = ruling.baseline(top: extra.minY, ascent: font.ascender) ?? extra.minY + font.ascender
         } else {
             guard manager.numberOfGlyphs > 0 else { return nil }
             let point = CGPoint(x: rect.midX - inset.left, y: rect.midY - inset.top)
@@ -225,16 +225,16 @@ final class PageTextView: UITextView {
         addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))
         addGestureRecognizer(touchWatcher)
         touchWatcher.onEnded = { [weak self] touch in
-            guard let self else { return }
-            // A tap in the text writes, also with the keyboard gone (no Esc then).
-            if self.isFirstResponder, self.lastTouchWasCleanTap, !KeyboardRouter.shared.allowsTyping {
-                TextFlowSelection.shared.set(nil)
-                KeyboardRouter.shared.setTextMode(.insert, editor: self)
-            }
-            guard self.refusedDuringTouch else { return }
-            self.refusedDuringTouch = false
-            if self.lastTouchWasCleanTap { self.onCleanTapAfterRefusal?(touch.location(in: self)) }
+            guard let self, self.lastTouchEndedAsTap else { return }
+            self.writeAfterTap()
+            self.onCleanTap?(touch.location(in: self), touch.tapCount)
         }
+    }
+    /// A tap in the text writes, also with the keyboard gone (no Esc then).
+    func writeAfterTap() {
+        guard isFirstResponder, !KeyboardRouter.shared.allowsTyping else { return }
+        TextFlowSelection.shared.set(nil)
+        KeyboardRouter.shared.setTextMode(.insert, editor: self)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     /// Feedback zu Build 62: „Der Cursor sollte erst reingehen, wenn man
@@ -243,21 +243,25 @@ final class PageTextView: UITextView {
     /// down and lifted within 0.5 s, at most 10 screen points apart, just now.
     /// Code paths that open a field on purpose (new field by tap, „Bearbeiten“,
     /// second tap on a selected field, flow hand-off) set `openingOnPurpose`.
+    /// UIKit starts a pointer click on touch-down, before it can be clean, and
+    /// places a finger's caret at word ends: every clean tap ends in
+    /// `onCleanTap`, which opens the field and sets the caret at the tap.
     private let touchWatcher = TouchDownWatcher()
     var openingOnPurpose = false
-    /// Editing was refused while the touch was still down; if it ends as a
-    /// clean tap after all, the field opens at the tap (own coordinates).
-    var refusedDuringTouch = false
-    var onCleanTapAfterRefusal: ((CGPoint) -> Void)?
-    var touchIsDown: Bool { touchWatcher.start.map { $0.touch.phase != .ended && $0.touch.phase != .cancelled } ?? false }
-    var lastTouchWasCleanTap: Bool {
+    /// A clean tap ended at this point (own coordinates) with this tap count.
+    var onCleanTap: ((CGPoint, Int) -> Void)?
+    /// Held clicks are no accident: the time limit is for fingers and the Pencil.
+    private var lastTouchEndedAsTap: Bool {
         guard let start = touchWatcher.start else { return false }
         let touch = start.touch
         guard touch.phase == .ended else { return false }
         let point = touch.location(in: nil)
         return hypot(point.x - start.point.x, point.y - start.point.y) <= 10
-            && touch.timestamp - start.time <= 0.5
-            && ProcessInfo.processInfo.systemUptime - touch.timestamp <= 0.6
+            && (touch.type == .indirectPointer || touch.timestamp - start.time <= 0.5)
+    }
+    var lastTouchWasCleanTap: Bool {
+        guard lastTouchEndedAsTap, let touch = touchWatcher.start?.touch else { return false }
+        return ProcessInfo.processInfo.systemUptime - touch.timestamp <= 0.6
     }
     /// Opens the field for typing from app code (not a native text gesture).
     func beginEditingOnPurpose() {
@@ -348,6 +352,8 @@ final class TouchDownWatcher: UIGestureRecognizer, UIGestureRecognizerDelegate {
     init() {
         super.init(target: nil, action: nil)
         cancelsTouchesInView = false; delaysTouchesBegan = false; delaysTouchesEnded = false; delegate = self
+        // The default is „platform dependent“ (UIGestureRecognizer.h); every clean tap decides here.
+        allowedTouchTypes = [UITouch.TouchType.direct, .indirectPointer, .pencil].map { NSNumber(value: $0.rawValue) }
     }
     var onEnded: ((UITouch) -> Void)?
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {

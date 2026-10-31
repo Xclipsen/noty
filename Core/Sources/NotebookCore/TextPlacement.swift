@@ -25,6 +25,15 @@ public struct TextRuling: Equatable, Sendable {
         let earliest = natural - tolerance
         return max(earliest, nextBaseline(atOrAfter: earliest) - lift)
     }
+    /// First line of a page's text flow: it stands on the first rule that
+    /// keeps its ascenders on the page, however large the text; they may reach
+    /// into the top margin above the writing area. `ascent`: the line's height
+    /// above its baseline, `pageTop`: the page's top edge (same coordinates as
+    /// the baselines). Never tightened: the result is at least `pageTop + ascent`.
+    public func firstLineBaseline(ascent: Double, pageTop: Double = 0) -> Double {
+        let highest = pageTop + ascent
+        return max(highest, nextBaseline(atOrAfter: highest) - lift)
+    }
 }
 
 /// Click-and-type below existing text: the empty lines a tap needs and the
@@ -52,15 +61,18 @@ public struct TextPlacement: Equatable, Sendable {
     ///     the first candidate line already exists and needs no new break.
     ///   - lineHeight/ascent/descent: native metrics of the typing font.
     ///   - origin: page y of the container top (ruling coordinates).
+    ///   - pageTop: top edge of the page for a flow segment, whose first line
+    ///     follows `TextRuling.firstLineBaseline`; nil for other text.
     public static func below(tap: PagePoint, top: Double, endsWithBreak: Bool, width: Double, height: Double,
                              lineHeight: Double, ascent: Double, descent: Double,
-                             ruling: TextRuling?, origin: Double = 0) -> TextPlacement? {
+                             ruling: TextRuling?, origin: Double = 0, pageTop: Double? = nil) -> TextPlacement? {
         guard [tap.x, tap.y, top, width, height, lineHeight, ascent, descent, origin].allSatisfy(\.isFinite),
               lineHeight > 0, ascent > 0, width > 0, tap.y >= top - 0.5 else { return nil }
         var lineTop = top, chosen: (Int, Double)?
         for line in 0...maximumNewlines {
             let natural = origin + lineTop + ascent
-            let adjusted = ruling?.baseline(forNatural: natural) ?? natural
+            let first = lineTop < 0.5 ? pageTop.flatMap { ruling?.firstLineBaseline(ascent: ascent, pageTop: $0) } : nil
+            let adjusted = first ?? ruling?.baseline(forNatural: natural) ?? natural
             let baseline = adjusted - origin
             guard baseline + max(0, descent) <= height + 0.5 else { break }
             chosen = (line, baseline)
