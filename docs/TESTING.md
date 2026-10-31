@@ -2,6 +2,18 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## iPad-Simulator in GitHub Actions (31.10.2026, Branch `ci/simulator`)
+
+Workflow [`.github/workflows/simulator.yml`](../.github/workflows/simulator.yml), Start per `workflow_dispatch` oder Push auf `ci/**`, Pfadfilter auf App, Core und `ci/simulator`. Runner `xcode-27` (Vorschau-Image, macOS 27, Xcode 27.1), iPad Pro 11 Zoll (M5) mit iOS 27.0. `macos-26` reicht nicht, die App nutzt das iOS-27-SDK.
+
+- **Bauen ohne Signierung:** XcodeGen erzeugt aus `ci/simulator/project.yml` nur auf dem Runner ein Projekt. Es kompiliert dieselben Quellen und dieselbe `Info.plist` wie xtool, `Package.swift` und die Linux-Bauweise bleiben unberührt. `xtool dev build --triple arm64-apple-ios17.0-simulator` baut lokal ebenfalls, startet aber nichts.
+- **Smoke-Test:** `ci/simulator/UITests/KeyboardSmokeTests.swift`. Der Simulator startet leer, der Test legt alles selbst an. `-notyUITest` macht die Modusanzeige für XCUITest sichtbar, VoiceOver hört sie weiterhin nicht. `-noty.diagnostics.hangProbe YES` schaltet die Kategorie `keyboard` ein.
+- **Esc und Return:** `typeKey(.escape)` und `typeKey(.return)` kommen nicht an: kein `pressesBegan`, kein Key-Command, keine Zeile in einer aktiven Textansicht, kein `cancelAction`. Beide Tasten laufen deshalb als HID-Ereignis über AXe (Version und Prüfsumme im Workflow); `ci/simulator/hid-bridge.sh` nimmt die Aufträge des Tests per Datei entgegen. Alle anderen Tasten bleiben `typeKey`.
+- **Nicht warten auf Leerlauf:** In einem offenen Text meldet XCTest die App nie als untätig, jede Taste kostet dann zwei Minuten. Der Test schaltet diese Wartezeit über einen privaten XCTest-Einstieg aus und pollt selbst. Warum die App dort nicht als untätig gilt, ist **ungeklärt**.
+- **Artefakt `simulator-smoke`:** `.xcresult`, Screenshots und je Test eine Zeilenliste `tasten-*.txt` (auch in der Job-Zusammenfassung), `keyboard.log`, `cpu.log`, Build- und Testprotokoll. Keine Nutzerdaten.
+
+Der Simulator belegt Tastenzustellung, Fokus und Anzeige in der laufenden App, aber nicht das Gerät: Halten und Wiederholen einer Taste, deutsches Layout und tote Tasten, Bildschirmtastatur-Einblendung, Globe-/Systemkürzel, echte Tastaturhülle, Stift und Schreibgefühl bleiben **ungeprüft**. Ein grüner Lauf heißt nicht **auf dem iPad getestet**.
+
 ## Rückgängig für alle Operationen (31.10.2026, Branch `phase0/undo`)
 
 **Implementiert, Core-Tests (neu `UndoReliabilityTests`), `check_page_workflow.sh` und `xtool dev build` bestanden. Nicht installiert, am iPad ungeprüft.** Die Tests belegen Verlauf, Stände und Hinweisdaten; **nicht** belegt sind Ansichtsaktualisierung, Canvas und Gesten. Der Fall des Nutzers ist nicht am Gerät nachgestellt.
