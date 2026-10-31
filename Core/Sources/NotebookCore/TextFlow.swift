@@ -153,8 +153,12 @@ extension Notebook {
     /// handwriting or objects (they stay fixed on their page, the text runs
     /// below them); afterwards trailing pages that hold nothing are removed
     /// (`trimmingEmptyTrailingPages`, `drawingIsEmpty` decodes ink in the app).
+    /// `trailingLineFits`: the empty line behind a final line break still fits
+    /// its segment; otherwise Return on a page's last line continues on the
+    /// next page (the caret must not stand below the writing area).
     public func reflowText(pageID: UUID, previous: TextBox, replacement: TextBox, selection: NSRange,
                            trailingDraft: Page? = nil, drawingIsEmpty: (Data) -> Bool = { $0.isEmpty },
+                           trailingLineFits: ((Page, TextBox) -> Bool)? = nil,
                            pageCapacity: (Page, TextBox) throws -> Int) throws -> (Notebook, TextFlowFocus) {
         guard let start = pages.firstIndex(where: { $0.id == pageID }),
               pages[start].effectiveTextBoxes.contains(previous), previous.id == replacement.id,
@@ -282,6 +286,33 @@ extension Notebook {
             // Typing that does not move a segment boundary stops here.
             if focus != nil, consumed < total, nodeIndex < existing.count, storedTailMatches(from: nodeIndex, at: consumed) { break }
         } while consumed < total || nodeIndex < existing.count
+        if let trailingLineFits, selection.length == 0, selection.location == total, let current = focus,
+           let last = (text.text as NSString).length > 0 ? (text.text as NSString).character(at: total - 1) : nil, [10, 13, 0x2028, 0x2029].contains(last),
+           let index = next.pages.firstIndex(where: { $0.id == current.pageID }),
+           let box = next.pages[index].effectiveTextBoxes.first(where: { $0.id == current.boxID }), !box.text.isEmpty,
+           !trailingLineFits(next.pages[index], box) {
+            var target = next.pages[(index + 1)...].first(where: { page in page.effectiveTextBoxes.contains { $0.flowID == flow } })?.id
+            if target == nil {
+                var page: Page
+                if next.pages.indices.contains(index + 1), next.pages[index + 1].pdfReference == nil, next.pages[index + 1].writingRect(.page) != nil { page = next.pages[index + 1] }
+                else {
+                    guard next.pages.count < 500 else { throw PageOperationError.pageLimit }
+                    let draftID = trailingDraft?.id
+                    let mayUseDraft = index + 1 == next.pages.count && draftID.map { id in !next.pages.contains(where: { $0.id == id }) } == true
+                    page = next.writingDraft(id: mayUseDraft ? draftID! : UUID())
+                    page.paper = next.pages[index].paper; page.paperColor = next.pages[index].paperColor; page.geometry = next.pages[index].geometry
+                    next.pages.insert(page, at: index + 1)
+                }
+                guard let rect = page.writingRect(.page) else { throw TextFlowError.noSpace }
+                var empty = TextBox(x: rect.x, y: rect.y, width: rect.width, height: rect.height, style: replacement.style)
+                empty.flowID = flow; empty.flowRegion = .page
+                next.pages[index + 1].textBoxes = next.pages[index + 1].effectiveTextBoxes + [empty]
+                target = next.pages[index + 1].id
+            }
+            if let target, let empty = next.pages.first(where: { $0.id == target })?.effectiveTextBoxes.first(where: { $0.flowID == flow }) {
+                focus = TextFlowFocus(pageID: target, boxID: empty.id, selection: NSRange(location: 0, length: 0), typingStyle: replacement.style)
+            }
+        }
         next.raiseSchemaForTextColors(next.pages.flatMap { $0.textBoxes ?? [] })
         next.raiseSchemaForTextFields(next.pages.flatMap { $0.textBoxes ?? [] })
         if isTextDocument {
