@@ -12,19 +12,19 @@ struct PDFWritingSpaceOptions: View {
     @Binding var paper: PaperStyle
     @Binding var color: PaperColor
     var body: some View {
-        Toggle("Schreibplatz rechts", isOn: $enabled)
+        keyToggle("Schreibplatz rechts", isOn: $enabled)
         if enabled {
-            Toggle("Zusätzlich links", isOn: $left)
+            keyToggle("Zusätzlich links", isOn: $left)
             Picker("Breite", selection: $fraction) {
                 Text("25 %").tag(0.25); Text("60 %").tag(0.6); Text("100 %").tag(1.0)
-            }.pickerStyle(.segmented)
+            }.pickerStyle(.segmented).keyOption(.choice($fraction, [0.25, 0.6, 1.0]))
             HStack {
                 Picker("Vorlage", selection: $paper) {
                     Text("Blanko").tag(PaperStyle.blank); Text("Liniert").tag(PaperStyle.lined); Text("Kariert").tag(PaperStyle.grid)
-                }.pickerStyle(.segmented)
+                }.pickerStyle(.segmented).keyOption(.choice($paper, [.blank, .lined, .grid]))
                 Picker("Farbe", selection: $color) {
                     Text("Weiß").tag(PaperColor.white); Text("Dunkel").tag(PaperColor.dark)
-                }.pickerStyle(.segmented).frame(maxWidth: 170)
+                }.pickerStyle(.segmented).frame(maxWidth: 170).keyOption(.choice($color, [.white, .dark]))
             }
         }
     }
@@ -58,7 +58,7 @@ struct PDFImportSheet: View {
                 } footer: {
                     Text("Die PDF wird vollständig lokal kopiert; das Original bleibt unverändert. 100 % entspricht einer normalen Seitenbreite.")
                 }
-                Section { Button("PDF aus Dateien wählen …", systemImage: "doc.badge.plus") { choosingFile = true } }
+                Section { Button("PDF aus Dateien wählen …", systemImage: "doc.badge.plus") { choosingFile = true }.keyOption(.action { choosingFile = true }) }
             }
             .navigationTitle("PDF importieren").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
@@ -71,5 +71,6 @@ struct PDFImportSheet: View {
                 }
             }
         }.preferredColorScheme(.dark)
+        .keyboardSheet(onDefault: { choosingFile = true })
     }
 }

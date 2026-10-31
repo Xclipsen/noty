@@ -18,6 +18,8 @@ private struct DocumentLineLayout: @MainActor TextEngineLayout {
 /// commands and the surface shows all of them (`refreshOverlay`).
 extension DocumentTextSurface: KeyboardTextTarget {
     var keepsTextFocus: Bool { window != nil && isActive }
+    /// Text editor 2 has no format bar yet (docs/TEXT-EDITOR-2.md).
+    func keyboardColorRows() -> [KeyChoiceRow] { [] }
     func finishByEscape() { finishEditing() }
 
     /// Undo, taps and typing happen outside the engine: it takes over the buffer.

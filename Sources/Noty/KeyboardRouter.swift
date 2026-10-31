@@ -48,6 +48,8 @@ protocol KeyboardTextTarget: UIResponder {
     var normalCaret: Bool { get set }
     /// Can take the focus back after the palette (an empty field may be gone).
     var keepsTextFocus: Bool { get }
+    /// Text and marker colours of the colour panel; empty where it has none.
+    func keyboardColorRows() -> [KeyChoiceRow]
     func beginEditingOnPurpose()
     func finishByEscape()
     @discardableResult func keyboardSync() -> Bool
@@ -99,6 +101,12 @@ final class KeyboardRouter: ObservableObject {
     var engine = TextEngine(mode: .insert)
     var mode: TextEngine.Mode { engine.mode }
     private(set) var editing = false
+    /// Open parts with keys of their own, see `KeyPanel`.
+    var panels = KeyPanelStack<KeyPanel>()
+    /// Counts changes of `panels`: they are no published value themselves.
+    @Published var panelRevision = 0
+    @Published var question: KeyQuestion?
+    @Published var choices: KeyChoices?
     private var parser = HelixParser()
     private var editorActions: EditorKeyActions?
     private var libraryActions: LibraryKeyActions?
@@ -154,6 +162,7 @@ final class KeyboardRouter: ObservableObject {
         if commands == nil {
             editing = false; heldEditor = nil
             endTextState()
+            dropQuestions()
             reclaim()
         } else if editorActions == nil { cancelPrompt() }
         // The keys of a started sequence lead nowhere there.
@@ -179,11 +188,14 @@ final class KeyboardRouter: ObservableObject {
         }
     }
     private func claimResponder() {
-        switch scope {
-        case .library: if libraryActions != nil { host?.claim() }
-        case .editor:
-            if heldEditor != nil { returnToHeldText() }
-            else if editorActions != nil { viewport?.activeSheet?.claimUndoResponder() }
+        let sheet = sheetPanel
+        switch KeyFocusTarget.resolve(hasPanelHost: sheet != nil, inEditor: scope == .editor, heldText: heldEditor != nil,
+                                      editorActive: editorActions != nil, libraryActive: libraryActions != nil) {
+        case .panelHost: sheet?.host?.claim()
+        case .heldText: returnToHeldText()
+        case .page: viewport?.activeSheet?.claimUndoResponder()
+        case .library: host?.claim()
+        case .none: break
         }
         guard HangProbe.isInstalled, Self.responderName != loggedResponder else { return }
         loggedResponder = Self.responderName
@@ -195,6 +207,7 @@ final class KeyboardRouter: ObservableObject {
         // `applyTextFocus` ends a hand-off, once the selection is in place.
         if !handoff {
             dropPrompt()
+            pageTouched()
             setMode(.insert); insertRun = nil; typedSinceInsert = false
         } else if entering { insertRun = nil; typedSinceInsert = false }
         refreshLabel()
@@ -223,7 +236,7 @@ final class KeyboardRouter: ObservableObject {
         if mode == .insert { dropSequence() }
         modeChanged(editor: editor)
     }
-    private func dropSequence() { parser.reset(); pending = ""; menu = nil }
+    func dropSequence() { parser.reset(); pending = ""; menu = nil }
     /// The input line goes, the selection stays what the user made of it.
     private func dropPrompt() { textPrompt = nil; promptStart = nil }
     /// After a command: the wide caret, the indicator and the start of an INS run.
@@ -260,12 +273,12 @@ final class KeyboardRouter: ObservableObject {
         TextFlowSelection.shared.set(nil)
         if mode == .select { setMode(.normal) }
     }
-    private func refreshLabel() {
+    func refreshLabel() {
         let name: String = switch mode {
         case .insert: "INS"; case .normal: "NOR"; case .select: "SEL"
         }
-        let value = scope == .editor && editing ? name : "NOR"
-        let place = scope == .library ? "BIBLIOTHEK" : editing ? "" : "SEITE"
+        let value = activePanel.map { $0.typing ? "INS" : "NOR" } ?? (scope == .editor && editing ? name : "NOR")
+        let place = activePanel?.label ?? (scope == .library ? "BIBLIOTHEK" : editing ? "" : "SEITE")
         // In INS only text editor 2 keeps several: it types at all of them.
         let count = scope == .editor && editing ? engine.selections.count : 1
         if label != value { label = value }
@@ -289,12 +302,16 @@ final class KeyboardRouter: ObservableObject {
         pasteboardCopy = value
     }
     func show(_ value: TextEngine.Notice) {
-        notice = switch value {
+        let note = switch value {
         case .wrapped: "Suche von vorn"
         case .noMatch: "Kein Treffer"
         case .pairNotFound: "Kein Paar gefunden"
         case .primaryOnly: "Nur Hauptauswahl"
         }
+        show(note: note)
+    }
+    func show(note: String) {
+        notice = note
         noticeTask?.cancel()
         noticeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
@@ -390,6 +407,7 @@ final class KeyboardRouter: ObservableObject {
     // MARK: Keys
 
     private var context: HelixContext? {
+        if let activePanel { return activePanel.context }
         if scope == .library { return libraryActions == nil ? nil : .library }
         guard editorActions != nil else { return nil }
         guard editing else { return .page }
@@ -440,7 +458,7 @@ final class KeyboardRouter: ObservableObject {
     }
     private func handle(_ key: UIKey, time: TimeInterval, text: (any KeyboardTextTarget)?) -> Bool {
         let code = key.keyCode.rawValue, token = Self.token(for: key), tracing = HangProbe.isInstalled
-        let before = context, typing = (editing && mode == .insert) || textPrompt != nil
+        let before = context, typing = (editing && mode == .insert) || textPrompt != nil || activePanel?.input != nil
         outcome = ""
         // The responder chain walked on with an unused press: nothing new happened.
         let fresh = gate.began(key: code, time: time)
@@ -504,8 +522,9 @@ final class KeyboardRouter: ObservableObject {
             paletteVisible = false
             return true
         }
+        if let activePanel, activePanel.typing { return panelKey(token, activePanel) }
         if textPrompt != nil { promptKey(token, editor: text); return true }
-        if token == "<Esc>", editing, scope == .editor, let editor = text ?? UIResponder.currentFirstResponder as? any KeyboardTextTarget {
+        if token == "<Esc>", activePanel == nil, editing, scope == .editor, let editor = text ?? UIResponder.currentFirstResponder as? any KeyboardTextTarget {
             if !escape(in: editor) { editor.finishByEscape() }
             return true
         }
@@ -514,6 +533,8 @@ final class KeyboardRouter: ObservableObject {
 
     private func feed(_ token: String, key: Int?, text: (any KeyboardTextTarget)?) -> Bool {
         guard let context else { return false }
+        // In a search list a digit is text, not a count.
+        if parser.isIdle, token.first?.isNumber == true, typeUnbound(token) { return true }
         let editor = editing ? (text ?? UIResponder.currentFirstResponder as? any KeyboardTextTarget) : nil
         let result = parser.feed(token, context: context)
         if HangProbe.isInstalled { outcome = "\(result)" }
@@ -526,8 +547,10 @@ final class KeyboardRouter: ObservableObject {
             return true
         case .unbound:
             pending = ""; menu = nil
+            if typeUnbound(token) { return true }
             // In a text no stray letter may be typed; arrows with ⇧ and the like stay native.
-            return context == .text
+            // A panel keeps its keys, too: the responder behind it means nothing now.
+            return context == .text || activePanel != nil
         case .action(let action, let count, let repeats):
             pending = ""; menu = nil
             perform(action, count: count, context: context, text: editor)
@@ -583,6 +606,7 @@ final class KeyboardRouter: ObservableObject {
             return
         default: break
         }
+        if let activePanel, activePanel.context == context { activePanel.run(action, count); return }
         if context == .library { libraryActions?.run(action, count); return }
         if let text, action == .undo || action == .redo {
             text.keyboardUndo(redo: action == .redo)
@@ -619,8 +643,8 @@ final class KeyboardRouter: ObservableObject {
                 PaletteCommand(title: row.title, keys: row.label) { [weak self] in self?.runFromPalette(action, context: context) }
             }
         }
-        let extra = scope == .library ? libraryActions?.commands() : editorActions?.commands()
-        return (extra ?? []) + keys
+        let extra = activePanel?.commands() ?? []
+        return extra + ((scope == .library ? libraryActions?.commands() : editorActions?.commands()) ?? []) + keys
     }
     /// Without the keyboard mode no engine runs and no keys reach the input
     /// line: these would do nothing.

@@ -67,7 +67,7 @@ struct NotebookAppearanceEditor: View {
                             .accessibilityLabel("Umschlag \(cover.title)")
                             .accessibilityAddTraits(appearance.cover == cover ? .isSelected : [])
                     }
-                }
+                }.keyOption(.choice($appearance.cover, NotebookCover.allCases))
             }
             Text(paperHeading).font(.headline)
             if let fixedFormat {
@@ -75,16 +75,17 @@ struct NotebookAppearanceEditor: View {
             } else {
                 Picker("Größe", selection: $appearance.format) {
                     ForEach(PaperFormat.allCases, id: \.self) { Text($0.title).tag($0) }
-                }.pickerStyle(.segmented)
+                }.pickerStyle(.segmented).keyOption(.choice($appearance.format, PaperFormat.allCases))
             }
             Picker("Ausrichtung", selection: $appearance.landscape) {
                 Label("Hochformat", systemImage: "rectangle.portrait").tag(false)
                 Label("Querformat", systemImage: "rectangle").tag(true)
-            }.pickerStyle(.segmented)
+            }.pickerStyle(.segmented).keyOption(.toggle($appearance.landscape))
             Picker("Papier", selection: $appearance.paper) {
                 Text("Blanko").tag(PaperStyle.blank); Text("Liniert").tag(PaperStyle.lined); Text("Kariert").tag(PaperStyle.grid)
-            }.pickerStyle(.segmented)
+            }.pickerStyle(.segmented).keyOption(.choice($appearance.paper, [.blank, .lined, .grid]))
             Picker("Papierfarbe", selection: $appearance.color) { Text("Weiß").tag(PaperColor.white); Text("Dunkel").tag(PaperColor.dark) }.pickerStyle(.segmented)
+                .keyOption(.choice($appearance.color, [.white, .dark]))
             Text(note).font(.caption).foregroundStyle(.secondary)
         }
         .animation(NotyMotion.panel(reduceMotion), value: appearance.coverEnabled)
@@ -110,11 +111,12 @@ private struct DocumentCreationForm: View {
                     VStack(alignment: .leading, spacing: 18) {
                         TextField("Titel", text: $title).font(.title3).textFieldStyle(.roundedBorder)
                             .accessibilityLabel("Titel \(kind == "Heft" ? "des Hefts" : "des Textdokuments")")
+                            .keyOption(.text($title))
                         if textDocument {
                             Text("Seiten entstehen beim Schreiben; am Ende steht immer eine leere Seite für Handschrift bereit. Handschrift bleibt fest auf ihrer Seite.")
                                 .font(.caption).foregroundStyle(.secondary)
                         } else {
-                            Toggle("Umschlag", isOn: $appearance.coverEnabled)
+                            keyToggle("Umschlag", isOn: $appearance.coverEnabled)
                             Text("Der Umschlag erscheint in der Bibliothek und zählt nicht als Seite.").font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -148,14 +150,17 @@ struct NotebookCreationView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.disabled(creating) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Erstellen") {
-                        creating = true
-                        Task { if await onCreate(title, appearance) { dismiss() }; creating = false }
-                    }.disabled(creating || (try? LibraryStore.validTitle(title)) == nil)
+                    Button("Erstellen", action: create).disabled(!creatable)
                 }
             }
             .disabled(creating)
         }.preferredColorScheme(.dark)
+        .keyboardSheet(onDefault: { if creatable { create() } }, onCancel: { if !creating { dismiss() } })
+    }
+    private var creatable: Bool { !creating && (try? LibraryStore.validTitle(title)) != nil }
+    private func create() {
+        creating = true
+        Task { if await onCreate(title, appearance) { dismiss() }; creating = false }
     }
 }
 
@@ -194,13 +199,16 @@ struct TextDocumentCreationView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.disabled(creating) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Erstellen") {
-                        creating = true
-                        Task { if await onCreate(title, appearance.landscape, appearance.paper, appearance.color) { dismiss() }; creating = false }
-                    }.disabled(creating || (try? LibraryStore.validTitle(title)) == nil)
+                    Button("Erstellen", action: create).disabled(!creatable)
                 }
             }
             .disabled(creating)
         }.preferredColorScheme(.dark)
+        .keyboardSheet(onDefault: { if creatable { create() } }, onCancel: { if !creating { dismiss() } })
+    }
+    private var creatable: Bool { !creating && (try? LibraryStore.validTitle(title)) != nil }
+    private func create() {
+        creating = true
+        Task { if await onCreate(title, appearance.landscape, appearance.paper, appearance.color) { dismiss() }; creating = false }
     }
 }

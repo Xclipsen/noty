@@ -145,14 +145,7 @@ struct PageMarginsView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Anwenden") {
-                        do {
-                            let change = try model.prepareMarginChange(pageID: pageID, margins: margins, wholeImport: wholeImport,
-                                                                       paper: extendsPaper ? (paperStyle, paperColor) : nil)
-                            if change.removedStrokes > 0 { pending = change; confirming = true }
-                            else { try model.commitMarginChange(change); dismiss() }
-                        } catch { self.error = error.localizedDescription }
-                    }.fontWeight(.semibold).disabled(!editable)
+                    Button("Anwenden", action: apply).fontWeight(.semibold).disabled(!editable)
                 }
             }
             .alert("Handschrift liegt im entfernten Rand", isPresented: $confirming) {
@@ -166,10 +159,19 @@ struct PageMarginsView: View {
                 Text("\(NotyText.count(pending?.removedStrokes ?? 0, "betroffener Strich wird", "betroffene Striche werden")) ganz entfernt. \(NotyText.count(pending?.archivedPages ?? 0, "vollständiger Seitenstand bleibt", "vollständige Seitenstände bleiben")) mit dem bisherigen Schreibplatz im Seitenpapierkorb. Wiederherstellen setzt die bestehende Seite zurück und sichert ihren aktuellen Stand vorher im Papierkorb.")
             }
             .alert("Seite nicht geändert", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-                Button("OK") { error = nil }
+                Button("OK") { error = nil }.keyboardShortcut(.defaultAction)
             } message: { Text(error ?? "") }
         }
         .preferredColorScheme(.dark)
+        .keyboardSheet(onDefault: { if editable { apply() } })
+    }
+    private func apply() {
+        do {
+            let change = try model.prepareMarginChange(pageID: pageID, margins: margins, wholeImport: wholeImport,
+                                                       paper: extendsPaper ? (paperStyle, paperColor) : nil)
+            if change.removedStrokes > 0 { pending = change; confirming = true }
+            else { try model.commitMarginChange(change); dismiss() }
+        } catch { self.error = error.localizedDescription }
     }
 
     // MARK: Paper page („Seite anpassen“)
@@ -190,7 +192,7 @@ struct PageMarginsView: View {
                         Picker("Gilt für", selection: $wholeImport) {
                             Text("Diese Seite").tag(false)
                             Text("Alle Papierseiten").tag(true)
-                        }.pickerStyle(.segmented).disabled(!editable)
+                        }.pickerStyle(.segmented).disabled(!editable).keyOption(.toggle($wholeImport))
                         Text(wholeImport
                              ? "Jede vorhandene Papierseite wächst um denselben Anteil ihrer Größe. Neue Seiten bleiben normal, gelöschte unverändert."
                              : "Linien und Papierfarbe laufen nahtlos weiter. Kürzer geht nur bis zum Inhalt, es wird nie etwas gelöscht.")
@@ -207,13 +209,13 @@ struct PageMarginsView: View {
                             Text("Blanko").tag(PaperStyle.blank)
                             Text("Liniert").tag(PaperStyle.lined)
                             Text("Kariert").tag(PaperStyle.grid)
-                        }.pickerStyle(.segmented).frame(maxWidth: 300)
+                        }.pickerStyle(.segmented).frame(maxWidth: 300).keyOption(.choice($paperStyle, [.blank, .lined, .grid]))
                     }
                     LabeledContent("Farbe") {
                         Picker("Farbe", selection: $paperColor) {
                             Text("Weiß").tag(PaperColor.white)
                             Text("Dunkel").tag(PaperColor.dark)
-                        }.pickerStyle(.segmented).frame(maxWidth: 200)
+                        }.pickerStyle(.segmented).frame(maxWidth: 200).keyOption(.choice($paperColor, [.white, .dark]))
                     }
                     if paperColor != (page?.paperColor ?? .white) {
                         Text("Schwarze und weiße Schrift wird passend getauscht, farbige bleibt.")
@@ -299,8 +301,8 @@ struct PageMarginsView: View {
         let on = value.wrappedValue > 0
         let percent = Int((value.wrappedValue / dimension * 100).rounded())
         return VStack(alignment: .leading, spacing: 12) {
-            Toggle(title, isOn: Binding(get: { value.wrappedValue > 0 },
-                                       set: { value.wrappedValue = $0 ? max(minimum, dimension * standard) : 0 }))
+            keyToggle(title, isOn: Binding(get: { value.wrappedValue > 0 },
+                                           set: { value.wrappedValue = $0 ? max(minimum, dimension * standard) : 0 }))
                 .toggleStyle(.switch).frame(minHeight: 36)
                 .disabled(!editable || (on && minimum > 0))
             HStack(spacing: 8) {
@@ -312,6 +314,7 @@ struct PageMarginsView: View {
                         .buttonStyle(.bordered).tint(chosen ? Color.accentColor : Color.gray)
                         .disabled(!on || !editable || target < minimum - 0.5)
                         .accessibilityLabel("\(title) \(label)")
+                        .keyOption(.action { value.wrappedValue = max(minimum, target) })
                 }
                 Spacer(minLength: 0)
                 Text(on ? "+\(percent) %" : "aus").font(.caption).monospacedDigit().foregroundStyle(.secondary)
@@ -319,6 +322,7 @@ struct PageMarginsView: View {
             Slider(value: value, in: (on ? minimum : 0)...max(1, max(dimension, value.wrappedValue)))
                 .disabled(!on || !editable)
                 .accessibilityLabel("\(title), Anteil")
+                .keyOption(.slider(value, in: (on ? minimum : 0)...max(1, max(dimension, value.wrappedValue)), step: dimension / 20))
             if minimum > 0.5 {
                 Text("Hier liegt schon Inhalt: kürzer als \(Int((minimum / dimension * 100).rounded())) % geht nicht.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -367,7 +371,7 @@ struct PageMarginsView: View {
                 Picker("Anwenden auf", selection: $wholeImport) {
                     Text("Aktuelle Seite").tag(false)
                     Text("Dieser PDF-Import").tag(true)
-                }.pickerStyle(.segmented)
+                }.pickerStyle(.segmented).keyOption(.toggle($wholeImport))
                 Text("100 % ist so breit wie das PDF-Blatt. Bei einheitlicher Anzeige entspricht das einer normalen Seitenbreite. Gelöschte Seiten bleiben unverändert.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -385,12 +389,12 @@ struct PageMarginsView: View {
                     Text("Blanko").tag(PaperStyle.blank)
                     Text("Liniert").tag(PaperStyle.lined)
                     Text("Kariert").tag(PaperStyle.grid)
-                }.pickerStyle(.segmented)
+                }.pickerStyle(.segmented).keyOption(.choice($margins.style, [.blank, .lined, .grid]))
                 Text("Papierfarbe").font(.subheadline)
                 Picker("Papierfarbe", selection: $margins.color) {
                     Text("Weiß").tag(PaperColor.white)
                     Text("Dunkel").tag(PaperColor.dark)
-                }.pickerStyle(.segmented)
+                }.pickerStyle(.segmented).keyOption(.choice($margins.color, [.white, .dark]))
             }
             .notySheetCard()
         }
@@ -402,8 +406,8 @@ struct PageMarginsView: View {
         let enabled = value.wrappedValue > 0
         let editable = model.writable && !model.mutationsPaused && !model.busy
         return VStack(alignment: .leading, spacing: 10) {
-            Toggle(title, isOn: Binding(get: { value.wrappedValue > 0 },
-                                       set: { value.wrappedValue = $0 ? dimension : 0 }))
+            keyToggle(title, isOn: Binding(get: { value.wrappedValue > 0 },
+                                           set: { value.wrappedValue = $0 ? dimension : 0 }))
                 .toggleStyle(.switch)
                 .frame(minHeight: 44)
                 .disabled(!editable)
@@ -412,12 +416,14 @@ struct PageMarginsView: View {
                 .frame(height: 32)
                 .disabled(!enabled || !editable)
                 .accessibilityLabel("Breite \(title)")
+                .keyOption(.slider(value, in: 0...max(1, max(dimension, value.wrappedValue)), step: dimension / 20))
             HStack(spacing: 8) {
                 ForEach(Array(zip(["Schmal", "Mittel", "Breit"], [0.25, 0.6, 1.0])), id: \.0) { label, fraction in
                     Button(label) { value.wrappedValue = dimension * fraction }
                         .buttonStyle(.bordered)
                         .disabled(!enabled || !editable)
                         .accessibilityLabel("\(title) \(label)")
+                        .keyOption(.action { value.wrappedValue = dimension * fraction })
                 }
                 Spacer(minLength: 0)
                 Text("\(Int((value.wrappedValue / dimension * 100).rounded())) %")

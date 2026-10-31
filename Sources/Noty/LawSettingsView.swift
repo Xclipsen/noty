@@ -75,6 +75,7 @@ struct NotyAccountSettingsPage: View {
                 NavigationLink("Gesetzessammlung & Synchronisierung") { LawSettingsPage() }
             }
         }.navigationTitle("Konto").disabled(laws.accountBusy)
+            .keyboardSheet()
             .onChange(of: laws.error) { _, error in if error != nil { message = "" } }
             .onAppear { laws.inlineErrorPages += 1 }
             .onDisappear { laws.inlineErrorPages -= 1 }
@@ -100,9 +101,9 @@ struct LawSettingsPage: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Gesetzessammlung aktivieren", isOn: $enabled)
-                Toggle("Lesezeichen und Markierungen synchronisieren", isOn: $sync)
-                Toggle("Neue Gesetzesfassungen automatisch laden", isOn: $updates)
+                keyToggle("Gesetzessammlung aktivieren", isOn: $enabled)
+                keyToggle("Lesezeichen und Markierungen synchronisieren", isOn: $sync)
+                keyToggle("Neue Gesetzesfassungen automatisch laden", isOn: $updates)
             } footer: {
                 Text("Der Kontoabgleich und öffentliche Gesetzesupdates sind unabhängig. Ohne Konto bleiben Markierungen lokal. Nach einem vollständigen Erstdownload sind die Texte offline verfügbar; PDFs lassen sich einzeln laden.")
             }
@@ -113,12 +114,12 @@ struct LawSettingsPage: View {
                     LabeledContent("Speicher", value: ByteCountFormatter.string(fromByteCount: laws.byteCount, countStyle: .file))
                     if !laws.progress.isEmpty { Text(laws.progress).font(.caption) }
                     if laws.downloading { ProgressView() }
-                    Button("Gesetzesbestand jetzt laden / aktualisieren") { Task { await laws.updateLaws() } }.disabled(laws.downloading)
+                    Button("Gesetzesbestand jetzt laden / aktualisieren") { Task { await laws.updateLaws() } }.keyOption(.action { Task { await laws.updateLaws() } }).disabled(laws.downloading)
                     NavigationLink("Gesetzessammlung öffnen") { LawReaderView() }
                 }
                 Section("Persönliche Daten") {
                     Text(laws.syncStatus).font(.caption)
-                    Button("Jetzt synchronisieren") { Task { await laws.synchronize() } }.disabled(laws.syncing || !sync || laws.user == nil || laws.sessionExpired)
+                    Button("Jetzt synchronisieren") { Task { await laws.synchronize() } }.keyOption(.action { Task { await laws.synchronize() } }).disabled(laws.syncing || !sync || laws.user == nil || laws.sessionExpired)
                     Button("Markierungen und Lesezeichen sichern …") {
                         Task { do { exported = try await laws.exportPersonal() } catch { laws.error = error.localizedDescription } }
                     }
@@ -128,6 +129,7 @@ struct LawSettingsPage: View {
                 }
             }
         }.navigationTitle("Gesetzessammlung")
+            .keyboardSheet()
             .task { await laws.start() }
             .onAppear { laws.inlineErrorPages += 1 }
             .onDisappear { laws.inlineErrorPages -= 1 }

@@ -1,3 +1,4 @@
+import SwiftUI
 import UIKit
 import NotebookCore
 
@@ -96,6 +97,25 @@ extension TextObjectLayer {
         root.addSubview(scroll); root.autoresizingMask = [.flexibleWidth]
         return root
     }
+    static let formatColors: [(String, InkColor)] = [
+        ("Gelb", .init(1,1,0)), ("Orange", .init(1,0.6,0)), ("Rot", .init(0.8,0.12,0.12)), ("Pink", .init(1,0,0.7)),
+        ("Hellgrün", .init(0.5,0.9,0)), ("Grün", .init(0.3,0.7,0.3)), ("Violett", .init(0.7,0.2,0.9)), ("Lila", .init(0.6,0.4,0.8)),
+        ("Mint", .init(0.5,1,0.8)), ("Blau", .init(0.1,0.35,0.8)), ("Hellblau", .init(0.3,0.5,0.9)), ("Lavendel", .init(0.6,0.5,1)),
+        ("Schwarz", .init(0,0,0)), ("Grau", .init(0.4,0.4,0.4)), ("Weiß", .init(1,1,1)), ("Braun", .init(0.7,0.5,0.3))
+    ]
+    /// Text and marker colours for `Space c`, the choices of the format bar.
+    func keyboardColorRows() -> [KeyChoiceRow] {
+        let inks = Self.formatColors.map { name, ink in
+            KeyChoiceItem(title: name, color: Color(uiColor: UIColor(red: ink.red, green: ink.green, blue: ink.blue, alpha: 1))) { [weak self] in
+                self?.changeStyle { $0.ink = ink; $0.automaticColor = nil }
+            }
+        }
+        var markers = HighlightColor.allCases.map { color in
+            KeyChoiceItem(title: color.title, color: Color(uiColor: color.uiColor)) { [weak self] in self?.applyHighlight(color) }
+        }
+        markers.append(KeyChoiceItem(title: "Aus") { [weak self] in self?.applyHighlight(nil) })
+        return KeyChoiceRow.rows("Textfarbe", inks, width: 8) + [KeyChoiceRow(title: "Markieren", items: markers)]
+    }
     private var presentingController: UIViewController? {
         var responder: UIResponder? = self
         while let current = responder { if let controller = current as? UIViewController { return controller }; responder = current.next }
@@ -186,13 +206,7 @@ extension TextObjectLayer {
         popover.view.backgroundColor = UIColor(white: 0.035, alpha: 1)
         popover.preferredContentSize = CGSize(width: 360, height: 152)
         popover.modalPresentationStyle = .popover
-        let colors: [(String, InkColor)] = [
-            ("Gelb", .init(1,1,0)), ("Orange", .init(1,0.6,0)), ("Rot", .init(0.8,0.12,0.12)), ("Pink", .init(1,0,0.7)),
-            ("Hellgrün", .init(0.5,0.9,0)), ("Grün", .init(0.3,0.7,0.3)), ("Violett", .init(0.7,0.2,0.9)), ("Lila", .init(0.6,0.4,0.8)),
-            ("Mint", .init(0.5,1,0.8)), ("Blau", .init(0.1,0.35,0.8)), ("Hellblau", .init(0.3,0.5,0.9)), ("Lavendel", .init(0.6,0.5,1)),
-            ("Schwarz", .init(0,0,0)), ("Grau", .init(0.4,0.4,0.4)), ("Weiß", .init(1,1,1)), ("Braun", .init(0.7,0.5,0.3))
-        ]
-        for (i, item) in colors.enumerated() {
+        for (i, item) in Self.formatColors.enumerated() {
             let button = UIButton(type: .system); button.accessibilityLabel = item.0
             button.frame = CGRect(x: 4 + (i % 8) * 44, y: 8 + (i / 8) * 44, width: 44, height: 44)
             let swatch = UIView(frame: CGRect(x: 9, y: 9, width: 26, height: 26)); swatch.isUserInteractionEnabled = false
