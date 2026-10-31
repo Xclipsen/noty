@@ -21,7 +21,7 @@ extension TextEngine {
     /// The grapheme starting at `index`.
     func category(at index: Int) -> Category {
         let unit = text.character(at: index)
-        if TextMotions.isLineBreak(unit) { return .lineBreak }
+        if TextLines.isBreak(unit) { return .lineBreak }
         if let scalar = UnicodeScalar(unit) { return Self.category(of: scalar) }
         guard index + 1 < text.length, UTF16.isLeadSurrogate(unit) else { return .other }
         let value = 0x10000 + (UInt32(unit) - 0xD800) << 10 + UInt32(text.character(at: index + 1)) - 0xDC00
@@ -269,7 +269,7 @@ extension TextEngine {
     private func paragraphObject(_ range: Selection, around: Bool, count: Int) -> Selection {
         let starts = lineStarts, position = blockCursor(of: range)
         func offset(_ line: Int) -> Int { line < starts.count ? starts[line] : text.length }
-        func blank(_ line: Int) -> Bool { line < starts.count && TextMotions.lineEnd(text, starts[line]) == starts[line] }
+        func blank(_ line: Int) -> Bool { line < starts.count && TextLines.end(text, starts[line]) == starts[line] }
         var line = starts.lastIndex { $0 <= position } ?? 0
         // Helix reads the line above for the "next" line, too.
         let previousBlank = blank(max(0, line - 1)), currentBlank = blank(line), nextBlank = previousBlank

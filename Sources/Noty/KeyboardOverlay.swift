@@ -1,8 +1,9 @@
 import SwiftUI
 import NotebookCore
 
-/// Mode indicator, key overview and command palette of the keyboard mode.
-/// The editor is a full-screen cover above the library, so each has its own.
+/// Mode indicator, input line, which-key popup, key overview and command
+/// palette of the keyboard mode. The editor is a full-screen cover above the
+/// library, so each has its own.
 struct KeyboardOverlay: View {
     let scope: KeyboardRouter.Scope
     @ObservedObject private var router = KeyboardRouter.shared
@@ -11,52 +12,110 @@ struct KeyboardOverlay: View {
     /// Editor: below the back button and above every palette position
     /// (`ToolbarLayout`: 76 pt and lower), where neither the keyboard nor its
     /// format bar can reach, whatever height the system reports for them.
+    /// The format bar lives in the keyboard's own window: only the place
+    /// keeps popup and input line clear of it.
     private var inEditor: Bool { scope == .editor }
 
     var body: some View {
         ZStack(alignment: inEditor ? .topLeading : .bottomLeading) {
             Color.clear.allowsHitTesting(false)
             if enabled, router.scope == scope {
-                if router.keyboardSeen {
-                    HStack(spacing: 6) {
-                        Text(router.label).font(.caption2.weight(.bold).monospaced())
-                        if !router.pending.isEmpty { Text(router.pending).font(.caption2.monospaced()).foregroundStyle(.secondary) }
-                    }
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.leading, 10).padding(inEditor ? .top : .bottom, inEditor ? 54 : 8)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
+                    if !inEditor { panels }
+                    if router.keyboardSeen { indicator }
+                    if inEditor { panels }
                 }
-                if router.helpVisible { KeyboardHelpView(onClose: { router.helpVisible = false }) }
+                .padding(.leading, 10).padding(inEditor ? .top : .bottom, inEditor ? 54 : 8)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                if router.helpVisible { KeyboardHelpView(context: router.shownContext, onClose: { router.helpVisible = false }) }
                 if router.paletteVisible { KeyboardPaletteView(commands: router.paletteCommands()) { router.paletteVisible = false } }
             }
         }
     }
+
+    private var indicator: some View {
+        HStack(spacing: 6) {
+            Text(router.label).font(.caption2.weight(.bold).monospaced())
+            if !router.contextLabel.isEmpty { Text(router.contextLabel).font(.caption2.weight(.medium).monospaced()) }
+            if router.selectionCount > 1 { Text("\(router.selectionCount) Auswahlen").font(.caption2.monospaced()) }
+            if !router.pending.isEmpty { Text(router.pending).font(.caption2.monospaced()).foregroundStyle(.secondary) }
+            if let notice = router.notice { Text(notice).font(.caption2).foregroundStyle(.secondary) }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(.ultraThinMaterial, in: Capsule())
+    }
+    @ViewBuilder private var panels: some View {
+        if let prompt = router.textPrompt { KeyboardPromptView(prompt: prompt) }
+        if let menu = router.menu { KeyboardMenuView(menu: menu) }
+    }
+}
+
+/// The input line: shows what the router collects, it never takes the focus.
+private struct KeyboardPromptView: View {
+    let prompt: TextPrompt
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(prompt.symbol).font(.callout.weight(.bold).monospaced()).foregroundStyle(.secondary)
+            Text(prompt.query + "▏").font(.callout.monospaced()).lineLimit(1).truncationMode(.head)
+            Spacer(minLength: 12)
+            if prompt.noMatch { Text("Kein Treffer").font(.caption).foregroundStyle(.secondary) }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .frame(width: 320, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// The next keys of an open menu.
+private struct KeyboardMenuView: View {
+    let menu: HelixMenu
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(menu.title).font(.caption.weight(.semibold))
+            ForEach(menu.entries, id: \.key) { entry in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(HelixKeymap.label(entry.key)).font(.caption.monospaced()).frame(minWidth: 26, alignment: .leading)
+                    Text(entry.isMenu ? entry.title + " …" : entry.title).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+    }
 }
 
 private struct KeyboardHelpView: View {
+    let context: HelixContext
     let onClose: () -> Void
-    private var groups: [(name: String, rows: [KeyBinding])] {
-        var seen = Set<String>(), order: [String] = [], rows: [String: [KeyBinding]] = [:]
-        for row in KeyMap.bindings where seen.insert(row.group + row.title).inserted {
-            if rows[row.group] == nil { order.append(row.group) }
-            rows[row.group, default: []].append(row)
+    private static func title(_ context: HelixContext) -> String {
+        switch context {
+        case .library: "Bibliothek"
+        case .page: "Seite"
+        case .text: "Text"
         }
-        return order.map { ($0, rows[$0] ?? []) }
     }
+    /// The current context first.
+    private var contexts: [HelixContext] { [context] + HelixContext.allCases.filter { $0 != context } }
     var body: some View {
         ZStack {
             Color.black.opacity(0.45).ignoresSafeArea().onTapGesture(perform: onClose)
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), alignment: .top)], alignment: .leading, spacing: 18) {
-                    ForEach(groups, id: \.name) { group in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(group.name).font(.subheadline.weight(.semibold))
-                            ForEach(group.rows, id: \.title) { row in
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text(row.keys.replacingOccurrences(of: " ", with: "")).font(.caption.monospaced()).frame(width: 74, alignment: .leading)
-                                    Text(row.title).font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 22) {
+                    ForEach(contexts, id: \.self) { context in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(Self.title(context)).font(.headline)
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), alignment: .top)], alignment: .leading, spacing: 18) {
+                                ForEach(HelixKeymap.groups(in: context), id: \.name) { group in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(group.name).font(.subheadline.weight(.semibold))
+                                        ForEach(group.rows, id: \.title) { row in
+                                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                                Text(row.label).font(.caption.monospaced()).frame(width: 74, alignment: .leading)
+                                                Text(row.title).font(.caption).foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

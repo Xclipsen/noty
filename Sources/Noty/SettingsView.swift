@@ -236,8 +236,8 @@ private struct EditorSettingsPage: View {
                 Toggle("Schreibmaschinen-Modus beim Tippen", isOn: $typewriter)
                 Toggle("Einrasten", isOn: $snapping)
                     .accessibilityHint("Textfelder, Bilder, Formen und Auswahlen rasten beim langsamen Verschieben an Kanten, Mitten, Linien und Seitenrändern ein.")
-                Toggle("Tastaturmodus (wie vim)", isOn: $keyboardMode)
-                    .accessibilityHint("Steuert die App mit einer Hardware-Tastatur: Buchstaben sind Befehle, i schreibt, Esc beendet das Schreiben, ? zeigt alle Tasten.")
+                Toggle("Tastaturmodus (wie Helix)", isOn: $keyboardMode)
+                    .accessibilityHint("Steuert die App mit einer Hardware-Tastatur: Erst auswählen, dann handeln. i schreibt, Esc geht eine Ebene zurück, die Leertaste öffnet das Menü, Leertaste und h zeigen alle Tasten.")
             } header: { Text("Alle Bereiche") } footer: {
                 Text("Die Seitenleiste merkt sich auch das letzte Ein- oder Ausblenden im Editor. Der Schreibmaschinen-Modus hält die Schreibzeile beim Tippen im oberen Drittel, auch mit schwebender oder externer Tastatur. Einrasten wirkt nur bei langsamer Bewegung; ein zweiter Finger auf dem Bildschirm unterdrückt es beim Ziehen.")
             }

@@ -15,21 +15,21 @@ public struct LogicalLineLayout: TextEngineLayout {
     public init(visibleLines: Int = 40) { self.visibleLines = visibleLines }
 
     public func verticalTarget(from offset: Int, lines: Int, goal: Double?, in text: NSString) -> (offset: Int, goal: Double) {
-        var start = TextMotions.lineStart(text, offset)
+        var start = TextLines.start(text, offset)
         var column = 0, walked = start
         while walked < offset { walked = text.nextBoundary(walked); column += 1 }
         let wanted = goal.map { Int($0) } ?? column
         for _ in 0..<abs(lines) {
             if lines > 0 {
-                let end = TextMotions.lineEnd(text, start)
+                let end = TextLines.end(text, start)
                 guard end < text.length else { break }
                 start = text.nextBoundary(end)
             } else {
                 guard start > 0 else { break }
-                start = TextMotions.lineStart(text, text.previousBoundary(start))
+                start = TextLines.start(text, text.previousBoundary(start))
             }
         }
-        let end = TextMotions.lineEnd(text, start)
+        let end = TextLines.end(text, start)
         var position = start, steps = 0
         while steps < wanted, position < end { position = text.nextBoundary(position); steps += 1 }
         return (position, Double(wanted))
@@ -192,6 +192,8 @@ public struct TextEngine {
     public var cursor: Int { cursor(of: primary) }
     /// More than the single grapheme under a cursor is selected.
     public var hasWideSelection: Bool { selections.contains(where: isWide) }
+    /// The same for the primary selection, the one the app shows.
+    public var primaryIsWide: Bool { isWide(primary) }
 
     /// The app's text and selection before a command: undo, tapping and native
     /// typing happen outside. An unchanged state keeps all selections; a caret
@@ -319,30 +321,30 @@ public struct TextEngine {
 
     static func endsWithBreak(_ value: String) -> Bool {
         let units = value as NSString
-        return units.length > 0 && TextMotions.isLineBreak(units.character(at: units.length - 1))
+        return units.length > 0 && TextLines.isBreak(units.character(at: units.length - 1))
     }
-    private var textEndsWithBreak: Bool { text.length > 0 && TextMotions.isLineBreak(text.character(at: text.length - 1)) }
+    private var textEndsWithBreak: Bool { text.length > 0 && TextLines.isBreak(text.character(at: text.length - 1)) }
 
     /// Offsets where the lines of `range` begin (first and last line).
     func lineBounds(_ range: Selection) -> (first: Int, last: Int) {
         let last = range.isEmpty ? range.to : max(text.previousBoundary(range.to), range.from)
-        return (TextMotions.lineStart(text, range.from), TextMotions.lineStart(text, last))
+        return (TextLines.start(text, range.from), TextLines.start(text, last))
     }
     /// Behind the line that begins at `line`: the next line, or the end of the text.
     func nextLine(_ line: Int) -> Int {
-        let end = TextMotions.lineEnd(text, line)
+        let end = TextLines.end(text, line)
         return end < text.length ? text.nextBoundary(end) : text.length
     }
     /// Line beginnings; a line break at the end opens an empty last line, as in a rope.
     var lineStarts: [Int] {
         var result = [0], index = 0
         while index < text.length {
-            if TextMotions.isLineBreak(text.character(at: index)) { index = text.nextBoundary(index); result.append(index) } else { index += 1 }
+            if TextLines.isBreak(text.character(at: index)) { index = text.nextBoundary(index); result.append(index) } else { index += 1 }
         }
         return result
     }
     func firstNonBlank(_ line: Int) -> Int? {
-        let end = TextMotions.lineEnd(text, line)
+        let end = TextLines.end(text, line)
         var index = line
         while index < end {
             if !category(at: index).isSpace { return index }
@@ -387,15 +389,15 @@ public struct TextEngine {
         case .gotoLastLine: gotoLine(Int.max, extend: extend)
         case .gotoLine: if count != nil { gotoLine(times, extend: false) } // Helix has no extending `G`
         case .gotoLineStart:
-            selections = selections.map { put($0, TextMotions.lineStart(text, cursor(of: $0)), extend: extend) }
+            selections = selections.map { put($0, TextLines.start(text, cursor(of: $0)), extend: extend) }
         case .gotoLineEnd:
             selections = selections.map { range in
-                let line = TextMotions.lineStart(text, cursor(of: range))
-                return put(range, max(line, text.previousBoundary(TextMotions.lineEnd(text, line))), extend: extend)
+                let line = TextLines.start(text, cursor(of: range))
+                return put(range, max(line, text.previousBoundary(TextLines.end(text, line))), extend: extend)
             }
         case .gotoFirstNonBlank:
             selections = selections.map { range in
-                firstNonBlank(TextMotions.lineStart(text, cursor(of: range))).map { put(range, $0, extend: extend) } ?? range
+                firstNonBlank(TextLines.start(text, cursor(of: range))).map { put(range, $0, extend: extend) } ?? range
             }
 
         case .selectAll: selections = [Selection(anchor: 0, head: text.length)]; primaryIndex = 0
@@ -525,7 +527,7 @@ public struct TextEngine {
         selections = selections.map { range in
             let found = layout.verticalTarget(from: cursor(of: range), lines: lines, goal: range.goal, in: text)
             // Extending must not swallow the line break of the last written line.
-            if extend, found.offset == text.length, TextMotions.lineStart(text, found.offset) == found.offset { return range }
+            if extend, found.offset == text.length, TextLines.start(text, found.offset) == found.offset { return range }
             var result = put(range, found.offset, extend: extend)
             result.goal = found.goal
             return result
@@ -558,7 +560,7 @@ public struct TextEngine {
             return (line, column)
         }
         func place(_ line: Int, _ column: Int) -> (offset: Int, column: Int) {
-            let end = TextMotions.lineEnd(text, starts[line])
+            let end = TextLines.end(text, starts[line])
             var position = starts[line], steps = 0
             while steps < column, position < end { position = text.nextBoundary(position); steps += 1 }
             return (position, steps)
@@ -610,7 +612,7 @@ public struct TextEngine {
         let lines = lineBounds(range)
         guard lines.first == range.from, nextLine(lines.last) == range.to else { return false }
         var index = range.from
-        while index < range.to { if TextMotions.isLineBreak(text.character(at: index)) { return true }; index += 1 }
+        while index < range.to { if TextLines.isBreak(text.character(at: index)) { return true }; index += 1 }
         return false
     }
 
@@ -634,7 +636,7 @@ public struct TextEngine {
             shift += (replacement as NSString).length - (range.to - start)
         }
         commit(edits.filter { $0.range.length > 0 }, selecting: carets, into: &outcome)
-        if mergedIntoLastLine, let last = selections.indices.last { selections[last] = .point(TextMotions.lineStart(text, text.length)) }
+        if mergedIntoLastLine, let last = selections.indices.last { selections[last] = .point(TextLines.start(text, text.length)) }
         mode = change ? .insert : .normal
     }
 
@@ -706,9 +708,9 @@ public struct TextEngine {
             var last = starts.lastIndex { $0 <= bounds.last } ?? 0
             if first == last { last = min(last + 1, starts.count - 1) }
             for line in first..<max(first, last) {
-                let start = TextMotions.lineEnd(text, starts[line])
+                let start = TextLines.end(text, starts[line])
                 var end = starts[line + 1]
-                let lineEnd = TextMotions.lineEnd(text, end)
+                let lineEnd = TextLines.end(text, end)
                 while end < lineEnd, [32, 9].contains(text.character(at: end)) { end += 1 }
                 edits.append(Edit(range: NSRange(location: start, length: end - start), replacement: end == lineEnd ? "" : " "))
             }
@@ -743,7 +745,7 @@ public struct TextEngine {
         let tabWidth = 4, wanted = count * max(1, indentUnit == "\t" ? tabWidth : (indentUnit as NSString).length)
         var edits: [Edit] = []
         for line in selectedLines {
-            let end = TextMotions.lineEnd(text, line)
+            let end = TextLines.end(text, line)
             var width = 0, position = line
             while position < end, width < wanted {
                 let unit = text.character(at: position)
@@ -796,15 +798,15 @@ public struct TextEngine {
         case .after: selections = selections.map { Selection(anchor: $0.from, head: $0.to) }
         case .lineStart:
             selections = selections.map { range in
-                let line = TextMotions.lineStart(text, cursorBeforeInsert(range))
+                let line = TextLines.start(text, cursorBeforeInsert(range))
                 return .point(firstNonBlank(line) ?? line)
             }
-        case .lineEnd: selections = selections.map { .point(TextMotions.lineEnd(text, cursorBeforeInsert($0))) }
+        case .lineEnd: selections = selections.map { .point(TextLines.end(text, cursorBeforeInsert($0))) }
         case .lineBelow, .lineAbove:
             var edits: [Edit] = [], carets: [Selection] = [], shift = 0
             for range in selections {
                 let bounds = lineBounds(range)
-                let position = entry == .lineBelow ? TextMotions.lineEnd(text, bounds.last) : bounds.first
+                let position = entry == .lineBelow ? TextLines.end(text, bounds.last) : bounds.first
                 edits.append(Edit(range: NSRange(location: position, length: 0), replacement: String(repeating: "\n", count: count)))
                 for line in 0..<count { carets.append(.point(position + shift + line + (entry == .lineBelow ? 1 : 0))) }
                 shift += count

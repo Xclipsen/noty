@@ -120,7 +120,7 @@ struct LibraryView: View {
         .background(KeyboardHost().frame(width: 0, height: 0).accessibilityHidden(true))
         .overlay { KeyboardOverlay(scope: .library) }
         .onChange(of: model.opened == nil && !presenting, initial: true) { _, free in
-            KeyboardRouter.shared.setLibrary(free ? LibraryKeyActions(run: { runKey($0, count: $1) }, commands: { keyCommands }) : nil)
+            KeyboardRouter.shared.setLibrary(free ? LibraryKeyActions(run: { runKey($0, count: $1 ?? 1) }, commands: { keyCommands }) : nil)
         }
         .sheet(isPresented: $creatingNotebook) {
             NotebookCreationView(defaultAppearance: toolbox.preferences.defaultAppearance) { title, appearance in
@@ -154,7 +154,10 @@ struct LibraryView: View {
             ContentSearchView(documents: search.documents, area: StableDefaults.scope(model.root), retain: search.retain) { searchHit = $0 }
         }
         // Closing a notebook updates the library in place (no visible reload).
-        .fullScreenCover(item: $model.opened, onDismiss: { model.editorClosed() }) { document in
+        .fullScreenCover(item: $model.opened, onDismiss: {
+            model.editorClosed()
+            if KeyboardRouter.shared.searchAllAfterClosing { KeyboardRouter.shared.searchAllAfterClosing = false; searchAllNotebooks() }
+        }) { document in
             LibraryNotebookView(document: document, root: model.root, library: model).id(document.id)
                 .environment(\.searchIndexArea, StableDefaults.scope(model.root))
                 .publishesEditorCommands()
@@ -241,7 +244,7 @@ struct LibraryView: View {
     private var keyboardColumns: Int {
         layout == .list ? 1 : max(1, Int((detailSize.width - 56 + 32) / (140 + 32)))
     }
-    private func runKey(_ action: KeyAction, count: Int) {
+    private func runKey(_ action: HelixAction, count: Int) {
         let items = rows
         let index = items.firstIndex { $0.id == keyboardFocus }
         func focus(_ target: Int) { if !items.isEmpty { keyboardFocus = items[min(max(0, target), items.count - 1)].id } }
@@ -252,7 +255,7 @@ struct LibraryView: View {
         case .focusFirstItem: focus(0)
         case .focusLastItem: focus(items.count - 1)
         case .parentFolder: leaveLevel()
-        case .search: searchAllNotebooks()
+        case .search, .searchAll: searchAllNotebooks()
         case .newNotebook: creatingNotebook = true
         case .newTextDocument: creatingTextDocument = true
         case .newFolder: prompt(.folder)
@@ -266,25 +269,21 @@ struct LibraryView: View {
         case .pinItem: Task { await model.favorite(item) }
         case .moveItem: moving = item
         case .duplicateItem: if !item.isFolder { Task { await model.duplicate(item) } }
-        case .exportItem: if !item.isFolder { exportPDF(item) }
-        case .shareItem: if !item.isFolder { shareNoty(item) }
+        case .export(.pdf): if !item.isFolder { exportPDF(item) }
+        case .export(.markdown): if !item.isFolder { shareText(item, as: .markdown) }
+        case .export(.plainText): if !item.isFolder { shareText(item, as: .plainText) }
+        case .export(.noty): if !item.isFolder { shareNoty(item) }
         default: break
         }
     }
     /// What only the menus offer; the palette adds every key binding by name.
     private var keyCommands: [PaletteCommand] {
-        var items = [PaletteCommand(title: "PDF importieren") { importingPDF = true },
+        [PaletteCommand(title: "PDF importieren") { importingPDF = true },
          PaletteCommand(title: "Backup importieren") { importingBackup = true },
          PaletteCommand(title: "Wiederhergestellte Kopien") { showingCopies = true },
          PaletteCommand(title: "Bereiche") { showingAreas = true },
          PaletteCommand(title: "Einstellungen") { settingsRequest = SettingsRequest() },
          PaletteCommand(title: "Tastaturmodus ausschalten") { UserDefaults.standard.set(false, forKey: AppSettingsKey.keyboardMode) }]
-        // The item the keyboard stands on, like `e` and `s`.
-        if let item = rows.first(where: { $0.id == keyboardFocus }), !item.isFolder, editable {
-            items += [PaletteCommand(title: "Als Markdown teilen (.md)") { shareText(item, as: .markdown) },
-                      PaletteCommand(title: "Als Text teilen (.txt)") { shareText(item, as: .plainText) }]
-        }
-        return items
     }
 
     // MARK: Sidebar

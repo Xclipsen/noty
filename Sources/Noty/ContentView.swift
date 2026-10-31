@@ -283,27 +283,35 @@ struct ContentView: View {
             search: { if canEdit { contentSearch = true } }, save: { model.save() },
             exportNotebook: { startPDFExport(pageOnly: false) }, exportPage: { startPDFExport(pageOnly: true) },
             previousPage: { stepPage(-1) }, nextPage: { stepPage(1) }, close: { closeEditor() },
-            keys: EditorKeyActions(run: { runKey($0, count: $1, explicit: $2) }, commands: { keyCommands }, direct: { runDirect($0) }))
+            keys: EditorKeyActions(run: { runKey($0, count: $1) }, commands: { keyCommands }, direct: { runDirect($0) }))
     }
 
     // MARK: Keyboard mode (docs/KEYBOARD.md)
-    private func runKey(_ action: KeyAction, count: Int, explicit: Bool) {
+    /// `count` is nil unless typed: on `gg`, `ge` and `G` it names a page.
+    private func runKey(_ action: HelixAction, count: Int?) {
         guard canEdit else { return }
         let pages = model.notebook.pages
         func go(to number: Int) { selectedPageID = pages[min(max(1, number), pages.count) - 1].id }
         switch action {
         case .tool(let value): tool = value; toolbarOptions = false
-        case .page(let delta): for _ in 0..<count { stepPage(delta) }
-        case .firstPage: go(to: explicit ? count : 1)
-        case .lastPage: go(to: explicit ? count : pages.count)
+        case .page(let delta): for _ in 0..<(count ?? 1) { stepPage(delta) }
+        case .firstPage: go(to: count ?? 1)
+        case .lastPage: go(to: count ?? pages.count)
+        case .gotoPage: if let count { go(to: count) } else { openPageEntry() }
         case .fit: fitRequest += 1
         case .sidebar: showingPages.toggle()
         case .outline: showingPages = true; outlineRequest += 1
         case .close: closeEditor()
         case .bookmark: if pages.contains(where: { $0.id == currentPage.id }) { model.toggleBookmark(currentPage.id) }
-        case .pageEntry: openPageEntry()
-        case .save: model.save()
         case .search: contentSearch = true
+        case .searchAll:
+            // The other documents can only open from the library.
+            if isLibraryDocument { KeyboardRouter.shared.searchAllAfterClosing = true; closeEditor() } else { contentSearch = true }
+        case .export(.pdf): startPDFExport(pageOnly: false)
+        case .export(.pagePDF): startPDFExport(pageOnly: true)
+        case .export(.markdown): shareText(.markdown)
+        case .export(.plainText): shareText(.plainText)
+        case .export(.noty): shareNoty()
         case .undo: performUndo(redo: false)
         case .redo: performUndo(redo: true)
         default: break
@@ -313,17 +321,12 @@ struct ContentView: View {
         switch command {
         case .save: model.save()
         case .close: closeEditor()
-        case .page(let number): runKey(.lastPage, count: number, explicit: true)
+        case .page(let number): runKey(.gotoPage, count: number)
         }
     }
     /// What only the menus offer; the palette adds every key binding by name.
     private var keyCommands: [PaletteCommand] {
-        var items = [PaletteCommand(title: "Als PDF exportieren (ganz)") { startPDFExport(pageOnly: false) },
-                     PaletteCommand(title: "Diese Seite als PDF exportieren") { startPDFExport(pageOnly: true) },
-                     PaletteCommand(title: "Als Markdown teilen (.md)") { shareText(.markdown) },
-                     PaletteCommand(title: "Als Text teilen (.txt)") { shareText(.plainText) },
-                     PaletteCommand(title: "Teilen als .noty") { shareNoty() },
-                     PaletteCommand(title: "Vollständiges Backup") { exportBackup() },
+        var items = [PaletteCommand(title: "Vollständiges Backup") { exportBackup() },
                      PaletteCommand(title: "Lokale Wiederherstellungspunkte") { showingHistory = true },
                      PaletteCommand(title: "Speichern", keys: ":w") { model.save() },
                      PaletteCommand(title: "Blättern statt Scrollen umschalten") { toolbox.preferences.paging = !(toolbox.preferences.paging ?? false) },
@@ -355,17 +358,24 @@ struct ContentView: View {
             offset: { model.notebook.textFlowOffset(boxID: $0, location: $1) },
             parts: { model.notebook.textFlowParts(of: $0) },
             paragraph: { model.notebook.textFlowParagraph(of: $0) },
-            edit: { range, text, caret in show(model.editFlow(range: range, replacement: text, caret: caret, trailingDraft: draftPage)) },
+            edit: { edits, caret in show(model.editFlow(edits, caret: caret, trailingDraft: draftPage)) },
             restyle: { range, change in
                 guard model.restyleFlow(range: range, trailingDraft: draftPage, change: change) != nil else { return }
                 // Sizes may have moved text over pages: the same range, new parts.
                 if TextFlowSelection.shared.range != nil { TextFlowSelection.shared.set(range, parts: model.notebook.textFlowParts(of: range)) }
             },
-            moveCaret: { offset in
-                guard let place = model.notebook.textFlowPlace(at: offset), let content = model.notebook.textFlowContent else { return }
+            moveCaret: { range in
+                guard let place = model.notebook.textFlowPlace(at: range.location), let content = model.notebook.textFlowContent else {
+                    KeyboardRouter.shared.handoff = false
+                    return
+                }
                 let length = (content.text as NSString).length
-                show(TextFlowFocus(pageID: place.pageID, boxID: place.boxID, selection: NSRange(location: place.location, length: 0),
-                                   typingStyle: length == 0 ? content.style : content.style(at: min(offset, length - 1))))
+                show(TextFlowFocus(pageID: place.pageID, boxID: place.boxID, selection: NSRange(location: place.location, length: range.length),
+                                   typingStyle: length == 0 ? content.style : content.style(at: min(range.location, length - 1))))
+            },
+            segments: {
+                let pages = Dictionary(model.notebook.pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                return model.notebook.textFlowSegments.compactMap { segment in pages[segment.pageID].map { ($0, segment.box) } }
             })
     }
 

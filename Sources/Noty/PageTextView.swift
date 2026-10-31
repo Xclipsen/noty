@@ -82,14 +82,12 @@ final class PageTextView: UITextView {
         materializePlacement(); super.setMarkedText(markedText, selectedRange: selectedRange)
     }
     override func paste(_ sender: Any?) {
-        // Normal mode: ⌘V like `P`, the text view itself does not take text there.
-        if KeyboardRouter.shared.isVisual {
-            if let text = UIPasteboard.general.string { historyOwner?.keyboardReplaceSelection(with: text, editor: self) }
+        // The input line takes it; outside typing the text view itself takes no text.
+        if KeyboardRouter.shared.textPrompt != nil {
+            if let text = UIPasteboard.general.string { KeyboardRouter.shared.pasteIntoPrompt(text, editor: self) }
             return
         }
-        if !KeyboardRouter.shared.allowsTyping {
-            _ = historyOwner?.keyboardPerform(.paste(before: true), count: 1, explicit: false, editor: self); return
-        }
+        if !KeyboardRouter.shared.allowsTyping { historyOwner?.keyboardPaste(self); return }
         if let text = UIPasteboard.general.string, historyOwner?.replaceFlowSelection(with: text) == true { return }
         materializePlacement(); super.paste(sender)
     }
@@ -97,9 +95,7 @@ final class PageTextView: UITextView {
         if let text = historyOwner?.flowSelectionText { UIPasteboard.general.string = text } else { super.copy(sender) }
     }
     override func cut(_ sender: Any?) {
-        if KeyboardRouter.shared.isVisual {
-            _ = historyOwner?.keyboardPerform(.operateSelection(.delete), count: 1, explicit: false, editor: self); return
-        }
+        if !KeyboardRouter.shared.allowsTyping, historyOwner?.keyboardCut(self) == true { return }
         if let text = historyOwner?.flowSelectionText {
             UIPasteboard.general.string = text
             _ = historyOwner?.replaceFlowSelection(with: "")
@@ -116,7 +112,7 @@ final class PageTextView: UITextView {
         return super.canPerformAction(action, withSender: sender)
     }
     // MARK: Keyboard mode
-    /// Normal mode: a wide caret on the character (vim's block cursor).
+    /// NOR and SEL: a wide caret on the character (the block cursor).
     var normalCaret = false { didSet { if normalCaret != oldValue { refreshCaret() } } }
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         if !KeyboardRouter.shared.handle(presses, text: self) { super.pressesBegan(presses, with: event) }
@@ -234,7 +230,7 @@ final class PageTextView: UITextView {
     func writeAfterTap() {
         guard isFirstResponder, !KeyboardRouter.shared.allowsTyping else { return }
         TextFlowSelection.shared.set(nil)
-        KeyboardRouter.shared.setTextMode(.insert, editor: self)
+        KeyboardRouter.shared.tappedText(self)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     /// Feedback zu Build 62: „Der Cursor sollte erst reingehen, wenn man

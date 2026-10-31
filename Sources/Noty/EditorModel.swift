@@ -267,8 +267,8 @@ final class EditorModel: ObservableObject {
             return nil
         }
     }
-    func editFlow(range: NSRange, replacement: String, caret: Int?, trailingDraft: Page?) -> TextFlowFocus? {
-        rewriteFlow { try notebook.editingTextFlow(range: range, replacement: replacement, caret: caret, layout: flowLayout(trailingDraft)) }
+    func editFlow(_ edits: [TextListEditing.Edit], caret: Int?, trailingDraft: Page?) -> TextFlowFocus? {
+        rewriteFlow { try notebook.editingTextFlow(edits, caret: caret, layout: flowLayout(trailingDraft)) }
     }
     func restyleFlow(range: NSRange, trailingDraft: Page?, change: (inout TextBoxStyle) -> Void) -> TextFlowFocus? {
         rewriteFlow { try notebook.restylingTextFlow(range: range, layout: flowLayout(trailingDraft), change: change) }

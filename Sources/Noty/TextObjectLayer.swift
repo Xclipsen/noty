@@ -703,6 +703,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         }
         finishListInput(editor)
         layoutIfNeeded(); requestCaretReveal(.typing)
+        keyboardTyped(editor)
     }
     /// After typing, UIKit derives typing attributes from the typed character
     /// and may drop app keys (marker colour, automatic ink, font name). The
@@ -746,12 +747,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             editor.typingAttributes = focus.typingStyle.resolvingAutomaticColor(light: light).attributes
         }
         KeyboardRouter.shared.handoff = false
-        editor.normalCaret = KeyboardRouter.shared.isEnabled && KeyboardRouter.shared.textMode != .insert
+        editor.normalCaret = KeyboardRouter.shared.isEnabled && KeyboardRouter.shared.mode != .insert
         if TextFlowSelection.shared.selectAllWhenFocused {
             TextFlowSelection.shared.selectAllWhenFocused = false
             // Not in typing: the next letter (`x`, `y`) would replace everything.
             let router = KeyboardRouter.shared
-            if router.isEnabled, router.textMode == .insert, flowActions?.content()?.text.isEmpty == false { router.setTextMode(.normal, editor: editor) }
+            if router.isEnabled, router.mode == .insert, flowActions?.content()?.text.isEmpty == false { router.setMode(.normal, editor: editor) }
             editor.selectEverything()
         }
     }
@@ -879,11 +880,13 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         layoutIfNeeded(); requestCaretReveal(.typing)
     }
     func textViewDidChangeSelection(_ textView: UITextView) {
-        if !updating, !applyingFlow, !KeyboardRouter.shared.isVisual { TextFlowSelection.shared.set(nil) }
+        // The keyboard mode's own selections keep a marking over pages, a user's selection ends it.
+        let own = KeyboardRouter.shared.showingSelection || KeyboardRouter.shared.handoff
+        if !updating, !applyingFlow, !own { TextFlowSelection.shared.set(nil) }
         if let editor = textView as? PageTextView, let placement = editor.placement,
            editor.selectedRange != NSRange(location: placement.location, length: 0) { editor.placement = nil }
         if !updating, !applyingFlow, active {
-            if let editor = textView as? PageTextView, editor.markedTextRange == nil,
+            if !own, let editor = textView as? PageTextView, editor.markedTextRange == nil,
                let current = boxes.first(where: { $0.id == editor.objectID }),
                let persisted = readCurrentBoxes?().first(where: { $0.id == editor.objectID }), current != persisted, current.flowID != nil {
                 let base = compositionBase ?? persisted; compositionBase = nil

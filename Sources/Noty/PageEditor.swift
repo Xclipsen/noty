@@ -1023,12 +1023,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         claimSelectionFocus(); syncObjectPlane()
         objectLayer.keyboardCycle(step)
     }
-    /// `i`, `a`: a text document's flow on this page or at its end; a notebook gets a new field.
-    func keyboardWrite(_ entry: TextInsertEntry) {
+    /// `i` without a selected field: a text document's flow on this page; a notebook gets a new field.
+    func keyboardWrite() {
         guard editable else { return }
         let size = pageLayout.contentCanvas
         if flowDocument {
-            if entry == .here, pageContent.textBoxes.contains(where: { $0.flowID != nil && !$0.text.isEmpty }) {
+            if pageContent.textBoxes.contains(where: { $0.flowID != nil && !$0.text.isEmpty }) {
                 requestFlowCaret(at: PagePoint(x: size.width, y: size.height))
             } else { configuration?.onFlowEnd() }
             return

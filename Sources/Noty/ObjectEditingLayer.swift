@@ -1660,8 +1660,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     func keyboardDelete() { if active, hasSelection, !selectionLocked { deleteSelection() } }
     func keyboardCopy() { if active, hasSelection { copySelection() } }
-    func keyboardCut() { if active { cutKey() } }
     func keyboardDuplicate() { if active { duplicateKey() } }
     func keyboardClearSelection() { if active { escapeKey() } }
-    func keyboardEditSelected() { if isFieldSelection, let id = texts.first { onEditText?(id, nil) } }
+    /// False: no field is selected.
+    func keyboardEditSelected() -> Bool {
+        guard isFieldSelection, let id = texts.first else { return false }
+        onEditText?(id, nil)
+        return true
+    }
 }

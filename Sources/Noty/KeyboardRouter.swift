@@ -13,57 +13,104 @@ struct PaletteCommand: Identifiable {
 
 /// What the keyboard mode asks of an open editor pane (`ContentView`).
 struct EditorKeyActions {
-    var run: (KeyAction, Int, Bool) -> Void
+    var run: (HelixAction, Int?) -> Void
     var commands: () -> [PaletteCommand]
     var direct: (KeyPalette.Direct) -> Void
 }
 
 /// What it asks of the library (`LibraryView`).
 struct LibraryKeyActions {
-    var run: (KeyAction, Int) -> Void
+    var run: (HelixAction, Int?) -> Void
     var commands: () -> [PaletteCommand]
 }
 
+/// The input line of `/`, `?` and `s`. Display only: its keys keep coming
+/// through the router, because the text view has to stay first responder.
+/// Selection, caret reveal and format bar then work as during every other
+/// command; focus moving to a field would end the text for all of them.
+struct TextPrompt: Equatable {
+    enum Kind: Equatable { case search(backward: Bool), select }
+    let kind: Kind
+    var query = ""
+    var noMatch = false
+    var symbol: String {
+        switch kind {
+        case .search(let backward): backward ? "?" : "/"
+        case .select: "s"
+        }
+    }
+}
+
 /// The keyboard mode (docs/KEYBOARD.md). Responders hand their hardware key
-/// presses here (`pressesBegan`); what a key means is decided by
-/// `KeySequenceParser` in Core. ⌘ shortcuts stay with the menus and key
-/// commands. Without a hardware keyboard nothing here ever runs.
+/// presses here (`pressesBegan`); what a key means is decided by `HelixParser`
+/// in Core, text commands by `TextEngine`. ⌘ shortcuts stay with the menus and
+/// key commands. Without a hardware keyboard nothing here ever runs.
 @MainActor
 final class KeyboardRouter: ObservableObject {
-    enum TextMode: Equatable { case insert, normal, visual(line: Bool) }
     enum Scope { case library, editor }
     static let shared = KeyboardRouter()
 
     @Published private(set) var scope = Scope.library
-    @Published private(set) var label = "BIBLIOTHEK"
+    @Published private(set) var label = "NOR"
+    /// SEITE or BIBLIOTHEK; in a text the mode says enough.
+    @Published private(set) var contextLabel = "BIBLIOTHEK"
     @Published private(set) var pending = ""
+    /// The open menu node, for the which-key popup.
+    @Published private(set) var menu: HelixMenu?
+    @Published private(set) var textPrompt: TextPrompt?
+    /// A short message of a command (`Kein Treffer`).
+    @Published private(set) var notice: String?
+    /// Selections of the engine: the app shows only the primary one, so the
+    /// mode indicator has to say that `d` will take more than that.
+    @Published private(set) var selectionCount = 1
     /// The mode indicator only appears once a hardware key was pressed.
     @Published private(set) var keyboardSeen = false
     @Published var helpVisible = false
     @Published var paletteVisible = false {
         didSet {
+            if paletteVisible, !oldValue { holdText() }
             // The palette's text field took the focus: keys must find a responder again.
             guard oldValue, !paletteVisible else { return }
+            returnToHeldText()
             reclaim()
         }
     }
 
-    private(set) var textMode = TextMode.insert
+    /// Text, selections, register and mode of the current text. Nothing but a
+    /// text in NOR or SEL reads it; INS only remembers where typing began.
+    var engine = TextEngine(mode: .insert)
+    var mode: TextEngine.Mode { engine.mode }
     private(set) var editing = false
-    private var parser = KeySequenceParser()
+    private var parser = HelixParser()
     private var editorActions: EditorKeyActions?
     private var libraryActions: LibraryKeyActions?
     weak var viewport: NotebookViewport?
     weak var host: KeyboardHostView?
     /// The next text view to begin editing continues the current mode (a
-    /// motion or edit moved the caret to another page).
-    var handoff = false
-    /// Visual mode, in offsets of the whole text.
-    var visualAnchor = 0
-    var visualCaret = 0
-    /// `y`/`d` keep whether whole lines were taken; the text is on the system pasteboard.
-    var register = ""
-    var registerLinewise = false
+    /// motion or edit moved the caret to another page). A focus request that
+    /// never arrives must not hold the mode, so this runs out.
+    var handoff: Bool {
+        get { handoffTime.map { CACurrentMediaTime() - $0 < 1.5 } ?? false }
+        set { handoffTime = newValue ? CACurrentMediaTime() : nil }
+    }
+    private var handoffTime: TimeInterval?
+    /// The app sets the selection itself: nothing new to take over from the view.
+    var showingSelection = false
+    /// Where the caret stands while INS follows typing behind `i`, `a`, `o` …
+    /// Another place at Esc means a tap or an arrow key moved it.
+    var insertRun: Int?
+    private(set) var typedSinceInsert = false
+    /// What the register last put on the system pasteboard.
+    private var pasteboardCopy: String?
+    /// The state before the input line opened, for Esc.
+    private var promptStart: TextEngine?
+    /// The text the palette's field took the focus from.
+    private weak var heldEditor: PageTextView?
+    private var heldTries = 0
+    private var noticeTask: Task<Void, Never>?
+    /// `Space f` in the editor: the search over all notebooks lives in the
+    /// library, it opens as soon as the editor cover is gone.
+    var searchAllAfterClosing = false
 
     private var gate = KeyPressGate()
     private var repeatKey: Int?
@@ -75,9 +122,7 @@ final class KeyboardRouter: ObservableObject {
     private var loggedResponder = ""
 
     var isEnabled: Bool { UserDefaults.standard.object(forKey: AppSettingsKey.keyboardMode) as? Bool ?? true }
-    var isVisual: Bool { if case .visual = textMode { return true }; return false }
-    var isLinewiseVisual: Bool { textMode == .visual(line: true) }
-    var allowsTyping: Bool { !isEnabled || textMode == .insert }
+    var allowsTyping: Bool { !isEnabled || mode == .insert }
 
     // MARK: State from the views
 
@@ -87,9 +132,10 @@ final class KeyboardRouter: ObservableObject {
         if editorActions == nil, commands?.canEdit == true { reclaim() }
         editorActions = commands?.canEdit == true ? commands?.keys : nil
         if commands == nil {
-            editing = false; textMode = .insert
+            editing = false; heldEditor = nil
+            endTextState()
             reclaim()
-        }
+        } else if editorActions == nil { cancelPrompt() }
         refreshLabel()
     }
     func setLibrary(_ actions: LibraryKeyActions?) {
@@ -112,7 +158,9 @@ final class KeyboardRouter: ObservableObject {
     private func claimResponder() {
         switch scope {
         case .library: if libraryActions != nil { host?.claim() }
-        case .editor: if editorActions != nil { viewport?.activeSheet?.claimUndoResponder() }
+        case .editor:
+            if heldEditor != nil { returnToHeldText() }
+            else if editorActions != nil { viewport?.activeSheet?.claimUndoResponder() }
         }
         guard HangProbe.isInstalled, Self.responderName != loggedResponder else { return }
         loggedResponder = Self.responderName
@@ -120,43 +168,186 @@ final class KeyboardRouter: ObservableObject {
     }
     func textBegan() {
         editing = true
-        if handoff { handoff = false } else { setTextMode(.insert) }
+        // `applyTextFocus` ends a hand-off, once the selection is in place.
+        if !handoff { setMode(.insert); insertRun = nil; typedSinceInsert = false }
         refreshLabel()
     }
     func textEnded() {
         DispatchQueue.main.async { [self] in
-            guard !(UIResponder.currentFirstResponder is PageTextView) else { return }
+            guard !(UIResponder.currentFirstResponder is PageTextView), heldEditor == nil else { return }
             editing = false; TextFlowSelection.shared.set(nil)
-            parser.reset(); pending = ""; textMode = .insert
+            endTextState()
             refreshLabel()
         }
     }
-    func setTextMode(_ mode: TextMode, editor: PageTextView? = nil) {
-        textMode = mode
+    /// No text any more: the register stays, everything else goes.
+    private func endTextState() {
+        parser.reset(); pending = ""; menu = nil
+        textPrompt = nil; promptStart = nil
+        engine.sync(text: "", selection: NSRange(location: 0, length: 0), mode: .insert)
+    }
+    func setMode(_ mode: TextEngine.Mode, editor: PageTextView? = nil) {
+        engine.sync(text: engine.string, selection: engine.selectedRange, mode: mode)
+        if mode == .insert { parser.reset(); pending = ""; menu = nil }
+        modeChanged(editor: editor)
+    }
+    /// After a command: the wide caret, the indicator and the start of an INS run.
+    func modeChanged(editor: PageTextView? = nil) {
         (editor ?? (UIResponder.currentFirstResponder as? PageTextView))?.normalCaret = isEnabled && mode != .insert
         refreshLabel()
+    }
+    /// A tap in the text writes, also out of NOR and SEL.
+    func tappedText(_ editor: PageTextView) {
+        cancelPrompt()
+        setMode(.insert, editor: editor)
+        insertRun = nil; typedSinceInsert = false
+    }
+    /// INS was entered by a command: typing follows from here.
+    func insertBegan(at caret: Int) { insertRun = caret; typedSinceInsert = false }
+    func typed(caret: Int) {
+        typedSinceInsert = true
+        if insertRun != nil { insertRun = caret }
     }
     /// Undo or a replaced selection changed the text: selection offsets are stale.
     func textChangedElsewhere() {
         TextFlowSelection.shared.set(nil)
-        if isVisual { setTextMode(.normal) }
+        if mode == .select { setMode(.normal) }
     }
     private func refreshLabel() {
-        let text: String = switch textMode {
-        case .insert: "SCHREIBEN"; case .normal: "NORMAL"; case .visual(line: false): "MARKIEREN"; case .visual(line: true): "ZEILEN"
+        let name: String = switch mode {
+        case .insert: "INS"; case .normal: "NOR"; case .select: "SEL"
         }
-        let value = scope == .library ? "BIBLIOTHEK" : editing ? text : "SEITE"
+        let value = scope == .editor && editing ? name : "NOR"
+        let place = scope == .library ? "BIBLIOTHEK" : editing ? "" : "SEITE"
+        let count = scope == .editor && editing && mode != .insert ? engine.selections.count : 1
         if label != value { label = value }
+        if contextLabel != place { contextLabel = place }
+        if selectionCount != count { selectionCount = count }
+    }
+
+    // MARK: Register and messages
+
+    /// `y`, `d`, `c`: the system pasteboard takes the register.
+    func exportRegister() {
+        guard let value = engine.register?.joined else { return }
+        pasteboardCopy = value
+        UIPasteboard.general.string = value
+    }
+    /// Before pasting: something copied elsewhere since then wins. A string
+    /// ending in a line break counts as whole lines, as in the register.
+    func adoptPasteboard() {
+        guard let value = UIPasteboard.general.string, !value.isEmpty, value != pasteboardCopy else { return }
+        engine.register = TextEngine.Register(value)
+        pasteboardCopy = value
+    }
+    func show(_ value: TextEngine.Notice) {
+        notice = switch value {
+        case .wrapped: "Suche von vorn"
+        case .noMatch: "Kein Treffer"
+        case .pairNotFound: "Kein Paar gefunden"
+        }
+        noticeTask?.cancel()
+        noticeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, !Task.isCancelled else { return }
+            self.notice = nil
+        }
+    }
+
+    // MARK: Palette over a text
+
+    /// The palette's field ends the text's editing: its state stays here, so
+    /// that a text command of the palette still finds it.
+    private func holdText() {
+        guard editing, let editor = UIResponder.currentFirstResponder as? PageTextView else { return }
+        if mode != .insert { editor.historyOwner?.keyboardSync(editor) }
+        heldEditor = editor; heldTries = 0
+    }
+    private func returnToHeldText() {
+        guard !paletteVisible, let editor = heldEditor else { return }
+        guard editor.window != nil, editor.isEditable, editor.historyOwner != nil else {
+            // An empty free field disappeared with the focus.
+            heldEditor = nil; textEnded(); return
+        }
+        handoff = true
+        editor.beginEditingOnPurpose()
+        handoff = false
+        guard editor.isFirstResponder else {
+            // `claimResponder` tries again, as often as it claims.
+            heldTries += 1
+            if heldTries > 5 { heldEditor = nil; textEnded() }
+            return
+        }
+        heldEditor = nil
+        if mode != .insert { editor.historyOwner?.keyboardShowSelection(editor) }
+        modeChanged(editor: editor)
+    }
+
+    // MARK: Input line
+
+    private func openPrompt(_ kind: TextPrompt.Kind, editor: PageTextView?) {
+        guard let editor, editor.historyOwner?.keyboardSync(editor) == true else { return }
+        promptStart = engine
+        textPrompt = TextPrompt(kind: kind)
+    }
+    /// Live: every change searches from the state before the prompt opened.
+    private func promptChanged(_ query: String, editor: PageTextView?) {
+        guard var prompt = textPrompt, let start = promptStart else { return }
+        prompt.query = query
+        engine = start
+        if !query.isEmpty {
+            let outcome: TextEngine.Outcome
+            switch prompt.kind {
+            case .search(let backward): outcome = engine.search(query, backward: backward)
+            case .select: outcome = engine.selectMatches(query)
+            }
+            prompt.noMatch = outcome.notice == .noMatch
+        } else { prompt.noMatch = false }
+        textPrompt = prompt
+        showSelection(in: editor)
+    }
+    private func closePrompt(restoring: Bool, editor: PageTextView?) {
+        guard let prompt = textPrompt else { return }
+        if restoring, let promptStart { engine = promptStart }
+        textPrompt = nil; promptStart = nil
+        if restoring { showSelection(in: editor) }
+        else if prompt.noMatch { show(.noMatch) }
+    }
+    func cancelPrompt() { closePrompt(restoring: true, editor: nil) }
+    private func showSelection(in editor: PageTextView?) {
+        guard let editor = editor ?? UIResponder.currentFirstResponder as? PageTextView else { return }
+        editor.historyOwner?.keyboardShowSelection(editor)
+        modeChanged(editor: editor)
+    }
+    /// ⌘V while the input line is open.
+    func pasteIntoPrompt(_ text: String, editor: PageTextView) {
+        guard let prompt = textPrompt else { return }
+        promptChanged(prompt.query + text.replacingOccurrences(of: "\n", with: " "), editor: editor)
+    }
+    private func promptKey(_ token: String, editor: PageTextView?) {
+        guard let prompt = textPrompt else { return }
+        switch token {
+        case "<Esc>": closePrompt(restoring: true, editor: editor)
+        case "<CR>": closePrompt(restoring: false, editor: editor)
+        case "<BS>": if !prompt.query.isEmpty { promptChanged(String(prompt.query.dropLast()), editor: editor) }
+        case "<Space>", "<S-Space>": promptChanged(prompt.query + " ", editor: editor)
+        default:
+            // A control key or a named key is no text.
+            guard token.count == 1 else { return }
+            promptChanged(prompt.query + token, editor: editor)
+        }
     }
 
     // MARK: Keys
 
-    private var context: KeyContext? {
+    private var context: HelixContext? {
         if scope == .library { return libraryActions == nil ? nil : .library }
         guard editorActions != nil else { return nil }
         guard editing else { return .page }
-        switch textMode { case .insert: return nil; case .normal: return .text; case .visual: return .visual }
+        return mode == .insert ? nil : .text
     }
+    /// Where overview and palette start: also while typing.
+    var shownContext: HelixContext { context ?? (scope == .library ? .library : editing ? .text : .page) }
 
     /// The token of a key press; nil for ⌘ shortcuts and keys without meaning here.
     private static func token(for key: UIKey) -> String? {
@@ -181,6 +372,8 @@ final class KeyboardRouter: ObservableObject {
             if letter == "[" || letter == "c" { return "<Esc>" }
             return letter.count == 1 ? "^" + letter : nil
         }
+        // Everything else with ⌥ stays what it types: `[ ] { } | ~ @` on German layouts.
+        if flags.contains(.alternate), key.charactersIgnoringModifiers == ";" || (shift && key.charactersIgnoringModifiers == ",") { return "<A-;>" }
         let characters = key.characters
         return characters.count == 1 ? characters : nil
     }
@@ -198,7 +391,7 @@ final class KeyboardRouter: ObservableObject {
     }
     private func handle(_ key: UIKey, time: TimeInterval, text: PageTextView?) -> Bool {
         let code = key.keyCode.rawValue, token = Self.token(for: key), tracing = HangProbe.isInstalled
-        let before = context, typing = editing && textMode == .insert
+        let before = context, typing = (editing && mode == .insert) || textPrompt != nil
         outcome = ""
         // The responder chain walked on with an unused press: nothing new happened.
         let fresh = gate.began(key: code, time: time)
@@ -216,7 +409,7 @@ final class KeyboardRouter: ObservableObject {
         guard let token else {
             // A dead key (`^` on German layouts) must not start typing in normal mode.
             let arrows: [UIKeyboardHIDUsage] = [.keyboardLeftArrow, .keyboardRightArrow, .keyboardUpArrow, .keyboardDownArrow]
-            guard !key.modifierFlags.contains(.command), !arrows.contains(key.keyCode), let context, context == .text || context == .visual else { return false }
+            guard !key.modifierFlags.contains(.command), !arrows.contains(key.keyCode), let context, context == .text else { return false }
             gate.swallow(key: code)
             return true
         }
@@ -224,7 +417,12 @@ final class KeyboardRouter: ObservableObject {
         cancelRepeat()
         if helpVisible { helpVisible = false; gate.swallow(key: code); return true }
         if paletteVisible { return false }
-        if textMode == .insert, editing, token == "<Esc>", let text { _ = escape(in: text); gate.swallow(key: code); return true }
+        if textPrompt != nil {
+            promptKey(token, editor: text)
+            gate.swallow(key: code)
+            return true
+        }
+        if mode == .insert, editing, token == "<Esc>", let text { _ = escape(in: text); gate.swallow(key: code); return true }
         guard feed(token, key: code, text: text) else { return false }
         gate.swallow(key: code)
         return true
@@ -242,16 +440,19 @@ final class KeyboardRouter: ObservableObject {
         let result = parser.feed(token, context: context)
         if HangProbe.isInstalled { outcome = "\(result)" }
         switch result {
-        case .pending:
-            pending = parser.display
+        case .pending(let node):
+            pending = parser.display; menu = node
+            return true
+        case .cancelled:
+            pending = ""; menu = nil
             return true
         case .unbound:
-            pending = ""
+            pending = ""; menu = nil
             // In a text no stray letter may be typed; arrows with ⇧ and the like stay native.
-            return context == .text || context == .visual
-        case .action(let action, let count, let explicit, let repeats):
-            pending = ""
-            perform(action, count: count, explicit: explicit, context: context, text: editor)
+            return context == .text
+        case .action(let action, let count, let repeats):
+            pending = ""; menu = nil
+            perform(action, count: count, context: context, text: editor)
             // A page or tool change can take the responder away with its sheet.
             if context == .page { reclaim() }
             if repeats, let key {
@@ -261,7 +462,7 @@ final class KeyboardRouter: ObservableObject {
                     // A lost key-up ends by itself; every other key cancels at once.
                     for _ in 0..<160 where !Task.isCancelled {
                         guard let self, self.repeatKey == key else { return }
-                        self.perform(action, count: 1, explicit: false, context: context, text: self.editing ? UIResponder.currentFirstResponder as? PageTextView : nil)
+                        self.perform(action, count: nil, context: context, text: self.editing ? UIResponder.currentFirstResponder as? PageTextView : nil)
                         try? await Task.sleep(for: .milliseconds(45))
                     }
                 }
@@ -282,52 +483,47 @@ final class KeyboardRouter: ObservableObject {
         return handled
     }
 
-    /// Esc in a text: typing → normal → (false) the caller leaves the text.
+    /// Esc in a text, one level at a time; false: the caller leaves the text.
     func escape(in editor: PageTextView) -> Bool {
         guard isEnabled, scope == .editor else { return false }
-        // First Esc only drops a started sequence (`d`, `3`).
-        if !parser.isIdle { parser.reset(); pending = ""; return true }
-        switch textMode {
-        case .insert:
-            TextFlowSelection.shared.set(nil)
-            setTextMode(.normal, editor: editor)
-            editor.historyOwner?.keyboardStepBackAfterTyping(editor)
-            return true
-        case .visual:
-            TextFlowSelection.shared.set(nil)
-            editor.historyOwner?.keyboardEndVisual(editor)
-            setTextMode(.normal, editor: editor)
-            return true
-        case .normal:
-            return false
-        }
+        if textPrompt != nil { closePrompt(restoring: true, editor: editor); return true }
+        // First Esc only drops a started sequence (`g`, `3`).
+        if !parser.isIdle { parser.reset(); pending = ""; menu = nil; return true }
+        return editor.historyOwner?.keyboardEscape(editor) ?? false
     }
 
-    private func perform(_ action: KeyAction, count: Int, explicit: Bool, context: KeyContext, text: PageTextView?) {
+    private func perform(_ action: HelixAction, count: Int?, context: HelixContext, text: PageTextView?) {
         switch action {
         case .help: helpVisible = true; return
         case .palette: paletteVisible = true; return
+        case .searchPrompt(let backward): openPrompt(.search(backward: backward), editor: text); return
+        case .selectPrompt: openPrompt(.select, editor: text); return
+        case .text(let command):
+            if let text { text.historyOwner?.keyboardRun(command, count: count, editor: text) }
+            return
         default: break
         }
         if context == .library { libraryActions?.run(action, count); return }
-        if let text, let layer = text.historyOwner, layer.keyboardPerform(action, count: count, explicit: explicit, editor: text) { return }
+        if let text, action == .undo || action == .redo {
+            text.historyOwner?.keyboardUndo(redo: action == .redo, editor: text)
+            return
+        }
+        let times = count ?? 1
         let sheet = viewport?.activeSheet
         switch action {
         case .scroll(let x, let y):
-            if sheet?.objectLayer.keyboardNudge(dx: Double(x * count), dy: Double(y * count)) != true { viewport?.keyboardScroll(x: x * count, y: y * count) }
-        case .scrollScreen(let fraction): viewport?.keyboardScreen(fraction * Double(count))
-        case .zoom(let steps): viewport?.keyboardZoom(steps * count)
-        case .write(let entry): sheet?.keyboardWrite(entry)
-        case .nextObject(let step): sheet?.keyboardCycleObject(step * count)
-        case .editObject: sheet?.objectLayer.keyboardEditSelected()
+            if sheet?.objectLayer.keyboardNudge(dx: Double(x * times), dy: Double(y * times)) != true { viewport?.keyboardScroll(x: x * times, y: y * times) }
+        case .scrollScreen(let fraction): viewport?.keyboardScreen(fraction * Double(times))
+        case .zoom(let steps): viewport?.keyboardZoom(steps * times)
+        case .write: if sheet?.objectLayer.keyboardEditSelected() != true { sheet?.keyboardWrite() }
+        case .nextObject(let step): sheet?.keyboardCycleObject(step * times)
         case .deleteObject: sheet?.objectLayer.keyboardDelete()
         case .copyObject: sheet?.objectLayer.keyboardCopy()
-        case .cutObject: sheet?.objectLayer.keyboardCut()
         case .duplicateObject: sheet?.objectLayer.keyboardDuplicate()
         case .pasteObject: sheet?.pasteFromClipboard()
         case .selectAll: sheet?.keyboardSelectAll()
-        case .cancel: sheet?.objectLayer.keyboardClearSelection()
-        default: editorActions?.run(action, count, explicit)
+        case .escape: sheet?.objectLayer.keyboardClearSelection()
+        default: editorActions?.run(action, count)
         }
     }
 
@@ -336,17 +532,20 @@ final class KeyboardRouter: ObservableObject {
     func togglePalette() { paletteVisible.toggle() }
     /// Every key binding of the current context by name, then what only the menus offer.
     func paletteCommands() -> [PaletteCommand] {
-        let context = self.context ?? (scope == .library ? .library : .page)
-        var seen = Set<String>(), result: [PaletteCommand] = []
-        for row in KeyMap.bindings where row.contexts.contains(context) && row.action != .palette && row.action != .cancel {
-            guard seen.insert(row.title).inserted else { continue }
-            result.append(PaletteCommand(title: row.title, keys: row.keys.replacingOccurrences(of: " ", with: "")) { [weak self] in
-                self?.perform(row.action, count: 1, explicit: false, context: context,
-                              text: self?.editing == true ? UIResponder.currentFirstResponder as? PageTextView : nil)
-            })
+        let context = shownContext
+        let keys = HelixKeymap.commands(in: context).compactMap { row in
+            row.action.map { action in
+                PaletteCommand(title: row.title, keys: row.label) { [weak self] in self?.runFromPalette(action, context: context) }
+            }
         }
         let extra = scope == .library ? libraryActions?.commands() : editorActions?.commands()
-        return (extra ?? []) + result
+        return (extra ?? []) + keys
+    }
+    private func runFromPalette(_ action: HelixAction, context: HelixContext) {
+        let text = editing ? UIResponder.currentFirstResponder as? PageTextView : nil
+        // The commands of a text start in NOR, wherever ⇧⌘P came from.
+        if context == .text, mode == .insert, let text { _ = escape(in: text) }
+        perform(action, count: nil, context: context, text: text)
     }
     func runDirect(_ command: KeyPalette.Direct) { editorActions?.direct(command) }
 }
