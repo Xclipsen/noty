@@ -1,5 +1,14 @@
 # Architektur
 
+## Tastaturmodus und Text über Seiten · Build 65 · 31.10.2026
+
+Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft. Bedienung, Grenzen und Gerätetest: [KEYBOARD](KEYBOARD.md), Befunde: [TEXT-REBUILD-62](TEXT-REBUILD-62.md).
+
+- **Core:** `KeyboardCommands.swift` (`KeyMap` als einzige Tastentabelle, `KeySequenceParser` für Zähler, Sequenzen und Operatoren, `KeyPalette`), `TextMotions.swift` (Bewegungen und Bearbeitungen auf Klartext), `TextFlowRange.swift` (Offsets, Bereiche, `editingTextFlow`, `restylingTextFlow`).
+- **App:** Tastendrücke gehen über `pressesBegan` an `KeyboardRouter` (`PageTextView`, `DrawingCanvasView`, `WorksheetView`, in der Bibliothek `KeyboardHostView`). Plaintasten laufen bewusst nicht über Key Commands: `UIKey.characters` liefert unabhängig von der Belegung das getippte Zeichen, und nur der Router weiß, ob gerade geschrieben wird. ⌘-Kürzel bleiben bei Menü und Key Commands. Esc und Tab kommen als Key Command, weil das System sie sonst zuerst nimmt.
+- **Auswahl über Seiten:** Jede Seite hat eine eigene Textansicht. `TextFlowSelection` hält den Bereich, jede `TextObjectLayer` markiert ihren Teil; Änderungen gehen über `TextFlowActions` ans `EditorModel` und sind je ein Undo-Schritt. Innerhalb einer Seite bleibt die native Auswahl, damit Griffe und Formatleiste unverändert arbeiten.
+- **Neue Abhängigkeit im Reflow:** optional `trailingLineFits`; ohne diesen Parameter bleibt das Verhalten gleich.
+
 ## Feldstil und Gliederung (Textneubau Stufe 4) · 22.10.2026
 
 Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung und Abweichungen: [TEXT-REBUILD-62](TEXT-REBUILD-62.md), Format: [STORAGE](STORAGE.md) (Schema 14).

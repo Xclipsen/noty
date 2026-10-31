@@ -11,6 +11,8 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Build 65 (`feat/tastatur`, gestapelt auf `feat/textneubau`):** ⌘A über das ganze Textdokument und in jedem Werkzeug, Absatzstile über Seitenwechsel, Zeilenumbruch am Seitenende ohne Überlauf, vim-artiger [Tastaturmodus](docs/KEYBOARD.md). Implementiert, gebaut und installiert (alle 28 Dokumente unverändert), am iPad ungeprüft.
+
 **Nutzungsfeedback Tag 1 (22.10.2026) – auf `main`, implementiert und erfolgreich gebaut, nicht installiert, auf dem iPad ungeprüft:**
 
 - **Lasso-Kontur:** Auswahlen werden wieder wie beim frühen nativen Lasso mit Abstand umrandet (`SelectionContour`); nahe Inhalte verschmelzen, entfernte bleiben Inseln, Griffe und Leiste sitzen am Konturrahmen.
