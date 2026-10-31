@@ -144,6 +144,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     fileprivate var avoidance: (edge: ToolbarAvoidanceEdge, shift: CGFloat, after: CGPoint)?
     fileprivate var avoidanceRequest: ToolbarOptionsAvoidance?
     fileprivate var avoidanceInset = UIEdgeInsets.zero
+    /// Room beyond the content ends, only while chrome would cover the caret there.
+    private var caretInset = UIEdgeInsets.zero
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -157,6 +159,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)),
             name: UIResponder.keyboardWillHideNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardSettled),
+            name: UIResponder.keyboardDidChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(memoryWarning),
             name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
         for direction: UISwipeGestureRecognizer.Direction in [.left, .right] {
@@ -383,8 +387,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
     private func updateInsets() {
         let side = NotebookViewportGeometry.horizontalInset(viewportWidth: bounds.width, contentWidth: contentSize.width)
-        let inset = UIEdgeInsets(top: topObstruction + 12 + avoidanceInset.top, left: side,
-                                 bottom: 32 + keyboardOverlap + avoidanceInset.bottom, right: side)
+        let inset = UIEdgeInsets(top: topObstruction + 12 + avoidanceInset.top + caretInset.top, left: side,
+                                 bottom: 32 + keyboardOverlap + avoidanceInset.bottom + caretInset.bottom, right: side)
         if contentInset != inset { contentInset = inset }
     }
     private func refreshSheets() {
@@ -602,13 +606,30 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         if window == nil { stopZoomTransition(); stopElastic(); userZoomPage = nil; hideFloatingSelection(); laser.reset() }
     }
     private var keyboardOverlap: CGFloat {
-        guard let window, let screenFrame = keyboardScreenFrame else { return 0 }
-        let rect = convert(window.convert(screenFrame, from: window.screen.coordinateSpace), from: window)
+        guard let window else { return 0 }
+        var result: CGFloat = 0
+        if let screenFrame = keyboardScreenFrame {
+            result = dockedOverlap(convert(window.convert(screenFrame, from: window.screen.coordinateSpace), from: window), slack: 4)
+        }
+        // With a hardware keyboard the format bar is all that shows, and the frame
+        // reported for it is not reliable: measure the bar itself. Wherever it
+        // stands in the lower half (screen edge, on a keyboard), it covers what is below.
+        if let bar = UIResponder.currentFirstResponder?.inputAccessoryView, let home = bar.window, !bar.isHidden {
+            result = max(result, dockedOverlap(convert(window.convert(bar.convert(bar.bounds, to: nil), from: home), from: window), slack: bounds.height / 2))
+        }
+        return result
+    }
+    /// Floating keyboards may be panned around; only docked keyboards reserve
+    /// a full-width bottom inset. Text focus itself never changes zoom.
+    private func dockedOverlap(_ rect: CGRect, slack: CGFloat) -> CGFloat {
         let overlap = bounds.intersection(rect)
-        // Floating keyboards may be panned around; only docked keyboards reserve
-        // a full-width bottom inset. Text focus itself never changes zoom.
-        guard !overlap.isNull, overlap.width > bounds.width * 0.7, rect.maxY >= bounds.maxY - 4 else { return 0 }
+        guard !overlap.isNull, overlap.width > bounds.width * 0.7, rect.maxY >= bounds.maxY - slack else { return 0 }
         return max(0, bounds.maxY - overlap.minY)
+    }
+    /// The bar reaches its place after `keyboardChanged`.
+    @objc private func keyboardSettled() {
+        if activeSheet?.editingCaret == nil { caretInset = .zero }
+        updateInsets(); revealCaret()
     }
     @objc private func keyboardChanged(_ note: Notification) {
         keyboardScreenFrame = note.name == UIResponder.keyboardWillHideNotification ? nil
@@ -644,6 +665,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
               pinchGestureRecognizer?.state != .began, pinchGestureRecognizer?.state != .changed,
               state?.enabled == true, let selected, let sheet = sheets[selected], sheet.editingCaret != nil else { return }
         sheet.layoutIfNeeded()
+        updateInsets()
         let kind = sheet.takeCaretReveal()
         guard let caret = sheet.editingCaret else { return }
         let target = sheet.convert(caret, to: self)
@@ -652,6 +674,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             width: max(1, bounds.width), height: max(1, bounds.height - keyboardOverlap - topObstruction))
         let chrome = obstructions.map { PageRect($0.offsetBy(dx: contentOffset.x, dy: contentOffset.y)) }
         let delta = NotebookViewportGeometry.caretRevealDelta(caret: PageRect(target), visible: free, obstructions: chrome, kind: kind)
+        makeRoom(forOffset: contentOffset.y + delta.y, covered: kind != .typewriter && chrome.contains { $0.cgRect.intersects(target) })
         let result = CGPoint(x: min(max(contentOffset.x + delta.x, -contentInset.left), max(-contentInset.left, contentSize.width - bounds.width + contentInset.right)),
             y: min(max(contentOffset.y + delta.y, -contentInset.top), max(-contentInset.top, contentSize.height - bounds.height + contentInset.bottom)))
         guard abs(result.x - contentOffset.x) > 0.5 || abs(result.y - contentOffset.y) > 0.5 else { return }
@@ -661,6 +684,15 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         if glide { UIView.animate(withDuration: 0.12, delay: 0, options: [.beginFromCurrentState, .allowUserInteraction]) { self.contentOffset = result } }
         else { setContentOffset(result, animated: false) }
         changing = false
+    }
+    /// A floating palette over the first or last lines of the content: the
+    /// clamped offset would leave the caret below it. Taken back once unused.
+    private func makeRoom(forOffset y: CGFloat, covered: Bool) {
+        let top = topObstruction + 12 + avoidanceInset.top, bottom = 32 + keyboardOverlap + avoidanceInset.bottom
+        let beyondTop = max(0, -y - top), beyondEnd = max(0, y - (contentSize.height - bounds.height + bottom))
+        let next = UIEdgeInsets(top: covered ? beyondTop : min(caretInset.top, beyondTop), left: 0,
+                                bottom: covered ? beyondEnd : min(caretInset.bottom, beyondEnd), right: 0)
+        if next != caretInset { caretInset = next; updateInsets() }
     }
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         HangProbe.hit("Viewport.didZoom")

@@ -8,8 +8,13 @@ struct KeyboardOverlay: View {
     @ObservedObject private var router = KeyboardRouter.shared
     @AppStorage(AppSettingsKey.keyboardMode) private var enabled = true
 
+    /// Editor: below the back button and above every palette position
+    /// (`ToolbarLayout`: 76 pt and lower), where neither the keyboard nor its
+    /// format bar can reach, whatever height the system reports for them.
+    private var inEditor: Bool { scope == .editor }
+
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
+        ZStack(alignment: inEditor ? .topLeading : .bottomLeading) {
             Color.clear.allowsHitTesting(false)
             if enabled, router.scope == scope {
                 if router.keyboardSeen {
@@ -19,7 +24,7 @@ struct KeyboardOverlay: View {
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.leading, 10).padding(.bottom, 8)
+                    .padding(.leading, 10).padding(inEditor ? .top : .bottom, inEditor ? 54 : 8)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
                 }
