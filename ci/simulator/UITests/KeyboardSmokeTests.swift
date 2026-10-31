@@ -22,7 +22,8 @@ final class KeyboardSmokeTests: XCTestCase {
         report.name = "tasten-\(name.split(separator: " ").last?.dropLast() ?? "test").txt"
         report.lifetime = .keepAlways
         add(report)
-        app.terminate()
+        // No `terminate` here: it failed once and took the test into its time
+        // limit. The next `launch` ends the app anyway.
     }
 
     // MARK: Tests
@@ -162,10 +163,11 @@ final class KeyboardSmokeTests: XCTestCase {
         press("j"); press("j")
         press("g"); press("h")
         press("x"); press("d")
-        checkValue("zweimal j geht zwei Zeilen tiefer", text, "eins\nzwei\n")
+        // The last line takes the break in front of it along (`takesBreakBefore`).
+        checkValue("zweimal j geht zwei Zeilen tiefer", text, "eins\nzwei")
         press("u")
         press("U", .shift)
-        checkValue("U wiederholt", text, "eins\nzwei\n")
+        checkValue("U wiederholt", text, "eins\nzwei")
         press(.escape); press(.escape)
         press(.space); press("q")
         checkLabel("Space q schließt das Dokument", indicator, contains: "BIBLIOTHEK", timeout: 8)
