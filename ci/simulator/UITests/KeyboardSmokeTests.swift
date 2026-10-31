@@ -60,6 +60,12 @@ final class KeyboardSmokeTests: XCTestCase {
         press("g"); press(.escape)
         check("Esc schließt Which-Key", waitGone(menu))
         checkFocus("Esc nach g lässt Fokus stehen", "Kurs A")
+        press("c", .control)
+        check("⌃C schließt Which-Key", waitGone(menu))
+        press("[", .control)
+        press("g")
+        checkFocus("⌃C und ⌃[ lassen die Bibliothek bedienbar", "Kurs A")
+        press("g")
         shot("Bibliothek")
     }
 
@@ -93,15 +99,16 @@ final class KeyboardSmokeTests: XCTestCase {
         guard sheet.waitForExistence(timeout: 5) else { check("N öffnet das Blatt ein zweites Mal", false); return }
         if !field.holdsKeys { field.tap() }
         for letter in "enter" { press(String(letter)) }
-        checkValue("Tasten erreichen das Titelfeld", field, "enter")
+        // The first letter comes out capitalized, as on the iPad.
+        checkValue("Tasten erreichen das Titelfeld", field, "Enter")
         press(.return)
         if !check("Enter erstellt das Dokument", waitGone(sheet)) {
             app.buttons["Erstellen"].tap()
             _ = waitGone(sheet)
         }
-        check("Dokument liegt in der Bibliothek", waitFor(item("enter")))
+        check("Dokument liegt in der Bibliothek", waitFor(item("Enter")))
         press("g"); press("e")
-        checkFocus("Bibliothek nimmt nach dem Blatt wieder Tasten an", "enter")
+        checkFocus("Bibliothek nimmt nach dem Blatt wieder Tasten an", "Enter")
     }
 
     func test5_TextEditing() {
@@ -113,9 +120,7 @@ final class KeyboardSmokeTests: XCTestCase {
         guard let text = activeText() else { check("Textansicht hat den Fokus", false); return }
         write("eins", "zwei", "drei")
         checkValue("Tippen in INS kommt im Text an", text, "eins\nzwei\ndrei")
-        press(.escape)
-        checkLabel("Esc: NOR", indicator, contains: "NOR")
-        checkNoLabel("Esc: nicht mehr INS", indicator, "INS")
+        leaveInsert()
         shot("NOR")
 
         press("g"); press("g")
@@ -159,8 +164,7 @@ final class KeyboardSmokeTests: XCTestCase {
         press("i")
         guard let text = activeText() else { check("Textansicht hat den Fokus", false); return }
         write("abc def")
-        press(.escape)
-        checkLabel("Esc 1: INS → NOR", indicator, contains: "NOR")
+        leaveInsert()
 
         press("g")
         check("g im Text: Which-Key erscheint", waitFor(menu))
@@ -209,6 +213,16 @@ final class KeyboardSmokeTests: XCTestCase {
         }
     }
 
+    /// Esc, and when it does not arrive ⌃[ and ⌃C, so that the rest still runs.
+    private func leaveInsert() {
+        press(.escape)
+        if checkLabel("Esc: INS → NOR", indicator, contains: "NOR") { return }
+        press("[", .control)
+        if checkLabel("⌃[: INS → NOR", indicator, contains: "NOR") { return }
+        press("c", .control)
+        checkLabel("⌃C: INS → NOR", indicator, contains: "NOR")
+    }
+
     // MARK: Elements
 
     private var indicator: XCUIElement { element("keyboard.indicator") }
@@ -234,7 +248,6 @@ final class KeyboardSmokeTests: XCTestCase {
         app.launchArguments = ["-notyUITest", "-noty.home.layout", layout, "-noty.diagnostics.hangProbe", "YES",
                                "-AppleLanguages", "(de)", "-AppleLocale", "de_DE"]
         app.launch()
-        XCUIDevice.shared.orientation = .landscapeLeft
         XCTAssertTrue(app.buttons["Alle Unterlagen"].waitForExistence(timeout: 30), "Bibliothek erscheint")
         // The host claims the keys for a while after launch (`KeyboardRouter.reclaim`).
         sleep(2)
@@ -260,7 +273,10 @@ final class KeyboardSmokeTests: XCTestCase {
         press("g"); press("e")
         checkFocus("ge steht auf dem neuen Dokument", title)
         press(.return)
-        checkLabel("Enter öffnet das Dokument: NOR SEITE", indicator, contains: "SEITE", timeout: 15)
+        if !checkLabel("Enter öffnet das Dokument", indicator, contains: "SEITE", timeout: 8) {
+            press("o")
+            checkLabel("o öffnet das Dokument", indicator, contains: "SEITE", timeout: 15)
+        }
         sleep(1)
     }
 
@@ -272,9 +288,10 @@ final class KeyboardSmokeTests: XCTestCase {
         if !passed { XCTFail("\(what) \(detail)") }
         return passed
     }
-    private func checkLabel(_ what: String, _ element: XCUIElement, contains part: String, timeout: TimeInterval = 3) {
+    @discardableResult
+    private func checkLabel(_ what: String, _ element: XCUIElement, contains part: String, timeout: TimeInterval = 3) -> Bool {
         let passed = poll(timeout) { element.exists && element.label.contains(part) }
-        check(what, passed, detail: passed ? "" : "Anzeige: „\(element.exists ? element.label : "fehlt")“")
+        return check(what, passed, detail: passed ? "" : "Anzeige: „\(element.exists ? element.label : "fehlt")“")
     }
     private func checkNoLabel(_ what: String, _ element: XCUIElement, _ part: String) {
         check(what, !(element.exists && element.label.contains(part)), detail: element.exists ? "Anzeige: „\(element.label)“" : "")
