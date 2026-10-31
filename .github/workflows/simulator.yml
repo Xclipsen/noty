@@ -25,6 +25,9 @@ concurrency:
 
 env:
   XCODEGEN_VERSION: '2.46.0'
+  # Esc and Return as HID events, `typeKey` does not deliver these two.
+  AXE_VERSION: '1.8.0'
+  AXE_SHA256: 7b76340b72e90d0f211bc7c4636f15009076eff07acef2f2b632b175debd8834
   DEVICE: iPad Pro 11-inch (M5)
   DERIVED: ${{ github.workspace }}/.simulator/DerivedData
   OUT: ${{ github.workspace }}/.simulator/out
@@ -55,6 +58,14 @@ jobs:
           unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP/xcodegen"
           echo "$RUNNER_TEMP/xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
 
+      - name: AXe laden
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/axe.tar.gz" "https://github.com/cameroncooke/AXe/releases/download/v$AXE_VERSION/AXe-macOS-v$AXE_VERSION-universal.tar.gz"
+          echo "$AXE_SHA256  $RUNNER_TEMP/axe.tar.gz" | shasum -a 256 -c -
+          mkdir "$RUNNER_TEMP/axe"
+          tar xzf "$RUNNER_TEMP/axe.tar.gz" -C "$RUNNER_TEMP/axe"
+          echo "$RUNNER_TEMP/axe" >> "$GITHUB_PATH"
+
       - name: Projekt erzeugen
         working-directory: ci/simulator
         run: xcodegen generate
@@ -83,18 +94,21 @@ jobs:
 
       - name: Smoke-Test
         id: smoke
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
           set -o pipefail
+          export HID_DIR="$OUT/hid"
+          mkdir -p "$HID_DIR"
+          bash ci/simulator/hid-bridge.sh "$HID_DIR" "$UDID" &
           # CPU of the app every 5 s: shows a busy loop behind a missing idle.
           (while true; do date +%T; ps -axo %cpu=,comm= | grep '/Noty$' || true; sleep 5; done > "$OUT/cpu.log") &
-          xcodebuild test-without-building \
+          TEST_RUNNER_HID_DIR="$HID_DIR" xcodebuild test-without-building \
             -project ci/simulator/NotySim.xcodeproj -scheme NotySim \
             -destination "platform=iOS Simulator,id=$UDID" \
             -derivedDataPath "$DERIVED" \
             -resultBundlePath "$OUT/KeyboardSmoke.xcresult" \
             -test-timeouts-enabled YES \
-            -default-test-execution-time-allowance 240 -maximum-test-execution-time-allowance 300 \
+            -default-test-execution-time-allowance 360 -maximum-test-execution-time-allowance 420 \
             | tee "$OUT/test.log" | grep -E "Test Case|error:|\*\* TEST|Executed "
 
       - name: Ergebnisse und Screenshots auspacken
@@ -120,6 +134,7 @@ jobs:
             ${{ env.OUT }}/attachments
             ${{ env.OUT }}/keyboard.log
             ${{ env.OUT }}/cpu.log
+            ${{ env.OUT }}/hid/bridge.log
             ${{ env.OUT }}/build.log
             ${{ env.OUT }}/test.log
             ${{ env.OUT }}/tests.json

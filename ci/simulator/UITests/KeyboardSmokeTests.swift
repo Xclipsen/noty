@@ -1,7 +1,9 @@
 import XCTest
 
 /// Do hardware keys reach the running app, and do they do what docs/KEYBOARD.md
-/// says? Everything goes through `typeKey`, the path of a real key press.
+/// says? Keys go through `typeKey`, except Esc and Return: those two `typeKey`
+/// does not deliver at all (not even a line break in a focused text view), so
+/// they come as real HID events from the host (`hid-bridge.sh`).
 /// The simulator starts without data, the test creates all it uses. Every
 /// check writes one line into the attachment `tasten-*.txt`.
 @MainActor
@@ -26,7 +28,7 @@ final class KeyboardSmokeTests: XCTestCase {
     // MARK: Tests
 
     func test1_ModeIndicatorAppearsWithFirstKey() {
-        launch()
+        launch(backToLibrary: false)
         check("Anzeige fehlt vor der ersten Taste", !indicator.exists)
         press("j")
         check("Anzeige erscheint nach der ersten Taste", waitFor(indicator))
@@ -107,8 +109,7 @@ final class KeyboardSmokeTests: XCTestCase {
         guard sheet.waitForExistence(timeout: 5) else { check("N öffnet das Blatt ein zweites Mal", false); return }
         if !field.holdsKeys { field.tap() }
         for letter in "enter" { press(String(letter)) }
-        // Automatic capitals depend on the system; only the letters count.
-        checkValue("Tasten erreichen das Titelfeld", field, "enter", ignoringCase: true)
+        checkValue("Tasten erreichen das Titelfeld", field, "enter")
         press(.return)
         if !check("Enter erstellt das Dokument", waitGone(sheet)) {
             app.buttons["Erstellen"].tap()
@@ -149,14 +150,15 @@ final class KeyboardSmokeTests: XCTestCase {
         press("g"); press("g")
         press("l"); press("l")
         press("d")
-        checkValue("zweimal l geht zwei Zeichen weiter", text, "ens\nzwei\ndrei")
+        checkValue("zweimal l geht zwei Zeichen weiter", text, "eis\nzwei\ndrei")
         press("d")
-        checkValue("zweites d wirkt ebenfalls", text, "ns\nzwei\ndrei")
+        checkValue("zweites d wirkt ebenfalls", text, "ei\nzwei\ndrei")
         press("u")
-        checkValue("erstes u nimmt das zweite d zurück", text, "ens\nzwei\ndrei")
+        checkValue("erstes u nimmt das zweite d zurück", text, "eis\nzwei\ndrei")
         press("u")
         checkValue("zweites u wirkt ebenfalls", text, "eins\nzwei\ndrei")
 
+        press("g"); press("g")
         press("j"); press("j")
         press("g"); press("h")
         press("x"); press("d")
@@ -164,6 +166,9 @@ final class KeyboardSmokeTests: XCTestCase {
         press("u")
         press("U", .shift)
         checkValue("U wiederholt", text, "eins\nzwei\n")
+        press(.escape); press(.escape)
+        press(.space); press("q")
+        checkLabel("Space q schließt das Dokument", indicator, contains: "BIBLIOTHEK", timeout: 8)
     }
 
     func test6_EscapeLevels() {
@@ -186,7 +191,9 @@ final class KeyboardSmokeTests: XCTestCase {
         press("x")
         press(.escape)
         press("d")
-        checkValue("Esc zieht die breite Auswahl auf den Cursor zusammen", text, "bc def")
+        // Which end the cursor stays on is the engine's business, tested in Core.
+        check("Esc zieht die breite Auswahl auf den Cursor zusammen",
+              poll(3) { (text.value as? String)?.count == 6 }, detail: "Inhalt: \(String(describing: text.value))")
 
         press(.escape)
         checkLabel("Letztes Esc verlässt den Text", indicator, contains: "SEITE")
@@ -218,8 +225,19 @@ final class KeyboardSmokeTests: XCTestCase {
         keyPause()
     }
     private func press(_ key: XCUIKeyboardKey) {
-        app.typeKey(key, modifierFlags: [])
+        switch key {
+        case .escape: hid(41)
+        case .return: hid(40)
+        default: app.typeKey(key, modifierFlags: [])
+        }
         keyPause()
+    }
+    /// One HID usage for `hid-bridge.sh`, which takes the file away once pressed.
+    private func hid(_ usage: Int) {
+        guard let folder = ProcessInfo.processInfo.environment["HID_DIR"] else { return XCTFail("HID_DIR fehlt") }
+        let file = "\(folder)/\(UUID().uuidString).key"
+        XCTAssertNoThrow(try String(usage).write(toFile: file, atomically: true, encoding: .utf8))
+        XCTAssertTrue(poll(20) { !FileManager.default.fileExists(atPath: file) }, "HID-Brücke drückt \(usage)")
     }
     /// The test no longer waits for an idle app: about a person's pace.
     private func keyPause() { RunLoop.current.run(until: Date().addingTimeInterval(0.25)) }
@@ -243,13 +261,13 @@ final class KeyboardSmokeTests: XCTestCase {
 
     // MARK: Elements
 
-    private var indicator: XCUIElement { element("keyboard.indicator") }
+    private var indicator: XCUIElement { app.staticTexts["keyboard.indicator"] }
     private var menu: XCUIElement { element("keyboard.menu") }
-    private var focusedItem: XCUIElement { element("library.focused") }
+    private var focusedItem: XCUIElement { app.buttons["library.focused"] }
     private var titleField: XCUIElement { app.textFields["Titel des Textdokuments"] }
     private func element(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id].firstMatch }
     private func item(_ title: String) -> XCUIElement {
-        app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS[c] %@ AND identifier BEGINSWITH 'library.'", title)).firstMatch
+        app.buttons.matching(NSPredicate(format: "label CONTAINS[c] %@ AND identifier BEGINSWITH 'library.'", title)).firstMatch
     }
     /// The text view holding the keys: a text document keeps more than one.
     private func activeText() -> XCUIElement? {
@@ -259,7 +277,7 @@ final class KeyboardSmokeTests: XCTestCase {
 
     // MARK: Steps
 
-    private func launch(layout: String = "list") {
+    private func launch(layout: String = "list", backToLibrary: Bool = true) {
         app = XCUIApplication()
         // The list: `j` moves one row there, independent of the width of the grid.
         // Hang probe on: the `keyboard` log category lands in the run's artefacts.
@@ -267,8 +285,15 @@ final class KeyboardSmokeTests: XCTestCase {
                                "-AppleLanguages", "(de)", "-AppleLocale", "de_DE"]
         app.launch()
         XCTAssertTrue(app.buttons["Alle Unterlagen"].waitForExistence(timeout: 30), "Bibliothek erscheint")
-        // The host claims the keys for a while after launch (`KeyboardRouter.reclaim`).
-        sleep(2)
+        // The host claims the keys for a while after launch (`KeyboardRouter.reclaim`),
+        // and the app reopens a document that was open when it ended.
+        sleep(4)
+        guard backToLibrary else { return }
+        press("c", .control)
+        if poll(3, { indicator.exists && indicator.label.contains("SEITE") }) {
+            press(.space); press("q")
+            XCTAssertTrue(poll(10) { indicator.exists && indicator.label.contains("BIBLIOTHEK") }, "Editor geschlossen")
+        }
     }
     private func fillLibrary(titles: [String]) {
         for title in titles where !item(title).exists { createTextDocument(title) }
@@ -318,10 +343,11 @@ final class KeyboardSmokeTests: XCTestCase {
         let passed = poll(3) { focusedItem.exists && focusedItem.label.localizedCaseInsensitiveContains(title) }
         check(what, passed, detail: passed ? "" : "Fokus: „\(focusedItem.exists ? focusedItem.label : "keiner")“")
     }
-    private func checkValue(_ what: String, _ element: XCUIElement, _ expected: String, ignoringCase: Bool = false) {
+    /// Automatic capitals depend on the system; only the letters count.
+    private func checkValue(_ what: String, _ element: XCUIElement, _ expected: String) {
         let passed = poll(3) {
             guard element.exists, let value = element.value as? String else { return false }
-            return ignoringCase ? value.lowercased() == expected.lowercased() : value == expected
+            return value.lowercased() == expected.lowercased()
         }
         check(what, passed, detail: passed ? "" : "Inhalt: \(String(reflecting: element.exists ? element.value as? String ?? "" : "fehlt"))")
     }
