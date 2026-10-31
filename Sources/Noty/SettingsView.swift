@@ -16,6 +16,8 @@ enum AppSettingsKey {
     static let snapping = "noty.editor.snapping"
     /// Keyboard mode (docs/KEYBOARD.md): on unless switched off.
     static let keyboardMode = "noty.keyboard.mode"
+    /// Text editor 2 in text documents (docs/TEXT-EDITOR-2.md): off unless switched on.
+    static let textEditor2 = "noty.text.editor2"
     /// Lasso: what it selects (`SelectionFilter.bits`) and freeform/rectangle.
     static let lassoFilter = "noty.lasso.filter"
     static let lassoMode = "noty.lasso.mode"
@@ -584,6 +586,7 @@ private struct AboutSettingsPage: View {
     @ObservedObject var toolbox: ToolbarSettingsModel
     @ObservedObject var workspaces: WorkspaceAppModel
     @AppStorage(AppSettingsKey.hangProbe) private var hangProbe = false
+    @AppStorage(AppSettingsKey.textEditor2) private var textEditor2 = false
     private func info(_ key: String) -> String { Bundle.main.object(forInfoDictionaryKey: key) as? String ?? "–" }
     var body: some View {
         Form {
@@ -603,8 +606,9 @@ private struct AboutSettingsPage: View {
             SigningRenewalSection()
             Section {
                 Toggle("Hänger-Diagnose", isOn: $hangProbe)
+                Toggle("Neuer Texteditor (Test)", isOn: $textEditor2)
             } header: { Text("Diagnose") } footer: {
-                Text("Protokolliert bei längeren Hängern nur Codeadressen und Zähler im Systemprotokoll, keine Inhalte. Wirkt nach einem Neustart der App.")
+                Text("Hänger-Diagnose: protokolliert bei längeren Hängern nur Codeadressen und Zähler im Systemprotokoll, keine Inhalte. Wirkt nach einem Neustart der App. Neuer Texteditor: ein Text über alle Seiten eines Textdokuments, im Blättermodus aus; noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.")
             }
         }
         .navigationTitle("Über noty")

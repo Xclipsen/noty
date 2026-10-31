@@ -33,6 +33,9 @@ struct TextFlowActions {
     var moveCaret: (NSRange) -> Void
     /// The segments with their pages, for lines over a page change.
     var segments: () -> [(page: Page, box: TextBox)]
+    /// Text editor 2: the model follows its buffer. The closure gives the
+    /// layout's page length for a page and the text from there on (nil: unknown).
+    var change: ((TextFlowChange, @escaping (Page, TextBox) -> Int?) -> TextFlowFocus?)? = nil
 }
 
 /// `j`/`k` go by the lines on screen, measured by the same layout that draws them.

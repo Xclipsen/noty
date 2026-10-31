@@ -376,7 +376,8 @@ struct ContentView: View {
             segments: {
                 let pages = Dictionary(model.notebook.pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                 return model.notebook.textFlowSegments.compactMap { segment in pages[segment.pageID].map { ($0, segment.box) } }
-            })
+            },
+            change: { change, capacity in model.changeFlow(change, capacity: capacity, trailingDraft: draftPage) })
     }
 
     private func markNotebookShown() {

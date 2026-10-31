@@ -85,7 +85,9 @@ final class TaskLayoutManager: NSLayoutManager {
     }
     override func drawGlyphs(forGlyphRange requested: NSRange, at origin: CGPoint) {
         if suppressed { nativeDrawRequested(); return }
-        guard let storage = textStorage, let container = textContainers.first,
+        // Several containers: text editor 2, one per page of a document.
+        let page = textContainers.count > 1 ? textContainer(forGlyphAt: requested.location, effectiveRange: nil) : nil
+        guard let storage = textStorage, let container = page ?? textContainers.first,
               let context = UIGraphicsGetCurrentContext() else { super.drawGlyphs(forGlyphRange: requested, at: origin); return }
         var cursor = requested.location
         for item in TextListEditing.taskItems(in: storage.string) {
@@ -174,11 +176,7 @@ final class RuledTextLayout: NSObject, @preconcurrency NSLayoutManagerDelegate {
     /// rule of editor, previews, PDF and flow capacity. Nil without ruling.
     func baseline(top: CGFloat, ascent: CGFloat) -> CGFloat? {
         guard let originY else { return nil }
-        if top < 0.5, let pageTop { return CGFloat(lines.firstLineBaseline(ascent: Double(ascent), pageTop: Double(pageTop))) - originY }
-        let natural = originY + top + ascent
-        let ruled = CGFloat(lines.baseline(forNatural: Double(natural)))
-        // Grid rows may tighten a line slightly, never the first one (no clipping).
-        return (top < 0.5 ? max(natural, ruled) : ruled) - originY
+        return CGFloat(lines.lineBaseline(top: Double(top), ascent: Double(ascent), origin: Double(originY), pageTop: pageTop.map { Double($0) }))
     }
     func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect rect: UnsafeMutablePointer<CGRect>,
                        lineFragmentUsedRect used: UnsafeMutablePointer<CGRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,

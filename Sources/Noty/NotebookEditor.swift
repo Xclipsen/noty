@@ -146,6 +146,14 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     fileprivate var avoidanceInset = UIEdgeInsets.zero
     /// Room beyond the content ends, only while chrome would cover the caret there.
     private var caretInset = UIEdgeInsets.zero
+    /// Text editor 2 (docs/TEXT-EDITOR-2.md): read once, a viewport keeps its editor.
+    private let documentEditorEnabled = UserDefaults.standard.bool(forKey: AppSettingsKey.textEditor2)
+    private var documentText: DocumentTextController?
+    private let documentInteractionID = UUID()
+    /// A text is being edited on a sheet or on the document surface.
+    private var isEditingText: Bool {
+        documentText?.view.isFirstResponder == true || sheets.values.contains(where: { $0.editingCaret != nil })
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -265,6 +273,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             reported = selected
         } else if oldSelection != selected && selected != reported {
             if let oldSelection { sheets[oldSelection]?.finishTextEditing() }
+            documentText?.view.finishEditing()
             pendingJump = true
         }
         if fitRequest != next.fitRequest { fitRequest = next.fitRequest; pendingFit = true; pendingJump = true }
@@ -284,13 +293,16 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             }
         }
         if first { textRequest = next.textInsertRequest }
+        if documentEditorEnabled { updateDocumentText(next) }
         setNeedsLayout(); layoutIfNeeded()
         if scrollModeChanged { constrainHorizontalOffset(animated: true) }
         if !first { updateOptionsAvoidance(next.optionsAvoidance) } else { avoidanceRequest = next.optionsAvoidance }
         refreshSheets()
         if let deletion { slideAfterDeletion(from: slide, deletion: deletion) }
         if oldSelection != selected { queueCaretReveal() }
-        if let focus = pendingTextFocus, let sheet = sheets[focus.pageID], next.enabled {
+        if let focus = pendingTextFocus, next.enabled, documentText?.view.show(focus) == true {
+            pendingTextFocus = nil; queueCaretReveal()
+        } else if let focus = pendingTextFocus, let sheet = sheets[focus.pageID], next.enabled {
             pendingTextFocus = nil
             sheet.focusText(focus); queueCaretReveal()
         }
@@ -449,6 +461,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             if sheet.transform != transform { sheet.transform = transform }
             let center = CGPoint(x: placement.frame.x + placement.frame.width / 2, y: placement.frame.y + placement.frame.height / 2)
             if sheet.center != center { sheet.center = center }
+            documentText?.attach(sheet.textLayer, pageID: page.id)
             if sheetRevisions[page.id] == configurationRevision {
                 sheet.updateRendering(visible: convert(bounds, to: sheet), scale: zoomScale * placement.scale, live: live)
                 continue
@@ -498,6 +511,10 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             }
             sheet.updateRendering(visible: convert(bounds, to: sheet), scale: zoomScale * placement.scale, live: live)
         }
+        if let document = documentText {
+            if surface.subviews.last !== document.view { surface.bringSubviewToFront(document.view) }
+            document.view.setVisible(visible)
+        }
     }
     /// Memory warning: off-screen sheets (each with PDF rasters up to ~70 MB,
     /// text rasters, PencilKit tiles) are released, the others drop caches;
@@ -524,7 +541,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
         guard pinchGestureRecognizer?.state == .began || pinchGestureRecognizer?.state == .changed else { return }
         stopZoomTransition(); stopElastic()
-        if !sheets.values.contains(where: { $0.editingCaret != nil }), let pinch = pinchGestureRecognizer {
+        if !isEditingText, let pinch = pinchGestureRecognizer {
             let point = pinch.location(in: surface)
             if let id = frames.first(where: { $0.value.contains(point) })?.key, id != selected {
                 selected = id; reported = id; state?.onSelect(id)
@@ -628,7 +645,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
     /// The bar reaches its place after `keyboardChanged`.
     @objc private func keyboardSettled() {
-        if activeSheet?.editingCaret == nil { caretInset = .zero }
+        if activeSheet?.editingCaret == nil, documentText?.view.editingCaret == nil { caretInset = .zero }
         updateInsets(); revealCaret()
     }
     @objc private func keyboardChanged(_ note: Notification) {
@@ -663,12 +680,16 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         guard !changing, pendingTextFocus == nil, !isDragging, !isDecelerating, !isZooming,
               userZoomPage == nil, !widthSnapInProgress,
               pinchGestureRecognizer?.state != .began, pinchGestureRecognizer?.state != .changed,
-              state?.enabled == true, let selected, let sheet = sheets[selected], sheet.editingCaret != nil else { return }
+              state?.enabled == true, let selected, let sheet = sheets[selected],
+              sheet.editingCaret != nil || documentText?.view.editingCaret != nil else { return }
         sheet.layoutIfNeeded()
         updateInsets()
-        let kind = sheet.takeCaretReveal()
-        guard let caret = sheet.editingCaret else { return }
-        let target = sheet.convert(caret, to: self)
+        let document = documentText?.view.editingCaret != nil ? documentText?.view : nil
+        let kind = document?.takeCaretReveal() ?? sheet.takeCaretReveal()
+        let target: CGRect
+        if let document, let caret = document.editingCaret { target = document.convert(caret, to: self) }
+        else if let caret = sheet.editingCaret { target = sheet.convert(caret, to: self) }
+        else { return }
         // Content coordinates: bounds.origin is the content offset.
         let free = PageRect(x: contentOffset.x, y: contentOffset.y + topObstruction,
             width: max(1, bounds.width), height: max(1, bounds.height - keyboardOverlap - topObstruction))
@@ -706,7 +727,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         if focusScrolling && (isDragging || isZooming) { focusScrolling = false }
         if !isZooming && !widthSnapInProgress && !focusScrolling { constrainHorizontalOffset() }
         queueRefresh()
-        guard !mode, !isZooming, !widthSnapInProgress, !sheets.values.contains(where: { $0.editingCaret != nil }), isDragging || isDecelerating || keyboardScrolling else { return }
+        guard !mode, !isZooming, !widthSnapInProgress, !isEditingText, isDragging || isDecelerating || keyboardScrolling else { return }
         let center = (contentOffset.y + bounds.height * 0.4) / zoomScale
         if let id = pageAt(vertical: center), id != reported {
             reported = id
@@ -776,7 +797,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer is UISwipeGestureRecognizer {
             return mode && state?.enabled == true && state?.fingerDrawing == false
-                && !sheets.values.contains(where: { $0.editingCaret != nil }) && abs(zoomScale-fitWidth) < 0.03
+                && !isEditingText && abs(zoomScale-fitWidth) < 0.03
         }
         // UIScrollView's own pan/pinch checks stay in force.
         return super.gestureRecognizerShouldBegin(gestureRecognizer)
@@ -785,6 +806,65 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         guard let state, let index = state.pages.firstIndex(where: { $0.id == selected }) else { return }
         let next = index + (gesture.direction == .left ? 1 : -1)
         if state.pages.indices.contains(next) { state.onSelect(state.pages[next].id) }
+    }
+}
+
+/// Text editor 2: the surface over all pages of a text document. Not with
+/// page turning (only one sheet is placed then) and not without a flow.
+extension NotebookViewport {
+    fileprivate func updateDocumentText(_ next: NotebookEditor) {
+        guard let selected, let page = next.pages.first(where: { $0.id == selected }) else { return }
+        let config = next.configuration(page)
+        guard !next.paging, config.flowDocument, let flow = config.flowActions,
+              next.pages.contains(where: { $0.effectiveTextBoxes.contains { $0.flowID != nil } }) else {
+            if let document = documentText {
+                document.view.isActive = false
+                document.view.removeFromSuperview()
+                sheets.values.forEach { document.detach($0.textLayer) }
+                documentText = nil
+            }
+            return
+        }
+        let document = documentText ?? DocumentTextController()
+        if documentText == nil { documentText = document; surface.addSubview(document.view) }
+        let interaction = documentInteractionID
+        let host = DocumentTextHost(flow: flow, undo: { config.onFlowUndo?($0) },
+            undoManager: { [weak self] in self?.activeSheet?.undoManager },
+            selectPage: { [weak self] id in self?.documentCaretMoved(to: id) },
+            reveal: { [weak self] in self?.queueCaretReveal() },
+            passesThrough: { [weak self] point in self?.documentPassesThrough(at: point) ?? false },
+            checkbox: { [weak self] point in self?.documentCheckbox(at: point) ?? false },
+            editing: { config.onInteraction(interaction, $0) },
+            leave: { if !config.textToolLocked { config.onTextEditingFinished() } },
+            visibleLines: { [weak self] in
+                guard let self else { return 40 }
+                return max(1, Int(self.bounds.height / max(1, 19 * self.zoomScale)))
+            })
+        document.update(pages: next.pages, placements: placements, frame: surface.bounds, host: host,
+                        active: config.tool == .text && next.enabled)
+    }
+    /// The page changes with the caret, without a jump (like a scrolled page).
+    private func documentCaretMoved(to id: UUID) {
+        guard id != selected, placements[id] != nil else { return }
+        reported = id
+        state?.onSelect(id)
+    }
+    private func documentSheet(at point: CGPoint) -> WorksheetView? {
+        frames.first(where: { $0.value.contains(point) }).flatMap { sheets[$0.key] }
+    }
+    /// A free field or the handles of a finger selection lie on the sheet below.
+    private func documentPassesThrough(at point: CGPoint) -> Bool {
+        guard let view = documentText?.view, let sheet = documentSheet(at: point) else { return false }
+        return sheet.textLayer.hasFreeField(at: view.convert(point, to: sheet.textLayer))
+            || sheet.objectLayer.hitTest(view.convert(point, to: sheet.objectLayer), with: nil) != nil
+    }
+    /// The surface takes the touches the sheet's checkbox tap would see.
+    private func documentCheckbox(at point: CGPoint) -> Bool {
+        guard let view = documentText?.view, let layer = documentSheet(at: point)?.textLayer else { return false }
+        let local = view.convert(point, to: layer)
+        guard layer.hasCheckbox(at: local) else { return false }
+        layer.tapCheckbox(at: local)
+        return true
     }
 }
 

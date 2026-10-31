@@ -267,6 +267,28 @@ final class EditorModel: ObservableObject {
             return nil
         }
     }
+    /// Text editor 2: the buffer changed. The page lengths come from its
+    /// layout; typing joins the steps before it like `updateFlowText`.
+    func changeFlow(_ change: TextFlowChange, capacity: @escaping (Page, TextBox) -> Int?, trailingDraft: Page?) -> TextFlowFocus? {
+        guard writable, !busy, !mutationsPaused else { return nil }
+        let before = notebook
+        do {
+            let measured = flowLayout(trailingDraft)
+            var layout = measured
+            layout.capacity = { page, box in try capacity(page, box) ?? measured.capacity(page, box) }
+            let (candidate, focus) = try notebook.changingTextFlow(change, layout: layout)
+            try installFlow(candidate)
+            pendingDraft = nil
+            if change.separateStep { history.separateNextStep() }
+            history.record(.textFlow, before: before, after: candidate, beforeFocus: before.textFlowFocus(selection: change.selectionBefore),
+                           afterFocus: focus, coalescing: change.separateStep ? nil : Self.flowCoalescing)
+            publishHistory()
+            return focus
+        } catch {
+            self.error = "Textfluss: \(error.localizedDescription)"
+            return nil
+        }
+    }
     func editFlow(_ edits: [TextListEditing.Edit], caret: Int?, trailingDraft: Page?) -> TextFlowFocus? {
         rewriteFlow { try notebook.editingTextFlow(edits, caret: caret, layout: flowLayout(trailingDraft)) }
     }

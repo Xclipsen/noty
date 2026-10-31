@@ -126,6 +126,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
 
     /// The whole text of a text document (⌘A, keyboard mode); nil in notebooks.
     var flowActions: TextFlowActions?
+    /// Text editor 2: the flow lives on `DocumentTextSurface`; this page only
+    /// draws its part of the shared layout, the flow's field stays configured
+    /// but hidden (`boxes` keeps the model's boxes, publishing needs them).
+    private var documentRaster: DocumentPageRaster?
+    /// A tap or `i` that would have put the caret into the flow.
+    var onDocumentCaret: ((CGPoint) -> Void)?
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear; clipsToBounds = true
@@ -253,6 +259,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             guard let field = fields[box.id] else { continue }
             position(field, for: box); updateRaster(field, for: box)
         }
+        updateDocumentRaster()
     }
 
     func synchronize() {
@@ -304,6 +311,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 fields[box.id] = field
             }
             if field.superview !== self { addSubview(field) }
+            if documentRaster != nil { field.isHidden = box.flowID != nil }
             let editor = field.editor
             let selectedRange = editor.selectedRange
             let light = automaticLight(box)
@@ -356,6 +364,42 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         textViewport = InkRenderViewport(page: page, visible: PageRect(visible), scale: quantized)
         rasterScreenScale = screenScale
         for box in boxes { if let field = fields[box.id] { updateRaster(field, for: box) } }
+        updateDocumentRaster()
+    }
+    /// Text editor 2: `page` of `store` on this sheet; nil: nothing, or (with
+    /// the store) a page the flow does not reach. `box` in page coordinates.
+    func showDocumentPage(store: DocumentTextStore?, page: Int?, box: PageRect?) {
+        guard let store else {
+            guard documentRaster != nil else { return }
+            documentRaster?.removeFromSuperview(); documentRaster = nil
+            for field in fields.values { field.isHidden = false }
+            return
+        }
+        let raster = documentRaster ?? DocumentPageRaster()
+        if documentRaster == nil {
+            documentRaster = raster; insertSubview(raster, at: 0); store.add(raster)
+            synchronize()
+        }
+        let origin = box.map { CGPoint(x: $0.x + pageLayout.contentOrigin.x, y: $0.y + pageLayout.contentOrigin.y) } ?? .zero
+        if raster.store !== store || raster.page != page || raster.textOrigin != origin {
+            raster.store = store; raster.page = page; raster.textOrigin = origin
+            raster.setNeedsDisplay()
+        }
+        updateDocumentRaster()
+    }
+    private func updateDocumentRaster() {
+        guard let raster = documentRaster else { return }
+        let sheet = CGRect(origin: .zero, size: superview?.bounds.size ?? bounds.size)
+        let area = textViewport.map { sheet.intersection($0.frame.cgRect) } ?? sheet
+        let visible = area.isNull ? CGRect.zero : area
+        let scale = textViewport.map { EditorRenderGeometry.contentScale(size: PageSize(width: visible.width, height: visible.height),
+            displayScale: $0.scale, screenScale: Double(rasterScreenScale)) } ?? Double(rasterScreenScale)
+        if raster.frame != visible { raster.frame = visible; raster.setNeedsDisplay() }
+        if abs(raster.contentScaleFactor - CGFloat(scale)) > 0.001 { raster.contentScaleFactor = CGFloat(scale); raster.setNeedsDisplay() }
+    }
+    /// A free field takes this point (layer coordinates).
+    func hasFreeField(at point: CGPoint) -> Bool {
+        fields.values.contains { !$0.isHidden && $0.point(inside: convert(point, to: $0), with: nil) }
     }
     private func updateRaster(_ field: TextFieldContainer, for box: TextBox) {
         guard let viewport = textViewport else { field.setRaster(nil, scale: 1); return }
@@ -584,6 +628,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     /// (after the text, reserve page) asks for the end of the flow.
     func focusFlow(at point: CGPoint) {
         guard active else { return }
+        if let onDocumentCaret { onDocumentCaret(point); return }
         if let flow = boxes.first(where: { $0.flowID != nil }) {
             if let selectedID, selectedID != flow.id, isEditingField { fields[selectedID]?.editor.resignFirstResponder() }
             focusField(flow.id, at: point)

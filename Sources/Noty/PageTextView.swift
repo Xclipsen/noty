@@ -318,6 +318,15 @@ final class PageTextView: UITextView {
     @objc private func underline() { onUnderline?() }
 }
 
+extension PageTextView: KeyboardTextTarget {
+    var keepsTextFocus: Bool { window != nil && isEditable && historyOwner != nil }
+    @discardableResult func keyboardSync() -> Bool { historyOwner?.keyboardSync(self) == true }
+    func keyboardRun(_ command: TextEngine.Command, count: Int?) { historyOwner?.keyboardRun(command, count: count, editor: self) }
+    func keyboardEscape() -> Bool { historyOwner?.keyboardEscape(self) ?? false }
+    func keyboardShowSelection() { historyOwner?.keyboardShowSelection(self) }
+    func keyboardUndo(redo: Bool) { historyOwner?.keyboardUndo(redo: redo, editor: self) }
+}
+
 struct CaretPlacement: Equatable {
     var location: Int
     var newlines: Int
