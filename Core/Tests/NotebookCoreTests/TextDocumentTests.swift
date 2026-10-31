@@ -276,6 +276,44 @@ final class TextDocumentTests: XCTestCase {
         XCTAssertEqual(TextDocumentExport.plainText(doc), "Titel\n☐ Aufgabe\n")
     }
 
+    func testNotebookExportReadsFieldsByPlaceAndDropsEverythingElse() throws {
+        var book = try Notebook.blank(title: "Heft", appearance: NotebookAppearance())
+        book.pages.append(Page())
+        func field(_ x: Double, _ y: Double, _ text: String) -> TextBox { TextBox(x: x, y: y, width: 120, height: 20, text: text) }
+        var emphasized = field(40, 300, "Unten links"); emphasized.style.italic = true
+        // Stored in another order than read; the right field is a little
+        // higher than the left one and still in its row.
+        book.pages[0].textBoxes = [emphasized, field(300, 95, "Rechts"), field(40, 100, "Links"), field(40, 400, "")]
+        book.pages[0].drawing = Data([1, 2, 3])
+        book.pages[1].textBoxes = [field(40, 40, "Zweite Seite")]
+        XCTAssertEqual(TextDocumentExport.plainText(book), "Links\n\nRechts\n\nUnten links\n\nZweite Seite\n")
+        XCTAssertEqual(TextDocumentExport.markdown(book), "Links\n\nRechts\n\n*Unten links*\n\nZweite Seite\n")
+    }
+
+    func testNotebookExportRowsAndEmptyPages() throws {
+        func field(_ x: Double, _ y: Double, _ text: String) -> TextBox { TextBox(x: x, y: y, width: 120, height: 20, text: text) }
+        // A row is measured from its first field, so a slanting chain of
+        // fields does not merge into one row.
+        let order = TextDocumentExport.readingOrder([field(300, 110, "c"), field(200, 105, "b"), field(100, 100, "a"), field(0, 125, "d")])
+        XCTAssertEqual(order.map(\.text), ["a", "b", "c", "d"])
+        // Same place: the stored order.
+        XCTAssertEqual(TextDocumentExport.readingOrder([field(5, 5, "1"), field(5, 5, "2")]).map(\.text), ["1", "2"])
+        // Only handwriting: nothing to share.
+        var book = try Notebook.blank(title: "Tinte", appearance: NotebookAppearance())
+        book.pages[0].drawing = Data([1])
+        XCTAssertEqual(TextDocumentExport.plainText(book), "")
+        XCTAssertEqual(TextDocumentExport.markdown(book), "")
+    }
+
+    func testTextDocumentExportPutsFreeFieldsBehindTheFlow() throws {
+        var doc = try document([("Fließtext", { _ in })])
+        var free = TextBox(x: 40, y: 200, width: 120, height: 20, text: "Randnotiz")
+        free.style.italic = true
+        doc.pages[0].textBoxes?.insert(free, at: 0)
+        XCTAssertEqual(TextDocumentExport.plainText(doc), "Fließtext\n\nRandnotiz\n")
+        XCTAssertEqual(TextDocumentExport.markdown(doc), "Fließtext\n\n*Randnotiz*\n")
+    }
+
     // MARK: Library
 
     func testLibraryKnowsTheKindAcrossCreateDuplicateDiscoverAndRepair() async throws {

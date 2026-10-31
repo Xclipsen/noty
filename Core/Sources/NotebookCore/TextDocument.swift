@@ -121,9 +121,12 @@ extension Page {
     }
 }
 
-/// Text/Markdown export of a text document's flow (Teilen-Menü). Only the
-/// flow is exported; handwriting, free fields, images and shapes are in the
-/// PDF. Paragraph styles become headings (Titel `#`, Überschrift `##`,
+/// Text/Markdown export of notebooks and text documents (Teilen-Menü). All
+/// text there is exported: a text document's flow as one text first (it runs
+/// over page breaks, so fields cannot stand between its paragraphs), then the
+/// free fields page by page, in reading order (`readingOrder`). Handwriting,
+/// images, shapes and PDF content are dropped; they are in the PDF export.
+/// Paragraph styles become headings (Titel `#`, Überschrift `##`,
 /// Unterüberschrift `###`), list markers Markdown lists (`-`, `1.`,
 /// `- [ ]`, `- [x]`, nesting four spaces per level), bold `**`, italic `*`
 /// (unlike `_` it also works inside a word).
@@ -136,19 +139,43 @@ public enum TextDocumentExport {
         format == .markdown ? markdown(notebook) : plainText(notebook)
     }
 
-    /// The flow's text as written (list markers stay), line separators as
-    /// line breaks, ending with one line break.
+    /// Each text as written (list markers stay), line separators as line
+    /// breaks, ending with one line break; an empty line between texts.
     public static func plainText(_ notebook: Notebook) -> String {
-        guard let box = notebook.textFlowContent else { return "" }
+        texts(of: notebook).map(plainText).filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    public static func markdown(_ notebook: Notebook) -> String {
+        texts(of: notebook).map(markdown).filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    static func plainText(_ box: TextBox) -> String {
         let lines = paragraphs(box.text).map { (box.text as NSString).substring(with: $0) }
         var text = lines.joined(separator: "\n")
         while text.hasSuffix("\n") { text.removeLast() }
         return text.isEmpty ? "" : text + "\n"
     }
 
-    public static func markdown(_ notebook: Notebook) -> String {
-        guard let box = notebook.textFlowContent else { return "" }
-        return markdown(box)
+    /// The flow (if any), then the free fields of every page in page order.
+    static func texts(of notebook: Notebook) -> [TextBox] {
+        (notebook.textFlowContent.map { [$0] } ?? []) + notebook.pages.flatMap { readingOrder($0.effectiveTextBoxes.filter { $0.flowID == nil }) }
+    }
+
+    /// Fields starting within this distance of a row's first field share its
+    /// row (half a ruled line): hand-placed fields are rarely exactly level.
+    static let rowTolerance = PaperRuling.spacing / 2
+
+    /// Top to bottom, within a row left to right, by the visible frame (so
+    /// also for turned fields and in margins). Equal places keep their order.
+    static func readingOrder(_ boxes: [TextBox]) -> [TextBox] {
+        let items = boxes.enumerated().map { (index: $0.offset, box: $0.element, frame: $0.element.rotatedBounds) }
+        let sorted = items.sorted { ($0.frame.y, $0.index) < ($1.frame.y, $1.index) }
+        var rows: [[(index: Int, box: TextBox, frame: PageRect)]] = []
+        for item in sorted {
+            if let top = rows.last?.first?.frame.y, item.frame.y - top <= rowTolerance { rows[rows.count - 1].append(item) }
+            else { rows.append([item]) }
+        }
+        return rows.flatMap { $0.sorted { ($0.frame.x, $0.index) < ($1.frame.x, $1.index) } }.map(\.box)
     }
 
     /// One paragraph per line of the flow; blocks are separated by an empty
