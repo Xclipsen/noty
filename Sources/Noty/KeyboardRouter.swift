@@ -427,19 +427,8 @@ final class KeyboardRouter: ObservableObject {
         gate.swallow(key: code)
         return true
     }
-    /// A key command that the system would otherwise take (Tab, in the library
-    /// also Esc and Enter, which never reach `pressesBegan` there).
-    func handle(token: String) {
-        if !keyboardSeen { keyboardSeen = true }
-        cancelRepeat()
-        if helpVisible { helpVisible = false; return }
-        guard !paletteVisible else { return }
-        outcome = ""
-        let used = feed(token, key: nil, text: nil)
-        if HangProbe.isInstalled {
-            Self.log.notice("[noty.keys] command token=\(token, privacy: .public) used=\(used, privacy: .public) \(self.outcome, privacy: .public) responder=\(Self.responderName, privacy: .public)")
-        }
-    }
+    /// A key command that the system would otherwise take (Tab).
+    func handle(token: String) { _ = feed(token, key: nil, text: nil) }
 
     private func feed(_ token: String, key: Int?, text: PageTextView?) -> Bool {
         guard let context else { return false }
@@ -566,16 +555,6 @@ final class KeyboardRouter: ObservableObject {
 final class KeyboardHostView: UIView {
     override var canBecomeFirstResponder: Bool { true }
     private var observing = false
-    override var keyCommands: [UIKeyCommand]? {
-        guard KeyboardRouter.shared.isEnabled else { return nil }
-        return [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey)),
-                UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(returnKey))].map { command in
-            command.wantsPriorityOverSystemBehavior = true
-            return command
-        }
-    }
-    @objc private func escapeKey() { KeyboardRouter.shared.handle(token: "<Esc>") }
-    @objc private func returnKey() { KeyboardRouter.shared.handle(token: "<CR>") }
     override func didMoveToWindow() {
         super.didMoveToWindow()
         guard window != nil else { return }
