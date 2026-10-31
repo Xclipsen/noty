@@ -226,13 +226,14 @@ extension Notebook {
             if content.textBoxes.contains(where: \.usesRichText) { next.schemaVersion = max(7, next.schemaVersion) }
             next.raiseSchemaForTextColors(content.textBoxes)
             next.raiseSchemaForTextFields(content.textBoxes)
+            let unchanged = next.pages[index].effectiveTextBoxes
             next.pages[index].drawing = content.drawing
             next.pages[index].textBoxes = content.textBoxes
             next.pages[index].images = content.images
             next.pages[index].shapes = content.shapes
             next.raiseSchemaForShapes(content.shapes)
             let bounds = next.pages[index].textBounds
-            guard restoring || content.textBoxes.allSatisfy({ $0.fits(in: bounds) }) else { throw StorageError.invalidDocument }
+            guard restoring || content.textBoxes.allSatisfy({ $0.fits(in: bounds) || unchanged.contains($0) }) else { throw StorageError.invalidDocument }
         }
         next.raiseSchemaForImageAssets()
         try next.validate(); self = next

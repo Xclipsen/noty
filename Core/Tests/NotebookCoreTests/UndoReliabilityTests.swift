@@ -228,4 +228,15 @@ extension UndoReliabilityTests {
         for step in 1...5 { try move(&book, &history, a, to: 100 + Double(step), y: 100) }
         XCTAssertEqual(history.undoCount, 6, "unchanged ink costs nothing: it is the page's own buffer")
     }
+
+    func testAFieldBesideTheSheetDoesNotBlockEditingTheOthers() throws {
+        var book = try Notebook.blank(title: "Heft", appearance: NotebookAppearance())
+        let page = book.pages[0].id
+        let beside = TextBox(x: -50, y: 10, width: 100, height: 20, text: "alt")
+        try book.replaceTextBoxes([beside], pageID: page, restoring: true)
+        let other = TextBox(x: 40, y: 40, width: 100, height: 20, text: "neu")
+        XCTAssertNoThrow(try book.replaceTextBoxes([beside, other], pageID: page), "the unchanged field stays as it is")
+        var moved = beside; moved.x = -60
+        XCTAssertThrowsError(try book.replaceTextBoxes([moved, other], pageID: page), "a change must fit")
+    }
 }

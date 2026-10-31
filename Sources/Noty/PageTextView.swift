@@ -252,7 +252,7 @@ final class PageTextView: UITextView {
     var onCleanTap: ((CGPoint, Int) -> Void)?
     /// Held clicks are no accident: the time limit is for fingers and the Pencil.
     private var lastTouchEndedAsTap: Bool {
-        guard let start = touchWatcher.start else { return false }
+        guard let start = touchWatcher.start, touchWatcher.quiet else { return false }
         let touch = start.touch
         guard touch.phase == .ended else { return false }
         let point = touch.location(in: nil)
@@ -356,9 +356,21 @@ final class TouchDownWatcher: UIGestureRecognizer, UIGestureRecognizerDelegate {
         allowedTouchTypes = [UITouch.TouchType.direct, .indirectPointer, .pencil].map { NSNumber(value: $0.rawValue) }
     }
     var onEnded: ((UITouch) -> Void)?
+    /// One finger on a resting page: stopping a scroll or pinching over text is no tap.
+    private(set) var quiet = true
+    private var viewportMoves: Bool {
+        var current = view?.superview
+        while let ancestor = current {
+            if let scroll = ancestor as? UIScrollView, scroll.isDragging || scroll.isDecelerating || scroll.isZooming { return true }
+            current = ancestor.superview
+        }
+        return false
+    }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let touch = touches.first else { return }
+        if (event.allTouches?.count ?? 1) > 1 { quiet = false }
         if start.map({ $0.touch.phase == .ended || $0.touch.phase == .cancelled }) ?? true {
+            quiet = (event.allTouches?.count ?? 1) == 1 && !viewportMoves
             start = (touch, touch.location(in: nil), touch.timestamp)
         }
     }

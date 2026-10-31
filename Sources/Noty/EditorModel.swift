@@ -197,6 +197,8 @@ final class EditorModel: ObservableObject {
             if blank == .added { history.separateNextStep() }
             recordChange(.text, pageID: pageID, before: before,
                          coalescing: .init(key: "text-\(pageID.uuidString)", window: blank == nil ? 1.5 : NotebookUndoHistory.blankFieldWindow))
+            // The long window belongs to the blank field only, not to what comes next.
+            if blank == .removed { history.separateNextStep() }
             scheduleSave()
         } catch { self.error = "Textänderung konnte nicht übernommen werden: \(error.localizedDescription)" }
     }
