@@ -12,6 +12,10 @@ Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verl
 
 Gerätetest (gebündelt, Testheft): Text mit dem Lasso auf der Seite, auf eine andere Seite und auf die Reserveseite verschieben, je Rückgängig und Wiederholen, Auswahl dabei aktiv lassen; dasselbe mit Handschrift und gemischter Auswahl; im Textdokument ein freies Feld; Text mit dem Finger bei aktivem Stift. Mit dem Textwerkzeug tippen, in die Seite tippen und leer verlassen, danach Rückgängig: der echte Schritt davor kommt zurück. Rückgängig während eines Bildimports: Hinweis.
 
+## Build 68 · Tastaturmodus, Review-Korrekturen (31.10.2026, Branch `feat/tastatur`)
+
+**Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: installierte App-ID unverändert, alle 28 Dokumente und 256 Dateien unverändert. Der Simulator-Lauf 41216955235 hat alle sechs Smoke-Tests bestanden (wiederholte Tasten, `gg`, `ge`, Which-Key, Esc-Ebenen), rot nur durch das 20-Minuten-Limit des Schritts; er prüfte den Stand von Build 67, **nicht** Build 68 und **nicht** echte Tastatur und Fokus am iPad. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft), Editor 2: [TEXT-EDITOR-2](TEXT-EDITOR-2.md).
+
 ## Build 67 · Tastaturmodus wie Helix (31.10.2026, Branch `phase1/app`)
 
 **Implementiert, Core-Tests und `xtool dev build` bestanden. Nicht installiert, am iPad ungeprüft.** Die App läuft vollständig auf `HelixKeymap`, `HelixParser` und `TextEngine`, der Vim-Modus ist entfernt (`KeyMap`, `KeySequenceParser`, `TextMotions`). Getestet sind Engine (gegen echtes Helix, siehe [KEYBOARD](KEYBOARD.md#helix-modell)), Tastentabelle, Parser, `KeyPressGate`, mehrere Edits über Seiten; **nicht** getestet sind Tastenzustellung, Fokus, Palette über Text, Eingabezeile, Which-Key, TextKit-Messung von `j`/`k` und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).
