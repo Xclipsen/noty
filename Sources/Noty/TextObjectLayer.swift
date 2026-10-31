@@ -782,7 +782,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             boxes[index] = box
             if gesture.state == .began { synchronize() } else { showDragged(index) }
         case .ended:
-            dragStart = nil; snapping.end(); synchronize(); publish()
+            // A move is a step of its own, also right after typing.
+            dragStart = nil; snapping.end(); synchronize(); onUndoBoundary?(); publish(); onUndoBoundary?()
         case .cancelled, .failed:
             boxes = start.boxes; dragStart = nil; snapping.end(); synchronize(); publish()
         default: break

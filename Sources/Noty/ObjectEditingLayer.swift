@@ -1047,6 +1047,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                     // Finished form: the same confirmation as a held form or a lasso.
                     haptic(completed: true, at: gesture.location(in: self))
                 }
+            } else if dragMode == 1, groupTransform?.isIdentity == true {
+                // Ended where it began: fitting the frame alone is no invisible undo step.
             } else if var preview {
                 if let inkTransform {
                     if let changed = transformedInk(initial, using: inkTransform, inkOnly: false) { preview.drawing = changed.drawing }
