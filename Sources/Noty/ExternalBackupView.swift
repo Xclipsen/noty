@@ -148,7 +148,7 @@ struct SigningRenewalSection: View {
                     enabled = value
                     Task { reminderStatus = value ? await SigningReminder.enable() : SigningReminder.disable(); enabled = SigningReminder.enabled }
                 }))
-            } else { Text("Profilablauf nicht lesbar. Die kostenlose Signierung weiterhin wöchentlich am PC erneuern.") }
+            } else { Text("Profilablauf nicht lesbar. Die Signierung rechtzeitig am PC erneuern.") }
             if !reminderStatus.isEmpty { Text(reminderStatus).font(.caption) }
             Text("Am PC als Update mit derselben App-ID installieren. App vorher schließen und Gerät entsperren. Vor jedem Update vollständigen Datenabzug sichern; App nicht löschen.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -199,7 +199,7 @@ enum SigningReminder {
             }
             guard status == .authorized || status == .provisional else {
                 if mayAsk { UserDefaults.standard.set(false, forKey: enabledKey) }
-                return "Mitteilungen nicht erlaubt. Bitte wöchentlich selbst erinnern."
+                return "Mitteilungen nicht erlaubt. Bitte selbst an die Erneuerung denken."
             }
             let content = UNMutableNotificationContent()
             content.title = "noty-Signierung erneuern"; content.body = "Am PC mit derselben App-ID aktualisieren und vorher die App-Daten sichern. App nicht löschen."; content.sound = .default

@@ -11,7 +11,41 @@ import NotebookCore
 /// „Beide behalten“. Nothing is overwritten.
 @MainActor
 enum IncomingBackup {
+    /// One file at a time: several files opened together would otherwise
+    /// present their alerts over each other, and an alert that cannot be
+    /// presented never answers.
+    private static var running: Task<Void, Never>?
     static func receive(_ url: URL, library: LibraryModel, workspaces: WorkspaceAppModel) async {
+        let previous = running
+        let next = Task { @MainActor in
+            await previous?.value
+            await handle(url, library: library, workspaces: workspaces)
+        }
+        running = next
+        await next.value
+    }
+
+    /// AirDrop, Mail and „Kopieren nach noty“ deliver copies iOS leaves in
+    /// `Documents/Inbox` for the app to remove. Only files directly inside it.
+    private static var inbox: URL { URL.documentsDirectory.appendingPathComponent("Inbox", isDirectory: true) }
+    private static func removeFromInbox(_ url: URL) {
+        guard url.standardizedFileURL.deletingLastPathComponent().path == inbox.standardizedFileURL.path else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+    /// Launch: delivered files whose handling did not finish (still open
+    /// notebook, app ended). The user decides within a day, the source stays elsewhere.
+    nonisolated static func removeStaleInboxFiles(olderThan age: TimeInterval = 24 * 3600, now: Date = Date()) {
+        let fm = FileManager.default
+        let folder = URL.documentsDirectory.appendingPathComponent("Inbox", isDirectory: true)
+        guard let files = try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey]) else { return }
+        for file in files {
+            guard let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey]), values.isRegularFile == true,
+                  now.timeIntervalSince(values.contentModificationDate ?? now) > age else { continue }
+            try? fm.removeItem(at: file)
+        }
+    }
+
+    private static func handle(_ url: URL, library: LibraryModel, workspaces: WorkspaceAppModel) async {
         let kind = url.pathExtension.lowercased()
         guard kind == "notylibrary" || NotyFile.notebookExtensions.contains(kind) else { return }
         // On a cold launch the library first loads and may reopen the last
@@ -19,6 +53,11 @@ enum IncomingBackup {
         var waited = 0
         while !library.ready, waited < 100 { try? await Task.sleep(for: .milliseconds(100)); waited += 1 }
         try? await Task.sleep(for: .milliseconds(800))
+        // Before any question: a notebook file cannot go in while one is open.
+        guard kind == "notylibrary" || library.opened == nil else {
+            TopAlert.show("Notizbuch geöffnet", "Bitte zuerst das Notizbuch schließen und die Datei danach erneut aus der Dateien-App öffnen.")
+            return
+        }
         let progress = TopAlert.progress("Datei wird geprüft …")
         let copy: URL
         do {
@@ -34,7 +73,7 @@ enum IncomingBackup {
             TopAlert.show("Datei nicht lesbar", "Die Datei konnte nicht in noty kopiert werden. Es wurde nichts verändert.")
             return
         }
-        defer { BackupScratch.remove(copy) }
+        defer { BackupScratch.remove(copy); removeFromInbox(url) }
         if kind == "notylibrary" { await offerLibrary(copy, progress: progress, workspaces: workspaces) }
         else { await offerNotebook(copy, progress: progress, library: library) }
     }
@@ -55,13 +94,16 @@ enum IncomingBackup {
             await workspaces.discardLibraryRestore(prepared); return
         }
         let running = TopAlert.progress("Bereich wird angelegt …")
+        // A running area switch is no reason to throw the checked file away.
+        while workspaces.busy { try? await Task.sleep(for: .milliseconds(100)) }
         do {
             let area = try await workspaces.commitLibraryRestore(prepared)
             await TopAlert.dismiss(running)
             TopAlert.show("Als neuen Bereich wiederhergestellt", "„\(area.title)“ ist unter Einstellungen › Backup & Daten › Bereich verfügbar. Die aktuelle Bibliothek bleibt erhalten.")
         } catch {
+            await workspaces.discardLibraryRestore(prepared)
             await TopAlert.dismiss(running)
-            TopAlert.show("Wiederherstellung fehlgeschlagen", error.localizedDescription)
+            TopAlert.show("Wiederherstellung fehlgeschlagen", error.localizedDescription + " Die Datei bitte erneut öffnen.")
         }
     }
 

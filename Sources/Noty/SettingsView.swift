@@ -401,6 +401,7 @@ private struct BackupSettingsPage: View {
                 } label: {
                     LabeledContent("Bereich", value: workspaces.title)
                 }
+                .disabled(library.busy && !library.backgroundBusy)
             } footer: {
                 if library.opened != nil { Text("Export und Wiederherstellen erst nach dem Schließen des Notizbuchs.") }
             }

@@ -67,6 +67,15 @@ struct LibraryView: View {
     private var normalFolder: Bool { location == .root || parentID != nil }
     /// Manual drag order is only meaningful for the unsorted contents of one folder.
     private var canReorder: Bool { normalFolder && search.isEmpty && sort == .manual }
+    private var errorShown: Binding<Bool> {
+        Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })
+    }
+    /// New items land in the open folder or „Alle Unterlagen“; „Zuletzt
+    /// verwendet“ or a running search would hide them.
+    private func showNewItem() {
+        search = ""
+        if location == .recent { location = .root }
+    }
     private var activeCopies: [RestoredNotebook] {
         model.restoredCopies.compactMap { copy -> RestoredNotebook? in
             guard let item = model.snapshot.items.first(where: { $0.id == copy.id }), !model.snapshot.isTrashed(copy.id) else { return nil }
@@ -108,13 +117,21 @@ struct LibraryView: View {
         .environment(\.editMode, $libraryEditMode)
         .sheet(isPresented: $creatingNotebook) {
             NotebookCreationView(defaultAppearance: toolbox.preferences.defaultAppearance) { title, appearance in
-                await model.createNotebook(title, appearance: appearance, parent: parentID)
-            }
+                let created = await model.createNotebook(title, appearance: appearance, parent: parentID)
+                if created { showNewItem() }
+                return created
+            }.alert("Bibliothek", isPresented: errorShown) {
+                Button("OK") { model.error = nil }
+            } message: { Text(model.error ?? "") }
         }
         .sheet(isPresented: $creatingTextDocument) {
             TextDocumentCreationView { title, landscape, paper, color in
-                await model.createTextDocument(title, landscape: landscape, paper: paper, color: color, parent: parentID)
-            }
+                let created = await model.createTextDocument(title, landscape: landscape, paper: paper, color: color, parent: parentID)
+                if created { showNewItem() }
+                return created
+            }.alert("Bibliothek", isPresented: errorShown) {
+                Button("OK") { model.error = nil }
+            } message: { Text(model.error ?? "") }
         }
         .sheet(item: $settingsRequest, onDismiss: switchAreaIfRequested) { request in
             SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces,
@@ -178,17 +195,19 @@ struct LibraryView: View {
                 let access = url.startAccessingSecurityScopedResource()
                 Task {
                     await model.importPDF(url, parent: parentID, writingArea: margins)
+                    showNewItem()
                     if access { url.stopAccessingSecurityScopedResource() }
                 }
             }, onError: { model.error = $0 })
         }
         .fileImporter(isPresented: $importingBackup, allowedContentTypes: [.noty, .notyBackup, .json, .data]) { result in
             switch result {
-            case .success(let url): Task { await model.importBackup(url, parent: parentID) }
+            case .success(let url): Task { if await model.importBackup(url, parent: parentID) != nil { showNewItem() } }
             case .failure(let error): model.error = error.localizedDescription
             }
         }
-        .alert("Bibliothek", isPresented: Binding(get: { model.error != nil && settingsRequest == nil }, set: { if !$0 { model.error = nil } })) {
+        // The creation sheets show errors over themselves, this one would wait behind them.
+        .alert("Bibliothek", isPresented: Binding(get: { model.error != nil && settingsRequest == nil && !creatingNotebook && !creatingTextDocument }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
         // Settings and the area sheet show these errors themselves.
@@ -199,6 +218,9 @@ struct LibraryView: View {
             search = ""; libraryEditMode = .inactive
             if case .folder(let id) = value { reveal(id) }
         }
+        // Search or another sort removes the „Fertig“ button with `canReorder`:
+        // editing must not stay on without a way out.
+        .onChange(of: canReorder) { _, reorder in if !reorder { libraryEditMode = .inactive } }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
         .focusedSceneValue(\.libraryCommands, model.opened == nil && !presenting ? LibraryCommandActions(
             newNotebook: editable ? { creatingNotebook = true } : nil,
@@ -642,7 +664,11 @@ struct LibraryView: View {
         guard !item.isFolder, !pdfExport.running else { return }
         Task {
             do {
-                let (notebook, assets) = try await model.committedNotebook(item.id)
+                let committed = try await model.committedNotebook(item.id)
+                var notebook = committed.0
+                let assets = committed.1
+                // The library title: a renamed notebook takes it over only when opened.
+                notebook.title = item.title
                 exportedPDFName = PDFExporter.fileName(for: notebook.title)
                 // Same pages as from the editor: a text document without empty trailing pages.
                 pdfExport.start(notebook, pageIDs: PDFExporter.wholeDocumentPages(notebook), assets: assets) { result in
@@ -674,6 +700,8 @@ struct LibraryView: View {
             if toolbox.writable {
                 guard await toolbox.flush() else { model.error = toolbox.status; return }
             }
+            // The new area's store must not start beside a running import.
+            await model.waitUntilIdle()
             await workspaces.select(area)
         }
     }
@@ -907,7 +935,9 @@ struct LibraryView: View {
         let parent = parentID
         Task {
             switch action {
-            case .folder: await model.createFolder(value, parent: parent)
+            case .folder:
+                await model.createFolder(value, parent: parent)
+                showNewItem()
             case .rename(let id): await model.rename(id, title: value)
             }
         }
@@ -1031,14 +1061,14 @@ private struct MoveDestinationView: View {
     var body: some View {
         NavigationStack {
             List {
-                Button("Alle Unterlagen") { onSelect(nil) }
+                Button("Alle Unterlagen") { onSelect(nil) }.disabled(item.parentID == nil)
                 ForEach(folders) { folder in
                     Button { onSelect(folder.id) } label: {
                         VStack(alignment: .leading) {
                             Label(folder.title, systemImage: "folder")
                             Text(libraryPath(folder, in: snapshot)).font(.caption).foregroundStyle(.secondary)
                         }
-                    }
+                    }.disabled(folder.id == item.parentID)
                 }
             }
             .navigationTitle("\(item.title) verschieben")

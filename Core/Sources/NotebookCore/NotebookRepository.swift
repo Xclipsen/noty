@@ -80,6 +80,26 @@ public actor NotebookRepository {
 
     private var stagingRoot: URL { store.directory.appendingPathComponent("BackupStaging", isDirectory: true) }
 
+    /// Stages of failed imports stay for analysis, but not for ever: they can
+    /// be as large as the file. Only UUID-named real directories directly
+    /// inside `BackupStaging`, like the library restore stages.
+    @discardableResult
+    public func removeStaleStages(olderThan age: TimeInterval = 24 * 3600, now: Date = Date()) -> Int {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: stagingRoot, includingPropertiesForKeys: nil, options: []) else { return 0 }
+        var removed = 0
+        for entry in entries {
+            guard let id = UUID(uuidString: entry.lastPathComponent), entry.lastPathComponent == id.uuidString,
+                  let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey, .creationDateKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            let touched = [values.contentModificationDate, values.creationDate].compactMap { $0 }.max() ?? .distantPast
+            guard now.timeIntervalSince(touched) > age, (try? fm.removeItem(at: entry)) != nil else { continue }
+            removed += 1
+        }
+        if (try? fm.contentsOfDirectory(atPath: stagingRoot.path))?.isEmpty == true { try? fm.removeItem(at: stagingRoot) }
+        return removed
+    }
+
     private func prepareStaged(_ fill: (URL) throws -> LibraryArchiveFileInfo) throws -> PreparedRestore {
         let fm = FileManager.default
         let id = UUID()

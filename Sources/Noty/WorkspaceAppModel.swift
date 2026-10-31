@@ -14,7 +14,7 @@ final class WorkspaceAppModel: ObservableObject {
     @Published var error: String?
 
     init() {
-        Task.detached(priority: .utility) { BackupScratch.removeStale() }
+        Task.detached(priority: .utility) { BackupScratch.removeStale(); IncomingBackup.removeStaleInboxFiles() }
         // Unpublished restore stages of earlier runs (failed/interrupted, older than a day)
         // and files of removed areas whose delete did not finish.
         Task { [store] in

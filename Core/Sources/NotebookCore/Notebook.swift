@@ -211,12 +211,18 @@ public enum StorageError: Error, LocalizedError {
     case invalidDocument
     case unreadableCopies
     case unsupportedSchema(Int)
+    case lockedPDF
+    case unreadablePDF
+    case tooManyPDFPages(Int)
 
     public var errorDescription: String? {
         switch self {
         case .invalidDocument: "Die Datei enthält kein unterstütztes noty-Dokument."
         case .unreadableCopies: "Arbeitsstand und Wiederherstellungskopie sind nicht lesbar."
         case .unsupportedSchema(let version): "Dokumentformat \(version) wird von dieser noty-Version nicht unterstützt."
+        case .lockedPDF: "Das PDF ist passwortgeschützt. Bitte eine Fassung ohne Passwort wählen."
+        case .unreadablePDF: "Die Datei ist kein lesbares PDF oder hat keine Seiten."
+        case .tooManyPDFPages(let count): "Das PDF hat \(count) Seiten; noty übernimmt höchstens 500 Seiten je Import."
         }
     }
 }
