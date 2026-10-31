@@ -2,6 +2,10 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Texteditor 2, Prototyp (31.10.2026, Branch `phase2/spike`)
+
+**Implementiert, Core-Tests (neu `DocumentTextLayoutTests`), `check_page_workflow.sh` und `xtool dev build` bestanden. Nicht installiert, am iPad ungeprüft.** Belegt sind die reinen Regeln gegen einen Festbreiten-Ersatz; **nicht** belegt sind TextKit über mehrere Container, `UITextInteraction`, Eingabesystem, Zeichnen und alles Sichtbare. Mit dem Schalter aus nur Typänderungen im Router und `TextRuling.lineBaseline` statt der gleichen Formel in `RuledTextLayout`. Gerätetest: [TEXT-EDITOR-2](TEXT-EDITOR-2.md#gono-go-am-gerät).
+
 ## Rückgängig für alle Operationen (31.10.2026, Branch `phase0/undo`)
 
 **Implementiert, Core-Tests (neu `UndoReliabilityTests`), `check_page_workflow.sh` und `xtool dev build` bestanden. Nicht installiert, am iPad ungeprüft.** Die Tests belegen Verlauf, Stände und Hinweisdaten; **nicht** belegt sind Ansichtsaktualisierung, Canvas und Gesten. Der Fall des Nutzers ist nicht am Gerät nachgestellt.
