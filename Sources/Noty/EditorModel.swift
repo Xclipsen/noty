@@ -191,8 +191,12 @@ final class EditorModel: ObservableObject {
                 sources = catalogue; pdfOutline = catalogue.outline
             }
             notebook = candidate
+            // A blank field alone is no visible step: it joins the first
+            // characters, or cancels out when it is removed unused.
+            let blank = NotebookUndoHistory.blankField(before: before.textBoxes, after: boxes)
+            if blank == .added { history.separateNextStep() }
             recordChange(.text, pageID: pageID, before: before,
-                         coalescing: .init(key: "text-\(pageID.uuidString)", window: 1.5))
+                         coalescing: .init(key: "text-\(pageID.uuidString)", window: blank == nil ? 1.5 : NotebookUndoHistory.blankFieldWindow))
             scheduleSave()
         } catch { self.error = "Textänderung konnte nicht übernommen werden: \(error.localizedDescription)" }
     }
@@ -291,12 +295,21 @@ final class EditorModel: ObservableObject {
 
     /// Reverts (or re-applies) the most recent change on any page, in order.
     /// Steps whose page was deleted, replaced or changed elsewhere are dropped;
-    /// they never overwrite newer content. Returns the page to reveal.
+    /// they never overwrite newer content, and the user is told: a step never
+    /// vanishes silently. Returns the page to reveal.
     func undo(redo: Bool) -> NotebookUndoHistory.Outcome? {
         guard writable, !busy, !mutationsPaused else { return nil }
         defer { publishHistory() }
         pendingDraft = nil
-        guard let outcome = redo ? history.redo(notebook) : history.undo(notebook) else { return nil }
+        guard let outcome = redo ? history.redo(notebook) : history.undo(notebook) else {
+            if history.lastSkipped > 0 {
+                error = "\(redo ? "Wiederholen" : "Rückgängig") nicht möglich: Die Seite wurde inzwischen anders geändert. Der neuere Stand bleibt erhalten."
+            }
+            return nil
+        }
+        if outcome.skipped > 0 {
+            error = "\(NotyText.count(outcome.skipped, "Schritt", "Schritte")) nicht \(redo ? "wiederholt" : "zurückgenommen"), weil die Seite inzwischen anders geändert wurde. Der neuere Stand bleibt erhalten."
+        }
         do {
             let previous = notebook
             let selected = page.id
@@ -338,11 +351,11 @@ final class EditorModel: ObservableObject {
     /// with the page itself, so undoing the first stroke/text/object removes
     /// the then empty page again and redo restores both. True when recorded.
     private func recordWithMaterializedDraft(_ kind: NotebookUndoHistory.Kind, pageIDs: Set<UUID>,
-                                             coalescing: NotebookUndoHistory.Coalescing?) -> Bool {
+                                             coalescing: NotebookUndoHistory.Coalescing?, undoPageID: UUID? = nil) -> Bool {
         guard let pending = pendingDraft else { return false }
         if pageIDs.contains(pending.pageID), history.continuesMaterialization(of: pending.pageID, kind: kind, coalescing: coalescing),
            history.recordMaterialization(kind, before: pending.before, after: notebook, pageID: pending.pageID,
-                                         touching: pageIDs, coalescing: coalescing) {
+                                         touching: pageIDs, coalescing: coalescing, undoPageID: undoPageID) {
             publishHistory(); return true
         }
         pendingDraft = nil
@@ -399,7 +412,11 @@ final class EditorModel: ObservableObject {
                 let before = notebook
                 try installFlow(candidate)
                 // Its own undo step until the first content joins it (`recordWithMaterializedDraft`).
-                if history.recordMaterialization(.pages, before: before, after: notebook, pageID: draft.id) {
+                // A draft that already holds text is that content: only more
+                // typing joins it, the next operation is a step of its own.
+                let written = draft.effectiveTextBoxes.contains { !$0.text.isEmpty }
+                if history.recordMaterialization(written ? .text : .pages, before: before, after: notebook, pageID: draft.id,
+                                                 coalescing: written ? .init(key: "text-\(draft.id.uuidString)", window: 1.5) : nil) {
                     pendingDraft = (draft.id, before); publishHistory()
                 } else { pendingDraft = nil }
             }
@@ -486,8 +503,14 @@ final class EditorModel: ObservableObject {
             notebook = candidate
             // One step for both pages; undo reveals the source, redo the target.
             // A drop onto the just materialised writing draft joins that step.
-            if !recordWithMaterializedDraft(.transfer, pageIDs: Set(changes.map(\.pageID)), coalescing: nil) {
-                history.record(.transfer, changes: changes); publishHistory()
+            if !recordWithMaterializedDraft(.transfer, pageIDs: Set(changes.map(\.pageID)), coalescing: nil, undoPageID: changes.first?.pageID) {
+                // What the model holds now, not what was asked for: the step must match it.
+                history.record(.transfer, changes: changes.compactMap { change in
+                    candidate.pages.first { $0.id == change.pageID }.map {
+                        PageContentReplacement(pageID: change.pageID, expected: change.expected, replacement: PageContent(page: $0))
+                    }
+                })
+                publishHistory()
             }
             scheduleSave(); return true
         } catch CrossPageTransferError.conflict {

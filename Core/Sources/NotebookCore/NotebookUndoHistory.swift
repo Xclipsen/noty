@@ -4,7 +4,8 @@ import Foundation
 /// all content layers). Steps name pages by stable ID and carry the exact
 /// expected page state. A step whose pages no longer match — page deleted,
 /// cleared, restored, replaced or edited outside this history — is dropped
-/// instead of overwriting newer content. Positions are never used.
+/// instead of overwriting newer content, and reported (`Outcome.skipped`,
+/// `lastSkipped`) so the editor can say so. Positions are never used.
 public struct NotebookUndoHistory: Sendable {
     /// `.pages`: page-level operations (paper style/defaults, whole-notebook
     /// restyle, add, delete to the page trash, restore, duplicate, paste,
@@ -20,12 +21,14 @@ public struct NotebookUndoHistory: Sendable {
     }
 
     /// Result of an undo/redo: the complete candidate notebook and the page
-    /// that should be revealed.
+    /// that should be revealed. `skipped`: newer steps that no longer applied
+    /// and were dropped on the way to this one.
     public struct Outcome: Sendable {
         public let notebook: Notebook
         public let pageID: UUID
         public let focus: TextFlowFocus?
         public let kind: Kind
+        public let skipped: Int
     }
 
     struct Step: Sendable {
@@ -40,7 +43,7 @@ public struct NotebookUndoHistory: Sendable {
         var afterFocus: TextFlowFocus?
         let undoPageID: UUID
         let redoPageID: UUID
-        let coalescing: Coalescing?
+        var coalescing: Coalescing?
         var updated: Date
         var cost: Int
         /// The trailing writing draft this step turned into a page (with the
@@ -54,11 +57,30 @@ public struct NotebookUndoHistory: Sendable {
     /// first content to join its step.
     public static let materializationWindow: TimeInterval = 30
     public static let maximumCost = 80_000_000
+    /// A blank field waits this long for its first character (or its removal)
+    /// to join its step: nothing else may be recorded in between.
+    public static let blankFieldWindow: TimeInterval = 3_600
+
+    /// A free field without text or field style leaves no visible trace. On
+    /// its own such a change would be an undo step without any visible effect
+    /// (tap into the page, later leave the field): it joins what follows or
+    /// disappears with its removal. nil: any other change of the boxes.
+    public enum BlankField: Equatable, Sendable { case added, removed }
+    public static func blankField(before: [TextBox], after: [TextBox]) -> BlankField? {
+        let old = Set(before.map(\.id)), new = Set(after.map(\.id))
+        let added = after.filter { !old.contains($0.id) }, removed = before.filter { !new.contains($0.id) }
+        guard added.count + removed.count == 1, let box = (added + removed).first, box.flowID == nil, box.text.isEmpty,
+              !box.hasFieldStyle, before.filter({ new.contains($0.id) }) == after.filter({ old.contains($0.id) }) else { return nil }
+        return added.isEmpty ? .removed : .added
+    }
 
     private var undoSteps: [Step] = []
     private var redoSteps: [Step] = []
     /// Coalescing only continues the step that was recorded last.
     private var canCoalesce = false
+    /// Steps the last undo/redo dropped because they no longer applied. With a
+    /// nil result: the request found nothing applicable and did nothing.
+    public private(set) var lastSkipped = 0
 
     public init() {}
 
@@ -138,15 +160,18 @@ public struct NotebookUndoHistory: Sendable {
     /// operation (legacy notebook); the caller records normally then.
     /// `touching`: further pages the content change may touch (the source
     /// of a moved selection); any other difference refuses the step.
+    /// `undoPageID`: the page to reveal after undoing (the source of a moved
+    /// selection: what comes back is there, not on the removed page).
     @discardableResult
     public mutating func recordMaterialization(_ kind: Kind, before: Notebook, after: Notebook, pageID: UUID,
-                                               touching: Set<UUID> = [], coalescing: Coalescing? = nil, now: Date = Date()) -> Bool {
+                                               touching: Set<UUID> = [], coalescing: Coalescing? = nil, undoPageID: UUID? = nil,
+                                               now: Date = Date()) -> Bool {
         guard let change = PageStructureChange(before: before, after: after), !change.isEmpty,
               change.pageIDs.contains(pageID), change.pageIDs.isSubset(of: touching.union([pageID])), change.trashIDs.isEmpty,
               after.pages.contains(where: { $0.id == pageID }),
               !before.pages.contains(where: { $0.id == pageID }) else { return false }
         let step = Step(kind: kind, changes: [], snapshot: nil, structure: change, beforeFocus: nil, afterFocus: nil,
-                        undoPageID: pageID, redoPageID: pageID, coalescing: coalescing, updated: now, cost: change.cost,
+                        undoPageID: undoPageID ?? pageID, redoPageID: pageID, coalescing: coalescing, updated: now, cost: change.cost,
                         materializedPage: pageID)
         if continuesMaterialization(of: pageID, kind: kind, coalescing: coalescing, now: now) {
             undoSteps[undoSteps.count - 1] = step
@@ -185,19 +210,22 @@ public struct NotebookUndoHistory: Sendable {
 
     private mutating func move(_ notebook: Notebook, redo: Bool) -> Outcome? {
         canCoalesce = false
+        lastSkipped = 0
         while let step = redo ? redoSteps.popLast() : undoSteps.popLast() {
-            guard let result = try? Self.apply(step, to: notebook, redo: redo) else { continue }
+            guard let result = try? Self.apply(step, to: notebook, redo: redo) else { lastSkipped += 1; continue }
             if redo { undoSteps.append(step) } else { redoSteps.append(step) }
             return Outcome(notebook: result, pageID: redo ? step.redoPageID : step.undoPageID,
-                           focus: redo ? step.afterFocus : step.beforeFocus, kind: step.kind)
+                           focus: redo ? step.afterFocus : step.beforeFocus, kind: step.kind, skipped: lastSkipped)
         }
         return nil
     }
 
     private mutating func add(_ step: Step) {
         redoSteps = []
+        // The longer window of the two: a blank field waits for what follows it.
         if canCoalesce, let key = step.coalescing, let top = undoSteps.last, top.kind == step.kind,
-           top.coalescing == key, step.updated.timeIntervalSince(top.updated) <= key.window,
+           let previous = top.coalescing, previous.key == key.key,
+           step.updated.timeIntervalSince(top.updated) <= max(previous.window, key.window),
            let merged = Self.merge(top, step) {
             // A gesture that ended where it started (cancelled drag) leaves no step.
             if merged.changes.isEmpty && merged.snapshot == nil { undoSteps.removeLast(); canCoalesce = false; return }
@@ -218,6 +246,7 @@ public struct NotebookUndoHistory: Sendable {
         guard top.structure == nil, next.structure == nil else { return nil }
         var merged = top
         merged.updated = next.updated
+        merged.coalescing = next.coalescing
         merged.afterFocus = next.afterFocus ?? top.afterFocus
         if let a = top.snapshot, let b = next.snapshot {
             guard a.after == b.before else { return nil }
@@ -242,7 +271,12 @@ public struct NotebookUndoHistory: Sendable {
 
     private static func cost(_ changes: [PageContentReplacement]) -> Int {
         changes.reduce(0) { total, change in
-            var value = change.expected.drawing.count + change.replacement.drawing.count + 256
+            // Unchanged ink shares the page's buffer: moving a field on a page
+            // full of handwriting must not push older steps out of the history.
+            var value = 256
+            if change.expected.drawing != change.replacement.drawing {
+                value += change.expected.drawing.count + change.replacement.drawing.count
+            }
             // Image objects hold only asset references (the originals stay as
             // package files for the whole session): about 128 bytes each.
             if change.expected.images != change.replacement.images {
@@ -272,6 +306,8 @@ public struct NotebookUndoHistory: Sendable {
 
     /// Uses the same write path as the original edit, so restoring ink never
     /// changes the schema and text/image/object changes keep their validation.
+    /// Every state is one this page had (`restoring`): a field that lay beside
+    /// the sheet before it was moved onto it must not make the move permanent.
     public static func apply(_ changes: [PageContentReplacement], to notebook: Notebook) throws -> Notebook {
         guard !changes.isEmpty, Set(changes.map(\.pageID)).count == changes.count else { throw StorageError.invalidDocument }
         for change in changes {
@@ -293,13 +329,13 @@ public struct NotebookUndoHistory: Sendable {
         if changes.count == 1, let change = changes.first {
             let e = change.expected, r = change.replacement
             if e.drawing == r.drawing && e.images == r.images && e.shapes == r.shapes {
-                try result.replaceTextBoxes(r.textBoxes, pageID: change.pageID); return result
+                try result.replaceTextBoxes(r.textBoxes, pageID: change.pageID, restoring: true); return result
             }
             if e.drawing == r.drawing && e.textBoxes == r.textBoxes && e.shapes == r.shapes {
                 try result.replaceImages(r.images, pageID: change.pageID); return result
             }
         }
-        try result.replaceContents(changes)
+        try result.replaceContents(changes, restoring: true)
         return result
     }
 }

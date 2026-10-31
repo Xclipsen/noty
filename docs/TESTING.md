@@ -2,6 +2,12 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Rückgängig für alle Operationen (31.10.2026, Branch `phase0/undo`)
+
+**Implementiert, Core-Tests (neu `UndoReliabilityTests`), `check_page_workflow.sh` und `xtool dev build` bestanden. Nicht installiert, am iPad ungeprüft.** Die Tests belegen Verlauf, Stände und Hinweisdaten; **nicht** belegt sind Ansichtsaktualisierung, Canvas und Gesten. Der Fall des Nutzers ist nicht am Gerät nachgestellt.
+
+Gerätetest (gebündelt, Testheft): Text mit dem Lasso auf der Seite, auf eine andere Seite und auf die Reserveseite verschieben, je Rückgängig und Wiederholen, Auswahl dabei aktiv lassen; dasselbe mit Handschrift und gemischter Auswahl; im Textdokument ein freies Feld; Text mit dem Finger bei aktivem Stift. Mit dem Textwerkzeug tippen, in die Seite tippen und leer verlassen, danach Rückgängig: der echte Schritt davor kommt zurück. Rückgängig während eines Bildimports: Hinweis.
+
 ## Build 65 · Textdokument, ⌘A, Tastaturmodus (31.10.2026)
 
 **Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: alle 28 Dokumente und 248 Dateien unverändert. Core-Tests (neu `TextFlowRangeTests`, `KeyboardCommandsTests`, `TextMotionsTests`), `check_page_workflow.sh`, `check_verifiers.sh` und `xtool dev build` bestanden. Getestet sind Keymap, Parser, Motions und Bereichsbearbeitung; **nicht** getestet sind Tastenzustellung, Fokus, TextKit-Messung und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).

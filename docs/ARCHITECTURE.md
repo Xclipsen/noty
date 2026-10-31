@@ -1,5 +1,18 @@
 # Architektur
 
+## Rückgängig für alle Operationen · 31.10.2026
+
+Implementiert, erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Nutzermeldung: Text mit dem Lasso verschoben, nicht zurücknehmbar. Der Normalfall (gleiche Seite, über Seiten, Reserveseite, Textdokument) war in Core-Tests bereits rückgängig zu machen; behoben sind die Wege, auf denen ein Schritt verschwand oder nichts Sichtbares tat.
+
+- **Zurücknehmen scheiterte an der Feldprüfung:** `NotebookUndoHistory.apply` lief über `replaceTextBoxes`/`replaceContents`, die `TextBox.fits` verlangen. Lag ein Feld vor dem Verschieben neben dem Blatt (gültiges Dokument, `validate` prüft das nicht), warf das Zurücknehmen, und `move` verwarf den Schritt still. Undo/Redo stellen jetzt mit `restoring: true` einen Stand wieder her, den die Seite hatte; erwartete Stände und `validate` gelten weiter.
+- **Nie still:** `Outcome.skipped` und `lastSkipped` melden verworfene Schritte, `EditorModel.undo` zeigt einen Hinweis. Fremde spätere Änderungen werden weiter nicht überschrieben, das Schema sinkt nicht. Ein laufender Vorgang (`busy`, Pause) meldet sich ebenfalls statt nichts zu tun.
+- **Schritte ohne sichtbare Wirkung:** Ein leeres Feld ohne Feldstil (`blankField`) ist kein eigener Schritt: es geht in die ersten Zeichen auf oder hebt sich mit seiner Entfernung auf (`blankFieldWindow`, das längere Fenster gilt; nur ununterbrochene Ketten). Ein Griff, der am Ausgangspunkt endet, legt keinen Schritt mehr nur für die eingepasste Höhe an.
+- **Reserveseite:** Ein Entwurf, der schon Text trägt, ist nicht mehr die „leere Seite“, die 30 s auf ihren Inhalt wartet (sonst nahm das Zurücknehmen eines Verschiebens die ganze Seite mit). Eine Auswahl, die auf die Reserveseite verschoben wurde, zeigt beim Zurücknehmen die Quellseite.
+- **Verschieben im Textmodus** (Rahmenzone) ist ein eigener Schritt, auch direkt nach dem Tippen. Der Transferschritt wird aus dem Modellstand aufgezeichnet.
+- **Speicherbudget:** Unveränderte Tinte zählt nicht mehr doppelt je Schritt; auf vollgeschriebenen Seiten verdrängten Text- und Objektschritte sonst ältere Schritte.
+
+Bewusste Grenzen: Die Historie lebt nur, solange das Heft offen ist (kein Formatfeld; danach bleiben die lokalen Wiederherstellungspunkte). Höchstens 100 Schritte. Altformat-Hefte ohne `pdfSources` können die Seitenoperation, die sie migriert, nicht aufzeichnen (`prune`). Jeder Pfeiltasten-Schritt ist ein eigener Undo-Schritt. `undo` bei Installationsfehler (`NotebookPDFCatalog`) leert die Historie sichtbar mit Fehlermeldung.
+
 ## Tastaturmodus und Text über Seiten · Build 65 · 31.10.2026
 
 Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft. Bedienung, Grenzen und Gerätetest: [KEYBOARD](KEYBOARD.md), Befunde: [TEXT-REBUILD-62](TEXT-REBUILD-62.md).

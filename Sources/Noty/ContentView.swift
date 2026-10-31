@@ -815,7 +815,12 @@ struct ContentView: View {
     /// Notebook-wide undo/redo: reverts the most recent change on any page in
     /// order (by stable page ID) and brings that page into view.
     private func performUndo(redo: Bool) {
-        guard canEdit, let outcome = model.undo(redo: redo) else { return }
+        guard canEdit else {
+            // Never a silent no-op: an import or backup holds the notebook for the moment.
+            if isPaneActive(), model.writable { showRecentNote("\(redo ? "Wiederholen" : "Rückgängig") geht erst nach dem laufenden Vorgang.") }
+            return
+        }
+        guard let outcome = model.undo(redo: redo) else { return }
         KeyboardRouter.shared.textChangedElsewhere()
         // Undoing the first content on the former writing draft removed that
         // page again: the (new) writing draft takes its place, without a jump.
