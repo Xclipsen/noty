@@ -200,13 +200,20 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     /// A focus of the model (undo, outline, end of the flow). False: not the flow's.
     func show(_ focus: TextFlowFocus) -> Bool {
         guard let start = host?.flow.offset(focus.boxID, focus.selection.location) else { return false }
-        if !isFirstResponder { beginEditingOnPurpose() }
+        let router = KeyboardRouter.shared
+        defer { router.handoff = false }
+        if !isFirstResponder {
+            // Not a tap: as on a page (`applyTextFocus`), the mode stays.
+            router.handoff = true
+            beginEditingOnPurpose()
+            router.modeChanged(editor: self)
+        }
         guard marked == nil else { return true }
         setSelection(NSRange(location: start, length: focus.selection.length))
+        if overlayOwnsSelection { keyboardSync(); refreshOverlay() }
         typingAttributes = focus.typingStyle.resolvingAutomaticColor(light: lightText).attributes
         if TextFlowSelection.shared.selectAllWhenFocused {
             TextFlowSelection.shared.selectAllWhenFocused = false
-            let router = KeyboardRouter.shared
             if router.isEnabled, router.mode == .insert, store.storage.length > 0 { router.setMode(.normal, editor: self) }
             selectEverything()
         }
@@ -570,7 +577,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     }()
     @objc private func undoKey() { host?.undo(false) }
     @objc private func redoKey() { host?.undo(true) }
-    @objc private func escapeKey() { if !KeyboardRouter.shared.escape(in: self) { finishEditing() } }
+    @objc private func escapeKey() { if !KeyboardRouter.shared.handle(token: "<Esc>", text: self) { finishEditing() } }
     @objc private func selectAllKey() { selectEverything() }
     @objc private func formatKey(_ command: UIKeyCommand) { (command.propertyList as? String).map(format) }
     @objc private func arrowKey(_ command: UIKeyCommand) {

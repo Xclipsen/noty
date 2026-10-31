@@ -120,7 +120,7 @@ struct NotyCommands: Commands {
                 .disabled(editor.map { !$0.canEdit } ?? true)
             Button("Befehlspalette") { KeyboardRouter.shared.togglePalette() }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
-            Button("Tastenübersicht") { KeyboardRouter.shared.helpVisible.toggle() }
+            Button("Tastenübersicht") { KeyboardRouter.shared.toggleHelp() }
                 .keyboardShortcut("/", modifiers: .command)
         }
     }

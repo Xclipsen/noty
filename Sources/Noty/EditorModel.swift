@@ -279,15 +279,21 @@ final class EditorModel: ObservableObject {
             let (candidate, focus) = try notebook.changingTextFlow(change, layout: layout)
             try installFlow(candidate)
             pendingDraft = nil
-            if change.separateStep { history.separateNextStep() }
-            history.record(.textFlow, before: before, after: candidate, beforeFocus: before.textFlowFocus(selection: change.selectionBefore),
-                           afterFocus: focus, coalescing: change.separateStep ? nil : Self.flowCoalescing)
-            publishHistory()
+            recordFlowChange(change, before: before, after: candidate, focus: focus)
             return focus
         } catch {
             self.error = "Textfluss: \(error.localizedDescription)"
-            return nil
+            // As `updateFlowText`: no room is no reason to lose what was typed.
+            guard let (candidate, focus) = try? notebook.keepingTextFlowChange(change), (try? installFlow(candidate)) != nil else { return nil }
+            recordFlowChange(change, before: before, after: candidate, focus: focus)
+            return focus
         }
+    }
+    private func recordFlowChange(_ change: TextFlowChange, before: Notebook, after: Notebook, focus: TextFlowFocus) {
+        if change.separateStep { history.separateNextStep() }
+        history.record(.textFlow, before: before, after: after, beforeFocus: before.textFlowFocus(selection: change.selectionBefore),
+                       afterFocus: focus, coalescing: change.separateStep ? nil : Self.flowCoalescing)
+        publishHistory()
     }
     func editFlow(_ edits: [TextListEditing.Edit], caret: Int?, trailingDraft: Page?) -> TextFlowFocus? {
         rewriteFlow { try notebook.editingTextFlow(edits, caret: caret, layout: flowLayout(trailingDraft)) }

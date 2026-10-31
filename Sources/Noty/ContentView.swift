@@ -414,7 +414,11 @@ struct ContentView: View {
 
     private func closeEditor() {
         if let onCloseWorkspace { onCloseWorkspace(); return }
-        Task { if await model.flushBeforeClosing() { _ = await toolbox.flush(); dismiss() } }
+        Task {
+            if await model.flushBeforeClosing() { _ = await toolbox.flush(); dismiss() }
+            // Stays open: `Space f` must not fire at some later close.
+            else { KeyboardRouter.shared.searchAllAfterClosing = false }
+        }
     }
 
     /// The durable editor is always child zero. The sidebar only changes its
@@ -842,6 +846,8 @@ struct ContentView: View {
         }
         if tool == .text, var focus = outcome.focus, model.notebook.pages.contains(where: { $0.id == focus.pageID }) {
             focus.requestID = UUID(); textFocus = focus
+            // Only now: an undo without a focus must not hold the mode.
+            KeyboardRouter.shared.undoRequestedFocus()
         }
         guard outcome.pageID != selectedPageID, model.notebook.pages.contains(where: { $0.id == outcome.pageID }) else { return }
         revealRequest = PageRevealRequest(pageID: outcome.pageID)
@@ -951,7 +957,11 @@ struct ContentView: View {
                 }
                 let focus = model.updateFlowText(pageID: page.id, previous: previous, replacement: replacement,
                     selection: selection, trailingDraft: draftPage)
-                if let focus { textFocus = focus; selectedPageID = focus.pageID }
+                if let focus {
+                    // The caret leaves this page: the old view ends before the new one begins.
+                    if focus.pageID != page.id { KeyboardRouter.shared.handoff = true }
+                    textFocus = focus; selectedPageID = focus.pageID
+                }
                 return focus
             },
             onFlowUndo: { redo in
@@ -1015,6 +1025,7 @@ struct ContentView: View {
                 // Below the text, on a page after it or on the reserve page: caret behind the last character.
                 guard isPaneActive(), model.pageContentGeneration == generation, canEdit,
                       var focus = model.textFlowEnd() else { return }
+                KeyboardRouter.shared.writingRequested()
                 if tool != .text { tool = .text; toolbarOptions = false }
                 focus.requestID = UUID(); textFocus = focus; selectedPageID = focus.pageID
             },

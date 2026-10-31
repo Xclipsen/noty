@@ -205,7 +205,8 @@ extension TextObjectLayer {
         default: break
         }
         router.engine.layout = KeyboardLineLayout(layer: self, editor: editor)
-        finish(router.engine.perform(command, count: count), editor: editor)
+        // Editing here types at one caret: `c`, `i`, `o` … must not touch selections out of sight.
+        finish(router.engine.performAtPrimary(command, count: count), editor: editor)
     }
 
     private func finish(_ outcome: TextEngine.Outcome, editor: PageTextView) {
@@ -218,22 +219,33 @@ extension TextObjectLayer {
     }
 
     /// One undo step: inside this page like a native edit, otherwise through
-    /// the whole flow. The separate edits keep the formats between them.
+    /// the whole flow. The separate edits keep the formats between them. What
+    /// INS types next belongs to `c` or `o`, after anything else it is a step of its own.
     private func apply(_ outcome: TextEngine.Outcome, editor: PageTextView) {
         guard let buffer = keyboardBuffer(editor) else { return }
+        let router = KeyboardRouter.shared, flowing = isFlow(editor)
         onUndoBoundary?()
-        // `edits` run back to front, both edit paths want them in text order.
-        let edits = outcome.edits.reversed().map { TextListEditing.Edit(range: $0.range, replacement: $0.replacement) }
+        defer { if router.mode != .insert { onUndoBoundary?() } }
+        let edits = outcome.textEdits(in: flowing ? flowActions?.content() : boxes.first { $0.id == editor.objectID })
         let start = edits.first?.range.location ?? 0, end = edits.map { NSMaxRange($0.range) }.max() ?? start
-        if viewIsCurrent(editor), start >= buffer.base, end - buffer.base <= editor.attributedText.length,
-           let index = boxes.firstIndex(where: { $0.id == editor.objectID }) {
+        // On a new empty last line only the reflow knows the page, it may be the
+        // next one. It needs that caret, and its focus stands: `moveCaret` goes
+        // by the written text and would pull the caret back.
+        let text = router.engine.text
+        let onEmptyLastLine = flowing && text.length > 0 && router.engine.cursor == text.length && TextLines.isBreak(text.character(at: text.length - 1))
+        if onEmptyLastLine, let flow = flowActions {
+            router.handoff = true
+            TextFlowSelection.shared.set(nil)
+            flow.edit(edits, router.engine.cursor)
+        } else if viewIsCurrent(editor), start >= buffer.base, end - buffer.base <= editor.attributedText.length,
+                  let index = boxes.firstIndex(where: { $0.id == editor.objectID }) {
             let local = edits.map { TextListEditing.Edit(range: NSRange(location: $0.range.location - buffer.base, length: $0.range.length), replacement: $0.replacement) }
             applyListEdits(local, at: index, editor: editor)
             // The edit left a focus for the next view update: this newer one replaces it.
-            keyboardShowSelection(editor, focusing: isFlow(editor))
+            keyboardShowSelection(editor, focusing: flowing)
         } else if let flow = flowActions {
-            KeyboardRouter.shared.handoff = true
-            flow.edit(edits, KeyboardRouter.shared.engine.cursor)
+            router.handoff = true
+            flow.edit(edits, router.engine.cursor)
             keyboardShowSelection(editor, focusing: true)
         }
     }
@@ -329,8 +341,6 @@ extension TextObjectLayer {
     func keyboardUndo(redo: Bool, editor: PageTextView) {
         let router = KeyboardRouter.shared
         if boxes.first(where: { $0.id == editor.objectID })?.flowID != nil {
-            // The focus of the undone step may lie on another page: the mode stays.
-            router.handoff = true
             onFlowUndo?(redo)
         } else if redo { notebookUndo?.redo() } else { notebookUndo?.undo() }
         router.textChangedElsewhere()

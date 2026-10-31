@@ -1554,7 +1554,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         var commands = [UIKeyCommand(input: "c", modifierFlags: .command, action: #selector(copyKey)),
          UIKeyCommand(input: "v", modifierFlags: .command, action: #selector(pasteKey)),
          UIKeyCommand(input: "\u{8}", modifierFlags: [], action: #selector(deleteKey)),
-         UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey)),
+         UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeCommand)),
          UIKeyCommand(title: "Alles auswählen", action: #selector(selectAllKey), input: "a", modifierFlags: .command)]
         guard hasSelection, lift == nil, startContent == nil else { return commands }
         commands += [UIKeyCommand(title: "Ausschneiden", action: #selector(cutKey), input: "x", modifierFlags: .command),
@@ -1572,7 +1572,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     @objc private func copyKey() { copySelection() }
     @objc private func pasteKey() { if let onPaste { onPaste() } else { pasteSelection() } }
     @objc private func deleteKey() { deleteSelection() }
-    @objc private func escapeKey() { adopted = nil; clearSelection(); refresh() }
+    /// An open menu goes first, the router comes back to `escapeKey` otherwise.
+    @objc private func escapeCommand() { if !KeyboardRouter.shared.handle(token: "<Esc>") { escapeKey() } }
+    private func escapeKey() { adopted = nil; clearSelection(); refresh() }
     @objc private func cutKey() { guard hasSelection, !selectionLocked else { return }; copySelection(); deleteSelection() }
     @objc private func duplicateKey() { guard hasSelection else { return }; duplicateSelection() }
     /// ⌘A: everything selectable on this page (the lasso's filter; shape tool: shapes).

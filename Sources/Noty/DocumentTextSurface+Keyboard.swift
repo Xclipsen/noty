@@ -47,8 +47,7 @@ extension DocumentTextSurface: KeyboardTextTarget {
     }
     /// The engine's edits as one step: several selections, also over pages.
     func applyEngine(_ outcome: TextEngine.Outcome) {
-        // `edits` run back to front, buffer and model want them in text order.
-        let edits = outcome.edits.reversed().map { TextListEditing.Edit(range: $0.range, replacement: $0.replacement) }
+        let edits = outcome.textEdits(in: host?.flow.content())
         guard !edits.isEmpty else { keyboardShowSelection(); return }
         let before = selection
         inputDelegate?.textWillChange(self)

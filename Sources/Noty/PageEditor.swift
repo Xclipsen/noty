@@ -997,21 +997,25 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if !KeyboardRouter.shared.pressEnded(presses) { super.pressesCancelled(presses, with: event) }
     }
     /// ⌘A in every tool: ink tools and the text tool between fields end up
-    /// here. Tab reaches the keyboard mode before the system's focus moves.
+    /// here. Tab reaches the keyboard mode before the system's focus moves,
+    /// Esc before the system takes it (`KeyboardRouter.handle(token:)`).
     override var keyCommands: [UIKeyCommand]? {
         var commands = [UIKeyCommand(title: "Alles auswählen", action: #selector(selectAllKey), input: "a", modifierFlags: .command)]
-        guard editable, KeyboardRouter.shared.isEnabled else { return commands }
+        guard editable, KeyboardRouter.shared.isEnabled || KeyboardRouter.shared.helpVisible else { return commands }
         for flags in [UIKeyModifierFlags(), .shift] {
             let command = UIKeyCommand(input: "\t", modifierFlags: flags, action: #selector(tabKey(_:)))
             command.wantsPriorityOverSystemBehavior = true
             commands.append(command)
         }
-        return commands
+        let escape = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey))
+        escape.wantsPriorityOverSystemBehavior = true
+        return commands + [escape]
     }
     @objc private func selectAllKey() { keyboardSelectAll() }
     @objc private func tabKey(_ command: UIKeyCommand) {
         KeyboardRouter.shared.handle(token: command.modifierFlags.contains(.shift) ? "<S-Tab>" : "<Tab>")
     }
+    @objc private func escapeKey() { KeyboardRouter.shared.handle(token: "<Esc>") }
     func keyboardSelectAll() {
         guard editable else { return }
         if flowDocument { configuration?.onSelectWholeFlow(); return }

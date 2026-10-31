@@ -281,8 +281,9 @@ final class PageTextView: UITextView {
         return command
     }
     @objc private func listTab(_ command: UIKeyCommand) {
-        guard KeyboardRouter.shared.allowsTyping else { return }
         let outdent = command.modifierFlags.contains(.shift)
+        if KeyboardRouter.shared.handle(token: outdent ? "<S-Tab>" : "<Tab>", text: self) { return }
+        guard KeyboardRouter.shared.allowsTyping else { return }
         if onListTab?(outdent) != true, !outdent { insertText("\t") }
     }
     private static let formatCommands: [UIKeyCommand] = {
@@ -306,7 +307,7 @@ final class PageTextView: UITextView {
     @objc private func shortcut(_ command: UIKeyCommand) { (command.propertyList as? String).map { onShortcut?($0) } }
     @objc private func undoFlow() { onFlowUndo?(false) }
     @objc private func redoFlow() { onFlowUndo?(true) }
-    @objc private func escape() { if !KeyboardRouter.shared.escape(in: self) { onEscape?() } }
+    @objc private func escape() { if !KeyboardRouter.shared.handle(token: "<Esc>", text: self) { onEscape?() } }
     private static let selectAllCommand: UIKeyCommand = {
         let command = UIKeyCommand(input: "a", modifierFlags: .command, action: #selector(selectAllKey))
         command.wantsPriorityOverSystemBehavior = true

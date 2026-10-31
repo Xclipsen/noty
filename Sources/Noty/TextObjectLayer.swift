@@ -783,7 +783,13 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         selectedID = focus.boxID; synchronize(); layoutIfNeeded()
         defer { pendingReveal = max(pendingReveal ?? .typing, .typing) } // flow hand-off while typing
         let editor = field.editor
-        if !editor.isFirstResponder { editor.beginEditingOnPurpose() }
+        if !editor.isFirstResponder {
+            // Not a tap: undo, a format or the flow moved the caret. The mode
+            // stays; a marking over pages stays only for the keyboard's own moves.
+            if !KeyboardRouter.shared.handoff { TextFlowSelection.shared.set(nil) }
+            KeyboardRouter.shared.handoff = true
+            editor.beginEditingOnPurpose()
+        }
         if editor.markedTextRange == nil {
             let length = editor.attributedText.length
             let range = NSRange(location: min(focus.selection.location, length), length: min(focus.selection.length, max(0, length - focus.selection.location)))

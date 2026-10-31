@@ -19,15 +19,18 @@ struct KeyboardOverlay: View {
     var body: some View {
         ZStack(alignment: inEditor ? .topLeading : .bottomLeading) {
             Color.clear.allowsHitTesting(false)
-            if enabled, router.scope == scope {
-                VStack(alignment: .leading, spacing: 6) {
-                    if !inEditor { panels }
-                    if router.keyboardSeen { indicator }
-                    if inEditor { panels }
+            if router.scope == scope {
+                if enabled {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !inEditor { panels }
+                        if router.keyboardSeen { indicator }
+                        if inEditor { panels }
+                    }
+                    .padding(.leading, 10).padding(inEditor ? .top : .bottom, inEditor ? 54 : 8)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
                 }
-                .padding(.leading, 10).padding(inEditor ? .top : .bottom, inEditor ? 54 : 8)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+                // ⌘/ and ⇧⌘P work without the keyboard mode, too.
                 if router.helpVisible { KeyboardHelpView(context: router.shownContext, onClose: { router.helpVisible = false }) }
                 if router.paletteVisible { KeyboardPaletteView(commands: router.paletteCommands()) { router.paletteVisible = false } }
             }
@@ -125,6 +128,9 @@ private struct KeyboardHelpView: View {
             .frame(maxWidth: 980, maxHeight: 640)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             .padding(24)
+            // Without a responder of the router, too; the same way, so that one Esc stays one.
+            Button("") { if !KeyboardRouter.shared.handle(token: "<Esc>") { onClose() } }
+                .keyboardShortcut(.cancelAction).frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
     }
 }
@@ -142,7 +148,7 @@ private struct KeyboardPaletteView: View {
     }
     private func run() {
         let hit = hits.indices.contains(index) ? hits[index] : nil
-        let direct = KeyPalette.direct(query)
+        let direct = KeyPalette.direct(query, in: KeyboardRouter.shared.shownContext)
         onClose()
         // After the palette is gone: the focus returns before the command runs.
         DispatchQueue.main.async {
@@ -157,7 +163,7 @@ private struct KeyboardPaletteView: View {
         ZStack(alignment: .top) {
             Color.black.opacity(0.3).ignoresSafeArea().onTapGesture(perform: onClose)
             VStack(spacing: 0) {
-                TextField("Befehl, :w, :q oder Seitenzahl", text: $query)
+                TextField(KeyboardRouter.shared.scope == .library ? "Befehl" : "Befehl, :w, :q oder Seitenzahl", text: $query)
                     .textFieldStyle(.plain).font(.title3).padding(14)
                     .focused($focused).autocorrectionDisabled().textInputAutocapitalization(.never)
                     .onSubmit(run).onChange(of: query) { _, _ in index = 0 }
