@@ -97,6 +97,19 @@ final class TextDocumentExtrasTests: XCTestCase {
         XCTAssertEqual(next.textFlowContent?.text, "1. ax\u{0C}2. b", "numbering runs on over a break")
     }
 
+    func testTheOutlineEndsAHeadingBeforeItsBreak() throws {
+        var document = try flowing("Kopf\u{0C}Kapitel")
+        document = try document.restylingTextFlow(range: NSRange(location: 0, length: 4), layout: layout) { TextStylePreset.heading.apply(to: &$0) }.0
+        document = try document.restylingTextFlow(range: NSRange(location: 5, length: 7), layout: layout) { TextStylePreset.heading.apply(to: &$0) }.0
+        XCTAssertEqual(document.textOutline.map(\.text), ["Kopf", "Kapitel"])
+        XCTAssertEqual(document.textOutline[0].range, NSRange(location: 0, length: 4))
+        XCTAssertEqual(document.textOutline[1].pageIndex, 1)
+    }
+
+    func testAnOpenTaskEndsBeforeTheBreak() throws {
+        XCTAssertEqual(TextListEditing.taskItems(in: "☐ offen\u{0C}☑ fertig").map(\.body), [NSRange(location: 2, length: 5), NSRange(location: 10, length: 6)])
+    }
+
     func testTheKeyboardCursorStopsBeforeTheBreakOnItsLine() {
         let text = "ab\u{0C}cd" as NSString
         let line = DocumentTextLine(page: 0, range: NSRange(location: 0, length: 3), rect: PageRect(x: 0, y: 0, width: 100, height: 20),

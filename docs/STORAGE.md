@@ -1,5 +1,18 @@
 # Lokaler Revisionsspeicher – Format 1
 
+## Ergänzung 31.10.2026 · Manueller Seitenumbruch ohne neues Schema
+
+Ein manueller Seitenumbruch im Textdokument ist das Zeichen U+000C im Flusstext, am Ende des Segments vor dem Umbruch (`TextLines.pageBreak`). Kein neues Schema, keine neue Eigenschaft, keine Migration: Textdokumente bleiben Schema 15, Hefte unverändert.
+
+- **Warum das reicht:** `text` ist in Swift (`TextBox.validate`) und Python (`notebook_format.py`) freier Text bis 1 MB; U+000C läuft als `\f` durch JSON, zählt als eine UTF-16-Einheit für Runs und trennt keine Surrogate. Geprüft mit `verify_backup.py`, `verify_device_store.py`, `verify_library_backup.py` (Host-Roundtrip `checkTextDocumentExtras`, `textdoc-page-break` in `check_verifiers.sh`, auch mit `python3 -O`). Eine neue Eigenschaft hätte Schema 16 und damit eine Sperre für den installierten Stand bedeutet, ohne etwas zu gewinnen.
+- **Regel:** `Notebook.reflowText` beendet im Textdokument ein Segment hinter jedem U+000C, gleich wie viel Platz die Seite noch hat; ein Umbruch am Textende öffnet die Folgeseite (leeres Segment, `pageAfterFinalBreak`), und diese Seite bleibt beim Kürzen leerer Endseiten erhalten. Damit gehört sie auch zum PDF, wie in Word. In Heften bleibt das Zeichen wirkungslos: Sie haben keinen Fluss. Einfügen aus der Zwischenablage mit U+000C wirkt im Fluss wie ein Umbruch.
+- **Bestehende Dokumente:** Bloßes Öffnen ändert nichts. Ein älteres Dokument, das zufällig schon U+000C enthält, bricht dort erst bei der nächsten Textänderung.
+- **Ältere Builds (installierter Build 68 und davor):** öffnen solche Dokumente ohne Sperre. Das Zeichen bleibt erhalten, sie kennen aber keine Seitenregel: Die nächste Textänderung dort kann Text wieder über die Stelle ziehen, ohne dass etwas verloren geht. Am Gerät ungeprüft, wie die alte Textansicht das Zeichen zeigt.
+- **Papierwechsel:** kein Formatthema. `Notebook.changingTextDocumentPaper` setzt über `setPageDefaults(.wholeNotebook)` `paper`, `paperColor` und `appearance` und misst danach den ganzen Text neu (`everyPage`, kein Abbruch bei gleichen Segmenten). Findet der Text keinen Platz (Seitenlimit), ändert sich nichts. Seitenpapierkorb bleibt unberührt, wie bei Heften.
+- **Suche:** Der Index ist abgeleitet. `SearchLine.seam` ist optional und ändert sein Format nicht; das Stempel-Tag von `NotebookRevisionStamp` wechselt, damit jedes Heft einmal neu gelesen wird. Erkannte Ebenen bleiben über ihre Fingerabdrücke erhalten, es wird nichts neu erkannt.
+
+Nachweise: Core-Tests `TextDocumentExtrasTests`, `check_page_workflow.sh`, `check_verifiers.sh`, SDK-Build. **Nicht installiert, am iPad ungeprüft.**
+
 ## Ergänzung 22.10.2026 · Feldstil in Schema 14 (Textneubau Stufe 4)
 
 Kein neues Schema. Freie Textfelder tragen optional `fill` (`yellow`, `green`, `blue`, `pink`, `gray`, `purple`) und `border` (`text`, `accent`); fehlt = keine Füllung/kein Rahmen. Beide gehören zu Schema 14 (`TextBox.usesFieldFormat`): erst ein Feld mit Stil hebt ein Heft an (`raiseSchemaForTextFields` auf allen Textschreibwegen), Entfernen senkt nie; Textdokumente (15) enthalten sie ohne weitere Anhebung. Flusssegmente tragen keinen Stil (Swift `TextBox.validate`, Python `notebook_format.py`). Gespeichert bleibt der Textrahmen; Innenabstand (6 pt), Eckenradius (5 pt) und Rahmenstärke (1 pt) sind feste Darstellung. Seitengrenzen gelten für das sichtbare Feld mit Innenabstand (`corners`/`rotatedBounds`/`fits`).

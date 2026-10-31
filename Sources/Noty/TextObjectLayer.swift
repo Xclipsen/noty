@@ -795,8 +795,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     private func settleFlow() {
         guard let id = pendingSettle, let flow = flowActions, fields[id]?.editor.markedTextRange == nil else { return }
         pendingSettle = nil
+        // The caret may stand on another page by now: it stays with its text there, too.
         var selection: NSRange?
-        if let editor = fields[id]?.editor, editor.isFirstResponder, let start = flow.offset(id, editor.selectedRange.location) {
+        if let editor = UIResponder.currentFirstResponder as? PageTextView, editor.isFlow,
+           let start = flow.offset(editor.objectID, editor.selectedRange.location) {
             selection = NSRange(location: start, length: editor.selectedRange.length)
         }
         flow.settle(id, selection)
