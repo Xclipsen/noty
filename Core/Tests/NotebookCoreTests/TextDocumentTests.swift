@@ -266,7 +266,7 @@ final class TextDocumentTests: XCTestCase {
         XCTAssertEqual(doc.pages.count, 2)
         XCTAssertEqual(TextDocumentExport.markdown(doc), "Erste Zeile\n\nZweite\n")
         XCTAssertEqual(TextDocumentExport.plainText(doc), "Erste Zeile\nZweite\n")
-        XCTAssertEqual(TextDocumentExport.export(doc, as: .plainText), TextDocumentExport.plainText(doc))
+        XCTAssertEqual(TextDocumentExport.data(doc, as: .plainText), Data(TextDocumentExport.plainText(doc).utf8))
         XCTAssertEqual(TextDocumentExport.Format.markdown.fileExtension, "md")
         XCTAssertEqual(TextDocumentExport.markdown(try Notebook.textDocument(title: "Leer")), "")
     }

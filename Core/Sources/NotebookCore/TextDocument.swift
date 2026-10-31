@@ -60,12 +60,23 @@ extension Notebook {
     /// text, on a page after it or on the reserve page. Empty segments after
     /// the text (pages kept for their handwriting) are skipped.
     public var textFlowEndFocus: TextFlowFocus? {
+        if let opened = pageAfterFinalBreak {
+            return TextFlowFocus(pageID: opened.pageID, boxID: opened.box.id, selection: NSRange(location: 0, length: 0), typingStyle: opened.box.style)
+        }
         let segments = textFlowSegments
         guard let target = segments.last(where: { !$0.box.text.isEmpty }) ?? segments.first else { return nil }
         let length = (target.box.text as NSString).length
         let style = length > 0 ? target.box.style(at: length - 1) : target.box.style
         return TextFlowFocus(pageID: target.pageID, boxID: target.box.id,
                              selection: NSRange(location: length, length: 0), typingStyle: style)
+    }
+
+    /// The segment behind a final page break: the text goes on there.
+    var pageAfterFinalBreak: (pageID: UUID, box: TextBox)? {
+        let segments = textFlowSegments
+        guard let last = segments.lastIndex(where: { !$0.box.text.isEmpty }), last + 1 < segments.count else { return nil }
+        let text = segments[last].box.text as NSString
+        return text.character(at: text.length - 1) == TextLines.pageBreak ? segments[last + 1] : nil
     }
 
     /// A text document without a flow (not written by this build) gets an
@@ -84,13 +95,13 @@ extension Notebook {
     /// no ink, no field, image or shape) are removed – pages only come from
     /// the text. Never the first page, never one in `keeping`, never the page
     /// of the first flow segment; written pages (also handwriting after the
-    /// text) stay. `drawingIsEmpty`: the app decodes PencilKit data; Core only
-    /// knows empty bytes.
+    /// text) stay, as does the page a final page break opens. `drawingIsEmpty`:
+    /// the app decodes PencilKit data; Core only knows empty bytes.
     public func trimmingEmptyTrailingPages(keeping: Set<UUID> = [], drawingIsEmpty: (Data) -> Bool = { $0.isEmpty }) -> Notebook {
         guard isTextDocument else { return self }
         var next = self
-        let first = textFlowSegments.first?.pageID
-        while next.pages.count > 1, let last = next.pages.last, !keeping.contains(last.id), last.id != first,
+        let first = textFlowSegments.first?.pageID, opened = pageAfterFinalBreak?.pageID
+        while next.pages.count > 1, let last = next.pages.last, !keeping.contains(last.id), last.id != first, last.id != opened,
               last.holdsNothingInTextDocument(drawingIsEmpty: drawingIsEmpty) {
             next.pages.removeLast()
         }
@@ -101,6 +112,25 @@ extension Notebook {
     /// nothing, never fewer than the first page. Notebooks: every page.
     public func exportedPageIDs(drawingIsEmpty: (Data) -> Bool = { $0.isEmpty }) -> [UUID] {
         trimmingEmptyTrailingPages(drawingIsEmpty: drawingIsEmpty).pages.map(\.id)
+    }
+}
+
+extension Notebook {
+    /// Paper and paper colour of a text document, changed afterwards: every
+    /// page, the reserve page and the default together (`setPageDefaults`,
+    /// neutral ink and automatic text follow), then the whole text flows anew,
+    /// as the ruling moves its lines. Handwriting and objects stay on their page.
+    /// Text that finds no room fails the change, nothing is cut off.
+    public func changingTextDocumentPaper(_ paper: PaperStyle, color: PaperColor, layout: TextFlowLayout,
+                                          recolorDrawing: InkRecolor? = nil) throws -> Notebook {
+        guard isTextDocument else { throw StorageError.invalidDocument }
+        var next = self
+        try next.setPageDefaults(paper: paper, color: color, scope: .wholeNotebook, recolorDrawing: recolorDrawing)
+        guard let content = next.textFlowContent, !content.text.isEmpty, let first = next.textFlowSegments.first else { return next }
+        var whole = first.box; whole.text = content.text; whole.runs = content.runs
+        return try next.reflowText(pageID: first.pageID, previous: first.box, replacement: whole, selection: NSRange(location: 0, length: 0),
+            trailingDraft: layout.trailingDraft, drawingIsEmpty: layout.drawingIsEmpty,
+            holdsTail: true, everyPage: true, pageCapacity: layout.capacity).0
     }
 }
 
@@ -126,17 +156,32 @@ extension Page {
 /// over page breaks, so fields cannot stand between its paragraphs), then the
 /// free fields page by page, in reading order (`readingOrder`). Handwriting,
 /// images, shapes and PDF content are dropped; they are in the PDF export.
+/// RTF and Word: `TextDocumentOffice.swift`.
 /// Paragraph styles become headings (Titel `#`, Überschrift `##`,
 /// Unterüberschrift `###`), list markers Markdown lists (`-`, `1.`,
 /// `- [ ]`, `- [x]`, nesting four spaces per level), bold `**`, italic `*`
 /// (unlike `_` it also works inside a word).
 public enum TextDocumentExport {
-    public enum Format: Sendable { case plainText, markdown
-        public var fileExtension: String { self == .markdown ? "md" : "txt" }
+    public enum Format: Sendable { case plainText, markdown, rtf, word
+        public var fileExtension: String {
+            switch self { case .plainText: "txt"; case .markdown: "md"; case .rtf: "rtf"; case .word: "docx" }
+        }
     }
 
-    public static func export(_ notebook: Notebook, as format: Format) -> String {
-        format == .markdown ? markdown(notebook) : plainText(notebook)
+    /// The file's bytes; empty when there is no text (the app says so instead).
+    public static func data(_ notebook: Notebook, as format: Format) -> Data {
+        switch format {
+        case .plainText: Data(plainText(notebook).utf8)
+        case .markdown: Data(markdown(notebook).utf8)
+        case .rtf: Data(rtf(notebook).utf8)
+        case .word: word(notebook)
+        }
+    }
+
+    /// Also on the page beside the text: handwriting, images, shapes. These
+    /// files hold text only, the PDF export holds everything.
+    public static func leavesOutContent(of notebook: Notebook, drawingIsEmpty: (Data) -> Bool = { $0.isEmpty }) -> Bool {
+        notebook.pages.contains { !drawingIsEmpty($0.drawing) || !($0.images ?? []).isEmpty || !($0.shapes ?? []).isEmpty }
     }
 
     /// Each text as written (list markers stay), line separators as line
@@ -150,9 +195,15 @@ public enum TextDocumentExport {
     }
 
     static func plainText(_ box: TextBox) -> String {
-        let lines = paragraphs(box.text).map { (box.text as NSString).substring(with: $0) }
+        let source = box.text as NSString
+        var lines: [String] = []
+        for range in paragraphs(box.text) {
+            lines.append(source.substring(with: range))
+            // A manual page break stays the form feed it is, on a line of its own.
+            if NSMaxRange(range) < source.length, source.character(at: NSMaxRange(range)) == TextLines.pageBreak { lines.append(TextLines.pageBreakText) }
+        }
         var text = lines.joined(separator: "\n")
-        while text.hasSuffix("\n") { text.removeLast() }
+        while text.hasSuffix("\n") || text.hasSuffix(TextLines.pageBreakText) { text.removeLast() }
         return text.isEmpty ? "" : text + "\n"
     }
 
@@ -179,11 +230,15 @@ public enum TextDocumentExport {
     }
 
     /// One paragraph per line of the flow; blocks are separated by an empty
-    /// line, consecutive list items by a line break. Empty paragraphs vanish.
+    /// line, consecutive list items by a line break. Empty paragraphs vanish,
+    /// a manual page break is a thematic break (`---`).
     static func markdown(_ box: TextBox) -> String {
         let source = box.text as NSString
         var blocks: [(text: String, list: Bool)] = []
         for range in paragraphs(box.text) {
+            defer {
+                if NSMaxRange(range) < source.length, source.character(at: NSMaxRange(range)) == TextLines.pageBreak { blocks.append(("---", false)) }
+            }
             let line = source.substring(with: range)
             // Indentation characters before a marker belong to the structure.
             let leading = line.prefix { $0 == " " || $0 == "\t" }
@@ -214,6 +269,7 @@ public enum TextDocumentExport {
             case .body, .caption: blocks.append((escapeLineStart(inline(box, content, emphasis: true)), false))
             }
         }
+        while blocks.last?.text == "---", blocks.last?.list == false { blocks.removeLast() }
         var result = ""
         for (index, block) in blocks.enumerated() {
             if index > 0 { result += block.list && blocks[index - 1].list ? "\n" : "\n\n" }
@@ -228,7 +284,7 @@ public enum TextDocumentExport {
         var result: [NSRange] = [], start = 0, index = 0
         while index < value.length {
             let unit = value.character(at: index)
-            if [10, 13, 0x2028, 0x2029].contains(unit) {
+            if TextLines.isBreak(unit) {
                 result.append(NSRange(location: start, length: index - start))
                 if unit == 13, index + 1 < value.length, value.character(at: index + 1) == 10 { index += 1 }
                 start = index + 1

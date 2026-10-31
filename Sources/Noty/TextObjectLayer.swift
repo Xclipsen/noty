@@ -901,7 +901,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         let wasUpdating = updating; updating = true
         var range = EditorInteractionPolicy.formattingRange(selection: selection, textLength: editor.attributedText.length,
             floating: boxes[index].allowsObjectSelection, wholeField: wholeFloatingField)
-        if paragraph, !boxes[index].text.isEmpty { range = (boxes[index].text as NSString).paragraphRange(for: selection) }
+        if paragraph, !boxes[index].text.isEmpty { range = TextLines.paragraphRange(boxes[index].text as NSString, selection) }
         if range.length > 0 {
             let formatted = NSMutableAttributedString(attributedString: editor.attributedText)
             editor.attributedText.enumerateAttributes(in: range) { attributes, subrange, _ in

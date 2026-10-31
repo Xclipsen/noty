@@ -12,7 +12,7 @@ extension TextListEditing {
     }
     static func lineStart(_ text: String, _ location: Int) -> Int {
         let source = text as NSString
-        return source.lineRange(for: NSRange(location: min(max(0, location), source.length), length: 0)).location
+        return TextLines.lineRange(source, NSRange(location: min(max(0, location), source.length), length: 0)).location
     }
 
     // MARK: Automatic lists
@@ -75,7 +75,7 @@ extension TextListEditing {
         let source = text as NSString
         var result: [Paragraph] = [], cursor = 0
         while cursor < source.length {
-            let line = source.lineRange(for: NSRange(location: cursor, length: 0))
+            let line = TextLines.lineRange(source, NSRange(location: cursor, length: 0))
             result.append(paragraph(source, line: line, level: level, continuation: continuation && line.location == 0))
             guard NSMaxRange(line) > cursor else { break }
             cursor = NSMaxRange(line)
@@ -87,7 +87,7 @@ extension TextListEditing {
     public static func numberedItem(in text: String, at location: Int, level: (Int) -> Int, continuation: Bool = false) -> NumberedItem? {
         let source = text as NSString
         guard location >= 0, location < source.length else { return nil }
-        let line = source.lineRange(for: NSRange(location: location, length: 0))
+        let line = TextLines.lineRange(source, NSRange(location: location, length: 0))
         let item = paragraph(source, line: line, level: level, continuation: continuation && line.location == 0)
         guard item.kind == .numbered, let number = item.number else { return nil }
         return NumberedItem(depth: item.depth, number: number)
@@ -162,9 +162,9 @@ extension TextListEditing {
         let source = text as NSString
         guard changed.location >= 0, changed.length >= 0, NSMaxRange(changed) <= source.length else { return [] }
         // Cheap exit for ordinary typing away from lists.
-        let first = source.lineRange(for: NSRange(location: changed.location, length: 0))
-        var end = NSMaxRange(source.lineRange(for: NSRange(location: NSMaxRange(changed), length: 0)))
-        if end < source.length { end = NSMaxRange(source.lineRange(for: NSRange(location: end, length: 0))) }
+        let first = TextLines.lineRange(source, NSRange(location: changed.location, length: 0))
+        var end = NSMaxRange(TextLines.lineRange(source, NSRange(location: NSMaxRange(changed), length: 0)))
+        if end < source.length { end = NSMaxRange(TextLines.lineRange(source, NSRange(location: end, length: 0))) }
         let window = NSRange(location: first.location, length: end - first.location)
         let local = paragraphs(in: source.substring(with: window), level: { level(window.location + $0) },
             continuation: continuation && window.location == 0)
@@ -337,7 +337,7 @@ extension TextBox {
         guard selection.location >= 0, selection.length >= 0, NSMaxRange(selection) <= source.length else { return nil }
         var plan = ListNesting(paragraphs: [], indents: [], markers: [], renumbering: [])
         for line in TextListEditing.selectedLines(in: text, range: selection) {
-            let range = source.lineRange(for: NSRange(location: line.location, length: 0))
+            let range = TextLines.lineRange(source, NSRange(location: line.location, length: 0))
             guard !(continuation && range.location == 0),
                   let kind = [TextListEditing.Kind.checkbox, .bullet, .numbered].first(where: { TextListEditing.matches($0, line.prefix) }) else { continue }
             let level = listLevel(at: range.location) + (outdent ? -1 : 1)
