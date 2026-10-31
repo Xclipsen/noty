@@ -247,10 +247,11 @@ struct LibraryView: View {
         func focus(_ target: Int) { if !items.isEmpty { keyboardFocus = items[min(max(0, target), items.count - 1)].id } }
         let item = index.map { items[$0] }
         switch action {
-        case .focusItem(let dx, let dy): focus((index ?? (dx + dy > 0 ? -1 : 0)) + (dx + dy * keyboardColumns) * count)
+        // Nothing focused yet: every direction starts at the first item.
+        case .focusItem(let dx, let dy): focus(index.map { $0 + (dx + dy * keyboardColumns) * count } ?? 0)
         case .focusFirstItem: focus(0)
         case .focusLastItem: focus(items.count - 1)
-        case .parentFolder: if case .folder(let id) = location { goUp(from: id) }
+        case .parentFolder: leaveLevel()
         case .search: searchAllNotebooks()
         case .newNotebook: creatingNotebook = true
         case .newTextDocument: creatingTextDocument = true
@@ -997,6 +998,12 @@ struct LibraryView: View {
     private func parentTitle(of id: UUID) -> String {
         guard let parent = model.snapshot.items.first(where: { $0.id == id })?.parentID else { return "Alle Unterlagen" }
         return model.snapshot.items.first { $0.id == parent }?.title ?? "Alle Unterlagen"
+    }
+    /// `-` in the library: a name search first, then „Zuletzt verwendet“ or the folder.
+    private func leaveLevel() {
+        if !search.isEmpty { search = "" }
+        else if case .folder(let id) = location { goUp(from: id) }
+        else if location == .recent { location = .root }
     }
     private func goUp(from id: UUID) {
         let parent = model.snapshot.items.first { $0.id == id }?.parentID

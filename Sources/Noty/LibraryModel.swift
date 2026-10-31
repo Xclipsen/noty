@@ -227,11 +227,12 @@ final class LibraryModel: ObservableObject {
         while busy { try? await Task.sleep(for: .milliseconds(100)) }
     }
 
-    private func change(_ action: () async throws -> LibrarySnapshot) async {
+    /// `quiet`: no progress and no disabled library for a change without wait.
+    private func change(quiet: Bool = false, _ action: () async throws -> LibrarySnapshot) async {
         await settle()
         guard accepting else { return }
-        busy = true
-        defer { busy = false }
+        busy = true; backgroundBusy = quiet
+        defer { busy = false; backgroundBusy = false }
         do { snapshot = try await action() }
         catch { self.error = error.localizedDescription }
     }
@@ -381,7 +382,8 @@ final class LibraryModel: ObservableObject {
             trashStatus = parts.joined(separator: " ")
         } catch { self.error = "Endgültiges Löschen fehlgeschlagen: \(error.localizedDescription)" }
     }
-    func favorite(_ item: NotebookCore.LibraryItem) async { await change { try await store.setFavorite(item.id, value: !item.favorite) } }
+    // Quiet: a foreground change disables every entry for a moment, which made the library flash.
+    func favorite(_ item: NotebookCore.LibraryItem) async { await change(quiet: true) { try await store.setFavorite(item.id, value: !item.favorite) } }
     /// Pinned entries (active only) in their display order.
     var pinnedItems: [NotebookCore.LibraryItem] {
         LibraryPinOrder.arrange(snapshot.items.filter { $0.favorite && !snapshot.isTrashed($0.id) }, order: pinOrder)
