@@ -157,6 +157,6 @@ final class HelixParserTests: XCTestCase {
         XCTAssertEqual(feed("<CR>").result, .unbound)
         XCTAssertEqual(feed("m", .library).result, .action(.moveItem, count: nil, repeats: false))
         XCTAssertEqual(feed("m", .page).result, .unbound)
-        XCTAssertEqual(feed("<Space> m", .page).result, .action(.bookmark, count: nil, repeats: false))
+        XCTAssertEqual(feed("<Space> M", .page).result, .action(.bookmark, count: nil, repeats: false))
     }
 }
