@@ -36,7 +36,7 @@ jobs:
   smoke:
     # The app uses the iOS 27 SDK; this image has Xcode 27 and iOS 27 simulators.
     runs-on: xcode-27
-    timeout-minutes: 50
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -92,16 +92,19 @@ jobs:
           xcrun simctl boot "$UDID"
           xcrun simctl bootstatus "$UDID" -b >/dev/null
 
+      # The first AXe call of a run takes minutes: not during the test. Usage 0 is no key.
+      - name: AXe aufwärmen
+        timeout-minutes: 12
+        run: axe key 0 --udid "$UDID"
+
       - name: Smoke-Test
         id: smoke
-        timeout-minutes: 20
+        timeout-minutes: 25
         run: |
           set -o pipefail
+          trap 'kill $(jobs -p) 2>/dev/null' EXIT
           export HID_DIR="$OUT/hid"
           mkdir -p "$HID_DIR"
-          # The first AXe call of a run takes minutes: not during the test.
-          # Usage 0 is no key.
-          axe key 0 --udid "$UDID" > "$OUT/axe-warmup.log" 2>&1 || cat "$OUT/axe-warmup.log"
           bash ci/simulator/hid-bridge.sh "$HID_DIR" "$UDID" &
           # CPU of the app every 5 s: shows a busy loop behind a missing idle.
           (while true; do date +%T; ps -axo %cpu=,comm= | grep '/Noty$' || true; sleep 5; done > "$OUT/cpu.log") &
