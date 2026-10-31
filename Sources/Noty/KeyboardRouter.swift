@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import OSLog
 import NotebookCore
 
 /// One entry of the command palette.
@@ -43,7 +44,7 @@ final class KeyboardRouter: ObservableObject {
         didSet {
             // The palette's text field took the focus: keys must find a responder again.
             guard oldValue, !paletteVisible else { return }
-            DispatchQueue.main.async { [weak self] in self?.viewport?.activeSheet?.claimUndoResponder(); self?.host?.claim() }
+            reclaim()
         }
     }
 
@@ -64,10 +65,14 @@ final class KeyboardRouter: ObservableObject {
     var register = ""
     var registerLinewise = false
 
-    private weak var lastPress: UIPress?
-    private weak var repeatPress: UIPress?
+    private var gate = KeyPressGate()
+    private var repeatKey: Int?
     private var repeatTask: Task<Void, Never>?
-    private var swallowed = Set<ObjectIdentifier>()
+    private var reclaimTask: Task<Void, Never>?
+    /// Settings › Diagnose only (`idevicesyslog | grep noty.keys`); `notice`, as the syslog relay drops `info`.
+    private static let log = Logger(subsystem: "de.la.noty", category: "keyboard")
+    private var outcome = ""
+    private var loggedResponder = ""
 
     var isEnabled: Bool { UserDefaults.standard.object(forKey: AppSettingsKey.keyboardMode) as? Bool ?? true }
     var isVisual: Bool { if case .visual = textMode { return true }; return false }
@@ -79,19 +84,39 @@ final class KeyboardRouter: ObservableObject {
     func setEditor(_ commands: EditorCommandActions?) {
         scope = commands == nil ? .library : .editor
         // A sheet closed: the keys need a responder in the editor again.
-        if editorActions == nil, commands?.canEdit == true {
-            DispatchQueue.main.async { [weak self] in self?.viewport?.activeSheet?.claimUndoResponder() }
-        }
+        if editorActions == nil, commands?.canEdit == true { reclaim() }
         editorActions = commands?.canEdit == true ? commands?.keys : nil
         if commands == nil {
             editing = false; textMode = .insert
-            DispatchQueue.main.async { [weak self] in self?.host?.claim() }
+            reclaim()
         }
         refreshLabel()
     }
     func setLibrary(_ actions: LibraryKeyActions?) {
         libraryActions = actions
-        if actions != nil { DispatchQueue.main.async { [weak self] in self?.host?.claim() } }
+        if actions != nil { reclaim() }
+    }
+    /// Keys only arrive at the first responder. Whatever held it (a closing
+    /// sheet, the editor under its cover animation) lets go some time later and
+    /// nothing reports that moment, so the claim is repeated for a while.
+    func reclaim() {
+        reclaimTask?.cancel()
+        reclaimTask = Task { @MainActor [weak self] in
+            for delay in [0, 150, 350, 500, 1000] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard let self, !Task.isCancelled else { return }
+                self.claimResponder()
+            }
+        }
+    }
+    private func claimResponder() {
+        switch scope {
+        case .library: if libraryActions != nil { host?.claim() }
+        case .editor: if editorActions != nil { viewport?.activeSheet?.claimUndoResponder() }
+        }
+        guard HangProbe.isInstalled, Self.responderName != loggedResponder else { return }
+        loggedResponder = Self.responderName
+        Self.log.notice("[noty.keys] claim scope=\(self.scope == .library ? "library" : "editor", privacy: .public) responder=\(Self.responderName, privacy: .public)")
     }
     func textBegan() {
         editing = true
@@ -160,38 +185,63 @@ final class KeyboardRouter: ObservableObject {
         return characters.count == 1 ? characters : nil
     }
 
-    /// True when the press was used (not passed on, no text is typed).
+    /// True when a press was used (not passed on, no text is typed). One event
+    /// can carry several presses (⇧ and a letter in one report of the keyboard).
     func handle(_ presses: Set<UIPress>, text: PageTextView? = nil) -> Bool {
-        guard isEnabled, presses.count == 1, let press = presses.first, press !== lastPress, let key = press.key else { return false }
-        lastPress = press
-        guard let token = Self.token(for: key) else {
+        guard isEnabled else { return false }
+        var used = false
+        for press in presses.sorted(by: { $0.timestamp < $1.timestamp }) {
+            guard let key = press.key else { continue }
+            if handle(key, time: press.timestamp, text: text) { used = true }
+        }
+        return used
+    }
+    private func handle(_ key: UIKey, time: TimeInterval, text: PageTextView?) -> Bool {
+        let code = key.keyCode.rawValue, token = Self.token(for: key), tracing = HangProbe.isInstalled
+        let before = context, typing = editing && textMode == .insert
+        outcome = ""
+        // The responder chain walked on with an unused press: nothing new happened.
+        let fresh = gate.began(key: code, time: time)
+        let used = fresh && evaluate(key, token: token, code: code, text: text)
+        if tracing {
+            // Typing stays out of the log; named keys carry no content.
+            let shown = token.map { typing && !$0.hasPrefix("<") ? "(typing)" : $0 } ?? "(none)"
+            Self.log.notice("[noty.keys] token=\(shown, privacy: .public) time=\(time, privacy: .public) context=\(before?.rawValue ?? "none", privacy: .public) scope=\(self.scope == .library ? "library" : "editor", privacy: .public) editing=\(self.editing, privacy: .public) \(fresh ? "" : "second-delivery ", privacy: .public)used=\(used, privacy: .public) \(self.outcome, privacy: .public) responder=\(Self.responderName, privacy: .public)")
+        }
+        return used
+    }
+    private static var responderName: String { UIResponder.currentFirstResponder.map { String(describing: type(of: $0)) } ?? "none" }
+
+    private func evaluate(_ key: UIKey, token: String?, code: Int, text: PageTextView?) -> Bool {
+        guard let token else {
             // A dead key (`^` on German layouts) must not start typing in normal mode.
             let arrows: [UIKeyboardHIDUsage] = [.keyboardLeftArrow, .keyboardRightArrow, .keyboardUpArrow, .keyboardDownArrow]
             guard !key.modifierFlags.contains(.command), !arrows.contains(key.keyCode), let context, context == .text || context == .visual else { return false }
-            swallow(press)
+            gate.swallow(key: code)
             return true
         }
         if !keyboardSeen { keyboardSeen = true }
         cancelRepeat()
-        if helpVisible { helpVisible = false; swallow(press); return true }
+        if helpVisible { helpVisible = false; gate.swallow(key: code); return true }
         if paletteVisible { return false }
-        if textMode == .insert, editing, token == "<Esc>", let text { _ = escape(in: text); swallow(press); return true }
-        guard feed(token, press: press, text: text) else { return false }
-        swallow(press)
+        if textMode == .insert, editing, token == "<Esc>", let text { _ = escape(in: text); gate.swallow(key: code); return true }
+        guard feed(token, key: code, text: text) else { return false }
+        gate.swallow(key: code)
         return true
     }
     /// A key command that the system would otherwise take (Tab).
-    func handle(token: String) { _ = feed(token, press: nil, text: nil) }
-    private func swallow(_ press: UIPress) { swallowed.insert(ObjectIdentifier(press)) }
+    func handle(token: String) { _ = feed(token, key: nil, text: nil) }
 
-    private func feed(_ token: String, press: UIPress?, text: PageTextView?) -> Bool {
+    private func feed(_ token: String, key: Int?, text: PageTextView?) -> Bool {
         guard let context else { return false }
         let editor = editing ? (text ?? UIResponder.currentFirstResponder as? PageTextView) : nil
         if token == "<Esc>", parser.isIdle, let editor {
             if !escape(in: editor) { editor.finishByEscape() }
             return true
         }
-        switch parser.feed(token, context: context) {
+        let result = parser.feed(token, context: context)
+        if HangProbe.isInstalled { outcome = "\(result)" }
+        switch result {
         case .pending:
             pending = parser.display
             return true
@@ -202,13 +252,15 @@ final class KeyboardRouter: ObservableObject {
         case .action(let action, let count, let explicit, let repeats):
             pending = ""
             perform(action, count: count, explicit: explicit, context: context, text: editor)
-            if repeats, let press {
-                repeatPress = press
+            // A page or tool change can take the responder away with its sheet.
+            if context == .page { reclaim() }
+            if repeats, let key {
+                repeatKey = key
                 repeatTask = Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .milliseconds(320))
                     // A lost key-up ends by itself; every other key cancels at once.
                     for _ in 0..<160 where !Task.isCancelled {
-                        guard let self, self.repeatPress === press else { return }
+                        guard let self, self.repeatKey == key else { return }
                         self.perform(action, count: 1, explicit: false, context: context, text: self.editing ? UIResponder.currentFirstResponder as? PageTextView : nil)
                         try? await Task.sleep(for: .milliseconds(45))
                     }
@@ -217,14 +269,15 @@ final class KeyboardRouter: ObservableObject {
             return true
         }
     }
-    private func cancelRepeat() { repeatTask?.cancel(); repeatTask = nil; repeatPress = nil }
+    private func cancelRepeat() { repeatTask?.cancel(); repeatTask = nil; repeatKey = nil }
 
     /// True when the end of this press belongs to a handled one.
     func pressEnded(_ presses: Set<UIPress>) -> Bool {
         var handled = false
         for press in presses {
-            if press === repeatPress { cancelRepeat() }
-            if swallowed.remove(ObjectIdentifier(press)) != nil { handled = true }
+            guard let code = press.key?.keyCode.rawValue else { cancelRepeat(); continue }
+            if code == repeatKey { cancelRepeat() }
+            if gate.ended(key: code) { handled = true }
         }
         return handled
     }
@@ -307,16 +360,22 @@ final class KeyboardHostView: UIView {
         super.didMoveToWindow()
         guard window != nil else { return }
         KeyboardRouter.shared.host = self
-        claim()
+        KeyboardRouter.shared.reclaim()
         guard !observing else { return }
         observing = true
-        for name in [UITextField.textDidEndEditingNotification, UITextView.textDidEndEditingNotification] {
-            NotificationCenter.default.addObserver(self, selector: #selector(textEnded), name: name, object: nil)
+        // At launch the window is not key yet; a finished text gives the focus back.
+        for name in [UITextField.textDidEndEditingNotification, UITextView.textDidEndEditingNotification,
+                     UIWindow.didBecomeKeyNotification, UIApplication.didBecomeActiveNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(focusChanged), name: name, object: nil)
         }
     }
-    @objc private func textEnded() { DispatchQueue.main.async { [weak self] in self?.claim() } }
+    @objc private func focusChanged() { KeyboardRouter.shared.reclaim() }
+    /// Takes the keys unless text is being typed; the sheets and the editor
+    /// cover above the library have to be gone first.
     func claim() {
-        guard window != nil, KeyboardRouter.shared.isEnabled, KeyboardRouter.shared.scope == .library, UIResponder.currentFirstResponder == nil else { return }
+        guard let window, !isFirstResponder, KeyboardRouter.shared.isEnabled, KeyboardRouter.shared.scope == .library,
+              window.rootViewController?.presentedViewController == nil,
+              !(UIResponder.currentFirstResponder is UIKeyInput) else { return }
         becomeFirstResponder()
     }
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -331,8 +390,7 @@ final class KeyboardHostView: UIView {
 }
 
 struct KeyboardHost: UIViewRepresentable {
-    func makeUIView(context: Context) -> KeyboardHostView {
-        let view = KeyboardHostView(); view.isUserInteractionEnabled = false; return view
-    }
+    // Stays interactive: a view without interaction ignores keys (`UIView.h`); it has no size to be touched.
+    func makeUIView(context: Context) -> KeyboardHostView { KeyboardHostView() }
     func updateUIView(_ view: KeyboardHostView, context: Context) {}
 }

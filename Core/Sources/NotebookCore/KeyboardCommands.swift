@@ -296,6 +296,32 @@ public struct KeySequenceParser: Sendable {
     }
 }
 
+/// Key-downs by hardware key and press time, never by `UIPress` object: UIKit
+/// may reuse that object for the next press of a key. A press the app does not
+/// use walks up the responder chain and reaches several views; only that second
+/// delivery of one event is refused. A key-up forgets the key, so a press time
+/// that stayed the same cannot block the next press; a lost key-up (the focus
+/// moved while the key was down) cannot either, the next press has a new time.
+public struct KeyPressGate: Sendable {
+    private var times: [Int: Double] = [:]
+    private var swallowed = Set<Int>()
+    public init() {}
+
+    /// False for a second delivery of the same key-down.
+    public mutating func began(key: Int, time: Double) -> Bool {
+        guard times[key] != time else { return false }
+        times[key] = time; swallowed.remove(key)
+        return true
+    }
+    /// This press was used: its key-up stays away from the system too.
+    public mutating func swallow(key: Int) { swallowed.insert(key) }
+    /// True when the key-up belongs to a swallowed press.
+    public mutating func ended(key: Int) -> Bool {
+        times[key] = nil
+        return swallowed.remove(key) != nil
+    }
+}
+
 /// Command palette: every action by name, plus vim's `:w`, `:q`, `:wq`, `:12`.
 public enum KeyPalette {
     public enum Direct: Equatable, Sendable { case save, close, page(Int) }
