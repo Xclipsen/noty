@@ -24,6 +24,7 @@ Core: DocumentTextLayout.swift, reine Regeln gegen `DocumentTextMetrics`
 - **Modell bleibt Quelle.** Das Speicherformat ändert sich nicht. Jede Änderung geht als `TextFlowChange` durch `EditorModel.changeFlow` → `Notebook.changingTextFlow` → das bestehende `reflowText`: Seiten anlegen, leere entfernen, Listen nummerieren, `validate`, `NotebookUndoHistory`. Es entstehen dieselben Segmente (`TextBox` mit `flowID`), keine Migration.
 - **Seitenzuordnung aus der Layout-Maschine.** `DocumentTextStore.capacity` beantwortet `TextFlowLayout.capacity` aus dem gemeinsamen Layout. Passt der Text nicht zum Layout (Reflow hat eine Liste umnummeriert), misst das Modell selbst wie bisher (`TextFlowEditing.capacity`).
 - **Puffer folgt dem Modell.** Eigene Eingabe steht schon im Puffer. Der Controller lädt nur neu, wenn die Segmente nicht mehr stimmen (Undo, Formate, Umnummerierung, abgelehnte Änderung).
+- **Kein Platz.** Scheitert der Reflow (Seitenlimit, kein Platz), behält `Notebook.keepingTextFlowChange` die Eingabe in den berührten Segmenten, wie `updateFlowText` im alten Weg, als normaler Undo-Schritt; das Modell zeigt den Fehler. Nur eine schreibgeschützte, belegte oder veraltete Änderung geht zurück.
 - **Container und Slots.** Seiten mit Segment plus alle Seiten dahinter (`DocumentPageSlots`), wie `reflowText` weiterschreibt. Die Reserveseite ist ein normaler Slot.
 - **Seitenregel.** TextKit prüft eine Zeile, bevor die Lineatur sie verschiebt. `DocumentPageContainer` fragt deshalb `DocumentPageRule` mit dem verschobenen Unterrand und liefert sonst ein leeres Rechteck: dann wechselt TextKit den Container. Die Containerhöhe selbst entscheidet nie (`spare`).
 - **Eine Grundlinienregel.** `TextRuling.lineBaseline` in Core ist die frühere `RuledTextLayout.baseline`; beide Wege rufen sie auf.
@@ -34,7 +35,7 @@ Core: DocumentTextLayout.swift, reine Regeln gegen `DocumentTextMetrics`
 
 ### Was in Core getestet ist (`DocumentTextLayoutTests`)
 
-Seitenregel gegen `capacity` auf Blanko, Liniert, Kariert; Grundlinienformel; Seitenbereiche aus Messungen, auch mit Lücken; Segmente aus dem Layout mit `validate`; Tippstil; Seiten entfernen; Cursor an Seitengrenze, Textende und Leerzeile; Auswahlrechtecke über Seiten; `j`/`k` und Pfeile mit Zielspalte und leeren Seiten; Punkt ↔ Seite ↔ Position mit Maßstab; Wortbewegung; `shownSelections`. Die Tests laufen gegen einen Festbreiten-Ersatz für TextKit: Sie prüfen die Regeln, nicht TextKit.
+Seitenregel gegen `capacity` auf Blanko, Liniert, Kariert; Grundlinienformel; Eingabe ohne Platz (`TextFlowRangeTests`); Seitenbereiche aus Messungen, auch mit Lücken; Segmente aus dem Layout mit `validate`; Tippstil; Seiten entfernen; Cursor an Seitengrenze, Textende und Leerzeile; Auswahlrechtecke über Seiten; `j`/`k` und Pfeile mit Zielspalte und leeren Seiten; Punkt ↔ Seite ↔ Position mit Maßstab; Wortbewegung; `shownSelections`. Die Tests laufen gegen einen Festbreiten-Ersatz für TextKit: Sie prüfen die Regeln, nicht TextKit.
 
 ## Abweichungen vom bisherigen Weg
 
@@ -54,7 +55,7 @@ Mit Hänger-Diagnose schreibt `logDeviations` Seiten mit abweichender Länge ins
 - **Listen:** Fortsetzen mit Return, automatische Liste und Checkbox-Tipp sind da; Einrücken mit Tab und Return auf leerer verschachtelter Zeile fehlen.
 - **Gesten der Seite bei aktivem Textwerkzeug:** Die Touches enden auf der Fläche, die Erkenner der Seite sehen sie nicht (Doppeltipp-Menü, Fingerauswahl von Bildern).
 - **Scrollen beim Ziehen der Griffe:** `NotebookViewport.scrollRectToVisible` ist bewusst leer, Auswahl über nicht sichtbare Seiten nur per Tastatur.
-- **Abgelehnte Änderung** (Seitenlimit, kein Platz): Der Puffer geht auf den Modellstand zurück, das Modell zeigt den Fehler. Die letzte Eingabe ist weg; der alte Weg behält sie auf der Seite. Vor einem Go zu ändern.
+- **Überlauf sichtbar machen:** Bei fehlendem Platz bleibt der Text im Modell, der alte Weg zeigt dann den roten Rahmen. Die Fläche hat keinen, Text hinter dem letzten Container ist nicht zu sehen, nur die Fehlermeldung. Ob TextKit die Zeilen dann wirklich nicht zeichnet: ungeprüft.
 - **Marked Text am Ende der letzten Seite:** Bis zum Abschluss gibt es keinen neuen Container.
 - **VoiceOver:** nur Element mit Bezeichnung, kein `UIAccessibilityReadingContent`.
 - **Rechts-nach-links**, vertikaler Text: nicht behandelt.
@@ -88,7 +89,8 @@ Nur in einem isolierten Bereich oder einer Kopie (AGENTS: Geräteupdates). Schal
 | **Bearbeitungsmenü** | Kopieren, Ausschneiden, Einfügen, Alles auswählen, auch über Seiten | Aktion wirkt falsch |
 | **Pfeile, `j`/`k`** | Über Seitengrenzen, Spalte bleibt, Ende und Anfang | Stoppt an der Grenze |
 | **Mehrfachauswahl** | `C` und `s`, alle Auswahlen sichtbar, auch über Seiten; `c`, tippen, ⌫ an allen Cursorn | Nur eine sichtbar oder Text falsch |
-| **Rückgängig** | ⌘Z nach Tippen und Format, Cursor kommt zurück | Stand fremd oder Schritt fehlt |
+| **Rückgängig** | ⌘Z nach Tippen und Format, Cursor kommt zurück; in NOR bleibt der Modus, auch auf anderer Seite, das nächste `j` ist kein Text | Stand fremd oder Schritt fehlt |
+| **Kein Platz** | Seitenlimit (500) in einer Kopie erreichen, tippen: Fehlermeldung, Text bleibt erhalten, Löschen fließt zurück, ⌘Z wirkt | Eingabe verschwindet oder Absturz |
 | **Freie Felder, Bilder, Tinte** | Felder bleiben bedienbar, Tinte bleibt auf der Seite, Text fließt darunter | Inhalte verschwinden |
 | **VoiceOver** | Fläche erreichbar, Text vorlesbar | Dokument nicht erreichbar (für Go nachzubauen) |
 | **50-Seiten-Dokument** | Tippen ohne spürbaren Verzug auf Seite 1, 25, 50, Sprung ans Ende unter 0,5 s, Öffnen ohne Hänger | Spürbarer Verzug je Taste |
