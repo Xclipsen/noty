@@ -98,6 +98,37 @@ Eine „Zeile“ ist wie in vim ein Absatz bis zum Zeilenumbruch; nur `j`/`k` fo
 
 **Diagnose:** Mit Einstellungen › Diagnose (ab Neustart) protokolliert `KeyboardRouter` jede Taste mit Kontext, Ergebnis und First Responder: `idevicesyslog | rg noty.keys`. Getippter Text erscheint nur als `(typing)`. Kommt zu einer Taste keine Zeile, hat sie keinen unserer Responder erreicht.
 
+## Helix-Modell (Core, App noch nicht angebunden)
+
+Der Vim-Modus wird durch ein Helix-Modell ersetzt: Auswahl zuerst, dann Aktion, Modi NOR/INS/SEL. **Implementiert und getestet in Core** (`TextEngine`, `HelixKeymap`, `HelixParser`), **in der App noch nicht angebunden**: Bis dahin gelten die Tabellen oben, die alte Core-API (`KeyMap`, `KeySequenceParser`, `TextMotions`) bleibt bis zur Umstellung bestehen.
+
+- `TextEngine` ist reiner Zustand aus Text (UTF-16 auf Graphemgrenzen), mehreren Auswahlen (`anchor`, `head`, Hauptauswahl), Modus, Register und Suche. `perform` liefert Edits von hinten nach vorn in Versätzen des alten Texts, zusätzlich `combinedEdit` als eine Ersetzung für einen Undo-Schritt. `sync` übernimmt natives Tippen, Antippen und Undo aus der App. Angezeigte Zeilen kommen über `TextEngineLayout`.
+- `HelixKeymap.bindings` ist die einzige Tabelle für Parser, Übersicht (`groups`), Palette (`commands`) und Which-Key (`menu`). `HelixParser.feed` liefert `.pending(menu:)` mit dem aktuellen Knoten.
+- Geprüft gegen das echte Helix 25.07.1 im PTY: rund 3600 Abläufe (Zufall und Randfälle) inklusive Auswahl, Cursor und Hauptauswahl, abgeglichen mit dessen Quelltext; 389 davon stehen als `HelixGoldenCases` in den Tests.
+
+**Abweichungen von Helix**, alle wegen der App:
+
+| Fall | Helix | noty | Grund |
+| --- | --- | --- | --- |
+| Text endet ohne Zeilenumbruch (Normalfall bei Notizen): `xd`, `xy` auf der letzten Zeile | lässt `"a\n"` stehen, Register ohne Umbruch, `p` hängt ans Zeilenende | Zeile samt Umbruch davor weg (`"a"`), Register als Zeile, `p` setzt sie als eigene Zeile | Dateien enden dort immer mit Umbruch, Notizen nicht |
+| Zeilen-`p` hinter der letzten Zeile ohne Umbruch, oder in leeren Text | klebt an die Zeile (`"abcx\n"`) | eigene Zeile, kein Umbruch am Textende | wie oben |
+| `xxc` über alle Zeilen ohne Schlussumbruch | lässt `"\n"` | leerer Text | wie oben |
+| `a` mit Auswahl bis zum Textende | fügt einen Umbruch ein | fügt nichts ein | kein Platzhalter nötig, Caret darf am Ende stehen |
+| `mi(`, `md(` usw. mit Auswahl am Textende | Fehler `RangeExceedsText` | funktioniert | wie oben |
+| `o`, `O`, Enter, `c` auf Zeilen | rücken automatisch ein, Paare schließen selbst | kein Auto-Einzug, keine Auto-Paare | INS ist natives Tippen; Listen regelt `TextListEditing` |
+| Spalten bei `C` und im logischen `j`/`k` | Terminalzellen (Tab 4, Emoji 2) | Grapheme; in der App entscheidet das Layout | proportionale Schrift |
+| Wortklassen, `f`/`t`, `r` | Unicode-Zeichen | Grapheme | „Grapheme respektieren“ |
+| ⌃f ⌃b | Ansicht blättert, Cursor bleibt möglichst | Cursor bewegt sich eine Ansicht (wie ⌃d ⌃u) | Engine kennt keine Ansicht |
+| Ungültiger regulärer Ausdruck bei `/`, `s` | Fehlermeldung | wörtlich gesucht | Notizen enthalten einzelne Klammern |
+| `mr(` ohne Treffer | zweite Taste geht in den Normalmodus | Parser nimmt beide Zeichen, nichts passiert | Parser kennt den Text nicht |
+| Esc in NOR | tut nichts | geht eine Ebene zurück: Auswahl zusammenziehen, nur Hauptauswahl, Text verlassen | Bedienmodell der App |
+| `?` | rückwärts suchen | im Text ebenso, in Bibliothek und Seite Tastenübersicht | im Text bleibt die Übersicht über `Space ?` und ⌘/ erreichbar |
+| `y` auf leerer Stelle | leert das Register | Register bleibt | Zwischenablage nicht versehentlich leeren |
+
+Bewusst wie Helix, obwohl es überrascht: `w` wählt auch die Leerzeichen dahinter, `ge` geht an den Anfang der letzten Zeile, `G` ohne Zähler tut nichts, `5G` in SEL zieht die Auswahl zusammen, `r` ersetzt auch Zeilenumbrüche, `n` geht auch nach `?` vorwärts, `p` in SEL lässt die Auswahl stehen, `>` fügt einen Tab ein (`TextEngine.indentUnit`).
+
+Nicht enthalten: benannte Register, `.`, Makros, Sprungliste, ⌥C, `S`, ⌥s, `[`/`]`.
+
 ## Aufbau
 
 Reine Logik in Core: `KeyMap` (einzige Tastentabelle, speist Hilfe und Palette), `KeySequenceParser`, `TextMotions`, `Notebook.editingTextFlow`/`restylingTextFlow` (`TextFlowRange.swift`). In der App nimmt `KeyboardRouter` die Tastendrücke entgegen (`pressesBegan` in `PageTextView`, `DrawingCanvasView`, `WorksheetView`, `KeyboardHostView`), ⌘-Kürzel bleiben bei Menü und Key Commands. `TextFlowSelection` hält Auswahlen über Seiten, die jede `TextObjectLayer` für ihren Teil markiert; Text innerhalb einer Seite bleibt native Auswahl. Kein Formatwechsel; einzige neue Einstellung `noty.keyboard.mode` in UserDefaults.
