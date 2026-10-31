@@ -17,7 +17,7 @@ struct NotyAccountSettingsPage: View {
                 Section("Noty-Konto") {
                     LabeledContent("Angemeldet", value: user.email ?? user.name)
                     Text("Dasselbe Konto gilt für noty und law.xclipsen.de. Deine Notizbücher werden nicht hochgeladen.").font(.caption).foregroundStyle(.secondary)
-                    if user.emailVerified != true {
+                    if LawLibraryModel.mailDelivery, user.emailVerified != true {
                         if user.email == nil {
                             TextField("E-Mail ergänzen", text: $email).keyboardType(.emailAddress).textContentType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
                             SecureField("Aktuelles Passwort", text: $password).textContentType(.password)
@@ -34,6 +34,12 @@ struct NotyAccountSettingsPage: View {
                     Text("Markierungen bleiben nach dem Abmelden auf diesem iPad sichtbar. Noch nicht übertragene Änderungen bleiben gespeichert.").font(.caption).foregroundStyle(.secondary)
                 }
             } else {
+                if laws.sessionExpired, let user = laws.user {
+                    Section("Anmeldung abgelaufen") {
+                        Text("Die Anmeldung als „\(user.email ?? user.name)“ gilt nicht mehr. Bitte erneut anmelden; noch nicht übertragene Markierungen bleiben auf diesem iPad.").font(.caption)
+                        Button("Abmelden", role: .destructive) { Task { await laws.logout() } }
+                    }
+                }
                 Section(recovery ? "Passwort zurücksetzen" : registering ? "Noty-Konto erstellen" : "Bei noty anmelden") {
                     TextField(recovery ? "E-Mail" : registering ? "Benutzername" : "Benutzername oder E-Mail", text: $email)
                         .keyboardType(recovery ? .emailAddress : .default).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -44,15 +50,19 @@ struct NotyAccountSettingsPage: View {
                     if recoverySent { TextField("Code aus der E-Mail", text: $code).textInputAutocapitalization(.never).autocorrectionDisabled() }
                     Button(recovery ? (recoverySent ? "Neues Passwort speichern" : "Anmeldehilfe senden") : (registering ? "Konto erstellen" : "Anmelden")) {
                         Task {
+                            message = ""
                             if recovery {
                                 if recoverySent {
                                     if await laws.accountAction("/api/password/reset", password: password, code: code) { password = ""; code = ""; recovery = false; recoverySent = false; message = "Passwort geändert. Bitte anmelden." }
                                 } else if await laws.accountAction("/api/password/request", email: email) { recoverySent = true; message = "Falls ein bestätigtes Konto existiert, erhältst du eine E-Mail." }
-                            } else { await laws.login(email: email, password: password, registering: registering); password = "" }
+                            } else if await laws.login(email: email, password: password, registering: registering) { password = "" }
                         }
                     }.disabled(email.isEmpty || ((!recovery || recoverySent) && password.isEmpty))
                     Button(recovery ? "Zur Anmeldung" : registering ? "Ich habe schon ein Konto" : "Konto erstellen") { recovery = false; registering.toggle(); password = "" }
-                    if !registering && !recovery { Button("Passwort vergessen?") { recovery = true; password = "" } }
+                    if !registering && !recovery {
+                        if LawLibraryModel.mailDelivery { Button("Passwort vergessen?") { recovery = true; password = "" } }
+                        else { Text("Zurücksetzen eines vergessenen Passworts ist noch nicht möglich, weil noty derzeit keine E-Mails verschickt.").font(.caption).foregroundStyle(.secondary) }
+                    }
                     Text(registering
                         ? "Ein Konto braucht nur einen Benutzernamen (2–32 Buchstaben, Zahlen oder . _ -) und ein Passwort mit mindestens 12 Zeichen. Es wird keine E-Mail verschickt. Ohne E-Mail-Adresse lässt sich ein vergessenes Passwort nicht zurücksetzen."
                         : "Lesen, Suchen und Markieren funktionieren ohne Konto; Markierungen bleiben dann nur auf diesem iPad. Mit Konto werden Lesezeichen und Markierungen mit law.xclipsen.de und anderen Geräten abgeglichen.").font(.caption).foregroundStyle(.secondary)
@@ -65,6 +75,9 @@ struct NotyAccountSettingsPage: View {
                 NavigationLink("Gesetzessammlung & Synchronisierung") { LawSettingsPage() }
             }
         }.navigationTitle("Konto").disabled(laws.accountBusy)
+            .onChange(of: laws.error) { _, error in if error != nil { message = "" } }
+            .onAppear { laws.inlineErrorPages += 1 }
+            .onDisappear { laws.inlineErrorPages -= 1 }
     }
     private var verification: some View {
         Group {
@@ -105,7 +118,7 @@ struct LawSettingsPage: View {
                 }
                 Section("Persönliche Daten") {
                     Text(laws.syncStatus).font(.caption)
-                    Button("Jetzt synchronisieren") { Task { await laws.synchronize() } }.disabled(laws.syncing || !sync || laws.user == nil)
+                    Button("Jetzt synchronisieren") { Task { await laws.synchronize() } }.disabled(laws.syncing || !sync || laws.user == nil || laws.sessionExpired)
                     Button("Markierungen und Lesezeichen sichern …") {
                         Task { do { exported = try await laws.exportPersonal() } catch { laws.error = error.localizedDescription } }
                     }
@@ -116,6 +129,8 @@ struct LawSettingsPage: View {
             }
         }.navigationTitle("Gesetzessammlung")
             .task { await laws.start() }
+            .onAppear { laws.inlineErrorPages += 1 }
+            .onDisappear { laws.inlineErrorPages -= 1 }
             .onChange(of: enabled) { _, _ in Task { await laws.settingsChanged() } }
             .onChange(of: sync) { _, _ in Task { await laws.settingsChanged(); await laws.synchronize() } }
             .onChange(of: updates) { _, _ in Task { await laws.settingsChanged() } }
@@ -133,13 +148,17 @@ struct LawPanelView<Drag: Gesture>: View {
     /// What Apple Pencil does in the reader, and how the reader changes it.
     var pen = LawPenMode()
     var onPenChange: ((LawPenMode) -> Void)? = nil
+    /// Room to dock at the current edge; without it the window can only float.
+    var canDock = true
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Menu {
+                    if canDock {
                     Button(laws.docked ? "Über Notizbüchern schweben" : laws.panelEdge == .bottom ? "Unter Notizbuch andocken" : "Neben Notizbuch andocken",
                            systemImage: laws.docked ? "rectangle.on.rectangle" : laws.panelEdge == .bottom ? "rectangle.split.1x2" : "rectangle.split.2x1") {
                         withAnimation(NotyMotion.panel(reduceMotion)) { laws.docked.toggle() }
+                    }
                     }
                     // Left, right or along the bottom edge (also by dragging the bar).
                     Picker("Position", selection: Binding(get: { laws.panelEdge }, set: { edge in

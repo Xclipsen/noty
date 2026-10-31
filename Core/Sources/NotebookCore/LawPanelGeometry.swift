@@ -106,15 +106,17 @@ public struct LawPanelLayout: Equatable, Sendable {
                      predictedTranslation: PagePoint? = nil, predictedLocation: PagePoint? = nil) -> LawPanelDrop {
         let f = frame, w = size.width, h = size.height
         let minX = f.x + translation.x, minY = f.y + translation.y
-        if minX + f.width - w > f.width * 0.5 { return .stash(.right) }
-        if -minX > f.width * 0.5 { return .stash(.left) }
+        // A window along the bottom keeps its shape: pushed sideways it is no
+        // side window, it only ever parks at its own edge.
+        if edge.isSide, minX + f.width - w > f.width * 0.5 { return .stash(.right) }
+        if edge.isSide, -minX > f.width * 0.5 { return .stash(.left) }
         // A side window would be "mostly below" long before the finger
         // reaches the bottom zones; only a bottom window is pushed out this way.
         if edge == .bottom, minY + f.height - h > f.height * 0.5 { return .stash(.bottom) }
         if let predictedTranslation, let predictedLocation {
             let aheadX = predictedTranslation.x - translation.x, aheadY = predictedTranslation.y - translation.y
-            if aheadX > 240, predictedLocation.x > w + 60 { return .stash(.right) }
-            if aheadX < -240, predictedLocation.x < -60 { return .stash(.left) }
+            if aheadX > 240, predictedLocation.x > w + 60 { return .stash(edge.isSide ? .right : .bottom) }
+            if aheadX < -240, predictedLocation.x < -60 { return .stash(edge.isSide ? .left : .bottom) }
             if aheadY > 240, predictedLocation.y > h + 60 { return .stash(.bottom) }
         }
         guard hypot(translation.x, translation.y) > 40 else { return .stay }

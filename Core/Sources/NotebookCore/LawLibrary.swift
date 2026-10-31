@@ -113,6 +113,23 @@ public struct LawQuickTarget: Equatable, Sendable {
     }
 }
 
+/// What one refused entry means for the rest of a sync push. A permanent refusal
+/// (4xx) only skips that entry, it stays local and is sent again next time.
+/// Temporary server trouble may be one bad entry too, but three in a row stop
+/// the push instead of hammering a broken server.
+public struct LawPushFailures: Sendable {
+    public enum Step: Equatable, Sendable { case next, stop }
+    public private(set) var refused = 0
+    private var serverFailures = 0
+    public init() {}
+    public mutating func record(status: Int) -> Step {
+        refused += 1
+        guard status >= 500 || status == 408 || status == 429 else { return .next }
+        serverFailures += 1
+        return serverFailures >= 3 ? .stop : .next
+    }
+}
+
 /// One serial owner for the separate law store. Immutable data files are written
 /// before the catalog is atomically replaced; a failed download keeps the old catalog.
 public actor LawOfflineStore {
@@ -139,8 +156,15 @@ public actor LawOfflineStore {
         let url = try documentURL(entry.id, version: version.id)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         if FileManager.default.fileExists(atPath: url.path) {
-            guard try Data(contentsOf: url) == data else { throw LawError.invalid("Eine unveränderliche Gesetzesfassung wurde verändert.") }
-        } else { try data.write(to: url, options: .atomic) }
+            let stored = try Data(contentsOf: url)
+            if stored == data { return }
+            // A valid stored version is immutable. One that no longer validates
+            // (damaged, or the catalogue says otherwise) would stay unreadable
+            // for ever; the checked download replaces it.
+            let usable = (try? JSONDecoder().decode(LawDocument.self, from: stored).validated(for: entry, version: version)) != nil
+            guard !usable else { throw LawError.invalid("Eine unveränderliche Gesetzesfassung wurde verändert.") }
+        }
+        try data.write(to: url, options: .atomic)
     }
     public func publish(_ catalog: LawCatalog) throws {
         if FileManager.default.fileExists(atPath: catalogURL.path) { _ = try self.catalog() }
@@ -159,11 +183,12 @@ public actor LawOfflineStore {
         guard size <= 150_000_000 else { throw LawError.invalid("Gespeicherte PDF-Datei zu groß.") }
         return try Data(contentsOf: url)
     }
-    public func putPDF(_ data: Data, id: String, version: String) throws -> URL {
+    /// `replacingDamaged`: the caller found the stored file unusable and checked `data`.
+    public func putPDF(_ data: Data, id: String, version: String, replacingDamaged: Bool = false) throws -> URL {
         guard data.count <= 150_000_000, data.starts(with: Data("%PDF-".utf8)) else { throw LawError.invalid("Ungültige PDF-Datei.") }
         let url = try pdfURL(id, version: version)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: url.path) {
+        if !replacingDamaged, FileManager.default.fileExists(atPath: url.path) {
             guard try Data(contentsOf: url) == data else { throw LawError.invalid("Die gespeicherte PDF-Fassung wurde verändert.") }
         } else { try data.write(to: url, options: .atomic) }
         return url
