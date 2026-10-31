@@ -1,6 +1,6 @@
 # Tastatur: Kürzel und Tastaturmodus
 
-Stand: Build 68 auf `phase1/fixes` (Review-Befunde zu Build 67). **Implementiert, erfolgreich gebaut, Core-Tests bestanden. Nicht installiert, am iPad ungeprüft.** Linux hat keinen iOS-Simulator: Engine, Tastentabelle, Parser, Bereichsbearbeitung und die Tastensperre sind getestet (`HelixEngineTests`, `HelixKeymapTests`, `HelixParserTests`, `KeyboardCommandsTests`, `TextFlowRangeTests`), Tastenzustellung, Fokus, Anzeige und TextKit-Messung **nicht**. Der Zustellweg (`KeyPressGate`, `KeyDeliveryLatch`, Rückholen des Fokus) ist selbst noch ungeprüft.
+Stand: Build 68 auf `phase1/fixes` (Review-Befunde zu Build 67). **Implementiert, erfolgreich gebaut, Core-Tests bestanden, installiert, am iPad ungeprüft.** Linux hat keinen iOS-Simulator: Engine, Tastentabelle, Parser, Bereichsbearbeitung und die Tastensperre sind getestet (`HelixEngineTests`, `HelixKeymapTests`, `HelixParserTests`, `KeyboardCommandsTests`, `TextFlowRangeTests`), Tastenzustellung, Fokus, Anzeige und TextKit-Messung **nicht**. Der Zustellweg (`KeyPressGate`, `KeyDeliveryLatch`, Rückholen des Fokus) ist selbst noch ungeprüft.
 
 ## ⌘-Kürzel (immer aktiv, auch ohne Tastaturmodus)
 

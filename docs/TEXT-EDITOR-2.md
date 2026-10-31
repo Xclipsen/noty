@@ -1,6 +1,6 @@
 # Texteditor 2 (Phase 2, Prototyp)
 
-Stand 31.10.2026, Branch `phase2/spike`. **Implementiert, erfolgreich gebaut, Core-Tests und Host-Roundtrip bestanden. Nicht installiert, am iPad ungeprüft.** Unter Linux läuft weder TextKit noch `UITextInteraction`: Alles unter „Eingabe“ und „Darstellung“ ist Code, der noch nie gelaufen ist. Dieser Prototyp entscheidet Go oder No-Go, er ist nicht fertig.
+Stand 31.10.2026, Branch `phase2/spike`. **Implementiert, erfolgreich gebaut, Core-Tests und Host-Roundtrip bestanden. In Build 68 installiert, am iPad ungeprüft.** Unter Linux läuft weder TextKit noch `UITextInteraction`: Alles unter „Eingabe“ und „Darstellung“ ist Code, der noch nie gelaufen ist. Dieser Prototyp entscheidet Go oder No-Go, er ist nicht fertig.
 
 Schalter: Einstellungen › Über noty › Diagnose › „Neuer Texteditor (Test)“ (`noty.text.editor2`, Standard aus). Wirkt beim nächsten Öffnen eines Dokuments, nur in Textdokumenten, nicht im Blättermodus. Aus: `NotebookViewport.documentText` bleibt nil, der bisherige Weg läuft unverändert.
 
