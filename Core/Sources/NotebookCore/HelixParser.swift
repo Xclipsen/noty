@@ -4,8 +4,8 @@ public enum HelixParseResult: Equatable, Sendable {
     /// Part of a sequence: a count, a menu or a key that waits for a character.
     /// `menu`: what the which-key popup shows now, nil after a bare count.
     case pending(menu: HelixMenu?)
-    /// `count` is nil unless typed: `5G` differs from `G`.
-    case action(HelixAction, count: Int?, repeats: Bool)
+    /// `count` is nil unless typed: `5G` differs from `G`. `register`: `"a` before it.
+    case action(HelixAction, count: Int?, repeats: Bool, register: String? = nil)
     /// Esc dropped a started sequence; nothing else happens.
     case cancelled
     /// No such command; a started sequence is dropped.
@@ -13,23 +13,26 @@ public enum HelixParseResult: Equatable, Sendable {
 }
 
 /// Turns key tokens into `HelixKeymap` commands: counts (`12j`), menus (`gg`,
-/// `<Space> t p`) and keys that take a character (`fx`, `mi(`, `mr([`). Insert
-/// mode does not come here: the app only looks for Esc there.
+/// `<Space> t p`), keys that take a character (`fx`, `mi(`, `mr([`) and `"a`
+/// before a command. Insert mode does not come here: the app only looks for
+/// Esc there.
 public struct HelixParser: Sendable {
     private var count: Int?
     private var keys: [String] = []
     private var prompt: HelixPrompt?
     /// `mr`: the first of two characters.
     private var replacedPair: String?
+    /// `"a`. A count before it falls away, one behind it counts, as in Helix.
+    private var register: String?
     /// The node of the current sequence, for the which-key popup.
     public private(set) var menu: HelixMenu?
     public init() {}
 
-    public mutating func reset() { count = nil; keys = []; prompt = nil; replacedPair = nil; menu = nil }
-    public var isIdle: Bool { count == nil && keys.isEmpty }
+    public mutating func reset() { count = nil; keys = []; prompt = nil; replacedPair = nil; register = nil; menu = nil }
+    public var isIdle: Bool { count == nil && keys.isEmpty && register == nil }
     /// What was typed so far, for the mode indicator.
     public var display: String {
-        (count.map(String.init) ?? "") + HelixKeymap.label(keys) + (replacedPair ?? "")
+        (register.map { "\"" + $0 } ?? "") + (count.map(String.init) ?? "") + HelixKeymap.label(keys) + (replacedPair ?? "")
     }
 
     public mutating func feed(_ token: String, context: HelixContext) -> HelixParseResult {
@@ -44,7 +47,7 @@ public struct HelixParser: Sendable {
         switch row.target {
         case .action(let action):
             defer { reset() }
-            return .action(action, count: count, repeats: row.repeats)
+            return .action(action, count: count, repeats: row.repeats, register: register)
         case .menu, .prompt:
             keys.append(token)
             if case .prompt(let waiting) = row.target { prompt = waiting }
@@ -55,6 +58,11 @@ public struct HelixParser: Sendable {
 
     private mutating func feedCharacter(_ token: String, _ prompt: HelixPrompt) -> HelixParseResult {
         guard let character = Self.character(token) else { reset(); return .unbound }
+        if prompt == .register {
+            register = character
+            count = nil; keys = []; self.prompt = nil; menu = nil
+            return .pending(menu: nil)
+        }
         if prompt == .surroundReplace {
             guard let replaced = replacedPair else {
                 replacedPair = character
@@ -62,11 +70,11 @@ public struct HelixParser: Sendable {
                 return .pending(menu: menu)
             }
             defer { reset() }
-            return .action(.text(.surroundReplace(replaced == "m" ? nil : replaced, with: character)), count: count, repeats: false)
+            return .action(.text(.surroundReplace(replaced == "m" ? nil : replaced, with: character)), count: count, repeats: false, register: register)
         }
         defer { reset() }
         guard let action = prompt.action(character) else { return .unbound }
-        return .action(action, count: count, repeats: false)
+        return .action(action, count: count, repeats: false, register: register)
     }
 
     /// The text behind a token: a plain character, Enter, Tab or Space.

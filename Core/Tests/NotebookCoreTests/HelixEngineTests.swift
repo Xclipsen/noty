@@ -12,7 +12,7 @@ final class HelixEngineTests: XCTestCase {
         func prompt() -> String {
             var query = ""
             index += 1
-            while index < tokens.count, tokens[index] != "<CR>" { query += tokens[index]; index += 1 }
+            while index < tokens.count, tokens[index] != "<CR>" { query += tokens[index] == "<Space>" ? " " : tokens[index]; index += 1 }
             return query
         }
         while index < tokens.count {
@@ -22,22 +22,37 @@ final class HelixEngineTests: XCTestCase {
                 case "<Esc>": results.append(engine.perform(.escape))
                 case "<BS>": results.append(engine.deleteBackward())
                 case "<CR>": results.append(engine.insertText("\n"))
+                case "<Space>": results.append(engine.insertText(" "))
                 default: results.append(engine.insertText(token))
                 }
             } else {
-                switch parser.feed(token, context: .text) {
-                case .action(.text(let command), let count, _): results.append(engine.perform(command, count: count))
-                case .action(.searchPrompt(let backward), _, _): results.append(engine.search(prompt(), backward: backward))
-                case .action(.selectPrompt, _, _): results.append(engine.selectMatches(prompt()))
-                default: break
+                let result = parser.feed(token, context: .text)
+                switch result {
+                case .action(.text(let command), let count, _, let register):
+                    engine.selectedRegister = register
+                    results.append(engine.perform(command, count: count))
+                    engine.record(token, result)
+                case .action(let action, _, _, _) where [.selectPrompt, .splitPrompt, .searchPrompt(backward: false), .searchPrompt(backward: true)].contains(action):
+                    // As `KeyboardRouter`: the state before the input line is where the jump goes.
+                    let start = engine, query = prompt()
+                    switch action {
+                    case .selectPrompt: results.append(engine.selectMatches(query))
+                    case .splitPrompt: results.append(engine.splitMatches(query))
+                    case .searchPrompt(let backward): results.append(engine.search(query, backward: backward))
+                    default: break
+                    }
+                    engine.rememberJump(from: start)
+                    engine.recordPrompt(action, query: query)
+                default: engine.record(token, result)
                 }
             }
             index += 1
         }
         return results
     }
-    private func run(_ text: String, _ keys: String, caret: Int = 0) -> TextEngine {
+    private func run(_ text: String, _ keys: String, caret: Int = 0, pairs: Bool = false) -> TextEngine {
         var engine = TextEngine(text: text, caret: caret), parser = HelixParser()
+        engine.autoPairs = pairs
         press(keys, on: &engine, parser: &parser)
         return engine
     }
@@ -59,6 +74,15 @@ final class HelixEngineTests: XCTestCase {
     func testGoldenCasesOfTheRealEditor() {
         for row in HelixGoldenCases.rows {
             var engine = run(row.text, row.keys)
+            if engine.mode != .normal { engine.perform(.escape) }
+            XCTAssertEqual(marks(engine), row.selections, "\(row.keys.debugDescription) on \(row.text.debugDescription)")
+            XCTAssertEqual(cursors(engine), row.cursors, "cursor: \(row.keys.debugDescription) on \(row.text.debugDescription)")
+        }
+    }
+
+    func testGoldenCasesWithAutomaticPairs() {
+        for row in HelixGoldenCases.pairRows {
+            var engine = run(row.text, row.keys, pairs: true)
             if engine.mode != .normal { engine.perform(.escape) }
             XCTAssertEqual(marks(engine), row.selections, "\(row.keys.debugDescription) on \(row.text.debugDescription)")
             XCTAssertEqual(cursors(engine), row.cursors, "cursor: \(row.keys.debugDescription) on \(row.text.debugDescription)")
@@ -256,11 +280,11 @@ final class HelixEngineTests: XCTestCase {
         XCTAssertEqual(run("\"ab\"", "l m a \"").selectedRange, NSRange(location: 0, length: 4))
     }
 
-    func testNewLinesBringNoIndent() {
+    func testNewLinesKeepTheIndentUntilEscFindsThemUnused() {
         var engine = run("  eins", "o")
-        XCTAssertEqual(engine.string, "  eins\n")
-        XCTAssertEqual(engine.cursor, 7)
-        engine.perform(.escape)
+        XCTAssertEqual(engine.string, "  eins\n  ")
+        XCTAssertEqual(engine.cursor, 9)
+        XCTAssertEqual(engine.perform(.escape).edits.count, 1, "an edit the app applies, too")
         XCTAssertEqual(engine.string, "  eins\n")
     }
 
@@ -601,5 +625,257 @@ final class HelixEngineTests: XCTestCase {
     func testNoCutInsideAComposedCharacter() {
         let edit = TextListEditing.Edit(range: NSRange(location: 0, length: 4), replacement: "😀😀")
         XCTAssertEqual(TextListEditing.split([edit], at: [1, 2, 3]).map(\.replacement), ["😀", "😀"])
+    }
+
+    // MARK: Registers
+
+    func testNamedRegistersStayApartFromTheDefaultOne() {
+        var engine = TextEngine(text: "eins zwei"), parser = HelixParser()
+        let yanked = press("w \" a y", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.register, nil)
+        XCTAssertEqual(engine.registers["a"]?.values, ["eins "])
+        XCTAssertFalse(yanked.last?.yanked ?? true, "the system pasteboard only follows the default register")
+        XCTAssertTrue(press("y", on: &engine, parser: &parser).last?.yanked ?? false)
+        XCTAssertEqual(engine.register?.values, ["eins "])
+    }
+    func testTheBlackHoleKeepsEverything() {
+        var engine = run("eins zwei", "w y w \" _ d")
+        XCTAssertEqual(engine.register?.values, ["eins "])
+        XCTAssertEqual(engine.registers.count, 0)
+        XCTAssertEqual(engine.string, "eins ")
+        engine.selectedRegister = "_"
+        XCTAssertNil(engine.perform(.paste(before: false)).notice)
+        XCTAssertEqual(engine.string, "eins ")
+    }
+    func testClipboardRegistersMeanTheDefaultOne() {
+        for name in ["+", "*", "\\\""] {
+            var engine = TextEngine(text: "ab")
+            engine.selectedRegister = String(name.suffix(1))
+            XCTAssertTrue(engine.perform(.yank).yanked, name)
+            XCTAssertEqual(engine.register?.values, ["a"], name)
+        }
+    }
+    func testAnEmptyNamedRegisterSaysSo() {
+        var engine = TextEngine(text: "ab")
+        engine.selectedRegister = "z"
+        XCTAssertEqual(engine.perform(.paste(before: false)).notice, .registerEmpty)
+        XCTAssertEqual(engine.string, "ab")
+        engine.selectedRegister = "z"
+        XCTAssertEqual(engine.perform(.replaceWithRegister).notice, .registerEmpty)
+        XCTAssertNil(engine.selectedRegister, "every command uses the name up")
+    }
+
+    // MARK: `.` after native typing
+
+    /// What the app does: `sync` brings the typed text, the engine sees no keys.
+    private func native(_ engine: inout TextEngine, _ text: String, caret: Int) {
+        engine.sync(text: text, selection: NSRange(location: caret, length: 0))
+    }
+    func testDotRepeatsWhatWasTypedNatively() {
+        var engine = run("ab cd\n", "w i")
+        XCTAssertEqual(engine.cursor, 0)
+        native(&engine, "xyab cd\n", caret: 2)
+        engine.perform(.escape)
+        var parser = HelixParser()
+        press("g l .", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.string, "xyab cxyd\n")
+    }
+    func testDotCoversAutocorrectionAndDeletion() {
+        var engine = TextEngine(text: "ab\ncd\n", caret: 1), parser = HelixParser()
+        press("a", on: &engine, parser: &parser)
+        // Autocorrection replaced what stood before the caret: a deletion and new text.
+        native(&engine, "aXYZ\ncd\n", caret: 4)
+        engine.perform(.escape)
+        press("j g l .", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.string, "aXYZ\ncXYZ\n", "the replaced letter goes, the new text comes")
+    }
+    func testDotCarriesTheRestOfAPair() {
+        var engine = TextEngine(text: "\nab\n"), parser = HelixParser()
+        press("i", on: &engine, parser: &parser)
+        native(&engine, "(x)\nab\n", caret: 2)
+        engine.perform(.escape)
+        press("j .", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.string, "(x)\nab(x)\n")
+    }
+    func testATapEndsTheRunThatDotWouldRepeat() {
+        var engine = TextEngine(text: "ab\n"), parser = HelixParser()
+        press("i x <Esc>", on: &engine, parser: &parser)
+        press("i", on: &engine, parser: &parser)
+        engine.sync(text: "xqab\n", selection: NSRange(location: 2, length: 0), mode: .insert)
+        engine.perform(.escape)
+        press(".", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.string.filter { $0 == "q" }.count, 1)
+        XCTAssertEqual(engine.string.filter { $0 == "x" }.count, 2, "the last finished run stays: \(engine.string)")
+    }
+    func testDotIsOneStepAtPrimaryOnly() {
+        var engine = TextEngine(text: "a b a\n"), parser = HelixParser()
+        press("% s a <CR>", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.selections.count, 2)
+        var copy = TextEngine(text: "x\n")
+        press("i y <Esc>", on: &copy, parser: &parser)
+        var seed = engine
+        press("i y <Esc>", on: &seed, parser: &parser)
+        XCTAssertEqual(seed.string, "yay b yay\n".replacingOccurrences(of: "yay", with: "ya"))
+        let outcome = seed.performAtPrimary(.repeatInsert)
+        XCTAssertEqual(outcome.notice, .primaryOnly)
+        XCTAssertEqual(seed.selections.count, 1)
+        XCTAssertEqual(seed.string.filter { $0 == "y" }.count, 3, seed.string)
+    }
+
+    // MARK: Macros
+
+    func testAMacroPlaysAsOneStepAndKeepsTheRestOfTheText() {
+        var engine = TextEngine(text: "aaa\nbbb\nccc\nddd\n"), parser = HelixParser()
+        press("Q A x <Esc> j Q", on: &engine, parser: &parser)
+        let before = engine.string
+        let outcome = press("2 q", on: &engine, parser: &parser).last
+        XCTAssertEqual(engine.string, "aaax\nbbbx\ncccx\nddd\n")
+        XCTAssertEqual(outcome?.edits.count, 2, "two inserts, what lies between is untouched and keeps its format")
+        XCTAssertTrue(outcome?.edits.allSatisfy { $0.range.length == 0 } ?? false)
+        let applied = NSMutableString(string: before)
+        for edit in outcome?.edits ?? [] { applied.replaceCharacters(in: edit.range, with: edit.replacement) }
+        XCTAssertEqual(applied as String, engine.string)
+        if let combined = outcome?.combinedEdit {
+            let whole = NSMutableString(string: before)
+            whole.replaceCharacters(in: combined.range, with: combined.replacement)
+            XCTAssertEqual(whole as String, engine.string)
+        } else { XCTFail("no combined edit") }
+    }
+    func testAMacroReplaysNativeTyping() {
+        var engine = TextEngine(text: "ab\ncd\n"), parser = HelixParser()
+        press("Q A", on: &engine, parser: &parser)
+        native(&engine, "abä\ncd\n", caret: 3)
+        engine.perform(.escape)
+        press("j Q q", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.string, "abä\ncdä\n")
+    }
+    func testAMacroNeverCallsItself() {
+        var engine = TextEngine(text: "ab\n"), parser = HelixParser()
+        press("Q A x <Esc> Q Q q A y <Esc> q Q", on: &engine, parser: &parser)
+        let before = engine.string
+        let outcome = press("q", on: &engine, parser: &parser).last
+        XCTAssertEqual(outcome?.notice, .macroStopped)
+        XCTAssertEqual(engine.string, "abxxyxy\n", "`A y` ran once, both inner `q` stopped: \(before)")
+        XCTAssertEqual(engine.mode, .normal)
+    }
+    func testMacrosCallingEachOtherEndAndCountsRunOut() {
+        var engine = TextEngine(text: "ab\n"), parser = HelixParser()
+        press("\" a Q \" b q l Q \" b Q \" a q h Q", on: &engine, parser: &parser)
+        press("\" a 9 9 9 9 q", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.mode, .normal)
+        // Multiplying counts run into the limit, whatever they nest to.
+        var big = TextEngine(text: "ab\n")
+        press("\" a Q l Q \" b Q 9 9 9 9 \" a q Q", on: &big, parser: &parser)
+        press("\" c Q 9 9 9 9 \" b q Q", on: &big, parser: &parser)
+        let outcome = press("9 9 9 9 \" c q", on: &big, parser: &parser).last
+        XCTAssertEqual(outcome?.notice, nil, "a count in front of the register falls away")
+        let limited = press("\" c 9 9 9 9 q", on: &big, parser: &parser).last
+        XCTAssertEqual(limited?.notice, .macroStopped)
+    }
+    func testAStoppedMacroDoesNotStayInInsertMode() {
+        var engine = TextEngine(text: "ab\n"), parser = HelixParser()
+        press("Q i x <Esc> Q", on: &engine, parser: &parser)
+        engine.macroBudget = 0
+        press("9 9 9 9 q", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.mode, .normal)
+    }
+    func testOnlyTextCommandsGoIntoAMacro() {
+        var engine = TextEngine(text: "ab\n"), parser = HelixParser()
+        press("Q", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.recordingRegister, "@")
+        XCTAssertFalse(engine.record("u", .action(.undo, count: nil, repeats: false)))
+        XCTAssertTrue(engine.record("l", .action(.text(.move(.right)), count: nil, repeats: true)))
+        press("Q", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.macros["@"], [.key("l")])
+    }
+    func testLeavingTheTextEndsARecordingAndKeepsIt() {
+        var engine = TextEngine(text: "ab\n"), parser = HelixParser()
+        press("\" a Q l", on: &engine, parser: &parser)
+        engine.textEnded()
+        XCTAssertNil(engine.recordingRegister)
+        XCTAssertEqual(engine.macros["a"], [.key("l")])
+    }
+    func testAMacroInAPageTypesAtThePrimaryOnly() {
+        var engine = TextEngine(text: "a b a a\n"), parser = HelixParser()
+        press("Q c x <Esc> Q g g % s a <CR>", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.selections.count, 2)
+        let outcome = engine.performAtPrimary(.playMacro)
+        XCTAssertEqual(outcome.notice, .primaryOnly)
+    }
+    func testAMacroCountsLogicalLinesAndHandsTheLayoutBack() {
+        struct Wide: TextEngineLayout {
+            var visibleLines: Int { 7 }
+            func verticalTarget(from offset: Int, lines: Int, goal: Double?, in text: NSString) -> (offset: Int, goal: Double) { (0, 0) }
+        }
+        var engine = TextEngine(text: "a\nb\nc\n"), parser = HelixParser()
+        engine.layout = Wide()
+        press("Q Q", on: &engine, parser: &parser)
+        engine.macros["@"] = [.key("j")]
+        press("q", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.cursor, 2)
+        XCTAssertEqual(engine.layout.visibleLines, 7)
+        press("j", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.cursor, 0, "back at the app's layout")
+    }
+
+    // MARK: Composed edits
+
+    func testComposedEditsAreTheSameAsTheSteps() {
+        var generator = SystemRandomNumberGenerator()
+        for _ in 0..<300 {
+            var text = "abcdefghij" as NSString
+            let start = text
+            var composer = EditComposer(length: text.length), outcome = TextEngine.Outcome()
+            for _ in 0..<Int.random(in: 1...8, using: &generator) {
+                var step = TextEngine.Outcome()
+                let location = Int.random(in: 0...text.length, using: &generator)
+                let length = Int.random(in: 0...min(3, text.length - location), using: &generator)
+                step.edits = [.init(range: NSRange(location: location, length: length), replacement: String(repeating: "x", count: Int.random(in: 0...3, using: &generator)))]
+                text = text.replacingCharacters(in: step.edits[0].range, with: step.edits[0].replacement) as NSString
+                composer.add(step)
+            }
+            composer.finish(in: text, into: &outcome)
+            let applied = NSMutableString(string: start as String)
+            for edit in outcome.edits { applied.replaceCharacters(in: edit.range, with: edit.replacement) }
+            XCTAssertEqual(applied as String, text as String)
+        }
+    }
+
+    // MARK: Jump list
+
+    func testJumpsFollowNativeTyping() {
+        var engine = TextEngine(text: "eins\nzwei\n"), parser = HelixParser()
+        press("j ^s g g", on: &engine, parser: &parser)
+        engine.sync(text: "xxeins\nzwei\n", selection: NSRange(location: 0, length: 1))
+        press("^o", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.cursor, 7, "the saved `z` moved with the text")
+    }
+    func testJumpsIntoRemovedTextAreClamped() {
+        var engine = TextEngine(text: "eins\nzwei\n"), parser = HelixParser()
+        press("g e ^s g g", on: &engine, parser: &parser)
+        engine.sync(text: "e", selection: NSRange(location: 0, length: 1))
+        press("^o", on: &engine, parser: &parser)
+        XCTAssertLessThanOrEqual(engine.primary.to, engine.text.length)
+    }
+    func testJumpsBelongToOneText() {
+        var engine = TextEngine(text: "eins\nzwei\n"), parser = HelixParser(), owner = UUID()
+        engine.useJumps(of: owner)
+        press("j ^s g g", on: &engine, parser: &parser)
+        engine.useJumps(of: owner)
+        press("^o", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.cursor, 5, "same text, same list")
+        owner = UUID()
+        engine.useJumps(of: owner)
+        press("g g ^o", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.cursor, 5, "`gg` saved it, a new list knows nothing older")
+        press("^o", on: &engine, parser: &parser)
+        XCTAssertEqual(engine.cursor, 5)
+    }
+    func testTheJumpListHasALimit() {
+        var engine = TextEngine(text: String(repeating: "x\n", count: 50)), parser = HelixParser()
+        for line in 1...40 { press("\(line) G ^s", on: &engine, parser: &parser) }
+        XCTAssertLessThanOrEqual(engine.jumps.count, 30)
+        press("9 9 ^o", on: &engine, parser: &parser)
+        XCTAssertGreaterThan(engine.cursor, 0, "the oldest places fell out; too far back stays")
     }
 }

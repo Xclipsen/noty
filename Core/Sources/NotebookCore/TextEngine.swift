@@ -128,8 +128,12 @@ public struct TextEngine {
         case gotoFileStart, gotoLastLine, gotoLine, gotoLineStart, gotoLineEnd, gotoFirstNonBlank
         /// ⌃d ⌃u ⌃f ⌃b, in screens (`TextEngineLayout.visibleLines`).
         case screen(Double)
+        /// `]p`, `[p`.
+        case paragraph(forward: Bool)
         // Selections
-        case selectAll, extendLine, extendToLineBounds, collapse, flip, keepPrimary, copyToNextLine
+        case selectAll, extendLine, extendToLineBounds, collapse, flip, keepPrimary, copyToNextLine, copyToPreviousLine
+        /// ⌥s: every line of the selections becomes a selection.
+        case splitOnLines
         case matchBracket
         case selectObject(TextObject, around: Bool)
         // Edits
@@ -143,14 +147,25 @@ public struct TextEngine {
         case surroundReplace(String?, with: String)
         // Modes
         case insert(InsertEntry), toggleSelect, escape
-        // Search: the query comes from the app (`search`, `selectMatches`).
+        // Search: the query comes from the app (`search`, `selectMatches`, `splitMatches`).
         case searchNext, searchPrevious, searchSelection
+        // Jump list (⌃s ⌃o ⌃i)
+        case saveSelection, jumpBackward, jumpForward
+        /// `.`: the last text a command opened insert mode for.
+        case repeatInsert
+        /// `Q`, `q`, by `selectedRegister`.
+        case toggleRecording, playMacro
     }
 
     public enum Notice: Sendable {
         case wrapped, noMatch, pairNotFound
         /// `performAtPrimary` gave up the other selections.
         case primaryOnly
+        case registerEmpty
+        /// A macro ran into `TextEngine.macroLimit` or called itself.
+        case macroStopped
+        /// `record`: this command changes something else than the text.
+        case notInMacro
     }
 
     public struct Outcome: Equatable, Sendable {
@@ -170,19 +185,45 @@ public struct TextEngine {
         public init() {}
     }
 
-    public private(set) var text: NSString
-    public private(set) var selections: [Selection]
-    public private(set) var primaryIndex = 0
-    public private(set) var mode: Mode
+    public internal(set) var text: NSString
+    public internal(set) var selections: [Selection]
+    public internal(set) var primaryIndex = 0
+    public internal(set) var mode: Mode
+    /// The default register, the one the system pasteboard follows.
     public var register: Register?
+    /// `"a`: named registers, in memory only.
+    public var registers: [String: Register] = [:]
+    /// `"a` of the next command, it takes the name along.
+    public var selectedRegister: String?
     /// The last search (`/`, `*`), a regular expression.
-    public private(set) var searchQuery: String?
+    public internal(set) var searchQuery: String?
     public var layout: any TextEngineLayout = LogicalLineLayout()
     /// What `>` inserts.
     public var indentUnit = "\t"
+    /// The setting for automatic pairs; `.` needs it, too.
+    public var autoPairs = false
     /// `x` or `X` made the selection: on a last line without line break it
     /// still counts as a whole line (docs/KEYBOARD.md, Abweichungen).
     private var wholeLineSelection = false
+
+    var jumps: [Jump] = []
+    var jumpIndex = 0
+    var jumpOwner: UUID?
+    /// The insert run a command opened; `lastInsert` once it ended.
+    var insertRun: InsertRun?
+    var lastInsert: (entry: Command, typed: TypedText)?
+    /// `endInsertRun` found the indent of an unused new line.
+    var unusedIndent: NSRange?
+    var macros: [String: [MacroStep]] = [:]
+    var recording: MacroRecording?
+    /// Registers of the macros that are playing; a macro never calls itself.
+    var playing: [String] = []
+    var macroBudget = 0
+    var macroDeadline = Date.distantPast
+    /// Commands of `.` or a macro run here: they stay out of a recording.
+    var nested = 0
+    /// `performAtPrimary` is running (a page's text view).
+    private var typesAtPrimary = false
 
     public init(text: String = "", caret: Int = 0, mode: Mode = .normal) {
         self.text = text as NSString
@@ -228,9 +269,11 @@ public struct TextEngine {
         let same = newText == string
         let unchanged = selection == selectedRange || (selection.length == 0 && selection.location == cursor)
         let wasInsert = mode == .insert
-        if let newMode { mode = newMode }
+        if let newMode { mode = newMode; insertRun = nil }
+        else if !same, wasInsert { insertRun?.native = true }
         guard !(same && unchanged && newMode == nil) else { settle(); return }
         let old = primary, delta = (newText as NSString).length - text.length
+        if !same, !jumps.isEmpty { mapJumps([Self.difference(from: text, to: newText as NSString)]) }
         text = newText as NSString
         wholeLineSelection = false
         let start = min(max(0, selection.location), text.length), end = min(start + selection.length, text.length)
@@ -246,7 +289,7 @@ public struct TextEngine {
 
     /// Selections stay usable after every change: on boundaries, at least one
     /// grapheme wide outside insert mode, sorted and without overlaps.
-    private mutating func settle() {
+    mutating func settle() {
         selections = selections.map { range in
             var result = aligned(range)
             if mode != .insert, result.isEmpty { result.head = text.nextBoundary(result.head) }
@@ -316,7 +359,7 @@ public struct TextEngine {
         }
         return position + delta
     }
-    private func mapped(_ range: Selection, _ edits: [Edit]) -> Selection {
+    func mapped(_ range: Selection, _ edits: [Edit]) -> Selection {
         var result = range
         if range.isEmpty {
             result.anchor = mapped(range.anchor, before: false, edits); result.head = result.anchor
@@ -330,11 +373,12 @@ public struct TextEngine {
 
     /// Applies ascending edits. `selecting`: selections in the new text,
     /// otherwise the current ones move along.
-    private mutating func commit(_ edits: [Edit], selecting new: [Selection]? = nil, into outcome: inout Outcome) {
+    mutating func commit(_ edits: [Edit], selecting new: [Selection]? = nil, into outcome: inout Outcome) {
         guard !edits.isEmpty else { return }
         let changed = NSMutableString(string: string)
         for edit in edits.reversed() { changed.replaceCharacters(in: edit.range, with: edit.replacement) }
         selections = new ?? selections.map { mapped($0, edits) }
+        mapJumps(edits)
         let start = edits[0].range.location, end = edits.map { NSMaxRange($0.range) }.max() ?? start
         let delta = changed.length - text.length
         outcome.combinedEdit = Edit(range: NSRange(location: start, length: end - start),
@@ -386,8 +430,17 @@ public struct TextEngine {
         var outcome = Outcome()
         guard mode != .insert || command == .escape else { return outcome }
         let times = max(1, count ?? 1), extend = mode == .select
-        let wholeLines = wholeLineSelection
+        let wholeLines = wholeLineSelection, named = selectedRegister
         wholeLineSelection = false
+        selectedRegister = nil
+        var reduced = false
+        if typesAtPrimary, mode != .insert, selections.count > 1 {
+            // `.` and a macro's commands come here, too: only these type.
+            switch command {
+            case .change, .insert, .repeatInsert: selections = [primary]; primaryIndex = 0; reduced = true
+            default: break
+            }
+        }
         switch command {
         case .move(.up), .move(.down), .screen: break
         default: selections = selections.map { var range = $0; range.goal = nil; return range }
@@ -409,9 +462,11 @@ public struct TextEngine {
         case .find(let character, let forward, let inclusive):
             selections = selections.map { find($0, character, forward: forward, inclusive: inclusive, count: times, extend: extend) }
         case .gotoFileStart:
+            pushJump()
             if count != nil { gotoLine(times, extend: extend) } else { selections = selections.map { put($0, 0, extend: extend) } }
-        case .gotoLastLine: gotoLine(Int.max, extend: extend)
-        case .gotoLine: if count != nil { gotoLine(times, extend: false) } // Helix has no extending `G`
+        case .gotoLastLine: pushJump(); gotoLine(Int.max, extend: extend)
+        case .gotoLine:
+            if count != nil { pushJump(); gotoLine(times, extend: false) } // Helix has no extending `G`
         case .gotoLineStart:
             selections = selections.map { put($0, TextLines.start(text, cursor(of: $0)), extend: extend) }
         case .gotoLineEnd:
@@ -423,6 +478,7 @@ public struct TextEngine {
             selections = selections.map { range in
                 firstNonBlank(TextLines.start(text, cursor(of: range))).map { put(range, $0, extend: extend) } ?? range
             }
+        case .paragraph(let forward): selections = selections.map { moveParagraph($0, forward: forward, count: times, extend: extend) }
 
         case .selectAll: selections = [Selection(anchor: 0, head: text.length)]; primaryIndex = 0
         case .extendLine: selections = selections.map { extendLine($0, count: times) }; wholeLineSelection = true
@@ -435,18 +491,20 @@ public struct TextEngine {
         case .collapse: selections = selections.map { .point(cursor(of: $0)) }
         case .flip: selections = selections.map { Selection(anchor: $0.head, head: $0.anchor) }
         case .keepPrimary: selections = [primary]; primaryIndex = 0
-        case .copyToNextLine: copyToNextLine(times)
+        case .copyToNextLine: copyToLine(times, forward: true)
+        case .copyToPreviousLine: copyToLine(times, forward: false)
+        case .splitOnLines: splitOnLines()
         case .matchBracket:
             selections = selections.map { range in matchingBracket(cursor(of: range)).map { put(range, $0, extend: extend) } ?? range }
         case .selectObject(let object, let around): selections = selections.map { select(object, around: around, $0, count: times) }
 
         case .yank:
-            outcome.yanked = yank(wholeLines: wholeLines)
+            outcome.yanked = yank(wholeLines: wholeLines, into: named)
             wholeLineSelection = wholeLines
             mode = .normal
-        case .delete, .change: delete(change: command == .change, wholeLines: wholeLines, into: &outcome)
-        case .paste(let before): paste(before: before, count: times, selectsPasted: !extend, into: &outcome); mode = .normal
-        case .replaceWithRegister: replaceWithRegister(count: times, into: &outcome); mode = .normal
+        case .delete, .change: delete(change: command == .change, wholeLines: wholeLines, register: named, into: &outcome)
+        case .paste(let before): paste(before: before, count: times, selectsPasted: !extend, register: named, into: &outcome); mode = .normal
+        case .replaceWithRegister: replaceWithRegister(count: times, register: named, into: &outcome); mode = .normal
         case .replace(let character): replaceCharacters(with: character, into: &outcome); mode = .normal
         case .switchCase: replaceSelections(Self.switchedCase, into: &outcome); mode = .normal
         case .lowercase: replaceSelections({ $0.lowercased() }, into: &outcome); mode = .normal
@@ -468,18 +526,35 @@ public struct TextEngine {
             }
         case .escape:
             switch mode {
-            case .insert, .select: mode = .normal
+            case .insert:
+                endInsertRun()
+                if let blank = unusedIndent { commit([Edit(range: blank, replacement: "")], into: &outcome) }
+                mode = .normal
+            case .select: mode = .normal
             case .normal:
                 if hasWideSelection { selections = selections.map { .point(cursor(of: $0)) } }
                 else if selections.count > 1 { selections = [primary]; primaryIndex = 0 }
                 else { outcome.leavesText = true }
             }
+            if !outcome.leavesText { recordEscape() }
 
         case .searchNext, .searchPrevious:
             if let searchQuery { outcome.notice = step(searchQuery, backward: command == .searchPrevious, count: times, extend: extend) }
         case .searchSelection: searchQuery = selectionPattern()
+
+        case .saveSelection: pushJump()
+        case .jumpBackward: jumpBackward(times)
+        case .jumpForward: jumpForward(times)
+        case .repeatInsert:
+            wholeLineSelection = wholeLines
+            repeatInsert(times, into: &outcome)
+        case .toggleRecording: toggleRecording(named)
+        case .playMacro: playMacro(named, count: times, into: &outcome)
         }
         settle()
+        if reduced, outcome.notice == nil { outcome.notice = .primaryOnly }
+        // Only `i`, `a`, `c` … come here in insert mode.
+        if mode == .insert, insertRun == nil, command != .escape { insertRun = InsertRun(entry: command, base: text, start: primary.head) }
         return outcome
     }
 
@@ -487,15 +562,9 @@ public struct TextEngine {
     /// `c`, `i`, `a`, `o` … would otherwise work on selections it cannot show
     /// or type at, so these keep the primary selection first.
     public mutating func performAtPrimary(_ command: Command, count: Int? = nil) -> Outcome {
-        var reduced = false
-        switch command {
-        case .change, .insert:
-            if mode != .insert, selections.count > 1 { selections = [primary]; primaryIndex = 0; reduced = true }
-        default: break
-        }
-        var outcome = perform(command, count: count)
-        if reduced, outcome.notice == nil { outcome.notice = .primaryOnly }
-        return outcome
+        typesAtPrimary = true
+        defer { typesAtPrimary = false }
+        return perform(command, count: count)
     }
 
     /// `/` and `?`: remembers the query (a regular expression, literal if it
@@ -525,21 +594,70 @@ public struct TextEngine {
         return outcome
     }
 
+    /// `S`: the selections fall apart at every match, without one they only
+    /// run forward. The pattern also becomes the search for `n`.
+    @discardableResult
+    public mutating func splitMatches(_ pattern: String) -> Outcome {
+        var outcome = Outcome()
+        guard !pattern.isEmpty else { return outcome }
+        searchQuery = pattern
+        var found: [Selection] = [], hit = false
+        for range in selections {
+            guard !range.isEmpty else { found.append(range); continue }
+            var start = range.from
+            for match in matches(pattern, in: range.range) {
+                hit = true
+                found.append(Selection(anchor: start, head: match.from))
+                start = match.to
+            }
+            if start < range.to { found.append(Selection(anchor: start, head: range.to)) }
+        }
+        if !hit { outcome.notice = .noMatch }
+        selections = found; primaryIndex = 0
+        settle()
+        return outcome
+    }
+
     /// Typing at every caret, for several selections; the app's native typing
-    /// of a single one comes in through `sync`.
+    /// of a single one comes in through `sync`. A line break keeps the indent.
     @discardableResult
     public mutating func insertText(_ string: String) -> Outcome {
+        guard mode == .insert, !string.isEmpty else { return Outcome() }
+        return type { engine, caret in
+            if string == "\n", let edit = TextTyping.newline(in: engine.string, range: NSRange(location: caret, length: 0)) {
+                return (edit.range, edit.replacement, (edit.replacement as NSString).length)
+            }
+            if engine.autoPairs, let pair = TextTyping.pairing(string, in: engine.text, at: caret) {
+                return (NSRange(location: caret, length: 0), pair.insert, pair.advance)
+            }
+            return (NSRange(location: caret, length: 0), string, (string as NSString).length)
+        }
+    }
+
+    /// `change` gives each caret its edit and how far into the replacement the caret goes.
+    private mutating func type(_ change: (TextEngine, Int) -> (range: NSRange, replacement: String, advance: Int)) -> Outcome {
         var outcome = Outcome()
-        guard mode == .insert, !string.isEmpty else { return outcome }
-        let length = (string as NSString).length
-        var edits: [Edit] = [], moved: [Selection] = [], shift = 0
-        for range in selections {
-            edits.append(Edit(range: NSRange(location: range.head, length: 0), replacement: string))
-            let anchor = range.anchor <= range.head && !range.isEmpty ? range.anchor + shift : range.anchor + shift + length
-            moved.append(Selection(anchor: anchor, head: range.head + shift + length))
-            shift += length
+        var edits: [Edit] = [], moved: [Selection] = [], shift = 0, end = 0
+        for (index, range) in selections.enumerated() {
+            var item = change(self, range.head)
+            if item.range.location < end { item.range = NSRange(location: range.head, length: 0) }
+            end = NSMaxRange(item.range)
+            let delta = (item.replacement as NSString).length - item.range.length
+            let head = item.range.location + shift + item.advance
+            if index == 0 {
+                // No replacement: the caret stepped over the typed character.
+                let typed = item.replacement.isEmpty && item.range.length == 0 ? text.substring(with: NSRange(location: range.head, length: item.advance)) : item.replacement
+                logTyping(typed, advance: item.advance)
+            }
+            if !item.replacement.isEmpty || item.range.length > 0 { edits.append(Edit(range: item.range, replacement: item.replacement)) }
+            if range.isEmpty { moved.append(.point(head)) }
+            // A one-wide selection ahead of a new pair shrinks to the closing half.
+            else if range.isBackward { moved.append(Selection(anchor: !isWide(range) && item.advance < (item.replacement as NSString).length ? head + 1 : range.anchor + shift + delta, head: head)) }
+            else { moved.append(Selection(anchor: min(range.anchor + shift, head), head: head)) }
+            shift += delta
         }
         commit(edits, selecting: moved, into: &outcome)
+        if edits.isEmpty { selections = moved }
         settle()
         return outcome
     }
@@ -550,14 +668,37 @@ public struct TextEngine {
         var outcome = Outcome()
         guard mode == .insert else { return outcome }
         var edits: [Edit] = [], end = 0
-        for range in selections where range.head > 0 {
-            let start = max(end, text.previousBoundary(range.head))
-            if start < range.head { edits.append(Edit(range: NSRange(location: start, length: range.head - start), replacement: "")) }
-            end = range.head
+        for (index, range) in selections.enumerated() where range.head > 0 {
+            let pair = autoPairs && !isWide(range) ? TextTyping.pairDeletion(in: text, at: range.head) : nil
+            let start = max(end, pair?.location ?? text.previousBoundary(range.head))
+            let stop = pair.map(NSMaxRange) ?? range.head
+            if start < stop { edits.append(Edit(range: NSRange(location: start, length: stop - start), replacement: "")) }
+            end = stop
+            if index == 0 { logDeletion(pair: pair != nil) }
         }
         commit(edits, into: &outcome)
         settle()
         return outcome
+    }
+
+    /// What `.` and a macro replay: the text as it stands, indent included.
+    /// With automatic pairs it goes through them again, Helix replays keys.
+    mutating func typeAgain(_ typed: TypedText) -> Outcome {
+        if autoPairs {
+            var composer = EditComposer(length: text.length), outcome = Outcome()
+            for character in typed.text {
+                let value = String(character)
+                composer.add(type { engine, caret in
+                    let pair = TextTyping.pairing(value, in: engine.text, at: caret)
+                    return (NSRange(location: caret, length: 0), pair?.insert ?? value, pair?.advance ?? (value as NSString).length)
+                })
+            }
+            composer.finish(in: text, into: &outcome)
+            return outcome
+        }
+        let body = typed.text + typed.tail, advance = (typed.text as NSString).length
+        guard !body.isEmpty else { return Outcome() }
+        return type { _, caret in (NSRange(location: caret, length: 0), body, advance) }
     }
 
     // MARK: Selections
@@ -589,7 +730,7 @@ public struct TextEngine {
         return Selection(anchor: lines.first, head: head)
     }
 
-    private mutating func copyToNextLine(_ count: Int) {
+    private mutating func copyToLine(_ count: Int, forward: Bool) {
         var result = selections, newPrimary = 0
         let starts = lineStarts
         func row(_ offset: Int) -> (row: Int, column: Int) {
@@ -614,7 +755,9 @@ public struct TextEngine {
             result.append(range)
             var made = 0, step = 1
             while made < count {
-                let anchorRow = anchor.row + step * height, headRow = head.row + step * height
+                let offset = step * height
+                let anchorRow = forward ? anchor.row + offset : max(0, anchor.row - offset)
+                let headRow = forward ? head.row + offset : max(0, head.row - offset)
                 guard anchorRow < starts.count, headRow < starts.count else { break }
                 let newAnchor = place(anchorRow, anchor.column), newHead = place(headRow, head.column)
                 // Lines that are too short are skipped.
@@ -623,10 +766,28 @@ public struct TextEngine {
                     result.append(put(.point(newAnchor.offset), newHead.offset, extend: true))
                     made += 1
                 }
+                if anchorRow == 0, headRow == 0 { break }
                 step += 1
             }
         }
         selections = result; primaryIndex = newPrimary
+    }
+
+    private mutating func splitOnLines() {
+        var result: [Selection] = []
+        for range in selections {
+            guard !range.isEmpty else { result.append(range); continue }
+            var start = range.from, index = range.from
+            while index < range.to {
+                if TextLines.isBreak(text.character(at: index)) {
+                    result.append(Selection(anchor: start, head: index))
+                    index = text.nextBoundary(index)
+                    start = index
+                } else { index += 1 }
+            }
+            if start < range.to { result.append(Selection(anchor: start, head: range.to)) }
+        }
+        selections = result; primaryIndex = 0
     }
 
     // MARK: Yank, delete, paste
@@ -636,15 +797,24 @@ public struct TextEngine {
     }
 
     /// False if there was nothing to take: an empty place must not wipe the register.
-    private mutating func yank(wholeLines: Bool) -> Bool {
+    /// Also false for a named register: only the default one reaches the system pasteboard.
+    private mutating func yank(wholeLines: Bool, into name: String?) -> Bool {
         var values = selections.map { text.substring(with: $0.range) }
-        guard values.contains(where: { !$0.isEmpty }) else { return false }
+        guard name != "_", values.contains(where: { !$0.isEmpty }) else { return false }
         // The last line lacks the break that makes it a line in the register.
         if wholeLines, !textEndsWithBreak, let last = selections.last, last.to == text.length, !last.isEmpty {
             values[values.count - 1] += "\n"
         }
-        register = Register(values: values)
-        return true
+        guard let name, !Self.isDefaultRegister(name) else { register = Register(values: values); return true }
+        registers[name] = Register(values: values)
+        return false
+    }
+    /// `"`, as in Helix, and the two of the system clipboard: the default
+    /// register already follows it.
+    private static func isDefaultRegister(_ name: String) -> Bool { ["\"", "+", "*"].contains(name) }
+    private func contents(of name: String?) -> Register? {
+        guard let name, !Self.isDefaultRegister(name) else { return register }
+        return registers[name]
     }
 
     private func isWholeLines(_ range: Selection) -> Bool {
@@ -655,8 +825,8 @@ public struct TextEngine {
         return false
     }
 
-    private mutating func delete(change: Bool, wholeLines: Bool, into outcome: inout Outcome) {
-        outcome.yanked = yank(wholeLines: wholeLines)
+    private mutating func delete(change: Bool, wholeLines: Bool, register name: String?, into outcome: inout Outcome) {
+        outcome.yanked = yank(wholeLines: wholeLines, into: name)
         let linewise = change && selections.allSatisfy(isWholeLines)
         var edits: [Edit] = [], carets: [Selection] = [], shift = 0
         var mergedIntoLastLine = false, previousEnd = 0
@@ -667,11 +837,12 @@ public struct TextEngine {
                 start = text.previousBoundary(start); mergedIntoLastLine = true
             }
             previousEnd = range.to
-            // Whole lines stay as one empty line for the new text.
+            // Whole lines stay as one empty line for the new text, indented like the line behind.
             let keepsLine = linewise && (range.to < text.length || textEndsWithBreak)
-            let replacement = keepsLine ? "\n" : ""
+            let indent = keepsLine ? indentation(ofLine: range.to) : ""
+            let replacement = keepsLine ? indent + "\n" : ""
             edits.append(Edit(range: NSRange(location: start, length: range.to - start), replacement: replacement))
-            carets.append(.point(start + shift))
+            carets.append(.point(start + shift + (indent as NSString).length))
             shift += (replacement as NSString).length - (range.to - start)
         }
         commit(edits.filter { $0.range.length > 0 }, selecting: carets, into: &outcome)
@@ -680,8 +851,11 @@ public struct TextEngine {
     }
 
     /// `selectsPasted`: in select mode the selection stays where it is.
-    private mutating func paste(before: Bool, count: Int, selectsPasted: Bool, into outcome: inout Outcome) {
-        guard let register, !register.values.isEmpty else { return }
+    private mutating func paste(before: Bool, count: Int, selectsPasted: Bool, register name: String?, into outcome: inout Outcome) {
+        guard let register = contents(of: name), !register.values.isEmpty else {
+            if name != nil, name != "_" { outcome.notice = .registerEmpty }
+            return
+        }
         let linewise = register.isLinewise
         var edits: [Edit] = [], ranges: [Selection] = [], shift = 0
         for (index, range) in selections.enumerated() {
@@ -708,8 +882,11 @@ public struct TextEngine {
         commit(edits.sorted { $0.range.location < $1.range.location }, selecting: selectsPasted ? ranges : nil, into: &outcome)
     }
 
-    private mutating func replaceWithRegister(count: Int, into outcome: inout Outcome) {
-        guard let register, !register.values.isEmpty else { return }
+    private mutating func replaceWithRegister(count: Int, register name: String?, into outcome: inout Outcome) {
+        guard let register = contents(of: name), !register.values.isEmpty else {
+            if name != nil, name != "_" { outcome.notice = .registerEmpty }
+            return
+        }
         var edits: [Edit] = [], index = 0
         for range in selections where !range.isEmpty {
             let value = register.values[min(index, register.values.count - 1)]
@@ -845,14 +1022,22 @@ public struct TextEngine {
         case .lineBelow, .lineAbove:
             var edits: [Edit] = [], carets: [Selection] = [], shift = 0
             for range in selections {
-                let bounds = lineBounds(range)
-                let position = entry == .lineBelow ? TextLines.end(text, bounds.last) : bounds.first
-                edits.append(Edit(range: NSRange(location: position, length: 0), replacement: String(repeating: "\n", count: count)))
-                for line in 0..<count { carets.append(.point(position + shift + line + (entry == .lineBelow ? 1 : 0))) }
-                shift += count
+                let bounds = lineBounds(range), below = entry == .lineBelow
+                let position = below ? TextLines.end(text, bounds.last) : bounds.first
+                let indent = indentation(ofLine: below ? bounds.last : bounds.first), step = (indent as NSString).length + 1
+                edits.append(Edit(range: NSRange(location: position, length: 0), replacement: String(repeating: below ? "\n" + indent : indent + "\n", count: count)))
+                for line in 0..<count { carets.append(.point(position + shift + line * step + step - (below ? 0 : 1))) }
+                shift += count * step
             }
             commit(edits, selecting: carets, into: &outcome)
         }
+    }
+    /// What a new line takes over from the line at `offset`, exactly as it stands.
+    func indentation(ofLine offset: Int) -> String {
+        let line = TextLines.start(text, offset), end = TextLines.end(text, line)
+        var first = line
+        while first < end, [32, 9].contains(text.character(at: first)) { first += 1 }
+        return text.substring(with: NSRange(location: line, length: first - line))
     }
     /// The block cursor of a selection: the mode has already changed here.
     private func cursorBeforeInsert(_ range: Selection) -> Int {
