@@ -56,6 +56,8 @@ struct DocumentTextHost {
 @MainActor
 final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     let store: DocumentTextStore
+    /// Whose jump list the engine holds.
+    let textID = UUID()
     var host: DocumentTextHost?
     /// A commit ended; nil: the model refused it.
     var onCommitted: ((TextFlowFocus?) -> Void)?
@@ -346,21 +348,43 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
             type(edit.replacement, over: edit.range, before: before, separate: true)
             return
         }
+        if text == "\n", let edit = KeyboardRouter.shared.indentedNewline(in: store.string, range: selection) {
+            type(edit.replacement, over: edit.range, before: selection)
+            return
+        }
+        if selection.length == 0, KeyboardRouter.shared.pairsTyping, let pairing = TextTyping.pairing(text, in: store.text, at: selection.location) {
+            typePair(pairing)
+            return
+        }
         type(text, over: selection, before: selection)
         if text == " " { finishAutomaticList() }
+    }
+    /// Automatic pairs: the caret stays inside a new pair or steps over a closing half.
+    private func typePair(_ pairing: TextTyping.Pairing) {
+        let caret = selection.location + pairing.advance
+        if pairing.insert.isEmpty {
+            setSelection(NSRange(location: caret, length: 0))
+            afterTyping()
+        } else {
+            type(pairing.insert, over: selection, before: selection, caret: caret)
+        }
     }
     func deleteBackward() {
         guard isActive, KeyboardRouter.shared.allowsTyping else { return }
         if hasSeveralCarets { applyEngine(KeyboardRouter.shared.engine.deleteBackward()); return }
         if selection.length > 0 { type("", over: selection, before: selection); return }
         guard selection.location > 0 else { return }
+        if marked == nil, KeyboardRouter.shared.pairsTyping, let pair = TextTyping.pairDeletion(in: store.text, at: selection.location) {
+            type("", over: pair, before: selection)
+            return
+        }
         let start = (store.string as NSString).rangeOfComposedCharacterSequence(at: selection.location - 1).location
         type("", over: NSRange(location: start, length: selection.location - start), before: selection)
     }
     /// One edit at the caret: the buffer first, then the model behind it.
-    private func type(_ text: String, over range: NSRange, before: NSRange, separate: Bool = false) {
+    private func type(_ text: String, over range: NSRange, before: NSRange, separate: Bool = false, caret: Int? = nil) {
         store.replace(range, with: NSAttributedString(string: text, attributes: typingAttributes))
-        selection = NSRange(location: range.location + (text as NSString).length, length: 0)
+        selection = NSRange(location: caret ?? range.location + (text as NSString).length, length: 0)
         verticalGoal = nil; selectionAnchor = nil
         commit([TextListEditing.Edit(range: range, replacement: text)], style: typingStyle, before: before, separate: separate)
         afterTyping()

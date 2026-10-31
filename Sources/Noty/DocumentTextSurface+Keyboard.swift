@@ -23,6 +23,7 @@ extension DocumentTextSurface: KeyboardTextTarget {
     /// Undo, taps and typing happen outside the engine: it takes over the buffer.
     @discardableResult
     func keyboardSync() -> Bool {
+        KeyboardRouter.shared.engine.useJumps(of: textID)
         KeyboardRouter.shared.engine.sync(text: store.string, selection: selection)
         return true
     }
@@ -31,7 +32,7 @@ extension DocumentTextSurface: KeyboardTextTarget {
         keyboardSync()
         let router = KeyboardRouter.shared
         switch command {
-        case .paste, .replaceWithRegister: router.adoptPasteboard()
+        case .paste, .replaceWithRegister, .playMacro: router.adoptPasteboard()
         default: break
         }
         router.engine.layout = DocumentLineLayout(store: store, lines: host?.visibleLines() ?? 40)

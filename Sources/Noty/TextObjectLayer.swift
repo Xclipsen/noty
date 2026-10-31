@@ -697,7 +697,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         guard KeyboardRouter.shared.allowsTyping else { return false }
         if replaceFlowSelection(with: text) { return false }
         if let handled = handleListInput(textView, range: range, text: text) { return handled }
-        guard !insertingList, text == "\n", let edit = TextListEditing.newline(in: textView.text ?? "", range: range) else { return true }
+        if let handled = handlePairInput(textView, range: range, text: text) { return handled }
+        guard !insertingList, text == "\n", let edit = TextListEditing.newline(in: textView.text ?? "", range: range)
+                ?? (textView.markedTextRange == nil ? KeyboardRouter.shared.indentedNewline(in: textView.text ?? "", range: range) : nil) else { return true }
         insertingList = true; defer { insertingList = false }
         textView.selectedRange = edit.range; textView.insertText(edit.replacement)
         return false

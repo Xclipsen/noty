@@ -41,6 +41,7 @@ struct KeyboardOverlay: View {
         HStack(spacing: 6) {
             Text(router.label).font(.caption2.weight(.bold).monospaced())
             if !router.contextLabel.isEmpty { Text(router.contextLabel).font(.caption2.weight(.medium).monospaced()) }
+            if let register = router.recordingRegister { Text("REC \(register)").font(.caption2.weight(.bold).monospaced()).foregroundStyle(.red) }
             if router.selectionCount > 1 { Text("\(router.selectionCount) Auswahlen").font(.caption2.monospaced()) }
             if !router.pending.isEmpty { Text(router.pending).font(.caption2.monospaced()).foregroundStyle(.secondary) }
             if let notice = router.notice { Text(notice).font(.caption2).foregroundStyle(.secondary) }

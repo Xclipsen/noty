@@ -16,6 +16,8 @@ enum AppSettingsKey {
     static let snapping = "noty.editor.snapping"
     /// Keyboard mode (docs/KEYBOARD.md): on unless switched off.
     static let keyboardMode = "noty.keyboard.mode"
+    /// Automatic pairs while typing in the keyboard mode: off unless switched on.
+    static let autoPairs = "noty.keyboard.autoPairs"
     /// Text editor 2 in text documents (docs/TEXT-EDITOR-2.md): off unless switched on.
     static let textEditor2 = "noty.text.editor2"
     /// Lasso: what it selects (`SelectionFilter.bits`) and freeform/rectangle.
@@ -230,6 +232,7 @@ private struct EditorSettingsPage: View {
     @AppStorage(AppSettingsKey.typewriter) private var typewriter = false
     @AppStorage(AppSettingsKey.snapping) private var snapping = true
     @AppStorage(AppSettingsKey.keyboardMode) private var keyboardMode = true
+    @AppStorage(AppSettingsKey.autoPairs) private var autoPairs = false
     var body: some View {
         Form {
             Section {
@@ -240,6 +243,9 @@ private struct EditorSettingsPage: View {
                     .accessibilityHint("Textfelder, Bilder, Formen und Auswahlen rasten beim langsamen Verschieben an Kanten, Mitten, Linien und Seitenrändern ein.")
                 Toggle("Tastaturmodus (wie Helix)", isOn: $keyboardMode)
                     .accessibilityHint("Steuert die App mit einer Hardware-Tastatur: Erst auswählen, dann handeln. i schreibt, Esc geht eine Ebene zurück, die Leertaste öffnet das Menü, Leertaste und h zeigen alle Tasten.")
+                Toggle("Klammern automatisch schließen", isOn: $autoPairs)
+                    .disabled(!keyboardMode)
+                    .accessibilityHint("Im Tastaturmodus schließt die Eingabe runde, eckige und geschweifte Klammern und Anführungszeichen selbst, außer direkt neben einem Wort.")
             } header: { Text("Alle Bereiche") } footer: {
                 Text("Die Seitenleiste merkt sich auch das letzte Ein- oder Ausblenden im Editor. Der Schreibmaschinen-Modus hält die Schreibzeile beim Tippen im oberen Drittel, auch mit schwebender oder externer Tastatur. Einrasten wirkt nur bei langsamer Bewegung; ein zweiter Finger auf dem Bildschirm unterdrückt es beim Ziehen.")
             }
