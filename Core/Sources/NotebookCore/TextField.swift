@@ -177,10 +177,20 @@ extension TextBox {
 public enum TextFieldRotation {
     public static let rightAngleReach = 6.0
     public static let diagonalReach = 2.5
+    /// An engaged target lets go this much later than it took hold, so the
+    /// object does not flicker at the edge of the magnet.
+    public static let releaseMargin = 2.0
 
     /// The angle to show and store, and the snap target if it engaged.
-    public static func snapped(_ degrees: Double) -> (angle: Double, target: Double?) {
+    /// `holding`: the target engaged so far in this drag.
+    public static func snapped(_ degrees: Double, holding: Double? = nil) -> (angle: Double, target: Double?) {
         let angle = TextBox.storedRotation(degrees) ?? 0
+        if let holding {
+            let reach = (holding / 90).rounded() * 90 == holding ? rightAngleReach : diagonalReach
+            var distance = abs(angle - holding).truncatingRemainder(dividingBy: 360)
+            if distance > 180 { distance = 360 - distance }
+            if distance <= reach + releaseMargin { return (holding, holding) }
+        }
         let right = (angle / 90).rounded() * 90
         if abs(angle - right) <= rightAngleReach { return (right == -180 ? 180 : right, right == -180 ? 180 : right) }
         let diagonal = (angle / 45).rounded() * 45

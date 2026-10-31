@@ -289,7 +289,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// locked image offers only „Entsperren“.
     private func updateBar() {
         guard hasSelection else {
-            bar.show(toolActive && ObjectClipboard.content != nil ? [[.paste]] : [])
+            bar.show(toolActive && offersPaste && ObjectClipboard.content != nil ? [[.paste]] : [])
             return
         }
         let onlyImages = !images.isEmpty && ink.isEmpty && texts.isEmpty && shapes.isEmpty
@@ -360,19 +360,28 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         var responder: UIResponder? = self
         while let current = responder, !(current is UIViewController) { responder = current.next }
         guard let parent = responder as? UIViewController, parent.presentedViewController == nil else { return }
-        do {
-            let image = try ImageRendering.image(object)
-            let page = pageID, expected = generation
-            let controller = UIHostingController(rootView: ImageCropView(image: image, crop: object.crop) { [weak self] crop in
-                guard let self, self.active, self.pageID == page, self.generation == expected, self.selectedImage?.id == object.id else { return }
-                do {
-                    let cropped = try object.cropped(to: crop, in: self.limits)
-                    self.editImage { $0 = cropped }
-                } catch { self.onError?(error.localizedDescription) }
-            })
-            controller.modalPresentationStyle = .formSheet
-            cropController = controller; parent.present(controller, animated: true)
-        } catch { onError?(error.localizedDescription) }
+        let page = pageID, expected = generation
+        // The full rendition decodes off the main thread (a large HEIC takes a moment).
+        ImageRendering.prepare(object, limit: 2048) { [weak self, weak parent] failure in
+            guard let self, let parent, self.active, self.pageID == page, self.generation == expected,
+                  self.selectedImage?.id == object.id, parent.presentedViewController == nil else { return }
+            do {
+                if let failure { throw failure }
+                let image = try ImageRendering.image(object)
+                let controller = UIHostingController(rootView: ImageCropView(image: image, crop: object.crop) { [weak self] crop in
+                    guard let self else { return }
+                    guard self.active, self.pageID == page, self.generation == expected, self.selectedImage?.id == object.id else {
+                        self.onError?("Die Seite wurde inzwischen geändert. Bitte das Bild erneut zuschneiden."); return
+                    }
+                    do {
+                        let cropped = try object.cropped(to: crop, in: self.limits)
+                        self.editImage { $0 = cropped }
+                    } catch { self.onError?(error.localizedDescription) }
+                })
+                controller.modalPresentationStyle = .formSheet
+                self.cropController = controller; parent.present(controller, animated: true)
+            } catch { self.onError?(error.localizedDescription) }
+        }
     }
     /// The selected field with its height from the content („Höhe immer aus
     /// dem Inhalt“): page text migrated to a field still has the height of its
@@ -502,19 +511,28 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         let reset = !samePage || self.layout != layout || self.generation != generation
         let needsRefresh = reset || incoming.shapes != content.shapes || active || (enabled && Self.planeTool(tool))
         // Image tool: an image added from outside (import, paste) is selected at once.
-        let added = !reset && enabled && tool == .image && self.tool == .image
+        let added = !reset && enabled && (awaitingPastedImage || tool == .image && self.tool == .image)
             ? incoming.images.last(where: { image in !content.images.contains { $0.id == image.id } }) : nil
         if reset || incoming != content {
-            clearSelection(); endLift()
+            clearSelection(); endLift(); endDragFeedback()
             preview = nil; inkTransform = nil; startContent = nil; draft = nil; lasso = []
         }
-        if let added { images = [added.id] }
+        if let added {
+            images = [added.id]
+            // With any other tool the pasted image becomes a finger selection:
+            // visibly there, and movable at once.
+            if awaitingPastedImage, !Self.planeTool(tool) { touchSelection = true }
+            awaitingPastedImage = false
+        }
         if let adopted {
             if samePage, adopted.content == incoming {
                 if !hasSelection { select(adopted.selection, in: incoming) }
             } else { self.adopted = nil }
         }
-        if self.tool != tool || !enabled { endLift(); preview = nil; inkTransform = nil; startContent = nil; draft = nil; lasso = [] }
+        if self.tool != tool || !enabled {
+            endLift(); endDragFeedback(); awaitingPastedImage = false
+            preview = nil; inkTransform = nil; startContent = nil; draft = nil; lasso = []
+        }
         // A tool change ends every selection (lasso, image, finger): none
         // reappears when switching back.
         if self.tool != tool { adopted = nil; clearSelection() }
@@ -531,6 +549,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         if needsRefresh { refresh() }
     }
 
+    /// The drag was taken away (tool change, page changed): its gesture never
+    /// reaches the end path, so guides and the angle label go here.
+    private func endDragFeedback() {
+        snapping.end(); angleLabel.isHidden = true; rotationDrag = nil; groupTransform = nil
+    }
+    /// Set when an image is pasted with any tool: the next added image gets selected.
+    var awaitingPastedImage = false
+    /// Only the page being worked on offers „Einfügen“, not every visible one.
+    var offersPaste = true { didSet { if offersPaste != oldValue { updateBar() } } }
     func adoptCommit(_ onCommit: @escaping (PageContent, PageContent) -> Bool) { self.onCommit = onCommit }
     /// A drag, lift or new shape is shown instead of the committed content.
     var showsTransientPreview: Bool { preview != nil || draft != nil || lift != nil || startContent != nil }
@@ -935,7 +962,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             if var drag = rotationDrag {
                 let pivot = drag.pivot
                 let turn = (atan2(point.y - pivot.y, point.x - pivot.x) - atan2(initialPoint.y - pivot.y, initialPoint.x - pivot.x)) * 180 / .pi
-                let snap = TextFieldRotation.snapped(drag.base + turn)
+                let snap = TextFieldRotation.snapped(drag.base + turn, holding: rotationSnap)
                 if let target = snap.target, target != rotationSnap { rotationTick(at: gesture.location(in: self)) }
                 rotationSnap = snap.target
                 let delta = snap.angle - drag.base
@@ -1015,11 +1042,18 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 selectAtTap(CGPoint(x: initialPoint.x + layout.contentOrigin.x, y: initialPoint.y + layout.contentOrigin.y)); return
             } else if dragMode == 3, let draft, (try? draft.validate()) != nil, limits.contains(draft.bounds, tolerance: 0.02) {
                 var value = initial; value.shapes.append(draft)
-                if commit(value, previous: initial) { shapes = [draft.id] }
+                if commit(value, previous: initial) {
+                    shapes = [draft.id]
+                    // Finished form: the same confirmation as a held form or a lasso.
+                    haptic(completed: true, at: gesture.location(in: self))
+                }
             } else if var preview {
                 if let inkTransform {
                     if let changed = transformedInk(initial, using: inkTransform, inkOnly: false) { preview.drawing = changed.drawing }
-                    else { preview = initial }
+                    else {
+                        preview = initial
+                        onError?("Die Handschrift würde über den Seitenrand hinausragen. Die Änderung wurde nicht übernommen.")
+                    }
                 }
                 _ = commit(preview, previous: initial)
             }
@@ -1454,12 +1488,14 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     /// New copies (new IDs) of `copied`, 24 pt beside `frame` and on the page; selected.
     private func paste(_ copied: PageContent, from frame: CGRect) {
+        let bounds = limits.cgRect
+        guard frame.width <= bounds.width, frame.height <= bounds.height else {
+            onError?("Die kopierte Auswahl ist zu groß für diese Seite und wurde nicht eingefügt."); return
+        }
         clearSelection()
         var value = content
-        let bounds = limits.cgRect
         let dx = max(bounds.minX - frame.minX, min(24, bounds.maxX - frame.maxX))
         let dy = max(bounds.minY - frame.minY, min(24, bounds.maxY - frame.maxY))
-        guard frame.width <= bounds.width, frame.height <= bounds.height else { return }
         for box in copied.textBoxes { var box = box; box.id = UUID(); box.x += dx; box.y += dy; texts.insert(box.id); value.textBoxes.append(box) }
         for image in copied.images { var image = image; image.id = UUID(); image.x += dx; image.y += dy; images.insert(image.id); value.images.append(image) }
         for shape in copied.shapes { var shape = shape.translated(x: dx, y: dy); shape.id = UUID(); shapes.insert(shape.id); value.shapes.append(shape) }

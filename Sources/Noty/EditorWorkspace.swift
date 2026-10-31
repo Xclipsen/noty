@@ -287,6 +287,20 @@ struct EditorWorkspaceView: View {
         switch edge { case .left: .leading; case .right: .trailing; case .bottom: .bottom }
     }
 
+    /// The tab sits mid-edge, exactly where a toolbar docked at the same edge
+    /// has its buttons; then it moves to the end of that edge.
+    private func lawTabClearsToolbar(_ edge: LawPanelEdge) -> Bool {
+        switch (edge, toolbox.preferences.effectiveDock) {
+        case (.left, .left), (.right, .right), (.bottom, .bottom): true
+        default: false
+        }
+    }
+    private func lawTabAlignment(_ edge: LawPanelEdge) -> Alignment {
+        guard lawTabClearsToolbar(edge) else { return lawAlignment(edge) }
+        switch edge { case .left: return .bottomLeading; case .right, .bottom: return .bottomTrailing }
+    }
+    private func lawTabEdges(_ edge: LawPanelEdge) -> Edge.Set { edge == .bottom ? .trailing : .bottom }
+
     @ViewBuilder
     private func lawLayer(_ l: LawPanelLayout, shown: Bool, visible: Bool, stashed: Bool) -> some View {
         let side = lawAlignment(l.edge)
@@ -297,11 +311,11 @@ struct EditorWorkspaceView: View {
             if let drop = lawDrag?.drop, l.changes(drop) {
                 lawDropPreview(drop, l).allowsHitTesting(false).transition(.opacity)
             }
-            LawPanelView(drag: lawMoveGesture(l), pen: lawPen) { next in
+            LawPanelView(drag: lawMoveGesture(l), pen: lawPen, onPenChange: { next in
                 lawPencil = next.kind == .marker ? "marker" : next.kind == .eraser ? "eraser" : "none"
                 // One highlighter colour for notebook and law reader.
                 if next.color != toolbox.preferences.markerColor { toolbox.preferences.markerColor = next.color }
-            }
+            }, canDock: l.canDock)
                 .frame(width: frame.width, height: frame.height)
                 .opacity(shown ? 1 : 0).allowsHitTesting(visible).accessibilityHidden(!visible)
                 .scaleEffect(lifted ? 0.97 : 1)
@@ -314,7 +328,8 @@ struct EditorWorkspaceView: View {
             if stashed {
                 lawEdgeTab(l)
                     .offset(x: offset.width - l.hiddenShift * l.outward.x, y: offset.height - l.hiddenShift * l.outward.y)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: side)
+                    .padding(lawTabEdges(l.edge), lawTabClearsToolbar(l.edge) ? 24 : 0)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: lawTabAlignment(l.edge))
                     .transition(.opacity)
             }
         }
@@ -428,7 +443,8 @@ struct EditorWorkspaceView: View {
                 .position(x: target.x + target.width / 2, y: target.y + target.height / 2)
         case .stash(let edge):
             lawTabShape(edge, highlighted: true)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: lawAlignment(edge))
+                .padding(lawTabEdges(edge), lawTabClearsToolbar(edge) ? 24 : 0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: lawTabAlignment(edge))
         case .stay:
             EmptyView()
         }

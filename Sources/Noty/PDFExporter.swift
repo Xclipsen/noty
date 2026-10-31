@@ -144,7 +144,12 @@ enum PDFExporter {
     }
 
     nonisolated private static func assets(_ page: Page, layout: PageLayout, images provider: ImageAssetProviding) throws -> PageAssets {
-        let images = try (page.images ?? []).map { try ImageRendering.decoded($0, limit: 4096, assets: provider) }
+        let objects = page.images ?? []
+        let images = try objects.map { object in
+            // 300 dpi from the third image on.
+            let limit = ImageRendering.outputLimit(object, imagesOnPage: objects.count, maximum: 4096, pixelsPerPoint: 300.0 / 72)
+            return try ImageRendering.decoded(object, limit: limit, assets: provider)
+        }
         guard !page.drawing.isEmpty else { return PageAssets(images: images, ink: nil) }
         let drawing = try PKDrawing(data: page.drawing)
         // Bound the temporary raster for unusually large PDF pages.

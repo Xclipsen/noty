@@ -176,10 +176,16 @@ struct EditorToolOptions: View {
         option("Freiform", symbol: "lasso", selected: lassoMode == .freeform, help: "Freiform – Auswahl frei umfahren") { lassoMode = .freeform }
         option("Rechteck", symbol: "rectangle.dashed", selected: lassoMode == .rectangle, help: "Rechteck – Auswahl aufziehen") { lassoMode = .rectangle }
         groupDivider
-        option("Handschrift", symbol: "pencil.tip", selected: selectionFilter.ink, help: "Handschrift auswählen") { selectionFilter.ink.toggle() }
-        option("Textfelder", symbol: "textformat", selected: selectionFilter.text, help: "Textfelder auswählen") { selectionFilter.text.toggle() }
-        option("Bilder", symbol: "photo", selected: selectionFilter.images, help: "Bilder auswählen") { selectionFilter.images.toggle() }
-        option("Formen", symbol: "square.on.circle", selected: selectionFilter.shapes, help: "Formen auswählen") { selectionFilter.shapes.toggle() }
+        option("Handschrift", symbol: "pencil.tip", selected: selectionFilter.ink, help: "Handschrift auswählen") { toggleFilter(\.ink) }
+        option("Textfelder", symbol: "textformat", selected: selectionFilter.text, help: "Textfelder auswählen") { toggleFilter(\.text) }
+        option("Bilder", symbol: "photo", selected: selectionFilter.images, help: "Bilder auswählen") { toggleFilter(\.images) }
+        option("Formen", symbol: "square.on.circle", selected: selectionFilter.shapes, help: "Formen auswählen") { toggleFilter(\.shapes) }
+    }
+    /// At least one kind stays on: with none the lasso would select nothing, without saying why.
+    private func toggleFilter(_ kind: WritableKeyPath<SelectionFilter, Bool>) {
+        var next = selectionFilter
+        next[keyPath: kind].toggle()
+        if next.ink || next.text || next.images || next.shapes { selectionFilter = next }
     }
 
     /// Laserpointer: mode | colour | trail length.

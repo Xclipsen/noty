@@ -1,5 +1,9 @@
 # Bibliothek – Format 1, Build 10
 
+## Nachtrag 31.10.2026 · Bedienfluss
+
+Bearbeiten endet automatisch, sobald Suche oder Sortierung das Umordnen beenden. Ein Tipp während eines Vorgangs bekommt die Antwort „Bitte warten …“ statt nichts. Der Bereich wechselt erst, wenn die laufende Bibliotheksoperation fertig ist, damit nie zwei Writer auf demselben Root arbeiten. „Neu“ in „Zuletzt verwendet“ oder bei aktiver Suche zeigt danach „Alle Unterlagen“. Verschieben in den aktuellen Ordner ändert nichts. Wiederherstellen nennt „Alle Unterlagen“, wenn der Ordner noch im Papierkorb liegt. Vorschauen werden außerhalb des Bibliotheks-Actors dekodiert, höchstens zwei Pakete zugleich.
+
 ## Nachtrag 22.10.2026 · Textdokumente
 
 „Neu“ bietet Heft, Textdokument und Ordner (vorher „Notizbuch“), der Import heißt „.noty importieren …“ und übernimmt die Art aus der Datei. Textdokumente (Schema 15, [TEXT-REBUILD-62](TEXT-REBUILD-62.md) §4, [STORAGE](STORAGE.md)) liegen wie Hefte unter `Library/Documents/<UUID>` und nehmen an Ordnern, Suche, Anheften, Zuletzt, Duplizieren, Papierkorb, endgültigem Löschen und Bibliotheksbackup teil. Der Index trägt am Eintrag optional `kind: "textDocument"` (Indexformat 1 unverändert) für Symbol (`doc.text`) und Bedienhilfe; das Dokument selbst ist maßgeblich (Reparatur beim Vorschaubild, `LibraryStore.setKind`). Implementiert und gebaut, am iPad ungeprüft.

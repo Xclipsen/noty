@@ -77,6 +77,8 @@ final class LibraryModel: ObservableObject {
             await refresh()
             if reopen { await reopenLastNotebook() }
         }
+        // Failed `.noty` imports keep their stage for a day (BACKUPS.md).
+        Task { [restoreCatalog] in await restoreCatalog.removeStaleStages() }
     }
 
     /// Set by the open editor workspace: commits every pane (editors pause only
@@ -210,9 +212,24 @@ final class LibraryModel: ObservableObject {
         Task { await refresh(quiet: true) }
     }
 
+    /// Foreground work blocks a second action; a tap is refused with a word
+    /// instead of being dropped without a trace.
+    private var accepting: Bool {
+        guard ready, opened == nil else { return false }
+        guard busy else { return true }
+        error = "Bitte warten, bis der laufende Vorgang abgeschlossen ist."
+        return false
+    }
+
+    /// Before a new store takes over this root (area switch): nothing of this
+    /// store may still be writing, there is only ever one writer per root.
+    func waitUntilIdle() async {
+        while busy { try? await Task.sleep(for: .milliseconds(100)) }
+    }
+
     private func change(_ action: () async throws -> LibrarySnapshot) async {
         await settle()
-        guard ready, !busy, opened == nil else { return }
+        guard accepting else { return }
         busy = true
         defer { busy = false }
         do { snapshot = try await action() }
@@ -235,12 +252,24 @@ final class LibraryModel: ObservableObject {
         let cache = NSCache<NSUUID, Tile>(); cache.totalCostLimit = 24 * 1024 * 1024; return cache
     }()
 
+    /// At most two packages in memory at a time.
+    private let previewGate = PreviewGate()
+
     func artwork(for id: UUID) async throws -> (NotebookAppearance?, UIImage?) {
         let url = try await store.documentURL(id: id)
         // Read before the document: a newer commit in between only re-renders later.
         let stamp = await Task.detached(priority: .utility) { NotebookRevisionStamp.read(directory: url) }.value
         if let stamp, let tile = tiles.object(forKey: id as NSUUID), tile.stamp == stamp { return (tile.appearance, tile.image) }
-        let (document, assets) = try await store.previewPackage(id: id)
+        // Whole packages are decoded outside the store actor: otherwise a
+        // scrolled grid queues „Öffnen“ or „Umbenennen“ behind every preview.
+        await previewGate.enter()
+        let package: (document: Notebook, assets: NotebookAssets)
+        do {
+            try Task.checkCancellation()
+            package = try await Task.detached(priority: .utility) { try LibraryStore.previewPackage(directory: url) }.value
+            await previewGate.leave()
+        } catch { await previewGate.leave(); throw error }
+        let (document, assets) = package
         try Task.checkCancellation()
         // The document's own kind decides; an index rewritten by an older build lost the hint.
         if let item = snapshot.items.first(where: { $0.id == id }), item.isTextDocument != document.isTextDocument,
@@ -269,17 +298,17 @@ final class LibraryModel: ObservableObject {
     }
     func createNotebook(_ title: String, appearance: NotebookAppearance = NotebookAppearance(), parent: UUID?) async -> Bool {
         await settle()
-        guard ready, !busy, opened == nil else { return false }
+        guard accepting else { return false }
         busy = true; defer { busy = false }
         do {
-            let notebook = try Notebook.blank(title: title, appearance: appearance)
+            let notebook = try Notebook.blank(title: try LibraryStore.validTitle(title), appearance: appearance)
             snapshot = try await store.createDocument(notebook, parentID: parent)
             return true
         } catch { self.error = error.localizedDescription; return false }
     }
     func createTextDocument(_ title: String, landscape: Bool, paper: PaperStyle, color: PaperColor = .white, parent: UUID?) async -> Bool {
         await settle()
-        guard ready, !busy, opened == nil else { return false }
+        guard accepting else { return false }
         busy = true; defer { busy = false }
         do {
             let document = try Notebook.textDocument(title: try LibraryStore.validTitle(title), landscape: landscape, paper: paper, color: color)
@@ -294,7 +323,15 @@ final class LibraryModel: ObservableObject {
         await change { try await store.place(id, in: parent, before: before) }
     }
     func trash(_ id: UUID) async { await change { try await store.trash(id) } }
-    func restore(_ id: UUID) async { await change { try await store.restore(id) } }
+    func restore(_ id: UUID) async {
+        let item = snapshot.items.first(where: { $0.id == id })
+        let folderTrashed = item?.parentID.map(snapshot.isTrashed) ?? false
+        await change { try await store.restore(id) }
+        // The store puts it at the top level, where it would not be looked for.
+        if folderTrashed, let item, snapshot.items.contains(where: { $0.id == id && $0.deletedAt == nil }) {
+            TopAlert.show("Wiederhergestellt", "„\(item.title)“ liegt jetzt in „Alle Unterlagen“, weil sein Ordner noch im Papierkorb liegt.")
+        }
+    }
     /// Independent copy of a notebook (new document identity) behind the original.
     func duplicate(_ item: NotebookCore.LibraryItem) async {
         guard !item.isFolder else { return }
@@ -364,10 +401,12 @@ final class LibraryModel: ObservableObject {
     func reorder(_ ids: [UUID], parent: UUID?) async { await change { try await store.reorder(ids, parentID: parent) } }
 
     func open(_ item: NotebookCore.LibraryItem, pageID: UUID? = nil, searchBounds: PageRect? = nil) async {
+        // A second tap on the notebook being opened is no second request.
+        guard opening != item.id else { return }
         await settle()
-        guard ready, !busy, opened == nil, !item.isFolder else { return }
-        busy = true
-        defer { busy = false }
+        guard accepting, !item.isFolder else { return }
+        busy = true; opening = item.id
+        defer { busy = false; opening = nil }
         do {
             let url = try await store.documentURL(id: item.id)
             snapshot = try await store.markOpened(item.id)
@@ -377,6 +416,8 @@ final class LibraryModel: ObservableObject {
             UserDefaults.standard.set(item.id.uuidString, forKey: lastOpenedKey)
         } catch { self.error = error.localizedDescription }
     }
+
+    private var opening: UUID?
 
     /// Called after the user closed the notebook normally (not on backgrounding).
     func notebookClosedByUser() { UserDefaults.standard.removeObject(forKey: lastOpenedKey) }
@@ -402,7 +443,7 @@ final class LibraryModel: ObservableObject {
 
     func importPDF(_ url: URL, parent: UUID?, writingArea: PageMargins? = nil) async {
         await settle()
-        guard ready, !busy, opened == nil else { return }
+        guard accepting else { return }
         busy = true
         let access = url.startAccessingSecurityScopedResource()
         defer {
@@ -410,26 +451,10 @@ final class LibraryModel: ObservableObject {
             busy = false
         }
         do {
-            let data = try await Task.detached { try Self.readPDF(url) }.value
-            guard let pdf = PDFDocument(data: data), !pdf.isLocked, (1...500).contains(pdf.pageCount) else {
-                throw StorageError.invalidDocument
-            }
-            var document = Notebook()
-            document.title = String(url.deletingPathExtension().lastPathComponent.prefix(120))
-            document.pdf = data
-            document.pages = try (0..<pdf.pageCount).map { index in
-                guard let source = pdf.page(at: index)?.pageRef else { throw StorageError.invalidDocument }
-                var page = Page(); page.geometry = try PDFPageGeometry(source); return page
-            }
-            if let writingArea {
-                for page in document.pages {
-                    let margins = try writingArea.scaled(from: .init(width: 1, height: 1), to: page.geometry?.displaySize ?? .a4)
-                    try document.setMargins(margins, pageIDs: [page.id])
-                }
-            }
-            // Originals above 20 MB get schema 10 at once, so Build 46 refuses the
-            // whole notebook instead of failing later edits.
-            if data.count > PDFSource.legacyMaximumBytes { document = try document.preparedForPageEditing() }
+            // Reading and parsing up to 500 pages stays off the UI actor.
+            let document = try await Task.detached(priority: .userInitiated) {
+                try Self.importedNotebook(url, writingArea: writingArea)
+            }.value
             snapshot = try await store.createDocument(document, parentID: parent)
         } catch { self.error = "PDF-Import fehlgeschlagen: \(error.localizedDescription)" }
     }
@@ -449,7 +474,7 @@ final class LibraryModel: ObservableObject {
     func importBackup(_ url: URL, parent: UUID?, collision: ImportCollision? = nil) async -> ImportedNotebook? {
         importDeclined = false
         await settle()
-        guard ready, !busy, opened == nil else { return nil }
+        guard accepting else { return nil }
         busy = true
         let access = url.startAccessingSecurityScopedResource()
         defer {
@@ -482,7 +507,8 @@ final class LibraryModel: ObservableObject {
             if let replacing, let pin = pinOrder.firstIndex(of: replacing) { pinOrder[pin] = result.id }
             return ImportedNotebook(id: result.id, title: result.title, replaced: replacing != nil)
         } catch {
-            // A failed validation or commit keeps its stage for analysis (BACKUPS.md).
+            // A failed validation or commit keeps its stage for analysis for a
+            // day (BACKUPS.md); `removeStaleStages` at launch clears it.
             self.error = "Import fehlgeschlagen: \(error.localizedDescription)"
             return nil
         }
@@ -514,6 +540,25 @@ final class LibraryModel: ObservableObject {
         }
     }
 
+    private nonisolated static func importedNotebook(_ url: URL, writingArea: PageMargins?) throws -> Notebook {
+        let data = try readPDF(url)
+        let (_, geometries) = try PDFImportCheck.pages(of: data)
+        var document = Notebook()
+        document.title = NotebookTitles.sanitized(url.deletingPathExtension().lastPathComponent)
+        document.pdf = data
+        document.pages = geometries.map { geometry in var page = Page(); page.geometry = geometry; return page }
+        if let writingArea {
+            for page in document.pages {
+                let margins = try writingArea.scaled(from: .init(width: 1, height: 1), to: page.geometry?.displaySize ?? .a4)
+                try document.setMargins(margins, pageIDs: [page.id])
+            }
+        }
+        // Originals above 20 MB get schema 10 at once, so Build 46 refuses the
+        // whole notebook instead of failing later edits.
+        if data.count > PDFSource.legacyMaximumBytes { document = try document.preparedForPageEditing() }
+        return document
+    }
+
     nonisolated static func readPDF(_ url: URL) throws -> Data {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
@@ -536,4 +581,17 @@ struct LibraryNotebookView: View {
         _workspace = StateObject(wrappedValue: EditorWorkspace(document: document, root: root))
     }
     var body: some View { EditorWorkspaceView(workspace: workspace, library: library) }
+}
+
+/// Limits how many notebook packages are decoded for previews at once.
+private actor PreviewGate {
+    private var running = 0
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    func enter() async {
+        if running < 2 { running += 1; return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+    func leave() {
+        if waiting.isEmpty { running -= 1 } else { waiting.removeFirst().resume() }
+    }
 }

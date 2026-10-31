@@ -196,7 +196,14 @@ public actor LibraryStore {
     /// Like `previewDocument`, with the package's image originals (read-only;
     /// embedded originals of a not yet migrated schema 5–11 state in memory).
     public func previewPackage(id: UUID) throws -> (document: Notebook, assets: NotebookAssets) {
-        let store = RevisionStore(directory: try documentURL(id: id), readOnly: true)
+        try Self.previewPackage(directory: try documentURL(id: id))
+    }
+
+    /// The same read without the actor, for work that must not hold up the
+    /// library (tile previews). Commits replace the manifest last, so this
+    /// always sees a complete revision.
+    public nonisolated static func previewPackage(directory: URL) throws -> (document: Notebook, assets: NotebookAssets) {
+        let store = RevisionStore(directory: directory, readOnly: true)
         return (try store.load(), store.assets)
     }
 
@@ -445,6 +452,8 @@ public actor LibraryStore {
         var next = try current()
         let index = try activeIndex(id, in: next)
         try checkDestination(parentID, moving: id, in: next)
+        // Already there: keeps its place among its siblings.
+        guard next.items[index].parentID != parentID else { return next }
         var item = next.items.remove(at: index)
         item.parentID = parentID
         next.items.append(item)

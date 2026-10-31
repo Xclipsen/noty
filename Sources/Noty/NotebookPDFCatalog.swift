@@ -93,3 +93,19 @@ final class NotebookPDFCatalog {
 
     var outline: [NotebookOutlineItem] { outlines }
 }
+
+/// The check every PDF import passes, with a reason the user can act on.
+/// CoreGraphics only: PDFKit stays on the main actor, this runs off it.
+enum PDFImportCheck {
+    nonisolated static func pages(of data: Data) throws -> (data: Data, geometries: [PDFPageGeometry]) {
+        guard let provider = CGDataProvider(data: data as CFData), let pdf = CGPDFDocument(provider) else { throw StorageError.unreadablePDF }
+        guard pdf.isUnlocked || pdf.unlockWithPassword("") else { throw StorageError.lockedPDF }
+        guard pdf.numberOfPages > 0 else { throw StorageError.unreadablePDF }
+        guard pdf.numberOfPages <= 500 else { throw StorageError.tooManyPDFPages(pdf.numberOfPages) }
+        let geometries = try (1...pdf.numberOfPages).map { number in
+            guard let page = pdf.page(at: number) else { throw StorageError.unreadablePDF }
+            return try PDFPageGeometry(page)
+        }
+        return (data, geometries)
+    }
+}

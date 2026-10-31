@@ -67,6 +67,11 @@ final class LawLibraryModel: ObservableObject {
     @Published private(set) var syncStatus = "Lokal gespeichert"
     @Published private(set) var byteCount: Int64 = 0
     @Published var error: String?
+    /// Visible pages that show `error` themselves; the app alert stays silent then.
+    @Published var inlineErrorPages = 0
+    /// Mail delivery is switched off on the server (user decision, see
+    /// LAW-INTEGRATION-PLAN). Everything waiting for an e-mail stays hidden until then.
+    static let mailDelivery = false
     /// Where the law window was last: open/stashed, docked/floating, side and
     /// width, kept across notebooks and launches. Display state only.
     static let panelOpenKey = "noty.laws.panelOpen"
@@ -136,6 +141,7 @@ final class LawLibraryModel: ObservableObject {
     func settingsChanged() async {
         epoch += 1
         if !enabled { panelOpen = false; return }
+        if catalog == nil { lastAttempt = .distantPast }
         await tick()
     }
     private nonisolated func fetch(_ path: String, method: String = "GET", body: [String: LawJSON]? = nil, token: String? = nil, limit: Int = 64_000_000) async throws -> Data {
@@ -154,7 +160,7 @@ final class LawLibraryModel: ObservableObject {
             data.append(byte)
         }
         guard (200..<300).contains(response.statusCode) else {
-            let message = (try? JSONDecoder().decode([String: String].self, from: data)["error"]) ?? "Server nicht erreichbar (\(response.statusCode))."
+            let message = (try? JSONDecoder().decode([String: String].self, from: data)["error"]) ?? (response.statusCode >= 500 ? "Server nicht erreichbar (\(response.statusCode))." : "Der Server hat die Anfrage abgelehnt (\(response.statusCode)).")
             throw LawAPIError(status: response.statusCode, message: message)
         }
         return data
@@ -198,7 +204,10 @@ final class LawLibraryModel: ObservableObject {
             catalog = next; lastCheck = Date(); progress = "\(NotyText.count(next.entries.count, "Dokument", "Dokumente")) offline verfügbar"
             byteCount = await offline.byteCount()
         } catch is CancellationError { progress = "Download pausiert; vorhandene Fassungen bleiben verfügbar." }
-        catch { if manual { self.error = error.localizedDescription }; progress = "Aktualisierung fehlgeschlagen; vorhandene Fassungen bleiben verfügbar. \(error.localizedDescription)" }
+        catch {
+            if manual { self.error = error.localizedDescription }
+            progress = "Aktualisierung fehlgeschlagen; vorhandene Fassungen bleiben verfügbar." + (manual ? "" : " \(error.localizedDescription)")
+        }
     }
     func document(_ entry: LawEntry, version: String? = nil) async throws -> LawDocument {
         guard let v = entry.versions.first(where: { $0.id == (version ?? entry.currentVersion) }) else { throw LawError.invalid("Gesetzesfassung fehlt.") }
@@ -211,19 +220,19 @@ final class LawLibraryModel: ObservableObject {
         let url = try await offline.pdfURL(entry.id, version: version)
         guard let v = entry.versions.first(where: { $0.id == version }), let path = v.pdfUrl else { throw LawError.invalid("Für dieses Dokument ist kein Original-PDF vorhanden.") }
         if FileManager.default.fileExists(atPath: url.path) {
-            let bytes = try await offline.pdfData(entry.id, version: version)
-            try await verify(bytes, sha: v.sha256["pdf"])
-            guard PDFDocument(url: url) != nil else { throw LawError.invalid("Gespeicherte PDF-Datei nicht lesbar.") }
-            return url
+            if let bytes = try? await offline.pdfData(entry.id, version: version),
+               (try? await verify(bytes, sha: v.sha256["pdf"])) != nil, PDFDocument(url: url) != nil { return url }
         }
         let data = try await fetch(path, limit: 150_000_000); try await verify(data, sha: v.sha256["pdf"])
-        let result = try await offline.putPDF(data, id: entry.id, version: version)
+        let result = try await offline.putPDF(data, id: entry.id, version: version, replacingDamaged: true)
         byteCount = await offline.byteCount()
         return result
     }
-    func login(email: String, password: String, registering: Bool) async {
-        guard !accountBusy else { return }
+    /// `true` once signed in; a failed attempt keeps the form as typed.
+    func login(email rawName: String, password: String, registering: Bool) async -> Bool {
+        guard !accountBusy else { return false }
         accountBusy = true; defer { accountBusy = false }
+        let email = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             // E-mail registration needs mail delivery, which is switched off on the
             // server; a username account is created at once without any e-mail.
@@ -240,7 +249,8 @@ final class LawLibraryModel: ObservableObject {
             try await personal.adoptGuests(owner: response.user.id)
             lastOwner = response.user.id; await refreshItems()
             Task { await synchronize() }
-        } catch { self.error = error.localizedDescription }
+            return true
+        } catch { self.error = error.localizedDescription; return false }
     }
     func logout() async {
         do { try NotyAccountKeychain.save(nil) }
@@ -254,7 +264,8 @@ final class LawLibraryModel: ObservableObject {
         accountBusy = true; defer { accountBusy = false }
         do {
             var body: [String: LawJSON] = [:]
-            if !email.isEmpty { body["email"] = .string(email) }
+            let address = email.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !address.isEmpty { body["email"] = .string(address) }
             if !password.isEmpty { body["password"] = .string(password) }
             if !code.isEmpty { body["token"] = .string(code.trimmingCharacters(in: .whitespacesAndNewlines)) }
             _ = try await fetch(path, method: "POST", body: body, token: user?.token, limit: 65536)
@@ -283,7 +294,7 @@ final class LawLibraryModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
     func synchronize() async {
-        guard enabled, syncEnabled, !syncing, let u = user, let token = u.token else { return }
+        guard enabled, syncEnabled, !syncing, !sessionExpired, let u = user, let token = u.token else { return }
         syncing = true
         let generation = epoch
         defer { syncing = false }
@@ -304,6 +315,8 @@ final class LawLibraryModel: ObservableObject {
         do {
             syncStatus = "Wird synchronisiert …"
             try await pull()
+            // One refused entry must not hold back the ones behind it.
+            var failures = LawPushFailures()
             for item in try await personal.pending(owner: u.id) {
                 guard current() else { throw CancellationError() }
                 let path = item.kind == "bookmark" ? "/api/bookmarks" : "/api/annotations"
@@ -317,14 +330,20 @@ final class LawLibraryModel: ObservableObject {
                 } catch let error as LawAPIError where item.deleted && error.status == 404 {
                     guard current() else { throw CancellationError() }
                     try await personal.acknowledge(item)
-                } catch let error as LawAPIError where error.status == 409 {
-                    // Pull authoritative tombstones, retaining any unrelated pending work.
-                    try await pull()
+                } catch let error as LawAPIError where error.status == 401 {
                     throw error
+                } catch let error as LawAPIError {
+                    // Pull authoritative tombstones, retaining any unrelated pending work.
+                    if error.status == 409 { try await pull() }
+                    if failures.record(status: error.status) == .stop { throw error }
+                } catch is DecodingError {
+                    _ = failures.record(status: 422)
                 }
             }
             try await pull(); lastSync = Date(); await refreshItems()
-            syncStatus = "Synchronisiert · \(NotyText.statusDate(Date()))"
+            let time = NotyText.statusDate(Date())
+            syncStatus = failures.refused == 0 ? "Synchronisiert · \(time)"
+                : "Synchronisiert · \(time) · \(failures.refused == 1 ? "1 Eintrag" : "\(failures.refused) Einträge") nicht übertragen, bleibt lokal"
         } catch is CancellationError { syncStatus = "Synchronisierung pausiert" }
         catch let error as LawAPIError where error.status == 401 {
             sessionExpired = true; syncStatus = "Anmeldung abgelaufen · Unter Einstellungen › Konto erneut anmelden; Änderungen bleiben lokal"

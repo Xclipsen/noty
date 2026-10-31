@@ -223,6 +223,13 @@ final class TextFieldRebuildTests: XCTestCase {
         XCTAssertEqual(TextFieldRotation.snapped(43).angle, 45)
         XCTAssertEqual(TextFieldRotation.snapped(41).angle, 41, "the diagonal pulls weaker than a right angle")
         XCTAssertEqual(TextFieldRotation.snapped(-133).angle, -135)
+        // Engaged, the magnet lets go later than it took hold; no flicker at its edge.
+        XCTAssertNil(TextFieldRotation.snapped(7).target)
+        XCTAssertEqual(TextFieldRotation.snapped(7, holding: 0).target, 0)
+        XCTAssertNil(TextFieldRotation.snapped(9, holding: 0).target)
+        XCTAssertEqual(TextFieldRotation.snapped(-173, holding: 180).angle, 180)
+        XCTAssertEqual(TextFieldRotation.snapped(49, holding: 45).angle, 45)
+        XCTAssertEqual(TextFieldRotation.snapped(50, holding: 45).angle, 50)
         XCTAssertEqual(TextFieldRotation.label(-90), "270°")
         XCTAssertEqual(TextFieldRotation.label(37.4), "37°")
     }

@@ -73,6 +73,8 @@ Nutzerrückmeldung zu Build 49: „kann keine importen die ich auf meinem iphone
 
 ## Ergänzung Build 26 – Drehmagnet und bedienbare Griffe
 
+*Überholt seit Build 64:* Bilder drehen mit dem gemeinsamen Magneten aller Objekte (`TextFieldRotation`): Eintritt bis 6° an 0/90/180/270° und 2,5° an 45°, gehalten bis 2° darüber hinaus. Der Absatz unten beschreibt den früheren Stand.
+
 Beim freien Drehen Eintritt bis 8° an 0/90/180/270°, Ziel bis 12° halten; außerhalb frei. Drehgriff zeigt das Einrasten farbig, Haptik einmal pro neuem Ziel. Knopf stellt den nächsten exakten Vierteldrehwinkel her, statt einen schiefen Ausgangswinkel mitzudrehen. Bildgriffe 44 pt und Bildaktionsleiste bleiben durch Kompensation von äußerem Zoom/Normalisierung in Bildschirmgröße bedienbar; Original und kanonische Objektparameter erhalten. Bildcache berücksichtigt effektiven Anzeigefaktor. Core-/SDK-Prüfungen bestanden; neue Dreh-/Zoom-/Hover-Bedienung noch ungeprüft, [TESTING](TESTING.md).
 
 ## Ergänzung Build 21

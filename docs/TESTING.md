@@ -2,6 +2,10 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Bedienfluss-Durchsicht (31.10.2026, Branch `audit/flow-2026-10-31`)
+
+Basis: `feat/textneubau` afe37fe, ohne die uncommitteten Arbeiten dort und auf `feat/tastatur`. Implementiert, Core-Tests, Host-Roundtrip und SDK-Build bestanden. **Nicht installiert, am iPad ungeprüft.** Gezielt am Gerät prüfen: aufgelegter Finger beim Halten und Radieren, Bild einfügen mit Stift und Universal Clipboard, Zuschneiden eines großen HEIC, `.noty` per AirDrop bei offenem Heft, Gesetzesfenster mit Leiste am selben Rand, PDF-Import eines gesperrten PDFs (Prüfung läuft jetzt über CoreGraphics statt PDFKit), Screenshot über 5 MB. WebDAV-Änderungen sind nicht gegen einen echten Server geprüft.
+
 ## Nutzungsfeedback Tag 1 (22.10.2026)
 
 Lasso-Kontur (`SelectionContour`) sowie Fingertipp-Auswahl bei aktivem Stift und Doppeltipp „Textfeld hinzufügen“ (`PageObjectHitTest`, `FingerObjectGestures`) als zwei Merge-Commits nach `main`. Bedienung: [DESIGN](DESIGN.md), Technik: [ARCHITECTURE](ARCHITECTURE.md).

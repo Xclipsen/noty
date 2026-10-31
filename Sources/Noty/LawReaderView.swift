@@ -104,6 +104,13 @@ struct LawReaderView: View {
     @FocusState private var queryFocused: Bool
     /// Closed or stashed at the screen edge: no hidden field may keep the keyboard.
     private var hidden: Bool { inPanel && (!laws.panelOpen || laws.stashed) }
+    @State private var errorsShownHere = false
+    /// While the reader is visible it shows `laws.error` itself.
+    private func showErrors(_ shown: Bool) {
+        guard shown != errorsShownHere else { return }
+        errorsShownHere = shown
+        laws.inlineErrorPages += shown ? 1 : -1
+    }
     private var entry: LawEntry? { laws.entries.first { $0.id == selectedID } }
     private var section: LawSection? { document?.sections.first { $0.id == sectionID } }
     private var marks: [LawPersonalItem] {
@@ -177,8 +184,12 @@ struct LawReaderView: View {
         }
         .task(id: query) {
             guard !query.isEmpty else { return }
+            loadError = ""
             do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
-            await search(query, from: .query)
+            // While typing only a complete „144 HGB“ jumps: a bare „144“ may
+            // still become that and must not move the reader (and its saved
+            // place) to § 144 of the open law. Return searches it.
+            await search(query, bareReference: false, from: .query)
         }
         .task(id: number) {
             // The field following the reader (arrows, contents) is no new lookup.
@@ -186,7 +197,12 @@ struct LawReaderView: View {
             do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
             await search(number, from: .number)
         }
-        .onChange(of: hidden) { _, hidden in if hidden { queryFocused = false; textSelection.clear() } }
+        .onChange(of: hidden) { _, hidden in
+            if hidden { queryFocused = false; textSelection.clear() }
+            showErrors(!hidden)
+        }
+        .onAppear { showErrors(!hidden) }
+        .onDisappear { showErrors(false) }
         .sheet(isPresented: $showContents) { contents }
         .sheet(isPresented: $showBookmarks) { bookmarks }
     }
@@ -315,6 +331,10 @@ struct LawReaderView: View {
         textSelection.clear()
         pdfTarget = nil; sectionID = sections[i + direction].id; jumpParagraph = nil; loadError = ""
         follow(sections[i + direction])
+        // Without a PDF position the PDF view would silently fall back to page 1.
+        if viewPDF, sections[i + direction].pdf == nil {
+            viewPDF = false; loadError = "Keine PDF-Fundstelle für diese Vorschrift; der Lesetext wird angezeigt."
+        }
     }
     /// Both fields describe where the reader is. After arrows, contents,
     /// bookmarks or another law the paragraph field shows the new section's
@@ -394,22 +414,23 @@ struct LawReaderView: View {
             follow(shown, from: field)
         } catch { if requestID == request { loadError = error.localizedDescription } }
     }
-    private func search(_ value: String, allowFullText: Bool = false, from field: LawLookupField) async {
+    private func search(_ value: String, allowFullText: Bool = false, bareReference: Bool = true, from field: LawLookupField) async {
         if let target = LawQuickTarget.parse(value, entries: laws.entries), let entry = laws.entries.first(where: { $0.id == target.lawID }) {
             await open(entry, target: target.reference.key, paragraph: target.reference.paragraph, from: field)
-        } else if let ref = LawReference.parse(value), let entry {
+        } else if bareReference, let ref = LawReference.parse(value), let entry {
             if let doc = document, let s = doc.sections.first(where: { $0.keys.contains(ref.key) }) {
                 textSelection.clear()
                 pdfTarget = nil; sectionID = s.id; jumpParagraph = ref.paragraph; loadError = ""
                 follow(s, from: field)
             } else { await open(entry, version: document?.version, target: ref.key, paragraph: ref.paragraph, from: field) }
-        } else if allowFullText, let doc = document, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        } else if allowFullText, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let doc = document else { loadError = "Bitte zuerst ein Gesetz wählen."; return }
             let term = value.lowercased()
             if let found = doc.sections.first(where: { ("\($0.label) \($0.title) \($0.text) \($0.notes)").lowercased().contains(term) }) {
                 textSelection.clear()
                 sectionID = found.id; jumpParagraph = nil; loadError = ""
                 follow(found, from: field)
-            }
+            } else { loadError = "„\(value)“ wurde in \(entry?.abbr ?? "diesem Dokument") nicht gefunden." }
         }
     }
     private func togglePDF() async {

@@ -33,7 +33,9 @@ extension EnvironmentValues {
 
 @MainActor
 final class ContentSearchModel: ObservableObject {
-    @Published var records: [ContentSearchHit] = []
+    @Published var records: [ContentSearchHit] = [] { didSet { hitRevision += 1 } }
+    /// Counts changes of `records` and `tasks`: the view filters again off the main actor.
+    @Published private(set) var hitRevision = 0
     @Published var status = "Suche wird vorbereitet …"
     @Published var running = false
     @Published var error: String?
@@ -44,7 +46,7 @@ final class ContentSearchModel: ObservableObject {
     private var order: [UUID] = []
     private var total = 0
     private var lastPublish = ContinuousClock.now
-    @Published var tasks: [ContentSearchHit] = []
+    @Published var tasks: [ContentSearchHit] = [] { didSet { hitRevision += 1 } }
     @Published var taskStatus = "Offene Aufgaben werden gesucht …"
     @Published var collectingTasks = false
     private(set) var tasksCollected = false
@@ -237,6 +239,9 @@ final class ContentSearchModel: ObservableObject {
                 show(page: offset, record, document); publish()
                 if lastSave.duration(to: .now) > .seconds(3) { await store.save(index); lastSave = .now }
                 await Task.yield()
+                // PDFKit stays on the main actor: a real pause between PDF pages
+                // lets touches through while a long PDF is being read.
+                if pending.contains(.pdfText) { try await Task.sleep(for: .milliseconds(10)) }
             }
         } catch {
             await store.save(index)
@@ -300,7 +305,10 @@ final class ContentSearchModel: ObservableObject {
     private static func recognizeBackground(_ pdf: SendablePDFPage?, images: [ImageObject], layout: PageLayout,
                                             assets: ImageAssetProviding? = nil, keepAlive: AnyObject?) async throws -> [SearchLine] {
         let lines = try await Task.detached(priority: .utility) { () throws -> [SearchLine] in
-            let decoded = try images.map { try ImageRendering.decoded($0, limit: 2400, assets: assets) }
+            let decoded = try images.map { object in
+                let limit = ImageRendering.outputLimit(object, imagesOnPage: images.count, maximum: 2400, pixelsPerPoint: 3)
+                return try ImageRendering.decoded(object, limit: limit, assets: assets)
+            }
             guard let image = PageRaster.bitmap(size: layout.canvas.cgSize, scale: scale(layout), opaque: true, { context in
                 UIColor.white.setFill(); context.fill(layout.canvas.bounds)
                 if let pdf { PageRaster.drawSource(pdf.page, layout: layout, context: context) }
@@ -355,9 +363,18 @@ struct ContentSearchView: View {
     @State private var query = ""
     @State private var openTasks = false
     @Environment(\.dismiss) private var dismiss
-    private var hits: [ContentSearchHit] {
-        openTasks ? model.tasks.filter { query.trimmingCharacters(in: .whitespaces).isEmpty || $0.matches(query) }
-            : Array(model.records.lazy.filter { $0.matches(query) }.prefix(300))
+    /// Filtered off the main actor: the index can hold 50 000 lines and
+    /// changes while it is built, typing must stay fluid.
+    @State private var hits: [ContentSearchHit] = []
+    private func refreshHits() async {
+        if !hits.isEmpty { try? await Task.sleep(for: .milliseconds(120)) }
+        guard !Task.isCancelled else { return }
+        let tasksOnly = openTasks, term = query, source = openTasks ? model.tasks : model.records
+        let found = await Task.detached(priority: .userInitiated) { () -> [ContentSearchHit] in
+            if tasksOnly { return source.filter { term.trimmingCharacters(in: .whitespaces).isEmpty || $0.matches(term) } }
+            return Array(source.lazy.filter { $0.matches(term) }.prefix(300))
+        }.value
+        if !Task.isCancelled { hits = found }
     }
     var body: some View {
         NavigationStack {
@@ -400,6 +417,7 @@ struct ContentSearchView: View {
                     }
                 }
                 .task { start(rebuild: false) }
+                .task(id: "\(query)|\(openTasks)|\(model.hitRevision)") { await refreshHits() }
                 .onDisappear { model.cancel(); model.cancelTasks() }
         }
     }

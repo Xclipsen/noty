@@ -15,9 +15,21 @@ final class PencilHoldGesture: UIGestureRecognizer, UIGestureRecognizerDelegate 
     private weak var tracked: UITouch?
     override init(target: Any?, action: Selector?) { super.init(target: target, action: action); delegate = self }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        guard tracked == nil, let touch = touches.first(where: { $0.type == .pencil || (allowFinger && $0.type == .direct) }) else {
-            timer?.invalidate(); onEnd?(true); state = tracked == nil ? .failed : .cancelled; return
+        // A resting finger or palm is no reason to give up a running Pencil
+        // stroke: the held form or eraser sweep goes on. A second finger while
+        // finger drawing is the start of navigation and ends the stroke.
+        if let tracked, tracked.type == .pencil {
+            for touch in touches where touch !== tracked { ignore(touch, for: event) }
+            return
         }
+        guard tracked == nil else { timer?.invalidate(); onEnd?(true); state = .cancelled; return }
+        guard let touch = touches.first(where: { $0.type == .pencil || (allowFinger && $0.type == .direct) }) else {
+            // Nothing tracked yet: keep waiting for the Pencil, and a form still
+            // being committed after the lift stays untouched.
+            for touch in touches { ignore(touch, for: event) }
+            return
+        }
+        for other in touches where other !== touch { ignore(other, for: event) }
         tracked = touch; point = touch.location(in: view?.window ?? view)
         state = .began; onBegin?(touch.location(in: view)); onPoint?(touch.location(in: view)); arm()
     }
@@ -39,8 +51,14 @@ final class PencilHoldGesture: UIGestureRecognizer, UIGestureRecognizerDelegate 
         }
         if let timer { RunLoop.main.add(timer, forMode: .common) }
     }
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { timer?.invalidate(); state = .ended; onEnd?(false) }
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { timer?.invalidate(); state = .cancelled; onEnd?(true) }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let tracked, touches.contains(tracked) else { return }
+        timer?.invalidate(); state = .ended; onEnd?(false)
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard let tracked, touches.contains(tracked) else { return }
+        timer?.invalidate(); state = .cancelled; onEnd?(true)
+    }
     override func reset() { timer?.invalidate(); timer = nil; tracked = nil; super.reset() }
     override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
     override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }

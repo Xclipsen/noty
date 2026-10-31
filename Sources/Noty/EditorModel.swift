@@ -624,14 +624,9 @@ final class EditorModel: ObservableObject {
         Task {
             defer { if access { url.stopAccessingSecurityScopedResource() }; busy = false }
             do {
-                let data = try await Task.detached { try LibraryModel.readPDF(url) }.value
-                guard let pdf = PDFDocument(data: data), !pdf.isLocked, (1...500).contains(pdf.pageCount) else {
-                    throw StorageError.invalidDocument
-                }
-                let geometries = try (0..<pdf.pageCount).map { index in
-                    guard let page = pdf.page(at: index)?.pageRef else { throw StorageError.invalidDocument }
-                    return try PDFPageGeometry(page)
-                }
+                let (data, geometries) = try await Task.detached(priority: .userInitiated) {
+                    try PDFImportCheck.pages(of: LibraryModel.readPDF(url))
+                }.value
                 guard let index = notebook.pages.firstIndex(where: { $0.id == anchor }) else { throw PageOperationError.missingPage }
                 let previous = notebook
                 let selected = page.id
@@ -778,7 +773,8 @@ final class EditorModel: ObservableObject {
     /// `<Titel>.noty` in its own scratch folder. The archive is written and
     /// re-read on the repository actor, never held in memory as a whole.
     func backupFile(sharing: Bool = false) async -> URL? {
-        guard writable, !mutationsPaused, !busy else { return nil }
+        guard writable else { return nil }
+        guard !mutationsPaused, !busy else { error = "Bitte warten, bis der laufende Vorgang abgeschlossen ist."; return nil }
         busy = true
         let snapshot = notebook
         // Sharing is no backup confirmation: the backup status stays as it is.

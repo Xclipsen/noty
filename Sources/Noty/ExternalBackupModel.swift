@@ -271,6 +271,8 @@ final class ExternalBackupModel: ObservableObject {
             }
         case is URLError: return isUnreachable(error) ? "Server nicht erreichbar (offline?)" : "Netzwerkfehler"
         case let error as CocoaError where error.code == .fileWriteOutOfSpace: return "Zu wenig freier Speicher auf dem iPad"
+        case let error as CocoaError where error.code == .fileWriteNoPermission || error.code == .fileWriteVolumeReadOnly:
+            return reason(BackupTargetError.folderNotWritable)
         case is ImageAssetError: return "Bildoriginal eines Hefts fehlt oder ist beschädigt"
         case is StorageError, is RevisionError, is BackupError: return "Inhalt eines Hefts ungültig"
         default: return "Backup nicht abgeschlossen"
@@ -280,6 +282,9 @@ final class ExternalBackupModel: ObservableObject {
         if error is LibraryArchiveError || error is BackupTargetError || error is StorageError || error is RevisionError
             || error is ImageAssetError {
             return error.localizedDescription
+        }
+        if let error = error as? CocoaError, error.code == .fileWriteNoPermission || error.code == .fileWriteVolumeReadOnly {
+            return BackupTargetError.folderNotWritable.localizedDescription
         }
         return "Ziel nicht erreichbar, nicht beschreibbar oder Backup unvollständig (\(reason(error))). Ältere Backups bleiben erhalten."
     }
@@ -363,20 +368,25 @@ final class ExternalBackupModel: ObservableObject {
         do {
             var put = try request("PUT", name: partial)
             put.setValue("*", forHTTPHeaderField: "If-None-Match"); put.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-            let (_, uploaded) = try await session.upload(for: put, fromFile: archive.url); try check(uploaded, allowed: [201])
+            // The read-back below is the proof, not one particular success code.
+            let (_, uploaded) = try await session.upload(for: put, fromFile: archive.url); try check(uploaded, allowed: [200, 201, 204])
             guard try await downloadChecksum(partial) == archive.summary.file else { throw LibraryArchiveError.verificationFailed }
             var move = try request("MOVE", name: partial)
             move.setValue(try request("GET", name: name).url!.absoluteString, forHTTPHeaderField: "Destination")
             move.setValue("F", forHTTPHeaderField: "Overwrite")
-            let (_, moved) = try await session.data(for: move); try check(moved, allowed: [201])
+            let (_, moved) = try await session.data(for: move); try check(moved, allowed: [201, 204])
         } catch {
             await deleteQuietly(partial)
             throw error
         }
         do { guard try await downloadChecksum(name) == archive.summary.file else { throw LibraryArchiveError.verificationFailed } }
-        catch {
+        catch let error as URLError {
+            // Only this check lost the network: the same bytes were verified as
+            // `.partial` a moment ago, so the finished backup stays.
+            throw error
+        } catch {
             await deleteQuietly(name)
-            throw error is URLError ? error : LibraryArchiveError.verificationFailed
+            throw LibraryArchiveError.verificationFailed
         }
     }
     private func deleteQuietly(_ name: String) async {

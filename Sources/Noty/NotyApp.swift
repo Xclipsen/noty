@@ -30,7 +30,7 @@ struct NotyApp: App {
                     }
                 }
                 .onChange(of: scenePhase, initial: true) { _, phase in laws.sceneActive = phase == .active; if phase == .active { Task { await laws.tick() } } }
-                .alert("Gesetzessammlung", isPresented: Binding(get: { laws.error != nil }, set: { if !$0 { laws.error = nil } })) {
+                .alert("Gesetzessammlung", isPresented: Binding(get: { laws.error != nil && laws.inlineErrorPages == 0 }, set: { if !$0 { laws.error = nil } })) {
                     Button("OK") { laws.error = nil }
                 } message: { Text(laws.error ?? "") }
         }

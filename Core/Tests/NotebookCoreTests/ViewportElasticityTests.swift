@@ -168,6 +168,10 @@ final class LawPanelLayoutTests: XCTestCase {
         let bottom = LawPanelLayout(size: size, width: 380, height: 360, docked: false, edge: .bottom)
         XCTAssertEqual(bottom.drop(translation: .init(x: 0, y: 200), location: .init(x: 500, y: 660)), .stash(.bottom))
         XCTAssertEqual(bottom.drop(translation: .init(x: 400, y: -400), location: .init(x: 900, y: 60)), .float(.right))
+        // Pushed far sideways a bottom window never turns into a side window.
+        XCTAssertEqual(bottom.drop(translation: .init(x: 900, y: 0), location: .init(x: 1150, y: 500)), .dock(.right))
+        XCTAssertEqual(bottom.drop(translation: .init(x: 200, y: 0), location: .init(x: 900, y: 600),
+                                   predictedTranslation: .init(x: 900, y: 0), predictedLocation: .init(x: 1600, y: 600)), .stash(.bottom))
         XCTAssertTrue(bottom.changes(.float(.right)))
         XCTAssertFalse(bottom.changes(.float(.bottom)))
         XCTAssertTrue(bottom.changes(.dock(.bottom)))

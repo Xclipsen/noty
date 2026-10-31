@@ -6,6 +6,7 @@ public enum WritingTool: String, Codable, CaseIterable, Identifiable, Hashable, 
     /// Tools of formats 1–7; format 8 adds `pencil` and `laser`.
     public static let format7Tools: [WritingTool] = [.pen, .marker, .strokeEraser, .precisionEraser, .inkSelection, .text, .image, .shape, .selection, .read]
     /// Stroke tools that write native PencilKit ink with colour/width.
+    public var isEraser: Bool { self == .strokeEraser || self == .precisionEraser }
     public var isInk: Bool { self == .pen || self == .pencil || self == .marker }
 }
 
