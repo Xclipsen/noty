@@ -361,13 +361,14 @@ struct ContentSearchView: View {
     let onSelect: (ContentSearchHit) -> Void
     @StateObject private var model = ContentSearchModel()
     @State private var query = ""
+    @State private var searching = false
     @State private var openTasks = false
     @Environment(\.dismiss) private var dismiss
     /// Filtered off the main actor: the index can hold 50 000 lines and
     /// changes while it is built, typing must stay fluid.
     @State private var hits: [ContentSearchHit] = []
     private func refreshHits() async {
-        if !hits.isEmpty { try? await Task.sleep(for: .milliseconds(120)) }
+        if !hits.isEmpty || !query.isEmpty { try? await Task.sleep(for: .milliseconds(120)) }
         guard !Task.isCancelled else { return }
         let tasksOnly = openTasks, term = query, source = openTasks ? model.tasks : model.records
         let found = await Task.detached(priority: .userInitiated) { () -> [ContentSearchHit] in
@@ -375,6 +376,16 @@ struct ContentSearchView: View {
             return Array(source.lazy.filter { $0.matches(term) }.prefix(300))
         }.value
         if !Task.isCancelled { hits = found }
+    }
+    /// The field takes the focus only once the sheet stands; iOS 17 has no
+    /// `searchFocused`, and a refused `isPresented` gives no signal, so look.
+    private func focusField() async {
+        for delay in [50, 300, 500] {
+            try? await Task.sleep(for: .milliseconds(delay))
+            if Task.isCancelled || UIResponder.currentFirstResponder is UISearchTextField { return }
+            if searching { searching = false; try? await Task.sleep(for: .milliseconds(30)) }
+            searching = true
+        }
     }
     var body: some View {
         NavigationStack {
@@ -403,7 +414,7 @@ struct ContentSearchView: View {
                             description: Text("Nicht abgehakte Checkboxen aus dem Text erscheinen hier."))
                     } else if !(openTasks ? model.collectingTasks : model.running) && !query.isEmpty && hits.isEmpty { ContentUnavailableView.search(text: query) }
                 }
-            }.searchable(text: $query, prompt: openTasks ? "Aufgaben filtern" : "Inhalt suchen")
+            }.searchable(text: $query, isPresented: $searching, prompt: openTasks ? "Aufgaben filtern" : "Inhalt suchen")
                 .onChange(of: openTasks) { _, tasks in
                     if tasks && !model.tasksCollected { model.collectTasks(documents: documents, current: current) }
                 }
@@ -417,6 +428,7 @@ struct ContentSearchView: View {
                     }
                 }
                 .task { start(rebuild: false) }
+                .task { await focusField() }
                 .task(id: "\(query)|\(openTasks)|\(model.hitRevision)") { await refreshHits() }
                 .onDisappear { model.cancel(); model.cancelTasks() }
         }

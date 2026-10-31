@@ -1,6 +1,6 @@
 # Tastatur: Kürzel und Tastaturmodus
 
-Stand: Build 65 auf `feat/tastatur` (gestapelt auf `feat/textneubau`). **Implementiert, erfolgreich gebaut, Core-Tests bestanden.** **Installiert** am 31.10.2026 (`XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype`, InstallationProxy meldet 65), **am iPad ungeprüft**. Linux hat keinen iOS-Simulator: Parser, Motions und Bereichsbearbeitung sind getestet (`KeyboardCommandsTests`, `TextMotionsTests`, `TextFlowRangeTests`), die Tastenzustellung durch UIKit nicht.
+Stand: Build 65 auf `feat/tastatur` (gestapelt auf `feat/textneubau`). **Implementiert, erfolgreich gebaut, Core-Tests bestanden.** **Installiert** am 31.10.2026 (`XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype`, InstallationProxy meldet 65), **am iPad ungeprüft**. Linux hat keinen iOS-Simulator: Parser, Motions und Bereichsbearbeitung sind getestet (`KeyboardCommandsTests`, `TextMotionsTests`, `TextFlowRangeTests`), die Tastenzustellung durch UIKit nicht. Nach dem Feedback zu Build 65 (Tasten nur einmal, `gg`/`dd` tot): `KeyPressGate` entprellt nach Taste und Zeitstempel statt nach `UIPress`-Objekt, gebaut auf `phase0/keys`, am iPad ungeprüft.
 
 ## ⌘-Kürzel (immer aktiv, auch ohne Tastaturmodus)
 
@@ -29,7 +29,7 @@ Stand: Build 65 auf `feat/tastatur` (gestapelt auf `feat/textneubau`). **Impleme
 
 ## Tastaturmodus
 
-Einstellungen › Editor › „Tastaturmodus (wie vim)“, Standard an. Wirkt nur auf Hardware-Tastaturen. `?` zeigt alle Tasten, `:` öffnet die Befehlspalette (alle Tastenbefehle und Menüfunktionen per Suche, dazu `:w`, `:q`, `:wq`, Seitenzahl). Unten links steht der Modus, sobald eine Taste gedrückt wurde.
+Einstellungen › Editor › „Tastaturmodus (wie vim)“, Standard an. Wirkt nur auf Hardware-Tastaturen. `?` zeigt alle Tasten, `:` öffnet die Befehlspalette (alle Tastenbefehle und Menüfunktionen per Suche, dazu `:w`, `:q`, `:wq`, Seitenzahl). Der Modus erscheint, sobald eine Taste gedrückt wurde: im Editor oben links unter der Zurück-Taste (dort reichen weder Tastatur noch Formatleiste hin), in der Bibliothek unten links.
 
 Modi: **BIBLIOTHEK**, **SEITE** (Editor ohne Cursor), **SCHREIBEN** (normales Tippen), **NORMAL** (Cursor im Text, Buchstaben sind Befehle, breiter Cursor), **MARKIEREN**/**ZEILEN** (visuell). Antippen eines Texts schreibt immer, auch aus NORMAL heraus. Esc: SCHREIBEN → NORMAL → Text verlassen. ⌃[ und ⌃C wirken wie Esc (Tastaturen ohne Esc-Taste; alternativ iPadOS: Modifikatortasten › Feststelltaste → Escape). Eine Zahl davor wiederholt: `5j`, `3dd`, `d2w`.
 
@@ -37,8 +37,8 @@ Modi: **BIBLIOTHEK**, **SEITE** (Editor ohne Cursor), **SCHREIBEN** (normales Ti
 | --- | --- |
 | `hjkl`, Pfeile, `gg`, `G` | Eintrag wählen |
 | Enter, `o` | Öffnen |
-| `-`, ⌫ | Übergeordneter Ordner |
-| `/` | Alle Hefte durchsuchen |
+| `-`, ⌫ | Eine Ebene hoch: Namenssuche beenden, sonst übergeordneter Ordner, aus „Zuletzt verwendet“ zu „Alle Unterlagen“ |
+| `/` | Alle Hefte durchsuchen (Cursor steht sofort im Feld, Treffer erscheinen beim Tippen) |
 | `n`, `N`, `f` | Neues Heft, Textdokument, Ordner |
 | `r`, `m`, `P` | Umbenennen, Verschieben, Anheften |
 | `yy`, `dd` | Duplizieren, Papierkorb (mit Rückfrage) |
@@ -85,8 +85,8 @@ Eine „Zeile“ ist wie in vim ein Absatz bis zum Zeilenumbruch; nur `j`/`k` fo
 
 ## Gerätetest (gebündelt, alles **ungeprüft**)
 
-1. **Tastenzustellung zuerst:** Heft öffnen, Stift aktiv, `j`, `k`, `tt`, `tp`; unten links steht SEITE. Text öffnen, tippen, Esc → NORMAL (breiter Cursor), `j` tippt nichts. Scheitert das, ist die Zustellung über `pressesBegan` falsch angenommen und alles Weitere hängt daran.
-2. **Bibliothek:** ohne Antippen `j`, `l`, Enter, Rückkehr, `-`; nach Suche und nach geschlossenem Sheet weiter steuerbar.
+1. **Tastenzustellung zuerst:** Heft öffnen, Stift aktiv, `j j j`, `k`, `tt`, `tp`, `gg`, `G`; oben links steht SEITE. Text öffnen, tippen, Esc → NORMAL (breiter Cursor), `j` tippt nichts. Scheitert das, ist die Zustellung über `pressesBegan` falsch angenommen und alles Weitere hängt daran.
+2. **Bibliothek:** direkt nach dem Start ohne Antippen `j`, `l`, `gg`, `G`, Enter, Heft schließen, wieder `j`, `-`; `dd` zeigt die Rückfrage; `-` aus „Zuletzt verwendet“; nach Suche und nach geschlossenem Sheet weiter steuerbar. `P` lässt nichts aufleuchten.
 3. **⌘A:** Textdokument über 3 Seiten mit Cursor, mit Stift, mit Textwerkzeug ohne Cursor; danach ⌘C (Einfügen in anderer App), Tippen, ⌫, ⌘B, ⌘Z. Heft mit Stift, Lasso, Text, Laser.
 4. **Text-Normalmodus:** `w b e 0 $ gg G`, `dd`, `dw`, `ciw`, `yy`, `p`, `v`, `V` auch über Seitengrenzen; `5j`, `3dd`; Undo je Befehl.
 5. **Objekte:** Tab, Enter, `x`, `yy`, `p`, `D`, `hjkl` schiebt; Esc.
@@ -95,6 +95,8 @@ Eine „Zeile“ ist wie in vim ein Absatz bis zum Zeilenumbruch; nur `j`/`k` fo
 8. **Layouts:** `:`, `?`, `/`, `{`, `[`, `$`, `+` mit der eigenen Tastatur; ⇧⌘7/8/9; ⌘+ ⌘-.
 9. **Halten:** `j` gehalten scrollt, loslassen stoppt sofort.
 10. **Abschalten:** Einstellung aus → alles wie vor Build 65, Esc beendet den Text sofort.
+
+**Diagnose:** Mit Einstellungen › Diagnose (ab Neustart) protokolliert `KeyboardRouter` jede Taste mit Kontext, Ergebnis und First Responder: `idevicesyslog | rg noty.keys`. Getippter Text erscheint nur als `(typing)`. Kommt zu einer Taste keine Zeile, hat sie keinen unserer Responder erreicht.
 
 ## Aufbau
 
