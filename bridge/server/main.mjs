@@ -66,7 +66,7 @@ export async function boot(env, options = {}) {
     prepareCatalog: () => toolFreeCatalog({ codexHome, file: path.join(stateDir, 'tool-free-catalog.json') }),
     rpcFactory: ({ catalog } = {}) => new CodexRpc({ cwd, codexHome, catalog, command: env.CODEX_BIN ?? 'codex' }) });
   const admin = options.admin ?? await createAdmin({ hub, accounts, accountUrl, origin: env.NOTY_AI_ADMIN_ORIGIN });
-  const api = createApi({ hub, accounts, auth: new SessionAuth({ accountUrl }) });
+  const api = createApi({ hub, accounts, auth: new SessionAuth({ accountUrl, knownFile: path.join(stateDir, 'known-sessions.json') }) });
   const adminApi = createAdminApi(admin);
   await hub.startRetention();
   const close = async () => {

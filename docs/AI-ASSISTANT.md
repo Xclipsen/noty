@@ -17,6 +17,7 @@ Die Bridge kennt keine eigenen Passwörter. `Authorization: Bearer <token>` ist 
 Diese Abfragen laufen beim Backend in einem gemeinsamen Limit von 1200 je 5 Minuten. Die Bridge drosselt sie deshalb selbst, Überschreitungen ergeben `429` oder `503` mit `Retry-After`, niemals Zugriff:
 
 - Abgelehnte Tokens werden 30 Sekunden gemerkt, Ausfälle des Backends 3 Sekunden, beides gehasht und auf 2000 Einträge begrenzt. Gültige Einträge liegen getrennt und werden von einer Flut nicht verdrängt.
+- Bekannte Sitzungen stehen nur als SHA-256 in `STATE_DIR/known-sessions.json` und gelten 30 Tage, damit eine Flut Rückkehrer auch nach Neustart nicht aussperrt.
 - Höchstens 900 Abfragen je 5 Minuten, davon höchstens 300 für unbekannte Tokens, höchstens 60 davon je Client (`X-Real-IP`, sonst Socket-Adresse). Der Rest bleibt für die erneute Prüfung bekannter Tokens reserviert; das sind Tokens, die in den letzten 24 Stunden gültig waren, seit dem letzten Neustart.
 - Höchstens 8 gleichzeitige Abfragen, davon 4 für unbekannte Tokens.
 - Antwortet das Backend selbst mit `429`, pausieren alle Abfragen für die Dauer von `Retry-After`, höchstens 5 Minuten. Tokens im 60-Sekunden-Cache laufen weiter.
@@ -49,7 +50,7 @@ Beide Listener lehnen Rohpfade mit `404` ab, bevor sie gedeutet werden: `//`, `\
 | `GET /v1/info` | | `200 { account: "chatgpt"\|null, models: [{ id, name, isDefault }], limits: { maxImages, maxImageBytes, maxContextChars, maxQuestionChars, dailyTurns, usedToday } }` |
 | `GET /v1/usage` | | `200 { checkedAt, limits: [{ id, name, windows: [{ usedPercent, windowDurationMins, resetsAt }] }] }` |
 | `GET /v1/sessions?documentId=UUID` | | `200 [Zusammenfassung]`, neueste zuerst |
-| `POST /v1/sessions` | `{ documentId?, title? }` | `201 Sitzung`; `409 code: too_many_sessions` ab 500 Sitzungen je Konto; `503` wenn nicht gespeichert, dann gibt es die Sitzung nicht |
+| `POST /v1/sessions` | `{ documentId?, title? }` | `201 Sitzung`; ab 500 Sitzungen je Konto weicht die älteste ruhende, `409 code: too_many_sessions` nur wenn alle laufen; `503` wenn nicht gespeichert, dann gibt es die Sitzung nicht |
 | `GET /v1/sessions/:id?after=REV` | | `200 Sitzung`, oder `204` wenn `revision == REV` |
 | `DELETE /v1/sessions/:id` | | `204`; `503` wenn nicht löschbar, dann bleibt alles unverändert und ein Lauf läuft weiter |
 | `POST /v1/sessions/:id/turns` | Anfrage (unten) | `202 Sitzung`; `409` läuft schon; `429` Limit oder Upload-Grenze; `403` Status nicht `active`; `400` Modell nicht in der sichtbaren Liste; `503` nicht bei ChatGPT angemeldet |

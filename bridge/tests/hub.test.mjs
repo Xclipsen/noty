@@ -642,15 +642,19 @@ test('Befund 4: Standard-Zeitlimit der Übersicht liegt unter 20 s', async t => 
   assert.ok(hub.queryTimeoutMs <= hub.overviewTimeoutMs);
 });
 
-test('Befund 5: Sitzungen je Konto sind begrenzt, Fehlermeldung ist klar, andere Konten frei', async t => {
+test('Befund 5: an der Grenze weicht der älteste ruhende Chat, laufende bleiben, andere Konten frei', async t => {
   const { hub, store } = await setup(t, { hub: { maxSessions: 2 } });
   const first = await hub.createSession(USER, {});
   await hub.createSession(USER, {});
-  await assert.rejects(hub.createSession(USER, {}), e => e.status === 409 && /Chats/.test(e.message));
-  assert.equal(store.list(USER).length, 2);
-  await hub.createSession('konto-b', {});
-  await hub.remove(USER, first.id);
+  store.get(first.id, USER).updatedAt = 1;
   await hub.createSession(USER, {});
+  assert.equal(store.list(USER).length, 2);
+  assert.ok(!store.list(USER).some(session => session.id === first.id));
+  await hub.createSession('konto-b', {});
+  for (const summary of store.list(USER)) store.get(summary.id, USER).status = 'running';
+  await assert.rejects(hub.createSession(USER, {}), e => e.status === 409 && e.code === 'too_many_sessions');
+  assert.equal(store.list(USER).length, 2);
+  for (const summary of store.list(USER)) store.get(summary.id, USER).status = 'idle';
   assert.equal(hub.maxSessions, 2);
   assert.equal((await setup(t)).hub.maxSessions, 500);
 });
@@ -658,7 +662,7 @@ test('Befund 5: Sitzungen je Konto sind begrenzt, Fehlermeldung ist klar, andere
 test('Befund 5: gleichzeitiges Anlegen überschreitet die Grenze nicht', async t => {
   const { hub, store } = await setup(t, { hub: { maxSessions: 3 } });
   const results = await Promise.allSettled(Array.from({ length: 8 }, () => hub.createSession(USER, {})));
-  assert.equal(results.filter(r => r.status === 'fulfilled').length, 3);
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, 8);
   assert.equal(store.list(USER).length, 3);
 });
 

@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { SessionAuth, bearerToken } from '../server/auth.mjs';
 import { startAccountBackend } from './fake-account-backend.mjs';
 import { TOKEN, TOKEN_B } from './helpers.mjs';
@@ -195,4 +197,36 @@ test('Befund 8: gekürzter Kontoname bleibt wohlgeformt', async () => {
   const auth = check(respond({ user: { id: 'konto-a', name: `${'a'.repeat(199)}😀` } }));
   const { name } = await auth.verify(TOKEN);
   assert.ok(name.isWellFormed());
+});
+
+test('Gegenprüfung: bekannte Sitzung bleibt nach Neustart von einer Flut unberührt, gespeichert nur als Hash', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'noty-known-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const knownFile = path.join(dir, 'known.json');
+  const token = randomToken();
+  const answer = async (_url, init) => new Response(JSON.stringify({ user: init.headers.authorization.endsWith(token) ? VALID : null }));
+  const before = check(answer, { knownFile, knownSaveMs: 0 });
+  assert.deepEqual(await before.verify(token), VALID);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const stored = await readFile(knownFile, 'utf8');
+  assert.ok(!stored.includes(token));
+  const after = check(answer, { knownFile, knownSaveMs: 0, maxClientLookups: 3 });
+  for (let i = 0; i < 3; i++) await assert.rejects(after.verify(randomToken()), e => e.status === 401);
+  await assert.rejects(after.verify(randomToken()), e => e.status === 429);
+  assert.deepEqual(await after.verify(token), VALID);
+});
+
+test('Gegenprüfung: ungültig gewordene Sitzung verliert ihren Vorrang, kaputte Datei stört nicht', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'noty-known-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const knownFile = path.join(dir, 'known.json');
+  await writeFile(knownFile, '[kaputt');
+  let valid = true;
+  const token = randomToken();
+  const auth = check(async () => new Response(JSON.stringify({ user: valid ? VALID : null })), { knownFile, knownSaveMs: 0, ttlMs: 0 });
+  await auth.verify(token);
+  assert.ok(auth.known.has(createHash('sha256').update(token).digest('hex')));
+  valid = false;
+  await assert.rejects(auth.verify(token), e => e.status === 401);
+  assert.ok(!auth.known.has(createHash('sha256').update(token).digest('hex')));
 });

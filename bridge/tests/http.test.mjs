@@ -477,3 +477,21 @@ test('Befund 13: die Körpergrenze bleibt beim Nachlesen hart, nichts wird gepuf
   assert.equal(ctx.store.get(path.split('/')[3], USER).messages.length, 0);
   assert.ok(process.memoryUsage().arrayBuffers - before < 512 * 1024 * 1024);
 });
+
+test('Gegenprüfung: Abbruch während der Kontoprüfung gibt den Upload-Platz frei', async t => {
+  const ctx = await serve(t);
+  const session = await (await ctx.call('POST', '/v1/sessions', {})).json();
+  const original = ctx.auth.verify.bind(ctx.auth);
+  let release;
+  ctx.auth.verify = async (...args) => { await new Promise(resolve => { release = resolve; }); ctx.auth.verify = original; return original(...args); };
+  const body = JSON.stringify(request('abbruch-1'));
+  const socket = connect(ctx.api.address().port, '127.0.0.1');
+  socket.write(`POST /v1/sessions/${session.id}/turns HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${TOKEN}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body) + 100}\r\n\r\n${body}`);
+  await until(() => release);
+  socket.destroy();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  release();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(ctx.uploads.active, 0);
+  assert.equal((await ctx.call('GET', '/v1/me')).status, 200);
+});

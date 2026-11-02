@@ -17,6 +17,8 @@ const BASE_HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'n
 
 function readBody(req, limit) {
   if (Number(req.headers['content-length']) > limit) return Promise.reject(new ApiError(413, 'Die Anfrage ist zu groß.'));
+  // Während der Kontoprüfung kann der Client schon weg sein; dann feuert kein Ereignis mehr.
+  if (req.destroyed && !req.readableEnded) return Promise.reject(new ApiError(400, 'Die Anfrage wurde abgebrochen.'));
   return new Promise((resolve, reject) => {
     const chunks = []; let size = 0;
     const onData = chunk => {

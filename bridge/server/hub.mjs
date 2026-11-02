@@ -145,6 +145,7 @@ function trimSession(session) {
 export class Hub {
   constructor({ store, accounts, metering, rpcFactory, prepareCatalog, cwd, turnTimeoutMs = 300_000, cancelGraceMs = 10_000, maxSessions = MAX_SESSIONS,
     queryTimeoutMs = QUERY_TIMEOUT_MS, overviewTimeoutMs = OVERVIEW_TIMEOUT_MS, failureCacheMs = FAILURE_CACHE_MS }) {
+    this.creating = Promise.resolve();
     Object.assign(this, { store, accounts, metering, rpcFactory, prepareCatalog, cwd, turnTimeoutMs, cancelGraceMs, maxSessions, queryTimeoutMs, overviewTimeoutMs, failureCacheMs });
     this.runs = new Map(); this.closing = false; this.cache = new Map();
   }
@@ -221,8 +222,19 @@ export class Hub {
   async createSession(userId, { documentId, title }) {
     if (documentId !== undefined && documentId !== null && !isUuid(documentId)) throw new ApiError(400, 'Ungültige Dokumentkennung.');
     if (title !== undefined && title !== null && (!isText(title, MAX_LABEL_CHARS) || !title.trim())) throw new ApiError(400, 'Ungültiger Titel.');
-    if (this.store.count(userId) >= this.maxSessions) throw new ApiError(409, `Du hast schon ${this.maxSessions} Chats. Lösche zuerst alte Chats.`, 'too_many_sessions');
-    return this.store.public(await this.store.create({ userId, documentId: documentId ?? null, title: title ?? undefined }));
+    // Nacheinander, damit parallele Anfragen dieselbe Grenze sehen.
+    const created = this.creating.then(() => this.addSession(userId, documentId ?? null, title ?? undefined));
+    this.creating = created.catch(() => {});
+    return created;
+  }
+  /** Die App zeigt nur Chats des offenen Hefts, also darf die Grenze dort keine Sackgasse sein. */
+  async addSession(userId, documentId, title) {
+    if (this.store.count(userId) >= this.maxSessions) {
+      const oldest = this.store.list(userId).filter(session => session.status !== 'running').at(-1);
+      if (!oldest) throw new ApiError(409, `Du hast schon ${this.maxSessions} laufende Chats.`, 'too_many_sessions');
+      await this.remove(userId, oldest.id);
+    }
+    return this.store.public(await this.store.create({ userId, documentId, title }));
   }
   /** Nur Modelle aus der sichtbaren Liste; versteckte oder erfundene Kennungen gehen nicht an Codex. */
   async requireModel(model) {

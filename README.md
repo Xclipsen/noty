@@ -3,6 +3,10 @@
 Native iPad-App für Schulnotizen, entwickelt auf `la@lab` unter Omarchy.
 Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nutzer auf **noty** geändert.
 
+## KI-Assistent (experimentell, nur noty dev)
+
+Fragen zu Heft und Seite über das eigene ChatGPT-Abo, standardmäßig aus. Branch `feat/ki-panel`, Bridge in `bridge/`, Vertrag und Betrieb in [AI-ASSISTANT](docs/AI-ASSISTANT.md). Admin-Web-App: `noty.xclipsen.de/admin`. Lernkarten und automatische Chats fehlen noch. Implementiert und gebaut, am iPad ungeprüft.
+
 ## Native Gesetzessammlung – separater Feature-Worktree
 
 Der bestätigte Ausbau ist in `feat/native-law-library` implementiert: optionale native Gesetzessammlung als internes Slide-over oder angedockte zweite Ansicht, lokale Texte/optionale PDFs, Direktfundstellen wie `144 HGB`, Apples Tastaturen und appweites E-Mail-Konto. Drei getrennte Schalter (Aktivierung aus, persönlicher Sync an, automatische Gesetzesupdates an). Notizbücher bleiben lokal; Gesetzesmarkierungen haben eine eigene dauerhafte Warteschlange und Sicherungsdatei.

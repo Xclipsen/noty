@@ -93,7 +93,7 @@ test('Konfigurationsfehler auf Deutsch', async t => {
 });
 
 test('Kein Inhalt im Server-Code landet in Logs', async () => {
-  for (const name of ['http', 'hub', 'rpc', 'usage', 'auth', 'accounts', 'metering', 'admin']) {
+  for (const name of ['http', 'hub', 'rpc', 'usage', 'auth', 'known-sessions', 'accounts', 'metering', 'admin']) {
     const source = await readFile(new URL(`../server/${name}.mjs`, import.meta.url), 'utf8');
     assert.ok(!/console\.(log|error|warn|info|debug)/.test(source), name);
   }

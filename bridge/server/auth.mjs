@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { KnownSessions } from './known-sessions.mjs';
 import { ApiError } from './store.mjs';
 
 const TOKEN = /^[a-f0-9]{64}$/;
@@ -10,7 +11,7 @@ const MAX_CLIENT_LOOKUPS = 60;
 const MAX_CONCURRENT = 8;
 const MAX_UNKNOWN_CONCURRENT = 4;
 const MAX_CLIENTS = 1000;
-const KNOWN_MS = 24 * 60 * 60_000;
+const KNOWN_MS = 30 * 24 * 60 * 60_000; // So lange gilt eine Backend-Sitzung höchstens.
 const MAX_COOLDOWN_MS = 5 * 60_000;
 const LIMITED_RETRY_S = 30;
 const BUSY_RETRY_S = 5;
@@ -33,12 +34,13 @@ export function bearerToken(header) {
 export class SessionAuth {
   constructor({ accountUrl, fetcher = globalThis.fetch, ttlMs = 60_000, negativeTtlMs = 30_000, failureTtlMs = 3000, knownMs = KNOWN_MS, timeoutMs = 5000, maxEntries = 2000,
     windowMs = WINDOW_MS, maxLookups = MAX_LOOKUPS, maxUnknownLookups = MAX_UNKNOWN_LOOKUPS, maxClientLookups = MAX_CLIENT_LOOKUPS,
-    maxConcurrent = MAX_CONCURRENT, maxUnknownConcurrent = MAX_UNKNOWN_CONCURRENT, maxClients = MAX_CLIENTS, now = Date.now }) {
+    maxConcurrent = MAX_CONCURRENT, maxUnknownConcurrent = MAX_UNKNOWN_CONCURRENT, maxClients = MAX_CLIENTS, knownFile = null, knownSaveMs, now = Date.now }) {
     this.url = accountUrl.replace(/\/+$/, '') + '/api/session';
     Object.assign(this, { fetcher, ttlMs, negativeTtlMs, failureTtlMs, knownMs, timeoutMs, maxEntries, windowMs, maxLookups, maxUnknownLookups, maxClientLookups, maxConcurrent, maxUnknownConcurrent, maxClients, now });
     this.cache = new Map(); this.negative = new Map(); this.pending = new Map();
     this.lookups = []; this.unknownLookups = []; this.clients = new Map();
     this.active = 0; this.activeUnknown = 0; this.coolingUntil = 0;
+    this.known = new KnownSessions({ file: knownFile, ttlMs: knownMs, maxEntries, saveMs: knownSaveMs, now });
   }
   /** Schlüssel nur als SHA-256; `client` wirkt nur auf unbekannte Tokens. */
   async verify(token, client = 'unbekannt') {
@@ -51,13 +53,13 @@ export class SessionAuth {
     if (miss && now < miss.expiresAt) throw miss.failed ? unavailable() : invalid();
     let pending = this.pending.get(key);
     if (!pending) {
-      const release = this.admit(!!entry && now < entry.knownUntil, client);
+      const release = this.admit(this.known.has(key), client);
       pending = this.lookup(token).finally(() => { release(); this.pending.delete(key); });
       this.pending.set(key, pending);
     }
     let user;
     try { user = await pending; } catch (error) { this.rememberMiss(key, true); throw error; }
-    if (!user) { this.cache.delete(key); this.rememberMiss(key, false); throw invalid(); }
+    if (!user) { this.cache.delete(key); this.known.remove(key); this.rememberMiss(key, false); throw invalid(); }
     this.remember(key, user);
     return user;
   }
@@ -65,7 +67,8 @@ export class SessionAuth {
     this.cache.delete(key); this.negative.delete(key);
     while (this.cache.size >= this.maxEntries) this.cache.delete(this.cache.keys().next().value);
     const now = this.now();
-    this.cache.set(key, { user, expiresAt: now + this.ttlMs, knownUntil: now + this.knownMs });
+    this.cache.set(key, { user, expiresAt: now + this.ttlMs });
+    this.known.add(key);
   }
   rememberMiss(key, failed) {
     const ttl = failed ? this.failureTtlMs : this.negativeTtlMs;
