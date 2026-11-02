@@ -38,7 +38,9 @@ Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft) und
 
 Nutzer: Felder rechts unten auf einer Scan-Seite lassen sich weder antippen noch per Zeiger erreichen, die übrigen schon. **Ursache nicht bestätigt.** Behoben sind drei belegte Mechanismen: gespeicherte leere Felder fingen Berührungen im ganzen Rahmen ab (im Geräteabzug vorhanden, teils seitengroß), ein nicht endender Zeiger-Touch sperrte die Tipp-Erkennung eines Felds dauerhaft, die Griffzone des bearbeiteten Felds verdeckte Text daneben. Zur Klärung: Einstellungen › Über noty › Tipp-Diagnose nennt nach jedem Tipp Fenster, getroffene Ansicht und die Felder an der Stelle.
 
-Offener Gerätetest: Installation über den Link als Update, gleiche Hefte danach; Felder rechts unten; Vergleich gegen eine USB-Sicherung nach der Rückkehr.
+**Nutzerbestätigung 02.11.2026:** Mit Build 70 lassen sich wieder alle Felder antippen. Welcher der drei Mechanismen die Ursache war, ist nicht belegt; die Tipp-Diagnose wurde dafür nicht gebraucht und bleibt als Schalter erhalten.
+
+Offener Gerätetest: Vergleich des Bestands gegen eine USB-Sicherung nach der Rückkehr, weil die Installation über den Link ohne Vorher-Sicherung per USB lief.
 
 ## Bedienfluss-Durchsicht (31.10.2026, Branch `audit/flow-2026-10-31`)
 
