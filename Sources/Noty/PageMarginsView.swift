@@ -300,6 +300,8 @@ struct PageMarginsView: View {
     private func growthRow(_ title: String, value: Binding<Double>, dimension: Double, minimum: Double, standard: Double) -> some View {
         let on = value.wrappedValue > 0
         let percent = Int((value.wrappedValue / dimension * 100).rounded())
+        // Content past the edge makes `minimum` larger than the current size.
+        let range = (on ? minimum : 0)...max(1, dimension, value.wrappedValue, minimum)
         return VStack(alignment: .leading, spacing: 12) {
             keyToggle(title, isOn: Binding(get: { value.wrappedValue > 0 },
                                            set: { value.wrappedValue = $0 ? max(minimum, dimension * standard) : 0 }))
@@ -319,10 +321,10 @@ struct PageMarginsView: View {
                 Spacer(minLength: 0)
                 Text(on ? "+\(percent) %" : "aus").font(.caption).monospacedDigit().foregroundStyle(.secondary)
             }
-            Slider(value: value, in: (on ? minimum : 0)...max(1, max(dimension, value.wrappedValue)))
+            Slider(value: value, in: range)
                 .disabled(!on || !editable)
                 .accessibilityLabel("\(title), Anteil")
-                .keyOption(.slider(value, in: (on ? minimum : 0)...max(1, max(dimension, value.wrappedValue)), step: dimension / 20))
+                .keyOption(.slider(value, in: range, step: dimension / 20))
             if minimum > 0.5 {
                 Text("Hier liegt schon Inhalt: kürzer als \(Int((minimum / dimension * 100).rounded())) % geht nicht.")
                     .font(.caption).foregroundStyle(.secondary)

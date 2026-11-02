@@ -33,7 +33,11 @@ public enum TextListEditing {
         let indent = String(before.prefix { $0 == " " || $0 == "\t" })
         guard let prefix = prefix(String(before.dropFirst(indent.count))) else { return nil }
         let content = String(before.dropFirst(indent.count + prefix.count))
-        if content.trimmingCharacters(in: .whitespaces).isEmpty {
+        var end = NSMaxRange(range)
+        while end < source.length, !TextLines.isBreak(source.character(at: end)) { end += 1 }
+        let rest = source.substring(with: NSRange(location: NSMaxRange(range), length: end - NSMaxRange(range)))
+        // An empty item ends the list; with text behind the caret it is a normal split.
+        if content.trimmingCharacters(in: .whitespaces).isEmpty, rest.trimmingCharacters(in: .whitespaces).isEmpty {
             return Edit(range: NSRange(location: line.location, length: range.location + range.length - line.location), replacement: "")
         }
         let next: String

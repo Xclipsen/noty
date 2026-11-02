@@ -240,10 +240,10 @@ final class TextListStructureTests: XCTestCase {
     }
     func testTypedStartNumbersAndDistantListsStay() {
         XCTAssertEqual(edited(box([("Text", 0), ("", 0), ("3.", 0)]), "Text\n\n3. ", caret: 9).0.text, "Text\n\n3. ")
-        let far = box([("1. a", 0), ("Text", 0), ("7. Mai", 0), ("9. Juni", 0)])
-        XCTAssertEqual(edited(far, "1. ab\nText\n7. Mai\n9. Juni", caret: 5).0.text, "1. ab\nText\n7. Mai\n9. Juni")
+        let far = box([("1. a", 0), ("Text", 0), ("7. Apfel", 0), ("9. Birne", 0)])
+        XCTAssertEqual(edited(far, "1. ab\nText\n7. Apfel\n9. Birne", caret: 5).0.text, "1. ab\nText\n7. Apfel\n9. Birne")
         // Touching that list counts on from its own first number.
-        XCTAssertEqual(edited(far, "1. a\nText\n7. Mai\n9. Juni!", caret: 23).0.text, "1. a\nText\n7. Mai\n8. Juni!")
+        XCTAssertEqual(edited(far, "1. a\nText\n7. Apfel\n9. Birne!", caret: 25).0.text, "1. a\nText\n7. Apfel\n8. Birne!")
         // Indented explanation text stays inside a list; normal text ends it.
         let inner = box([("1. a", 0), ("Erklärung", 1), ("5. b", 0), ("Normal", 0), ("4. c", 0)])
         XCTAssertEqual(edited(inner, "1. a\nErklärung\n5. b!\nNormal\n4. c", caret: 19).0.text, "1. a\nErklärung\n2. b!\nNormal\n4. c")
@@ -367,5 +367,17 @@ private extension TextBox {
         box = box.applying(plan.markers).applying(plan.renumbering)
         let caret = TextListEditing.selection(TextListEditing.selection(selection, after: plan.markers), after: plan.renumbering)
         return box == self ? nil : (box, caret)
+    }
+
+    func testDatesAreNoList() {
+        let text = "3. Mai\n10. Juni\n"
+        XCTAssertEqual(TextListEditing.normalize(text, level: { _ in 0 }, changed: NSRange(location: 0, length: 6)), [])
+    }
+
+    func testReturnBehindAMarkerSplitsTheItem() {
+        let edit = TextListEditing.newline(in: "1. abc", range: NSRange(location: 3, length: 0))
+        XCTAssertEqual(edit, .init(range: NSRange(location: 3, length: 0), replacement: "\n2. "))
+        XCTAssertEqual(TextListEditing.newline(in: "1. ", range: NSRange(location: 3, length: 0)),
+                       .init(range: NSRange(location: 0, length: 3), replacement: ""), "an empty item still ends the list")
     }
 }

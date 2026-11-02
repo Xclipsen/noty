@@ -45,6 +45,8 @@ final class EditorModel: ObservableObject {
     /// Local history copies get titles unique in this area.
     private let libraryRoot: URL
     @Published private(set) var mutationsPaused = false
+    /// An image is being fetched: nothing is locked meanwhile, closing waits.
+    var imageReading = false
     private var activeInteractions = Set<UUID>()
     private var mutationWaiters: [CheckedContinuation<Void, Never>] = []
     var inputInProgress: Bool { !activeInteractions.isEmpty }
@@ -56,6 +58,8 @@ final class EditorModel: ObservableObject {
         mutationsPaused = false
         let waiters = mutationWaiters; mutationWaiters = []
         for waiter in waiters { waiter.resume() }
+        let held = heldDrawings; heldDrawings = [:]
+        for (pageID, drawing) in held where drawing.generation == pageContentGeneration { updateDrawing(drawing.data, pageID: pageID) }
     }
     func awaitMutationAccess() async {
         if mutationsPaused { await withCheckedContinuation { mutationWaiters.append($0) } }
@@ -74,6 +78,13 @@ final class EditorModel: ObservableObject {
     private var retryAttempt = 0
     /// Last non-retryable save error already shown; cleared by a successful save.
     private var lastPermanentFailure: String?
+    /// Saving cannot succeed by waiting. The last commit stays valid.
+    var saveBlocked: String? { saveFailed ? lastPermanentFailure : nil }
+    /// The user chose to close without the changes since the last commit.
+    func abandonUnsavedChanges() {
+        retryTask?.cancel(); saveFailed = false; writable = false
+    }
+    private var heldDrawings: [UUID: (data: Data, generation: Int)] = [:]
     /// The package's asset GC after opening (repository actor, before its
     /// first commit; skipped there once a commit happened).
     private var openingCleanup: Task<Void, Never>?
@@ -471,6 +482,9 @@ final class EditorModel: ObservableObject {
 
     func updateDrawing(_ data: Data, pageID: UUID) {
         HangProbe.hit("Model.updateDrawing")
+        // PencilKit reports a stroke late, also behind a running backup commit:
+        // the canvas shows it, so it must not get lost.
+        if writable, mutationsPaused { heldDrawings[pageID] = (data, pageContentGeneration); return }
         guard writable, !mutationsPaused, let index = notebook.pages.firstIndex(where: { $0.id == pageID }),
               notebook.pages[index].drawing != data else { return }
         let before = PageContent(page: notebook.pages[index])
@@ -733,9 +747,11 @@ final class EditorModel: ObservableObject {
         Task {
             defer { if access { url.stopAccessingSecurityScopedResource() }; busy = false }
             do {
-                let (data, geometries) = try await Task.detached(priority: .userInitiated) {
-                    try PDFImportCheck.pages(of: LibraryModel.readPDF(url))
-                }.value
+                let (data, geometries) = try await withImportTimeLimit {
+                    try await Task.detached(priority: .userInitiated) {
+                        try PDFImportCheck.pages(of: LibraryModel.readPDF(url))
+                    }.value
+                }
                 guard let index = notebook.pages.firstIndex(where: { $0.id == anchor }) else { throw PageOperationError.missingPage }
                 let previous = notebook
                 let selected = page.id
@@ -762,7 +778,7 @@ final class EditorModel: ObservableObject {
     /// Closing must finish its last commit before another editor can be opened.
     /// On failure the editor stays open with its unsaved in-memory snapshot.
     func flushBeforeClosing() async -> Bool {
-        guard !busy else { error = "Bitte den laufenden Vorgang abwarten, dann erneut schließen."; return false }
+        guard !busy, !imageReading else { error = "Bitte den laufenden Vorgang abwarten, dann erneut schließen."; return false }
         guard writable else { return true }
         busy = true
         defer { busy = false }
@@ -868,6 +884,13 @@ final class EditorModel: ObservableObject {
     private static let retryDelays = [2, 5, 15, 60]
     private static func retryable(_ error: Error) -> Bool {
         if error is StorageError { return false }
+        // An original proven wrong or gone does not come back by itself.
+        if let error = error as? ImageAssetError {
+            switch error {
+            case .damaged, .missing: return false
+            default: return true
+            }
+        }
         guard let error = error as? RevisionError else { return true }
         switch error {
         case .snapshotTooLarge, .unsupportedFormat: return false

@@ -3,7 +3,7 @@ import ImageIO
 import NotebookCore
 
 enum ImageImportError: LocalizedError {
-    case invalid, fileTooLarge, tooManyPixels, missingClipboard, video, pageFull, pageChanged
+    case invalid, fileTooLarge, tooManyPixels, missingClipboard, video, pageFull, pageChanged, timedOut
     case notebookFull(used: Int, adding: Int)
     /// Photos delivered no still image; `offered`: its content types (diagnosis).
     case unsupportedPhoto(offered: String)
@@ -24,6 +24,7 @@ enum ImageImportError: LocalizedError {
         case .fileTooLarge: "Das Bild ist zu groß und ließ sich nicht ausreichend verkleinern (höchstens 250 MB als Quelle). Bitte eine kleinere Fassung wählen, z. B. in Fotos als HEIC oder JPEG sichern."
         case .tooManyPixels: "Das Bild hat mehr als 200 Megapixel, das ist für noty zu groß."
         case .pageChanged: "Die Seite hat sich währenddessen geändert. Bitte das Bild erneut einfügen."
+        case .timedOut: "Die Datei kam nicht rechtzeitig an. Liegt sie in iCloud, wird sie gerade noch geladen: bitte gleich erneut versuchen."
         case .missingClipboard: "Die Zwischenablage enthält kein unterstütztes Bild. Bitte zuerst einen Screenshot oder ein Bild kopieren."
         case .video: "Die ausgewählte Datei ist ein Video. Bitte ein Foto oder Bild wählen."
         case .pageFull: "Auf dieser Seite liegen bereits 50 Bilder, mehr sind je Seite nicht möglich. Bitte eine andere Seite verwenden."

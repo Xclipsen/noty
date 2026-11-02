@@ -93,6 +93,9 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     var autocapitalizationType: UITextAutocapitalizationType = .sentences
     var autocorrectionType: UITextAutocorrectionType = .default
     var spellCheckingType: UITextSpellCheckingType = .default
+    /// noty calculates itself (`TextCalculator`).
+    @available(iOS 18.0, *)
+    var mathExpressionCompletionType: UITextMathExpressionCompletionType { get { .no } set {} }
     var keyboardType: UIKeyboardType = .default
     var markedTextStyle: [NSAttributedString.Key: Any]?
     weak var inputDelegate: UITextInputDelegate?
@@ -358,6 +361,10 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         }
         type(text, over: selection, before: selection)
         if text == " " { finishAutomaticList() }
+        if text == "=", UserDefaults.standard.object(forKey: AppSettingsKey.calculator) as? Bool ?? true,
+           let calculation = TextCalculator.calculation(in: store.string, caret: selection.location) {
+            type(calculation.edit.replacement, over: calculation.edit.range, before: selection, separate: true)
+        }
     }
     /// Automatic pairs: the caret stays inside a new pair or steps over a closing half.
     private func typePair(_ pairing: TextTyping.Pairing) {
@@ -639,6 +646,8 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     override func cut(_ sender: Any?) {
         if !KeyboardRouter.shared.allowsTyping { if keyboardCut() { return } }
         copy(sender)
+        // A running composition (dead key) ends first: its range would go stale.
+        if marked != nil { unmarkText() }
         if selection.length > 0 { type("", over: selection, before: selection, separate: true) }
     }
     override func paste(_ sender: Any?) {
@@ -649,6 +658,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         }
         if !router.allowsTyping { keyboardPaste(); return }
         guard let text = UIPasteboard.general.string else { return }
+        if marked != nil { unmarkText() }
         type(text, over: selection, before: selection, separate: true)
     }
     override func selectAll(_ sender: Any?) { selectEverything() }

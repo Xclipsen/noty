@@ -139,6 +139,17 @@ public enum NotebookViewportGeometry {
         let index = pages.indices.min { verticalDistance(referenceY, page: pages[$0]) < verticalDistance(referenceY, page: pages[$1]) }!
         return range(index)
     }
+    /// Sideways resting place of a released flick. `allowed` belongs to where
+    /// the view is now, not to where the flick ends: the limit of a narrow
+    /// sheet at the destination (the trailing draft page) pulled the view
+    /// sideways from the first frame on, and a stopped flick left it there
+    /// (Nutzer zu Build 75 und 76). A mainly vertical flick does not move
+    /// sideways at all; reaching a narrower sheet still glides through the seam.
+    public static func flickTargetX(proposed: Double, current: Double, velocity: PagePoint,
+                                    allowed: ClosedRange<Double>) -> Double {
+        let x = abs(velocity.y) > 2 * abs(velocity.x) ? current : proposed
+        return min(max(x, allowed.lowerBound), allowed.upperBound)
+    }
     public static func verticalDistance(_ y: Double, page: PageRect) -> Double {
         max(page.y - y, y - page.y - page.height, 0)
     }
@@ -149,5 +160,30 @@ public enum NotebookViewportGeometry {
         let margin = min(1000, max(0, visible.height) * 0.5)
         return PageRect(x: visible.x, y: visible.y - margin,
                         width: visible.width, height: visible.height + 2 * margin)
+    }
+}
+
+/// Pages the viewport reported while scrolling, until the app's selection
+/// comes back. Scrolling can already have crossed the seam again by then: a
+/// late answer then differs from the newest report and must not count as a
+/// page jump from outside (Nutzer zu Build 75: Sprung beim schnellen Scrollen).
+/// Entries expire, so a report the app dropped never swallows a real jump.
+public struct ScrollSelectionEchoes: Sendable {
+    public static let lifetime = 1.0
+    private var sent: [(id: UUID, time: Double)] = []
+
+    public init() {}
+
+    public mutating func record(_ id: UUID, at time: Double) {
+        sent.removeAll { time - $0.time > Self.lifetime }
+        sent.append((id, time))
+    }
+    /// True when `id` is the late answer to an own report. Older reports are
+    /// answered by it as well.
+    public mutating func consume(_ id: UUID, at time: Double) -> Bool {
+        sent.removeAll { time - $0.time > Self.lifetime }
+        guard let index = sent.lastIndex(where: { $0.id == id }) else { return false }
+        sent.removeFirst(index + 1)
+        return true
     }
 }

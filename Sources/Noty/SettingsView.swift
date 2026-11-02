@@ -14,6 +14,10 @@ enum AppSettingsKey {
     static let textToolLocked = "noty.text.toolLocked"
     /// Weiches Einrasten beim Verschieben (default on).
     static let snapping = "noty.editor.snapping"
+    /// New text fields start in the automatic colour (default on); off: the last used one.
+    static let automaticTextColor = "noty.text.automaticColor"
+    /// „=“ calculates in the text (default on).
+    static let calculator = "noty.editor.calculator"
     /// Helix keys (docs/KEYBOARD.md): experimental, text documents only, off
     /// unless switched on. A new key: the former `noty.keyboard.mode` meant
     /// the whole app and was on by default.
@@ -96,9 +100,8 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     }
     /// True when the page edits data stored per area (Bereich).
     var perArea: Bool { [.tools, .paper, .backup, .trash].contains(self) }
-    /// Rows of the settings root, grouped. `.diagnostics` has no own row; it
-    /// opens „Über noty“, which contains the Diagnose section.
-    static let rootSections: [[SettingsPage]] = [[.general, .account, .laws, .editor, .tools, .paper], [.backup, .trash], [.about]]
+    /// Rows of the settings root, grouped.
+    static let rootSections: [[SettingsPage]] = [[.general, .account, .laws, .editor, .tools, .paper], [.backup, .trash], [.about, .diagnostics]]
 }
 
 struct SettingsRequest: Identifiable {
@@ -203,7 +206,8 @@ struct SettingsView: View {
         case .backup: BackupSettingsPage(library: library, toolbox: toolbox, externalBackup: externalBackup,
                                          workspaces: workspaces, onSelectArea: onSelectArea)
         case .trash: TrashSettingsPage(library: library, area: workspaces.title)
-        case .about, .diagnostics: AboutSettingsPage(toolbox: toolbox, workspaces: workspaces)
+        case .about: AboutSettingsPage(toolbox: toolbox, workspaces: workspaces)
+        case .diagnostics: DiagnosticsSettingsPage()
         }
     }
 }
@@ -238,6 +242,8 @@ private struct EditorSettingsPage: View {
     @AppStorage(AppSettingsKey.sidebarVisible) private var sidebarVisible = true
     @AppStorage(AppSettingsKey.typewriter) private var typewriter = false
     @AppStorage(AppSettingsKey.snapping) private var snapping = true
+    @AppStorage(AppSettingsKey.calculator) private var calculator = true
+    @AppStorage(AppSettingsKey.automaticTextColor) private var automaticTextColor = true
     @AppStorage(AppSettingsKey.helixTextDocuments) private var helix = false
     @AppStorage(AppSettingsKey.autoPairs) private var autoPairs = false
     var body: some View {
@@ -246,6 +252,10 @@ private struct EditorSettingsPage: View {
                 keyToggle("Schreibscrollen bis zur Bildschirmmitte", isOn: $writingScroll)
                 keyToggle("Seitenleiste beim Öffnen zeigen", isOn: $sidebarVisible)
                 keyToggle("Schreibmaschinen-Modus beim Tippen", isOn: $typewriter)
+                keyToggle("Neue Textfelder in automatischer Farbe", isOn: $automaticTextColor)
+                    .accessibilityHint("Schwarz oder Weiß passend zum Papier. Aus: Neue Felder übernehmen die zuletzt benutzte Farbe.")
+                keyToggle("Rechnen mit „=“", isOn: $calculator)
+                    .accessibilityHint("2+3= wird zu 2+3=5, 2 + 3 = zu 2 + 3 = 5. Von oben nach unten: Zahlen untereinander, dann = allein in einer neuen Zeile.")
                 keyToggle("Einrasten", isOn: $snapping)
                     .accessibilityHint("Textfelder, Bilder, Formen und Auswahlen rasten beim langsamen Verschieben an Kanten, Mitten, Linien und Seitenrändern ein.")
                 keyToggle("Helix-Tastatur in Textdokumenten (experimentell)", isOn: $helix)
@@ -639,9 +649,6 @@ private struct TrashSettingsPage: View {
 private struct AboutSettingsPage: View {
     @ObservedObject var toolbox: ToolbarSettingsModel
     @ObservedObject var workspaces: WorkspaceAppModel
-    @AppStorage(AppSettingsKey.hangProbe) private var hangProbe = false
-    @AppStorage(AppSettingsKey.tapDiagnostics) private var tapDiagnostics = false
-    @AppStorage(AppSettingsKey.textEditor2) private var textEditor2 = false
     private func info(_ key: String) -> String { Bundle.main.object(forInfoDictionaryKey: key) as? String ?? "–" }
     var body: some View {
         Form {
@@ -659,16 +666,29 @@ private struct AboutSettingsPage: View {
                 Text("Alle Unterlagen liegen lokal im App-Container und sind über die Dateien-App sichtbar. Dort bitte nichts umbenennen oder verschieben. Hefte und Textdokumente verlassen das iPad nur über ein selbst eingerichtetes Backup, einen Export oder Teilen. Das freiwillige noty-Konto gleicht nur Lesezeichen und Markierungen der Gesetzessammlung mit law.xclipsen.de ab; Gesetzestexte werden von dort geladen.")
             }
             SigningRenewalSection()
+        }
+        .navigationTitle("Über noty")
+        .keyboardSheet()
+    }
+}
+
+/// Own page: a freeze of „Über noty“ must not take the tools to find it with it.
+private struct DiagnosticsSettingsPage: View {
+    @AppStorage(AppSettingsKey.hangProbe) private var hangProbe = false
+    @AppStorage(AppSettingsKey.tapDiagnostics) private var tapDiagnostics = false
+    @AppStorage(AppSettingsKey.textEditor2) private var textEditor2 = false
+    var body: some View {
+        Form {
             Section {
                 keyToggle("Hänger-Diagnose", isOn: $hangProbe)
                 keyToggle("Tipp-Diagnose", isOn: $tapDiagnostics)
                     .onChange(of: tapDiagnostics) { _, _ in TapDiagnostics.shared.refresh() }
                 keyToggle("Neuer Texteditor (Test)", isOn: $textEditor2)
-            } header: { Text("Diagnose") } footer: {
-                Text("Tipp-Diagnose: zeigt nach jedem Tipp, was er getroffen hat und welche Felder dort liegen, nur Größen, keine Inhalte. Hänger-Diagnose: protokolliert bei längeren Hängern nur Codeadressen und Zähler im Systemprotokoll, keine Inhalte. Wirkt nach einem Neustart der App. Neuer Texteditor: ein Text über alle Seiten eines Textdokuments, im Blättermodus aus; noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.")
+            } footer: {
+                Text("Tipp-Diagnose: zeigt nach jedem Tipp, was er getroffen hat und welche Felder dort liegen, nur Größen, keine Inhalte. Hänger-Diagnose: schreibt bei längeren Hängern nur Codeadressen und Zähler ins Systemprotokoll und nach Dateien › Auf meinem iPad › noty › Diagnose › haenger.txt, keine Inhalte. Wirkt nach einem Neustart der App. Neuer Texteditor: ein Text über alle Seiten eines Textdokuments, im Blättermodus aus; noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.")
             }
         }
-        .navigationTitle("Über noty")
+        .navigationTitle("Diagnose")
         .keyboardSheet()
     }
 }

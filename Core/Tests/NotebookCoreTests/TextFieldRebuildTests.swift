@@ -342,4 +342,40 @@ final class TextFieldRebuildTests: XCTestCase {
         XCTAssertEqual(turned.selectionCorners[0].x, 107, accuracy: 1e-9)
         XCTAssertEqual(turned.selectionCorners[0].y, 193, accuracy: 1e-9)
     }
+
+    func testFieldOnAScanShowsTheSameSizeAsOnANormalPage() {
+        let scan = TextSizeUnits(pageWidth: PageSize.a4.width * 3, hasPDF: true)
+        XCTAssertEqual(scan.stored(14), 42, accuracy: 1e-9)
+        XCTAssertEqual(scan.visible(42), 14, accuracy: 1e-9)
+        XCTAssertEqual(scan.visible(43), 14, accuracy: 1e-9, "an older field shows its real size")
+        XCTAssertEqual(scan.stepped(42, by: 1), 45, accuracy: 1e-9)
+        XCTAssertEqual(scan.stepped(42, by: -1), 39, accuracy: 1e-9)
+    }
+
+    func testNormalPagesAndMarginTextKeepTheirSizes() {
+        for units in [TextSizeUnits.normal, TextSizeUnits(pageWidth: 1785, hasPDF: false),
+                      TextSizeUnits(pageWidth: 1785, hasPDF: true, coordinateScale: 3)] {
+            XCTAssertEqual(units.factor, 1)
+            XCTAssertEqual(units.stored(14), 14)
+            XCTAssertEqual(units.visible(14.5), 14.5)
+            XCTAssertEqual(units.stepped(14, by: 1), 15)
+        }
+    }
+
+    func testConvertedSizesStayValidOnVeryLargeAndVerySmallPDFs() {
+        let large = TextSizeUnits(pageWidth: PageSize.a4.width * 4, hasPDF: true)
+        XCTAssertEqual(large.stored(72), 96)
+        XCTAssertEqual(large.stepped(96, by: 1), 96)
+        let small = TextSizeUnits(pageWidth: 240, hasPDF: true)
+        XCTAssertEqual(small.stored(14), 8)
+        XCTAssertEqual(small.stepped(8, by: -1), 8)
+        XCTAssertEqual(large.remembered(8), 8, "the last used style stays valid")
+        XCTAssertEqual(small.remembered(96), 96)
+    }
+
+    func testBrokenPageWidthChangesNothing() {
+        for width in [0, -10, Double.nan, .infinity] {
+            XCTAssertEqual(TextSizeUnits(pageWidth: width, hasPDF: true).factor, 1)
+        }
+    }
 }

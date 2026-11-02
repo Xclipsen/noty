@@ -120,10 +120,34 @@ extension ImageImport {
 }
 
 @MainActor
+private final class ImportRace<Value: Sendable> {
+    var continuation: CheckedContinuation<Value, Error>?
+    func finish(_ result: Result<Value, Error>) { continuation?.resume(with: result); continuation = nil }
+}
+
+/// The result of `work`, or `timedOut` after two minutes: a file provider that
+/// never answers cannot be cancelled and would hold the editor's lock for
+/// ever (Nutzer zu Build 85). A late result is dropped.
+@MainActor
+func withImportTimeLimit<Value: Sendable>(_ work: @escaping @MainActor () async throws -> Value) async throws -> Value {
+    let race = ImportRace<Value>()
+    return try await withCheckedThrowingContinuation { continuation in
+        race.continuation = continuation
+        Task { @MainActor in
+            do { race.finish(.success(try await work())) } catch { race.finish(.failure(error)) }
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(120))
+            race.finish(.failure(ImageImportError.timedOut))
+        }
+    }
+}
+
+@MainActor
 extension EditorModel {
     func insertImageFile(_ url: URL, pageID: UUID) {
         guard writable, notebook.pages.contains(where: { $0.id == pageID }) else { return }
-        guard !busy else { error = Self.imageBusyMessage; return }
+        guard !busy, !imageReading else { error = Self.imageBusyMessage; return }
         let access = url.startAccessingSecurityScopedResource()
         insertImage(pageID: pageID) {
             defer { if access { url.stopAccessingSecurityScopedResource() } }
@@ -144,20 +168,35 @@ extension EditorModel {
 
     private func insertImage(pageID: UUID, near place: PagePoint? = nil, read: @escaping @MainActor () async throws -> Data) {
         guard writable, let target = notebook.pages.first(where: { $0.id == pageID }) else { return }
-        guard !busy else { error = Self.imageBusyMessage; return }
+        guard !busy, !imageReading else { error = Self.imageBusyMessage; return }
         let generation = pageContentGeneration
-        busy = true
+        // Fetching can take long or never end (Universal Clipboard, iCloud):
+        // that happens before the editor is locked, and with a time limit.
+        imageReading = true
         Task {
+            let source: Data
+            do { source = try await withImportTimeLimit(read) }
+            catch {
+                imageReading = false
+                self.error = "Bild nicht eingefügt: \(error.localizedDescription)"
+                return
+            }
+            imageReading = false
+            guard writable else { return }
+            guard !busy else { error = Self.imageBusyMessage; return }
+            busy = true
             defer { busy = false }
             await awaitMutationAccess()
             do {
-                let source = try await read()
                 // Over 5 MB, beyond the pixel limit or larger than the notebook's
                 // remaining image budget: compressed instead of refused.
                 let room = ImageLimits.maximumNotebookBytes - notebook.uniqueImageAssetBytes
                 // Almost no room left: the notebook-full message below explains it better.
                 let limit = room >= ImageCompression.minimumBudget ? min(ImageCompression.importTargetBytes, room) : ImageCompression.importTargetBytes
-                let fitted = try await Task.detached { try ImageCompression.fitting(source, limit: limit) }.value
+                // The editor is locked here: a picture that cannot be decoded must not hold it.
+                let fitted = try await withImportTimeLimit {
+                    try await Task.detached { try ImageCompression.fitting(source, limit: limit) }.value
+                }
                 let data = fitted.data
                 // Limits first (an original already in the notebook adds no
                 // bytes): a clear message instead of a failed validation, and
@@ -179,7 +218,8 @@ extension EditorModel {
                 // area (saving keeps failing) refuses with a clear message.
                 guard try imageAssets.stage(data) == reference else { throw ImageImportError.invalid }
                 updateImages((current.images ?? []) + [object], pageID: pageID)
-                if let original = fitted.originalBytes {
+                let inserted = notebook.pages.first(where: { $0.id == pageID })?.images?.contains { $0.id == object.id } == true
+                if inserted, let original = fitted.originalBytes {
                     fileStatus = "Bild verkleinert eingefügt (\(ImageLimits.megabytes(original)) → \(ImageLimits.megabytes(data.count)))"
                 }
             } catch { self.error = "Bild nicht eingefügt: \(error.localizedDescription)" }

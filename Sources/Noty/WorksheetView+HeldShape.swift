@@ -70,7 +70,7 @@ extension WorksheetView {
     /// shape with the learned point size of the tool (what its strokes draw)
     /// and the opacity/force/tilt of a typical drawn point. Nil when it would
     /// leave the page (the freehand ink stays).
-    private func heldInkStroke(_ shape: RecognizedShape) -> PKStroke? {
+    func heldInkStroke(_ shape: RecognizedShape) -> PKStroke? {
         let ink = heldInk ?? PKInk(inkType, color: heldColor.uiColor)
         let fitted = fittedHeld(shape, width: max(heldWidth, heldPointSize), allowShift: true) ?? shape
         let size = CGSize(width: heldPointSize, height: heldPointSize)

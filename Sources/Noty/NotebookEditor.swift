@@ -85,6 +85,10 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private var obstructions: [CGRect] = []
     private var selected: UUID?
     private var reported: UUID?
+    private var scrollEchoes = ScrollSelectionEchoes()
+    private var scrollSelection: DispatchWorkItem?
+    /// The user moved the view since the caret last asked to be followed.
+    private var scrolledFromCaret = false
     private var previousSize = CGSize.zero
     private var fitWidth: CGFloat = 1
     private var fitRequest = 0
@@ -100,7 +104,6 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private var widthSnapInProgress = false
     private var pinchTargetAttached = false
     /// Weak: recognizers of unloaded sheets vanish; reused addresses can't mask new ones.
-    private let rulerGestures = NSHashTable<UIGestureRecognizer>.weakObjects()
     private var separators: [CALayer] = []
     private var lastSearch: PageRect?
     private var pendingSearch: CGRect?
@@ -124,6 +127,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private weak var floatingGesture: UIGestureRecognizer?
     private var autoScrollLink: CADisplayLink?
     private let laser = LaserPointerView()
+    private let ruler = RulerOverlayView()
     /// Page below a floating selection; entering another page ticks on Apple Pencil Pro.
     private var floatTarget: UUID?
     private var selectionFeedback: UIFeedbackGenerator?
@@ -163,6 +167,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         addSubview(surface)
         laser.install(on: self, surface: surface)
+        ruler.install(on: self)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)),
             name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)),
@@ -197,8 +202,11 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
     func keyboardScreen(_ fraction: Double) {
         let height = max(1, bounds.height - topObstruction)
+        let target = keyboardOffset(CGPoint(x: contentOffset.x, y: contentOffset.y + CGFloat(fraction) * height))
+        // At the end of the page nothing animates, and nothing would reset the flag.
+        guard target != contentOffset else { return }
         keyboardScrolling = true
-        setContentOffset(keyboardOffset(CGPoint(x: contentOffset.x, y: contentOffset.y + CGFloat(fraction) * height)), animated: true)
+        setContentOffset(target, animated: true)
     }
     func keyboardZoom(_ steps: Int) {
         let scale = zoomScale * pow(1.15, CGFloat(steps))
@@ -228,7 +236,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         state = next; mode = next.paging; normalized = next.normalizeWidths; selected = next.selectedPageID
         let scrollModeChanged = writingScroll != next.writingScroll
         writingScroll = next.writingScroll; topObstruction = next.topObstruction; obstructions = next.obstructions
-        panGestureRecognizer.minimumNumberOfTouches = next.fingerDrawing ? 2 : 1
+        // A locked editor draws nothing: the finger scrolls then, too.
+        panGestureRecognizer.minimumNumberOfTouches = next.fingerDrawing && next.enabled ? 2 : 1
         let swiping = next.paging && next.enabled && !next.fingerDrawing
         for swipe in swipes where swipe.isEnabled != swiping { swipe.isEnabled = swiping }
         laser.configure(next.laser, fingerDrawing: next.fingerDrawing)
@@ -271,7 +280,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         if deletion != nil {
             // Pages above keep their place; the focus scroll follows the slide.
             reported = selected
-        } else if oldSelection != selected && selected != reported {
+        } else if oldSelection != selected, selected != reported,
+                  selected.map({ !scrollEchoes.consume($0, at: CACurrentMediaTime()) }) ?? true {
             if let oldSelection { sheets[oldSelection]?.finishTextEditing() }
             documentText?.view.finishEditing()
             pendingJump = true
@@ -279,12 +289,14 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         if fitRequest != next.fitRequest { fitRequest = next.fitRequest; pendingFit = true; pendingJump = true }
         if let page = next.pages.first(where: { $0.id == selected }) {
             let config = next.configuration(page)
+            ruler.setVisible(config.ruler && config.focused)
             // Text tool: the Pencil scrolls the paper like a finger; Pencil taps
             // still place the caret or open a field (text layer recognizers).
-            let textTool = config.tool == .text && next.enabled
+            // Not tied to `enabled`: a short lock while saving must not stop scrolling.
+            let textTool = config.tool == .text
             let allowed = (textTool ? [UITouch.TouchType.direct, .pencil] : [.direct]).map { NSNumber(value: $0.rawValue) }
             if panGestureRecognizer.allowedTouchTypes != allowed { panGestureRecognizer.allowedTouchTypes = allowed }
-            if textTool { panGestureRecognizer.minimumNumberOfTouches = 1 }
+            if textTool || config.tool == .read { panGestureRecognizer.minimumNumberOfTouches = 1 }
             if lastSearch != config.searchHighlight || oldSelection != selected || normalizationChanged {
                 lastSearch = config.searchHighlight
                 if let hit = config.searchHighlight, let placement = placements[page.id] {
@@ -316,6 +328,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     override func layoutSubviews() {
         super.layoutSubviews()
         HangProbe.hit("Viewport.layoutSubviews")
+        ruler.follow()
         // UIScrollView creates its pinch recognizer only once zooming is possible
         // (min < max), i.e. after the first fit. Attaching in init silently failed.
         if !pinchTargetAttached, let pinch = pinchGestureRecognizer {
@@ -452,6 +465,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
                 // Spread newly exposed PDF/UITextView construction across frames.
                 if created { queueRefresh(); continue }
                 sheet = WorksheetView(); sheets[page.id] = sheet; surface.addSubview(sheet); created = true
+                sheet.rulerView = ruler
+                sheet.canvas.drawingGestureRecognizer.require(toFail: ruler.move)
             }
             // Bounds are canonical points; UIKit converts touches/caret through
             // the common scale for all layers. Never write surface sizes back.
@@ -503,11 +518,6 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
                 if page.id == selected {
                     EditorOpenTrace.mark("first sheet configured", "configure=\(Int((CACurrentMediaTime() - configureStarted) * 1000)) ms pdf=\(config.sourcePage != nil) zoom=\(String(format: "%.2f", Double(zoomScale)))")
                 }
-            }
-            // PencilKit may install its ruler recognizers after activation.
-            for gesture in sheet.rulerGestureRecognizers where !rulerGestures.contains(gesture) {
-                rulerGestures.add(gesture)
-                panGestureRecognizer.require(toFail: gesture); pinchGestureRecognizer?.require(toFail: gesture)
             }
             sheet.updateRendering(visible: convert(bounds, to: sheet), scale: zoomScale * placement.scale, live: live)
         }
@@ -620,7 +630,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { stopZoomTransition(); stopElastic(); userZoomPage = nil; hideFloatingSelection(); laser.reset() }
+        if window == nil { scrollSelection?.cancel(); scrollSelection = nil; stopZoomTransition(); stopElastic(); userZoomPage = nil; hideFloatingSelection(); laser.reset() }
     }
     private var keyboardOverlap: CGFloat {
         guard let window else { return 0 }
@@ -677,7 +687,13 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     /// the free area or under the header (back arrow), a top/floating toolbar
     /// or the keyboard with its format bar. Selections never move the page.
     private func revealCaret() {
-        guard !changing, pendingTextFocus == nil, !isDragging, !isDecelerating, !isZooming,
+        // A request during a scroll is out of date when it ends.
+        if isDragging || isDecelerating {
+            _ = documentText?.view.takeCaretReveal()
+            sheets.values.forEach { _ = $0.takeCaretReveal() }
+            return
+        }
+        guard !changing, pendingTextFocus == nil, !isZooming,
               userZoomPage == nil, !widthSnapInProgress,
               pinchGestureRecognizer?.state != .began, pinchGestureRecognizer?.state != .changed,
               state?.enabled == true, let selected, let sheet = sheets[selected],
@@ -686,6 +702,9 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         updateInsets()
         let document = documentText?.view.editingCaret != nil ? documentText?.view : nil
         let kind = document?.takeCaretReveal() ?? sheet.takeCaretReveal()
+        // Keyboard, layout and page changes do not fetch the view back after
+        // the user scrolled away; typing or moving the caret does.
+        if kind != nil { scrolledFromCaret = false } else if scrolledFromCaret { return }
         let target: CGRect
         if let document, let caret = document.editingCaret { target = document.convert(caret, to: self) }
         else if let caret = sheet.editingCaret { target = sheet.convert(caret, to: self) }
@@ -717,28 +736,39 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         HangProbe.hit("Viewport.didZoom")
-        laser.refresh()
+        laser.refresh(); ruler.follow()
         if !changing { updateInsets(); queueRefresh() }
     }
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         HangProbe.hit("Viewport.didScroll")
-        laser.refresh()
+        laser.refresh(); ruler.follow()
         guard !changing, !pendingJump, let state else { return }
         if focusScrolling && (isDragging || isZooming) { focusScrolling = false }
         if !isZooming && !widthSnapInProgress && !focusScrolling { constrainHorizontalOffset() }
         queueRefresh()
         guard !mode, !isZooming, !widthSnapInProgress, !isEditingText, isDragging || isDecelerating || keyboardScrolling else { return }
         let center = (contentOffset.y + bounds.height * 0.4) / zoomScale
-        if let id = pageAt(vertical: center), id != reported {
-            reported = id
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.reported == id else { return }
-                // A locked editor (import, backup) drops the report; forget it so
-                // the next scroll event reports this page again.
-                guard self.state?.enabled == true else { self.reported = self.selected; return }
-                state.onSelect(id)
-            }
+        if let id = pageAt(vertical: center) { reported = id }
+        // A new page reconfigures the whole editor and two sheets (Nutzer zu
+        // Build 78: Ruckler an jeder Seitennaht). That waits until the view
+        // rests for a moment, and a page merely passed never becomes selected.
+        scrollSelection?.cancel(); scrollSelection = nil
+        guard let id = reported, id != selected else { return }
+        scheduleScrollSelection(id, after: 0.18)
+    }
+    /// A locked editor (import, backup) would drop the report and leave the
+    /// old page selected while the view rests: it is asked again until the
+    /// lock ends or the user scrolled on.
+    private func scheduleScrollSelection(_ id: UUID, after delay: TimeInterval) {
+        let commit = DispatchWorkItem { [weak self] in
+            guard let self, self.reported == id else { return }
+            guard self.state?.enabled == true else { self.scheduleScrollSelection(id, after: 0.3); return }
+            self.scrollSelection = nil
+            self.scrollEchoes.record(id, at: CACurrentMediaTime())
+            self.state?.onSelect(id)
         }
+        scrollSelection = commit
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: commit)
     }
     /// At least 48 screen points of the page are visible below the header.
     private func isOnScreen(_ id: UUID) -> Bool {
@@ -919,6 +949,7 @@ extension NotebookViewport {
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        scrolledFromCaret = true
         stopElastic()
         guard !isZooming, !widthSnapInProgress, !focusScrolling, let allowed = allowedHorizontalRange() else { return }
         // A drag may catch a sheet that is still springing back.
@@ -942,9 +973,10 @@ extension NotebookViewport {
         stopElastic()
         // Inside the range a flick glides out and comes to rest softly at the
         // edge instead of hitting the clamp.
-        guard !isZooming, !widthSnapInProgress,
-              let range = allowedHorizontalRange(atOffsetY: targetContentOffset.pointee.y) else { return }
-        targetContentOffset.pointee.x = min(max(targetContentOffset.pointee.x, range.lowerBound), range.upperBound)
+        guard !isZooming, !widthSnapInProgress, let range = allowedHorizontalRange() else { return }
+        targetContentOffset.pointee.x = CGFloat(NotebookViewportGeometry.flickTargetX(
+            proposed: Double(targetContentOffset.pointee.x), current: Double(contentOffset.x),
+            velocity: PagePoint(x: Double(velocity.x), y: Double(velocity.y)), allowed: range))
     }
 
     private func beginElasticReturn() {
@@ -963,7 +995,7 @@ extension NotebookViewport {
     @objc private func elasticTick(_ link: CADisplayLink) {
         guard elastic?.returning != nil else { stopElastic(); constrainHorizontalOffset(); return }
         constrainHorizontalOffset()
-        laser.refresh(); queueRefresh()
+        laser.refresh(); ruler.follow(); queueRefresh()
     }
 
     func stopElastic() {
@@ -1036,7 +1068,7 @@ extension NotebookViewport {
                            options: [.beginFromCurrentState, .allowUserInteraction]) { self.contentOffset = target }
         }
         changing = previous
-        laser.refresh(); queueRefresh()
+        laser.refresh(); ruler.follow(); queueRefresh()
     }
 }
 

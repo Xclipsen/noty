@@ -240,6 +240,46 @@ final class FieldBorderDrag: NSObject, UIGestureRecognizerDelegate {
     }
 }
 
+/// The trackpad pointer and fields: a closed field is dragged by its text, and
+/// over the frame zone of an open one the pointer shows that it moves it.
+@MainActor
+final class FieldPointerDrag: NSObject, UIGestureRecognizerDelegate, UIPointerInteractionDelegate {
+    static let shared = FieldPointerDrag()
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard let field = gestureRecognizer.view as? TextFieldContainer else { return false }
+        return !field.editing && field.content?.flowID == nil
+    }
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        guard let field = gestureRecognizer.view as? TextFieldContainer else { return false }
+        return ScrollPanPriority.outranksScrolling(gestureRecognizer, other) || other.view?.isDescendant(of: field.editor) == true
+    }
+    func pointerInteraction(_ interaction: UIPointerInteraction, regionFor request: UIPointerRegionRequest,
+                            defaultRegion: UIPointerRegion) -> UIPointerRegion? {
+        guard let field = interaction.view as? TextFieldContainer, field.inBorderZone(request.location) else { return nil }
+        // Small: leaving it asks again, so the text inside keeps its own pointer.
+        return UIPointerRegion(rect: CGRect(origin: request.location, size: .zero).insetBy(dx: -2, dy: -2))
+    }
+    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        UIPointerStyle(shape: .path(Self.moveArrows))
+    }
+    /// A cross with four arrow heads around the pointer position.
+    private static let moveArrows: UIBezierPath = {
+        let path = UIBezierPath(), reach: CGFloat = 11, head: CGFloat = 4
+        path.append(UIBezierPath(rect: CGRect(x: -reach + head, y: -1, width: 2 * (reach - head), height: 2)))
+        path.append(UIBezierPath(rect: CGRect(x: -1, y: -reach + head, width: 2, height: 2 * (reach - head))))
+        for quarter in 0..<4 {
+            let arrow = UIBezierPath()
+            arrow.move(to: CGPoint(x: reach, y: 0))
+            arrow.addLine(to: CGPoint(x: reach - head, y: -head))
+            arrow.addLine(to: CGPoint(x: reach - head, y: head))
+            arrow.close()
+            arrow.apply(CGAffineTransform(rotationAngle: CGFloat(quarter) * .pi / 2))
+            path.append(arrow)
+        }
+        return path
+    }()
+}
+
 /// A tap on the frame zone or a width point: everything but the text itself.
 final class FieldFrameTap: NSObject, UIGestureRecognizerDelegate {
     static let shared = FieldFrameTap()
@@ -265,6 +305,9 @@ enum TextStyleMemory {
     static func style(light: Bool) -> TextBoxStyle {
         if let data = UserDefaults.standard.data(forKey: key), var style = try? JSONDecoder().decode(TextBoxStyle.self, from: data),
            (try? style.validate()) != nil {
+            // By default a new field never starts in a colour it may not be readable in.
+            let automatic = UserDefaults.standard.object(forKey: AppSettingsKey.automaticTextColor) as? Bool ?? true
+            if automatic { style.automaticColor = true }
             if style.automaticColor == true { style.color = light ? .white : .black; style.ink = nil }
             return style
         }

@@ -277,14 +277,20 @@ final class DocumentTextStore: @preconcurrency DocumentTextMetrics {
     func pageRange(_ page: Int) -> NSRange {
         manager.characterRange(forGlyphRange: manager.glyphRange(for: containers[page]), actualGlyphRange: nil)
     }
-    /// `TextFlowEditing.capacity` from the shared layout: `box` holds all the
-    /// text from its page on, so its length says where that page starts. Nil
-    /// when this is not the layout's text (a reflow renumbered a list): the
-    /// model then measures itself. A page the layout does not have yet joins here.
+    /// `TextFlowEditing.capacity` from the shared layout. `box` holds the text
+    /// from its page on, or only the first part of it (`TextFlowMeasure`), so
+    /// the page itself says where it starts; a page the layout does not have
+    /// yet starts behind the laid-out pages and joins here. Nil when this is
+    /// not the layout's text (a reflow renumbered a list): the model then
+    /// measures itself.
     func capacity(page: Page, box: TextBox) -> Int? {
-        let length = storage.length, start = length - (box.text as NSString).length
-        guard start >= 0 else { return nil }
-        guard start < length else { return 0 }
+        let length = storage.length, measured = (box.text as NSString).length
+        guard measured > 0 else { return 0 }
+        guard !containers.isEmpty else { return nil }
+        let start = slots.firstIndex { $0.pageID == page.id }.flatMap { containers.indices.contains($0) ? pageRange($0).location : nil }
+            ?? NSMaxRange(pageRange(containers.count - 1))
+        guard start < length, measured <= length - start,
+              (storage.string as NSString).substring(with: NSRange(location: start, length: measured)) == box.text else { return nil }
         let glyph = manager.glyphIndexForCharacter(at: start)
         var container = manager.textContainer(forGlyphAt: glyph, effectiveRange: nil) as? DocumentPageContainer
         if container == nil {
@@ -302,7 +308,7 @@ final class DocumentTextStore: @preconcurrency DocumentTextMetrics {
             let cluster = text.rangeOfComposedCharacterSequence(at: start + count)
             if cluster.location < start + count { count = cluster.location - start }
         }
-        return count
+        return min(count, measured)
     }
     /// Diagnose: where the shared layout breaks elsewhere than the stored segments.
     func logDeviations(_ boxes: [TextBox]) {

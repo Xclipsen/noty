@@ -42,6 +42,8 @@ struct LibraryView: View {
     @State private var selectedArea: TestWorkspace?
     @State private var switchingArea = false
     @State private var settingsRequest: SettingsRequest?
+    /// Hint or verified result of the toolbar backup; its failures arrive in `externalBackup.error`.
+    @State private var backupNotice: String?
     /// Current drag & drop preview (insertion line or highlighted folder).
     @State private var dropMark: DropMark?
     /// Entry dragged from this library (for hiding invalid targets while hovering).
@@ -72,6 +74,7 @@ struct LibraryView: View {
     private var errorShown: Binding<Bool> {
         Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })
     }
+    private var backupMessage: String? { externalBackup.error ?? backupNotice }
     /// New items land in the open folder or „Alle Unterlagen“; „Zuletzt
     /// verwendet“ or a running search would hide them.
     private func showNewItem() {
@@ -226,6 +229,10 @@ struct LibraryView: View {
         .alert("Bereiche", isPresented: Binding(get: { workspaces.error != nil && settingsRequest == nil && !showingAreas }, set: { if !$0 { workspaces.error = nil } })) {
             Button("OK") { workspaces.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspaces.error ?? "") }
+        // Settings shows backup errors itself, also over the editor; this one reports the toolbar backup.
+        .alert("Backup", isPresented: Binding(get: { backupMessage != nil && !presenting && model.opened == nil }, set: { if !$0 { externalBackup.error = nil; backupNotice = nil } })) {
+            Button("OK") { externalBackup.error = nil; backupNotice = nil }.keyboardShortcut(.defaultAction)
+        } message: { Text(backupMessage ?? "") }
         .onChange(of: location) { _, value in
             search = ""; libraryEditMode = .inactive
             if case .folder(let id) = value { reveal(id) }
@@ -234,7 +241,7 @@ struct LibraryView: View {
         // editing must not stay on without a way out.
         .onChange(of: canReorder) { _, reorder in if !reorder { libraryEditMode = .inactive } }
         // No sheet changes with these alerts: the keys have to come back by themselves.
-        .onChange(of: model.error == nil && workspaces.error == nil) { _, _ in KeyboardRouter.shared.reclaim() }
+        .onChange(of: model.error == nil && workspaces.error == nil && backupMessage == nil) { _, _ in KeyboardRouter.shared.reclaim() }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
         .focusedSceneValue(\.libraryCommands, model.opened == nil && !presenting ? LibraryCommandActions(
             newNotebook: editable ? { creatingNotebook = true } : nil,
@@ -294,7 +301,7 @@ struct LibraryView: View {
     }
     /// What only the menus offer; the palette adds every key binding by name.
     private var keyCommands: [PaletteCommand] {
-        [PaletteCommand(title: "PDF importieren") { importingPDF = true },
+        [PaletteCommand(title: "PDF oder Bild importieren") { importingPDF = true },
          PaletteCommand(title: "Backup importieren") { importingBackup = true },
          PaletteCommand(title: "Wiederhergestellte Kopien") { showingCopies = true },
          PaletteCommand(title: "Bereiche") { showingAreas = true },
@@ -658,7 +665,8 @@ struct LibraryView: View {
     /// Top bar of the detail column. Every control is its own item with an
     /// explicit placement, declared in display order (leading to trailing):
     /// backup hint (only when needed) · Inhalte suchen · Darstellung ·
-    /// Bearbeiten (only when reordering is possible) · Neu · Einstellungen.
+    /// Bearbeiten (only when reordering is possible) · Neu · Backup jetzt
+    /// speichern (development builds only) · Einstellungen.
     /// Optional items are added or left out as whole items: no permanently
     /// present item with sometimes empty content (the leading slot used to be
     /// one), no group whose membership changes while navigating.
@@ -708,7 +716,7 @@ struct LibraryView: View {
                     Button("Neuer Ordner …", systemImage: "folder.badge.plus") { prompt(.folder) }
                 }
                 Section {
-                    Button("PDF importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
+                    Button("PDF oder Bild importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
                     Button(".noty importieren …", systemImage: "arrow.down.doc") { importingBackup = true }
                     if !activeCopies.isEmpty {
                         Button("Wiederhergestellte Kopien …", systemImage: "clock.arrow.circlepath") { showingCopies = true }
@@ -718,8 +726,39 @@ struct LibraryView: View {
             .disabled(!editable)
             .accessibilityLabel("Neu oder importieren")
         }
+        if Self.isDevelopmentBuild {
+            // Pinned like the gear: a plain trailing item is the first to be moved away.
+            ToolbarItem(placement: Self.settingsPlacement) {
+                Button { saveBackupNow() } label: {
+                    if externalBackup.busy { ProgressView() } else { Label("Backup jetzt speichern", systemImage: "square.and.arrow.down") }
+                }
+                .disabled(externalBackup.busy || !model.ready)
+                .accessibilityLabel("Backup jetzt speichern")
+            }
+        }
         ToolbarItem(placement: Self.settingsPlacement) {
             Button { settingsRequest = SettingsRequest() } label: { Label("Einstellungen", systemImage: "gearshape") }
+        }
+    }
+
+    /// All current builds are the prototype bundle; the installed ID is prefixed (`XTL-….de.la.noty.prototype`).
+    static var isDevelopmentBuild: Bool {
+        let id = Bundle.main.bundleIdentifier ?? ""
+        return id.contains(".prototype") || id.contains(".dev")
+    }
+
+    /// The same manual run as Settings › Backup. Failures and postponements arrive
+    /// in `externalBackup.error`; only a success moves `lastSuccess`. A run that
+    /// never started (an automatic one was faster) reports nothing.
+    private func saveBackupNow() {
+        guard externalBackup.policy.target != .disabled else {
+            backupNotice = "Noch kein Backup-Ziel gewählt. Bitte unter Einstellungen › Backup & Daten ein Ziel wählen."
+            return
+        }
+        let previous = externalBackup.policy.lastSuccess
+        Task {
+            await externalBackup.attempt(library: model, toolbox: toolbox, manual: true)
+            if externalBackup.policy.lastSuccess != previous { backupNotice = externalBackup.status }
         }
     }
 

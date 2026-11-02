@@ -62,6 +62,31 @@ extension Page {
     }
 }
 
+/// A page only needs the text it can hold. Measuring with all the text behind
+/// it copied everything left for every page of a long flow.
+enum TextFlowMeasure {
+    static let firstLength = 8192
+    /// `measure(length)`: what fits of the next `length` characters. A result
+    /// well before the cut is final: the lines on the page end there, the text
+    /// behind the cut cannot change them.
+    static func capacity(remaining: Int, measure: (Int) throws -> Int) rethrows -> Int {
+        var length = firstLength
+        while length < remaining {
+            let fits = try measure(length)
+            if fits <= length - length / 4 { return fits }
+            length *= 2
+        }
+        return try measure(remaining)
+    }
+    /// `end`, moved back out of a composed character; forward where that
+    /// character begins at `start` (nothing would be left to measure).
+    static func composedEnd(of text: NSString, from start: Int, after end: Int) -> Int {
+        guard end < text.length else { return text.length }
+        let cluster = text.rangeOfComposedCharacterSequence(at: end)
+        return cluster.location > start ? cluster.location : NSMaxRange(cluster)
+    }
+}
+
 extension TextBox {
     /// Slice UTF-16 runs while preserving grapheme clusters and all formatting.
     public func fragment(_ range: NSRange) throws -> TextBox {
@@ -179,7 +204,11 @@ extension Notebook {
               selection.length <= (replacement.text as NSString).length - selection.location else { throw TextFlowError.stale }
         var selection = selection
         // Numbering continues across pages: earlier segments give the open runs.
-        if !everyPage, let changed = TextListEditing.changedRange(from: previous.text, to: replacement.text) {
+        // `holdsTail`: `replacement` is compared with the same text, the segment
+        // and the ones behind it, or everything behind the segment counts as edited.
+        var before = previous
+        if holdsTail, !everyPage { for (_, box) in existing.dropFirst() { before = before.appending(box) } }
+        if !everyPage, let changed = TextListEditing.changedRange(from: before.text, to: replacement.text) {
             let earlier = next.pages[..<start].compactMap { $0.effectiveTextBoxes.first { $0.flowID == flow } }
             func ends(_ box: TextBox) -> Bool? {
                 let value = box.text as NSString
@@ -195,7 +224,7 @@ extension Notebook {
                 return context
             }
             let edits = TextListEditing.normalize(text.text, level: text.listLevel(at:), changed: changed,
-                restart: TextListEditing.numberedItem(in: previous.text, at: changed.location, level: previous.listLevel(at:), continuation: continuation),
+                restart: TextListEditing.numberedItem(in: before.text, at: changed.location, level: before.listLevel(at:), continuation: continuation),
                 context: earlierContext(), continuation: continuation)
             if !edits.isEmpty { text = text.applying(edits); selection = TextListEditing.selection(selection, after: edits) }
         }
@@ -274,13 +303,17 @@ extension Notebook {
                 box = TextBox(x: rect.x, y: rect.y, width: rect.width, height: rect.height, style: replacement.style)
                 box.flowID = flow; box.flowRegion = continuationRegion
             }
-            let remainder = try text.fragment(NSRange(location: consumed, length: total - consumed))
-            var candidate = box; candidate.text = remainder.text; candidate.runs = remainder.runs
-            var count = min(total - consumed, max(0, try pageCapacity(next.pages[currentIndex], candidate)))
+            let page = next.pages[currentIndex], whole = text.text as NSString, start = consumed, field = box
+            var count = min(total - consumed, max(0, try TextFlowMeasure.capacity(remaining: total - consumed) { length in
+                let cut = TextFlowMeasure.composedEnd(of: whole, from: start, after: start + length)
+                let prefix = try text.fragment(NSRange(location: start, length: cut - start))
+                var candidate = field; candidate.text = prefix.text; candidate.runs = prefix.runs
+                return try pageCapacity(page, candidate)
+            }))
             while nextBreak < pageBreaks.count, pageBreaks[nextBreak] < consumed { nextBreak += 1 }
             if nextBreak < pageBreaks.count { count = min(count, pageBreaks[nextBreak] + 1 - consumed) }
             guard count > 0 || consumed == total else { throw TextFlowError.noSpace }
-            let part = try remainder.fragment(NSRange(location: 0, length: count))
+            let part = try text.fragment(NSRange(location: consumed, length: count))
             box.text = part.text; box.runs = part.runs
             // Keep the chosen insertion attributes for an empty continuation.
             if box.text.isEmpty { box.style = replacement.style }

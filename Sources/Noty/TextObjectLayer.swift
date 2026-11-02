@@ -99,6 +99,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     private var readOnly = false
     var updating = false
     var insertingList = false
+    /// The field and range of the result just calculated, until the next input.
+    private var calculatedResult: (id: UUID, range: NSRange)?
     private var darkPaper = false
     private var darkMargins = false
     private var hasPDF = false
@@ -308,7 +310,16 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 // on its text); the four corner points change the width.
                 let border = SnapPanGestureRecognizer(target: self, action: #selector(moveField(_:)))
                 border.delegate = FieldBorderDrag.shared; border.maximumNumberOfTouches = 1
+                // The default types are platform dependent and left the trackpad out.
+                let allTouches = [UITouch.TouchType.direct, .indirectPointer, .pencil].map { NSNumber(value: $0.rawValue) }
+                border.allowedTouchTypes = allTouches
                 field.addGestureRecognizer(border)
+                // A closed field moves with the pointer wherever its text is grabbed.
+                let pointer = SnapPanGestureRecognizer(target: self, action: #selector(moveField(_:)))
+                pointer.delegate = FieldPointerDrag.shared; pointer.maximumNumberOfTouches = 1
+                pointer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+                field.addGestureRecognizer(pointer)
+                field.addInteraction(UIPointerInteraction(delegate: FieldPointerDrag.shared))
                 // Only drags belong to frame and points; a tap there sets the caret.
                 let frameTap = UITapGestureRecognizer(target: self, action: #selector(frameTapped(_:)))
                 frameTap.delegate = FieldFrameTap.shared; frameTap.cancelsTouchesInView = false
@@ -318,6 +329,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                     let action = TextFieldContainer.changesLeftEdge(index) ? #selector(widenLeft(_:)) : #selector(widenRight(_:))
                     let pan = SnapPanGestureRecognizer(target: self, action: action)
                     pan.delegate = ScrollPanPriority.shared // the notebook pan waits for field drags
+                    pan.allowedTouchTypes = allTouches
                     handle.addGestureRecognizer(pan)
                 }
                 fields[box.id] = field
@@ -446,6 +458,14 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     /// Margin text keeps normal-page units: flow segments and migrated fields (`flowRegion`).
     func coordinateScale(for box: TextBox) -> CGFloat {
         box.flowRegion != nil && box.flowRegion != .page ? pageLayout.writingCoordinateScale : 1
+    }
+    /// Sizes shown for a free field; flows keep one size over all their pages.
+    func sizeUnits(for box: TextBox) -> TextSizeUnits {
+        TextSizeUnits(pageWidth: pageLayout.contentCanvas.width, hasPDF: hasPDF && box.flowID == nil,
+                      coordinateScale: Double(coordinateScale(for: box)))
+    }
+    var selectedSizeUnits: TextSizeUnits {
+        selectedID.flatMap { id in boxes.first { $0.id == id } }.map(sizeUnits) ?? .normal
     }
     /// Turned about the field's top-left corner, like preview, PDF and lasso.
     private func position(_ field: TextFieldContainer, for box: TextBox) {
@@ -627,7 +647,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         let limits = PageRect(canonicalBounds)
         let canonical = PagePoint(x: point.x - pageLayout.contentOrigin.x, y: point.y - pageLayout.contentOrigin.y)
         let dark = hasPDF ? (!pageLayout.sourceFrame.cgRect.contains(point) && darkMargins) : darkPaper
-        let style = TextStyleMemory.style(light: dark)
+        var style = TextStyleMemory.style(light: dark)
+        style.fontSize = TextSizeUnits(pageWidth: pageLayout.contentCanvas.width, hasPDF: hasPDF).stored(style.fontSize)
         let line = ceil(style.fontSize * TextStylePreset.lineHeightFactor)
         guard let frame = TextFieldPlacement.frame(tap: canonical, limits: limits, width: max(16, style.fontSize), lineHeight: line) else { return nil }
         var box = TextBox(x: frame.x, y: frame.y, width: frame.width, height: frame.height, text: text, style: style)
@@ -718,6 +739,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         // Normal mode: a key that reached the text view anyway must not type.
         guard KeyboardRouter.shared.allowsTyping else { return false }
         if replaceFlowSelection(with: text) { return false }
+        if replaceCalculatedResult(textView, range: range, text: text) { return false }
         if let handled = handleListInput(textView, range: range, text: text) { return handled }
         if let handled = handlePairInput(textView, range: range, text: text) { return handled }
         guard !insertingList, text == "\n", let edit = TextListEditing.newline(in: textView.text ?? "", range: range)
@@ -773,21 +795,43 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         finishListInput(editor)
         layoutIfNeeded(); requestCaretReveal(.typing)
         keyboardTyped(editor)
-        spaceMathResult(editor, previous: previous)
+        calculate(editor, previous: previous)
     }
-    /// iPadOS inserts a calculated result directly behind „=“. On the next
-    /// turn of the run loop: UIKit is still finishing its own insertion here.
-    private func spaceMathResult(_ editor: PageTextView, previous: TextBox) {
-        guard editor.markedTextRange == nil, editor.selectedRange.length == 0,
+    /// A typed „=“ calculates (`TextCalculator`). On the next turn of the run
+    /// loop: UIKit is still finishing its own insertion here.
+    private func calculate(_ editor: PageTextView, previous: TextBox) {
+        let enabled = UserDefaults.standard.object(forKey: AppSettingsKey.calculator) as? Bool ?? true
+        guard enabled, editor.markedTextRange == nil, editor.selectedRange.length == 0,
               let current = boxes.first(where: { $0.id == editor.objectID })?.text,
-              let edit = MathResultSpacing.edit(before: previous.text, after: current, caret: editor.selectedRange.location) else { return }
+              (current as NSString).length == (previous.text as NSString).length + 1,
+              let calculation = TextCalculator.calculation(in: current, caret: editor.selectedRange.location) else { return }
         let id = editor.objectID, page = pageID, expected = generation
         DispatchQueue.main.async { [weak self, weak editor] in
             guard let self, let editor, self.active, self.pageID == page, self.generation == expected,
                   let index = self.boxes.firstIndex(where: { $0.id == id }), self.boxes[index].text == current,
                   self.fields[id]?.editor === editor, editor.markedTextRange == nil else { return }
-            self.applyListEdits([edit], at: index, editor: editor)
+            // A step of its own: undo takes the result, not the calculation.
+            self.onUndoBoundary?()
+            self.applyListEdits([calculation.edit], at: index, editor: editor)
+            self.onUndoBoundary?()
+            self.calculatedResult = (id, calculation.result)
         }
+    }
+    /// Directly behind a calculated result a digit writes an own result
+    /// instead, and Backspace takes the whole number away at once.
+    private func replaceCalculatedResult(_ textView: UITextView, range: NSRange, text: String) -> Bool {
+        guard let (id, result) = calculatedResult else { return false }
+        calculatedResult = nil
+        guard let editor = textView as? PageTextView, editor.objectID == id, !insertingList,
+              NSMaxRange(result) <= (editor.text as NSString).length,
+              editor.selectedRange == NSRange(location: NSMaxRange(result), length: 0) else { return false }
+        let deletes = text.isEmpty && range == NSRange(location: NSMaxRange(result) - 1, length: 1)
+        let digit = range == editor.selectedRange && text.count == 1 && text.first?.isNumber == true
+        guard deletes || digit else { return false }
+        insertingList = true; defer { insertingList = false }
+        editor.selectedRange = result
+        editor.insertText(text)
+        return true
     }
     /// After typing, UIKit derives typing attributes from the typed character
     /// and may drop app keys (marker colour, automatic ink, font name). The
@@ -990,12 +1034,17 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         grow(index); synchronize()
         updating = wasUpdating
         // New fields take over the last used style; „Formatierung entfernen“ leads back.
-        if boxes[index].flowID == nil, let used = selectionStyle { TextStyleMemory.remember(used) }
+        if boxes[index].flowID == nil, var used = selectionStyle {
+            used.fontSize = sizeUnits(for: boxes[index]).remembered(used.fontSize)
+            TextStyleMemory.remember(used)
+        }
         if boxes[index].flowID != nil { commitFlow(previous: previous[index], editor: editor) }
         else { publish() }
         layoutIfNeeded(); requestCaretReveal(.typing)
     }
     func textViewDidChangeSelection(_ textView: UITextView) {
+        // The caret left the result: coming back later is ordinary typing.
+        if let result = calculatedResult?.range, textView.selectedRange != NSRange(location: NSMaxRange(result), length: 0) { calculatedResult = nil }
         // The keyboard mode's own selections keep a marking over pages, a user's selection ends it.
         let own = KeyboardRouter.shared.showingSelection || KeyboardRouter.shared.handoff
         if !updating, !applyingFlow, !own { TextFlowSelection.shared.set(nil) }
@@ -1027,7 +1076,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     func applyPreset(_ preset: TextStylePreset) {
         let flow = selectedID.flatMap { id in boxes.first { $0.id == id } }?.flowID != nil
-        changeStyle({ preset.apply(to: &$0) }, paragraph: flow, wholeFloatingField: !flow)
+        let units = selectedSizeUnits
+        changeStyle({ preset.apply(to: &$0); $0.fontSize = units.stored(preset.fontSize) }, paragraph: flow, wholeFloatingField: !flow)
     }
     var selectedLight: Bool { selectedID.flatMap { id in boxes.first { $0.id == id } }.map(automaticLight) ?? false }
     private func performShortcut(_ id: String) {
@@ -1048,8 +1098,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         default: break
         }
     }
-    @objc func smaller() { changeStyle({ $0.fontSize = max(8, $0.fontSize - 1) }, wholeFloatingField: true) }
-    @objc func larger() { changeStyle({ $0.fontSize = min(96, $0.fontSize + 1) }, wholeFloatingField: true) }
+    @objc func smaller() { stepFontSize(by: -1) }
+    @objc func larger() { stepFontSize(by: 1) }
+    private func stepFontSize(by delta: Double) {
+        let units = selectedSizeUnits
+        changeStyle({ $0.fontSize = units.stepped($0.fontSize, by: delta) }, wholeFloatingField: true)
+    }
 
     func toggleList(_ kind: TextListEditing.Kind) {
         guard let selectedID, let index = boxes.firstIndex(where: { $0.id == selectedID }),

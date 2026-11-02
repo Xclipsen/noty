@@ -119,6 +119,17 @@ final class ExternalBackupPolicyTests: XCTestCase {
         XCTAssertTrue(policy.obsolete(names, verified: "invalid").isEmpty)
         XCTAssertNil(policy.timestamp(policy.prefix + "../../a.notylibrary"))
     }
+    func testArchivesWaitingForTheirUploadReplaceNothing() {
+        var policy = ExternalBackupPolicy(); policy.keep = 3
+        // Newest first; 0 was just written, 0 and 1 are not in iCloud yet.
+        let names = (0..<8).map { policy.filename(at: Date(timeIntervalSince1970: Double(1_700_000_100 - $0))) }
+        let one = policy.obsolete(names, verified: names[0], waitingForUpload: Set(names[0...1]))
+        XCTAssertEqual(Set(one), Set(names[5...]), "three uploaded ones stay besides the waiting ones")
+        // iCloud stays full: the older waiting ones go, the device does not fill up.
+        let full = policy.obsolete(names, verified: names[0], waitingForUpload: Set(names[0...4]))
+        XCTAssertEqual(Set(full), Set(names[3...4]))
+        XCTAssertEqual(policy.obsolete(names, verified: names[0]), Array(names[3...]), "everything uploaded: as before")
+    }
     func testHTTPSDirectoryOnlyAndNoCredentialsInURL() throws {
         XCTAssertEqual(try ExternalBackupPolicy.webDAVDirectory("https://example.org/dav/notes").absoluteString, "https://example.org/dav/notes/")
         for value in ["http://example.org/", "https://user:pass@example.org/", "https://example.org/?token=x", "https://example.org/#x", "file:///tmp/a", "garbage"] {

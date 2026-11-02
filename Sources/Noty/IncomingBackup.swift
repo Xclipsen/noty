@@ -162,27 +162,41 @@ enum TopAlert {
     static func show(_ title: String, _ message: String) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .cancel))
-        top?.present(alert, animated: true)
+        present(alert)
+    }
+    /// `present` fails silently above a controller that is just going away. It
+    /// is tried again; if the alert never appears, `unshown` answers for it, so
+    /// nothing waits for a reply forever.
+    private static func present(_ alert: UIAlertController, unshown: (() -> Void)? = nil) {
+        Task { @MainActor in
+            for _ in 0..<8 {
+                guard let top else { break }
+                top.present(alert, animated: true)
+                try? await Task.sleep(for: .milliseconds(300))
+                if alert.presentingViewController != nil || alert.isViewLoaded { return }
+            }
+            unshown?()
+        }
     }
     static func ask(_ title: String, _ message: String, confirm: String) async -> Bool {
         await withCheckedContinuation { continuation in
-            guard let top else { continuation.resume(returning: false); return }
+            guard top != nil else { continuation.resume(returning: false); return }
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "Abbrechen", style: .cancel) { _ in continuation.resume(returning: false) })
             alert.addAction(UIAlertAction(title: confirm, style: .default) { _ in continuation.resume(returning: true) })
-            top.present(alert, animated: true)
+            present(alert) { continuation.resume(returning: false) }
         }
     }
     /// Several answers plus „Abbrechen“; nil when cancelled.
     static func choose<Choice: Sendable>(_ title: String, _ message: String, actions: [(String, UIAlertAction.Style, Choice)]) async -> Choice? {
         await withCheckedContinuation { continuation in
-            guard let top else { continuation.resume(returning: nil); return }
+            guard top != nil else { continuation.resume(returning: nil); return }
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             for (label, style, choice) in actions {
                 alert.addAction(UIAlertAction(title: label, style: style) { _ in continuation.resume(returning: choice) })
             }
             alert.addAction(UIAlertAction(title: "Abbrechen", style: .cancel) { _ in continuation.resume(returning: nil) })
-            top.present(alert, animated: true)
+            present(alert) { continuation.resume(returning: nil) }
         }
     }
     static func progress(_ title: String) -> UIAlertController? {
@@ -191,9 +205,25 @@ enum TopAlert {
         top.present(alert, animated: true)
         return alert
     }
+    /// A dismissal during the present animation can be dropped without its
+    /// completion: first wait for the alert to stand, and never wait for ever.
     static func dismiss(_ alert: UIAlertController?) async {
-        guard let alert, alert.presentingViewController != nil else { return }
-        await withCheckedContinuation { continuation in alert.dismiss(animated: true) { continuation.resume() } }
+        guard let alert else { return }
+        for _ in 0..<40 where alert.isBeingPresented { try? await Task.sleep(for: .milliseconds(25)) }
+        guard alert.presentingViewController != nil else { return }
+        let once = DismissOnce()
+        await withCheckedContinuation { continuation in
+            once.continuation = continuation
+            alert.dismiss(animated: true) { once.finish() }
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                once.finish()
+            }
+        }
+    }
+    @MainActor private final class DismissOnce {
+        var continuation: CheckedContinuation<Void, Never>?
+        func finish() { continuation?.resume(); continuation = nil }
     }
 }
 

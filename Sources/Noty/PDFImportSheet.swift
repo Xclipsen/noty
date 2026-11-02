@@ -56,13 +56,13 @@ struct PDFImportSheet: View {
                 Section {
                     PDFWritingSpaceOptions(enabled: $extraSpace, left: $left, fraction: $fraction, paper: $paper, color: $color)
                 } footer: {
-                    Text("Die PDF wird vollständig lokal kopiert; das Original bleibt unverändert. 100 % entspricht einer normalen Seitenbreite.")
+                    Text("Die Datei wird vollständig lokal kopiert. Ein Bild wird zu einer eigenen Seite; Fotos werden dabei auf höchstens 4096 Pixel verkleinert, die Originaldatei bleibt nur in Dateien erhalten. 100 % entspricht einer normalen Seitenbreite.")
                 }
-                Section { Button("PDF aus Dateien wählen …", systemImage: "doc.badge.plus") { choosingFile = true }.keyOption(.action { choosingFile = true }) }
+                Section { Button("PDF oder Bild aus Dateien wählen …", systemImage: "doc.badge.plus") { choosingFile = true }.keyOption(.action { choosingFile = true }) }
             }
-            .navigationTitle("PDF importieren").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("PDF oder Bild importieren").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
-            .fileImporter(isPresented: $choosingFile, allowedContentTypes: [.pdf]) { result in
+            .fileImporter(isPresented: $choosingFile, allowedContentTypes: [.pdf, .image]) { result in
                 switch result {
                 case .success(let url):
                     onImport(url, PDFWritingSpaceOptions.margins(enabled: extraSpace, left: left, fraction: fraction, paper: paper, color: color))

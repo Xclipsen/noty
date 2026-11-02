@@ -237,6 +237,8 @@ final class PageTextView: UITextView {
         storage.addLayoutManager(manager); manager.addTextContainer(container)
         super.init(frame: .zero, textContainer: container)
         manager.delegate = ruling
+        // noty calculates itself (`TextCalculator`).
+        if #available(iOS 18.0, *) { mathExpressionCompletionType = .no }
         // With the text tool the Pencil scrolls the paper; handwriting-to-text
         // (Scribble) would turn every Pencil drag over text into writing.
         addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))

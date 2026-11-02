@@ -67,13 +67,27 @@ final class EditorWorkspace: ObservableObject {
         for model in models.values { if !(await model.waitForSave()) { return .failed } }
         return .committed
     }
+    static let blockedTitle = "Heft kann nicht gespeichert werden"
+    static func blockedMessage(_ reason: String) -> String {
+        "\(reason)\n\nDer zuletzt gespeicherte Stand bleibt erhalten. Beim Schließen gehen die Änderungen seitdem verloren."
+    }
+    static let blockedConfirm = "Ohne Speichern schließen"
+    /// Saving cannot succeed for a pane: the user may leave it anyway, then
+    /// the others close as usual.
+    func closeAbandoningBlockedPanes() async -> Bool {
+        let blocked = models.values.filter { $0.saveBlocked != nil }
+        guard !closing, let reason = blocked.first?.saveBlocked,
+              await TopAlert.ask(Self.blockedTitle, Self.blockedMessage(reason), confirm: Self.blockedConfirm) else { return false }
+        for model in blocked { model.abandonUnsavedChanges() }
+        return await closeAll()
+    }
     func closeAll() async -> Bool {
         guard !closing else { return false }
         closing = true; defer { closing = false }
         // Persist every owner first. Only disable the owners after all saves
         // succeeded, otherwise one failed pane could strand its sibling.
         for model in models.values {
-            if model.busy { error = "Bitte den laufenden Vorgang abwarten."; return false }
+            if model.busy || model.imageReading { error = "Bitte den laufenden Vorgang abwarten."; return false }
             model.save()
         }
         for model in models.values { if !(await model.waitForSave()) { return false } }
@@ -256,8 +270,14 @@ struct EditorWorkspaceView: View {
     private func pane(_ model: EditorModel, index: Int) -> some View {
         ContentView(model: model, isRestoredCopy: false, isLibraryDocument: true, initialSearchBounds: index == 0 ? workspace.primaryDocument.searchBounds : nil,
             initialFlowRange: index == 0 ? workspace.primaryDocument.searchFlowRange : nil,
-            isPaneActive: { workspace.activePane == index && !workspace.closing }, onActivatePane: { workspace.activePane = index },
-            onCloseWorkspace: { Task { if await toolbox.flush(), await workspace.closeAll() { library.notebookClosedByUser(); dismiss() } } },
+            isPaneActive: { workspace.activePane == index && !workspace.closing }, isPaneSelected: { workspace.activePane == index }, onActivatePane: { workspace.activePane = index },
+            onCloseWorkspace: { Task {
+                // Toolbar settings are no reason to keep a notebook open.
+                _ = await toolbox.flush()
+                var closed = await workspace.closeAll()
+                if !closed { closed = await workspace.closeAbandoningBlockedPanes() }
+                if closed { library.notebookClosedByUser(); dismiss() }
+            } },
             onSecondView: { choose() }, onLaws: lawsEnabled ? {
                 // Shows the window; a visible one goes to its edge tab like its ✕.
                 if !laws.panelOpen { laws.panelOpen = true; laws.stashed = false }

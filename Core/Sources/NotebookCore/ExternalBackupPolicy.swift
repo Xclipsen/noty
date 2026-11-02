@@ -93,11 +93,20 @@ public struct ExternalBackupPolicy: Codable, Equatable, Sendable {
         Set(names).filter { name in temporaryTimestamp(name).map { now.timeIntervalSince1970 - $0 > 24 * 3600 } ?? false }.sorted()
     }
     /// Only archives from this series; newest verified filename is always retained.
-    public func obsolete(_ names: [String], verified: String) -> [String] {
+    /// `waitingForUpload`: written but not in the cloud yet, so they do not
+    /// replace what is there: `keep` archives stay besides them, and of
+    /// themselves the `keep` newest, so a full iCloud cannot fill the device.
+    public func obsolete(_ names: [String], verified: String, waitingForUpload: Set<String> = []) -> [String] {
         guard timestamp(verified) != nil else { return [] }
         let sorted = Set(names).filter { timestamp($0) != nil && $0 != verified }
             .sorted { timestamp($0)! > timestamp($1)! }
-        return Array(sorted.dropFirst(keep - 1))
+        var kept = waitingForUpload.contains(verified) ? 0 : 1
+        var waiting = waitingForUpload.contains(verified) ? 1 : 0
+        return sorted.filter { name in
+            if waitingForUpload.contains(name) { waiting += 1; return waiting > keep }
+            kept += 1
+            return kept > keep
+        }
     }
     public static func webDAVDirectory(_ string: String) throws -> URL {
         guard let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),

@@ -50,6 +50,10 @@ Archivprüfer: `python3 -B scripts/verify_backup.py ARCHIV --compare REVISION.js
 
 `origin` ist das **öffentliche** Repo `github.com/Xclipsen/noty`; es soll immer `main` spiegeln. Lokale Hooks (`post-commit`, `post-merge`, `post-rewrite` → `.git/hooks/noty-autopush`) pushen jeden neuen Stand von `main` im Hintergrund, Protokoll in `.git/autopush.log`; andere Branches bleiben lokal. Nach Merges prüfen: `git rev-list --count origin/main..main` muss 0 sein, sonst manuell pushen. Wegen Öffentlichkeit nie private Hefte, Gerätesicherungen, UDIDs, Zugangsdaten oder `.tools/`-Artefakte committen.
 
+## Arbeitsweise: nur in dev
+
+Gearbeitet wird nur in der App **noty dev** (`de.la.noty.dev`, eigene Daten). `bash scripts/publish_ota.sh` veröffentlicht ohne Angabe dorthin. Die normale App noty (`de.la.noty.prototype`) mit den echten Heften und `main` bekommen eine Änderung erst, wenn der Nutzer mit ihr in dev zufrieden ist und das sagt. Dann: Stand nach `main` übernehmen und mit `NOTY_CHANNEL=stable bash scripts/publish_ota.sh` veröffentlichen. Details: [ENVIRONMENT](docs/ENVIRONMENT.md).
+
 ## Geräteupdates und Nachweise
 
 - Bei einem autorisierten Update: Basis-ID in `xtool.yml`, Signierungsidentität und App-Container erhalten. Bewährter Weg: `xtool dev build --sign --ipa`, dann `xtool install --usb xtool/Noty.ipa`. Nicht ungeprüft auf `xtool dev run` wechseln: Build und Installation präfixieren die ID hier zweimal; ein anderer Weg kann einen anderen Container erzeugen. IPA-ID und installierte ID prüfen (ENVIRONMENT). App nicht deinstallieren; Zertifikatswiderruf oder Entfernen anderer Apps nur mit ausdrücklichem Auftrag.

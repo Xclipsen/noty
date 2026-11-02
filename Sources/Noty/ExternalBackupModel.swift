@@ -205,8 +205,10 @@ final class ExternalBackupModel: ObservableObject {
         status = (archive.warning.map { "Backup mit Hinweis: \($0) · " } ?? "") + (policy.target == .folder
             ? "Zieldatei geprüft · Cloud-Upload übernimmt die Dateien-App"
             : "WebDAV-Backup vollständig zurückgelesen und geprüft")
-        do { try await reloadHistory(); try await prune(verified: name, file: archive.summary.file) }
-        catch { status += " · ältere Stände nicht bereinigt" }
+        do {
+            try await reloadHistory()
+            if try await prune(verified: name, file: archive.summary.file) { status += " · iCloud lädt noch hoch, ältere Stände bleiben" }
+        } catch { status += " · ältere Stände nicht bereinigt" }
     }
 
     /// Not a failure: no attempt time and no target backoff. Running input is
@@ -428,14 +430,28 @@ final class ExternalBackupModel: ObservableObject {
         } else { listing = ExternalBackupListing() }
         history = listing.archives; placeholders = listing.placeholders; temporaries = listing.temporaries
     }
-    private func prune(verified: String, file: LibraryArchiveFileInfo) async throws {
+    /// Own archives in iCloud Drive that are only local so far (iCloud may
+    /// also be full). Other providers tell nothing here: an empty set.
+    nonisolated private static func waitingForUpload(_ names: [String], in directory: URL) -> Set<String> {
+        Set(names.filter { name in
+            guard let values = try? directory.appendingPathComponent(name)
+                .resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemIsUploadedKey]) else { return false }
+            return values.isUbiquitousItem == true && values.ubiquitousItemIsUploaded != true
+        })
+    }
+    /// True when archives still wait for their upload.
+    private func prune(verified: String, file: LibraryArchiveFileInfo) async throws -> Bool {
         if policy.target == .folder {
             let directory = try folder(), access = directory.startAccessingSecurityScopedResource(), policy = policy
             defer { if access { directory.stopAccessingSecurityScopedResource() } }
-            let removed = try await Task.detached(priority: .utility) {
-                try ExternalBackupFolder.prune(policy: policy, directory: directory, verified: verified, file: file, coordination: CoordinatedBackupFiles())
+            let names = history
+            let (removed, waiting) = try await Task.detached(priority: .utility) {
+                let waiting = Self.waitingForUpload(names, in: directory)
+                return (try ExternalBackupFolder.prune(policy: policy, directory: directory, verified: verified, file: file,
+                    waitingForUpload: waiting, coordination: CoordinatedBackupFiles()), waiting)
             }.value
             history.removeAll { removed.contains($0) }
+            return !waiting.isEmpty
         } else {
             // Only after the newest full archive has been read back and checked above.
             for name in policy.obsolete(history, verified: verified) {
@@ -443,6 +459,7 @@ final class ExternalBackupModel: ObservableObject {
                 history.removeAll { $0 == name }
             }
             for name in policy.staleTemporaries(temporaries) { await deleteQuietly(name) }
+            return false
         }
     }
 

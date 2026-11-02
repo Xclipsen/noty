@@ -13,6 +13,8 @@ struct ContentView: View {
     /// A search hit over a page change: marked in the flow once the document stands.
     var initialFlowRange: NSRange? = nil
     var isPaneActive: () -> Bool = { true }
+    /// Without the short lock while saving: only another pane being in front covers this one.
+    var isPaneSelected: () -> Bool = { true }
     var onActivatePane: (() -> Void)?
     var onCloseWorkspace: (() -> Void)?
     var onSecondView: (() -> Void)?
@@ -132,7 +134,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             workspaceSurface.ignoresSafeArea(.keyboard, edges: .bottom).overlay {
-                if !isPaneActive() {
+                if !isPaneSelected() {
                     Color.clear.contentShape(Rectangle()).onTapGesture { onActivatePane?(); model.pageIndex = currentPageIndex }
                         .accessibilityLabel("Diese Ansicht aktivieren").accessibilityAddTraits(.isButton)
                 }
@@ -505,9 +507,12 @@ struct ContentView: View {
     private func closeEditor() {
         if let onCloseWorkspace { onCloseWorkspace(); return }
         Task {
-            if await model.flushBeforeClosing() { _ = await toolbox.flush(); dismiss() }
+            if await model.flushBeforeClosing() { _ = await toolbox.flush(); dismiss(); return }
+            if let reason = model.saveBlocked, await TopAlert.ask(EditorWorkspace.blockedTitle, EditorWorkspace.blockedMessage(reason), confirm: EditorWorkspace.blockedConfirm) {
+                model.abandonUnsavedChanges(); _ = await toolbox.flush(); dismiss(); return
+            }
             // Stays open: `Space f` must not fire at some later close.
-            else { KeyboardRouter.shared.searchAllAfterClosing = false }
+            KeyboardRouter.shared.searchAllAfterClosing = false
         }
     }
 
@@ -751,7 +756,7 @@ struct ContentView: View {
             let defaults = model.notebook.pageDefaults
             model.insertPaper(defaults.paper, color: defaults.color, relativeTo: anchorPageID)
         }
-        Button("Papier oder PDF wählen …", systemImage: "doc.on.doc") { addingPage = true }
+        Button("Papier, PDF oder Bild wählen …", systemImage: "doc.on.doc") { addingPage = true }
     }
 
     private var pageNavigator: some View {
@@ -1086,7 +1091,8 @@ struct ContentView: View {
             readTextBoxes: { model.notebook.pages.first(where: { $0.id == page.id })?.effectiveTextBoxes ?? (page.id == writingDraft.id ? writingDraft.effectiveTextBoxes : []) },
             readFlowText: { flow in model.notebook.pages.flatMap { $0.effectiveTextBoxes.filter { $0.flowID == flow }.map(\.text) }.joined() },
             onDrawing: { data in
-                guard isPaneActive(), model.pageContentGeneration == generation else { return }
+                // Not `isPaneActive`: a late stroke behind a closing phase still counts.
+                guard isPaneSelected(), model.pageContentGeneration == generation else { return }
                 if page.id == writingDraft.id, !model.notebook.pages.contains(where: { $0.id == page.id }) {
                     guard let drawing = try? PKDrawing(data: data), !drawing.strokes.isEmpty else { return }
                     guard model.materializeDraft(draftPage) else { return }

@@ -148,7 +148,10 @@ extension TextObjectLayer {
             .init(label: "Tiefstellen", symbol: "textformat.subscript", selected: style.baseline == -1,
                 change: { $0.baseline = $0.baseline == -1 ? nil : -1 }),
             .init(label: "Formatierung entfernen", symbol: "eraser", selected: false,
-                change: { [light = selectedLight] in $0 = $0.clearingCharacterFormatting(light: light) })
+                change: { [light = selectedLight, units = selectedSizeUnits] in
+                    $0 = $0.clearingCharacterFormatting(light: light)
+                    $0.fontSize = units.stored($0.fontSize)
+                })
         ] + (flowActions == nil ? [] : [
             .init(label: "Seitenumbruch", symbol: "arrow.down.to.line.compact", selected: false, change: { _ in },
                 action: { [weak self] in self?.insertPageBreak() })
@@ -359,9 +362,11 @@ extension TextObjectLayer {
         field.editor.accessibilityHint = neededHeight(field.editor, width: box.width) > box.height + 1
             ? "Textfeld am Seitenende · Text bleibt vollständig gespeichert." : nil
         let style = selectionStyle ?? box.style
-        buttons["Textstil"]?.setTitle(TextStylePreset.matching(style).title, for: .normal)
-        buttons["Schriftgröße"]?.setTitle(String(Int(style.fontSize)), for: .normal)
-        buttons["Schriftgröße"]?.accessibilityValue = "\(Int(style.fontSize)) Punkt"
+        var shown = style
+        shown.fontSize = sizeUnits(for: box).visible(style.fontSize)
+        buttons["Textstil"]?.setTitle(TextStylePreset.matching(shown).title, for: .normal)
+        buttons["Schriftgröße"]?.setTitle(String(Int(shown.fontSize)), for: .normal)
+        buttons["Schriftgröße"]?.accessibilityValue = "\(Int(shown.fontSize)) Punkt"
         buttons["Schrift"]?.setTitle(style.fontName.flatMap { UIFont(name: $0, size: 17)?.familyName } ?? (style.font == .serif ? "Serif" : style.font == .monospaced ? "Festbreite" : "System"), for: .normal)
         if style.automaticColor == true {
             buttons["Farbe"]?.setImage(automaticSwatch().withRenderingMode(.alwaysOriginal), for: .normal)

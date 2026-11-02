@@ -47,11 +47,11 @@ enum PDFExporter {
         let ink: UIImage?
     }
 
-    /// One finished page: a single-page PDF from UIKit's renderer plus its link
-    /// rectangles (UIKit page space; `drawPDFPage` does not carry annotations).
+    /// One finished page: a single-page PDF file from UIKit's renderer plus its
+    /// link rectangles (UIKit page space; `drawPDFPage` does not carry
+    /// annotations). On disk: a notebook full of photos does not fit in memory twice.
     private struct RenderedPage {
-        let document: CGPDFDocument
-        let page: CGPDFPage
+        let file: URL
         let bounds: CGRect
         let links: [(URL, CGRect)]
     }
@@ -93,6 +93,9 @@ enum PDFExporter {
         }
         guard overflow.isEmpty else { throw ExportError.textOverflow(overflow) }
 
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("noty-pdf-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
         var rendered: [RenderedPage] = []
         for (position, (_, page)) in selected.enumerated() {
             try Task.checkCancellation()
@@ -100,47 +103,56 @@ enum PDFExporter {
             let layout = layouts[position]
             let assets = try await Task.detached(priority: .userInitiated) { try Self.assets(page, layout: layout, images: provider) }.value
             try Task.checkCancellation()
-            rendered.append(try autoreleasepool { try render(page, layout: layout, source: sources[position], assets: assets) })
+            let file = folder.appendingPathComponent("\(position).pdf")
+            rendered.append(try autoreleasepool { try render(page, layout: layout, source: sources[position], assets: assets, to: file) })
             await Task.yield()
         }
         try Task.checkCancellation()
-        let data = assemble(rendered, title: snapshot.title)
+        let result = folder.appendingPathComponent("noty.pdf")
+        try assemble(rendered, title: snapshot.title, to: result)
         withExtendedLifetime((documents, catalogue)) {}
-        guard let check = CGDataProvider(data: data as CFData).flatMap(CGPDFDocument.init),
-              check.numberOfPages == rendered.count else { throw ExportError.writeFailed }
+        guard let check = CGPDFDocument(result as CFURL), check.numberOfPages == rendered.count else { throw ExportError.writeFailed }
+        // Mapped: the bytes stay on disk, and stay readable after the file's removal.
+        let data = try Data(contentsOf: result, options: .alwaysMapped)
         progress(selected.count, selected.count)
         return data
     }
 
-    /// The page in its own single-page PDF, drawn by UIKit's renderer.
-    private static func render(_ page: Page, layout: PageLayout, source: CGPDFPage?, assets: PageAssets) throws -> RenderedPage {
+    /// The page in its own single-page PDF file, drawn by UIKit's renderer.
+    private static func render(_ page: Page, layout: PageLayout, source: CGPDFPage?, assets: PageAssets, to file: URL) throws -> RenderedPage {
         let bounds = layout.canvas.bounds
         var links: [(URL, CGRect)] = []
-        let data = UIGraphicsPDFRenderer(bounds: bounds).pdfData { output in
+        try UIGraphicsPDFRenderer(bounds: bounds).writePDF(to: file) { output in
             links = drawPage(page, layout: layout, source: source, assets: assets, in: output)
         }
-        guard let document = CGDataProvider(data: data as CFData).flatMap(CGPDFDocument.init),
-              document.numberOfPages == 1, let pdfPage = document.page(at: 1) else { throw ExportError.writeFailed }
-        return RenderedPage(document: document, page: pdfPage, bounds: bounds, links: links)
+        guard let document = CGPDFDocument(file as CFURL), document.numberOfPages == 1 else { throw ExportError.writeFailed }
+        return RenderedPage(file: file, bounds: bounds, links: links)
     }
 
     /// The finished pages, unchanged and in order, in one document (again via
     /// UIKit's renderer). Links are set anew because a placed page has none.
-    private static func assemble(_ pages: [RenderedPage], title: String) -> Data {
+    private static func assemble(_ pages: [RenderedPage], title: String, to file: URL) throws {
         let format = UIGraphicsPDFRendererFormat()
         format.documentInfo = [kCGPDFContextTitle as String: title, kCGPDFContextCreator as String: "noty"]
-        return UIGraphicsPDFRenderer(bounds: pageBounds, format: format).pdfData { output in
+        var complete = true
+        try UIGraphicsPDFRenderer(bounds: pageBounds, format: format).writePDF(to: file) { output in
             for rendered in pages {
-                output.beginPage(withBounds: rendered.bounds, pageInfo: [:])
-                let context = output.cgContext
-                context.saveGState()
-                // From UIKit's y-down page space back to the page's own PDF space.
-                context.translateBy(x: 0, y: rendered.bounds.height); context.scaleBy(x: 1, y: -1)
-                context.drawPDFPage(rendered.page)
-                context.restoreGState()
-                for (url, rect) in rendered.links { output.setURL(url, for: rect) }
+                autoreleasepool {
+                    // A CGPDFPage does not keep its document alive.
+                    guard let document = CGPDFDocument(rendered.file as CFURL), let page = document.page(at: 1) else { complete = false; return }
+                    defer { withExtendedLifetime(document) {} }
+                    output.beginPage(withBounds: rendered.bounds, pageInfo: [:])
+                    let context = output.cgContext
+                    context.saveGState()
+                    // From UIKit's y-down page space back to the page's own PDF space.
+                    context.translateBy(x: 0, y: rendered.bounds.height); context.scaleBy(x: 1, y: -1)
+                    context.drawPDFPage(page)
+                    context.restoreGState()
+                    for (url, rect) in rendered.links { output.setURL(url, for: rect) }
+                }
             }
         }
+        guard complete else { throw ExportError.writeFailed }
     }
 
     nonisolated private static func assets(_ page: Page, layout: PageLayout, images provider: ImageAssetProviding) throws -> PageAssets {

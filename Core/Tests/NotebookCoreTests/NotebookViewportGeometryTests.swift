@@ -191,4 +191,64 @@ final class StrokeHorizontalDriftTests: XCTestCase {
         XCTAssertEqual(kept.upperBound, normal.upperBound)
         XCTAssertEqual(kept.lowerBound, max(writing.lowerBound, normal.lowerBound - 200), "same page distance at the new zoom")
     }
+
+    func testFastFlickTowardsTheNarrowDraftDoesNotPullTheViewSideways() {
+        var sheet = Page()
+        sheet.margins = PageMargins(right: 595)
+        let pages = NotebookViewportLayout(pages: [sheet, Page()], selectedPageID: sheet.id, paging: false, normalizeWidths: true).pages
+        let range = { (index: Int) in
+            NotebookViewportGeometry.horizontalRange(viewportWidth: 1000, page: pages[index].frame, scale: 1.6,
+                centre: pages[index].contentFrame.x + pages[index].contentFrame.width / 2)
+        }
+        let here = range(0), draft = range(1)
+        XCTAssertEqual(draft.lowerBound, draft.upperBound, accuracy: 1e-9, "the draft allows only the page centre")
+        let x = here.upperBound
+        XCTAssertNotEqual(x, draft.lowerBound)
+        let kept = NotebookViewportGeometry.flickTargetX(proposed: x + 40, current: x,
+            velocity: PagePoint(x: 0.2, y: 6), allowed: here)
+        XCTAssertEqual(kept, x, accuracy: 1e-9)
+    }
+
+    func testSidewaysFlickStillGlidesToTheEdgeOfTheRange() {
+        let target = NotebookViewportGeometry.flickTargetX(proposed: 900, current: 100,
+            velocity: PagePoint(x: 3, y: 0.5), allowed: 0...300)
+        XCTAssertEqual(target, 300)
+        XCTAssertEqual(NotebookViewportGeometry.flickTargetX(proposed: 150, current: 100,
+            velocity: PagePoint(x: 3, y: 3), allowed: 0...300), 150, "diagonal stays free")
+    }
+
+    func testLateAnswerToAnOwnScrollReportIsNoPageJump() {
+        let first = UUID(), second = UUID()
+        var echoes = ScrollSelectionEchoes()
+        // Down over the seam and straight back: the app answers the older report.
+        echoes.record(second, at: 10)
+        echoes.record(first, at: 10.02)
+        XCTAssertTrue(echoes.consume(second, at: 10.05))
+        XCTAssertTrue(echoes.consume(first, at: 10.06))
+        XCTAssertFalse(echoes.consume(first, at: 10.07), "answered once, the next one comes from outside")
+    }
+
+    func testPageChoiceFromOutsideStillJumps() {
+        let reported = UUID(), other = UUID()
+        var echoes = ScrollSelectionEchoes()
+        echoes.record(reported, at: 10)
+        XCTAssertFalse(echoes.consume(other, at: 10.1))
+        XCTAssertTrue(echoes.consume(reported, at: 10.2), "an unrelated choice leaves the report in place")
+    }
+
+    func testReportTheAppDroppedDoesNotSwallowALaterJump() {
+        let page = UUID()
+        var echoes = ScrollSelectionEchoes()
+        echoes.record(page, at: 10)
+        XCTAssertFalse(echoes.consume(page, at: 10 + ScrollSelectionEchoes.lifetime + 0.01))
+    }
+
+    func testAnsweringAReportAlsoSettlesOlderOnes() {
+        let first = UUID(), second = UUID()
+        var echoes = ScrollSelectionEchoes()
+        echoes.record(first, at: 10)
+        echoes.record(second, at: 10.1)
+        XCTAssertTrue(echoes.consume(second, at: 10.2))
+        XCTAssertFalse(echoes.consume(first, at: 10.3))
+    }
 }

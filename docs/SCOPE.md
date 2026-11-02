@@ -94,7 +94,7 @@ Das Umfangsinterview ist abgeschlossen. Weitere Umsetzung ist autorisiert. Norma
 
 ## Technische Machbarkeit aus der Recherche
 
-- PencilKit: native Schreibwerkzeuge, Farben/Breiten, ganzer Strich (`vector`) und Teilradieren (`bitmap`), Handschrift-Lasso, Lineal. Eigene Leiste kann die Werkzeuge direkt ansteuern.
+- PencilKit: native Schreibwerkzeuge, Farben/Breiten, ganzer Strich (`vector`) und Teilradieren (`bitmap`), Handschrift-Lasso. Das Lineal ist app-eigen, seine Striche bleiben PencilKit-Tinte. Eigene Leiste kann die Werkzeuge direkt ansteuern.
 - Gestrichelte/gepunktete Geometrie: eigene Linien-/Formobjekte; kein entsprechender öffentlicher PKInkingTool-Strichmusterschalter gefunden.
 - Gemischte Auswahl und eigener Formen-/Text-/Bildeditor brauchen eine gemeinsame Objektebene zusätzlich zu PKDrawing. Das native Lasso allein genügt dafür nicht.
 - Zwei Ansichten, Explorer und Volltextindex sind eigene App-Funktionen. Beim gleichen Dokument darf es nur einen gemeinsamen Daten-/Speichereigentümer geben.

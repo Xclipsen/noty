@@ -454,4 +454,60 @@ final class TextDocumentExtrasTests: XCTestCase {
         XCTAssertEqual(shorter.textFlowOffset(boxID: focus.boxID, location: focus.selection.location), 241)
         XCTAssertNoThrow(try shorter.validate())
     }
+
+    func testLongFlowMeasuresOnlyWhatAPageNeedsAndSplitsTheSame() throws {
+        var book = Notebook.blank(title: "Heft")
+        var field = TextBox(text: "a"); field.flowID = UUID(); field.flowRegion = .page
+        book.pages[0].textBoxes = [field]; book.schemaVersion = 8
+        let box = try XCTUnwrap(book.pages[0].textBoxes?.first)
+        var longer = box; longer.text = String(repeating: "wort ", count: 12_000)
+        var largest = 0
+        let (next, _) = try book.reflowText(pageID: book.pages[0].id, previous: box, replacement: longer,
+            selection: NSRange(location: 0, length: 0), capacity: { candidate in
+                let length = (candidate.text as NSString).length
+                largest = max(largest, length)
+                return min(3_000, length)
+            })
+        XCTAssertEqual(largest, TextFlowMeasure.firstLength, "not the 60 000 characters left")
+        let parts = next.pages.compactMap { $0.textBoxes?.first?.text }
+        XCTAssertEqual(parts.count, 20)
+        XCTAssertEqual(parts.joined(), longer.text)
+        XCTAssertTrue(parts.allSatisfy { ($0 as NSString).length == 3_000 })
+    }
+
+    func testMeasuringAPrefixGivesTheResultOfMeasuringEverything() {
+        for pageHolds in [0, 100, 6_100, 6_200, 8_191, 8_192, 8_193, 20_000, 50_000, 90_000] {
+            for remaining in [50, 8_191, 8_192, 8_193, 40_000, 100_000] {
+                let result = TextFlowMeasure.capacity(remaining: remaining) { min(pageHolds, $0) }
+                XCTAssertEqual(result, min(pageHolds, remaining), "page \(pageHolds), remaining \(remaining)")
+            }
+        }
+    }
+
+    func testPrefixNeverCutsAComposedCharacter() {
+        let text = "ab\u{1F469}\u{200D}\u{1F4BB}cd" as NSString
+        XCTAssertEqual(TextFlowMeasure.composedEnd(of: text, from: 0, after: 3), 2)
+        XCTAssertEqual(TextFlowMeasure.composedEnd(of: text, from: 2, after: 3), 7, "a cluster at the start stays whole")
+        XCTAssertEqual(TextFlowMeasure.composedEnd(of: text, from: 0, after: 99), text.length)
+    }
+
+    func testAnEditOnOnePageLeavesTheNumbersOnLaterPagesAlone() throws {
+        // „10.“ stands on the second page and is far from the edit.
+        let line = { (n: Int) in "\(n). aa\n" }
+        let text = line(1) + line(2) + line(3) + "Text\n" + "weiter\n" + "noch\n" + "mehr\n" + line(10) + line(11)
+        let height: (Page, TextBox) throws -> Int = { _, box in
+            let source = box.text as NSString
+            var end = 0, lines = 0
+            while end < source.length, lines < 5 {
+                end = NSMaxRange(source.lineRange(for: NSRange(location: end, length: 0))); lines += 1
+            }
+            return end
+        }
+        let document = try flowing(text, capacity: height)
+        XCTAssertGreaterThan(document.pages.count, 1)
+        let (next, _) = try document.editingTextFlow(range: NSRange(location: 1, length: 0), replacement: "", layout: TextFlowLayout(capacity: height))
+        XCTAssertEqual(next.textFlowContent?.text, text)
+        let (typed, _) = try document.editingTextFlow(range: NSRange(location: 5, length: 0), replacement: "b", layout: TextFlowLayout(capacity: height))
+        XCTAssertTrue(typed.textFlowContent?.text.contains("10. aa\n11. aa") == true, typed.textFlowContent?.text ?? "")
+    }
 }

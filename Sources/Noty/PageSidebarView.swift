@@ -707,14 +707,14 @@ struct AddPageSheet: View {
                     }
                     Divider().padding(.vertical, 4)
                     VStack(alignment: .leading, spacing: 10) {
-                        Label("PDF einfügen", systemImage: "doc.badge.plus").font(.headline)
+                        Label("PDF oder Bild einfügen", systemImage: "doc.badge.plus").font(.headline)
                         PDFWritingSpaceOptions(enabled: $writingSpace, left: $writingLeft, fraction: $writingFraction,
                                                paper: $writingPaper, color: $writingColor)
                         Button {
                             choosingPDF = true
                         } label: {
                             HStack {
-                                Text("PDF aus Dateien wählen").font(.headline)
+                                Text("PDF oder Bild aus Dateien wählen").font(.headline)
                                 Spacer(minLength: 8)
                                 Image(systemName: "chevron.right").font(.caption.weight(.semibold))
                             }.padding(14).frame(maxWidth: .infinity, minHeight: 52)
@@ -741,7 +741,7 @@ struct AddPageSheet: View {
                         .labelStyle(.iconOnly)
                 }
             }
-            .fileImporter(isPresented: $choosingPDF, allowedContentTypes: [.pdf]) { result in
+            .fileImporter(isPresented: $choosingPDF, allowedContentTypes: [.pdf, .image]) { result in
                 switch result {
                 case .success(let url):
                     onPDF(url, PDFWritingSpaceOptions.margins(enabled: writingSpace, left: writingLeft, fraction: writingFraction,

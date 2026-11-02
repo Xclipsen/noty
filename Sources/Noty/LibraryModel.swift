@@ -456,9 +456,11 @@ final class LibraryModel: ObservableObject {
         }
         do {
             // Reading and parsing up to 500 pages stays off the UI actor.
-            let document = try await Task.detached(priority: .userInitiated) {
-                try Self.importedNotebook(url, writingArea: writingArea)
-            }.value
+            let document = try await withImportTimeLimit {
+                try await Task.detached(priority: .userInitiated) {
+                    try Self.importedNotebook(url, writingArea: writingArea)
+                }.value
+            }
             snapshot = try await store.createDocument(document, parentID: parent)
         } catch { self.error = "PDF-Import fehlgeschlagen: \(error.localizedDescription)" }
     }
@@ -563,17 +565,19 @@ final class LibraryModel: ObservableObject {
         return document
     }
 
+    /// The PDF behind `url`; a picture becomes one (`ImagePagePDF`).
     nonisolated static func readPDF(_ url: URL) throws -> Data {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var data = Data()
         while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
             guard data.count + chunk.count <= PDFSource.maximumBytes else {
-                throw NSError(domain: "noty", code: 1, userInfo: [NSLocalizedDescriptionKey: "PDFs dürfen höchstens 100 MB groß sein."])
+                throw NSError(domain: "noty", code: 1, userInfo: [NSLocalizedDescriptionKey: "PDFs und Bilder dürfen hier höchstens 100 MB groß sein."])
             }
             data.append(chunk)
         }
-        return data
+        guard !ImagePagePDF.isPDF(data), ImageFileFormat.detect(data) != nil else { return data }
+        return try ImagePagePDF.pdf(from: data)
     }
 }
 

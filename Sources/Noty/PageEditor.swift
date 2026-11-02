@@ -291,6 +291,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// The exact PencilKit stroke a held ink result commits; the preview is
     /// this stroke rendered by PencilKit (`heldStrokeImage`).
     var heldStroke: PKStroke?
+    /// noty's ruler, above the pages; a stroke at its edge is `rulerLine`.
+    weak var rulerView: RulerOverlayView?
+    let rulerStroke = RulerStrokeGesture(target: nil, action: nil)
+    var rulerLine: RulerLine?
     let heldStrokeImage = UIImageView()
     /// The result is committed; the preview stays until PencilKit has drawn it.
     var heldVisualsPending: UUID?
@@ -410,6 +414,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         addGestureRecognizer(checkboxTap)
         canvas.drawingGestureRecognizer.require(toFail: checkboxTap)
+        configureRulerStroke()
         interactionObserver.cancelsTouchesInView = false
         interactionObserver.delaysTouchesBegan = false; interactionObserver.delaysTouchesEnded = false
         interactionObserver.onChange = { [weak self] active in
@@ -495,22 +500,6 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     func finishTextEditing() {
         if textLayer.isEditingField { textLayer.finishFieldByUser() } else { textLayer.endTextEditing() }
     }
-    /// PencilKit's private ruler recognizers (moved/rotated with two fingers).
-    /// The notebook's own pan/pinch must wait for them, otherwise the outer
-    /// scroll view swallows every ruler gesture.
-    var rulerGestureRecognizers: [UIGestureRecognizer] {
-        guard canvas.isRulerActive else { return [] }
-        var result: [UIGestureRecognizer] = []
-        func collect(_ view: UIView) {
-            for gesture in view.gestureRecognizers ?? [] where NSStringFromClass(type(of: gesture)).localizedCaseInsensitiveContains("ruler") {
-                result.append(gesture)
-            }
-            view.subviews.forEach(collect)
-        }
-        collect(canvas)
-        return result
-    }
-
     override func layoutSubviews() {
         super.layoutSubviews()
         HangProbe.hit("Sheet.layoutSubviews")
@@ -672,9 +661,6 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         let policy: PKCanvasViewDrawingPolicy = editor.fingerDrawing ? .anyInput : .pencilOnly
         if canvas.drawingPolicy != policy { canvas.drawingPolicy = policy }
         holdGesture.allowFinger = editor.fingerDrawing
-        // One ruler: only on the focused sheet; it follows the active page.
-        let rulerActive = editor.ruler && editor.focused
-        if canvas.isRulerActive != rulerActive { canvas.isRulerActive = rulerActive }
         defer { updating = false; objectLayer.publishPreview(ifTransientOnly: true) }
         // Search/task jump marker: shown on arrival, fades when the editor clears
         // it (after 3 s, Feedback 44) instead of staying on the page.
@@ -830,6 +816,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         // the app-owned sweep (hold observer) dims first and removes on lift.
         let nativeDrawing = tool != .strokeEraser
         if canvas.drawingGestureRecognizer.isEnabled != nativeDrawing { canvas.drawingGestureRecognizer.isEnabled = nativeDrawing }
+        rulerStroke.allowFinger = editor.fingerDrawing
+        let followsRuler = editor.ruler && editor.focused && editable && tool.isInk
+        if rulerStroke.isEnabled != followsRuler { rulerStroke.isEnabled = followsRuler }
         if eraseSession != nil || shapeErase != nil { dimErasedShapes() }
         pdfView?.isUserInteractionEnabled = tool == .read
         if modeChanged || focusChanged || first { updateInputMode(); fingerObjects.linkNativeDoubleTaps(in: canvas) }

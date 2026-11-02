@@ -96,8 +96,9 @@ public enum ExternalBackupFolder {
     /// After `verified` was written and read back: keeps `policy.keep` newest own
     /// archives (placeholders count and are deleted without downloading) and drops
     /// own temporaries older than a day. Other files are never touched.
+    /// `waitingForUpload`: see `ExternalBackupPolicy.obsolete`.
     public static func prune(policy: ExternalBackupPolicy, directory: URL, verified: String, file: LibraryArchiveFileInfo,
-                             now: Date = Date(), coordination: BackupFileCoordinating = DirectBackupFiles()) throws -> [String] {
+                             waitingForUpload: Set<String> = [], now: Date = Date(), coordination: BackupFileCoordinating = DirectBackupFiles()) throws -> [String] {
         guard policy.timestamp(verified) != nil else { throw LibraryArchiveError.invalid }
         let newest = directory.appendingPathComponent(verified)
         let values = try newest.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
@@ -106,7 +107,7 @@ public enum ExternalBackupFolder {
         }
         let listing = try list(policy: policy, directory: directory, coordination: coordination)
         var removed: [String] = []
-        for name in policy.obsolete(listing.archives, verified: verified) {
+        for name in policy.obsolete(listing.archives, verified: verified, waitingForUpload: waitingForUpload) {
             let url = directory.appendingPathComponent(listing.placeholders.contains(name) ? "." + name + ".icloud" : name)
             guard try remove(url, coordination: coordination, item: directory.appendingPathComponent(name)) else { continue }
             removed.append(name)

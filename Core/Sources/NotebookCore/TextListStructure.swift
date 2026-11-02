@@ -151,6 +151,16 @@ extension TextListEditing {
         return result
     }
 
+    /// „3. Mai“ above „10. Juni“ are dates that only look like a list.
+    private static func startsWithMonth(_ source: NSString, after item: Paragraph) -> Bool {
+        let start = item.prefixLocation + (item.prefix as NSString).length
+        let line = TextLines.lineRange(source, NSRange(location: start, length: 0))
+        let word = source.substring(with: NSRange(location: start, length: NSMaxRange(line) - start)).prefix { $0.isLetter }
+        return months.contains(word.lowercased())
+    }
+    private static let months: Set<String> = ["januar", "jan", "februar", "feb", "märz", "mär", "april", "apr", "mai", "juni", "jun",
+        "juli", "jul", "august", "aug", "september", "sep", "sept", "oktober", "okt", "november", "nov", "dezember", "dez"]
+
     /// Renumbers the runs touched by an edit (the changed paragraphs and the
     /// one after): each run counts on from its first item, which keeps its own
     /// number — unless the edit removed the previous first item, whose number
@@ -185,7 +195,8 @@ extension TextListEditing {
         }
         var edits: [Edit] = []
         for run in state.runs where run.touched {
-            for (index, number) in run.items where list[index].kind == .numbered && list[index].number != number {
+            for (index, number) in run.items where list[index].kind == .numbered && list[index].number != number
+                && !startsWithMonth(source, after: list[index]) {
                 edits.append(Edit(range: NSRange(location: list[index].prefixLocation, length: (list[index].prefix as NSString).length),
                     replacement: "\(number). "))
             }

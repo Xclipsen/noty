@@ -14,6 +14,9 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drag: PaletteDrag?
     @State private var candidate: ToolbarDock?
+    /// A drag the system cancels (a lock disables the bar) never reaches
+    /// `onEnded`: the options would stay hidden and the guides stay up.
+    @GestureState private var gripHeld = false
 
     private struct PaletteDrag {
         let origin: PageRect
@@ -56,6 +59,11 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
         .sensoryFeedback(.selection, trigger: candidate)
         .animation(NotyMotion.highlight(reduceMotion), value: drag != nil)
         .animation(NotyMotion.panel(reduceMotion), value: showingOptions)
+        .onChange(of: gripHeld) { _, held in
+            guard !held else { return }
+            // After `onEnded`, which finishes a normal drop and needs `drag`.
+            DispatchQueue.main.async { if drag != nil { drag = nil; candidate = nil } }
+        }
         .onChange(of: more) { old, _ in
             guard preferences.effectiveDock == .floating, drag == nil else { return }
             let oldCount = ToolbarLayout.itemCount(more: old, preferences: preferences, secondView: secondView)
@@ -96,6 +104,7 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
                 }
             }
             .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("toolbar-drag-area"))
+                .updating($gripHeld) { _, held, _ in held = true }
                 .onChanged { value in
                     var current = drag ?? PaletteDrag(origin: layout.frame, axis: layout.axis,
                         translation: .init(x: 0, y: 0), pointer: .init(x: value.startLocation.x, y: value.startLocation.y))
