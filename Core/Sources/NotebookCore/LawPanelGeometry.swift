@@ -90,6 +90,15 @@ public struct LawPanelLayout: Equatable, Sendable {
         }
     }
 
+    /// Strip along the window's edge in which its stashed tab lives.
+    public func edgeStrip(depth: Double) -> PageRect {
+        switch edge {
+        case .left: PageRect(x: 0, y: 0, width: depth, height: size.height)
+        case .right: PageRect(x: size.width - depth, y: 0, width: depth, height: size.height)
+        case .bottom: PageRect(x: 0, y: size.height - depth, width: size.width, height: depth)
+        }
+    }
+
     /// The window follows the finger, but never leaves the workspace completely.
     public func dragOffset(_ translation: PagePoint) -> PagePoint {
         let f = frame

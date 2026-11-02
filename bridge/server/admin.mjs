@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { ApiError } from './store.mjs';
-import { readJson } from './http.mjs';
+import { createListener, readJson } from './http.mjs';
 
 const COOKIE = 'noty_ai_admin';
 const SESSION_SECONDS = 8 * 60 * 60;
@@ -145,8 +145,18 @@ function parseUserId(raw) {
   try { return decodeURIComponent(raw); } catch { throw new ApiError(400, 'Ungültige Kontokennung.'); }
 }
 
+/** Eigener Listener für ADMIN_PORT hinter nginx: nur `/admin`, kein `/v1`. */
+export function createAdminApi(admin) {
+  return createListener(async (req, res, url) => {
+    // `admin(req, res, url)` antwortet selbst und prüft eigenes Cookie, Origin und JSON.
+    if (url.pathname !== '/admin' && !url.pathname.startsWith('/admin/')) throw new ApiError(404, 'Pfad nicht gefunden.');
+    await admin(req, res, url);
+    return null;
+  }, { headers: CONTRACT_HEADERS });
+}
+
 /**
- * Baut den Handler für `createApi({ admin })`. Fehler laufen als ApiError in dessen Fehlerpfad;
+ * Baut den Handler für `createAdminApi`. Fehler laufen als ApiError in dessen Fehlerpfad;
  * die Vertrags-Header stehen da schon auf der Antwort. Ohne gültigen NOTY_AI_ADMIN_ORIGIN oder
  * ohne Admin-Konten lehnt der Handler alles ab, die App-Schnittstelle /v1 bleibt davon unberührt.
  */
@@ -229,7 +239,6 @@ export async function createAdmin({ hub, accounts, accountUrl, origin, fetcher =
   }
 
   return async function admin(req, res, url) {
-    for (const [name, value] of Object.entries(CONTRACT_HEADERS)) res.setHeader(name, value);
     if (!enabled) throw new ApiError(503, 'Der Admin-Bereich ist nicht eingerichtet.');
     const { pathname } = url;
     const file = files.get(pathname); // Feste Liste: kein Pfad aus der Anfrage erreicht das Dateisystem.

@@ -14,7 +14,10 @@ Environment=HOME=/var/lib/noty-ai
 Environment=CODEX_HOME=/var/lib/noty-ai/codex
 Environment=STATE_DIR=/var/lib/noty-ai/state
 Environment=CODEX_BIN=/opt/noty-ai/runtime/node_modules/.bin/codex
+# /v1 für die App, nur über Tailscale.
 Environment=PORT=8790
+# /admin, nur für nginx.
+Environment=ADMIN_PORT=8791
 Environment=NOTY_AI_ACCOUNT_URL=http://127.0.0.1:18083
 # Kommagetrennte Konto-IDs vor dem Start eintragen.
 Environment=NOTY_AI_ADMIN_IDS=
@@ -23,10 +26,14 @@ Environment=NOTY_AI_ADMIN_ORIGIN=https://noty.xclipsen.de
 Environment=NOTY_AI_DAILY_LIMIT=200
 Environment=NOTY_AI_RETENTION_DAYS=30
 Environment=NOTY_AI_USAGE_DAYS=400
-ExecStart=/opt/noty-ai/runtime/bin/node /opt/noty-ai/server/main.mjs
+# Heap neben Puffern und Codex in MemoryMax: 4 parallele 24-MiB-Körper und 2 Läufe ergaben etwa 500 MiB RSS.
+ExecStart=/opt/noty-ai/runtime/bin/node --max-old-space-size=384 /opt/noty-ai/server/main.mjs
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=20
+MemoryMax=1G
+TasksMax=128
+CPUQuota=200%
 StateDirectory=noty-ai
 StateDirectoryMode=0700
 UMask=0077
@@ -41,6 +48,10 @@ ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 LockPersonality=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+SystemCallArchitectures=native
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/noty-ai

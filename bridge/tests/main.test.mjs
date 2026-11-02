@@ -9,7 +9,7 @@ import { startAccountBackend } from './fake-account-backend.mjs';
 
 const env = async (t, extra = {}) => {
   const root = await tempDir(t);
-  return { STATE_DIR: path.join(root, 'state'), CODEX_HOME: root, NOTY_AI_ACCOUNT_URL: 'http://127.0.0.1:9', CODEX_BIN: '/bin/false', PORT: '0', ...extra };
+  return { STATE_DIR: path.join(root, 'state'), CODEX_HOME: root, NOTY_AI_ACCOUNT_URL: 'http://127.0.0.1:9', CODEX_BIN: '/bin/false', PORT: '0', ADMIN_PORT: '0', ...extra };
 };
 
 test('Dienst lehnt root ab', () => {
@@ -49,9 +49,9 @@ test('Standard-Boot hängt /admin wirklich ein: Seite, Anmeldung, Übersicht', a
   const backend = await startAccountBackend(new Map(), { logins: [{ id: 'konto-admin', name: 'Chefin', password: 'synthetisch' }] });
   t.after(() => backend.close());
   const origin = 'https://noty.example.invalid';
-  const { close, address } = await boot(await env(t, { NOTY_AI_ACCOUNT_URL: backend.url, NOTY_AI_ADMIN_IDS: 'konto-admin', NOTY_AI_ADMIN_ORIGIN: origin }));
+  const { close, adminAddress } = await boot(await env(t, { NOTY_AI_ACCOUNT_URL: backend.url, NOTY_AI_ADMIN_IDS: 'konto-admin', NOTY_AI_ADMIN_ORIGIN: origin }));
   t.after(close);
-  const base = `http://127.0.0.1:${address.port}`;
+  const base = `http://127.0.0.1:${adminAddress.port}`;
   const page = await fetch(`${base}/admin`);
   assert.equal(page.status, 200);
   assert.match(page.headers.get('content-security-policy'), /^default-src 'none'/);
@@ -68,17 +68,16 @@ test('Standard-Boot hängt /admin wirklich ein: Seite, Anmeldung, Übersicht', a
 test('Standard-Boot ohne NOTY_AI_ADMIN_ORIGIN: /admin lehnt ab, /v1 läuft', async t => {
   const backend = await startAccountBackend(new Map([[TOKEN, { id: 'konto-admin', name: 'Chefin' }]]));
   t.after(() => backend.close());
-  const { close, address } = await boot(await env(t, { NOTY_AI_ACCOUNT_URL: backend.url, NOTY_AI_ADMIN_IDS: 'konto-admin' }));
+  const { close, address, adminAddress } = await boot(await env(t, { NOTY_AI_ACCOUNT_URL: backend.url, NOTY_AI_ADMIN_IDS: 'konto-admin' }));
   t.after(close);
-  const base = `http://127.0.0.1:${address.port}`;
-  for (const pathname of ['/admin', '/admin/app.js', '/admin/api/overview']) assert.equal((await fetch(base + pathname)).status, 503, pathname);
-  assert.equal((await fetch(`${base}/v1/me`, { headers: { authorization: `Bearer ${TOKEN}` } })).status, 200);
+  for (const pathname of ['/admin', '/admin/app.js', '/admin/api/overview']) assert.equal((await fetch(`http://127.0.0.1:${adminAddress.port}${pathname}`)).status, 503, pathname);
+  assert.equal((await fetch(`http://127.0.0.1:${address.port}/v1/me`, { headers: { authorization: `Bearer ${TOKEN}` } })).status, 200);
 });
 
 test('boot nimmt einen eigenen Admin-Handler an', async t => {
-  const { close, address } = await boot(await env(t), { admin: (req, res) => { res.writeHead(418); res.end(); } });
+  const { close, adminAddress } = await boot(await env(t), { admin: (req, res) => { res.writeHead(418); res.end(); } });
   t.after(close);
-  assert.equal((await fetch(`http://127.0.0.1:${address.port}/admin`)).status, 418);
+  assert.equal((await fetch(`http://127.0.0.1:${adminAddress.port}/admin`)).status, 418);
 });
 
 test('Konfigurationsfehler auf Deutsch', async t => {

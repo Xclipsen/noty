@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { request as httpRequest } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { AdminSessions, CONTRACT_HEADERS, LoginThrottle, createAdmin, parseAdminOrigin } from '../server/admin.mjs';
+import vm from 'node:vm';
+import { AdminSessions, CONTRACT_HEADERS, LoginThrottle, createAdmin, createAdminApi, parseAdminOrigin } from '../server/admin.mjs';
 import { SessionAuth } from '../server/auth.mjs';
 import { createApi } from '../server/http.mjs';
 import { emptyCounters } from '../server/metering.mjs';
@@ -19,15 +20,19 @@ const FAKE_COOKIE = `noty_ai_admin=${'f'.repeat(64)}`;
 async function panel(t, { origin = ORIGIN, adminIds = [ADMIN.id], now, options = {}, ...rest } = {}) {
   const backend = await startAccountBackend(new Map([[TOKEN, { id: USER, name: 'Anna' }]]), { logins: LOGINS });
   t.after(() => backend.close());
-  const ctx = await setup(t, { accounts: { adminIds }, ...rest });
+  const ctx = await setup(t, { activate: [], accounts: { adminIds }, ...rest });
   await ctx.accounts.seen(ADMIN);
   await ctx.accounts.seen({ id: USER, name: 'Anna' });
   await ctx.accounts.seen({ id: 'konto-c/d', name: 'Clara' });
   const admin = await createAdmin({ hub: ctx.hub, accounts: ctx.accounts, accountUrl: `${backend.url}/`, origin, now, logoutRetryMs: 5, ...options });
-  const api = createApi({ hub: ctx.hub, accounts: ctx.accounts, auth: new SessionAuth({ accountUrl: backend.url }), admin });
-  await new Promise(resolve => api.listen(0, '127.0.0.1', resolve));
-  t.after(() => { api.close(); api.closeAllConnections(); });
+  const api = createAdminApi(admin);
+  const app = createApi({ hub: ctx.hub, accounts: ctx.accounts, auth: new SessionAuth({ accountUrl: backend.url }) });
+  for (const server of [api, app]) {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => { server.close(); server.closeAllConnections(); });
+  }
   const base = `http://127.0.0.1:${api.address().port}`;
+  const appGet = (pathname, headers) => fetch(`http://127.0.0.1:${app.address().port}${pathname}`, { headers });
   const send = (method, pathname, { body, headers = {}, cookie, from = ORIGIN, type = 'application/json' } = {}) => fetch(base + pathname, {
     method, body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
     headers: { ...(method === 'GET' || from === null ? {} : { origin: from }), ...(method === 'GET' || type === null ? {} : { 'content-type': type }), ...(cookie ? { cookie } : {}), ...headers }
@@ -38,7 +43,7 @@ async function panel(t, { origin = ORIGIN, adminIds = [ADMIN.id], now, options =
     assert.equal(res.status, 200);
     return res.headers.getSetCookie()[0].split(';')[0];
   };
-  return { ...ctx, api, backend, base, send, login, signIn };
+  return { ...ctx, api, backend, base, send, appGet, login, signIn };
 }
 
 const rawGet = (port, path) => new Promise((resolve, reject) => {
@@ -337,7 +342,7 @@ test('Fehlt NOTY_AI_ADMIN_ORIGIN oder ist er ungültig, lehnt /admin alles ab; /
       assert.match((await res.json()).error, /nicht eingerichtet/);
     }
     assert.equal(ctx.backend.loginBodies.length, 0);
-    assert.equal((await ctx.send('GET', '/v1/me', { headers: { authorization: `Bearer ${TOKEN}` } })).status, 200);
+    assert.equal((await ctx.appGet('/v1/me', { authorization: `Bearer ${TOKEN}` })).status, 200);
   }
   const noAdmins = await panel(t, { adminIds: [] });
   assert.equal((await noAdmins.login(ADMIN.name, PASSWORD)).status, 503);
@@ -454,8 +459,9 @@ test('/v1 akzeptiert das Admin-Cookie nicht, weder als Cookie noch als Bearer', 
   const cookie = await ctx.signIn();
   assert.equal((await ctx.send('GET', '/admin/api/overview', { cookie })).status, 200);
   for (const pathname of ['/v1/me', '/v1/info', '/v1/usage', '/v1/sessions']) {
-    assert.equal((await ctx.send('GET', pathname, { cookie })).status, 401, pathname);
-    assert.equal((await ctx.send('GET', pathname, { headers: { authorization: `Bearer ${cookie.split('=')[1]}` } })).status, 401, pathname);
+    assert.equal((await ctx.appGet(pathname, { cookie })).status, 401, pathname);
+    assert.equal((await ctx.appGet(pathname, { authorization: `Bearer ${cookie.split('=')[1]}` })).status, 401, pathname);
+    assert.equal((await ctx.send('GET', pathname, { cookie })).status, 404, pathname);
   }
 });
 
@@ -503,4 +509,61 @@ test('Andere Änderungen lassen Läufe weiterlaufen; scheitert das Speichern, l�
 test('Server-Code: Admin-Teil schreibt nichts in Dateien oder Logs', async () => {
   const source = await readFile(new URL('../server/admin.mjs', import.meta.url), 'utf8');
   assert.ok(!/console\.|writeFile|appendFile|createWriteStream/.test(source));
+});
+
+test('Befund 4: hängendes Codex: Übersicht kommt rechtzeitig mit Kontodaten', async t => {
+  const ctx = await panel(t, { rpc: { hangQueries: true }, hub: { queryTimeoutMs: 40, overviewTimeoutMs: 200 } });
+  const cookie = await ctx.signIn();
+  const res = await ctx.send('GET', '/admin/api/overview', { cookie });
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.deepEqual([data.account, data.plan], [null, null]);
+  assert.ok(data.users.some(user => user.id === USER));
+});
+
+/** Führt die echte admin/app.js gegen ein minimales DOM aus. */
+async function loadPanel(t, answers) {
+  const source = await readFile(new URL('../admin/app.js', import.meta.url), 'utf8');
+  const nodes = new Map();
+  const element = () => ({ hidden: false, textContent: '', dataset: {}, className: '', style: {}, title: '', addEventListener() {}, focus() {}, append() {}, replaceChildren() {}, querySelector: () => element() });
+  const $ = id => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
+  for (const id of ['login-view', 'panel-view', 'banner', 'login-error']) $(id).hidden = true;
+  const timers = [];
+  const fetch = async () => {
+    const answer = answers.shift() ?? { status: 200, data: { account: 'chatgpt', plan: null, running: 0, today: { turns: 0, failedTurns: 0, images: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 }, users: [] } };
+    if (answer.offline) throw new Error('offline');
+    return new Response(JSON.stringify(answer.data ?? { error: answer.error }), { status: answer.status });
+  };
+  const document = { visibilityState: 'visible', getElementById: $, querySelector: element, createElement: element, addEventListener() {} };
+  const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(setImmediate); };
+  vm.runInNewContext(source, { document, fetch, setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {}, console });
+  await flush();
+  return { $, flush, queue: (...next) => answers.push(...next), poll: async () => { timers.pop()(); await flush(); } };
+}
+
+test('Befund 4: 5xx zeigt das Panel mit Hinweis, nur 401 die Anmeldemaske', async t => {
+  for (const answer of [{ status: 503, error: 'Der Admin-Bereich ist gerade gestört.' }, { status: 500, error: 'Interner Fehler.' }, { status: 502 }, { offline: true }]) {
+    const ui = await loadPanel(t, [answer]);
+    assert.equal(ui.$('login-view').hidden, true, JSON.stringify(answer));
+    assert.equal(ui.$('panel-view').hidden, false, JSON.stringify(answer));
+    assert.equal(ui.$('banner').hidden, false, JSON.stringify(answer));
+    assert.match(ui.$('banner').textContent, /fehlgeschlagen/);
+    await ui.poll();
+    assert.equal(ui.$('banner').hidden, true, 'nächste Abfrage heilt');
+  }
+  const signedOut = await loadPanel(t, [{ status: 401, error: 'Die Sitzung ist abgelaufen.' }]);
+  assert.equal(signedOut.$('login-view').hidden, false);
+  assert.equal(signedOut.$('panel-view').hidden, true);
+});
+
+test('Befund 4: 5xx im laufenden Betrieb lässt das Panel stehen, 401 meldet ab', async t => {
+  const ui = await loadPanel(t, []);
+  assert.equal(ui.$('panel-view').hidden, false);
+  ui.queue({ status: 503, error: 'Gestört' }, { status: 401, error: 'Die Sitzung ist abgelaufen.' });
+  await ui.poll();
+  assert.equal(ui.$('login-view').hidden, true);
+  assert.match(ui.$('banner').textContent, /Gestört/);
+  await ui.poll();
+  assert.equal(ui.$('login-view').hidden, false);
+  assert.equal(ui.$('panel-view').hidden, true);
 });

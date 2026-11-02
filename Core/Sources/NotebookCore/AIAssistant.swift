@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 // App side of the bridge contract (docs/AI-ASSISTANT.md). Nothing here is part
 // of a notebook, revision or backup; the assistant only reads snapshots.
@@ -44,6 +47,25 @@ public struct AISession: Codable, Equatable, Identifiable, Sendable {
     /// Whether this chat belongs to `document`; UUID spelling may differ in case.
     public func belongs(to document: UUID) -> Bool {
         documentId.flatMap(UUID.init(uuidString:)) == document
+    }
+    /// A late answer of the same chat must not take back a newer state.
+    public func supersedes(_ current: AISession?) -> Bool {
+        guard let current, current.id == id else { return true }
+        return revision > current.revision
+    }
+    /// Which request each answer belongs to: a question carries the `requestId`
+    /// as its message ID, an answer follows its question.
+    public var answerRequests: [String: String] {
+        var result: [String: String] = [:]
+        var question: String?
+        for message in messages {
+            switch message.role {
+            case .user: question = message.id
+            case .assistant: if let question { result[message.id] = question }
+            case .system: break
+            }
+        }
+        return result
     }
 }
 
@@ -152,6 +174,19 @@ public struct AITurnRequest: Codable, Equatable, Sendable {
                 model: String? = nil, effort: String? = nil) {
         self.requestId = requestId; self.text = text; self.context = context; self.images = images; self.model = model; self.effort = effort
     }
+    /// Digest of everything that goes out except the `requestId`; the content
+    /// itself is never kept for a repeat. Heavy with images: not for the main actor.
+    public var contentFingerprint: String {
+        var fields: [String?] = [text, context?.label, context?.text, model, effort]
+        for image in images ?? [] { fields += [image.mimeType, image.label, image.base64] }
+        var digest = SHA256Stream()
+        for field in fields {
+            // Length first: moving text between two fields changes the digest.
+            digest.update(Data((field.map { "\($0.utf8.count):" } ?? "-:").utf8))
+            digest.update(Data((field ?? "").utf8))
+        }
+        return digest.finalizeHex()
+    }
     public static func isValidRequestID(_ id: String) -> Bool {
         (8...80).contains(id.utf8.count) && id.utf8.allSatisfy { AIServerAddress.isASCIIAlphanumeric($0) || $0 == UInt8(ascii: "-") }
     }
@@ -167,6 +202,21 @@ public struct AITurnRequest: Codable, Equatable, Sendable {
         if images.contains(where: { $0.byteCount > limits.maxImageBytes }) { return "Das Seitenbild ist zu groß." }
         if images.contains(where: { $0.mimeType != "image/jpeg" && $0.mimeType != "image/png" }) { return "Dieses Bildformat wird nicht unterstützt." }
         return nil
+    }
+}
+
+/// A delivery without clear answer, by digest only: a repeat with the same
+/// content keeps its `requestId`, so a lost reply cannot start a second run;
+/// anything else is a new question.
+public struct AIPendingDelivery: Equatable, Sendable {
+    public let fingerprint: String
+    public let requestID: String
+    public init(fingerprint: String, requestID: String = UUID().uuidString) {
+        self.fingerprint = fingerprint; self.requestID = requestID
+    }
+    public static func resolve(fingerprint: String, previous: AIPendingDelivery?) -> AIPendingDelivery {
+        if let previous, previous.fingerprint == fingerprint { return previous }
+        return AIPendingDelivery(fingerprint: fingerprint)
     }
 }
 
@@ -205,6 +255,13 @@ public struct AIMe: Codable, Equatable, Sendable {
 public struct AIErrorReply: Codable, Equatable, Sendable {
     public var error: String?
     public var code: String?
+}
+
+public enum AIRequestFailure {
+    /// A request given up by the app, not an answer of the server.
+    public static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
 }
 
 /// What the server last said about this account, apart from `/v1/me`.
@@ -257,6 +314,11 @@ public enum AIServerAddress {
         (48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte)
     }
 
+    /// `host[:port]` of a normalised address.
+    public static func authority(of address: URL) -> String {
+        (address.host ?? "") + (address.port.map { ":\($0)" } ?? "")
+    }
+
     /// The normalised address, or nil for anything else (path, query,
     /// fragment, user information, other schemes).
     public static func parse(_ input: String) -> URL? {
@@ -280,6 +342,22 @@ public enum AIServerAddress {
     }
 }
 
+/// Consent to send a notebook's content goes to one server under one account.
+/// Entries without this form (older builds: the bare document ID) count for nothing.
+public enum AIApproval {
+    private static let version = "v2"
+
+    /// nil without account: nobody can have agreed.
+    public static func key(server: URL, account: String, document: UUID) -> String? {
+        guard !account.isEmpty, let encoded = account.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { return nil }
+        return [version, AIServerAddress.authority(of: server), encoded, document.uuidString].joined(separator: "|")
+    }
+
+    public static func valid(_ stored: [String]) -> Set<String> {
+        Set(stored.filter { $0.hasPrefix(version + "|") })
+    }
+}
+
 // MARK: Notebook context
 
 /// What is known of one page: typed text plus lines recognised earlier (the
@@ -294,6 +372,8 @@ public struct AIContextPage: Equatable, Sendable {
     public var handwriting: [SearchLine]
     public var missing: Set<SearchLayer>
     public var hasImages: Bool
+    /// PDF text left unread because the context was full: counts as omitted.
+    public private(set) var skippedAtLimit = false
 
     public init(number: Int, pageID: UUID, text: [SearchLine] = [], pdfText: [SearchLine] = [], imageOCR: [SearchLine] = [],
                 handwriting: [SearchLine] = [], missing: Set<SearchLayer> = [], hasImages: Bool = false) {
@@ -307,9 +387,20 @@ public struct AIContextPage: Equatable, Sendable {
         missing.remove(.pdfText)
     }
 
+    public mutating func skipAtLimit() {
+        skippedAtLimit = true
+        missing.remove(.pdfText)
+    }
+
+    /// Size of everything known of this page, without building its text.
+    public var knownLength: Int {
+        [text, pdfText, imageOCR, handwriting].reduce(0) { sum, lines in lines.reduce(sum) { $0 + $1.text.utf16.count } }
+    }
+
     /// Content the model would not see. A missing OCR run does not matter
     /// on a PDF page whose exact text is there and that has no inserted images.
     public var needsRecognition: Bool {
+        if skippedAtLimit { return false }
         if missing.contains(.handwriting) || missing.contains(.pdfText) { return true }
         guard missing.contains(.imageOCR) else { return false }
         return hasImages || !ContentSearchPlanner.hasMeaningfulTextLayer(pdfText)
@@ -337,6 +428,8 @@ public struct AIContext: Equatable, Sendable {
     public var pageCount: Int
     /// Pages with text in `text`, including `truncatedPage`.
     public var includedPages: [Int]
+    /// `includedPages` by stable ID.
+    public var includedPageIDs: [Int: UUID] = [:]
     /// Page cut off at the limit.
     public var truncatedPage: Int?
     /// Pages with text that did not fit any more.
@@ -368,20 +461,32 @@ public enum AIContextBuilder {
     private static let shortestPart = 200
 
     /// The pages of a notebook snapshot with every still-valid layer of `index`
-    /// (nil: no index yet). Heavy on large notebooks: not for the main actor.
+    /// (nil: no index yet). With `only`, the cost is that of the one page; the
+    /// whole notebook is heavy and not for the main actor. Gives up when its
+    /// task is cancelled.
     public static func pages(of notebook: Notebook, index: SearchDocumentIndex?, only pageID: UUID? = nil,
                              drawingIsEmpty: (Data) -> Bool = { $0.isEmpty }) -> [AIContextPage] {
-        let prepared = ContentSearchPlanner.prepare(notebook)
-        let current = ContentSearchPlanner.reconcile(index, documentID: notebook.id, pages: prepared)
-        return notebook.pages.indices.compactMap { offset in
-            let page = notebook.pages[offset], record = current.pages[offset]
-            if let pageID, page.id != pageID { return nil }
-            var missing = Set(ContentSearchPlanner.pending(prepared[offset], record))
+        let offsets: [Int]
+        if let pageID {
+            guard let offset = notebook.pages.firstIndex(where: { $0.id == pageID }) else { return [] }
+            offsets = [offset]
+        } else { offsets = Array(notebook.pages.indices) }
+        let identities = SearchPDFIdentities(notebook, only: pageID == nil ? nil : offsets.first.map { notebook.pages[$0] })
+        let stored = ContentSearchPlanner.storedRecords(index, documentID: notebook.id, only: pageID)
+        var result: [AIContextPage] = []
+        result.reserveCapacity(offsets.count)
+        for offset in offsets {
+            if Task.isCancelled { return [] }
+            let page = notebook.pages[offset]
+            let prepared = ContentSearchPlanner.prepared(page, at: offset, identities)
+            let record = ContentSearchPlanner.record(of: prepared, stored: stored)
+            var missing = Set(ContentSearchPlanner.pending(prepared, record))
             if missing.contains(.handwriting), drawingIsEmpty(page.drawing) { missing.remove(.handwriting) }
-            return AIContextPage(number: offset + 1, pageID: page.id, text: ContentSearchPlanner.textLines(page),
-                                 pdfText: record.pdfText?.lines ?? [], imageOCR: record.imageOCR?.lines ?? [],
-                                 handwriting: record.handwriting?.lines ?? [], missing: missing, hasImages: !(page.images ?? []).isEmpty)
+            result.append(AIContextPage(number: offset + 1, pageID: page.id, text: ContentSearchPlanner.textLines(page),
+                                        pdfText: record.pdfText?.lines ?? [], imageOCR: record.imageOCR?.lines ?? [],
+                                        handwriting: record.handwriting?.lines ?? [], missing: missing, hasImages: !(page.images ?? []).isEmpty))
         }
+        return result
     }
 
     /// `Mathe, Seite 3`; a very long title is shortened to the server's 200 units.
@@ -400,6 +505,7 @@ public enum AIContextBuilder {
                                unrecognizedPages: pages.filter(\.needsRecognition).map(\.number))
         var used = 0, full = false
         for page in pages {
+            if page.skippedAtLimit { full = true; result.omittedPages.append(page.number); continue }
             let body = page.body
             guard !body.isEmpty else { continue }
             if full { result.omittedPages.append(page.number); continue }
@@ -408,6 +514,7 @@ public enum AIContextBuilder {
             if used + headSize + size <= room {
                 result.text += head + body; used += headSize + size
                 result.includedPages.append(page.number)
+                result.includedPageIDs[page.number] = page.pageID
                 continue
             }
             full = true
@@ -415,6 +522,7 @@ public enum AIContextBuilder {
             guard free >= shortestPart else { result.omittedPages.append(page.number); continue }
             result.text += head + prefix(body, utf16: free); used = result.text.utf16.count
             result.includedPages.append(page.number); result.truncatedPage = page.number
+            result.includedPageIDs[page.number] = page.pageID
         }
         if !result.isEmpty, let note = closingNote(result), used + note.utf16.count <= limit { result.text += note }
         return result
@@ -471,6 +579,40 @@ public enum AIContextBuilder {
     }
 }
 
+/// When PDFKit need not be asked any more: pages past the limit could not go out.
+public struct AIContextBudget: Sendable {
+    public let limit: Int
+    public private(set) var used = 0
+    public init(limit: Int) { self.limit = limit }
+    public var exhausted: Bool { used >= limit }
+    public mutating func add(_ page: AIContextPage) { used += page.knownLength }
+}
+
+/// PDF text read before, by source and page: PDF originals never change under
+/// their source ID. Bounded by size; nothing of it is stored.
+public struct AIPDFTextCache: Sendable {
+    public static let defaultCapacity = 8_000_000
+    private let capacity: Int
+    private var texts: [String: String] = [:]
+    private var used = 0
+
+    public init(capacity: Int = defaultCapacity) { self.capacity = capacity }
+
+    public static func key(page: Page, document: UUID) -> String {
+        if let reference = page.pdfReference { return "\(reference.sourceID.uuidString):\(reference.pageIndex)" }
+        return "\(document.uuidString):\(page.id.uuidString)"
+    }
+
+    public func text(for key: String) -> String? { texts[key] }
+
+    public mutating func remember(_ text: String, for key: String) {
+        let size = text.utf16.count
+        guard size <= capacity, texts[key] == nil else { return }
+        if used + size > capacity { texts = [:]; used = 0 }
+        texts[key] = text; used += size
+    }
+}
+
 // MARK: Citations
 
 public enum AICitationPart: Equatable, Sendable {
@@ -479,49 +621,109 @@ public enum AICitationPart: Equatable, Sendable {
     case citation(page: Int, label: String)
 }
 
-/// `[S. N]` in an answer. A number outside the notebook stays plain text.
+/// `[S. N]`, `[S. 1, 3]` or `[S. 1 und 3]` in an answer. Only numbers in
+/// `pages` become citations; everything else stays plain text.
 public enum AICitation {
     public static let linkScheme = "noty-ai"
 
-    public static func parts(in text: String, pageCount: Int) -> [AICitationPart] {
+    public static func parts(in text: String, pages: Set<Int>) -> [AICitationPart] {
         var parts: [AICitationPart] = []
         var plain = ""
         var rest = text[...]
+        func flush() { if !plain.isEmpty { parts.append(.text(plain)); plain = "" } }
         while let open = rest.range(of: "[S. ") {
             plain += rest[..<open.lowerBound]
-            let digits = rest[open.upperBound...].prefix { $0.isASCII && $0.isNumber }
-            let close = digits.endIndex
-            if !digits.isEmpty, digits.count <= 6, close < rest.endIndex, rest[close] == "]",
-               let page = Int(digits), (1...max(1, pageCount)).contains(page), pageCount > 0 {
-                if !plain.isEmpty { parts.append(.text(plain)); plain = "" }
-                let end = rest.index(after: close)
-                parts.append(.citation(page: page, label: String(rest[open.lowerBound..<end])))
-                rest = rest[end...]
-            } else {
+            guard let list = numberList(rest[open.upperBound...]), list.numbers.contains(where: { pages.contains($0.page) }) else {
                 plain += rest[open]
                 rest = rest[open.upperBound...]
+                continue
             }
+            for (offset, entry) in list.numbers.enumerated() {
+                plain += entry.separator
+                let label = offset == 0 ? "S. \(entry.digits)" : String(entry.digits)
+                if pages.contains(entry.page) {
+                    flush()
+                    parts.append(.citation(page: entry.page, label: "[\(label)]"))
+                } else { plain += label }
+            }
+            rest = rest[list.end...]
         }
         plain += rest
-        if !plain.isEmpty { parts.append(.text(plain)) }
+        flush()
         return parts
     }
 
-    /// Markdown of one line with every valid citation as a link: inline
-    /// formatting around a citation stays intact.
-    public static func markdown(_ text: String, pageCount: Int) -> String {
-        parts(in: text, pageCount: pageCount).map { part in
-            switch part {
-            case .text(let value): value
-            case .citation(let page, let label): "\(label)(\(linkScheme)://page/\(page))"
-            }
-        }.joined()
+    /// Numbers of a citation from just after `[S. ` up to its `]`.
+    private static func numberList(_ text: Substring) -> (numbers: [(separator: Substring, digits: Substring, page: Int)], end: Substring.Index)? {
+        var numbers: [(separator: Substring, digits: Substring, page: Int)] = []
+        var rest = text
+        var separator = text[text.startIndex..<text.startIndex]
+        while true {
+            let digits = rest.prefix { $0.isASCII && $0.isNumber }
+            guard !digits.isEmpty, digits.count <= 6, let page = Int(digits) else { return nil }
+            numbers.append((separator, digits, page))
+            rest = rest[digits.endIndex...]
+            if rest.first == "]" { return (numbers, rest.index(after: rest.startIndex)) }
+            guard let next = [", ", ",", " und "].first(where: { rest.hasPrefix($0) }) else { return nil }
+            separator = rest.prefix(next.count)
+            rest = rest.dropFirst(next.count)
+        }
     }
 
-    /// The page of a citation link, if it still lies inside the notebook.
-    public static func page(from url: URL, pageCount: Int) -> Int? {
-        guard url.scheme == linkScheme, url.host == "page", let page = Int(url.lastPathComponent),
-              pageCount > 0, (1...pageCount).contains(page) else { return nil }
+    /// Markdown of one line with every valid citation as a link: inline
+    /// formatting around a citation stays intact. Code spans and escaped
+    /// characters are left alone: Markdown shows them as they are, so a link
+    /// target added there would appear in the text.
+    public static func markdown(_ text: String, pages: Set<Int>) -> String {
+        var result = ""
+        var start = text.startIndex
+        func linked(_ part: Substring) -> String {
+            parts(in: String(part), pages: pages).map { part in
+                switch part {
+                case .text(let value): value
+                case .citation(let page, let label): "\(label)(\(linkScheme)://page/\(page))"
+                }
+            }.joined()
+        }
+        for range in literalRanges(in: text) {
+            result += linked(text[start..<range.lowerBound]) + text[range]
+            start = range.upperBound
+        }
+        return result + linked(text[start...])
+    }
+
+    /// Backslash escapes and code spans: a span closes with a backtick run of
+    /// its own length, an unclosed run is plain text.
+    private static func literalRanges(in text: String) -> [Range<String.Index>] {
+        var ranges: [Range<String.Index>] = []
+        var index = text.startIndex
+        func run(at start: String.Index) -> String.Index { text[start...].prefix { $0 == "`" }.endIndex }
+        while index < text.endIndex {
+            let next = text.index(after: index)
+            if text[index] == "\\", next < text.endIndex {
+                let end = text.index(after: next)
+                ranges.append(index..<end)
+                index = end
+            } else if text[index] == "`" {
+                let open = run(at: index)
+                let length = text.distance(from: index, to: open)
+                var probe = open, close: String.Index?
+                while probe < text.endIndex, close == nil {
+                    guard text[probe] == "`" else { probe = text.index(after: probe); continue }
+                    let end = run(at: probe)
+                    if text.distance(from: probe, to: end) == length { close = end }
+                    probe = end
+                }
+                if let close { ranges.append(index..<close) }
+                index = close ?? open
+            } else { index = next }
+        }
+        return ranges
+    }
+
+    /// The page number of a citation link.
+    public static func page(from url: URL) -> Int? {
+        guard url.scheme == linkScheme, url.host == "page", let page = Int(url.lastPathComponent), page > 0 else { return nil }
         return page
     }
 }

@@ -356,30 +356,475 @@ final class AIAssistantTests: XCTestCase {
 
     // MARK: Citations
 
+    private func pages(_ count: Int) -> Set<Int> { count > 0 ? Set(1...count) : [] }
+
     func testCitationsSplitAnswer() {
-        XCTAssertEqual(AICitation.parts(in: "Siehe [S. 3] und [S. 12].", pageCount: 12), [
+        XCTAssertEqual(AICitation.parts(in: "Siehe [S. 3] und [S. 12].", pages: pages(12)), [
             .text("Siehe "), .citation(page: 3, label: "[S. 3]"), .text(" und "), .citation(page: 12, label: "[S. 12]"), .text("."),
         ])
-        XCTAssertEqual(AICitation.parts(in: "[S. 1]", pageCount: 1), [.citation(page: 1, label: "[S. 1]")])
-        XCTAssertEqual(AICitation.parts(in: "", pageCount: 3), [])
+        XCTAssertEqual(AICitation.parts(in: "[S. 1]", pages: pages(1)), [.citation(page: 1, label: "[S. 1]")])
+        XCTAssertEqual(AICitation.parts(in: "", pages: pages(3)), [])
     }
 
     func testForeignNumbersStayText() {
-        for text in ["Siehe [S. 13] dort", "[S. 0]", "[S. -1]", "[S. x]", "[S. ]", "[S. 3", "[S. 99999999999999999999]", "[S. ٣]", "[s. 3]", "[S.3]"] {
-            XCTAssertEqual(AICitation.parts(in: text, pageCount: 12), [.text(text)], text)
+        for text in ["Siehe [S. 13] dort", "[S. 0]", "[S. -1]", "[S. x]", "[S. ]", "[S. 3", "[S. 99999999999999999999]", "[S. ٣]", "[s. 3]", "[S.3]",
+                     "[S. 1,]", "[S. 1, ]", "[S. 1 oder 3]", "[S. 1, x]", "[S. 1 und 3"] {
+            XCTAssertEqual(AICitation.parts(in: text, pages: pages(12)), [.text(text)], text)
         }
-        XCTAssertEqual(AICitation.parts(in: "[S. 1]", pageCount: 0), [.text("[S. 1]")])
-        XCTAssertEqual(AICitation.parts(in: "[S. [S. 2]", pageCount: 3), [.text("[S. "), .citation(page: 2, label: "[S. 2]")])
+        XCTAssertEqual(AICitation.parts(in: "[S. 1]", pages: []), [.text("[S. 1]")])
+        XCTAssertEqual(AICitation.parts(in: "[S. [S. 2]", pages: pages(3)), [.text("[S. "), .citation(page: 2, label: "[S. 2]")])
+    }
+
+    func testOnlyListedPagesBecomeCitations() {
+        XCTAssertEqual(AICitation.parts(in: "[S. 2] und [S. 3]", pages: [3]), [.text("[S. 2] und "), .citation(page: 3, label: "[S. 3]")])
+    }
+
+    func testCitationWithSeveralPages() {
+        XCTAssertEqual(AICitation.parts(in: "Siehe [S. 1, 3].", pages: pages(3)), [
+            .text("Siehe "), .citation(page: 1, label: "[S. 1]"), .text(", "), .citation(page: 3, label: "[3]"), .text("."),
+        ])
+        XCTAssertEqual(AICitation.parts(in: "[S. 1 und 3]", pages: pages(3)), [
+            .citation(page: 1, label: "[S. 1]"), .text(" und "), .citation(page: 3, label: "[3]"),
+        ])
+        XCTAssertEqual(AICitation.parts(in: "[S. 1, 2 und 3]", pages: pages(3)), [
+            .citation(page: 1, label: "[S. 1]"), .text(", "), .citation(page: 2, label: "[2]"), .text(" und "), .citation(page: 3, label: "[3]"),
+        ])
+        XCTAssertEqual(AICitation.parts(in: "[S. 1,3]", pages: pages(3)), [
+            .citation(page: 1, label: "[S. 1]"), .text(","), .citation(page: 3, label: "[3]"),
+        ])
+    }
+
+    func testSeveralPagesKeepForeignNumbersAsText() {
+        XCTAssertEqual(AICitation.parts(in: "[S. 1, 99]", pages: pages(3)), [.citation(page: 1, label: "[S. 1]"), .text(", 99")])
+        XCTAssertEqual(AICitation.parts(in: "[S. 99, 3]", pages: pages(3)), [.text("S. 99, "), .citation(page: 3, label: "[3]")])
+        XCTAssertEqual(AICitation.parts(in: "[S. 98, 99]", pages: pages(3)), [.text("[S. 98, 99]")])
+        XCTAssertEqual(AICitation.markdown("[S. 1, 3]", pages: pages(3)), "[S. 1](noty-ai://page/1), [3](noty-ai://page/3)")
     }
 
     func testCitationLinksKeepInlineFormatting() throws {
-        let markdown = AICitation.markdown("**Satz [S. 2] weiter** und [S. 9]", pageCount: 3)
+        let markdown = AICitation.markdown("**Satz [S. 2] weiter** und [S. 9]", pages: pages(3))
         XCTAssertEqual(markdown, "**Satz [S. 2](noty-ai://page/2) weiter** und [S. 9]")
-        let url = try XCTUnwrap(URL(string: "noty-ai://page/2"))
-        XCTAssertEqual(AICitation.page(from: url, pageCount: 3), 2)
-        XCTAssertNil(AICitation.page(from: url, pageCount: 1), "Seite gelöscht: kein Sprung")
+        XCTAssertEqual(AICitation.page(from: try XCTUnwrap(URL(string: "noty-ai://page/2"))), 2)
         for other in ["noty-ai://page/x", "noty-ai://andere/2", "https://page/2", "noty-ai://page/0"] {
-            XCTAssertNil(AICitation.page(from: try XCTUnwrap(URL(string: other)), pageCount: 3), other)
+            XCTAssertNil(AICitation.page(from: try XCTUnwrap(URL(string: other))), other)
         }
+    }
+
+    func testNoLinkInCodeOrAfterABackslash() {
+        let all = pages(9)
+        for text in ["`[S. 1]`", "Code `a [S. 1] b` Ende", "``x ` [S. 1]``", "\\[S. 1]", "`[S. 1, 2]`"] {
+            XCTAssertEqual(AICitation.markdown(text, pages: all), text, text)
+        }
+        XCTAssertEqual(AICitation.markdown("`a` [S. 2] `[S. 3]`", pages: all), "`a` [S. 2](noty-ai://page/2) `[S. 3]`")
+        XCTAssertEqual(AICitation.markdown("` offen [S. 2]", pages: all), "` offen [S. 2](noty-ai://page/2)", "Ein Backtick allein ist kein Code")
+        XCTAssertEqual(AICitation.markdown("``ungleich` [S. 2]", pages: all), "``ungleich` [S. 2](noty-ai://page/2)")
+        XCTAssertEqual(AICitation.markdown("\\\\[S. 2]", pages: all), "\\\\[S. 2](noty-ai://page/2)", "Doppelter Backslash ist selbst das Escape")
+        XCTAssertEqual(AICitation.markdown("\\`[S. 2]\\`", pages: all), "\\`[S. 2](noty-ai://page/2)\\`", "Maskierter Backtick öffnet keinen Code")
+        XCTAssertEqual(AICitation.markdown("Ende\\", pages: all), "Ende\\")
+    }
+
+    // MARK: Consent
+
+    func testApprovalBelongsToServerAccountAndDocument() throws {
+        let server = try XCTUnwrap(AIServerAddress.parse("https://a.ts.net:8443"))
+        let other = try XCTUnwrap(AIServerAddress.parse("https://b.ts.net:8443"))
+        let otherPort = try XCTUnwrap(AIServerAddress.parse("https://a.ts.net:9443"))
+        let document = UUID()
+        let key = try XCTUnwrap(AIApproval.key(server: server, account: "u1", document: document))
+        XCTAssertEqual(AIApproval.key(server: server, account: "u1", document: document), key)
+        XCTAssertNotEqual(AIApproval.key(server: other, account: "u1", document: document), key)
+        XCTAssertNotEqual(AIApproval.key(server: otherPort, account: "u1", document: document), key)
+        XCTAssertNotEqual(AIApproval.key(server: server, account: "u2", document: document), key)
+        XCTAssertNotEqual(AIApproval.key(server: server, account: "u1", document: UUID()), key)
+        XCTAssertNil(AIApproval.key(server: server, account: "", document: document))
+        XCTAssertNotEqual(AIApproval.key(server: server, account: "a|b", document: document),
+                          AIApproval.key(server: server, account: "a%7Cb", document: document))
+        XCTAssertEqual(AIServerAddress.authority(of: server), "a.ts.net:8443")
+        XCTAssertEqual(AIServerAddress.authority(of: try XCTUnwrap(AIServerAddress.parse("https://a.ts.net"))), "a.ts.net")
+    }
+
+    func testOldApprovalsCountForNothing() throws {
+        let server = try XCTUnwrap(AIServerAddress.parse("https://a.ts.net"))
+        let document = UUID()
+        let key = try XCTUnwrap(AIApproval.key(server: server, account: "u1", document: document))
+        XCTAssertEqual(AIApproval.valid([document.uuidString, key]), [key])
+    }
+
+    // MARK: Repeating a delivery
+
+    func testFingerprintCoversEverythingThatGoesOut() {
+        let image = AITurnImage(mimeType: "image/jpeg", base64: "AAAA", label: "Seite 1")
+        let base = AITurnRequest(requestId: "abcdefgh-1", text: "Frage", context: AITurnContext(label: "Mathe", text: "Inhalt"), images: [image])
+        var other = base; other.requestId = "abcdefgh-2"
+        XCTAssertEqual(base.contentFingerprint, other.contentFingerprint, "Die Kennung gehört nicht zum Inhalt")
+        var changes: [AITurnRequest] = []
+        var change = base; change.text = "Frage?"; changes.append(change)
+        change = base; change.context?.text = "Inhalt gelöscht"; changes.append(change)
+        change = base; change.context?.label = "Deutsch"; changes.append(change)
+        change = base; change.context = nil; changes.append(change)
+        change = base; change.images = nil; changes.append(change)
+        change = base; change.images?[0].base64 = "BBBB"; changes.append(change)
+        change = base; change.images?[0].label = "Seite 2"; changes.append(change)
+        change = base; change.model = "m"; changes.append(change)
+        for changed in changes { XCTAssertNotEqual(changed.contentFingerprint, base.contentFingerprint) }
+        var moved = base; moved.context = AITurnContext(label: "MathI", text: "nhalt")
+        XCTAssertNotEqual(moved.contentFingerprint, base.contentFingerprint, "Feldgrenzen zählen mit")
+    }
+
+    func testRepeatKeepsTheRequestIDOnlyForIdenticalContent() {
+        let first = AIPendingDelivery.resolve(fingerprint: "a", previous: nil)
+        XCTAssertTrue(AITurnRequest.isValidRequestID(first.requestID))
+        XCTAssertEqual(AIPendingDelivery.resolve(fingerprint: "a", previous: first), first)
+        XCTAssertNotEqual(AIPendingDelivery.resolve(fingerprint: "b", previous: first).requestID, first.requestID)
+        XCTAssertNotEqual(AIPendingDelivery.resolve(fingerprint: "a", previous: nil).requestID, first.requestID)
+    }
+
+    // MARK: Requests
+
+    func testCancelledRequestsAreNoFailure() {
+        XCTAssertTrue(AIRequestFailure.isCancellation(CancellationError()))
+        XCTAssertTrue(AIRequestFailure.isCancellation(URLError(.cancelled)))
+        XCTAssertFalse(AIRequestFailure.isCancellation(URLError(.timedOut)))
+        XCTAssertFalse(AIRequestFailure.isCancellation(DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: ""))))
+    }
+
+    private func session(_ id: String = "s", revision: Int, messages: [AIMessage] = []) -> AISession {
+        AISession(id: id, documentId: nil, title: nil, status: .idle, revision: revision, updatedAt: 0, messages: messages)
+    }
+
+    func testOnlyANewerRevisionReplacesAChat() {
+        XCTAssertTrue(session(revision: 3).supersedes(nil))
+        XCTAssertTrue(session(revision: 3).supersedes(session(revision: 2)))
+        XCTAssertFalse(session(revision: 3).supersedes(session(revision: 3)))
+        XCTAssertFalse(session(revision: 3).supersedes(session(revision: 4)))
+        XCTAssertTrue(session("t", revision: 1).supersedes(session(revision: 4)), "Ein anderer Chat ist kein älterer Stand")
+    }
+
+    func testAnswerBelongsToTheQuestionBeforeIt() {
+        let chat = session(revision: 1, messages: [
+            AIMessage(id: "lose", role: .assistant, text: "ohne Frage"),
+            AIMessage(id: "r1", role: .user, text: "Eins"),
+            AIMessage(id: "a1", role: .assistant, text: "A"),
+            AIMessage(id: "n", role: .system, text: "Hinweis"),
+            AIMessage(id: "a2", role: .assistant, text: "B"),
+            AIMessage(id: "r2", role: .user, text: "Zwei"),
+            AIMessage(id: "a3", role: .assistant, text: "C"),
+        ])
+        XCTAssertEqual(chat.answerRequests, ["a1": "r1", "a2": "r1", "a3": "r2"])
+    }
+
+    func testContextNamesItsPagesByStableID() {
+        let first = input(1, "Eins"), empty = AIContextPage(number: 2, pageID: UUID()), third = input(3, "Drei")
+        XCTAssertEqual(AIContextBuilder.build([first, empty, third]).includedPageIDs, [1: first.pageID, 3: third.pageID])
+        let long = String(repeating: "x", count: 1_000)
+        let cut = (1...4).map { input($0, long) }
+        let context = AIContextBuilder.build(cut, limit: 2_000)
+        XCTAssertEqual(context.truncatedPage, 2)
+        XCTAssertEqual(Set(context.includedPageIDs.keys), Set(context.includedPages), "Abgeschnittene Seite ist Kontext, fehlende nicht")
+    }
+
+    // MARK: Reading one page
+
+    func testSinglePageReadMatchesTheWholeNotebook() {
+        var book = notebook([page("Eins"), page("Zwei"), page("Drei")])
+        book.pages[1].drawing = Data([1, 2, 3])
+        let prepared = ContentSearchPlanner.prepare(book)
+        var index = ContentSearchPlanner.reconcile(nil, documentID: book.id, pages: prepared)
+        index.pages[1].handwriting = SearchLayerRecord(fingerprint: prepared[1].fingerprints.handwriting!, lines: [line("erkannt", .handwriting)])
+        XCTAssertEqual(AIContextBuilder.pages(of: book, index: index, only: book.pages[1].id), [AIContextBuilder.pages(of: book, index: index)[1]])
+        XCTAssertEqual(AIContextBuilder.pages(of: book, index: index, only: UUID()), [])
+    }
+
+    func testSinglePageReadMatchesForPDFSources() throws {
+        var book = notebook([page("Eins"), page("Zwei")])
+        let source = PDFSource(id: UUID(), data: Data(repeating: 7, count: 4_000), pageCount: 2)
+        let foreign = PDFSource(id: UUID(), data: Data(repeating: 8, count: 4_000), pageCount: 1)
+        book.pdfSources = [source, foreign]
+        book.pages[1].pdfReference = PDFPageReference(sourceID: source.id, pageIndex: 1)
+        let prepared = ContentSearchPlanner.prepare(book)
+        var index = ContentSearchPlanner.reconcile(nil, documentID: book.id, pages: prepared)
+        let fingerprint = try XCTUnwrap(prepared[1].fingerprints.pdfText)
+        index.pages[1].pdfText = SearchLayerRecord(fingerprint: fingerprint, lines: [line("PDF", .pdf)])
+        let single = AIContextBuilder.pages(of: book, index: index, only: book.pages[1].id)
+        XCTAssertEqual(single.first?.pdfText.map(\.text), ["PDF"], "Gleicher Fingerabdruck wie beim ganzen Heft")
+        XCTAssertEqual(single, [AIContextBuilder.pages(of: book, index: index)[1]])
+    }
+
+    func testCancelledReadStops() async {
+        let book = notebook((0..<50).map { _ in page("Text") })
+        let task = Task.detached { () -> Int in
+            while !Task.isCancelled { await Task.yield() }
+            return AIContextBuilder.pages(of: book, index: nil).count
+        }
+        task.cancel()
+        let count = await task.value
+        XCTAssertEqual(count, 0)
+    }
+
+    func testIndexIsDecodedOnlyWhenTheFileChanged() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ContentSearchIndexStore(directory: directory)
+        let id = UUID(), file = directory.appendingPathComponent(id.uuidString + ".json")
+        let empty = await store.loadRemembered(id)
+        XCTAssertNil(empty)
+        await store.save(SearchDocumentIndex(documentID: id))
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+        let first = await store.loadRemembered(id)
+        XCTAssertNotNil(first)
+
+        // Same date and size, unreadable content: a decoder would fail here.
+        let size = try Data(contentsOf: file).count
+        try Data(repeating: 0x20, count: size).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+        let again = await store.loadRemembered(id)
+        XCTAssertEqual(again, first)
+
+        await store.save(SearchDocumentIndex(documentID: id, revisionStamp: "neu"))
+        let changed = await store.loadRemembered(id)
+        XCTAssertEqual(changed?.revisionStamp, "neu")
+        await store.remove([id])
+        let gone = await store.loadRemembered(id)
+        XCTAssertNil(gone)
+    }
+
+    // MARK: PDF text at the limit
+
+    func testBudgetEndsAtTheLimit() {
+        var budget = AIContextBudget(limit: 10)
+        XCTAssertFalse(budget.exhausted)
+        budget.add(input(1, "123456789"))
+        XCTAssertFalse(budget.exhausted)
+        var page = input(2, "1")
+        page.handwriting = [line("2", .handwriting)]
+        XCTAssertEqual(page.knownLength, 2)
+        budget.add(page)
+        XCTAssertTrue(budget.exhausted)
+    }
+
+    func testPagesSkippedAtTheLimitCountAsOmitted() {
+        var skipped = AIContextPage(number: 2, pageID: UUID(), missing: [.pdfText])
+        skipped.skipAtLimit()
+        XCTAssertFalse(skipped.missing.contains(.pdfText))
+        XCTAssertFalse(skipped.needsRecognition, "Ungelesen ist nicht unerkannt")
+        let context = AIContextBuilder.build([input(1, "Eins"), skipped, input(3, "Drei")])
+        XCTAssertEqual(context.includedPages, [1])
+        XCTAssertEqual(context.omittedPages, [2, 3], "Dahinter wird nichts nachgeholt")
+        XCTAssertEqual(context.unrecognizedPages, [])
+        XCTAssertTrue(context.wasTruncated)
+    }
+
+    func testPDFTextIsRememberedPerSourceAndPage() {
+        var cache = AIPDFTextCache(capacity: 10)
+        let document = UUID(), source = UUID()
+        var first = Page(); first.pdfReference = PDFPageReference(sourceID: source, pageIndex: 0)
+        var duplicate = Page(); duplicate.pdfReference = first.pdfReference
+        var second = Page(); second.pdfReference = PDFPageReference(sourceID: source, pageIndex: 1)
+        XCTAssertEqual(AIPDFTextCache.key(page: first, document: document), AIPDFTextCache.key(page: duplicate, document: UUID()))
+        XCTAssertNotEqual(AIPDFTextCache.key(page: first, document: document), AIPDFTextCache.key(page: second, document: document))
+        let legacy = Page(), other = Page()
+        XCTAssertNotEqual(AIPDFTextCache.key(page: legacy, document: document), AIPDFTextCache.key(page: other, document: document))
+        XCTAssertNotEqual(AIPDFTextCache.key(page: legacy, document: document), AIPDFTextCache.key(page: legacy, document: UUID()))
+
+        cache.remember("", for: "scan")
+        XCTAssertEqual(cache.text(for: "scan"), "", "Auch ein Scan ohne Text wird nicht neu gelesen")
+        cache.remember("12345", for: "a")
+        cache.remember("123456", for: "b")
+        XCTAssertNil(cache.text(for: "a"), "Über der Grenze beginnt der Speicher neu")
+        XCTAssertEqual(cache.text(for: "b"), "123456")
+        cache.remember(String(repeating: "x", count: 11), for: "c")
+        XCTAssertNil(cache.text(for: "c"))
+        XCTAssertEqual(cache.text(for: "b"), "123456")
+    }
+}
+
+final class AIPanelSupportTests: XCTestCase {
+    // MARK: Citation ledger
+
+    func testLedgerNamesThePagesOfARequest() throws {
+        var ledger = AICitationLedger()
+        let document = UUID(), page = UUID()
+        ledger.record(requestID: "r1", document: document, pages: [3: page])
+        XCTAssertEqual(ledger.pages(requestID: "r1", document: document), [3: page])
+        XCTAssertEqual(ledger.pages(requestID: "r1", document: UUID()), [:], "Fremdes Heft")
+        XCTAssertEqual(ledger.pages(requestID: "r2", document: document), [:], "Unbekannte Anfrage")
+
+        let saved = try JSONEncoder().encode(ledger)
+        XCTAssertEqual(try JSONDecoder().decode(AICitationLedger.self, from: saved), ledger)
+    }
+
+    func testLedgerDropsTheOldestEntries() {
+        var ledger = AICitationLedger(capacity: 2)
+        let document = UUID(), page = UUID()
+        ledger.record(requestID: "r1", document: document, pages: [1: page])
+        ledger.record(requestID: "r2", document: document, pages: [1: page])
+        ledger.record(requestID: "r1", document: document, pages: [2: page])
+        ledger.record(requestID: "r3", document: document, pages: [1: page])
+        XCTAssertEqual(ledger.pages(requestID: "r2", document: document), [:], "Wiederholte Anfrage zählt als neu")
+        XCTAssertEqual(ledger.pages(requestID: "r1", document: document), [2: page])
+        XCTAssertEqual(ledger.pages(requestID: "r3", document: document), [1: page])
+        ledger.record(requestID: "r3", document: document, pages: [:])
+        XCTAssertEqual(ledger.pages(requestID: "r3", document: document), [:])
+    }
+
+    // MARK: Presence
+
+    func testPanelStaysVisibleWhenTheNewOneAppearsFirst() {
+        var presence = AIPanelPresence()
+        XCTAssertFalse(presence.visible)
+        presence.appeared(); presence.appeared(); presence.disappeared()
+        XCTAssertTrue(presence.visible)
+        presence.disappeared()
+        XCTAssertFalse(presence.visible)
+        presence.disappeared()
+        presence.appeared()
+        XCTAssertTrue(presence.visible, "Überzähliges Verschwinden zählt nicht")
+    }
+
+    // MARK: Rendering
+
+    func testFinishedMessagesAreParsedOnce() {
+        var cache = AIRenderCache<String>()
+        var parsed = 0
+        func value(_ id: String, _ text: String, pages: Set<Int> = [], growing: Bool = false) -> (String, String) {
+            let result = cache.value(id: id, text: text, pages: pages, growing: growing) { parsed += 1; return $0.uppercased() }
+            return (result.value, String(result.tail))
+        }
+        XCTAssertEqual(value("a", "eins").0, "EINS")
+        XCTAssertEqual(value("a", "eins").0, "EINS")
+        XCTAssertEqual(parsed, 1)
+        XCTAssertEqual(value("b", "zwei").0, "ZWEI")
+        XCTAssertEqual(parsed, 2)
+        XCTAssertEqual(value("a", "eins", pages: [1]).0, "EINS", "Andere Verlinkung: neu")
+        XCTAssertEqual(parsed, 3)
+    }
+
+    func testGrowingAnswerIsParsedAtMostOncePerInterval() {
+        var cache = AIRenderCache<String>(interval: 1)
+        let start = Date(timeIntervalSince1970: 1_000)
+        var parsed = 0
+        func value(_ text: String, after seconds: Double, growing: Bool = true) -> (String, String) {
+            let result = cache.value(id: "a", text: text, pages: [], growing: growing, now: start.addingTimeInterval(seconds)) { parsed += 1; return $0 }
+            return (result.value, String(result.tail))
+        }
+        XCTAssertEqual(value("Ha", after: 0).0, "Ha")
+        let early = value("Hallo", after: 0.4)
+        XCTAssertEqual(early.0, "Ha"); XCTAssertEqual(early.1, "llo", "Neuer Text bleibt sichtbar")
+        XCTAssertEqual(parsed, 1)
+        XCTAssertEqual(value("Hallo Welt", after: 1).0, "Hallo Welt")
+        XCTAssertEqual(parsed, 2)
+        XCTAssertEqual(value("Ganz anders", after: 1.1).0, "Ganz anders", "Ersetzter Text wartet nicht")
+        XCTAssertEqual(parsed, 3)
+        XCTAssertEqual(value("Ganz anders.", after: 1.2, growing: false).0, "Ganz anders.", "Am Ende vollständig")
+        XCTAssertEqual(parsed, 4)
+    }
+
+    func testRenderCacheIsBounded() {
+        var cache = AIRenderCache<String>(capacity: 2)
+        var parsed = 0
+        func touch(_ id: String) { _ = cache.value(id: id, text: "x", pages: [], growing: false) { parsed += 1; return $0 } }
+        touch("a"); touch("b"); touch("c"); touch("c")
+        XCTAssertEqual(parsed, 3)
+        touch("a")
+        XCTAssertEqual(parsed, 4, "Ältester Eintrag ist fort")
+    }
+
+    // MARK: Placement
+
+    private let landscape = PageRect(x: 0, y: 0, width: 1180, height: 820)
+    private let portrait = PageRect(x: 0, y: 0, width: 820, height: 1180)
+    private let leftPane = PageRect(x: 0, y: 0, width: 587, height: 820)
+    private let rightPane = PageRect(x: 593, y: 0, width: 587, height: 820)
+    private let topPane = PageRect(x: 0, y: 0, width: 820, height: 587)
+    private let bottomPane = PageRect(x: 0, y: 593, width: 820, height: 587)
+
+    private func overlaps(_ a: PageRect, _ b: PageRect) -> Bool {
+        a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+    }
+    private func contains(_ outer: PageRect, _ inner: PageRect) -> Bool {
+        inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height
+    }
+
+    func testPanelLiesOverTheInactiveView() {
+        let right = AIPanelPlacement.frame(area: landscape, active: leftPane, inactive: rightPane, law: nil, flipped: false)
+        XCTAssertFalse(overlaps(right, leftPane))
+        XCTAssertEqual(right.width, AIPanelPlacement.width)
+        XCTAssertEqual(right.x, 1180 - 10 - 380)
+        let left = AIPanelPlacement.frame(area: landscape, active: rightPane, inactive: leftPane, law: nil, flipped: false)
+        XCTAssertFalse(overlaps(left, rightPane))
+        XCTAssertEqual(left.x, 10)
+    }
+
+    func testGripSwitchesTheSide() {
+        let flipped = AIPanelPlacement.frame(area: landscape, active: leftPane, inactive: rightPane, law: nil, flipped: true)
+        XCTAssertFalse(overlaps(flipped, rightPane))
+        let single = AIPanelPlacement.frame(area: landscape, active: nil, inactive: nil, law: nil, flipped: false)
+        XCTAssertEqual(single.x, 1180 - 10 - 380)
+        XCTAssertEqual(AIPanelPlacement.frame(area: landscape, active: nil, inactive: nil, law: nil, flipped: true).x, 10)
+    }
+
+    func testStackedViewsGetABroadPanelInPortrait() {
+        let lower = AIPanelPlacement.frame(area: portrait, active: topPane, inactive: bottomPane, law: nil, flipped: false)
+        XCTAssertFalse(overlaps(lower, topPane))
+        XCTAssertEqual(lower.width, AIPanelPlacement.stackedWidth)
+        let upper = AIPanelPlacement.frame(area: portrait, active: bottomPane, inactive: topPane, law: nil, flipped: false)
+        XCTAssertFalse(overlaps(upper, bottomPane))
+    }
+
+    func testPortraitSideBySideStaysInsideTheView() {
+        let area = PageRect(x: 0, y: 0, width: 820, height: 1180)
+        let first = PageRect(x: 0, y: 0, width: 407, height: 1180), second = PageRect(x: 413, y: 0, width: 407, height: 1180)
+        let frame = AIPanelPlacement.frame(area: area, active: first, inactive: second, law: nil, flipped: false)
+        XCTAssertFalse(overlaps(frame, first))
+        XCTAssertGreaterThanOrEqual(frame.width, AIPanelPlacement.minimumWidth)
+    }
+
+    func testPanelNeverLeavesTheAreaOnSmallRooms() {
+        let small = PageRect(x: 40, y: 20, width: 320, height: 200)
+        let frame = AIPanelPlacement.frame(area: small, active: nil, inactive: nil, law: nil, flipped: false)
+        XCTAssertTrue(contains(small, frame))
+    }
+
+    func testPanelAvoidsAFloatingLawWindow() {
+        // Right side window of the same size, active view on the left.
+        let law = PageRect(x: 790, y: 10, width: 380, height: 800)
+        let frame = AIPanelPlacement.frame(area: landscape, active: leftPane, inactive: rightPane, law: law, flipped: false)
+        XCTAssertFalse(overlaps(frame, law))
+        XCTAssertEqual(frame.width, AIPanelPlacement.minimumWidth, "So wenig wie möglich von der aktiven Ansicht verdecken")
+        XCTAssertEqual(frame.x + frame.width, law.x - AIPanelPlacement.gap)
+
+        let other = PageRect(x: 10, y: 10, width: 380, height: 800)
+        XCTAssertEqual(AIPanelPlacement.frame(area: landscape, active: leftPane, inactive: rightPane, law: other, flipped: false).width,
+                       AIPanelPlacement.width, "Gesetzesfenster auf der anderen Seite stört nicht")
+    }
+
+    func testPanelStaysAboveABottomLawWindow() {
+        let law = PageRect(x: 10, y: 450, width: 1160, height: 360)
+        let frame = AIPanelPlacement.frame(area: landscape, active: leftPane, inactive: rightPane, law: law, flipped: false)
+        XCTAssertFalse(overlaps(frame, law))
+        XCTAssertFalse(overlaps(frame, leftPane))
+        XCTAssertGreaterThanOrEqual(frame.height, AIPanelPlacement.minimumHeight)
+    }
+
+    func testStashedLawTabStaysReachable() {
+        let layout = LawPanelLayout(size: PageSize(width: 1180, height: 820), width: 380, height: 360, docked: false, edge: .right)
+        let strip = layout.edgeStrip(depth: 48)
+        let frame = AIPanelPlacement.frame(area: landscape, active: leftPane, inactive: rightPane, law: strip, flipped: false)
+        XCTAssertFalse(overlaps(frame, strip))
+        XCTAssertFalse(overlaps(frame, leftPane))
+        XCTAssertEqual(LawPanelLayout(size: PageSize(width: 100, height: 80), width: 380, height: 360, docked: false, edge: .bottom).edgeStrip(depth: 48),
+                       PageRect(x: 0, y: 32, width: 100, height: 48))
+        XCTAssertEqual(LawPanelLayout(size: PageSize(width: 100, height: 80), width: 380, height: 360, docked: false, edge: .left).edgeStrip(depth: 48),
+                       PageRect(x: 0, y: 0, width: 48, height: 80))
+    }
+
+    func testLawGripStaysFreeWithoutRoomBeside() {
+        let narrow = PageRect(x: 0, y: 0, width: 500, height: 700)
+        let law = PageRect(x: 110, y: 10, width: 380, height: 680)
+        let frame = AIPanelPlacement.frame(area: narrow, active: nil, inactive: nil, law: law, flipped: false)
+        let grip = PageRect(x: law.x, y: law.y, width: law.width, height: AIPanelPlacement.lawGrip)
+        XCTAssertFalse(overlaps(frame, grip))
+        XCTAssertGreaterThan(frame.height, AIPanelPlacement.minimumHeight)
     }
 }

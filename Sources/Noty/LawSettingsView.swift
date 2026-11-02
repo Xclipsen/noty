@@ -152,6 +152,8 @@ struct LawPanelView<Drag: Gesture>: View {
     var onPenChange: ((LawPenMode) -> Void)? = nil
     /// Room to dock at the current edge; without it the window can only float.
     var canDock = true
+    /// Whether it really is docked now: the assistant may hold the dock.
+    var docked = false
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -191,8 +193,8 @@ struct LawPanelView<Drag: Gesture>: View {
                 .contentShape(Rectangle())
                 .gesture(drag)
             LawReaderView(inPanel: true, pen: pen, onPenChange: onPenChange)
-        }.clipShape(RoundedRectangle(cornerRadius: laws.docked ? 0 : 16))
-            .overlay(RoundedRectangle(cornerRadius: laws.docked ? 0 : 16).strokeBorder(.secondary.opacity(0.25)))
-            .shadow(color: .black.opacity(laws.docked ? 0 : 0.3), radius: 16)
+        }.clipShape(RoundedRectangle(cornerRadius: docked ? 0 : 16))
+            .overlay(RoundedRectangle(cornerRadius: docked ? 0 : 16).strokeBorder(.secondary.opacity(0.25)))
+            .shadow(color: .black.opacity(docked ? 0 : 0.3), radius: 16)
     }
 }

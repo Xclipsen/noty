@@ -164,6 +164,30 @@ public enum NotebookRevisionStamp {
     }
 }
 
+/// Identity of the PDF behind each page. `only` samples nothing but that page's
+/// source: a single-page read stays independent of the notebook's size.
+struct SearchPDFIdentities {
+    private var sources: [UUID: String] = [:]
+    private let legacy: String?
+
+    init(_ notebook: Notebook, only page: Page? = nil) {
+        for source in notebook.pdfSources ?? [] where page == nil || page?.pdfReference?.sourceID == source.id {
+            var value = ContentFingerprint("source"); value.add(source.id); value.add(source.pageCount)
+            value.add(source.data.count); value.add(ContentFingerprint.sampledDigest(source.data))
+            sources[source.id] = value.value
+        }
+        legacy = page?.pdfReference != nil ? nil : notebook.pdf.map { data -> String in
+            var value = ContentFingerprint("legacy"); value.add(data.count); value.add(ContentFingerprint.sampledDigest(data))
+            return value.value
+        }
+    }
+
+    func identity(of page: Page, at index: Int) -> String? {
+        if let reference = page.pdfReference { return sources[reference.sourceID].map { "\($0):\(reference.pageIndex)" } }
+        return legacy.map { "\($0):\(index)" }
+    }
+}
+
 public enum ContentSearchPlanner {
     /// Same chunking as before the index: 2 000 characters, 160 overlapping.
     public static func textLines(_ page: Page) -> [SearchLine] {
@@ -204,25 +228,19 @@ public enum ContentSearchPlanner {
     /// Fingerprints of every active page. PDF originals are immutable per source
     /// ID; their digest is sampled once per notebook.
     public static func prepare(_ notebook: Notebook) -> [PreparedSearchPage] {
-        var sources: [UUID: String] = [:]
-        for source in notebook.pdfSources ?? [] {
-            var value = ContentFingerprint("source"); value.add(source.id); value.add(source.pageCount)
-            value.add(source.data.count); value.add(ContentFingerprint.sampledDigest(source.data))
-            sources[source.id] = value.value
-        }
-        let legacy = notebook.pdf.map { data -> String in
-            var value = ContentFingerprint("legacy"); value.add(data.count); value.add(ContentFingerprint.sampledDigest(data))
-            return value.value
-        }
+        let identities = SearchPDFIdentities(notebook)
         let seams = seamLines(notebook)
         return notebook.pages.enumerated().map { index, page in
-            var identity: String?
-            if let reference = page.pdfReference {
-                identity = sources[reference.sourceID].map { "\($0):\(reference.pageIndex)" }
-            } else if let legacy { identity = "\(legacy):\(index)" }
-            return PreparedSearchPage(pageID: page.id, fingerprints: fingerprints(page, pdfIdentity: identity),
-                                      text: textLines(page) + (seams[page.id] ?? []), hasPDF: identity != nil)
+            prepared(page, at: index, identities, seams: seams[page.id] ?? [])
         }
+    }
+
+    /// One page of `prepare`. Seam lines cost the whole flow and are left to
+    /// callers that need them.
+    static func prepared(_ page: Page, at index: Int, _ identities: SearchPDFIdentities, seams: [SearchLine] = []) -> PreparedSearchPage {
+        let identity = identities.identity(of: page, at: index)
+        return PreparedSearchPage(pageID: page.id, fingerprints: fingerprints(page, pdfIdentity: identity),
+                                  text: textLines(page) + seams, hasPDF: identity != nil)
     }
 
     static func fingerprints(_ page: Page, pdfIdentity: String?) -> SearchPageFingerprints {
@@ -258,16 +276,23 @@ public enum ContentSearchPlanner {
     /// Current pages with every still-valid layer of `stored`; removed pages and
     /// layers with changed inputs are dropped. The stamp is cleared until complete.
     public static func reconcile(_ stored: SearchDocumentIndex?, documentID: UUID, pages: [PreparedSearchPage]) -> SearchDocumentIndex {
-        let old = Dictionary((stored?.documentID == documentID ? stored?.pages ?? [] : []).map { ($0.pageID, $0) },
-                             uniquingKeysWith: { first, _ in first })
-        return SearchDocumentIndex(documentID: documentID, pages: pages.map { page in
-            var record = SearchPageRecord(pageID: page.pageID, text: page.text)
-            for layer in SearchLayer.allCases {
-                if let fingerprint = page.fingerprints[layer], let previous = old[page.pageID]?[layer],
-                   previous.fingerprint == fingerprint { record[layer] = previous }
-            }
-            return record
-        })
+        let old = storedRecords(stored, documentID: documentID)
+        return SearchDocumentIndex(documentID: documentID, pages: pages.map { record(of: $0, stored: old) })
+    }
+
+    /// Records of `stored` by page, if it belongs to `documentID`; `only` skips the rest.
+    static func storedRecords(_ stored: SearchDocumentIndex?, documentID: UUID, only pageID: UUID? = nil) -> [UUID: SearchPageRecord] {
+        let records = (stored?.documentID == documentID ? stored?.pages ?? [] : []).filter { pageID == nil || $0.pageID == pageID }
+        return Dictionary(records.map { ($0.pageID, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    static func record(of page: PreparedSearchPage, stored: [UUID: SearchPageRecord]) -> SearchPageRecord {
+        var record = SearchPageRecord(pageID: page.pageID, text: page.text)
+        for layer in SearchLayer.allCases {
+            if let fingerprint = page.fingerprints[layer], let previous = stored[page.pageID]?[layer],
+               previous.fingerprint == fingerprint { record[layer] = previous }
+        }
+        return record
     }
 
     public static func pending(_ page: PreparedSearchPage, _ record: SearchPageRecord) -> [SearchLayer] {
@@ -308,6 +333,9 @@ public enum ContentSearchPlanner {
 public actor ContentSearchIndexStore {
     public let directory: URL
     private let fm = FileManager.default
+    private struct Remembered { let id: UUID; let date: Date; let size: Int; let index: SearchDocumentIndex? }
+    /// Last read of `loadRemembered`: one notebook at most.
+    private var remembered: Remembered?
 
     public init(directory: URL) { self.directory = directory }
 
@@ -324,8 +352,19 @@ public actor ContentSearchIndexStore {
         return index
     }
 
+    /// `load` for repeated reads: an unchanged file is not decoded again.
+    public func loadRemembered(_ id: UUID) -> SearchDocumentIndex? {
+        let values = try? url(id).resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        guard let date = values?.contentModificationDate, let size = values?.fileSize else { remembered = nil; return nil }
+        if let remembered, remembered.id == id, remembered.date == date, remembered.size == size { return remembered.index }
+        let index = load(id)
+        remembered = Remembered(id: id, date: date, size: size, index: index)
+        return index
+    }
+
     @discardableResult
     public func save(_ index: SearchDocumentIndex) -> Bool {
+        remembered = nil
         do {
             try fm.createDirectory(at: directory, withIntermediateDirectories: true)
             try JSONEncoder().encode(index).write(to: url(index.documentID), options: .atomic)

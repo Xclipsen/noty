@@ -72,6 +72,8 @@ private struct AIBridgeClient: Sendable {
 struct AIAttachment: Sendable {
     var context: AITurnContext?
     var images: [AITurnImage] = []
+    /// Page numbers the answer may cite, by stable ID.
+    var pages: [Int: UUID] = [:]
 }
 
 enum AIContextChoice: String, CaseIterable, Identifiable, Sendable {
@@ -89,6 +91,8 @@ enum AIContextChoice: String, CaseIterable, Identifiable, Sendable {
 final class AIAssistantModel: ObservableObject {
     static let serverKey = "noty.ai.serverURL"
     static let approvalsKey = "noty.ai.approvedDocuments"
+    /// Local bookkeeping of the panel, not part of any notebook or backup.
+    static let citationsKey = "noty.ai.citationPages"
     /// Display state only, like the law window.
     static let panelOpenKey = "noty.ai.panelOpen"
 
@@ -110,7 +114,9 @@ final class AIAssistantModel: ObservableObject {
     @Published private(set) var stalled = false
     @Published private(set) var limitReached = false
     @Published var error: String?
-    @Published private(set) var approvals = Set(UserDefaults.standard.stringArray(forKey: AIAssistantModel.approvalsKey) ?? [])
+    @Published private(set) var approvals = AIApproval.valid(UserDefaults.standard.stringArray(forKey: AIAssistantModel.approvalsKey) ?? [])
+    @Published private(set) var citations = UserDefaults.standard.data(forKey: AIAssistantModel.citationsKey)
+        .flatMap { try? JSONDecoder().decode(AICitationLedger.self, from: $0) } ?? AICitationLedger()
 
     private let client = AIBridgeClient()
     private weak var laws: LawLibraryModel?
@@ -123,14 +129,16 @@ final class AIAssistantModel: ObservableObject {
     private var accountGeneration = 0
     private var poll: Task<Void, Never>?
     private var sceneActive = true
-    private var panelVisible = false
-    private struct PendingTurn { var key: String; var request: AITurnRequest }
-    /// Delivered without a clear answer: sending the same again repeats its
-    /// `requestId`, so a lost reply cannot start a second run.
-    private var pending: PendingTurn?
+    private var panelPresence = AIPanelPresence()
+    /// Delivered without a clear answer: sending the same content again repeats
+    /// its `requestId`, so a lost reply cannot start a second run.
+    private var pending: AIPendingDelivery?
+    /// Set by a failed list or chat request, gone with the next one that works.
+    private var loadError: String?
 
     var enabled: Bool { UserDefaults.standard.bool(forKey: AppSettingsKey.aiEnabled) }
     var serverAddress: String { server?.absoluteString ?? "" }
+    var serverHost: String? { server.map(AIServerAddress.authority) }
     var accountName: String? { laws.flatMap { $0.user?.email ?? $0.user?.name } }
     var signedIn: Bool { laws?.user?.token?.isEmpty == false }
     var access: AIAccess {
@@ -159,7 +167,7 @@ final class AIAssistantModel: ObservableObject {
         accountGeneration += 1; accountEpoch += 1
         invalidate()
         me = nil; info = nil; usage = nil; rejection = nil; statusError = nil; error = nil; checking = false
-        session = nil; sessions = []; lastSession = [:]; limitReached = false
+        session = nil; sessions = []; lastSession = [:]; limitReached = false; loadError = nil
     }
 
     /// Returns false for an address that is not plain `https://host[:port]`.
@@ -199,7 +207,7 @@ final class AIAssistantModel: ObservableObject {
             guard accountGeneration == expected else { return }
             if let usage { self.usage = usage }
         } catch {
-            guard accountGeneration == expected else { return }
+            guard accountGeneration == expected, !AIRequestFailure.isCancellation(error) else { return }
             if !note(rejection: error) { statusError = describe(error) }
         }
     }
@@ -230,10 +238,27 @@ final class AIAssistantModel: ObservableObject {
 
     // MARK: Consent per notebook
 
-    func isApproved(_ document: UUID) -> Bool { approvals.contains(document.uuidString) }
-    func approve(_ document: UUID) { approvals.insert(document.uuidString); storeApprovals() }
+    /// nil while no server or no account is set: nothing can be approved then.
+    func approvalKey(for document: UUID) -> String? {
+        guard let server, let account = laws?.user?.id else { return nil }
+        return AIApproval.key(server: server, account: account, document: document)
+    }
+    func isApproved(_ document: UUID) -> Bool { approvalKey(for: document).map(approvals.contains) ?? false }
+    /// The key of the moment the dialog was shown: it named that server.
+    func approve(key: String) { approvals.insert(key); storeApprovals() }
     func resetApprovals() { approvals = []; storeApprovals() }
     private func storeApprovals() { UserDefaults.standard.set(approvals.sorted(), forKey: Self.approvalsKey) }
+
+    // MARK: Citations
+
+    /// Pages noted for the question of `requestID`; empty leaves its citations as text.
+    func citationPages(requestID: String, document: UUID) -> [Int: UUID] {
+        citations.pages(requestID: requestID, document: document)
+    }
+    private func noteCitations(requestID: String, document: UUID, pages: [Int: UUID]) {
+        citations.record(requestID: requestID, document: document, pages: pages)
+        if let data = try? JSONEncoder().encode(citations) { UserDefaults.standard.set(data, forKey: Self.citationsKey) }
+    }
 
     // MARK: Chats
 
@@ -259,14 +284,30 @@ final class AIAssistantModel: ObservableObject {
                                              query: [URLQueryItem(name: "documentId", value: document.uuidString)])
             guard generation == expected else { return }
             sessions = list
-            guard resume, session == nil else { return }
+            clearLoadError()
+            // A question on its way is a newer wish than picking up an old chat.
+            guard resume, session == nil, !sending else { return }
             // A run under way continues; otherwise the chat left in this notebook.
             let target = list.first { $0.status == .running }?.id ?? lastSession[document].flatMap { id in list.contains { $0.id == id } ? id : nil }
             if let target { await select(target) }
         } catch {
             guard generation == expected else { return }
-            if !note(rejection: error) { self.error = describe(error) }
+            reportLoad(error)
         }
+    }
+
+    private func report(_ error: Error) {
+        guard !AIRequestFailure.isCancellation(error), !note(rejection: error) else { return }
+        self.error = describe(error)
+    }
+    private func reportLoad(_ error: Error) {
+        guard !AIRequestFailure.isCancellation(error), !note(rejection: error) else { return }
+        let message = describe(error)
+        self.error = message; loadError = message
+    }
+    private func clearLoadError() {
+        if let loadError, error == loadError { error = nil }
+        loadError = nil
     }
 
     func select(_ id: String) async {
@@ -275,13 +316,23 @@ final class AIAssistantModel: ObservableObject {
         let expected = generation
         error = nil
         do {
-            guard let next = try await client.session(id, after: nil, base: route.base, token: route.token) else { return }
-            guard generation == expected, next.belongs(to: document) else { return }
-            session = next; startPolling()
+            let next = try await client.session(id, after: nil, base: route.base, token: route.token)
+            guard generation == expected, !sending else { return }
+            guard let next, next.belongs(to: document) else { watchShownRun(); return }
+            session = next; clearLoadError(); startPolling()
         } catch {
-            guard generation == expected else { return }
-            if !note(rejection: error) { self.error = describe(error) }
+            guard generation == expected, !sending else { return }
+            reportLoad(error)
+            watchShownRun()
         }
+    }
+
+    /// A failed change of chat leaves the former one on screen: if it runs, it
+    /// is followed further or at least offered for checking again.
+    private func watchShownRun() {
+        guard session?.status == .running else { return }
+        startPolling()
+        stalled = poll == nil
     }
 
     func newChat() {
@@ -291,43 +342,53 @@ final class AIAssistantModel: ObservableObject {
 
     func delete(_ id: String) async {
         guard let route else { return }
+        let expected = accountGeneration
         do {
             _ = try await client.send(base: route.base, token: route.token, path: "/v1/sessions/\(id)", method: "DELETE")
+            guard accountGeneration == expected else { return }
             if session?.id == id { newChat() }
             sessions.removeAll { $0.id == id }
-        } catch { if !note(rejection: error) { self.error = describe(error) } }
+        } catch {
+            guard accountGeneration == expected else { return }
+            report(error)
+        }
     }
 
-    /// `key` names question and context: the same again repeats a delivery
-    /// that got no clear answer. True once the server took the question.
-    func send(question: String, document: UUID, key: String, prepare: @escaping @MainActor () async throws -> AIAttachment) async -> Bool {
+    /// `prepare` runs for every attempt: what goes out is always today's
+    /// content. A repeat with the same content keeps its `requestId`, changed
+    /// content is a new question. True once the server took the question.
+    func send(question: String, document: UUID, prepare: @escaping @MainActor () async throws -> AIAttachment) async -> Bool {
         guard !sending, session?.status != .running, document == documentID else { return false }
-        // Nothing is prepared or uploaded for a server that has not answered yet.
-        if me == nil { await refreshStatus() }
-        guard document == documentID, route != nil, access.canSend, !sending else { return false }
-        guard me != nil else { error = statusError ?? "Der KI-Server konnte nicht erreicht werden."; return false }
-        sending = true; error = nil; limitReached = false; stalled = false
+        sending = true
+        // From here on any change of account, server, notebook or chat ends this question.
         let expected = generation
         defer { if generation == expected { sending = false } }
-        var turn = pending
-        if turn?.key != key {
-            do {
-                let attachment = try await prepare()
-                guard generation == expected else { return false }
-                turn = PendingTurn(key: key, request: AITurnRequest(text: question, context: attachment.context,
-                                                                    images: attachment.images.isEmpty ? nil : attachment.images))
-            } catch {
-                if generation == expected { self.error = error.localizedDescription }
-                return false
-            }
+        // Nothing is prepared or uploaded for a server that has not answered yet.
+        if me == nil { await refreshStatus() }
+        guard generation == expected, route != nil, access.canSend else { return false }
+        guard me != nil else { error = statusError ?? "Der KI-Server konnte nicht erreicht werden."; return false }
+        error = nil; limitReached = false; stalled = false
+        let attachment: AIAttachment
+        do {
+            attachment = try await prepare()
+        } catch {
+            if generation == expected, !AIRequestFailure.isCancellation(error) { self.error = error.localizedDescription }
+            return false
         }
-        guard let turn else { return false }
-        if let problem = turn.request.violation(of: limits) { error = problem; return false }
-        pending = turn
-        return await deliver(turn, document: document, expected: expected)
+        guard generation == expected else { return false }
+        var request = AITurnRequest(text: question, context: attachment.context, images: attachment.images.isEmpty ? nil : attachment.images)
+        if let problem = request.violation(of: limits) { error = problem; return false }
+        let content = request
+        let fingerprint = await Task.detached(priority: .userInitiated) { content.contentFingerprint }.value
+        guard generation == expected else { return false }
+        let delivery = AIPendingDelivery.resolve(fingerprint: fingerprint, previous: pending)
+        request.requestId = delivery.requestID
+        pending = delivery
+        noteCitations(requestID: delivery.requestID, document: document, pages: attachment.pages)
+        return await deliver(request, document: document, expected: expected)
     }
 
-    private func deliver(_ turn: PendingTurn, document: UUID, expected: Int) async -> Bool {
+    private func deliver(_ request: AITurnRequest, document: UUID, expected: Int) async -> Bool {
         guard let route else { return false }
         do {
             var target = session?.id
@@ -339,7 +400,7 @@ final class AIAssistantModel: ObservableObject {
                 guard generation == expected else { return false }
                 session = created; target = created.id
             }
-            let body = try await client.encoded(turn.request)
+            let body = try await client.encoded(request)
             let updated = try await client.json(AISession.self, base: route.base, token: route.token, path: "/v1/sessions/\(target ?? "")/turns", method: "POST", body: body)
             guard generation == expected else { return false }
             session = updated; pending = nil; stopping = false
@@ -349,7 +410,7 @@ final class AIAssistantModel: ObservableObject {
             guard generation == expected else { return false }
             // Only an unclear outcome keeps the turn for its repeat.
             if let server = error as? AIServerError, server.status < 500 { pending = nil }
-            if !note(rejection: error) { self.error = describe(error) }
+            report(error)
             if let server = error as? AIServerError {
                 if server.status == 429 { limitReached = true; await refreshStatus() }
                 if server.status == 409 { await refreshSession() }
@@ -367,18 +428,18 @@ final class AIAssistantModel: ObservableObject {
         } catch {
             guard generation == expected else { return }
             stopping = false
-            if !note(rejection: error) { self.error = describe(error) }
+            report(error)
         }
     }
 
     // MARK: Polling
 
     func setSceneActive(_ active: Bool) { sceneActive = active; syncPolling() }
-    func panelAppeared() { panelVisible = true; syncPolling() }
-    func panelDisappeared() { panelVisible = false; syncPolling() }
+    func panelAppeared() { panelPresence.appeared(); syncPolling() }
+    func panelDisappeared() { panelPresence.disappeared(); syncPolling() }
 
     private func syncPolling() {
-        guard sceneActive, panelVisible else { poll?.cancel(); poll = nil; return }
+        guard sceneActive, panelPresence.visible else { poll?.cancel(); poll = nil; return }
         if poll == nil, session != nil { Task { await refreshSession() } }
     }
 
@@ -390,19 +451,19 @@ final class AIAssistantModel: ObservableObject {
         do {
             let next = try await client.session(current.id, after: current.revision, base: route.base, token: route.token)
             guard generation == expected, session?.id == current.id else { return }
-            if let next { session = next }
+            if let next, next.supersedes(session) { session = next }
             startPolling()
             // Ended while nobody was asking.
             if current.status == .running, session?.status != .running { await runEnded() }
         } catch {
-            guard generation == expected else { return }
+            guard generation == expected, !AIRequestFailure.isCancellation(error) else { return }
             if !note(rejection: error) { self.error = describe(error); stalled = true }
         }
     }
 
     private func startPolling() {
         poll?.cancel(); poll = nil
-        guard sceneActive, panelVisible, let route, let id = session?.id, session?.status == .running else { return }
+        guard sceneActive, panelPresence.visible, let route, let id = session?.id, session?.status == .running else { return }
         let expected = generation
         poll = Task { [weak self, client] in
             var failures = 0
@@ -413,7 +474,7 @@ final class AIAssistantModel: ObservableObject {
                     let next = try await client.session(id, after: revision, base: route.base, token: route.token)
                     guard !Task.isCancelled, let self, self.generation == expected else { return }
                     failures = 0
-                    if let next { self.session = next }
+                    if let next, next.supersedes(self.session) { self.session = next }
                     if self.session?.status != .running { self.poll = nil; await self.runEnded(); return }
                 } catch {
                     guard !Task.isCancelled, let self, self.generation == expected else { return }
@@ -440,30 +501,57 @@ final class AIAssistantModel: ObservableObject {
 /// started here: what the search index does not know is reported instead.
 @MainActor
 enum AIContextCollector {
+    private static var pdfTexts = AIPDFTextCache()
+
+    /// Off the main actor; cancelling the caller also cancels this work.
+    private static func detached<T: Sendable>(_ priority: TaskPriority, _ work: @escaping @Sendable () -> T) async -> T {
+        let task = Task.detached(priority: priority, operation: work)
+        return await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+
     /// `pageID` nil: the whole notebook. PDF text missing from the index comes
-    /// from the PDF itself; PDFKit stays on the main actor with a pause per page.
-    static func context(_ editor: EditorModel, notebook: Notebook, pageID: UUID?, area: String, limit: Int) async throws -> AIContext {
-        let store = ContentSearchIndexLocation.store(area: area)
-        let index = await store.load(notebook.id)
-        var pages = await Task.detached(priority: .userInitiated) {
+    /// from the PDF itself, read once per page and source and not past `limit`;
+    /// PDFKit stays on the main actor with a pause per page.
+    static func context(_ editor: EditorModel, notebook: Notebook, pageID: UUID?, area: String, limit: Int,
+                        priority: TaskPriority) async throws -> AIContext {
+        let index = await ContentSearchIndexLocation.store(area: area).loadRemembered(notebook.id)
+        var pages = await detached(priority) {
             AIContextBuilder.pages(of: notebook, index: index, only: pageID, drawingIsEmpty: EditorModel.drawingIsEmpty)
-        }.value
+        }
         try Task.checkCancellation()
-        for offset in pages.indices where pages[offset].missing.contains(.pdfText) {
-            guard let source = editor.sourcePage(for: notebook.pages[pages[offset].number - 1]) else { continue }
-            pages[offset].fillPDFText(source.string ?? "")
-            try await Task.sleep(for: .milliseconds(10))
+        if pages.contains(where: { $0.missing.contains(.pdfText) }) {
+            var budget = AIContextBudget(limit: limit)
+            for offset in pages.indices {
+                if pages[offset].missing.contains(.pdfText) {
+                    if budget.exhausted { pages[offset].skipAtLimit(); continue }
+                    try await readPDFText(&pages[offset], editor, notebook: notebook)
+                }
+                budget.add(pages[offset])
+            }
         }
         let finished = pages
-        return await Task.detached(priority: .userInitiated) { AIContextBuilder.build(finished, limit: limit) }.value
+        return await detached(priority) { AIContextBuilder.build(finished, limit: limit) }
+    }
+
+    private static func readPDFText(_ target: inout AIContextPage, _ editor: EditorModel, notebook: Notebook) async throws {
+        let page = notebook.pages[target.number - 1]
+        let key = AIPDFTextCache.key(page: page, document: notebook.id)
+        if let known = pdfTexts.text(for: key) { target.fillPDFText(known); return }
+        guard let source = editor.sourcePage(for: page) else { return }
+        let text = source.string ?? ""
+        pdfTexts.remember(text, for: key)
+        target.fillPDFText(text)
+        try await Task.sleep(for: .milliseconds(10))
     }
 
     /// Every layer of the page through the thumbnail renderer, JPEG off the main actor.
     static func image(_ editor: EditorModel, page: Page, label: String, limit: Int) async throws -> AITurnImage {
         let source = editor.sourcePage(for: page)
+        // A PDFPage holds its document weakly, its CGPDFPage needs it alive.
+        let document = source?.document
+        defer { withExtendedLifetime(document) {} }
         let rendered = try await PageThumbnailCache.render(page, source: source?.pageRef.map { .page($0) } ?? .none,
                                                            longestSide: 1600, assets: editor.imageAssets)
-        withExtendedLifetime(source?.document) {}
         let limit = min(limit, AILimits.contract.maxImageBytes - 1)
         let encoded = await Task.detached(priority: .userInitiated) { () -> String? in
             for quality in [0.8, 0.65, 0.5, 0.35] as [CGFloat] {

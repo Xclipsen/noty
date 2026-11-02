@@ -74,6 +74,42 @@ test('Kaputte Dateien stoppen den Start statt Limits oder Sperren zu verlieren',
   await assert.rejects(new Metering({ root }).init(), /unlesbar/);
 });
 
+test('Befund 13: formal gültiges JSON mit falscher Struktur gilt als unlesbar', async t => {
+  const root = await tempDir(t);
+  const good = { id: 'a', name: 'Anna', status: 'active', dailyLimit: null, lastSeenAt: 1 };
+  for (const content of ['[5]', '"abc"', '5', 'null', '[null]', '[[]]', JSON.stringify([{ ...good, id: 5 }]), JSON.stringify([{ ...good, id: '' }]), JSON.stringify([{ ...good, name: 5 }]), JSON.stringify([{ ...good, status: 'chef' }]), JSON.stringify([{ ...good, dailyLimit: 'viel' }]), JSON.stringify([{ ...good, dailyLimit: -1 }]), JSON.stringify([{ ...good, lastSeenAt: 'nie' }])]) {
+    await writeFile(path.join(root, 'accounts.json'), content);
+    await assert.rejects(new Accounts({ root }).init(), /unlesbar/, content);
+  }
+  for (const content of ['[5]', '"abc"', '5', 'null', '[]', '{"gestern":{}}', '{"2026-03-01":5}', '{"2026-03-01":[]}', '{"2026-03-01":{"a":5}}', '{"2026-03-01":{"a":[1]}}', '{"2026-03-01":{"a":null}}']) {
+    await writeFile(path.join(root, 'metering.json'), content);
+    await assert.rejects(new Metering({ root }).init(), /unlesbar/, content);
+  }
+  await writeFile(path.join(root, 'accounts.json'), JSON.stringify([good]));
+  await writeFile(path.join(root, 'metering.json'), '{"2026-03-01":{"a":{"turns":2}}}');
+  assert.equal((await new Accounts({ root }).init()).get('a').status, 'active');
+  assert.equal((await new Metering({ root }).init()).sum('a').turns, 2);
+});
+
+test('Befund 8: Kontoname mit einzelnem Surrogat wird beim Laden repariert', async t => {
+  const root = await tempDir(t);
+  await writeFile(path.join(root, 'accounts.json'), JSON.stringify([{ id: 'a', name: 'Anna \ud83d', status: 'active', dailyLimit: null, lastSeenAt: 1 }]));
+  assert.equal((await new Accounts({ root }).init()).get('a').name, 'Anna \ufffd');
+});
+
+test('Befund 10: neues Konto rollt bei Schreibfehler zurück', async t => {
+  const root = await tempDir(t);
+  const accounts = await new Accounts({ root }).init();
+  accounts.writer.file = path.join(root, 'fehlt', 'accounts.json');
+  await assert.rejects(accounts.seen({ id: 'a', name: 'Anna' }), e => e.status === 503 && /gespeichert/.test(e.message));
+  assert.throws(() => accounts.get('a'), e => e.status === 404);
+  assert.deepEqual(accounts.list(), []);
+  accounts.writer.file = path.join(root, 'accounts.json');
+  assert.equal((await accounts.seen({ id: 'a', name: 'Anna' })).status, 'pending');
+  assert.equal((await new Accounts({ root }).init()).get('a').name, 'Anna');
+  await accounts.close();
+});
+
 test('Zähler: je Konto und UTC-Tag, Datei 600, überleben Neustart', async t => {
   const root = await tempDir(t);
   let now = Date.parse('2026-03-01T23:59:00Z');

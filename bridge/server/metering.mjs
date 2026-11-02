@@ -4,11 +4,15 @@ import { DAY_MS, LatestWriter } from './store.mjs';
 
 export const COUNTERS = ['turns', 'failedTurns', 'images', 'inputTokens', 'cachedInputTokens', 'outputTokens', 'reasoningOutputTokens'];
 export const emptyCounters = () => Object.fromEntries(COUNTERS.map(name => [name, 0]));
-const dayKey = time => new Date(time).toISOString().slice(0, 10);
+export const dayKey = time => new Date(time).toISOString().slice(0, 10);
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const isPlainObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
+const isUsageFile = saved => isPlainObject(saved) && Object.entries(saved).every(([day, users]) =>
+  DAY.test(day) && isPlainObject(users) && Object.values(users).every(isPlainObject));
 const addTo = (target, delta) => {
   for (const name of COUNTERS) {
     const value = delta[name];
-    if (Number.isSafeInteger(value)) target[name] += value;
+    if (Number.isSafeInteger(value)) target[name] = Math.max(0, target[name] + value);
   }
   return target;
 };
@@ -27,14 +31,15 @@ export class Metering {
       if (error.code === 'ENOENT') return this;
       throw new Error('Verbrauchsdatei ist unlesbar.');
     }
+    if (!isUsageFile(saved)) throw new Error('Verbrauchsdatei ist unlesbar.');
     for (const [day, users] of Object.entries(saved)) {
       this.days.set(day, new Map(Object.entries(users).map(([id, counters]) => [id, addTo(emptyCounters(), counters)])));
     }
     return this;
   }
   today() { return dayKey(this.now()); }
-  add(userId, delta) {
-    const day = this.today();
+  /** `day` hält einen Lauf auf dem Tag seiner Reservierung, auch über Mitternacht. */
+  add(userId, delta, day = this.today()) {
     if (!this.days.has(day)) this.days.set(day, new Map());
     const users = this.days.get(day);
     if (!users.has(userId)) users.set(userId, emptyCounters());
@@ -42,6 +47,7 @@ export class Metering {
   }
   save() { return this.writer.save(); }
   flush() { return this.writer.flush(); }
+  close() { return this.writer.close(); }
   /** Letzter Gesamtstand eines Laufs aus `tokenUsage.total` von thread/tokenUsage/updated. */
   static tokens(total) {
     const { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens } = total ?? {};

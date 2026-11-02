@@ -3,9 +3,7 @@
 // Aufruf: PLAYWRIGHT_MODULE=/pfad/node_modules/playwright node tests/admin-browser.mjs
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { createAdmin } from '../server/admin.mjs';
-import { SessionAuth } from '../server/auth.mjs';
-import { createApi } from '../server/http.mjs';
+import { createAdmin, createAdminApi } from '../server/admin.mjs';
 import { request, setup, until } from './helpers.mjs';
 import { startAccountBackend } from './fake-account-backend.mjs';
 
@@ -18,7 +16,7 @@ const HOSTILE_NAME = '<img src=x onerror=window.pwned=1>';
 
 const backend = await startAccountBackend(new Map(), { logins: [{ id: 'konto-admin', name: 'Chefin', password: PASSWORD }] });
 cleanups.push(() => backend.close());
-const ctx = await setup(t, { accounts: { adminIds: ['konto-admin'] }, rpc: { onTurn: () => {} } });
+const ctx = await setup(t, { activate: [], accounts: { adminIds: ['konto-admin'] }, rpc: { onTurn: () => {} } });
 
 const big = { inputTokens: 1_284_330, cachedInputTokens: 900_000, outputTokens: 48_211, reasoningOutputTokens: 9000 };
 await ctx.accounts.seen({ id: 'konto-admin', name: 'Chefin' });
@@ -36,7 +34,7 @@ ctx.hub.usage = async () => ({ checkedAt: Date.now(), limits: [
     { usedPercent: 93.5, windowDurationMins: 10080, resetsAt: Math.floor(Date.now() / 1000) + 3 * 86400 }] }] });
 
 let handler;
-const api = createApi({ hub: ctx.hub, accounts: ctx.accounts, auth: new SessionAuth({ accountUrl: backend.url }), admin: (...args) => handler(...args) });
+const api = createAdminApi((...args) => handler(...args));
 await new Promise(resolve => api.listen(0, '127.0.0.1', resolve));
 cleanups.push(() => { api.close(); api.closeAllConnections(); });
 const origin = `http://localhost:${api.address().port}`;

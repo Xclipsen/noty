@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, rename } from 'node:fs/promises';
 import path from 'node:path';
-import { buildPrompt, DEVELOPER_INSTRUCTIONS, HISTORY, neutralize, parseTurn, selectHistory } from '../server/hub.mjs';
-import { setup, settled, until, request, PNG, USER, OWNER } from './helpers.mjs';
+import { buildPrompt, DEVELOPER_INSTRUCTIONS, HISTORY, neutralize, parseTurn, selectHistory, SESSION_LIMITS } from '../server/hub.mjs';
+import { Metering } from '../server/metering.mjs';
+import { Store } from '../server/store.mjs';
+import { setup, settled, tempDir, until, request, PNG, USER, OWNER } from './helpers.mjs';
 
 const hang = () => {};
 const IMAGE = { mimeType: 'image/png', base64: PNG.toString('base64'), label: 'Seite 3' };
@@ -25,7 +27,7 @@ test('Lauf: Parameter, Antwort, Prozessende', async t => {
   const accepted = await hub.turn(USER, s.id, request('anfrage-0001', { context: { label: 'Mathe, Seite 3', text: '--- Seite 3 ---\nInhalt' }, images: [IMAGE], model: 'demo', effort: 'low' }));
   assert.equal(accepted.status, 'running');
   await settled(store, s.id);
-  const [rpc] = instances;
+  const rpc = instances.at(-1);
   const thread = rpc.calls.find(c => c.method === 'thread/start').params;
   assert.deepEqual({ ...thread, developerInstructions: undefined }, { cwd: root, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true, model: 'demo', developerInstructions: undefined });
   assert.equal(thread.developerInstructions, DEVELOPER_INSTRUCTIONS);
@@ -88,8 +90,8 @@ test('Provider-Fehlertext erreicht weder Nutzer noch Datei', async t => {
 test('Fehlerfälle beenden den Prozess und geben den Platz frei', async t => {
   for (const [rpc, expected] of [
     [{ failStart: true }, /fehlgeschlagen/],
-    [{ authType: 'apiKey' }, /nicht mit ChatGPT angemeldet/],
-    [{ authType: null }, /nicht mit ChatGPT angemeldet/],
+    [{ authType: 'apiKey' }, /nicht bei ChatGPT angemeldet/],
+    [{ authType: null }, /nicht bei ChatGPT angemeldet/],
     [{ onTurn: r => r.complete('failed', { message: 'english', codexErrorInfo: 'usageLimitExceeded' }) }, /Nutzungslimit/],
     [{ onTurn: r => r.complete('failed', { message: 'english', codexErrorInfo: { httpConnectionFailed: {} } }) }, /fehlgeschlagen/],
     [{ onTurn: r => r.emit('message', { method: 'error', params: { threadId: r.threadId, willRetry: false, error: { message: 'x' } } }) }, /fehlgeschlagen/],
@@ -459,7 +461,7 @@ test('Herunterfahren beendet Prozesse; Neustart meldet error', async t => {
 });
 
 test('Admin-Übersicht: nur Konten und Zähler, Codex-Ausfall bleibt null', async t => {
-  const { hub, store, accounts } = await setup(t, { accounts: { adminIds: [USER] } });
+  const { hub, store, accounts } = await setup(t, { activate: [], accounts: { adminIds: [USER] } });
   await accounts.seen({ id: USER, name: 'Anna' });
   await accounts.seen({ id: 'konto-b', name: 'Ben' });
   const s = await store.create(OWNER);
@@ -473,7 +475,7 @@ test('Admin-Übersicht: nur Konten und Zähler, Codex-Ausfall bleibt null', asyn
   assert.equal(overview.plan.limits[0].id, 'codex');
   assert.deepEqual(overview.users.map(u => [u.id, u.status, u.role, u.today.turns, u.last7.turns, u.last30.turns, u.total.turns]), [[USER, 'active', 'admin', 1, 1, 1, 1], ['konto-b', 'pending', 'user', 0, 0, 0, 0]]);
   assert.ok(!JSON.stringify(overview).includes('FRAGE-MARKER'));
-  const down = await setup(t, { rpc: { failStart: true } });
+  const down = await setup(t, { activate: [], rpc: { failStart: true } });
   const fallback = await down.hub.overview();
   assert.deepEqual([fallback.account, fallback.plan, fallback.users], [null, null, []]);
 });
@@ -506,7 +508,7 @@ test('Info und Usage: nur Erlaubtes, Prozess beendet, Fehler auf Deutsch', async
   assert.ok(instances.every(rpc => rpc.closed));
   const signedOut = await setup(t, { rpc: { authType: 'apiKey' } });
   assert.deepEqual({ ...(await signedOut.hub.info(USER)), limits: 0 }, { account: null, models: [], limits: 0 });
-  await assert.rejects(signedOut.hub.usage(), e => e.status === 503 && /nicht erreichbar/.test(e.message));
+  await assert.rejects(signedOut.hub.usage(), e => e.status === 503 && /nicht bei ChatGPT angemeldet/.test(e.message));
   const failing = await setup(t, { rpc: { failUsage: true } });
   await assert.rejects(failing.hub.usage(), e => e.status === 503 && !/privaten/.test(e.message));
 });
@@ -590,3 +592,496 @@ test('Eingabevalidierung', () => {
 });
 
 import { readFileSync as ReadSync } from 'node:fs';
+
+test('Befund 3: Konto, das während des Uploads auf pending fällt, startet keinen Lauf', async t => {
+  const { hub, store, accounts, instances } = await setup(t);
+  const s = await store.create(OWNER);
+  await accounts.update(USER, { status: 'pending' });
+  await assert.rejects(hub.turn(USER, s.id, request()), e => e.status === 403 && e.code === 'pending' && /wartet/.test(e.message));
+  await accounts.update(USER, { status: 'blocked' });
+  await assert.rejects(hub.turn(USER, s.id, request()), e => e.status === 403 && e.code === 'blocked' && /gesperrt/.test(e.message));
+  assert.equal(instances.length, 0);
+  assert.equal(hub.runs.size, 0);
+  assert.deepEqual([s.messages.length, s.requests.length], [0, 0]);
+});
+
+test('Befund 3: Konto ohne Eintrag gilt nicht als aktiv, Admin immer', async t => {
+  const { hub, store, instances } = await setup(t, { activate: [], accounts: { adminIds: ['konto-chef'] } });
+  const a = await store.create(OWNER);
+  await assert.rejects(hub.turn(USER, a.id, request()), e => e.status === 403 && e.code === 'pending');
+  const b = await store.create({ userId: 'konto-chef' });
+  await hub.turn('konto-chef', b.id, request());
+  await settled(store, b.id, 'konto-chef');
+  assert.equal(instances.length, 1);
+});
+
+const within = (promise, ms = 2000) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('hängt')), ms).unref())]);
+
+test('Befund 4: Übersicht hängt nicht an Codex, Prozess wird beendet, Fehlschlag kurz gemerkt', async t => {
+  const { hub, instances } = await setup(t, { rpc: { hangQueries: true }, hub: { queryTimeoutMs: 40, overviewTimeoutMs: 200, failureCacheMs: 60_000 } });
+  const data = await within(hub.overview());
+  assert.deepEqual([data.account, data.plan], [null, null]);
+  assert.deepEqual(data.users.map(user => user.id).sort(), [USER, 'konto-b'].sort());
+  await until(() => instances.every(rpc => rpc.closed));
+  const processes = instances.length;
+  const started = Date.now();
+  await within(hub.overview());
+  assert.equal(instances.length, processes, 'negativer Cache');
+  assert.ok(Date.now() - started < 30);
+});
+
+test('Befund 4: eigenes Zeitlimit der Übersicht greift auch bei hängendem Beenden', async t => {
+  const { hub } = await setup(t, { rpc: { hangQueries: true }, hub: { queryTimeoutMs: 400, overviewTimeoutMs: 40 } });
+  const data = await within(hub.overview());
+  assert.deepEqual([data.account, data.plan], [null, null]);
+});
+
+test('Befund 4: Standard-Zeitlimit der Übersicht liegt unter 20 s', async t => {
+  const { hub } = await setup(t);
+  assert.ok(hub.overviewTimeoutMs < 20_000);
+  assert.ok(hub.queryTimeoutMs <= hub.overviewTimeoutMs);
+});
+
+test('Befund 5: Sitzungen je Konto sind begrenzt, Fehlermeldung ist klar, andere Konten frei', async t => {
+  const { hub, store } = await setup(t, { hub: { maxSessions: 2 } });
+  const first = await hub.createSession(USER, {});
+  await hub.createSession(USER, {});
+  await assert.rejects(hub.createSession(USER, {}), e => e.status === 409 && /Chats/.test(e.message));
+  assert.equal(store.list(USER).length, 2);
+  await hub.createSession('konto-b', {});
+  await hub.remove(USER, first.id);
+  await hub.createSession(USER, {});
+  assert.equal(hub.maxSessions, 2);
+  assert.equal((await setup(t)).hub.maxSessions, 500);
+});
+
+test('Befund 5: gleichzeitiges Anlegen überschreitet die Grenze nicht', async t => {
+  const { hub, store } = await setup(t, { hub: { maxSessions: 3 } });
+  const results = await Promise.allSettled(Array.from({ length: 8 }, () => hub.createSession(USER, {})));
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, 3);
+  assert.equal(store.list(USER).length, 3);
+});
+
+test('Befund 5: requests und messages sind begrenzt, jüngste requestIds bleiben idempotent', async t => {
+  const { hub, store, metering, instances } = await setup(t);
+  const s = await store.create(OWNER);
+  s.requests = Array.from({ length: SESSION_LIMITS.requests + 50 }, (_, i) => `alt-anfrage-${i}`);
+  s.messages = Array.from({ length: SESSION_LIMITS.messages + 50 }, (_, i) => ({ id: `m${i}`, role: i % 2 ? 'assistant' : 'user', text: `Text ${i}` }));
+  const recent = s.requests.at(-1);
+  await hub.turn(USER, s.id, request('anfrage-neu-1'));
+  await settled(store, s.id);
+  assert.equal(s.requests.length, SESSION_LIMITS.requests);
+  assert.ok(s.messages.length <= SESSION_LIMITS.messages + 1);
+  assert.equal(s.messages.at(-1).role, 'assistant');
+  assert.ok(s.messages.some(m => m.id === 'anfrage-neu-1'));
+  const runs = metering.forToday(USER).turns;
+  await hub.turn(USER, s.id, request(recent));
+  await hub.turn(USER, s.id, request('anfrage-neu-1'));
+  assert.equal(metering.forToday(USER).turns, runs);
+  assert.equal(instances.length, runs);
+});
+
+test('Befund 5: Zeichenzahl je Sitzung ist begrenzt, die neue Frage bleibt', async t => {
+  const { hub, store } = await setup(t);
+  const s = await store.create(OWNER);
+  const long = 'x'.repeat(20_000);
+  s.messages = Array.from({ length: 150 }, (_, i) => ({ id: `m${i}`, role: 'user', text: long }));
+  await hub.turn(USER, s.id, request('anfrage-neu-1'));
+  await settled(store, s.id);
+  const chars = s.messages.reduce((sum, m) => sum + m.text.length, 0);
+  assert.ok(chars <= SESSION_LIMITS.chars + 100, String(chars));
+  assert.ok(s.messages.some(m => m.id === 'anfrage-neu-1'));
+});
+
+test('Befund 7: Lauf über Mitternacht bucht alles auf den Tag der Reservierung', async t => {
+  let now = Date.parse('2026-03-01T23:59:50Z');
+  let rpcRef;
+  const { hub, store, metering, instances } = await setup(t, { metering: { now: () => now }, rpc: { onTurn: rpc => { rpcRef = rpc; } } });
+  const s = await store.create(OWNER);
+  await hub.turn(USER, s.id, request('anfrage-0001', { images: [IMAGE] }));
+  await started(instances);
+  await until(() => rpcRef);
+  now = Date.parse('2026-03-02T00:00:10Z');
+  rpcRef.usage({ inputTokens: 100, cachedInputTokens: 10, outputTokens: 20, reasoningOutputTokens: 1 });
+  rpcRef.complete('failed', { message: 'x' });
+  await settled(store, s.id);
+  const first = metering.days.get('2026-03-01').get(USER);
+  assert.deepEqual([first.turns, first.images, first.failedTurns, first.inputTokens, first.outputTokens], [1, 1, 1, 100, 20]);
+  assert.equal(metering.days.get('2026-03-02')?.get(USER), undefined);
+  assert.equal(metering.forToday(USER).turns, 0);
+});
+
+test('Befund 7: Speicherfehler um Mitternacht hinterlässt kein -1', async t => {
+  let now = Date.parse('2026-03-01T23:59:59Z');
+  const { hub, store, metering } = await setup(t, { metering: { now: () => now } });
+  const s = await store.create(OWNER);
+  const { save } = store;
+  store.save = async () => { now = Date.parse('2026-03-02T00:00:01Z'); throw new Error('Platte voll'); };
+  await assert.rejects(hub.turn(USER, s.id, request('anfrage-0001', { images: [IMAGE] })), e => e.status === 503);
+  store.save = save;
+  assert.deepEqual([metering.forToday(USER).turns, metering.forToday(USER).images], [0, 0]);
+  assert.equal(metering.days.get('2026-03-01').get(USER).turns, 0);
+  assert.equal(metering.sum(USER).turns, 0);
+});
+
+test('Befund 7: Zähler fallen nie unter null', async t => {
+  const { metering } = await setup(t);
+  metering.add(USER, { turns: -1, images: -4 });
+  assert.deepEqual([metering.forToday(USER).turns, metering.forToday(USER).images], [0, 0]);
+});
+
+const LONE = '\ud83d';
+
+test('Befund 8: Titel wird an Graphemen gekürzt, Liste bleibt strikt lesbares JSON', async t => {
+  const { hub, store } = await setup(t);
+  for (const [text, expected] of [
+    [`${'a'.repeat(64)}😀 weiter`, 'a'.repeat(64)],
+    [`${'a'.repeat(60)}👩‍👩‍👧‍👦 weiter`, 'a'.repeat(60)],
+    [`${'a'.repeat(62)}🇩🇪 Flagge`, 'a'.repeat(62)],
+    ['😀'.repeat(40), '😀'.repeat(32)],
+    [`${'a'.repeat(63)}éé`, `${'a'.repeat(63)}é`]
+  ]) {
+    const s = await store.create(OWNER);
+    await hub.turn(USER, s.id, request('anfrage-0001', { text }));
+    await settled(store, s.id);
+    assert.equal(s.title, expected);
+    assert.ok(s.title.isWellFormed());
+    assert.ok(!/\\ud[89ab]/i.test(JSON.stringify(store.list(USER))));
+  }
+});
+
+test('Befund 8: ein einzelnes übergroßes Graphem lässt den Standardtitel stehen', async t => {
+  const { hub, store } = await setup(t);
+  const s = await store.create(OWNER);
+  await hub.turn(USER, s.id, request('anfrage-0001', { text: `e${'́'.repeat(100)}` }));
+  await settled(store, s.id);
+  assert.equal(s.title, 'Neuer Chat');
+});
+
+test('Befund 8: einzelne Surrogate werden abgewiesen', async t => {
+  const { hub, store } = await setup(t);
+  const ok = { requestId: 'anfrage-0001', text: 'Frage' };
+  for (const body of [
+    { ...ok, text: `Frage ${LONE}` },
+    { ...ok, text: `\udc00 Frage` },
+    { ...ok, context: { label: `Heft ${LONE}`, text: 'x' } },
+    { ...ok, context: { label: 'Heft', text: `x ${LONE}` } },
+    { ...ok, images: [{ ...IMAGE, label: `Seite ${LONE}` }] }
+  ]) assert.throws(() => parseTurn(body), e => e.status === 400, JSON.stringify(body));
+  assert.doesNotThrow(() => parseTurn({ ...ok, text: 'Frage 😀' }));
+  await assert.rejects(hub.createSession(USER, { title: `Titel ${LONE}` }), e => e.status === 400);
+  assert.equal(store.list(USER).length, 0);
+});
+
+test('Befund 8: Antworttext von Codex bleibt wohlgeformt, auch über Deltagrenzen', async t => {
+  const delta = (r, itemId, text) => r.emit('message', { method: 'item/agentMessage/delta', params: { threadId: r.threadId, itemId, delta: text } });
+  const seen = [];
+  const onTurn = async r => {
+    r.emit('message', { method: 'turn/started', params: { threadId: r.threadId, turn: { id: r.turnId } } });
+    delta(r, 'a', 'Hallo \ud83d');
+    await until(() => seen.at(-1) && !seen.at(-1).isWellFormed() || seen.length > 0);
+    delta(r, 'a', '\ude00 Welt');
+    delta(r, 'b', `Rest ${LONE} Ende`);
+    r.emit('message', { method: 'item/completed', params: { threadId: r.threadId, item: { id: 'b', type: 'agentMessage', text: `Rest ${LONE} Ende` } } });
+    r.complete();
+  };
+  const { hub, store } = await setup(t, { rpc: { onTurn } });
+  const s = await store.create(OWNER);
+  const touch = store.touch.bind(store);
+  store.touch = session => { seen.push(session.messages.at(-1).text); touch(session); };
+  await hub.turn(USER, s.id, request());
+  await settled(store, s.id);
+  assert.ok(seen.every(text => text.isWellFormed()), 'Zwischenstände');
+  const [a, b] = s.messages.filter(m => m.role === 'assistant');
+  assert.equal(a.text, 'Hallo 😀 Welt');
+  assert.equal(b.text, 'Rest � Ende');
+});
+
+test('Befund 8: Deltas ohne Text schreiben kein undefined in die Antwort', async t => {
+  const onTurn = r => {
+    r.emit('message', { method: 'item/agentMessage/delta', params: { threadId: r.threadId, itemId: 'a' } });
+    r.finish('gut');
+  };
+  const { hub, store } = await setup(t, { rpc: { onTurn } });
+  const s = await store.create(OWNER);
+  await hub.turn(USER, s.id, request());
+  await settled(store, s.id);
+  assert.ok(!s.messages.some(m => m.text.includes('undefined')));
+});
+
+test('Befund 9: Fehler beim Prompt-Aufbau verliert keinen Laufplatz', async t => {
+  const { hub, store, metering, instances } = await setup(t);
+  const a = await store.create(OWNER);
+  const b = await store.create(OWNER);
+  const broken = { id: 'x', role: 'user' };
+  a.messages.push(broken);
+  for (let i = 0; i < 3; i++) await assert.rejects(hub.turn(USER, a.id, request(`anfrage-000${i}`)), e => e.status === 503);
+  assert.equal(hub.runs.size, 0);
+  assert.equal(a.status, 'idle');
+  assert.deepEqual(a.requests, []);
+  assert.deepEqual(a.messages, [broken]);
+  assert.equal(metering.forToday(USER).turns, 0);
+  await hub.turn(USER, b.id, request());
+  await settled(store, b.id);
+  assert.equal(instances.length, 1);
+});
+
+test('Befund 10: Lauf übersteht den Schreibfehler, Stand steht danach auf der Platte', async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const { hub, store, metering, root } = await setup(t, { store: { retryMs: 5 }, rpc: { onTurn: async r => { await gate; r.finish(); } } });
+  metering.writer.retryMs = 5;
+  const s = await store.create(OWNER);
+  await hub.turn(USER, s.id, request());
+  const moved = `${store.sessionsDir}.weg`;
+  await until(() => hub.runs.get(s.id)?.turnId);
+  await rename(store.sessionsDir, moved);
+  const meteringFile = metering.writer.file;
+  metering.writer.file = path.join(root, 'fehlt', 'metering.json');
+  release();
+  await settled(store, s.id);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(s.status, 'idle');
+  assert.equal(s.messages.at(-1).role, 'assistant');
+  await rename(moved, store.sessionsDir);
+  metering.writer.file = meteringFile;
+  await until(() => { try { return JSON.parse(ReadSync(store.file(s.id))).status === 'idle'; } catch { return false; } });
+  assert.equal(JSON.parse(ReadSync(store.file(s.id))).messages.at(-1).role, 'assistant');
+  metering.add(USER, { images: 0 });
+  await until(() => { try { return ReadSync(meteringFile, 'utf8').includes('"turns":1'); } catch { return false; } });
+});
+
+test('Befund 10: gescheiterter Laufstart hinterlässt auf der Platte keinen running-Stand', async t => {
+  const { hub, store, metering, root } = await setup(t, { store: { retryMs: 5 } });
+  metering.writer.retryMs = 5;
+  const s = await store.create(OWNER);
+  const file = metering.writer.file;
+  metering.writer.file = path.join(root, 'fehlt', 'metering.json');
+  await assert.rejects(hub.turn(USER, s.id, request()), e => e.status === 503);
+  metering.writer.file = file;
+  await store.flush();
+  await until(() => JSON.parse(ReadSync(store.file(s.id))).status === 'idle');
+  assert.deepEqual(JSON.parse(ReadSync(store.file(s.id))).requests, []);
+  assert.equal(hub.runs.size, 0);
+});
+
+test('Befund 10: DELETE ist ganz oder gar nicht, auch während eines Laufs', async t => {
+  const { hub, store, instances } = await setup(t, { rpc: { onTurn: hang } });
+  const s = await store.create(OWNER);
+  await hub.turn(USER, s.id, request());
+  await started(instances);
+  const unlinkFile = store.unlinkFile;
+  store.unlinkFile = async () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); };
+  await assert.rejects(hub.remove(USER, s.id), e => e.status === 503 && /gelöscht/.test(e.message));
+  assert.equal(store.get(s.id, USER), s);
+  assert.equal(s.status, 'running');
+  assert.ok(hub.runs.has(s.id), 'Lauf läuft weiter');
+  store.touch(s);
+  await store.flush();
+  assert.equal(JSON.parse(ReadSync(store.file(s.id))).revision, s.revision);
+  store.unlinkFile = unlinkFile;
+  await hub.remove(USER, s.id);
+  assert.throws(() => store.get(s.id, USER), e => e.status === 404);
+  assert.throws(() => ReadSync(store.file(s.id)), e => e.code === 'ENOENT');
+  assert.equal(hub.runs.size, 0);
+});
+
+test('Befund 11: Neustart im Lauf zählt failedTurns genau einmal', async t => {
+  const first = await setup(t, { rpc: { onTurn: hang } });
+  const s = await first.store.create(OWNER);
+  await first.hub.turn(USER, s.id, request());
+  await started(first.instances);
+  await first.hub.close();
+  const second = await setup(t, { root: first.root });
+  await second.hub.startRetention();
+  assert.equal(second.metering.forToday(USER).failedTurns, 1);
+  await second.hub.close();
+  const third = await setup(t, { root: first.root });
+  await third.hub.startRetention();
+  assert.equal(third.metering.forToday(USER).failedTurns, 1);
+  assert.equal(third.metering.forToday(USER).turns, 1);
+});
+
+test('Befund 11: Absturz im Lauf zählt failedTurns auf den Tag des Laufs', async t => {
+  const root = await tempDir(t);
+  const first = await new Store({ root, now: () => Date.parse('2026-03-01T23:59:00Z') }).init();
+  const s = await first.create(OWNER);
+  s.status = 'running';
+  await first.save(s);
+  const { hub, metering } = await setup(t, { root, store: { now: () => Date.parse('2026-03-02T08:00:00Z') }, metering: { now: () => Date.parse('2026-03-02T08:00:00Z') } });
+  await hub.startRetention();
+  assert.equal(metering.days.get('2026-03-01').get(USER).failedTurns, 1);
+  assert.equal(metering.forToday(USER).failedTurns, 0);
+});
+
+const TOKENS = { inputTokens: 120, cachedInputTokens: 20, outputTokens: 30, reasoningOutputTokens: 5 };
+const usageThenHang = r => { r.usage(TOKENS); };
+
+test('Befund 11: abgebrochene Läufe zählen den letzten bekannten Tokenstand', async t => {
+  for (const abort of [
+    ({ hub, s }) => hub.cancel(USER, s.id),
+    ({ hub }) => hub.abortUser(USER),
+    ({ hub, s }) => hub.remove(USER, s.id)
+  ]) {
+    const { hub, store, metering, instances } = await setup(t, { rpc: { onTurn: usageThenHang } });
+    const s = await store.create(OWNER);
+    await hub.turn(USER, s.id, request());
+    await started(instances);
+    await until(() => hub.runs.get(s.id)?.queue && instances.at(-1).calls.some(c => c.method === 'turn/start'));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await abort({ hub, s });
+    await until(() => hub.runs.size === 0);
+    assert.equal(metering.forToday(USER).inputTokens, 120);
+    assert.equal(metering.forToday(USER).outputTokens, 30);
+  }
+});
+
+test('Befund 11: Tokenstand übersteht auch einen harten Absturz', async t => {
+  const { hub, store, metering, instances, root } = await setup(t, { rpc: { onTurn: usageThenHang } });
+  const s = await store.create(OWNER);
+  await hub.turn(USER, s.id, request());
+  await started(instances);
+  await until(() => metering.forToday(USER).inputTokens > 0);
+  await metering.flush();
+  const reloaded = await new Metering({ root }).init();
+  assert.equal(reloaded.forToday(USER).inputTokens, 120);
+  await hub.cancel(USER, s.id);
+  await settled(store, s.id);
+});
+
+const SIGNED_OUT = 'Der Dienst ist nicht bei ChatGPT angemeldet.';
+
+test('Befund 12: ohne ChatGPT-Anmeldung klarer Text, auch ohne Modellkatalog', async t => {
+  const { ApiError } = await import('../server/store.mjs');
+  const { hub, store } = await setup(t, { rpc: { authType: null }, hub: { prepareCatalog: async () => { throw new ApiError(503, 'Der Modellkatalog ist noch nicht verfügbar.'); } } });
+  const s = await store.create(OWNER);
+  await hub.turn(USER, s.id, request());
+  const done = await settled(store, s.id);
+  assert.equal(done.status, 'error');
+  assert.equal(done.messages.at(-1).text, SIGNED_OUT);
+});
+
+test('Befund 12: objektförmige Codex-Fehler werden erkannt', async t => {
+  for (const [info, expected] of [
+    [{ httpConnectionFailed: { httpStatusCode: 401 } }, SIGNED_OUT],
+    [{ responseStreamConnectionFailed: { httpStatusCode: 401 } }, SIGNED_OUT],
+    ['unauthorized', SIGNED_OUT],
+    [{ unauthorized: {} }, SIGNED_OUT],
+    [{ httpConnectionFailed: { httpStatusCode: 429 } }, 'Zu viele Anfragen. Bitte später erneut versuchen.'],
+    [{ usageLimitExceeded: { resetsAt: 1 } }, 'Das ChatGPT-Nutzungslimit ist erreicht.'],
+    [{ httpConnectionFailed: { httpStatusCode: 500 } }, 'Die Anfrage an den KI-Dienst ist fehlgeschlagen.'],
+    ['constructor', 'Die Anfrage an den KI-Dienst ist fehlgeschlagen.'],
+    [{ constructor: {} }, 'Die Anfrage an den KI-Dienst ist fehlgeschlagen.'],
+    [null, 'Die Anfrage an den KI-Dienst ist fehlgeschlagen.']
+  ]) {
+    for (const onTurn of [
+      r => r.complete('failed', { message: 'english', codexErrorInfo: info }),
+      r => r.emit('message', { method: 'error', params: { threadId: r.threadId, willRetry: false, error: { message: 'x', codexErrorInfo: info } } })
+    ]) {
+      const { hub, store } = await setup(t, { rpc: { onTurn } });
+      const s = await store.create(OWNER);
+      await hub.turn(USER, s.id, request());
+      assert.equal((await settled(store, s.id)).messages.at(-1).text, expected, JSON.stringify(info));
+    }
+  }
+});
+
+test('Befund 12: Info-Cache überdeckt eine neue Anmeldung nicht, Erfolg bleibt 60 s', async t => {
+  const rpc = { authType: null };
+  const { hub, instances } = await setup(t, { rpc, hub: { failureCacheMs: 15 } });
+  assert.equal((await hub.info(USER)).account, null);
+  assert.equal((await hub.info(USER)).account, null);
+  assert.equal(instances.length, 1, 'kurz gemerkt');
+  rpc.authType = 'chatgpt';
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal((await hub.info(USER)).account, 'chatgpt');
+  const count = instances.length;
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal((await hub.info(USER)).account, 'chatgpt');
+  assert.equal(instances.length, count, 'Erfolg bleibt im Cache');
+});
+
+test('Befund 12: Ausfall wird kurz gemerkt, nicht 60 s, und Nutzung nennt die fehlende Anmeldung', async t => {
+  const rpc = { failStart: true };
+  const { hub, instances } = await setup(t, { rpc, hub: { failureCacheMs: 15 } });
+  await assert.rejects(hub.info(USER), e => e.status === 503);
+  await assert.rejects(hub.info(USER), e => e.status === 503);
+  assert.equal(instances.length, 1);
+  rpc.failStart = false;
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal((await hub.info(USER)).account, 'chatgpt');
+  const out = await setup(t, { rpc: { authType: null } });
+  await assert.rejects(out.hub.usage(), e => e.status === 503 && e.message === SIGNED_OUT);
+});
+
+test('Befund 13: mimeType muss ein String sein', () => {
+  for (const mimeType of [['image/png'], { toString: () => 'image/png' }, 5, null]) {
+    assert.throws(() => parseTurn({ requestId: 'anfrage-0001', text: 'x', images: [{ ...IMAGE, mimeType }] }), e => e.status === 400, String(mimeType));
+  }
+});
+
+test('Befund 13: model kommt nur aus der sichtbaren Liste', async t => {
+  const { hub, store, instances } = await setup(t);
+  const s = await store.create(OWNER);
+  for (const model of ['versteckt', 'gibt-es-nicht']) await assert.rejects(hub.turn(USER, s.id, request('anfrage-0001', { model })), e => e.status === 400 && /Modell/.test(e.message), model);
+  assert.deepEqual([s.messages.length, s.requests.length, hub.runs.size], [0, 0, 0]);
+  await hub.turn(USER, s.id, request('anfrage-0001', { model: 'demo' }));
+  await settled(store, s.id);
+  assert.equal(instances.at(-1).calls.find(c => c.method === 'thread/start').params.model, 'demo');
+});
+
+test('Befund 13: ohne Anmeldung nennt die Modellprüfung die Ursache; Wiederholung bleibt idempotent', async t => {
+  const rpc = {};
+  const { hub, store, instances } = await setup(t, { rpc, hub: { failureCacheMs: 0 } });
+  const s = await store.create(OWNER);
+  await hub.turn(USER, s.id, request('anfrage-0001', { model: 'demo' }));
+  await settled(store, s.id);
+  hub.cache.clear();
+  rpc.authType = null;
+  const count = instances.length;
+  assert.equal((await hub.turn(USER, s.id, request('anfrage-0001', { model: 'demo' }))).status, 'idle');
+  assert.equal(instances.length, count);
+  await assert.rejects(hub.turn(USER, s.id, request('anfrage-0002', { model: 'demo' })), e => e.status === 503 && e.message === SIGNED_OUT);
+});
+
+test('Befund 13: gleichzeitige Anfragen reservieren trotz Modellprüfung nur einen Lauf', async t => {
+  const { hub, store, instances, metering } = await setup(t);
+  const s = await store.create(OWNER);
+  const results = await Promise.allSettled([hub.turn(USER, s.id, request('anfrage-0001', { model: 'demo' })), hub.turn(USER, s.id, request('anfrage-0001', { model: 'demo' }))]);
+  assert.ok(results.every(r => r.status === 'fulfilled'));
+  await settled(store, s.id);
+  assert.equal(metering.forToday(USER).turns, 1);
+  assert.equal(instances.filter(rpc => rpc.calls.some(c => c.method === 'turn/start')).length, 1);
+});
+
+test('Befund 13: Sitzung, die während der Modellprüfung gelöscht wird, startet nichts', async t => {
+  const { hub, store, instances } = await setup(t);
+  const s = await store.create(OWNER);
+  const turn = hub.turn(USER, s.id, request('anfrage-0001', { model: 'demo' })).catch(error => error);
+  await hub.remove(USER, s.id);
+  assert.equal((await turn).status, 404);
+  assert.equal(instances.filter(rpc => rpc.calls.some(c => c.method === 'turn/start')).length, 0);
+});
+
+test('Befund 13: Lauf ohne Antworttext meldet das', async t => {
+  for (const onTurn of [r => r.complete(), r => r.finish(''), r => r.finish('  \n')]) {
+    const { hub, store, metering } = await setup(t, { rpc: { onTurn } });
+    const s = await store.create(OWNER);
+    await hub.turn(USER, s.id, request());
+    const done = await settled(store, s.id);
+    assert.equal(done.status, 'error');
+    assert.equal(done.messages.at(-1).role, 'system');
+    assert.match(done.messages.at(-1).text, /keine Antwort/);
+    assert.equal(metering.forToday(USER).failedTurns, 1);
+  }
+});
+
+test('Befund 13: abgelehnte Anfrage mit Bild nennt das Bild, ohne Bild nicht', async t => {
+  const onTurn = r => r.complete('failed', { message: 'english', codexErrorInfo: 'badRequest' });
+  const { hub, store } = await setup(t, { rpc: { onTurn } });
+  const s = await store.create(OWNER);
+  await hub.turn(USER, s.id, request('anfrage-0001', { images: [IMAGE] }));
+  assert.match((await settled(store, s.id)).messages.at(-1).text, /Bild/);
+  await hub.turn(USER, s.id, request('anfrage-0002'));
+  assert.doesNotMatch((await settled(store, s.id)).messages.at(-1).text, /Bild/);
+});

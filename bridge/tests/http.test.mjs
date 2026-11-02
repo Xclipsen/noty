@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { request as httpRequest } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { connect } from 'node:net';
+import { readFile, rename } from 'node:fs/promises';
+import { createAdminApi } from '../server/admin.mjs';
 import { MAX_BODY } from '../server/http.mjs';
 import { serve, settled, request, until, TOKEN, TOKEN_B, USER, PNG } from './helpers.mjs';
 
@@ -39,7 +41,7 @@ test('Ohne gültige Sitzung wird ein großer Körper nicht ausgewertet', async t
 });
 
 test('Backend down: 503 für jeden /v1-Pfad, auch /v1/me', async t => {
-  const ctx = await serve(t);
+  const ctx = await serve(t, { auth: { failureTtlMs: 0 } });
   ctx.backend.down = true;
   for (const path of ['/v1/me', '/v1/info', '/v1/sessions']) {
     const res = await ctx.call('GET', path);
@@ -141,18 +143,24 @@ test('Sitzungsprüfung läuft höchstens einmal je Minute je Schlüssel', async 
   assert.equal((await ctx.call('GET', '/v1/me')).status, 401);
 });
 
-test('Einhängepunkt /admin: ohne Handler 404, mit Handler ohne /v1-Prüfung', async t => {
-  const without = await serve(t);
-  for (const path of ['/admin', '/admin/api/overview']) assert.equal((await without.call('GET', path, undefined, {})).status, 404);
-  assert.equal(without.backend.lookups, 0);
-  assert.equal((await without.call('GET', '/adminx', undefined, {})).status, 404);
+test('Der App-Listener kennt /admin nicht, der Admin-Listener prüft keine Kontositzung', async t => {
+  const ctx = await serve(t);
+  for (const path of ['/admin', '/admin/api/overview', '/adminx']) assert.equal((await ctx.call('GET', path, undefined, {})).status, 404, path);
   const seen = [];
-  const withHandler = await serve(t, { admin: async (req, res, url) => { seen.push(url.pathname); res.writeHead(200); res.end('panel'); } });
-  const res = await withHandler.call('GET', '/admin', undefined, {});
+  const listen = async handler => {
+    const server = createAdminApi(handler);
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => { server.close(); server.closeAllConnections(); });
+    return `http://127.0.0.1:${server.address().port}`;
+  };
+  const base = await listen(async (req, res, url) => { seen.push(url.pathname); res.writeHead(200); res.end('panel'); });
+  const res = await fetch(`${base}/admin`);
   assert.equal(await res.text(), 'panel');
   assert.deepEqual(seen, ['/admin']);
-  const failing = await serve(t, { admin: async () => { throw new Error('intern'); } });
-  assert.deepEqual(await (await failing.call('GET', '/admin/x', undefined, {})).json(), { error: 'Interner Fehler.' });
+  assert.equal((await fetch(`${base}/adminx`)).status, 404);
+  assert.deepEqual(seen, ['/admin']);
+  const failing = await listen(async () => { throw new Error('intern'); });
+  assert.deepEqual(await (await fetch(`${failing}/admin/x`)).json(), { error: 'Interner Fehler.' });
 });
 
 test('Sitzungen: anlegen, listen, filtern, abfragen, löschen', async t => {
@@ -281,4 +289,191 @@ test('Sitzungsdatei enthält nach HTTP-Lauf den Kontext nicht', async t => {
   await settled(ctx.store, session.id);
   await ctx.store.flush();
   assert.ok(!(await readFile(ctx.store.file(session.id), 'utf8')).includes('HTTP-MARKER-99'));
+});
+
+const authHeaders = (token = TOKEN) => ({ authorization: `Bearer ${token}`, 'content-type': 'application/json' });
+
+/** Hält einen Upload offen: Kopf ist da, der Körper kommt erst mit `finish`. */
+function openUpload(port, path, headers = authHeaders()) {
+  const upload = {};
+  upload.done = new Promise((resolve, reject) => {
+    upload.req = httpRequest({ port, host: '127.0.0.1', method: 'POST', path, headers: { ...headers, 'transfer-encoding': 'chunked' } }, res => {
+      let body = ''; res.setEncoding('utf8'); res.on('data', d => { body += d; }); res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
+    });
+    upload.req.on('error', reject);
+  });
+  upload.req.flushHeaders();
+  upload.req.write(' ');
+  return upload;
+}
+const turnsPath = async (ctx, token = TOKEN) => {
+  const res = await ctx.call('POST', '/v1/sessions', {}, { authorization: `Bearer ${token}` });
+  return `/v1/sessions/${(await res.json()).id}/turns`;
+};
+const waitFor = async (condition, what) => {
+  for (let i = 0; i < 400; i++) { if (await condition()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
+  assert.fail(what);
+};
+
+test('Befund 3: Sperre während des Uploads kommt als 403 mit code beim Client an', async t => {
+  const ctx = await serve(t);
+  const path = await turnsPath(ctx);
+  const upload = openUpload(ctx.api.address().port, path);
+  await waitFor(() => ctx.uploads.active === 1, 'Upload läuft nicht');
+  await ctx.accounts.update(USER, { status: 'pending' });
+  upload.req.end(JSON.stringify(request()));
+  const res = await upload.done;
+  assert.equal(res.status, 403);
+  assert.equal(JSON.parse(res.body).code, 'pending');
+  assert.equal(ctx.instances.length, 0);
+});
+
+test('Befund 5: parallele Uploads sind je Konto und global gedeckelt', async t => {
+  const ctx = await serve(t, { uploads: { perAccount: 2, global: 3 } });
+  const { port } = ctx.api.address();
+  const mine = await Promise.all([turnsPath(ctx), turnsPath(ctx), turnsPath(ctx)]);
+  const other = await Promise.all([turnsPath(ctx, TOKEN_B), turnsPath(ctx, TOKEN_B)]);
+  const open = [openUpload(port, mine[0]), openUpload(port, mine[1])];
+  await waitFor(() => ctx.uploads.active === 2, 'Uploads laufen nicht');
+  const third = await raw(port, { path: mine[2], headers: authHeaders(), chunks: [JSON.stringify(request())] });
+  assert.equal(third.status, 429);
+  assert.match(JSON.parse(third.body).error, /Upload/);
+  assert.ok(Number(third.headers['retry-after']) > 0);
+  open.push(openUpload(port, other[0], authHeaders(TOKEN_B)));
+  await waitFor(() => ctx.uploads.active === 3, 'Upload läuft nicht');
+  const global = await raw(port, { path: other[1], headers: authHeaders(TOKEN_B), chunks: [JSON.stringify(request())] });
+  assert.equal(global.status, 429);
+  for (const [index, upload] of open.entries()) {
+    upload.req.end(JSON.stringify(request()));
+    assert.equal((await upload.done).status, 202);
+    await settled(ctx.store, (index === 2 ? other[0] : mine[index]).split('/')[3], index === 2 ? 'konto-b' : USER);
+    await waitFor(() => ctx.hub.runs.size === 0, 'Lauf endet nicht');
+  }
+  assert.equal(ctx.uploads.active, 0);
+});
+
+test('Befund 5: abgebrochener Upload gibt seinen Platz frei', async t => {
+  const ctx = await serve(t, { uploads: { perAccount: 1, global: 1 } });
+  const path = await turnsPath(ctx);
+  const upload = openUpload(ctx.api.address().port, path);
+  upload.done.catch(() => {});
+  await waitFor(() => ctx.uploads.active === 1, 'Upload läuft nicht');
+  upload.req.destroy();
+  await waitFor(() => ctx.uploads.active === 0, 'Platz bleibt belegt');
+  const res = await raw(ctx.api.address().port, { path, headers: authHeaders(), chunks: [JSON.stringify(request())] });
+  assert.equal(res.status, 202);
+  await settled(ctx.store, path.split('/')[3]);
+});
+
+test('Befund 5: Fehlerfälle geben den Upload-Platz frei', async t => {
+  const ctx = await serve(t, { uploads: { perAccount: 1, global: 1 } });
+  const { port } = ctx.api.address();
+  const path = await turnsPath(ctx);
+  for (const [body, status] of [['{kaputt', 400], ['{"requestId":"x"}', 400]]) assert.equal((await raw(port, { path, headers: authHeaders(), chunks: [body] })).status, status);
+  assert.equal(ctx.uploads.active, 0);
+});
+
+test('Befund 5: Standardgrenzen stehen im Code', async t => {
+  const ctx = await serve(t);
+  assert.deepEqual([ctx.uploads.perAccount, ctx.uploads.global], [2, 4]);
+});
+
+test('Befund 2: Flut über HTTP ergibt 429 mit Retry-After; X-Real-IP trennt Clients', async t => {
+  const ctx = await serve(t, { auth: { maxClientLookups: 2 } });
+  const flood = (ip, token) => ctx.call('GET', '/v1/me', undefined, { authorization: `Bearer ${token}`, 'x-real-ip': ip });
+  for (const token of ['1', '2']) assert.equal((await flood('198.51.100.1', token.repeat(64))).status, 401);
+  const res = await flood('198.51.100.1', '3'.repeat(64));
+  assert.equal(res.status, 429);
+  assert.ok(Number(res.headers.get('retry-after')) > 0);
+  assert.equal((await flood('198.51.100.2', '4'.repeat(64))).status, 401);
+  assert.equal((await ctx.call('GET', '/v1/me')).status, 200);
+});
+
+test('Befund 10: POST /v1/sessions bei voller Platte ist 503 und hinterlässt nichts', async t => {
+  const ctx = await serve(t);
+  const moved = `${ctx.store.sessionsDir}.weg`;
+  await rename(ctx.store.sessionsDir, moved);
+  const res = await ctx.call('POST', '/v1/sessions', {});
+  assert.equal(res.status, 503);
+  await rename(moved, ctx.store.sessionsDir);
+  assert.deepEqual(await (await ctx.call('GET', '/v1/sessions')).json(), []);
+  assert.equal((await ctx.call('POST', '/v1/sessions', {})).status, 201);
+});
+
+test('Befund 10: DELETE, das nicht löschen kann, ist 503 und lässt alles stehen', async t => {
+  const ctx = await serve(t);
+  const session = await (await ctx.call('POST', '/v1/sessions', {})).json();
+  ctx.store.unlinkFile = async () => { throw Object.assign(new Error('EROFS'), { code: 'EROFS' }); };
+  assert.equal((await ctx.call('DELETE', `/v1/sessions/${session.id}`)).status, 503);
+  assert.equal((await ctx.call('GET', `/v1/sessions/${session.id}`)).status, 200);
+  assert.equal((await (await ctx.call('GET', '/v1/sessions')).json()).length, 1);
+});
+
+test('Befund 10: neues Konto bei voller Platte ist 503, kein halbes Konto', async t => {
+  const ctx = await serve(t, { activate: [] });
+  const file = ctx.accounts.writer.file;
+  ctx.accounts.writer.file = `${ctx.root}/fehlt/accounts.json`;
+  assert.equal((await ctx.call('GET', '/v1/me')).status, 503);
+  assert.deepEqual(ctx.accounts.list(), []);
+  ctx.accounts.writer.file = file;
+  assert.equal((await (await ctx.call('GET', '/v1/me')).json()).status, 'pending');
+});
+
+test('Befund 13: mimeType-Liste ergibt über HTTP 400', async t => {
+  const ctx = await serve(t);
+  const path = await turnsPath(ctx);
+  const res = await ctx.call('POST', path, request('anfrage-0001', { images: [{ mimeType: ['image/png'], base64: PNG.toString('base64') }] }));
+  assert.equal(res.status, 400);
+});
+
+/** Lädt den ganzen Körper hoch wie ein Client, der nicht auf die Antwort wartet, und liest danach. */
+function fullUpload(port, head, body) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1');
+    let data = '';
+    socket.setEncoding('utf8');
+    socket.on('data', chunk => { data += chunk; if (data.includes('\r\n\r\n') && data.endsWith('}')) { socket.destroy(); resolve(data); } });
+    socket.on('error', reject);
+    socket.on('close', () => resolve(data));
+    socket.write(head);
+    socket.write(body);
+  });
+}
+
+test('Befund 13: 413 kommt auch bei vollem Upload an, statt ECONNRESET', async t => {
+  const ctx = await serve(t);
+  const { port } = ctx.api.address();
+  const path = await turnsPath(ctx);
+  const head = size => `POST ${path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${TOKEN}\r\nContent-Type: application/json\r\nContent-Length: ${size}\r\n\r\n`;
+  const answer = await fullUpload(port, head(MAX_BODY + 1), Buffer.alloc(MAX_BODY + 1, 0x20));
+  assert.match(answer, /^HTTP\/1\.1 413 /);
+  assert.match(answer, /zu groß/);
+  const chunked = `POST ${path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${TOKEN}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n`;
+  const chunk = Buffer.alloc(1024 * 1024, 0x20);
+  const framed = Buffer.concat([...Array(30).fill(0).flatMap(() => [Buffer.from('100000\r\n'), chunk, Buffer.from('\r\n')]), Buffer.from('0\r\n\r\n')]);
+  const second = await fullUpload(port, chunked, framed);
+  assert.match(second, /^HTTP\/1\.1 413 /);
+});
+
+test('Befund 13: die Körpergrenze bleibt beim Nachlesen hart, nichts wird gepuffert', async t => {
+  const ctx = await serve(t);
+  const { port } = ctx.api.address();
+  const path = await turnsPath(ctx);
+  const before = process.memoryUsage().arrayBuffers;
+  const head = `POST ${path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${TOKEN}\r\nContent-Type: application/json\r\nContent-Length: ${MAX_BODY * 100}\r\n\r\n`;
+  const socket = connect(port, '127.0.0.1');
+  let data = '';
+  socket.on('error', () => {});
+  socket.setEncoding('utf8');
+  socket.on('data', chunk => { data += chunk; });
+  const closed = new Promise(resolve => socket.on('close', resolve));
+  socket.write(head);
+  const chunk = Buffer.alloc(1024 * 1024, 0x20);
+  // Endlos sendender Client: Nach der Nachlese-Grenze trennt der Server.
+  const pump = () => { for (let i = 0; i < 8 && !socket.destroyed; i++) socket.write(chunk); if (!socket.destroyed) setImmediate(pump); };
+  pump();
+  await closed;
+  assert.match(data, /^HTTP\/1\.1 413 /);
+  assert.equal(ctx.store.get(path.split('/')[3], USER).messages.length, 0);
+  assert.ok(process.memoryUsage().arrayBuffers - before < 512 * 1024 * 1024);
 });

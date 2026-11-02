@@ -104,7 +104,9 @@ struct EditorWorkspaceView: View {
     @AppStorage(AppSettingsKey.aiEnabled) private var aiEnabled = false
     @AppStorage(AIAssistantModel.panelOpenKey) private var aiPanelOpen = false
     @State private var pageJump: AIPageJump?
-    private static let aiPanelWidth = 380.0
+    private static let aiPanelWidth = AIPanelPlacement.width
+    /// Swapped by the panel's own button; each active view starts afresh.
+    @State private var aiSideFlipped = false
     /// Live width while resizing; stored when the resize ends.
     @State private var lawWidth = UserDefaults.standard.object(forKey: LawLibraryModel.panelWidthKey) as? Double ?? 380
     @State private var lawResizeStart: Double?
@@ -174,17 +176,17 @@ struct EditorWorkspaceView: View {
             let lawStashed = lawShown && laws.stashed
             let lawVisible = lawShown && !laws.stashed
             let whole = PageSize(width: geometry.size.width, height: geometry.size.height)
-            // The assistant docks at the right edge unless a law window is
-            // docked or a second view needs the room; then it floats over the
-            // notebook area. Docked, the law window lives in the rest.
+            // The assistant docks at the right edge unless a second view needs
+            // the room; then it floats over the notebook area. Docked, the law
+            // window floats in the rest; its own dock setting stays as it is
+            // and applies again once the panel is closed.
             let aiShown = aiEnabled && aiPanelOpen
-            let lawHoldsDock = lawVisible && LawPanelLayout(size: whole, width: lawWidth, height: lawHeight, docked: laws.docked, edge: laws.panelEdge).docked
             let aiDock = LawPanelLayout(size: whole, width: Self.aiPanelWidth, height: 0,
-                                        docked: aiShown && workspace.secondary == nil && !lawHoldsDock, edge: .right)
+                                        docked: aiShown && workspace.secondary == nil, edge: .right)
             let lawArea = aiDock.docked ? PageSize(width: aiDock.notebookFrame.width, height: whole.height) : whole
             // A stashed window keeps its docked/floating shape for the way back
             // but gives the notebook its full width meanwhile.
-            let law = LawPanelLayout(size: lawArea, width: lawWidth, height: lawHeight, docked: laws.docked, edge: laws.panelEdge)
+            let law = LawPanelLayout(size: lawArea, width: lawWidth, height: lawHeight, docked: laws.docked && !aiDock.docked, edge: laws.panelEdge)
             let docking = lawVisible && law.docked
             // Docked at a side or along the bottom: the notebooks keep the rest.
             let notebookArea = docking ? law.notebookFrame : PageRect(x: 0, y: 0, width: lawArea.width, height: lawArea.height)
@@ -220,12 +222,17 @@ struct EditorWorkspaceView: View {
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
             .overlay(alignment: .topLeading) {
                 if lawsEnabled {
-                    lawLayer(law, shown: lawShown, visible: lawVisible, stashed: lawStashed)
+                    lawLayer(law, shown: lawShown, visible: lawVisible, stashed: lawStashed, dockTaken: aiDock.docked)
                         .frame(width: lawArea.width, height: lawArea.height).clipped()
                 }
             }
             .overlay(alignment: .topLeading) {
-                if aiShown { aiLayer(aiDock, notebookArea: notebookArea) }
+                if aiShown {
+                    // Docked it takes no room from the law window; floating it
+                    // keeps clear of the window or of its tab at the edge.
+                    let lawBlock: PageRect? = lawStashed ? law.edgeStrip(depth: Self.lawTabTouch) : lawVisible && !docking ? law.frame : nil
+                    aiLayer(aiDock, notebookArea: notebookArea, panes: split ? current : nil, size: size, law: lawBlock)
+                }
             }
             // Panes clip themselves already; this keeps a stashed law window
             // from drawing beyond the workspace edge.
@@ -243,6 +250,7 @@ struct EditorWorkspaceView: View {
             .animation(NotyMotion.panel(reduceMotion), value: current)
             .animation(NotyMotion.panel(reduceMotion), value: split)
             .animation(NotyMotion.highlight(reduceMotion), value: paneDrag?.target)
+            .onChange(of: workspace.activePane) { _, _ in aiSideFlipped = false }
             .animation(NotyMotion.highlight(reduceMotion), value: dividerFraction)
             .sensoryFeedback(.selection, trigger: paneDrag?.target)
             .sensoryFeedback(.selection, trigger: dividerFraction)
@@ -325,22 +333,28 @@ struct EditorWorkspaceView: View {
     private func toggleAI() {
         withAnimation(NotyMotion.panel(reduceMotion)) {
             aiPanelOpen.toggle()
-            // Opening takes the dock over; the law window floats on beside it.
-            if aiPanelOpen, laws.panelOpen, !laws.stashed, laws.docked { laws.docked = false }
         }
     }
 
-    private func aiLayer(_ dock: LawPanelLayout, notebookArea: PageRect) -> some View {
-        let room = PageSize(width: notebookArea.width, height: notebookArea.height)
-        let layout = dock.docked ? dock : LawPanelLayout(size: room, width: Self.aiPanelWidth, height: 0, docked: false, edge: .right)
-        let origin = dock.docked ? PagePoint(x: 0, y: 0) : PagePoint(x: notebookArea.x, y: notebookArea.y)
-        return AIPanelView(editor: activeModel, docked: dock.docked, onJump: { document, number in
+    private func aiLayer(_ dock: LawPanelLayout, notebookArea: PageRect, panes: SplitPaneArrangement?, size: PageSize, law: PageRect?) -> some View {
+        func view(_ pane: SplitPane, _ arrangement: SplitPaneArrangement) -> PageRect {
+            let frame = arrangement.frame(of: pane, in: size)
+            return PageRect(x: frame.x + notebookArea.x, y: frame.y + notebookArea.y, width: frame.width, height: frame.height)
+        }
+        let active = workspace.activePane == 1 ? SplitPane.secondary : .primary
+        let frame = dock.docked ? dock.frame
+            : AIPanelPlacement.frame(area: notebookArea, active: panes.map { view(active, $0) }, inactive: panes.map { view(active.other, $0) },
+                                     law: law, flipped: aiSideFlipped)
+        return AIPanelView(editor: activeModel, docked: dock.docked, onJump: { document, pageID in
             let model = activeModel
-            guard model.documentLoaded, model.notebook.id == document, model.notebook.pages.indices.contains(number - 1) else { return }
-            pageJump = AIPageJump(pane: workspace.activePane, pageID: model.notebook.pages[number - 1].id)
+            guard model.documentLoaded, model.notebook.id == document, model.notebook.pages.contains(where: { $0.id == pageID }) else { return }
+            pageJump = AIPageJump(pane: workspace.activePane, pageID: pageID)
+        }, onSwitchSide: dock.docked ? nil : {
+            aiSideFlipped.toggle()
         }, onClose: { toggleAI() })
-            .frame(width: layout.frame.width, height: layout.frame.height)
-            .offset(x: origin.x + layout.frame.x, y: origin.y + layout.frame.y)
+            .frame(width: frame.width, height: frame.height)
+            .offset(x: frame.x, y: frame.y)
+            .animation(NotyMotion.panel(reduceMotion), value: frame)
             .transition(.move(edge: .trailing).combined(with: .opacity))
     }
 
@@ -373,7 +387,7 @@ struct EditorWorkspaceView: View {
     private func lawTabEdges(_ edge: LawPanelEdge) -> Edge.Set { edge == .bottom ? .trailing : .bottom }
 
     @ViewBuilder
-    private func lawLayer(_ l: LawPanelLayout, shown: Bool, visible: Bool, stashed: Bool) -> some View {
+    private func lawLayer(_ l: LawPanelLayout, shown: Bool, visible: Bool, stashed: Bool, dockTaken: Bool) -> some View {
         let side = lawAlignment(l.edge)
         let offset = lawPanelOffset(l, stashed: stashed)
         let lifted = lawDrag.map { !$0.fromTab } ?? false
@@ -382,11 +396,11 @@ struct EditorWorkspaceView: View {
             if let drop = lawDrag?.drop, l.changes(drop) {
                 lawDropPreview(drop, l).allowsHitTesting(false).transition(.opacity)
             }
-            LawPanelView(drag: lawMoveGesture(l), pen: lawPen, onPenChange: { next in
+            LawPanelView(drag: lawMoveGesture(l, dockTaken: dockTaken), pen: lawPen, onPenChange: { next in
                 lawPencil = next.kind == .marker ? "marker" : next.kind == .eraser ? "eraser" : "none"
                 // One highlighter colour for notebook and law reader.
                 if next.color != toolbox.preferences.markerColor { toolbox.preferences.markerColor = next.color }
-            }, canDock: l.canDock)
+            }, canDock: l.canDock && !dockTaken, docked: l.docked)
                 .frame(width: frame.width, height: frame.height)
                 .opacity(shown ? 1 : 0).allowsHitTesting(visible).accessibilityHidden(!visible)
                 .scaleEffect(lifted ? 0.97 : 1)
@@ -461,30 +475,36 @@ struct EditorWorkspaceView: View {
     /// decides on release (stash behind an edge tab, dock left/right/bottom,
     /// or float). Measured in the fixed workspace space because the bar
     /// itself moves with the finger.
-    private func lawMoveGesture(_ l: LawPanelLayout) -> some Gesture {
+    private func lawMoveGesture(_ l: LawPanelLayout, dockTaken: Bool) -> some Gesture {
         DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.space))
             .updating($lawDragActive) { _, state, _ in state = true }
-            .onChanged { value in lawDrag = LawDrag(translation: value.translation, drop: lawDrop(value, l, flick: false), fromTab: false) }
+            .onChanged { value in lawDrag = LawDrag(translation: value.translation, drop: lawDrop(value, l, flick: false, dockTaken: dockTaken), fromTab: false) }
             .onEnded { value in
-                let drop = lawDrop(value, l, flick: true)
+                let drop = lawDrop(value, l, flick: true, dockTaken: dockTaken)
                 withAnimation(NotyMotion.panel(reduceMotion)) {
                     lawDrag = nil
-                    applyLawDrop(drop)
+                    applyLawDrop(drop, dockTaken: dockTaken)
                 }
             }
     }
 
-    private func lawDrop(_ value: DragGesture.Value, _ l: LawPanelLayout, flick: Bool) -> LawPanelDrop {
-        l.drop(translation: PagePoint(x: value.translation.width, y: value.translation.height),
-               location: PagePoint(x: value.location.x, y: value.location.y),
-               predictedTranslation: flick ? PagePoint(x: value.predictedEndTranslation.width, y: value.predictedEndTranslation.height) : nil,
-               predictedLocation: flick ? PagePoint(x: value.predictedEndLocation.x, y: value.predictedEndLocation.y) : nil)
+    private func lawDrop(_ value: DragGesture.Value, _ l: LawPanelLayout, flick: Bool, dockTaken: Bool) -> LawPanelDrop {
+        let drop = l.drop(translation: PagePoint(x: value.translation.width, y: value.translation.height),
+                          location: PagePoint(x: value.location.x, y: value.location.y),
+                          predictedTranslation: flick ? PagePoint(x: value.predictedEndTranslation.width, y: value.predictedEndTranslation.height) : nil,
+                          predictedLocation: flick ? PagePoint(x: value.predictedEndLocation.x, y: value.predictedEndLocation.y) : nil)
+        // While the assistant holds the dock the window can only float.
+        if dockTaken, case .dock(let edge) = drop { return .float(edge) }
+        return drop
     }
 
-    private func applyLawDrop(_ drop: LawPanelDrop) {
+    /// `dockTaken`: floating is forced, not chosen, so the dock setting stays.
+    private func applyLawDrop(_ drop: LawPanelDrop, dockTaken: Bool) {
         switch drop {
         case .stay: break
-        case .float(let edge): laws.docked = false; laws.panelEdge = edge
+        case .float(let edge):
+            if !dockTaken { laws.docked = false }
+            laws.panelEdge = edge
         case .dock(let edge): laws.docked = true; laws.panelEdge = edge
         case .stash(let edge): laws.panelEdge = edge; laws.stashed = true
         }

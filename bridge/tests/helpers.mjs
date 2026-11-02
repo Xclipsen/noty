@@ -6,7 +6,7 @@ import { Hub } from '../server/hub.mjs';
 import { Accounts } from '../server/accounts.mjs';
 import { Metering } from '../server/metering.mjs';
 import { SessionAuth } from '../server/auth.mjs';
-import { createApi } from '../server/http.mjs';
+import { UploadGate, createApi } from '../server/http.mjs';
 import { FakeRpc } from './fake-rpc.mjs';
 
 export const TOKEN = 'a'.repeat(64);
@@ -18,15 +18,20 @@ export const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0
 
 export async function tempDir(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'noty-ai-test-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 10 }));
   return root;
 }
 
-export async function setup(t, { rpc = {}, hub: hubOptions = {}, store: storeOptions = {}, accounts: accountOptions = {}, metering: meteringOptions = {}, root } = {}) {
+export async function setup(t, { activate = [USER, 'konto-b'], rpc = {}, hub: hubOptions = {}, store: storeOptions = {}, accounts: accountOptions = {}, metering: meteringOptions = {}, root } = {}) {
   root ??= await tempDir(t);
   const store = await new Store({ root, ...storeOptions }).init();
   const accounts = await new Accounts({ root, ...accountOptions }).init();
   const metering = await new Metering({ root, ...meteringOptions }).init();
+  for (const user of USERS.values()) {
+    if (!activate.includes(user.id)) continue;
+    await accounts.seen(user);
+    await accounts.update(user.id, { status: 'active' });
+  }
   const instances = [];
   const hub = new Hub({ store, accounts, metering, cwd: root, prepareCatalog: async () => path.join(root, 'katalog.json'), rpcFactory: options => { const fake = new FakeRpc(rpc); fake.options = options; instances.push(fake); return fake; }, ...hubOptions });
   t.after(() => hub.close());
@@ -34,7 +39,7 @@ export async function setup(t, { rpc = {}, hub: hubOptions = {}, store: storeOpt
 }
 
 /** Echte HTTP-Schicht mit Kontoprüfung gegen ein Ersatz-Backend im Speicher. */
-export async function serve(t, { activate = [USER, 'konto-b'], admin, backend = {}, ...options } = {}) {
+export async function serve(t, { admin, backend = {}, uploads: uploadOptions, ...options } = {}) {
   const context = await setup(t, options);
   const state = { down: false, users: new Map(USERS), lookups: 0, ...backend };
   const fetcher = async (url, { headers }) => {
@@ -44,12 +49,8 @@ export async function serve(t, { activate = [USER, 'konto-b'], admin, backend = 
     return new Response(JSON.stringify({ user }), { status: 200 });
   };
   const auth = new SessionAuth({ accountUrl: 'http://127.0.0.1:1', fetcher, ...options.auth });
-  for (const user of USERS.values()) {
-    if (!activate.includes(user.id)) continue;
-    await context.accounts.seen(user);
-    await context.accounts.update(user.id, { status: 'active' });
-  }
-  const api = createApi({ hub: context.hub, auth, accounts: context.accounts, admin });
+  const uploads = new UploadGate(uploadOptions);
+  const api = createApi({ hub: context.hub, auth, accounts: context.accounts, uploads });
   await new Promise(resolve => api.listen(0, '127.0.0.1', resolve));
   t.after(() => { api.close(); api.closeAllConnections(); });
   const base = `http://127.0.0.1:${api.address().port}`;
@@ -57,7 +58,7 @@ export async function serve(t, { activate = [USER, 'konto-b'], admin, backend = 
     method, headers: { ...headers, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
     body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body)
   });
-  return { ...context, api, base, call, auth, backend: state };
+  return { ...context, api, base, call, auth, uploads, backend: state };
 }
 
 export async function settled(store, id, userId = USER) {

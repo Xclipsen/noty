@@ -5,6 +5,14 @@ import { ApiError, LatestWriter } from './store.mjs';
 export const STATUSES = ['pending', 'active', 'blocked'];
 export const MAX_DAILY_LIMIT = 1_000_000;
 const SEEN_WRITE_MS = 60_000;
+const STATUS_TEXT = { pending: 'Dein Konto wartet noch auf Freischaltung.', blocked: 'Dein Konto ist für die KI gesperrt.' };
+
+/** 403 mit `code` für alles außer `active`. */
+export const statusError = status => new ApiError(403, STATUS_TEXT[status], status);
+
+const isLimit = value => value === null || value === undefined || (Number.isInteger(value) && value >= 0 && value <= MAX_DAILY_LIMIT);
+const isRecord = record => !!record && typeof record === 'object' && typeof record.id === 'string' && !!record.id && typeof record.name === 'string'
+  && STATUSES.includes(record.status) && isLimit(record.dailyLimit) && Number.isFinite(record.lastSeenAt);
 
 export class Accounts {
   constructor({ root, adminIds = [], defaultDailyLimit = 200, now = Date.now }) {
@@ -19,12 +27,13 @@ export class Accounts {
       if (error.code === 'ENOENT') return this;
       throw new Error('Kontodatei ist unlesbar.');
     }
-    if (!Array.isArray(saved)) throw new Error('Kontodatei ist unlesbar.');
-    for (const record of saved) this.records.set(record.id, record);
+    if (!Array.isArray(saved) || !saved.every(isRecord)) throw new Error('Kontodatei ist unlesbar.');
+    for (const record of saved) this.records.set(record.id, { ...record, name: record.name.toWellFormed() });
     return this;
   }
   isAdmin(id) { return this.adminIds.has(id); }
-  isBlocked(id) { return !this.isAdmin(id) && this.records.get(id)?.status === 'blocked'; }
+  /** Ohne Eintrag gibt es keine Freischaltung. */
+  statusOf(id) { return this.isAdmin(id) ? 'active' : this.records.get(id)?.status ?? 'pending'; }
   limitFor(id) { return this.records.get(id)?.dailyLimit ?? this.defaultDailyLimit; }
   /** Konto für Anzeige und Prüfung; `dailyLimit` null heißt Standard. */
   view({ id, name, status, dailyLimit, lastSeenAt }) {
@@ -44,7 +53,10 @@ export class Accounts {
     if (!record) {
       const created = { id, name, status: 'pending', dailyLimit: null, lastSeenAt: now };
       this.records.set(id, created);
-      await this.writer.save();
+      try { await this.writer.save(); } catch {
+        if (this.records.get(id) === created) this.records.delete(id);
+        throw new ApiError(503, 'Das Konto konnte nicht gespeichert werden.');
+      }
       return this.view(created);
     }
     const stale = record.name !== name || now - record.lastSeenAt >= SEEN_WRITE_MS;
@@ -69,6 +81,7 @@ export class Accounts {
     return this.view(record);
   }
   flush() { return this.writer.flush(); }
+  close() { return this.writer.close(); }
 }
 
 /** Daten von `GET /admin/api/overview`, ausschließlich Konten und Zähler. */

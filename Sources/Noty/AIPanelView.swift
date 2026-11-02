@@ -9,14 +9,32 @@ struct AIPageJump: Equatable {
     let pageID: UUID
 }
 
+/// What the panel keeps between two runs of its body.
+@MainActor
+private final class AIPanelCache {
+    var answers = AIRenderCache<AttributedString>()
+    private var known: (changes: Int, document: UUID, pages: Set<UUID>)?
+
+    /// IDs of the notebook's pages, built anew only after a change.
+    func pages(of editor: EditorModel) -> Set<UUID> {
+        let notebook = editor.notebook
+        if let known, known.changes == editor.contentChanges, known.document == notebook.id { return known.pages }
+        let pages = Set(notebook.pages.map(\.id))
+        known = (editor.contentChanges, notebook.id, pages)
+        return pages
+    }
+}
+
 /// Chat beside the notebook. Reads snapshots, writes nothing into a notebook.
 struct AIPanelView: View {
     @EnvironmentObject private var ai: AIAssistantModel
     @Environment(\.searchIndexArea) private var searchIndexArea
     @ObservedObject var editor: EditorModel
     let docked: Bool
-    /// Page number in `document`; the workspace checks it is still the active one.
-    let onJump: (UUID, Int) -> Void
+    /// Page in `document`; the workspace checks it is still the active one.
+    let onJump: (UUID, UUID) -> Void
+    /// Only while floating: the panel changes the side.
+    let onSwitchSide: (() -> Void)?
     let onClose: () -> Void
 
     @State private var draft = ""
@@ -25,16 +43,20 @@ struct AIPanelView: View {
     @State private var showingChats = false
     @State private var approval: ApprovalRequest?
     @State private var preview: Preview?
+    @State private var cache = AIPanelCache()
     @FocusState private var composing: Bool
 
-    private struct ApprovalRequest { let document: UUID; let title: String; let choice: AIContextChoice }
+    private struct ApprovalRequest { let document: UUID; let key: String; let host: String; let title: String; let choice: AIContextChoice }
     private struct Preview: Equatable { let key: PreviewKey; let context: AIContext }
     private struct PreviewKey: Hashable {
         let document: UUID
         let choice: AIContextChoice
         let page: UUID?
-        /// Cheap sign of a change on the page; a whole notebook is read again on send.
+        /// Moves with every change of the notebook.
         let revision: Int
+        func sameContent(as other: PreviewKey?) -> Bool {
+            document == other?.document && choice == other?.choice && page == other?.page
+        }
     }
 
     private var document: UUID? { editor.documentLoaded ? editor.notebook.id : nil }
@@ -43,7 +65,6 @@ struct AIPanelView: View {
         return pages.indices.contains(editor.pageIndex) ? pages[editor.pageIndex] : pages.last
     }
     private var pageNumber: Int { min(editor.pageIndex + 1, editor.notebook.pages.count) }
-    private var pageCount: Int { editor.notebook.pages.count }
     private var area: String { searchIndexArea ?? StableDefaults.scope(editor.storageRoot) }
     /// A choice from another notebook or a withdrawn approval sends nothing.
     private var effectiveChoice: AIContextChoice {
@@ -53,7 +74,7 @@ struct AIPanelView: View {
     private var previewKey: PreviewKey? {
         guard let document, let page = activePage, effectiveChoice != .none else { return nil }
         return PreviewKey(document: document, choice: effectiveChoice, page: effectiveChoice == .page ? page.id : nil,
-                          revision: effectiveChoice == .page ? page.drawing.count &+ page.searchableText.utf16.count : 0)
+                          revision: editor.contentChanges)
     }
     private var trimmedDraft: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var running: Bool { ai.session?.status == .running }
@@ -76,10 +97,6 @@ struct AIPanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: docked ? 0 : 16))
         .overlay(RoundedRectangle(cornerRadius: docked ? 0 : 16).strokeBorder(.secondary.opacity(0.25)))
         .shadow(color: .black.opacity(docked ? 0 : 0.3), radius: 16)
-        .environment(\.openURL, OpenURLAction { url in
-            if let document, let page = AICitation.page(from: url, pageCount: pageCount) { onJump(document, page) }
-            return .handled
-        })
         .onAppear { ai.panelAppeared() }
         .onDisappear { ai.panelDisappeared() }
         .onChange(of: document, initial: true) { _, document in
@@ -87,6 +104,11 @@ struct AIPanelView: View {
             ai.show(document: document); preview = nil; approval = nil
             if !ai.isApproved(document) { choice = .none; withImage = false }
             Task { await ai.loadSessions(resume: true) }
+        }
+        .onChange(of: ai.accountEpoch) { _, _ in
+            // Consent belongs to server and account: a dialog of the former one ends here.
+            approval = nil; preview = nil
+            if let document, !ai.isApproved(document) { choice = .none; withImage = false }
         }
         .task(id: ai.accountEpoch) {
             await ai.refreshStatus()
@@ -96,14 +118,14 @@ struct AIPanelView: View {
         .alert("Inhalte dieses Hefts an ChatGPT senden?", isPresented: Binding(get: { approval != nil }, set: { if !$0 { approval = nil } })) {
             Button("Freigeben") {
                 guard let approval else { return }
-                ai.approve(approval.document)
+                ai.approve(key: approval.key)
                 // The notebook may have changed behind the dialog.
                 if approval.document == document { choice = approval.choice }
                 self.approval = nil
             }
             Button("Abbrechen", role: .cancel) { approval = nil }
         } message: {
-            Text("„\(approval?.title ?? "")“: Was du je Frage auswählst, geht an deinen eigenen Server und an OpenAI. Die Freigabe lässt sich in den Einstellungen zurücksetzen.")
+            Text("„\(approval?.title ?? "")“: Was du je Frage auswählst, geht an den Server \(approval?.host ?? "") und von dort an OpenAI. Die Freigabe gilt nur für diesen Server und dieses Konto und lässt sich in den Einstellungen zurücksetzen.")
         }
     }
 
@@ -119,6 +141,7 @@ struct AIPanelView: View {
                     .help("Fragen heute")
             }
             Spacer()
+            if let onSwitchSide { headerButton("arrow.left.and.right", "Seite wechseln", action: onSwitchSide) }
             headerButton("clock.arrow.circlepath", "Frühere Chats") { showingChats.toggle() }
             headerButton("square.and.pencil", "Neuer Chat") { showingChats = false; ai.newChat() }
             headerButton("xmark", "KI-Assistent schließen") { composing = false; onClose() }
@@ -171,8 +194,9 @@ struct AIPanelView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if let session = ai.session {
+                        let answers = session.answerRequests
                         ForEach(session.messages) { message in
-                            AIMessageRow(message: message, pageCount: pageCount).equatable()
+                            row(message, in: session, request: answers[message.id])
                         }
                         runStatus(session.status)
                     } else if ai.access.canSend {
@@ -188,6 +212,30 @@ struct AIPanelView: View {
             .onChange(of: ai.session?.id) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
         }
         .frame(maxHeight: .infinity)
+    }
+
+    private func row(_ message: AIMessage, in session: AISession, request: String?) -> some View {
+        let pages = citablePages(request: request)
+        var rendered: AttributedString?
+        if message.role == .assistant {
+            let growing = session.status == .running && message.id == session.messages.last?.id
+            let answer = cache.answers.value(id: message.id, text: message.text, pages: Set(pages.keys), growing: growing) {
+                AIMarkdown.rendered($0, pages: Set(pages.keys))
+            }
+            rendered = answer.tail.isEmpty ? answer.value : answer.value + AttributedString(String(answer.tail))
+        }
+        return AIMessageRow(message: message, rendered: rendered, pages: pages) { page in
+            if let document { onJump(document, page) }
+        }.equatable()
+    }
+
+    /// Only pages of the question's own context, and only those that still exist.
+    private func citablePages(request: String?) -> [Int: UUID] {
+        guard let request, let document else { return [:] }
+        let noted = ai.citationPages(requestID: request, document: document)
+        guard !noted.isEmpty else { return [:] }
+        let existing = cache.pages(of: editor)
+        return noted.filter { existing.contains($0.value) }
     }
 
     @ViewBuilder
@@ -206,22 +254,27 @@ struct AIPanelView: View {
 
     @ViewBuilder
     private var notices: some View {
-        if let error = ai.error {
+        if ai.error != nil || ai.stalled {
             HStack(alignment: .firstTextBaseline) {
-                Label(error, systemImage: ai.limitReached ? "hourglass" : "exclamationmark.triangle")
-                    .font(.footnote).foregroundStyle(.orange)
+                Label(ai.error ?? "Die Verbindung zur laufenden Antwort ist unterbrochen.",
+                      systemImage: ai.limitReached ? "hourglass" : "exclamationmark.triangle")
+                    .font(.footnote).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 if ai.stalled { Button("Erneut prüfen") { ai.error = nil; Task { await ai.refreshSession() } }.font(.footnote) }
-                Button { ai.error = nil } label: { Image(systemName: "xmark.circle.fill") }
-                    .foregroundStyle(.secondary).accessibilityLabel("Hinweis schließen")
+                if ai.error != nil {
+                    Button { ai.error = nil } label: { Image(systemName: "xmark.circle.fill") }
+                        .foregroundStyle(.secondary).accessibilityLabel("Hinweis schließen")
+                }
             }
             .padding(.horizontal, 12).padding(.top, 8)
         } else if let status = ai.statusError {
             Label(status, systemImage: "wifi.exclamationmark").font(.footnote).foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12).padding(.top, 8)
         } else if let info = ai.info, info.account == nil {
             Label("Der Server ist nicht bei ChatGPT angemeldet.", systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12).padding(.top, 8)
         }
@@ -250,10 +303,12 @@ struct AIPanelView: View {
     private func choose(_ next: AIContextChoice) {
         guard let document else { return }
         if next == .none || ai.isApproved(document) { choice = next; return }
-        approval = ApprovalRequest(document: document, title: editor.notebook.title, choice: next)
+        guard let key = ai.approvalKey(for: document), let host = ai.serverHost else { return }
+        approval = ApprovalRequest(document: document, key: key, host: host, title: editor.notebook.title, choice: next)
     }
 
-    private var currentPreview: Preview? { preview?.key == previewKey ? preview : nil }
+    /// The last state of the same content stays until the newer one is there.
+    private var currentPreview: Preview? { previewKey?.sameContent(as: preview?.key) == true ? preview : nil }
 
     private var contextLine: String {
         switch effectiveChoice {
@@ -285,11 +340,16 @@ struct AIPanelView: View {
         return warnings
     }
 
+    /// Waits for a pause in the work on the notebook; `.task(id:)` cancels this
+    /// with every change, so nothing runs between strokes. An open text field
+    /// counts as input too, hence the bound.
     private func updatePreview() async {
         guard let key = previewKey else { preview = nil; return }
         do {
-            try await Task.sleep(for: .milliseconds(350))
-            let context = try await AIContextCollector.context(editor, notebook: editor.notebook, pageID: key.page, area: area, limit: ai.limits.maxContextChars)
+            try await Task.sleep(for: .milliseconds(key.sameContent(as: preview?.key) ? 1_200 : 350))
+            for _ in 0..<20 where editor.inputInProgress { try await Task.sleep(for: .milliseconds(250)) }
+            let context = try await AIContextCollector.context(editor, notebook: editor.notebook, pageID: key.page, area: area,
+                                                               limit: ai.limits.maxContextChars, priority: .utility)
             guard !Task.isCancelled else { return }
             preview = Preview(key: key, context: context)
         } catch {}
@@ -323,17 +383,22 @@ struct AIPanelView: View {
         let number = (notebook.pages.firstIndex { $0.id == page.id } ?? 0) + 1
         let place = choice == .page ? "Seite \(number)" : "ganzes Heft"
         let label = AIContextBuilder.label(title: notebook.title, place: place)
-        let key = [document.uuidString, choice.rawValue, page.id.uuidString, String(image), question].joined(separator: "|")
+        let key = previewKey
         Task {
-            let accepted = await ai.send(question: question, document: document, key: key) {
+            let accepted = await ai.send(question: question, document: document) {
                 var attachment = AIAttachment()
                 if choice != .none {
                     let context = try await AIContextCollector.context(editor, notebook: notebook, pageID: choice == .page ? page.id : nil,
-                                                                       area: area, limit: limits.maxContextChars)
-                    if !context.isEmpty { attachment.context = AITurnContext(label: label, text: context.text) }
+                                                                       area: area, limit: limits.maxContextChars, priority: .userInitiated)
+                    if let key { preview = Preview(key: key, context: context) }
+                    if !context.isEmpty {
+                        attachment.context = AITurnContext(label: label, text: context.text)
+                        attachment.pages = context.includedPageIDs
+                    }
                 }
                 if image {
                     attachment.images = [try await AIContextCollector.image(editor, page: page, label: "Seite \(number)", limit: limits.maxImageBytes)]
+                    attachment.pages[number] = page.id
                 }
                 return attachment
             }
@@ -343,10 +408,17 @@ struct AIPanelView: View {
 }
 
 /// One message. Equatable: the panel's body also runs for changes of the
-/// notebook, parsing only happens when the message itself changed.
+/// notebook, the row only when its content changed.
 private struct AIMessageRow: View, Equatable {
     let message: AIMessage
-    let pageCount: Int
+    let rendered: AttributedString?
+    /// Citable pages of this answer.
+    let pages: [Int: UUID]
+    let onJump: (UUID) -> Void
+
+    nonisolated static func == (a: AIMessageRow, b: AIMessageRow) -> Bool {
+        a.message == b.message && a.rendered == b.rendered && a.pages == b.pages
+    }
 
     var body: some View {
         switch message.role {
@@ -359,8 +431,12 @@ private struct AIMessageRow: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .trailing)
         case .assistant:
             VStack(alignment: .leading, spacing: 4) {
-                Text(AIMarkdown.rendered(message.text, pageCount: pageCount)).font(.callout)
+                Text(rendered ?? AttributedString(message.text)).font(.callout)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .environment(\.openURL, OpenURLAction { url in
+                        if let number = AICitation.page(from: url), let page = pages[number] { onJump(page) }
+                        return .handled
+                    })
                 Button {
                     UIPasteboard.general.string = message.text
                 } label: { Image(systemName: "doc.on.doc").font(.caption).frame(width: 32, height: 28) }
@@ -384,7 +460,7 @@ private struct AIMessageRow: View, Equatable {
 /// rest of each line. Only citations stay links: an answer may not offer
 /// addresses that notebook text talked it into.
 private enum AIMarkdown {
-    static func rendered(_ text: String, pageCount: Int) -> AttributedString {
+    static func rendered(_ text: String, pages: Set<Int>) -> AttributedString {
         var result = AttributedString()
         var code = false
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
@@ -396,13 +472,13 @@ private enum AIMarkdown {
                 part = AttributedString(String(line))
                 part.font = .system(.footnote, design: .monospaced)
             } else if let (level, title) = heading(trimmed) {
-                part = inline(title, pageCount: pageCount)
+                part = inline(title, pages: pages)
                 part.font = level == 1 ? .title3.bold() : .headline
             } else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
                 part = AttributedString(String(repeating: " ", count: line.count - trimmed.count) + "•  ")
-                    + inline(trimmed.dropFirst(2), pageCount: pageCount)
+                    + inline(trimmed.dropFirst(2), pages: pages)
             } else {
-                part = inline(line, pageCount: pageCount)
+                part = inline(line, pages: pages)
             }
             result += part
             if offset < lines.count - 1 { result += AttributedString("\n") }
@@ -416,8 +492,8 @@ private enum AIMarkdown {
         return (level, line.dropFirst(level + 1))
     }
 
-    private static func inline(_ line: Substring, pageCount: Int) -> AttributedString {
-        let source = AICitation.markdown(String(line), pageCount: pageCount)
+    private static func inline(_ line: Substring, pages: Set<Int>) -> AttributedString {
+        let source = AICitation.markdown(String(line), pages: pages)
         guard var result = try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) else {
             return AttributedString(String(line))
         }

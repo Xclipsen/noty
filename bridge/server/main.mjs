@@ -9,11 +9,22 @@ import { SessionAuth } from './auth.mjs';
 import { Accounts } from './accounts.mjs';
 import { Metering } from './metering.mjs';
 import { createApi } from './http.mjs';
-import { createAdmin } from './admin.mjs';
+import { createAdmin, createAdminApi } from './admin.mjs';
 
 export function assertNotRoot(uid = process.getuid?.()) {
   if (uid === 0) throw new Error('Den Dienst als eigenen unprivilegierten Benutzer starten.');
 }
+
+function portNumber(value, fallback, name) {
+  const port = integer(value, fallback, name, 0);
+  if (port > 65535) throw new Error(`${name} ist ungültig.`);
+  return port;
+}
+
+const listen = (server, port) => new Promise((resolve, reject) => {
+  server.once('error', reject);
+  server.listen(port, '127.0.0.1', resolve);
+});
 
 function integer(value, fallback, name, minimum) {
   if (value === undefined || value === '') return fallback;
@@ -35,8 +46,9 @@ export async function boot(env, options = {}) {
   for (const key of ['STATE_DIR', 'CODEX_HOME', 'NOTY_AI_ACCOUNT_URL']) {
     if (!env[key]) throw new Error(`${key} fehlt. Siehe README.md.`);
   }
-  const port = integer(env.PORT, 8790, 'PORT', 0);
-  if (port > 65535) throw new Error('PORT ist ungültig.');
+  const port = portNumber(env.PORT, 8790, 'PORT');
+  const adminPort = portNumber(env.ADMIN_PORT, 8791, 'ADMIN_PORT');
+  if (port !== 0 && port === adminPort) throw new Error('ADMIN_PORT muss sich von PORT unterscheiden.');
   const dailyLimit = integer(env.NOTY_AI_DAILY_LIMIT, 200, 'NOTY_AI_DAILY_LIMIT', 1);
   const retentionDays = integer(env.NOTY_AI_RETENTION_DAYS, 30, 'NOTY_AI_RETENTION_DAYS', 1);
   const usageDays = integer(env.NOTY_AI_USAGE_DAYS, 400, 'NOTY_AI_USAGE_DAYS', 1);
@@ -54,18 +66,25 @@ export async function boot(env, options = {}) {
     prepareCatalog: () => toolFreeCatalog({ codexHome, file: path.join(stateDir, 'tool-free-catalog.json') }),
     rpcFactory: ({ catalog } = {}) => new CodexRpc({ cwd, codexHome, catalog, command: env.CODEX_BIN ?? 'codex' }) });
   const admin = options.admin ?? await createAdmin({ hub, accounts, accountUrl, origin: env.NOTY_AI_ADMIN_ORIGIN });
-  const api = createApi({ hub, accounts, auth: new SessionAuth({ accountUrl }), admin });
+  const api = createApi({ hub, accounts, auth: new SessionAuth({ accountUrl }) });
+  const adminApi = createAdminApi(admin);
   await hub.startRetention();
-  await new Promise((resolve, reject) => { api.once('error', reject); api.listen(port, '127.0.0.1', resolve); });
-  const close = async () => { api.close(); api.closeAllConnections(); await hub.close(); };
-  return { api, hub, close, address: api.address() };
+  const close = async () => {
+    for (const server of [api, adminApi]) { server.close(); server.closeAllConnections(); }
+    await hub.close();
+  };
+  try {
+    await listen(api, port);
+    await listen(adminApi, adminPort);
+  } catch (error) { await close(); throw error; }
+  return { api, adminApi, hub, close, address: api.address(), adminAddress: adminApi.address() };
 }
 
 if (process.argv[1] && import.meta.filename === realpathSync(process.argv[1])) {
   try {
     assertNotRoot();
-    const { close, address } = await boot(process.env);
-    console.log(`noty KI-Bridge: http://${address.address}:${address.port} (nur lokal, HTTPS-Proxy erforderlich)`);
+    const { close, address, adminAddress } = await boot(process.env);
+    console.log(`noty KI-Bridge: /v1 auf ${address.address}:${address.port}, /admin auf ${adminAddress.address}:${adminAddress.port} (nur lokal, HTTPS-Proxy erforderlich)`);
     const shutdown = () => close().finally(() => process.exit(0));
     process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
   } catch (error) { console.error(error.message); process.exitCode = 1; }

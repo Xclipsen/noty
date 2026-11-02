@@ -3,15 +3,16 @@ import { randomUUID } from 'node:crypto';
 
 /** Spielt das JSON-RPC-Verhalten von Codex nach; `onTurn` steuert den Lauf. */
 export class FakeRpc extends EventEmitter {
-  constructor({ authType = 'chatgpt', failStart = false, failThread = false, failUsage = false, onTurn, answer = 'Antwort [S. 3]', tokens = [] } = {}) {
+  constructor({ authType = 'chatgpt', failStart = false, failThread = false, failUsage = false, hangQueries = false, onTurn, answer = 'Antwort [S. 3]', tokens = [] } = {}) {
     super();
-    Object.assign(this, { authType, failStart, failThread, failUsage, onTurn, answer, tokens });
+    Object.assign(this, { authType, failStart, failThread, failUsage, hangQueries, onTurn, answer, tokens });
     this.calls = []; this.responses = []; this.closed = false;
   }
   emitLater(message) { setImmediate(() => this.emit('message', message)); }
   async start() { if (this.failStart) throw new Error('Synthetischer Startfehler'); return this; }
   async request(method, params) {
     this.calls.push({ method, params });
+    if (this.hangQueries) return new Promise(() => {});
     if (method === 'account/read') return { account: this.authType ? { type: this.authType, email: 'privat@example.invalid' } : null };
     if (method === 'model/list') return { data: [
       { id: 'demo', model: 'demo', displayName: 'Demo', isDefault: true, hidden: false },

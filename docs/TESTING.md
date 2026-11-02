@@ -191,9 +191,9 @@ Gerätetests (gebündelt, isolierter Bereich/Testheft):
 
 ## KI-Assistent – `feat/ki-panel`
 
-Vertrag: [AI-ASSISTANT](AI-ASSISTANT.md). Implementiert in `AIAssistant.swift` (Core), `AIAssistantModel.swift`, `AIPanelView.swift`, Einstellungsseite und `EditorWorkspace`. Geprüft: `AIAssistantTests` unter Linux, `xtool dev build`. Nicht installiert, gegen eine laufende Bridge ungeprüft, am iPad ungeprüft.
+Vertrag: [AI-ASSISTANT](AI-ASSISTANT.md). Implementiert in `AIAssistant.swift` (Core), `AIAssistantModel.swift`, `AIPanelView.swift`, Einstellungsseite und `EditorWorkspace`. Geprüft: `AIAssistantTests` und `AIPanelSupportTests` unter Linux (Logik von Freigabeschlüssel, Prüfsumme, Fundstellen, Platzierung, Zwischenspeicher), `xtool dev build`. Nicht installiert, gegen eine laufende Bridge ungeprüft, am iPad ungeprüft.
 
-Am Gerät offen: Anmeldung, `pending`/`blocked`/401 im Panel; Frage ohne, mit Seite und mit ganzem Heft; Seitenbild samt Ink und Text; Abbruch, App in den Hintergrund und zurück während eines Laufs, Heft- und Ansichtswechsel während eines Laufs; Fundstellensprung; Panel angedockt, schwebend, neben Gesetzesfenster und zweiter Ansicht; Tastaturfokus im Panel neben Pencil und Texteingabe im Heft, Bildschirmtastatur im Panel.
+Am Gerät offen: Anmeldung, `pending`/`blocked`/401 im Panel; Frage ohne, mit Seite und mit ganzem Heft; Seitenbild samt Ink und Text; Abbruch, App in den Hintergrund und zurück während eines Laufs, Heft- und Ansichtswechsel während eines Laufs; Fundstellensprung; Panel angedockt, schwebend, neben Gesetzesfenster und zweiter Ansicht, Hochformat, Seitenwechsel über den Kopfknopf, Griffleiste und Randpfeil des Gesetzesfensters; Dock-Einstellung des Gesetzesfensters nach dem Schließen des Panels; Freigabedialog nach Adress- und Kontowechsel; Wiederholung nach Verbindungsabbruch mit geänderter Seite; Fundstellen nach Verschieben und Löschen von Seiten; Vorschau während des Schreibens (Ruckeln, Neuberechnung); lange Antwort beim Mitlaufen; Tastaturfokus im Panel neben Pencil und Texteingabe im Heft, Bildschirmtastatur im Panel.
 
 ## Native Gesetzessammlung – Feature-Worktree
 

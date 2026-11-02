@@ -258,8 +258,9 @@ async function refresh() {
     $('updated').textContent = `Stand ${clock.format(new Date())}`;
   } catch (error) {
     if (error instanceof SignedOut) { signedOut(state.signedIn ? error.message : ''); return; }
-    if (state.signedIn) show($('banner'), `Aktualisierung fehlgeschlagen: ${error.message}`);
-    else signedOut(error.message);
+    // Nur 401 heißt abgemeldet. Bei 5xx oder Netzfehlern ist das Cookie weiter gültig; die nächste Abfrage holt die Daten.
+    signedIn();
+    show($('banner'), `Aktualisierung fehlgeschlagen: ${error.message}`);
   } finally {
     state.loading = false;
     if (state.reload) { state.reload = false; refresh(); } else schedule();
