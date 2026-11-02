@@ -173,6 +173,7 @@ extension Notebook {
         if content.textBoxes.contains(where: \.usesRichText) { next.schemaVersion = max(7, next.schemaVersion) }
         next.raiseSchemaForTextColors(content.textBoxes)
         next.raiseSchemaForTextFields(content.textBoxes)
+        let unchanged = next.pages[index].effectiveTextBoxes
         next.pages[index].drawing = content.drawing
         next.pages[index].textBoxes = content.textBoxes
         next.pages[index].images = content.images
@@ -180,7 +181,7 @@ extension Notebook {
         next.raiseSchemaForShapes(content.shapes)
         next.raiseSchemaForImageAssets()
         let bounds = next.pages[index].textBounds
-        guard content.textBoxes.allSatisfy({ $0.fits(in: bounds) }) else { throw StorageError.invalidDocument }
+        guard content.textBoxes.allSatisfy({ $0.fits(in: bounds) || unchanged.contains($0) }) else { throw StorageError.invalidDocument }
         try next.validate(); self = next
     }
 }

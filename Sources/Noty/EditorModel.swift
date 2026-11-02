@@ -21,7 +21,7 @@ final class EditorModel: ObservableObject {
     @Published private(set) var documentLoaded = false
     @Published var busy = true
     @Published var saveFailed = false
-    @Published var backupStatus = "Noch kein Backup exportiert"
+    @Published var backupStatus = "Noch nicht in Dateien gesichert"
     @Published var fileStatus: String?
     @Published var openedRestore: RestoredNotebook?
     @Published private(set) var copiedPage: CopiedPage?
@@ -95,7 +95,7 @@ final class EditorModel: ObservableObject {
         self.preferredPageID = preferredPageID
         let legacyDate = legacyPageKeysAllowed ? UserDefaults.standard.object(forKey: "noty.backupExport.\(root.lastPathComponent)") as? Date : nil
         if let date = UserDefaults.standard.object(forKey: backupDateKey) as? Date ?? legacyDate {
-            backupStatus = "Letzter Datei-Export: \(date.formatted(date: .abbreviated, time: .shortened))"
+            backupStatus = "Zuletzt in Dateien gesichert: \(NotyText.statusDate(date))"
         }
         Task {
             defer { busy = false }
@@ -191,8 +191,14 @@ final class EditorModel: ObservableObject {
                 sources = catalogue; pdfOutline = catalogue.outline
             }
             notebook = candidate
+            // A blank field alone is no visible step: it joins the first
+            // characters, or cancels out when it is removed unused.
+            let blank = NotebookUndoHistory.blankField(before: before.textBoxes, after: boxes)
+            if blank == .added { history.separateNextStep() }
             recordChange(.text, pageID: pageID, before: before,
-                         coalescing: .init(key: "text-\(pageID.uuidString)", window: 1.5))
+                         coalescing: .init(key: "text-\(pageID.uuidString)", window: blank == nil ? 1.5 : NotebookUndoHistory.blankFieldWindow))
+            // The long window belongs to the blank field only, not to what comes next.
+            if blank == .removed { history.separateNextStep() }
             scheduleSave()
         } catch { self.error = "Textänderung konnte nicht übernommen werden: \(error.localizedDescription)" }
     }
@@ -211,7 +217,7 @@ final class EditorModel: ObservableObject {
         do {
             let (candidate, focus) = try notebook.reflowText(pageID: pageID, previous: previous,
                 replacement: replacement, selection: selection, trailingDraft: trailingDraft,
-                drawingIsEmpty: Self.drawingIsEmpty,
+                drawingIsEmpty: Self.drawingIsEmpty, trailingLineFits: { page, box in TextFlowEditing.trailingLineFits(box, page: page) },
                 pageCapacity: { page, box in TextFlowEditing.capacity(box, page: page) })
             let beforeFocus = TextFlowFocus(pageID: pageID, boxID: previous.id,
                 selection: NSRange(location: TextListEditing.caret(before: previous.text, after: replacement.text, selection: selection.location), length: 0),
@@ -239,6 +245,78 @@ final class EditorModel: ObservableObject {
             return nil
         }
     }
+    // Edits of the whole text: over several pages (⌘A, keyboard mode, a
+    // paragraph across a page change). Each is one undo step of its own.
+    private func flowLayout(_ draft: Page?) -> TextFlowLayout {
+        TextFlowLayout(capacity: { page, box in TextFlowEditing.capacity(box, page: page) }, trailingDraft: draft,
+                       drawingIsEmpty: Self.drawingIsEmpty, trailingLineFits: { page, box in TextFlowEditing.trailingLineFits(box, page: page) })
+    }
+    private func rewriteFlow(_ rewrite: () throws -> (Notebook, TextFlowFocus)) -> TextFlowFocus? {
+        guard writable, !busy, !mutationsPaused else { return nil }
+        let before = notebook
+        do {
+            let (candidate, focus) = try rewrite()
+            try installFlow(candidate)
+            pendingDraft = nil
+            history.separateNextStep()
+            history.record(.textFlow, before: before, after: candidate, beforeFocus: nil, afterFocus: focus)
+            publishHistory()
+            return focus
+        } catch {
+            self.error = "Textfluss: \(error.localizedDescription)"
+            return nil
+        }
+    }
+    /// Text editor 2: the buffer changed. The page lengths come from its
+    /// layout; typing joins the steps before it like `updateFlowText`.
+    func changeFlow(_ change: TextFlowChange, capacity: @escaping (Page, TextBox) -> Int?, trailingDraft: Page?) -> TextFlowFocus? {
+        guard writable, !busy, !mutationsPaused else { return nil }
+        let before = notebook
+        do {
+            let measured = flowLayout(trailingDraft)
+            var layout = measured
+            layout.capacity = { page, box in try capacity(page, box) ?? measured.capacity(page, box) }
+            let (candidate, focus) = try notebook.changingTextFlow(change, layout: layout)
+            try installFlow(candidate)
+            pendingDraft = nil
+            recordFlowChange(change, before: before, after: candidate, focus: focus)
+            return focus
+        } catch {
+            self.error = "Textfluss: \(error.localizedDescription)"
+            // As `updateFlowText`: no room is no reason to lose what was typed.
+            guard let (candidate, focus) = try? notebook.keepingTextFlowChange(change), (try? installFlow(candidate)) != nil else { return nil }
+            recordFlowChange(change, before: before, after: candidate, focus: focus)
+            return focus
+        }
+    }
+    private func recordFlowChange(_ change: TextFlowChange, before: Notebook, after: Notebook, focus: TextFlowFocus) {
+        if change.separateStep { history.separateNextStep() }
+        history.record(.textFlow, before: before, after: after, beforeFocus: before.textFlowFocus(selection: change.selectionBefore),
+                       afterFocus: focus, coalescing: change.separateStep ? nil : Self.flowCoalescing)
+        publishHistory()
+    }
+    func editFlow(_ edits: [TextListEditing.Edit], caret: Int?, trailingDraft: Page?) -> TextFlowFocus? {
+        rewriteFlow { try notebook.editingTextFlow(edits, caret: caret, layout: flowLayout(trailingDraft)) }
+    }
+    func restyleFlow(range: NSRange, trailingDraft: Page?, change: (inout TextBoxStyle) -> Void) -> TextFlowFocus? {
+        rewriteFlow { try notebook.restylingTextFlow(range: range, layout: flowLayout(trailingDraft), change: change) }
+    }
+
+    /// The typing paused: the start of `boxID` moves back onto the page before
+    /// if it fits there now. Joins the typing's undo step.
+    func settleFlow(boxID: UUID, selection: NSRange?, trailingDraft: Page?) -> TextFlowFocus? {
+        guard writable, !busy, !mutationsPaused else { return nil }
+        let before = notebook
+        guard let (candidate, focus) = try? notebook.settlingTextFlow(boxID: boxID, selection: selection, layout: flowLayout(trailingDraft)),
+              (try? installFlow(candidate)) != nil else { return nil }
+        pendingDraft = nil
+        // The edit that made the room ended its step (`d`, a macro): this is still it.
+        history.joinNextStep()
+        history.record(.textFlow, before: before, after: candidate, beforeFocus: nil, afterFocus: focus, coalescing: Self.flowCoalescing)
+        publishHistory()
+        return focus
+    }
+
     /// No strokes (also ink whose strokes were all erased): such a page holds
     /// nothing in a text document and is neither kept after the text nor exported.
     nonisolated static func drawingIsEmpty(_ data: Data) -> Bool {
@@ -262,12 +340,21 @@ final class EditorModel: ObservableObject {
 
     /// Reverts (or re-applies) the most recent change on any page, in order.
     /// Steps whose page was deleted, replaced or changed elsewhere are dropped;
-    /// they never overwrite newer content. Returns the page to reveal.
+    /// they never overwrite newer content, and the user is told: a step never
+    /// vanishes silently. Returns the page to reveal.
     func undo(redo: Bool) -> NotebookUndoHistory.Outcome? {
         guard writable, !busy, !mutationsPaused else { return nil }
         defer { publishHistory() }
         pendingDraft = nil
-        guard let outcome = redo ? history.redo(notebook) : history.undo(notebook) else { return nil }
+        guard let outcome = redo ? history.redo(notebook) : history.undo(notebook) else {
+            if history.lastSkipped > 0 {
+                error = "\(redo ? "Wiederholen" : "Rückgängig") nicht möglich: Die Seite wurde inzwischen anders geändert. Der neuere Stand bleibt erhalten."
+            }
+            return nil
+        }
+        if outcome.skipped > 0 {
+            error = "\(NotyText.count(outcome.skipped, "Schritt", "Schritte")) nicht \(redo ? "wiederholt" : "zurückgenommen"), weil die Seite inzwischen anders geändert wurde. Der neuere Stand bleibt erhalten."
+        }
         do {
             let previous = notebook
             let selected = page.id
@@ -309,11 +396,11 @@ final class EditorModel: ObservableObject {
     /// with the page itself, so undoing the first stroke/text/object removes
     /// the then empty page again and redo restores both. True when recorded.
     private func recordWithMaterializedDraft(_ kind: NotebookUndoHistory.Kind, pageIDs: Set<UUID>,
-                                             coalescing: NotebookUndoHistory.Coalescing?) -> Bool {
+                                             coalescing: NotebookUndoHistory.Coalescing?, undoPageID: UUID? = nil) -> Bool {
         guard let pending = pendingDraft else { return false }
         if pageIDs.contains(pending.pageID), history.continuesMaterialization(of: pending.pageID, kind: kind, coalescing: coalescing),
            history.recordMaterialization(kind, before: pending.before, after: notebook, pageID: pending.pageID,
-                                         touching: pageIDs, coalescing: coalescing) {
+                                         touching: pageIDs, coalescing: coalescing, undoPageID: undoPageID) {
             publishHistory(); return true
         }
         pendingDraft = nil
@@ -370,7 +457,11 @@ final class EditorModel: ObservableObject {
                 let before = notebook
                 try installFlow(candidate)
                 // Its own undo step until the first content joins it (`recordWithMaterializedDraft`).
-                if history.recordMaterialization(.pages, before: before, after: notebook, pageID: draft.id) {
+                // A draft that already holds text is that content: only more
+                // typing joins it, the next operation is a step of its own.
+                let written = draft.effectiveTextBoxes.contains { !$0.text.isEmpty }
+                if history.recordMaterialization(written ? .text : .pages, before: before, after: notebook, pageID: draft.id,
+                                                 coalescing: written ? .init(key: "text-\(draft.id.uuidString)", window: 1.5) : nil) {
                     pendingDraft = (draft.id, before); publishHistory()
                 } else { pendingDraft = nil }
             }
@@ -457,8 +548,14 @@ final class EditorModel: ObservableObject {
             notebook = candidate
             // One step for both pages; undo reveals the source, redo the target.
             // A drop onto the just materialised writing draft joins that step.
-            if !recordWithMaterializedDraft(.transfer, pageIDs: Set(changes.map(\.pageID)), coalescing: nil) {
-                history.record(.transfer, changes: changes); publishHistory()
+            if !recordWithMaterializedDraft(.transfer, pageIDs: Set(changes.map(\.pageID)), coalescing: nil, undoPageID: changes.first?.pageID) {
+                // What the model holds now, not what was asked for: the step must match it.
+                history.record(.transfer, changes: changes.compactMap { change in
+                    candidate.pages.first { $0.id == change.pageID }.map {
+                        PageContentReplacement(pageID: change.pageID, expected: change.expected, replacement: PageContent(page: $0))
+                    }
+                })
+                publishHistory()
             }
             scheduleSave(); return true
         } catch CrossPageTransferError.conflict {
@@ -548,12 +645,24 @@ final class EditorModel: ObservableObject {
         }
         let converted = editPages(resetEditor: scope == .wholeNotebook, action)
         guard converted else { return false }
-        let pages = "\(changed) Seite\(changed == 1 ? "" : "n")"
+        let pages = NotyText.count(changed, "Seite", "Seiten")
         switch scope {
-        case .wholeNotebook: fileStatus = "Notizbuch auf \(color == .dark ? "Dunkel" : "Weiß") umgestellt: \(pages)"
-        case .emptyPages: fileStatus = changed > 0 ? "Seitenstandard geändert, \(changed) leere Seite\(changed == 1 ? "" : "n") umgestellt" : "Seitenstandard geändert"
-        case .newPagesOnly: fileStatus = "Seitenstandard geändert"
+        case .wholeNotebook: fileStatus = "Heft auf \(color == .dark ? "Dunkel" : "Weiß") umgestellt: \(pages)"
+        case .emptyPages: fileStatus = changed > 0 ? "Papier für neue Seiten geändert, \(NotyText.count(changed, "leere Seite", "leere Seiten")) umgestellt" : "Papier für neue Seiten geändert"
+        case .newPagesOnly: fileStatus = "Papier für neue Seiten geändert"
         }
+        return true
+    }
+    /// Text documents: paper and colour of all pages together, the text flows
+    /// anew. One undo step; refused when the text finds no room.
+    @discardableResult
+    func setDocumentPaper(paper: PaperStyle, color: PaperColor, trailingDraft: Page?) -> Bool {
+        let step = inkRecolorStep, layout = flowLayout(trailingDraft)
+        guard editPages(resetEditor: true, { document in
+            document = try document.changingTextDocumentPaper(paper, color: color, layout: layout, recolorDrawing: step)
+            return nil
+        }) else { return false }
+        fileStatus = "Papier geändert"
         return true
     }
     /// Thin PencilKit step for paper colour flips: path, transform, mask, ink
@@ -796,7 +905,7 @@ final class EditorModel: ObservableObject {
     func backupExported() {
         let date = Date()
         UserDefaults.standard.set(date, forKey: backupDateKey)
-        backupStatus = "Backup-Datei exportiert: \(date.formatted(date: .omitted, time: .shortened))"
+        backupStatus = "In Dateien gesichert: \(NotyText.statusDate(date))"
     }
 
     func localHistory() async throws -> LocalHistory {

@@ -85,7 +85,10 @@ final class TaskLayoutManager: NSLayoutManager {
     }
     override func drawGlyphs(forGlyphRange requested: NSRange, at origin: CGPoint) {
         if suppressed { nativeDrawRequested(); return }
-        guard let storage = textStorage, let container = textContainers.first,
+        if rasterPass { drawPageBreaks(requested, at: origin) }
+        // Several containers: text editor 2, one per page of a document.
+        let page = textContainers.count > 1 ? textContainer(forGlyphAt: requested.location, effectiveRange: nil) : nil
+        guard let storage = textStorage, let container = page ?? textContainers.first,
               let context = UIGraphicsGetCurrentContext() else { super.drawGlyphs(forGlyphRange: requested, at: origin); return }
         var cursor = requested.location
         for item in TextListEditing.taskItems(in: storage.string) {
@@ -132,6 +135,33 @@ final class TaskLayoutManager: NSLayoutManager {
         }
         if cursor < NSMaxRange(requested) { super.drawGlyphs(forGlyphRange: .init(location: cursor, length: NSMaxRange(requested) - cursor), at: origin) }
     }
+    /// A manual page break, on its line behind the text. Only the editor's
+    /// raster draws it: previews and the PDF show the break by the page itself.
+    nonisolated private func drawPageBreaks(_ glyphs: NSRange, at origin: CGPoint) {
+        guard let storage = textStorage else { return }
+        let text = storage.string as NSString
+        var search = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        while search.length > 0 {
+            let found = text.range(of: TextLines.pageBreakText, options: .literal, range: search)
+            guard found.location != NSNotFound else { return }
+            search = NSRange(location: NSMaxRange(found), length: NSMaxRange(search) - NSMaxRange(found))
+            let glyph = glyphIndexForCharacter(at: found.location)
+            let line = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let font = storage.attribute(.font, at: found.location, effectiveRange: nil) as? UIFont ?? .systemFont(ofSize: 14)
+            let y = origin.y + baseline(forGlyphAt: glyph) - font.xHeight / 2
+            let ink = UIColor.gray.withAlphaComponent(0.7)
+            let name = NSAttributedString(string: "Seitenumbruch", attributes: [.font: UIFont.systemFont(ofSize: 8), .foregroundColor: ink])
+            let label = name.size()
+            let start = origin.x + line.minX + location(forGlyphAt: glyph).x + 4, end = origin.x + line.maxX - label.width - 4
+            if end > start {
+                let mark = UIBezierPath(); mark.lineWidth = 0.6
+                mark.setLineDash([3, 2], count: 2, phase: 0)
+                mark.move(to: CGPoint(x: start, y: y)); mark.addLine(to: CGPoint(x: end, y: y))
+                ink.setStroke(); mark.stroke()
+            }
+            name.draw(at: CGPoint(x: max(start, end + 4), y: y - label.height / 2))
+        }
+    }
     /// Done tasks: one line per laid-out line through the middle of the
     /// lowercase letters (x-height), from the first to the last visible glyph.
     nonisolated private func strikeThrough(_ glyphs: NSRange, at origin: CGPoint, in container: NSTextContainer) {
@@ -167,18 +197,32 @@ final class TaskLayoutManager: NSLayoutManager {
 final class RuledTextLayout: NSObject, @preconcurrency NSLayoutManagerDelegate {
     var originY: CGFloat?
     var lines = TextRuling.lined
+    /// Top edge of the page (ruling coordinates) for a flow segment, whose
+    /// first line may reach above the writing area (`firstLineBaseline`).
+    var pageTop: CGFloat?
+    /// Baseline in container coordinates of a line starting at `top`; the one
+    /// rule of editor, previews, PDF and flow capacity. Nil without ruling.
+    func baseline(top: CGFloat, ascent: CGFloat) -> CGFloat? {
+        guard let originY else { return nil }
+        return CGFloat(lines.lineBaseline(top: Double(top), ascent: Double(ascent), origin: Double(originY), pageTop: pageTop.map { Double($0) }))
+    }
     func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect rect: UnsafeMutablePointer<CGRect>,
                        lineFragmentUsedRect used: UnsafeMutablePointer<CGRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
                        in textContainer: NSTextContainer, forGlyphRange glyphRange: NSRange) -> Bool {
-        guard let originY else { return false }
-        let current = originY + rect.pointee.minY + baselineOffset.pointee
-        // Grid rows may tighten a line slightly, never the first one (no clipping).
-        var delta = CGFloat(lines.baseline(forNatural: Double(current))) - current
-        if rect.pointee.minY < 0.5 { delta = max(0, delta) }
+        guard let baseline = baseline(top: rect.pointee.minY, ascent: baselineOffset.pointee) else { return false }
+        let delta = baseline - rect.pointee.minY - baselineOffset.pointee
         rect.pointee.size.height += delta
         used.pointee.size.height += delta
         baselineOffset.pointee += delta
         return true
+    }
+    /// A page break takes no room in a page's own layout: it ends a segment,
+    /// and text behind it (a field, a kept overflow) must stay visible.
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction,
+                       forControlCharacterAt charIndex: Int) -> NSLayoutManager.ControlCharacterAction {
+        guard let storage = layoutManager.textStorage, charIndex < storage.length,
+              (storage.string as NSString).character(at: charIndex) == TextLines.pageBreak else { return action }
+        return .zeroAdvancement
     }
 }
 
@@ -193,6 +237,12 @@ extension Page {
     func ruledTextOrigin(for box: TextBox) -> CGFloat? {
         guard textRuling(for: box) != nil, let anchor = box.rulingAnchorY(regionTops: writingRegionTops) else { return nil }
         return (anchor + (margins?.top ?? 0)) / writingCoordinateScale(for: box)
+    }
+    /// Page top in the coordinates of `ruledTextOrigin`, for the segments of a
+    /// text flow only: migrated fields keep their laid-out lines.
+    func ruledPageTop(for box: TextBox) -> CGFloat? {
+        guard box.flowID != nil, textRuling(for: box) != nil else { return nil }
+        return (margins?.top ?? 0) / writingCoordinateScale(for: box)
     }
 }
 
@@ -345,33 +395,45 @@ struct TextObjectLayout {
     let coordinateScale: CGFloat
     /// The field's rotation (radians) about its top-left corner, the drawing origin.
     let rotation: CGFloat
-    init(_ box: TextBox, on page: Page) {
-        self.init(box, ruledOrigin: page.ruledTextOrigin(for: box), ruling: page.textRuling(for: box) ?? .lined,
-            coordinateScale: page.writingCoordinateScale(for: box))
+    /// `limitedTo`: only as many lines as this height (page units) holds, for
+    /// measuring a page of a long flow; the rest stays without layout.
+    init(_ box: TextBox, on page: Page, limitedTo limit: Double? = nil) {
+        self.init(box, ruledOrigin: page.ruledTextOrigin(for: box), ruling: page.textRuling(for: box) ?? .lined, pageTop: page.ruledPageTop(for: box),
+            coordinateScale: page.writingCoordinateScale(for: box), limitedTo: limit)
     }
-    init(_ box: TextBox, ruledOrigin: CGFloat? = nil, ruling lines: TextRuling = .lined, coordinateScale: CGFloat = 1) {
+    init(_ box: TextBox, ruledOrigin: CGFloat? = nil, ruling lines: TextRuling = .lined, pageTop: CGFloat? = nil, coordinateScale: CGFloat = 1, limitedTo limit: Double? = nil) {
         self.coordinateScale = coordinateScale
         rotation = CGFloat(box.angle * .pi / 180)
         storage = NSTextStorage(attributedString: box.attributedText)
         manager = TaskLayoutManager()
-        ruling = RuledTextLayout(); ruling.originY = ruledOrigin; ruling.lines = lines; manager.delegate = ruling
-        container = NSTextContainer(size: CGSize(width: box.width / coordinateScale, height: .greatestFiniteMagnitude))
+        ruling = RuledTextLayout(); ruling.originY = ruledOrigin; ruling.lines = lines; ruling.pageTop = pageTop; manager.delegate = ruling
+        // A line of the largest size more than the page, so the last one is never cut off by the container.
+        let height = limit.map { CGFloat($0) / coordinateScale + Self.glyphOverhang(box) * 4 } ?? .greatestFiniteMagnitude
+        container = NSTextContainer(size: CGSize(width: box.width / coordinateScale, height: height))
         container.lineFragmentPadding = 0
         storage.addLayoutManager(manager); manager.addTextContainer(container)
         manager.ensureLayout(for: container)
     }
     var usedHeight: CGFloat { ceil(manager.usedRect(for: container).height * coordinateScale) }
+    /// `usedHeight` without the empty line behind a final line break: in a
+    /// flow that line belongs to the next page, it is no overflow.
+    func contentHeight(_ box: TextBox) -> CGFloat {
+        let extra = manager.extraLineFragmentRect
+        return box.flowID != nil && extra.height > 0 ? min(usedHeight, ceil(extra.minY * coordinateScale)) : usedHeight
+    }
     /// Room beyond a field's text frame where glyphs still draw (italics, „J“,
     /// the caret at the left edge), in the field's own units: the editor's
     /// zoom raster and the previews clip the same way.
     static func glyphOverhang(_ box: TextBox) -> CGFloat {
         let largest = ([box.style.fontSize] + (box.runs ?? []).map(\.style.fontSize)).max() ?? box.style.fontSize
-        return CGFloat(largest) * 0.35 + 2
+        let reach = CGFloat(largest) * 0.35 + 2
+        // A page's first line reaches up to the page edge (`firstLineBaseline`).
+        return box.flowID == nil ? reach : max(reach, CGFloat(box.y) + 2)
     }
     /// The field's text does not fit its height on `page` (`TextBox.overflows`):
     /// previews mark it red like the editor, the PDF export refuses it.
     static func overflows(_ box: TextBox, on page: Page) -> Bool {
-        box.overflows(textHeight: Double(TextObjectLayout(box, on: page).usedHeight))
+        box.overflows(textHeight: Double(TextObjectLayout(box, on: page).contentHeight(box)))
     }
     /// Widest laid-out line in canonical units (automatic field width).
     var usedWidth: CGFloat { manager.usedRect(for: container).width * coordinateScale }

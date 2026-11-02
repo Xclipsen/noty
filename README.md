@@ -11,6 +11,14 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Build 69 (`extras/build69`):** Helix-Erweiterungen (Register, `.`, Makros, Sprungliste, Teilen, Absätze, Klammerpaare, Einzug), [Tastatur](docs/KEYBOARD.md) in Seitenleiste, Suche, Gesetzen, eigenen Dialogen und Farbauswahl, im Textdokument manueller Seitenumbruch, Papierwechsel, Word- und RTF-Export, Suche über Seitenwechsel und Zurückrücken beim Kürzen. Kein Formatwechsel. Implementiert und gebaut, am iPad ungeprüft.
+
+**Build 68 (`phase1/fixes`):** Korrekturen aus dem Review des Tastaturmodus für beide Textwege: `c`, `i`, `o` nur noch an sichtbaren Stellen, `~`, `` ` ``, `r` erhalten Formate, Modus bleibt bei programmatischem Fokus, ein Esc oder Tab wirkt genau einmal; Texteditor 2 verliert bei fehlendem Platz keine Eingabe. Implementiert, gebaut und installiert (alle 28 Dokumente unverändert), am iPad ungeprüft ([Gerätetest](docs/KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft)).
+
+**Build 67 (`phase1/app`):** [Tastaturmodus](docs/KEYBOARD.md) wie Helix statt vim: erst auswählen, dann handeln, Which-Key-Popup, Suche mit Live-Treffern, `Space`-Menü, eine Belegung für Bibliothek, Seite und Text. Implementiert und gebaut, nicht installiert, am iPad ungeprüft.
+
+**Build 65 (`feat/tastatur`, gestapelt auf `feat/textneubau`):** ⌘A über das ganze Textdokument und in jedem Werkzeug, Absatzstile über Seitenwechsel, Zeilenumbruch am Seitenende ohne Überlauf, vim-artiger [Tastaturmodus](docs/KEYBOARD.md). Implementiert, gebaut und installiert (alle 28 Dokumente unverändert), am iPad ungeprüft.
+
 **Nutzungsfeedback Tag 1 (22.10.2026) – auf `main`, implementiert und erfolgreich gebaut, nicht installiert, auf dem iPad ungeprüft:**
 
 - **Lasso-Kontur:** Auswahlen werden wieder wie beim frühen nativen Lasso mit Abstand umrandet (`SelectionContour`); nahe Inhalte verschmelzen, entfernte bleiben Inseln, Griffe und Leiste sitzen am Konturrahmen.

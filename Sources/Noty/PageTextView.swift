@@ -6,9 +6,10 @@ final class PageTextView: UITextView {
     private let ruling = RuledTextLayout()
     var rulingOrigin: CGFloat? { ruling.originY }
     var rulingLines: TextRuling { ruling.lines }
-    func setRulingOrigin(_ y: CGFloat?, lines: TextRuling = .lined) {
-        guard ruling.originY != y || ruling.lines != lines else { return }
-        ruling.originY = y; ruling.lines = lines
+    var rulingPageTop: CGFloat? { ruling.pageTop }
+    func setRulingOrigin(_ y: CGFloat?, lines: TextRuling = .lined, pageTop: CGFloat? = nil) {
+        guard ruling.originY != y || ruling.lines != lines || ruling.pageTop != pageTop else { return }
+        ruling.originY = y; ruling.lines = lines; ruling.pageTop = pageTop
         layoutManager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: textStorage.length), actualCharacterRange: nil)
         (layoutManager as? TaskLayoutManager)?.onDisplayChange?()
     }
@@ -80,10 +81,57 @@ final class PageTextView: UITextView {
     override func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
         materializePlacement(); super.setMarkedText(markedText, selectedRange: selectedRange)
     }
-    override func paste(_ sender: Any?) { materializePlacement(); super.paste(sender) }
+    override func paste(_ sender: Any?) {
+        // The input line takes it; outside typing the text view itself takes no text.
+        if KeyboardRouter.shared.textPrompt != nil {
+            if let text = UIPasteboard.general.string { KeyboardRouter.shared.pasteIntoPrompt(text, editor: self) }
+            return
+        }
+        if !KeyboardRouter.shared.allowsTyping { historyOwner?.keyboardPaste(self); return }
+        if let text = UIPasteboard.general.string, historyOwner?.replaceFlowSelection(with: text) == true { return }
+        materializePlacement(); super.paste(sender)
+    }
+    override func copy(_ sender: Any?) {
+        if let text = historyOwner?.flowSelectionText { UIPasteboard.general.string = text } else { super.copy(sender) }
+    }
+    override func cut(_ sender: Any?) {
+        if !KeyboardRouter.shared.allowsTyping, historyOwner?.keyboardCut(self) == true { return }
+        if let text = historyOwner?.flowSelectionText {
+            UIPasteboard.general.string = text
+            _ = historyOwner?.replaceFlowSelection(with: "")
+        } else { super.cut(sender) }
+    }
+    /// ⌘A: the whole text document, not only this page's part of it. The
+    /// edit menu's „Alles auswählen“ keeps the native selection with its handles.
+    func selectEverything() {
+        if historyOwner?.keyboardSelectAll(self) == true || historyOwner?.selectWholeFlow() == true { return }
+        selectAll(nil)
+    }
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if TextFlowSelection.shared.range != nil, [#selector(copy(_:)), #selector(cut(_:)), #selector(paste(_:))].contains(action) { return true }
+        return super.canPerformAction(action, withSender: sender)
+    }
+    // MARK: Keyboard mode
+    /// NOR and SEL: a wide caret on the character (the block cursor).
+    var normalCaret = false { didSet { if normalCaret != oldValue { refreshCaret() } } }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.handle(presses, text: self) { super.pressesBegan(presses, with: event) }
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesEnded(presses, with: event) }
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesCancelled(presses, with: event) }
+    }
+    func finishByEscape() { onEscape?() }
     /// TextKit spans caret/selection over the whole line fragment, which on ruled
     /// paper includes the gap up to the previous line. Use the glyph band instead.
     override func caretRect(for position: UITextPosition) -> CGRect {
+        var rect = textCaretRect(for: position)
+        if normalCaret { rect.size.width = max(rect.width, rect.height * 0.5) }
+        return rect
+    }
+    private func textCaretRect(for position: UITextPosition) -> CGRect {
         if let placement, selectedRange == NSRange(location: placement.location, length: 0),
            offset(from: beginningOfDocument, to: position) == placement.location { return placement.caret }
         let rect = super.caretRect(for: position)
@@ -117,8 +165,7 @@ final class PageTextView: UITextView {
             // Empty trailing line: not laid out as glyphs; place where typed text will land.
             let extra = manager.extraLineFragmentRect
             guard let font = fonts.first, length == 0 || extra.height > 0 else { return nil }
-            let natural = extra.minY + font.ascender
-            baseline = ruling.originY.map { CGFloat(ruling.lines.baseline(forNatural: Double($0 + natural))) - $0 } ?? natural
+            baseline = ruling.baseline(top: extra.minY, ascent: font.ascender) ?? extra.minY + font.ascender
         } else {
             guard manager.numberOfGlyphs > 0 else { return nil }
             let point = CGPoint(x: rect.midX - inset.left, y: rect.midY - inset.top)
@@ -157,6 +204,7 @@ final class PageTextView: UITextView {
     override func scrollRectToVisible(_ rect: CGRect, animated: Bool) { }
     override func deleteBackward() {
         if placement != nil { placement = nil; return }
+        if historyOwner?.replaceFlowSelection(with: "") == true { return }
         if isFlow, selectedRange.location == 0, selectedRange.length == 0 { onFlowBackspace?() }
         else { super.deleteBackward() }
     }
@@ -173,10 +221,16 @@ final class PageTextView: UITextView {
         addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))
         addGestureRecognizer(touchWatcher)
         touchWatcher.onEnded = { [weak self] touch in
-            guard let self, self.refusedDuringTouch else { return }
-            self.refusedDuringTouch = false
-            if self.lastTouchWasCleanTap { self.onCleanTapAfterRefusal?(touch.location(in: self)) }
+            guard let self, self.lastTouchEndedAsTap else { return }
+            self.writeAfterTap()
+            self.onCleanTap?(touch.location(in: self), touch.tapCount)
         }
+    }
+    /// A tap in the text writes, also with the keyboard gone (no Esc then).
+    func writeAfterTap() {
+        guard isFirstResponder, !KeyboardRouter.shared.allowsTyping else { return }
+        TextFlowSelection.shared.set(nil)
+        KeyboardRouter.shared.tappedText(self)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     /// Feedback zu Build 62: „Der Cursor sollte erst reingehen, wenn man
@@ -185,21 +239,25 @@ final class PageTextView: UITextView {
     /// down and lifted within 0.5 s, at most 10 screen points apart, just now.
     /// Code paths that open a field on purpose (new field by tap, „Bearbeiten“,
     /// second tap on a selected field, flow hand-off) set `openingOnPurpose`.
+    /// UIKit starts a pointer click on touch-down, before it can be clean, and
+    /// places a finger's caret at word ends: every clean tap ends in
+    /// `onCleanTap`, which opens the field and sets the caret at the tap.
     private let touchWatcher = TouchDownWatcher()
     var openingOnPurpose = false
-    /// Editing was refused while the touch was still down; if it ends as a
-    /// clean tap after all, the field opens at the tap (own coordinates).
-    var refusedDuringTouch = false
-    var onCleanTapAfterRefusal: ((CGPoint) -> Void)?
-    var touchIsDown: Bool { touchWatcher.start.map { $0.touch.phase != .ended && $0.touch.phase != .cancelled } ?? false }
-    var lastTouchWasCleanTap: Bool {
-        guard let start = touchWatcher.start else { return false }
+    /// A clean tap ended at this point (own coordinates) with this tap count.
+    var onCleanTap: ((CGPoint, Int) -> Void)?
+    /// Held clicks are no accident: the time limit is for fingers and the Pencil.
+    private var lastTouchEndedAsTap: Bool {
+        guard let start = touchWatcher.start, touchWatcher.quiet else { return false }
         let touch = start.touch
         guard touch.phase == .ended else { return false }
         let point = touch.location(in: nil)
         return hypot(point.x - start.point.x, point.y - start.point.y) <= 10
-            && touch.timestamp - start.time <= 0.5
-            && ProcessInfo.processInfo.systemUptime - touch.timestamp <= 0.6
+            && (touch.type == .indirectPointer || touch.timestamp - start.time <= 0.5)
+    }
+    var lastTouchWasCleanTap: Bool {
+        guard lastTouchEndedAsTap, let touch = touchWatcher.start?.touch else { return false }
+        return ProcessInfo.processInfo.systemUptime - touch.timestamp <= 0.6
     }
     /// Opens the field for typing from app code (not a native text gesture).
     func beginEditingOnPurpose() {
@@ -210,11 +268,17 @@ final class PageTextView: UITextView {
     override var keyCommands: [UIKeyCommand]? {
         (super.keyCommands ?? []) + (isFlow ? [
             UIKeyCommand(input: "z", modifierFlags: .command, action: #selector(undoFlow)),
-            UIKeyCommand(input: "z", modifierFlags: [.command, .shift], action: #selector(redoFlow))] : []) + [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escape)),
+            UIKeyCommand(input: "z", modifierFlags: [.command, .shift], action: #selector(redoFlow)), Self.pageBreakCommand] : []) + [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escape)),
+            Self.selectAllCommand,
             UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(bold)),
             UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(italic)),
             UIKeyCommand(input: "u", modifierFlags: .command, action: #selector(underline))] + Self.formatCommands + Self.listCommands
     }
+    private static let pageBreakCommand: UIKeyCommand = {
+        let command = UIKeyCommand(title: "Seitenumbruch", action: #selector(shortcut(_:)), input: "\r", modifierFlags: .command, propertyList: "pagebreak")
+        command.wantsPriorityOverSystemBehavior = true
+        return command
+    }()
     /// Tab/⇧Tab nest list items; elsewhere Tab stays a tab character.
     private static let listCommands: [UIKeyCommand] = [UIKeyModifierFlags(), .shift].map { flags in
         let command = UIKeyCommand(input: "\t", modifierFlags: flags, action: #selector(listTab(_:)))
@@ -223,6 +287,8 @@ final class PageTextView: UITextView {
     }
     @objc private func listTab(_ command: UIKeyCommand) {
         let outdent = command.modifierFlags.contains(.shift)
+        if KeyboardRouter.shared.handle(token: outdent ? "<S-Tab>" : "<Tab>", text: self) { return }
+        guard KeyboardRouter.shared.allowsTyping else { return }
         if onListTab?(outdent) != true, !outdent { insertText("\t") }
     }
     private static let formatCommands: [UIKeyCommand] = {
@@ -232,21 +298,41 @@ final class PageTextView: UITextView {
             ("Schrift größer", "+", .command, "larger"), ("Schrift größer", "=", .command, "larger"),
             ("Schrift kleiner", "-", .command, "smaller"), ("Durchstreichen", "x", [.command, .shift], "strike"),
             ("Aufzählung", "7", [.command, .shift], "bullet"), ("Nummerierung", "8", [.command, .shift], "numbered"),
-            ("Checkliste", "9", [.command, .shift], "checkbox")]
+            ("Checkliste", "9", [.command, .shift], "checkbox"), ("Link", "k", .command, "link"), ("Markieren", "h", [.command, .shift], "highlight"),
+            // German layouts report ⇧7/8/9 as their shifted characters.
+            ("Aufzählung", "/", [.command, .shift], "bullet"), ("Nummerierung", "(", [.command, .shift], "numbered"), ("Checkliste", ")", [.command, .shift], "checkbox")]
+        let aliases: Set<String> = ["=", "/", "(", ")"]
         return items.map { title, input, flags, id in
             let command = UIKeyCommand(title: title, action: #selector(shortcut(_:)), input: input, modifierFlags: flags, propertyList: id)
             command.wantsPriorityOverSystemBehavior = true
-            if input == "=" { command.attributes = .hidden }
+            if aliases.contains(input) { command.attributes = .hidden }
             return command
         }
     }()
     @objc private func shortcut(_ command: UIKeyCommand) { (command.propertyList as? String).map { onShortcut?($0) } }
     @objc private func undoFlow() { onFlowUndo?(false) }
     @objc private func redoFlow() { onFlowUndo?(true) }
-    @objc private func escape() { onEscape?() }
+    @objc private func escape() { if !KeyboardRouter.shared.handle(token: "<Esc>", text: self) { onEscape?() } }
+    private static let selectAllCommand: UIKeyCommand = {
+        let command = UIKeyCommand(input: "a", modifierFlags: .command, action: #selector(selectAllKey))
+        command.wantsPriorityOverSystemBehavior = true
+        return command
+    }()
+    @objc private func selectAllKey() { selectEverything() }
     @objc private func bold() { onBold?() }
     @objc private func italic() { onItalic?() }
     @objc private func underline() { onUnderline?() }
+}
+
+extension PageTextView: KeyboardTextTarget {
+    var keepsTextFocus: Bool { window != nil && isEditable && historyOwner != nil }
+    func keyboardColorRows() -> [KeyChoiceRow] { historyOwner?.keyboardColorRows() ?? [] }
+    @discardableResult func keyboardSync() -> Bool { historyOwner?.keyboardSync(self) == true }
+    func keyboardRun(_ command: TextEngine.Command, count: Int?) { historyOwner?.keyboardRun(command, count: count, editor: self) }
+    func keyboardEscape() -> Bool { historyOwner?.keyboardEscape(self) ?? false }
+    func keyboardShowSelection() { historyOwner?.keyboardShowSelection(self) }
+    func keyboardUndo(redo: Bool) { historyOwner?.keyboardUndo(redo: redo, editor: self) }
+    func insertPageBreak() { historyOwner?.insertPageBreak() }
 }
 
 struct CaretPlacement: Equatable {
@@ -279,11 +365,25 @@ final class TouchDownWatcher: UIGestureRecognizer, UIGestureRecognizerDelegate {
     init() {
         super.init(target: nil, action: nil)
         cancelsTouchesInView = false; delaysTouchesBegan = false; delaysTouchesEnded = false; delegate = self
+        // The default is „platform dependent“ (UIGestureRecognizer.h); every clean tap decides here.
+        allowedTouchTypes = [UITouch.TouchType.direct, .indirectPointer, .pencil].map { NSNumber(value: $0.rawValue) }
     }
     var onEnded: ((UITouch) -> Void)?
+    /// One finger on a resting page: stopping a scroll or pinching over text is no tap.
+    private(set) var quiet = true
+    private var viewportMoves: Bool {
+        var current = view?.superview
+        while let ancestor = current {
+            if let scroll = ancestor as? UIScrollView, scroll.isDragging || scroll.isDecelerating || scroll.isZooming { return true }
+            current = ancestor.superview
+        }
+        return false
+    }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let touch = touches.first else { return }
+        if (event.allTouches?.count ?? 1) > 1 { quiet = false }
         if start.map({ $0.touch.phase == .ended || $0.touch.phase == .cancelled }) ?? true {
+            quiet = (event.allTouches?.count ?? 1) == 1 && !viewportMoves
             start = (touch, touch.location(in: nil), touch.timestamp)
         }
     }

@@ -74,9 +74,9 @@ final class ContentSearchModel: ObservableObject {
                 tasks = found
                 await Task.yield()
             }
-            let count = found.count == 1 ? "1 offene Aufgabe" : "\(found.count) offene Aufgaben"
+            let count = NotyText.count(found.count, "offene Aufgabe", "offene Aufgaben")
             taskStatus = found.isEmpty ? "Keine offenen Aufgaben" : count
-            if failed > 0 { taskStatus += " · \(failed) Heft(e) nicht lesbar" }
+            if failed > 0 { taskStatus += " · \(NotyText.count(failed, "Heft", "Hefte")) nicht lesbar" }
             collectingTasks = false
         }
     }
@@ -105,8 +105,8 @@ final class ContentSearchModel: ObservableObject {
             var text = "\(records) Textstellen erfasst"
             if total >= ContentSearchIndexFormat.hitLimit { text += " · Grenze 50.000 erreicht" }
             text += pages == 0 ? " · Suchindex aktuell" : pages == 1 ? " · 1 Seite neu erfasst" : " · \(pages) Seiten neu erfasst"
-            if failed > 0 { text += " · \(failed) Erkennung(en) fehlgeschlagen" }
-            if unreadable > 0 { text += " · \(unreadable) Heft(e) nicht lesbar" }
+            if failed > 0 { text += " · \(NotyText.count(failed, "Erkennung", "Erkennungen")) fehlgeschlagen" }
+            if unreadable > 0 { text += " · \(NotyText.count(unreadable, "Heft", "Hefte")) nicht lesbar" }
             return text + " · lokal, Deutsch/Englisch"
         }
     }
@@ -361,13 +361,49 @@ struct ContentSearchView: View {
     let onSelect: (ContentSearchHit) -> Void
     @StateObject private var model = ContentSearchModel()
     @State private var query = ""
+    @State private var searching = false
     @State private var openTasks = false
     @Environment(\.dismiss) private var dismiss
+    /// Keyboard mode: the hit `j`/`k` stand on. With a keyboard the keys stay
+    /// with the router and fill the field, so that `j` can move here.
+    @State private var keys = KeyPanel(context: .list, label: "SUCHE", ownsResponder: true)
+    @State private var keyIndex: Int?
+    private var keyHit: UUID? { keyIndex.flatMap { hits.indices.contains($0) ? hits[$0].id : nil } }
+    private func keyRun(_ action: HelixAction, count: Int) {
+        let router = KeyboardRouter.shared
+        func move(_ delta: Int) { keyIndex = KeyList.moved(keyIndex, dy: delta, count: hits.count); router.setTyping(keys, false) }
+        switch action {
+        case .listMove(let delta): move(delta * count)
+        case .listScreen(let delta): move(delta * 8)
+        case .listFirst: move(-hits.count)
+        case .listLast: move(hits.count)
+        case .confirm: if let hit = hits.indices.contains(keyIndex ?? 0) ? hits[keyIndex ?? 0] : nil { select(hit) }
+        case .cancelPanel: dismiss()
+        case .typeFilter: router.setTyping(keys, true)
+        case .panelTab: openTasks.toggle(); keyIndex = nil
+        default: break
+        }
+    }
+    private func startKeys() {
+        keys.input = $query
+        keys.typesUnbound = true
+        keys.run = { keyRun($0, count: $1 ?? 1) }
+        keys.commands = { [PaletteCommand(title: "Suchindex neu erfassen") { start(rebuild: true) }] }
+        let router = KeyboardRouter.shared
+        router.enter(keys)
+        router.setTyping(keys, true)
+    }
+    private func select(_ hit: ContentSearchHit) {
+        model.cancel(); model.cancelTasks()
+        var chosen = hit
+        chosen.flowRange = hit.crossingRange(query)
+        onSelect(chosen); dismiss()
+    }
     /// Filtered off the main actor: the index can hold 50 000 lines and
     /// changes while it is built, typing must stay fluid.
     @State private var hits: [ContentSearchHit] = []
     private func refreshHits() async {
-        if !hits.isEmpty { try? await Task.sleep(for: .milliseconds(120)) }
+        if !hits.isEmpty || !query.isEmpty { try? await Task.sleep(for: .milliseconds(120)) }
         guard !Task.isCancelled else { return }
         let tasksOnly = openTasks, term = query, source = openTasks ? model.tasks : model.records
         let found = await Task.detached(priority: .userInitiated) { () -> [ContentSearchHit] in
@@ -375,6 +411,17 @@ struct ContentSearchView: View {
             return Array(source.lazy.filter { $0.matches(term) }.prefix(300))
         }.value
         if !Task.isCancelled { hits = found }
+    }
+    /// The field takes the focus only once the sheet stands; iOS 17 has no
+    /// `searchFocused`, and a refused `isPresented` gives no signal, so look.
+    private func focusField() async {
+        guard !(KeyboardRouter.shared.isEnabled && KeyboardRouter.shared.hasKeyboard) else { return }
+        for delay in [50, 300, 500] {
+            try? await Task.sleep(for: .milliseconds(delay))
+            if Task.isCancelled || UIResponder.currentFirstResponder is UISearchTextField { return }
+            if searching { searching = false; try? await Task.sleep(for: .milliseconds(30)) }
+            searching = true
+        }
     }
     var body: some View {
         NavigationStack {
@@ -385,31 +432,36 @@ struct ContentSearchView: View {
                 Text(openTasks ? model.taskStatus : model.status).font(.caption).padding(.horizontal)
                 if openTasks ? model.collectingTasks : model.running { ProgressView().padding(.horizontal) }
                 if !openTasks {
-                    Text("Handschrift und Scan-/Bild-OCR sind lokal. Erkanntes bleibt als abgeleiteter Suchindex auf diesem iPad gespeichert und wird nur für geänderte Seiten neu erfasst. Die Erkennungsqualität muss mit deinen Unterlagen geprüft werden.")
+                    Text("Handschrift und Scan-/Bild-OCR sind lokal. Erkanntes bleibt als abgeleiteter Suchindex auf diesem iPad gespeichert und wird nur für geänderte Seiten neu erfasst. Die Erkennungsqualität muss mit den eigenen Unterlagen geprüft werden.")
                         .font(.caption).foregroundStyle(.secondary).padding(.horizontal)
                 }
                 if let error = model.error { Text(error).foregroundStyle(.red).font(.caption).padding(.horizontal) }
-                List(hits) { hit in
-                    Button { model.cancel(); model.cancelTasks(); onSelect(hit); dismiss() } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("\(hit.title) · Seite \(hit.pageNumber)").font(.headline)
-                            Text(hit.text).lineLimit(3)
-                            Text(label(hit.kind)).font(.caption).foregroundStyle(.secondary)
+                ScrollViewReader { proxy in
+                    List(hits) { hit in
+                        Button { select(hit) } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(hit.title) · Seite \(hit.pageNumber)").font(.headline)
+                                Text(hit.text).lineLimit(3)
+                                Text(label(hit.kind)).font(.caption).foregroundStyle(.secondary)
+                            }
                         }
+                        .listRowBackground(hit.id == keyHit ? Color.accentColor.opacity(0.28) : nil)
                     }
+                    .onChange(of: keyIndex) { _, _ in if let keyHit { proxy.scrollTo(keyHit) } }
+                    .onChange(of: hits.count) { _, count in keyIndex = KeyList.clamped(keyIndex, count: count) }
                 }.overlay {
                     if openTasks, !model.collectingTasks, model.tasks.isEmpty {
                         ContentUnavailableView("Keine offenen Aufgaben", systemImage: "checkmark.circle",
                             description: Text("Nicht abgehakte Checkboxen aus dem Text erscheinen hier."))
                     } else if !(openTasks ? model.collectingTasks : model.running) && !query.isEmpty && hits.isEmpty { ContentUnavailableView.search(text: query) }
                 }
-            }.searchable(text: $query, prompt: openTasks ? "Aufgaben filtern" : "Inhalt suchen")
+            }.searchable(text: $query, isPresented: $searching, prompt: openTasks ? "Aufgaben filtern" : "Inhalt suchen")
                 .onChange(of: openTasks) { _, tasks in
                     if tasks && !model.tasksCollected { model.collectTasks(documents: documents, current: current) }
                 }
-                .navigationTitle(current == nil ? "In allen Heften suchen" : "Im Heft suchen")
+                .navigationTitle(current == nil ? "In allen Heften suchen" : current?.isTextDocument == true ? "Im Dokument suchen" : "Im Heft suchen")
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Schließen") { dismiss() } }
+                    ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } }
                     ToolbarItem(placement: .primaryAction) {
                         if openTasks { Button("Aktualisieren") { model.collectTasks(documents: documents, current: current) }.disabled(model.collectingTasks) }
                         else if model.running { Button("Anhalten") { model.cancel() } }
@@ -417,9 +469,15 @@ struct ContentSearchView: View {
                     }
                 }
                 .task { start(rebuild: false) }
+                .task { await focusField() }
                 .task(id: "\(query)|\(openTasks)|\(model.hitRevision)") { await refreshHits() }
                 .onDisappear { model.cancel(); model.cancelTasks() }
         }
+        .background(KeyPanelHost(panel: keys).frame(width: 0, height: 0).accessibilityHidden(true))
+        .background { KeyEscapeButton { dismiss() } }
+        .overlay { KeyboardOverlay(scope: .library, panel: keys.id) }
+        .onAppear { startKeys() }
+        .onDisappear { KeyboardRouter.shared.leave(keys) }
     }
     private func start(rebuild: Bool) {
         model.start(documents: documents, current: current, currentSources: currentSources, area: area, retain: retain, rebuild: rebuild)

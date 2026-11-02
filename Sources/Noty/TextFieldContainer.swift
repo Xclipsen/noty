@@ -63,6 +63,17 @@ final class TextFieldContainer: UIView {
     private var unitScale: CGFloat = 1
     var content: TextBox?
     var automaticLight: Bool?
+    /// This field's part of a selection over several pages (`TextFlowSelection`).
+    private var flowHighlight: CAShapeLayer?
+    func setFlowHighlight(_ path: CGPath?) {
+        guard let path else { flowHighlight?.removeFromSuperlayer(); flowHighlight = nil; return }
+        let shape = flowHighlight ?? CAShapeLayer()
+        if flowHighlight == nil {
+            shape.fillColor = UIColor.systemBlue.withAlphaComponent(0.28).cgColor
+            layer.addSublayer(shape); flowHighlight = shape
+        }
+        shape.frame = editor.frame; shape.path = path
+    }
     private(set) var editing = false
     /// Frame drag zone in screen points: outside the frame and inside it.
     static let outerBorder: CGFloat = 14
@@ -201,6 +212,11 @@ final class TextFieldContainer: UIView {
     }
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard self.point(inside: point, with: event), isUserInteractionEnabled, !isHidden else { return nil }
+        // Text comes first: the width points cover a short field completely
+        // and the frame zone most of a single line.
+        if editing, bounds.contains(point), !editor.isHidden, editor.hitsLine(at: convert(point, to: editor), slack: 0) {
+            return editor.hitTest(convert(point, to: editor), with: event) ?? editor
+        }
         for handle in widthHandles where !handle.isHidden && handle.frame.contains(point) { return handle }
         // The frame zone belongs to the move drag, not to text selection.
         if inBorderZone(point) { return self }
@@ -221,6 +237,14 @@ final class FieldBorderDrag: NSObject, UIGestureRecognizerDelegate {
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
         ScrollPanPriority.outranksScrolling(gestureRecognizer, other)
+    }
+}
+
+/// A tap on the frame zone or a width point: everything but the text itself.
+final class FieldFrameTap: NSObject, UIGestureRecognizerDelegate {
+    static let shared = FieldFrameTap()
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        touch.view === gestureRecognizer.view || touch.view is SelectionHandle
     }
 }
 

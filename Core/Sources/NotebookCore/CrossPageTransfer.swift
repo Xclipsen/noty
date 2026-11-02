@@ -209,8 +209,9 @@ public struct PageContentReplacement: Equatable, Sendable {
 extension Notebook {
     /// All pages change together or none does. Every expected state is checked
     /// first; the complete candidate is validated once, so an object may leave
-    /// one page and arrive on another with the same identity.
-    public mutating func replaceContents(_ changes: [PageContentReplacement]) throws {
+    /// one page and arrive on another with the same identity. `restoring`:
+    /// undo/redo installs a state these pages had; fields need not fit again.
+    public mutating func replaceContents(_ changes: [PageContentReplacement], restoring: Bool = false) throws {
         guard !changes.isEmpty, Set(changes.map(\.pageID)).count == changes.count else { throw StorageError.invalidDocument }
         for change in changes {
             guard let page = pages.first(where: { $0.id == change.pageID }) else { throw PageOperationError.missingPage }
@@ -225,13 +226,14 @@ extension Notebook {
             if content.textBoxes.contains(where: \.usesRichText) { next.schemaVersion = max(7, next.schemaVersion) }
             next.raiseSchemaForTextColors(content.textBoxes)
             next.raiseSchemaForTextFields(content.textBoxes)
+            let unchanged = next.pages[index].effectiveTextBoxes
             next.pages[index].drawing = content.drawing
             next.pages[index].textBoxes = content.textBoxes
             next.pages[index].images = content.images
             next.pages[index].shapes = content.shapes
             next.raiseSchemaForShapes(content.shapes)
             let bounds = next.pages[index].textBounds
-            guard content.textBoxes.allSatisfy({ $0.fits(in: bounds) }) else { throw StorageError.invalidDocument }
+            guard restoring || content.textBoxes.allSatisfy({ $0.fits(in: bounds) || unchanged.contains($0) }) else { throw StorageError.invalidDocument }
         }
         next.raiseSchemaForImageAssets()
         try next.validate(); self = next

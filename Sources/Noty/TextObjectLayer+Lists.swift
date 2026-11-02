@@ -59,6 +59,8 @@ extension TextObjectLayer {
         let manager = editor.layoutManager, container = editor.textContainer, inset = editor.textContainerInset
         manager.ensureLayout(for: container)
         let text = editor.textStorage.string as NSString, length = text.length
+        // Behind a page break the text goes on on the next page, not below it.
+        guard length == 0 || text.character(at: length - 1) != TextLines.pageBreak else { return nil }
         let font = editor.typingAttributes[.font] as? UIFont ?? .systemFont(ofSize: 14)
         let local = CGPoint(x: point.x - inset.left, y: point.y - inset.top)
         let width = Double(editor.bounds.width - inset.left - inset.right)
@@ -66,11 +68,12 @@ extension TextObjectLayer {
         guard width > 40, local.x >= 0, local.x <= width + 1 else { return nil }
         let top = manager.numberOfGlyphs == 0 ? 0 : manager.lineFragmentRect(forGlyphAt: manager.numberOfGlyphs - 1, effectiveRange: nil).maxY
         guard local.y >= top else { return nil }
-        let ends = length == 0 || [10, 13, 0x2028, 0x2029].contains(text.character(at: length - 1))
+        let ends = length == 0 || TextLines.isBreak(text.character(at: length - 1))
         guard let result = TextPlacement.below(tap: .init(x: Double(local.x), y: Double(local.y)), top: Double(top), endsWithBreak: ends,
                 width: width, height: Double(editor.bounds.height - inset.top - inset.bottom),
                 lineHeight: Double(font.lineHeight), ascent: ascent, descent: descent,
-                ruling: editor.rulingOrigin == nil ? nil : editor.rulingLines, origin: Double(editor.rulingOrigin ?? 0)),
+                ruling: editor.rulingOrigin == nil ? nil : editor.rulingLines, origin: Double(editor.rulingOrigin ?? 0),
+                pageTop: editor.rulingPageTop.map(Double.init)),
               result.newlines > 0 else { return nil }
         return CaretPlacement(location: length, newlines: result.newlines,
             caret: CGRect(x: Double(inset.left), y: result.baseline - ascent + Double(inset.top), width: 2, height: ascent + descent))
@@ -163,7 +166,7 @@ extension TextObjectLayer {
         if text == "\t", nestList(editor, outdent: false) { return false }
         if text == "\n", let edit = TextListEditing.newline(in: editor.text ?? "", range: range), edit.replacement.isEmpty,
            let box = boxes.first(where: { $0.id == editor.objectID }),
-           box.listLevel(at: ((editor.text ?? "") as NSString).lineRange(for: NSRange(location: range.location, length: 0)).location) > 0,
+           box.listLevel(at: TextLines.lineRange((editor.text ?? "") as NSString, NSRange(location: range.location, length: 0)).location) > 0,
            nestList(editor, outdent: true) { return false }
         return nil
     }
@@ -176,7 +179,7 @@ extension TextObjectLayer {
         guard active, editor.markedTextRange == nil, editor.selectedRange.length == 0,
               let index = boxes.firstIndex(where: { $0.id == editor.objectID }) else { return }
         let text = editor.text ?? "", caret = editor.selectedRange.location
-        let start = (text as NSString).lineRange(for: NSRange(location: max(0, caret - 1), length: 0)).location
+        let start = TextLines.lineRange(text as NSString, NSRange(location: max(0, caret - 1), length: 0)).location
         guard let edit = TextListEditing.autoList(in: text, caret: caret, level: boxes[index].listLevel(at: start)) else { return }
         onUndoBoundary?()
         applyListEdits([edit], at: index, editor: editor)

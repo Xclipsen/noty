@@ -189,6 +189,7 @@ struct PageWorkflowCheck {
         let legacyPackage = try await Self.checkLegacyPackage(root: root, image: imageData)
         let flowPackage = try await Self.checkTextFlowMigration(root: root)
         let textDocument = try await Self.checkTextDocument(root: root)
+        let textDocumentExtras = try await Self.checkTextDocumentExtras(root: root)
         let report: [String: Any] = ["schemaVersion": document.schemaVersion,
             "textFieldSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first == continuation,
             "unmaterializedDraftExcludedFromNotebookArchive": !roundTrip.documents[0].pages.contains(where: { $0.id == document.writingDraft().id }),
@@ -214,7 +215,8 @@ struct PageWorkflowCheck {
             "pageTextBecomesFieldsAtSameFrameInSchema14": flowPackage.sameFrames,
             "textDocumentSchema15KeepsFlowAndHandwritingPage": textDocument.flowKept,
             "textDocumentKindAndFieldStyleSurviveNotyImportAndLibraryRestore": textDocument.kindKept,
-            "textDocumentMarkdownExport": textDocument.markdown]
+            "textDocumentMarkdownExport": textDocument.markdown,
+            "textDocumentPageBreakKept": textDocumentExtras.breakKept, "textDocumentPaperChanged": textDocumentExtras.paperChanged]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
     }
@@ -378,6 +380,43 @@ struct PageWorkflowCheck {
         let markdown = TextDocumentExport.markdown(document).hasPrefix("# Einleitung\n\n- Punkt eins\n- [ ] offen\n\nText Text")
         guard flowKept, kindKept, markdown else { throw StorageError.invalidDocument }
         return (flowKept, kindKept, markdown)
+    }
+
+    /// A manual page break needs no format of its own: U+000C stands in the
+    /// text of schema 15, Python reads the package, `.noty` and library archive
+    /// as usual. The paper changes on all pages, Word and RTF of the same
+    /// document go to `verify_office_export.py`.
+    static func checkTextDocumentExtras(root: URL) async throws -> (breakKept: Bool, paperChanged: Bool) {
+        let libraryRoot = root.appendingPathComponent("TextDocumentExtras", isDirectory: true)
+        let library = LibraryStore(root: libraryRoot); _ = try await library.load()
+        var document = try Notebook.textDocument(title: "Umbruch & Papier", paper: .lined)
+        let capacity: (Page, TextBox) throws -> Int = { page, box in min(page.paper == .lined ? 90 : 70, (box.text as NSString).length) }
+        let layout = TextFlowLayout(capacity: capacity)
+        let first = document.textFlowSegments[0]
+        var typed = first.box
+        typed.text = "Kapitel\n• Punkt\n1. eins\n☐ offen\nLink" + TextLines.pageBreakText + "Zweite Seite\n" + String(repeating: "Text ", count: 30)
+        (document, _) = try document.reflowText(pageID: first.pageID, previous: first.box, replacement: typed,
+            selection: NSRange(location: 0, length: 0), pageCapacity: capacity)
+        let formats: [(Int, Int, (inout TextBoxStyle) -> Void)] = [
+            (0, 7, { TextStylePreset.heading.apply(to: &$0) }), (32, 4, { $0.link = "https://example.org/?a=1&b=2" }),
+            (37, 6, { $0.bold = true }), (44, 5, { $0.italic = true }), (50, 4, { $0.underline = true }), (55, 4, { $0.strikethrough = true }),
+            (60, 4, { $0.color = .red; $0.automaticColor = nil }), (65, 4, { $0.highlighted = true })]
+        for (location, length, change) in formats {
+            document = try document.restylingTextFlow(range: NSRange(location: location, length: length), layout: layout, change: change).0
+        }
+        let breakKept = document.textFlowSegments[0].box.text.hasSuffix(TextLines.pageBreakText) && document.schemaVersion == 15
+        document = try document.changingTextDocumentPaper(.grid, color: .dark, layout: layout)
+        let paperChanged = document.pages.allSatisfy { $0.paper == .grid && $0.paperColor == .dark } && document.appearance?.paper == .grid
+            && document.textFlowContent?.text == typed.text && document.textFlowSegments[0].box.text.hasSuffix(TextLines.pageBreakText)
+        _ = try await library.createDocument(document, parentID: nil)
+        let reopened = try RevisionStore(directory: try await library.documentURL(id: document.id), readOnly: true).load()
+        _ = try BackupArchive.write(reopened, to: root.appendingPathComponent("textdokument-umbruch.noty"))
+        try JSONEncoder().encode(reopened).write(to: root.appendingPathComponent("current-textdokument-umbruch.json"))
+        _ = try LibraryArchive.write(try await library.backupPlan(), to: root.appendingPathComponent("textdokument-umbruch.notylibrary"))
+        try TextDocumentExport.data(reopened, as: .word).write(to: root.appendingPathComponent("textdokument.docx"))
+        try TextDocumentExport.data(reopened, as: .rtf).write(to: root.appendingPathComponent("textdokument.rtf"))
+        guard reopened == document, breakKept, paperChanged else { throw StorageError.invalidDocument }
+        return (breakKept, paperChanged)
     }
 
     /// Page text as Build ≤ 62 stored it (schema 13, flow segments over two

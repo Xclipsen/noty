@@ -30,7 +30,7 @@ xtool-Build/Signierung in PTY/Terminal ausführen: dokumentierter Non-TTY-/Swift
 | --- | --- | --- |
 | Datenmodell, Migration, Speichern, Seitenoperationen | [STORAGE](docs/STORAGE.md), [ARCHITECTURE](docs/ARCHITECTURE.md), betroffene Core-Tests | Core-Tests; bei Format-/Archiv-/Layeränderung zusätzlich Host-Roundtrip |
 | Bibliothek, Bereiche, Backup/Restore | [LIBRARY](docs/LIBRARY.md), [BACKUPS](docs/BACKUPS.md), [LIBRARY-BACKUP](docs/LIBRARY-BACKUP.md) | Core-Tests und Host-Roundtrip; echte Archive unabhängig prüfen |
-| Editor, Gesten, Fokus, Undo, Werkzeugleiste | DESIGN, ARCHITECTURE; je nach Inhalt [TEXT-FIELDS](docs/TEXT-FIELDS.md) / [IMAGES](docs/IMAGES.md) | iPad-Build; betroffene Eingabe-/Fokus-/Neustartfälle gebündelt am Gerät |
+| Editor, Gesten, Fokus, Undo, Werkzeugleiste, Tastatur | DESIGN, ARCHITECTURE, [KEYBOARD](docs/KEYBOARD.md); je nach Inhalt [TEXT-FIELDS](docs/TEXT-FIELDS.md) / [IMAGES](docs/IMAGES.md) | iPad-Build; betroffene Eingabe-/Fokus-/Neustartfälle gebündelt am Gerät |
 | PDF, Koordinaten, Ränder, Rendering | `PageGeometry.swift`, `PagePresentation.swift`, gemeinsame Text-/Bildrenderer | Geometrie-/Seiten-/Objekttests, iPad-Build; tatsächliches Geräte-PDF mit `pdfinfo`, `pdftoppm`, `pdftotext` prüfen |
 | Nur Dokumentation/Agent-Anweisungen | Aussagen gegen betroffene Quellen, Befehls-Hilfe und Links prüfen | Kein App-Build allein wegen Textänderungen |
 

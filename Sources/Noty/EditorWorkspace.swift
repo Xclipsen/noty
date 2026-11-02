@@ -239,7 +239,7 @@ struct EditorWorkspaceView: View {
             }
         }
         .alert("Ansichten", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
-            Button("OK") { workspace.error = nil }
+            Button("OK") { workspace.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspace.error ?? "") }
         .onAppear { library.editorCommit = { await workspace.commitForBackup(toolbox: toolbox) } }
         .onDisappear { library.editorCommit = nil }
@@ -255,12 +255,16 @@ struct EditorWorkspaceView: View {
 
     private func pane(_ model: EditorModel, index: Int) -> some View {
         ContentView(model: model, isRestoredCopy: false, isLibraryDocument: true, initialSearchBounds: index == 0 ? workspace.primaryDocument.searchBounds : nil,
+            initialFlowRange: index == 0 ? workspace.primaryDocument.searchFlowRange : nil,
             isPaneActive: { workspace.activePane == index && !workspace.closing }, onActivatePane: { workspace.activePane = index },
             onCloseWorkspace: { Task { if await toolbox.flush(), await workspace.closeAll() { library.notebookClosedByUser(); dismiss() } } },
             onSecondView: { choose() }, onLaws: lawsEnabled ? {
                 // Shows the window; a visible one goes to its edge tab like its ✕.
                 if !laws.panelOpen { laws.panelOpen = true; laws.stashed = false }
                 else { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed.toggle() } }
+            } : nil, onLawKeys: lawsEnabled ? {
+                withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelOpen = true; laws.stashed = false }
+                laws.keyFocus += 1
             } : nil, onToolChange: { tool in
                 // Picking the highlighter or an eraser in the active notebook
                 // switches the law reader along; other tools leave its choice.
@@ -506,7 +510,7 @@ struct EditorWorkspaceView: View {
         }
             .buttonStyle(NotyPressStyle())
             .accessibilityLabel("Gesetzessammlung ganz schließen")
-            .accessibilityHint("Ohne Pfeil am Rand. Über „Gesetzessammlung“ im Notizbuch wieder öffnen.")
+            .accessibilityHint("Ohne Pfeil am Rand. Über „Gesetzessammlung“ im Heft wieder öffnen.")
             .help("Ganz schließen – ohne Pfeil am Rand")
         return Group {
             if edge == .bottom {
@@ -533,7 +537,7 @@ struct EditorWorkspaceView: View {
     }
 
     private func title(_ model: EditorModel) -> String {
-        model.documentLoaded ? model.notebook.title : "Notizbuch"
+        model.documentLoaded ? model.notebook.title : "Heft"
     }
 
     // MARK: Pane strip with grab handle
@@ -597,7 +601,7 @@ struct EditorWorkspaceView: View {
             if abs(current.effectiveFraction(extent: current.vertical ? size.height : size.width) - 0.5) > 1e-9 {
                 Button("Gleich groß") { update { $0.setFraction(0.5) } }
             }
-            if entry.pane == .secondary { Button("Anderes Notizbuch wählen …") { choose() } }
+            if entry.pane == .secondary { Button("Anderes Heft wählen …") { choose() } }
             Button("Zweite Ansicht schließen") { Task { await workspace.closeSecondary() } }
         }
         .accessibilityElement(children: .ignore)
@@ -735,32 +739,33 @@ private struct SecondViewPicker: View {
                     Picker("Anordnung", selection: $vertical) {
                         Label("Nebeneinander", systemImage: "rectangle.split.2x1").tag(false)
                         Label("Untereinander", systemImage: "rectangle.split.1x2").tag(true)
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.toggle($vertical))
                     Picker("Position", selection: $slot) {
                         Text(vertical ? "Oben" : "Links").tag(SplitSlot.first)
                         Text(vertical ? "Unten" : "Rechts").tag(SplitSlot.second)
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.choice($slot, SplitSlot.allCases))
                 } header: { Text("Zweite Ansicht") }
                 if let documents {
                     let recent = recentDocuments(documents)
                     if !recent.isEmpty {
                         Section("Zuletzt geöffnet") { ForEach(recent) { row($0) } }
                     }
-                    Section(recent.isEmpty ? "Notizbücher" : "Alle Notizbücher") {
+                    Section(recent.isEmpty ? "Hefte" : "Alle Hefte") {
                         ForEach(documents) { row($0) }
-                        if documents.isEmpty { Text("Keine Notizbücher verfügbar.").foregroundStyle(.secondary) }
+                        if documents.isEmpty { Text("Keine Hefte verfügbar.").foregroundStyle(.secondary) }
                     }
                 } else {
                     Section {
-                        HStack(spacing: 10) { ProgressView(); Text("Notizbücher werden geladen …").foregroundStyle(.secondary) }
+                        HStack(spacing: 10) { ProgressView(); Text("Hefte werden geladen …").foregroundStyle(.secondary) }
                             .accessibilityElement(children: .combine)
                     }
                 }
             }
-            .navigationTitle("Notizbuch für zweite Ansicht")
+            .navigationTitle("Heft für zweite Ansicht")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
             .task { if documents == nil { documents = await library.editorChoices() } }
         }
+        .keyboardSheet()
     }
 
     private func recentDocuments(_ documents: [OpenNotebook]) -> [OpenNotebook] {
@@ -777,10 +782,11 @@ private struct SecondViewPicker: View {
                 Label(document.title, systemImage: document.isRestored ? "clock.arrow.circlepath" : "book.closed")
                     .foregroundStyle(.primary)
                 Spacer()
-                if document.id == primaryID { Text("gleiches Notizbuch").font(.caption).foregroundStyle(.secondary) }
+                if document.id == primaryID { Text("gleiches Heft").font(.caption).foregroundStyle(.secondary) }
                 if document.id == currentID { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
             }
         }
-        .accessibilityValue(document.id == primaryID ? "gleiches Notizbuch" : "")
+        .accessibilityValue(document.id == primaryID ? "gleiches Heft" : "")
+        .keyOption(.action { onPick(document, slot, vertical) })
     }
 }

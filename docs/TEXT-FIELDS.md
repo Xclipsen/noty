@@ -2,6 +2,8 @@
 
 > Ab dem Textneubau (22.10.2026, [TEXT-REBUILD-62](TEXT-REBUILD-62.md), Schema 14) enthalten Hefte nur noch Textfelder; Seitentext/Klicken-und-Schreiben, Verschiebegriff oben links, Breitengriff unten rechts und X gelten dort nicht mehr. Die folgenden Abschnitte sind Entwicklungsverlauf.
 
+> Erste Zeile im Textdokument und Cursor per Tipp: seit Feedback zu Build 65 gilt [TEXT-REBUILD-62](TEXT-REBUILD-62.md), letzter Abschnitt.
+
 ## Nachtrag 19.10.2026 · Klicken und Schreiben, Karopapier, verschachtelte Listen, offene Aufgaben
 
 Implementiert, Core-Tests/Host-Roundtrip/SDK-Build erfolgreich; auf dem iPad **ungeprüft**. Kein Formatwechsel: Listenzeichen bleiben Textpräfixe, die Verschachtelungsebene ist der vorhandene Absatzeinzug (20 pt je Ebene, Formatgrenze 240 pt = 12 Ebenen).

@@ -9,6 +9,8 @@ struct OpenNotebook: Identifiable {
     let isRestored: Bool
     var preferredPageID: UUID?
     var searchBounds: PageRect?
+    /// A search hit over a page change, in flow offsets.
+    var searchFlowRange: NSRange?
 }
 
 @MainActor
@@ -69,7 +71,7 @@ final class LibraryModel: ObservableObject {
         pinOrder = (UserDefaults.standard.stringArray(forKey: pinOrderKey) ?? []).compactMap(UUID.init(uuidString:))
         if let date = UserDefaults.standard.object(forKey: libraryBackupKey) as? Date {
             lastLibraryExport = date
-            backupStatus = "Letzter Bibliotheksexport: \(date.formatted(date: .abbreviated, time: .shortened))"
+            backupStatus = "Letztes Bibliotheksbackup: \(NotyText.statusDate(date))"
         }
         let reopen = Self.launchReopenPending
         Self.launchReopenPending = false
@@ -106,7 +108,7 @@ final class LibraryModel: ObservableObject {
     /// editor would open (`olderStates`), so it never blocks the whole backup.
     func buildArchive(editorsCommitted: Bool = false) async throws -> PreparedLibraryArchive {
         guard ready, opened == nil || editorsCommitted, !archiveRunning else {
-            throw BackupPostponed(reason: backupBlocker ?? "Notizbuch geöffnet")
+            throw BackupPostponed(reason: backupBlocker ?? "Heft geöffnet")
         }
         archiveRunning = true; defer { archiveRunning = false }
         // Process-wide: closing or opening editors skip their asset GC meanwhile.
@@ -144,9 +146,9 @@ final class LibraryModel: ObservableObject {
         let date = Date()
         UserDefaults.standard.set(date, forKey: libraryBackupKey)
         lastLibraryExport = date
-        backupStatus = "Bibliotheksdatei exportiert: \(date.formatted(date: .omitted, time: .shortened))"
+        backupStatus = "Bibliotheksbackup exportiert: \(NotyText.statusDate(date))"
         // Success with warning: shown in the library banner, not as an error.
-        if let preparedExportWarning { warning = "Bibliotheksdatei exportiert; \(preparedExportWarning). Notizbuch öffnen und prüfen." }
+        if let preparedExportWarning { warning = "Bibliotheksbackup exportiert; \(preparedExportWarning). Heft öffnen und prüfen." }
         discardPreparedExport()
     }
 
@@ -227,11 +229,12 @@ final class LibraryModel: ObservableObject {
         while busy { try? await Task.sleep(for: .milliseconds(100)) }
     }
 
-    private func change(_ action: () async throws -> LibrarySnapshot) async {
+    /// `quiet`: no progress and no disabled library for a change without wait.
+    private func change(quiet: Bool = false, _ action: () async throws -> LibrarySnapshot) async {
         await settle()
         guard accepting else { return }
-        busy = true
-        defer { busy = false }
+        busy = true; backgroundBusy = quiet
+        defer { busy = false; backgroundBusy = false }
         do { snapshot = try await action() }
         catch { self.error = error.localizedDescription }
     }
@@ -373,7 +376,7 @@ final class LibraryModel: ObservableObject {
             restoredCopies.removeAll { result.purgedIDs.contains($0.id) }
             var parts = [result.purgedIDs.count == 1 ? "1 Eintrag endgültig gelöscht." : "\(result.purgedIDs.count) Einträge endgültig gelöscht."]
             if !result.retainedIDs.isEmpty {
-                parts.append("Das ursprüngliche Notizbuch liegt direkt im App-Ordner und bleibt im Papierkorb.")
+                parts.append("Das ursprüngliche Heft liegt direkt im App-Ordner und bleibt im Papierkorb.")
             }
             if result.leftoverDirectories > 0 {
                 parts.append("\(result.leftoverDirectories) Ordner konnten nicht vom Speicher entfernt werden; ihre Dateien bleiben erhalten und erscheinen nach dem Neuladen eventuell wieder in der Bibliothek.")
@@ -381,7 +384,8 @@ final class LibraryModel: ObservableObject {
             trashStatus = parts.joined(separator: " ")
         } catch { self.error = "Endgültiges Löschen fehlgeschlagen: \(error.localizedDescription)" }
     }
-    func favorite(_ item: NotebookCore.LibraryItem) async { await change { try await store.setFavorite(item.id, value: !item.favorite) } }
+    // Quiet: a foreground change disables every entry for a moment, which made the library flash.
+    func favorite(_ item: NotebookCore.LibraryItem) async { await change(quiet: true) { try await store.setFavorite(item.id, value: !item.favorite) } }
     /// Pinned entries (active only) in their display order.
     var pinnedItems: [NotebookCore.LibraryItem] {
         LibraryPinOrder.arrange(snapshot.items.filter { $0.favorite && !snapshot.isTrashed($0.id) }, order: pinOrder)
@@ -400,7 +404,7 @@ final class LibraryModel: ObservableObject {
     }
     func reorder(_ ids: [UUID], parent: UUID?) async { await change { try await store.reorder(ids, parentID: parent) } }
 
-    func open(_ item: NotebookCore.LibraryItem, pageID: UUID? = nil, searchBounds: PageRect? = nil) async {
+    func open(_ item: NotebookCore.LibraryItem, pageID: UUID? = nil, searchBounds: PageRect? = nil, flowRange: NSRange? = nil) async {
         // A second tap on the notebook being opened is no second request.
         guard opening != item.id else { return }
         await settle()
@@ -411,7 +415,7 @@ final class LibraryModel: ObservableObject {
             let url = try await store.documentURL(id: item.id)
             snapshot = try await store.markOpened(item.id)
             opened = OpenNotebook(id: item.id, directory: url, title: item.title,
-                                  isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds)
+                                  isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds, searchFlowRange: flowRange)
             lastEditedID = item.id
             UserDefaults.standard.set(item.id.uuidString, forKey: lastOpenedKey)
         } catch { self.error = error.localizedDescription }

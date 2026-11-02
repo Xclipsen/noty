@@ -25,10 +25,10 @@ enum ImageImportError: LocalizedError {
         case .tooManyPixels: "Das Bild hat mehr als 200 Megapixel, das ist für noty zu groß."
         case .pageChanged: "Die Seite hat sich währenddessen geändert. Bitte das Bild erneut einfügen."
         case .missingClipboard: "Die Zwischenablage enthält kein unterstütztes Bild. Bitte zuerst einen Screenshot oder ein Bild kopieren."
-        case .video: "Die ausgewählte Datei ist ein Video. Bitte ein Foto oder Bild auswählen."
+        case .video: "Die ausgewählte Datei ist ein Video. Bitte ein Foto oder Bild wählen."
         case .pageFull: "Auf dieser Seite liegen bereits 50 Bilder, mehr sind je Seite nicht möglich. Bitte eine andere Seite verwenden."
         case .notebookFull(let used, let adding):
-            "Dieses Bild (\(ImageLimits.megabytes(adding))) passt nicht mehr in das Notizbuch: Bildoriginale sind auf 500 MB je Notizbuch begrenzt, einschließlich Seitenpapierkorb; mehrfach verwendete Bilder (duplizierte Seiten, Kopien) zählen nur einmal. Belegt sind \(ImageLimits.megabytes(used)). Bitte Seiten mit Bildern im Seitenpapierkorb endgültig löschen, ein kleineres Bild wählen oder ein neues Notizbuch verwenden."
+            "Dieses Bild (\(ImageLimits.megabytes(adding))) passt nicht mehr in das Heft: Bildoriginale sind auf 500 MB je Heft begrenzt, einschließlich Seitenpapierkorb; mehrfach verwendete Bilder (duplizierte Seiten, Kopien) zählen nur einmal. Belegt sind \(ImageLimits.megabytes(used)). Bitte Seiten mit Bildern im Seitenpapierkorb endgültig löschen, ein kleineres Bild wählen oder ein neues Heft verwenden."
         case .unsupportedPhoto(let offered):
             "Fotos hat für dieses Objekt kein Standbild geliefert (angeboten: \(offered)). Bitte das Foto in Fotos als HEIC oder JPEG sichern oder über „Bilddatei“ einfügen."
         case .photoUnavailable(let detail):

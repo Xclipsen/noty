@@ -176,7 +176,8 @@ extension Notebook {
         return next
     }
 
-    public mutating func replaceTextBoxes(_ boxes: [TextBox], pageID: UUID) throws {
+    /// `restoring`: undo/redo installs a state this page had (`replaceContents`).
+    public mutating func replaceTextBoxes(_ boxes: [TextBox], pageID: UUID, restoring: Bool = false) throws {
         var next = try preparedForTextEditing()
         if boxes.contains(where: \.usesTextFlowFormat) { next.schemaVersion = max(8, next.schemaVersion) }
         if boxes.contains(where: \.usesRichText) { next.schemaVersion = max(7, next.schemaVersion) }
@@ -184,9 +185,11 @@ extension Notebook {
         next.raiseSchemaForTextFields(boxes)
         guard let index = next.pages.firstIndex(where: { $0.id == pageID }) else { throw PageOperationError.missingPage }
         let bounds = next.pages[index].textBounds
+        // Only what changes must fit: an old field beside the sheet must not block the rest of the page.
+        let unchanged = next.pages[index].effectiveTextBoxes
         for box in boxes {
             try box.validate()
-            guard box.fits(in: bounds) else { throw StorageError.invalidDocument }
+            guard restoring || box.fits(in: bounds) || unchanged.contains(box) else { throw StorageError.invalidDocument }
         }
         next.pages[index].textBoxes = boxes
         try next.validate(); self = next

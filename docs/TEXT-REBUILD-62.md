@@ -134,8 +134,8 @@ Gerätetestpunkte (gebündelt, alles **ungeprüft**):
 Bewusste Abweichungen und Grenzen:
 - Stifttipp neben dem bearbeiteten Text beendet wie im Heft die Bearbeitung und kehrt zum vorherigen Werkzeug zurück (nur fixiertes Textwerkzeug setzt den Cursor); ein Fingertipp setzt immer den Cursor. Ein Fingertipp mit Stiftwerkzeug wirkt erst nach dem Doppeltipp-Fenster (0,3 s), damit „Textfeld hinzufügen“ erreichbar bleibt.
 - Mit Textwerkzeug setzt ein Tipp auf ein Bild oder eine Form im Schreibbereich den Cursor (der Fluss liegt darüber); Bilder/Formen wählt man mit dem Finger bei Stiftwerkzeug oder mit Bild-/Lassowerkzeug.
-- Text/Markdown enthalten nur den Fluss; Handschrift, freie Felder, Bilder und Formen nur im PDF. Unterstreichung, Markierung, Farben und Links gehen im Markdown verloren.
-- Papier und Papierfarbe sind nach dem Anlegen fest (kein Umstellen im Dokument; ein nachträglicher Wechsel müsste alle Seiten, die Reserveseite, den Standard und die Tintenfarben gemeinsam umstellen und bleibt offen).
+- Text/Markdown enthalten den Fluss und dahinter die freien Felder (Regel unter „Feedback zu Build 65“); Handschrift, Bilder und Formen nur im PDF. Unterstreichung, Markierung, Farben und Links gehen im Markdown verloren.
+- Papier und Papierfarbe sind nach dem Anlegen fest (kein Umstellen im Dokument; ein nachträglicher Wechsel müsste alle Seiten, die Reserveseite, den Standard und die Tintenfarben gemeinsam umstellen und bleibt offen). *(Überholt: siehe „Extras Textdokument“ am Ende.)*
 
 Gerätetestpunkte (gebündelt, alles **ungeprüft**):
 1. Neu › Textdokument (hoch/quer, blanko/liniert/kariert); Symbol, Titel, Vorschau in Raster/Liste/Seitenleiste/Angeheftet; ein älterer Build zeigt „Dokumentformat 15 … nicht unterstützt“.
@@ -238,6 +238,29 @@ Bugfixes nach dem Nutzertest von Build 62 (Punkte 1–11 oben), keine Formatänd
 - **Installiert**: InstallationProxy bestätigt Build **63** unter unveränderter ID. Zurückgelesen: `verify_device_store.py --compare` für beide Bereichsroots gültig, **alle 24 Dokumente und 210 Dateien unverändert**, keine neuen Dateien.
 - **Auf dem iPad ungeprüft**: alle Korrekturen 1–11 (Prüfliste im Abschnitt der Korrekturen); höchstes Risiko: Stift-Tipp öffnet ein Textfeld zuverlässig.
 
+### Build 65 · Prüfung Textdokument, ⌘A, Tastaturmodus (31.10.2026, Branch `feat/tastatur`)
+
+Code-Prüfung des Textdokuments und aller Tastenkürzel, Auslöser: Hardware-Tastatur. **Implementiert, erfolgreich gebaut** (`xtool dev build`) **und installiert (unten), am iPad ungeprüft.** Core-Tests (791, 3 übersprungen; neu `TextFlowRangeTests`, `KeyboardCommandsTests`, `TextMotionsTests`), `check_page_workflow.sh` und `check_verifiers.sh` bestanden. Kein Formatwechsel. Bedienung und alle Tasten: [KEYBOARD](KEYBOARD.md).
+
+- **⌘A im Textdokument:** griff nur die aktuelle Seite (jede Seite ist eine eigene Textansicht); ⌘A + ⌫ löschte also nur eine Seite. Jetzt ganzer Text über alle Seiten: `TextFlowSelection` markiert auf jeder Seite ihren Teil, Kopieren, Ausschneiden, Einfügen, Tippen, ⌫ und Formatieren laufen als ein Undo-Schritt über `Notebook.editingTextFlow`/`restylingTextFlow`.
+- **⌘A sonst:** wirkte nur mit Lasso, Formen, Bild oder bestehender Fingerauswahl; mit Stift, Bleistift, Marker, Radierer, Laser, Lesen und dem Textwerkzeug zwischen Feldern passierte nichts. Jetzt in jedem Werkzeug.
+- **Absatzstile und Ausrichtung** rissen an einem Seitenwechsel ab (nur der Teil auf dieser Seite wurde Überschrift). Jetzt der ganze Absatz (`textFlowParagraph`).
+- **Zeilenumbruch auf der letzten Zeile einer Seite:** Die leere Zeile dahinter zählte als Überlauf: roter Rahmen, PDF-Export verweigert, Cursor unter dem Schreibbereich. Jetzt keine Überlaufmessung für diese Zeile (`TextObjectLayout.contentHeight`), der Cursor geht auf die nächste Seite (`trailingLineFits`), die leere Seite wird nicht exportiert. Aus dem Code hergeleitet (Linux hat kein TextKit); am Gerät prüfen.
+- **Lange Dokumente:** Die Seitenmessung legte bei jedem Tastendruck den gesamten Resttext aus, beim Einfügen einmal je Seite. Jetzt nur bis zur Seitenhöhe (`TextObjectLayout(limitedTo:)`).
+- **Markdown:** kursiv als `*` statt `_`, weil `_` mitten im Wort kein Kursiv ist.
+- **Reflow beim Bereichslöschen** beginnt eine Seite früher, damit Text über die Seitengrenze zurückrückt.
+
+Geprüft ohne Befund: Fluss-Reflow, Kürzen leerer Endseiten, Seitenoperationen in Dokumenten (Bedienung in Seitenleiste, Menü und Kürzeln gesperrt), `.noty`-Import und Restore-Kopien mehrseitiger Dokumente (Fluss bleibt eins), Undo über Seiten zusammen mit Lesezeichen, Gliederung, Text-/Markdown-Export.
+
+Bekannte Grenzen:
+- Eine Phrase über einen Seitenwechsel findet die Suche nicht (Suche je Seite). *(Erledigt: „Extras Textdokument“.)*
+- Beim normalen Tippen rückt Text nur vorwärts: Wird das erste Wort einer Folgeseite so kurz, dass es auf die Vorseite passte, bleibt es bis zur nächsten Änderung auf der Vorseite stehen. *(Erledigt: „Extras Textdokument“.)*
+- Auswählen mit Finger oder ⇧Pfeil bleibt je Seite; über Seiten nur ⌘A und `v`/`V`.
+
+Gerätetestpunkte siehe [KEYBOARD](KEYBOARD.md) und TESTING.
+
+**Installiert** (31.10.2026, 11:16, iPadOS 27.0.1): IPA SHA-256 `0ad24b9b…e255`, CFBundleVersion 65, gleiche ID, Team `BAFXLQ964V` und Zertifikat (`50f3e096…`), Profil bis 31.10.2027. Sicherung vor dem Update: `/home/la/Backups/noty-before-build65-2026-10-31T10-15-58-197949174Z/` (28 Dokumente in zwei Bereichsroots, 103 Revisionen, 248 Dateien). Rücklesen mit `verify_device_store.py --compare`: alle 28 Dokumente und 248 Dateien unverändert, keine neuen Dateien. **Auf dem iPad ungeprüft.**
+
 ### Build 64 · Verhalten und Objektbedienung vereinheitlicht (22.10.2026)
 
 Ein Audit (nur Code-Lesen) fand Ungleichheiten zwischen Werkzeugen, Objektarten, Editor und Export; der Nutzer hat entschieden, sie zu beheben. **Implementiert und erfolgreich gebaut** (`xtool dev build`, ohne Warnungen), **nicht installiert, auf dem iPad ungeprüft.** Core-Tests (763, 3 übersprungen; neu `Build64BehaviourTests`), `check_page_workflow.sh` und `check_verifiers.sh` bestanden. **Kein Formatwechsel** (Notebook-Schema, Archive, `toolbar.json` unverändert; neue App-Einstellungen nur in UserDefaults). Optik/Texte (Farben „aktiv“, Paletten, Begriffe) folgen in einem eigenen Build.
@@ -293,3 +316,59 @@ Gerätetestpunkte (gebündelt nach Risiko, alles **ungeprüft**):
 10. Pencil: Doppeltipp/-drücken von Lasso, Formen, Laser zum Radierer und zurück; Systemeinstellung „Vorheriges Werkzeug“.
 11. Durchkritzeln über Form und Tinte entfernt beides (ein Undo); Checkbox-Tipp mit Radierer, Lasso, Formen- und Bildwerkzeug; Werkzeugwechsel hebt Auswahl auf.
 12. Darstellung/Export: „Seite anpassen“ auf dunkles Papier (Vorschau mit heller Schrift); Seitenvorschau kursiver Text ohne abgeschnittene Kanten, überlaufendes Feld rot und PDF-Export verweigert; PDF eines Textdokuments aus der Bibliothek ohne leere Endseiten, Dateiname = Titel; gehaltene Form erscheint beim Halten unter kreuzender Tinte; gehobene Auswahl mit weißem Text auf dunklem Papier.
+
+## Feedback zu Build 65 (31.10.2026, Branch `phase0/text`)
+
+**Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft.** Core-Tests bestanden; Klickwege laufen unter Linux nicht.
+
+**Cursor setzen.** Jeder saubere Tipp auf Text (Finger, Pencil, Trackpad) endet jetzt im selben eigenen Weg (`PageTextView.onCleanTap` → `TextObjectLayer.caretAfterTap`): Er öffnet das Feld, falls UIKit es nicht getan hat, und setzt den Cursor auf die getippte Stelle statt ans Wortende. Doppeltipp (Wort markieren), Tipp in eine Markierung und Checkboxen bleiben unverändert. Die Regel der Korrektur nach Build 62 bleibt: höchstens 10 pt und 0,5 s, nur bei gehaltenen Trackpad-Klicks ohne Zeitgrenze; Ziehen und Halten öffnen nichts.
+- Im bearbeiteten Feld geht echter Text vor Breitenpunkten und Rahmenzone (`TextFieldContainer.hitTest`). Vorher deckten die 44-pt-Punkte ein kurzes Feld ganz und die Rahmenzone den Großteil einer Einzelzeile ab, und der Tipp verpuffte. Ein Tipp auf den Rest der Zone setzt den Cursor an die nächste Stelle (`FieldFrameTap`); Ziehen dort verschiebt wie bisher, die Punkte bleiben außerhalb des Texts greifbar.
+- `TouchDownWatcher` nennt seine Eingabearten ausdrücklich, weil der Standard laut `UIGestureRecognizer.h` plattformabhängig ist. `UIApplicationSupportsIndirectInputEvents` steht nun in der `Info.plist`; das ändert nichts, denn ohne Schlüssel gilt ab iOS 17 schon `YES`.
+
+**Erste Zeile einer Seite.** Das Segment eines Textflusses beginnt 16 pt unter der Seitenkante; ab etwa 26 pt Schrift lag die natürliche Grundlinie damit unter der ersten Linie (40), und die Zeile rutschte auf die zweite. Jetzt steht sie auf der ersten Linie, die ihre Oberlängen auf der Seite hält (`TextRuling.firstLineBaseline`), und darf dafür in den oberen Rand reichen. Über 40 pt Oberlänge folgt die nächste passende Linie. `RuledTextLayout.baseline(top:ascent:)` ist die eine Regel für Editor, Vorschau, PDF, Kapazität und Cursor auf leerer Zeile; `TextPlacement.below` nutzt dieselbe Core-Rechnung. Nur Flusssegmente: migrierte Felder behalten ihr Layout. Vorhandene Dokumente zeigen große erste Zeilen sofort höher; umbrochen wird wie immer erst bei der nächsten Änderung. Kein Formatwechsel.
+
+**Teilen als Text.** „Als Markdown teilen (.md)“ und „Als Text teilen (.txt)“ stehen in Heften und Textdokumenten im Menü ⋯ › Teilen und exportieren › Nur Text, im Kontextmenü der Bibliothek und in der Befehlspalette (Bibliothek: für den per Tastatur gewählten Eintrag). `TextDocumentExport` nimmt allen Text: im Textdokument zuerst den Fluss als ein Stück, dann die freien Felder Seite für Seite (Grund: Der Fluss läuft über Seitenwechsel, Felder hätten zwischen seinen Absätzen keinen festen Platz, und Text soll nicht still fehlen). Hefte: alle Seiten der Reihe nach. Felder von oben nach unten, innerhalb einer Reihe (12 pt Spielraum ab dem ersten Feld der Reihe) von links nach rechts, nach dem sichtbaren Rahmen. Tinte, Bilder, Formen und PDF-Inhalte entfallen. Ohne Text erscheint ein Hinweis statt einer leeren Datei.
+
+Gerätetestpunkte (gebündelt, alles **ungeprüft**):
+1. Trackpad, Finger und Pencil mit Textwerkzeug: Klick in fremdes Feld, ins bearbeitete Feld (erstes und letztes Zeichen, kurzes Wort), mitten ins Wort; Cursor exakt dort. Doppelklick markiert das Wort, Klick-Ziehen markiert auch in einer Einzelzeile.
+2. Schutz: Ziehen und Halten über Text öffnen nichts, Scrollen über Text bleibt Scrollen; Breitenpunkte und Rahmen ziehen weiter.
+3. Stiftwerkzeug: erster Klick wählt, zweiter setzt den Cursor; Textdokument: Klick setzt ihn nach 0,3 s; Hardware-Tastatur im NORMAL-Modus: Tipp schreibt.
+4. Textdokument liniert und kariert: 30-pt-Zeile am Seitenende erzeugen, Größe rauf und runter: erste Linie im Editor, in Seitenleiste und PDF (Oberlängen vollständig, auch beim Zoomen); leere erste Zeile mit großer Schrift: Cursor an derselben Stelle wie der getippte Text.
+5. .md und .txt aus Heft mit Tinte, Textdokument mit Feld und Bibliothek; reine Tintenseite zeigt den Hinweis.
+
+## Extras Textdokument (31.10.2026, Branch `extras/textdokument`)
+
+**Implementiert und erfolgreich gebaut** (`xtool dev build`), **nicht installiert, am iPad ungeprüft.** Basis `feat/tastatur`. Gilt für den bisherigen Textweg und Editor 2, Ausnahmen stehen dabei. Kein Formatwechsel ([STORAGE](STORAGE.md), oben). Hefte unverändert.
+
+**Manueller Seitenumbruch.** Zeichen U+000C im Fluss. Einfügen: Weitere Textformate (Pfeil in der Formatleiste, nur im alten Weg, Editor 2 hat keine Formatleiste), ⋯ › Seitenumbruch einfügen, Befehlspalette, `Space b`, ⌘↩. Ohne Cursor geht er ans Textende, in NOR und SEL vor die Auswahl, die Text bleibt; in INS ersetzt er eine Auswahl. Sichtbar als gestrichelte Linie mit „Seitenumbruch“ hinter der Zeile, gezeichnet nur im Editor-Raster (`TaskLayoutManager.rasterPass`), nie in Vorschau oder PDF. Das Zeichen beendet die Zeile für Listen, Absatzstile, Gliederung, Aufgaben und den Tastaturmodus (`TextLines.isBreak`, `lineRange`, `paragraphRange`; Foundation selbst bricht dort nicht). Löschen wie ein Zeichen, auch ⌫ am Anfang der Folgeseite; Einfügen ein Undo-Schritt. Export: `.txt` behält das Zeichen auf eigener Zeile, `.md` schreibt `---`, Word `<w:br w:type="page"/>`, RTF `\page`.
+
+**Papierwechsel.** ⋯ › Papier ändern … und Befehlspalette, Blanko, Liniert, Kariert, Weiß, Dunkel. Alle Seiten, Reserveseite, Standard und automatische Tintenfarben gemeinsam (`Notebook.changingTextDocumentPaper`), Stift und Marker folgen wie beim Heft. Der ganze Text fließt neu, Handschrift und Objekte bleiben auf ihrer Seite, leere Endseiten verschwinden. Ein Undo-Schritt über den bestehenden Seitenschritt. Findet der Text keinen Platz, bleibt alles wie es war und es erscheint die Fehlermeldung.
+
+**Word und RTF.** `TextDocumentOffice.swift`, ein Absatzmodell (`Block`) für beide, reine Erzeugung in Core. Reihenfolge wie im Textexport: Fluss, dann freie Felder. Word: echte Absatzstile (Title, heading 1, heading 2, Caption, Normal), fett, kursiv, unterstrichen, durchgestrichen, Farbe, Markierung (Gelb, Grün, Blau, Pink als `w:highlight`, Orange und Lila als Schattierung, Word kennt sie nicht), Hoch-/Tiefstellung, Schrift und Größe wo sie vom Absatzstil abweichen, Links, Listen als echte Word-Listen mit neun Ebenen, Nummerierung behält die erste Zahl, Checklisten als Liste mit ☐/☑, Seitenumbrüche, Seitenformat und Schreibbereich des Dokuments. Automatische und weiße Schrift bleibt automatisch: Eine Word-Seite ist weiß. RTF: dieselben Absätze und Zeichenformate, Listenmarken bleiben Text mit Einzug, kaum Mehrcode, deshalb enthalten. ZIP: Das Repo hatte keinen Schreiber (`RecordArchive` ist kein ZIP), neu `ZipStore` mit unkomprimierten Einträgen und festem Zeitstempel, CRC aus `StreamingCRC32`, gleiche Eingabe gibt gleiche Bytes. Bilder stehen nie im Fluss, also keine Bilder im Export; Handschrift, Bilder und Formen fehlen wie beim Text. Im Editor sagt ein Hinweis das nach dem Teilen, im Kontextmenü der Bibliothek nicht. Ohne Text derselbe Hinweis wie bei `.txt`. Einstieg: ⋯ › Teilen und exportieren › Nur Text, Kontextmenü der Bibliothek, Befehlspalette, `Space e w`, `Space e r`.
+
+**Suche über Seitengrenzen.** Im Textdokument bekommt jede Seite eine Suchzeile über ihren Seitenwechsel (je 160 Zeichen, `SearchSeam`). Sie trifft nur eine Phrase, die den Wechsel wirklich kreuzt; was auf einer Seite steht, bleibt deren eigener Treffer, nichts erscheint doppelt. Leerraum zählt als ein Leerzeichen, auch Zeilenumbruch und U+000C; Groß-/Kleinschreibung und Akzente wie bisher. Gilt für „Im Dokument suchen“ und „In allen Heften suchen“. Der Treffer gehört zur Seite, auf der die Phrase beginnt. Sprung: Textwerkzeug, Auswahl über beide Seiten (`TextFlowSelection`, in Editor 2 der ganze Bereich), kurze Marke über dem Teil auf der ersten Seite; aus der Bibliothek nach dem Öffnen. Tastaturmodus: Der Puffer ist der ganze Fluss, Phrasen liefen dort schon über Seiten; über einen manuellen Umbruch liest die Suche jetzt wie über ein Leerzeichen. Hefte bleiben je Seite.
+
+**Zurückrücken beim Kürzen.** Der alte Weg misst beim Tippen ab der bearbeiteten Seite. Ändert eine Taste das erste Wort einer Folgeseite (`Notebook.reachesFirstWord`), merkt sich die Seite das; 0,8 s nach der letzten Taste prüft `settlingTextFlow`, ob Text auf die Vorseite passt. Das misst genau eine Seite; rückt nichts, passiert nichts weiter. Rückt Text, wandert der Cursor mit ihm, der Schritt gehört zum Tippen, ein Undo nimmt beides zurück. Die Pause ist Absicht: Ein Wort, das gerade getippt wird, würde sonst zwischen den Seiten springen und der Fokus mit ihm. Editor 2 braucht das nicht, TextKit setzt sofort um, ein Eingabefeld, kein Fokuswechsel. Dort misst `rewritingTextFlow` jetzt nur noch die erreichten Seiten: Es leerte vorher alle Folgesegmente, sodass bei jeder Taste jede Seite neu gemessen wurde (Core-Test: 50 Seiten, höchstens 2 Messungen).
+
+Nachweise: Core-Tests 957, davon 3 übersprungen (vorher 925); neu `TextDocumentExtrasTests` (32). `check_page_workflow.sh` (neu `checkTextDocumentExtras`: Paket, `.noty`, Bibliotheksbackup mit Umbruch und gewechseltem Papier, von Python geprüft) und `check_verifiers.sh` (neu `textdoc-page-break`, acht Office-Negativfälle). `scripts/verify_office_export.py` prüft ZIP, wohlgeformtes XML, Inhaltstypen, Beziehungen, Stile, Listen, Links. LibreOffice 26.8 wandelt die `.docx` und `.rtf` des Host-Roundtrips nach PDF: A4, zwei Seiten, Umbruch an der richtigen Stelle, Listenmarken da. Word selbst stand nicht zur Verfügung.
+
+Grenzen:
+- Editor 2: Die Seitenregel für U+000C verlangt von TextKit `containerBreak`. Unter Linux nicht ausführbar; das Modell schneidet unabhängig davon richtig, eine Abweichung zeigt `logDeviations`.
+- Steht der Umbruch allein auf einer Zeile, die nicht mehr auf die Seite passt, rutscht er auf die nächste Seite und diese bleibt bis auf ihn leer. Sichtbar, mit ⌫ zu beheben.
+- Zurückrücken im alten Weg nach einer Pause, nicht sofort. Hält man die Taste gedrückt, passiert es nach dem Loslassen.
+- Suchzeilen reichen 160 Zeichen weit; eine längere Phrase über einen Wechsel wird nicht gefunden. Die Trefferanzeige in der Liste zeigt das Umfeld, drei Zeilen.
+- Hinweis auf fehlende Handschrift nur im Editor. `.rtf` ohne echte Listen, nur Marke und Einzug.
+- Seitenpapierkorb behält sein altes Papier, wie bei Heften.
+
+Gerätetestpunkte (alles **ungeprüft**, möglichst in einer Kopie, alter Weg und Editor 2 getrennt):
+1. Umbruch mit ⌘↩ mitten im Text, am Textende, in einer Liste, auf einer Auswahl; Marke sichtbar, auch gezoomt und auf dunklem Papier, nicht in Seitenleiste und PDF. ⌘↩ kommt an (Kollision mit dem System?).
+2. ⌫ am Anfang der Folgeseite und hinter der Marke, ⌘Z, ⇧⌘Z; Cursor steht danach richtig. Tippen hinter einem Umbruch am Textende landet auf der neuen Seite.
+3. Editor 2: Text hinter dem Umbruch steht auf der nächsten Seite, Cursor am Textende auf der neuen Seite, keine `noty.editor2`-Abweichungen; Pfeile und `j`/`k` über den Umbruch.
+4. Formatmenü, ⋯ und Palette; `Space b` in NOR: Umbruch vor der Auswahl, nichts gelöscht.
+5. Papier ändern bei 10 Seiten mit Handschrift, Bild, freiem Feld: Blanko ↔ Liniert ↔ Kariert, Weiß ↔ Dunkel; Text neu verteilt, kein roter Rahmen, Tinte auf ihrer Seite und lesbar, Reserveseite und neue Seiten folgen, ein ⌘Z stellt alles her, Stiftfarbe lesbar. PDF-Export danach.
+6. `.docx` und `.rtf` aus ⋯, Bibliothek, Palette, `Space e w`, `Space e r`; Dateiname, Öffnen in Pages und Word; Stile als Absatzstile, Links klickbar, Umbruch, Checklisten. Hinweis nach dem Teilen bei Handschrift.
+7. Suche: Phrase über einen Seitenwechsel und über einen Umbruch im Dokument und über alle Hefte; Treffer einmal, Sprung, Auswahl auf beiden Seiten, Tippen ersetzt sie; `/` im Tastaturmodus. Erster Start nach dem Update: Suchindex liest einmal alles, erkennt aber nichts neu.
+8. Zurückrücken im alten Weg: erstes Wort der Folgeseite kürzen, Pause: Wort springt zurück, Cursor bleibt dahinter, kein Flackern beim Tippen; langes Wort neu tippen am Seitenanfang; ⌘Z. Marked Text (Tottasten).
+9. 50-Seiten-Dokument: Tippen auf Seite 1, 25, 50 ohne Verzug, in beiden Wegen.
+10. Speichern, schließen, öffnen; Geräteabzug mit `verify_device_store.py`. Ein älterer Build bewusst nur in einer Kopie.
+

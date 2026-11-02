@@ -69,6 +69,8 @@ final class LawLibraryModel: ObservableObject {
     @Published var error: String?
     /// Visible pages that show `error` themselves; the app alert stays silent then.
     @Published var inlineErrorPages = 0
+    /// Counts `Space l`: the open reader takes the keys.
+    @Published var keyFocus = 0
     /// Mail delivery is switched off on the server (user decision, see
     /// LAW-INTEGRATION-PLAN). Everything waiting for an e-mail stays hidden until then.
     static let mailDelivery = false
@@ -201,7 +203,7 @@ final class LawLibraryModel: ObservableObject {
             next.laws = merged(next.laws, old: catalog?.laws ?? [])
             next.administrative = merged(next.administrative ?? [], old: catalog?.administrative ?? [])
             try await offline.publish(next)
-            catalog = next; lastCheck = Date(); progress = "\(next.entries.count) Dokumente offline verfügbar"
+            catalog = next; lastCheck = Date(); progress = "\(NotyText.count(next.entries.count, "Dokument", "Dokumente")) offline verfügbar"
             byteCount = await offline.byteCount()
         } catch is CancellationError { progress = "Download pausiert; vorhandene Fassungen bleiben verfügbar." }
         catch {
@@ -236,7 +238,7 @@ final class LawLibraryModel: ObservableObject {
         do {
             // E-mail registration needs mail delivery, which is switched off on the
             // server; a username account is created at once without any e-mail.
-            if registering && email.contains("@") { throw LawError.invalid("Bitte wähle einen Benutzernamen ohne @. Registrieren per E-Mail ist noch nicht freigeschaltet.") }
+            if registering && email.contains("@") { throw LawError.invalid("Bitte einen Benutzernamen ohne @ wählen. Registrieren per E-Mail ist noch nicht freigeschaltet.") }
             if registering && email.range(of: "^[\\p{L}\\p{N}_.-]{2,32}$", options: .regularExpression) == nil { throw LawError.invalid("Der Benutzername braucht 2–32 Buchstaben, Zahlen oder . _ -") }
             if registering && password.count < 12 { throw LawError.invalid("Das Passwort braucht mindestens 12 Zeichen.") }
             var body: [String: LawJSON] = ["password": .string(password)]
@@ -341,12 +343,12 @@ final class LawLibraryModel: ObservableObject {
                 }
             }
             try await pull(); lastSync = Date(); await refreshItems()
-            let time = Date().formatted(date: .omitted, time: .shortened)
+            let time = NotyText.statusDate(Date())
             syncStatus = failures.refused == 0 ? "Synchronisiert · \(time)"
                 : "Synchronisiert · \(time) · \(failures.refused == 1 ? "1 Eintrag" : "\(failures.refused) Einträge") nicht übertragen, bleibt lokal"
         } catch is CancellationError { syncStatus = "Synchronisierung pausiert" }
         catch let error as LawAPIError where error.status == 401 {
-            sessionExpired = true; syncStatus = "Anmeldung abgelaufen · Unter Konto erneut anmelden; Änderungen bleiben lokal"
+            sessionExpired = true; syncStatus = "Anmeldung abgelaufen · Unter Einstellungen › Konto erneut anmelden; Änderungen bleiben lokal"
         } catch { syncStatus = "Offline/Fehler · Änderungen bleiben lokal: \(error.localizedDescription)" }
     }
     func exportPersonal() async throws -> URL {

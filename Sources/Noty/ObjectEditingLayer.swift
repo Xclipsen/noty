@@ -1047,6 +1047,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                     // Finished form: the same confirmation as a held form or a lasso.
                     haptic(completed: true, at: gesture.location(in: self))
                 }
+            } else if dragMode == 1, groupTransform?.isIdentity == true {
+                // Ended where it began: fitting the frame alone is no invisible undo step.
             } else if var preview {
                 if let inkTransform {
                     if let changed = transformedInk(initial, using: inkTransform, inkOnly: false) { preview.drawing = changed.drawing }
@@ -1552,7 +1554,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         var commands = [UIKeyCommand(input: "c", modifierFlags: .command, action: #selector(copyKey)),
          UIKeyCommand(input: "v", modifierFlags: .command, action: #selector(pasteKey)),
          UIKeyCommand(input: "\u{8}", modifierFlags: [], action: #selector(deleteKey)),
-         UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey)),
+         UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeCommand)),
          UIKeyCommand(title: "Alles auswählen", action: #selector(selectAllKey), input: "a", modifierFlags: .command)]
         guard hasSelection, lift == nil, startContent == nil else { return commands }
         commands += [UIKeyCommand(title: "Ausschneiden", action: #selector(cutKey), input: "x", modifierFlags: .command),
@@ -1568,9 +1570,18 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         return commands
     }
     @objc private func copyKey() { copySelection() }
-    @objc private func pasteKey() { if let onPaste { onPaste() } else { pasteSelection() } }
-    @objc private func deleteKey() { deleteSelection() }
-    @objc private func escapeKey() { adopted = nil; clearSelection(); refresh() }
+    @objc private func pasteKey() {
+        if KeyboardRouter.shared.activePanel?.typing == true { KeyboardRouter.shared.pasteIntoPanel(); return }
+        if let onPaste { onPaste() } else { pasteSelection() }
+    }
+    @objc private func deleteKey() {
+        // A panel or its line has the keys: the selection behind it stays.
+        if KeyboardRouter.shared.activePanel != nil { KeyboardRouter.shared.handle(token: "<BS>"); return }
+        deleteSelection()
+    }
+    /// An open menu goes first, the router comes back to `escapeKey` otherwise.
+    @objc private func escapeCommand() { if !KeyboardRouter.shared.handle(token: "<Esc>") { escapeKey() } }
+    private func escapeKey() { adopted = nil; clearSelection(); refresh() }
     @objc private func cutKey() { guard hasSelection, !selectionLocked else { return }; copySelection(); deleteSelection() }
     @objc private func duplicateKey() { guard hasSelection else { return }; duplicateSelection() }
     /// ⌘A: everything selectable on this page (the lasso's filter; shape tool: shapes).
@@ -1588,6 +1599,16 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         refresh()
     }
     @objc private func nudgeKey(_ command: UIKeyCommand) {
+        if KeyboardRouter.shared.activePanel != nil {
+            let token = switch command.input ?? "" {
+            case UIKeyCommand.inputLeftArrow: "<Left>"
+            case UIKeyCommand.inputRightArrow: "<Right>"
+            case UIKeyCommand.inputUpArrow: "<Up>"
+            default: "<Down>"
+            }
+            if !command.modifierFlags.contains(.shift) { KeyboardRouter.shared.handle(token: token) }
+            return
+        }
         let step = command.modifierFlags.contains(.shift) ? 10.0 : 1.0
         let (dx, dy): (Double, Double) = switch command.input ?? "" {
         case UIKeyCommand.inputLeftArrow: (-step, 0)
@@ -1595,6 +1616,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         case UIKeyCommand.inputUpArrow: (0, -step)
         default: (0, step)
         }
+        nudge(dx: dx, dy: dy)
+    }
+    private func nudge(dx: Double, dy: Double) {
         // Same clamped move and ink transform as a drag; one model change per key.
         guard active, hasSelection, !selectionLocked, lift == nil, startContent == nil,
               var value = transformed(content, dx: dx, dy: dy, scale: 1) else { return }
@@ -1604,5 +1628,63 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         inkTransform = nil
         _ = commit(value, previous: content); refresh()
+    }
+
+    // MARK: Keyboard mode
+    /// With an ink or the text tool this plane rests: like a finger selection, it wakes up for the selection.
+    private func wakeForKeyboard() {
+        guard !active, enabled else { return }
+        touchSelection = true
+        isUserInteractionEnabled = active; isHidden = !active
+    }
+    /// ⌘A from any tool: everything selectable on this page.
+    func keyboardSelectAll() {
+        wakeForKeyboard()
+        selectAllKey()
+        isUserInteractionEnabled = active; isHidden = !active
+    }
+    /// The page's objects in reading order: Tab goes through them.
+    private var keyboardObjects: [(reference: PageObjectReference, bounds: PageRect)] {
+        var items: [(reference: PageObjectReference, bounds: PageRect)] = content.textBoxes.filter(\.allowsObjectSelection).map { (.text($0.id), $0.rotatedBounds) }
+        items += content.images.filter { !$0.locked }.map { (.image($0.id), $0.rotatedBounds) }
+        items += content.shapes.map { (.shape($0.id), $0.bounds) }
+        return items.sorted { $0.bounds.y != $1.bounds.y ? $0.bounds.y < $1.bounds.y : $0.bounds.x < $1.bounds.x }
+    }
+    func keyboardCycle(_ step: Int) {
+        let items = keyboardObjects
+        guard !items.isEmpty, lift == nil, startContent == nil else { return }
+        let current = items.firstIndex { item in
+            switch item.reference {
+            case .text(let id): return texts == [id] && images.isEmpty && shapes.isEmpty
+            case .image(let id): return images == [id] && texts.isEmpty && shapes.isEmpty
+            case .shape(let id): return shapes == [id] && texts.isEmpty && images.isEmpty
+            }
+        }
+        let target = items[((current ?? (step > 0 ? -1 : 0)) + step % items.count + items.count) % items.count].reference
+        if toolActive {
+            adopted = nil; clearSelection()
+            switch target {
+            case .text(let id): texts = [id]; fieldMode = true
+            case .image(let id): images = [id]
+            case .shape(let id): shapes = [id]
+            }
+            refresh()
+        } else { selectByTouch(target) }
+    }
+    /// hjkl on a selection move it (1 pt, like the arrow keys). False: nothing selected.
+    func keyboardNudge(dx: Double, dy: Double) -> Bool {
+        guard active, hasSelection else { return false }
+        nudge(dx: dx, dy: dy)
+        return true
+    }
+    func keyboardDelete() { if active, hasSelection, !selectionLocked { deleteSelection() } }
+    func keyboardCopy() { if active, hasSelection { copySelection() } }
+    func keyboardDuplicate() { if active { duplicateKey() } }
+    func keyboardClearSelection() { if active { escapeKey() } }
+    /// False: no field is selected.
+    func keyboardEditSelected() -> Bool {
+        guard isFieldSelection, let id = texts.first else { return false }
+        onEditText?(id, nil)
+        return true
     }
 }

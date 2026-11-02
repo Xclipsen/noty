@@ -2,6 +2,36 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Texteditor 2, Prototyp (31.10.2026, Branch `phase2/spike`)
+
+**Implementiert, Core-Tests (neu `DocumentTextLayoutTests`), `check_page_workflow.sh` und `xtool dev build` bestanden. In Build 68 installiert, am iPad ungeprüft.** Belegt sind die reinen Regeln gegen einen Festbreiten-Ersatz; **nicht** belegt sind TextKit über mehrere Container, `UITextInteraction`, Eingabesystem, Zeichnen und alles Sichtbare. Mit dem Schalter aus nur Typänderungen im Router und `TextRuling.lineBaseline` statt der gleichen Formel in `RuledTextLayout`. Gerätetest: [TEXT-EDITOR-2](TEXT-EDITOR-2.md#gono-go-am-gerät).
+
+## Rückgängig für alle Operationen (31.10.2026, Branch `phase0/undo`)
+
+**Implementiert, Core-Tests (neu `UndoReliabilityTests`), `check_page_workflow.sh` und `xtool dev build` bestanden. In Build 68 installiert, am iPad ungeprüft.** Die Tests belegen Verlauf, Stände und Hinweisdaten; **nicht** belegt sind Ansichtsaktualisierung, Canvas und Gesten. Der Fall des Nutzers ist nicht am Gerät nachgestellt.
+
+Gerätetest (gebündelt, Testheft): Text mit dem Lasso auf der Seite, auf eine andere Seite und auf die Reserveseite verschieben, je Rückgängig und Wiederholen, Auswahl dabei aktiv lassen; dasselbe mit Handschrift und gemischter Auswahl; im Textdokument ein freies Feld; Text mit dem Finger bei aktivem Stift. Mit dem Textwerkzeug tippen, in die Seite tippen und leer verlassen, danach Rückgängig: der echte Schritt davor kommt zurück. Rückgängig während eines Bildimports: Hinweis.
+
+## Build 69 · Helix-Erweiterungen, Tastatur in Panels, Textdokument-Extras (31.10.2026, Branch `extras/build69`)
+
+**Implementiert und erfolgreich gebaut, am iPad ungeprüft.** Core-Tests (1014, 3 übersprungen), `check_page_workflow.sh`, `check_verifiers.sh` und `xtool dev build` bestanden. Vergleich gegen echtes Helix 25.07.1: 2400 Zufallsabläufe, 37 Differenzen, alle in der Abweichungstabelle von [KEYBOARD](KEYBOARD.md) oder bekannte Fälle am Textende. `.docx` und `.rtf` strukturell und in LibreOffice geprüft, **nicht** in Word oder Pages. Unabhängiges Review ohne Datenverlust-Befund, seine Befunde sind behoben; `SettingsView`, `NotebookCreationView`, `NotebookDefaultsView`, `RestoredCopiesView`, `LocalHistoryView` und `ExternalBackupView` wurden dabei nicht im Detail geprüft.
+
+**Offener Gerätebefund aus Build 68:** Esc im Text führte am iPad laut Nutzer nicht zu `NOR SEITE`. Heft oder Textdokument und Anzahl der Drücke sind unbekannt. Aus dem Code bewiesen sind drei Dinge: Der Weg braucht nach `i` und Tippen drei Drücke, zweimal bleibt die Anzeige `NOR`. Ein hängender `handoff` hielt `editing` bis rund 1,75 s, Esc lief dann ins Leere. Texteditor 2 mit fixiertem Textwerkzeug hielt danach keinen Fokus. Beide Lücken sind behoben, ob das der Befund war, ist **ungeprüft**. Zuerst testen, mit Diagnose: `idevicesyslog | rg noty.keys`.
+
+Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft) und [TEXT-REBUILD-62](TEXT-REBUILD-62.md), Abschnitt „Extras Textdokument“.
+
+## Build 68 · Tastaturmodus, Review-Korrekturen (31.10.2026, Branch `feat/tastatur`)
+
+**Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: installierte App-ID unverändert, alle 28 Dokumente und 256 Dateien unverändert. Der Simulator-Lauf 41216955235 hat alle sechs Smoke-Tests bestanden (wiederholte Tasten, `gg`, `ge`, Which-Key, Esc-Ebenen), rot nur durch das 20-Minuten-Limit des Schritts; er prüfte den Stand von Build 67, **nicht** Build 68 und **nicht** echte Tastatur und Fokus am iPad. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft), Editor 2: [TEXT-EDITOR-2](TEXT-EDITOR-2.md).
+
+## Build 67 · Tastaturmodus wie Helix (31.10.2026, Branch `phase1/app`)
+
+**Implementiert, Core-Tests und `xtool dev build` bestanden. Nicht installiert, am iPad ungeprüft.** Die App läuft vollständig auf `HelixKeymap`, `HelixParser` und `TextEngine`, der Vim-Modus ist entfernt (`KeyMap`, `KeySequenceParser`, `TextMotions`). Getestet sind Engine (gegen echtes Helix, siehe [KEYBOARD](KEYBOARD.md#helix-modell)), Tastentabelle, Parser, `KeyPressGate`, mehrere Edits über Seiten; **nicht** getestet sind Tastenzustellung, Fokus, Palette über Text, Eingabezeile, Which-Key, TextKit-Messung von `j`/`k` und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).
+
+## Build 65 · Textdokument, ⌘A, Tastaturmodus (31.10.2026)
+
+**Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: alle 28 Dokumente und 248 Dateien unverändert. Core-Tests (neu `TextFlowRangeTests`, `KeyboardCommandsTests`, `TextMotionsTests`), `check_page_workflow.sh`, `check_verifiers.sh` und `xtool dev build` bestanden. Getestet sind Keymap, Parser, Motions und Bereichsbearbeitung; **nicht** getestet sind Tastenzustellung, Fokus, TextKit-Messung und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).
+
 ## Bedienfluss-Durchsicht (31.10.2026, Branch `audit/flow-2026-10-31`)
 
 Basis: `feat/textneubau` afe37fe, ohne die uncommitteten Arbeiten dort und auf `feat/tastatur`. Implementiert, Core-Tests, Host-Roundtrip und SDK-Build bestanden. **Nicht installiert, am iPad ungeprüft.** Gezielt am Gerät prüfen: aufgelegter Finger beim Halten und Radieren, Bild einfügen mit Stift und Universal Clipboard, Zuschneiden eines großen HEIC, `.noty` per AirDrop bei offenem Heft, Gesetzesfenster mit Leiste am selben Rand, PDF-Import eines gesperrten PDFs (Prüfung läuft jetzt über CoreGraphics statt PDFKit), Screenshot über 5 MB. WebDAV-Änderungen sind nicht gegen einen echten Server geprüft.

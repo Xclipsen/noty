@@ -11,12 +11,24 @@ public enum ContentSearchIndexFormat {
     public static let hitLimit = 50_000
 }
 
+/// A line over the page change of a text document's flow.
+public struct SearchSeam: Codable, Equatable, Sendable {
+    /// UTF-16 offset of the page change in the line.
+    public var location: Int
+    /// Flow offset of the line's first character.
+    public var flowStart: Int
+    public init(location: Int, flowStart: Int) { self.location = location; self.flowStart = flowStart }
+}
+
 public struct SearchLine: Codable, Equatable, Sendable {
     public var text: String
     public var kind: SearchContentKind
     /// Canonical page coordinates (no zoom; negative values address top/left margins).
     public var bounds: PageRect
-    public init(text: String, kind: SearchContentKind, bounds: PageRect) { self.text = text; self.kind = kind; self.bounds = bounds }
+    public var seam: SearchSeam?
+    public init(text: String, kind: SearchContentKind, bounds: PageRect, seam: SearchSeam? = nil) {
+        self.text = text; self.kind = kind; self.bounds = bounds; self.seam = seam
+    }
 }
 
 /// Independently invalidated parts of a page: editing handwriting never repeats the scan OCR.
@@ -145,7 +157,9 @@ public enum NotebookRevisionStamp {
         guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
               values.isRegularFile == true, let size = values.fileSize, size <= 256_000,
               let data = try? Data(contentsOf: url) else { return nil }
-        var stamp = ContentFingerprint("revision"); stamp.add(data)
+        // The tag names what a read takes from the notebook: a new one reads
+        // every notebook once, without repeating any recognition.
+        var stamp = ContentFingerprint("revision-seams"); stamp.add(data)
         return stamp.value
     }
 }
@@ -166,6 +180,27 @@ public enum ContentSearchPlanner {
         return lines
     }
 
+    /// Characters on either side of a page change in its seam line.
+    static let seamReach = 160
+
+    /// A text document runs over its pages: one line per page change, on the
+    /// page before it, for what crosses it (`ContentSearchHit.crossingRange`).
+    static func seamLines(_ notebook: Notebook) -> [UUID: [SearchLine]] {
+        guard notebook.isTextDocument, let content = notebook.textFlowContent else { return [:] }
+        let source = content.text as NSString, segments = notebook.textFlowSegments
+        var result: [UUID: [SearchLine]] = [:], boundary = 0
+        for segment in segments {
+            let length = (segment.box.text as NSString).length
+            boundary += length
+            guard length > 0, boundary < source.length else { continue }
+            let start = source.rangeOfComposedCharacterSequence(at: max(0, boundary - seamReach)).location
+            let end = NSMaxRange(source.rangeOfComposedCharacterSequence(at: min(source.length, boundary + seamReach) - 1))
+            result[segment.pageID] = [SearchLine(text: source.substring(with: NSRange(location: start, length: end - start)), kind: .text,
+                                                 bounds: segment.box.rotatedBounds, seam: SearchSeam(location: boundary - start, flowStart: start))]
+        }
+        return result
+    }
+
     /// Fingerprints of every active page. PDF originals are immutable per source
     /// ID; their digest is sampled once per notebook.
     public static func prepare(_ notebook: Notebook) -> [PreparedSearchPage] {
@@ -179,13 +214,14 @@ public enum ContentSearchPlanner {
             var value = ContentFingerprint("legacy"); value.add(data.count); value.add(ContentFingerprint.sampledDigest(data))
             return value.value
         }
+        let seams = seamLines(notebook)
         return notebook.pages.enumerated().map { index, page in
             var identity: String?
             if let reference = page.pdfReference {
                 identity = sources[reference.sourceID].map { "\($0):\(reference.pageIndex)" }
             } else if let legacy { identity = "\(legacy):\(index)" }
             return PreparedSearchPage(pageID: page.id, fingerprints: fingerprints(page, pdfIdentity: identity),
-                                      text: textLines(page), hasPDF: identity != nil)
+                                      text: textLines(page) + (seams[page.id] ?? []), hasPDF: identity != nil)
         }
     }
 
@@ -263,7 +299,7 @@ public enum ContentSearchPlanner {
         let lines = record.text + (record.pdfText?.lines ?? [])
             + (record.imageOCR?.lines ?? []).filter { !exact.contains($0.text) } + (record.handwriting?.lines ?? [])
         return lines.map { ContentSearchHit(documentID: documentID, pageID: record.pageID, pageNumber: pageNumber,
-                                            title: title, text: $0.text, kind: $0.kind, bounds: $0.bounds) }
+                                            title: title, text: $0.text, kind: $0.kind, bounds: $0.bounds, seam: $0.seam) }
     }
 }
 

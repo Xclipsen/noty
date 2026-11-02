@@ -1,5 +1,32 @@
 # Architektur
 
+## Texteditor 2 (Prototyp) · 31.10.2026
+
+Implementiert, erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Hinter dem Schalter `noty.text.editor2`, Standard aus, nur in Textdokumenten: eine Eingabeansicht über allen Seiten, ein Puffer, TextKit 1 mit einem Container je Seite. Das Modell bleibt Quelle und Speicherformat unverändert, die Seitenlängen kommen aus dem gemeinsamen Layout in das bestehende `reflowText`. Mit dem Schalter aus bleibt der Weg über `PageTextView`. [Architektur, Abweichungen, Go/No-Go](TEXT-EDITOR-2.md).
+
+## Rückgängig für alle Operationen · 31.10.2026
+
+Implementiert, erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Nutzermeldung: Text mit dem Lasso verschoben, nicht zurücknehmbar. Der Normalfall (gleiche Seite, über Seiten, Reserveseite, Textdokument) war in Core-Tests bereits rückgängig zu machen; behoben sind die Wege, auf denen ein Schritt verschwand oder nichts Sichtbares tat.
+
+- **Zurücknehmen scheiterte an der Feldprüfung:** `NotebookUndoHistory.apply` lief über `replaceTextBoxes`/`replaceContents`, die `TextBox.fits` verlangen. Lag ein Feld vor dem Verschieben neben dem Blatt (gültiges Dokument, `validate` prüft das nicht), warf das Zurücknehmen, und `move` verwarf den Schritt still. Undo/Redo stellen jetzt mit `restoring: true` einen Stand wieder her, den die Seite hatte; erwartete Stände und `validate` gelten weiter.
+- **Nie still:** `Outcome.skipped` und `lastSkipped` melden verworfene Schritte, `EditorModel.undo` zeigt einen Hinweis. Fremde spätere Änderungen werden weiter nicht überschrieben, das Schema sinkt nicht. Ein laufender Vorgang (`busy`, Pause) meldet sich ebenfalls statt nichts zu tun.
+- **Schritte ohne sichtbare Wirkung:** Ein leeres Feld ohne Feldstil (`blankField`) ist kein eigener Schritt: es geht in die ersten Zeichen auf oder hebt sich mit seiner Entfernung auf (`blankFieldWindow`, das längere Fenster gilt; nur ununterbrochene Ketten). Ein Griff, der am Ausgangspunkt endet, legt keinen Schritt mehr nur für die eingepasste Höhe an.
+- **Reserveseite:** Ein Entwurf, der schon Text trägt, ist nicht mehr die „leere Seite“, die 30 s auf ihren Inhalt wartet (sonst nahm das Zurücknehmen eines Verschiebens die ganze Seite mit). Eine Auswahl, die auf die Reserveseite verschoben wurde, zeigt beim Zurücknehmen die Quellseite.
+- **Verschieben im Textmodus** (Rahmenzone) ist ein eigener Schritt, auch direkt nach dem Tippen. Der Transferschritt wird aus dem Modellstand aufgezeichnet.
+- **Speicherbudget:** Unveränderte Tinte zählt nicht mehr doppelt je Schritt; auf vollgeschriebenen Seiten verdrängten Text- und Objektschritte sonst ältere Schritte.
+
+Bewusste Grenzen: Die Historie lebt nur, solange das Heft offen ist (kein Formatfeld; danach bleiben die lokalen Wiederherstellungspunkte). Höchstens 100 Schritte. Altformat-Hefte ohne `pdfSources` können die Seitenoperation, die sie migriert, nicht aufzeichnen (`prune`). Jeder Pfeiltasten-Schritt ist ein eigener Undo-Schritt. `undo` bei Installationsfehler (`NotebookPDFCatalog`) leert die Historie sichtbar mit Fehlermeldung.
+
+## Tastaturmodus (Helix) und Text über Seiten · Build 68 · 31.10.2026
+
+Implementiert, erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung, Grenzen, Aufbau und Gerätetest: [KEYBOARD](KEYBOARD.md), Befunde zu Build 65: [TEXT-REBUILD-62](TEXT-REBUILD-62.md).
+
+- **Core:** `HelixKeymap.swift` (einzige Tastentabelle für Parser, Übersicht, Palette, Which-Key), `HelixParser.swift` (Zähler, Menüs, Zeichenprompts), `TextEngine.swift` und `TextEngine+Objects.swift` (Auswahlen, Modi, Register, Suche, gegen das echte Helix geprüft), `KeyboardCommands.swift` (`KeyPressGate`, `KeyDeliveryLatch`, `KeyPalette`), `TextLines.swift`, `TextFlowRange.swift` (Offsets, Bereiche, `editingTextFlow` auch mit mehreren Edits, `restylingTextFlow`).
+- **App:** Tastendrücke gehen über `pressesBegan` an `KeyboardRouter` (`PageTextView`, `DrawingCanvasView`, `WorksheetView`, in der Bibliothek `KeyboardHostView`). Plaintasten laufen bewusst nicht über Key Commands: `UIKey.characters` liefert unabhängig von der Belegung das getippte Zeichen, und nur der Router weiß, ob gerade geschrieben wird. ⌘-Kürzel bleiben bei Menü und Key Commands. Esc und Tab können zusätzlich als Key Command kommen, weil das System sie sonst nehmen kann; beide Wege enden im selben Router-Einstieg, `KeyDeliveryLatch` lässt einen Druck nur einmal wirken ([KEYBOARD](KEYBOARD.md#aufbau)). `TextObjectLayer+Keyboard.swift` verbindet `TextEngine` mit Textansicht und Fluss, `KeyboardOverlay.swift` zeigt Modus, Eingabezeile, Which-Key, Übersicht und Palette.
+- **Fokus bleibt beim Text:** Die Eingabezeile von `/`, `?`, `s` ist reine Anzeige, ihre Tasten laufen weiter durch den Router. Ein Textfeld würde die Textansicht beenden (Formatleiste weg, Layoutsprung, keine native Auswahl, keine Caret-Führung).
+- **Auswahl über Seiten:** Jede Seite hat eine eigene Textansicht. `TextFlowSelection` hält den Bereich, jede `TextObjectLayer` markiert ihren Teil; Änderungen gehen über `TextFlowActions` ans `EditorModel` und sind je ein Undo-Schritt. Innerhalb einer Seite bleibt die native Auswahl, damit Griffe und Formatleiste unverändert arbeiten.
+- **Neue Abhängigkeit im Reflow:** optional `trailingLineFits`; ohne diesen Parameter bleibt das Verhalten gleich.
+
 ## Feldstil und Gliederung (Textneubau Stufe 4) · 22.10.2026
 
 Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung und Abweichungen: [TEXT-REBUILD-62](TEXT-REBUILD-62.md), Format: [STORAGE](STORAGE.md) (Schema 14).
