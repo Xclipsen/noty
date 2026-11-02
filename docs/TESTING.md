@@ -32,6 +32,14 @@ Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft) und
 
 **Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: alle 28 Dokumente und 248 Dateien unverändert. Core-Tests (neu `TextFlowRangeTests`, `KeyboardCommandsTests`, `TextMotionsTests`), `check_page_workflow.sh`, `check_verifiers.sh` und `xtool dev build` bestanden. Getestet sind Keymap, Parser, Motions und Bereichsbearbeitung; **nicht** getestet sind Tastenzustellung, Fokus, TextKit-Messung und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).
 
+## Build 70 · Textfelder erreichbar, Update unterwegs (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** 1014 Core-Tests, 3 übersprungen, 0 Fehler; SDK-Build erfolgreich; IPA-ID und Profil geprüft (`scripts/ota_check.py`), Download über HTTPS geprüft. Enthält Build 69 und die Bedienfluss-Durchsicht.
+
+Nutzer: Felder rechts unten auf einer Scan-Seite lassen sich weder antippen noch per Zeiger erreichen, die übrigen schon. **Ursache nicht bestätigt.** Behoben sind drei belegte Mechanismen: gespeicherte leere Felder fingen Berührungen im ganzen Rahmen ab (im Geräteabzug vorhanden, teils seitengroß), ein nicht endender Zeiger-Touch sperrte die Tipp-Erkennung eines Felds dauerhaft, die Griffzone des bearbeiteten Felds verdeckte Text daneben. Zur Klärung: Einstellungen › Über noty › Tipp-Diagnose nennt nach jedem Tipp Fenster, getroffene Ansicht und die Felder an der Stelle.
+
+Offener Gerätetest: Installation über den Link als Update, gleiche Hefte danach; Felder rechts unten; Vergleich gegen eine USB-Sicherung nach der Rückkehr.
+
 ## Bedienfluss-Durchsicht (31.10.2026, Branch `audit/flow-2026-10-31`)
 
 Basis: `feat/textneubau` afe37fe, ohne die uncommitteten Arbeiten dort und auf `feat/tastatur`. Implementiert, Core-Tests, Host-Roundtrip und SDK-Build bestanden. **Nicht installiert, am iPad ungeprüft.** Gezielt am Gerät prüfen: aufgelegter Finger beim Halten und Radieren, Bild einfügen mit Stift und Universal Clipboard, Zuschneiden eines großen HEIC, `.noty` per AirDrop bei offenem Heft, Gesetzesfenster mit Leiste am selben Rand, PDF-Import eines gesperrten PDFs (Prüfung läuft jetzt über CoreGraphics statt PDFKit), Screenshot über 5 MB. WebDAV-Änderungen sind nicht gegen einen echten Server geprüft.
