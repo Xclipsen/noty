@@ -270,6 +270,9 @@ extension TextBoxStyle {
         case .justified: .justified
         }
         paragraph.headIndent = indent ?? 0; paragraph.firstLineHeadIndent = indent ?? 0
+        // The system's twelve stops end after 336 pt, a tab behind them wrapped
+        // the line. One endless grid instead (`TextTabs`).
+        paragraph.tabStops = []; paragraph.defaultTabInterval = TextTabs.interval(fontSize: fontSize)
         var result: [NSAttributedString.Key: Any] = [.font: UIFont(descriptor: descriptor, size: fontSize), .foregroundColor: ink,
                 .underlineStyle: underline ? NSUnderlineStyle.single.rawValue : 0,
                 .paragraphStyle: paragraph, NSAttributedString.Key("noty.font"): font.rawValue]
@@ -436,7 +439,26 @@ struct TextObjectLayout {
         box.overflows(textHeight: Double(TextObjectLayout(box, on: page).contentHeight(box)))
     }
     /// Widest laid-out line in canonical units (automatic field width).
-    var usedWidth: CGFloat { manager.usedRect(for: container).width * coordinateScale }
+    var usedWidth: CGFloat { max(manager.usedRect(for: container).width, trailingTabEnd) * coordinateScale }
+    /// The used area may end before a tab at the end of a line. An automatic
+    /// field must reach that tab's stop: otherwise the caret wraps instead of
+    /// standing at the stop.
+    private var trailingTabEnd: CGFloat {
+        let text = storage.string as NSString
+        guard text.range(of: "\t").location != NSNotFound, manager.numberOfGlyphs > 0 else { return 0 }
+        var end: CGFloat = 0
+        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { fragment, _, _, glyphs, _ in
+            var last = NSMaxRange(glyphs) - 1
+            while last >= glyphs.location, TextLines.isBreak(text.character(at: manager.characterIndexForGlyph(at: last))) { last -= 1 }
+            guard last >= glyphs.location else { return }
+            let character = manager.characterIndexForGlyph(at: last)
+            guard text.character(at: character) == 9,
+                  let paragraph = storage.attribute(.paragraphStyle, at: character, effectiveRange: nil) as? NSParagraphStyle else { return }
+            let start = Double(fragment.minX + manager.location(forGlyphAt: last).x)
+            end = max(end, CGFloat(TextTabs.nextStop(after: start, interval: Double(paragraph.defaultTabInterval))))
+        }
+        return end
+    }
     /// Local (unrotated, unscaled) → drawing coordinates for a field at `origin`.
     func transform(at origin: CGPoint) -> CGAffineTransform {
         CGAffineTransform(translationX: origin.x, y: origin.y).rotated(by: rotation).scaledBy(x: coordinateScale, y: coordinateScale)

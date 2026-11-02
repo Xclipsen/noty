@@ -32,6 +32,10 @@ Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft) und
 
 **Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: alle 28 Dokumente und 248 Dateien unverändert. Core-Tests (neu `TextFlowRangeTests`, `KeyboardCommandsTests`, `TextMotionsTests`), `check_page_workflow.sh`, `check_verifiers.sh` und `xtool dev build` bestanden. Getestet sind Keymap, Parser, Motions und Bereichsbearbeitung; **nicht** getestet sind Tastenzustellung, Fokus, TextKit-Messung und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).
 
+## Build 72 · Tabstopps ohne Ende (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Nutzer: Tab kam im Textfeld nur bis etwa zur Mitte und brach dann um. Ursache: Ohne eigene Stopps gelten die zwölf Stopps von iOS bis 336 pt. Jetzt ein gleichmäßiges Raster von 2,5 Schriftgrößen ab linker Textkante (14 pt: 35 pt), gemeinsam für Editor, Vorschau und PDF, kein Formatwechsel; der Bestand vom 31.10.2026 enthielt keine Tabs. Automatische Feldbreite wächst bis zum Stopp mit. Gerätetest: Tab bis zum rechten Rand im Heft und im Textdokument, zwei Zeilen mit Tabs stehen in einer Spalte, ⇧Tab, mehrere Zeilen markieren und Tab, PDF-Export gleich wie Editor.
+
 ## Build 71 · Helix experimentell, nur in Textdokumenten (02.11.2026)
 
 **Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Ein Schalter in Einstellungen › Editor, Standard aus. Gerätetest: Schalter aus, im Textdokument und im Heft normal tippen, kein INS-Hinweis; Schalter an, im Textdokument Esc und `i`, im Heft und in der Bibliothek keine Helix-Tasten; zwei Ansichten mit Textdokument und Heft, beim Wechsel der aktiven Ansicht tippt das Heft normal.

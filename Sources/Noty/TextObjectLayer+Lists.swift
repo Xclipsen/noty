@@ -17,6 +17,11 @@ extension TextObjectLayer {
         editor.onListTab = { [weak self, weak editor] outdent in
             guard let self, let editor else { return false }
             if self.nestList(editor, outdent: outdent) { return true }
+            if editor.markedTextRange == nil, let index = self.boxes.firstIndex(where: { $0.id == editor.objectID }),
+               let edits = TextTabs.edits(in: editor.text ?? "", selection: editor.selectedRange, outdent: outdent) {
+                self.applyListEdits(edits, at: index, editor: editor)
+                return true
+            }
             if outdent { self.indentFromBar(outdent: true) }
             return outdent
         }

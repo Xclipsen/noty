@@ -25,7 +25,8 @@ Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur 
 | ⇧⌘7 ⇧⌘8 ⇧⌘9 | Aufzählung, Nummerierung, Checkliste | Text |
 | ⌘K, ⇧⌘H | Link, Markieren | Text |
 | ⌘↩ | Seitenumbruch (in NOR und SEL vor die Auswahl) | Textdokument |
-| Tab, ⇧Tab | Listenebene | Text |
+| Tab | Nächster Tabstopp, ohne Ende bis zum Feldrand; in Listen eine Ebene tiefer; über mehrere markierte Zeilen rückt jede ein | Text |
+| ⇧Tab | Tab vor dem Cursor zurücknehmen, sonst Tab am Zeilenanfang, sonst Einzug; in Listen eine Ebene höher; über mehrere markierte Zeilen rückt jede aus | Text |
 | ⇧⌘P, ⌘/ | Befehlspalette, Tastenübersicht (ohne Tastaturmodus enthält die Palette keine Textbefehle und keine Eingabezeile, beides braucht die Engine) | überall |
 
 **⌘A:** Im Text das ganze Feld; im Textdokument der ganze Text über alle Seiten (blau markiert; ⌘C/⌘X/⌘V, ⌫ und Formatierung wirken auf alles, beim Schreiben auch Tippen, ⌘Z als ein Schritt). Ohne Cursor im Textdokument dasselbe, dann in NOR, damit kein Buchstabe versehentlich alles ersetzt. Außerhalb von INS wirkt ⌘A wie `%`. Im Heft alles Auswählbare der Seite, mit jedem Werkzeug. Das Bearbeitungsmenü „Alles auswählen“ bleibt die native Auswahl dieser Seite.

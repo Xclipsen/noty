@@ -282,7 +282,8 @@ final class PageTextView: UITextView {
         command.wantsPriorityOverSystemBehavior = true
         return command
     }()
-    /// Tab/⇧Tab nest list items; elsewhere Tab stays a tab character.
+    /// Tab/⇧Tab nest list items; elsewhere Tab goes to the next stop
+    /// (`TextTabs`), over several selected lines it moves each of them.
     private static let listCommands: [UIKeyCommand] = [UIKeyModifierFlags(), .shift].map { flags in
         let command = UIKeyCommand(input: "\t", modifierFlags: flags, action: #selector(listTab(_:)))
         command.wantsPriorityOverSystemBehavior = true
