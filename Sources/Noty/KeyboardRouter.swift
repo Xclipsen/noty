@@ -161,7 +161,9 @@ final class KeyboardRouter: ObservableObject {
     private var outcome = ""
     private var loggedResponder = ""
 
-    var isEnabled: Bool { UserDefaults.standard.object(forKey: AppSettingsKey.keyboardMode) as? Bool ?? true }
+    /// The active pane shows a text document: the only place the keys work.
+    @Published private(set) var inTextDocument = false
+    var isEnabled: Bool { inTextDocument && UserDefaults.standard.bool(forKey: AppSettingsKey.helixTextDocuments) }
     var allowsTyping: Bool { !isEnabled || mode == .insert }
     /// INS closes pairs by itself (Settings › Editor).
     var pairsTyping: Bool { isEnabled && UserDefaults.standard.bool(forKey: AppSettingsKey.autoPairs) }
@@ -175,6 +177,12 @@ final class KeyboardRouter: ObservableObject {
     func setEditor(_ commands: EditorCommandActions?) {
         let before = (scope, editorActions != nil)
         scope = commands == nil ? .library : .editor
+        let document = commands?.isTextDocument == true
+        if document != inTextDocument {
+            // The other pane or the library knows no NOR: its text just takes typing.
+            if inTextDocument { cancelPrompt(); setMode(.insert) }
+            inTextDocument = document
+        }
         // A sheet closed: the keys need a responder in the editor again.
         if editorActions == nil, commands?.canEdit == true { reclaim() }
         editorActions = commands?.canEdit == true ? commands?.keys : nil
@@ -711,6 +719,12 @@ final class KeyboardRouter: ObservableObject {
     // MARK: Palette and help
 
     func togglePalette() { dropSequence(); paletteVisible.toggle() }
+    /// „Helix ausschalten“ in the palette: the open text takes typing at once.
+    func switchOff() {
+        cancelPrompt(); setMode(.insert)
+        UserDefaults.standard.set(false, forKey: AppSettingsKey.helixTextDocuments)
+        modeChanged(); refreshLabel()
+    }
     func toggleHelp() { dropSequence(); helpVisible.toggle() }
     /// Every key binding of the current context by name, then what only the menus offer.
     func paletteCommands() -> [PaletteCommand] {

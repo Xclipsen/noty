@@ -9,7 +9,8 @@ struct KeyboardOverlay: View {
     /// In a sheet: the sheet's panel. The overlays below it would stay hidden.
     var panel: KeyPanel.ID? = nil
     @ObservedObject private var router = KeyboardRouter.shared
-    @AppStorage(AppSettingsKey.keyboardMode) private var enabled = true
+    @AppStorage(AppSettingsKey.helixTextDocuments) private var helix = false
+    private var enabled: Bool { helix && router.inTextDocument }
 
     /// Editor: below the back button and above every palette position
     /// (`ToolbarLayout`: 76 pt and lower), where neither the keyboard nor its
@@ -192,6 +193,10 @@ private struct KeyboardHelpView: View {
             Color.black.opacity(0.45).ignoresSafeArea().onTapGesture(perform: onClose)
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
+                    if !KeyboardRouter.shared.isEnabled {
+                        Text("Diese Tasten gelten nur in Textdokumenten mit eingeschalteter Helix-Tastatur (Einstellungen › Editor, experimentell).")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
                     ForEach(contexts, id: \.self) { context in
                         VStack(alignment: .leading, spacing: 10) {
                             Text(Self.title(context)).font(.headline)

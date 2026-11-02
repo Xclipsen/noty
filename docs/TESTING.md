@@ -32,6 +32,10 @@ Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft) und
 
 **Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: alle 28 Dokumente und 248 Dateien unverändert. Core-Tests (neu `TextFlowRangeTests`, `KeyboardCommandsTests`, `TextMotionsTests`), `check_page_workflow.sh`, `check_verifiers.sh` und `xtool dev build` bestanden. Getestet sind Keymap, Parser, Motions und Bereichsbearbeitung; **nicht** getestet sind Tastenzustellung, Fokus, TextKit-Messung und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).
 
+## Build 71 · Helix experimentell, nur in Textdokumenten (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Ein Schalter in Einstellungen › Editor, Standard aus. Gerätetest: Schalter aus, im Textdokument und im Heft normal tippen, kein INS-Hinweis; Schalter an, im Textdokument Esc und `i`, im Heft und in der Bibliothek keine Helix-Tasten; zwei Ansichten mit Textdokument und Heft, beim Wechsel der aktiven Ansicht tippt das Heft normal.
+
 ## Build 70 · Textfelder erreichbar, Update unterwegs (02.11.2026)
 
 **Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** 1014 Core-Tests, 3 übersprungen, 0 Fehler; SDK-Build erfolgreich; IPA-ID und Profil geprüft (`scripts/ota_check.py`), Download über HTTPS geprüft. Enthält Build 69 und die Bedienfluss-Durchsicht.

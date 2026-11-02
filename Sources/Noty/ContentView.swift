@@ -387,8 +387,10 @@ struct ContentView: View {
                      PaletteCommand(title: "Schreibmaschinen-Modus umschalten") { TextObjectLayer.typewriterEnabled.toggle() },
                      PaletteCommand(title: "Lineal umschalten") { ruler.toggle() },
                      PaletteCommand(title: "Textwerkzeug fixieren umschalten") { textToolLocked.toggle() },
-                     PaletteCommand(title: "Werkzeugleiste anpassen") { customizingTools = true },
-                     PaletteCommand(title: "Tastaturmodus ausschalten") { UserDefaults.standard.set(false, forKey: AppSettingsKey.keyboardMode) }]
+                     PaletteCommand(title: "Werkzeugleiste anpassen") { customizingTools = true }]
+        if KeyboardRouter.shared.isEnabled {
+            items.append(PaletteCommand(title: "Helix-Tastatur ausschalten") { KeyboardRouter.shared.switchOff() })
+        }
         if isTextDocument {
             items.append(PaletteCommand(title: "Papier ändern") { editingDefaults = true })
         } else {

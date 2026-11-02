@@ -14,8 +14,10 @@ enum AppSettingsKey {
     static let textToolLocked = "noty.text.toolLocked"
     /// Weiches Einrasten beim Verschieben (default on).
     static let snapping = "noty.editor.snapping"
-    /// Keyboard mode (docs/KEYBOARD.md): on unless switched off.
-    static let keyboardMode = "noty.keyboard.mode"
+    /// Helix keys (docs/KEYBOARD.md): experimental, text documents only, off
+    /// unless switched on. A new key: the former `noty.keyboard.mode` meant
+    /// the whole app and was on by default.
+    static let helixTextDocuments = "noty.keyboard.helixTextDocuments"
     /// Automatic pairs while typing in the keyboard mode: off unless switched on.
     static let autoPairs = "noty.keyboard.autoPairs"
     /// One line after every tap on what it reached (`TapDiagnostics`): off unless switched on.
@@ -236,7 +238,7 @@ private struct EditorSettingsPage: View {
     @AppStorage(AppSettingsKey.sidebarVisible) private var sidebarVisible = true
     @AppStorage(AppSettingsKey.typewriter) private var typewriter = false
     @AppStorage(AppSettingsKey.snapping) private var snapping = true
-    @AppStorage(AppSettingsKey.keyboardMode) private var keyboardMode = true
+    @AppStorage(AppSettingsKey.helixTextDocuments) private var helix = false
     @AppStorage(AppSettingsKey.autoPairs) private var autoPairs = false
     var body: some View {
         Form {
@@ -246,13 +248,13 @@ private struct EditorSettingsPage: View {
                 keyToggle("Schreibmaschinen-Modus beim Tippen", isOn: $typewriter)
                 keyToggle("Einrasten", isOn: $snapping)
                     .accessibilityHint("Textfelder, Bilder, Formen und Auswahlen rasten beim langsamen Verschieben an Kanten, Mitten, Linien und Seitenrändern ein.")
-                keyToggle("Tastaturmodus (wie Helix)", isOn: $keyboardMode)
-                    .accessibilityHint("Steuert die App mit einer Hardware-Tastatur: Erst auswählen, dann handeln. i schreibt, Esc geht eine Ebene zurück, die Leertaste öffnet das Menü, Leertaste und h zeigen alle Tasten.")
+                keyToggle("Helix-Tastatur in Textdokumenten (experimentell)", isOn: $helix)
+                    .accessibilityHint("Steuert Textdokumente mit einer Hardware-Tastatur: Erst auswählen, dann handeln. i schreibt, Esc geht eine Ebene zurück, die Leertaste öffnet das Menü, Leertaste und h zeigen alle Tasten. Hefte und Bibliothek bleiben unverändert.")
                 Toggle("Klammern automatisch schließen", isOn: $autoPairs)
-                    .disabled(!keyboardMode)
-                    .accessibilityHint("Im Tastaturmodus schließt die Eingabe runde, eckige und geschweifte Klammern und Anführungszeichen selbst, außer direkt neben einem Wort.")
+                    .disabled(!helix)
+                    .accessibilityHint("Mit der Helix-Tastatur schließt die Eingabe runde, eckige und geschweifte Klammern und Anführungszeichen selbst, außer direkt neben einem Wort.")
             } header: { Text("Alle Bereiche") } footer: {
-                Text("Die Seitenleiste merkt sich auch das letzte Ein- oder Ausblenden im Editor. Der Schreibmaschinen-Modus hält die Schreibzeile beim Tippen im oberen Drittel, auch mit schwebender oder externer Tastatur. Einrasten wirkt nur bei langsamer Bewegung; ein zweiter Finger auf dem Bildschirm unterdrückt es beim Ziehen.")
+                Text("Die Helix-Tastatur ist experimentell und wirkt nur in Textdokumenten mit einer Hardware-Tastatur. Die Seitenleiste merkt sich auch das letzte Ein- oder Ausblenden im Editor. Der Schreibmaschinen-Modus hält die Schreibzeile beim Tippen im oberen Drittel, auch mit schwebender oder externer Tastatur. Einrasten wirkt nur bei langsamer Bewegung; ein zweiter Finger auf dem Bildschirm unterdrückt es beim Ziehen.")
             }
             Section {
                 keyToggle("Blättern statt vertikal scrollen", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))

@@ -2,6 +2,8 @@
 
 Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur in Seitenleiste, Suche, Gesetzen, Dialogen und Farbe, Textdokument-Extras und die Befunde des Reviews. **Implementiert, erfolgreich gebaut, Core-Tests bestanden, am iPad ungeprüft.** Linux hat keinen iOS-Simulator: Engine, Tastentabelle, Parser, Bereichsbearbeitung, Tastensperre und Fokusziele sind getestet, Tastenzustellung, Fokus, Anzeige und TextKit-Messung **nicht**. Ein Simulator-Lauf auf Stand Build 67 hat die Tastenzustellung einmal bestätigt, das ersetzt den Gerätetest nicht.
 
+**Seit Build 71 experimentell und nur in Textdokumenten.** Die Helix-Bedienung ist standardmäßig aus und gilt, wenn eingeschaltet, nur solange ein Textdokument im aktiven Bereich offen ist, einschließlich der daraus geöffneten Bedienfelder. Bibliothek, Hefte und deren Seiten kennen sie nicht mehr; die Abschnitte dazu unten beschreiben den Stand bis Build 70. Der frühere Schalter `noty.keyboard.mode` wird nicht mehr gelesen.
+
 ## ⌘-Kürzel (immer aktiv, auch ohne Tastaturmodus)
 
 | Taste | Wirkung | Wo |
@@ -32,7 +34,7 @@ Außerhalb von INS: ⌘V ersetzt eine breite Auswahl, sonst wie `P`; ⌘X schnei
 
 ## Tastaturmodus
 
-Einstellungen › Editor › „Tastaturmodus (wie Helix)“, Standard an. Wirkt nur auf Hardware-Tastaturen. Modell wie [Helix](https://helix-editor.com): **erst auswählen, dann handeln**. `w` wählt ein Wort, `d` löscht es.
+Einstellungen › Editor › „Helix-Tastatur in Textdokumenten (experimentell)“, Standard aus. Wirkt nur auf Hardware-Tastaturen. Modell wie [Helix](https://helix-editor.com): **erst auswählen, dann handeln**. `w` wählt ein Wort, `d` löscht es.
 
 **Modus:** `NOR` (Buchstaben sind Befehle), `INS` (natives Tippen), `SEL` (Bewegungen erweitern die Auswahl, `v` schaltet um). Auf Seite und Bibliothek steht `NOR` mit `SEITE`/`BIBLIOTHEK` als Kontext. Die Anzeige erscheint, sobald eine Taste gedrückt wurde: im Editor oben links unter der Zurück-Taste, in der Bibliothek unten links. Daneben stehen eine laufende Makroaufnahme (`REC @`, rot), Zähler und angefangene Folge (`3g`, `"a`), „n Auswahlen“ und kurze Hinweise (`Kein Treffer`, `Suche von vorn`, `Kein Paar gefunden`, `Nur Hauptauswahl`, `Register leer`, `Makro abgebrochen`, `Nicht im Makro`).
 

@@ -298,8 +298,7 @@ struct LibraryView: View {
          PaletteCommand(title: "Backup importieren") { importingBackup = true },
          PaletteCommand(title: "Wiederhergestellte Kopien") { showingCopies = true },
          PaletteCommand(title: "Bereiche") { showingAreas = true },
-         PaletteCommand(title: "Einstellungen") { settingsRequest = SettingsRequest() },
-         PaletteCommand(title: "Tastaturmodus ausschalten") { UserDefaults.standard.set(false, forKey: AppSettingsKey.keyboardMode) }]
+         PaletteCommand(title: "Einstellungen") { settingsRequest = SettingsRequest() }]
     }
 
     // MARK: Sidebar
