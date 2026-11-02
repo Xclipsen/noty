@@ -94,7 +94,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var pageID: UUID?
     private var contentGeneration = -1
     var generation = 0
-    private var pageLayout = PageLayout(source: .testPaper, legacyA4: true)
+    private(set) var pageLayout = PageLayout(source: .testPaper, legacyA4: true)
     var active = false
     private var readOnly = false
     var updating = false
@@ -249,6 +249,15 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let target = super.hitTest(point, with: event)
         if readOnly && !active { return target === self || target === notice ? nil : target }
+        // The drag zone of the edited field reaches beyond its frame: text of a
+        // field next to it stays reachable there, also when it lies below.
+        if let zone = target as? TextFieldContainer, !zone.selectionRect.contains(convert(point, to: zone)) {
+            for case let other as TextFieldContainer in subviews.reversed() where other !== zone && !other.isHidden {
+                if other.editor.hitsLine(at: convert(point, to: other.editor), slack: 0) {
+                    return other.hitTest(convert(point, to: other), with: event) ?? target
+                }
+            }
+        }
         return target
     }
     override func layoutSubviews() {

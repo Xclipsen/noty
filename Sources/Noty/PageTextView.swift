@@ -42,12 +42,15 @@ final class PageTextView: UITextView {
         return local.x >= used.minX - 16 && local.x <= used.maxX + 16
     }
     /// A laid-out text line (its used glyph area, widened by `slack`) is at
-    /// `point` (own coordinates). Empty lines count as no text; an empty field
-    /// is hit inside its frame (it only exists while being edited).
+    /// `point` (own coordinates). Empty lines count as no text. An empty field
+    /// is hit inside its frame only while being edited: stored empty fields
+    /// exist (a field saved before leaving it, former page text with a frame
+    /// as large as its writing area), and they would invisibly catch every
+    /// touch on what lies below them.
     func hitsLine(at point: CGPoint, slack: CGFloat) -> Bool {
         let manager = layoutManager, inset = textContainerInset
         manager.ensureLayout(for: textContainer)
-        guard manager.numberOfGlyphs > 0 else { return bounds.insetBy(dx: -slack, dy: -slack).contains(point) }
+        guard manager.numberOfGlyphs > 0 else { return isFirstResponder && bounds.insetBy(dx: -slack, dy: -slack).contains(point) }
         let local = CGPoint(x: point.x - inset.left, y: point.y - inset.top)
         var hit = false
         manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { _, used, _, _, stop in
@@ -379,20 +382,28 @@ final class TouchDownWatcher: UIGestureRecognizer, UIGestureRecognizerDelegate {
         }
         return false
     }
+    /// A touch sequence is running. Decided by this recognizer's own life
+    /// cycle, not by the phase of the last touch: a kept pointer touch never
+    /// has to reach `.ended` or `.cancelled` (it can go on hovering), and then
+    /// no later tap on this text ever counted and the field stayed closed.
+    private var tracking = false
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         guard let touch = touches.first else { return }
         if (event.allTouches?.count ?? 1) > 1 { quiet = false }
-        if start.map({ $0.touch.phase == .ended || $0.touch.phase == .cancelled }) ?? true {
+        if !tracking {
+            tracking = true
             quiet = (event.allTouches?.count ?? 1) == 1 && !viewportMoves
             start = (touch, touch.location(in: nil), touch.timestamp)
         }
     }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let start, touches.contains(start.touch) { onEnded?(start.touch); state = .failed }
+        if let start, touches.contains(start.touch) { tracking = false; onEnded?(start.touch); state = .failed }
     }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let start, touches.contains(start.touch) { state = .failed }
+        if let start, touches.contains(start.touch) { tracking = false; state = .failed }
     }
+    /// `start` stays: `lastTouchWasCleanTap` reads it right after the sequence.
+    override func reset() { tracking = false; super.reset() }
     override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
     override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }

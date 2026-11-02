@@ -18,6 +18,8 @@ enum AppSettingsKey {
     static let keyboardMode = "noty.keyboard.mode"
     /// Automatic pairs while typing in the keyboard mode: off unless switched on.
     static let autoPairs = "noty.keyboard.autoPairs"
+    /// One line after every tap on what it reached (`TapDiagnostics`): off unless switched on.
+    static let tapDiagnostics = "noty.debug.tapDiagnostics"
     /// Text editor 2 in text documents (docs/TEXT-EDITOR-2.md): off unless switched on.
     static let textEditor2 = "noty.text.editor2"
     /// Lasso: what it selects (`SelectionFilter.bits`) and freeform/rectangle.
@@ -636,6 +638,7 @@ private struct AboutSettingsPage: View {
     @ObservedObject var toolbox: ToolbarSettingsModel
     @ObservedObject var workspaces: WorkspaceAppModel
     @AppStorage(AppSettingsKey.hangProbe) private var hangProbe = false
+    @AppStorage(AppSettingsKey.tapDiagnostics) private var tapDiagnostics = false
     @AppStorage(AppSettingsKey.textEditor2) private var textEditor2 = false
     private func info(_ key: String) -> String { Bundle.main.object(forInfoDictionaryKey: key) as? String ?? "–" }
     var body: some View {
@@ -656,9 +659,11 @@ private struct AboutSettingsPage: View {
             SigningRenewalSection()
             Section {
                 keyToggle("Hänger-Diagnose", isOn: $hangProbe)
+                keyToggle("Tipp-Diagnose", isOn: $tapDiagnostics)
+                    .onChange(of: tapDiagnostics) { _, _ in TapDiagnostics.shared.refresh() }
                 keyToggle("Neuer Texteditor (Test)", isOn: $textEditor2)
             } header: { Text("Diagnose") } footer: {
-                Text("Hänger-Diagnose: protokolliert bei längeren Hängern nur Codeadressen und Zähler im Systemprotokoll, keine Inhalte. Wirkt nach einem Neustart der App. Neuer Texteditor: ein Text über alle Seiten eines Textdokuments, im Blättermodus aus; noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.")
+                Text("Tipp-Diagnose: zeigt nach jedem Tipp, was er getroffen hat und welche Felder dort liegen, nur Größen, keine Inhalte. Hänger-Diagnose: protokolliert bei längeren Hängern nur Codeadressen und Zähler im Systemprotokoll, keine Inhalte. Wirkt nach einem Neustart der App. Neuer Texteditor: ein Text über alle Seiten eines Textdokuments, im Blättermodus aus; noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.")
             }
         }
         .navigationTitle("Über noty")
