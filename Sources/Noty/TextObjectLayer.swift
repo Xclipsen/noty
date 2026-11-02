@@ -336,6 +336,16 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                                                length: min(selectedRange.length, max(0, length - min(selectedRange.location, length))))
             }
             field.content = box; field.automaticLight = light
+            // A size change or typed text may have left a paragraph on another grid.
+            if editor.markedTextRange == nil {
+                let grid = CGFloat(TextTabs.interval(box))
+                editor.textStorage.applyTabGrid(grid)
+                if let typing = editor.typingAttributes[.paragraphStyle] as? NSParagraphStyle, typing.defaultTabInterval != grid,
+                   let next = typing.mutableCopy() as? NSMutableParagraphStyle {
+                    next.tabStops = []; next.defaultTabInterval = grid
+                    editor.typingAttributes[.paragraphStyle] = next
+                }
+            }
             field.applyFieldStyle(box.resolvingAutomaticColor(light: light), unitScale: coordinateScale(for: box))
             editor.isFlow = box.flowID != nil
             // Flow segments and the fields migrated from page text keep the ruling of their region;

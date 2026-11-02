@@ -32,6 +32,10 @@ Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft) und
 
 **Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: alle 28 Dokumente und 248 Dateien unverändert. Core-Tests (neu `TextFlowRangeTests`, `KeyboardCommandsTests`, `TextMotionsTests`), `check_page_workflow.sh`, `check_verifiers.sh` und `xtool dev build` bestanden. Getestet sind Keymap, Parser, Motions und Bereichsbearbeitung; **nicht** getestet sind Tastenzustellung, Fokus, TextKit-Messung und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).
 
+## Build 75 · Ein Tab-Raster je Feld (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Nutzerbild IMG_0343: Zeilen mit Tab am Anfang standen auf einem anderen Raster als Zeilen mit Text davor. Der Abstand hing an der Schriftgröße des ersten Zeichens der Zeile, und eine Größenänderung ließ im offenen Feld den alten Abstand stehen. Jetzt gilt je Feld ein Raster nach der größten Schrift (`TextTabs.interval(_:)`), in Editor, Vorschau und PDF. Im Textdokument gilt es je Seitenabschnitt. Gerätetest: Zeile mit Tab am Anfang und Zeile mit Text und Tab auf denselben Stopp, Schriftgröße ändern, Feld verlassen und wieder öffnen.
+
 ## Build 74 · Mehrzeilige Textauswahl (02.11.2026)
 
 **Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Nutzerbilder IMG_0341/0342: Bei einer Auswahl über mehrere Zeilen waren nur erste, letzte und eine mittlere Zeile markiert. Ursache: UIKit meldet die Zeilen dazwischen als ein Rechteck, `selectionRects` kürzte es auf die Zeile in seiner Mitte. Jetzt je Zeile ein Band. Kein Core-Test möglich (UIKit). Gerätetest: Auswahl über drei und mehr Zeilen mit Leerzeilen, Griffe ziehen, im Heft und im Textdokument.

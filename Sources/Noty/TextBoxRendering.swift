@@ -375,6 +375,7 @@ extension TextBox {
         for run in runs ?? [] where run.location >= 0 && run.length > 0 && run.location <= value.length && run.length <= value.length-run.location {
             value.setAttributes(run.style.attributes, range: NSRange(location: run.location, length: run.length))
         }
+        value.applyTabGrid(CGFloat(TextTabs.interval(self)))
         return value
     }
     @MainActor mutating func capture(_ value: NSAttributedString) {
@@ -384,6 +385,25 @@ extension TextBox {
             collected.append(TextRun(location: range.location, length: range.length, style: TextBoxStyle(attributes: attributes, fallback: style)))
         }
         runs = collected
+    }
+}
+
+extension NSMutableAttributedString {
+    /// Every paragraph on the same endless grid (`TextTabs`). True if anything changed.
+    @discardableResult
+    func applyTabGrid(_ interval: CGFloat) -> Bool {
+        var changed = false
+        beginEditing()
+        enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: length)) { value, range, _ in
+            let style = value as? NSParagraphStyle
+            guard style?.defaultTabInterval != interval || style?.tabStops.isEmpty != true else { return }
+            let next = (style?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+            next.tabStops = []; next.defaultTabInterval = interval
+            addAttribute(.paragraphStyle, value: next, range: range)
+            changed = true
+        }
+        endEditing()
+        return changed
     }
 }
 

@@ -13,6 +13,16 @@ final class TextTabsTests: XCTestCase {
         // Past the twelve default stops of iOS, where text used to wrap.
         XCTAssertEqual(TextTabs.nextStop(after: 400, interval: 35), 420)
     }
+    func testOneGridForAWholeFieldFollowsItsLargestText() {
+        var box = TextBox(x: 0, y: 0, width: 300, height: 100, text: "\tab\ncd", style: TextBoxStyle())
+        box.style.fontSize = 14
+        XCTAssertEqual(TextTabs.interval(box), 35)
+        var large = box.style; large.fontSize = 43
+        box.runs = [TextRun(location: 0, length: 1, style: box.style), TextRun(location: 1, length: 5, style: large)]
+        XCTAssertEqual(TextTabs.interval(box), 108, "a tab of 14 pt at the line start has no grid of its own")
+        box.runs = []
+        XCTAssertEqual(TextTabs.interval(box), 35)
+    }
     private func apply(_ edits: [TextListEditing.Edit], to text: String) -> String {
         let value = NSMutableString(string: text)
         for edit in edits.reversed() { value.replaceCharacters(in: edit.range, with: edit.replacement) }
