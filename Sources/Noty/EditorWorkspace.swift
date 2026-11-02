@@ -101,6 +101,10 @@ final class EditorWorkspace: ObservableObject {
 struct EditorWorkspaceView: View {
     @EnvironmentObject private var laws: LawLibraryModel
     @AppStorage(LawLibraryModel.enabledKey) private var lawsEnabled = false
+    @AppStorage(AppSettingsKey.aiEnabled) private var aiEnabled = false
+    @AppStorage(AIAssistantModel.panelOpenKey) private var aiPanelOpen = false
+    @State private var pageJump: AIPageJump?
+    private static let aiPanelWidth = 380.0
     /// Live width while resizing; stored when the resize ends.
     @State private var lawWidth = UserDefaults.standard.object(forKey: LawLibraryModel.panelWidthKey) as? Double ?? 380
     @State private var lawResizeStart: Double?
@@ -169,13 +173,21 @@ struct EditorWorkspaceView: View {
             let lawShown = lawsEnabled && laws.panelOpen
             let lawStashed = lawShown && laws.stashed
             let lawVisible = lawShown && !laws.stashed
+            let whole = PageSize(width: geometry.size.width, height: geometry.size.height)
+            // The assistant docks at the right edge unless a law window is
+            // docked or a second view needs the room; then it floats over the
+            // notebook area. Docked, the law window lives in the rest.
+            let aiShown = aiEnabled && aiPanelOpen
+            let lawHoldsDock = lawVisible && LawPanelLayout(size: whole, width: lawWidth, height: lawHeight, docked: laws.docked, edge: laws.panelEdge).docked
+            let aiDock = LawPanelLayout(size: whole, width: Self.aiPanelWidth, height: 0,
+                                        docked: aiShown && workspace.secondary == nil && !lawHoldsDock, edge: .right)
+            let lawArea = aiDock.docked ? PageSize(width: aiDock.notebookFrame.width, height: whole.height) : whole
             // A stashed window keeps its docked/floating shape for the way back
             // but gives the notebook its full width meanwhile.
-            let law = LawPanelLayout(size: PageSize(width: geometry.size.width, height: geometry.size.height),
-                                     width: lawWidth, height: lawHeight, docked: laws.docked, edge: laws.panelEdge)
+            let law = LawPanelLayout(size: lawArea, width: lawWidth, height: lawHeight, docked: laws.docked, edge: laws.panelEdge)
             let docking = lawVisible && law.docked
             // Docked at a side or along the bottom: the notebooks keep the rest.
-            let notebookArea = docking ? law.notebookFrame : PageRect(x: 0, y: 0, width: geometry.size.width, height: geometry.size.height)
+            let notebookArea = docking ? law.notebookFrame : PageRect(x: 0, y: 0, width: lawArea.width, height: lawArea.height)
             let editorWidth = notebookArea.width
             let size = PageSize(width: editorWidth, height: notebookArea.height)
             let split = workspace.secondary != nil && !docking
@@ -206,8 +218,14 @@ struct EditorWorkspaceView: View {
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-            .overlay {
-                if lawsEnabled { lawLayer(law, shown: lawShown, visible: lawVisible, stashed: lawStashed) }
+            .overlay(alignment: .topLeading) {
+                if lawsEnabled {
+                    lawLayer(law, shown: lawShown, visible: lawVisible, stashed: lawStashed)
+                        .frame(width: lawArea.width, height: lawArea.height).clipped()
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if aiShown { aiLayer(aiDock, notebookArea: notebookArea) }
             }
             // Panes clip themselves already; this keeps a stashed law window
             // from drawing beyond the workspace edge.
@@ -285,7 +303,7 @@ struct EditorWorkspaceView: View {
             } : nil, onLawKeys: lawsEnabled ? {
                 withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelOpen = true; laws.stashed = false }
                 laws.keyFocus += 1
-            } : nil, onToolChange: { tool in
+            } : nil, onAI: aiEnabled ? { toggleAI() } : nil, pageJump: pageJump?.pane == index ? pageJump : nil, onToolChange: { tool in
                 // Picking the highlighter or an eraser in the active notebook
                 // switches the law reader along; other tools leave its choice.
                 guard workspace.activePane == index else { return }
@@ -295,6 +313,35 @@ struct EditorWorkspaceView: View {
                 default: break
                 }
             })
+    }
+
+    // MARK: Assistant
+
+    /// The notebook of the focused view; only its pages can be jumped to.
+    private var activeModel: EditorModel {
+        workspace.activePane == 1 ? workspace.secondary ?? workspace.primary : workspace.primary
+    }
+
+    private func toggleAI() {
+        withAnimation(NotyMotion.panel(reduceMotion)) {
+            aiPanelOpen.toggle()
+            // Opening takes the dock over; the law window floats on beside it.
+            if aiPanelOpen, laws.panelOpen, !laws.stashed, laws.docked { laws.docked = false }
+        }
+    }
+
+    private func aiLayer(_ dock: LawPanelLayout, notebookArea: PageRect) -> some View {
+        let room = PageSize(width: notebookArea.width, height: notebookArea.height)
+        let layout = dock.docked ? dock : LawPanelLayout(size: room, width: Self.aiPanelWidth, height: 0, docked: false, edge: .right)
+        let origin = dock.docked ? PagePoint(x: 0, y: 0) : PagePoint(x: notebookArea.x, y: notebookArea.y)
+        return AIPanelView(editor: activeModel, docked: dock.docked, onJump: { document, number in
+            let model = activeModel
+            guard model.documentLoaded, model.notebook.id == document, model.notebook.pages.indices.contains(number - 1) else { return }
+            pageJump = AIPageJump(pane: workspace.activePane, pageID: model.notebook.pages[number - 1].id)
+        }, onClose: { toggleAI() })
+            .frame(width: layout.frame.width, height: layout.frame.height)
+            .offset(x: origin.x + layout.frame.x, y: origin.y + layout.frame.y)
+            .transition(.move(edge: .trailing).combined(with: .opacity))
     }
 
     // MARK: Law window

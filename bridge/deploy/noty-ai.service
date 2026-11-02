@@ -1,0 +1,51 @@
+# Referenz-Unit. Benutzer, Laufzeit und eigenes Codex-Profil vorher mit provision.py anlegen.
+[Unit]
+Description=Private KI-Bridge für noty
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=noty-ai
+Group=noty-ai
+WorkingDirectory=/opt/noty-ai
+Environment=PATH=/opt/noty-ai/runtime/bin:/opt/noty-ai/runtime/node_modules/.bin:/usr/bin:/bin
+Environment=HOME=/var/lib/noty-ai
+Environment=CODEX_HOME=/var/lib/noty-ai/codex
+Environment=STATE_DIR=/var/lib/noty-ai/state
+Environment=CODEX_BIN=/opt/noty-ai/runtime/node_modules/.bin/codex
+Environment=PORT=8790
+Environment=NOTY_AI_ACCOUNT_URL=http://127.0.0.1:18083
+# Kommagetrennte Konto-IDs vor dem Start eintragen.
+Environment=NOTY_AI_ADMIN_IDS=
+# Ohne diesen exakten Ursprung lehnt /admin alles ab.
+Environment=NOTY_AI_ADMIN_ORIGIN=https://noty.xclipsen.de
+Environment=NOTY_AI_DAILY_LIMIT=200
+Environment=NOTY_AI_RETENTION_DAYS=30
+Environment=NOTY_AI_USAGE_DAYS=400
+ExecStart=/opt/noty-ai/runtime/bin/node /opt/noty-ai/server/main.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+StateDirectory=noty-ai
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/noty-ai
+# Kein Zugriff auf Notizen anderer Dienste.
+InaccessiblePaths=-/srv/obsidian
+
+[Install]
+WantedBy=multi-user.target

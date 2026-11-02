@@ -189,6 +189,12 @@ Gerätetests (gebündelt, isolierter Bereich/Testheft):
 4. Doppeltipp auf freie Fläche (Papier- und PDF-Seite): nur „Textfeld hinzufügen“, kein „Platz einfügen“; neues freies Textfeld an der Tippstelle mit Tastatur; Doppeltipp auf ein Objekt zeigt kein Menü.
 5. Undo/Redo nach Fingerverschiebung, Neustart der App: Stand erhalten.
 
+## KI-Assistent – `feat/ki-panel`
+
+Vertrag: [AI-ASSISTANT](AI-ASSISTANT.md). Implementiert in `AIAssistant.swift` (Core), `AIAssistantModel.swift`, `AIPanelView.swift`, Einstellungsseite und `EditorWorkspace`. Geprüft: `AIAssistantTests` unter Linux, `xtool dev build`. Nicht installiert, gegen eine laufende Bridge ungeprüft, am iPad ungeprüft.
+
+Am Gerät offen: Anmeldung, `pending`/`blocked`/401 im Panel; Frage ohne, mit Seite und mit ganzem Heft; Seitenbild samt Ink und Text; Abbruch, App in den Hintergrund und zurück während eines Laufs, Heft- und Ansichtswechsel während eines Laufs; Fundstellensprung; Panel angedockt, schwebend, neben Gesetzesfenster und zweiter Ansicht; Tastaturfokus im Panel neben Pencil und Texteingabe im Heft, Bildschirmtastatur im Panel.
+
 ## Native Gesetzessammlung – Feature-Worktree
 
 Implementiert in `noty-law-integration` / `feat/native-law-library`, getrennt vom laufenden anderen Featurestrang. Die Website-/Backendseite liegt in `gesetzessammlung-noty` / `feat/noty-law-integration`. **Website/Backend am 20.10.2026 produktiv auf IONOS ausgerollt. Native Erweiterung als Build 54 installiert; Bedienung noch nicht auf dem iPad getestet. Mail auf Nutzerwunsch deaktiviert.**

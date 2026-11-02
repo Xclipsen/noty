@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex">
+<title>noty KI – Verwaltung</title>
+<link rel="stylesheet" href="/admin/app.css">
+<script src="/admin/app.js" defer></script>
+</head>
+<body>
+<main id="login-view" class="login" hidden>
+  <h1>noty KI</h1>
+  <p class="muted">Verwaltung</p>
+  <form id="login-form">
+    <label for="login-name">E-Mail oder Name</label>
+    <input id="login-name" name="username" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>
+    <label for="login-password">Passwort</label>
+    <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+    <p id="login-error" class="error" role="alert" hidden></p>
+    <button id="login-submit" type="submit" class="primary">Anmelden</button>
+  </form>
+</main>
+
+<div id="panel-view" class="panel" hidden>
+  <header class="topbar">
+    <h1>noty KI</h1>
+    <span id="updated" class="muted"></span>
+    <button id="logout" type="button">Abmelden</button>
+  </header>
+  <p id="banner" class="error banner" role="alert" hidden></p>
+  <section class="summary" aria-label="Zustand">
+    <div class="tile"><h2>Codex-Anmeldung</h2><p id="codex-account" class="value"></p></div>
+    <div class="tile"><h2>Laufende Läufe</h2><p id="running" class="value"></p></div>
+    <div class="tile"><h2>Heute</h2><p id="today" class="value"></p><p id="today-detail" class="muted"></p></div>
+  </section>
+  <section class="plan" aria-labelledby="plan-title">
+    <h2 id="plan-title">Abo-Kontingent</h2>
+    <div id="plan"></div>
+  </section>
+  <section aria-labelledby="users-title">
+    <div class="section-head">
+      <h2 id="users-title">Konten</h2>
+      <span class="muted">rein und raus sind Tokens, Tage nach UTC</span>
+    </div>
+    <div class="table-wrap">
+      <table id="users">
+        <thead>
+          <tr>
+            <th scope="col">Name</th><th scope="col">Status</th><th scope="col">Rolle</th><th scope="col">Limit</th>
+            <th scope="col">Heute</th><th scope="col">7 Tage</th><th scope="col">30 Tage</th><th scope="col">Gesamt</th>
+            <th scope="col">Zuletzt aktiv</th><th scope="col">Aktionen</th>
+          </tr>
+        </thead>
+        <tbody id="users-body"></tbody>
+      </table>
+    </div>
+    <p id="users-empty" class="muted" hidden>Noch keine Konten. Ein Konto erscheint, sobald es die KI zum ersten Mal in der App öffnet.</p>
+  </section>
+</div>
+</body>
+</html>
