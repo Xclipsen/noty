@@ -32,6 +32,10 @@ Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft) und
 
 **Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: alle 28 Dokumente und 248 Dateien unverändert. Core-Tests (neu `TextFlowRangeTests`, `KeyboardCommandsTests`, `TextMotionsTests`), `check_page_workflow.sh`, `check_verifiers.sh` und `xtool dev build` bestanden. Getestet sind Keymap, Parser, Motions und Bereichsbearbeitung; **nicht** getestet sind Tastenzustellung, Fokus, TextKit-Messung und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).
 
+## Build 73 · Leerzeichen vor dem Rechenergebnis (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Das Rechnen nach „=“ kommt von iPadOS, die App kann es nur ein- oder ausschalten. `MathResultSpacing` erkennt die Einfügung nach der Textänderung und ergänzt das Leerzeichen; von Hand getippte Ergebnisse gelten mit. Ungeprüft ist, ob iPadOS das Ergebnis über den normalen Änderungsweg einfügt und ob die Rechnung danach weiterläuft. Gerätetest: `2+3=` mit angenommenem Vorschlag im Heft und im Textdokument, danach Undo; der neue Texteditor (Test) ist nicht angebunden.
+
 ## Build 72 · Tabstopps ohne Ende (02.11.2026)
 
 **Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Nutzer: Tab kam im Textfeld nur bis etwa zur Mitte und brach dann um. Ursache: Ohne eigene Stopps gelten die zwölf Stopps von iOS bis 336 pt. Jetzt ein gleichmäßiges Raster von 2,5 Schriftgrößen ab linker Textkante (14 pt: 35 pt), gemeinsam für Editor, Vorschau und PDF, kein Formatwechsel; der Bestand vom 31.10.2026 enthielt keine Tabs. Automatische Feldbreite wächst bis zum Stopp mit. Gerätetest: Tab bis zum rechten Rand im Heft und im Textdokument, zwei Zeilen mit Tabs stehen in einer Spalte, ⇧Tab, mehrere Zeilen markieren und Tab, PDF-Export gleich wie Editor.

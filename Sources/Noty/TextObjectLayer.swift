@@ -763,6 +763,21 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         finishListInput(editor)
         layoutIfNeeded(); requestCaretReveal(.typing)
         keyboardTyped(editor)
+        spaceMathResult(editor, previous: previous)
+    }
+    /// iPadOS inserts a calculated result directly behind „=“. On the next
+    /// turn of the run loop: UIKit is still finishing its own insertion here.
+    private func spaceMathResult(_ editor: PageTextView, previous: TextBox) {
+        guard editor.markedTextRange == nil, editor.selectedRange.length == 0,
+              let current = boxes.first(where: { $0.id == editor.objectID })?.text,
+              let edit = MathResultSpacing.edit(before: previous.text, after: current, caret: editor.selectedRange.location) else { return }
+        let id = editor.objectID, page = pageID, expected = generation
+        DispatchQueue.main.async { [weak self, weak editor] in
+            guard let self, let editor, self.active, self.pageID == page, self.generation == expected,
+                  let index = self.boxes.firstIndex(where: { $0.id == id }), self.boxes[index].text == current,
+                  self.fields[id]?.editor === editor, editor.markedTextRange == nil else { return }
+            self.applyListEdits([edit], at: index, editor: editor)
+        }
     }
     /// After typing, UIKit derives typing attributes from the typed character
     /// and may drop app keys (marker colour, automatic ink, font name). The
