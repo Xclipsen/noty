@@ -144,10 +144,28 @@ final class PageTextView: UITextView {
         return CGRect(x: rect.minX, y: band.minY, width: rect.width, height: band.height)
     }
     override func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
-        super.selectionRects(for: range).map { item in
-            guard item.rect.minY.isFinite, item.rect.height > 0, let band = glyphBand(near: item.rect, caretIndex: nil) else { return item }
-            return GlyphSelectionRect(item, rect: CGRect(x: item.rect.minX, y: band.minY, width: item.rect.width, height: band.height))
+        super.selectionRects(for: range).flatMap { item -> [UITextSelectionRect] in
+            guard item.rect.minY.isFinite, item.rect.height > 0 else { return [item] }
+            let bands = glyphBands(in: item.rect)
+            guard let first = bands.first, let last = bands.last else { return [item] }
+            return bands.map { band in
+                GlyphSelectionRect(item, rect: CGRect(x: item.rect.minX, y: band.minY, width: item.rect.width, height: band.height),
+                                   start: item.containsStart && band == first, end: item.containsEnd && band == last)
+            }
         }
+    }
+    /// UIKit reports all lines between the first and the last selected one as
+    /// a single rectangle: one glyph band per line inside it, or only the
+    /// line at its middle would stay marked.
+    private func glyphBands(in rect: CGRect) -> [CGRect] {
+        let manager = layoutManager, top = textContainerInset.top
+        var middles: [CGFloat] = []
+        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { fragment, _, _, _, _ in
+            let middle = fragment.midY + top
+            if middle > rect.minY, middle < rect.maxY { middles.append(middle) }
+        }
+        guard middles.count > 1 else { return glyphBand(near: rect, caretIndex: nil).map { [$0] } ?? [] }
+        return middles.compactMap { glyphBand(near: CGRect(x: rect.minX, y: $0, width: rect.width, height: 0), caretIndex: nil) }
     }
     private static func isBreak(_ c: unichar) -> Bool { c == 10 || c == 13 || c == 0x2028 || c == 0x2029 }
     private func caretFont(at index: Int) -> UIFont {
@@ -354,11 +372,14 @@ final class NoScribble: NSObject, UIScribbleInteractionDelegate {
 final class GlyphSelectionRect: UITextSelectionRect {
     private let base: UITextSelectionRect
     private let frame: CGRect
-    init(_ base: UITextSelectionRect, rect: CGRect) { self.base = base; frame = rect; super.init() }
+    private let start: Bool, end: Bool
+    init(_ base: UITextSelectionRect, rect: CGRect, start: Bool, end: Bool) {
+        self.base = base; frame = rect; self.start = start; self.end = end; super.init()
+    }
     override var rect: CGRect { frame }
     override var writingDirection: NSWritingDirection { base.writingDirection }
-    override var containsStart: Bool { base.containsStart }
-    override var containsEnd: Bool { base.containsEnd }
+    override var containsStart: Bool { start }
+    override var containsEnd: Bool { end }
     override var isVertical: Bool { base.isVertical }
 }
 

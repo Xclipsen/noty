@@ -32,6 +32,10 @@ Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft) und
 
 **Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: alle 28 Dokumente und 248 Dateien unverändert. Core-Tests (neu `TextFlowRangeTests`, `KeyboardCommandsTests`, `TextMotionsTests`), `check_page_workflow.sh`, `check_verifiers.sh` und `xtool dev build` bestanden. Getestet sind Keymap, Parser, Motions und Bereichsbearbeitung; **nicht** getestet sind Tastenzustellung, Fokus, TextKit-Messung und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).
 
+## Build 74 · Mehrzeilige Textauswahl (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Nutzerbilder IMG_0341/0342: Bei einer Auswahl über mehrere Zeilen waren nur erste, letzte und eine mittlere Zeile markiert. Ursache: UIKit meldet die Zeilen dazwischen als ein Rechteck, `selectionRects` kürzte es auf die Zeile in seiner Mitte. Jetzt je Zeile ein Band. Kein Core-Test möglich (UIKit). Gerätetest: Auswahl über drei und mehr Zeilen mit Leerzeilen, Griffe ziehen, im Heft und im Textdokument.
+
 ## Build 73 · Leerzeichen vor dem Rechenergebnis (02.11.2026)
 
 **Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Das Rechnen nach „=“ kommt von iPadOS, die App kann es nur ein- oder ausschalten. `MathResultSpacing` erkennt die Einfügung nach der Textänderung und ergänzt das Leerzeichen; von Hand getippte Ergebnisse gelten mit. Ungeprüft ist, ob iPadOS das Ergebnis über den normalen Änderungsweg einfügt und ob die Rechnung danach weiterläuft. Gerätetest: `2+3=` mit angenommenem Vorschlag im Heft und im Textdokument, danach Undo; der neue Texteditor (Test) ist nicht angebunden.
