@@ -28,7 +28,8 @@ private struct AIBridgeClient: Sendable {
         session = URLSession(configuration: config, delegate: AISessionDelegate(), delegateQueue: nil)
     }
 
-    func send(base: URL, token: String, path: String, query: [URLQueryItem] = [], method: String = "GET", body: Data? = nil) async throws -> (Data, Int) {
+    func send(base: URL, token: String, path: String, query: [URLQueryItem] = [], method: String = "GET", body: Data? = nil,
+              timeout: TimeInterval? = nil) async throws -> (Data, Int) {
         guard let address = AIServerAddress.parse(base.absoluteString),
               var components = URLComponents(url: address, resolvingAgainstBaseURL: false) else {
             throw AIServerError(status: 0, message: "Die Server-Adresse ist ungültig.", code: nil)
@@ -38,6 +39,7 @@ private struct AIBridgeClient: Sendable {
         guard let url = components.url else { throw AIServerError(status: 0, message: "Die Server-Adresse ist ungültig.", code: nil) }
         var request = URLRequest(url: url)
         request.httpMethod = method; request.httpBody = body
+        if let timeout { request.timeoutInterval = timeout }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
@@ -57,10 +59,13 @@ private struct AIBridgeClient: Sendable {
         return try JSONDecoder().decode(type, from: data)
     }
 
-    /// nil: nothing new since `after` (204).
-    func session(_ id: String, after revision: Int?, base: URL, token: String) async throws -> AISession? {
-        let query = revision.map { [URLQueryItem(name: "after", value: String($0))] } ?? []
-        let (data, status) = try await send(base: base, token: token, path: "/v1/sessions/\(id)", query: query)
+    /// nil: nothing new since `after` (204). `wait`: long polling, the bridge
+    /// holds the request up to 20 s until the revision changes.
+    func session(_ id: String, after revision: Int?, wait: Bool = false, base: URL, token: String) async throws -> AISession? {
+        var query = revision.map { [URLQueryItem(name: "after", value: String($0))] } ?? []
+        if wait, revision != nil { query.append(URLQueryItem(name: "wait", value: "1")) }
+        let (data, status) = try await send(base: base, token: token, path: "/v1/sessions/\(id)", query: query, timeout: wait ? 40 : nil)
+        // Off the main actor: while an answer runs this decodes up to ten times a second.
         return status == 204 ? nil : try JSONDecoder().decode(AISession.self, from: data)
     }
 
@@ -512,19 +517,30 @@ final class AIAssistantModel: ObservableObject {
         poll?.cancel(); poll = nil
         guard sceneActive, panelPresence.visible, let route, let id = session?.id, session?.status == .running else { return }
         let expected = generation
+        // Long polling while the answer runs: every new revision arrives at once
+        // (the bridge sends one at most every 100 ms). Cancelled with the task when
+        // the panel closes or the app leaves the foreground, as before.
         poll = Task { [weak self, client] in
             var failures = 0
+            var mode = AILongPoll()
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(min(5_000, 700 << failures)))
+                let pause = mode.delay(failures: failures)
+                if pause > 0 { try? await Task.sleep(for: .milliseconds(pause)) }
                 guard !Task.isCancelled, let revision = self?.session?.revision, self?.generation == expected, self?.session?.id == id else { return }
+                let asked = ContinuousClock.now
                 do {
-                    let next = try await client.session(id, after: revision, base: route.base, token: route.token)
+                    let next = try await client.session(id, after: revision, wait: mode.waits, base: route.base, token: route.token)
                     guard !Task.isCancelled, let self, self.generation == expected else { return }
                     failures = 0
-                    if let next, next.supersedes(self.session) { self.session = next }
+                    let took = asked.duration(to: .now)
+                    // A reply that is not newer counts as unchanged: no loop of instant replies.
+                    let newer = next.map { $0.supersedes(self.session) } ?? false
+                    mode.answered(changed: newer, seconds: Double(took.components.seconds) + Double(took.components.attoseconds) / 1e18)
+                    if let next, newer { self.session = next }
                     if self.session?.status != .running { self.poll = nil; await self.runEnded(); return }
                 } catch {
                     guard !Task.isCancelled, let self, self.generation == expected else { return }
+                    if let server = error as? AIServerError, mode.rejected(status: server.status) { continue }
                     failures += 1
                     if self.note(rejection: error) { self.poll = nil; return }
                     let missing = (error as? AIServerError)?.status == 404

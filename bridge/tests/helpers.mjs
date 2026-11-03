@@ -8,6 +8,7 @@ import { Metering } from '../server/metering.mjs';
 import { RunLog } from '../server/runlog.mjs';
 import { SessionAuth } from '../server/auth.mjs';
 import { UploadGate, createApi } from '../server/http.mjs';
+import { RevisionWaits } from '../server/waits.mjs';
 import { FakeRpc } from './fake-rpc.mjs';
 
 export const TOKEN = 'a'.repeat(64);
@@ -44,7 +45,7 @@ export async function setup(t, { activate = [USER, 'konto-b'], rpc = {}, hub: hu
 }
 
 /** Echte HTTP-Schicht mit Kontoprüfung gegen ein Ersatz-Backend im Speicher. */
-export async function serve(t, { admin, backend = {}, uploads: uploadOptions, ...options } = {}) {
+export async function serve(t, { admin, backend = {}, uploads: uploadOptions, waits: waitOptions, ...options } = {}) {
   const context = await setup(t, options);
   const state = { down: false, users: new Map(USERS), lookups: 0, ...backend };
   const fetcher = async (url, { headers }) => {
@@ -55,7 +56,8 @@ export async function serve(t, { admin, backend = {}, uploads: uploadOptions, ..
   };
   const auth = new SessionAuth({ accountUrl: 'http://127.0.0.1:1', fetcher, ...options.auth });
   const uploads = new UploadGate(uploadOptions);
-  const api = createApi({ hub: context.hub, auth, accounts: context.accounts, uploads });
+  const waits = new RevisionWaits(waitOptions);
+  const api = createApi({ hub: context.hub, auth, accounts: context.accounts, uploads, waits });
   await new Promise(resolve => api.listen(0, '127.0.0.1', resolve));
   t.after(() => { api.close(); api.closeAllConnections(); });
   const base = `http://127.0.0.1:${api.address().port}`;
@@ -63,7 +65,7 @@ export async function serve(t, { admin, backend = {}, uploads: uploadOptions, ..
     method, headers: { ...headers, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
     body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body)
   });
-  return { ...context, api, base, call, auth, uploads, backend: state };
+  return { ...context, api, base, call, auth, uploads, waits, backend: state };
 }
 
 export async function settled(store, id, userId = USER) {

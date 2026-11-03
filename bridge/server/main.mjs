@@ -73,6 +73,8 @@ export async function boot(env, options = {}) {
   const adminApi = createAdminApi(admin);
   await hub.startRetention();
   const close = async () => {
+    // Wartende Abfragen enden sofort, damit das Herunterfahren nicht bis zu 20 Sekunden hängt.
+    api.waits.close();
     for (const server of [api, adminApi]) { server.close(); server.closeAllConnections(); }
     await hub.close();
   };

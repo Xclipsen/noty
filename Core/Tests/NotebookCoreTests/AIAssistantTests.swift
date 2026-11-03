@@ -679,54 +679,6 @@ final class AIPanelSupportTests: XCTestCase {
         XCTAssertTrue(presence.visible, "Überzähliges Verschwinden zählt nicht")
     }
 
-    // MARK: Rendering
-
-    func testFinishedMessagesAreParsedOnce() {
-        var cache = AIRenderCache<String>()
-        var parsed = 0
-        func value(_ id: String, _ text: String, pages: Set<Int> = [], growing: Bool = false) -> (String, String) {
-            let result = cache.value(id: id, text: text, pages: pages, growing: growing) { parsed += 1; return $0.uppercased() }
-            return (result.value, String(result.tail))
-        }
-        XCTAssertEqual(value("a", "eins").0, "EINS")
-        XCTAssertEqual(value("a", "eins").0, "EINS")
-        XCTAssertEqual(parsed, 1)
-        XCTAssertEqual(value("b", "zwei").0, "ZWEI")
-        XCTAssertEqual(parsed, 2)
-        XCTAssertEqual(value("a", "eins", pages: [1]).0, "EINS", "Andere Verlinkung: neu")
-        XCTAssertEqual(parsed, 3)
-    }
-
-    func testGrowingAnswerIsParsedAtMostOncePerInterval() {
-        var cache = AIRenderCache<String>(interval: 1)
-        let start = Date(timeIntervalSince1970: 1_000)
-        var parsed = 0
-        func value(_ text: String, after seconds: Double, growing: Bool = true) -> (String, String) {
-            let result = cache.value(id: "a", text: text, pages: [], growing: growing, now: start.addingTimeInterval(seconds)) { parsed += 1; return $0 }
-            return (result.value, String(result.tail))
-        }
-        XCTAssertEqual(value("Ha", after: 0).0, "Ha")
-        let early = value("Hallo", after: 0.4)
-        XCTAssertEqual(early.0, "Ha"); XCTAssertEqual(early.1, "llo", "Neuer Text bleibt sichtbar")
-        XCTAssertEqual(parsed, 1)
-        XCTAssertEqual(value("Hallo Welt", after: 1).0, "Hallo Welt")
-        XCTAssertEqual(parsed, 2)
-        XCTAssertEqual(value("Ganz anders", after: 1.1).0, "Ganz anders", "Ersetzter Text wartet nicht")
-        XCTAssertEqual(parsed, 3)
-        XCTAssertEqual(value("Ganz anders.", after: 1.2, growing: false).0, "Ganz anders.", "Am Ende vollständig")
-        XCTAssertEqual(parsed, 4)
-    }
-
-    func testRenderCacheIsBounded() {
-        var cache = AIRenderCache<String>(capacity: 2)
-        var parsed = 0
-        func touch(_ id: String) { _ = cache.value(id: id, text: "x", pages: [], growing: false) { parsed += 1; return $0 } }
-        touch("a"); touch("b"); touch("c"); touch("c")
-        XCTAssertEqual(parsed, 3)
-        touch("a")
-        XCTAssertEqual(parsed, 4, "Ältester Eintrag ist fort")
-    }
-
     // MARK: Placement
 
     private let landscape = PageRect(x: 0, y: 0, width: 1180, height: 820)

@@ -17,41 +17,9 @@ public enum AIMarkdownBlock: Equatable, Sendable {
 public enum AIMarkdownBlocks {
     /// A code block still open at the end (an answer under way) is shown as code.
     public static func parse(_ text: String) -> [AIMarkdownBlock] {
-        var blocks: [AIMarkdownBlock] = []
-        var paragraph: [String] = [], quote: [String] = [], code: [String]?, table: [[String]] = []
-        func flush() {
-            if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: "\n"))); paragraph = [] }
-            if !quote.isEmpty { blocks.append(.quote(quote.joined(separator: "\n"))); quote = [] }
-            if !table.isEmpty { blocks.append(.table(table)); table = [] }
-        }
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw).replacingOccurrences(of: "\r", with: "")
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("```") {
-                if let open = code { blocks.append(.code(open.joined(separator: "\n"))); code = nil } else { flush(); code = [] }
-                continue
-            }
-            if code != nil { code?.append(line); continue }
-            if trimmed.isEmpty { flush(); continue }
-            if trimmed.hasPrefix("|") {
-                if !paragraph.isEmpty || !quote.isEmpty { let rows = table; table = []; flush(); table = rows }
-                if !isSeparatorRow(trimmed) { table.append(cells(trimmed)) }
-                continue
-            }
-            if !table.isEmpty { flush() }
-            if let (level, title) = heading(trimmed) { flush(); blocks.append(.heading(level: level, text: title)); continue }
-            if isRule(trimmed) { flush(); blocks.append(.rule); continue }
-            if trimmed.hasPrefix(">") {
-                if !paragraph.isEmpty { let rows = quote; quote = []; flush(); quote = rows }
-                quote.append(String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)); continue
-            }
-            if let item = listItem(line) { flush(); blocks.append(item); continue }
-            if !quote.isEmpty { flush() }
-            paragraph.append(trimmed)
-        }
-        if let code { blocks.append(.code(code.joined(separator: "\n"))) }
-        flush()
-        return blocks
+        var parser = AIMarkdownLineParser()
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) { parser.feed(raw) }
+        return parser.finish()
     }
 
     /// A table for a narrow panel: columns padded in a monospaced block,
@@ -78,18 +46,18 @@ public enum AIMarkdownBlocks {
         return result
     }
 
-    private static func heading(_ line: String) -> (Int, String)? {
+    static func heading(_ line: String) -> (Int, String)? {
         let level = line.prefix { $0 == "#" }.count
         guard (1...6).contains(level), line.dropFirst(level).first == " " else { return nil }
         return (level, line.dropFirst(level + 1).trimmingCharacters(in: .whitespaces))
     }
 
-    private static func isRule(_ line: String) -> Bool {
+    static func isRule(_ line: String) -> Bool {
         let compact = line.replacingOccurrences(of: " ", with: "")
         return compact.count >= 3 && (Set(compact) == ["-"] || Set(compact) == ["*"] || Set(compact) == ["_"])
     }
 
-    private static func listItem(_ line: String) -> AIMarkdownBlock? {
+    static func listItem(_ line: String) -> AIMarkdownBlock? {
         let spaces = line.prefix { $0 == " " || $0 == "\t" }.reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
         let body = line.drop { $0 == " " || $0 == "\t" }
         let indent = spaces / 2
@@ -103,15 +71,64 @@ public enum AIMarkdownBlocks {
         return .listItem(indent: indent, marker: digits + ".", text: String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces))
     }
 
-    private static func isSeparatorRow(_ line: String) -> Bool {
+    static func isSeparatorRow(_ line: String) -> Bool {
         let inner = line.replacingOccurrences(of: " ", with: "")
         return inner.count > 2 && inner.allSatisfy { "|-:".contains($0) } && inner.contains("-")
     }
 
-    private static func cells(_ line: String) -> [String] {
+    static func cells(_ line: String) -> [String] {
         var inner = Substring(line)
         if inner.hasPrefix("|") { inner = inner.dropFirst() }
         if inner.hasSuffix("|") { inner = inner.dropLast() }
         return inner.split(separator: "|", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+}
+
+/// The block parser, one line at a time. Between two lines it is `idle` when
+/// nothing is pending: no paragraph, quote or table being collected and no
+/// open code block. Parsing on from an idle point gives the same blocks as a
+/// fresh parser, which is what lets a growing answer keep its finished blocks.
+struct AIMarkdownLineParser {
+    private(set) var blocks: [AIMarkdownBlock] = []
+    private var paragraph: [String] = [], quote: [String] = [], code: [String]?, table: [[String]] = []
+
+    var isIdle: Bool { paragraph.isEmpty && quote.isEmpty && table.isEmpty && code == nil }
+
+    private mutating func flush() {
+        if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: "\n"))); paragraph = [] }
+        if !quote.isEmpty { blocks.append(.quote(quote.joined(separator: "\n"))); quote = [] }
+        if !table.isEmpty { blocks.append(.table(table)); table = [] }
+    }
+
+    mutating func feed(_ raw: Substring) {
+        let line = String(raw).replacingOccurrences(of: "\r", with: "")
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("```") {
+            if let open = code { blocks.append(.code(open.joined(separator: "\n"))); code = nil } else { flush(); code = [] }
+            return
+        }
+        if code != nil { code?.append(line); return }
+        if trimmed.isEmpty { flush(); return }
+        if trimmed.hasPrefix("|") {
+            if !paragraph.isEmpty || !quote.isEmpty { let rows = table; table = []; flush(); table = rows }
+            if !AIMarkdownBlocks.isSeparatorRow(trimmed) { table.append(AIMarkdownBlocks.cells(trimmed)) }
+            return
+        }
+        if !table.isEmpty { flush() }
+        if let (level, title) = AIMarkdownBlocks.heading(trimmed) { flush(); blocks.append(.heading(level: level, text: title)); return }
+        if AIMarkdownBlocks.isRule(trimmed) { flush(); blocks.append(.rule); return }
+        if trimmed.hasPrefix(">") {
+            if !paragraph.isEmpty { let rows = quote; quote = []; flush(); quote = rows }
+            quote.append(String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)); return
+        }
+        if let item = AIMarkdownBlocks.listItem(line) { flush(); blocks.append(item); return }
+        if !quote.isEmpty { flush() }
+        paragraph.append(trimmed)
+    }
+
+    mutating func finish() -> [AIMarkdownBlock] {
+        if let code { blocks.append(.code(code.joined(separator: "\n"))); self.code = nil }
+        flush()
+        return blocks
     }
 }

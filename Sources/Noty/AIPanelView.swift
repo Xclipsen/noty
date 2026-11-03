@@ -27,7 +27,9 @@ struct AIRenderedBlock: Equatable, Identifiable {
 /// What the panel keeps between two runs of its body.
 @MainActor
 private final class AIPanelCache {
-    var answers = AIRenderCache<[AIRenderedBlock]>()
+    var answers = AIAnswerRenderCache<AIRenderedBlock>()
+    /// Reveal of the answer being written, by message.
+    private var reveals: [String: AIRevealState] = [:]
     private var known: (changes: Int, document: UUID, pages: Set<UUID>)?
 
     /// IDs of the notebook's pages, built anew only after a change.
@@ -37,6 +39,21 @@ private final class AIPanelCache {
         let pages = Set(notebook.pages.map(\.id))
         known = (editor.contentChanges, notebook.id, pages)
         return pages
+    }
+
+    func reveal(_ message: AIMessage) -> AIRevealState {
+        if let reveal = reveals[message.id] { return reveal }
+        // Only one answer grows at a time; the others are finished.
+        let reveal = AIRevealState(text: message.text)
+        reveals = [message.id: reveal]
+        return reveal
+    }
+    func finished(_ id: String) { reveals[id] = nil }
+
+    func blocks(_ message: AIMessage, text: String, pages: Set<Int>, final: Bool) -> [AIRenderedBlock] {
+        answers.blocks(id: message.id, text: text, pages: pages, final: final) { block, index, open in
+            AIMarkdown.render(block, index: index, open: open, pages: pages)
+        }
     }
 }
 
@@ -68,6 +85,7 @@ struct AIPanelView: View {
     @State private var showingChats = false
     @State private var preview: Preview?
     @State private var cache = AIPanelCache()
+    @StateObject private var scroll = AIScrollController()
     /// Local recognition of pages the search index does not know yet.
     @StateObject private var reader = ContentSearchModel()
 
@@ -270,6 +288,9 @@ struct AIPanelView: View {
     @ViewBuilder
     private var conversation: some View {
         if let session = ai.session, !session.messages.isEmpty {
+            // No `defaultScrollAnchor(.bottom)`: on iOS 17 it also keeps the bottom on
+            // size changes and would pull a reader back down. `AIScrollController`
+            // follows instead, and only while the user is at the bottom.
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 24) {
@@ -285,11 +306,18 @@ struct AIPanelView: View {
                         Color.clear.frame(height: 1).id("end")
                     }
                     .padding(16)
+                    .background(AIScrollProbe(controller: scroll))
                 }
-                .defaultScrollAnchor(.bottom)
                 .scrollDismissesKeyboard(.interactively)
-                .onChange(of: ai.session?.revision) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
-                .onChange(of: ai.session?.id) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
+                .overlay(alignment: .bottom) { AIJumpPill(controller: scroll) }
+                .onAppear { scroll.reduceMotion = reduceMotion }
+                .onChange(of: reduceMotion) { _, reduced in scroll.reduceMotion = reduced }
+                // Only without a scroll view to follow (see AIScrollController).
+                .onChange(of: ai.session?.revision) { _, _ in if !scroll.attached { proxy.scrollTo("end", anchor: .bottom) } }
+                .onChange(of: ai.session?.id, initial: true) { _, _ in
+                    scroll.followAgain(animated: false)
+                    if !scroll.attached { proxy.scrollTo("end", anchor: .bottom) }
+                }
             }
         } else {
             emptyState
@@ -338,18 +366,20 @@ struct AIPanelView: View {
 
     private func row(_ message: AIMessage, in session: AISession, request: String?, retry: String?) -> some View {
         let pages = citablePages(request: request)
+        let growing = message.role == .assistant && session.status == .running && message.id == session.messages.last?.id
         var blocks: [AIRenderedBlock]?
-        if message.role == .assistant {
-            let growing = session.status == .running && message.id == session.messages.last?.id
-            let answer = cache.answers.value(id: message.id, text: message.text, pages: Set(pages.keys), growing: growing) {
-                AIMarkdown.blocks($0, pages: Set(pages.keys))
-            }
-            var value = answer.value
-            if !answer.tail.isEmpty { value.append(AIRenderedBlock(id: value.count, kind: .text(AttributedString(String(answer.tail)), .body))) }
-            blocks = value
+        var reveal: AIRevealState?
+        if growing {
+            reveal = cache.reveal(message)
+        } else if message.role == .assistant {
+            // Finished: whole at once, also right at the end of a run.
+            cache.finished(message.id)
+            blocks = cache.blocks(message, text: message.text, pages: Set(pages.keys), final: true)
         }
-        let finished = !(session.status == .running && message.id == session.messages.last?.id)
-        return AIMessageRow(message: message, blocks: blocks, pages: pages, showsActions: finished, canRetry: retry != nil && ready,
+        let cache = self.cache, citable = Set(pages.keys)
+        return AIMessageRow(message: message, blocks: blocks, reveal: reveal,
+                            render: { text in cache.blocks(message, text: text, pages: citable, final: false) },
+                            pages: pages, showsActions: !growing, canRetry: retry != nil && ready,
                             onJump: { page in if let document { onJump(document, page) } },
                             onRetry: { if let retry { submit(retry) } }).equatable()
     }
@@ -363,21 +393,27 @@ struct AIPanelView: View {
         return noted.filter { existing.contains($0.value) }
     }
 
-    @ViewBuilder
+    /// One slot of constant height under the chat: the typing indicator comes
+    /// and goes without moving anything (both variants reserve their room).
     private func runStatus(_ session: AISession) -> some View {
-        switch session.status {
-        case .running:
-            let last = session.messages.last
-            let waiting = last?.role != .assistant || last?.text.isEmpty == true
-            let question = session.messages.last { $0.role == .user }?.id
-            AITypingIndicator(thinking: waiting && (question.flatMap(ai.mode(of:))?.showsThinking ?? false))
-        case .error:
-            Label("Die Antwort ist fehlgeschlagen.", systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.secondary)
-        case .interrupted:
-            Label("Abgebrochen", systemImage: "stop.circle").font(.footnote).foregroundStyle(.tertiary)
-        case .idle:
-            EmptyView()
+        ZStack(alignment: .leading) {
+            AITypingIndicator(thinking: true).hidden()
+            AITypingIndicator(thinking: false).hidden()
+            switch session.status {
+            case .running:
+                let last = session.messages.last
+                let waiting = last?.role != .assistant || last?.text.isEmpty == true
+                let question = session.messages.last { $0.role == .user }?.id
+                AITypingIndicator(thinking: waiting && (question.flatMap(ai.mode(of:))?.showsThinking ?? false))
+            case .error:
+                Label("Die Antwort ist fehlgeschlagen.", systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(.secondary)
+            case .interrupted:
+                Label("Abgebrochen", systemImage: "stop.circle").font(.footnote).foregroundStyle(.tertiary)
+            case .idle:
+                EmptyView()
+            }
         }
+        .accessibilityElement(children: .contain)
     }
 
     // MARK: Footer
@@ -596,6 +632,8 @@ struct AIPanelView: View {
                                        limit: limits.maxContextChars, maxImages: limits.maxImages)
         let key = previewKey
         let reader = self.reader
+        // An own question brings the view down again.
+        scroll.followAgain(animated: true)
         Task {
             let accepted = await ai.send(question: question, document: document, mode: mode) {
                 var attachment = AIAttachment()
@@ -646,7 +684,11 @@ private struct AITypingIndicator: View {
 /// notebook, the row only when its content changed.
 private struct AIMessageRow: View, Equatable {
     let message: AIMessage
+    /// Finished answer.
     let blocks: [AIRenderedBlock]?
+    /// The answer being written: revealed evenly, rendered through `render`.
+    let reveal: AIRevealState?
+    let render: (String) -> [AIRenderedBlock]
     /// Citable pages of this answer.
     let pages: [Int: UUID]
     let showsActions: Bool
@@ -656,7 +698,8 @@ private struct AIMessageRow: View, Equatable {
     @State private var copied = false
 
     nonisolated static func == (a: AIMessageRow, b: AIMessageRow) -> Bool {
-        a.message == b.message && a.blocks == b.blocks && a.pages == b.pages && a.showsActions == b.showsActions && a.canRetry == b.canRetry
+        a.message == b.message && a.blocks == b.blocks && a.reveal === b.reveal && a.pages == b.pages && a.showsActions == b.showsActions
+            && a.canRetry == b.canRetry
     }
 
     var body: some View {
@@ -672,10 +715,14 @@ private struct AIMessageRow: View, Equatable {
             .padding(.leading, 40)
         case .assistant:
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(blocks ?? [AIRenderedBlock(id: 0, kind: .text(AttributedString(message.text), .body))]) { block in
-                    AIBlockView(block: block)
+                if let reveal {
+                    AIGrowingAnswer(message: message, pages: pages, reveal: reveal, render: render)
+                } else {
+                    AIAnswerBlocks(key: AIAnswerBlocks.Key(message: message.id, length: message.text.utf8.count, pages: pages.count),
+                                   blocks: blocks ?? [AIRenderedBlock(id: 0, kind: .text(AttributedString(message.text), .body))], pages: pages)
                 }
-                if showsActions { actions }
+                // Room for the actions also while the answer is written: nothing jumps at its end.
+                actions.opacity(showsActions ? 1 : 0).disabled(!showsActions).accessibilityHidden(!showsActions)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .environment(\.openURL, OpenURLAction { url in
@@ -716,7 +763,7 @@ private struct AIMessageRow: View, Equatable {
     }
 }
 
-private struct AIBlockView: View {
+struct AIBlockView: View {
     let block: AIRenderedBlock
     var body: some View {
         switch block.kind {
@@ -762,21 +809,23 @@ private struct AIBlockView: View {
 /// Only citations stay links, shown as small pills: an answer may not offer
 /// addresses that notebook text talked it into.
 private enum AIMarkdown {
-    static func blocks(_ text: String, pages: Set<Int>) -> [AIRenderedBlock] {
-        AIMarkdownBlocks.parse(text).enumerated().map { offset, block in
-            let kind: AIRenderedBlock.Kind
-            switch block {
-            case .heading(let level, let title):
-                kind = .text(inline(title, pages: pages), level == 1 ? .title : level == 2 ? .heading : .subheading)
-            case .paragraph(let value): kind = .text(inline(value, pages: pages), .body)
-            case .listItem(let indent, let marker, let value): kind = .listItem(indent: indent, marker: marker, inline(value, pages: pages))
-            case .quote(let value): kind = .quote(inline(value, pages: pages))
-            case .code(let value): kind = .code(value)
-            case .table(let rows): kind = .code(AIMarkdownBlocks.monospaced(rows))
-            case .rule: kind = .rule
-            }
-            return AIRenderedBlock(id: offset, kind: kind)
+    /// `open`: the block is still being written; marks opened in it are closed for display.
+    static func render(_ block: AIMarkdownBlock, index: Int, open: Bool, pages: Set<Int>) -> AIRenderedBlock {
+        func inline(_ text: String) -> AttributedString {
+            AIMarkdown.inline(open ? AIMarkdownBlocks.closingOpenInline(text) : text, pages: pages)
         }
+        let kind: AIRenderedBlock.Kind
+        switch block {
+        case .heading(let level, let title):
+            kind = .text(inline(title), level == 1 ? .title : level == 2 ? .heading : .subheading)
+        case .paragraph(let value): kind = .text(inline(value), .body)
+        case .listItem(let indent, let marker, let value): kind = .listItem(indent: indent, marker: marker, inline(value))
+        case .quote(let value): kind = .quote(inline(value))
+        case .code(let value): kind = .code(value)
+        case .table(let rows): kind = .code(AIMarkdownBlocks.monospaced(rows))
+        case .rule: kind = .rule
+        }
+        return AIRenderedBlock(id: index, kind: kind)
     }
 
     private static func inline(_ text: String, pages: Set<Int>) -> AttributedString {

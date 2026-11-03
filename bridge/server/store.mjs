@@ -9,6 +9,13 @@ const SESSION_STATUSES = ['idle', 'running', 'error', 'interrupted'];
 const ROLES = ['user', 'assistant', 'system'];
 const RETRY_MS = 1000;
 const MAX_RETRY_MS = 60_000;
+/**
+ * Textdeltas einer laufenden Antwort: höchstens alle STREAM.notifyMs eine neue Revision (und damit ein
+ * Weckruf für Long-Polling), höchstens alle STREAM.persistMs ein Schreiben auf die Platte. Das Laufende
+ * und jeder andere Stand gehen sofort und vollständig auf die Platte (`save`). Ein Absturz verliert so
+ * höchstens eine Sekunde Teilantwort; der Neustart setzt die Revision ohnehin um 1000 weiter.
+ */
+export const STREAM = { notifyMs: 100, persistMs: 1000 };
 
 /** Fehler, dessen deutscher Text an den Client gehen darf. */
 export class ApiError extends Error {
@@ -99,11 +106,14 @@ function repairText(session) {
 }
 
 export class Store {
-  constructor({ root, retentionDays = 30, now = Date.now, retryMs }) {
+  constructor({ root, retentionDays = 30, now = Date.now, retryMs, notifyMs = STREAM.notifyMs, persistMs = STREAM.persistMs, clock = () => performance.now() }) {
     this.root = path.resolve(root); this.sessionsDir = path.join(this.root, 'sessions');
     this.retentionMs = retentionDays * DAY_MS; this.now = now; this.retryMs = retryMs;
     this.sessions = new Map(); this.writes = new Map(); this.removing = new Set(); this.restarted = [];
     this.unlinkFile = unlink;
+    Object.assign(this, { notifyMs, persistMs, clock });
+    // Sitzungs-ID → gedrosselte Deltas (`touch`); Beobachter neuer Revisionen (Long-Polling).
+    this.streams = new Map(); this.watchers = new Set(); this.closed = false;
   }
   file(id) { return path.join(this.sessionsDir, id + '.json'); }
   expired(time) { return time < this.now() - this.retentionMs; }
@@ -187,10 +197,52 @@ export class Store {
   isDefaultTitle(session) { return session.title === DEFAULT_TITLE; }
   summary({ id, documentId, title, status, revision, updatedAt }) { return { id, documentId, title, status, revision, updatedAt }; }
   public(session) { return { ...this.summary(session), messages: session.messages }; }
-  bump(session) { session.updatedAt = this.now(); session.revision++; }
-  save(session) { this.bump(session); return this.persist(session); }
-  /** Für Textdeltas: Revision sofort, Schreiben im Hintergrund. */
-  touch(session) { this.bump(session); this.persist(session).catch(() => {}); }
+  /** `listener(id)` nach jeder neuen Revision und nach dem Löschen; gibt die Abmeldung zurück. */
+  watch(listener) { this.watchers.add(listener); return () => { this.watchers.delete(listener); }; }
+  changed(id) {
+    for (const listener of [...this.watchers]) { try { listener(id); } catch { /* Ein Beobachter hält die anderen nicht auf. */ } }
+  }
+  bump(session) { session.updatedAt = this.now(); session.revision++; this.changed(session.id); }
+  /** Sofort und vollständig; ausstehende Deltas gehen darin auf. */
+  save(session) { this.endStream(session.id); this.bump(session); return this.persist(session); }
+  /**
+   * Für Textdeltas: gedrosselt nach STREAM. Das erste Delta nach einer Pause wirkt sofort, die folgenden
+   * gebündelt am Ende des Fensters; nichts geht verloren, nur seltener.
+   */
+  touch(session) {
+    let stream = this.streams.get(session.id);
+    if (!stream) {
+      stream = { session, timer: null, due: Infinity, bump: false, disk: false, bumpedAt: -Infinity, persistedAt: -Infinity };
+      this.streams.set(session.id, stream);
+    }
+    stream.session = session; stream.bump = true; stream.disk = true;
+    this.pump(stream);
+  }
+  /** Ein Timer je Sitzung, immer auf die nächste fällige Aufgabe gestellt: Revision und Platte haben getrennte Fenster. */
+  pump(stream) {
+    const now = this.clock();
+    if (stream.bump && now - stream.bumpedAt >= this.notifyMs) { stream.bump = false; stream.bumpedAt = now; this.bump(stream.session); }
+    if (stream.disk && now - stream.persistedAt >= this.persistMs) { stream.disk = false; stream.persistedAt = now; this.persist(stream.session).catch(() => {}); }
+    if ((!stream.bump && !stream.disk) || this.closed) return;
+    const due = Math.min(stream.bump ? stream.bumpedAt + this.notifyMs : Infinity, stream.disk ? stream.persistedAt + this.persistMs : Infinity);
+    if (stream.timer && stream.due <= due) return;
+    clearTimeout(stream.timer);
+    stream.due = due;
+    stream.timer = setTimeout(() => { stream.timer = null; if (this.streams.get(stream.session.id) === stream) this.pump(stream); }, Math.max(1, Math.ceil(due - now)));
+    stream.timer.unref();
+  }
+  /** Wendet Ausstehendes sofort an, zum Beispiel vor dem Warten auf die Platte. */
+  drainStream(stream) {
+    clearTimeout(stream.timer); stream.timer = null;
+    if (stream.bump) { stream.bump = false; this.bump(stream.session); }
+    if (stream.disk) { stream.disk = false; this.persist(stream.session).catch(() => {}); }
+  }
+  endStream(id) {
+    const stream = this.streams.get(id);
+    if (!stream) return;
+    clearTimeout(stream.timer);
+    this.streams.delete(id);
+  }
   persist(session) {
     if (!this.sessions.has(session.id) || this.removing.has(session.id)) return Promise.resolve();
     let writer = this.writes.get(session.id);
@@ -204,6 +256,7 @@ export class Store {
   async remove(id) {
     const writer = this.writes.get(id);
     this.removing.add(id);
+    this.endStream(id);
     writer?.cancel();
     await writer?.flush();
     try {
@@ -214,6 +267,8 @@ export class Store {
       throw new ApiError(503, 'Der Chat konnte nicht gelöscht werden.');
     }
     this.sessions.delete(id); this.writes.delete(id); this.removing.delete(id);
+    // Wartende Abfragen erfahren es sofort und bekommen 404.
+    this.changed(id);
   }
   async purge(active = () => false) {
     for (const session of [...this.sessions.values()]) {
@@ -223,6 +278,13 @@ export class Store {
     }
     await this.sweepCorrupt();
   }
-  async flush() { await Promise.all([...this.writes.values()].map(writer => writer.flush())); }
-  async close() { await Promise.all([...this.writes.values()].map(writer => writer.close())); }
+  async flush() {
+    for (const stream of [...this.streams.values()]) this.drainStream(stream);
+    await Promise.all([...this.writes.values()].map(writer => writer.flush()));
+  }
+  async close() {
+    this.closed = true;
+    for (const stream of [...this.streams.values()]) { this.drainStream(stream); this.endStream(stream.session.id); }
+    await Promise.all([...this.writes.values()].map(writer => writer.close()));
+  }
 }

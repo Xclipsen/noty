@@ -4,6 +4,7 @@ import { ApiError } from './store.mjs';
 import { isUuid } from './hub.mjs';
 import { bearerToken } from './auth.mjs';
 import { statusError } from './accounts.mjs';
+import { RevisionWaits } from './waits.mjs';
 
 export const MAX_BODY = 24 * 1024 * 1024;
 const MAX_SMALL_BODY = 4096;
@@ -142,9 +143,32 @@ export function createListener(route, { headers = BASE_HEADERS } = {}) {
   });
 }
 
+/**
+ * `GET /v1/sessions/:id`: ohne `after` oder bei anderer Revision sofort `200`. Gleiche Revision: ohne
+ * `wait=1` sofort `204`, mit `wait=1` Long-Polling bis zur nächsten Revision (`200`) oder bis zum Ablauf
+ * (`204`). Konto und Sitzung werden nach dem Warten erneut geprüft.
+ */
+async function readSession({ hub, accounts, waits }, userId, id, url, res) {
+  const after = url.searchParams.get('after');
+  const wait = url.searchParams.get('wait');
+  if (after !== null && !/^\d{1,15}$/.test(after)) throw new ApiError(400, 'Ungültige Revision.');
+  if (wait !== null && wait !== '0' && wait !== '1') throw new ApiError(400, 'Ungültiger Warteparameter.');
+  const session = hub.store.get(id, userId);
+  if (after !== String(session.revision)) return [200, hub.store.public(session)];
+  if (wait !== '1') return [204];
+  const reason = await waits.wait(userId, id, res);
+  // Client weg: niemand liest die Antwort mehr.
+  if (res.destroyed || res.writableEnded) return null;
+  if (reason === 'closed') return [204];
+  const status = accounts.statusOf(userId);
+  if (status !== 'active') throw statusError(status);
+  const current = hub.store.get(id, userId);
+  return after === String(current.revision) ? [204] : [200, hub.store.public(current)];
+}
+
 /** Nur `/v1` für die App, gedacht für PORT hinter Tailscale. `/admin` gibt es hier nicht. */
-export function createApi({ hub, auth, accounts, uploads = new UploadGate() }) {
-  return createListener(async (req, res, url) => {
+export function createApi({ hub, auth, accounts, uploads = new UploadGate(), waits = new RevisionWaits() }) {
+  const server = createListener(async (req, res, url) => {
     const { method } = req;
     const parts = url.pathname.split('/').filter(Boolean);
     if (parts[0] !== 'v1') throw new ApiError(404, 'Pfad nicht gefunden.');
@@ -163,12 +187,7 @@ export function createApi({ hub, auth, accounts, uploads = new UploadGate() }) {
     if (parts[0] === 'v1' && parts[1] === 'sessions' && parts.length >= 3 && parts.length <= 4) {
       if (!isUuid(parts[2])) throw new ApiError(400, 'Ungültige Sitzungskennung.');
       const id = parts[2].toLowerCase();
-      if (parts.length === 3 && method === 'GET') {
-        const session = hub.store.get(id, userId);
-        const after = url.searchParams.get('after');
-        if (after !== null && !/^\d{1,15}$/.test(after)) throw new ApiError(400, 'Ungültige Revision.');
-        return after === String(session.revision) ? [204] : [200, hub.store.public(session)];
-      }
+      if (parts.length === 3 && method === 'GET') return readSession({ hub, accounts, waits }, userId, id, url, res);
       if (parts.length === 3 && method === 'DELETE') { await hub.remove(userId, id); return [204]; }
       if (parts[3] === 'turns' && method === 'POST') {
         hub.store.get(id, userId);
@@ -179,4 +198,9 @@ export function createApi({ hub, auth, accounts, uploads = new UploadGate() }) {
     }
     throw new ApiError(404, 'Pfad nicht gefunden.');
   });
+  // Jede neue Revision weckt die Wartenden ihrer Sitzung; beim Schließen wartet niemand weiter.
+  const unwatch = hub.store.watch(id => waits.notify(id));
+  server.on('close', () => { unwatch(); waits.close(); });
+  server.waits = waits;
+  return server;
 }

@@ -42,40 +42,6 @@ public struct AIPanelPresence: Equatable, Sendable {
     public mutating func disappeared() { count = max(0, count - 1) }
 }
 
-/// Parsed answers by message. A growing answer is parsed anew at most once per
-/// `interval`; until then the new text comes back as a raw tail.
-public struct AIRenderCache<Value> {
-    private struct Entry {
-        var text: String
-        var pages: Set<Int>
-        var value: Value
-        var date: Date
-    }
-    private var entries: [String: Entry] = [:]
-    private var order: [String] = []
-    private let capacity: Int
-    private let interval: TimeInterval
-
-    public init(capacity: Int = 80, interval: TimeInterval = 1.5) {
-        self.capacity = capacity; self.interval = interval
-    }
-
-    public mutating func value(id: String, text: String, pages: Set<Int>, growing: Bool, now: Date = Date(),
-                               render: (String) -> Value) -> (value: Value, tail: Substring) {
-        if let entry = entries[id], entry.pages == pages {
-            if entry.text == text { return (entry.value, text[text.endIndex...]) }
-            if growing, now.timeIntervalSince(entry.date) < interval, text.hasPrefix(entry.text) {
-                return (entry.value, text.dropFirst(entry.text.count))
-            }
-        }
-        let value = render(text)
-        if entries[id] == nil { order.append(id) }
-        entries[id] = Entry(text: text, pages: pages, value: value, date: now)
-        while order.count > capacity { entries[order.removeFirst()] = nil }
-        return (value, text[text.endIndex...])
-    }
-}
-
 /// Where the floating panel goes: over the view the user is not working in,
 /// beside the law window. `active` and `inactive` are the two views of a
 /// split, `law` what the law window takes up (all in workspace points).
@@ -150,4 +116,31 @@ public enum AIPanelPlacement {
     }
 
     private static func clamp(_ value: Double, _ low: Double, _ high: Double) -> Double { max(low, min(value, max(low, high))) }
+}
+
+/// How the app asks for a running answer: long polling (`wait=1`, the bridge
+/// holds the request up to 20 s until the revision changes), or the former
+/// polling every 700 ms for a bridge that does not hold requests. Such a
+/// bridge answers `204` at once or rejects the parameter with `400`.
+public struct AILongPoll: Equatable, Sendable {
+    /// A `204` sooner than this: the server did not wait.
+    public static let minimumHold = 1.0
+    public static let interval = 700
+    public private(set) var waits = true
+    public init() {}
+
+    /// A reply: `changed` for `200`, `seconds` from request to reply.
+    public mutating func answered(changed: Bool, seconds: Double) {
+        if waits, !changed, seconds < Self.minimumHold { waits = false }
+    }
+    /// True if the request is to be repeated at once without `wait`.
+    public mutating func rejected(status: Int) -> Bool {
+        guard waits, status == 400 else { return false }
+        waits = false
+        return true
+    }
+    /// Pause before the next request in milliseconds; failures back off as before.
+    public func delay(failures: Int) -> Int {
+        waits && failures == 0 ? 0 : min(5_000, Self.interval << min(failures, 8))
+    }
 }
