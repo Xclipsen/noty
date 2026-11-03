@@ -28,7 +28,7 @@ enum IncomingBackup {
     /// AirDrop, Mail and „Kopieren nach noty“ deliver copies iOS leaves in
     /// `Documents/Inbox` for the app to remove. Only files directly inside it.
     private static var inbox: URL { URL.documentsDirectory.appendingPathComponent("Inbox", isDirectory: true) }
-    private static func removeFromInbox(_ url: URL) {
+    static func removeFromInbox(_ url: URL) {
         guard url.standardizedFileURL.deletingLastPathComponent().path == inbox.standardizedFileURL.path else { return }
         try? FileManager.default.removeItem(at: url)
     }

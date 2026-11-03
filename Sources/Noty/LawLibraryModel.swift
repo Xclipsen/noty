@@ -10,6 +10,9 @@ struct NotyAccountUser: Codable, Sendable {
     var email: String?
     var emailVerified: Bool?
     var token: String?
+    /// Whether „Mit Apple anmelden“ is linked (`GET /api/session`); nil until
+    /// the server has said. Only this flag is kept, never Apple's own data.
+    var apple: Bool?
 }
 @MainActor
 private enum NotyAccountKeychain {
@@ -245,14 +248,94 @@ final class LawLibraryModel: ObservableObject {
             body[email.contains("@") ? "email" : "name"] = .string(email)
             struct Response: Decodable, Sendable { var user: NotyAccountUser }
             let response = try await decode(Response.self, from: await fetch(registering ? "/api/register" : "/api/login", method: "POST", body: body, limit: 65536))
-            guard let token = response.user.token, token.count == 64 else { throw LawError.invalid("Server unterstützt die native Anmeldung noch nicht.") }
-            try NotyAccountKeychain.save(response.user)
-            epoch += 1; user = response.user; sessionExpired = false
-            try await personal.adoptGuests(owner: response.user.id)
-            lastOwner = response.user.id; await refreshItems()
-            Task { await synchronize() }
+            try await signedIn(response.user)
+            Task { await refreshAccount() }
             return true
         } catch { self.error = error.localizedDescription; return false }
+    }
+    /// The same session for every way in (password, Apple): Keychain, account
+    /// switch, guest markings, and through `user` the AI panel as well.
+    private func signedIn(_ account: NotyAccountUser) async throws {
+        guard let token = account.token, token.count == 64 else { throw LawError.invalid("Server unterstützt die native Anmeldung noch nicht.") }
+        try NotyAccountKeychain.save(account)
+        epoch += 1; user = account; sessionExpired = false
+        try await personal.adoptGuests(owner: account.id)
+        lastOwner = account.id; await refreshItems()
+        Task { await synchronize() }
+    }
+    private let apple = AppleSignInController()
+    /// „Mit Apple anmelden“: `true` once signed in. Cancelling the Apple sheet
+    /// is silent; a new account is reported in `message`.
+    func appleLogin() async -> (signedIn: Bool, created: Bool) {
+        guard !accountBusy else { return (false, false) }
+        accountBusy = true; defer { accountBusy = false }
+        switch await apple.authorize(withName: true) {
+        case .canceled: return (false, false)
+        case .failed(let message): error = message; return (false, false)
+        case .authorized(let auth):
+            do {
+                let body = AppleSignIn.loginBody(identityToken: auth.identityToken, nonce: auth.nonce, givenName: auth.givenName)
+                var response = try await decode(AppleLoginResponse<NotyAccountUser>.self, from: await fetch("/api/apple/login", method: "POST", body: body, limit: 65536))
+                response.user.apple = true
+                try await signedIn(response.user)
+                return (true, response.created)
+            } catch { self.error = appleMessage(error); return (false, false) }
+        }
+    }
+    /// Links Apple to the account that is signed in now (never by e-mail).
+    func appleLink() async -> Bool {
+        guard !accountBusy, let account = user, let token = account.token, !sessionExpired else { return false }
+        accountBusy = true; defer { accountBusy = false }
+        let generation = epoch
+        switch await apple.authorize(withName: false) {
+        case .canceled: return false
+        case .failed(let message): error = message; return false
+        case .authorized(let auth):
+            do {
+                // Signed out or switched account while the sheet was open: link nothing.
+                guard generation == epoch, user?.id == account.id else { throw CancellationError() }
+                let body = AppleSignIn.linkBody(identityToken: auth.identityToken, nonce: auth.nonce)
+                let response = try await decode(AppleLinkResponse<NotyAccountUser>.self, from: await fetch("/api/apple/link", method: "POST", body: body, token: token, limit: 65536))
+                try storeApple(response.apple, fresh: response.user, account: account.id, generation: generation)
+                return true
+            } catch is CancellationError { return false }
+            catch { self.error = appleMessage(error); return false }
+        }
+    }
+    func appleUnlink() async -> Bool {
+        guard !accountBusy, let account = user, let token = account.token, !sessionExpired else { return false }
+        accountBusy = true; defer { accountBusy = false }
+        let generation = epoch
+        do {
+            let response = try await decode(AppleLinkResponse<NotyAccountUser>.self, from: await fetch("/api/apple", method: "DELETE", body: [:], token: token, limit: 65536))
+            try storeApple(response.apple, fresh: nil, account: account.id, generation: generation)
+            return true
+        } catch { self.error = appleMessage(error); return false }
+    }
+    private func appleMessage(_ error: Error) -> String {
+        if let error = error as? LawAPIError, error.status == 404 || error.status == 405 { return "Der noty-Server kennt „Mit Apple anmelden“ noch nicht. Bitte später erneut versuchen." }
+        if error is DecodingError { return "Ungültige Serverantwort bei der Anmeldung mit Apple." }
+        return error.localizedDescription
+    }
+    private func storeApple(_ linked: Bool, fresh: NotyAccountUser?, account: String, generation: Int) throws {
+        guard generation == epoch, var next = user, next.id == account else { return }
+        if let fresh, fresh.id == account { next.name = fresh.name; next.email = fresh.email; next.emailVerified = fresh.emailVerified }
+        next.apple = linked
+        try NotyAccountKeychain.save(next); user = next
+    }
+    /// Best effort: learns `apple` (and name/e-mail changes) for the stored session.
+    func refreshAccount() async {
+        guard let account = user, let token = account.token, !sessionExpired else { return }
+        let generation = epoch
+        struct Session: Decodable, Sendable { var user: NotyAccountUser? }
+        do {
+            let session = try await decode(Session.self, from: await fetch("/api/session", token: token, limit: 65536))
+            guard generation == epoch, user?.id == account.id else { return }
+            guard var fresh = session.user, fresh.id == account.id else { sessionExpired = true; return }
+            fresh.token = token; try NotyAccountKeychain.save(fresh); user = fresh
+        } catch let error as LawAPIError where error.status == 401 {
+            if generation == epoch, user?.id == account.id { sessionExpired = true }
+        } catch {}
     }
     func logout() async {
         do { try NotyAccountKeychain.save(nil) }

@@ -11,6 +11,8 @@ struct NotyAccountSettingsPage: View {
     @State private var recovery = false
     @State private var recoverySent = false
     @State private var message = ""
+    @State private var confirmUnlink = false
+    @Environment(\.colorScheme) private var colorScheme
     var body: some View {
         Form {
             if let user = laws.user, !laws.sessionExpired {
@@ -30,6 +32,7 @@ struct NotyAccountSettingsPage: View {
                             Task { if await laws.accountAction("/api/email/resend") { message = "Bestätigungscode wurde verschickt." } }
                         }
                     }
+                    apple(user)
                     Button("Abmelden", role: .destructive) { Task { await laws.logout() } }
                     Text("Markierungen bleiben nach dem Abmelden auf diesem iPad sichtbar. Noch nicht übertragene Änderungen bleiben gespeichert.").font(.caption).foregroundStyle(.secondary)
                 }
@@ -58,6 +61,18 @@ struct NotyAccountSettingsPage: View {
                             } else if await laws.login(email: email, password: password, registering: registering) { password = "" }
                         }
                     }.disabled(email.isEmpty || ((!recovery || recoverySent) && password.isEmpty))
+                    if !recovery {
+                        AppleSignInButton(type: registering ? .signUp : .signIn) {
+                            Task {
+                                message = ""
+                                let result = await laws.appleLogin()
+                                guard result.signedIn else { return }
+                                password = ""; registering = false
+                                if result.created { message = "Neues noty-Konto „\(laws.user?.name ?? "")“ mit Apple erstellt." }
+                            }
+                        }.id(colorScheme).frame(height: 44).frame(maxWidth: 375)
+                            .accessibilityLabel(registering ? "Mit Apple registrieren" : "Mit Apple anmelden")
+                    }
                     Button(recovery ? "Zur Anmeldung" : registering ? "Ich habe schon ein Konto" : "Konto erstellen") { recovery = false; registering.toggle(); password = "" }
                     if !registering && !recovery {
                         if LawLibraryModel.mailDelivery { Button("Passwort vergessen?") { recovery = true; password = "" } }
@@ -66,6 +81,9 @@ struct NotyAccountSettingsPage: View {
                     Text(registering
                         ? "Ein Konto braucht nur einen Benutzernamen (2–32 Buchstaben, Zahlen oder . _ -) und ein Passwort mit mindestens 12 Zeichen. Es wird keine E-Mail verschickt. Ohne E-Mail-Adresse lässt sich ein vergessenes Passwort nicht zurücksetzen."
                         : "Lesen, Suchen und Markieren funktionieren ohne Konto; Markierungen bleiben dann nur auf diesem iPad. Mit Konto werden Lesezeichen und Markierungen mit law.xclipsen.de und anderen Geräten abgeglichen.").font(.caption).foregroundStyle(.secondary)
+                    if !recovery {
+                        Text("„Mit Apple anmelden“ öffnet das noty-Konto, das mit dieser Apple-ID verknüpft ist, sonst entsteht ein neues. Ein bestehendes Konto zuerst mit Passwort anmelden und dann Apple verknüpfen. noty speichert von Apple keine E-Mail-Adresse.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
             if let error = laws.error { Section { Text(error).foregroundStyle(.orange); Button("Hinweis schließen") { laws.error = nil } } }
@@ -75,10 +93,26 @@ struct NotyAccountSettingsPage: View {
                 NavigationLink("Gesetzessammlung & Synchronisierung") { LawSettingsPage() }
             }
         }.navigationTitle("Konto").disabled(laws.accountBusy)
+            .task { if laws.user != nil, laws.user?.apple == nil { await laws.refreshAccount() } }
+            .confirmationDialog("Apple trennen?", isPresented: $confirmUnlink, titleVisibility: .visible) {
+                Button("Apple trennen", role: .destructive) {
+                    Task { message = ""; if await laws.appleUnlink() { message = "Apple ist nicht mehr mit diesem Konto verknüpft." } }
+                }
+            } message: { Text("Danach ist die Anmeldung nur noch mit Benutzername und Passwort möglich.") }
             .keyboardSheet()
             .onChange(of: laws.error) { _, error in if error != nil { message = "" } }
             .onAppear { laws.inlineErrorPages += 1 }
             .onDisappear { laws.inlineErrorPages -= 1 }
+    }
+    @ViewBuilder private func apple(_ user: NotyAccountUser) -> some View {
+        if user.apple == true {
+            LabeledContent("Mit Apple anmelden", value: "verknüpft")
+            Button("Apple trennen", role: .destructive) { confirmUnlink = true }
+        } else {
+            Button("Apple verknüpfen") {
+                Task { message = ""; if await laws.appleLink() { message = "Apple ist jetzt mit diesem Konto verknüpft." } }
+            }
+        }
     }
     private var verification: some View {
         Group {

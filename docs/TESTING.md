@@ -2,6 +2,12 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## PDFs und Bilder aus dem Teilen-Menü (03.11.2026, Branch `feat/ki-panel`)
+
+**Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert), nicht installiert, am iPad ungeprüft.** Core-Tests 1132 (3 übersprungen, neu `IncomingFilesTests`: Typ nach Inhalt, Warteschlange, Namensvorschlag, Ziellisten, Einfügeposition mit neuen IDs und unveränderter Quelle, Eingangsordner inkl. Neustart und Reste, Anhängen an ein geschlossenes Heft mit Fehlerfällen), `check_page_workflow.sh` bestanden. Nicht belegt: ob „noty dev“ im Teilen-Menü (App-Reihe) überhaupt erscheint, für welche Quell-Apps (Dateien, Safari, Mail; Fotos zeigt erfahrungsgemäß nur Apps mit Share-Extension), Security-Scope/iCloud-Download, Präsentation über offenem Heft und Dialog, Fokus, Stift und Tastatur dabei, Kaltstart.
+
+Gerätetest (gebündelt, Testbereich): PDF aus Dateien und aus Safari teilen → „noty dev“ in der App-Reihe? Als neues Heft in einen Unterordner, mit neuem Ordner und umbenannt; Bild (HEIC aus Dateien) als neues Heft; bei offenem Heft mit aktivem Textfeld bzw. Stift ein PDF „Hinter aktuelle Seite“ anhängen, Rückgängig, Neustart; an ein geschlossenes Heft „Ans Ende“; zwei Dateien kurz nacheinander; passwortgeschütztes PDF und Video teilen; App während des Fensters beenden → Kopie nach Neustart wieder angeboten; Abbrechen → Kopie weg.
+
 ## Texteditor 2, Prototyp (31.10.2026, Branch `phase2/spike`)
 
 **Implementiert, Core-Tests (neu `DocumentTextLayoutTests`), `check_page_workflow.sh` und `xtool dev build` bestanden. In Build 68 installiert, am iPad ungeprüft.** Belegt sind die reinen Regeln gegen einen Festbreiten-Ersatz; **nicht** belegt sind TextKit über mehrere Container, `UITextInteraction`, Eingabesystem, Zeichnen und alles Sichtbare. Mit dem Schalter aus nur Typänderungen im Router und `TextRuling.lineBaseline` statt der gleichen Formel in `RuledTextLayout`. Gerätetest: [TEXT-EDITOR-2](TEXT-EDITOR-2.md#gono-go-am-gerät).

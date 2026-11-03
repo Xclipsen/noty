@@ -409,6 +409,7 @@ final class LibraryModel: ObservableObject {
         guard opening != item.id else { return }
         await settle()
         guard accepting, !item.isFolder else { return }
+        guard !Self.filingPackages.contains(item.id) else { error = "Dieses Heft wird gerade ergänzt. Bitte gleich noch einmal öffnen."; return }
         busy = true; opening = item.id
         defer { busy = false; opening = nil }
         do {
@@ -549,8 +550,15 @@ final class LibraryModel: ObservableObject {
     private nonisolated static func importedNotebook(_ url: URL, writingArea: PageMargins?) throws -> Notebook {
         let data = try readPDF(url)
         let (_, geometries) = try PDFImportCheck.pages(of: data)
+        return try importedNotebook(data: data, geometries: geometries,
+                                    title: NotebookTitles.sanitized(url.deletingPathExtension().lastPathComponent), writingArea: writingArea)
+    }
+
+    /// A new notebook of a checked PDF (`PDFImportCheck`); also the shared-file path.
+    nonisolated static func importedNotebook(data: Data, geometries: [PDFPageGeometry], title: String,
+                                             writingArea: PageMargins?) throws -> Notebook {
         var document = Notebook()
-        document.title = NotebookTitles.sanitized(url.deletingPathExtension().lastPathComponent)
+        document.title = title
         document.pdf = data
         document.pages = geometries.map { geometry in var page = Page(); page.geometry = geometry; return page }
         if let writingArea {
@@ -563,6 +571,69 @@ final class LibraryModel: ObservableObject {
         // whole notebook instead of failing later edits.
         if data.count > PDFSource.legacyMaximumBytes { document = try document.preparedForPageEditing() }
         return document
+    }
+
+    // MARK: Shared files (`IncomingFiling`)
+
+    /// The open editor workspace (set by `EditorWorkspaceView`): an open
+    /// notebook takes a shared file through its own editor model.
+    weak var workspace: EditorWorkspace?
+    /// Closed packages a shared file is being appended to right now; neither
+    /// view may open them meanwhile (one writer per package).
+    static var filingPackages = Set<UUID>()
+
+    /// Unlike the library's own actions, filing is allowed above an open
+    /// notebook: it writes the index and new or closed packages only, never a
+    /// package an editor holds. It waits briefly for running library work.
+    private func filingAccess() async throws {
+        await settle()
+        var waited = 0
+        while busy && waited < 100 { try? await Task.sleep(for: .milliseconds(50)); waited += 1 }
+        guard ready, !busy else { throw IncomingFilingError.libraryBusy }
+    }
+
+    /// A new notebook from the shared file in `parent`; the title is made
+    /// unique among the active notebooks like every import.
+    func fileIncomingNotebook(_ pdf: IncomingPDF, title: String, parent: UUID?, writingArea: PageMargins?) async throws -> NotebookCore.LibraryItem {
+        try await filingAccess()
+        busy = true; defer { busy = false }
+        if let parent { guard snapshot.items.contains(where: { $0.id == parent && $0.isFolder }), !snapshot.isTrashed(parent) else { throw LibraryError.unavailable } }
+        let name = NotebookTitles.unique(try LibraryStore.validTitle(title), taken: snapshot.activeNotebookTitles())
+        let document = try await Task.detached(priority: .userInitiated) {
+            try Self.importedNotebook(data: pdf.data, geometries: pdf.geometries, title: name, writingArea: writingArea)
+        }.value
+        snapshot = try await store.createDocument(document, parentID: parent)
+        guard let item = snapshot.items.first(where: { $0.id == document.id }) else { throw LibraryError.unavailable }
+        return item
+    }
+
+    /// Appends the shared file to a notebook no view has open, through the
+    /// library actor (one complete new revision, `LibraryStore.appendIncomingPDF`).
+    func appendIncoming(_ pdf: IncomingPDF, to id: UUID, writingArea: PageMargins?) async throws -> [UUID] {
+        guard opened?.id != id, workspace?.holds(id) != true else { throw IncomingFilingError.editorBusy }
+        try await filingAccess()
+        guard opened?.id != id, workspace?.holds(id) != true else { throw IncomingFilingError.editorBusy }
+        busy = true; Self.filingPackages.insert(id)
+        defer { busy = false; Self.filingPackages.remove(id) }
+        let result = try await store.appendIncomingPDF(to: id, data: pdf.data, geometries: pdf.geometries,
+                                                       placement: .end, writingArea: writingArea)
+        artworkRevision[id, default: 0] += 1
+        return result.pageIDs
+    }
+
+    func createIncomingFolder(_ title: String, parent: UUID?) async throws -> UUID {
+        try await filingAccess()
+        busy = true; defer { busy = false }
+        snapshot = try await store.createFolder(title: title, parentID: parent)
+        guard let folder = snapshot.items.last, folder.isFolder else { throw LibraryError.unavailable }
+        return folder.id
+    }
+
+    /// The editor's description of a library notebook (second view, „Öffnen“).
+    func openDocument(_ id: UUID) async -> OpenNotebook? {
+        guard let item = snapshot.items.first(where: { $0.id == id }), !item.isFolder,
+              let url = try? await store.documentURL(id: id) else { return nil }
+        return OpenNotebook(id: id, directory: url, title: item.title, isRestored: item.source == .restored)
     }
 
     /// The PDF behind `url`; a picture becomes one (`ImagePagePDF`).

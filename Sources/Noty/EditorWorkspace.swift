@@ -21,8 +21,19 @@ final class EditorWorkspace: ObservableObject {
             preferredPageID: document.preferredPageID, libraryTitle: document.title)
         models = [document.id: primary]
     }
+    /// The single writer of an open notebook (either view), for filing a
+    /// shared file into it (`IncomingFiling`).
+    func model(for id: UUID) -> EditorModel? { models[id] }
+    /// Either view holds this notebook (also while it is being closed).
+    func holds(_ id: UUID) -> Bool { models[id] != nil }
+    /// The model of the view the user works in.
+    var activeModel: EditorModel { activePane == 1 ? secondary ?? primary : primary }
     func openSecondary(_ document: OpenNotebook) async {
         guard !closing else { return }
+        // The library appends a shared file to this closed package right now.
+        guard !LibraryModel.filingPackages.contains(document.id) else {
+            error = "Dieses Heft wird gerade ergänzt. Bitte gleich noch einmal öffnen."; return
+        }
         closing = true; defer { closing = false }
         if let secondary, secondary !== primary, secondaryID != document.id {
             guard await secondary.flushBeforeClosing() else { return }
@@ -281,8 +292,8 @@ struct EditorWorkspaceView: View {
         .alert("Ansichten", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
             Button("OK") { workspace.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspace.error ?? "") }
-        .onAppear { library.editorCommit = { await workspace.commitForBackup(toolbox: toolbox) } }
-        .onDisappear { library.editorCommit = nil }
+        .onAppear { library.editorCommit = { await workspace.commitForBackup(toolbox: toolbox) }; library.workspace = workspace }
+        .onDisappear { library.editorCommit = nil; if library.workspace === workspace { library.workspace = nil } }
         .interactiveDismissDisabled()
     }
 

@@ -777,6 +777,42 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    /// A shared PDF/picture (`IncomingFiling`) into this open notebook: this
+    /// model is the package's single writer, so the pages go in as one undo
+    /// step and the normal autosave commits them. The current page stays
+    /// (insertion is behind it or at the end), canvases are kept. Returns the
+    /// new page IDs once the commit is acknowledged; a refused or failed
+    /// insertion changes nothing, a failed save keeps the pages in the editor
+    /// (it retries like every save) and is reported as not saved.
+    func insertIncomingPDF(_ data: Data, geometries: [PDFPageGeometry], placement: IncomingPlacement,
+                           writingArea: PageMargins?) async throws -> [UUID] {
+        await awaitMutationAccess()
+        var waited = 0
+        while (busy || imageReading || mutationsPaused) && waited < 100 {
+            try? await Task.sleep(for: .milliseconds(50)); waited += 1
+            await awaitMutationAccess()
+        }
+        guard writable, !busy, !imageReading, !mutationsPaused else { throw IncomingFilingError.editorBusy }
+        let previous = notebook
+        let selected = page.id
+        var candidate = notebook
+        let ids = try candidate.insertIncomingPDF(data, geometries: geometries, placement: placement, writingArea: writingArea)
+        let catalogue = try NotebookPDFCatalog(candidate, reusing: sources)
+        sources = catalogue
+        pdfOutline = catalogue.outline
+        notebook = candidate
+        pageIndex = candidate.pages.firstIndex { $0.id == selected } ?? min(pageIndex, candidate.pages.count - 1)
+        recordPageOperation(before: previous, undoPageID: selected)
+        save()
+        guard await waitForSave() else { throw IncomingFilingError.notSaved }
+        return ids
+    }
+
+    /// „Öffnen“ after filing into this notebook: shows the first new page.
+    func showPage(_ id: UUID) {
+        if let index = notebook.pages.firstIndex(where: { $0.id == id }) { pageIndex = index }
+    }
+
     /// Closing must finish its last commit before another editor can be opened.
     /// On failure the editor stays open with its unsaved in-memory snapshot.
     func flushBeforeClosing() async -> Bool {

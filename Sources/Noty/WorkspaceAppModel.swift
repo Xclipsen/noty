@@ -134,7 +134,12 @@ struct WorkspaceLibraryHost: View {
                 externalBackup.sceneActive = phase == .active
                 if phase == .active { Task { await externalBackup.attempt(library: library, toolbox: toolbox) } }
             }
-            .onOpenURL { url in Task { await IncomingBackup.receive(url, library: library, workspaces: workspaces) } }
+            // Shared PDFs/pictures go to the filing sheet, noty files keep their way.
+            .onOpenURL { url in
+                if IncomingFiling.handles(url) { Task { await IncomingFiling.receive(url) } }
+                else { Task { await IncomingBackup.receive(url, library: library, workspaces: workspaces) } }
+            }
+            .task { IncomingFiling.attach(library: library, workspaces: workspaces, defaults: toolbox.preferences.defaultAppearance) }
     }
 }
 
