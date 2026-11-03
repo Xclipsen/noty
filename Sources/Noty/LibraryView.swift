@@ -2,9 +2,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 import NotebookCore
 
-/// Shown location; notebooks open the editor instead.
+/// Shown location; notebooks open the editor instead. `calendar` replaces the
+/// collection with the calendar (docs/CALENDAR-PLAN.md, Stufe A).
 private enum LibraryLocation: Hashable {
-    case root, folder(UUID), recent
+    case root, folder(UUID), recent, calendar
 }
 
 /// Files-like library: sidebar with pinned entries and the persisted
@@ -52,6 +53,8 @@ struct LibraryView: View {
     @State private var sidebarSize = CGSize(width: 280, height: 600)
     @State private var detailSize = CGSize(width: 600, height: 600)
     @StateObject private var pdfExport = PDFExportJob()
+    /// Lives with the library (per area): switching to the calendar and back keeps both.
+    @StateObject private var calendar = CalendarDesignModel()
     @State private var exportedPDF: ExportFile?
     @State private var exportingPDF = false
     @State private var exportedPDFName = "noty-export"
@@ -79,7 +82,7 @@ struct LibraryView: View {
     /// verwendet“ or a running search would hide them.
     private func showNewItem() {
         search = ""
-        if location == .recent { location = .root }
+        if location == .recent || location == .calendar { location = .root }
     }
     private var activeCopies: [RestoredNotebook] {
         model.restoredCopies.compactMap { copy -> RestoredNotebook? in
@@ -92,6 +95,7 @@ struct LibraryView: View {
         case .root: "Alle Unterlagen"
         case .folder(let id): model.snapshot.items.first { $0.id == id }?.title ?? "Ordner"
         case .recent: "Zuletzt verwendet"
+        case .calendar: "Kalender"
         }
     }
     private var rows: [NotebookCore.LibraryItem] {
@@ -102,6 +106,7 @@ struct LibraryView: View {
             candidates = value.items.filter { !value.isTrashed($0.id) }
         } else {
             switch location {
+            case .calendar: return []
             case .root, .folder: candidates = value.children(of: parentID)
             case .recent:
                 return value.items.filter { !$0.isFolder && $0.lastOpened != nil && !value.isTrashed($0.id) }
@@ -246,7 +251,8 @@ struct LibraryView: View {
         .focusedSceneValue(\.libraryCommands, model.opened == nil && !presenting ? LibraryCommandActions(
             newNotebook: editable ? { creatingNotebook = true } : nil,
             search: editable ? { searchAllNotebooks() } : nil,
-            newTextDocument: editable ? { creatingTextDocument = true } : nil) : nil)
+            newTextDocument: editable ? { creatingTextDocument = true } : nil,
+            newEvent: location == .calendar ? { calendar.requestNewEvent() } : nil) : nil)
     }
 
     // MARK: Keyboard mode (docs/KEYBOARD.md)
@@ -321,6 +327,7 @@ struct LibraryView: View {
                             dropInto: dropMark == DropMark(zone: .root, target: .into(nil)))
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(LibrarySpace.sidebar)) } action: { frames.root = $0 }
                 sidebarLink("Zuletzt verwendet", systemImage: "clock", target: .recent, dropInto: false)
+                sidebarLink("Kalender", systemImage: "calendar", target: .calendar, dropInto: false)
                 let pins = model.pinnedItems
                 if !pins.isEmpty {
                     sidebarHeader("Angeheftet")
@@ -635,8 +642,19 @@ struct LibraryView: View {
 
     // MARK: Detail
 
+    /// The calendar brings its own toolbar; search, editing and drops belong
+    /// to the collection only. Export and warnings stay for both.
     private var detail: some View {
-        collection
+        Group {
+            if location == .calendar {
+                CalendarView(model: calendar, keysActive: model.opened == nil)
+            } else {
+                collection
+                    .navigationTitle(title)
+                    .searchable(text: $search, prompt: "Name suchen")
+                    .toolbar { libraryToolbar }
+            }
+        }
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let warning = model.warning {
                     Label(warning, systemImage: "exclamationmark.triangle")
@@ -657,9 +675,6 @@ struct LibraryView: View {
                     ProgressView().padding(10).background(.regularMaterial, in: Capsule()).padding(12)
                 }
             }
-            .navigationTitle(title)
-            .searchable(text: $search, prompt: "Name suchen")
-            .toolbar { libraryToolbar }
     }
 
     /// Top bar of the detail column. Every control is its own item with an
@@ -903,6 +918,8 @@ struct LibraryView: View {
             switch location {
             case .recent:
                 ContentUnavailableView("Noch nichts geöffnet", systemImage: "clock")
+            case .calendar:
+                EmptyView()
             case .folder:
                 ContentUnavailableView {
                     Label("Ordner ist leer", systemImage: "folder")

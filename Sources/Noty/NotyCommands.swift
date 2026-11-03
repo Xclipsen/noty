@@ -6,6 +6,8 @@ struct LibraryCommandActions {
     var newNotebook: (() -> Void)?
     var search: (() -> Void)?
     var newTextDocument: (() -> Void)?
+    /// Shown calendar: ⌘N creates an event instead of a notebook.
+    var newEvent: (() -> Void)?
 }
 
 /// Actions of the active editor pane. Equality ignores the closures: they act on
@@ -84,9 +86,11 @@ struct NotyCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("Neues Heft …") { library?.newNotebook?() }
+            Button(library?.newEvent == nil ? "Neues Heft …" : "Neuer Termin …") {
+                if let newEvent = library?.newEvent { newEvent() } else { library?.newNotebook?() }
+            }
                 .keyboardShortcut("n", modifiers: .command)
-                .disabled(editor != nil || library?.newNotebook == nil)
+                .disabled(editor != nil || (library?.newNotebook == nil && library?.newEvent == nil))
             Button("Neues Textdokument") { library?.newTextDocument?() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(editor != nil || library?.newTextDocument == nil)
