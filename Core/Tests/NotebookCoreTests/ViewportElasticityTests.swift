@@ -79,6 +79,31 @@ final class ViewportElasticityTests: XCTestCase {
             pages: [PageRect(x: 700, y: 0, width: 300, height: 2000)], freeTop: 72, freeBottom: 700), 0)
     }
 
+    func testClosingTheOptionsRestoresExactlyTheOffsetBeforeOpening() {
+        // Nutzer zu Build 62 (top toolbar, one page, document start): closing
+        // put the page ~one options bar too high, under the toolbar.
+        let before = PagePoint(x: -16, y: -84)           // document start: −contentInset.top
+        let shift = -56.0                                 // top bar: pages slide down
+        let after = PagePoint(x: before.x, y: before.y + shift)
+        // Read before the inset shrinks: exactly back.
+        XCTAssertEqual(NotebookViewportGeometry.avoidanceReleaseOffset(current: after, after: after, shift: shift,
+                                                                       minY: -84, maxY: 400), before)
+        // The clamped value UIKit would report after removing the inset is not
+        // "untouched"; the old code took the shift back from it a second time.
+        let clamped = PagePoint(x: after.x, y: -84)
+        XCTAssertEqual(NotebookViewportGeometry.avoidanceReleaseOffset(current: clamped, after: after, shift: shift,
+                                                                       minY: -84, maxY: 400).y, -28, "the former double take-back")
+        // Bottom toolbar at the document end: back to the end, not beyond.
+        let end = PagePoint(x: 0, y: 1200), lift = 60.0
+        XCTAssertEqual(NotebookViewportGeometry.avoidanceReleaseOffset(current: PagePoint(x: 0, y: 1260), after: PagePoint(x: 0, y: 1260),
+                                                                       shift: lift, minY: -84, maxY: 1200), end)
+        // Scrolled meanwhile: the shift is taken back from where the user is, within the limits.
+        XCTAssertEqual(NotebookViewportGeometry.avoidanceReleaseOffset(current: PagePoint(x: 0, y: 500), after: PagePoint(x: 0, y: 300),
+                                                                       shift: -56, minY: -84, maxY: 1200), PagePoint(x: 0, y: 556))
+        XCTAssertEqual(NotebookViewportGeometry.avoidanceReleaseOffset(current: PagePoint(x: 0, y: -120), after: PagePoint(x: 0, y: 300),
+                                                                       shift: 56, minY: -84, maxY: 1200).y, -84)
+    }
+
     func testTopToolbarOptionsPushPagesDown() {
         let bar = PageRect(x: 200, y: 124, width: 450, height: 52)
         let shift = NotebookViewportGeometry.chromeAvoidanceShift(edge: .top, bar: bar,
@@ -143,6 +168,10 @@ final class LawPanelLayoutTests: XCTestCase {
         let bottom = LawPanelLayout(size: size, width: 380, height: 360, docked: false, edge: .bottom)
         XCTAssertEqual(bottom.drop(translation: .init(x: 0, y: 200), location: .init(x: 500, y: 660)), .stash(.bottom))
         XCTAssertEqual(bottom.drop(translation: .init(x: 400, y: -400), location: .init(x: 900, y: 60)), .float(.right))
+        // Pushed far sideways a bottom window never turns into a side window.
+        XCTAssertEqual(bottom.drop(translation: .init(x: 900, y: 0), location: .init(x: 1150, y: 500)), .dock(.right))
+        XCTAssertEqual(bottom.drop(translation: .init(x: 200, y: 0), location: .init(x: 900, y: 600),
+                                   predictedTranslation: .init(x: 900, y: 0), predictedLocation: .init(x: 1600, y: 600)), .stash(.bottom))
         XCTAssertTrue(bottom.changes(.float(.right)))
         XCTAssertFalse(bottom.changes(.float(.bottom)))
         XCTAssertTrue(bottom.changes(.dock(.bottom)))

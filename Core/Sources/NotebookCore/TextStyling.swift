@@ -30,6 +30,39 @@ public enum TextStylePreset: String, CaseIterable, Sendable {
     }
 }
 
+/// Sizes the user sees for a free field. Text on a PDF is stored in the PDF's
+/// own units, and a scan can be several times as wide as a normal page: a
+/// stored 14 would appear far too small. The format bar, its steps, the presets
+/// and new fields therefore speak normal-page points and only the stored value
+/// is converted. The file format and existing fields stay untouched.
+public struct TextSizeUnits: Equatable, Sendable {
+    public static let normal = TextSizeUnits(factor: 1)
+    /// Stored points per visible point.
+    public let factor: Double
+
+    private init(factor: Double) { self.factor = factor }
+
+    /// `coordinateScale`: fields already in normal-page units (margin text)
+    /// report their scale here and need no conversion.
+    public init(pageWidth: Double, hasPDF: Bool, coordinateScale: Double = 1) {
+        let width = pageWidth / PageSize.a4.width
+        self.init(factor: hasPDF && coordinateScale == 1 && width.isFinite && width > 0 ? width : 1)
+    }
+    public func visible(_ stored: Double) -> Double {
+        factor == 1 ? stored : (stored / factor).rounded()
+    }
+    public func stored(_ visible: Double) -> Double {
+        min(max(visible * factor, 8), 96)
+    }
+    public func stepped(_ stored: Double, by delta: Double) -> Double {
+        self.stored(visible(stored) + delta)
+    }
+    /// Normal-page size for the memory of the last used style.
+    public func remembered(_ stored: Double) -> Double {
+        min(max(visible(stored), 8), 96)
+    }
+}
+
 extension TextBoxStyle {
     /// „Formatierung entfernen“: plain body text in automatic colour. Paragraph
     /// alignment/indent and links (content, not appearance) stay.

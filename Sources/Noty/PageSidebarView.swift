@@ -13,18 +13,32 @@ struct PageSidebarView: View {
     var onCollapse: () -> Void
     var onSelect: (() -> Void)? = nil
     var onMargins: ((UUID) -> Void)? = nil
+    /// Text document: a tap on an entry of the Gliederung (caret behind the heading).
+    var onOutline: ((TextOutlineEntry) -> Void)? = nil
     @StateObject private var cache = PageThumbnailCache()
+    /// Gliederung of a text document; recomputed off the main thread after
+    /// the text rests briefly (`refreshTextOutline`), never per keystroke.
+    @State private var textOutline: [TextOutlineEntry] = []
+    @State private var outlineTask: Task<Void, Never>?
     @State private var editMode: EditMode = .inactive
     @State private var showingTrash = false
     @State private var addingPage: AddRequest?
     @State private var dropTarget: UUID?
     @State private var selectedTab: SidebarTab = .pages
+    /// `Space s`, `Space o`, `Space m`: the keys come here, and which list (`KeyPanel`).
+    @Binding var keyRequest: SidebarKeyRequest?
+    @State private var keyPanel: KeyPanel?
+    /// Keyboard: the entry `j`/`k` stand on, in the shown list.
+    @State private var keyCursor: Int?
+    @State private var keyColumns = 2
     @State private var filter: PageFilter = .all
     @State private var scrollRequest = 0
 
     private enum SidebarTab: String, CaseIterable, Identifiable {
         case pages = "Seiten", outline = "Inhalt"
         var id: Self { self }
+        /// Text documents show their Gliederung instead of a PDF outline.
+        func title(textDocument: Bool) -> String { self == .outline && textDocument ? "Gliederung" : rawValue }
     }
     private enum PageFilter: String, CaseIterable, Identifiable {
         case all = "Alle Seiten", bookmarks = "Lesezeichen"
@@ -46,6 +60,9 @@ struct PageSidebarView: View {
         let before: Bool
     }
     private var canEdit: Bool { model.writable && !model.mutationsPaused && !model.busy }
+    /// Text documents get their pages from the text: no adding, ordering,
+    /// copying or deleting pages by hand (TEXT-REBUILD-62 §4).
+    private var manualPages: Bool { !model.notebook.isTextDocument }
     private var deletedCount: Int { model.notebook.deletedPages?.count ?? 0 }
     private var currentPageIndex: Int { model.notebook.pages.firstIndex { $0.id == selectedPageID } ?? min(model.pageIndex, model.notebook.pages.count - 1) }
     private var currentPage: Page { model.notebook.pages[currentPageIndex] }
@@ -55,21 +72,25 @@ struct PageSidebarView: View {
         VStack(spacing: 0) {
             HStack {
                 Menu {
-                    Section {
-                        Button("Seite hinzufügen …", systemImage: "doc.badge.plus") {
-                            addingPage = AddRequest(anchor: currentPage.id, position: .after)
-                        }.disabled(!canEdit)
-                        Button(editMode.isEditing ? "Anordnen beenden" : "Seiten anordnen", systemImage: "arrow.up.arrow.down") {
-                            withAnimation(NotyMotion.panel(reduceMotion)) {
-                                selectedTab = .pages; filter = .all
-                                editMode = editMode.isEditing ? .inactive : .active
-                            }
-                        }.disabled(!canEdit)
+                    if manualPages {
+                        Section {
+                            Button("Seite hinzufügen …", systemImage: "doc.badge.plus") {
+                                addingPage = AddRequest(anchor: currentPage.id, position: .after)
+                            }.disabled(!canEdit)
+                            Button(editMode.isEditing ? "Anordnen beenden" : "Seiten anordnen", systemImage: "arrow.up.arrow.down") {
+                                withAnimation(NotyMotion.panel(reduceMotion)) {
+                                    selectedTab = .pages; filter = .all
+                                    editMode = editMode.isEditing ? .inactive : .active
+                                }
+                            }.disabled(!canEdit)
+                        }
                     }
                     Section {
-                        Button("Seitenpapierkorb (\(deletedCount)) …", systemImage: "trash") { showingTrash = true }
-                            .disabled(!canEdit)
-                        Button("Zu den Notizbüchern", systemImage: "books.vertical", action: onBack)
+                        if manualPages || deletedCount > 0 {
+                            Button("Seitenpapierkorb (\(deletedCount)) …", systemImage: "trash") { showingTrash = true }
+                                .disabled(!canEdit)
+                        }
+                        Button("Zur Bibliothek", systemImage: "books.vertical", action: onBack)
                             .disabled(model.busy)
                     }
                 } label: {
@@ -86,10 +107,12 @@ struct PageSidebarView: View {
             }.padding(12)
             Picker("Seitenbereich", selection: $selectedTab) {
                 ForEach(SidebarTab.allCases) { tab in
-                    Text(tab.rawValue).tag(tab)
+                    Text(tab.title(textDocument: !manualPages)).tag(tab)
                 }
             }.pickerStyle(.segmented).padding(.horizontal, 16).padding(.bottom, 12)
-            .onChange(of: selectedTab) { _, tab in if tab == .outline { editMode = .inactive } }
+            .onChange(of: selectedTab) { _, tab in
+                if tab == .outline { editMode = .inactive; refreshTextOutline(model.notebook) }
+            }
             if selectedTab == .pages && !editMode.isEditing {
                 HStack {
                     Menu {
@@ -123,12 +146,12 @@ struct PageSidebarView: View {
                 ScrollViewReader { proxy in
                     ZStack {
                         if selectedTab == .outline {
-                            outlineList
+                            if manualPages { outlineList } else { textOutlineList }
                         } else if editMode.isEditing {
                             reorderList
                         } else if filter == .bookmarks && visiblePages.isEmpty {
                             ContentUnavailableView("Keine Lesezeichen", systemImage: "bookmark",
-                                                   description: Text("Markiere eine Seite über das Lesezeichensymbol in der Vorschau."))
+                                                   description: Text("Seiten lassen sich über das Lesezeichensymbol in der Vorschau markieren."))
                         } else {
                             ScrollView {
                                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 20, alignment: .top), count: count),
@@ -137,10 +160,15 @@ struct PageSidebarView: View {
                                         draggablePage(entry.page, index: entry.index)
                                             .id(entry.page.id)
                                     }
-                                    insertionCard(height: width * 842 / 595)
+                                    if manualPages { insertionCard(height: width * 842 / 595) }
                                 }.padding(.horizontal, 20).padding(.vertical, 12)
                             }
                         }
+                    }
+                    .onChange(of: count, initial: true) { _, value in keyColumns = value }
+                    .onChange(of: keyCursor) { _, _ in
+                        guard let id = keyScrollTarget else { return }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { proxy.scrollTo(id, anchor: .center) }
                     }
                     .onChange(of: currentPage.id) { _, id in
                         guard selectedTab == .pages, filter == .all, !editMode.isEditing else { return }
@@ -157,13 +185,31 @@ struct PageSidebarView: View {
                     scrollRequest += 1
                 }.font(.caption).frame(minHeight: 44).contentShape(Rectangle()).accessibilityLabel("Zur aktuellen Seite in der Seitenleiste")
                 Spacer()
-                Button { showingTrash = true } label: {
-                    Label("\(deletedCount)", systemImage: "trash").font(.caption).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-                }.accessibilityLabel("Seitenpapierkorb, \(deletedCount) Seiten").disabled(!canEdit)
+                if manualPages || deletedCount > 0 {
+                    Button { showingTrash = true } label: {
+                        Label("\(deletedCount)", systemImage: "trash").font(.caption).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    }.accessibilityLabel("Seitenpapierkorb, \(NotyText.count(deletedCount, "Seite", "Seiten"))").disabled(!canEdit)
+                }
             }.padding(.horizontal, 16)
         }
         .animation(NotyMotion.panel(reduceMotion), value: selectedTab)
         .animation(NotyMotion.panel(reduceMotion), value: filter)
+        // Live while typing, but debounced: one extraction after the text rests.
+        .onReceive(model.$notebook) { notebook in refreshTextOutline(notebook, after: .milliseconds(400)) }
+        .onAppear { refreshTextOutline(model.notebook) }
+        .onChange(of: keyRequest, initial: true) { _, request in
+            guard let request else { return }
+            keyRequest = nil
+            startKeys(request.target)
+        }
+        .onChange(of: selectedTab) { _, _ in resetKeyCursor() }
+        .onChange(of: filter) { _, _ in resetKeyCursor() }
+        .onChange(of: textOutline.count) { _, count in if selectedTab == .outline, !manualPages { keyCursor = KeyList.clamped(keyCursor, count: count) } }
+        .onChange(of: visiblePages.count) { _, count in if selectedTab == .pages { keyCursor = KeyList.clamped(keyCursor, count: count) } }
+        .onDisappear {
+            outlineTask?.cancel(); outlineTask = nil
+            if let keyPanel { KeyboardRouter.shared.leave(keyPanel) }
+        }
         .background(Color(white: 0.065))
         .environment(\.colorScheme, .dark)
         .sheet(isPresented: $showingTrash) {
@@ -190,13 +236,59 @@ struct PageSidebarView: View {
                                    description: Text("Die enthaltenen PDFs haben kein Inhaltsverzeichnis mit erreichbaren Seiten."))
         } else {
             List(model.pdfOutline) { item in
-                NotebookOutlineRow(item: item, selectedPage: currentPage.id) { id in
+                NotebookOutlineRow(item: item, selectedPage: currentPage.id, keyItem: keyOutlineItem?.id) { id in
                     guard canEdit else { return }
                     selectPage(id); onSelect?()
                 }
                 .listRowBackground(Color.clear)
             }.listStyle(.plain).scrollContentBackground(.hidden)
                 .disabled(!canEdit)
+        }
+    }
+
+    /// Gliederung (text documents): titles, headings and subheadings of the
+    /// flow, indented by level, shortened; a tap jumps there (`onOutline`).
+    @ViewBuilder
+    private var textOutlineList: some View {
+        if textOutline.isEmpty {
+            ContentUnavailableView("Keine Überschriften", systemImage: "list.bullet.indent",
+                                   description: Text("Absätze im Stil Titel, Überschrift oder Unterüberschrift erscheinen hier."))
+        } else {
+            List(textOutline) { entry in
+                Button {
+                    onOutline?(entry); onSelect?()
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(entry.text)
+                            .font(entry.preset == .title ? .headline : entry.preset == .heading ? .subheadline.weight(.semibold) : .subheadline)
+                            .foregroundStyle(entry.pageID == currentPage.id ? Color.accentColor : .primary)
+                            .lineLimit(2).multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text("\(entry.pageIndex + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    .padding(.leading, CGFloat(min(entry.depth, 4)) * 16)
+                    .frame(minHeight: 36).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(entry.preset.title): \(entry.text), Seite \(entry.pageIndex + 1)")
+                .listRowBackground(keyEntry == entry.id ? Color.accentColor.opacity(0.28) : Color.clear)
+            }.listStyle(.plain).scrollContentBackground(.hidden)
+        }
+    }
+
+    /// Extracts the Gliederung on a background task (pure Core function);
+    /// only for text documents while the tab is shown. Each change restarts
+    /// the short wait, so typing costs no extraction; older results never
+    /// overwrite newer ones (the previous task is cancelled).
+    private func refreshTextOutline(_ notebook: Notebook, after wait: Duration = .zero) {
+        guard notebook.isTextDocument, selectedTab == .outline else { return }
+        outlineTask?.cancel()
+        outlineTask = Task {
+            if wait > .zero { try? await Task.sleep(for: wait) }
+            guard !Task.isCancelled else { return }
+            let entries = await Task.detached(priority: .userInitiated) { notebook.textOutline }.value
+            guard !Task.isCancelled else { return }
+            if entries != textOutline { textOutline = entries }
         }
     }
 
@@ -228,7 +320,7 @@ struct PageSidebarView: View {
 
     @ViewBuilder
     private func draggablePage(_ page: Page, index: Int) -> some View {
-        if filter == .all {
+        if filter == .all, manualPages {
             reorderablePage(page, index: index)
         } else {
             pageRow(page, index: index)
@@ -320,6 +412,7 @@ struct PageSidebarView: View {
         }
         .background(dropTarget == page.id ? Color.accentColor.opacity(0.15) : .clear,
                     in: RoundedRectangle(cornerRadius: 8))
+        .overlay { if keyPage == page.id { RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 2).allowsHitTesting(false) } }
         .contextMenu { pageActions(page, index: index).disabled(!canEdit) }
     }
 
@@ -327,6 +420,15 @@ struct PageSidebarView: View {
     /// extras sit between „Duplizieren“ and the destructive actions at the end.
     @ViewBuilder
     private func pageActions(_ page: Page, index: Int) -> some View {
+        if manualPages { manualPageActions(page, index: index) }
+        else {
+            Button(page.bookmarked == true ? "Lesezeichen entfernen" : "Lesezeichen setzen",
+                   systemImage: page.bookmarked == true ? "bookmark.slash" : "bookmark") { model.toggleBookmark(page.id) }
+        }
+    }
+
+    @ViewBuilder
+    private func manualPageActions(_ page: Page, index: Int) -> some View {
         Section {
             Button("Seite hinzufügen …", systemImage: "doc.badge.plus") {
                 addingPage = AddRequest(anchor: page.id, position: .after)
@@ -342,7 +444,7 @@ struct PageSidebarView: View {
             Button(page.bookmarked == true ? "Lesezeichen entfernen" : "Lesezeichen setzen",
                    systemImage: page.bookmarked == true ? "bookmark.slash" : "bookmark") { model.toggleBookmark(page.id) }
             if let onMargins, model.sourcePage(for: page) != nil || page.writingSpaceExtendsPaper {
-                Button(page.writingSpaceExtendsPaper ? "Seite anpassen …" : "Schreibplatz …",
+                Button("Seite anpassen …",
                        systemImage: "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left") { onMargins(page.id) }
             }
             Menu("Verschieben", systemImage: "arrow.up.arrow.down.square") {
@@ -359,8 +461,123 @@ struct PageSidebarView: View {
         }
         Section {
             Button("Seite leeren", systemImage: "clear", role: .destructive) { model.clearPage(page.id) }
-            Button("Löschen", systemImage: "trash", role: .destructive) { model.trashPage(page.id) }
+            Button("In den Seitenpapierkorb", systemImage: "trash", role: .destructive) { model.trashPage(page.id) }
                 .disabled(model.notebook.pages.count <= 1)
+        }
+    }
+
+    // MARK: Keyboard mode (docs/KEYBOARD.md)
+
+    private var keysActive: Bool { keyPanel != nil && keyCursor != nil }
+    private var keyPage: UUID? {
+        guard keysActive, selectedTab == .pages, let keyCursor, visiblePages.indices.contains(keyCursor) else { return nil }
+        return visiblePages[keyCursor].page.id
+    }
+    private var keyEntry: TextOutlineEntry.ID? {
+        guard keysActive, selectedTab == .outline, !manualPages, let keyCursor, textOutline.indices.contains(keyCursor) else { return nil }
+        return textOutline[keyCursor].id
+    }
+    /// A PDF outline as one list, closed entries included: `NotebookOutlineRow` opens the way there.
+    private var flatOutline: [NotebookOutlineItem] {
+        func flat(_ items: [NotebookOutlineItem]) -> [NotebookOutlineItem] { items.flatMap { [$0] + flat($0.children ?? []) } }
+        return flat(model.pdfOutline).filter { $0.pageID != nil }
+    }
+    private var keyOutlineItem: NotebookOutlineItem? {
+        guard keysActive, selectedTab == .outline, manualPages, let keyCursor else { return nil }
+        let items = flatOutline
+        return items.indices.contains(keyCursor) ? items[keyCursor] : nil
+    }
+    private var keyScrollTarget: AnyHashable? {
+        if let keyPage { return keyPage }
+        if let keyEntry { return keyEntry }
+        return keyOutlineItem?.id
+    }
+    private var keyCount: Int {
+        guard selectedTab == .outline else { return visiblePages.count }
+        return manualPages ? flatOutline.count : textOutline.count
+    }
+    private func resetKeyCursor() {
+        guard keyPanel != nil else { return }
+        keyCursor = selectedTab == .pages ? visiblePages.firstIndex { $0.page.id == currentPage.id } ?? (visiblePages.isEmpty ? nil : 0) : (keyCount > 0 ? 0 : nil)
+    }
+    private func startKeys(_ target: SidebarKeyTarget) {
+        editMode = .inactive
+        switch target {
+        case .pages: selectedTab = .pages
+        case .outline: selectedTab = .outline; refreshTextOutline(model.notebook)
+        case .bookmarks: selectedTab = .pages; filter = .bookmarks
+        }
+        let panel = keyPanel ?? KeyPanel(context: .sidebar, label: "SEITENLEISTE")
+        panel.leavesOnPageTouch = true
+        panel.run = { runKey($0, count: $1 ?? 1) }
+        panel.onLeave = { keyPanel = nil; keyCursor = nil }
+        keyPanel = panel
+        resetKeyCursor()
+        KeyboardRouter.shared.enter(panel)
+    }
+    private func leaveKeys() { if let keyPanel { KeyboardRouter.shared.leave(keyPanel) } }
+    private func runKey(_ action: HelixAction, count: Int) {
+        let total = keyCount
+        let columns = selectedTab == .pages ? keyColumns : 1
+        switch action {
+        case .listMove(let delta): keyCursor = KeyList.moved(keyCursor, dy: delta * count, columns: columns, count: total)
+        case .listColumn(let delta): if columns > 1 { keyCursor = KeyList.moved(keyCursor, dx: delta * count, count: total) }
+        case .listScreen(let delta): keyCursor = KeyList.moved(keyCursor, dy: delta * 4, columns: columns, count: total)
+        case .listFirst: keyCursor = total > 0 ? 0 : nil
+        case .listLast: keyCursor = total > 0 ? total - 1 : nil
+        case .panelTab: selectedTab = selectedTab == .pages ? .outline : .pages
+        case .panelFilter: selectedTab = .pages; filter = filter == .all ? .bookmarks : .all
+        case .confirm: openKeyEntry()
+        case .cancelPanel: leaveKeys()
+        case .sidebar: leaveKeys(); onCollapse()
+        case .pageItem(let item): if let keyCursor, visiblePages.indices.contains(keyCursor), selectedTab == .pages { runPageItem(item, entry: visiblePages[keyCursor]) }
+        default: break
+        }
+    }
+    private func openKeyEntry() {
+        if let keyPage {
+            guard canEdit else { return }
+            selectPage(keyPage)
+        } else if let keyOutlineItem, let page = keyOutlineItem.pageID {
+            guard canEdit else { return }
+            selectPage(page)
+        } else if let keyEntry, let entry = textOutline.first(where: { $0.id == keyEntry }) {
+            leaveKeys()
+            onOutline?(entry); onSelect?()
+            return
+        } else { return }
+        leaveKeys()
+        onSelect?()
+    }
+    private func runPageItem(_ item: HelixPageItem, entry: (index: Int, page: Page)) {
+        guard canEdit else { return }
+        let id = entry.page.id, router = KeyboardRouter.shared
+        if item == .bookmark { model.toggleBookmark(id); return }
+        guard manualPages else {
+            if item == .showTrash, deletedCount > 0 { showingTrash = true }
+            return
+        }
+        switch item {
+        case .bookmark: break
+        case .copy: model.copyPage(id)
+        case .cut: model.copyPage(id, cut: true)
+        case .paste: if model.copiedPage != nil { model.pastePage(after: id) }
+        case .duplicate: model.duplicatePage(id)
+        case .add: addingPage = AddRequest(anchor: id, position: .after)
+        case .showTrash: showingTrash = true
+        case .trash:
+            guard model.notebook.pages.count > 1 else { router.show(note: "Die letzte Seite bleibt"); return }
+            router.ask("Seite \(entry.index + 1) in den Papierkorb?", message: "Sie bleibt im Seitenpapierkorb und lässt sich dort wiederherstellen.",
+                       confirm: "In den Seitenpapierkorb") { model.trashPage(id) }
+        case .clear:
+            router.ask("Seite \(entry.index + 1) leeren?", message: "Der bisherige Stand bleibt im Seitenpapierkorb.", confirm: "Seite leeren") { model.clearPage(id) }
+        case .moveUp, .moveDown:
+            guard filter == .all else { return }
+            let target = entry.index + (item == .moveUp ? -1 : 1)
+            guard model.notebook.pages.indices.contains(target) else { return }
+            model.movePage(id, to: target); keyCursor = target
+        case .margins:
+            if let onMargins, model.sourcePage(for: entry.page) != nil || entry.page.writingSpaceExtendsPaper { onMargins(id) }
         }
     }
 
@@ -385,14 +602,20 @@ struct PageSidebarView: View {
 private struct NotebookOutlineRow: View {
     let item: NotebookOutlineItem
     let selectedPage: UUID
+    /// The entry the keys stand on: the way to it stays open.
+    var keyItem: String? = nil
     let onSelect: (UUID) -> Void
+    @State private var expanded = false
 
+    private func holds(_ id: String?, _ item: NotebookOutlineItem) -> Bool {
+        id != nil && (item.children ?? []).contains { $0.id == id || holds(id, $0) }
+    }
     var body: some View {
         Group {
             if let children = item.children, !children.isEmpty {
-                DisclosureGroup {
+                DisclosureGroup(isExpanded: Binding(get: { expanded || holds(keyItem, item) }, set: { expanded = $0 })) {
                     ForEach(children) { child in
-                        NotebookOutlineRow(item: child, selectedPage: selectedPage, onSelect: onSelect)
+                        NotebookOutlineRow(item: child, selectedPage: selectedPage, keyItem: keyItem, onSelect: onSelect)
                     }
                 } label: { title }
             } else { title }
@@ -406,11 +629,19 @@ private struct NotebookOutlineRow: View {
                 Text(item.title).font(.subheadline).multilineTextAlignment(.leading)
                     .foregroundStyle(pageID == selectedPage ? Color.accentColor : .primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(keyItem == item.id ? Color.accentColor.opacity(0.28) : .clear)
             }.buttonStyle(.plain)
         } else {
             Text(item.title).font(.subheadline).foregroundStyle(.secondary)
         }
     }
+}
+
+/// Which list of the sidebar the keys go to.
+enum SidebarKeyTarget: Equatable { case pages, outline, bookmarks }
+struct SidebarKeyRequest: Equatable {
+    let id = UUID()
+    let target: SidebarKeyTarget
 }
 
 enum PageInsertionPosition: String, CaseIterable, Identifiable {
@@ -459,15 +690,15 @@ struct AddPageSheet: View {
                         ForEach(PageInsertionPosition.allCases) { position in
                             Text(position.rawValue).tag(position)
                         }
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.choice($position, PageInsertionPosition.allCases))
                     HStack(spacing: 12) {
                         Picker("Größe", selection: $format) { ForEach(PaperFormat.allCases, id: \.self) { Text($0.title).tag($0) } }
-                            .pickerStyle(.segmented)
-                        Toggle("Quer", isOn: $landscape).fixedSize()
+                            .pickerStyle(.segmented).keyOption(.choice($format, PaperFormat.allCases))
+                        keyToggle("Quer", isOn: $landscape).fixedSize()
                         Picker("Papierfarbe", selection: $paperColor) {
                             Text("Weiß").tag(PaperColor.white)
                             Text("Dunkel").tag(PaperColor.dark)
-                        }.pickerStyle(.segmented).frame(maxWidth: 170)
+                        }.pickerStyle(.segmented).frame(maxWidth: 170).keyOption(.choice($paperColor, [.white, .dark]))
                     }
                     HStack(alignment: .top, spacing: 12) {
                         template(.blank, title: "Blanko")
@@ -476,14 +707,14 @@ struct AddPageSheet: View {
                     }
                     Divider().padding(.vertical, 4)
                     VStack(alignment: .leading, spacing: 10) {
-                        Label("PDF einfügen", systemImage: "doc.badge.plus").font(.headline)
+                        Label("PDF oder Bild einfügen", systemImage: "doc.badge.plus").font(.headline)
                         PDFWritingSpaceOptions(enabled: $writingSpace, left: $writingLeft, fraction: $writingFraction,
                                                paper: $writingPaper, color: $writingColor)
                         Button {
                             choosingPDF = true
                         } label: {
                             HStack {
-                                Text("PDF aus Dateien wählen").font(.headline)
+                                Text("PDF oder Bild aus Dateien wählen").font(.headline)
                                 Spacer(minLength: 8)
                                 Image(systemName: "chevron.right").font(.caption.weight(.semibold))
                             }.padding(14).frame(maxWidth: .infinity, minHeight: 52)
@@ -494,7 +725,8 @@ struct AddPageSheet: View {
                         }.buttonStyle(.plain)
                             .contentShape(RoundedRectangle(cornerRadius: 16))
                             .accessibilityHint("Öffnet die Dateiauswahl.")
-                        Text("Die Originaldatei wird vollständig in dieses Notizbuch kopiert.")
+                            .keyOption(.action { choosingPDF = true })
+                        Text("Die Originaldatei wird vollständig in dieses Heft kopiert.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(20)
@@ -509,7 +741,7 @@ struct AddPageSheet: View {
                         .labelStyle(.iconOnly)
                 }
             }
-            .fileImporter(isPresented: $choosingPDF, allowedContentTypes: [.pdf]) { result in
+            .fileImporter(isPresented: $choosingPDF, allowedContentTypes: [.pdf, .image]) { result in
                 switch result {
                 case .success(let url):
                     onPDF(url, PDFWritingSpaceOptions.margins(enabled: writingSpace, left: writingLeft, fraction: writingFraction,
@@ -522,12 +754,16 @@ struct AddPageSheet: View {
         .preferredColorScheme(.dark)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .keyboardSheet()
     }
 
+    private func insert(_ style: PaperStyle) {
+        var settings = NotebookAppearance(); settings.format = format; settings.landscape = landscape
+        onPaper(style, paperColor, settings.geometry, position)
+    }
     private func template(_ style: PaperStyle, title: String) -> some View {
         Button {
-            var settings = NotebookAppearance(); settings.format = format; settings.landscape = landscape
-            onPaper(style, paperColor, settings.geometry, position)
+            insert(style)
         } label: {
             VStack(spacing: 12) {
                 PaperTemplatePreview(style: style, color: paperColor)
@@ -538,6 +774,7 @@ struct AddPageSheet: View {
                 Text(title).font(.subheadline).foregroundStyle(.primary)
             }.frame(maxWidth: .infinity)
         }.buttonStyle(.plain).accessibilityLabel("\(title) einfügen, \(position.rawValue)")
+            .keyOption(.action { insert(style) })
     }
 }
 
@@ -574,7 +811,7 @@ private struct PageTrashView: View {
             Group {
                 if deleted.isEmpty {
                     ContentUnavailableView("Keine gelöschten Seiten", systemImage: "trash",
-                                           description: Text("Gelöschte Seiten dieses Notizbuchs können hier wiederhergestellt werden."))
+                                           description: Text("Gelöschte Seiten dieses Hefts können hier wiederhergestellt werden."))
                 } else {
                     List(deleted.sorted { $0.deletedAt > $1.deletedAt }, id: \.page.id) { entry in
                         HStack(spacing: 16) {
@@ -590,7 +827,7 @@ private struct PageTrashView: View {
                                          : "Die ursprüngliche Seite ist nicht mehr verfügbar. Dieser Stand wird als zusätzliche Seite wiederhergestellt.")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
-                                Text(entry.deletedAt, format: .dateTime.day().month().hour().minute())
+                                Text("Gelöscht \(NotyText.listDate(entry.deletedAt))")
                                     .font(.caption).foregroundStyle(.secondary)
                                 if !entry.page.searchableText.isEmpty {
                                     Text(String(entry.page.searchableText.prefix(100))).font(.caption).lineLimit(2)
@@ -600,10 +837,13 @@ private struct PageTrashView: View {
                                     Button(entry.reason != nil ? "Seitenstand wiederherstellen" : "Wiederherstellen",
                                            systemImage: "arrow.uturn.backward") {
                                         model.restorePage(entry.page.id)
-                                    }
-                                    Button("Endgültig löschen", systemImage: "trash", role: .destructive) {
+                                    }.keyOption(.action { model.restorePage(entry.page.id) })
+                                    Button("Endgültig löschen …", systemImage: "trash.slash", role: .destructive) {
                                         pendingDeletion = entry
-                                    }
+                                    }.keyOption(.action {
+                                        KeyboardRouter.shared.ask("Seite endgültig löschen?", message: "Die Seite wird aus dem Heft entfernt, ebenso PDF-Originale, die keine Seite mehr verwendet. \(Self.undoNote)",
+                                                                  confirm: "Seite endgültig löschen", safe: true) { model.deleteTrashedPage(entry.page.id) }
+                                    })
                                 }.buttonStyle(.borderless).disabled(!canEdit)
                             }
                         }.padding(.vertical, 4)
@@ -613,20 +853,20 @@ private struct PageTrashView: View {
             .navigationTitle("Seitenpapierkorb")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Papierkorb leeren", role: .destructive) { confirmingEmpty = true }
+                    Button("Papierkorb leeren …", systemImage: "trash.slash", role: .destructive) { confirmingEmpty = true }
                         .disabled(deleted.isEmpty || !canEdit)
                 }
                 ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } }
             }
             .confirmationDialog("Seite endgültig löschen?", isPresented: Binding(get: { pendingDeletion != nil },
                                 set: { if !$0 { pendingDeletion = nil } }), titleVisibility: .visible, presenting: pendingDeletion) { entry in
-                Button("Endgültig löschen", role: .destructive) { model.deleteTrashedPage(entry.page.id) }
+                Button("Seite endgültig löschen", role: .destructive) { model.deleteTrashedPage(entry.page.id) }
                 Button("Abbrechen", role: .cancel) {}
             } message: { _ in
                 Text("Die Seite wird aus dem Heft entfernt, ebenso PDF-Originale, die keine Seite mehr verwendet. \(Self.undoNote)")
             }
             .confirmationDialog("Seitenpapierkorb leeren?", isPresented: $confirmingEmpty, titleVisibility: .visible) {
-                Button(deleted.count == 1 ? "1 Seite endgültig löschen" : "\(deleted.count) Seiten endgültig löschen", role: .destructive) {
+                Button("\(NotyText.count(deleted.count, "Seite", "Seiten")) endgültig löschen", role: .destructive) {
                     model.emptyPageTrash()
                 }
                 Button("Abbrechen", role: .cancel) {}
@@ -634,5 +874,29 @@ private struct PageTrashView: View {
                 Text("Alle Seiten im Papierkorb, auch gesicherte Seitenstände, werden endgültig entfernt, ebenso nicht mehr verwendete PDF-Originale. \(Self.undoNote)")
             }
         }
+        .keyboardSheet()
+    }
+}
+
+extension TextOutlineEntry {
+    /// Page rectangle of the heading's own lines (same native layout as
+    /// editor and PDF), for the short jump marker; the segment frame if the
+    /// text changed meanwhile.
+    @MainActor func markerBounds(box: TextBox, page: Page) -> PageRect { box.markerBounds(range, on: page) }
+}
+
+extension TextBox {
+    /// Page rectangle of `range`'s lines; the frame if the text changed meanwhile.
+    @MainActor func markerBounds(_ range: NSRange, on page: Page) -> PageRect {
+        let box = self
+        let length = (box.text as NSString).length
+        guard NSMaxRange(range) <= length, range.length > 0, box.rotation == nil else { return box.rotatedBounds }
+        let layout = TextObjectLayout(box, on: page)
+        let glyphs = layout.manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        let rect = layout.manager.boundingRect(forGlyphRange: glyphs, in: layout.container)
+        guard !rect.isEmpty, rect.minX.isFinite else { return box.rotatedBounds }
+        let scale = Double(layout.coordinateScale)
+        return PageRect(x: box.x + Double(rect.minX) * scale, y: box.y + Double(rect.minY) * scale,
+                        width: max(1, Double(rect.width) * scale), height: max(1, Double(rect.height) * scale))
     }
 }

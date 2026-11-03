@@ -12,19 +12,19 @@ struct PDFWritingSpaceOptions: View {
     @Binding var paper: PaperStyle
     @Binding var color: PaperColor
     var body: some View {
-        Toggle("Schreibplatz rechts", isOn: $enabled)
+        keyToggle("Schreibplatz rechts", isOn: $enabled)
         if enabled {
-            Toggle("Zusätzlich links", isOn: $left)
+            keyToggle("Zusätzlich links", isOn: $left)
             Picker("Breite", selection: $fraction) {
                 Text("25 %").tag(0.25); Text("60 %").tag(0.6); Text("100 %").tag(1.0)
-            }.pickerStyle(.segmented)
+            }.pickerStyle(.segmented).keyOption(.choice($fraction, [0.25, 0.6, 1.0]))
             HStack {
                 Picker("Vorlage", selection: $paper) {
                     Text("Blanko").tag(PaperStyle.blank); Text("Liniert").tag(PaperStyle.lined); Text("Kariert").tag(PaperStyle.grid)
-                }.pickerStyle(.segmented)
+                }.pickerStyle(.segmented).keyOption(.choice($paper, [.blank, .lined, .grid]))
                 Picker("Farbe", selection: $color) {
                     Text("Weiß").tag(PaperColor.white); Text("Dunkel").tag(PaperColor.dark)
-                }.pickerStyle(.segmented).frame(maxWidth: 170)
+                }.pickerStyle(.segmented).frame(maxWidth: 170).keyOption(.choice($color, [.white, .dark]))
             }
         }
     }
@@ -56,13 +56,13 @@ struct PDFImportSheet: View {
                 Section {
                     PDFWritingSpaceOptions(enabled: $extraSpace, left: $left, fraction: $fraction, paper: $paper, color: $color)
                 } footer: {
-                    Text("Die PDF wird vollständig lokal kopiert; das Original bleibt unverändert. 100 % entspricht einer normalen Seitenbreite.")
+                    Text("Die Datei wird vollständig lokal kopiert. Ein Bild wird zu einer eigenen Seite; Fotos werden dabei auf höchstens 4096 Pixel verkleinert, die Originaldatei bleibt nur in Dateien erhalten. 100 % entspricht einer normalen Seitenbreite.")
                 }
-                Section { Button("PDF aus Dateien auswählen", systemImage: "doc.badge.plus") { choosingFile = true } }
+                Section { Button("PDF oder Bild aus Dateien wählen …", systemImage: "doc.badge.plus") { choosingFile = true }.keyOption(.action { choosingFile = true }) }
             }
-            .navigationTitle("PDF importieren").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("PDF oder Bild importieren").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
-            .fileImporter(isPresented: $choosingFile, allowedContentTypes: [.pdf]) { result in
+            .fileImporter(isPresented: $choosingFile, allowedContentTypes: [.pdf, .image]) { result in
                 switch result {
                 case .success(let url):
                     onImport(url, PDFWritingSpaceOptions.margins(enabled: extraSpace, left: left, fraction: fraction, paper: paper, color: color))
@@ -71,5 +71,6 @@ struct PDFImportSheet: View {
                 }
             }
         }.preferredColorScheme(.dark)
+        .keyboardSheet(onDefault: { choosingFile = true })
     }
 }

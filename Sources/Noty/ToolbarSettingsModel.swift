@@ -17,6 +17,9 @@ final class ToolbarSettingsModel: ObservableObject {
     @Published var status = "Werkzeugeinstellungen werden geladen …"
     private let store: ToolbarPreferenceStore
     private var revision = 0
+    /// Nothing can be written then, and nothing waits to be: no reason to
+    /// refuse closing or a backup.
+    private var loadFailed = false
     private var pending: Task<Void, Never>?
     private var debounce: Task<Void, Never>?
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
@@ -28,7 +31,7 @@ final class ToolbarSettingsModel: ObservableObject {
                 let (loaded, recovered) = try await store.load()
                 preferences = loaded; writable = true
                 status = recovered ? "Vorherige Werkzeugeinstellungen geladen" : ""
-            } catch { status = error.localizedDescription }
+            } catch { status = error.localizedDescription; loadFailed = true }
         }
         for name in [UIApplication.didEnterBackgroundNotification, UIApplication.willTerminateNotification] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -72,7 +75,7 @@ final class ToolbarSettingsModel: ObservableObject {
         }
     }
     func flush() async -> Bool {
-        guard writable else { return false }
+        guard writable else { return loadFailed }
         write()
         while true {
             let flushingRevision = revision

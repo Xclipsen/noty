@@ -1,0 +1,539 @@
+import Foundation
+
+/// The keyboard mode's one key table (docs/KEYBOARD.md): the parser, the key
+/// overview, the command palette and the which-key popup all read `bindings`.
+/// Tokens as the app hands them over: `j`, `G`, `:`, `^d`, `<A-;>`, `<CR>`,
+/// `<Esc>`, `<Space>`, `<S-Tab>`.
+public enum HelixContext: String, Sendable, CaseIterable {
+    case library
+    /// Editor without text cursor.
+    case page
+    /// A text in NOR or SEL; which of them only the engine has to know.
+    case text
+    /// The focused page sidebar with its outline and bookmarks.
+    case sidebar
+    /// The hits of a search sheet.
+    case list
+    /// A sheet or question of the app.
+    case dialog
+    /// The law reader.
+    case law
+    /// The colour and stroke panel.
+    case color
+
+    /// Where the app stands without any panel open.
+    public static let places: [HelixContext] = [.library, .page, .text]
+}
+
+/// What a command means to the app; `text` goes to `TextEngine.perform`.
+public enum HelixAction: Equatable, Sendable {
+    // Anywhere
+    case help, palette, search, undo, redo, escape
+    case searchAll, sidebar, outline, bookmark, close
+    case export(HelixExport)
+    // Library
+    case focusItem(dx: Int, dy: Int), focusFirstItem, focusLastItem, openItem, parentFolder
+    case newNotebook, newTextDocument, newFolder, renameItem, trashItem, duplicateItem, pinItem, moveItem
+    // Page. A typed count on `firstPage`, `lastPage` or `gotoPage` means that page.
+    case scroll(x: Int, y: Int), scrollScreen(Double), page(Int), firstPage, lastPage, gotoPage
+    case fit, zoom(Int), tool(WritingTool)
+    /// Edit the selected field, otherwise write.
+    case write
+    case nextObject(Int), deleteObject, copyObject, pasteObject, duplicateObject, selectAll
+    // Text
+    case text(TextEngine.Command)
+    /// Asks for a query, then `TextEngine.search`.
+    case searchPrompt(backward: Bool)
+    /// Asks for a pattern, then `TextEngine.selectMatches`.
+    case selectPrompt
+    // Panels (`KeyPanel`). `sidebar` focuses the sidebar, `outline` and
+    // `bookmarks` its lists; a panel decides what these mean for it.
+    case laws, bookmarks, colors
+    case listMove(Int), listColumn(Int), listFirst, listLast, listScreen(Int)
+    case confirm, cancelPanel, toggleOption, adjustOption(Int), pickEntry(Int)
+    /// Back to the line a list filters by.
+    case typeFilter
+    case panelTab, panelFilter
+    case pageItem(HelixPageItem)
+    case lawField(HelixLawField), lawContents, lawBookmarks, lawChoose, lawView
+    /// The touch selection in the law text: mark it, or remove what it covers.
+    case lawMark(Bool)
+    /// A manual page break at the caret (text documents).
+    case pageBreak
+    /// Asks for a pattern, then `TextEngine.splitMatches`.
+    case splitPrompt
+}
+
+/// What the sidebar does to the chosen page.
+public enum HelixPageItem: String, Sendable, CaseIterable {
+    case bookmark, copy, cut, paste, duplicate, add, trash, clear, moveUp, moveDown, margins, showTrash
+}
+
+public enum HelixLawField: String, Sendable { case query, paragraph }
+
+public enum HelixExport: String, Sendable, CaseIterable { case pdf, pagePDF, markdown, plainText, noty, word, rtf }
+
+/// A key that waits for a character (`f`, `r`, `mi`).
+public enum HelixPrompt: String, Sendable, CaseIterable {
+    case findForward, tillForward, findBackward, tillBackward, replace
+    case inside, around, surroundAdd, surroundDelete, surroundReplace
+    /// `"a` before a command.
+    case register
+
+    public var title: String {
+        switch self {
+        case .findForward: "Bis einschließlich Zeichen"
+        case .tillForward: "Bis vor Zeichen"
+        case .findBackward: "Zurück bis einschließlich Zeichen"
+        case .tillBackward: "Zurück bis nach Zeichen"
+        case .replace: "Ersetzen durch Zeichen"
+        case .inside: "Innerhalb von"
+        case .around: "Mitsamt"
+        case .surroundAdd: "Umschließen mit"
+        case .surroundDelete: "Umschließung entfernen"
+        case .surroundReplace: "Umschließung ersetzen"
+        case .register: "Register wählen"
+        }
+    }
+
+    private static let pairs: [HelixMenu.Entry] = [
+        .init(key: "(", title: "Runde Klammern"), .init(key: "[", title: "Eckige Klammern"), .init(key: "{", title: "Geschweifte Klammern"),
+        .init(key: "<", title: "Spitze Klammern"), .init(key: "\"", title: "Anführungszeichen"), .init(key: "'", title: "Einfache Anführungszeichen"),
+        .init(key: "`", title: "Backticks")]
+    private static let closest = HelixMenu.Entry(key: "m", title: "Nächstes Klammerpaar")
+    /// What the which-key popup suggests; any other punctuation works, too.
+    public var choices: [HelixMenu.Entry] {
+        switch self {
+        case .inside, .around:
+            [.init(key: "w", title: "Wort"), .init(key: "W", title: "Langes Wort"), .init(key: "p", title: "Absatz"), Self.closest] + Self.pairs
+        case .surroundAdd: Self.pairs
+        case .surroundDelete, .surroundReplace: [Self.closest] + Self.pairs
+        case .register:
+            [.init(key: "a…z", title: "Eigenes Register, nur im Speicher"), .init(key: "_", title: "Nichts merken"),
+             .init(key: "+", title: "Systemzwischenablage (wie ohne Register)")]
+        default: []
+        }
+    }
+
+    /// The command for a typed character; nil if it means nothing here.
+    public func action(_ character: String) -> HelixAction? {
+        func object(_ around: Bool) -> HelixAction? {
+            let kind: TextEngine.TextObject
+            switch character {
+            case "w": kind = .word
+            case "W": kind = .longWord
+            case "p": kind = .paragraph
+            case "m": kind = .closestPair
+            default:
+                guard let first = character.first, !(first.isASCII && (first.isLetter || first.isNumber)) else { return nil }
+                kind = .pair(character)
+            }
+            return .text(.selectObject(kind, around: around))
+        }
+        switch self {
+        case .findForward: return .text(.find(character, forward: true, inclusive: true))
+        case .tillForward: return .text(.find(character, forward: true, inclusive: false))
+        case .findBackward: return .text(.find(character, forward: false, inclusive: true))
+        case .tillBackward: return .text(.find(character, forward: false, inclusive: false))
+        case .replace: return .text(.replace(character))
+        case .inside: return object(false)
+        case .around: return object(true)
+        case .surroundAdd: return .text(.surroundAdd(character))
+        case .surroundDelete: return .text(.surroundDelete(character == "m" ? nil : character))
+        case .surroundReplace, .register: return nil // see `HelixParser`
+        }
+    }
+}
+
+/// The next keys of a menu node, for the which-key popup.
+public struct HelixMenu: Equatable, Sendable {
+    public struct Entry: Equatable, Sendable {
+        /// Token; `HelixKeymap.label` shows it.
+        public let key: String
+        public let title: String
+        public let isMenu: Bool
+        public init(key: String, title: String, isMenu: Bool = false) { self.key = key; self.title = title; self.isMenu = isMenu }
+    }
+    public let title: String
+    public let entries: [Entry]
+    public init(title: String, entries: [Entry]) { self.title = title; self.entries = entries }
+}
+
+/// One row of the table.
+public struct HelixBinding: Sendable {
+    public enum Target: Equatable, Sendable {
+        case action(HelixAction)
+        /// A menu node: further rows start with these keys.
+        case menu
+        case prompt(HelixPrompt)
+    }
+    /// Tokens separated by a space: `g g`, `^d`, `<Space> t p`.
+    public let keys: String
+    public let target: Target
+    public let title: String
+    public let group: String
+    public let contexts: Set<HelixContext>
+    /// Holding the key repeats it; never on destructive actions.
+    public let repeats: Bool
+    public var tokens: [String] { keys.split(separator: " ").map(String.init) }
+    public var action: HelixAction? { if case .action(let action) = target { return action }; return nil }
+    /// As it reads on the keyboard: `gg`, `⌃d`, `Space tp`.
+    public var label: String { HelixKeymap.label(tokens) }
+
+    init(_ keys: String, _ target: Target, _ title: String, _ group: String, _ contexts: Set<HelixContext>, repeats: Bool = false) {
+        self.keys = keys; self.target = target; self.title = title; self.group = group
+        self.contexts = contexts; self.repeats = repeats
+    }
+}
+
+public enum HelixKeymap {
+    public static let bindings: [HelixBinding] = {
+        let all: Set<HelixContext> = [.library, .page, .text], editor: Set<HelixContext> = [.page, .text]
+        let library: Set<HelixContext> = [.library], page: Set<HelixContext> = [.page], text: Set<HelixContext> = [.text]
+        // Every panel but the small colour panel has the palette, a menu and the overview.
+        let panels: Set<HelixContext> = [.sidebar, .list, .dialog, .law], lists: Set<HelixContext> = [.sidebar, .list, .dialog]
+        let sidebar: Set<HelixContext> = [.sidebar], dialog: Set<HelixContext> = [.dialog], law: Set<HelixContext> = [.law], color: Set<HelixContext> = [.color]
+        func act(_ keys: String, _ action: HelixAction, _ title: String, _ group: String, _ contexts: Set<HelixContext>, repeats: Bool = false) -> HelixBinding {
+            HelixBinding(keys, .action(action), title, group, contexts, repeats: repeats)
+        }
+        func edit(_ keys: String, _ command: TextEngine.Command, _ title: String, _ group: String, repeats: Bool = false) -> HelixBinding {
+            act(keys, .text(command), title, group, text, repeats: repeats)
+        }
+        func menu(_ keys: String, _ title: String, _ contexts: Set<HelixContext>) -> HelixBinding {
+            HelixBinding(keys, .menu, title, "Menüs", contexts)
+        }
+        func prompt(_ keys: String, _ prompt: HelixPrompt) -> HelixBinding {
+            HelixBinding(keys, .prompt(prompt), prompt.title, "Text", text)
+        }
+
+        var rows: [HelixBinding] = [
+            act(":", .palette, "Befehle", "Überall", all.union(panels)),
+            act("?", .help, "Tastenübersicht", "Überall", [.library, .page, .sidebar, .dialog, .law]),
+            act("/", .search, "Suchen", "Überall", [.library, .page]),
+            act("u", .undo, "Rückgängig", "Überall", editor),
+            act("U", .redo, "Wiederholen", "Überall", editor),
+            act("<Esc>", .escape, "Eine Ebene zurück", "Überall", editor),
+            act("^[", .escape, "Eine Ebene zurück (wie Esc)", "Überall", editor),
+            act("^c", .escape, "Eine Ebene zurück (wie Esc)", "Überall", editor),
+
+            menu("g", "Gehe zu", all.union(panels)),
+            menu("z", "Ansicht", editor),
+            menu("m", "Auswählen und umschließen", text),
+            menu("[", "Zurück zu", text),
+            menu("]", "Vor zu", text),
+            // The keys at those places on a German keyboard (docs/KEYBOARD.md, Grenzen).
+            menu("ü", "Zurück zu", text),
+            menu("+", "Vor zu", text),
+            menu("t", "Werkzeug", page),
+            // In a dialog the space bar switches the option instead.
+            menu("<Space>", "Menü", all.union([.sidebar, .list, .law])),
+            menu("<Space> t", "Werkzeuge", editor),
+            menu("<Space> e", "Export und Teilen", all),
+
+            act("<Space> s", .sidebar, "Seitenleiste", "Menü", editor.union(sidebar)),
+            act("<Space> o", .outline, "Gliederung", "Menü", editor),
+            act("<Space> m", .bookmarks, "Lesezeichen", "Menü", editor),
+            act("<Space> M", .bookmark, "Lesezeichen setzen/entfernen", "Menü", editor),
+            act("<Space> l", .laws, "Gesetzessammlung", "Menü", editor.union(law)),
+            act("<Space> c", .colors, "Farbe und Strich", "Menü", editor),
+            act("<Space> f", .searchAll, "Alle Hefte suchen", "Menü", all),
+            act("<Space> q", .close, "Schließen", "Menü", editor),
+            act("<Space> ?", .palette, "Befehlspalette", "Menü", all.union([.sidebar, .list, .law])),
+            act("<Space> h", .help, "Tastenübersicht", "Menü", all.union([.sidebar, .list, .law])),
+            act("<Space> e p", .export(.pdf), "Als PDF exportieren", "Export und Teilen", all),
+            act("<Space> e c", .export(.pagePDF), "Diese Seite als PDF", "Export und Teilen", editor),
+            act("<Space> e m", .export(.markdown), "Als Markdown teilen", "Export und Teilen", all),
+            act("<Space> e t", .export(.plainText), "Als Text teilen", "Export und Teilen", all),
+            act("<Space> e n", .export(.noty), "Als .noty teilen", "Export und Teilen", all),
+            act("<Space> e w", .export(.word), "Als Word teilen", "Export und Teilen", all),
+            act("<Space> e r", .export(.rtf), "Als RTF teilen", "Export und Teilen", all),
+            act("<Space> b", .pageBreak, "Seitenumbruch einfügen", "Menü", text),
+
+            act("z z", .fit, "Einpassen", "Ansicht", editor),
+            act("z +", .zoom(1), "Vergrößern", "Ansicht", editor, repeats: true),
+            act("z -", .zoom(-1), "Verkleinern", "Ansicht", editor, repeats: true),
+
+            // Library
+            act("g g", .focusFirstItem, "Erster Eintrag", "Bibliothek", library),
+            act("g e", .focusLastItem, "Letzter Eintrag", "Bibliothek", library),
+            act("<CR>", .openItem, "Öffnen", "Bibliothek", library),
+            act("o", .openItem, "Öffnen", "Bibliothek", library),
+            act("-", .parentFolder, "Eine Ebene hoch", "Bibliothek", library),
+            act("<BS>", .parentFolder, "Eine Ebene hoch", "Bibliothek", library),
+            act("n", .newNotebook, "Neues Heft", "Bibliothek", library),
+            act("N", .newTextDocument, "Neues Textdokument", "Bibliothek", library),
+            act("f", .newFolder, "Neuer Ordner", "Bibliothek", library),
+            act("r", .renameItem, "Umbenennen", "Bibliothek", library),
+            act("d", .trashItem, "In den Papierkorb", "Bibliothek", library),
+            act("y", .duplicateItem, "Duplizieren", "Bibliothek", library),
+            act("P", .pinItem, "Anheften/Lösen", "Bibliothek", library),
+            act("m", .moveItem, "Verschieben", "Bibliothek", library),
+
+            // Page
+            act("^d", .scrollScreen(0.5), "Halbe Ansicht runter", "Bewegen", page.union(law), repeats: true),
+            act("^u", .scrollScreen(-0.5), "Halbe Ansicht hoch", "Bewegen", page.union(law), repeats: true),
+            act("^f", .scrollScreen(0.9), "Ganze Ansicht runter", "Bewegen", page.union(law), repeats: true),
+            act("^b", .scrollScreen(-0.9), "Ganze Ansicht hoch", "Bewegen", page.union(law), repeats: true),
+            act("g g", .firstPage, "Erste Seite", "Gehe zu", page),
+            act("g e", .lastPage, "Letzte Seite", "Gehe zu", page),
+            act("g n", .page(1), "Nächste Seite", "Gehe zu", page, repeats: true),
+            act("g p", .page(-1), "Vorherige Seite", "Gehe zu", page, repeats: true),
+            act("G", .gotoPage, "Zur Seite (5G: Seite 5)", "Gehe zu", page),
+            act("+", .zoom(1), "Vergrößern", "Ansicht", page, repeats: true),
+            act("=", .zoom(1), "Vergrößern", "Ansicht", page, repeats: true),
+            act("-", .zoom(-1), "Verkleinern", "Ansicht", page, repeats: true),
+            act("<CR>", .write, "Feld bearbeiten oder schreiben", "Objekte", page),
+            act("i", .write, "Feld bearbeiten oder schreiben", "Objekte", page),
+            act("<Tab>", .nextObject(1), "Nächstes Objekt", "Objekte", page),
+            act("<S-Tab>", .nextObject(-1), "Vorheriges Objekt", "Objekte", page),
+            act("d", .deleteObject, "Auswahl löschen", "Objekte", page),
+            act("y", .copyObject, "Auswahl kopieren", "Objekte", page),
+            act("p", .pasteObject, "Einfügen", "Objekte", page),
+            act("%", .selectAll, "Alles wählen", "Objekte", page),
+            act("D", .duplicateObject, "Auswahl duplizieren", "Objekte", page),
+
+            // Text: motions, in SEL they extend
+            edit("w", .word(.nextStart, long: false), "Nächstes Wort", "Bewegen", repeats: true),
+            edit("b", .word(.previousStart, long: false), "Vorheriges Wort", "Bewegen", repeats: true),
+            edit("e", .word(.nextEnd, long: false), "Wortende", "Bewegen", repeats: true),
+            edit("W", .word(.nextStart, long: true), "Nächstes langes Wort", "Bewegen", repeats: true),
+            edit("B", .word(.previousStart, long: true), "Vorheriges langes Wort", "Bewegen", repeats: true),
+            edit("E", .word(.nextEnd, long: true), "Ende des langen Worts", "Bewegen", repeats: true),
+            prompt("f", .findForward), prompt("t", .tillForward), prompt("F", .findBackward), prompt("T", .tillBackward),
+            edit("^d", .screen(0.5), "Halbe Ansicht runter", "Bewegen", repeats: true),
+            edit("^u", .screen(-0.5), "Halbe Ansicht hoch", "Bewegen", repeats: true),
+            edit("^f", .screen(1), "Ganze Ansicht runter", "Bewegen", repeats: true),
+            edit("^b", .screen(-1), "Ganze Ansicht hoch", "Bewegen", repeats: true),
+            edit("g g", .gotoFileStart, "Textanfang", "Gehe zu"),
+            edit("g e", .gotoLastLine, "Letzte Zeile", "Gehe zu"),
+            edit("g h", .gotoLineStart, "Zeilenanfang", "Gehe zu"),
+            edit("g l", .gotoLineEnd, "Zeilenende", "Gehe zu"),
+            edit("g s", .gotoFirstNonBlank, "Erstes Zeichen der Zeile", "Gehe zu"),
+            edit("G", .gotoLine, "Zur Zeile (5G: Zeile 5)", "Gehe zu"),
+            edit("[ p", .paragraph(forward: false), "Vorheriger Absatz", "Gehe zu"),
+            edit("] p", .paragraph(forward: true), "Nächster Absatz", "Gehe zu"),
+            edit("ü p", .paragraph(forward: false), "Vorheriger Absatz", "Gehe zu"),
+            edit("+ p", .paragraph(forward: true), "Nächster Absatz", "Gehe zu"),
+            edit("^s", .saveSelection, "Position merken", "Sprünge"),
+            edit("^o", .jumpBackward, "Zurück springen", "Sprünge"),
+            edit("^i", .jumpForward, "Vor springen", "Sprünge"),
+
+            // Text: selections
+            edit("%", .selectAll, "Alles wählen", "Auswahl"),
+            edit("x", .extendLine, "Zeile wählen, wiederholt erweitern", "Auswahl", repeats: true),
+            edit("X", .extendToLineBounds, "Auf ganze Zeilen erweitern", "Auswahl"),
+            edit(";", .collapse, "Auswahl zusammenziehen", "Auswahl"),
+            edit("<A-;>", .flip, "Auswahl umdrehen", "Auswahl"),
+            edit(",", .keepPrimary, "Nur Hauptauswahl", "Auswahl"),
+            edit("C", .copyToNextLine, "Auswahl in die nächste Zeile kopieren", "Auswahl", repeats: true),
+            edit("<A-C>", .copyToPreviousLine, "Auswahl in die vorige Zeile kopieren", "Auswahl", repeats: true),
+            act("s", .selectPrompt, "Treffer in der Auswahl wählen", "Auswahl", text),
+            act("S", .splitPrompt, "Auswahl an Treffern teilen", "Auswahl", text),
+            edit("<A-s>", .splitOnLines, "Auswahl an Zeilenumbrüchen teilen", "Auswahl"),
+            edit("v", .toggleSelect, "Auswahlmodus", "Auswahl"),
+
+            // Text: edits
+            edit("d", .delete, "Auswahl löschen", "Ändern"),
+            edit("c", .change, "Auswahl ändern", "Ändern"),
+            edit("y", .yank, "Auswahl kopieren", "Ändern"),
+            edit("p", .paste(before: false), "Einfügen dahinter", "Ändern"),
+            edit("P", .paste(before: true), "Einfügen davor", "Ändern"),
+            edit("R", .replaceWithRegister, "Durch Kopiertes ersetzen", "Ändern"),
+            prompt("\"", .register),
+            prompt("r", .replace),
+            edit("~", .switchCase, "Groß/klein tauschen", "Ändern"),
+            edit("`", .lowercase, "Kleinschreiben", "Ändern"),
+            edit("J", .joinLines, "Zeilen verbinden", "Ändern"),
+            edit(">", .indent, "Einrücken", "Ändern"),
+            edit("<", .unindent, "Ausrücken", "Ändern"),
+
+            // Text: writing
+            edit("i", .insert(.before), "Schreiben vor der Auswahl", "Schreiben"),
+            edit("a", .insert(.after), "Schreiben hinter der Auswahl", "Schreiben"),
+            edit("I", .insert(.lineStart), "Schreiben am Zeilenanfang", "Schreiben"),
+            edit("A", .insert(.lineEnd), "Schreiben am Zeilenende", "Schreiben"),
+            edit("o", .insert(.lineBelow), "Neue Zeile darunter", "Schreiben"),
+            edit("O", .insert(.lineAbove), "Neue Zeile darüber", "Schreiben"),
+            edit(".", .repeatInsert, "Letzte Einfügung wiederholen", "Schreiben"),
+            edit("Q", .toggleRecording, "Makro aufnehmen an/aus", "Makros"),
+            edit("q", .playMacro, "Makro abspielen", "Makros"),
+
+            // Text: search
+            act("/", .searchPrompt(backward: false), "Im Text suchen", "Suchen", text),
+            act("?", .searchPrompt(backward: true), "Im Text rückwärts suchen", "Suchen", text),
+            edit("n", .searchNext, "Nächster Treffer", "Suchen", repeats: true),
+            edit("N", .searchPrevious, "Vorheriger Treffer", "Suchen", repeats: true),
+            edit("*", .searchSelection, "Auswahl als Suchbegriff", "Suchen"),
+
+            // Text: the `m` menu
+            edit("m m", .matchBracket, "Passende Klammer", "Auswählen und umschließen"),
+            prompt("m i", .inside), prompt("m a", .around),
+            prompt("m s", .surroundAdd), prompt("m d", .surroundDelete), prompt("m r", .surroundReplace),
+
+            // Panels: what lists and dialogs share
+            act("^n", .listMove(1), "Nächster Eintrag", "Liste", lists, repeats: true),
+            act("^p", .listMove(-1), "Vorheriger Eintrag", "Liste", lists, repeats: true),
+            act("g g", .listFirst, "Erster Eintrag", "Liste", lists),
+            act("g e", .listLast, "Letzter Eintrag", "Liste", lists),
+            act("^d", .listScreen(1), "Einige Einträge weiter", "Liste", [.sidebar, .list], repeats: true),
+            act("^u", .listScreen(-1), "Einige Einträge zurück", "Liste", [.sidebar, .list], repeats: true),
+            act("<CR>", .confirm, "Öffnen", "Liste", [.sidebar, .list]),
+            act("<CR>", .confirm, "Bestätigen", "Dialog", dialog),
+            act("<Esc>", .cancelPanel, "Zurück", "Liste", [.sidebar, .list]),
+            act("<Esc>", .cancelPanel, "Abbrechen", "Dialog", dialog),
+
+            // Sidebar
+            act("<Tab>", .panelTab, "Seiten oder Inhalt", "Seitenleiste", sidebar),
+            act("<S-Tab>", .panelTab, "Seiten oder Inhalt", "Seitenleiste", sidebar),
+            act("f", .panelFilter, "Alle Seiten oder Lesezeichen", "Seitenleiste", sidebar),
+            act("b", .pageItem(.bookmark), "Lesezeichen setzen/entfernen", "Seitenleiste", sidebar),
+            act("y", .pageItem(.copy), "Seite kopieren", "Seitenleiste", sidebar),
+            act("x", .pageItem(.cut), "Seite ausschneiden", "Seitenleiste", sidebar),
+            act("p", .pageItem(.paste), "Seite einfügen", "Seitenleiste", sidebar),
+            act("D", .pageItem(.duplicate), "Seite duplizieren", "Seitenleiste", sidebar),
+            act("a", .pageItem(.add), "Seite hinzufügen", "Seitenleiste", sidebar),
+            act("d", .pageItem(.trash), "In den Seitenpapierkorb (mit Rückfrage)", "Seitenleiste", sidebar),
+            act("X", .pageItem(.clear), "Seite leeren (mit Rückfrage)", "Seitenleiste", sidebar),
+            act("K", .pageItem(.moveUp), "Seite nach oben", "Seitenleiste", sidebar),
+            act("J", .pageItem(.moveDown), "Seite nach unten", "Seitenleiste", sidebar),
+            act("r", .pageItem(.margins), "Seite anpassen", "Seitenleiste", sidebar),
+            act("t", .pageItem(.showTrash), "Seitenpapierkorb öffnen", "Seitenleiste", sidebar),
+
+            // Search sheet: other letters go on into the search line
+            act("/", .typeFilter, "Zurück ins Suchfeld", "Liste", [.list]),
+            act("<Tab>", .panelTab, "Alle Inhalte oder offene Aufgaben", "Liste", [.list]),
+            act("<S-Tab>", .panelTab, "Alle Inhalte oder offene Aufgaben", "Liste", [.list]),
+
+            // Dialog
+            act("<Tab>", .listMove(1), "Nächste Option", "Dialog", dialog),
+            act("<S-Tab>", .listMove(-1), "Vorherige Option", "Dialog", dialog),
+            act("<Space>", .toggleOption, "Schalten oder auslösen", "Dialog", dialog),
+
+            // Law reader
+            act("n", .page(1), "Nächste Vorschrift", "Gesetze", law, repeats: true),
+            act("N", .page(-1), "Vorherige Vorschrift", "Gesetze", law, repeats: true),
+            act("g g", .firstPage, "Anfang der Vorschrift", "Gesetze", law),
+            act("g e", .lastPage, "Ende der Vorschrift", "Gesetze", law),
+            act("G", .gotoPage, "Paragraph (144G: § 144)", "Gesetze", law),
+            act("p", .lawField(.paragraph), "Paragraph eingeben", "Gesetze", law),
+            act("/", .lawField(.query), "Schnellsuche (144 HGB oder Volltext)", "Gesetze", law),
+            act("<CR>", .confirm, "Nächstem Treffer folgen", "Gesetze", law),
+            act("<Esc>", .cancelPanel, "Schließen", "Gesetze", law),
+            act("t", .lawChoose, "Gesetz wählen", "Gesetze", law),
+            act("o", .lawContents, "Inhaltsverzeichnis", "Gesetze", law),
+            act("B", .lawBookmarks, "Lesezeichen und Markierungen", "Gesetze", law),
+            act("b", .bookmark, "Lesezeichen setzen/entfernen", "Gesetze", law),
+            act("v", .lawView, "Lesetext oder PDF", "Gesetze", law),
+            act("+", .zoom(1), "Schrift größer", "Gesetze", law, repeats: true),
+            act("=", .zoom(1), "Schrift größer", "Gesetze", law, repeats: true),
+            act("-", .zoom(-1), "Schrift kleiner", "Gesetze", law, repeats: true),
+            act("m", .lawMark(true), "Auswahl markieren", "Gesetze", law),
+            act("M", .lawMark(false), "Markierung in der Auswahl entfernen", "Gesetze", law),
+
+            // Colour panel
+            act("<CR>", .confirm, "Wählen", "Farbe", color),
+            act("<Esc>", .cancelPanel, "Abbrechen", "Farbe", color),
+            act("<Tab>", .focusItem(dx: 0, dy: 1), "Nächste Reihe", "Farbe", color),
+            act("<S-Tab>", .focusItem(dx: 0, dy: -1), "Vorherige Reihe", "Farbe", color)
+        ]
+
+        // `hjkl` and the arrows in every context.
+        let directions: [(String, String, TextEngine.Direction, Int, Int, String)] = [
+            ("h", "<Left>", .left, -1, 0, "links"), ("j", "<Down>", .down, 0, 1, "unten"),
+            ("k", "<Up>", .up, 0, -1, "oben"), ("l", "<Right>", .right, 1, 0, "rechts")]
+        for (letter, arrow, direction, x, y, name) in directions {
+            for key in [letter, arrow] {
+                rows.append(act(key, .focusItem(dx: x, dy: y), "Nach \(name)", "Bibliothek", library, repeats: true))
+                rows.append(act(key, .scroll(x: x, y: y), "Nach \(name)", "Bewegen", page.union(law), repeats: true))
+                rows.append(edit(key, .move(direction), "Nach \(name)", "Bewegen", repeats: true))
+                rows.append(act(key, .focusItem(dx: x, dy: y), "Nach \(name)", "Farbe", color, repeats: true))
+                if x == 0 {
+                    rows.append(act(key, .listMove(y), y > 0 ? "Nächster Eintrag" : "Vorheriger Eintrag", "Liste", lists, repeats: true))
+                } else {
+                    rows.append(act(key, .listColumn(x), "Nach \(name)", "Seitenleiste", sidebar, repeats: true))
+                    rows.append(act(key, .adjustOption(x), x > 0 ? "Wert weiter" : "Wert zurück", "Dialog", dialog, repeats: true))
+                }
+            }
+        }
+        // The same tools under `t` (page only: in a text `t` is a motion) and `Space t`.
+        let tools: [(String, WritingTool, String)] = [
+            ("p", .pen, "Stift"), ("b", .pencil, "Bleistift"), ("m", .marker, "Marker"), ("e", .strokeEraser, "Radierer (Strich)"),
+            ("E", .precisionEraser, "Radierer (genau)"), ("l", .inkSelection, "Lasso"), ("s", .shape, "Formen"), ("i", .image, "Bilder"),
+            ("t", .text, "Text"), ("L", .laser, "Laserpointer"), ("r", .read, "Lesen")]
+        for (key, tool, title) in tools {
+            rows.append(act("t \(key)", .tool(tool), title, "Werkzeuge", page))
+            rows.append(act("<Space> t \(key)", .tool(tool), title, "Werkzeuge", editor))
+        }
+        // One line in the overview: the digits choose, they count nothing here.
+        for number in 1...9 { rows.append(act("\(number)", .pickEntry(number), "Eintrag 1–9 der Reihe wählen", "Farbe", color)) }
+        return rows
+    }()
+
+    private static let index: [HelixContext: [String: HelixBinding]] = {
+        var result: [HelixContext: [String: HelixBinding]] = [:]
+        for binding in bindings { for context in binding.contexts { result[context, default: [:]][binding.keys] = binding } }
+        return result
+    }()
+
+    public static func binding(_ keys: String, in context: HelixContext) -> HelixBinding? { index[context]?[keys] }
+
+    /// The rows of a context in table order.
+    public static func rows(in context: HelixContext) -> [HelixBinding] { bindings.filter { $0.contexts.contains(context) } }
+
+    /// The next keys behind a menu or waiting key; nil for anything else.
+    public static func menu(_ keys: String, in context: HelixContext) -> HelixMenu? {
+        guard let node = binding(keys, in: context) else { return nil }
+        if case .prompt(let prompt) = node.target { return HelixMenu(title: prompt.title, entries: prompt.choices) }
+        guard node.target == .menu else { return nil }
+        let depth = node.tokens.count + 1
+        let entries = rows(in: context).filter { $0.tokens.count == depth && Array($0.tokens.dropLast()) == node.tokens }.map {
+            HelixMenu.Entry(key: $0.tokens[depth - 1], title: $0.title, isMenu: $0.action == nil)
+        }
+        return HelixMenu(title: node.title, entries: entries)
+    }
+
+    /// Every runnable command by name, for the palette.
+    public static func commands(in context: HelixContext) -> [HelixBinding] {
+        var seen = Set<String>()
+        return rows(in: context).filter { row in
+            guard let action = row.action, action != .palette, action != .escape, action != .cancelPanel else { return false }
+            return seen.insert(row.title).inserted
+        }
+    }
+
+    /// The overview: groups in table order, each title once.
+    public static func groups(in context: HelixContext) -> [(name: String, rows: [HelixBinding])] {
+        var order: [String] = [], rows: [String: [HelixBinding]] = [:], seen = Set<String>()
+        for row in Self.rows(in: context) where row.target != .menu && seen.insert(row.group + row.title).inserted {
+            if rows[row.group] == nil { order.append(row.group) }
+            rows[row.group, default: []].append(row)
+        }
+        return order.map { ($0, rows[$0] ?? []) }
+    }
+
+    /// A token as it reads on the keyboard.
+    public static func label(_ token: String) -> String {
+        switch token {
+        case "<Space>": return "Space"
+        case "<CR>": return "Enter"
+        case "<Esc>": return "Esc"
+        case "<Tab>": return "Tab"
+        case "<S-Tab>": return "⇧Tab"
+        case "<BS>": return "⌫"
+        case "<Left>": return "←"
+        case "<Right>": return "→"
+        case "<Up>": return "↑"
+        case "<Down>": return "↓"
+        default: break
+        }
+        if token.hasPrefix("<A-"), token.hasSuffix(">") { return "⌥" + token.dropFirst(3).dropLast() }
+        if token.count == 2, token.hasPrefix("^") { return "⌃" + token.dropFirst() }
+        return token
+    }
+    /// Tokens side by side, a named first key set apart: `gg`, `Space tp`.
+    public static func label(_ tokens: [String]) -> String {
+        guard let first = tokens.first else { return "" }
+        let rest = tokens.dropFirst().map(label).joined()
+        return label(first) + (label(first).count > 1 && !rest.isEmpty ? " " : "") + rest
+    }
+}

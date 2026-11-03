@@ -53,6 +53,28 @@ final class LassoTouchAndHighZoomTests: XCTestCase {
         XCTAssertTrue(LassoRegion(points: hull).contains(.init(x: 50, y: 50)))
         XCTAssertFalse(LassoRegion(points: hull).contains(.init(x: 0, y: 0)))
     }
+    func testSeveralMembersShareOneRoundedHullWithoutHoles() {
+        // Nutzer zu Build 62: one contour around everything, with some room.
+        let discs: [(center: PagePoint, radius: Double)] = [(.init(x: 0, y: 0), 7), (.init(x: 300, y: 0), 7), (.init(x: 150, y: 200), 10)]
+        let hull = SelectionOutline.roundedHull(discs)
+        let region = LassoRegion(points: hull)
+        for disc in discs {
+            for angle in stride(from: 0.0, to: 2 * .pi, by: .pi / 8) {
+                let edge = PagePoint(x: disc.center.x + disc.radius * 0.98 * cos(angle), y: disc.center.y + disc.radius * 0.98 * sin(angle))
+                XCTAssertTrue(region.contains(edge), "every widened member inside")
+            }
+        }
+        XCTAssertTrue(region.contains(.init(x: 150, y: 50)), "the space between members is inside: one piece, no holes")
+        XCTAssertFalse(region.contains(.init(x: 0, y: 200)))
+        // Convex: every turn has the same sign (one simple closed outline).
+        let turns = hull.indices.map { index -> Double in
+            let a = hull[index], b = hull[(index + 1) % hull.count], c = hull[(index + 2) % hull.count]
+            return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+        }
+        XCTAssertTrue(turns.allSatisfy { $0 > 0 } || turns.allSatisfy { $0 < 0 })
+        XCTAssertGreaterThan(hull.count, 12, "rounded, not a triangle")
+        XCTAssertTrue(SelectionOutline.roundedHull([]).isEmpty)
+    }
     func testSelectionContourGapStaysConstantOnScreenInZoomSteps() {
         XCTAssertEqual(SelectionOutline.gap(displayScale: 1), 7)
         XCTAssertEqual(SelectionOutline.zoomBucket(0), 1)

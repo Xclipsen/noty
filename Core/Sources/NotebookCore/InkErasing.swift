@@ -80,6 +80,29 @@ public enum ScribbleErase {
         }
     }
 
+    /// Shapes whose drawn outline lies mostly inside the scribble's hull, like
+    /// strokes (`coveredStrokes` over outlines sampled about every 3 pt): a
+    /// scribble over a shape removes it together with covered ink.
+    public static func coveredShapes(scribble: [PagePoint], shapes: [ShapeObject], padding: Double, minimumShare: Double = 0.5) -> [UUID] {
+        let outlines = shapes.map { shape in
+            shape.outlinePolylines.flatMap { line in sampled(line.closed && !line.points.isEmpty ? line.points + [line.points[0]] : line.points, spacing: 3) }
+        }
+        return coveredStrokes(scribble: scribble, strokes: outlines, padding: padding, minimumShare: minimumShare).map { shapes[$0].id }
+    }
+    /// The polyline with extra points so no gap exceeds `spacing`.
+    static func sampled(_ points: [PagePoint], spacing: Double) -> [PagePoint] {
+        guard let first = points.first else { return [] }
+        var result = [first]
+        for (a, b) in zip(points, points.dropFirst()) {
+            let steps = max(1, Int((hypot(b.x - a.x, b.y - a.y) / max(0.5, spacing)).rounded(.up)))
+            for step in 1...steps {
+                let t = Double(step) / Double(steps)
+                result.append(PagePoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t))
+            }
+        }
+        return result
+    }
+
     static func convexHull(_ points: [PagePoint]) -> [PagePoint] {
         let sorted = points.sorted { $0.x == $1.x ? $0.y < $1.y : $0.x < $1.x }
         guard sorted.count >= 3 else { return sorted }

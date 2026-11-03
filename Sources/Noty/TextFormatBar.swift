@@ -1,3 +1,4 @@
+import SwiftUI
 import UIKit
 import NotebookCore
 
@@ -96,6 +97,25 @@ extension TextObjectLayer {
         root.addSubview(scroll); root.autoresizingMask = [.flexibleWidth]
         return root
     }
+    static let formatColors: [(String, InkColor)] = [
+        ("Gelb", .init(1,1,0)), ("Orange", .init(1,0.6,0)), ("Rot", .init(0.8,0.12,0.12)), ("Pink", .init(1,0,0.7)),
+        ("Hellgrün", .init(0.5,0.9,0)), ("Grün", .init(0.3,0.7,0.3)), ("Violett", .init(0.7,0.2,0.9)), ("Lila", .init(0.6,0.4,0.8)),
+        ("Mint", .init(0.5,1,0.8)), ("Blau", .init(0.1,0.35,0.8)), ("Hellblau", .init(0.3,0.5,0.9)), ("Lavendel", .init(0.6,0.5,1)),
+        ("Schwarz", .init(0,0,0)), ("Grau", .init(0.4,0.4,0.4)), ("Weiß", .init(1,1,1)), ("Braun", .init(0.7,0.5,0.3))
+    ]
+    /// Text and marker colours for `Space c`, the choices of the format bar.
+    func keyboardColorRows() -> [KeyChoiceRow] {
+        let inks = Self.formatColors.map { name, ink in
+            KeyChoiceItem(title: name, color: Color(uiColor: UIColor(red: ink.red, green: ink.green, blue: ink.blue, alpha: 1))) { [weak self] in
+                self?.changeStyle { $0.ink = ink; $0.automaticColor = nil }
+            }
+        }
+        var markers = HighlightColor.allCases.map { color in
+            KeyChoiceItem(title: color.title, color: Color(uiColor: color.uiColor)) { [weak self] in self?.applyHighlight(color) }
+        }
+        markers.append(KeyChoiceItem(title: "Aus") { [weak self] in self?.applyHighlight(nil) })
+        return KeyChoiceRow.rows("Textfarbe", inks, width: 8) + [KeyChoiceRow(title: "Markieren", items: markers)]
+    }
     private var presentingController: UIViewController? {
         var responder: UIResponder? = self
         while let current = responder { if let controller = current as? UIViewController { return controller }; responder = current.next }
@@ -106,6 +126,8 @@ extension TextObjectLayer {
         var symbol: String
         var selected: Bool
         var change: (inout TextBoxStyle) -> Void
+        /// Not a format: an action at the caret.
+        var action: (() -> Void)?
     }
     /// Fixed-size vector canvases keep differently shaped SF symbols centered.
     private func formatIcon(_ name: String) -> UIImage? {
@@ -126,8 +148,14 @@ extension TextObjectLayer {
             .init(label: "Tiefstellen", symbol: "textformat.subscript", selected: style.baseline == -1,
                 change: { $0.baseline = $0.baseline == -1 ? nil : -1 }),
             .init(label: "Formatierung entfernen", symbol: "eraser", selected: false,
-                change: { [light = selectedLight] in $0 = $0.clearingCharacterFormatting(light: light) })
-        ])
+                change: { [light = selectedLight, units = selectedSizeUnits] in
+                    $0 = $0.clearingCharacterFormatting(light: light)
+                    $0.fontSize = units.stored($0.fontSize)
+                })
+        ] + (flowActions == nil ? [] : [
+            .init(label: "Seitenumbruch", symbol: "arrow.down.to.line.compact", selected: false, change: { _ in },
+                action: { [weak self] in self?.insertPageBreak() })
+        ]))
     }
     @objc private func showAlignment() {
         guard let style = selectionStyle else { return }
@@ -159,6 +187,7 @@ extension TextObjectLayer {
             button.addAction(UIAction { [weak self, weak popover, weak editor] _ in
                 defer { popover?.dismiss(animated: true) }
                 guard let self, let editor, editor.attributedText.isEqual(to: original), self.restoreFormatSelection() else { return }
+                if let action = choice.action { action(); return }
                 if editor.selectedRange.length == 0 { editor.typingAttributes = insertion }
                 self.changeStyle(choice.change, paragraph: paragraph)
             }, for: .touchUpInside)
@@ -186,13 +215,7 @@ extension TextObjectLayer {
         popover.view.backgroundColor = UIColor(white: 0.035, alpha: 1)
         popover.preferredContentSize = CGSize(width: 360, height: 152)
         popover.modalPresentationStyle = .popover
-        let colors: [(String, InkColor)] = [
-            ("Gelb", .init(1,1,0)), ("Orange", .init(1,0.6,0)), ("Rot", .init(0.8,0.12,0.12)), ("Pink", .init(1,0,0.7)),
-            ("Hellgrün", .init(0.5,0.9,0)), ("Grün", .init(0.3,0.7,0.3)), ("Violett", .init(0.7,0.2,0.9)), ("Lila", .init(0.6,0.4,0.8)),
-            ("Mint", .init(0.5,1,0.8)), ("Blau", .init(0.1,0.35,0.8)), ("Hellblau", .init(0.3,0.5,0.9)), ("Lavendel", .init(0.6,0.5,1)),
-            ("Schwarz", .init(0,0,0)), ("Grau", .init(0.4,0.4,0.4)), ("Weiß", .init(1,1,1)), ("Braun", .init(0.7,0.5,0.3))
-        ]
-        for (i, item) in colors.enumerated() {
+        for (i, item) in Self.formatColors.enumerated() {
             let button = UIButton(type: .system); button.accessibilityLabel = item.0
             button.frame = CGRect(x: 4 + (i % 8) * 44, y: 8 + (i / 8) * 44, width: 44, height: 44)
             let swatch = UIView(frame: CGRect(x: 9, y: 9, width: 26, height: 26)); swatch.isUserInteractionEnabled = false
@@ -250,7 +273,7 @@ extension TextObjectLayer {
         changeStyle { $0.font = .system; $0.fontName = name }
         viewController.dismiss(animated: true)
     }
-    private func editLink() {
+    func editLink() {
         var responder: UIResponder? = self
         while responder != nil && !(responder is UIViewController) { responder = responder?.next }
         guard let controller = responder as? UIViewController else { return }
@@ -283,7 +306,7 @@ extension TextObjectLayer {
         })
         controller.present(alert, animated: true)
     }
-    @objc private func finishEditing() { endTextEditing() }
+    @objc private func finishEditing() { finishFieldByUser() }
     /// White highlighter symbol with a short stroke in the current marker colour.
     private func highlightIcon(_ color: UIColor) -> UIImage? {
         guard let symbol = UIImage(systemName: "highlighter", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)) else { return nil }
@@ -339,9 +362,11 @@ extension TextObjectLayer {
         field.editor.accessibilityHint = neededHeight(field.editor, width: box.width) > box.height + 1
             ? "Textfeld am Seitenende · Text bleibt vollständig gespeichert." : nil
         let style = selectionStyle ?? box.style
-        buttons["Textstil"]?.setTitle(TextStylePreset.matching(style).title, for: .normal)
-        buttons["Schriftgröße"]?.setTitle(String(Int(style.fontSize)), for: .normal)
-        buttons["Schriftgröße"]?.accessibilityValue = "\(Int(style.fontSize)) Punkt"
+        var shown = style
+        shown.fontSize = sizeUnits(for: box).visible(style.fontSize)
+        buttons["Textstil"]?.setTitle(TextStylePreset.matching(shown).title, for: .normal)
+        buttons["Schriftgröße"]?.setTitle(String(Int(shown.fontSize)), for: .normal)
+        buttons["Schriftgröße"]?.accessibilityValue = "\(Int(shown.fontSize)) Punkt"
         buttons["Schrift"]?.setTitle(style.fontName.flatMap { UIFont(name: $0, size: 17)?.familyName } ?? (style.font == .serif ? "Serif" : style.font == .monospaced ? "Festbreite" : "System"), for: .normal)
         if style.automaticColor == true {
             buttons["Farbe"]?.setImage(automaticSwatch().withRenderingMode(.alwaysOriginal), for: .normal)

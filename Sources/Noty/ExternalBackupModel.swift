@@ -6,10 +6,10 @@ private enum BackupTargetError: LocalizedError {
     case missing, folderUnreachable, folderNotWritable, invalidResponse, http(Int), credential, credentialsMissing
     var errorDescription: String? {
         switch self {
-        case .missing: "Backupziel nicht erreichbar. Ordner erneut wählen bzw. WebDAV-Zugang prüfen."
+        case .missing: "Backup-Ziel nicht erreichbar. Backup-Ordner erneut wählen bzw. WebDAV-Zugang prüfen."
         case .folderUnreachable: ExternalBackupModel.folderUnreachableText
         case .folderNotWritable: "Der Backup-Ordner ist nicht beschreibbar. Bitte einen anderen Ordner wählen."
-        case .invalidResponse: "Backupziel antwortet ungültig oder leitet um. Bitte die endgültige HTTPS-Ordneradresse verwenden."
+        case .invalidResponse: "Backup-Ziel antwortet ungültig oder leitet um. Bitte die endgültige HTTPS-Ordneradresse verwenden."
         case .http(let code): "WebDAV meldet HTTP \(code). Zugang, Ordneradresse und Schreibrechte prüfen."
         case .credential: "WebDAV-Zugang konnte nicht im Schlüsselbund gelesen oder gesichert werden."
         case .credentialsMissing: "Für WebDAV sind keine Zugangsdaten gespeichert. Bitte Benutzername und Passwort eingeben."
@@ -93,7 +93,7 @@ final class ExternalBackupModel: ObservableObject {
         if let saved, let value = try? JSONDecoder().decode(ExternalBackupPolicy.self, from: saved), (try? value.validate()) != nil {
             policy = value
             status = Self.summary(value)
-        } else { policy = ExternalBackupPolicy(); status = saved == nil ? "Externes Backup nicht eingerichtet" : "Backupziel unlesbar · bitte neu einrichten" }
+        } else { policy = ExternalBackupPolicy(); status = saved == nil ? "Automatisches Backup nicht eingerichtet" : "Backup-Ziel unlesbar · bitte neu einrichten" }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 60; configuration.timeoutIntervalForResource = 6 * 3600
         configuration.urlCredentialStorage = nil; configuration.httpCookieStorage = nil; configuration.urlCache = nil
@@ -105,9 +105,9 @@ final class ExternalBackupModel: ObservableObject {
     private static func summary(_ policy: ExternalBackupPolicy) -> String {
         switch policy.lastOutcome {
         case .unreachable?, .failed?:
-            return "Letzter Versuch fehlgeschlagen: \(policy.lastFailureReason ?? "unbekannt") · ältere Sicherungen bleiben erhalten"
+            return "Letzter Versuch fehlgeschlagen: \(policy.lastFailureReason ?? "unbekannt") · ältere Backups bleiben erhalten"
         default:
-            return policy.lastSuccess.map { "Zuletzt geprüft: \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "Noch keine externe Sicherung"
+            return policy.lastSuccess.map { "Letztes Backup: \(NotyText.statusDate($0))" } ?? "Noch kein Backup"
         }
     }
 
@@ -120,7 +120,7 @@ final class ExternalBackupModel: ObservableObject {
     var hasStoredCredentials: Bool { storedUsername != nil }
     private var credentialAccount: String { policy.series.uuidString }
     private func persist() { if let data = try? JSONEncoder().encode(policy) { UserDefaults.standard.set(data, forKey: key) } }
-    func disable() { guard !busy else { return }; policy.target = .disabled; persist(); history = []; status = "Automatisches externes Backup aus" }
+    func disable() { guard !busy else { return }; policy.target = .disabled; persist(); history = []; status = "Automatisches Backup ausgeschaltet" }
     func setRetention(_ count: Int) { guard !busy else { return }; policy.keep = min(30, max(3, count)); persist() }
     func useFolder(_ url: URL) {
         guard !busy else { return }
@@ -129,7 +129,7 @@ final class ExternalBackupModel: ObservableObject {
             let bookmark = try url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
             policy.folderBookmark = bookmark; policy.folderName = url.lastPathComponent
             policy.startTarget(.folder); folderUnreachable = false
-            try policy.validate(); persist(); history = []; placeholders = []; status = "Ordner gewählt · erste Sicherung steht aus"
+            try policy.validate(); persist(); history = []; placeholders = []; status = "Backup-Ordner gewählt · erstes Backup steht aus"
         } catch { self.error = "Ordner konnte nicht eingerichtet werden." }
     }
     /// An empty password keeps the stored one (also when only the name changes).
@@ -151,7 +151,7 @@ final class ExternalBackupModel: ObservableObject {
             storedUsername = name
             if policy.target != .webDAV || policy.endpoint != url.absoluteString { policy.startTarget(.webDAV); history = []; placeholders = [] }
             policy.endpoint = url.absoluteString
-            try policy.validate(); persist(); status = "WebDAV gespeichert · nächste Sicherung steht aus"
+            try policy.validate(); persist(); status = "WebDAV gespeichert · erstes Backup steht aus"
         } catch { self.error = "WebDAV konnte nicht eingerichtet werden. HTTPS-Ordneradresse, Benutzername und Schlüsselbund prüfen." }
     }
     /// Explicit only; switching targets keeps the credential.
@@ -180,33 +180,35 @@ final class ExternalBackupModel: ObservableObject {
         let commit: BackupCommit
         if committed { commit = await library.editorCommit?() ?? .busy } else { commit = await toolbox.flush() ? .committed : .failed }
         switch commit {
-        case .busy: postpone("Notizbuch wird bearbeitet oder gespeichert", manual: manual); return
-        case .failed: postpone("Speichern im Notizbuch oder der Werkzeugeinstellungen fehlgeschlagen", manual: manual, stuck: true); return
+        case .busy: postpone("Heft wird bearbeitet oder gespeichert", manual: manual); return
+        case .failed: postpone("Speichern im Heft oder der Werkzeugeinstellungen fehlgeschlagen", manual: manual, stuck: true); return
         case .committed: blockedCount = 0; blockedUntil = nil
         }
-        status = "Backupziel wird geprüft …"
+        status = "Backup-Ziel wird geprüft …"
         let folderURL: URL?
         do { folderURL = try await reachableTarget() }
         catch { fail(Self.isUnreachable(error) ? .unreachable : .failed, error, manual: manual); return }
-        status = "Bibliothek wird für externes Backup gesichert …"
+        status = "Bibliothek wird für das Backup vorbereitet …"
         let archive: PreparedLibraryArchive
         do { archive = try await library.buildArchive(editorsCommitted: committed) }
         catch let postponed as BackupPostponed { postpone(postponed.reason, manual: manual); return }
         catch { fail(.failed, error, manual: manual); return }
         defer { BackupScratch.remove(archive.url) }
         let name = policy.filename()
-        status = "Externes Backup wird geschrieben und zurückgelesen …"
+        status = "Backup wird geschrieben und zurückgelesen …"
         do {
             if let folderURL { try await writeFolder(archive, name: name, folder: folderURL) }
             else { try await writeWebDAV(archive, name: name) }
         } catch { fail(Self.isUnreachable(error) ? .unreachable : .failed, error, manual: manual); return }
         // Older readable notebook states are a warning, never a failure.
         policy.recordSuccess(warning: archive.warning); persist()
-        status = (archive.warning.map { "Gesichert; \($0) · " } ?? "") + (policy.target == .folder
+        status = (archive.warning.map { "Backup mit Hinweis: \($0) · " } ?? "") + (policy.target == .folder
             ? "Zieldatei geprüft · Cloud-Upload übernimmt die Dateien-App"
-            : "WebDAV-Sicherung vollständig zurückgelesen und geprüft")
-        do { try await reloadHistory(); try await prune(verified: name, file: archive.summary.file) }
-        catch { status += " · ältere Stände nicht bereinigt" }
+            : "WebDAV-Backup vollständig zurückgelesen und geprüft")
+        do {
+            try await reloadHistory()
+            if try await prune(verified: name, file: archive.summary.file) { status += " · iCloud lädt noch hoch, ältere Stände bleiben" }
+        } catch { status += " · ältere Stände nicht bereinigt" }
     }
 
     /// Not a failure: no attempt time and no target backoff. Running input is
@@ -219,7 +221,7 @@ final class ExternalBackupModel: ObservableObject {
             blockedCount += 1
             let until = Date().addingTimeInterval(Self.stuckDelays[min(blockedCount, Self.stuckDelays.count) - 1])
             blockedUntil = until
-            text += " · nächster Versuch \(until.formatted(date: .omitted, time: .shortened))"
+            text += " · nächster Versuch \(NotyText.statusDate(until))"
         }
         status = text
         if manual { error = BackupPostponed(reason: reason).localizedDescription }
@@ -232,8 +234,8 @@ final class ExternalBackupModel: ObservableObject {
         if error is CancellationError || (error as? URLError)?.code == .cancelled { postpone("Vorgang abgebrochen", manual: manual); return }
         let reason = Self.reason(error)
         policy.recordFailure(outcome, reason: reason); persist()
-        let next = policy.nextAttempt.map { " · nächster Versuch \($0.formatted(date: .omitted, time: .shortened))" } ?? ""
-        status = (outcome == .unreachable ? "Backupziel nicht erreichbar: " : "Externes Backup fehlgeschlagen: ") + reason + next
+        let next = policy.nextAttempt.map { " · nächster Versuch \(NotyText.statusDate($0))" } ?? ""
+        status = (outcome == .unreachable ? "Backup-Ziel nicht erreichbar: " : "Backup fehlgeschlagen: ") + reason + next
         // Never display a URLSession error that might include a credential-bearing endpoint.
         if manual { self.error = Self.detail(error) }
     }
@@ -255,8 +257,8 @@ final class ExternalBackupModel: ObservableObject {
             switch error {
             case .archiveTooLarge: return "Bibliothek größer als 4 GB"
             case .notebookTooLarge(let title): return "„\(title.prefix(40))“: Heftdaten ohne Bilder größer als 200 MB"
-            case .incomplete: return "Ein Notizbuch ist nicht vollständig lesbar"
-            case .verificationFailed: return "Zurückgelesene Sicherung weicht ab"
+            case .incomplete: return "Ein Heft ist nicht vollständig lesbar"
+            case .verificationFailed: return "Zurückgelesenes Backup weicht ab"
             case .damagedImage(let title): return "Bildoriginal in „\(title.prefix(40))“ fehlt oder ist beschädigt"
             default: return "Archiv ungültig"
             }
@@ -271,9 +273,11 @@ final class ExternalBackupModel: ObservableObject {
             }
         case is URLError: return isUnreachable(error) ? "Server nicht erreichbar (offline?)" : "Netzwerkfehler"
         case let error as CocoaError where error.code == .fileWriteOutOfSpace: return "Zu wenig freier Speicher auf dem iPad"
-        case is ImageAssetError: return "Bildoriginal eines Notizbuchs fehlt oder ist beschädigt"
-        case is StorageError, is RevisionError, is BackupError: return "Inhalt eines Notizbuchs ungültig"
-        default: return "Sicherung nicht abgeschlossen"
+        case let error as CocoaError where error.code == .fileWriteNoPermission || error.code == .fileWriteVolumeReadOnly:
+            return reason(BackupTargetError.folderNotWritable)
+        case is ImageAssetError: return "Bildoriginal eines Hefts fehlt oder ist beschädigt"
+        case is StorageError, is RevisionError, is BackupError: return "Inhalt eines Hefts ungültig"
+        default: return "Backup nicht abgeschlossen"
         }
     }
     private static func detail(_ error: Error) -> String {
@@ -281,7 +285,10 @@ final class ExternalBackupModel: ObservableObject {
             || error is ImageAssetError {
             return error.localizedDescription
         }
-        return "Ziel nicht erreichbar, nicht beschreibbar oder Sicherung unvollständig (\(reason(error))). Ältere Sicherungen bleiben erhalten."
+        if let error = error as? CocoaError, error.code == .fileWriteNoPermission || error.code == .fileWriteVolumeReadOnly {
+            return BackupTargetError.folderNotWritable.localizedDescription
+        }
+        return "Ziel nicht erreichbar, nicht beschreibbar oder Backup unvollständig (\(reason(error))). Ältere Backups bleiben erhalten."
     }
 
     /// Folder: resolvable existing directory (returns the URL). Write permission
@@ -363,20 +370,25 @@ final class ExternalBackupModel: ObservableObject {
         do {
             var put = try request("PUT", name: partial)
             put.setValue("*", forHTTPHeaderField: "If-None-Match"); put.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-            let (_, uploaded) = try await session.upload(for: put, fromFile: archive.url); try check(uploaded, allowed: [201])
+            // The read-back below is the proof, not one particular success code.
+            let (_, uploaded) = try await session.upload(for: put, fromFile: archive.url); try check(uploaded, allowed: [200, 201, 204])
             guard try await downloadChecksum(partial) == archive.summary.file else { throw LibraryArchiveError.verificationFailed }
             var move = try request("MOVE", name: partial)
             move.setValue(try request("GET", name: name).url!.absoluteString, forHTTPHeaderField: "Destination")
             move.setValue("F", forHTTPHeaderField: "Overwrite")
-            let (_, moved) = try await session.data(for: move); try check(moved, allowed: [201])
+            let (_, moved) = try await session.data(for: move); try check(moved, allowed: [201, 204])
         } catch {
             await deleteQuietly(partial)
             throw error
         }
         do { guard try await downloadChecksum(name) == archive.summary.file else { throw LibraryArchiveError.verificationFailed } }
-        catch {
+        catch let error as URLError {
+            // Only this check lost the network: the same bytes were verified as
+            // `.partial` a moment ago, so the finished backup stays.
+            throw error
+        } catch {
             await deleteQuietly(name)
-            throw error is URLError ? error : LibraryArchiveError.verificationFailed
+            throw LibraryArchiveError.verificationFailed
         }
     }
     private func deleteQuietly(_ name: String) async {
@@ -418,14 +430,28 @@ final class ExternalBackupModel: ObservableObject {
         } else { listing = ExternalBackupListing() }
         history = listing.archives; placeholders = listing.placeholders; temporaries = listing.temporaries
     }
-    private func prune(verified: String, file: LibraryArchiveFileInfo) async throws {
+    /// Own archives in iCloud Drive that are only local so far (iCloud may
+    /// also be full). Other providers tell nothing here: an empty set.
+    nonisolated private static func waitingForUpload(_ names: [String], in directory: URL) -> Set<String> {
+        Set(names.filter { name in
+            guard let values = try? directory.appendingPathComponent(name)
+                .resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemIsUploadedKey]) else { return false }
+            return values.isUbiquitousItem == true && values.ubiquitousItemIsUploaded != true
+        })
+    }
+    /// True when archives still wait for their upload.
+    private func prune(verified: String, file: LibraryArchiveFileInfo) async throws -> Bool {
         if policy.target == .folder {
             let directory = try folder(), access = directory.startAccessingSecurityScopedResource(), policy = policy
             defer { if access { directory.stopAccessingSecurityScopedResource() } }
-            let removed = try await Task.detached(priority: .utility) {
-                try ExternalBackupFolder.prune(policy: policy, directory: directory, verified: verified, file: file, coordination: CoordinatedBackupFiles())
+            let names = history
+            let (removed, waiting) = try await Task.detached(priority: .utility) {
+                let waiting = Self.waitingForUpload(names, in: directory)
+                return (try ExternalBackupFolder.prune(policy: policy, directory: directory, verified: verified, file: file,
+                    waitingForUpload: waiting, coordination: CoordinatedBackupFiles()), waiting)
             }.value
             history.removeAll { removed.contains($0) }
+            return !waiting.isEmpty
         } else {
             // Only after the newest full archive has been read back and checked above.
             for name in policy.obsolete(history, verified: verified) {
@@ -433,6 +459,7 @@ final class ExternalBackupModel: ObservableObject {
                 history.removeAll { $0 == name }
             }
             for name in policy.staleTemporaries(temporaries) { await deleteQuietly(name) }
+            return false
         }
     }
 
@@ -459,7 +486,7 @@ final class ExternalBackupModel: ObservableObject {
             return PreparedLibraryArchive(url: destination, summary: summary)
         } catch {
             if let local { BackupScratch.remove(local) }
-            self.error = "Dieser Sicherungsstand konnte nicht vollständig gelesen und geprüft werden."
+            self.error = "Dieser Backup-Stand konnte nicht vollständig gelesen und geprüft werden."
             return nil
         }
     }

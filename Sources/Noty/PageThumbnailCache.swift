@@ -110,11 +110,31 @@ final class PageThumbnailCache: ObservableObject {
             ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)
             parts.ink?.draw(in: bounds)
             for box in page.resolvedTextBoxes {
-                let frame = CGRect(x: box.x + layout.contentOrigin.x, y: box.y + layout.contentOrigin.y,
-                                   width: box.width, height: box.height)
-                context.saveGState(); context.clip(to: frame)
-                TextObjectLayout(box, on: page).draw(at: frame.origin)
+                let origin = layout.contentOrigin
+                func shown(_ point: PagePoint) -> CGPoint { CGPoint(x: point.x + origin.x, y: point.y + origin.y) }
+                TextFieldStyleRendering.draw(box, at: CGPoint(x: box.x + origin.x, y: box.y + origin.y), context: context)
+                // Clipped like the editor: the (possibly rotated) text frame
+                // plus the same glyph overhang, so italics and first letters
+                // keep their edges; text beyond it stays stored, marked below.
+                let text = TextObjectLayout(box, on: page)
+                let reach = Double(TextObjectLayout.glyphOverhang(box)) * page.writingCoordinateScale(for: box)
+                let outline = CGMutablePath()
+                outline.addLines(between: [PagePoint(x: -reach, y: -reach), PagePoint(x: box.width + reach, y: -reach),
+                                           PagePoint(x: box.width + reach, y: box.height + reach), PagePoint(x: -reach, y: box.height + reach)]
+                    .map { shown(box.pagePoint($0)) })
+                outline.closeSubpath()
+                context.saveGState(); context.addPath(outline); context.clip()
+                text.draw(at: CGPoint(x: box.x + origin.x, y: box.y + origin.y))
                 context.restoreGState()
+                // Overflowing text: the red frame of the editor (`TextBox.overflows`).
+                if box.overflows(textHeight: Double(text.contentHeight(box))) {
+                    let frame = CGMutablePath()
+                    frame.addLines(between: box.selectionCorners.map(shown)); frame.closeSubpath()
+                    context.saveGState()
+                    context.addPath(frame); context.setStrokeColor(UIColor.systemRed.cgColor)
+                    context.setLineWidth(1.5 / parts.scale); context.strokePath()
+                    context.restoreGState()
+                }
             }
         }
     }

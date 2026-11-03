@@ -3,6 +3,7 @@ import PDFKit
 import PencilKit
 import NotebookCore
 import OSLog
+import UniformTypeIdentifiers
 
 /// Configuration of one native page (`WorksheetView`), built per page by the
 /// editor and applied by `NotebookViewport`.
@@ -10,6 +11,9 @@ struct PageEditor {
     var sourcePage: PDFPage?
     var layout: PageLayout
     var pageID: UUID
+    /// The page as configured (paper, margins, geometry, PDF reference):
+    /// context for automatic text colours and ruled layout of lifted text.
+    var page = Page()
     var drawing: Data
     var textBoxes: [TextBox]
     var images: [ImageObject]
@@ -18,6 +22,8 @@ struct PageEditor {
     var paper: PaperStyle = .blank
     var paperColor: PaperColor = .white
     var margins: PageMargins?
+    /// Tops of the page's writing regions: migrated page text keeps its line layout there (`TextBox.rulingAnchorY`).
+    var writingRegionTops: [TextFlowRegion: Double] = [:]
     var tool: EditorTool
     var color: UIColor
     var width: CGFloat
@@ -35,7 +41,8 @@ struct PageEditor {
     /// Round tip: PencilKit monoline ink (colour already at highlighter opacity).
     var markerTip = MarkerTip.round
     var scribbleErase = true
-    var onPencilAction: () -> Void
+    /// Pencil double tap/squeeze per system setting: eraser ↔ the tool before it, or the previous tool.
+    var onPencilAction: (PencilToolSwitch) -> Void
     /// Apple Pencil Pro squeeze phases (palette / double squeeze); nil keeps the plain toggle.
     var onPencilSqueeze: ((PencilSqueezeEvent) -> Void)? = nil
     var onInteraction: (UUID, Bool) -> Void
@@ -62,9 +69,25 @@ struct PageEditor {
     var onContent: (PageContent, PageContent) -> Bool
     /// Shapes removed by the precision eraser, merged into that gesture's ink undo step.
     var onEraseShapes: (PageContent, PageContent) -> Bool = { _, _ in false }
+    /// An image from the system pasteboard onto this page (the one paste path).
+    /// `near`: where the image should land (canonical), nil for the page's text area.
+    var onPasteImage: (PagePoint?) -> Void = { _ in }
     /// „Textfeld hinzufügen“ from the finger double-tap menu: the editor
     /// switches to the text tool, the sheet then opens the field itself.
+    /// Also „Bearbeiten“/second tap on a selected field (caret there).
     var onTextFieldRequested: () -> Void = {}
+    /// „Textwerkzeug fixieren“ (lock in the text tool's options).
+    var textToolLocked = false
+    /// Text document (TEXT-REBUILD-62 §4): a tap beside every object puts the
+    /// caret into the flow, also a finger tap while an ink tool is active.
+    var flowDocument = false
+    /// Caret behind the flow's last character (page without flow segment).
+    var onFlowEnd: () -> Void = {}
+    /// ⌘A with no caret in a text document: the whole text.
+    var onSelectWholeFlow: () -> Void = {}
+    var flowActions: TextFlowActions? = nil
+    /// The user left a field while the text tool is not fixed: back to the previous tool.
+    var onTextEditingFinished: () -> Void = {}
 }
 
 extension PageEditor {
@@ -75,7 +98,8 @@ extension PageEditor {
               contentGeneration == other.contentGeneration, searchHighlight == other.searchHighlight else { return false }
         guard paper == other.paper, paperColor == other.paperColor, margins == other.margins else { return false }
         guard tool == other.tool, width == other.width, Self.sameColor(color, other.color), enabled == other.enabled,
-              focused == other.focused, autoPen == other.autoPen, fingerDrawing == other.fingerDrawing, ruler == other.ruler else { return false }
+              focused == other.focused, autoPen == other.autoPen, fingerDrawing == other.fingerDrawing, ruler == other.ruler,
+              textToolLocked == other.textToolLocked, flowDocument == other.flowDocument else { return false }
         return shapeOptions == other.shapeOptions && selectionFilter == other.selectionFilter && lassoMode == other.lassoMode
             && recognizeShapes == other.recognizeShapes && markerStraight == other.markerStraight && markerTip == other.markerTip
             && scribbleErase == other.scribbleErase
@@ -89,6 +113,9 @@ extension PageEditor {
 }
 
 struct UndoAvailability: Equatable { var undo = false, redo = false }
+
+/// What a Pencil double tap/squeeze switches to (system setting).
+enum PencilToolSwitch { case eraser, previous }
 
 /// Responder undo manager of a sheet. The system undo gesture/shortcut runs the
 /// notebook-wide history in `EditorModel` (stable page IDs, expected states).
@@ -130,10 +157,26 @@ final class DrawingCanvasView: PKCanvasView {
     override var inputAccessoryView: UIView? { nil }
     // Native canvas viewport changes must never scroll the containing notebook.
     override func scrollRectToVisible(_ rect: CGRect, animated: Bool) { }
+    /// ⌘V/„Einfügen“ while an ink tool is active: the sheet's one paste path
+    /// (`WorksheetView.pasteFromClipboard`); `canPaste`: something to paste.
+    var onPaste: (() -> Void)?
+    var canPaste: (() -> Bool)?
+    override func paste(_ sender: Any?) { onPaste?() }
+    // The canvas is a scroll view: keys go to the keyboard mode before it scrolls by them.
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.handle(presses) { super.pressesBegan(presses, with: event) }
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesEnded(presses, with: event) }
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesCancelled(presses, with: event) }
+    }
     /// PencilKit's „Platz einfügen“ (insert space) is not offered (Nutzerfeedback
     /// Tag 1); the finger double tap shows „Textfeld hinzufügen“ instead.
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if NSStringFromSelector(action).lowercased().contains("insertspace") { return false }
+        if action == #selector(paste(_:)) { return canPaste?() ?? false }
         return super.canPerformAction(action, withSender: sender)
     }
 }
@@ -148,10 +191,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private let pdfRaster = PDFSourceRasterView()
     private var pdfDocument: PDFDocument?
     let canvas = DrawingCanvasView()
-    private let imageLayer = ImageObjectLayer()
+    let imageLayer = ImageObjectLayer()
     let shapeLayer = ShapeObjectLayer()
     let objectLayer = ObjectEditingLayer()
-    private let textLayer = TextObjectLayer()
+    let textLayer = TextObjectLayer()
+    /// Guides of weiches Einrasten above everything (SoftSnapping.swift).
+    let snapGuides = SnapGuideView()
     private let hitHighlight = UIView()
     private var sourceDark = false
     private var sourceDarkCalculated = false
@@ -169,6 +214,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         var polylines: [Int: [PagePoint]] = [:]
         var marked = Set<Int>()
         var shapes = Set<UUID>()
+        /// Filled shapes swept only inside: they lose their fill, not themselves.
+        var unfilled = Set<UUID>()
         var last: PagePoint?
     }
     var eraseSession: EraseSession?
@@ -176,6 +223,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     struct ShapeEraseSession {
         var shapes: [ShapeObject]
         var hit = Set<UUID>()
+        /// Filled shapes swept only inside: they lose their fill, not themselves.
+        var unfilled = Set<UUID>()
         /// Solid, unfilled shapes the eraser cut: they become ink pieces.
         var masks: [UUID: ShapeEraseMask] = [:]
         var last: PagePoint?
@@ -221,7 +270,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var pageContent = PageContent(page: Page())
     var onContent: ((PageContent, PageContent) -> Bool)?
     var onEraseShapes: ((PageContent, PageContent) -> Bool)?
-    private var onPencilAction: (() -> Void)?
+    private var onPencilAction: ((PencilToolSwitch) -> Void)?
     private var onPencilSqueeze: ((PencilSqueezeEvent) -> Void)?
     var holdEnabled = true
     var holdPoints: [PagePoint] = []
@@ -234,6 +283,21 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var heldWidth: CGFloat = 2
     /// Ratio of PencilKit's drawn point size to the tool width, per ink type.
     var drawnWidthRatio: [PKInk.InkType: CGFloat] = [:]
+    /// Opacity, force and tilt of a typical drawn point (median size) of the
+    /// last stroke per ink type: a held ink line is drawn with them.
+    var drawnPointTemplate: [PKInk.InkType: PKStrokePoint] = [:]
+    /// Ink of the held stroke (the canvas tool when it was recognised).
+    var heldInk: PKInk?
+    /// The exact PencilKit stroke a held ink result commits; the preview is
+    /// this stroke rendered by PencilKit (`heldStrokeImage`).
+    var heldStroke: PKStroke?
+    /// noty's ruler, above the pages; a stroke at its edge is `rulerLine`.
+    weak var rulerView: RulerOverlayView?
+    let rulerStroke = RulerStrokeGesture(target: nil, action: nil)
+    var rulerLine: RulerLine?
+    let heldStrokeImage = UIImageView()
+    /// The result is committed; the preview stays until PencilKit has drawn it.
+    var heldVisualsPending: UUID?
     var holdSerial = 0
     var holdCompletion = StrokeCompletionGate()
     let heldInkImage = UIImageView()
@@ -245,14 +309,20 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// Finger taps select objects while an ink tool stays active; double tap
     /// offers „Textfeld hinzufügen“ (WorksheetView+FingerObjects.swift).
     private let fingerObjects = FingerObjectGestures()
-    /// Point of a requested text field until the text tool is configured.
-    private var pendingTextField: (pageID: UUID, point: PagePoint, deadline: CFTimeInterval)?
+    /// A requested new field (point) or caret in a field (box ID, point or
+    /// nil: end of text) until the text tool is configured.
+    /// `flow`: caret into the text document's flow at `point` instead of a new field.
+    private var pendingTextField: (pageID: UUID, point: PagePoint?, box: UUID?, deadline: CFTimeInterval, flow: Bool)?
+    /// Last tap on this page (canonical) and the visible part (sheet
+    /// coordinates): where pasted text opens its new field.
+    private var lastTap: PagePoint?
+    private var lastVisible: CGRect?
     private let interactionID = UUID()
     private let textInteractionID = UUID()
     private var onInteraction: ((UUID, Bool) -> Void)?
     var inkActive = false
     var renderViewport: InkRenderViewport?
-    private var configuration: PageEditor?
+    private(set) var configuration: PageEditor?
     private var lastObjectPreview: PageContent?
     private let selectionInkImage = UIImageView()
     private var selectionInkSource: Data?
@@ -332,8 +402,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             }
         }
         canvas.addGestureRecognizer(holdGesture)
+        // A checkbox toggles with every tool (finger or Pencil tap); only a
+        // stroke being drawn never does.
         checkboxTap.accepts = { [weak self] point in
-            guard let self, self.editable, [.pen, .pencil, .marker, .text, .read].contains(self.tool) else { return false }
+            guard let self, self.editable, !self.inkActive else { return false }
             return self.textLayer.hasCheckbox(at: self.convert(point, to: self.textLayer))
         }
         checkboxTap.onTap = { [weak self] point in
@@ -342,6 +414,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         addGestureRecognizer(checkboxTap)
         canvas.drawingGestureRecognizer.require(toFail: checkboxTap)
+        configureRulerStroke()
         interactionObserver.cancelsTouchesInView = false
         interactionObserver.delaysTouchesBegan = false; interactionObserver.delaysTouchesEnded = false
         interactionObserver.onChange = { [weak self] active in
@@ -350,25 +423,51 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         addGestureRecognizer(interactionObserver)
         textLayer.onEditingActive = { [weak self] active in
             guard let self else { return }; self.textEditing = active; self.onInteraction?(self.textInteractionID, active)
+            if active { self.claimSelectionFocus() }
             // A field that stopped editing leaves no first responder; ⌘Z keeps working.
             if !active { DispatchQueue.main.async { [weak self] in self?.claimUndoResponder() } }
         }
         textLayer.onCaretChanged = { [weak self] in self?.onRevealCaret?() }
+        textLayer.onLeaveField = { [weak self] in self?.configuration?.onTextEditingFinished() }
+        textLayer.onTap = { [weak self] point in
+            self?.rememberTap(point); self?.objectLayer.endTouchSelection(); self?.claimSelectionFocus()
+        }
+        objectLayer.onInteractionBegan = { [weak self] in self?.claimSelectionFocus() }
+        textLayer.objectAt = { [weak self] point in self?.objectHits(at: point).first }
+        textLayer.onSelectObject = { [weak self] object in
+            guard let self else { return }
+            self.syncObjectPlane(); self.objectLayer.selectByTouch(object)
+        }
+        objectLayer.textLines = { [weak self] box in self?.textLayer.lineRects(box) ?? [] }
+        objectLayer.objectHits = { [weak self] point in self?.objectHits(at: point) ?? [] }
+        objectLayer.hitsCheckbox = { [weak self] point in self?.fingerTapHitsCheckbox(point) ?? false }
+        objectLayer.pageContext = { [weak self] in self?.configuration?.page }
+        textLayer.pageContext = { [weak self] in self?.configuration?.page }
+        objectLayer.fittedText = { [weak self] box in self?.textLayer.fitted(box) ?? box }
+        objectLayer.onEditText = { [weak self] id, point in self?.requestTextEdit(id, at: point) }
+        objectLayer.onError = { [weak self] message in self?.configuration?.onError(message) }
+        canvas.onPaste = { [weak self] in self?.pasteFromClipboard() }
+        canvas.canPaste = { [weak self] in self?.canPasteFromClipboard ?? false }
+        objectLayer.onPaste = { [weak self] in self?.pasteFromClipboard() }
         objectLayer.onPreview = { [weak self] content in self?.showObjectPreview(content) }
         objectLayer.onTouchSelectionEnded = { [weak self] in DispatchQueue.main.async { self?.claimUndoResponder() } }
         fingerObjects.install(on: self)
-        imageLayer.pageContent = { [weak self] in self?.objectContent }
         objectLayer.onInkPreview = { [weak self] data, indices, transform in
             self?.showSelectionInk(data, indices: indices, transform: transform)
         }
         let interaction = UIPencilInteraction(); interaction.delegate = self; addInteraction(interaction)
         PencilLocationTracker.shared.observe(self)
         [paperBackground, pdfRaster, imageLayer, shapeLayer, canvas, textLayer, objectLayer, hitHighlight].forEach { addSubview($0) }
+        installSnapping()
         selectionInkImage.isUserInteractionEnabled = false; selectionInkImage.isHidden = true
         insertSubview(selectionInkImage, aboveSubview: canvas)
         heldInkImage.isUserInteractionEnabled = false; heldInkImage.isHidden = true
         insertSubview(heldInkImage, aboveSubview: canvas)
-        layer.insertSublayer(heldShapeLayer, above: heldInkImage.layer)
+        heldStrokeImage.isUserInteractionEnabled = false; heldStrokeImage.isHidden = true
+        insertSubview(heldStrokeImage, aboveSubview: heldInkImage)
+        // A held shape previews where the finished shape lies: above the
+        // shapes, below the ink (`Page.exportLayers`, `heldInkImage` shows it).
+        layer.insertSublayer(heldShapeLayer, above: shapeLayer.layer)
         heldShapeLayer.fillColor = UIColor.clear.cgColor; heldShapeLayer.lineCap = .round; heldShapeLayer.lineJoin = .round
         heldShapeLayer.isHidden = true
         layer.addSublayer(eraseTrail)
@@ -384,36 +483,23 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var objectLayout: PageLayout { pageLayout }
     var objectPageID: UUID? { pageID }
     /// Installs the result of an atomic cross-page transfer before SwiftUI
-    /// publishes it, so the next configure keeps the object history.
-    /// With the image tool the moved image is selected on the image plane
-    /// (it can be dragged on at once), otherwise the lasso selection is.
+    /// publishes it, so the next configure keeps the object history. The
+    /// moved members stay selected (they can be dragged on at once).
     func adoptTransfer(_ value: PageContent, selecting selection: TransferredSelection? = nil) {
         pageContent = value
-        let imageTool = tool == .image
-        imageLayer.adoptTransfer(value.images, selecting: imageTool ? selection?.images.first : nil)
-        objectLayer.adoptTransfer(value, selecting: imageTool ? nil : selection)
+        imageLayer.adoptTransfer(value.images)
+        objectLayer.adoptTransfer(value, selecting: selection)
     }
     func insertText(at point: CGPoint) { textLayer.insertText(at: point) }
     /// Frame (sheet coordinates) of an image just added with the image tool.
     func takeInsertedImage() -> CGRect? { imageLayer.takeInsertedImage().map { imageLayer.convert($0, to: self) } }
     func focusText(_ focus: TextFlowFocus) { textLayer.applyTextFocus(focus) }
-    func finishTextEditing() { textLayer.endTextEditing() }
-    /// PencilKit's private ruler recognizers (moved/rotated with two fingers).
-    /// The notebook's own pan/pinch must wait for them, otherwise the outer
-    /// scroll view swallows every ruler gesture.
-    var rulerGestureRecognizers: [UIGestureRecognizer] {
-        guard canvas.isRulerActive else { return [] }
-        var result: [UIGestureRecognizer] = []
-        func collect(_ view: UIView) {
-            for gesture in view.gestureRecognizers ?? [] where NSStringFromClass(type(of: gesture)).localizedCaseInsensitiveContains("ruler") {
-                result.append(gesture)
-            }
-            view.subviews.forEach(collect)
-        }
-        collect(canvas)
-        return result
+    /// The viewport left this page (sidebar, ⌘↑/↓, search, page number):
+    /// a field being edited ends like with Esc/„Fertig“ – back to the
+    /// previous tool unless the text tool is fixed.
+    func finishTextEditing() {
+        if textLayer.isEditingField { textLayer.finishFieldByUser() } else { textLayer.endTextEditing() }
     }
-
     override func layoutSubviews() {
         super.layoutSubviews()
         HangProbe.hit("Sheet.layoutSubviews")
@@ -450,6 +536,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// resolution step mid-gesture showed stale, shifted ink; keep the raster
     /// (magnified) unless the visible area is no longer covered at all.
     func updateRendering(visible: CGRect, scale: CGFloat, live: Bool = false) {
+        if bounds.intersects(visible) { lastVisible = visible.intersection(bounds) }
         guard !inkActive, bounds.intersects(visible), bounds.width > 0, bounds.height > 0 else { return }
         // Text keeps its own zoom-resolution viewport (not capped like ink).
         textLayer.updateDisplay(visible: visible, scale: scale, screenScale: window?.screen.scale ?? 2, live: live)
@@ -554,6 +641,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.onFlowChange = editor.onFlowEdit; textLayer.onFlowUndo = editor.onFlowUndo
         textLayer.onFlowBackspace = editor.onFlowBackspace; textLayer.onUndoBoundary = editor.onUndoBoundary
         textLayer.readCurrentBoxes = editor.readTextBoxes; textLayer.readFlowText = editor.readFlowText
+        textLayer.onFlowEnd = editor.onFlowEnd; textLayer.flowActions = editor.flowActions
         textLayer.adoptCallback(editor.onTextBoxes)
         imageLayer.adoptCallbacks(onChange: editor.onImages, onError: editor.onError)
         objectLayer.adoptCommit(editor.onContent)
@@ -569,12 +657,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         onInkSession = editor.onInkSession
         let focusChanged = worksheetFocused != editor.focused
         worksheetFocused = editor.focused
+        objectLayer.offersPaste = editor.focused
         let policy: PKCanvasViewDrawingPolicy = editor.fingerDrawing ? .anyInput : .pencilOnly
         if canvas.drawingPolicy != policy { canvas.drawingPolicy = policy }
         holdGesture.allowFinger = editor.fingerDrawing
-        // One ruler: only on the focused sheet; it follows the active page.
-        let rulerActive = editor.ruler && editor.focused
-        if canvas.isRulerActive != rulerActive { canvas.isRulerActive = rulerActive }
         defer { updating = false; objectLayer.publishPreview(ifTransientOnly: true) }
         // Search/task jump marker: shown on arrival, fades when the editor clears
         // it (after 3 s, Feedback 44) instead of staying on the page.
@@ -698,11 +784,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.onUndoBoundary = editor.onUndoBoundary
         textLayer.readCurrentBoxes = editor.readTextBoxes
         textLayer.readFlowText = editor.readFlowText
+        textLayer.onFlowEnd = editor.onFlowEnd
+        textLayer.flowActions = editor.flowActions
         textLayer.configure(boxes: editor.textBoxes, pageID: editor.pageID, layout: editor.layout,
                             contentGeneration: editor.contentGeneration, active: editable && tool == .text, readOnly: editable && tool == .read,
                             darkPaper: editor.paperColor == .dark, darkMargins: editor.margins?.color == .dark,
                             hasPDF: editor.sourcePage != nil, paperStyle: editor.paper, marginStyle: editor.margins?.style ?? .blank,
-                            onChange: editor.onTextBoxes)
+                            regionTops: editor.writingRegionTops, locked: editor.textToolLocked, flowDocument: editor.flowDocument, onChange: editor.onTextBoxes)
         imageLayer.configure(objects: editor.images, pageID: editor.pageID, layout: editor.layout,
                              contentGeneration: editor.contentGeneration, active: editable && tool == .image,
                              onChange: editor.onImages, onError: editor.onError)
@@ -728,6 +816,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         // the app-owned sweep (hold observer) dims first and removes on lift.
         let nativeDrawing = tool != .strokeEraser
         if canvas.drawingGestureRecognizer.isEnabled != nativeDrawing { canvas.drawingGestureRecognizer.isEnabled = nativeDrawing }
+        rulerStroke.allowFinger = editor.fingerDrawing
+        let followsRuler = editor.ruler && editor.focused && editable && tool.isInk
+        if rulerStroke.isEnabled != followsRuler { rulerStroke.isEnabled = followsRuler }
         if eraseSession != nil || shapeErase != nil { dimErasedShapes() }
         pdfView?.isUserInteractionEnabled = tool == .read
         if modeChanged || focusChanged || first { updateInputMode(); fingerObjects.linkNativeDoubleTaps(in: canvas) }
@@ -737,21 +828,80 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
 
     // MARK: Finger taps on objects and „Textfeld hinzufügen“
 
-    /// Ink tool active and the finger does not draw itself.
+    /// Finger taps select objects and double taps offer „Textfeld
+    /// hinzufügen“ with every tool except the text tool (its taps set the
+    /// caret or open fields), unless the finger draws itself.
     var acceptsFingerObjectTaps: Bool {
-        editable && [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(tool) && configuration?.fingerDrawing != true
+        editable && tool != .text && (configuration?.fingerDrawing != true || tool == .image || tool == .read)
     }
     /// Before a finger selection: the object plane gets the sheet's current
     /// content (ink and held shapes do not reconfigure it).
     func syncObjectPlane() { objectLayer.adoptCurrentContent(pageContent) }
+    /// This page is being worked on: selections on every other page end
+    /// (`SelectionTransferHost.sheetBecameActive`).
+    func claimSelectionFocus() {
+        var view = superview
+        while let current = view {
+            if let host = current as? SelectionTransferHost { host.sheetBecameActive(self); break }
+            view = current.superview
+        }
+        // Key commands (⌘C/⌘V/⌫ …) follow the page being worked on.
+        DispatchQueue.main.async { [weak self] in self?.claimUndoResponder() }
+    }
+    /// Another page is being worked on: drop this page's selection (and its
+    /// claim on key commands); a drag in progress here is left alone.
+    func dropSelectionForOtherPage() {
+        objectLayer.dropSelection()
+    }
     /// Checkbox glyphs keep their own tap (`CheckboxTapGesture`).
     func fingerTapHitsCheckbox(_ point: CGPoint) -> Bool { textLayer.hasCheckbox(at: convert(point, to: textLayer)) }
+    /// Canonical page point of a sheet point.
+    func canonical(_ point: CGPoint) -> PagePoint {
+        PagePoint(x: point.x - pageLayout.contentOrigin.x, y: point.y - pageLayout.contentOrigin.y)
+    }
+    /// Screen points per page point (current zoom).
+    var screenScale: CGFloat {
+        let a = convert(CGPoint.zero, to: nil), b = convert(CGPoint(x: 100, y: 0), to: nil)
+        return max(0.001, hypot(b.x - a.x, b.y - a.y) / 100)
+    }
+    /// A laid-out text line of `box` is at the canonical point (Textneubau:
+    /// the empty rest of a field's frame is no hit).
+    func textLineHit(_ box: TextBox, at point: PagePoint, slack: Double) -> Bool {
+        textLayer.hitsTextLine(box, at: point, slack: slack)
+    }
+    /// Every selectable object under a tap at `point` (sheet coordinates),
+    /// topmost first: one hit test for finger taps with any tool and for
+    /// lasso/shape/image taps. About 10 screen points of slack at any zoom
+    /// (8 around text lines); an empty part of a field's frame reaches through.
+    func objectHits(at point: CGPoint) -> [PageObjectReference] {
+        let scale = Double(screenScale)
+        return PageObjectHitTest.all(at: canonical(point), in: objectContent, tolerance: 10 / scale,
+            textHit: { box, point in self.textLineHit(box, at: point, slack: 8 / scale) },
+            shapeHit: { shape, point in ShapeRendering.hit(shape, at: CGPoint(x: point.x, y: point.y), tolerance: 10 / scale) })
+    }
+    func rememberTap(_ point: CGPoint) { lastTap = canonical(point) }
     /// Double-tap menu: remembers the canonical point and lets the editor
     /// switch to the text tool; the next configuration opens the field.
     func requestTextField(at point: PagePoint) {
         guard editable, let pageID, let request = configuration?.onTextFieldRequested else { return }
-        pendingTextField = (pageID, point, CACurrentMediaTime() + 2)
+        pendingTextField = (pageID, point, nil, CACurrentMediaTime() + 2, false)
         request()
+    }
+    /// „Bearbeiten“ or a second tap on a selected field: the text tool takes
+    /// over (temporarily unless fixed) and sets the caret at `point`.
+    func requestTextEdit(_ id: UUID, at point: PagePoint?) {
+        guard editable, let pageID else { return }
+        pendingTextField = (pageID, point, id, CACurrentMediaTime() + 2, false)
+        if tool == .text { openPendingTextField() } else { configuration?.onTextFieldRequested() }
+    }
+    /// Text document: a finger tap beside every object while an ink tool is
+    /// active puts the caret into the flow (text tool temporarily, back to
+    /// the ink tool when the user leaves it). The Pencil keeps drawing.
+    var flowDocument: Bool { configuration?.flowDocument == true }
+    func requestFlowCaret(at point: PagePoint) {
+        guard editable, flowDocument, let pageID else { return }
+        pendingTextField = (pageID, point, nil, CACurrentMediaTime() + 2, true)
+        if tool == .text { openPendingTextField() } else { configuration?.onTextFieldRequested() }
     }
     private func openPendingTextField() {
         guard let pending = pendingTextField else { return }
@@ -761,19 +911,128 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         // After this configuration pass: the text plane is active by then.
         DispatchQueue.main.async { [weak self] in
             guard let self, self.pageID == pending.pageID, self.editable, self.tool == .text else { return }
-            self.addTextField(at: pending.point)
+            let origin = self.pageLayout.contentOrigin
+            let display = pending.point.map { CGPoint(x: $0.x + origin.x, y: $0.y + origin.y) }
+            if let box = pending.box { self.textLayer.focusField(box, at: display) }
+            else if pending.flow, let display { self.textLayer.focusFlow(at: display) }
+            else if let point = pending.point { self.addTextField(at: point) }
         }
     }
     /// „Textfeld an Punkt anlegen“: the only way the double-tap menu reaches
     /// the text system. A new free field at `point` (canonical page
-    /// coordinates), opened for typing. A rebuilt text system replaces this body.
+    /// coordinates), opened for typing.
     func addTextField(at point: PagePoint) {
         let origin = pageLayout.contentOrigin
-        textLayer.insertText(at: CGPoint(x: point.x + origin.x, y: point.y + origin.y), freeField: true)
+        textLayer.createField(at: CGPoint(x: point.x + origin.x, y: point.y + origin.y))
+    }
+    /// Something can be pasted on this page (objects copied in noty, or text
+    /// or an image on the system pasteboard); never into an edited field,
+    /// which pastes natively.
+    var canPasteFromClipboard: Bool {
+        guard editable, !textLayer.isEditingField else { return false }
+        let board = UIPasteboard.general
+        return ObjectClipboard.content != nil || board.hasStrings || board.hasImages
+    }
+    /// The one paste path for every tool (⌘V, „Einfügen“, edit menu): what
+    /// was copied last wins. Objects copied in noty while the system
+    /// pasteboard is unchanged since → those objects (selected); otherwise
+    /// an image → image on this page, text → a new field. Objects copied
+    /// earlier are still pasted when the system pasteboard holds nothing usable.
+    func pasteFromClipboard() {
+        guard canPasteFromClipboard else { return }
+        let board = UIPasteboard.general
+        if ObjectClipboard.isNewest || (!board.hasStrings && !board.hasImages) {
+            syncObjectPlane(); objectLayer.pasteCopiedObjects(); return
+        }
+        // Both on the board (a copied web image with its address, or an Office
+        // text with a picture of it): what the source offers first is what it means.
+        let imageFirst = board.types.first.flatMap(UTType.init)?.conforms(to: .image) == true
+        if board.hasImages, imageFirst || !board.hasStrings { pasteImageHere(); return }
+        if board.hasStrings { pasteText() } else { pasteImageHere() }
+    }
+    /// In the middle of what is visible, like pasted text, and selected: on a
+    /// long page the text-area centre could be out of sight.
+    private func pasteImageHere() {
+        let origin = pageLayout.contentOrigin
+        let visible = lastVisible ?? bounds
+        objectLayer.awaitingPastedImage = true
+        configuration?.onPasteImage(PagePoint(x: visible.midX - origin.x, y: visible.midY - origin.y))
+    }
+    /// Text from outside without an edited field: a new field at the last
+    /// tapped place, otherwise in the middle of the visible part, in the
+    /// current (last used) style. The text tool opens it for typing.
+    func pasteText() {
+        guard editable, !textLayer.isEditingField, let text = UIPasteboard.general.string, !text.isEmpty,
+              text.utf8.count <= 1_000_000 else { return }
+        let origin = pageLayout.contentOrigin
+        let visible = lastVisible ?? bounds
+        let point = lastTap.map { CGPoint(x: $0.x + origin.x, y: $0.y + origin.y) } ?? CGPoint(x: visible.midX, y: visible.midY)
+        textLayer.createField(at: point, text: text, focus: tool == .text)
+    }
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)) { return canPasteFromClipboard }
+        return super.canPerformAction(action, withSender: sender)
+    }
+    override func paste(_ sender: Any?) { pasteFromClipboard() }
+
+    // MARK: Keyboard (⌘A, keyboard mode)
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.handle(presses) { super.pressesBegan(presses, with: event) }
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesEnded(presses, with: event) }
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesCancelled(presses, with: event) }
+    }
+    /// ⌘A in every tool: ink tools and the text tool between fields end up
+    /// here. Tab reaches the keyboard mode before the system's focus moves,
+    /// Esc before the system takes it (`KeyboardRouter.handle(token:)`).
+    override var keyCommands: [UIKeyCommand]? {
+        var commands = [UIKeyCommand(title: "Alles auswählen", action: #selector(selectAllKey), input: "a", modifierFlags: .command)]
+        guard editable, KeyboardRouter.shared.isEnabled || KeyboardRouter.shared.helpVisible else { return commands }
+        for flags in [UIKeyModifierFlags(), .shift] {
+            let command = UIKeyCommand(input: "\t", modifierFlags: flags, action: #selector(tabKey(_:)))
+            command.wantsPriorityOverSystemBehavior = true
+            commands.append(command)
+        }
+        let escape = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey))
+        escape.wantsPriorityOverSystemBehavior = true
+        return commands + [escape]
+    }
+    @objc private func selectAllKey() { keyboardSelectAll() }
+    @objc private func tabKey(_ command: UIKeyCommand) {
+        KeyboardRouter.shared.handle(token: command.modifierFlags.contains(.shift) ? "<S-Tab>" : "<Tab>")
+    }
+    @objc private func escapeKey() { KeyboardRouter.shared.handle(token: "<Esc>") }
+    func keyboardSelectAll() {
+        guard editable else { return }
+        if flowDocument { configuration?.onSelectWholeFlow(); return }
+        claimSelectionFocus(); syncObjectPlane()
+        objectLayer.keyboardSelectAll()
+    }
+    func keyboardCycleObject(_ step: Int) {
+        guard editable else { return }
+        claimSelectionFocus(); syncObjectPlane()
+        objectLayer.keyboardCycle(step)
+    }
+    /// `i` without a selected field: a text document's flow on this page; a notebook gets a new field.
+    func keyboardWrite() {
+        guard editable else { return }
+        let size = pageLayout.contentCanvas
+        if flowDocument {
+            if pageContent.textBoxes.contains(where: { $0.flowID != nil && !$0.text.isEmpty }) {
+                requestFlowCaret(at: PagePoint(x: size.width, y: size.height))
+            } else { configuration?.onFlowEnd() }
+            return
+        }
+        let origin = pageLayout.contentOrigin, visible = lastVisible ?? bounds
+        let point = lastTap ?? PagePoint(x: visible.midX - origin.x, y: visible.midY - origin.y)
+        if tool == .text { addTextField(at: point) } else { requestTextField(at: point) }
     }
 
     private func showObjectPreview(_ content: PageContent) {
-        guard !updating, let editor = configuration, tool == .selection || tool == .inkSelection || tool == .shape || objectLayer.hasTouchSelection,
+        guard !updating, let editor = configuration, objectLayer.handlesTapsItself || objectLayer.hasTouchSelection,
               lastObjectPreview != content else { return }
         lastObjectPreview = content
         shapeLayer.configure(content.shapes, origin: pageLayout.contentOrigin)
@@ -787,7 +1046,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             contentGeneration: editor.contentGeneration, active: false,
             darkPaper: editor.paperColor == .dark, darkMargins: editor.margins?.color == .dark,
             hasPDF: editor.sourcePage != nil, paperStyle: editor.paper, marginStyle: editor.margins?.style ?? .blank,
-            onChange: editor.onTextBoxes)
+            regionTops: editor.writingRegionTops, onChange: editor.onTextBoxes)
         imageLayer.configure(objects: content.images, pageID: editor.pageID, layout: editor.layout,
             contentGeneration: editor.contentGeneration, active: false, onChange: editor.onImages, onError: editor.onError)
     }
@@ -889,7 +1148,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         // bytes) and exactly one encode of the result.
         let previousCount = publishedStrokeCount
         if tool == .marker, markerStraight { straightenLastMarkerStroke(previousCount: previousCount) }
-        if tool == .pen, scribbleErase { eraseByScribble(previousCount: previousCount) }
+        let scribbled = tool == .pen && scribbleErase ? eraseByScribble(previousCount: previousCount) : []
         let drawing = canvas.drawing, strokes = drawing.strokes
         // A precision eraser that splits a stroke also adds one: no pen width.
         if tool == .pen || tool == .pencil || tool == .marker { recordDrawnWidth(strokes, previousCount: previousCount) }
@@ -897,6 +1156,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if eraseSession == nil { strokeCountCache = (lastDrawing, strokes.count); canvasSource = lastDrawing }
         pageContent.drawing = lastDrawing
         onDrawing?(lastDrawing)
+        removeScribbledShapes(scribbled)
     }
     /// Stroke count of `pageContent.drawing`; decoded at most once per distinct value.
     private var publishedStrokeCount: Int {
@@ -932,8 +1192,15 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
         inkActive = true
         objectLayer.endTouchSelection() // writing again ends a finger selection
+        claimSelectionFocus()
         onInkSession?()
+        if heldVisualsPending != nil { hideHeldVisuals() } // a new stroke is never hidden
         if heldShape == nil { holdBase = pageContent }
+    }
+    /// A committed held result is on the canvas now: the preview may go
+    /// (no frame without either, no flash of the freehand stroke).
+    func canvasViewDidFinishRendering(_ canvasView: PKCanvasView) {
+        if heldVisualsPending != nil { hideHeldVisuals() }
     }
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
         inkActive = false
@@ -957,17 +1224,19 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     }
     /// Every preloaded sheet owns an interaction; only the focused one may act,
     /// otherwise an even number of sheets toggles the tool back and forth.
-    private func pencilAction() { if worksheetFocused, window != nil { onPencilAction?() } }
+    private func pencilAction(_ action: PencilToolSwitch) { if worksheetFocused, window != nil { onPencilAction?(action) } }
     /// Double tap follows the system setting (Einstellungen › Apple Pencil):
-    /// eraser or previous tool → the app's eraser toggle; colour palette or
-    /// ink attributes → the app's own tool palette at the Pencil; off → nothing.
+    /// „Radierer“ → eraser and back to the tool used before it, „Vorheriges
+    /// Werkzeug“ → the previously used tool; colour palette or ink attributes
+    /// → the app's own tool palette at the Pencil; off → nothing.
     private func pencilTap(palette: () -> PencilSqueezeEvent) {
         guard worksheetFocused, window != nil else { return }
         switch UIPencilInteraction.preferredTapAction {
         case .ignore: return
-        case .switchEraser, .switchPrevious: onPencilAction?()
+        case .switchEraser: onPencilAction?(.eraser)
+        case .switchPrevious: onPencilAction?(.previous)
         case .showColorPalette, .showInkAttributes:
-            if let onPencilSqueeze { onPencilSqueeze(palette()) } else { onPencilAction?() }
+            if let onPencilSqueeze { onPencilSqueeze(palette()) } else { onPencilAction?(.eraser) }
         default: return // system shortcuts and future actions are handled by iPadOS
         }
     }
@@ -978,7 +1247,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     }
     @available(iOS 17.5, *)
     func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
-        guard let onPencilSqueeze else { if squeeze.phase == .ended { pencilAction() }; return }
+        guard let onPencilSqueeze else {
+            if squeeze.phase == .ended { pencilAction(UIPencilInteraction.preferredSqueezeAction == .switchPrevious ? .previous : .eraser) }
+            return
+        }
         if worksheetFocused, window != nil { onPencilSqueeze(PencilSqueezeEvent(squeeze, in: self)) }
     }
     /// Automatic pen colour after a late PDF darkness result (same rule as configure).

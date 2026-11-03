@@ -3,6 +3,10 @@
 Native iPad-App für Schulnotizen, entwickelt auf `la@lab` unter Omarchy.
 Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nutzer auf **noty** geändert.
 
+## KI-Assistent
+
+Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
+
 ## Native Gesetzessammlung – separater Feature-Worktree
 
 Der bestätigte Ausbau ist in `feat/native-law-library` implementiert: optionale native Gesetzessammlung als internes Slide-over oder angedockte zweite Ansicht, lokale Texte/optionale PDFs, Direktfundstellen wie `144 HGB`, Apples Tastaturen und appweites E-Mail-Konto. Drei getrennte Schalter (Aktivierung aus, persönlicher Sync an, automatische Gesetzesupdates an). Notizbücher bleiben lokal; Gesetzesmarkierungen haben eine eigene dauerhafte Warteschlange und Sicherungsdatei.
@@ -10,6 +14,14 @@ Der bestätigte Ausbau ist in `feat/native-law-library` implementiert: optionale
 Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Website und Backend sind seit 20.10.2026 auf IONOS ausgerollt und öffentlich geprüft. Mail bleibt auf Nutzerwunsch aus; E-Mail-Registrierung/Recovery sind deshalb noch nicht verfügbar, bestehende Namenslogins bleiben unterstützt. **Build 60 ist seit 21.10.2026 auf dem iPad installiert** (Gesetzesfenster per Drag & Drop andocken/schweben/parken, Position/Breite gemerkt, ✕ parkt als Pfeil-Lasche am Rand, Blätterleiste mit mitlaufendem Paragraphfeld, Markieren per Auswahl und mit Pencil über den Stiftschalter „Lesen | Markieren | Radieren“, Markierungen sofort sichtbar, gemerkte Lesestelle, direkte Schriftgröße, Registrieren mit Benutzername ohne E-Mail), einschließlich der Funktionen aus Build 53. Vorher-/Nachhervergleich: alle 14 Hefte und 101 Dateien unverändert. Bedienung am iPad weiterhin ungeprüft. Aktivierung unter Einstellungen → Gesetzessammlung. [Umfang und Architektur](docs/LAW-INTEGRATION-PLAN.md), [Prüfungen](docs/TESTING.md#native-gesetzessammlung--feature-worktree).
 
 ## Aktueller Stand der bisherigen Lieferung
+
+**Build 69 (`extras/build69`):** Helix-Erweiterungen (Register, `.`, Makros, Sprungliste, Teilen, Absätze, Klammerpaare, Einzug), [Tastatur](docs/KEYBOARD.md) in Seitenleiste, Suche, Gesetzen, eigenen Dialogen und Farbauswahl, im Textdokument manueller Seitenumbruch, Papierwechsel, Word- und RTF-Export, Suche über Seitenwechsel und Zurückrücken beim Kürzen. Kein Formatwechsel. Implementiert und gebaut, am iPad ungeprüft.
+
+**Build 68 (`phase1/fixes`):** Korrekturen aus dem Review des Tastaturmodus für beide Textwege: `c`, `i`, `o` nur noch an sichtbaren Stellen, `~`, `` ` ``, `r` erhalten Formate, Modus bleibt bei programmatischem Fokus, ein Esc oder Tab wirkt genau einmal; Texteditor 2 verliert bei fehlendem Platz keine Eingabe. Implementiert, gebaut und installiert (alle 28 Dokumente unverändert), am iPad ungeprüft ([Gerätetest](docs/KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft)).
+
+**Build 67 (`phase1/app`):** [Tastaturmodus](docs/KEYBOARD.md) wie Helix statt vim: erst auswählen, dann handeln, Which-Key-Popup, Suche mit Live-Treffern, `Space`-Menü, eine Belegung für Bibliothek, Seite und Text. Implementiert und gebaut, nicht installiert, am iPad ungeprüft.
+
+**Build 65 (`feat/tastatur`, gestapelt auf `feat/textneubau`):** ⌘A über das ganze Textdokument und in jedem Werkzeug, Absatzstile über Seitenwechsel, Zeilenumbruch am Seitenende ohne Überlauf, vim-artiger [Tastaturmodus](docs/KEYBOARD.md). Implementiert, gebaut und installiert (alle 28 Dokumente unverändert), am iPad ungeprüft.
 
 **Nutzungsfeedback Tag 1 (22.10.2026) – auf `main`, implementiert und erfolgreich gebaut, nicht installiert, auf dem iPad ungeprüft:**
 

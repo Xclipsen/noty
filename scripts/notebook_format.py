@@ -19,7 +19,13 @@ IMAGE_LIMIT = 20_000_000  # per stored original
 IMAGES_TOTAL_LIMIT = 500_000_000  # unique originals (each hash once), schema 12
 LEGACY_IMAGES_TOTAL_LIMIT = 40_000_000  # embedded originals summed per object, schema <= 11
 IMAGE_ASSET_SCHEMA = 12  # image objects reference package assets instead of embedding
-CURRENT_SCHEMA = 12
+VERTEX_SHAPE_SCHEMA = 13  # polyline/polygon shapes (`points`, kind "polygon")
+TEXT_FIELD_SCHEMA = 14  # free text fields only: rotation, autoWidth, migrated page text, field style (fill/border)
+FIELD_FILLS = ("yellow", "green", "blue", "pink", "gray", "purple")
+FIELD_BORDERS = ("text", "accent")
+TEXT_DOCUMENT_SCHEMA = 15  # text documents (`kind: "textDocument"`): one flow over paper pages
+MAX_SHAPE_VERTICES = 64
+CURRENT_SCHEMA = 15
 ASSET_HASH = re.compile(r"[0-9a-f]{64}")
 # Foundation dates: seconds since 2001 (JSONEncoder default); Swift accepts years 1…9999.
 REFERENCE_DATE_UNIX = 978_307_200
@@ -170,12 +176,31 @@ def _text_boxes(page, version, text_ids):
     for box in page["textBoxes"]:
         flow = box.get("flowID")
         region = box.get("flowRegion")
-        check((flow is None) == (region is None), "Invalid text flow")
+        check(flow is None or region is not None, "Invalid text flow")
+        if region is not None:
+            check(region in ("page", "left", "right", "top", "bottom"), "Invalid text flow")
         if flow is not None:
-            check(version >= 8 and region in ("page", "left", "right", "top", "bottom"), "Invalid text flow")
+            check(version >= 8, "Invalid text flow")
             flow = uuid_string(flow)
             check(flow not in flow_ids, "Duplicate text flow on one page")
             flow_ids.add(flow)
+        elif region is not None:
+            # Schema 14: page text migrated to a free field keeps its region as layout.
+            check(version >= TEXT_FIELD_SCHEMA, "Migrated page text needs schema 14")
+        rotation, auto_width = box.get("rotation"), box.get("autoWidth")
+        if rotation is not None or auto_width is not None:
+            check(version >= TEXT_FIELD_SCHEMA, "Text field rotation/automatic width needs schema 14")
+            check(flow is None, "Flow segments neither rotate nor change width automatically")
+        if rotation is not None:
+            check(number(rotation) and -180 <= rotation <= 180, "Invalid text field rotation")
+        check(auto_width is None or auto_width is True, "Invalid automatic text width")
+        # Schema 14 (Stufe 4): field style of free fields; padding/corners follow from it.
+        fill, border = box.get("fill"), box.get("border")
+        if fill is not None or border is not None:
+            check(version >= TEXT_FIELD_SCHEMA, "Text field style needs schema 14")
+            check(flow is None, "Flow segments carry no field style")
+        check(fill is None or fill in FIELD_FILLS, "Unknown text field fill")
+        check(border is None or border in FIELD_BORDERS, "Unknown text field border")
         box_id = uuid_string(box["id"])
         check(box_id not in text_ids, "Duplicate text object identities")
         text_ids.add(box_id)
@@ -214,24 +239,59 @@ def _shapes(page, version, shape_ids):
         shape_id = uuid_string(shape["id"])
         check(shape_id not in shape_ids, "Duplicate shape identities")
         shape_ids.add(shape_id)
-        check(shape["kind"] in ("line", "arrow", "rectangle", "ellipse"), "Unknown shape kind")
+        kind = shape["kind"]
+        check(kind in ("line", "arrow", "rectangle", "ellipse", "polygon"), "Unknown shape kind")
         check(shape["pattern"] in ("solid", "dashed", "dotted"), "Unknown stroke pattern")
-        points = [shape[p][k] for p in ("start", "end") for k in ("x", "y")]
-        check(all(number(v) and abs(v) <= 14_400 for v in points), "Invalid shape points")
+        vertices = shape.get("points")
+        # Schema 13: polylines (line/arrow with >= 3 vertices) and polygons carry
+        # `points`; start/end are their first/last vertex.
+        if vertices is not None or kind == "polygon":
+            check(version >= VERTEX_SHAPE_SCHEMA, "Polyline/polygon shapes need schema 13")
+            check(kind != "rectangle" and kind != "ellipse", "Rectangles and ellipses have no vertices")
+            check(isinstance(vertices, list) and 3 <= len(vertices) <= MAX_SHAPE_VERTICES, "Invalid shape vertices")
+        corners = [shape["start"], shape["end"]] + (vertices or [])
+        check(all(isinstance(c, dict) and number(c["x"]) and number(c["y"])
+                  and abs(c["x"]) <= 14_400 and abs(c["y"]) <= 14_400 for c in corners), "Invalid shape points")
         width = shape["lineWidth"]
         check(number(width) and 0.5 <= width <= 40, "Invalid line width")
         a, b = shape["start"], shape["end"]
-        check(math.hypot(a["x"] - b["x"], a["y"] - b["y"]) >= 1, "Shape too small")
-        if shape["kind"] in ("rectangle", "ellipse"):
-            check(abs(a["x"] - b["x"]) >= 1 and abs(a["y"] - b["y"]) >= 1, "Shape too small")
+        if vertices is None:
+            check(math.hypot(a["x"] - b["x"], a["y"] - b["y"]) >= 1, "Shape too small")
+        else:
+            check(vertices[0]["x"] == a["x"] and vertices[0]["y"] == a["y"]
+                  and vertices[-1]["x"] == b["x"] and vertices[-1]["y"] == b["y"], "Shape ends differ from its vertices")
+            length = sum(math.hypot(q["x"] - p["x"], q["y"] - p["y"]) for p, q in zip(vertices, vertices[1:]))
+            check(length >= 1, "Shape too small")
+            if kind == "arrow":
+                c = vertices[-2]
+                check(math.hypot(b["x"] - c["x"], b["y"] - c["y"]) >= 1, "Arrow head without direction")
+        outline = [a, b] if vertices is None or kind in ("rectangle", "ellipse") else vertices
+        xs, ys = [c["x"] for c in outline], [c["y"] for c in outline]
+        if kind in ("rectangle", "ellipse", "polygon"):
+            check(max(xs) - min(xs) >= 1 and max(ys) - min(ys) >= 1, "Shape too small")
         color(shape["color"])
         if shape.get("fill") is not None:
             color(shape["fill"])
-        pad = max(10, width * 3) if shape["kind"] == "arrow" else width / 2
-        check(min(a["x"], b["x"]) - pad >= -m.get("left", 0) - 0.02, "Shape outside page")
-        check(min(a["y"], b["y"]) - pad >= -m.get("top", 0) - 0.02, "Shape outside page")
-        check(max(a["x"], b["x"]) + pad <= w + m.get("right", 0) + 0.02, "Shape outside page")
-        check(max(a["y"], b["y"]) + pad <= h + m.get("bottom", 0) + 0.02, "Shape outside page")
+        pad = max(10, width * 3) if kind == "arrow" else width / 2
+        check(min(xs) - pad >= -m.get("left", 0) - 0.02, "Shape outside page")
+        check(min(ys) - pad >= -m.get("top", 0) - 0.02, "Shape outside page")
+        check(max(xs) + pad <= w + m.get("right", 0) + 0.02, "Shape outside page")
+        check(max(ys) + pad <= h + m.get("bottom", 0) + 0.02, "Shape outside page")
+
+
+def _text_document(active, pages, sources):
+    """Text documents: only paper pages with their own geometry, no writing
+    space, no PDF originals; flow segments only in the page region; at most
+    one flow over the active pages (Swift `Notebook.validateTextDocument`)."""
+    check(isinstance(sources, list) and len(sources) == 0, "Text documents hold no PDF originals")
+    for page in pages:
+        check(page.get("pdfReference") is None and page.get("margins") is None and page.get("geometry") is not None
+              and page["text"] == "" and page.get("paper") in ("blank", "lined", "grid"), "Invalid text document page")
+        for box in page.get("textBoxes") or []:
+            if box.get("flowID") is not None:
+                check(box.get("flowRegion") == "page", "Text document flow outside the page region")
+    flows = {uuid_string(box["flowID"]) for page in active for box in page.get("textBoxes") or [] if box.get("flowID") is not None}
+    check(len(flows) <= 1, "More than one flow in a text document")
 
 
 def asset_reference(value):
@@ -298,6 +358,11 @@ def validate_notebook(document):
     if document.get("appearance") is not None:
         check(version >= 7, "Appearance needs schema 7")
         appearance(document["appearance"])
+    kind = document.get("kind")
+    # Notebooks store no kind; text documents need schema 15.
+    check(kind in (None, "textDocument"), "Unknown document kind")
+    if kind is not None:
+        check(version >= TEXT_DOCUMENT_SCHEMA, "Text documents need schema 15")
     active = document["pages"]
     deleted = document.get("deletedPages") or []
     check(isinstance(active, list) and isinstance(deleted, list), "Invalid page list")
@@ -333,6 +398,8 @@ def validate_notebook(document):
         return references
     check(version >= 3 and document.get("pdf") is None, "Invalid PDF source representation")
     sources = document["pdfSources"]
+    if kind == "textDocument":
+        _text_document(active, pages, sources)
     check(isinstance(sources, list) and len(sources) <= 500, "Too many PDF sources")
     lookup = {}
     total = 0

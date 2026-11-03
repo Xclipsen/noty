@@ -259,15 +259,17 @@ public actor WorkspaceStore {
         let scratch = stage.appendingPathComponent(Self.assetScratch, isDirectory: true)
         let staged = NotebookAssets(directory: scratch, readOnly: true)
         var fingerprints: [UUID: LibraryArchiveFileInfo] = [:]
+        var kinds: [UUID: DocumentKind] = [:]
         let summary = try LibraryArchive.verify(input, limits: .standard, handling: .skip) { document, _ in
             for reference in document.externalImageAssets {
                 guard case .file = try staged.verifiedPayload(for: reference) else { throw BackupError.invalidStaging }
             }
             try LibraryStore.populatePackage(document, root: data, assetsFrom: staged)
             fingerprints[document.id] = try LibraryArchive.fingerprint(document)
+            kinds[document.id] = document.documentKind
         }
         guard summary == prepared.summary else { throw BackupError.invalidStaging }
-        try await LibraryStore(root: data).populateIndex(summary.snapshot, toolbar: summary.toolbar)
+        try await LibraryStore(root: data).populateIndex(summary.snapshot, toolbar: summary.toolbar, kinds: kinds)
         // A fresh independent store must reopen every restored document before
         // the result is published.
         let plan = try await LibraryStore(root: data).backupPlan()

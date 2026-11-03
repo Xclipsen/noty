@@ -5,8 +5,9 @@ import Foundation
 /// stroke's half width (or an arrow's head reach) that must stay on the page.
 /// - Lines and arrows are clipped to the page: the part beyond the edge was
 ///   never visible, the drawn direction stays.
-/// - Closed shapes keep their size and are moved just far enough onto the
-///   page (`allowShift`); a shape larger than the page is not fitted.
+/// - Closed shapes and polylines keep their size and are moved just far
+///   enough onto the page (`allowShift`); a shape larger than the page is
+///   not fitted.
 /// nil: nothing sensible remains, the freehand stroke is kept.
 public enum HeldShapeFitting {
     public static func fit(_ shape: RecognizedShape, in bounds: PageRect, padding: Double, allowShift: Bool = true) -> RecognizedShape? {
@@ -22,7 +23,7 @@ public enum HeldShapeFitting {
         case let .arrow(start, tip):
             guard let (a, b) = clip(start, tip, to: inner), hypot(b.x - a.x, b.y - a.y) >= minimumLength else { return nil }
             return .arrow(start: a, tip: b)
-        case .ellipse, .polygon:
+        case .ellipse, .polygon, .polyline:
             guard allowShift, maxX - minX <= inner.width, maxY - minY <= inner.height else { return nil }
             let dx = minX < inner.x ? inner.x - minX : (maxX > inner.x + inner.width ? inner.x + inner.width - maxX : 0)
             let dy = minY < inner.y ? inner.y - minY : (maxY > inner.y + inner.height ? inner.y + inner.height - maxY : 0)
@@ -58,7 +59,7 @@ public enum HeldShapeFitting {
             let angle = degrees * .pi / 180
             let hx = hypot(rx * cos(angle), ry * sin(angle)), hy = hypot(rx * sin(angle), ry * cos(angle))
             points = [.init(x: center.x - hx, y: center.y - hy), .init(x: center.x + hx, y: center.y + hy)]
-        case let .polygon(_, vertices): points = vertices
+        case let .polygon(_, vertices), let .polyline(vertices, _): points = vertices
         }
         guard !points.isEmpty, points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { return nil }
         return (points.map(\.x).min()!, points.map(\.y).min()!, points.map(\.x).max()!, points.map(\.y).max()!)
@@ -71,6 +72,7 @@ public enum HeldShapeFitting {
         case let .arrow(a, b): return .arrow(start: move(a), tip: move(b))
         case let .ellipse(center, rx, ry, degrees): return .ellipse(center: move(center), radiusX: rx, radiusY: ry, degrees: degrees)
         case let .polygon(kind, vertices): return .polygon(kind, vertices.map(move))
+        case let .polyline(vertices, arrow): return .polyline(vertices.map(move), arrow: arrow)
         }
     }
 }

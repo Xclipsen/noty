@@ -7,8 +7,8 @@ extension WritingTool {
     var title: String {
         switch self {
         case .pen: "Stift"
-        case .marker: "Marker"
-        case .strokeEraser: "Ganzer Strich"
+        case .marker: "Textmarker"
+        case .strokeEraser: "Radierer"
         case .precisionEraser: "Präzisionsradierer"
         case .inkSelection: "Lasso"
         case .text: "Text"
@@ -49,7 +49,7 @@ extension WritingTool {
         case .selection: "Gemischtes Lasso – alles Berührte auswählen"
         case .text: "Text – Textfeld antippen oder anlegen"
         case .image: "Bilder – Foto, Datei oder Zwischenablage"
-        case .shape: "Formen – Linie, Pfeil, Rechteck, Ellipse"
+        case .shape: "Formen – Linie, Pfeil, Rechteck, Ellipse, Vieleck"
         case .read: "PDF lesen – Text auswählen, ohne zu schreiben"
         case .laser: "Laserpointer – zeigen, wird nicht gespeichert"
         }
@@ -157,7 +157,8 @@ struct EditorToolbar: View {
     private func toolButton(_ item: WritingTool) -> some View {
         let selected = tool == item || (item == .strokeEraser && tool == .precisionEraser)
         return Button {
-            if selected { if item == .text { settings = false } else { settings.toggle() } }
+            // The text tool's options (lock, „Textfeld hinzufügen“) open like every other tool's.
+            if selected { settings.toggle() }
             else {
                 let choice = Self.choice(item, preferences: preferences)
                 tool = choice.tool; settings = choice.options
@@ -207,6 +208,7 @@ struct ToolbarCustomizationView: View {
             ToolbarCustomizationList(settings: settings)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
         }
+        .keyboardSheet()
     }
 }
 
@@ -222,27 +224,29 @@ struct ToolbarCustomizationList: View {
                 }
             }
             Section("Position und Eingabe") {
-                Picker("Werkzeugleiste", selection: Binding(get: { settings.preferences.effectiveDock }, set: { settings.preferences.dock = $0 })) {
+                let dock = Binding(get: { settings.preferences.effectiveDock }, set: { settings.preferences.dock = $0 })
+                Picker("Werkzeugleiste", selection: dock) {
                     Text("Oben").tag(ToolbarDock.top)
                     Text("Unten").tag(ToolbarDock.bottom)
                     Text("Links").tag(ToolbarDock.left)
                     Text("Rechts").tag(ToolbarDock.right)
                     if settings.preferences.dockOnly == false { Text("Schwebend").tag(ToolbarDock.floating) }
-                }
-                Toggle("Nur an Andockpunkten", isOn: Binding(get: { settings.preferences.dockOnly ?? true }, set: {
+                }.keyOption(.choice(dock, settings.preferences.dockOnly == false ? [.top, .bottom, .left, .right, .floating] : [.top, .bottom, .left, .right]))
+                keyToggle("Nur an Andockpunkten", isOn: Binding(get: { settings.preferences.dockOnly ?? true }, set: {
                     settings.preferences.dockOnly = $0
                     if $0 && settings.preferences.dock == .floating { settings.preferences.dock = .top }
                 }))
                 if settings.preferences.dockOnly == false {
-                    Picker("Schwebende Ausrichtung", selection: Binding(get: { settings.preferences.floatingAxis ?? .horizontal }, set: {
+                    let axis = Binding(get: { settings.preferences.floatingAxis ?? .horizontal }, set: {
                         settings.preferences.floatingAxis = $0; settings.preferences.dock = .floating
-                    })) {
+                    })
+                    Picker("Schwebende Ausrichtung", selection: axis) {
                         Text("Horizontal").tag(ToolbarAxis.horizontal)
                         Text("Vertikal").tag(ToolbarAxis.vertical)
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.choice(axis, [.horizontal, .vertical]))
                 }
                 Text("Standard: nur die vier Andockpunkte. Für freies Verschieben ausschalten; dann wechselt ein Doppeltipp auf den Griff die Ausrichtung.").font(.caption).foregroundStyle(.secondary)
-                Toggle("Auch mit dem Finger zeichnen", isOn: $settings.preferences.fingerDrawing)
+                keyToggle("Auch mit dem Finger zeichnen", isOn: $settings.preferences.fingerDrawing)
                 Text("Standard: Pencil schreibt, Finger navigiert. Bei Fingermalen mit zwei Fingern navigieren.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Werkzeuge umordnen") {

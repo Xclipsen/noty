@@ -74,6 +74,9 @@ def verify_toolbar(toolbar):
     require(toolbar.get("laserFade") is None or (format8 and toolbar["laserFade"] in ("short", "medium", "long", "untilLift")), "Invalid laserFade")
     # Build 45: optional highlighter tip (format 8, absent = round).
     require(toolbar.get("markerTip") is None or (format8 and toolbar["markerTip"] in ("round", "chisel")), "Invalid markerTip")
+    # 22.10.2026: optional fill of new shapes (own colour, strength 10-100 %).
+    require(toolbar.get("shapeFillColor") is None or (format8 and color(toolbar["shapeFillColor"])), "Invalid shapeFillColor")
+    require(toolbar.get("shapeFillOpacity") is None or (format8 and number(toolbar["shapeFillOpacity"], 0.1, 1)), "Invalid shapeFillOpacity")
     widths = {"pen": (1, 12), "marker": (4, 40), "pencil": (1, 16)} if format8 else {"pen": (1, 12), "marker": (4, 40)}
     require(len(toolbar["presets"]) <= 12, "Too many presets")
     for preset in toolbar["presets"]:
@@ -88,6 +91,8 @@ def verify_index(index):
     lookup = {i["id"]: i for i in items}
     for item in items:
         UUID(item["id"])
+        # Display hint of text documents (notebooks and folders carry no key).
+        require(item.get("kind") is None or (item["kind"] == "textDocument" and item.get("source") is not None), "Invalid document kind")
         seen = {item["id"]}
         parent = item.get("parentID")
         while parent is not None:
@@ -133,6 +138,7 @@ def verify_v2(path, size):
         verify_toolbar(toolbar)
         expected = {uuid_string(i["id"]): i["id"] for i in items if i.get("source") is not None}
         emitted, ids, shared = {}, set(), set()
+        text_documents = 0
         group = None  # references of the current notebook
 
         def finish(group):
@@ -149,6 +155,7 @@ def verify_v2(path, size):
                 document = json.loads(reader.payload(record, MAXIMUM_NOTEBOOK))
                 require(isinstance(document, dict) and uuid_string(document["id"]) == record["id"], "Notebook identity mismatch")
                 group = check_references(validate_notebook(document))
+                text_documents += document.get("kind") == "textDocument"
                 require(document["title"] == lookup[expected[record["id"]]]["title"], "Notebook title differs from index")
                 shared.update(sha for sha in group if sha in emitted)
                 del document
@@ -165,7 +172,7 @@ def verify_v2(path, size):
             else:
                 require(False, "Index or toolbar record out of place")
         require(ids == set(expected), "Incomplete document set")
-    return {"formatVersion": 2, "documents": len(expected), "folders": len(items) - len(expected),
+    return {"formatVersion": 2, "documents": len(expected), "textDocuments": text_documents, "folders": len(items) - len(expected),
             "explicitly_trashed": sum(i.get("deletedAt") is not None for i in items),
             "presets": len(toolbar["presets"]), "assets": len(emitted), "assetBytes": sum(emitted.values()),
             "sharedAssets": len(shared), "bytes": size, "crc32": reader.crc, "all_payload_checksums_valid": True}

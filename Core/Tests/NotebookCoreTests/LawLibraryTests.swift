@@ -40,6 +40,36 @@ final class LawLibraryTests: XCTestCase, @unchecked Sendable {
         do { try await store.putDocument(JSONEncoder().encode(altered), entry: old, version: old.versions[0]); XCTFail("Immutable version overwritten") } catch {}
         let unchanged = try await store.document(old, version: old.versions[0]); XCTAssertEqual(unchanged.sections[0].text, "(1) Vorschrift")
     }
+    func testDamagedStoredVersionIsReplacedByCheckedDownload() async throws {
+        let store = LawOfflineStore(root: try root())
+        let law = entry(), version = law.versions[0]
+        try await store.putDocument(bytes(law), entry: law, version: version)
+        let url = try await store.documentURL(law.id, version: version.id)
+        try Data("kaputt".utf8).write(to: url)
+        do { _ = try await store.document(law, version: version); XCTFail("Damaged file read") } catch {}
+        try await store.putDocument(bytes(law), entry: law, version: version)
+        let healed = try await store.document(law, version: version)
+        XCTAssertEqual(healed.sections[0].id, "s144")
+    }
+    func testDamagedStoredPDFIsReplacedOnlyOnRequest() async throws {
+        let store = LawOfflineStore(root: try root())
+        let first = Data("%PDF-1.7 a".utf8), second = Data("%PDF-1.7 b".utf8)
+        _ = try await store.putPDF(first, id: "hgb", version: "v1")
+        do { _ = try await store.putPDF(second, id: "hgb", version: "v1"); XCTFail("PDF overwritten") } catch {}
+        _ = try await store.putPDF(second, id: "hgb", version: "v1", replacingDamaged: true)
+        let stored = try await store.pdfData("hgb", version: "v1")
+        XCTAssertEqual(stored, second)
+    }
+    func testRefusedEntryDoesNotStopThePushButServerTroubleDoes() {
+        var refused = LawPushFailures()
+        for _ in 0..<5 { XCTAssertEqual(refused.record(status: 422), .next) }
+        XCTAssertEqual(refused.refused, 5)
+        var server = LawPushFailures()
+        XCTAssertEqual(server.record(status: 500), .next)
+        XCTAssertEqual(server.record(status: 400), .next)
+        XCTAssertEqual(server.record(status: 503), .next)
+        XCTAssertEqual(server.record(status: 429), .stop)
+    }
     func testCatalogRejectsTraversalAndDuplicateAndWrongIdentity() async throws {
         var future = LawCatalog(laws: [entry()], generatedAt: "test"); future.schemaVersion = 99
         XCTAssertThrowsError(try future.validated())

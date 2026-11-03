@@ -18,7 +18,7 @@ struct SelectionLift {
     let start: CGPoint
     let snapshot: UIImage?
 
-    /// A single image dragged with the image tool (image-specific messages).
+    /// A single image (image-specific messages).
     var isSingleImage: Bool {
         ink.isEmpty && objects.textBoxes.isEmpty && objects.shapes.isEmpty && objects.images.count == 1
     }
@@ -41,6 +41,10 @@ protocol SelectionTransferHost: AnyObject {
     /// Page below the touch that would accept a drop (nil: gap, beside the
     /// pages, editor locked or zooming).
     func transferTarget(for gesture: UIGestureRecognizer) -> UUID?
+    /// Someone works on `sheet` (stroke, tap, lasso, field editing): every
+    /// other page drops its selection, so only one selection, one action bar
+    /// and one target for key commands exist at a time.
+    func sheetBecameActive(_ sheet: WorksheetView)
 }
 
 @MainActor
@@ -52,8 +56,11 @@ enum SelectionTransfer {
     }
 
     /// Transparent preview of only the selected members, composed with the
-    /// export renderers. Bounded to about 4 megapixels.
-    static func snapshot(objects: MovedObjects, ink: [PKStroke], frame: CGRect, pixelScale: CGFloat) -> UIImage? {
+    /// export renderers like the page itself: text with its automatic colours
+    /// resolved and its ruled layout (`page`: paper, margins and PDF of the
+    /// source page), images from their decoded renditions or – never left
+    /// out – as the neutral placeholder. Bounded to about 4 megapixels.
+    static func snapshot(objects: MovedObjects, ink: [PKStroke], frame: CGRect, pixelScale: CGFloat, page: Page? = nil) -> UIImage? {
         guard frame.width.isFinite, frame.height.isFinite, frame.width > 0, frame.height > 0 else { return nil }
         let scale = max(0.05, min(pixelScale, 4, (4_000_000 / (frame.width * frame.height)).squareRoot()))
         let format = UIGraphicsImageRendererFormat()
@@ -68,27 +75,18 @@ enum SelectionTransfer {
         return UIGraphicsImageRenderer(bounds: frame, format: format).image { context in
             let cg = context.cgContext
             for image in objects.images {
-                try? ImageRendering.draw(image, context: cg, origin: .init(x: 0, y: 0))
+                // Never decodes an original here: the rendition the page shows.
+                let rendition = ImageRendering.cached(image, limit: 1024) ?? ImageRendering.anyCached(image, near: 1024)
+                ImageRendering.draw(rendition, for: image, context: cg, origin: .init(x: 0, y: 0))
             }
             ShapeRendering.draw(objects.shapes, origin: .init(x: 0, y: 0), context: cg)
             inkImage?.draw(in: frame)
-            for box in objects.textBoxes {
-                TextObjectLayout(box).draw(at: CGPoint(x: box.x, y: box.y))
+            var context = page ?? Page()
+            context.textBoxes = objects.textBoxes
+            for box in context.resolvedTextBoxes {
+                TextFieldStyleRendering.draw(box, at: CGPoint(x: box.x, y: box.y), context: cg)
+                TextObjectLayout(box, on: context).draw(at: CGPoint(x: box.x, y: box.y))
             }
-        }
-    }
-
-    /// Preview of one image dragged with the image tool. Uses an already
-    /// decoded rendition (`rendition`, nil: neutral placeholder), so starting
-    /// the lift never decodes a camera original on the main thread.
-    static func snapshot(image object: ImageObject, rendition: UIImage?, pixelScale: CGFloat) -> UIImage? {
-        let frame = object.rotatedBounds.cgRect
-        guard frame.width.isFinite, frame.height.isFinite, frame.width > 0, frame.height > 0 else { return nil }
-        let format = UIGraphicsImageRendererFormat()
-        format.opaque = false
-        format.scale = max(0.05, min(pixelScale, 4, (4_000_000 / (frame.width * frame.height)).squareRoot()))
-        return UIGraphicsImageRenderer(bounds: frame, format: format).image { context in
-            ImageRendering.draw(rendition, for: object, context: context.cgContext, origin: .init(x: 0, y: 0))
         }
     }
 

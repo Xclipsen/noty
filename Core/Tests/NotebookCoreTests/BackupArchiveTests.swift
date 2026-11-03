@@ -167,6 +167,22 @@ final class BackupArchiveTests: XCTestCase {
         XCTAssertEqual(unchanged, document)
     }
 
+    func testOldImportStagesAreClearedAndForeignEntriesStay() async throws {
+        let root = try directory()
+        let repository = NotebookRepository(directory: root)
+        let staging = root.appendingPathComponent("BackupStaging", isDirectory: true)
+        let stage = staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let foreign = staging.appendingPathComponent("nicht-von-noty", isDirectory: true)
+        for folder in [stage, foreign] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        let fresh = await repository.removeStaleStages()
+        XCTAssertEqual(fresh, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stage.path))
+        let later = await repository.removeStaleStages(now: Date().addingTimeInterval(2 * 24 * 3600))
+        XCTAssertEqual(later, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stage.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: foreign.path))
+    }
+
     func testModifiedStagingAndReplayedTokenAreRejected() async throws {
         let root = try directory()
         let repository = NotebookRepository(directory: root)

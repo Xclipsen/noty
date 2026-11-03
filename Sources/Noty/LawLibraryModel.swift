@@ -10,6 +10,9 @@ struct NotyAccountUser: Codable, Sendable {
     var email: String?
     var emailVerified: Bool?
     var token: String?
+    /// Whether „Mit Apple anmelden“ is linked (`GET /api/session`); nil until
+    /// the server has said. Only this flag is kept, never Apple's own data.
+    var apple: Bool?
 }
 @MainActor
 private enum NotyAccountKeychain {
@@ -42,6 +45,8 @@ private final class LawSessionDelegate: NSObject, URLSessionTaskDelegate, @unche
 private struct LawAPIError: LocalizedError {
     let status: Int
     let message: String
+    /// The server's machine-readable `code` (e.g. `apple_unknown`), if any.
+    var code: String? = nil
     var errorDescription: String? { message }
 }
 
@@ -67,6 +72,13 @@ final class LawLibraryModel: ObservableObject {
     @Published private(set) var syncStatus = "Lokal gespeichert"
     @Published private(set) var byteCount: Int64 = 0
     @Published var error: String?
+    /// Visible pages that show `error` themselves; the app alert stays silent then.
+    @Published var inlineErrorPages = 0
+    /// Counts `Space l`: the open reader takes the keys.
+    @Published var keyFocus = 0
+    /// Mail delivery is switched off on the server (user decision, see
+    /// LAW-INTEGRATION-PLAN). Everything waiting for an e-mail stays hidden until then.
+    static let mailDelivery = false
     /// Where the law window was last: open/stashed, docked/floating, side and
     /// width, kept across notebooks and launches. Display state only.
     static let panelOpenKey = "noty.laws.panelOpen"
@@ -136,6 +148,7 @@ final class LawLibraryModel: ObservableObject {
     func settingsChanged() async {
         epoch += 1
         if !enabled { panelOpen = false; return }
+        if catalog == nil { lastAttempt = .distantPast }
         await tick()
     }
     private nonisolated func fetch(_ path: String, method: String = "GET", body: [String: LawJSON]? = nil, token: String? = nil, limit: Int = 64_000_000) async throws -> Data {
@@ -154,8 +167,9 @@ final class LawLibraryModel: ObservableObject {
             data.append(byte)
         }
         guard (200..<300).contains(response.statusCode) else {
-            let message = (try? JSONDecoder().decode([String: String].self, from: data)["error"]) ?? "Server nicht erreichbar (\(response.statusCode))."
-            throw LawAPIError(status: response.statusCode, message: message)
+            let fields = try? JSONDecoder().decode([String: String].self, from: data)
+            let message = fields?["error"] ?? (response.statusCode >= 500 ? "Server nicht erreichbar (\(response.statusCode))." : "Der Server hat die Anfrage abgelehnt (\(response.statusCode)).")
+            throw LawAPIError(status: response.statusCode, message: message, code: fields?["code"])
         }
         return data
     }
@@ -195,10 +209,13 @@ final class LawLibraryModel: ObservableObject {
             next.laws = merged(next.laws, old: catalog?.laws ?? [])
             next.administrative = merged(next.administrative ?? [], old: catalog?.administrative ?? [])
             try await offline.publish(next)
-            catalog = next; lastCheck = Date(); progress = "\(next.entries.count) Dokumente offline verfügbar"
+            catalog = next; lastCheck = Date(); progress = "\(NotyText.count(next.entries.count, "Dokument", "Dokumente")) offline verfügbar"
             byteCount = await offline.byteCount()
         } catch is CancellationError { progress = "Download pausiert; vorhandene Fassungen bleiben verfügbar." }
-        catch { if manual { self.error = error.localizedDescription }; progress = "Aktualisierung fehlgeschlagen; vorhandene Fassungen bleiben verfügbar. \(error.localizedDescription)" }
+        catch {
+            if manual { self.error = error.localizedDescription }
+            progress = "Aktualisierung fehlgeschlagen; vorhandene Fassungen bleiben verfügbar." + (manual ? "" : " \(error.localizedDescription)")
+        }
     }
     func document(_ entry: LawEntry, version: String? = nil) async throws -> LawDocument {
         guard let v = entry.versions.first(where: { $0.id == (version ?? entry.currentVersion) }) else { throw LawError.invalid("Gesetzesfassung fehlt.") }
@@ -211,36 +228,154 @@ final class LawLibraryModel: ObservableObject {
         let url = try await offline.pdfURL(entry.id, version: version)
         guard let v = entry.versions.first(where: { $0.id == version }), let path = v.pdfUrl else { throw LawError.invalid("Für dieses Dokument ist kein Original-PDF vorhanden.") }
         if FileManager.default.fileExists(atPath: url.path) {
-            let bytes = try await offline.pdfData(entry.id, version: version)
-            try await verify(bytes, sha: v.sha256["pdf"])
-            guard PDFDocument(url: url) != nil else { throw LawError.invalid("Gespeicherte PDF-Datei nicht lesbar.") }
-            return url
+            if let bytes = try? await offline.pdfData(entry.id, version: version),
+               (try? await verify(bytes, sha: v.sha256["pdf"])) != nil, PDFDocument(url: url) != nil { return url }
         }
         let data = try await fetch(path, limit: 150_000_000); try await verify(data, sha: v.sha256["pdf"])
-        let result = try await offline.putPDF(data, id: entry.id, version: version)
+        let result = try await offline.putPDF(data, id: entry.id, version: version, replacingDamaged: true)
         byteCount = await offline.byteCount()
         return result
     }
-    func login(email: String, password: String, registering: Bool) async {
-        guard !accountBusy else { return }
+    /// `true` once signed in; a failed attempt keeps the form as typed.
+    func login(email rawName: String, password: String, registering: Bool) async -> Bool {
+        guard !accountBusy else { return false }
         accountBusy = true; defer { accountBusy = false }
+        let email = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             // E-mail registration needs mail delivery, which is switched off on the
             // server; a username account is created at once without any e-mail.
-            if registering && email.contains("@") { throw LawError.invalid("Bitte wähle einen Benutzernamen ohne @. Registrieren per E-Mail ist noch nicht freigeschaltet.") }
+            if registering && email.contains("@") { throw LawError.invalid("Bitte einen Benutzernamen ohne @ wählen. Registrieren per E-Mail ist noch nicht freigeschaltet.") }
             if registering && email.range(of: "^[\\p{L}\\p{N}_.-]{2,32}$", options: .regularExpression) == nil { throw LawError.invalid("Der Benutzername braucht 2–32 Buchstaben, Zahlen oder . _ -") }
             if registering && password.count < 12 { throw LawError.invalid("Das Passwort braucht mindestens 12 Zeichen.") }
             var body: [String: LawJSON] = ["password": .string(password)]
             body[email.contains("@") ? "email" : "name"] = .string(email)
             struct Response: Decodable, Sendable { var user: NotyAccountUser }
             let response = try await decode(Response.self, from: await fetch(registering ? "/api/register" : "/api/login", method: "POST", body: body, limit: 65536))
-            guard let token = response.user.token, token.count == 64 else { throw LawError.invalid("Server unterstützt die native Anmeldung noch nicht.") }
-            try NotyAccountKeychain.save(response.user)
-            epoch += 1; user = response.user; sessionExpired = false
-            try await personal.adoptGuests(owner: response.user.id)
-            lastOwner = response.user.id; await refreshItems()
-            Task { await synchronize() }
-        } catch { self.error = error.localizedDescription }
+            try await signedIn(response.user)
+            Task { await refreshAccount() }
+            return true
+        } catch { self.error = error.localizedDescription; return false }
+    }
+    /// The same session for every way in (password, Apple): Keychain, account
+    /// switch and guest markings.
+    private func signedIn(_ account: NotyAccountUser) async throws {
+        guard let token = account.token, token.count == 64 else { throw LawError.invalid("Server unterstützt die native Anmeldung noch nicht.") }
+        try NotyAccountKeychain.save(account)
+        epoch += 1; accountUpdates.changed(); user = account; sessionExpired = false
+        try await personal.adoptGuests(owner: account.id)
+        lastOwner = account.id; await refreshItems()
+        Task { await synchronize() }
+    }
+    private let apple = AppleSignInController()
+    /// Local account changes (sign-in, Apple linked/unlinked, e-mail): an
+    /// older `refreshAccount` answer never overwrites a newer change.
+    private var accountUpdates = AccountUpdateGate()
+    /// Markings of another account that are not transferred yet.
+    private var foreignPendingCount: Int { items.filter { $0.dirty && $0.owner != nil && $0.owner != user?.id }.count }
+    /// „Mit Apple anmelden“: `true` once signed in. Cancelling the Apple sheet
+    /// is silent; a new account is reported in `message`. No account appears
+    /// silently while the iPad belongs to another one (`AppleLoginPlan`):
+    /// with an expired session of a known account an unknown Apple ID only
+    /// explains linking; with another account's untransferred markings the
+    /// user is asked before a new account is created.
+    func appleLogin() async -> (signedIn: Bool, created: Bool) {
+        guard !accountBusy else { return (false, false) }
+        accountBusy = true; defer { accountBusy = false }
+        let expired = sessionExpired && user != nil
+        let expiredName = expired ? (user?.email ?? user?.name) : nil
+        let foreign = foreignPendingCount
+        switch await apple.authorize(withName: true) {
+        case .canceled: return (false, false)
+        case .failed(let message): error = message; return (false, false)
+        case .authorized(let auth):
+            func login(create: Bool) async throws -> AppleLoginResponse<NotyAccountUser> {
+                let body = AppleSignIn.loginBody(identityToken: auth.identityToken, nonce: auth.nonce, givenName: auth.givenName, create: create)
+                return try await decode(AppleLoginResponse<NotyAccountUser>.self, from: await fetch("/api/apple/login", method: "POST", body: body, limit: 65536))
+            }
+            do {
+                var response: AppleLoginResponse<NotyAccountUser>
+                do {
+                    response = try await login(create: AppleLoginPlan.mayCreate(sessionExpired: expired, foreignPendingCount: foreign))
+                } catch let failure as LawAPIError where failure.status == 401 && failure.code == AppleSignIn.unknownCode {
+                    switch AppleLoginPlan.unknown(sessionExpired: expired, accountName: expiredName, foreignPendingCount: foreign) {
+                    case .explainLinking(let text): self.error = text; return (false, false)
+                    case .confirmCreation(let title, let message):
+                        guard await TopAlert.ask(title, message, confirm: "Neues Konto anlegen") else { return (false, false) }
+                        // The same token, still within its few minutes of validity.
+                        response = try await login(create: true)
+                    }
+                }
+                response.user.apple = true
+                try await signedIn(response.user)
+                return (true, response.created)
+            } catch { self.error = appleMessage(error); return (false, false) }
+        }
+    }
+    /// Links Apple to the account that is signed in now (never by e-mail).
+    func appleLink() async -> Bool {
+        guard !accountBusy, let account = user, let token = account.token, !sessionExpired else { return false }
+        accountBusy = true; defer { accountBusy = false }
+        let generation = epoch
+        switch await apple.authorize(withName: false) {
+        case .canceled: return false
+        case .failed(let message): error = message; return false
+        case .authorized(let auth):
+            do {
+                // Signed out or switched account while the sheet was open: link nothing.
+                guard generation == epoch, user?.id == account.id else { throw CancellationError() }
+                let body = AppleSignIn.linkBody(identityToken: auth.identityToken, nonce: auth.nonce)
+                let response = try await decode(AppleLinkResponse<NotyAccountUser>.self, from: await fetch("/api/apple/link", method: "POST", body: body, token: token, limit: 65536))
+                try storeApple(response.apple, fresh: response.user, account: account.id, generation: generation)
+                return true
+            } catch is CancellationError { return false }
+            catch let failure as LawAPIError where failure.status == 401 {
+                // The account session ended (the Apple token is checked separately): sign in again.
+                if generation == epoch, user?.id == account.id { sessionExpired = true }
+                self.error = "Die Anmeldung als „\(account.email ?? account.name)“ ist abgelaufen. Bitte erneut anmelden und Apple danach verknüpfen."
+                return false
+            }
+            catch { self.error = appleMessage(error); return false }
+        }
+    }
+    func appleUnlink() async -> Bool {
+        guard !accountBusy, let account = user, let token = account.token, !sessionExpired else { return false }
+        accountBusy = true; defer { accountBusy = false }
+        let generation = epoch
+        do {
+            let response = try await decode(AppleLinkResponse<NotyAccountUser>.self, from: await fetch("/api/apple", method: "DELETE", body: [:], token: token, limit: 65536))
+            try storeApple(response.apple, fresh: nil, account: account.id, generation: generation)
+            return true
+        } catch { self.error = appleMessage(error); return false }
+    }
+    private func appleMessage(_ error: Error) -> String {
+        if let error = error as? LawAPIError, error.status == 404 || error.status == 405 { return "Der noty-Server kennt „Mit Apple anmelden“ noch nicht. Bitte später erneut versuchen." }
+        if error is DecodingError { return "Ungültige Serverantwort bei der Anmeldung mit Apple." }
+        return error.localizedDescription
+    }
+    private func storeApple(_ linked: Bool, fresh: NotyAccountUser?, account: String, generation: Int) throws {
+        guard generation == epoch, var next = user, next.id == account else { return }
+        if let fresh, fresh.id == account { next.name = fresh.name; next.email = fresh.email; next.emailVerified = fresh.emailVerified }
+        next.apple = linked
+        try NotyAccountKeychain.save(next); user = next
+        accountUpdates.changed()
+    }
+    /// Best effort: learns `apple` (and name/e-mail changes) for the stored session.
+    func refreshAccount() async {
+        guard let account = user, let token = account.token, !sessionExpired else { return }
+        let generation = epoch
+        // A link/unlink finishing meanwhile wins over this older answer.
+        let update = accountUpdates.begin()
+        struct Session: Decodable, Sendable { var user: NotyAccountUser? }
+        do {
+            let session = try await decode(Session.self, from: await fetch("/api/session", token: token, limit: 65536))
+            guard generation == epoch, user?.id == account.id else { return }
+            guard var fresh = session.user, fresh.id == account.id else { sessionExpired = true; return }
+            guard accountUpdates.isCurrent(update), !accountBusy else { return }
+            fresh.token = token; try NotyAccountKeychain.save(fresh); user = fresh
+            accountUpdates.changed()
+        } catch let error as LawAPIError where error.status == 401 {
+            if generation == epoch, user?.id == account.id { sessionExpired = true }
+        } catch {}
     }
     func logout() async {
         do { try NotyAccountKeychain.save(nil) }
@@ -254,7 +389,8 @@ final class LawLibraryModel: ObservableObject {
         accountBusy = true; defer { accountBusy = false }
         do {
             var body: [String: LawJSON] = [:]
-            if !email.isEmpty { body["email"] = .string(email) }
+            let address = email.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !address.isEmpty { body["email"] = .string(address) }
             if !password.isEmpty { body["password"] = .string(password) }
             if !code.isEmpty { body["token"] = .string(code.trimmingCharacters(in: .whitespacesAndNewlines)) }
             _ = try await fetch(path, method: "POST", body: body, token: user?.token, limit: 65536)
@@ -262,6 +398,7 @@ final class LawLibraryModel: ObservableObject {
                 struct Session: Decodable, Sendable { var user: NotyAccountUser? }
                 if var fresh = try await decode(Session.self, from: await fetch("/api/session", token: token, limit: 65536)).user {
                     fresh.token = token; try NotyAccountKeychain.save(fresh); user = fresh
+                    accountUpdates.changed()
                 }
             }
             return true
@@ -283,7 +420,7 @@ final class LawLibraryModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
     func synchronize() async {
-        guard enabled, syncEnabled, !syncing, let u = user, let token = u.token else { return }
+        guard enabled, syncEnabled, !syncing, !sessionExpired, let u = user, let token = u.token else { return }
         syncing = true
         let generation = epoch
         defer { syncing = false }
@@ -304,6 +441,8 @@ final class LawLibraryModel: ObservableObject {
         do {
             syncStatus = "Wird synchronisiert …"
             try await pull()
+            // One refused entry must not hold back the ones behind it.
+            var failures = LawPushFailures()
             for item in try await personal.pending(owner: u.id) {
                 guard current() else { throw CancellationError() }
                 let path = item.kind == "bookmark" ? "/api/bookmarks" : "/api/annotations"
@@ -317,17 +456,23 @@ final class LawLibraryModel: ObservableObject {
                 } catch let error as LawAPIError where item.deleted && error.status == 404 {
                     guard current() else { throw CancellationError() }
                     try await personal.acknowledge(item)
-                } catch let error as LawAPIError where error.status == 409 {
-                    // Pull authoritative tombstones, retaining any unrelated pending work.
-                    try await pull()
+                } catch let error as LawAPIError where error.status == 401 {
                     throw error
+                } catch let error as LawAPIError {
+                    // Pull authoritative tombstones, retaining any unrelated pending work.
+                    if error.status == 409 { try await pull() }
+                    if failures.record(status: error.status) == .stop { throw error }
+                } catch is DecodingError {
+                    _ = failures.record(status: 422)
                 }
             }
             try await pull(); lastSync = Date(); await refreshItems()
-            syncStatus = "Synchronisiert · \(Date().formatted(date: .omitted, time: .shortened))"
+            let time = NotyText.statusDate(Date())
+            syncStatus = failures.refused == 0 ? "Synchronisiert · \(time)"
+                : "Synchronisiert · \(time) · \(failures.refused == 1 ? "1 Eintrag" : "\(failures.refused) Einträge") nicht übertragen, bleibt lokal"
         } catch is CancellationError { syncStatus = "Synchronisierung pausiert" }
         catch let error as LawAPIError where error.status == 401 {
-            sessionExpired = true; syncStatus = "Anmeldung abgelaufen · Unter Konto erneut anmelden; Änderungen bleiben lokal"
+            sessionExpired = true; syncStatus = "Anmeldung abgelaufen · Unter Einstellungen › Konto erneut anmelden; Änderungen bleiben lokal"
         } catch { syncStatus = "Offline/Fehler · Änderungen bleiben lokal: \(error.localizedDescription)" }
     }
     func exportPersonal() async throws -> URL {

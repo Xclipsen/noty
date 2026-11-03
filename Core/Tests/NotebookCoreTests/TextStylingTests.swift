@@ -25,7 +25,8 @@ final class TextStylingTests: XCTestCase {
         box.runs = [TextRun(location: 0, length: 5, style: marked)]
         try book.replaceTextBoxes([box], pageID: book.pages[0].id)
         XCTAssertEqual(book.schemaVersion, 9)
-        XCTAssertEqual(try Notebook.decode(JSONEncoder().encode(book)), book)
+        // Stored page text is read back as free fields (schema 14, Textneubau).
+        XCTAssertEqual(try Notebook.decode(JSONEncoder().encode(book)), try book.migratedTextFlow())
         var lowered = book; lowered.schemaVersion = 8
         XCTAssertThrowsError(try lowered.validate())
         var invalid = TextBoxStyle(); invalid.automaticColor = true; invalid.ink = InkColor(0.2, 0.2, 0.2)
@@ -92,8 +93,8 @@ final class TextStylingTests: XCTestCase {
         XCTAssertEqual(folders.count, 1)
         let archived = try Data(contentsOf: folders[0].appendingPathComponent("notebook-v8.json"))
         XCTAssertEqual(archived, acknowledged)
-        XCTAssertEqual(try Notebook.decode(archived), book)
-        XCTAssertEqual(try RevisionStore(directory: root).load(), upgraded)
+        XCTAssertEqual(try Notebook.decode(archived), try book.migratedTextFlow())
+        XCTAssertEqual(try RevisionStore(directory: root).load(), try upgraded.migratedTextFlow())
 
         let blocked = try directory()
         try RevisionStore(directory: blocked).save(book)
@@ -102,7 +103,7 @@ final class TextStylingTests: XCTestCase {
         var candidate = try failing.load()
         try candidate.replaceTextBoxes([box], pageID: book.pages[0].id)
         XCTAssertThrowsError(try failing.save(candidate))
-        XCTAssertEqual(try RevisionStore(directory: blocked).load(), book)
+        XCTAssertEqual(try RevisionStore(directory: blocked).load(), try book.migratedTextFlow())
     }
 
     func testAutomaticColorResolvesAgainstPaperMarginsAndPDF() throws {

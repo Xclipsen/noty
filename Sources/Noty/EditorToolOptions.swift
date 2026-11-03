@@ -10,6 +10,8 @@ struct EditorToolOptions: View {
     @Binding var selectionFilter: SelectionFilter
     @Binding var lassoMode: LassoMode
     @Binding var recognizeShapes: Bool
+    /// „Textwerkzeug fixieren“: after leaving a field the text tool stays and a tap beside opens the next field.
+    @Binding var textToolLocked: Bool
     let onInsertText: () -> Void
     let onPhoto: () -> Void
     let onImageFile: () -> Void
@@ -22,7 +24,8 @@ struct EditorToolOptions: View {
         case .pen: 470
         case .pencil: 400
         case .laser: 520
-        case .shape: 700
+        case .shape: 940
+        case .text: 330
         case .marker: 520
         case .strokeEraser, .precisionEraser: 390
         case .image: 360
@@ -57,6 +60,13 @@ struct EditorToolOptions: View {
         case .shape: shapeControls
         case .strokeEraser, .precisionEraser: eraserControls
         case .text:
+            // Lock | fallback insert; the main ways are a tap with the text tool and the double-tap menu.
+            option(textToolLocked ? "Textwerkzeug fixiert – lösen" : "Textwerkzeug fixieren",
+                   symbol: textToolLocked ? "lock.fill" : "lock.open", selected: textToolLocked,
+                   help: textToolLocked ? "Fixiert – Tipp daneben legt das nächste Textfeld an" : "Textwerkzeug fixieren – bleibt nach dem Verlassen eines Felds aktiv") {
+                textToolLocked.toggle()
+            }
+            groupDivider
             labeled("Textfeld hinzufügen", symbol: "text.badge.plus", help: "Textfeld hinzufügen – in der Mitte der Ansicht") { showing = false; onInsertText() }
         case .image:
             // Sources first, clipboard after a group divider.
@@ -118,8 +128,8 @@ struct EditorToolOptions: View {
 
     /// Formen: shape kind | line (colour, width, Autostift) | line style | fill.
     @ViewBuilder private var shapeControls: some View {
-        ForEach(ShapeKind.allCases, id: \.self) { kind in
-            let symbol = switch kind { case .line: "line.diagonal"; case .arrow: "arrow.up.right"; case .rectangle: "rectangle"; case .ellipse: "circle" }
+        ForEach(ShapeKind.toolKinds, id: \.self) { kind in
+            let symbol = switch kind { case .line: "line.diagonal"; case .arrow: "arrow.up.right"; case .rectangle: "rectangle"; case .ellipse: "circle"; case .polygon: "triangle" }
             option(kind.title, symbol: symbol, selected: shapeOptions.kind == kind) { shapeOptions.kind = kind }
         }
         groupDivider
@@ -140,10 +150,11 @@ struct EditorToolOptions: View {
         shapeFillControls
     }
 
-    /// Fill section of the shape options, the last group of the row. Further
-    /// fill settings (colour, opacity) belong here, after the toggle.
+    /// Fill section of the shape options, the last group of the row: toggle,
+    /// then (while on) fill colour, „wie Strich“ and strength (`ShapeFillOptions`).
     @ViewBuilder private var shapeFillControls: some View {
-        option("Füllung", symbol: "square.fill", selected: shapeOptions.filled, help: "Füllung – Rechteck und Ellipse füllen") { shapeOptions.filled.toggle() }
+        option("Füllung", symbol: "square.fill", selected: shapeOptions.filled, help: "Füllung – Rechteck, Ellipse und Vieleck füllen") { shapeOptions.filled.toggle() }
+        if shapeOptions.filled { ShapeFillOptions(options: $shapeOptions, strokeColor: preferences.inkColor(for: .shape)) }
     }
 
     /// Radierer: kind | width (precise only).
@@ -165,10 +176,16 @@ struct EditorToolOptions: View {
         option("Freiform", symbol: "lasso", selected: lassoMode == .freeform, help: "Freiform – Auswahl frei umfahren") { lassoMode = .freeform }
         option("Rechteck", symbol: "rectangle.dashed", selected: lassoMode == .rectangle, help: "Rechteck – Auswahl aufziehen") { lassoMode = .rectangle }
         groupDivider
-        option("Handschrift", symbol: "pencil.tip", selected: selectionFilter.ink, help: "Handschrift auswählen") { selectionFilter.ink.toggle() }
-        option("Textfelder", symbol: "textformat", selected: selectionFilter.text, help: "Textfelder auswählen") { selectionFilter.text.toggle() }
-        option("Bilder", symbol: "photo", selected: selectionFilter.images, help: "Bilder auswählen") { selectionFilter.images.toggle() }
-        option("Formen", symbol: "square.on.circle", selected: selectionFilter.shapes, help: "Formen auswählen") { selectionFilter.shapes.toggle() }
+        option("Handschrift", symbol: "pencil.tip", selected: selectionFilter.ink, help: "Handschrift auswählen") { toggleFilter(\.ink) }
+        option("Textfelder", symbol: "textformat", selected: selectionFilter.text, help: "Textfelder auswählen") { toggleFilter(\.text) }
+        option("Bilder", symbol: "photo", selected: selectionFilter.images, help: "Bilder auswählen") { toggleFilter(\.images) }
+        option("Formen", symbol: "square.on.circle", selected: selectionFilter.shapes, help: "Formen auswählen") { toggleFilter(\.shapes) }
+    }
+    /// At least one kind stays on: with none the lasso would select nothing, without saying why.
+    private func toggleFilter(_ kind: WritableKeyPath<SelectionFilter, Bool>) {
+        var next = selectionFilter
+        next[keyPath: kind].toggle()
+        if next.ink || next.text || next.images || next.shapes { selectionFilter = next }
     }
 
     /// Laserpointer: mode | colour | trail length.

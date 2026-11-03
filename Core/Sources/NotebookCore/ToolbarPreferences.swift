@@ -6,6 +6,7 @@ public enum WritingTool: String, Codable, CaseIterable, Identifiable, Hashable, 
     /// Tools of formats 1–7; format 8 adds `pencil` and `laser`.
     public static let format7Tools: [WritingTool] = [.pen, .marker, .strokeEraser, .precisionEraser, .inkSelection, .text, .image, .shape, .selection, .read]
     /// Stroke tools that write native PencilKit ink with colour/width.
+    public var isEraser: Bool { self == .strokeEraser || self == .precisionEraser }
     public var isInk: Bool { self == .pen || self == .pencil || self == .marker }
 }
 
@@ -67,6 +68,10 @@ public struct ToolbarPreferences: Codable, Equatable, Sendable {
     public var shapeKind: ShapeKind?
     public var shapePattern: StrokePattern?
     public var shapeFilled: Bool?
+    /// Fill of new shapes (optional, format 8; older builds ignore the keys):
+    /// own colour (nil = stroke colour) and strength 0.1–1 (nil = 0.2).
+    public var shapeFillColor: InkColor?
+    public var shapeFillOpacity: Double?
     public var recognizeShapes: Bool?
     /// Highlighter: straighten a held line (optional, v7-compatible; nil = on).
     /// Separate from `recognizeShapes`, so turning it off for the highlighter
@@ -214,9 +219,10 @@ public struct ToolbarPreferences: Codable, Equatable, Sendable {
               penWidth.isFinite, (1...12).contains(penWidth), markerWidth.isFinite, (4...40).contains(markerWidth),
               eraserWidth.isFinite, (4...60).contains(eraserWidth),
               pencilWidth.map({ $0.isFinite && Self.pencilWidths.contains($0) }) ?? true,
+              shapeFillOpacity.map({ $0.isFinite && ShapeFill.opacityRange.contains($0) }) ?? true,
               [floatingX, floatingY].allSatisfy({ $0.isFinite && (0...1).contains($0) }),
               presets.count <= 12, Set(presets.map(\.id)).count == presets.count else { throw ToolbarError.invalid }
-        try penColor.validate(); try markerColor.validate(); try pencilColor?.validate(); try laserColor?.validate()
+        try penColor.validate(); try markerColor.validate(); try pencilColor?.validate(); try laserColor?.validate(); try shapeFillColor?.validate()
         do { try defaultAppearance?.validate() } catch { throw ToolbarError.invalid }
         for preset in presets {
             guard preset.tool.isInk, let range = Self.widthRange(for: preset.tool), preset.width.isFinite,

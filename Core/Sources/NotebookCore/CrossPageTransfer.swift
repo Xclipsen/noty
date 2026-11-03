@@ -86,7 +86,7 @@ public struct MovedObjects: Equatable, Sendable {
     public var isEmpty: Bool { textBoxes.isEmpty && images.isEmpty && shapes.isEmpty }
     /// Union of the outer bounds used for page-limit checks.
     public var bounds: PageRect? {
-        let rects = textBoxes.map(\.rect) + images.map(\.rotatedBounds) + shapes.map(\.bounds)
+        let rects = textBoxes.map(\.rotatedBounds) + images.map(\.rotatedBounds) + shapes.map(\.bounds)
         return rects.dropFirst().reduce(rects.first) { $0?.union($1) }
     }
     public func translated(by offset: PagePoint) -> MovedObjects {
@@ -115,8 +115,7 @@ public enum CrossPageTransfer {
             guard (try? result.images[i].validate()) != nil else { throw CrossPageTransferError.invalidObject }
         }
         for i in result.shapes.indices {
-            result.shapes[i].start = move.apply(result.shapes[i].start)
-            result.shapes[i].end = move.apply(result.shapes[i].end)
+            result.shapes[i] = result.shapes[i].mapped(move.apply)
             result.shapes[i].lineWidth *= move.scale
             guard (try? result.shapes[i].validate()) != nil else { throw CrossPageTransferError.invalidObject }
         }
@@ -177,7 +176,7 @@ public enum CrossPageTransfer {
         }
         var inserted = objects
         for i in inserted.textBoxes.indices {
-            guard limits.contains(inserted.textBoxes[i].rect), inserted.textBoxes[i].allowsObjectSelection else {
+            guard inserted.textBoxes[i].fits(in: limits), inserted.textBoxes[i].allowsObjectSelection else {
                 throw CrossPageTransferError.doesNotFit
             }
             inserted.textBoxes[i].id = unique(inserted.textBoxes[i].id)
@@ -210,8 +209,9 @@ public struct PageContentReplacement: Equatable, Sendable {
 extension Notebook {
     /// All pages change together or none does. Every expected state is checked
     /// first; the complete candidate is validated once, so an object may leave
-    /// one page and arrive on another with the same identity.
-    public mutating func replaceContents(_ changes: [PageContentReplacement]) throws {
+    /// one page and arrive on another with the same identity. `restoring`:
+    /// undo/redo installs a state these pages had; fields need not fit again.
+    public mutating func replaceContents(_ changes: [PageContentReplacement], restoring: Bool = false) throws {
         guard !changes.isEmpty, Set(changes.map(\.pageID)).count == changes.count else { throw StorageError.invalidDocument }
         for change in changes {
             guard let page = pages.first(where: { $0.id == change.pageID }) else { throw PageOperationError.missingPage }
@@ -225,12 +225,15 @@ extension Notebook {
             if content.textBoxes.contains(where: \.usesTextFlowFormat) { next.schemaVersion = max(8, next.schemaVersion) }
             if content.textBoxes.contains(where: \.usesRichText) { next.schemaVersion = max(7, next.schemaVersion) }
             next.raiseSchemaForTextColors(content.textBoxes)
+            next.raiseSchemaForTextFields(content.textBoxes)
+            let unchanged = next.pages[index].effectiveTextBoxes
             next.pages[index].drawing = content.drawing
             next.pages[index].textBoxes = content.textBoxes
             next.pages[index].images = content.images
             next.pages[index].shapes = content.shapes
+            next.raiseSchemaForShapes(content.shapes)
             let bounds = next.pages[index].textBounds
-            guard content.textBoxes.allSatisfy({ bounds.contains($0.rect) }) else { throw StorageError.invalidDocument }
+            guard restoring || content.textBoxes.allSatisfy({ $0.fits(in: bounds) || unchanged.contains($0) }) else { throw StorageError.invalidDocument }
         }
         next.raiseSchemaForImageAssets()
         try next.validate(); self = next

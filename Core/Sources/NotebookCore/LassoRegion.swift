@@ -73,8 +73,8 @@ public struct LassoRegion: Sendable {
 
 public enum SelectionOutline {
     /// Visible gap between selected content and its contour, in screen points.
-    /// Like the native PencilKit lasso of the early builds: every stroke and
-    /// object is encircled at a small distance instead of a box or one hull.
+    /// Several members share one rounded hull (`roundedHull`); a single
+    /// member is encircled closely (Nutzer zu Build 62).
     public static let screenGap = 7.0
 
     /// Zoom in steps of ~20 %, so pinching does not rebuild the contour per frame.
@@ -89,6 +89,26 @@ public enum SelectionOutline {
     /// Spacing of centre-line samples: fine enough that the rounded offset
     /// contour stays smooth, coarse enough for large selections.
     public static func sampleSpacing(gap: Double) -> Double { max(1, gap * 0.6) }
+
+    /// One closed, convex, softly rounded contour around discs (selected
+    /// content widened by its gap): the convex hull of points around every
+    /// disc. Convex instead of concave on purpose: never holes, never
+    /// self-intersections, never separate pieces, whatever the selection.
+    /// Callers pass only hull vertices of dense samples (few discs).
+    public static func roundedHull(_ discs: [(center: PagePoint, radius: Double)], steps: Int = 24) -> [PagePoint] {
+        let steps = max(8, steps)
+        var points: [PagePoint] = []
+        points.reserveCapacity(discs.count * steps)
+        for disc in discs where disc.center.x.isFinite && disc.center.y.isFinite && disc.radius.isFinite {
+            let r = max(0, disc.radius)
+            if r == 0 { points.append(disc.center); continue }
+            for index in 0..<steps {
+                let angle = Double(index) / Double(steps) * 2 * .pi
+                points.append(PagePoint(x: disc.center.x + r * cos(angle), y: disc.center.y + r * sin(angle)))
+            }
+        }
+        return hull(points)
+    }
 
     /// A tight outer contour for handwriting; no rectangular empty selection box.
     public static func hull(_ points: [PagePoint]) -> [PagePoint] {

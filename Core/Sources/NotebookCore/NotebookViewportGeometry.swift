@@ -79,6 +79,23 @@ public enum NotebookViewportGeometry {
         }
         return low...max(low, high)
     }
+    /// Writing scroll while pinching (Nutzer zu Build 62): the view may stand
+    /// beyond the normal sideways range only as far (page units) as it did
+    /// when the pinch began – zooming never moves a sheet edge towards the
+    /// screen middle, only writing/dragging does. `excess`: page units
+    /// left of the normal lower / right of the normal upper bound at the start.
+    public static func pinchRange(writing: ClosedRange<Double>, normal: ClosedRange<Double>,
+                                  excess: (left: Double, right: Double), scale: Double) -> ClosedRange<Double> {
+        let s = scale.isFinite && scale > 0 ? scale : 1
+        let low = max(writing.lowerBound, normal.lowerBound - max(0, excess.left) * s)
+        let high = min(writing.upperBound, normal.upperBound + max(0, excess.right) * s)
+        return low...max(low, high)
+    }
+    /// Page units the offset `x` stands beyond `normal` at `scale`.
+    public static func writingExcess(offset x: Double, normal: ClosedRange<Double>, scale: Double) -> (left: Double, right: Double) {
+        let s = scale.isFinite && scale > 0 ? scale : 1
+        return (max(0, normal.lowerBound - x) / s, max(0, x - normal.upperBound) / s)
+    }
     /// Horizontal target of a page jump (page number, arrows, sidebar, focus
     /// after deleting): the base sheet/PDF in the middle of the screen at the
     /// current zoom. A fit (`wholeSheet`) centres PDF and writing space together.
@@ -122,6 +139,17 @@ public enum NotebookViewportGeometry {
         let index = pages.indices.min { verticalDistance(referenceY, page: pages[$0]) < verticalDistance(referenceY, page: pages[$1]) }!
         return range(index)
     }
+    /// Sideways resting place of a released flick. `allowed` belongs to where
+    /// the view is now, not to where the flick ends: the limit of a narrow
+    /// sheet at the destination (the trailing draft page) pulled the view
+    /// sideways from the first frame on, and a stopped flick left it there
+    /// (Nutzer zu Build 75 und 76). A mainly vertical flick does not move
+    /// sideways at all; reaching a narrower sheet still glides through the seam.
+    public static func flickTargetX(proposed: Double, current: Double, velocity: PagePoint,
+                                    allowed: ClosedRange<Double>) -> Double {
+        let x = abs(velocity.y) > 2 * abs(velocity.x) ? current : proposed
+        return min(max(x, allowed.lowerBound), allowed.upperBound)
+    }
     public static func verticalDistance(_ y: Double, page: PageRect) -> Double {
         max(page.y - y, y - page.y - page.height, 0)
     }
@@ -132,5 +160,30 @@ public enum NotebookViewportGeometry {
         let margin = min(1000, max(0, visible.height) * 0.5)
         return PageRect(x: visible.x, y: visible.y - margin,
                         width: visible.width, height: visible.height + 2 * margin)
+    }
+}
+
+/// Pages the viewport reported while scrolling, until the app's selection
+/// comes back. Scrolling can already have crossed the seam again by then: a
+/// late answer then differs from the newest report and must not count as a
+/// page jump from outside (Nutzer zu Build 75: Sprung beim schnellen Scrollen).
+/// Entries expire, so a report the app dropped never swallows a real jump.
+public struct ScrollSelectionEchoes: Sendable {
+    public static let lifetime = 1.0
+    private var sent: [(id: UUID, time: Double)] = []
+
+    public init() {}
+
+    public mutating func record(_ id: UUID, at time: Double) {
+        sent.removeAll { time - $0.time > Self.lifetime }
+        sent.append((id, time))
+    }
+    /// True when `id` is the late answer to an own report. Older reports are
+    /// answered by it as well.
+    public mutating func consume(_ id: UUID, at time: Double) -> Bool {
+        sent.removeAll { time - $0.time > Self.lifetime }
+        guard let index = sent.lastIndex(where: { $0.id == id }) else { return false }
+        sent.removeFirst(index + 1)
+        return true
     }
 }

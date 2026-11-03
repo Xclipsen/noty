@@ -14,7 +14,7 @@ final class WorkspaceAppModel: ObservableObject {
     @Published var error: String?
 
     init() {
-        Task.detached(priority: .utility) { BackupScratch.removeStale() }
+        Task.detached(priority: .utility) { BackupScratch.removeStale(); IncomingBackup.removeStaleInboxFiles() }
         // Unpublished restore stages of earlier runs (failed/interrupted, older than a day)
         // and files of removed areas whose delete did not finish.
         Task { [store] in
@@ -28,7 +28,7 @@ final class WorkspaceAppModel: ObservableObject {
         do {
             let result = try await store.list()
             areas = result.workspaces
-            if result.unreadableCount > 0 { error = "\(result.unreadableCount) Bereich(e) nicht lesbar. Dateien bleiben erhalten." }
+            if result.unreadableCount > 0 { error = "\(NotyText.count(result.unreadableCount, "Bereich", "Bereiche")) nicht lesbar. Dateien bleiben erhalten." }
         } catch { self.error = error.localizedDescription }
     }
     func select(_ record: TestWorkspace?) async {
@@ -74,7 +74,7 @@ final class WorkspaceAppModel: ObservableObject {
         defer { busy = false }
         do {
             let existing = try await store.list()
-            _ = try await store.createTest(title: "Test \(existing.workspaces.count + 1) · \(Date().formatted(date: .abbreviated, time: .shortened))")
+            _ = try await store.createTest(title: "Test \(existing.workspaces.count + 1) · \(NotyText.listDate(Date()))")
             await refresh()
         } catch { self.error = error.localizedDescription }
     }
@@ -94,7 +94,7 @@ final class WorkspaceAppModel: ObservableObject {
         guard !busy else { throw BackupPostponed(reason: "Eine Wiederherstellung läuft bereits") }
         busy = true; defer { busy = false }
         let existing = try await store.list()
-        let area = try await store.commitRestore(prepared, title: "Restore \(existing.workspaces.count + 1) · \(Date().formatted(date: .abbreviated, time: .shortened))")
+        let area = try await store.commitRestore(prepared, title: "Restore \(existing.workspaces.count + 1) · \(NotyText.listDate(Date()))")
         await refresh()
         return area
     }
@@ -134,7 +134,12 @@ struct WorkspaceLibraryHost: View {
                 externalBackup.sceneActive = phase == .active
                 if phase == .active { Task { await externalBackup.attempt(library: library, toolbox: toolbox) } }
             }
-            .onOpenURL { url in Task { await IncomingBackup.receive(url, library: library, workspaces: workspaces) } }
+            // Shared PDFs/pictures go to the filing sheet, noty files keep their way.
+            .onOpenURL { url in
+                if IncomingFiling.handles(url) { Task { await IncomingFiling.receive(url) } }
+                else { Task { await IncomingBackup.receive(url, library: library, workspaces: workspaces) } }
+            }
+            .task { IncomingFiling.attach(library: library, workspaces: workspaces, defaults: toolbox.preferences.defaultAppearance) }
     }
 }
 
@@ -147,14 +152,15 @@ struct WorkspacePickerView: View {
             WorkspacePickerList(model: model, onSelect: onSelect)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
         }
+        .keyboardSheet()
         // The library's own alert cannot appear while this sheet is shown.
-        .alert("Test- und Restore-Bereiche", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
+        .alert("Bereiche", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
     }
 }
 
-/// Area list shared by the sheet and Settings › Backup & Daten. Without
+/// Area list shared by the sheet and Settings › Backup › Bereiche. Without
 /// `onSelect` (e.g. while a notebook is open) areas are listed but neither
 /// switchable nor removable. „Meine Bibliothek“ and the open area are never removable.
 struct WorkspacePickerList: View {
@@ -166,10 +172,11 @@ struct WorkspacePickerList: View {
         List {
             Section {
                 areaButton("Meine Bibliothek", icon: "books.vertical", current: model.areaID == nil) { onSelect?(nil) }
-                Text("Test- und Restore-Bereiche haben eigene Unterlagen und Werkzeugeinstellungen. Alle liegen im App-Container; ein externes Backup bleibt nötig.")
+                    .keyOption(.action { onSelect?(nil) })
+                Text("Test- und Restore-Bereiche haben eigene Unterlagen und Werkzeugeinstellungen. Alle liegen im App-Container; ein Backup außerhalb des iPads bleibt nötig.")
                     .font(.caption).foregroundStyle(.secondary)
                 if onSelect == nil {
-                    Text("Bereich wechseln ist nur in der Bibliothek möglich, nicht bei geöffnetem Notizbuch.")
+                    Text("Bereich wechseln ist nur in der Bibliothek möglich, nicht bei geöffnetem Heft.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -188,11 +195,12 @@ struct WorkspacePickerList: View {
                         }
                     }
                     .disabled(onSelect == nil)
+                    .keyOption(.action { onSelect?(area) })
                     // Only asks; the confirmation deletes. No destructive role here,
                     // so the row is not animated away before the user confirmed.
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if removable(area) {
-                            Button("Entfernen", systemImage: "trash") { requestRemoval(area) }.tint(.red)
+                            Button("Entfernen …", systemImage: "trash") { requestRemoval(area) }.tint(.red)
                         }
                     }
                     .contextMenu {
@@ -204,10 +212,11 @@ struct WorkspacePickerList: View {
                 }
                 if model.areas.isEmpty { Text("Noch keine getrennten Bereiche.").foregroundStyle(.secondary) }
                 Button("Neuen Testbereich anlegen", systemImage: "plus") { Task { await model.createTest() } }
+                    .keyOption(.action { Task { await model.createTest() } })
                 if model.busy { ProgressView() }
             } header: { Text("Getrennte Bereiche") } footer: {
                 if onSelect != nil && !model.areas.isEmpty {
-                    Text("Zum Entfernen nach links wischen oder lange drücken. Ein entfernter Bereich wird mit allen Notizbüchern endgültig von diesem iPad gelöscht. „Meine Bibliothek“ und der geöffnete Bereich lassen sich nicht entfernen; vorher zu „Meine Bibliothek“ wechseln.")
+                    Text("Zum Entfernen nach links wischen oder lange drücken. Ein entfernter Bereich wird mit allen Heften endgültig von diesem iPad gelöscht. „Meine Bibliothek“ und der geöffnete Bereich lassen sich nicht entfernen; vorher zu „Meine Bibliothek“ wechseln.")
                 }
             }
         }
@@ -233,13 +242,13 @@ struct WorkspacePickerList: View {
     static func removalMessage(_ summary: WorkspaceRemovalSummary) -> String {
         let title = summary.workspace.title
         let count = switch summary.notebooks {
-        case 0: "keine Notizbücher"
-        case 1: "1 Notizbuch"
-        default: "\(summary.notebooks) Notizbücher"
+        case 0: "keine Hefte"
+        case 1: "1 Heft"
+        default: "\(summary.notebooks) Hefte"
         }
         var contents = summary.indexReadable ? "„\(title)“ enthält \(count)" : "Der Bibliotheksindex von „\(title)“ ist nicht lesbar; gefunden: \(count)"
         if summary.trashedNotebooks > 0 { contents += " (davon \(summary.trashedNotebooks) im Papierkorb)" }
-        return contents + ". Der Bereich wird mit allen Notizbüchern, Ordnern, dem Papierkorb und seinen Werkzeugeinstellungen endgültig von diesem iPad gelöscht. Das kann nicht rückgängig gemacht werden. „Meine Bibliothek“, die anderen Bereiche und bereits exportierte Backups bleiben unverändert."
+        return contents + ". Der Bereich wird mit allen Heften, Ordnern, dem Papierkorb und seinen Werkzeugeinstellungen endgültig von diesem iPad gelöscht. Das kann nicht rückgängig gemacht werden. „Meine Bibliothek“, die anderen Bereiche und bereits exportierte Backups bleiben unverändert."
     }
     private func areaButton(_ title: String, icon: String, current: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {

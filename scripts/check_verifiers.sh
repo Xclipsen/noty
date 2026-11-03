@@ -130,7 +130,129 @@ large = [dict(valid["pdfSources"][0], data=base64.b64encode(bytes(20_000_001)).d
 backup("large-source-schema-9.notybackup", dict(valid, schemaVersion=9, pdfSources=large))
 backup("large-source-schema-10.notybackup", dict(valid, schemaVersion=10, pdfSources=large))
 
+
+# Schema 13: polylines (line/arrow with `points`) and polygons.
+def point(x, y):
+    return {"x": x, "y": y}
+
+
+def shape(kind, vertices=None, start=None, end=None, **extra):
+    value = {"id": uid(), "kind": kind, "start": start or vertices[0], "end": end or vertices[-1],
+             "color": {"red": 0, "green": 0, "blue": 0, "alpha": 1}, "lineWidth": 2, "pattern": "solid"}
+    if vertices is not None:
+        value["points"] = vertices
+    value.update(extra)
+    return value
+
+
+def shaped(version, shapes):
+    return dict(valid, schemaVersion=version, pages=[dict(valid["pages"][0], shapes=shapes)] + valid["pages"][1:])
+
+
+bent = [point(50, 50), point(50, 200), point(200, 200)]
+triangle = [point(300, 300), point(400, 300), point(350, 380)]
+straight = shape("arrow", start=point(20, 20), end=point(120, 20))
+backup("shapes-schema-13.notybackup", shaped(13, [straight, shape("arrow", bent), shape("line", bent), shape("polygon", triangle)]))
+backup("shapes-straight-schema-12.notybackup", shaped(12, [straight]))
+backup("shapes-polyline-schema-12.notybackup", shaped(12, [shape("arrow", bent)]))
+backup("shapes-polygon-schema-12.notybackup", shaped(12, [shape("polygon", triangle)]))
+backup("shapes-start-mismatch.notybackup", shaped(13, [shape("line", bent, start=point(51, 50))]))
+backup("shapes-two-vertices.notybackup", shaped(13, [shape("line", bent[:2])]))
+backup("shapes-polygon-without-points.notybackup", shaped(13, [shape("polygon", start=point(10, 10), end=point(90, 90))]))
+backup("shapes-rectangle-points.notybackup", shaped(13, [shape("rectangle", [point(10, 10), point(50, 30), point(90, 90)])]))
+backup("shapes-arrow-without-head.notybackup", shaped(13, [shape("arrow", bent + [point(200, 200)])]))
+backup("shapes-flat-polygon.notybackup", shaped(13, [shape("polygon", [point(10, 10), point(50, 10), point(90, 10)])]))
+backup("shapes-vertex-outside.notybackup", shaped(13, [shape("line", [point(50, 50), point(700, 400), point(100, 100)])]))
+backup("shapes-vertex-type.notybackup", shaped(13, [shape("line", [point(50, 50), point("70", 400), point(100, 100)])]))
+# 22.10.2026: fill with its own colour and strength stays in `fill` (schema 6, no raise).
+own_fill = {"red": 0.2, "green": 0.5, "blue": 1, "alpha": 0.65}
+backup("shapes-fill-schema-12.notybackup", shaped(12, [shape("rectangle", start=point(20, 20), end=point(120, 90), fill=own_fill),
+                                                      shape("ellipse", start=point(150, 20), end=point(250, 90), fill=dict(own_fill, alpha=1))]))
+backup("shapes-fill-alpha.notybackup", shaped(12, [shape("rectangle", start=point(20, 20), end=point(120, 90), fill=dict(own_fill, alpha=1.5))]))
+backup("shapes-fill-type.notybackup", shaped(12, [shape("ellipse", start=point(20, 20), end=point(120, 90), fill=dict(own_fill, red="1"))]))
+
+
+# Schema 14: free text fields (rotation, automatic width, page text migrated to a field).
+def text_box(**extra):
+    value = {"id": uid(), "x": 40, "y": 40, "width": 200, "height": 30, "text": "Feld",
+             "style": {"font": "system", "fontSize": 17, "bold": False, "italic": False, "underline": False, "color": "black"}}
+    value.update(extra)
+    return value
+
+
+def texted(version, boxes):
+    return dict(valid, schemaVersion=version, pages=[dict(valid["pages"][0], textBoxes=boxes)] + valid["pages"][1:])
+
+
+backup("text-fields-schema-14.notybackup",
+       texted(14, [text_box(), text_box(rotation=30.5), text_box(rotation=-180), text_box(autoWidth=True), text_box(flowRegion="left")]))
+backup("text-plain-schema-13.notybackup", texted(13, [text_box()]))
+backup("text-flow-schema-14.notybackup", texted(14, [text_box(flowID=uid(), flowRegion="page")]))
+backup("text-rotation-schema-13.notybackup", texted(13, [text_box(rotation=30)]))
+backup("text-autowidth-schema-13.notybackup", texted(13, [text_box(autoWidth=True)]))
+backup("text-region-schema-13.notybackup", texted(13, [text_box(flowRegion="page")]))
+backup("text-rotation-range.notybackup", texted(14, [text_box(rotation=200)]))
+backup("text-rotation-type.notybackup", texted(14, [text_box(rotation="30")]))
+backup("text-autowidth-false.notybackup", texted(14, [text_box(autoWidth=False)]))
+backup("text-flow-rotated.notybackup", texted(14, [text_box(flowID=uid(), flowRegion="page", rotation=10)]))
+backup("text-flow-autowidth.notybackup", texted(14, [text_box(flowID=uid(), flowRegion="page", autoWidth=True)]))
+backup("text-flow-without-region.notybackup", texted(14, [text_box(flowID=uid())]))
+backup("text-region-enum.notybackup", texted(14, [text_box(flowRegion="middle")]))
+backup("text-schema-16.notybackup", texted(16, [text_box(rotation=30)]))
+# Schema 14, Stufe 4: field style (fill, border) of free fields.
+backup("text-style-schema-14.notybackup",
+       texted(14, [text_box(fill="yellow"), text_box(border="accent"), text_box(fill="purple", border="text", rotation=12, autoWidth=True)]))
+backup("text-style-fill-schema-13.notybackup", texted(13, [text_box(fill="blue")]))
+backup("text-style-border-schema-13.notybackup", texted(13, [text_box(border="text")]))
+backup("text-style-fill-enum.notybackup", texted(14, [text_box(fill="orange")]))
+backup("text-style-fill-type.notybackup", texted(14, [text_box(fill=True)]))
+backup("text-style-border-enum.notybackup", texted(14, [text_box(border="thick")]))
+backup("text-style-flow.notybackup", texted(14, [text_box(flowID=uid(), flowRegion="page", fill="green")]))
+
+
+# Schema 15: text documents (one flow over paper pages, Textneubau Stufe 3).
+def text_document(version=15, kind="textDocument", **changes):
+    flow = uid()
+    def page(text):
+        return {"id": uid(), "drawing": "", "text": "", "paper": "lined", "paperColor": "white",
+                "geometry": {"mediaBox": A4, "cropBox": A4, "rotation": 0},
+                "textBoxes": [text_box(flowID=flow, flowRegion="page", x=32, y=16, width=531, height=810, text=text),
+                              text_box(text="freies Feld", rotation=12, autoWidth=True, fill="gray", border="accent")]}
+    document = {"schemaVersion": version, "id": uid(), "title": "Textdokument", "kind": kind,
+                "pages": [page("Erster Teil "), page("Fortsetzung")], "pdfSources": [], "deletedPages": []}
+    if kind is None:
+        del document["kind"]
+    document.update(changes)
+    return document
+
+
+def text_document_with(change):
+    document = text_document()
+    change(document)
+    return document
+
+
+backup("textdoc-valid.notybackup", text_document())
+backup("textdoc-dark.notybackup", text_document_with(lambda d: [page.update(paperColor="dark") for page in d["pages"]]))
+# A manual page break is a character of the flow, in schema 15 as it is.
+backup("textdoc-page-break.notybackup", text_document_with(lambda d: d["pages"][0]["textBoxes"][0].update(text="Erster Teil\f")))
+backup("textdoc-schema-14.notybackup", text_document(version=14))
+backup("textdoc-kind-notebook.notybackup", text_document(kind="notebook"))
+backup("textdoc-kind-enum.notybackup", text_document(kind="essay"))
+backup("textdoc-pdf-source.notybackup", text_document(pdfSources=valid["pdfSources"]))
+backup("textdoc-pdf-page.notybackup", text_document_with(lambda d: d["pages"].append(dict(valid["pages"][1], id=uid()))
+                                                          or d.update(pdfSources=valid["pdfSources"])))
+backup("textdoc-margins.notybackup", text_document_with(lambda d: d["pages"][0].update(
+    margins={"left": 0, "right": 100, "top": 0, "bottom": 0, "style": "lined", "color": "white"})))
+backup("textdoc-two-flows.notybackup", text_document_with(lambda d: d["pages"][1]["textBoxes"][0].update(flowID=uid())))
+backup("textdoc-margin-flow.notybackup", text_document_with(lambda d: d["pages"][0]["textBoxes"][0].update(flowRegion="right")))
+backup("textdoc-legacy-paper.notybackup", text_document_with(lambda d: d["pages"][0].update(paper="legacyTest")))
+backup("textdoc-schema-16.notybackup", text_document(version=16))
+
 store("valid")
+store("kind-valid", lambda s: s["items"][2].update(kind="textDocument"))
+store("kind-folder", lambda s: s["items"][1].update(kind="textDocument"))
+store("kind-enum", lambda s: s["items"][2].update(kind="notebook"))
 store("source-enum", lambda s: s["items"][2].update(source="bogus"))
 store("title-control", lambda s: s["items"][1].update(title="Ordner\u0007"))
 store("title-length", lambda s: s["items"][1].update(title="x" * 121))
@@ -344,7 +466,7 @@ schema_case("v2-schema12-pixel-mismatch.notybackup",
             with_images([image_object(sha, len(image)), image_object(sha, len(image), width=9, x=50)]))
 schema_case("v2-schema12-size-mismatch.notybackup",
             with_images([image_object(sha, len(image)), image_object(sha, len(image) + 1, x=50)]))
-schema_case("v2-schema13.notybackup", with_images([image_object(sha, len(image))], version=13))
+schema_case("v2-schema16.notybackup", with_images([image_object(sha, len(image))], version=16))
 # Format 1 has no asset records: a schema-12 notebook with images is refused.
 v1_document = with_images([image_object(sha, len(image))])
 v1_payload = json.dumps(v1_document).encode()
@@ -383,6 +505,12 @@ write_library("v2-entries-key.notylibrary", head + groups, header=dict(library_h
 write_library("v2-missing-notebook.notylibrary", head + groups[:1])
 write_library("v2-crc.notylibrary", head + [(groups[0][0], groups[0][1][:-2] + b"x}")] + groups[1:])
 write_library("v2-toolbar-first.notylibrary", head[::-1] + groups)
+# Index hint of text documents: only documents, only "textDocument" (no cross-check
+# with the notebook: an older build may have dropped the key; the document decides).
+hinted = compact({"formatVersion": 1, "items": [dict(items[0], kind="textDocument"), items[1]]})
+write_library("v2-kind-hint.notylibrary", [data_record("index", hinted), head[1]] + groups)
+folder_kind = compact({"formatVersion": 1, "items": items + [{"id": uid(), "title": "Ordner", "favorite": False, "kind": "textDocument"}]})
+write_library("v2-kind-folder.notylibrary", [data_record("index", folder_kind), head[1]] + groups)
 
 # Format 1 as written up to Build 53: reserved manifest padded with spaces.
 chunks = [index, toolbar, compact(first), compact(second)]
@@ -429,10 +557,77 @@ reject() {
     done
 }
 
+
+# Office exports: `verify_office_export.py` must refuse what Word would stumble over.
+python3 -B - "$work" <<'PY'
+import sys, zipfile
+from pathlib import Path
+
+out = Path(sys.argv[1]) / "office"
+out.mkdir()
+W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+HEAD = '<?xml version="1.0" encoding="UTF-8"?>'
+TYPES = HEAD + ('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                '<Default Extension="xml" ContentType="application/xml"/></Types>')
+RELS = HEAD + ('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+               '<Relationship Id="rId1" Type="office" Target="word/document.xml"/></Relationships>')
+DOC = HEAD + f'<w:document {W}><w:body><w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>a</w:t></w:r></w:p><w:sectPr/></w:body></w:document>'
+STYLES = HEAD + f'<w:styles {W}><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/></w:style></w:styles>'
+NUMBERING = HEAD + f'<w:numbering {W}></w:numbering>'
+
+
+def write(name, **changes):
+    parts = {"[Content_Types].xml": TYPES, "_rels/.rels": RELS, "word/document.xml": DOC, "word/styles.xml": STYLES, "word/numbering.xml": NUMBERING}
+    parts.update(changes)
+    with zipfile.ZipFile(out / name, "w") as archive:
+        for key, value in parts.items():
+            if value is not None:
+                archive.writestr(key, value)
+
+
+write("valid.docx")
+write("malformed.docx", **{"word/document.xml": DOC.replace("</w:body>", "")})
+write("no-styles.docx", **{"word/styles.xml": None})
+write("unknown-style.docx", **{"word/document.xml": DOC.replace('w:val="Title"', 'w:val="Ghost"')})
+write("broken-relation.docx", **{"_rels/.rels": RELS.replace("word/document.xml", "word/fehlt.xml")})
+write("undefined-list.docx", **{"word/document.xml": DOC.replace('<w:pStyle w:val="Title"/>', '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="9"/></w:numPr>')})
+(out / "no-zip.docx").write_bytes(b"PK nichts")
+(out / "valid.rtf").write_bytes(b"{\\rtf1\\ansi {\\b a}\\par\n}\n")
+(out / "open.rtf").write_bytes(b"{\\rtf1\\ansi {\\b a\\par\n}\n")
+(out / "umlaut.rtf").write_bytes("{\\rtf1 ä}".encode())
+PY
+accept verify_office_export.py "$work/office/valid.docx"
+accept verify_office_export.py "$work/office/valid.rtf"
+for name in malformed.docx no-styles.docx unknown-style.docx broken-relation.docx undefined-list.docx no-zip.docx open.rtf umlaut.rtf; do
+    reject verify_office_export.py "$work/office/$name"
+done
+
 accept verify_backup.py "$work/backups/valid.notybackup" --compare "$work/backups/valid.json"
 accept verify_backup.py "$work/backups/large-source-schema-10.notybackup"
 for name in schema-99 crc trailing title-type urn-page-id page-count-type source-enum large-source-schema-9; do
     reject verify_backup.py "$work/backups/$name.notybackup"
+done
+accept verify_backup.py "$work/backups/shapes-schema-13.notybackup"
+accept verify_backup.py "$work/backups/shapes-straight-schema-12.notybackup"
+accept verify_backup.py "$work/backups/shapes-fill-schema-12.notybackup"
+for name in polyline-schema-12 polygon-schema-12 start-mismatch two-vertices polygon-without-points rectangle-points \
+            arrow-without-head flat-polygon vertex-outside vertex-type fill-alpha fill-type; do
+    reject verify_backup.py "$work/backups/shapes-$name.notybackup"
+done
+for name in fields-schema-14 plain-schema-13 flow-schema-14 style-schema-14; do
+    accept verify_backup.py "$work/backups/text-$name.notybackup"
+done
+for name in rotation-schema-13 autowidth-schema-13 region-schema-13 rotation-range rotation-type autowidth-false \
+            flow-rotated flow-autowidth flow-without-region region-enum schema-16 style-fill-schema-13 \
+            style-border-schema-13 style-fill-enum style-fill-type style-border-enum style-flow; do
+    reject verify_backup.py "$work/backups/text-$name.notybackup"
+done
+accept verify_backup.py "$work/backups/textdoc-valid.notybackup"
+accept verify_backup.py "$work/backups/textdoc-dark.notybackup"
+accept verify_backup.py "$work/backups/textdoc-page-break.notybackup"
+for name in schema-14 kind-notebook kind-enum pdf-source pdf-page margins two-flows margin-flow legacy-paper schema-16; do
+    reject verify_backup.py "$work/backups/textdoc-$name.notybackup"
 done
 accept verify_backup.py "$work/backups/v2.notybackup" --compare "$work/backups/v2.json"
 for name in extra-asset asset-first no-end trailing version-3 header-key crc descriptor-key wrong-id schema-99 end-totals \
@@ -440,7 +635,7 @@ for name in extra-asset asset-first no-end trailing version-3 header-key crc des
     reject verify_backup.py "$work/backups/v2-$name.notybackup"
 done
 for name in schema12-data-and-asset schema12-data schema11-asset schema11-data-and-asset schema12-hash-upper schema12-hash-63 \
-            schema12-hash-path schema12-asset-over-20mb schema12-over-500mb schema12-pixel-mismatch schema12-size-mismatch schema13; do
+            schema12-hash-path schema12-asset-over-20mb schema12-over-500mb schema12-pixel-mismatch schema12-size-mismatch schema16; do
     reject verify_backup.py "$work/backups/v2-$name.notybackup"
     # The notebook rule itself must refuse (not a missing asset record afterwards).
     if grep -q "Referenced asset missing" "$work/last.log"; then
@@ -448,10 +643,16 @@ for name in schema12-data-and-asset schema12-data schema11-asset schema11-data-a
     fi
 done
 reject verify_backup.py "$work/backups/v1-schema12-asset.notybackup"
+# `.noty` is the same format under another extension: the verifier must not depend on it.
+cp "$work/backups/v2.notybackup" "$work/backups/v2.noty"
+cp "$work/backups/v2-crc.notybackup" "$work/backups/v2-crc.noty"
+accept verify_backup.py "$work/backups/v2.noty" --compare "$work/backups/v2.json"
+reject verify_backup.py "$work/backups/v2-crc.noty"
 accept verify_backup.py "$work/backups/v2-schema11-embedded.notybackup"
 accept verify_library_backup.py "$work/libraries/v2.notylibrary"
 accept verify_library_backup.py "$work/libraries/v1.notylibrary"
-for name in asset-first extra-asset no-end trailing version-3 entries-key missing-notebook crc toolbar-first; do
+accept verify_library_backup.py "$work/libraries/v2-kind-hint.notylibrary"
+for name in asset-first extra-asset no-end trailing version-3 entries-key missing-notebook crc toolbar-first kind-folder; do
     reject verify_library_backup.py "$work/libraries/v2-$name.notylibrary"
 done
 # Archive asset rules with real schema-12 notebooks (image objects reference
@@ -561,6 +762,14 @@ expect("library reference never carried", False, library("missing.notylibrary", 
 expect("library same hash twice", False, library("twice.notylibrary", [n1, asset(a), n2, asset(a), asset(b), n3]))
 expect("library SHA-256 mismatch", False, library("sha.notylibrary", [n1, asset(a), n2, asset(b, flip=True), n3]))
 expect("library asset after the last notebook's group", False, library("unreferenced.notylibrary", [n1, asset(a), n2, asset(b), n3, asset(b"x")]))
+# Toolbar: optional fill of new shapes (format 8).
+format8 = {"formatVersion": 8, "dock": "top", "presets": [],
+           "order": ["pen", "pencil", "marker", "strokeEraser", "text", "selection", "shape", "image", "read", "laser", "precisionEraser", "inkSelection"]}
+fill_color = {"red": 1, "green": 0.5, "blue": 0, "alpha": 1}
+expect("toolbar shape fill", True, lambda: verify_library_backup.verify_toolbar(dict(format8, shapeFillColor=fill_color, shapeFillOpacity=0.35)))
+expect("toolbar shape fill below 10 %", False, lambda: verify_library_backup.verify_toolbar(dict(format8, shapeFillOpacity=0.05)))
+expect("toolbar shape fill colour type", False, lambda: verify_library_backup.verify_toolbar(dict(format8, shapeFillColor="orange")))
+expect("toolbar shape fill before format 8", False, lambda: verify_library_backup.verify_toolbar(dict(toolbar, shapeFillOpacity=0.5)))
 # Notebook rules directly (declared sizes, no bytes needed).
 from notebook_format import validate_notebook
 def declared(n, count=20_000_000, width=8):
@@ -591,6 +800,7 @@ PY
     fi
 done
 accept verify_device_store.py "$work/stores/valid"
+accept verify_device_store.py "$work/stores/kind-valid"
 accept verify_device_store.py "$work/stores/assets-valid"
 python3 -B - "$task_root/scripts" "$work/stores/assets-valid" <<'PY'
 import sys
@@ -602,7 +812,7 @@ expected = {"assets": 2, "unreferenced_assets": 1, "partial_asset_files": 1}
 if any(result[key] != value for key, value in expected.items()):
     sys.exit(f"FEHLER: Asset-Zählung des Gerätespeichers {result}")
 PY
-for name in source-enum title-control title-length date-range favorite-type cycle missing-package revision-crc \
+for name in kind-folder kind-enum source-enum title-control title-length date-range favorite-type cycle missing-package revision-crc \
             previous-missing too-many-revisions four-revisions checkpoint-crc checkpoint-format future-manifest \
             future-schema saved-range index-crc asset-missing asset-size asset-flipped asset-symlink assets-directory-symlink; do
     reject verify_device_store.py "$work/stores/$name"

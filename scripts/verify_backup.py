@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Verify a notybackup independently, without extracting or printing note text.
+"""Verify a noty notebook file independently, without extracting or printing note text.
+
+The same format is written as `.noty` (since 22.10.2026) and `.notybackup`
+(older builds); the file extension is not checked.
 
 Format 1: magic + header + one notebook JSON (<= 200 MB). Format 2: record
 stream (record_archive.py) with exactly one notebook, then exactly its unique
@@ -97,6 +100,7 @@ def main() -> None:
     args = parser.parse_args()
     notebook, info = verify(args.archive)
     result = {"valid": True, "formatVersion": info["formatVersion"], "schemaVersion": notebook["schemaVersion"],
+              "kind": notebook.get("kind") or "notebook",
               "pageCount": len(notebook["pages"]), "assets": info["assets"], "assetBytes": info["assetBytes"]}
     if args.compare:
         result["complete_contents_match"] = notebook == json.loads(args.compare.read_bytes())

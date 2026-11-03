@@ -126,6 +126,7 @@ def validate_snapshot(snapshot):
         check(item.get("source") in (None, "legacyMain", "restored", "library"), "Unknown library source")
         check(valid_title(item["title"]), "Invalid library title")
         check(type(item["favorite"]) is bool, "Invalid favorite flag")
+        check(item.get("kind") is None or (item["kind"] == "textDocument" and item.get("source") is not None), "Invalid document kind")
         for key in ("lastOpened", "deletedAt"):
             if item.get(key) is not None:
                 foundation_date(item[key], "Library date outside range")

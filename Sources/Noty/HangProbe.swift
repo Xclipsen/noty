@@ -14,6 +14,8 @@ enum HangProbe {
     nonisolated(unsafe) private static var counts: [String: Int] = [:]
     nonisolated(unsafe) private static var iteration: UInt64 = 0
     nonisolated(unsafe) private static var iterationStart = CACurrentMediaTime()
+    /// Main sleeps in its run loop: that is no stall.
+    nonisolated(unsafe) private static var idle = false
     nonisolated(unsafe) private static var mainThread: thread_act_t = 0
     private static let maxFrames = 96
     nonisolated(unsafe) private static let frames = UnsafeMutablePointer<UInt>.allocate(capacity: maxFrames)
@@ -26,11 +28,16 @@ enum HangProbe {
         guard !installed else { return }
         installed = true
         mainThread = mach_thread_self()
+        // Allocates: must not happen on first use, while main is suspended.
+        _ = frames
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        write("=== Start \(Date().formatted(.iso8601)), Build \(build)")
         let observer = CFRunLoopObserverCreateWithHandler(nil,
             CFRunLoopActivity.afterWaiting.rawValue | CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { _, activity in
             os_unfair_lock_lock(&lock)
             let elapsed = CACurrentMediaTime() - iterationStart
-            let snapshot = elapsed > 0.25 ? counts : [:]
+            let snapshot = elapsed > 0.25 && !idle ? counts : [:]
+            idle = activity == .beforeWaiting
             counts.removeAll(keepingCapacity: true)
             iteration &+= 1; iterationStart = CACurrentMediaTime()
             os_unfair_lock_unlock(&lock)
@@ -53,6 +60,27 @@ enum HangProbe {
     private static func report(elapsed: Double, counts: [String: Int]) {
         let text = counts.sorted { $0.value > $1.value }.prefix(24).map { "\($0.key)=\($0.value)" }.joined(separator: " ")
         log.error("Slow main iteration \(Int(elapsed * 1000), privacy: .public) ms: \(text, privacy: .public)")
+        if elapsed >= 0.7 { write("Langsam \(Int(elapsed * 1000)) ms: \(text)") }
+    }
+
+    /// Without USB the system log cannot be read: the same addresses and
+    /// counters also go to Documents/Diagnose (Dateien › Auf meinem iPad › noty).
+    private static let fileQueue = DispatchQueue(label: "noty.hang-probe.file", qos: .utility)
+    private static func write(_ text: String) {
+        fileQueue.async {
+            guard let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("Diagnose", isDirectory: true) else { return }
+            let url = folder.appendingPathComponent("haenger.txt")
+            let data = Data((text + "\n").utf8)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            guard size > 0, size < 2_000_000, let handle = try? FileHandle(forWritingTo: url) else {
+                try? data.write(to: url, options: .atomic); return
+            }
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        }
     }
 
     private static func watchdog() {
@@ -62,12 +90,12 @@ enum HangProbe {
             usleep(100_000)
             os_unfair_lock_lock(&lock)
             let current = iteration, elapsed = CACurrentMediaTime() - iterationStart
-            let live = counts
+            let live = counts, sleeping = idle
             os_unfair_lock_unlock(&lock)
             if current != sampledIteration { samples = 0 }
-            // Sample at ~0.7 s, ~1.5 s and ~3 s of one stalled iteration.
-            let due = samples == 0 ? 0.7 : samples == 1 ? 1.5 : samples == 2 ? 3.0 : .infinity
-            guard elapsed >= due else { continue }
+            // Sample at ~0.7 s, ~1.5 s, ~3 s and ~10 s of one stalled iteration.
+            let due = samples == 0 ? 0.7 : samples == 1 ? 1.5 : samples == 2 ? 3.0 : samples == 3 ? 10.0 : .infinity
+            guard !sleeping, elapsed >= due else { continue }
             sampledIteration = current; samples += 1
             let count = sampleMainThread()
             symbolizeAndLog(count: count, elapsed: elapsed, sample: samples, counts: live)
@@ -122,6 +150,7 @@ enum HangProbe {
         }
         let tags = counts.sorted { $0.value > $1.value }.prefix(24).map { "\($0.key)=\($0.value)" }.joined(separator: " ")
         log.error("Main thread stalled \(Int(elapsed * 1000), privacy: .public) ms (sample \(sample, privacy: .public)); paths: \(tags, privacy: .public)")
+        write("Haenger \(Int(elapsed * 1000)) ms, Probe \(sample), Pfade: \(tags)\n" + lines.joined(separator: "\n"))
         // Several short records survive syslog line limits better than one long one.
         stride(from: 0, to: lines.count, by: 12).forEach { start in
             let chunk = lines[start..<min(lines.count, start + 12)].joined(separator: " | ")

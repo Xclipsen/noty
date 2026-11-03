@@ -87,28 +87,67 @@ extension ImageImport {
     /// A copied camera photo may also be offered as a much larger PNG
     /// re-encoding: the pasteboard's own order (source encoding first) decides,
     /// and the first still image within the limit wins. Nothing is re-encoded here.
+    /// Loaded through the item providers: a photo copied on the iPhone arrives
+    /// by Universal Clipboard and direct pasteboard reads would block the UI
+    /// until the transfer has finished.
     @MainActor
-    static func clipboardImage(_ pasteboard: UIPasteboard) throws -> Data {
-        let offered = pasteboard.types.compactMap { UTType($0) }
-            .filter { $0.conforms(to: .image) && !$0.conforms(to: .livePhoto) && !$0.conforms(to: .package) }
+    static func clipboardImage(_ pasteboard: UIPasteboard) async throws -> Data {
         var tooLarge = false
-        var seen = Set<String>()
-        for type in offered + ImportedStillImage.contentTypes where seen.insert(type.identifier).inserted {
-            guard let data = pasteboard.data(forPasteboardType: type.identifier), !data.isEmpty,
-                  ImageFileFormat.detect(data) != .video else { continue }
-            guard data.count <= ImageCompression.maximumSourceBytes else { tooLarge = true; continue }
-            return data
+        for provider in pasteboard.itemProviders {
+            let offered = provider.registeredTypeIdentifiers.compactMap { UTType($0) }
+                .filter { $0.conforms(to: .image) && !$0.conforms(to: .livePhoto) && !$0.conforms(to: .package) }
+            var seen = Set<String>()
+            for type in offered + ImportedStillImage.contentTypes where seen.insert(type.identifier).inserted {
+                guard provider.hasRepresentationConforming(toTypeIdentifier: type.identifier, fileOptions: []),
+                      let data = await loaded(type.identifier, from: provider), !data.isEmpty,
+                      ImageFileFormat.detect(data) != .video else { continue }
+                guard data.count <= ImageCompression.maximumSourceBytes else { tooLarge = true; continue }
+                return data
+            }
         }
         if tooLarge { throw ImageImportError.fileTooLarge }
-        guard let data = pasteboard.image?.pngData() else { throw ImageImportError.missingClipboard }
+        guard let image = pasteboard.image else { throw ImageImportError.missingClipboard }
+        guard let data = await Task.detached(priority: .userInitiated, operation: { image.pngData() }).value else { throw ImageImportError.missingClipboard }
         return data
+    }
+
+    @MainActor
+    private static func loaded(_ type: String, from provider: NSItemProvider) async -> Data? {
+        await withCheckedContinuation { continuation in
+            _ = provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in continuation.resume(returning: data) }
+        }
+    }
+}
+
+@MainActor
+private final class ImportRace<Value: Sendable> {
+    var continuation: CheckedContinuation<Value, Error>?
+    func finish(_ result: Result<Value, Error>) { continuation?.resume(with: result); continuation = nil }
+}
+
+/// The result of `work`, or `timedOut` after two minutes: a file provider that
+/// never answers cannot be cancelled and would hold the editor's lock for
+/// ever (Nutzer zu Build 85). A late result is dropped.
+@MainActor
+func withImportTimeLimit<Value: Sendable>(_ work: @escaping @MainActor () async throws -> Value) async throws -> Value {
+    let race = ImportRace<Value>()
+    return try await withCheckedThrowingContinuation { continuation in
+        race.continuation = continuation
+        Task { @MainActor in
+            do { race.finish(.success(try await work())) } catch { race.finish(.failure(error)) }
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(120))
+            race.finish(.failure(ImageImportError.timedOut))
+        }
     }
 }
 
 @MainActor
 extension EditorModel {
     func insertImageFile(_ url: URL, pageID: UUID) {
-        guard writable, !busy, notebook.pages.contains(where: { $0.id == pageID }) else { return }
+        guard writable, notebook.pages.contains(where: { $0.id == pageID }) else { return }
+        guard !busy, !imageReading else { error = Self.imageBusyMessage; return }
         let access = url.startAccessingSecurityScopedResource()
         insertImage(pageID: pageID) {
             defer { if access { url.stopAccessingSecurityScopedResource() } }
@@ -120,25 +159,44 @@ extension EditorModel {
         insertImage(pageID: pageID) { try await ImageImport.photo(item) }
     }
 
-    func pasteImage(pageID: UUID) {
-        insertImage(pageID: pageID) { try ImageImport.clipboardImage(UIPasteboard.general) }
+    /// `near`: where to centre the image, nil for the middle of the text area.
+    func pasteImage(pageID: UUID, near place: PagePoint?) {
+        insertImage(pageID: pageID, near: place) { try await ImageImport.clipboardImage(UIPasteboard.general) }
     }
 
-    private func insertImage(pageID: UUID, read: @escaping @MainActor () async throws -> Data) {
-        guard writable, !busy, let target = notebook.pages.first(where: { $0.id == pageID }) else { return }
+    private static var imageBusyMessage: String { "Bild nicht eingefügt: Bitte warten, bis der laufende Vorgang abgeschlossen ist." }
+
+    private func insertImage(pageID: UUID, near place: PagePoint? = nil, read: @escaping @MainActor () async throws -> Data) {
+        guard writable, let target = notebook.pages.first(where: { $0.id == pageID }) else { return }
+        guard !busy, !imageReading else { error = Self.imageBusyMessage; return }
         let generation = pageContentGeneration
-        busy = true
+        // Fetching can take long or never end (Universal Clipboard, iCloud):
+        // that happens before the editor is locked, and with a time limit.
+        imageReading = true
         Task {
+            let source: Data
+            do { source = try await withImportTimeLimit(read) }
+            catch {
+                imageReading = false
+                self.error = "Bild nicht eingefügt: \(error.localizedDescription)"
+                return
+            }
+            imageReading = false
+            guard writable else { return }
+            guard !busy else { error = Self.imageBusyMessage; return }
+            busy = true
             defer { busy = false }
             await awaitMutationAccess()
             do {
-                let source = try await read()
                 // Over 5 MB, beyond the pixel limit or larger than the notebook's
                 // remaining image budget: compressed instead of refused.
                 let room = ImageLimits.maximumNotebookBytes - notebook.uniqueImageAssetBytes
                 // Almost no room left: the notebook-full message below explains it better.
                 let limit = room >= ImageCompression.minimumBudget ? min(ImageCompression.importTargetBytes, room) : ImageCompression.importTargetBytes
-                let fitted = try await Task.detached { try ImageCompression.fitting(source, limit: limit) }.value
+                // The editor is locked here: a picture that cannot be decoded must not hold it.
+                let fitted = try await withImportTimeLimit {
+                    try await Task.detached { try ImageCompression.fitting(source, limit: limit) }.value
+                }
                 let data = fitted.data
                 // Limits first (an original already in the notebook adds no
                 // bytes): a clear message instead of a failed validation, and
@@ -150,17 +208,18 @@ extension EditorModel {
                 if let problem = notebook.imageInsertionProblem(adding: reference, pageID: pageID) {
                     throw ImageImportError(problem)
                 }
-                let object = try await Task.detached { try ImageImport.object(reference, data: data, in: target.textBounds) }.value
-                guard writable, generation == pageContentGeneration,
-                      let current = notebook.pages.first(where: { $0.id == pageID }), current.textBounds == target.textBounds else {
-                    throw PageOperationError.missingPage
+                let object = try await Task.detached { try ImageImport.object(reference, data: data, in: target.textBounds, near: place) }.value
+                guard let current = notebook.pages.first(where: { $0.id == pageID }) else { throw PageOperationError.missingPage }
+                guard writable, generation == pageContentGeneration, current.textBounds == target.textBounds else {
+                    throw ImageImportError.pageChanged
                 }
                 // Pending in the package's asset store until the next commit
                 // writes it (assets first, then the revision). A full pending
                 // area (saving keeps failing) refuses with a clear message.
                 guard try imageAssets.stage(data) == reference else { throw ImageImportError.invalid }
                 updateImages((current.images ?? []) + [object], pageID: pageID)
-                if let original = fitted.originalBytes {
+                let inserted = notebook.pages.first(where: { $0.id == pageID })?.images?.contains { $0.id == object.id } == true
+                if inserted, let original = fitted.originalBytes {
                     fileStatus = "Bild verkleinert eingefügt (\(ImageLimits.megabytes(original)) → \(ImageLimits.megabytes(data.count)))"
                 }
             } catch { self.error = "Bild nicht eingefügt: \(error.localizedDescription)" }

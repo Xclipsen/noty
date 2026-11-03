@@ -27,8 +27,11 @@ struct LibraryView: View {
     @State private var importingBackup = false
     @State private var showingName = false
     @State private var creatingNotebook = false
+    @State private var creatingTextDocument = false
     @State private var libraryEditMode: EditMode = .inactive
     @State private var name = ""
+    /// Keyboard mode: the item `hjkl` stands on.
+    @State private var keyboardFocus: UUID?
     @State private var nameAction = NameAction.folder
     @State private var moving: NotebookCore.LibraryItem?
     @State private var trashing: NotebookCore.LibraryItem?
@@ -39,6 +42,8 @@ struct LibraryView: View {
     @State private var selectedArea: TestWorkspace?
     @State private var switchingArea = false
     @State private var settingsRequest: SettingsRequest?
+    /// Hint or verified result of the toolbar backup; its failures arrive in `externalBackup.error`.
+    @State private var backupNotice: String?
     /// Current drag & drop preview (insertion line or highlighted folder).
     @State private var dropMark: DropMark?
     /// Entry dragged from this library (for hiding invalid targets while hovering).
@@ -60,12 +65,22 @@ struct LibraryView: View {
     }
     /// Menu shortcuts pause while a sheet/dialog is shown: a second presentation would not appear.
     private var presenting: Bool {
-        creatingNotebook || settingsRequest != nil || contentSearch != nil || moving != nil || showingAreas || showingCopies
+        creatingNotebook || creatingTextDocument || settingsRequest != nil || contentSearch != nil || moving != nil || showingAreas || showingCopies
             || showingName || trashing != nil || importingPDF || importingBackup || exportingPDF
     }
     private var normalFolder: Bool { location == .root || parentID != nil }
     /// Manual drag order is only meaningful for the unsorted contents of one folder.
     private var canReorder: Bool { normalFolder && search.isEmpty && sort == .manual }
+    private var errorShown: Binding<Bool> {
+        Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })
+    }
+    private var backupMessage: String? { externalBackup.error ?? backupNotice }
+    /// New items land in the open folder or „Alle Unterlagen“; „Zuletzt
+    /// verwendet“ or a running search would hide them.
+    private func showNewItem() {
+        search = ""
+        if location == .recent { location = .root }
+    }
     private var activeCopies: [RestoredNotebook] {
         model.restoredCopies.compactMap { copy -> RestoredNotebook? in
             guard let item = model.snapshot.items.first(where: { $0.id == copy.id }), !model.snapshot.isTrashed(copy.id) else { return nil }
@@ -105,10 +120,28 @@ struct LibraryView: View {
         .animation(NotyMotion.panel(reduceMotion), value: libraryEditMode)
         .animation(NotyMotion.highlight(reduceMotion), value: location)
         .environment(\.editMode, $libraryEditMode)
+        .background(KeyboardHost().frame(width: 0, height: 0).accessibilityHidden(true))
+        .overlay { KeyboardOverlay(scope: .library) }
+        .onChange(of: model.opened == nil && !presenting, initial: true) { _, free in
+            KeyboardRouter.shared.setLibrary(free ? LibraryKeyActions(run: { runKey($0, count: $1 ?? 1) }, commands: { keyCommands }) : nil)
+        }
         .sheet(isPresented: $creatingNotebook) {
             NotebookCreationView(defaultAppearance: toolbox.preferences.defaultAppearance) { title, appearance in
-                await model.createNotebook(title, appearance: appearance, parent: parentID)
-            }
+                let created = await model.createNotebook(title, appearance: appearance, parent: parentID)
+                if created { showNewItem() }
+                return created
+            }.alert("Bibliothek", isPresented: errorShown) {
+                Button("OK") { model.error = nil }
+            } message: { Text(model.error ?? "") }
+        }
+        .sheet(isPresented: $creatingTextDocument) {
+            TextDocumentCreationView(defaultAppearance: toolbox.preferences.defaultAppearance) { title, landscape, paper, color in
+                let created = await model.createTextDocument(title, landscape: landscape, paper: paper, color: color, parent: parentID)
+                if created { showNewItem() }
+                return created
+            }.alert("Bibliothek", isPresented: errorShown) {
+                Button("OK") { model.error = nil }
+            } message: { Text(model.error ?? "") }
         }
         .sheet(item: $settingsRequest, onDismiss: switchAreaIfRequested) { request in
             SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces,
@@ -118,16 +151,20 @@ struct LibraryView: View {
         }
         .sheet(item: $contentSearch, onDismiss: {
             if let hit = searchHit, let item = model.snapshot.items.first(where: { $0.id == hit.documentID }) {
-                searchHit = nil; Task { await model.open(item, pageID: hit.pageID, searchBounds: hit.bounds) }
+                searchHit = nil; Task { await model.open(item, pageID: hit.pageID, searchBounds: hit.bounds, flowRange: hit.flowRange) }
             }
         }) { search in
             ContentSearchView(documents: search.documents, area: StableDefaults.scope(model.root), retain: search.retain) { searchHit = $0 }
         }
         // Closing a notebook updates the library in place (no visible reload).
-        .fullScreenCover(item: $model.opened, onDismiss: { model.editorClosed() }) { document in
+        .fullScreenCover(item: $model.opened, onDismiss: {
+            model.editorClosed()
+            if KeyboardRouter.shared.searchAllAfterClosing { KeyboardRouter.shared.searchAllAfterClosing = false; searchAllNotebooks() }
+        }) { document in
             LibraryNotebookView(document: document, root: model.root, library: model).id(document.id)
                 .environment(\.searchIndexArea, StableDefaults.scope(model.root))
                 .publishesEditorCommands()
+                .overlay { KeyboardOverlay(scope: .editor) }
                 .environment(\.editorSettings, EditorSettingsPresenter { [model, toolbox, externalBackup, workspaces] in
                     AnyView(SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces))
                 })
@@ -157,6 +194,7 @@ struct LibraryView: View {
             TextField("Name", text: $name)
             Button("Abbrechen", role: .cancel) { }
             Button("Speichern") { submitName() }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.defaultAction)
         }
         .confirmationDialog("In den Papierkorb verschieben?", isPresented: Binding(
             get: { trashing != nil }, set: { if !$0 { trashing = nil } }), titleVisibility: .visible) {
@@ -166,37 +204,108 @@ struct LibraryView: View {
                     trashing = nil
                 }
             }
-        } message: { Text("Wiederherstellen ist unter Einstellungen › Papierkorb möglich. Enthaltene Unterlagen eines Ordners werden ebenfalls ausgeblendet.") }
+        } message: { Text(Self.trashNote) }
         .sheet(isPresented: $importingPDF) {
             PDFImportSheet(defaults: toolbox.preferences.defaultAppearance, onImport: { url, margins in
                 let access = url.startAccessingSecurityScopedResource()
                 Task {
                     await model.importPDF(url, parent: parentID, writingArea: margins)
+                    showNewItem()
                     if access { url.stopAccessingSecurityScopedResource() }
                 }
             }, onError: { model.error = $0 })
         }
-        .fileImporter(isPresented: $importingBackup, allowedContentTypes: [.notyBackup, .json, .data]) { result in
+        .fileImporter(isPresented: $importingBackup, allowedContentTypes: [.noty, .notyBackup, .json, .data]) { result in
             switch result {
-            case .success(let url): Task { await model.importBackup(url, parent: parentID) }
+            case .success(let url): Task { if await model.importBackup(url, parent: parentID) != nil { showNewItem() } }
             case .failure(let error): model.error = error.localizedDescription
             }
         }
-        .alert("Bibliothek", isPresented: Binding(get: { model.error != nil && settingsRequest == nil }, set: { if !$0 { model.error = nil } })) {
-            Button("OK") { model.error = nil }
+        // The creation sheets show errors over themselves, this one would wait behind them.
+        .alert("Bibliothek", isPresented: Binding(get: { model.error != nil && settingsRequest == nil && !creatingNotebook && !creatingTextDocument }, set: { if !$0 { model.error = nil } })) {
+            Button("OK") { model.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(model.error ?? "") }
         // Settings and the area sheet show these errors themselves.
-        .alert("Test- und Restore-Bereiche", isPresented: Binding(get: { workspaces.error != nil && settingsRequest == nil && !showingAreas }, set: { if !$0 { workspaces.error = nil } })) {
-            Button("OK") { workspaces.error = nil }
+        .alert("Bereiche", isPresented: Binding(get: { workspaces.error != nil && settingsRequest == nil && !showingAreas }, set: { if !$0 { workspaces.error = nil } })) {
+            Button("OK") { workspaces.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspaces.error ?? "") }
+        // Settings shows backup errors itself, also over the editor; this one reports the toolbar backup.
+        .alert("Backup", isPresented: Binding(get: { backupMessage != nil && !presenting && model.opened == nil }, set: { if !$0 { externalBackup.error = nil; backupNotice = nil } })) {
+            Button("OK") { externalBackup.error = nil; backupNotice = nil }.keyboardShortcut(.defaultAction)
+        } message: { Text(backupMessage ?? "") }
         .onChange(of: location) { _, value in
             search = ""; libraryEditMode = .inactive
             if case .folder(let id) = value { reveal(id) }
         }
+        // Search or another sort removes the „Fertig“ button with `canReorder`:
+        // editing must not stay on without a way out.
+        .onChange(of: canReorder) { _, reorder in if !reorder { libraryEditMode = .inactive } }
+        // No sheet changes with these alerts: the keys have to come back by themselves.
+        .onChange(of: model.error == nil && workspaces.error == nil && backupMessage == nil) { _, _ in KeyboardRouter.shared.reclaim() }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
         .focusedSceneValue(\.libraryCommands, model.opened == nil && !presenting ? LibraryCommandActions(
             newNotebook: editable ? { creatingNotebook = true } : nil,
-            search: editable ? { searchAllNotebooks() } : nil) : nil)
+            search: editable ? { searchAllNotebooks() } : nil,
+            newTextDocument: editable ? { creatingTextDocument = true } : nil) : nil)
+    }
+
+    // MARK: Keyboard mode (docs/KEYBOARD.md)
+    /// Items per row of the grid (`gridColumns`); the lists have one.
+    private var keyboardColumns: Int {
+        layout == .list ? 1 : max(1, Int((detailSize.width - 56 + 32) / (140 + 32)))
+    }
+    private func runKey(_ action: HelixAction, count: Int) {
+        let items = rows
+        let index = items.firstIndex { $0.id == keyboardFocus }
+        func focus(_ target: Int) { if !items.isEmpty { keyboardFocus = items[min(max(0, target), items.count - 1)].id } }
+        let item = index.map { items[$0] }
+        switch action {
+        // Nothing focused yet: every direction starts at the first item.
+        case .focusItem(let dx, let dy): focus(index.map { $0 + (dx + dy * keyboardColumns) * count } ?? 0)
+        case .focusFirstItem: focus(0)
+        case .focusLastItem: focus(items.count - 1)
+        case .parentFolder: leaveLevel()
+        case .search, .searchAll: searchAllNotebooks()
+        case .newNotebook: creatingNotebook = true
+        case .newTextDocument: creatingTextDocument = true
+        case .newFolder: askName(.folder, title: "Neuer Ordner")
+        default: break
+        }
+        guard editable, let item else { return }
+        switch action {
+        case .openItem: activate(item)
+        case .renameItem: askName(.rename(item.id), title: "Umbenennen", value: item.title)
+        case .trashItem:
+            KeyboardRouter.shared.ask("„\(item.title)“ in den Papierkorb?", message: Self.trashNote, confirm: "In den Papierkorb") {
+                Task { await model.trash(item.id) }
+            }
+        case .pinItem: Task { await model.favorite(item) }
+        case .moveItem: moving = item
+        case .duplicateItem: if !item.isFolder { Task { await model.duplicate(item) } }
+        case .export(.pdf): if !item.isFolder { exportPDF(item) }
+        case .export(.markdown): if !item.isFolder { shareText(item, as: .markdown) }
+        case .export(.plainText): if !item.isFolder { shareText(item, as: .plainText) }
+        case .export(.noty): if !item.isFolder { shareNoty(item) }
+        case .export(.word): if !item.isFolder { shareText(item, as: .word) }
+        case .export(.rtf): if !item.isFolder { shareText(item, as: .rtf) }
+        default: break
+        }
+    }
+    private static let trashNote = "Wiederherstellen ist unter Einstellungen › Papierkorb möglich. Enthaltene Unterlagen eines Ordners werden ebenfalls ausgeblendet."
+    /// The name by key: the input line, the responder stays (the alert is for touch).
+    private func askName(_ action: NameAction, title: String, value: String = "") {
+        KeyboardRouter.shared.askText(title, value: value) { text in
+            nameAction = action; name = text
+            submitName()
+        }
+    }
+    /// What only the menus offer; the palette adds every key binding by name.
+    private var keyCommands: [PaletteCommand] {
+        [PaletteCommand(title: "PDF oder Bild importieren") { importingPDF = true },
+         PaletteCommand(title: "Backup importieren") { importingBackup = true },
+         PaletteCommand(title: "Wiederhergestellte Kopien") { showingCopies = true },
+         PaletteCommand(title: "Bereiche") { showingAreas = true },
+         PaletteCommand(title: "Einstellungen") { settingsRequest = SettingsRequest() }]
     }
 
     // MARK: Sidebar
@@ -273,7 +382,7 @@ struct LibraryView: View {
         let selected = location == .folder(item.id)
         return Button { activate(item) } label: {
             VStack(alignment: .leading, spacing: 6) {
-                Image(systemName: item.isFolder ? "folder.fill" : "book.closed.fill")
+                Image(systemName: item.librarySymbol(filled: true))
                     .font(.title3).foregroundStyle(Color.accentColor)
                 Text(item.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
                     .lineLimit(2).multilineTextAlignment(.leading)
@@ -287,7 +396,7 @@ struct LibraryView: View {
         .buttonStyle(NotyPressStyle())
         .overlay { if dropMark == DropMark(zone: .pinned, target: .into(item.id)) { dropHighlight } }
         .accessibilityLabel(accessibilityName(item))
-        .accessibilityHint(item.isFolder ? "Zeigt den Ordner" : "Öffnet das Notizbuch")
+        .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
         .accessibilityAddTraits(selected ? .isSelected : [])
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(LibrarySpace.sidebar)) } action: { frames.pinned[item.id] = $0 }
         .onDrag { dragProvider(item.id) }
@@ -337,7 +446,7 @@ struct LibraryView: View {
                 Label {
                     Text(item.title).lineLimit(1).foregroundStyle(.primary)
                 } icon: {
-                    Image(systemName: item.isFolder ? "folder" : "book.closed")
+                    Image(systemName: item.librarySymbol(filled: false))
                         .foregroundStyle(item.isFolder ? Color.accentColor : Color.secondary)
                 }
                 .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -345,7 +454,7 @@ struct LibraryView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(accessibilityName(item))
-            .accessibilityHint(item.isFolder ? "Zeigt den Ordner" : "Öffnet das Notizbuch")
+            .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
             .accessibilityAddTraits(selected ? .isSelected : [])
         }
         .padding(.leading, CGFloat(entry.depth) * LibrarySpace.indent)
@@ -549,14 +658,15 @@ struct LibraryView: View {
                 }
             }
             .navigationTitle(title)
-            .searchable(text: $search, prompt: "Ordner- oder Notizbuchname")
+            .searchable(text: $search, prompt: "Name suchen")
             .toolbar { libraryToolbar }
     }
 
     /// Top bar of the detail column. Every control is its own item with an
     /// explicit placement, declared in display order (leading to trailing):
     /// backup hint (only when needed) · Inhalte suchen · Darstellung ·
-    /// Bearbeiten (only when reordering is possible) · Neu · Einstellungen.
+    /// Bearbeiten (only when reordering is possible) · Neu · Backup jetzt
+    /// speichern (development builds only) · Einstellungen.
     /// Optional items are added or left out as whole items: no permanently
     /// present item with sometimes empty content (the leading slot used to be
     /// one), no group whose membership changes while navigating.
@@ -579,7 +689,7 @@ struct LibraryView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Button { searchAllNotebooks() } label: {
-                Label("Inhalte suchen", systemImage: "doc.text.magnifyingglass")
+                Label("In allen Heften suchen", systemImage: "magnifyingglass")
             }.disabled(!editable)
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -601,12 +711,13 @@ struct LibraryView: View {
             // One primary entry point for creating and importing.
             Menu {
                 Section {
-                    Button("Notizbuch", systemImage: "square.and.pencil") { creatingNotebook = true }
-                    Button("Ordner", systemImage: "folder.badge.plus") { prompt(.folder) }
+                    Button("Neues Heft …", systemImage: "book.closed") { creatingNotebook = true }
+                    Button("Neues Textdokument …", systemImage: "doc.text") { creatingTextDocument = true }
+                    Button("Neuer Ordner …", systemImage: "folder.badge.plus") { prompt(.folder) }
                 }
                 Section {
-                    Button("PDF importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
-                    Button("Backup als Kopie importieren …", systemImage: "arrow.down.doc") { importingBackup = true }
+                    Button("PDF oder Bild importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
+                    Button(".noty importieren …", systemImage: "arrow.down.doc") { importingBackup = true }
                     if !activeCopies.isEmpty {
                         Button("Wiederhergestellte Kopien …", systemImage: "clock.arrow.circlepath") { showingCopies = true }
                     }
@@ -615,8 +726,39 @@ struct LibraryView: View {
             .disabled(!editable)
             .accessibilityLabel("Neu oder importieren")
         }
+        if Self.isDevelopmentBuild {
+            // Pinned like the gear: a plain trailing item is the first to be moved away.
+            ToolbarItem(placement: Self.settingsPlacement) {
+                Button { saveBackupNow() } label: {
+                    if externalBackup.busy { ProgressView() } else { Label("Backup jetzt speichern", systemImage: "square.and.arrow.down") }
+                }
+                .disabled(externalBackup.busy || !model.ready)
+                .accessibilityLabel("Backup jetzt speichern")
+            }
+        }
         ToolbarItem(placement: Self.settingsPlacement) {
             Button { settingsRequest = SettingsRequest() } label: { Label("Einstellungen", systemImage: "gearshape") }
+        }
+    }
+
+    /// All current builds are the prototype bundle; the installed ID is prefixed (`XTL-….de.la.noty.prototype`).
+    static var isDevelopmentBuild: Bool {
+        let id = Bundle.main.bundleIdentifier ?? ""
+        return id.contains(".prototype") || id.contains(".dev")
+    }
+
+    /// The same manual run as Settings › Backup. Failures and postponements arrive
+    /// in `externalBackup.error`; only a success moves `lastSuccess`. A run that
+    /// never started (an automatic one was faster) reports nothing.
+    private func saveBackupNow() {
+        guard externalBackup.policy.target != .disabled else {
+            backupNotice = "Noch kein Backup-Ziel gewählt. Bitte unter Einstellungen › Backup & Daten ein Ziel wählen."
+            return
+        }
+        let previous = externalBackup.policy.lastSuccess
+        Task {
+            await externalBackup.attempt(library: model, toolbox: toolbox, manual: true)
+            if externalBackup.policy.lastSuccess != previous { backupNotice = externalBackup.status }
         }
     }
 
@@ -635,15 +777,40 @@ struct LibraryView: View {
         guard !item.isFolder, !pdfExport.running else { return }
         Task {
             do {
-                let (notebook, assets) = try await model.committedNotebook(item.id)
-                exportedPDFName = item.title
-                pdfExport.start(notebook, assets: assets) { result in
+                let committed = try await model.committedNotebook(item.id)
+                var notebook = committed.0
+                let assets = committed.1
+                // The library title: a renamed notebook takes it over only when opened.
+                notebook.title = item.title
+                exportedPDFName = PDFExporter.fileName(for: notebook.title)
+                // Same pages as from the editor: a text document without empty trailing pages.
+                pdfExport.start(notebook, pageIDs: PDFExporter.wholeDocumentPages(notebook), assets: assets) { result in
                     switch result {
                     case .success(let data): exportedPDF = ExportFile(pdfData: data); exportingPDF = true
                     case .failure(let error): if !(error is CancellationError) { model.error = error.localizedDescription }
                     }
                 }
             } catch { model.error = error.localizedDescription }
+        }
+    }
+
+    /// `<Titel>.noty` of the last committed revision in the share sheet.
+    private func shareNoty(_ item: NotebookCore.LibraryItem) {
+        Task { if let url = await model.shareFile(for: item) { NotyShare.present(url) } }
+    }
+
+    /// Notebook or text document as `<Titel>.txt`/`.md`/`.rtf`/`.docx` of the last committed
+    /// revision, the same export as in the editor (`TextDocumentExport`).
+    private func shareText(_ item: NotebookCore.LibraryItem, as format: TextDocumentExport.Format) {
+        Task {
+            do {
+                let (notebook, _) = try await model.committedNotebook(item.id)
+                let data = TextDocumentExport.data(notebook, as: format)
+                guard !data.isEmpty else { model.error = "Hier gibt es noch keinen Text zum Teilen."; return }
+                let url = try BackupScratch.newShareFile(title: notebook.title, fileExtension: format.fileExtension)
+                try data.write(to: url, options: .atomic)
+                NotyShare.present(url)
+            } catch { model.error = "Teilen nicht möglich: \(error.localizedDescription)" }
         }
     }
 
@@ -661,6 +828,8 @@ struct LibraryView: View {
             if toolbox.writable {
                 guard await toolbox.flush() else { model.error = toolbox.status; return }
             }
+            // The new area's store must not start beside a running import.
+            await model.waitUntilIdle()
             await workspaces.select(area)
         }
     }
@@ -678,6 +847,7 @@ struct LibraryView: View {
                         .moveDisabled(!canReorder || !editable)
                 }
             } else {
+                ScrollViewReader { proxy in
                 ScrollView {
                     Group {
                         if layout == .list {
@@ -703,6 +873,8 @@ struct LibraryView: View {
                                                                        resolve: { detailDrop(at: $0) }, perform: { performDrop($0, id: $1) }))
                 }
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { detailSize = $0 }
+                .onChange(of: keyboardFocus) { _, id in if let id { withAnimation(NotyMotion.highlight(reduceMotion)) { proxy.scrollTo(id) } } }
+                }
             }
         }
         .overlay {
@@ -744,15 +916,17 @@ struct LibraryView: View {
     }
 
     @ViewBuilder private var createButtons: some View {
-        Button("Neuer Ordner", systemImage: "folder.badge.plus") { prompt(.folder) }.disabled(!editable)
-        Button("Neues Notizbuch", systemImage: "square.and.pencil") { creatingNotebook = true }.disabled(!editable)
+        // Same order and labels as the „+“ menu: Heft, Textdokument, Ordner.
+        Button("Neues Heft …", systemImage: "book.closed") { creatingNotebook = true }.disabled(!editable)
+        Button("Neues Textdokument …", systemImage: "doc.text") { creatingTextDocument = true }.disabled(!editable)
+        Button("Neuer Ordner …", systemImage: "folder.badge.plus") { prompt(.folder) }.disabled(!editable)
     }
 
     private func accessibilityName(_ item: NotebookCore.LibraryItem) -> String {
-        var parts = [item.isFolder ? "Ordner \(item.title)" : "Notizbuch \(item.title)"]
+        var parts = ["\(item.libraryKindName) \(item.title)"]
         if item.favorite { parts.append("angeheftet") }
         if item.source == .restored { parts.append("wiederhergestellte Kopie") }
-        if let date = item.lastOpened, !item.isFolder { parts.append("zuletzt geöffnet \(date.formatted(date: .abbreviated, time: .omitted))") }
+        if let date = item.lastOpened, !item.isFolder { parts.append("zuletzt geöffnet \(NotyText.listDate(date))") }
         return parts.joined(separator: ", ")
     }
 
@@ -765,10 +939,14 @@ struct LibraryView: View {
         if !search.isEmpty { return path(of: item) }
         if item.isFolder {
             let count = model.snapshot.children(of: item.id).count
-            return count == 1 ? "1 Objekt" : "\(count) Objekte"
+            return NotyText.count(count, "Objekt", "Objekte")
         }
         guard let date = item.lastOpened else { return nil }
-        return location == .recent ? date.formatted(.relative(presentation: .named)) : date.formatted(date: .abbreviated, time: .omitted)
+        return NotyText.listDate(date)
+    }
+
+    private var keyboardFocusRing: some View {
+        RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2).allowsHitTesting(false)
     }
 
     private func documentCard(_ item: NotebookCore.LibraryItem) -> some View {
@@ -782,7 +960,7 @@ struct LibraryView: View {
                 }.aspectRatio(0.72, contentMode: .fit)
             }.buttonStyle(NotyPressStyle()).disabled(!editable)
                 .accessibilityLabel(accessibilityName(item))
-                .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : "Öffnet das Notizbuch")
+                .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
             VStack(spacing: 2) {
                 HStack(spacing: 4) {
                     if item.favorite { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary) }
@@ -796,6 +974,8 @@ struct LibraryView: View {
         .background {
             if dropMark == DropMark(zone: .detail, target: .into(item.id)) { dropHighlight.padding(-8) }
         }
+        .overlay { if keyboardFocus == item.id { keyboardFocusRing.padding(-6) } }
+        .id(item.id)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(LibrarySpace.detail)) } action: { frames.grid[item.id] = $0 }
         .onDrag { dragProvider(item.id) }
         .contextMenu { itemActions(item, showsEnclosing: location == .recent || !search.isEmpty) }
@@ -804,13 +984,13 @@ struct LibraryView: View {
     private func documentRow(_ item: NotebookCore.LibraryItem) -> some View {
         Button { activate(item) } label: {
             HStack(spacing: 14) {
-                Image(systemName: item.isFolder ? "folder.fill" : "book.closed")
+                Image(systemName: item.isFolder ? "folder.fill" : item.librarySymbol(filled: false))
                     .font(.title2).foregroundStyle(item.isFolder ? Color.accentColor : .secondary).frame(width: 32)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title).foregroundStyle(.primary)
                     HStack {
                         if item.source == .restored { Text("Wiederhergestellte Kopie") }
-                        if item.source == .legacyMain { Text("Ursprüngliches Notizbuch") }
+                        if item.source == .legacyMain { Text("Ursprüngliches Heft") }
                         if let detail = subtitle(item) { Text(detail) }
                     }.font(.caption).foregroundStyle(.secondary)
                 }
@@ -819,8 +999,10 @@ struct LibraryView: View {
                 if item.isFolder { Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary) }
             }.padding(.vertical, 4).contentShape(Rectangle())
         }.buttonStyle(NotyPressStyle()).disabled(!editable)
+        .overlay { if keyboardFocus == item.id { keyboardFocusRing.padding(-3) } }
+        .id(item.id)
             .accessibilityLabel(accessibilityName(item))
-            .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : "Öffnet das Notizbuch")
+            .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
             .contextMenu { itemActions(item, showsEnclosing: location == .recent || !search.isEmpty) }
     }
 
@@ -831,11 +1013,16 @@ struct LibraryView: View {
             Button(item.favorite ? "Nicht mehr anheften" : "Anheften", systemImage: item.favorite ? "pin.slash" : "pin") {
                 Task { await model.favorite(item) }
             }
-            Button("Umbenennen", systemImage: "pencil") { prompt(.rename(item.id), value: item.title) }
-            Button("Verschieben", systemImage: "folder") { moving = item }
+            Button("Umbenennen …", systemImage: "pencil") { prompt(.rename(item.id), value: item.title) }
+            Button("Verschieben …", systemImage: "folder") { moving = item }
             if !item.isFolder {
                 Button("Duplizieren", systemImage: "plus.square.on.square") { Task { await model.duplicate(item) } }
-                Button("Als PDF exportieren", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
+                Button("Als PDF exportieren …", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
+                Button("Als .noty teilen …", systemImage: "square.and.arrow.up") { shareNoty(item) }
+                Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(item, as: .markdown) }
+                Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(item, as: .plainText) }
+                Button("Als Word teilen (.docx) …", systemImage: "doc.text") { shareText(item, as: .word) }
+                Button("Als RTF teilen (.rtf) …", systemImage: "doc.richtext") { shareText(item, as: .rtf) }
             }
             if showsEnclosing {
                 Button("Im Ordner zeigen", systemImage: "arrow.up.forward.square") {
@@ -843,7 +1030,7 @@ struct LibraryView: View {
                 }
             }
             Divider()
-            Button("In den Papierkorb", systemImage: "trash", role: .destructive) { trashing = item }
+            Button("In den Papierkorb …", systemImage: "trash", role: .destructive) { trashing = item }
         }
     }
 
@@ -873,6 +1060,12 @@ struct LibraryView: View {
         guard let parent = model.snapshot.items.first(where: { $0.id == id })?.parentID else { return "Alle Unterlagen" }
         return model.snapshot.items.first { $0.id == parent }?.title ?? "Alle Unterlagen"
     }
+    /// `-` in the library: a name search first, then „Zuletzt verwendet“ or the folder.
+    private func leaveLevel() {
+        if !search.isEmpty { search = "" }
+        else if case .folder(let id) = location { goUp(from: id) }
+        else if location == .recent { location = .root }
+    }
     private func goUp(from id: UUID) {
         let parent = model.snapshot.items.first { $0.id == id }?.parentID
         location = parent.map(LibraryLocation.folder) ?? .root
@@ -892,7 +1085,9 @@ struct LibraryView: View {
         let parent = parentID
         Task {
             switch action {
-            case .folder: await model.createFolder(value, parent: parent)
+            case .folder:
+                await model.createFolder(value, parent: parent)
+                showNewItem()
             case .rename(let id): await model.rename(id, title: value)
             }
         }
@@ -1016,19 +1211,20 @@ private struct MoveDestinationView: View {
     var body: some View {
         NavigationStack {
             List {
-                Button("Alle Unterlagen") { onSelect(nil) }
+                Button("Alle Unterlagen") { onSelect(nil) }.disabled(item.parentID == nil).keyOption(.action { onSelect(nil) })
                 ForEach(folders) { folder in
                     Button { onSelect(folder.id) } label: {
                         VStack(alignment: .leading) {
                             Label(folder.title, systemImage: "folder")
                             Text(libraryPath(folder, in: snapshot)).font(.caption).foregroundStyle(.secondary)
                         }
-                    }
+                    }.disabled(folder.id == item.parentID).keyOption(.action { onSelect(folder.id) })
                 }
             }
             .navigationTitle("\(item.title) verschieben")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
         }
+        .keyboardSheet()
     }
 }
 

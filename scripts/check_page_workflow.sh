@@ -7,15 +7,32 @@ mkdir -p .tools
 task_check="$(mktemp -d "$task_root/.tools/page-workflow-XXXXXX")"
 swiftc -swift-version 6 -parse-as-library Core/Sources/NotebookCore/*.swift scripts/PageWorkflowCheck.swift -o "$task_check/check"
 "$task_check/check" "$task_root/fixtures/Seitenformate.pdf" "$task_check/results"
-python3 -B scripts/verify_backup.py "$task_check/results/heft.notybackup" --compare "$task_check/results/current.json"
+# `.noty` (format 2) written by Swift; the verifier ignores the extension.
+python3 -B scripts/verify_backup.py "$task_check/results/heft.noty" --compare "$task_check/results/current.json"
 # Format 1 as Build 53 wrote it (schema 11, embedded original).
 python3 -B scripts/verify_backup.py "$task_check/results/heft-v1.notybackup" --compare "$task_check/results/current-v11.json"
+# Schema 13 (polyline/polygon shapes) written by Swift.
+python3 -B scripts/verify_backup.py "$task_check/results/heft-v13.notybackup" --compare "$task_check/results/current-v13.json"
+# Schema 14 (page text migrated to free fields, rotated/automatic-width field) written by Swift.
+python3 -B scripts/verify_backup.py "$task_check/results/heft-v14.notybackup" --compare "$task_check/results/current-v14.json"
+python3 -B scripts/verify_device_store.py "$task_check/results/FlowMigration"
+# Schema 15: text document as package, `.noty` and library archive (kind hint lost / kept).
+python3 -B scripts/verify_device_store.py "$task_check/results/TextDocument"
+python3 -B scripts/verify_backup.py "$task_check/results/textdokument.noty" --compare "$task_check/results/current-textdokument.json"
+python3 -B scripts/verify_library_backup.py "$task_check/results/textdokument.notylibrary"
+python3 -B scripts/verify_library_backup.py "$task_check/results/textdokument-index.notylibrary"
 python3 -B scripts/verify_library_backup.py "$task_check/results/bibliothek.notylibrary"
+# Manual page break (U+000C in schema 15), changed paper, Word and RTF of that document.
+python3 -B scripts/verify_device_store.py "$task_check/results/TextDocumentExtras"
+python3 -B scripts/verify_backup.py "$task_check/results/textdokument-umbruch.noty" --compare "$task_check/results/current-textdokument-umbruch.json"
+python3 -B scripts/verify_library_backup.py "$task_check/results/textdokument-umbruch.notylibrary"
+python3 -B scripts/verify_office_export.py "$task_check/results/textdokument.docx" --expect '{"pageBreaks": 1, "styles": ["Heading1"], "links": 1, "listParagraphs": 3, "formats": ["b", "color", "highlight", "i", "strike", "u"]}'
+python3 -B scripts/verify_office_export.py "$task_check/results/textdokument.rtf" --expect '{"pageBreaks": 1, "links": 1}'
 python3 -B scripts/verify_device_store.py "$task_check/results/Source"
 # Restore copies (Restores/*) and the migrated schema-11 package carry their assets.
 python3 -B scripts/verify_device_store.py "$task_check/results/RestoreCheck"
 python3 -B scripts/verify_device_store.py "$task_check/results/Legacy"
-if python3 -B scripts/verify_backup.py "$task_check/results/corrupt.notybackup" > "$task_check/expected-corruption.log" 2>&1; then
+if python3 -B scripts/verify_backup.py "$task_check/results/corrupt.noty" > "$task_check/expected-corruption.log" 2>&1; then
     echo 'FEHLER: beschädigtes Backup wurde akzeptiert' >&2
     exit 1
 fi
@@ -32,13 +49,16 @@ import verify_backup, verify_device_store, verify_library_backup
 from notebook_format import check
 
 results = Path(sys.argv[2])
-_, backup = verify_backup.verify(results / "heft.notybackup")
+_, backup = verify_backup.verify(results / "heft.noty")
 library = verify_library_backup.verify(results / "bibliothek.notylibrary")
 _, store = verify_device_store.load_store(results / "Source")
 _, legacy = verify_device_store.load_store(results / "Legacy")
 _, restores = verify_device_store.load_store(results / "RestoreCheck")
 check(backup["assets"] == 1 and library["assets"] == 1 and store["assets"] == 1, "Asset records missing")
 check(legacy["assets"] == 1 and restores["assets"] == 2, "Assets of the migrated package or the restore copies missing")
+text_notebook, _ = verify_backup.verify(results / "textdokument.noty")
+text_library = verify_library_backup.verify(results / "textdokument-index.notylibrary")
+check(text_notebook.get("kind") == "textDocument" and text_library["textDocuments"] == 2, "Text documents not recognised")
 print(json.dumps({"swiftAssetRecordsVerifiedByPython": True, "backupAssets": backup["assets"], "libraryAssets": library["assets"],
                   "assetBytes": backup["assetBytes"], "storeAssets": store["assets"], "legacyPackageAssets": legacy["assets"],
                   "restoredCopyAssets": restores["assets"]}))

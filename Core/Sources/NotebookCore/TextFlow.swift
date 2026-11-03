@@ -62,6 +62,31 @@ extension Page {
     }
 }
 
+/// A page only needs the text it can hold. Measuring with all the text behind
+/// it copied everything left for every page of a long flow.
+enum TextFlowMeasure {
+    static let firstLength = 8192
+    /// `measure(length)`: what fits of the next `length` characters. A result
+    /// well before the cut is final: the lines on the page end there, the text
+    /// behind the cut cannot change them.
+    static func capacity(remaining: Int, measure: (Int) throws -> Int) rethrows -> Int {
+        var length = firstLength
+        while length < remaining {
+            let fits = try measure(length)
+            if fits <= length - length / 4 { return fits }
+            length *= 2
+        }
+        return try measure(remaining)
+    }
+    /// `end`, moved back out of a composed character; forward where that
+    /// character begins at `start` (nothing would be left to measure).
+    static func composedEnd(of text: NSString, from start: Int, after end: Int) -> Int {
+        guard end < text.length else { return text.length }
+        let cluster = text.rangeOfComposedCharacterSequence(at: end)
+        return cluster.location > start ? cluster.location : NSMaxRange(cluster)
+    }
+}
+
 extension TextBox {
     /// Slice UTF-16 runs while preserving grapheme clusters and all formatting.
     public func fragment(_ range: NSRange) throws -> TextBox {
@@ -135,6 +160,7 @@ extension Notebook {
         next.pages.append(page)
         if page.effectiveTextBoxes.contains(where: \.usesTextFlowFormat) { next.schemaVersion = max(8, next.schemaVersion) }
         next.raiseSchemaForTextColors(page.effectiveTextBoxes)
+        next.raiseSchemaForTextFields(page.effectiveTextBoxes)
         try next.validate(); self = next
     }
 
@@ -147,8 +173,22 @@ extension Notebook {
             trailingDraft: trailingDraft, pageCapacity: { _, box in try capacity(box) })
     }
 
+    /// Text documents (`isTextDocument`): the flow continues on the next page
+    /// whenever that page has no flow segment yet, even if it holds
+    /// handwriting or objects (they stay fixed on their page, the text runs
+    /// below them); afterwards trailing pages that hold nothing are removed
+    /// (`trimmingEmptyTrailingPages`, `drawingIsEmpty` decodes ink in the app).
+    /// `trailingLineFits`: the empty line behind a final line break still fits
+    /// its segment; otherwise Return on a page's last line continues on the
+    /// next page (the caret must not stand below the writing area).
+    /// A page break (U+000C, `TextLines.pageBreak`) ends its segment whatever
+    /// the page could still take; a final one opens the next page.
+    /// `holdsTail`: `replacement` already holds the text of the following
+    /// segments. `everyPage`: no page keeps its measurement (the paper changed).
     public func reflowText(pageID: UUID, previous: TextBox, replacement: TextBox, selection: NSRange,
-                           trailingDraft: Page? = nil, pageCapacity: (Page, TextBox) throws -> Int) throws -> (Notebook, TextFlowFocus) {
+                           trailingDraft: Page? = nil, drawingIsEmpty: (Data) -> Bool = { $0.isEmpty },
+                           trailingLineFits: ((Page, TextBox) -> Bool)? = nil, holdsTail: Bool = false, everyPage: Bool = false,
+                           pageCapacity: (Page, TextBox) throws -> Int) throws -> (Notebook, TextFlowFocus) {
         guard let start = pages.firstIndex(where: { $0.id == pageID }),
               pages[start].effectiveTextBoxes.contains(previous), previous.id == replacement.id,
               let flow = replacement.flowID, let region = replacement.flowRegion,
@@ -159,16 +199,20 @@ extension Notebook {
             guard let box = next.pages[index].effectiveTextBoxes.first(where: { $0.flowID == flow }) else { return nil }
             return (next.pages[index].id, box)
         }
-        for (_, box) in existing.dropFirst() { text = text.appending(box) }
+        if !holdsTail { for (_, box) in existing.dropFirst() { text = text.appending(box) } }
         guard selection.location >= 0, selection.length >= 0, selection.location <= (replacement.text as NSString).length,
               selection.length <= (replacement.text as NSString).length - selection.location else { throw TextFlowError.stale }
         var selection = selection
         // Numbering continues across pages: earlier segments give the open runs.
-        if let changed = TextListEditing.changedRange(from: previous.text, to: replacement.text) {
+        // `holdsTail`: `replacement` is compared with the same text, the segment
+        // and the ones behind it, or everything behind the segment counts as edited.
+        var before = previous
+        if holdsTail, !everyPage { for (_, box) in existing.dropFirst() { before = before.appending(box) } }
+        if !everyPage, let changed = TextListEditing.changedRange(from: before.text, to: replacement.text) {
             let earlier = next.pages[..<start].compactMap { $0.effectiveTextBoxes.first { $0.flowID == flow } }
             func ends(_ box: TextBox) -> Bool? {
                 let value = box.text as NSString
-                return value.length == 0 ? nil : [10, 13, 0x2028, 0x2029].contains(value.character(at: value.length - 1))
+                return value.length == 0 ? nil : TextLines.isBreak(value.character(at: value.length - 1))
             }
             let continuation = earlier.last(where: { ends($0) != nil }).map { ends($0) == false } ?? false
             func earlierContext() -> TextListEditing.ListContext {
@@ -180,11 +224,14 @@ extension Notebook {
                 return context
             }
             let edits = TextListEditing.normalize(text.text, level: text.listLevel(at:), changed: changed,
-                restart: TextListEditing.numberedItem(in: previous.text, at: changed.location, level: previous.listLevel(at:), continuation: continuation),
+                restart: TextListEditing.numberedItem(in: before.text, at: changed.location, level: before.listLevel(at:), continuation: continuation),
                 context: earlierContext(), continuation: continuation)
             if !edits.isEmpty { text = text.applying(edits); selection = TextListEditing.selection(selection, after: edits) }
         }
         let total = (text.text as NSString).length
+        // Hefte keep their old rule: the character means nothing there.
+        let pageBreaks = isTextDocument ? TextLines.pageBreaks(in: text.text as NSString) : []
+        var nextBreak = 0
         var consumed = 0, nodeIndex = 0, currentIndex = start
         var continuationRegion = region
         var focus: TextFlowFocus?
@@ -201,6 +248,8 @@ extension Notebook {
                 if let legacy = next.pages[index].legacyWritingRect(area), let rect = next.pages[index].writingRect(area), legacy != rect,
                    abs(stored.x - legacy.x) < 0.01, abs(stored.width - legacy.width) < 0.01 { return false }
                 let length = (stored.text as NSString).length
+                // The empty page behind a final page break.
+                if length == 0, offset == total { continue }
                 guard length > 0, offset + length <= total,
                       let part = try? text.fragment(NSRange(location: offset, length: length)) else { return false }
                 var produced = stored; produced.text = part.text; produced.runs = part.runs
@@ -223,11 +272,15 @@ extension Notebook {
                 }
             } else {
                 let after = currentIndex + 1
-                let canReuse = next.pages.indices.contains(after) && next.pages[after].drawing.isEmpty
-                    && (next.pages[after].images ?? []).isEmpty && (next.pages[after].shapes ?? []).isEmpty
-                    && next.pages[after].effectiveTextBoxes.isEmpty
-                    && (continuationRegion != .page || next.pages[after].pdfReference == nil)
-                    && next.pages[after].writingRect(continuationRegion) != nil
+                let canReuse = isTextDocument
+                    ? next.pages.indices.contains(after) && next.pages[after].pdfReference == nil
+                        && !next.pages[after].effectiveTextBoxes.contains(where: { $0.flowID != nil })
+                        && next.pages[after].writingRect(continuationRegion) != nil
+                    : next.pages.indices.contains(after) && next.pages[after].drawing.isEmpty
+                        && (next.pages[after].images ?? []).isEmpty && (next.pages[after].shapes ?? []).isEmpty
+                        && next.pages[after].effectiveTextBoxes.isEmpty
+                        && (continuationRegion != .page || next.pages[after].pdfReference == nil)
+                        && next.pages[after].writingRect(continuationRegion) != nil
                 if canReuse { currentIndex = after }
                 else {
                     guard next.pages.count < 500 else { throw PageOperationError.pageLimit }
@@ -250,11 +303,17 @@ extension Notebook {
                 box = TextBox(x: rect.x, y: rect.y, width: rect.width, height: rect.height, style: replacement.style)
                 box.flowID = flow; box.flowRegion = continuationRegion
             }
-            let remainder = try text.fragment(NSRange(location: consumed, length: total - consumed))
-            var candidate = box; candidate.text = remainder.text; candidate.runs = remainder.runs
-            let count = min(total - consumed, max(0, try pageCapacity(next.pages[currentIndex], candidate)))
+            let page = next.pages[currentIndex], whole = text.text as NSString, start = consumed, field = box
+            var count = min(total - consumed, max(0, try TextFlowMeasure.capacity(remaining: total - consumed) { length in
+                let cut = TextFlowMeasure.composedEnd(of: whole, from: start, after: start + length)
+                let prefix = try text.fragment(NSRange(location: start, length: cut - start))
+                var candidate = field; candidate.text = prefix.text; candidate.runs = prefix.runs
+                return try pageCapacity(page, candidate)
+            }))
+            while nextBreak < pageBreaks.count, pageBreaks[nextBreak] < consumed { nextBreak += 1 }
+            if nextBreak < pageBreaks.count { count = min(count, pageBreaks[nextBreak] + 1 - consumed) }
             guard count > 0 || consumed == total else { throw TextFlowError.noSpace }
-            let part = try remainder.fragment(NSRange(location: 0, length: count))
+            let part = try text.fragment(NSRange(location: consumed, length: count))
             box.text = part.text; box.runs = part.runs
             // Keep the chosen insertion attributes for an empty continuation.
             if box.text.isEmpty { box.style = replacement.style }
@@ -269,9 +328,52 @@ extension Notebook {
             }
             consumed += count; nodeIndex += 1
             // Typing that does not move a segment boundary stops here.
-            if focus != nil, consumed < total, nodeIndex < existing.count, storedTailMatches(from: nodeIndex, at: consumed) { break }
+            if !everyPage, focus != nil, consumed < total, nodeIndex < existing.count, storedTailMatches(from: nodeIndex, at: consumed) { break }
         } while consumed < total || nodeIndex < existing.count
+        /// The page after `index` with the flow on it, an empty segment if it has none yet.
+        func nextFlowPage(after index: Int) throws -> UUID? {
+            if let page = next.pages[(index + 1)...].first(where: { page in page.effectiveTextBoxes.contains { $0.flowID == flow } }) { return page.id }
+            var page: Page
+            if next.pages.indices.contains(index + 1), next.pages[index + 1].pdfReference == nil, next.pages[index + 1].writingRect(.page) != nil { page = next.pages[index + 1] }
+            else {
+                guard next.pages.count < 500 else { throw PageOperationError.pageLimit }
+                let draftID = trailingDraft?.id
+                let mayUseDraft = index + 1 == next.pages.count && draftID.map { id in !next.pages.contains(where: { $0.id == id }) } == true
+                page = next.writingDraft(id: mayUseDraft ? draftID! : UUID())
+                page.paper = next.pages[index].paper; page.paperColor = next.pages[index].paperColor; page.geometry = next.pages[index].geometry
+                next.pages.insert(page, at: index + 1)
+            }
+            guard let rect = page.writingRect(.page) else { throw TextFlowError.noSpace }
+            var empty = TextBox(x: rect.x, y: rect.y, width: rect.width, height: rect.height, style: replacement.style)
+            empty.flowID = flow; empty.flowRegion = .page
+            next.pages[index + 1].textBoxes = next.pages[index + 1].effectiveTextBoxes + [empty]
+            return next.pages[index + 1].id
+        }
+        // The caret stands behind a final page break on the page it opens.
+        if pageBreaks.last == total - 1, total > 0,
+           let index = next.pages.lastIndex(where: { page in page.effectiveTextBoxes.contains { $0.flowID == flow && !$0.text.isEmpty } }) {
+            let opened = try nextFlowPage(after: index)
+            if selection.length == 0, selection.location == total, let opened,
+               let empty = next.pages.first(where: { $0.id == opened })?.effectiveTextBoxes.first(where: { $0.flowID == flow }) {
+                focus = TextFlowFocus(pageID: opened, boxID: empty.id, selection: NSRange(location: 0, length: 0), typingStyle: replacement.style)
+            }
+        }
+        if let trailingLineFits, selection.length == 0, selection.location == total, let current = focus,
+           let last = (text.text as NSString).length > 0 ? (text.text as NSString).character(at: total - 1) : nil, [10, 13, 0x2028, 0x2029].contains(last),
+           let index = next.pages.firstIndex(where: { $0.id == current.pageID }),
+           let box = next.pages[index].effectiveTextBoxes.first(where: { $0.id == current.boxID }), !box.text.isEmpty,
+           !trailingLineFits(next.pages[index], box) {
+            let target = try nextFlowPage(after: index)
+            if let target, let empty = next.pages.first(where: { $0.id == target })?.effectiveTextBoxes.first(where: { $0.flowID == flow }) {
+                focus = TextFlowFocus(pageID: target, boxID: empty.id, selection: NSRange(location: 0, length: 0), typingStyle: replacement.style)
+            }
+        }
         next.raiseSchemaForTextColors(next.pages.flatMap { $0.textBoxes ?? [] })
+        next.raiseSchemaForTextFields(next.pages.flatMap { $0.textBoxes ?? [] })
+        if isTextDocument {
+            // The caret's page stays; an emptied page behind it disappears.
+            next = next.trimmingEmptyTrailingPages(keeping: Set([focus?.pageID ?? pageID]), drawingIsEmpty: drawingIsEmpty)
+        }
         try next.validate()
         return (next, focus ?? TextFlowFocus(pageID: pageID, boxID: replacement.id, selection: .init(location: 0, length: 0), typingStyle: replacement.style))
     }

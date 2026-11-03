@@ -12,6 +12,10 @@ Die in [UI-REBUILD.md](UI-REBUILD.md) beschriebenen und anschließend präzisier
 
 Appweites E-Mail-/Passwortkonto auf dem bestehenden IONOS-Backend, auch auf der Website verwendbar. Ohne Login lokal lesen und markieren. Gastmarkierungen beim Login automatisch zuordnen; nach Logout lokal sichtbar erhalten, fremde Konten nicht vermischen. Persistenter beidseitiger Abgleich ausschließlich für Gesetzesmarkierungen/Lesezeichen. Separat abschaltbare automatische öffentliche Fassungsupdates; alte markierte Fassungen erhalten. Drei Schalter: Gesetzessammlung anfangs **aus**, persönlicher Sync **an**, automatische Gesetzesupdates **an**. Kein Apple-Login im jetzigen kostenlosen Signierungssetup. Diese Umfangsbestätigung ist kein Geräte-/Serverabnahmenachweis.
 
+## KI-Assistent
+
+Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
+
 ## Bestätigte Entscheidungen
 
 ### Bibliothek und Dokumente
@@ -94,7 +98,7 @@ Das Umfangsinterview ist abgeschlossen. Weitere Umsetzung ist autorisiert. Norma
 
 ## Technische Machbarkeit aus der Recherche
 
-- PencilKit: native Schreibwerkzeuge, Farben/Breiten, ganzer Strich (`vector`) und Teilradieren (`bitmap`), Handschrift-Lasso, Lineal. Eigene Leiste kann die Werkzeuge direkt ansteuern.
+- PencilKit: native Schreibwerkzeuge, Farben/Breiten, ganzer Strich (`vector`) und Teilradieren (`bitmap`), Handschrift-Lasso. Das Lineal ist app-eigen, seine Striche bleiben PencilKit-Tinte. Eigene Leiste kann die Werkzeuge direkt ansteuern.
 - Gestrichelte/gepunktete Geometrie: eigene Linien-/Formobjekte; kein entsprechender öffentlicher PKInkingTool-Strichmusterschalter gefunden.
 - Gemischte Auswahl und eigener Formen-/Text-/Bildeditor brauchen eine gemeinsame Objektebene zusätzlich zu PKDrawing. Das native Lasso allein genügt dafür nicht.
 - Zwei Ansichten, Explorer und Volltextindex sind eigene App-Funktionen. Beim gleichen Dokument darf es nur einen gemeinsamen Daten-/Speichereigentümer geben.

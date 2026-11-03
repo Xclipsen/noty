@@ -1,6 +1,46 @@
 import SwiftUI
 import NotebookCore
 
+/// Paper of a text document: one setting for all its pages, the reserve page
+/// and new pages. The text flows anew (`Notebook.changingTextDocumentPaper`).
+struct TextDocumentPaperView: View {
+    let onApply: (PaperStyle, PaperColor) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var paper: PaperStyle
+    @State private var color: PaperColor
+
+    init(current: NotebookAppearance, onApply: @escaping (PaperStyle, PaperColor) -> Void) {
+        self.onApply = onApply
+        _paper = State(initialValue: current.paper == .legacyTest ? .blank : current.paper)
+        _color = State(initialValue: current.color)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Papier", selection: $paper) {
+                        Text("Blanko").tag(PaperStyle.blank)
+                        Text("Liniert").tag(PaperStyle.lined)
+                        Text("Kariert").tag(PaperStyle.grid)
+                    }.pickerStyle(.segmented)
+                    Picker("Papierfarbe", selection: $color) {
+                        Text("Weiß").tag(PaperColor.white)
+                        Text("Dunkel").tag(PaperColor.dark)
+                    }.pickerStyle(.segmented)
+                } footer: {
+                    Text("Gilt für alle Seiten. Der Text fließt neu und kann dabei auf andere Seiten rücken, Handschrift bleibt auf ihrer Seite. Mit „Rückgängig“ lässt sich die Umstellung zurücknehmen.")
+                }
+            }
+            .navigationTitle("Papier ändern")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("Anwenden") { onApply(paper, color); dismiss() } }
+            }
+        }
+    }
+}
+
 /// Change an existing notebook's standard paper afterwards, e.g. make every new
 /// page dark – optionally converting empty pages or the whole notebook.
 struct NotebookDefaultsView: View {
@@ -27,25 +67,26 @@ struct NotebookDefaultsView: View {
                         Text("Blanko").tag(PaperStyle.blank)
                         Text("Liniert").tag(PaperStyle.lined)
                         Text("Kariert").tag(PaperStyle.grid)
-                    }.pickerStyle(.segmented)
-                    Picker("Farbe", selection: $color) {
+                    }.pickerStyle(.segmented).keyOption(.choice($paper, [.blank, .lined, .grid]))
+                    Picker("Papierfarbe", selection: $color) {
                         Text("Weiß").tag(PaperColor.white)
                         Text("Dunkel").tag(PaperColor.dark)
-                    }.pickerStyle(.segmented)
-                } header: { Text("Neue Standardseiten") } footer: {
-                    Text("Gilt für jede neue Standardseite und die leere Seite am Ende des Notizbuchs.")
+                    }.pickerStyle(.segmented).keyOption(.choice($color, [.white, .dark]))
+                } header: { Text("Neue Seiten") } footer: {
+                    Text("Gilt für jede neue Papierseite und die leere Seite am Ende des Hefts.")
                 }
                 Section {
                     Picker("Bestehende Seiten", selection: $scope) {
                         Text("Nur neue Seiten").tag(PageDefaultsScope.newPagesOnly)
                         Text("Leere Papierseiten").tag(PageDefaultsScope.emptyPages)
-                        Text("Ganzes Notizbuch umstellen").tag(PageDefaultsScope.wholeNotebook)
+                        Text("Ganzes Heft umstellen").tag(PageDefaultsScope.wholeNotebook)
                     }
                     .pickerStyle(.inline)
                     .labelsHidden()
+                    .keyOption(.choice($scope, [.newPagesOnly, .emptyPages, .wholeNotebook]))
                 } header: { Text("Bestehende Seiten") } footer: { Text(footer) }
             }
-            .navigationTitle("Seitenstandard")
+            .navigationTitle("Papier für neue Seiten")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
@@ -53,6 +94,7 @@ struct NotebookDefaultsView: View {
                 }
             }
         }.preferredColorScheme(.dark)
+        .keyboardSheet(onDefault: { onApply(paper, color, scope); dismiss() })
     }
 
     private var footer: String {

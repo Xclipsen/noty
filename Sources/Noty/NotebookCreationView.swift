@@ -44,14 +44,19 @@ struct NotebookCoverPreview: View {
     }
 }
 
-/// Cover and paper pickers, shared by notebook creation and Settings › Papier-Standards.
+/// Paper pickers in one order for every place (Build 65): Größe › Ausrichtung
+/// › Papier › Papierfarbe. Shared by „Neues Heft“, „Neues Textdokument“ and
+/// Settings › Papier für neue Hefte. A text document has a fixed A4 size.
 struct NotebookAppearanceEditor: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var appearance: NotebookAppearance
-    var paperHeading = "Papierstandard für dieses Notizbuch"
+    var paperHeading = "Papier für neue Seiten"
+    /// Text documents: size fixed, no cover colour.
+    var fixedFormat: PaperFormat? = nil
+    var note = "Neue Papierseiten übernehmen diese Vorgaben. Importierte PDFs behalten ihr Originalformat."
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            if appearance.coverEnabled {
+            if appearance.coverEnabled && fixedFormat == nil {
                 Text("Umschlagfarbe").font(.headline)
                 HStack(spacing: 16) {
                     ForEach(NotebookCover.allCases, id: \.self) { cover in
@@ -62,22 +67,68 @@ struct NotebookAppearanceEditor: View {
                             .accessibilityLabel("Umschlag \(cover.title)")
                             .accessibilityAddTraits(appearance.cover == cover ? .isSelected : [])
                     }
-                }
+                }.keyOption(.choice($appearance.cover, NotebookCover.allCases))
             }
             Text(paperHeading).font(.headline)
-            Picker("Größe", selection: $appearance.format) {
-                ForEach(PaperFormat.allCases, id: \.self) { Text($0.title).tag($0) }
-            }.pickerStyle(.segmented)
-            Toggle("Querformat", isOn: $appearance.landscape)
-            Picker("Papierfarbe", selection: $appearance.color) { Text("Weiß").tag(PaperColor.white); Text("Dunkel").tag(PaperColor.dark) }.pickerStyle(.segmented)
-            Picker("Vorlage", selection: $appearance.paper) {
+            if let fixedFormat {
+                LabeledContent("Größe", value: "\(fixedFormat.title) (fest)")
+            } else {
+                Picker("Größe", selection: $appearance.format) {
+                    ForEach(PaperFormat.allCases, id: \.self) { Text($0.title).tag($0) }
+                }.pickerStyle(.segmented).keyOption(.choice($appearance.format, PaperFormat.allCases))
+            }
+            Picker("Ausrichtung", selection: $appearance.landscape) {
+                Label("Hochformat", systemImage: "rectangle.portrait").tag(false)
+                Label("Querformat", systemImage: "rectangle").tag(true)
+            }.pickerStyle(.segmented).keyOption(.toggle($appearance.landscape))
+            Picker("Papier", selection: $appearance.paper) {
                 Text("Blanko").tag(PaperStyle.blank); Text("Liniert").tag(PaperStyle.lined); Text("Kariert").tag(PaperStyle.grid)
-            }.pickerStyle(.segmented)
-            Text("Neue Papierseiten übernehmen diese Vorgaben. Importierte PDFs behalten ihr Originalformat.").font(.caption).foregroundStyle(.secondary)
+            }.pickerStyle(.segmented).keyOption(.choice($appearance.paper, [.blank, .lined, .grid]))
+            Picker("Papierfarbe", selection: $appearance.color) { Text("Weiß").tag(PaperColor.white); Text("Dunkel").tag(PaperColor.dark) }.pickerStyle(.segmented)
+                .keyOption(.choice($appearance.color, [.white, .dark]))
+            Text(note).font(.caption).foregroundStyle(.secondary)
         }
         .animation(NotyMotion.panel(reduceMotion), value: appearance.coverEnabled)
         .animation(NotyMotion.highlight(reduceMotion), value: appearance.cover)
         .animation(NotyMotion.highlight(reduceMotion), value: appearance.color)
+    }
+}
+
+/// One layout for „Neues Heft“ and „Neues Textdokument“: preview, title (and
+/// for a Heft the cover), then the shared paper pickers.
+private struct DocumentCreationForm: View {
+    let kind: String
+    @Binding var title: String
+    @Binding var appearance: NotebookAppearance
+    let textDocument: Bool
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                HStack(alignment: .top, spacing: 24) {
+                    NotebookCoverPreview(appearance: appearance).aspectRatio(appearance.landscape ? 1.41 : 0.71, contentMode: .fit)
+                        .frame(maxWidth: appearance.landscape ? 220 : 170)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 18) {
+                        TextField("Titel", text: $title).font(.title3).textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("Titel \(kind == "Heft" ? "des Hefts" : "des Textdokuments")")
+                            .keyOption(.text($title))
+                        if textDocument {
+                            Text("Seiten entstehen beim Schreiben; am Ende steht immer eine leere Seite für Handschrift bereit. Handschrift bleibt fest auf ihrer Seite.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            keyToggle("Umschlag", isOn: $appearance.coverEnabled)
+                            Text("Der Umschlag erscheint in der Bibliothek und zählt nicht als Seite.").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if textDocument {
+                    NotebookAppearanceEditor(appearance: $appearance, paperHeading: "Seite", fixedFormat: .a4,
+                                             note: "Gilt für alle Seiten des Textdokuments.")
+                } else {
+                    NotebookAppearanceEditor(appearance: $appearance)
+                }
+            }.padding(24)
+        }
     }
 }
 
@@ -87,38 +138,77 @@ struct NotebookCreationView: View {
     @State private var appearance: NotebookAppearance
     @State private var creating = false
     let onCreate: (String, NotebookAppearance) async -> Bool
-    /// Starts from the area's paper default (Settings › Papier-Standards), if any.
+    /// Starts from the area's paper default (Settings › Papier für neue Hefte), if any.
     init(defaultAppearance: NotebookAppearance? = nil, onCreate: @escaping (String, NotebookAppearance) async -> Bool) {
         _appearance = State(initialValue: defaultAppearance ?? NotebookAppearance())
         self.onCreate = onCreate
     }
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    HStack(alignment: .top, spacing: 24) {
-                        NotebookCoverPreview(appearance: appearance).aspectRatio(0.71, contentMode: .fit).frame(maxWidth: 170)
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 18) {
-                            TextField("Titel des Notizbuchs", text: $title).font(.title3).textFieldStyle(.roundedBorder)
-                            Toggle("Umschlag", isOn: $appearance.coverEnabled)
-                            Text("Der Umschlag erscheint in der Bibliothek und zählt nicht als Seite.").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    NotebookAppearanceEditor(appearance: $appearance)
-                }.padding(24)
-            }
-            .navigationTitle("Neues Notizbuch").navigationBarTitleDisplayMode(.inline)
+            DocumentCreationForm(kind: "Heft", title: $title, appearance: $appearance, textDocument: false)
+            .navigationTitle("Neues Heft").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.disabled(creating) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Erstellen") {
-                        creating = true
-                        Task { if await onCreate(title, appearance) { dismiss() }; creating = false }
-                    }.disabled(creating || (try? LibraryStore.validTitle(title)) == nil)
+                    Button("Erstellen", action: create).disabled(!creatable)
                 }
             }
             .disabled(creating)
         }.preferredColorScheme(.dark)
+        .keyboardSheet(onDefault: { if creatable { create() } }, onCancel: { if !creating { dismiss() } })
+    }
+    private var creatable: Bool { !creating && (try? LibraryStore.validTitle(title)) != nil }
+    private func create() {
+        creating = true
+        Task { if await onCreate(title, appearance) { dismiss() }; creating = false }
+    }
+}
+
+extension NotebookCore.LibraryItem {
+    /// Library symbol: folder, notebook (Heft) or text document.
+    func librarySymbol(filled: Bool) -> String {
+        let name = isFolder ? "folder" : isTextDocument ? "doc.text" : "book.closed"
+        return filled ? name + ".fill" : name
+    }
+    var libraryKindName: String { isFolder ? "Ordner" : isTextDocument ? "Textdokument" : "Heft" }
+}
+
+/// „Neu › Textdokument“ (TEXT-REBUILD-62 §4), built like „Neues Heft“
+/// (Build 65): A4 fixed, orientation, paper and paper colour start from the
+/// area's paper default (Settings › Papier für neue Hefte); without one the
+/// paper is blank. Pages come from the text.
+struct TextDocumentCreationView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var appearance: NotebookAppearance
+    @State private var creating = false
+    let onCreate: (String, Bool, PaperStyle, PaperColor) async -> Bool
+    init(defaultAppearance: NotebookAppearance? = nil, onCreate: @escaping (String, Bool, PaperStyle, PaperColor) async -> Bool) {
+        var start = NotebookAppearance()
+        start.coverEnabled = false; start.format = .a4
+        if let defaultAppearance {
+            start.landscape = defaultAppearance.landscape; start.paper = defaultAppearance.paper; start.color = defaultAppearance.color
+        }
+        _appearance = State(initialValue: start)
+        self.onCreate = onCreate
+    }
+    var body: some View {
+        NavigationStack {
+            DocumentCreationForm(kind: "Textdokument", title: $title, appearance: $appearance, textDocument: true)
+            .navigationTitle("Neues Textdokument").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.disabled(creating) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Erstellen", action: create).disabled(!creatable)
+                }
+            }
+            .disabled(creating)
+        }.preferredColorScheme(.dark)
+        .keyboardSheet(onDefault: { if creatable { create() } }, onCancel: { if !creating { dismiss() } })
+    }
+    private var creatable: Bool { !creating && (try? LibraryStore.validTitle(title)) != nil }
+    private func create() {
+        creating = true
+        Task { if await onCreate(title, appearance.landscape, appearance.paper, appearance.color) { dismiss() }; creating = false }
     }
 }

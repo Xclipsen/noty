@@ -30,7 +30,7 @@ xtool-Build/Signierung in PTY/Terminal ausführen: dokumentierter Non-TTY-/Swift
 | --- | --- | --- |
 | Datenmodell, Migration, Speichern, Seitenoperationen | [STORAGE](docs/STORAGE.md), [ARCHITECTURE](docs/ARCHITECTURE.md), betroffene Core-Tests | Core-Tests; bei Format-/Archiv-/Layeränderung zusätzlich Host-Roundtrip |
 | Bibliothek, Bereiche, Backup/Restore | [LIBRARY](docs/LIBRARY.md), [BACKUPS](docs/BACKUPS.md), [LIBRARY-BACKUP](docs/LIBRARY-BACKUP.md) | Core-Tests und Host-Roundtrip; echte Archive unabhängig prüfen |
-| Editor, Gesten, Fokus, Undo, Werkzeugleiste | DESIGN, ARCHITECTURE; je nach Inhalt [TEXT-FIELDS](docs/TEXT-FIELDS.md) / [IMAGES](docs/IMAGES.md) | iPad-Build; betroffene Eingabe-/Fokus-/Neustartfälle gebündelt am Gerät |
+| Editor, Gesten, Fokus, Undo, Werkzeugleiste, Tastatur | DESIGN, ARCHITECTURE, [KEYBOARD](docs/KEYBOARD.md); je nach Inhalt [TEXT-FIELDS](docs/TEXT-FIELDS.md) / [IMAGES](docs/IMAGES.md) | iPad-Build; betroffene Eingabe-/Fokus-/Neustartfälle gebündelt am Gerät |
 | PDF, Koordinaten, Ränder, Rendering | `PageGeometry.swift`, `PagePresentation.swift`, gemeinsame Text-/Bildrenderer | Geometrie-/Seiten-/Objekttests, iPad-Build; tatsächliches Geräte-PDF mit `pdfinfo`, `pdftoppm`, `pdftotext` prüfen |
 | Nur Dokumentation/Agent-Anweisungen | Aussagen gegen betroffene Quellen, Befehls-Hilfe und Links prüfen | Kein App-Build allein wegen Textänderungen |
 
@@ -49,6 +49,20 @@ Archivprüfer: `python3 -B scripts/verify_backup.py ARCHIV --compare REVISION.js
 ## GitHub
 
 `origin` ist das **öffentliche** Repo `github.com/Xclipsen/noty`; es soll immer `main` spiegeln. Lokale Hooks (`post-commit`, `post-merge`, `post-rewrite` → `.git/hooks/noty-autopush`) pushen jeden neuen Stand von `main` im Hintergrund, Protokoll in `.git/autopush.log`; andere Branches bleiben lokal. Nach Merges prüfen: `git rev-list --count origin/main..main` muss 0 sein, sonst manuell pushen. Wegen Öffentlichkeit nie private Hefte, Gerätesicherungen, UDIDs, Zugangsdaten oder `.tools/`-Artefakte committen.
+
+## Branches und Apps
+
+| Branch | Worktree | App | Regel |
+| --- | --- | --- | --- |
+| `main` | `/home/la/workspace/noty` | **noty** (`de.la.noty.prototype`, echte Hefte) | Nur freigegebene Stände aus `dev`, per `git merge --no-ff dev`, nachdem der Nutzer den Stand in noty dev getestet und ausdrücklich freigegeben hat. Spiegelt GitHub. Jede Installation bekommt das Tag `stable/build-N`. |
+| `dev` | `/home/la/workspace/noty-dev` | **noty dev** (`de.la.noty.dev`, eigene Daten) | Alles, was in die nächste normale Version soll. Hier wird gearbeitet. |
+| `exp/<name>` | eigener Worktree, z. B. `noty-ki` für `exp/ki` | noty dev, nur auf ausdrücklichen Wunsch | Experimente wie der KI-Assistent. Nehmen `dev` regelmäßig auf (`git merge dev`), gehen nur nach Entscheidung des Nutzers nach `dev`. `exp/ki` trägt zusätzlich `bridge/`, von dem der Dienst `noty-ai` läuft. |
+| `feat/<name>` | eigener Worktree | noty dev | Größere Einzelthemen, von `dev` abgezweigt, nach dem Merge in `dev` gelöscht. |
+
+- `scripts/publish_ota.sh` setzt das durch: noty dev nur von `dev`, `exp/*` oder `feat/*` und nur committet (`NOTY_ALLOW_DIRTY=1` als bewusste Ausnahme); die normale noty nur von `main`, sauber und mit `NOTY_STABLE_CONFIRMED=1`, nachdem der Nutzer zugestimmt und vorher ein Bibliotheksbackup bzw. eine Sicherung gemacht hat. Die Installationsseite nennt Branch und Commit.
+- Buildnummern (`CFBundleVersion`) zählen über beide Apps durchgehend hoch; das Skript lehnt eine Nummer ab, die nicht größer als die zuletzt veröffentlichte ist.
+- Ablauf einer Änderung: in `dev` (oder `feat/*`) bauen und testen → noty dev → Nutzer prüft → auf Wunsch `main` + normale noty. Ohne ausdrückliche Freigabe nichts auf `main` oder die normale noty.
+- Nicht mehr gebrauchte Branches nach dem Merge löschen; vorher prüfen, dass sie enthalten sind (`git merge-base --is-ancestor`).
 
 ## Geräteupdates und Nachweise
 

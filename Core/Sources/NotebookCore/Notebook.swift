@@ -17,6 +17,13 @@ public struct Page: Codable, Equatable, Identifiable, Sendable {
     public init() {}
 }
 
+/// What a library document is (Textneubau Stufe 3, docs/TEXT-REBUILD-62.md §4).
+/// Stored only as `textDocument` (schema 15); a missing `kind` is a notebook,
+/// so notebooks stay byte-identical in their former schema.
+public enum DocumentKind: String, Codable, CaseIterable, Sendable {
+    case notebook, textDocument
+}
+
 /// One worksheet; each PDF page has its own PencilKit drawing and fixed text box.
 public struct Notebook: Codable, Equatable, Sendable {
     /// 10: PDF sources above 20 MB (Build 46 rejects them as invalid and would
@@ -24,7 +31,17 @@ public struct Notebook: Codable, Equatable, Sendable {
     /// 11: writing space beside paper pages (right/below, in the page's own paper).
     /// 12: image originals as package assets (`ImageObject.asset`), no longer
     /// embedded; notebooks with images are raised to 12 in memory on load.
-    public static let currentSchemaVersion = 12
+    /// 13: polyline/polygon shapes (`ShapeObject.points`, kind `polygon`);
+    /// older builds would draw them as straight lines, so they refuse them.
+    /// 14: free text fields only (Textneubau): rotation, automatic width and
+    /// page text migrated to fields (`flowRegion` without `flowID`).
+    /// 15: text documents (`kind == .textDocument`): one text flow over paper
+    /// pages, handwriting and objects fixed on their page. Notebooks are never
+    /// raised to 15; older builds refuse text documents instead of showing
+    /// them as notebooks.
+    public static let currentSchemaVersion = 15
+    /// Lowest schema of a text document.
+    public static let textDocumentSchemaVersion = 15
     /// Lowest schema whose image objects reference assets instead of embedding.
     public static let imageAssetSchemaVersion = 12
     // Existing callers retain the legacy representation until a structural edit.
@@ -36,7 +53,12 @@ public struct Notebook: Codable, Equatable, Sendable {
     public var pdfSources: [PDFSource]?
     public var deletedPages: [DeletedPage]?
     public var appearance: NotebookAppearance?
+    /// nil: a notebook (Heft). `.textDocument` only from schema 15.
+    public var kind: DocumentKind?
     public init() {}
+
+    public var documentKind: DocumentKind { kind ?? .notebook }
+    public var isTextDocument: Bool { kind == .textDocument }
 
     /// Validated notebook as it lives in memory (images of schema 5–11 raised
     /// to 12). Embedded legacy bytes are dropped: only for pure checks. Paths
@@ -58,6 +80,11 @@ public struct Notebook: Codable, Equatable, Sendable {
             guard schemaVersion >= 7 else { throw StorageError.invalidDocument }
             try appearance.validate()
         }
+        if let kind {
+            // Notebooks never store a kind; text documents need schema 15.
+            guard kind == .textDocument, schemaVersion >= Self.textDocumentSchemaVersion else { throw StorageError.invalidDocument }
+            try validateTextDocument()
+        }
         let allTextBoxes = allPages.flatMap { $0.textBoxes ?? [] }
         guard Set(allTextBoxes.map(\.id)).count == allTextBoxes.count else { throw StorageError.invalidDocument }
         let allImages = allPages.flatMap { $0.images ?? [] }
@@ -76,6 +103,7 @@ public struct Notebook: Codable, Equatable, Sendable {
             if let shapes = page.shapes {
                 guard schemaVersion >= 6, shapes.count <= 500 else { throw StorageError.invalidDocument }
                 for shape in shapes {
+                    if shape.usesVertexFormat { guard schemaVersion >= ShapeObject.vertexSchemaVersion else { throw StorageError.invalidDocument } }
                     try shape.validate()
                     guard page.textBounds.contains(shape.bounds, tolerance: 0.02) else { throw StorageError.invalidDocument }
                 }
@@ -98,6 +126,7 @@ public struct Notebook: Codable, Equatable, Sendable {
                     if box.usesTextFlowFormat { guard schemaVersion >= 8 else { throw StorageError.invalidDocument } }
                     if box.usesRichText { guard schemaVersion >= 7 else { throw StorageError.invalidDocument } }
                     if box.usesColorFormat { guard schemaVersion >= 9 else { throw StorageError.invalidDocument } }
+                    if box.usesFieldFormat { guard schemaVersion >= TextBox.fieldSchemaVersion else { throw StorageError.invalidDocument } }
                     try box.validate()
                 }
             }
@@ -182,12 +211,18 @@ public enum StorageError: Error, LocalizedError {
     case invalidDocument
     case unreadableCopies
     case unsupportedSchema(Int)
+    case lockedPDF
+    case unreadablePDF
+    case tooManyPDFPages(Int)
 
     public var errorDescription: String? {
         switch self {
         case .invalidDocument: "Die Datei enthält kein unterstütztes noty-Dokument."
         case .unreadableCopies: "Arbeitsstand und Wiederherstellungskopie sind nicht lesbar."
         case .unsupportedSchema(let version): "Dokumentformat \(version) wird von dieser noty-Version nicht unterstützt."
+        case .lockedPDF: "Das PDF ist passwortgeschützt. Bitte eine Fassung ohne Passwort wählen."
+        case .unreadablePDF: "Die Datei ist kein lesbares PDF oder hat keine Seiten."
+        case .tooManyPDFPages(let count): "Das PDF hat \(count) Seiten; noty übernimmt höchstens 500 Seiten je Import."
         }
     }
 }

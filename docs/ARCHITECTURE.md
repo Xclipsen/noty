@@ -1,12 +1,60 @@
 # Architektur
 
+## Texteditor 2 (Prototyp) · 31.10.2026
+
+Implementiert, erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Hinter dem Schalter `noty.text.editor2`, Standard aus, nur in Textdokumenten: eine Eingabeansicht über allen Seiten, ein Puffer, TextKit 1 mit einem Container je Seite. Das Modell bleibt Quelle und Speicherformat unverändert, die Seitenlängen kommen aus dem gemeinsamen Layout in das bestehende `reflowText`. Mit dem Schalter aus bleibt der Weg über `PageTextView`. [Architektur, Abweichungen, Go/No-Go](TEXT-EDITOR-2.md).
+
+## Rückgängig für alle Operationen · 31.10.2026
+
+Implementiert, erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Nutzermeldung: Text mit dem Lasso verschoben, nicht zurücknehmbar. Der Normalfall (gleiche Seite, über Seiten, Reserveseite, Textdokument) war in Core-Tests bereits rückgängig zu machen; behoben sind die Wege, auf denen ein Schritt verschwand oder nichts Sichtbares tat.
+
+- **Zurücknehmen scheiterte an der Feldprüfung:** `NotebookUndoHistory.apply` lief über `replaceTextBoxes`/`replaceContents`, die `TextBox.fits` verlangen. Lag ein Feld vor dem Verschieben neben dem Blatt (gültiges Dokument, `validate` prüft das nicht), warf das Zurücknehmen, und `move` verwarf den Schritt still. Undo/Redo stellen jetzt mit `restoring: true` einen Stand wieder her, den die Seite hatte; erwartete Stände und `validate` gelten weiter.
+- **Nie still:** `Outcome.skipped` und `lastSkipped` melden verworfene Schritte, `EditorModel.undo` zeigt einen Hinweis. Fremde spätere Änderungen werden weiter nicht überschrieben, das Schema sinkt nicht. Ein laufender Vorgang (`busy`, Pause) meldet sich ebenfalls statt nichts zu tun.
+- **Schritte ohne sichtbare Wirkung:** Ein leeres Feld ohne Feldstil (`blankField`) ist kein eigener Schritt: es geht in die ersten Zeichen auf oder hebt sich mit seiner Entfernung auf (`blankFieldWindow`, das längere Fenster gilt; nur ununterbrochene Ketten). Ein Griff, der am Ausgangspunkt endet, legt keinen Schritt mehr nur für die eingepasste Höhe an.
+- **Reserveseite:** Ein Entwurf, der schon Text trägt, ist nicht mehr die „leere Seite“, die 30 s auf ihren Inhalt wartet (sonst nahm das Zurücknehmen eines Verschiebens die ganze Seite mit). Eine Auswahl, die auf die Reserveseite verschoben wurde, zeigt beim Zurücknehmen die Quellseite.
+- **Verschieben im Textmodus** (Rahmenzone) ist ein eigener Schritt, auch direkt nach dem Tippen. Der Transferschritt wird aus dem Modellstand aufgezeichnet.
+- **Speicherbudget:** Unveränderte Tinte zählt nicht mehr doppelt je Schritt; auf vollgeschriebenen Seiten verdrängten Text- und Objektschritte sonst ältere Schritte.
+
+Bewusste Grenzen: Die Historie lebt nur, solange das Heft offen ist (kein Formatfeld; danach bleiben die lokalen Wiederherstellungspunkte). Höchstens 100 Schritte. Altformat-Hefte ohne `pdfSources` können die Seitenoperation, die sie migriert, nicht aufzeichnen (`prune`). Jeder Pfeiltasten-Schritt ist ein eigener Undo-Schritt. `undo` bei Installationsfehler (`NotebookPDFCatalog`) leert die Historie sichtbar mit Fehlermeldung.
+
+## Tastaturmodus (Helix) und Text über Seiten · Build 68 · 31.10.2026
+
+Implementiert, erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung, Grenzen, Aufbau und Gerätetest: [KEYBOARD](KEYBOARD.md), Befunde zu Build 65: [TEXT-REBUILD-62](TEXT-REBUILD-62.md).
+
+- **Core:** `HelixKeymap.swift` (einzige Tastentabelle für Parser, Übersicht, Palette, Which-Key), `HelixParser.swift` (Zähler, Menüs, Zeichenprompts), `TextEngine.swift` und `TextEngine+Objects.swift` (Auswahlen, Modi, Register, Suche, gegen das echte Helix geprüft), `KeyboardCommands.swift` (`KeyPressGate`, `KeyDeliveryLatch`, `KeyPalette`), `TextLines.swift`, `TextFlowRange.swift` (Offsets, Bereiche, `editingTextFlow` auch mit mehreren Edits, `restylingTextFlow`).
+- **App:** Tastendrücke gehen über `pressesBegan` an `KeyboardRouter` (`PageTextView`, `DrawingCanvasView`, `WorksheetView`, in der Bibliothek `KeyboardHostView`). Plaintasten laufen bewusst nicht über Key Commands: `UIKey.characters` liefert unabhängig von der Belegung das getippte Zeichen, und nur der Router weiß, ob gerade geschrieben wird. ⌘-Kürzel bleiben bei Menü und Key Commands. Esc und Tab können zusätzlich als Key Command kommen, weil das System sie sonst nehmen kann; beide Wege enden im selben Router-Einstieg, `KeyDeliveryLatch` lässt einen Druck nur einmal wirken ([KEYBOARD](KEYBOARD.md#aufbau)). `TextObjectLayer+Keyboard.swift` verbindet `TextEngine` mit Textansicht und Fluss, `KeyboardOverlay.swift` zeigt Modus, Eingabezeile, Which-Key, Übersicht und Palette.
+- **Fokus bleibt beim Text:** Die Eingabezeile von `/`, `?`, `s` ist reine Anzeige, ihre Tasten laufen weiter durch den Router. Ein Textfeld würde die Textansicht beenden (Formatleiste weg, Layoutsprung, keine native Auswahl, keine Caret-Führung).
+- **Auswahl über Seiten:** Jede Seite hat eine eigene Textansicht. `TextFlowSelection` hält den Bereich, jede `TextObjectLayer` markiert ihren Teil; Änderungen gehen über `TextFlowActions` ans `EditorModel` und sind je ein Undo-Schritt. Innerhalb einer Seite bleibt die native Auswahl, damit Griffe und Formatleiste unverändert arbeiten.
+- **Neue Abhängigkeit im Reflow:** optional `trailingLineFits`; ohne diesen Parameter bleibt das Verhalten gleich.
+
+## Feldstil und Gliederung (Textneubau Stufe 4) · 22.10.2026
+
+Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung und Abweichungen: [TEXT-REBUILD-62](TEXT-REBUILD-62.md), Format: [STORAGE](STORAGE.md) (Schema 14).
+
+- **Core:** `TextFieldStyle.swift` (`TextFieldFill`, `TextFieldBorder`, Innenabstand, `fieldStyleHit`, `styled(fill:border:in:)`); `TextField.swift` liefert `corners`/`rotatedBounds`/`contains`/`fits` für das sichtbare Feld, `textCorners` für den Textrahmen. `EditorInteractionPolicy.automaticTextIsLight` löst gegen die Füllung auf. `TextOutline.swift`: `Notebook.textOutline` (reine Funktion über `textFlowSegments`).
+- **App:** `TextFieldStyleRendering` (gemeinsam für PDF, Vorschaubilder, gehobene Auswahl); `TextFieldContainer` zeichnet dieselbe Geometrie als `CAShapeLayer` unter dem Text. `FieldStyleOptions` im Popover der Feldauswahl (`ObjectEditingLayer`). Gliederung in `PageSidebarView` (Hintergrundberechnung nach 400 ms Ruhe), Sprung über `ContentView.jumpToOutline` → `TextFlowFocus`. Kein neuer Writer, keine neue Speicherstelle.
+
+## Weiches Einrasten (Textneubau Stufe 2) · 22.10.2026
+
+Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung, Parameter und Abweichungen: [TEXT-REBUILD-62](TEXT-REBUILD-62.md).
+
+- **Core:** `SoftSnapping.swift` – `SoftSnapper` (Kandidaten, Reichweite in Bildschirmpunkten, Geschwindigkeitsschwelle, Hysterese, Hilfslinien/Abstandsmarken als `SnapFeedback`), `MoveSnapSession` als `MoveSnapping` für `ObjectMovement` und für Einzelpunkte, `DragSpeed` (Papierlinien/Karos sind seit dem Feedback zu Build 62 keine Ziele mehr), `ShapeObject.snapFrame`.
+- **App:** `Sources/Noty/SoftSnapping.swift` – `DragSnapping` je Ebene (`ObjectEditingLayer`, `TextObjectLayer`, `ImageObjectLayer`) mit `begin/track/show/point/end`; `WorksheetView` ist `SnapHost` (sammelt Ziele aus `pageContent`, Grundlinien über `TextObjectLayout.firstBaseline`, zeigt `SnapGuideView` als oberste, nicht interaktive Ebene); `SnapPanGestureRecognizer` (auch Basis von `TouchDownPanGestureRecognizer`) meldet einen zweiten Touch. Einstellung `AppSettingsKey.snapping`. Kein Format, Writer oder Export betroffen.
+
+## Textneubau Stufe 1 · 22.10.2026
+
+Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung und Abweichungen: [TEXT-REBUILD-62](TEXT-REBUILD-62.md), Format: [STORAGE](STORAGE.md) (Schema 14).
+
+- **Core:** `TextField.swift` (Drehung um die linke obere Ecke, `rotatedBounds`/`fits`/`contains`, automatische Breite bis zum Rand, `TextFieldRotation`, `TextFieldPlacement`, `ObjectMovement` + `MoveSnapping` als einzige Bewegungsstelle, `movingField`, Lese-Migration `migratedTextFlow`). `PageObjectHitTest.all/next` mit `textHit`-Closure für Zeilentreffer.
+- **App:** `TextObjectLayer` legt nur noch freie Felder an (Tipp, Option „Textfeld hinzufügen“, Doppeltippmenü, Einsetzen), passt Breite/Höhe über `fitted` an, verschiebt/verbreitert beim Bearbeiten über Rahmenzone und Breitenpunkte (`TextFieldContainer`, `FieldBorderDrag`) und meldet das Verlassen (`onLeaveField` → `PageEditor.onTextEditingFinished` → `ContentView` setzt das vorherige Werkzeug, außer `textToolLocked`). `ObjectEditingLayer` zeigt eine per Tipp gewählte Einzelauswahl als Feldauswahl (Rahmen, Breitenpunkte, Drehgriff, eigenes Menü) und ruft für Bearbeiten `WorksheetView.requestTextEdit`. Treffer auf Textzeilen kommen aus den vorhandenen `PageTextView`-Instanzen (`hitsLine`). Vorschau, PDF und Lasso-Kontur drehen über `TextObjectLayout.transform(at:)` bzw. `SelectionContour`. Kein neuer Writer, keine neue Speicherstelle.
+
 ## Fingertipp-Auswahl und Doppeltipp-Menü · 22.10.2026
 
 Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Bedienung: [DESIGN](DESIGN.md).
 
 - **Core:** `PageObjectHitTest.topmost(at:in:tolerance:shapeHit:)` liefert das oberste auswählbare Objekt als `PageObjectReference` (`.text`/`.image`/`.shape` mit stabiler ID) in der Zeichenreihenfolge Text > Formen > Bilder; Seitentext und gesperrte Bilder ausgenommen, Bilder mit Drehung, Formen über den echten App-Umriss (`ShapeRendering.hit`) oder eine geometrische Näherung.
 - **App:** `FingerObjectGestures` hängt an jedem `WorksheetView` (nur Fingertouches, nur Tintenwerkzeuge ohne Fingerzeichnen): Tipp → `ObjectEditingLayer.selectByTouch`, Ziehen auf der Auswahl → `dragTouchSelection` (vor dem Notizbuch-Scrollen, `ScrollPanPriority`), Doppeltipp → eigenes `UIEditMenuInteraction`-Menü „Textfeld hinzufügen“. PencilKits eigene Finger-Doppeltipp-Erkenner warten auf diesen (`require(toFail:)`), `DrawingCanvasView` lehnt `insertSpace`-Aktionen ab. Im Fingerauswahlmodus nimmt `ObjectEditingLayer` nur über seine Bedienelemente Touches an; Pencil und Finger erreichen sonst Canvas und Viewport unverändert. Der Modus endet mit der Auswahl, beim Werkzeugwechsel und beim Schreibbeginn.
-- **Textfeld an Punkt:** Das Menü ruft `WorksheetView.requestTextField(at:)` → `PageEditor.onTextFieldRequested` (Editor wechselt zum Textwerkzeug) → nach der Konfiguration `addTextField(at:)` → `TextObjectLayer.insertText(…, freeField: true)`. Ein Neubau der Textfelder ersetzt nur `addTextField(at:)`. Kein Format-, Speicher- oder Writer-Wechsel.
+- **Textfeld an Punkt:** Das Menü ruft `WorksheetView.requestTextField(at:)` → `PageEditor.onTextFieldRequested` (Editor wechselt zum Textwerkzeug) → nach der Konfiguration `addTextField(at:)` → `TextObjectLayer.createField(at:)` (seit dem Textneubau, siehe oben). Kein Format-, Speicher- oder Writer-Wechsel.
 
 ## Bild-Assets (Schema 12, Archivformat 2) · 21.10.2026
 
@@ -16,6 +64,10 @@ Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Pla
 - **Einziger Writer:** `RevisionStore.assets` ist die einzige beschreibbare `NotebookAssets`-Instanz je Paket; Lesewege (Vorschau, Suche, Aufgaben, Bibliotheksbackup, Duplikatquelle, Restore-Katalog, Rücklesen) öffnen `RevisionStore(readOnly: true)`, deren `save` und GC `readOnly` werfen. Commit: Migrationssicherung → Assets → Revision → `checkpoints.json` → voriges Manifest → Manifest. Kopien (Restore, Bibliotheksrestore, Duplikat, lokale Historie) gehen über `save(_:importingAssetsFrom:)`.
 - **Asset-GC:** `RevisionStore.collectAssetGarbage(.opening/.closing)` über den Repository-Actor; der Editor startet ihn nach dem Laden (der Store verweigert ihn nach dem ersten Commit) und wartet ihn nach dem letzten Commit beim Schließen ab (`flushBeforeClosing`, `EditorWorkspace.closeAll`). Prozessweite Sperre `BackupActivity`: gehalten von Bibliotheks- und externem Backup, Heft- und Bibliotheksrestore, lokaler Historie als Kopie und Duplizieren.
 - **App:** `ImageAssetRegistry.shared` (schwache Referenzen auf die `NotebookAssets` offener Editoren und laufender Vorschauen, neueste zuerst) ist der Standard-Provider von `ImageRendering`, `PDFExporter`, `PageThumbnailCache`, Such-OCR und Validierung; Hintergrundwege geschlossener Hefte übergeben ihre schreibgeschützten Assets. `pinClipboard` hält die Pakete der Objekt-Zwischenablage am Leben, `clipboardHashes` schützt deren Originale vor dem GC. Renditionen sind nach `sha256-limit` zwischengespeichert. Öffnen prüft Originale nur auf Vorhandensein (`EditorModelValidation.validateOnOpening`); `ImageRendering.prepare` liest beim ersten Zeichnen über `verifiedPayload`. Backups werden als Dateien geschrieben, zurückgelesen und per `FileWrapper(url:)` exportiert.
+
+## KI-Assistent
+
+Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
 
 ## Native Gesetzessammlung – Feature-Worktree, 20.10.2026
 
@@ -44,6 +96,8 @@ Ausgeliefert mit Build 48. Keine neue Grundarchitektur. Die bestehenden Grenzen 
 ## Lasso-Kontur wie das frühe native Lasso · 22.10.2026
 
 Nutzerwunsch: Auswahl wieder wie in den ersten Versionen umranden. Vorlage ist das native Handschrift-Lasso (`PKLassoTool`, Werkzeug `.inkSelection`, bis Build 29; im Repo z. B. `04de50a` = Stand Build 28, `PageEditor.swift`), das jeden ausgewählten Strich mit etwas Abstand umlief. Build 30 ersetzte es durch das gemeinsame Hauptlasso, Build 31 zeichnete nur bei reiner Handschrift eine konvexe Hülle, gemischte Auswahlen ein Rechteck. `SelectionContour` bildet jetzt für jede Auswahl (Ink, Formen, freie Textfelder, Bilder) die Vereinigung aller um `SelectionOutline.gap` (7 Bildschirm-pt, Zoom in 20-%-Stufen) verbreiterten Mitglieder: Striche entlang ihrer Mittellinie mit Strichbreite, Formen entlang `ShapeRendering.path` (gefüllte samt Fläche), Textfelder/Bilder als gerundete (gedrehte) Rechtecke. Nahe Inhalte verschmelzen, entfernte bleiben eigene Inseln. Die Kontur wird einmal je Auswahl und Zoomstufe in Seitenkoordinaten berechnet (`CGPath.normalized`, iOS 16+) und beim Verschieben/Skalieren/Drehen nur mit dem Gruppentransform bewegt. Strichelung, Animation, Bewegung-reduzieren, Trefferflächen, Auswahlregel, Commit und Undo unverändert; Griffe und Aktionsleiste sitzen am Konturrahmen. Das laufende Lasso ist gestrichelt. **Implementiert und mit dem SDK gebaut; am iPad ungeprüft.**
+
+**Korrektur nach Build 62 (Nutzerfeedback):** Eine Auswahl aus mehreren Mitgliedern bekommt keine Einzelkonturen/Inseln mehr, sondern **eine** geschlossene, weich gerundete Hülle mit demselben Abstand: konvexe Hülle von Kreisen (Radius = halbe Strichbreite + Abstand) um die Hüllpunkte jedes Mitglieds (`SelectionOutline.roundedHull`). Konvex statt konkav, weil das ohne Löcher, Selbstüberschneidung oder Zerfall in Teile garantiert ist; eine konkave Hülle wäre bei weit verstreuten Inhalten nicht robust zu begrenzen. Genau ein Mitglied folgt weiter seiner Form (Vereinigung wie bisher). Berechnung weiterhin einmal je Auswahl/Zoomstufe gecacht, Griffe und Aktionsleiste am Konturrahmen. **Implementiert und gebaut; am iPad ungeprüft.**
 
 ## Build 32 · Normale Randtext-Einheiten und finalisierte Ink
 

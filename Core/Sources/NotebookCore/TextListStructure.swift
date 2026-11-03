@@ -12,7 +12,7 @@ extension TextListEditing {
     }
     static func lineStart(_ text: String, _ location: Int) -> Int {
         let source = text as NSString
-        return source.lineRange(for: NSRange(location: min(max(0, location), source.length), length: 0)).location
+        return TextLines.lineRange(source, NSRange(location: min(max(0, location), source.length), length: 0)).location
     }
 
     // MARK: Automatic lists
@@ -75,7 +75,7 @@ extension TextListEditing {
         let source = text as NSString
         var result: [Paragraph] = [], cursor = 0
         while cursor < source.length {
-            let line = source.lineRange(for: NSRange(location: cursor, length: 0))
+            let line = TextLines.lineRange(source, NSRange(location: cursor, length: 0))
             result.append(paragraph(source, line: line, level: level, continuation: continuation && line.location == 0))
             guard NSMaxRange(line) > cursor else { break }
             cursor = NSMaxRange(line)
@@ -87,7 +87,7 @@ extension TextListEditing {
     public static func numberedItem(in text: String, at location: Int, level: (Int) -> Int, continuation: Bool = false) -> NumberedItem? {
         let source = text as NSString
         guard location >= 0, location < source.length else { return nil }
-        let line = source.lineRange(for: NSRange(location: location, length: 0))
+        let line = TextLines.lineRange(source, NSRange(location: location, length: 0))
         let item = paragraph(source, line: line, level: level, continuation: continuation && line.location == 0)
         guard item.kind == .numbered, let number = item.number else { return nil }
         return NumberedItem(depth: item.depth, number: number)
@@ -151,6 +151,16 @@ extension TextListEditing {
         return result
     }
 
+    /// „3. Mai“ above „10. Juni“ are dates that only look like a list.
+    private static func startsWithMonth(_ source: NSString, after item: Paragraph) -> Bool {
+        let start = item.prefixLocation + (item.prefix as NSString).length
+        let line = TextLines.lineRange(source, NSRange(location: start, length: 0))
+        let word = source.substring(with: NSRange(location: start, length: NSMaxRange(line) - start)).prefix { $0.isLetter }
+        return months.contains(word.lowercased())
+    }
+    private static let months: Set<String> = ["januar", "jan", "februar", "feb", "märz", "mär", "april", "apr", "mai", "juni", "jun",
+        "juli", "jul", "august", "aug", "september", "sep", "sept", "oktober", "okt", "november", "nov", "dezember", "dez"]
+
     /// Renumbers the runs touched by an edit (the changed paragraphs and the
     /// one after): each run counts on from its first item, which keeps its own
     /// number — unless the edit removed the previous first item, whose number
@@ -162,9 +172,9 @@ extension TextListEditing {
         let source = text as NSString
         guard changed.location >= 0, changed.length >= 0, NSMaxRange(changed) <= source.length else { return [] }
         // Cheap exit for ordinary typing away from lists.
-        let first = source.lineRange(for: NSRange(location: changed.location, length: 0))
-        var end = NSMaxRange(source.lineRange(for: NSRange(location: NSMaxRange(changed), length: 0)))
-        if end < source.length { end = NSMaxRange(source.lineRange(for: NSRange(location: end, length: 0))) }
+        let first = TextLines.lineRange(source, NSRange(location: changed.location, length: 0))
+        var end = NSMaxRange(TextLines.lineRange(source, NSRange(location: NSMaxRange(changed), length: 0)))
+        if end < source.length { end = NSMaxRange(TextLines.lineRange(source, NSRange(location: end, length: 0))) }
         let window = NSRange(location: first.location, length: end - first.location)
         let local = paragraphs(in: source.substring(with: window), level: { level(window.location + $0) },
             continuation: continuation && window.location == 0)
@@ -185,7 +195,8 @@ extension TextListEditing {
         }
         var edits: [Edit] = []
         for run in state.runs where run.touched {
-            for (index, number) in run.items where list[index].kind == .numbered && list[index].number != number {
+            for (index, number) in run.items where list[index].kind == .numbered && list[index].number != number
+                && !startsWithMonth(source, after: list[index]) {
                 edits.append(Edit(range: NSRange(location: list[index].prefixLocation, length: (list[index].prefix as NSString).length),
                     replacement: "\(number). "))
             }
@@ -199,7 +210,42 @@ extension TextListEditing {
     }
 }
 
+extension TextEngine.Outcome {
+    /// `edits` in text order, as both edit paths want them. A replacement takes
+    /// one format from its place: what must keep its formats (`keepsFormat`)
+    /// is cut at the format changes of `source`, the text before the command.
+    public func textEdits(in source: @autoclosure () -> TextBox?) -> [TextListEditing.Edit] {
+        let ordered = edits.reversed().map { TextListEditing.Edit(range: $0.range, replacement: $0.replacement) }
+        guard keepsFormat, let source = source() else { return ordered }
+        return TextListEditing.split(ordered, at: source.formatChanges)
+    }
+}
+
+extension TextListEditing {
+    /// Cuts each replacement of the same UTF-16 length at `offsets` (ascending,
+    /// in the text before the edits). Not grapheme by grapheme: a run stays one
+    /// edit. Another length (`ß` to `SS`) has no such places and stays whole,
+    /// no cut falls inside a composed character of the new text.
+    public static func split(_ edits: [Edit], at offsets: [Int]) -> [Edit] {
+        edits.flatMap { edit -> [Edit] in
+            let value = edit.replacement as NSString, length = edit.range.length, origin = edit.range.location
+            guard length > 0, value.length == length else { return [edit] }
+            var parts: [Edit] = [], start = 0
+            for cut in offsets.map({ $0 - origin }).filter({ $0 > 0 && $0 < length }) + [length] {
+                guard cut == length || value.rangeOfComposedCharacterSequence(at: cut).location == cut else { continue }
+                let part = NSRange(location: start, length: cut - start)
+                parts.append(Edit(range: NSRange(location: origin + start, length: part.length), replacement: value.substring(with: part)))
+                start = cut
+            }
+            return parts
+        }
+    }
+}
+
 extension TextBox {
+    /// Where the format changes, in UTF-16 offsets.
+    public var formatChanges: [Int] { styleRuns.dropFirst().map(\.location) }
+
     /// Style at a UTF-16 location (runs are sorted and nonoverlapping).
     public func style(at location: Int) -> TextBoxStyle {
         guard let runs, !runs.isEmpty else { return style }
@@ -302,7 +348,7 @@ extension TextBox {
         guard selection.location >= 0, selection.length >= 0, NSMaxRange(selection) <= source.length else { return nil }
         var plan = ListNesting(paragraphs: [], indents: [], markers: [], renumbering: [])
         for line in TextListEditing.selectedLines(in: text, range: selection) {
-            let range = source.lineRange(for: NSRange(location: line.location, length: 0))
+            let range = TextLines.lineRange(source, NSRange(location: line.location, length: 0))
             guard !(continuation && range.location == 0),
                   let kind = [TextListEditing.Kind.checkbox, .bullet, .numbered].first(where: { TextListEditing.matches($0, line.prefix) }) else { continue }
             let level = listLevel(at: range.location) + (outdent ? -1 : 1)

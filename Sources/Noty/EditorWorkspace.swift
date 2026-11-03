@@ -21,19 +21,37 @@ final class EditorWorkspace: ObservableObject {
             preferredPageID: document.preferredPageID, libraryTitle: document.title)
         models = [document.id: primary]
     }
+    /// The single writer of an open notebook (either view), for filing a
+    /// shared file into it (`IncomingFiling`).
+    func model(for id: UUID) -> EditorModel? { models[id] }
+    /// Either view holds this notebook (also while it is being closed).
+    func holds(_ id: UUID) -> Bool { models[id] != nil }
+    /// The model of the view the user works in.
     func openSecondary(_ document: OpenNotebook) async {
         guard !closing else { return }
+        // Reserved before waiting for the old second view: no library append
+        // (or any other writer) can commit to this package between now and
+        // the new model's load (`PackageWriteLock`). A pane holding it already
+        // owns the claim.
+        var reservation: PackageWriteLock.Claim?
+        if models[document.id] == nil {
+            guard let claim = PackageWriteLock.shared.claim(document.directory) else {
+                error = "Dieses Heft wird gerade ergänzt oder ist an anderer Stelle geöffnet. Bitte gleich noch einmal öffnen."; return
+            }
+            reservation = claim
+        }
         closing = true; defer { closing = false }
         if let secondary, secondary !== primary, secondaryID != document.id {
-            guard await secondary.flushBeforeClosing() else { return }
+            // A failed flush keeps the old view; the reservation ends with this call.
+            guard await secondary.flushBeforeClosing() else { reservation?.release(); return }
             if let secondaryID { models.removeValue(forKey: secondaryID) }
         }
         let model: EditorModel
-        if let existing = models[document.id] { model = existing }
+        if let existing = models[document.id] { reservation?.release(); model = existing }
         else {
             model = EditorModel(storageRoot: document.directory,
                 restoreDirectory: root.appendingPathComponent("Restores", isDirectory: true),
-                preferredPageID: document.preferredPageID, libraryTitle: document.title)
+                preferredPageID: document.preferredPageID, libraryTitle: document.title, writeClaim: reservation)
             models[document.id] = model
         }
         secondary = model; secondaryID = document.id; activePane = 1
@@ -67,19 +85,34 @@ final class EditorWorkspace: ObservableObject {
         for model in models.values { if !(await model.waitForSave()) { return .failed } }
         return .committed
     }
+    static let blockedTitle = "Heft kann nicht gespeichert werden"
+    static func blockedMessage(_ reason: String) -> String {
+        "\(reason)\n\nDer zuletzt gespeicherte Stand bleibt erhalten. Beim Schließen gehen die Änderungen seitdem verloren."
+    }
+    static let blockedConfirm = "Ohne Speichern schließen"
+    /// Saving cannot succeed for a pane: the user may leave it anyway, then
+    /// the others close as usual.
+    func closeAbandoningBlockedPanes() async -> Bool {
+        let blocked = models.values.filter { $0.saveBlocked != nil }
+        guard !closing, let reason = blocked.first?.saveBlocked,
+              await TopAlert.ask(Self.blockedTitle, Self.blockedMessage(reason), confirm: Self.blockedConfirm) else { return false }
+        for model in blocked { model.abandonUnsavedChanges() }
+        return await closeAll()
+    }
     func closeAll() async -> Bool {
         guard !closing else { return false }
         closing = true; defer { closing = false }
         // Persist every owner first. Only disable the owners after all saves
         // succeeded, otherwise one failed pane could strand its sibling.
         for model in models.values {
-            if model.busy { error = "Bitte den laufenden Vorgang abwarten."; return false }
+            if model.busy || model.imageReading { error = "Bitte den laufenden Vorgang abwarten."; return false }
             model.save()
         }
         for model in models.values { if !(await model.waitForSave()) { return false } }
         for model in models.values { model.writable = false }
         // After every pane's last commit: each package's asset GC.
         for model in models.values { await model.collectAssetGarbageAfterClosing() }
+        for model in models.values { model.releaseWriteClaim() }
         return true
     }
 }
@@ -239,10 +272,10 @@ struct EditorWorkspaceView: View {
             }
         }
         .alert("Ansichten", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
-            Button("OK") { workspace.error = nil }
+            Button("OK") { workspace.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspace.error ?? "") }
-        .onAppear { library.editorCommit = { await workspace.commitForBackup(toolbox: toolbox) } }
-        .onDisappear { library.editorCommit = nil }
+        .onAppear { library.editorCommit = { await workspace.commitForBackup(toolbox: toolbox) }; library.workspace = workspace }
+        .onDisappear { library.editorCommit = nil; if library.workspace === workspace { library.workspace = nil } }
         .interactiveDismissDisabled()
     }
 
@@ -255,12 +288,22 @@ struct EditorWorkspaceView: View {
 
     private func pane(_ model: EditorModel, index: Int) -> some View {
         ContentView(model: model, isRestoredCopy: false, isLibraryDocument: true, initialSearchBounds: index == 0 ? workspace.primaryDocument.searchBounds : nil,
-            isPaneActive: { workspace.activePane == index && !workspace.closing }, onActivatePane: { workspace.activePane = index },
-            onCloseWorkspace: { Task { if await toolbox.flush(), await workspace.closeAll() { library.notebookClosedByUser(); dismiss() } } },
+            initialFlowRange: index == 0 ? workspace.primaryDocument.searchFlowRange : nil,
+            isPaneActive: { workspace.activePane == index && !workspace.closing }, isPaneSelected: { workspace.activePane == index }, onActivatePane: { workspace.activePane = index },
+            onCloseWorkspace: { Task {
+                // Toolbar settings are no reason to keep a notebook open.
+                _ = await toolbox.flush()
+                var closed = await workspace.closeAll()
+                if !closed { closed = await workspace.closeAbandoningBlockedPanes() }
+                if closed { library.notebookClosedByUser(); dismiss() }
+            } },
             onSecondView: { choose() }, onLaws: lawsEnabled ? {
                 // Shows the window; a visible one goes to its edge tab like its ✕.
                 if !laws.panelOpen { laws.panelOpen = true; laws.stashed = false }
                 else { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed.toggle() } }
+            } : nil, onLawKeys: lawsEnabled ? {
+                withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelOpen = true; laws.stashed = false }
+                laws.keyFocus += 1
             } : nil, onToolChange: { tool in
                 // Picking the highlighter or an eraser in the active notebook
                 // switches the law reader along; other tools leave its choice.
@@ -287,6 +330,20 @@ struct EditorWorkspaceView: View {
         switch edge { case .left: .leading; case .right: .trailing; case .bottom: .bottom }
     }
 
+    /// The tab sits mid-edge, exactly where a toolbar docked at the same edge
+    /// has its buttons; then it moves to the end of that edge.
+    private func lawTabClearsToolbar(_ edge: LawPanelEdge) -> Bool {
+        switch (edge, toolbox.preferences.effectiveDock) {
+        case (.left, .left), (.right, .right), (.bottom, .bottom): true
+        default: false
+        }
+    }
+    private func lawTabAlignment(_ edge: LawPanelEdge) -> Alignment {
+        guard lawTabClearsToolbar(edge) else { return lawAlignment(edge) }
+        switch edge { case .left: return .bottomLeading; case .right, .bottom: return .bottomTrailing }
+    }
+    private func lawTabEdges(_ edge: LawPanelEdge) -> Edge.Set { edge == .bottom ? .trailing : .bottom }
+
     @ViewBuilder
     private func lawLayer(_ l: LawPanelLayout, shown: Bool, visible: Bool, stashed: Bool) -> some View {
         let side = lawAlignment(l.edge)
@@ -297,11 +354,11 @@ struct EditorWorkspaceView: View {
             if let drop = lawDrag?.drop, l.changes(drop) {
                 lawDropPreview(drop, l).allowsHitTesting(false).transition(.opacity)
             }
-            LawPanelView(drag: lawMoveGesture(l), pen: lawPen) { next in
+            LawPanelView(drag: lawMoveGesture(l), pen: lawPen, onPenChange: { next in
                 lawPencil = next.kind == .marker ? "marker" : next.kind == .eraser ? "eraser" : "none"
                 // One highlighter colour for notebook and law reader.
                 if next.color != toolbox.preferences.markerColor { toolbox.preferences.markerColor = next.color }
-            }
+            }, canDock: l.canDock, docked: l.docked)
                 .frame(width: frame.width, height: frame.height)
                 .opacity(shown ? 1 : 0).allowsHitTesting(visible).accessibilityHidden(!visible)
                 .scaleEffect(lifted ? 0.97 : 1)
@@ -314,7 +371,8 @@ struct EditorWorkspaceView: View {
             if stashed {
                 lawEdgeTab(l)
                     .offset(x: offset.width - l.hiddenShift * l.outward.x, y: offset.height - l.hiddenShift * l.outward.y)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: side)
+                    .padding(lawTabEdges(l.edge), lawTabClearsToolbar(l.edge) ? 24 : 0)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: lawTabAlignment(l.edge))
                     .transition(.opacity)
             }
         }
@@ -428,7 +486,8 @@ struct EditorWorkspaceView: View {
                 .position(x: target.x + target.width / 2, y: target.y + target.height / 2)
         case .stash(let edge):
             lawTabShape(edge, highlighted: true)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: lawAlignment(edge))
+                .padding(lawTabEdges(edge), lawTabClearsToolbar(edge) ? 24 : 0)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: lawTabAlignment(edge))
         case .stay:
             EmptyView()
         }
@@ -490,7 +549,7 @@ struct EditorWorkspaceView: View {
         }
             .buttonStyle(NotyPressStyle())
             .accessibilityLabel("Gesetzessammlung ganz schließen")
-            .accessibilityHint("Ohne Pfeil am Rand. Über „Gesetzessammlung“ im Notizbuch wieder öffnen.")
+            .accessibilityHint("Ohne Pfeil am Rand. Über „Gesetzessammlung“ im Heft wieder öffnen.")
             .help("Ganz schließen – ohne Pfeil am Rand")
         return Group {
             if edge == .bottom {
@@ -517,7 +576,7 @@ struct EditorWorkspaceView: View {
     }
 
     private func title(_ model: EditorModel) -> String {
-        model.documentLoaded ? model.notebook.title : "Notizbuch"
+        model.documentLoaded ? model.notebook.title : "Heft"
     }
 
     // MARK: Pane strip with grab handle
@@ -581,7 +640,7 @@ struct EditorWorkspaceView: View {
             if abs(current.effectiveFraction(extent: current.vertical ? size.height : size.width) - 0.5) > 1e-9 {
                 Button("Gleich groß") { update { $0.setFraction(0.5) } }
             }
-            if entry.pane == .secondary { Button("Anderes Notizbuch wählen …") { choose() } }
+            if entry.pane == .secondary { Button("Anderes Heft wählen …") { choose() } }
             Button("Zweite Ansicht schließen") { Task { await workspace.closeSecondary() } }
         }
         .accessibilityElement(children: .ignore)
@@ -719,32 +778,33 @@ private struct SecondViewPicker: View {
                     Picker("Anordnung", selection: $vertical) {
                         Label("Nebeneinander", systemImage: "rectangle.split.2x1").tag(false)
                         Label("Untereinander", systemImage: "rectangle.split.1x2").tag(true)
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.toggle($vertical))
                     Picker("Position", selection: $slot) {
                         Text(vertical ? "Oben" : "Links").tag(SplitSlot.first)
                         Text(vertical ? "Unten" : "Rechts").tag(SplitSlot.second)
-                    }.pickerStyle(.segmented)
+                    }.pickerStyle(.segmented).keyOption(.choice($slot, SplitSlot.allCases))
                 } header: { Text("Zweite Ansicht") }
                 if let documents {
                     let recent = recentDocuments(documents)
                     if !recent.isEmpty {
                         Section("Zuletzt geöffnet") { ForEach(recent) { row($0) } }
                     }
-                    Section(recent.isEmpty ? "Notizbücher" : "Alle Notizbücher") {
+                    Section(recent.isEmpty ? "Hefte" : "Alle Hefte") {
                         ForEach(documents) { row($0) }
-                        if documents.isEmpty { Text("Keine Notizbücher verfügbar.").foregroundStyle(.secondary) }
+                        if documents.isEmpty { Text("Keine Hefte verfügbar.").foregroundStyle(.secondary) }
                     }
                 } else {
                     Section {
-                        HStack(spacing: 10) { ProgressView(); Text("Notizbücher werden geladen …").foregroundStyle(.secondary) }
+                        HStack(spacing: 10) { ProgressView(); Text("Hefte werden geladen …").foregroundStyle(.secondary) }
                             .accessibilityElement(children: .combine)
                     }
                 }
             }
-            .navigationTitle("Notizbuch für zweite Ansicht")
+            .navigationTitle("Heft für zweite Ansicht")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
             .task { if documents == nil { documents = await library.editorChoices() } }
         }
+        .keyboardSheet()
     }
 
     private func recentDocuments(_ documents: [OpenNotebook]) -> [OpenNotebook] {
@@ -761,10 +821,11 @@ private struct SecondViewPicker: View {
                 Label(document.title, systemImage: document.isRestored ? "clock.arrow.circlepath" : "book.closed")
                     .foregroundStyle(.primary)
                 Spacer()
-                if document.id == primaryID { Text("gleiches Notizbuch").font(.caption).foregroundStyle(.secondary) }
+                if document.id == primaryID { Text("gleiches Heft").font(.caption).foregroundStyle(.secondary) }
                 if document.id == currentID { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
             }
         }
-        .accessibilityValue(document.id == primaryID ? "gleiches Notizbuch" : "")
+        .accessibilityValue(document.id == primaryID ? "gleiches Heft" : "")
+        .keyOption(.action { onPick(document, slot, vertical) })
     }
 }

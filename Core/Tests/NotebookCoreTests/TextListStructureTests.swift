@@ -49,6 +49,44 @@ final class TextListStructureTests: XCTestCase {
         }
         XCTAssertNil(TextRuling(paper: .blank)); XCTAssertEqual(TextRuling(paper: .grid), .grid)
     }
+    func testFirstLineOfAPageStandsOnTheFirstRuleUntilItLeavesThePage() {
+        // Writing area from page y 16; 30-pt system text (ascent about 28.6).
+        XCTAssertEqual(TextRuling.lined.firstLineBaseline(ascent: 28.6), 37.5, accuracy: 1e-9)
+        XCTAssertEqual(TextRuling.grid.firstLineBaseline(ascent: 28.6), 38.5, accuracy: 1e-9)
+        // The natural line would have needed the second rule.
+        XCTAssertEqual(TextRuling.lined.baseline(forNatural: 16 + 28.6), 61.5, accuracy: 1e-9)
+        // Only the lift shrinks while the ascenders still fit above the rule.
+        XCTAssertEqual(TextRuling.lined.firstLineBaseline(ascent: 39), 39, accuracy: 1e-9)
+        // Too large for the first rule: the next one that stays on the page.
+        XCTAssertEqual(TextRuling.lined.firstLineBaseline(ascent: 41), 61.5, accuracy: 1e-9)
+        XCTAssertEqual(TextRuling.lined.firstLineBaseline(ascent: 91.4), 109.5, accuracy: 1e-9)
+        // Same rule for a page starting lower (coordinates of the ruling).
+        XCTAssertEqual(TextRuling.lined.firstLineBaseline(ascent: 41, pageTop: 24), 85.5, accuracy: 1e-9)
+        for lines in [TextRuling.lined, .grid] {
+            for ascent in stride(from: 7.0, through: 100, by: 0.3) {
+                let baseline = lines.firstLineBaseline(ascent: ascent)
+                XCTAssertGreaterThanOrEqual(baseline, ascent - 1e-9, "stays on the page")
+                let rule = lines.nextBaseline(atOrAfter: ascent)
+                XCTAssertLessThanOrEqual(baseline, rule + 1e-9)
+                XCTAssertGreaterThanOrEqual(baseline, rule - lines.lift - 1e-9)
+                // Never lower than where the writing area alone would put it.
+                XCTAssertLessThanOrEqual(baseline, lines.baseline(forNatural: 16 + ascent) + lines.tolerance + 1e-9)
+            }
+        }
+    }
+    func testTapOnAnEmptyFlowSegmentUsesTheFirstLineRule() throws {
+        let large = try XCTUnwrap(TextPlacement.below(tap: .init(x: 0, y: 10), top: 0, endsWithBreak: true, width: 500,
+            height: 760, lineHeight: 35.8, ascent: 28.6, descent: 7.2, ruling: .lined, origin: 16, pageTop: 0))
+        XCTAssertEqual(large.newlines, 0); XCTAssertEqual(large.baseline, 21.5, accuracy: 1e-9)
+        // The next line continues from there, like the laid-out text.
+        let second = try XCTUnwrap(TextPlacement.below(tap: .init(x: 0, y: 75), top: 0, endsWithBreak: true, width: 500,
+            height: 760, lineHeight: 35.8, ascent: 28.6, descent: 7.2, ruling: .lined, origin: 16, pageTop: 0))
+        XCTAssertEqual(second.newlines, 1); XCTAssertEqual(second.baseline, 69.5, accuracy: 1e-9)
+        // Fields keep their rule.
+        let field = try XCTUnwrap(TextPlacement.below(tap: .init(x: 0, y: 10), top: 0, endsWithBreak: true, width: 500,
+            height: 760, lineHeight: 35.8, ascent: 28.6, descent: 7.2, ruling: .lined, origin: 16))
+        XCTAssertEqual(field.baseline, 45.5, accuracy: 1e-9)
+    }
     func testTapBelowTextPicksNearestRuledLineAndCountsBreaks() throws {
         // Lined paper, container top at page y 16, existing line ends at 32.
         let lined = try XCTUnwrap(TextPlacement.below(tap: .init(x: 5, y: 90), top: 32, endsWithBreak: false, width: 500,
@@ -202,10 +240,10 @@ final class TextListStructureTests: XCTestCase {
     }
     func testTypedStartNumbersAndDistantListsStay() {
         XCTAssertEqual(edited(box([("Text", 0), ("", 0), ("3.", 0)]), "Text\n\n3. ", caret: 9).0.text, "Text\n\n3. ")
-        let far = box([("1. a", 0), ("Text", 0), ("7. Mai", 0), ("9. Juni", 0)])
-        XCTAssertEqual(edited(far, "1. ab\nText\n7. Mai\n9. Juni", caret: 5).0.text, "1. ab\nText\n7. Mai\n9. Juni")
+        let far = box([("1. a", 0), ("Text", 0), ("7. Apfel", 0), ("9. Birne", 0)])
+        XCTAssertEqual(edited(far, "1. ab\nText\n7. Apfel\n9. Birne", caret: 5).0.text, "1. ab\nText\n7. Apfel\n9. Birne")
         // Touching that list counts on from its own first number.
-        XCTAssertEqual(edited(far, "1. a\nText\n7. Mai\n9. Juni!", caret: 23).0.text, "1. a\nText\n7. Mai\n8. Juni!")
+        XCTAssertEqual(edited(far, "1. a\nText\n7. Apfel\n9. Birne!", caret: 25).0.text, "1. a\nText\n7. Apfel\n8. Birne!")
         // Indented explanation text stays inside a list; normal text ends it.
         let inner = box([("1. a", 0), ("Erklärung", 1), ("5. b", 0), ("Normal", 0), ("4. c", 0)])
         XCTAssertEqual(edited(inner, "1. a\nErklärung\n5. b!\nNormal\n4. c", caret: 19).0.text, "1. a\nErklärung\n2. b!\nNormal\n4. c")
@@ -329,5 +367,17 @@ private extension TextBox {
         box = box.applying(plan.markers).applying(plan.renumbering)
         let caret = TextListEditing.selection(TextListEditing.selection(selection, after: plan.markers), after: plan.renumbering)
         return box == self ? nil : (box, caret)
+    }
+
+    func testDatesAreNoList() {
+        let text = "3. Mai\n10. Juni\n"
+        XCTAssertEqual(TextListEditing.normalize(text, level: { _ in 0 }, changed: NSRange(location: 0, length: 6)), [])
+    }
+
+    func testReturnBehindAMarkerSplitsTheItem() {
+        let edit = TextListEditing.newline(in: "1. abc", range: NSRange(location: 3, length: 0))
+        XCTAssertEqual(edit, .init(range: NSRange(location: 3, length: 0), replacement: "\n2. "))
+        XCTAssertEqual(TextListEditing.newline(in: "1. ", range: NSRange(location: 3, length: 0)),
+                       .init(range: NSRange(location: 0, length: 3), replacement: ""), "an empty item still ends the list")
     }
 }

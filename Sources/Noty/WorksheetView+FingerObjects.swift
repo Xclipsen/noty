@@ -12,18 +12,23 @@ import NotebookCore
 ///
 /// What a tap hits is decided by `PageObjectHitTest` over all object types;
 /// showing and editing the selection stays with `ObjectEditingLayer`. Text
-/// fields are reached only through `WorksheetView.addTextField(at:)`.
+/// fields count only on their laid-out text lines (Textneubau): the empty
+/// rest of a frame reaches through. A tap on the selected field sets the
+/// caret there (`WorksheetView.requestTextEdit`), or – with another field's
+/// text at the same place – selects the next field below.
 @MainActor
 final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainActor UIEditMenuInteractionDelegate {
     private weak var sheet: WorksheetView?
     private let tap = UITapGestureRecognizer()
     private let doubleTap = UITapGestureRecognizer()
-    private let drag = UIPanGestureRecognizer()
+    private let drag = SnapPanGestureRecognizer() // a second finger pauses snapping
     private var menu: UIEditMenuInteraction?
     /// Page and canonical point of the shown double-tap menu.
     private var menuTarget: (pageID: UUID, point: PagePoint)?
     /// PencilKit double-tap recognizers already waiting for `doubleTap`.
     private let linked = NSHashTable<UIGestureRecognizer>.weakObjects()
+    /// Pending flow caret of a single tap in a text document (cancelled by a double tap).
+    private var flowTapToken = 0
 
     func install(on sheet: WorksheetView) {
         self.sheet = sheet
@@ -60,36 +65,45 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
         visit(canvas)
     }
 
-    // MARK: Hit test
-
-    /// Topmost selectable object under a finger at `point` (sheet coordinates).
-    private func object(at point: CGPoint, in sheet: WorksheetView) -> PageObjectReference? {
-        let origin = sheet.pageLayout.contentOrigin
-        let canonical = PagePoint(x: point.x - origin.x, y: point.y - origin.y)
-        // About 10 screen points of slack at any zoom.
-        let a = sheet.convert(CGPoint.zero, to: nil), b = sheet.convert(CGPoint(x: 100, y: 0), to: nil)
-        let scale = max(0.001, hypot(b.x - a.x, b.y - a.y) / 100)
-        return PageObjectHitTest.topmost(at: canonical, in: sheet.objectContent, tolerance: 10 / scale) { shape, point in
-            ShapeRendering.hit(shape, at: CGPoint(x: point.x, y: point.y))
-        }
-    }
-
     // MARK: Actions
 
     @objc private func tapped(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended, let sheet, sheet.acceptsFingerObjectTaps else { return }
+        // Shape, lasso and image tools select through their own plane's tap (same hit test).
+        guard !sheet.objectLayer.handlesTapsItself else { return }
+        let point = gesture.location(in: sheet)
+        sheet.rememberTap(point)
+        sheet.claimSelectionFocus()
         sheet.syncObjectPlane()
-        if let hit = object(at: gesture.location(in: sheet), in: sheet) { sheet.objectLayer.selectByTouch(hit) }
-        else { sheet.objectLayer.endTouchSelection() }
+        let hits = sheet.objectHits(at: point)
+        // Second tap on the selected field: caret there, or the next field below.
+        let texts = hits.compactMap { hit -> UUID? in if case .text(let id) = hit { return id }; return nil }
+        if sheet.objectLayer.tapOnSelectedField(textHits: texts, at: sheet.canonical(point)) { return }
+        if let hit = hits.first { sheet.objectLayer.selectByTouch(hit) }
+        else {
+            sheet.objectLayer.endTouchSelection()
+            // Text document: a tap beside every object puts the caret into the
+            // flow – after the double-tap window, so „Textfeld hinzufügen“ stays reachable.
+            if sheet.flowDocument {
+                flowTapToken += 1
+                let token = flowTapToken, target = sheet.canonical(point), page = sheet.objectPageID
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak sheet] in
+                    guard let self, let sheet, self.flowTapToken == token, sheet.objectPageID == page,
+                          sheet.acceptsFingerObjectTaps else { return }
+                    sheet.requestFlowCaret(at: target)
+                }
+            }
+        }
     }
 
     @objc private func doubleTapped(_ gesture: UITapGestureRecognizer) {
         guard gesture.state == .ended, let sheet, let pageID = sheet.objectPageID else { return }
+        flowTapToken += 1 // the double tap's menu wins over the flow caret of its first tap
         let point = gesture.location(in: sheet)
         dismissForeignMenus(in: sheet.canvas)
         sheet.syncObjectPlane()
         // On an object the first tap already selected it; no menu there.
-        guard object(at: point, in: sheet) == nil else { menuTarget = nil; return }
+        guard sheet.objectHits(at: point).isEmpty else { menuTarget = nil; return }
         let origin = sheet.pageLayout.contentOrigin
         menuTarget = (pageID, PagePoint(x: point.x - origin.x, y: point.y - origin.y))
         // A menu PencilKit still presents in this turn is closed before ours.
@@ -126,10 +140,14 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         guard let sheet else { return false }
-        // Selection controls, text views and buttons keep their own touches.
+        // Selection controls and buttons keep their own touches, text views
+        // only while they are being edited (text tool); the object plane's
+        // own surface (shape/lasso tools) reaches the double tap.
         var view = touch.view
         while let current = view, current !== sheet {
-            if current === sheet.objectLayer || current is UIControl || current is UITextView || current is TextFieldContainer { return false }
+            if current is UIControl { return false }
+            if current !== sheet.objectLayer, current.superview === sheet.objectLayer { return false }
+            if sheet.tool == .text, current is UITextView || current is TextFieldContainer { return false }
             view = current.superview
         }
         let point = touch.location(in: sheet)

@@ -4,10 +4,40 @@ import OSLog
 
 /// Page-local native text views and history. Canonical coordinates never include
 /// the current paper margins; only their display frames receive that translation.
+///
+/// Textneubau Stufe 1 (docs/TEXT-REBUILD-62.md): notebooks hold only free
+/// fields. With the text tool a tap on empty paper opens a field with its
+/// caret there (automatic width, height from the content, last used style);
+/// a tap on a field's text line sets the caret. A tap beside the field being
+/// edited ends it: with the tool fixed (`locked`) a new field opens at once,
+/// otherwise the editor returns to the previous tool (`onLeaveField`).
+/// Selecting, the width points and rotation of a selected field that is not
+/// being edited live in `ObjectEditingLayer`.
 @MainActor
 final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDelegate, UIColorPickerViewControllerDelegate, UIFontPickerViewControllerDelegate, UIPopoverPresentationControllerDelegate {
     var onEditingActive: ((Bool) -> Void)?
     var onCaretChanged: (() -> Void)?
+    /// The user left the edited field (tap beside it, Esc, „Fertig“) while
+    /// the text tool is not fixed: the editor returns to the previous tool.
+    var onLeaveField: (() -> Void)?
+    /// A tap of the text tool (layer coordinates), remembered for pasting.
+    var onTap: ((CGPoint) -> Void)?
+    /// The configured page (paper, margins, region tops) for the shared text layout.
+    var pageContext: (() -> Page?)?
+    /// Topmost selectable object at a point (layer coordinates, the sheet's hit test).
+    var objectAt: ((CGPoint) -> PageObjectReference?)?
+    /// A text-tool tap on an image or shape selects it (finger selection).
+    var onSelectObject: ((PageObjectReference) -> Void)?
+    /// „Textwerkzeug fixieren“: leaving a field keeps the tool, a tap beside opens a new field.
+    private(set) var locked = false
+    /// Text document (TEXT-REBUILD-62 §4): a tap beside every object puts the
+    /// caret into the flow at the nearest place instead of opening a field.
+    private(set) var flowDocument = false
+    /// Text document page without a flow segment (after the text, reserve
+    /// page): the editor puts the caret behind the flow's last character.
+    var onFlowEnd: (() -> Void)?
+    /// Touch type of the last tap that reached the layer itself.
+    private var lastTapByPencil = false
     var onFlowChange: ((TextBox, TextBox, NSRange) -> TextFlowFocus?)?
     var onFlowUndo: ((Bool) -> Void)?
     var onFlowBackspace: ((TextBox) -> Void)?
@@ -15,6 +45,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var onUndoBoundary: (() -> Void)?
     var readCurrentBoxes: (() -> [TextBox])?
     private var applyingFlow = false
+    /// A segment whose first word changed, until the typing pauses.
+    private var pendingSettle: UUID?
+    private var settleWork: DispatchWorkItem?
     private var compositionBase: TextBox?
     weak var colorPopover: UIViewController?
     weak var iconPopover: UIViewController?
@@ -61,19 +94,25 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var pageID: UUID?
     private var contentGeneration = -1
     var generation = 0
-    private var pageLayout = PageLayout(source: .testPaper, legacyA4: true)
+    private(set) var pageLayout = PageLayout(source: .testPaper, legacyA4: true)
     var active = false
     private var readOnly = false
     var updating = false
     var insertingList = false
+    /// The field and range of the result just calculated, until the next input.
+    private var calculatedResult: (id: UUID, range: NSRange)?
     private var darkPaper = false
     private var darkMargins = false
     private var hasPDF = false
     private var paperStyle = PaperStyle.blank
     private var marginStyle = PaperStyle.blank
+    private var regionTops: [TextFlowRegion: Double] = [:]
     private let notice = UILabel()
     private var onChange: (([TextBox]) -> Void)?
     private var dragStart: (boxes: [TextBox], box: TextBox, generation: Int)?
+    private enum FieldDrag { case move, left, right }
+    /// Weiches Einrasten for frame-zone moves and width points.
+    let snapping = DragSnapping()
     private lazy var accessory = makeAccessory()
     var buttons: [String: UIButton] = [:]
     /// BUG-18 input diagnosis (category `text-input`), only with Settings › Diagnose.
@@ -90,9 +129,18 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     override var undoManager: UndoManager? { notebookUndo }
     override var inputView: UIView? { UIView(frame: .zero) }
 
+    /// The whole text of a text document (⌘A, keyboard mode); nil in notebooks.
+    var flowActions: TextFlowActions?
+    /// Text editor 2: the flow lives on `DocumentTextSurface`; this page only
+    /// draws its part of the shared layout, the flow's field stays configured
+    /// but hidden (`boxes` keeps the model's boxes, publishing needs them).
+    private var documentRaster: DocumentPageRaster?
+    /// A tap or `i` that would have put the caret into the flow.
+    var onDocumentCaret: ((CGPoint) -> Void)?
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear; clipsToBounds = true
+        NotificationCenter.default.addObserver(self, selector: #selector(flowSelectionChanged), name: TextFlowSelection.changed, object: nil)
         notice.font = .systemFont(ofSize: 14); notice.textColor = .systemRed
         notice.backgroundColor = .systemBackground; notice.layer.cornerRadius = 6
         notice.clipsToBounds = true; notice.numberOfLines = 2; notice.isHidden = true
@@ -104,11 +152,15 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         addGestureRecognizer(tap)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func flowSelectionChanged() { showFlowSelection() }
 
     func configure(boxes incoming: [TextBox], pageID: UUID, layout: PageLayout,
                    contentGeneration: Int, active: Bool, readOnly: Bool = false, darkPaper: Bool, darkMargins: Bool, hasPDF: Bool,
                    paperStyle: PaperStyle = .blank, marginStyle: PaperStyle = .blank,
-                   onChange: @escaping ([TextBox]) -> Void) {
+                   regionTops: [TextFlowRegion: Double] = [:], locked: Bool? = nil,
+                   flowDocument: Bool? = nil, onChange: @escaping ([TextBox]) -> Void) {
+        if let locked { self.locked = locked }
+        if let flowDocument { self.flowDocument = flowDocument }
         let reset = self.pageID != pageID || self.contentGeneration != contentGeneration || self.pageLayout != layout
         // A field drag keeps its live frame locally and commits once when it
         // ends; the unchanged model state meanwhile is no conflicting update.
@@ -116,7 +168,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         if !reset, active, self.active, let start = dragStart, start.generation == generation, start.boxes == incoming { incoming = boxes }
         if !reset, boxes == incoming, self.active == active, self.readOnly == readOnly,
            self.darkPaper == darkPaper, self.darkMargins == darkMargins, self.hasPDF == hasPDF,
-           self.paperStyle == paperStyle, self.marginStyle == marginStyle {
+           self.paperStyle == paperStyle, self.marginStyle == marginStyle, self.regionTops == regionTops {
             self.onChange = onChange
             return
         }
@@ -131,6 +183,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             onEditingActive?(false)
             compositionBase = nil
             generation += 1; dragStart = nil; notice.isHidden = true
+            // The delegate goes first: `textViewDidEndEditing` will not report this.
+            if isEditingField { KeyboardRouter.shared.textEnded() }
             for field in fields.values {
                 field.editor.delegate = nil; field.editor.resignFirstResponder()
                 field.editor.historyOwner = nil
@@ -141,7 +195,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         self.pageID = pageID; self.contentGeneration = contentGeneration
         self.pageLayout = layout; self.active = active; self.readOnly = readOnly; self.darkPaper = darkPaper
         self.darkMargins = darkMargins; self.hasPDF = hasPDF
-        self.paperStyle = paperStyle; self.marginStyle = marginStyle
+        self.paperStyle = paperStyle; self.marginStyle = marginStyle; self.regionTops = regionTops
         self.onChange = onChange
         if !fields.values.contains(where: { $0.editor.markedTextRange != nil }) { boxes = incoming }
         isUserInteractionEnabled = active || readOnly
@@ -163,6 +217,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     func adoptCallback(_ onChange: @escaping ([TextBox]) -> Void) { self.onChange = onChange }
 
     func endTextEditing() { endEditing(true); onEditingActive?(false); selectedID = nil; synchronize() }
+    /// Esc, „Fertig“ or a tap beside the field: the user leaves it.
+    func finishFieldByUser() {
+        endTextEditing()
+        if !locked { onLeaveField?() }
+    }
+    var isEditingField: Bool { fields.values.contains { $0.editor.isFirstResponder } }
 
     private func checkboxHit(at point: CGPoint) -> (Int, TextListEditing.Edit)? {
         for index in boxes.indices.reversed() {
@@ -191,6 +251,15 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let target = super.hitTest(point, with: event)
         if readOnly && !active { return target === self || target === notice ? nil : target }
+        // The drag zone of the edited field reaches beyond its frame: text of a
+        // field next to it stays reachable there, also when it lies below.
+        if let zone = target as? TextFieldContainer, !zone.selectionRect.contains(convert(point, to: zone)) {
+            for case let other as TextFieldContainer in subviews.reversed() where other !== zone && !other.isHidden {
+                if other.editor.hitsLine(at: convert(point, to: other.editor), slack: 0) {
+                    return other.hitTest(convert(point, to: other), with: event) ?? target
+                }
+            }
+        }
         return target
     }
     override func layoutSubviews() {
@@ -204,6 +273,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             guard let field = fields[box.id] else { continue }
             position(field, for: box); updateRaster(field, for: box)
         }
+        updateDocumentRaster()
     }
 
     func synchronize() {
@@ -221,7 +291,11 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 field = TextFieldContainer(id: box.id)
                 field.editor.historyOwner = self; field.editor.delegate = self
                 field.editor.inputAccessoryView = accessory
-                field.editor.onEscape = { [weak self] in self?.endTextEditing() }
+                field.editor.onEscape = { [weak self] in self?.finishFieldByUser() }
+                field.editor.onCleanTap = { [weak self, weak field] point, tapCount in
+                    guard let self, let field else { return }
+                    self.caretAfterTap(in: field, at: point, tapCount: tapCount)
+                }
                 field.editor.onBold = { [weak self] in self?.toggleBold() }
                 field.editor.onItalic = { [weak self] in self?.toggleItalic() }
                 field.editor.onUnderline = { [weak self] in self?.toggleTextUnderline() }
@@ -232,15 +306,36 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                     guard let self, let field, let box = self.boxes.first(where: { $0.id == field.id }) else { return }
                     self.onFlowBackspace?(box)
                 }
-                for (handle, action) in [(field.move, #selector(moveField(_:))), (field.resize, #selector(resizeField(_:)))] {
-                    let pan = UIPanGestureRecognizer(target: self, action: action)
+                // Frame zone moves (only touches on the container itself, not
+                // on its text); the four corner points change the width.
+                let border = SnapPanGestureRecognizer(target: self, action: #selector(moveField(_:)))
+                border.delegate = FieldBorderDrag.shared; border.maximumNumberOfTouches = 1
+                // The default types are platform dependent and left the trackpad out.
+                let allTouches = [UITouch.TouchType.direct, .indirectPointer, .pencil].map { NSNumber(value: $0.rawValue) }
+                border.allowedTouchTypes = allTouches
+                field.addGestureRecognizer(border)
+                // A closed field moves with the pointer wherever its text is grabbed.
+                let pointer = SnapPanGestureRecognizer(target: self, action: #selector(moveField(_:)))
+                pointer.delegate = FieldPointerDrag.shared; pointer.maximumNumberOfTouches = 1
+                pointer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+                field.addGestureRecognizer(pointer)
+                field.addInteraction(UIPointerInteraction(delegate: FieldPointerDrag.shared))
+                // Only drags belong to frame and points; a tap there sets the caret.
+                let frameTap = UITapGestureRecognizer(target: self, action: #selector(frameTapped(_:)))
+                frameTap.delegate = FieldFrameTap.shared; frameTap.cancelsTouchesInView = false
+                frameTap.allowedTouchTypes = [UITouch.TouchType.direct, .indirectPointer, .pencil].map { NSNumber(value: $0.rawValue) }
+                field.addGestureRecognizer(frameTap)
+                for (index, handle) in field.widthHandles.enumerated() {
+                    let action = TextFieldContainer.changesLeftEdge(index) ? #selector(widenLeft(_:)) : #selector(widenRight(_:))
+                    let pan = SnapPanGestureRecognizer(target: self, action: action)
                     pan.delegate = ScrollPanPriority.shared // the notebook pan waits for field drags
+                    pan.allowedTouchTypes = allTouches
                     handle.addGestureRecognizer(pan)
                 }
-                field.delete.addTarget(self, action: #selector(deleteSelected), for: .touchUpInside)
                 fields[box.id] = field
             }
             if field.superview !== self { addSubview(field) }
+            if documentRaster != nil { field.isHidden = box.flowID != nil }
             let editor = field.editor
             let selectedRange = editor.selectedRange
             let light = automaticLight(box)
@@ -253,20 +348,36 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                                                length: min(selectedRange.length, max(0, length - min(selectedRange.location, length))))
             }
             field.content = box; field.automaticLight = light
+            // A size change or typed text may have left a paragraph on another grid.
+            if editor.markedTextRange == nil {
+                let grid = CGFloat(TextTabs.interval(box))
+                editor.textStorage.applyTabGrid(grid)
+                if let typing = editor.typingAttributes[.paragraphStyle] as? NSParagraphStyle, typing.defaultTabInterval != grid,
+                   let next = typing.mutableCopy() as? NSMutableParagraphStyle {
+                    next.tabStops = []; next.defaultTabInterval = grid
+                    editor.typingAttributes[.paragraphStyle] = next
+                }
+            }
+            field.applyFieldStyle(box.resolvingAutomaticColor(light: light), unitScale: coordinateScale(for: box))
             editor.isFlow = box.flowID != nil
-            let lines = box.flowID == nil ? nil : TextRuling(paper: box.flowRegion == .page ? paperStyle : marginStyle)
+            // Flow segments and the fields migrated from page text keep the ruling of their region;
+            // migrated fields anchored at their former region (lines move with the field).
+            let lines = box.flowRegion.flatMap { TextRuling(paper: $0 == .page ? paperStyle : marginStyle) }
             let pointScale = coordinateScale(for: box)
-            editor.setRulingOrigin(lines == nil ? nil : (box.y + pageLayout.contentOrigin.y) / pointScale, lines: lines ?? .lined)
+            let anchor = lines == nil ? nil : box.rulingAnchorY(regionTops: regionTops)
+            editor.setRulingOrigin(anchor.map { ($0 + pageLayout.contentOrigin.y) / pointScale }, lines: lines ?? .lined,
+                                   pageTop: box.flowID == nil || lines == nil ? nil : pageLayout.contentOrigin.y / pointScale)
             editor.isEditable = active; editor.isSelectable = active || readOnly
             editor.isUserInteractionEnabled = active || readOnly
             position(field, for: box); updateRaster(field, for: box)
-            let overflowing = neededHeight(editor, width: box.width / pointScale) * pointScale > box.height + 1
-            // Free fields (PDF, or opened right of the middle on paper) get handles.
-            field.configure(selected: active && selectedID == box.id, overflowing: overflowing, floating: box.flowID == nil)
+            let overflowing = box.overflows(textHeight: overflowHeight(box, editor: editor, width: box.width / pointScale) * pointScale)
+            field.configure(editing: active && selectedID == box.id && box.flowID == nil, overflowing: overflowing)
         }
-        for box in boxes where box.flowID == nil { if let field = fields[box.id] { bringSubviewToFront(field) } }
+        // Later fields lie on top („Nach vorne“/„Nach hinten“ reorder the array).
+        for box in boxes { if let field = fields[box.id] { bringSubviewToFront(field) } }
         bringSubviewToFront(notice)
         updateAccessory()
+        if TextFlowSelection.shared.range != nil { showFlowSelection() }
         setNeedsLayout()
     }
 
@@ -287,10 +398,48 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         textViewport = InkRenderViewport(page: page, visible: PageRect(visible), scale: quantized)
         rasterScreenScale = screenScale
         for box in boxes { if let field = fields[box.id] { updateRaster(field, for: box) } }
+        updateDocumentRaster()
+    }
+    /// Text editor 2: `page` of `store` on this sheet; nil: nothing, or (with
+    /// the store) a page the flow does not reach. `box` in page coordinates.
+    func showDocumentPage(store: DocumentTextStore?, page: Int?, box: PageRect?) {
+        guard let store else {
+            guard documentRaster != nil else { return }
+            documentRaster?.removeFromSuperview(); documentRaster = nil
+            for field in fields.values { field.isHidden = false }
+            return
+        }
+        let raster = documentRaster ?? DocumentPageRaster()
+        if documentRaster == nil {
+            documentRaster = raster; insertSubview(raster, at: 0); store.add(raster)
+            synchronize()
+        }
+        let origin = box.map { CGPoint(x: $0.x + pageLayout.contentOrigin.x, y: $0.y + pageLayout.contentOrigin.y) } ?? .zero
+        if raster.store !== store || raster.page != page || raster.textOrigin != origin {
+            raster.store = store; raster.page = page; raster.textOrigin = origin
+            raster.setNeedsDisplay()
+        }
+        updateDocumentRaster()
+    }
+    private func updateDocumentRaster() {
+        guard let raster = documentRaster else { return }
+        let sheet = CGRect(origin: .zero, size: superview?.bounds.size ?? bounds.size)
+        let area = textViewport.map { sheet.intersection($0.frame.cgRect) } ?? sheet
+        let visible = area.isNull ? CGRect.zero : area
+        let scale = textViewport.map { EditorRenderGeometry.contentScale(size: PageSize(width: visible.width, height: visible.height),
+            displayScale: $0.scale, screenScale: Double(rasterScreenScale)) } ?? Double(rasterScreenScale)
+        if raster.frame != visible { raster.frame = visible; raster.setNeedsDisplay() }
+        if abs(raster.contentScaleFactor - CGFloat(scale)) > 0.001 { raster.contentScaleFactor = CGFloat(scale); raster.setNeedsDisplay() }
+    }
+    /// A free field takes this point (layer coordinates).
+    func hasFreeField(at point: CGPoint) -> Bool {
+        fields.values.contains { !$0.isHidden && $0.point(inside: convert(point, to: $0), with: nil) }
     }
     private func updateRaster(_ field: TextFieldContainer, for box: TextBox) {
         guard let viewport = textViewport else { field.setRaster(nil, scale: 1); return }
-        let local = field.convert(viewport.frame.cgRect, from: self).intersection(field.bounds)
+        // A little beyond the frame: glyph overhang (italics, first letter) is drawn, not cut.
+        let overhang = field.glyphOverhang
+        let local = field.convert(viewport.frame.cgRect, from: self).intersection(field.bounds.insetBy(dx: -overhang, dy: -overhang))
         let area = local.isNull ? CGRect.zero : local
         let pointScale = coordinateScale(for: box)
         let scale = EditorRenderGeometry.contentScale(size: PageSize(width: area.width, height: area.height),
@@ -306,27 +455,122 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         EditorInteractionPolicy.automaticTextIsLight(box: box, pageSize: pageLayout.contentCanvas, hasPDF: hasPDF,
             darkPaper: darkPaper, darkMargins: darkMargins)
     }
-    private func coordinateScale(for box: TextBox) -> CGFloat {
-        box.flowID != nil && box.flowRegion != .page ? pageLayout.writingCoordinateScale : 1
+    /// Margin text keeps normal-page units: flow segments and migrated fields (`flowRegion`).
+    func coordinateScale(for box: TextBox) -> CGFloat {
+        box.flowRegion != nil && box.flowRegion != .page ? pageLayout.writingCoordinateScale : 1
     }
+    /// Sizes shown for a free field; flows keep one size over all their pages.
+    func sizeUnits(for box: TextBox) -> TextSizeUnits {
+        TextSizeUnits(pageWidth: pageLayout.contentCanvas.width, hasPDF: hasPDF && box.flowID == nil,
+                      coordinateScale: Double(coordinateScale(for: box)))
+    }
+    var selectedSizeUnits: TextSizeUnits {
+        selectedID.flatMap { id in boxes.first { $0.id == id } }.map(sizeUnits) ?? .normal
+    }
+    /// Turned about the field's top-left corner, like preview, PDF and lasso.
     private func position(_ field: TextFieldContainer, for box: TextBox) {
         let scale = coordinateScale(for: box), frame = displayFrame(box)
         let local = CGRect(x: 0, y: 0, width: frame.width / scale, height: frame.height / scale)
-        let transform = CGAffineTransform(scaleX: scale, y: scale)
+        let transform = CGAffineTransform(rotationAngle: box.angle * .pi / 180).scaledBy(x: scale, y: scale)
         if field.bounds != local { field.bounds = local }
         if field.transform != transform { field.transform = transform }
-        let center = CGPoint(x: frame.midX, y: frame.midY)
+        let middle = box.center
+        let center = CGPoint(x: middle.x + pageLayout.contentOrigin.x, y: middle.y + pageLayout.contentOrigin.y)
         if field.center != center { field.center = center }
     }
     private var canonicalBounds: CGRect { pageLayout.canonicalInkBounds }
     func publish() { if !updating { HangProbe.hit("Text.publish"); onChange?(boxes) } }
+    /// Like `neededHeight`, but the empty line behind a page's final line
+    /// break is no content of a flow segment: the text continues on the next page.
+    func overflowHeight(_ box: TextBox, editor: UITextView, width: Double) -> Double {
+        let needed = neededHeight(editor, width: width), extra = editor.layoutManager.extraLineFragmentRect
+        return box.flowID != nil && extra.height > 0 ? min(needed, ceil(extra.minY)) : needed
+    }
     func neededHeight(_ editor: UITextView, width: Double) -> Double {
         ceil(editor.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
     }
+    /// Height always from the content, width from the text while automatic.
     func grow(_ index: Int) {
-        guard boxes[index].flowID == nil, let field = fields[boxes[index].id] else { return }
-        let available = max(1, canonicalBounds.maxY - boxes[index].y)
-        boxes[index].height = min(available, max(boxes[index].height, max(24, neededHeight(field.editor, width: boxes[index].width))))
+        guard boxes[index].flowID == nil else { return }
+        boxes[index] = fitted(boxes[index], keepOnPage: true)
+    }
+    func minimumWidth(_ box: TextBox) -> Double { max(16, box.style.fontSize) * Double(coordinateScale(for: box)) }
+    /// Text height at the box's width in canonical units (the field's own
+    /// editor when it exists, otherwise the shared layout).
+    func measuredHeight(_ box: TextBox) -> Double {
+        let scale = coordinateScale(for: box)
+        if let editor = fields[box.id]?.editor, editor.attributedText.string == box.text {
+            return neededHeight(editor, width: box.width / scale) * scale
+        }
+        return Double(layout(box).usedHeight)
+    }
+    /// The shared layout of `box` on this page, ruled like its text view
+    /// (`TextObjectLayout(box, on:)` with the configured page; without it
+    /// the same ruling from this layer's own paper and region tops).
+    func layout(_ box: TextBox) -> TextObjectLayout {
+        if let page = pageContext?() { return TextObjectLayout(box, on: page) }
+        let scale = coordinateScale(for: box)
+        let lines = box.flowRegion.flatMap { TextRuling(paper: $0 == .page ? paperStyle : marginStyle) }
+        let anchor = lines == nil ? nil : box.rulingAnchorY(regionTops: regionTops)
+        return TextObjectLayout(box, ruledOrigin: anchor.map { CGFloat($0 + pageLayout.contentOrigin.y) / scale }, ruling: lines ?? .lined,
+                                pageTop: box.flowID == nil || lines == nil ? nil : pageLayout.contentOrigin.y / scale, coordinateScale: scale)
+    }
+    /// Textneubau: the height follows the content (never beyond the page, more
+    /// text stays stored and is marked as overflow); with `autoWidth` the width
+    /// follows the longest line up to the page edge, then the text wraps.
+    /// `keepOnPage`: shift a field that would no longer fit completely onto the page.
+    func fitted(_ original: TextBox, keepOnPage: Bool = false) -> TextBox {
+        guard original.flowID == nil else { return original }
+        var box = original
+        let limits = PageRect(canonicalBounds)
+        let scale = Double(coordinateScale(for: box))
+        if box.autoWidth == true {
+            let minimum = minimumWidth(box)
+            let widest = max(minimum, box.maximumWidth(in: limits, minimum: minimum))
+            // Very long text (a large paste) wraps at the page edge anyway: no extra layout pass.
+            if (box.text as NSString).length > 20_000 { box.width = widest }
+            else {
+                var probe = box; probe.width = widest
+                let natural = Double(TextObjectLayout(probe, coordinateScale: CGFloat(scale)).usedWidth)
+                box.width = min(widest, max(minimum, ceil(natural) + 4 * scale))
+            }
+        }
+        let line = ceil(box.style.fontSize * TextStylePreset.lineHeightFactor * scale)
+        let needed = max(line, measuredHeight(box))
+        box.height = max(1, min(needed, box.maximumHeight(in: limits, minimum: min(needed, line))))
+        if keepOnPage, !box.fits(in: limits), let shifted = box.shifted(into: limits) { box = shifted }
+        return box
+    }
+    /// Used rects of the laid-out text lines of `box` in its own unrotated
+    /// page units (origin: text top-left); what a lasso has to touch.
+    func lineRects(_ box: TextBox) -> [PageRect] {
+        let scale = coordinateScale(for: box)
+        let manager: NSLayoutManager, container: NSTextContainer
+        if let field = fields[box.id], field.content?.text == box.text {
+            manager = field.editor.layoutManager; container = field.editor.textContainer
+        } else {
+            let layout = layout(box)
+            manager = layout.manager; container = layout.container
+        }
+        manager.ensureLayout(for: container)
+        guard manager.numberOfGlyphs > 0 else { return [] }
+        var rects: [PageRect] = []
+        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { _, used, _, _, _ in
+            if used.width > 0.5 {
+                rects.append(PageRect(x: used.minX * scale, y: used.minY * scale, width: used.width * scale, height: used.height * scale))
+            }
+        }
+        return rects
+    }
+    /// A text line of `box` (laid out by its field) is at the canonical point;
+    /// the empty rest of the frame is no hit. `slack` in page units.
+    func hitsTextLine(_ box: TextBox, at point: PagePoint, slack: Double) -> Bool {
+        // Feldstil: a filled field's whole surface, a framed field's frame line.
+        if box.fieldStyleHit(point, tolerance: slack) { return true }
+        guard let field = fields[box.id], field.content?.text == box.text else { return box.contains(point, tolerance: slack) }
+        let display = CGPoint(x: point.x + pageLayout.contentOrigin.x, y: point.y + pageLayout.contentOrigin.y)
+        let scale = Double(coordinateScale(for: box))
+        return field.editor.hitsLine(at: convert(display, to: field.editor), slack: CGFloat(slack / scale))
     }
 
 
@@ -342,73 +586,147 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             view = current.superview
         }
         let accepted = view === self && active
+        if accepted { lastTapByPencil = touch.type == .pencil }
         if tracing { inputLog.info("[noty.text-input] Insertion touch type=\(touch.type.rawValue) accepted=\(accepted)") }
         return accepted
     }
     @objc private func insertAtTap(_ tap: UITapGestureRecognizer) {
         guard active, tap.state == .ended else { return }
-        insertText(at: tap.location(in: self), placing: true)
+        let point = tap.location(in: self)
+        onTap?(point)
+        if flowDocument {
+            // Text document: always text. A Pencil tap beside the edited text
+            // still ends it and returns to the pen (as in a notebook) unless
+            // the text tool is fixed; a finger tap moves the caret.
+            if isEditingField, lastTapByPencil, !locked { finishFieldByUser(); return }
+            focusFlow(at: point)
+            return
+        }
+        // A tap beside the field being edited ends it; fixed tool: new field at once.
+        if isEditingField {
+            finishFieldByUser()
+            if locked, !selectObject(at: point) { createField(at: point) }
+            return
+        }
+        if selectObject(at: point) { return }
+        createField(at: point)
+    }
+    /// The topmost object at a text-tool tap (`objectAt`, the sheet's finger
+    /// hit test): an image or a shape is selected like by a finger tap instead
+    /// of getting a new field on top; a field's text (within the touch slack)
+    /// gets the caret. False: nothing there, a new field may open.
+    private func selectObject(at point: CGPoint) -> Bool {
+        guard let hit = objectAt?(point) else { return false }
+        if case .text(let id) = hit {
+            guard boxes.contains(where: { $0.id == id && $0.flowID == nil }) else { return false }
+            focusField(id, at: point); return true
+        }
+        onSelectObject?(hit)
+        return true
     }
 
-    /// `placing`: a real tap also sets a click-and-type caret (not the „+“ button).
-    /// `freeField`: always a new free field at `point`, never page text.
-    func insertText(at point: CGPoint, placing: Bool = false, freeField: Bool = false) {
-        guard active else { if tracing { inputLog.info("[noty.text-input] Insertion ignored: text mode inactive") }; return }
+    /// Option „Textfeld hinzufügen“ and the double-tap menu entry: a new field at `point` (layer coordinates).
+    func insertText(at point: CGPoint) { createField(at: point) }
+
+    /// A new free field at `point` (layer coordinates) with the caret at the
+    /// tap: the first line is centred on it, automatic width, last used style.
+    /// `focus == false`: only published (pasting while another tool is active).
+    @discardableResult
+    func createField(at point: CGPoint, text: String = "", focus: Bool = true) -> UUID? {
+        guard active || !focus else { if tracing { inputLog.info("[noty.text-input] Insertion ignored: text mode inactive") }; return nil }
         guard boxes.count < 200 else {
             notice.text = "Höchstens 200 Textfelder pro Seite."
             let width = min(360, max(40, bounds.width - 16))
             notice.frame = CGRect(x: min(max(8, point.x - width / 2), max(8, bounds.width - width - 8)),
                                   y: min(max(8, point.y - 52), max(8, bounds.height - 52)), width: width, height: 44)
             notice.isHidden = false; bringSubviewToFront(notice)
-            return
+            return nil
         }
         notice.isHidden = true
         if fields.count >= 400 { releaseMemory() } // views of removed boxes, see there
-        let limits = canonicalBounds
-        guard limits.width >= 40, limits.height >= 24 else { return }
+        let limits = PageRect(canonicalBounds)
         let canonical = PagePoint(x: point.x - pageLayout.contentOrigin.x, y: point.y - pageLayout.contentOrigin.y)
-        var page = Page(); page.geometry = try? PDFPageGeometry(mediaBox: .init(x: 0, y: 0, width: pageLayout.contentCanvas.width, height: pageLayout.contentCanvas.height),
-            cropBox: .init(x: 0, y: 0, width: pageLayout.contentCanvas.width, height: pageLayout.contentCanvas.height), rotation: 0)
-        page.margins = PageMargins(left: -limits.minX, right: limits.maxX - pageLayout.contentCanvas.width,
-            top: -limits.minY, bottom: limits.maxY - pageLayout.contentCanvas.height)
-        // Writing space beside paper keeps the sheet's units (`writingSpaceExtendsPaper`).
-        if !hasPDF { page.paper = .blank }
-        var region = freeField ? nil : page.writingRegion(at: canonical, hasPDF: hasPDF)
-        // Click-and-type (Feedback 44): the left half of a writing region always
-        // offers the flowing lines; from the middle rightwards a tap beside or
-        // below the text opens a separate free field instead of indenting.
-        var fieldLimits = PageRect(limits)
-        if placing, let current = region, let rect = page.writingRect(current) {
-            let flow = boxes.first(where: { $0.flowRegion == current }).flatMap { fields[$0.id]?.editor }
-            let hits = flow.map { $0.hitsText(at: convert(point, to: $0)) } ?? false
-            if TextPlacement.opensFreeField(tapX: canonical.x, regionX: rect.x, regionWidth: rect.width, hitsText: hits) {
-                region = nil; fieldLimits = rect
-            }
-        }
-        if let region, let existing = boxes.first(where: { $0.flowRegion == region }), let field = fields[existing.id] {
-            selectedID = existing.id; synchronize(); field.editor.becomeFirstResponder()
-            if placing { placeCaret(in: field.editor, at: convert(point, to: field.editor)) }
-            return
-        }
         let dark = hasPDF ? (!pageLayout.sourceFrame.cgRect.contains(point) && darkMargins) : darkPaper
-        var style = TextBoxStyle(); style.fontSize = 14; style.color = dark ? .white : .black; style.automaticColor = true
-        var box: TextBox
-        if let region, let rect = page.writingRect(region) {
-            box = TextBox(x: rect.x, y: rect.y, width: rect.width, height: rect.height, style: style)
-            box.flowID = UUID(); box.flowRegion = region
-        } else if let frame = TextPlacement.freeFieldFrame(tap: canonical, limits: fieldLimits, fontSize: style.fontSize) {
-            box = TextBox(x: frame.x, y: frame.y, width: frame.width, height: frame.height, style: style)
-        } else { return }
-        boxes.append(box); selectedID = box.id
+        var style = TextStyleMemory.style(light: dark)
+        style.fontSize = TextSizeUnits(pageWidth: pageLayout.contentCanvas.width, hasPDF: hasPDF).stored(style.fontSize)
+        let line = ceil(style.fontSize * TextStylePreset.lineHeightFactor)
+        guard let frame = TextFieldPlacement.frame(tap: canonical, limits: limits, width: max(16, style.fontSize), lineHeight: line) else { return nil }
+        var box = TextBox(x: frame.x, y: frame.y, width: frame.width, height: frame.height, text: text, style: style)
+        box.autoWidth = true
+        boxes.append(box)
+        if focus { selectedID = box.id }
+        synchronize() // creates the native view the height is measured with
+        if let index = boxes.firstIndex(where: { $0.id == box.id }) { boxes[index] = fitted(boxes[index], keepOnPage: true) }
         if tracing { inputLog.info("[noty.text-input] Text field inserted count=\(self.boxes.count) x=\(Double(box.x)) y=\(Double(box.y))") }
         synchronize(); publish()
-        fields[box.id]?.editor.becomeFirstResponder()
-        if placing, box.flowID != nil, let editor = fields[box.id]?.editor { layoutIfNeeded(); placeCaret(in: editor, at: convert(point, to: editor)) }
+        if focus, let editor = fields[box.id]?.editor {
+            editor.beginEditingOnPurpose()
+            editor.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        }
+        return box.id
+    }
+
+    /// Text document: the caret goes into this page's flow segment at the
+    /// place nearest to `point` (layer coordinates); a page without one
+    /// (after the text, reserve page) asks for the end of the flow.
+    func focusFlow(at point: CGPoint) {
+        guard active else { return }
+        if let onDocumentCaret { onDocumentCaret(point); return }
+        if let flow = boxes.first(where: { $0.flowID != nil }) {
+            if let selectedID, selectedID != flow.id, isEditingField { fields[selectedID]?.editor.resignFirstResponder() }
+            focusField(flow.id, at: point)
+        } else {
+            if isEditingField { endTextEditing() }
+            onFlowEnd?()
+        }
+    }
+
+    /// Opens an existing field for typing; the caret goes to `point` (layer
+    /// coordinates), otherwise to the end of the text.
+    func focusField(_ id: UUID, at point: CGPoint?) {
+        guard active, let field = fields[id], boxes.contains(where: { $0.id == id }) else { return }
+        selectedID = id; synchronize(); layoutIfNeeded()
+        let editor = field.editor
+        if !editor.isFirstResponder { editor.beginEditingOnPurpose() }
+        guard editor.markedTextRange == nil else { return }
+        if let point, let position = editor.closestPosition(to: convert(point, to: editor)) {
+            editor.selectedTextRange = editor.textRange(from: position, to: position)
+        } else {
+            editor.selectedRange = NSRange(location: editor.attributedText.length, length: 0)
+        }
+    }
+
+    /// The end of every clean tap on a field's text, whatever UIKit made of
+    /// it: a refused or never started opening happens here, and the caret
+    /// goes exactly to the tap instead of UIKit's word end. After UIKit's own
+    /// handling of the same tap. Double taps and taps on a selection stay
+    /// native (word selection, edit menu), checkboxes toggle.
+    private func caretAfterTap(in field: TextFieldContainer, at point: CGPoint, tapCount: Int) {
+        let page = pageID, expected = generation
+        DispatchQueue.main.async { [weak self, weak field] in
+            guard let self, let field, self.active, self.pageID == page, self.generation == expected else { return }
+            let editor = field.editor, location = editor.convert(point, to: self)
+            guard !self.hasCheckbox(at: location) else { return }
+            if editor.isFirstResponder, tapCount > 1 || editor.selectedRange.length > 0 { return }
+            self.focusField(field.id, at: location)
+        }
+    }
+    @objc private func frameTapped(_ tap: UITapGestureRecognizer) {
+        guard tap.state == .ended, active, let field = tap.view as? TextFieldContainer else { return }
+        field.editor.writeAfterTap()
+        focusField(field.id, at: tap.location(in: self))
     }
 
     func textViewShouldBeginEditing(_ textView: UITextView) -> Bool {
         guard active, let editor = textView as? PageTextView,
               boxes.contains(where: { $0.id == editor.objectID }) else { return false }
+        // Caret only after a clean tap or on purpose, never from a drag, a
+        // long press, a held Pencil or a returning menu/popover.
+        guard editor.openingOnPurpose || editor.lastTouchWasCleanTap || UIAccessibility.isVoiceOverRunning else {
+            // If the touch still ends as a clean tap, `caretAfterTap` opens the field.
+            if tracing { inputLog.info("[noty.text-input] Editing refused: no clean tap") }
+            return false
+        }
         selectedID = editor.objectID; notice.isHidden = true
         // Free fields stay free fields, also on paper and in writing margins
         // (they are opened on purpose right of the middle since Feedback 44);
@@ -418,17 +736,25 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
         guard active else { return false }
+        // Normal mode: a key that reached the text view anyway must not type.
+        guard KeyboardRouter.shared.allowsTyping else { return false }
+        if replaceFlowSelection(with: text) { return false }
+        if replaceCalculatedResult(textView, range: range, text: text) { return false }
         if let handled = handleListInput(textView, range: range, text: text) { return handled }
-        guard !insertingList, text == "\n", let edit = TextListEditing.newline(in: textView.text ?? "", range: range) else { return true }
+        if let handled = handlePairInput(textView, range: range, text: text) { return handled }
+        guard !insertingList, text == "\n", let edit = TextListEditing.newline(in: textView.text ?? "", range: range)
+                ?? (textView.markedTextRange == nil ? KeyboardRouter.shared.indentedNewline(in: textView.text ?? "", range: range) : nil) else { return true }
         insertingList = true; defer { insertingList = false }
         textView.selectedRange = edit.range; textView.insertText(edit.replacement)
         return false
     }
     func textViewDidBeginEditing(_ textView: UITextView) {
+        KeyboardRouter.shared.textBegan()
         guard !updating, active else { return }
         onEditingActive?(true); layoutIfNeeded(); requestCaretReveal(.navigation)
     }
     func textViewDidEndEditing(_ textView: UITextView) {
+        KeyboardRouter.shared.textEnded()
         (textView as? PageTextView)?.placement = nil
         onEditingActive?(fields.values.contains { $0.editor.isFirstResponder })
         removeIfEmptyFreeField(textView)
@@ -468,6 +794,44 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         }
         finishListInput(editor)
         layoutIfNeeded(); requestCaretReveal(.typing)
+        keyboardTyped(editor)
+        calculate(editor, previous: previous)
+    }
+    /// A typed „=“ calculates (`TextCalculator`). On the next turn of the run
+    /// loop: UIKit is still finishing its own insertion here.
+    private func calculate(_ editor: PageTextView, previous: TextBox) {
+        let enabled = UserDefaults.standard.object(forKey: AppSettingsKey.calculator) as? Bool ?? true
+        guard enabled, editor.markedTextRange == nil, editor.selectedRange.length == 0,
+              let current = boxes.first(where: { $0.id == editor.objectID })?.text,
+              (current as NSString).length == (previous.text as NSString).length + 1,
+              let calculation = TextCalculator.calculation(in: current, caret: editor.selectedRange.location) else { return }
+        let id = editor.objectID, page = pageID, expected = generation
+        DispatchQueue.main.async { [weak self, weak editor] in
+            guard let self, let editor, self.active, self.pageID == page, self.generation == expected,
+                  let index = self.boxes.firstIndex(where: { $0.id == id }), self.boxes[index].text == current,
+                  self.fields[id]?.editor === editor, editor.markedTextRange == nil else { return }
+            // A step of its own: undo takes the result, not the calculation.
+            self.onUndoBoundary?()
+            self.applyListEdits([calculation.edit], at: index, editor: editor)
+            self.onUndoBoundary?()
+            self.calculatedResult = (id, calculation.result)
+        }
+    }
+    /// Directly behind a calculated result a digit writes an own result
+    /// instead, and Backspace takes the whole number away at once.
+    private func replaceCalculatedResult(_ textView: UITextView, range: NSRange, text: String) -> Bool {
+        guard let (id, result) = calculatedResult else { return false }
+        calculatedResult = nil
+        guard let editor = textView as? PageTextView, editor.objectID == id, !insertingList,
+              NSMaxRange(result) <= (editor.text as NSString).length,
+              editor.selectedRange == NSRange(location: NSMaxRange(result), length: 0) else { return false }
+        let deletes = text.isEmpty && range == NSRange(location: NSMaxRange(result) - 1, length: 1)
+        let digit = range == editor.selectedRange && text.count == 1 && text.first?.isNumber == true
+        guard deletes || digit else { return false }
+        insertingList = true; defer { insertingList = false }
+        editor.selectedRange = result
+        editor.insertText(text)
+        return true
     }
     /// After typing, UIKit derives typing attributes from the typed character
     /// and may drop app keys (marker colour, automatic ink, font name). The
@@ -494,15 +858,47 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             if focus.pageID == pageID, focus.boxID == editor.objectID {
                 applyTextFocus(focus)
             }
+            if Notebook.reachesFirstWord(from: previous.text, to: current.text) { pendingSettle = current.id }
+            scheduleFlowSettle()
         }
+    }
+    /// Text moving back onto the page before waits for a pause: while a word
+    /// is being typed or shortened the caret must not jump between the pages.
+    /// Every further keystroke starts the wait anew; the step joins the typing.
+    private func scheduleFlowSettle() {
+        guard pendingSettle != nil else { return }
+        settleWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.settleFlow() }
+        settleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+    }
+    private func settleFlow() {
+        guard let id = pendingSettle, let flow = flowActions, fields[id]?.editor.markedTextRange == nil else { return }
+        pendingSettle = nil
+        // The caret may stand on another page by now: it stays with its text there, too.
+        var selection: NSRange?
+        if let editor = UIResponder.currentFirstResponder as? PageTextView, editor.isFlow,
+           let start = flow.offset(editor.objectID, editor.selectedRange.location) {
+            selection = NSRange(location: start, length: editor.selectedRange.length)
+        }
+        flow.settle(id, selection)
     }
     func applyTextFocus(_ focus: TextFlowFocus) {
         guard active, focus.pageID == pageID, let field = fields[focus.boxID],
-              boxes.contains(where: { $0.id == focus.boxID }) else { return }
+              boxes.contains(where: { $0.id == focus.boxID }) else {
+            KeyboardRouter.shared.trace("applyTextFocus refused")
+            return
+        }
         selectedID = focus.boxID; synchronize(); layoutIfNeeded()
         defer { pendingReveal = max(pendingReveal ?? .typing, .typing) } // flow hand-off while typing
         let editor = field.editor
-        if !editor.isFirstResponder { editor.becomeFirstResponder() }
+        if !editor.isFirstResponder {
+            // Not a tap: undo, a format or the flow moved the caret. The mode
+            // stays; a marking over pages stays only for the keyboard's own moves.
+            if !KeyboardRouter.shared.handoff { TextFlowSelection.shared.set(nil) }
+            KeyboardRouter.shared.handoff = true
+            editor.beginEditingOnPurpose()
+        }
         if editor.markedTextRange == nil {
             let length = editor.attributedText.length
             let range = NSRange(location: min(focus.selection.location, length), length: min(focus.selection.length, max(0, length - focus.selection.location)))
@@ -510,59 +906,85 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             let light = boxes.first(where: { $0.id == focus.boxID }).map(automaticLight) ?? false
             editor.typingAttributes = focus.typingStyle.resolvingAutomaticColor(light: light).attributes
         }
+        KeyboardRouter.shared.handoff = false
+        editor.normalCaret = KeyboardRouter.shared.isEnabled && KeyboardRouter.shared.mode != .insert
+        if TextFlowSelection.shared.selectAllWhenFocused {
+            TextFlowSelection.shared.selectAllWhenFocused = false
+            // Not in typing: the next letter (`x`, `y`) would replace everything.
+            let router = KeyboardRouter.shared
+            if router.isEnabled, router.mode == .insert, flowActions?.content()?.text.isEmpty == false { router.setMode(.normal, editor: editor) }
+            editor.selectEverything()
+        }
     }
 
-    @objc private func moveField(_ gesture: UIPanGestureRecognizer) { drag(gesture, resizing: false) }
-    @objc private func resizeField(_ gesture: UIPanGestureRecognizer) { drag(gesture, resizing: true) }
-    private func drag(_ gesture: UIPanGestureRecognizer, resizing: Bool) {
-        guard active, let field = gesture.view?.superview as? TextFieldContainer,
-              let index = boxes.firstIndex(where: { $0.id == field.id }) else { return }
+    @objc private func moveField(_ gesture: UIPanGestureRecognizer) { drag(gesture, kind: .move) }
+    @objc private func widenLeft(_ gesture: UIPanGestureRecognizer) { drag(gesture, kind: .left) }
+    @objc private func widenRight(_ gesture: UIPanGestureRecognizer) { drag(gesture, kind: .right) }
+    /// While editing: the frame zone moves the field (through the one move
+    /// path, `ObjectMovement`), the width points set a fixed width. The field
+    /// keeps its caret; the model gets one change when the drag ends.
+    private func drag(_ gesture: UIPanGestureRecognizer, kind: FieldDrag) {
+        guard active, let field = (gesture.view as? TextFieldContainer) ?? (gesture.view?.superview as? TextFieldContainer),
+              let index = boxes.firstIndex(where: { $0.id == field.id }), boxes[index].flowID == nil else { return }
         if gesture.state == .began {
             selectedID = field.id
             dragStart = (boxes, boxes[index], generation)
-            endEditing(true)
+            let box = boxes[index]
+            snapping.begin(excluding: [box.id], baselineOffset: kind == .move ? snapping.host?.snapBaseline(of: box).map { $0 - box.rotatedBounds.y } : nil, in: self)
         }
-        guard let start = dragStart, start.generation == generation else { return }
+        guard let start = dragStart, start.generation == generation else { snapping.end(); return }
         let delta = gesture.translation(in: self)
-        let limits = canonicalBounds
+        let limits = PageRect(canonicalBounds)
         switch gesture.state {
         case .began, .changed:
             var box = start.box
-            if resizing {
-                let available = max(1, limits.maxX - box.x)
-                box.width = min(max(min(40, available), start.box.width + delta.x), available)
-            } else {
-                box.x = min(max(start.box.x + delta.x, limits.minX), limits.maxX - box.width)
-                box.y = min(max(start.box.y + delta.y, limits.minY), limits.maxY - box.height)
+            switch kind {
+            case .move:
+                let snap = snapping.track(gesture, in: self)
+                let shift = ObjectMovement.translation(moving: box.rotatedBounds, by: PagePoint(x: delta.x, y: delta.y), within: limits, snapping: snap)
+                snapping.show(translation: shift, frame: box.rotatedBounds, gesture: gesture, in: self)
+                box.x += shift.x; box.y += shift.y
+            case .left, .right:
+                let radians = box.angle * .pi / 180
+                var along = Double(delta.x) * cos(radians) + Double(delta.y) * sin(radians)
+                if box.angle == 0 {
+                    // The dragged edge snaps to vertical targets (edges, centres, grid, margins).
+                    // The visible edge (with a styled field's padding) snaps.
+                    let pad = start.box.fieldPadding
+                    let edge = kind == .right ? start.box.x + start.box.width + pad + along : start.box.x - pad + along
+                    along += snapping.point(PagePoint(x: edge, y: box.y + box.height / 2), axes: [.x], gesture: gesture, in: self).x - edge
+                }
+                let minimum = minimumWidth(box)
+                box.autoWidth = nil // a dragged width stays fixed
+                if kind == .right { box.width = max(minimum, start.box.width + along) }
+                else {
+                    let width = max(minimum, start.box.width - along), moved = start.box.width - width
+                    box.width = width; box.x += moved * cos(radians); box.y += moved * sin(radians)
+                }
+                box = fitted(box)
+                guard box.fits(in: limits) else { return } // keep the last frame that fits
             }
             // Live feedback stays local; the model gets one change at the end
             // (one undo step, no autosave/SwiftUI round trip per frame).
-            boxes[index] = box; grow(index)
+            boxes[index] = box
             if gesture.state == .began { synchronize() } else { showDragged(index) }
         case .ended:
-            dragStart = nil; synchronize(); publish()
+            // A move is a step of its own, also right after typing.
+            dragStart = nil; snapping.end(); synchronize(); onUndoBoundary?(); publish(); onUndoBoundary?()
         case .cancelled, .failed:
-            boxes = start.boxes; dragStart = nil; synchronize(); publish()
+            boxes = start.boxes; dragStart = nil; snapping.end(); synchronize(); publish()
         default: break
         }
     }
 
-    /// One drag frame: only the dragged free field moves or changes width.
+    /// One drag frame: only the dragged field moves or changes width.
     private func showDragged(_ index: Int) {
         let box = boxes[index]
         guard let field = fields[box.id] else { return }
         position(field, for: box); updateRaster(field, for: box)
         let pointScale = coordinateScale(for: box)
-        let overflowing = neededHeight(field.editor, width: box.width / pointScale) * pointScale > box.height + 1
-        field.configure(selected: active && selectedID == box.id, overflowing: overflowing, floating: box.flowID == nil)
-    }
-
-    @objc private func deleteSelected() {
-        guard active, let selectedID else { return }
-        fields[selectedID]?.editor.resignFirstResponder()
-        boxes.removeAll { $0.id == selectedID }; self.selectedID = nil
-        synchronize(); publish()
-        becomeFirstResponder()
+        let overflowing = box.overflows(textHeight: overflowHeight(box, editor: field.editor, width: box.width / pointScale) * pointScale)
+        field.configure(editing: active && selectedID == box.id, overflowing: overflowing)
     }
 
     var selectionStyle: TextBoxStyle? {
@@ -575,12 +997,20 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     func changeStyle(_ action: (inout TextBoxStyle) -> Void, paragraph: Bool = false, wholeFloatingField: Bool = false) {
         guard let selectedID, let index = boxes.firstIndex(where: { $0.id == selectedID }),
               let editor = fields[selectedID]?.editor else { return }
+        // Over pages: a selection there, or a paragraph that runs over a page change.
+        if boxes[index].flowID != nil, let flow = flowActions {
+            if let range = TextFlowSelection.shared.range { flow.restyle(range, action); return }
+            if paragraph, !boxes[index].text.isEmpty, let start = flow.offset(selectedID, editor.selectedRange.location),
+               let whole = flow.paragraph(NSRange(location: start, length: editor.selectedRange.length)), flow.parts(whole).count > 1 {
+                flow.restyle(whole, action); return
+            }
+        }
         let previous = boxes
         let selection = editor.selectedRange
         let wasUpdating = updating; updating = true
         var range = EditorInteractionPolicy.formattingRange(selection: selection, textLength: editor.attributedText.length,
             floating: boxes[index].allowsObjectSelection, wholeField: wholeFloatingField)
-        if paragraph, !boxes[index].text.isEmpty { range = (boxes[index].text as NSString).paragraphRange(for: selection) }
+        if paragraph, !boxes[index].text.isEmpty { range = TextLines.paragraphRange(boxes[index].text as NSString, selection) }
         if range.length > 0 {
             let formatted = NSMutableAttributedString(attributedString: editor.attributedText)
             editor.attributedText.enumerateAttributes(in: range) { attributes, subrange, _ in
@@ -603,15 +1033,25 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         fields[selectedID]?.content = boxes[index]
         grow(index); synchronize()
         updating = wasUpdating
+        // New fields take over the last used style; „Formatierung entfernen“ leads back.
+        if boxes[index].flowID == nil, var used = selectionStyle {
+            used.fontSize = sizeUnits(for: boxes[index]).remembered(used.fontSize)
+            TextStyleMemory.remember(used)
+        }
         if boxes[index].flowID != nil { commitFlow(previous: previous[index], editor: editor) }
         else { publish() }
         layoutIfNeeded(); requestCaretReveal(.typing)
     }
     func textViewDidChangeSelection(_ textView: UITextView) {
+        // The caret left the result: coming back later is ordinary typing.
+        if let result = calculatedResult?.range, textView.selectedRange != NSRange(location: NSMaxRange(result), length: 0) { calculatedResult = nil }
+        // The keyboard mode's own selections keep a marking over pages, a user's selection ends it.
+        let own = KeyboardRouter.shared.showingSelection || KeyboardRouter.shared.handoff
+        if !updating, !applyingFlow, !own { TextFlowSelection.shared.set(nil) }
         if let editor = textView as? PageTextView, let placement = editor.placement,
            editor.selectedRange != NSRange(location: placement.location, length: 0) { editor.placement = nil }
         if !updating, !applyingFlow, active {
-            if let editor = textView as? PageTextView, editor.markedTextRange == nil,
+            if !own, let editor = textView as? PageTextView, editor.markedTextRange == nil,
                let current = boxes.first(where: { $0.id == editor.objectID }),
                let persisted = readCurrentBoxes?().first(where: { $0.id == editor.objectID }), current != persisted, current.flowID != nil {
                 let base = compositionBase ?? persisted; compositionBase = nil
@@ -636,7 +1076,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     func applyPreset(_ preset: TextStylePreset) {
         let flow = selectedID.flatMap { id in boxes.first { $0.id == id } }?.flowID != nil
-        changeStyle({ preset.apply(to: &$0) }, paragraph: flow, wholeFloatingField: !flow)
+        let units = selectedSizeUnits
+        changeStyle({ preset.apply(to: &$0); $0.fontSize = units.stored(preset.fontSize) }, paragraph: flow, wholeFloatingField: !flow)
     }
     var selectedLight: Bool { selectedID.flatMap { id in boxes.first { $0.id == id } }.map(automaticLight) ?? false }
     private func performShortcut(_ id: String) {
@@ -651,11 +1092,18 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         case "bullet": toggleList(.bullet)
         case "numbered": toggleList(.numbered)
         case "checkbox": toggleList(.checkbox)
+        case "link": editLink()
+        case "highlight": toggleHighlight()
+        case "pagebreak": insertPageBreak()
         default: break
         }
     }
-    @objc func smaller() { changeStyle({ $0.fontSize = max(8, $0.fontSize - 1) }, wholeFloatingField: true) }
-    @objc func larger() { changeStyle({ $0.fontSize = min(96, $0.fontSize + 1) }, wholeFloatingField: true) }
+    @objc func smaller() { stepFontSize(by: -1) }
+    @objc func larger() { stepFontSize(by: 1) }
+    private func stepFontSize(by delta: Double) {
+        let units = selectedSizeUnits
+        changeStyle({ $0.fontSize = units.stepped($0.fontSize, by: delta) }, wholeFloatingField: true)
+    }
 
     func toggleList(_ kind: TextListEditing.Kind) {
         guard let selectedID, let index = boxes.firstIndex(where: { $0.id == selectedID }),

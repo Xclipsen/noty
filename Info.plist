@@ -6,10 +6,17 @@
     <key>CFBundleDevelopmentRegion</key><string>de</string>
     <key>CFBundleLocalizations</key><array><string>de</string></array>
     <key>CFBundleShortVersionString</key><string>0.0.1</string>
-    <key>CFBundleVersion</key><string>61</string>
+    <key>CFBundleVersion</key><string>96</string>
     <key>CFBundleIcons</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon</string></array></dict></dict>
     <key>CFBundleIcons~ipad</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon</string></array></dict></dict>
     <key>UTExportedTypeDeclarations</key><array><dict>
+        <key>UTTypeIdentifier</key><string>de.la.noty.document</string>
+        <key>UTTypeDescription</key><string>noty-Datei</string>
+        <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+        <key>UTTypeTagSpecification</key><dict>
+            <key>public.filename-extension</key><array><string>noty</string></array>
+        </dict>
+    </dict><dict>
         <key>UTTypeIdentifier</key><string>de.la.noty.backup</string>
         <key>UTTypeDescription</key><string>noty Notizbuch-Backup</string>
         <key>UTTypeConformsTo</key><array><string>public.data</string></array>
@@ -25,16 +32,27 @@
         </dict>
     </dict></array>
     <key>CFBundleDocumentTypes</key><array><dict>
-        <key>CFBundleTypeName</key><string>noty Heft-Backup</string>
+        <key>CFBundleTypeName</key><string>noty-Datei</string>
         <key>CFBundleTypeRole</key><string>Viewer</string>
         <key>LSHandlerRank</key><string>Owner</string>
-        <key>LSItemContentTypes</key><array><string>de.la.noty.backup</string></array>
+        <key>LSItemContentTypes</key><array><string>de.la.noty.document</string><string>de.la.noty.backup</string></array>
     </dict><dict>
         <key>CFBundleTypeName</key><string>noty Bibliotheksbackup</string>
         <key>CFBundleTypeRole</key><string>Viewer</string>
         <key>LSHandlerRank</key><string>Owner</string>
         <key>LSItemContentTypes</key><array><string>de.la.noty.library</string></array>
+    </dict><dict>
+        <key>CFBundleTypeName</key><string>PDF</string>
+        <key>CFBundleTypeRole</key><string>Viewer</string>
+        <key>LSHandlerRank</key><string>Alternate</string>
+        <key>LSItemContentTypes</key><array><string>com.adobe.pdf</string></array>
+    </dict><dict>
+        <key>CFBundleTypeName</key><string>Bild</string>
+        <key>CFBundleTypeRole</key><string>Viewer</string>
+        <key>LSHandlerRank</key><string>Alternate</string>
+        <key>LSItemContentTypes</key><array><string>public.image</string><string>public.jpeg</string><string>public.png</string><string>public.heic</string><string>public.heif</string></array>
     </dict></array>
+    <key>UIApplicationSupportsIndirectInputEvents</key><true/>
     <key>UIDeviceFamily</key><array><integer>2</integer></array>
     <key>UIFileSharingEnabled</key><true/>
     <key>LSSupportsOpeningDocumentsInPlace</key><true/>

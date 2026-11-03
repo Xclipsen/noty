@@ -19,18 +19,19 @@ struct RestoredCopiesView: View {
             List {
                 ForEach(filtered) { copy in
                     Section {
-                        Button("Notizbuch öffnen") { onSelect(copy) }
+                        Button("Öffnen") { onSelect(copy) }.keyOption(.action { onSelect(copy) })
                         ForEach(copy.textPages) { preview in
-                            Button {
+                            let open = {
                                 var selected = copy
                                 selected.preferredPageID = preview.id
                                 onSelect(selected)
-                            } label: {
+                            }
+                            Button(action: open) {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Seite \(preview.pageNumber) öffnen").font(.subheadline.bold())
                                     Text(preview.text).foregroundStyle(.primary).lineLimit(3)
                                 }
-                            }
+                            }.keyOption(.action(open))
                         }
                     } header: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -46,5 +47,6 @@ struct RestoredCopiesView: View {
             .navigationTitle("Wiederhergestellte Kopien")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
         }
+        .keyboardSheet()
     }
 }

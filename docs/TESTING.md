@@ -2,6 +2,189 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Ansicht bleibt nach App-Wechsel stehen (03.11.2026, Release-Kandidat 1)
+
+**Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert), nicht installiert, am iPad ungeprüft.** Nutzerbefund: Textfeld angelegt/bearbeitet, App gewechselt, zurück: noty zieht die Ansicht zum Cursor. Ursachen im Code, Ablauf und Lösung: [BUG-18](BUG-18-TEXT-INPUT.md#app-wechsel-zieht-die-ansicht-zum-cursor-03112026). Core-Tests 1187 (3 übersprungen, 0 Fehler; neu `CaretRevealGateTests`, 12 Tests). Die UIKit-Ereignisfolge beim Wechsel (Tastatur, Snapshot-Größen, Ersthelfer) ist unter Linux nicht ausführbar.
+
+Gerätetest (gebündelt, Testheft): jeweils Textfeld anlegen bzw. bearbeiten, Cursor im Feld, App über App-Umschalter und über Home verlassen, zurückkehren. Zoom und Scrollposition müssen exakt gleich bleiben, auch wenn die Tastatur jetzt etwas verdeckt. Varianten: (1) Bildschirmtastatur, Feld im unteren Drittel; (2) Hardwaretastatur (nur Formatleiste); (3) stark gezoomt und so gescrollt, dass der Cursor außerhalb liegt; (4) nur gezoomt (Pinch, ohne Ziehen); (5) zweite Ansicht offen, Text in der linken und in der rechten; (6) Textdokument-Modus; (7) Querformat verlassen, im Hochformat zurück (darf wie eine Drehung umrechnen, aber nicht zum Cursor springen). Danach: ein Zeichen tippen holt den Cursor sichtbar; Antippen einer verdeckten Stelle bzw. Pfeiltaste ebenso; Control Center herunterziehen und zurück verändert nichts; Scribble mit dem Pencil in ein Feld und normales Schreiben fühlen sich unverändert an.
+
+## PDFs und Bilder aus dem Teilen-Menü (03.11.2026, Release-Kandidat 1)
+
+**Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert), nicht installiert, am iPad ungeprüft.** Core-Tests 1132 (3 übersprungen, neu `IncomingFilesTests`: Typ nach Inhalt, Warteschlange, Namensvorschlag, Ziellisten, Einfügeposition mit neuen IDs und unveränderter Quelle, Eingangsordner inkl. Neustart und Reste, Anhängen an ein geschlossenes Heft mit Fehlerfällen), `check_page_workflow.sh` bestanden. Nicht belegt: ob „noty dev“ im Teilen-Menü (App-Reihe) überhaupt erscheint, für welche Quell-Apps (Dateien, Safari, Mail; Fotos zeigt erfahrungsgemäß nur Apps mit Share-Extension), Security-Scope/iCloud-Download, Präsentation über offenem Heft und Dialog, Fokus, Stift und Tastatur dabei, Kaltstart.
+
+Gerätetest (gebündelt, Testbereich): PDF aus Dateien und aus Safari teilen → „noty dev“ in der App-Reihe? Als neues Heft in einen Unterordner, mit neuem Ordner und umbenannt; Bild (HEIC aus Dateien) als neues Heft; bei offenem Heft mit aktivem Textfeld bzw. Stift ein PDF „Hinter aktuelle Seite“ anhängen, Rückgängig, Neustart; an ein geschlossenes Heft „Ans Ende“; zwei Dateien kurz nacheinander; passwortgeschütztes PDF und Video teilen; App während des Fensters beenden → Kopie nach Neustart wieder angeboten; Abbrechen → Kopie weg.
+
+## Texteditor 2, Prototyp (31.10.2026, Branch `phase2/spike`)
+
+**Implementiert, Core-Tests (neu `DocumentTextLayoutTests`), `check_page_workflow.sh` und `xtool dev build` bestanden. In Build 68 installiert, am iPad ungeprüft.** Belegt sind die reinen Regeln gegen einen Festbreiten-Ersatz; **nicht** belegt sind TextKit über mehrere Container, `UITextInteraction`, Eingabesystem, Zeichnen und alles Sichtbare. Mit dem Schalter aus nur Typänderungen im Router und `TextRuling.lineBaseline` statt der gleichen Formel in `RuledTextLayout`. Gerätetest: [TEXT-EDITOR-2](TEXT-EDITOR-2.md#gono-go-am-gerät).
+
+## Rückgängig für alle Operationen (31.10.2026, Branch `phase0/undo`)
+
+**Implementiert, Core-Tests (neu `UndoReliabilityTests`), `check_page_workflow.sh` und `xtool dev build` bestanden. In Build 68 installiert, am iPad ungeprüft.** Die Tests belegen Verlauf, Stände und Hinweisdaten; **nicht** belegt sind Ansichtsaktualisierung, Canvas und Gesten. Der Fall des Nutzers ist nicht am Gerät nachgestellt.
+
+Gerätetest (gebündelt, Testheft): Text mit dem Lasso auf der Seite, auf eine andere Seite und auf die Reserveseite verschieben, je Rückgängig und Wiederholen, Auswahl dabei aktiv lassen; dasselbe mit Handschrift und gemischter Auswahl; im Textdokument ein freies Feld; Text mit dem Finger bei aktivem Stift. Mit dem Textwerkzeug tippen, in die Seite tippen und leer verlassen, danach Rückgängig: der echte Schritt davor kommt zurück. Rückgängig während eines Bildimports: Hinweis.
+
+## Build 69 · Helix-Erweiterungen, Tastatur in Panels, Textdokument-Extras (31.10.2026, Branch `extras/build69`)
+
+**Implementiert und erfolgreich gebaut, am iPad ungeprüft.** Core-Tests (1014, 3 übersprungen), `check_page_workflow.sh`, `check_verifiers.sh` und `xtool dev build` bestanden. Vergleich gegen echtes Helix 25.07.1: 2400 Zufallsabläufe, 37 Differenzen, alle in der Abweichungstabelle von [KEYBOARD](KEYBOARD.md) oder bekannte Fälle am Textende. `.docx` und `.rtf` strukturell und in LibreOffice geprüft, **nicht** in Word oder Pages. Unabhängiges Review ohne Datenverlust-Befund, seine Befunde sind behoben; `SettingsView`, `NotebookCreationView`, `NotebookDefaultsView`, `RestoredCopiesView`, `LocalHistoryView` und `ExternalBackupView` wurden dabei nicht im Detail geprüft.
+
+**Offener Gerätebefund aus Build 68:** Esc im Text führte am iPad laut Nutzer nicht zu `NOR SEITE`. Heft oder Textdokument und Anzahl der Drücke sind unbekannt. Aus dem Code bewiesen sind drei Dinge: Der Weg braucht nach `i` und Tippen drei Drücke, zweimal bleibt die Anzeige `NOR`. Ein hängender `handoff` hielt `editing` bis rund 1,75 s, Esc lief dann ins Leere. Texteditor 2 mit fixiertem Textwerkzeug hielt danach keinen Fokus. Beide Lücken sind behoben, ob das der Befund war, ist **ungeprüft**. Zuerst testen, mit Diagnose: `idevicesyslog | rg noty.keys`.
+
+Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft) und [TEXT-REBUILD-62](TEXT-REBUILD-62.md), Abschnitt „Extras Textdokument“.
+
+## Build 68 · Tastaturmodus, Review-Korrekturen (31.10.2026, Branch `feat/tastatur`)
+
+**Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: installierte App-ID unverändert, alle 28 Dokumente und 256 Dateien unverändert. Der Simulator-Lauf 41216955235 hat alle sechs Smoke-Tests bestanden (wiederholte Tasten, `gg`, `ge`, Which-Key, Esc-Ebenen), rot nur durch das 20-Minuten-Limit des Schritts; er prüfte den Stand von Build 67, **nicht** Build 68 und **nicht** echte Tastatur und Fokus am iPad. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft), Editor 2: [TEXT-EDITOR-2](TEXT-EDITOR-2.md).
+
+## Build 67 · Tastaturmodus wie Helix (31.10.2026, Branch `phase1/app`)
+
+**Implementiert, Core-Tests und `xtool dev build` bestanden. Nicht installiert, am iPad ungeprüft.** Die App läuft vollständig auf `HelixKeymap`, `HelixParser` und `TextEngine`, der Vim-Modus ist entfernt (`KeyMap`, `KeySequenceParser`, `TextMotions`). Getestet sind Engine (gegen echtes Helix, siehe [KEYBOARD](KEYBOARD.md#helix-modell)), Tastentabelle, Parser, `KeyPressGate`, mehrere Edits über Seiten; **nicht** getestet sind Tastenzustellung, Fokus, Palette über Text, Eingabezeile, Which-Key, TextKit-Messung von `j`/`k` und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).
+
+## Build 65 · Textdokument, ⌘A, Tastaturmodus (31.10.2026)
+
+**Implementiert, erfolgreich gebaut und installiert, am iPad ungeprüft.** Rücklesen nach dem Update: alle 28 Dokumente und 248 Dateien unverändert. Core-Tests (neu `TextFlowRangeTests`, `KeyboardCommandsTests`, `TextMotionsTests`), `check_page_workflow.sh`, `check_verifiers.sh` und `xtool dev build` bestanden. Getestet sind Keymap, Parser, Motions und Bereichsbearbeitung; **nicht** getestet sind Tastenzustellung, Fokus, TextKit-Messung und alles Sichtbare. Gerätetest: [KEYBOARD](KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft).
+
+## Build 90 · Zweite App „noty dev“ (02.11.2026)
+
+**Implementiert, Core-Tests und `xtool dev build` bestanden, an „noty dev“ veröffentlicht. Installation und alles am iPad ungeprüft.** Ab jetzt gehen Builds an „noty dev“ (`de.la.noty.dev`, eigene Daten, oranges Icon, eigene Installationsseite). Die normale noty (`de.la.noty.prototype`) bleibt auf Build 89 und bekommt einen Build nur mit `NOTY_CHANNEL=stable`. Inhaltlich neu ist nur der richtige Seitenname in der Meldung des Backup-Knopfs. Weiter Debug-Build, Release ist zurückgestellt. Beide Apps melden dieselben Dateitypen `.noty`, `.notybackup`, `.notylibrary`; welche beim Öffnen einer Datei angeboten wird, entscheidet iPadOS (ungeprüft).
+
+## Build 89 · Lineal wie ein echtes Lineal, Backup-Knopf (02.11.2026)
+
+**Implementiert, Core-Tests und `xtool dev build` bestanden, veröffentlicht. Installation und alles am iPad ungeprüft.**
+
+Nutzer zu Build 88: Man konnte durch das Lineal malen, der Strich sollte an der Linie weitergehen. Ursache: Nur Striche, die nahe der Kante begannen, liefen über den eigenen Weg, alle anderen über PencilKit, das einen laufenden Strich nicht aufhalten kann. Jetzt läuft bei eingeblendetem Lineal jeder Strich mit Stift, Bleistift und Marker über den eigenen Weg: Er gehört zu der Seite des Lineals, auf der er beginnt (`NotebookRuler.side`), bleibt dort frei und gleitet an der Kante entlang (`NotebookRuler.kept`). Mit Lineal entfallen dafür die PencilKit-Livedarstellung, Halten-für-Form und gerader Marker. Die Vorschau ist eine einfache Linie, der fertige Strich ist PencilKit-Tinte aus den echten Stiftpunkten mit gleichmäßiger Breite. Ohne Lineal ändert sich nichts.
+
+Neu: Knopf „Backup jetzt speichern“ oben rechts in der Bibliothek, nur in Prototyp-Builds, derselbe Weg wie das manuelle Backup in den Einstellungen. Autosave und Backup bleiben getrennt. Der neue WebDAV-Dienst liegt auf dem Server, nicht im Repo.
+
+Gerätetest: von weit weg gegen die Kante und an ihr entlang zeichnen, an beiden Seiten und schräg, mit allen drei Werkzeugen; auf dem Lineal beginnen; Text neben dem Lineal schreiben und das Schriftbild mit dem Ergebnis vergleichen; Rückgängig; ein Strich über den Seitenrand; erstes echtes Backup auf den Server.
+
+## Build 88 · Eigenes Lineal (02.11.2026)
+
+**Implementiert, Core-Tests (neu `NotebookRulerTests`) und `xtool dev build` bestanden, veröffentlicht. Installation und alles am iPad ungeprüft.**
+
+Nutzer zu Build 87: Lineal nicht verschiebbar, es verkleinert sich mit dem Zoom. Ursache der Größe ist belegt: Das PencilKit-Lineal liegt in der Zeichenfläche, die noty beim Zoomen skaliert, und PencilKit bietet dafür keine Schnittstelle. Warum es sich nicht verschieben ließ, ist nicht geklärt. Die Erkennung lief über private Klassennamen und ging ohnehin nur bei aktivem Stift oder Radierer.
+
+Das Lineal ist jetzt eine eigene Ansicht über den Seiten (`NotebookRuler`, `RulerOverlay.swift`), fest in Viewport-Punkten. Ein Finger verschiebt es, zwei drehen es, nahe an Vielfachen von 15° rastet es ein. Das geht mit jedem Werkzeug, auch während einer Sperre. Ein Finger auf dem Lineal scrollt deshalb nicht mehr. Ein Strich, der nahe einer Kante beginnt, folgt ihr live und wird beim Abheben zu einem normalen PencilKit-Strich mit einem Rückgängig-Schritt (`WorksheetView+Ruler.swift`, in Build 89 auf alle Striche erweitert). Er hat die Breite des Werkzeugs ohne Druckverlauf und endet am Seitenrand. Das erfüllt zugleich den Wunsch aus [DEVICE-FEEDBACK-20](history/DEVICE-FEEDBACK-20.md), am Lineal zu gleiten. Die privaten `require(toFail:)`-Abhängigkeiten von Scrollen und Zoom sind entfernt. Position und Winkel liegen in `UserDefaults`, nicht in Heft oder Backup.
+
+Gerätetest: Lineal einblenden, zoomen (Größe bleibt), mit einem Finger verschieben, mit zwei drehen, mit Stift, Bleistift und Marker an beiden Kanten zeichnen, Rückgängig, ein Strich über den Seitenrand, normales Schreiben daneben ohne spürbare Verzögerung, Finger-Zeichnen, Neustart (Position bleibt). Die Annahme, dass die Canvas ohne Wartezeit startet, wenn beide neuen Recognizer sofort scheitern, ist nur am Gerät prüfbar.
+
+## Build 87 · Fehler aus der Logik-Prüfung (02.11.2026)
+
+**Implementiert, Core-Tests und `xtool dev build` bestanden, veröffentlicht. Installation und alles am iPad ungeprüft.**
+
+- **Rechner:** `0.125*8` ist 1, `-2^2` ist -4, `2^3^2` ist 512, `.5+1` ist 1,5. Mit Variablen, Einheiten oder Funktionen vor der Rechnung (`2x + 3 + 4`, `x^2+3`, `a - 2 - 3`, `sin(30+60)`, `10 € + 5 + 3`, `2 (3+4)`) entsteht kein Ergebnis mehr. Von oben nach unten: `+10%` ist Prozent der Zahl darüber, `x + 3` ist kein Name. `1.234` bleibt die deutsche Schreibweise für 1234. Das Ergebnis ist ein eigener Rückgängig-Schritt, und die Sonderregel für die Ziffer hinter dem Ergebnis endet, sobald der Cursor geht.
+- **PDF-Export:** Beim Zusammensetzen bleibt das Dokument der Einzelseite am Leben. Der Absturz war nie beobachtet, der Fehler nur aus dem Code bewiesen. Export mit `pdfinfo`, `pdftoppm`, `pdftotext` am Gerätestand ungeprüft.
+- **Neuer Texteditor:** `DocumentTextStore.capacity` kennt den Seitenanfang nun aus der Seite, nicht aus der Textlänge, weil Build 81 nur noch einen Teil misst. Stimmt der Text nicht, misst wie bisher das Modell.
+- **Listennummern:** Beim Tippen über mehrere Seiten wird nur noch die wirklich geänderte Stelle verglichen. Vorher galt alles hinter der Seite als geändert, weit entfernte Nummern änderten sich still. `3. Mai` / `10. Juni` bleiben stehen (Monatsnamen, Heuristik), Return bei `1. |abc` teilt den Punkt.
+- **Hängen:** Eine vom System abgebrochene Griff-Bewegung (etwa durch eine Sperre beim Sichern) räumt sich auf, die Werkzeugoptionen kommen zurück. Bei Sperre und „Auch mit dem Finger zeichnen“ sowie im Lesewerkzeug scrollt ein Finger. Ein Seitenwechsel während einer Sperre wird nachgeholt statt vergessen. Das Verkleinern beim Bildimport hat das Zeitlimit von 120 s. Ob einer dieser Punkte der Hänger des Nutzers war, ist **unbewiesen**.
+- **Speichern:** Ein beschädigtes oder fehlendes Bildoriginal blockiert den Commit weiter (bewusst, Tests), wird aber nicht mehr endlos wiederholt. Beim Schließen bietet noty „Ohne Speichern schließen“ an, der letzte Stand bleibt. Das gilt für alle dauerhaften Speicherfehler. Werkzeugeinstellungen blockieren das Schließen nicht mehr. Ein spät gemeldeter Stiftstrich während eines Backup-Commits wird nachgetragen. `closeAll` wartet auf laufendes Bildlesen.
+- **iCloud-Backups:** Noch nicht hochgeladene Archive ersetzen nichts: `keep` hochgeladene bleiben daneben, von den wartenden nur die `keep` neuesten. Bewertet über `ubiquitousItemIsUploaded`, andere Anbieter melden nichts und bereinigen wie bisher. Verhalten mit vollem iCloud ungeprüft.
+- **Bild als Seite:** Durchsichtige Bilder werden nicht mehr zu JPEG. Sehr lange Bilder bekommen eine schmalere Seite (PDF-Grenze 14.400 pt). Das Original bleibt bewusst nicht im Heft, das widerspricht weiter der Regel in `AGENTS.md`; der Dialog sagt es.
+- **Sonst:** Einfügen und Ausschneiden im Neuen Texteditor beenden zuerst eine laufende Komposition. `keyboardScrolling` bleibt am Seitenende nicht mehr stehen.
+
+**Nicht behoben:** Abhängigkeit des Scrollens von den Lineal-Gesten (entfällt mit Build 88). Pfeil oder Rückgängig, während das Blatt noch nachgleitet, nutzen die alte Seite. `elasticMinimum` bei Abbruch des Zooms, Tippen während eines Feld-Zugs, `pdfSources` mit `deletedPages` nil (nur Fremddateien), AirDrop-Inbox beim Abbrechen, `selectedPageID` nach Papierwechsel auf dem Entwurf.
+
+Gerätetest: Rechentabelle oben; ein Griff-Zug der Leiste während eines Backups; ein Export mit Bild und PDF-Seite; Textdokument mit mehr als 8192 Zeichen über mehrere Seiten; Liste über eine Seitengrenze.
+
+## Build 86 · Zeitlimit für PDF- und Bild-Import (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Core unverändert, `ota_check` ohne Befund. Nutzer zu Build 85: Ein Finger scrollte nicht mehr und die Werkzeugleiste ließ sich nicht öffnen; nach dem Neustart der App ging alles wieder, vermutlich nach einem Bild-Import. **Ursache nicht belegt.** Eine hängende Bearbeitungssperre erklärt die Leiste, das Ein-Finger-Scrollen aber nur zusammen mit „Auch mit dem Finger zeichnen“. Das Einfügen und Importieren von PDFs und Bildern als Seite endet jetzt wie das Bild-Einfügen nach 120 s mit Meldung und gibt die Sperre frei. Gerätetest: Bild und PDF aus iCloud importieren, die noch nicht geladen sind, auch ohne Netz.
+
+## Build 85 · Neue Textfelder in automatischer Farbe (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Core unverändert, `ota_check` ohne Befund. Nutzer: Text soll standardmäßig automatisch gefärbt sein, abschaltbar. Neue Felder starten in der automatischen Farbe, auch wenn zuletzt eine Farbe gewählt war; Schrift und Größe werden weiter übernommen. Schalter in Einstellungen › Editor, Standard an; aus: Die zuletzt benutzte Farbe wird wie bisher übernommen. Eine Farbwahl gilt für das Feld, bestehender Text bleibt unverändert. Gerätetest: Weiß wählen, neues Feld auf einem PDF ist schwarz; Schalter aus, neues Feld übernimmt die Farbe.
+
+## Build 84 · Textfelder mit dem Trackpad verschieben (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Core unverändert, `ota_check` ohne Befund. Nutzer: Felder sollen sich leichter mit dem Zeiger verschieben lassen. Rahmenzone und Breitengriffe hatten nur die plattformabhängige Vorgabe für Berührungsarten; sie erlauben jetzt ausdrücklich auch den Zeiger. Ein nicht geöffnetes freies Feld zieht der Zeiger direkt am Text (`FieldPointerDrag`), über der Rahmenzone eines geöffneten Felds zeigt er Verschiebepfeile. Gerätetest: mit Textwerkzeug nicht geöffnetes Feld am Text ziehen, geöffnetes am Rahmen ziehen, Breitengriffe, Text im geöffneten Feld mit dem Zeiger markieren, Klick öffnet weiter, Zwei-Finger-Scrollen über Feldern, Fluss-Text bewegt sich nicht.
+
+## Build 83 · Ergebnis in der Schreibweise der Rechnung (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** 0 Fehler in den Core-Tests. Nutzer zu Build 82: `2+5=` wird `2+5=7`, `2 + 5 =` wird `2 + 5 = 7`. Abstände stehen, wenn die Rechnung oder das Gleichheitszeichen welche hat. Von oben nach unten bleibt `= 7`.
+
+## Build 82 · Eigener Rechner, Bilder als Seite (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** 1044 Core-Tests, 3 übersprungen, 0 Fehler; `ota_check` ohne Befund. Enthält Build 81, der nie installiert wurde.
+
+- **Rechner (`TextCalculator`):** Ersetzt die Rechenhilfe von iPadOS, `MathResultSpacing` entfällt. `2+3=` wird zu `2+3=5` (seit Build 83), nur am Zeilenende und nur bei einer echten Rechnung. Von oben nach unten: Zahlen untereinander, `=` allein in einer neuen Zeile; ohne Zeichen wird addiert, Zeilen zählen der Reihe nach wie am Taschenrechner, Trennlinien werden übersprungen, Text vor der Zahl ist Bezeichnung, ein früheres Ergebnis rechnet weiter. Direkt hinter dem Ergebnis ersetzt eine Ziffer es, Backspace nimmt die ganze Zahl weg (nicht im neuen Texteditor). Schalter in Einstellungen › Editor, Standard an. Dezimalzahlen, höchstens zehn Nachkommastellen, deutsche Schreibweise. Gerätetest: Ergebnis erscheint, kein Vorschlag von iPadOS mehr, Undo, Leerzeichen hinter dem Ergebnis, Textdokument mit Seitenwechsel.
+- **Bild als Seite (`ImagePagePDF`):** Beim PDF-Import in Bibliothek, Seitenleiste und „Neue Seite“ lassen sich auch Bilder wählen. Sie werden zu einem einseitigen PDF in Seitenbreite 595, kein Formatwechsel; JPEG und HEIC werden mit Qualität 0,9 neu kodiert, das Original bleibt also nicht bytegleich erhalten, PNG bleibt verlustfrei, höchstens 4096 Pixel. Das Bild wird nur auf dem Gerät erzeugt und ist nicht getestet. Gerätetest: Screenshot, Hochkant-Foto mit Drehung, PNG mit Transparenz; Schreibplatz, Vorschau, Backup und PDF-Export.
+
+## Build 81 · Importe, PDF-Export und lange Texte (02.11.2026)
+
+**Implementiert und gebaut, nicht installiert, am iPad ungeprüft.** 1035 Core-Tests, 3 übersprungen, 0 Fehler. Die übrigen Punkte der Durchsicht vom 02.11.2026.
+
+- `TopAlert`: Ein stillschweigend gescheitertes `present` wird wiederholt, sonst antwortet die Rückfrage mit Abbrechen statt ewig zu warten. `dismiss` wartet das Einblenden ab und hat eine Obergrenze von 2 s.
+- Bild einfügen: Das Holen von Zwischenablage, Fotos oder Datei läuft vor der Bearbeitungssperre und endet nach 120 s mit Meldung. Schließen wartet solange. PDF-Einfügen und Bibliotheksimport bleiben ohne Zeitlimit.
+- PDF-Export: Seiten und Ergebnis liegen als Dateien im temporären Ordner, das Ergebnis wird gemappt. **Geräte-PDF mit `pdfinfo`, `pdftoppm` und `pdftotext` prüfen: ungeprüft.** Der Speicherbedarf ist nicht gemessen.
+- Textfluss: Je Seite wird nur ein Anfangsstück gemessen und bei Bedarf verdoppelt (`TextFlowMeasure`, Tests für gleiche Aufteilung). Die Annahme, dass Text hinter dem Schnitt die vollen Zeilen nicht ändert, gilt ab einem Viertel Abstand; TextKit wurde dafür nicht am Gerät verglichen.
+
+Gerätetest: `.noty` mit gleichem Titel importieren; sehr kleine `.noty` öffnen; Bild aus Zwischenablage bei getrenntem zweiten Gerät; Heft mit vielen Fotos als PDF exportieren, Seitenzahl, Links, Text und Bilder gegen Build 80 vergleichen; langes Textdokument bearbeiten, Seitenumbrüche gegen Build 80 vergleichen.
+
+## Build 80 · Keine Eingabesperre beim Backup, Absicherungen (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** 1032 Core-Tests, 3 übersprungen, 0 Fehler; `ota_check` ohne Befund. Aus der Durchsicht vom 02.11.2026; Nutzer hat ein iCloud-Backup eingerichtet, die Sperre ist damit als Ursache des Einfrierens wahrscheinlich, aber nicht belegt.
+
+- Während des Backup-Speicherns deckte die Aktivierungsebene den ganzen Editor ab. Sie erscheint jetzt nur noch über einer anderen Ansicht als der aktiven (`isPaneSelected`). Die Leisten bleiben in dieser Zeit gesperrt, Eingaben ebenso (`canEdit`, Zeichenfläche und Textebene aus), Scrollen geht.
+- Das Scrollen hängt nicht mehr an `enabled`: Beim Textwerkzeug blieb der Stift sonst in dieser Zeit ohne Scrollen.
+- „Seite anpassen“: Der Reglerbereich bleibt gültig, wenn Inhalt über den Schreibplatz hinausragt (`minimum` größer als die Größe).
+- Hänger-Diagnose: Der Stapelpuffer wird beim Start angelegt statt bei angehaltenem Hauptthread, und Leerlauf zählt nicht mehr als Hänger.
+
+Gerätetest: Während eines Backups das Blatt verschieben, dafür „Jetzt sichern“ auslösen und ins offene Heft wechseln; „Seite anpassen“ auf einer Seite mit Inhalt am äußeren Rand des Schreibplatzes; `haenger.txt` enthält im Leerlauf nur die Startzeile.
+
+## Build 79 · Seitenwechsel erst, wenn die Ansicht ruht (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** 1032 Core-Tests, 3 übersprungen, 0 Fehler; `ota_check` ohne Befund. Nutzer zu Build 78: kleiner Ruckler beim Scrollen zwischen den Seiten. Beim Überqueren der Naht wechselte die Auswahl sofort; das rechnet den Editor neu und richtet zwei Seiten vollständig neu ein, weil sich `focused` ändert. Die Ursache ist aus dem Code abgeleitet, nicht am Gerät gemessen. Jetzt wechselt die Auswahl erst 0,18 s nach der letzten Bewegung, überflogene Seiten werden nicht ausgewählt. Dadurch folgen Seitenzahl und Seitenleiste erst beim Anhalten. Gerätetest: zwischen zwei Seiten hin und her scrollen, Seitenzahl nach dem Anhalten, sofort nach dem Anhalten schreiben, Seite über Seitenleiste wählen.
+
+Nutzer zu Build 78: „Über noty“ friert nicht mehr ein. Warum, ist nicht belegt; geändert wurde nur, dass die Diagnose-Schalter dort entfernt wurden.
+
+## Build 78 · Diagnose für das Einfrieren (02.11.2026)
+
+**Implementiert, Fehler nicht behoben.** Nutzer: Nach dem Umschalten des Schreibscrollens reagierten Blatt und Icons nicht mehr, früher auch mit anderem Auslöser; „Einstellungen › Über noty“ friert reproduzierbar ein. **Ursache offen.** In den Seiten-Bausteinen ist beim Lesen keine Schleife zu finden. Die Hänger-Diagnose schreibt jetzt auch nach `Documents/Diagnose/haenger.txt` (nur Adressen und Zähler, höchstens 2 MB, danach neu begonnen) und nimmt eine vierte Probe nach 10 s. Ihre Schalter stehen auf einer eigenen Seite „Einstellungen › Diagnose“. Offener Kandidat aus der Durchsicht vom 02.11.2026: Während `EditorWorkspace.closing` (Backup-Commit, zweite Ansicht) ist `isPaneActive()` falsch, die durchsichtige Ebene in `ContentView` deckt dann Blatt und Leisten ab. Das blockiert Berührungen ohne Hänger; ob es der beobachtete Fehler ist, ist nicht belegt. Gerätetest: Hänger-Diagnose an, App neu starten, einfrieren lassen, 15 s warten, App beenden, Datei schicken. Bleibt „Über noty“ ohne die Diagnose-Schalter frei, lag es an diesen.
+
+## Build 77 · Schneller Wisch zieht nicht mehr seitlich (02.11.2026)
+
+**Implementiert, gebaut, erstmals auf dem eigenen Server signiert und über den Link installiert. Nutzerbestätigung 02.11.2026: „viel besser“; das Haken und die Einzelfälle des Gerätetests sind damit nicht einzeln bestätigt.** 1032 Core-Tests, 3 übersprungen, 0 Fehler; `ota_check` ohne Befund. Nutzerbilder IMG_0356–0358: Build 76 behob den Sprung nicht. **Ursache belegt:** Beim Loslassen begrenzte noty das seitliche Ziel mit dem Bereich am Zielort des Wischs (`scrollViewWillEndDragging`). Die leere Seite am Heftende hat keinen Schreibplatz und erlaubt nur die PDF-Mitte; landete der Wisch dort, glitt die Ansicht vom ersten Bild an dorthin und blieb bei gestopptem Wisch auf halbem Weg stehen. Jetzt gilt der Bereich am aktuellen Ort, ein überwiegend senkrechter Wisch bewegt nicht seitlich (`flickTargetX`, neue Tests). Beim Erreichen der schmalen Seite gleitet die Ansicht weiterhin zu ihr. Das Haken beim Seitenwechsel ist nicht geklärt. Gerätetest: im Schreibplatz schnell nach unten wischen und anhalten, Blatt bleibt seitlich stehen; bis auf die leere Seite scrollen und zurück.
+
+## Build 76 · Kein Sprung beim schnellen Scrollen (02.11.2026)
+
+**Implementiert, gebaut und über den Link installiert (Nutzerbestätigung 02.11.2026). Der Sprung blieb, siehe Build 77.** 1030 Core-Tests, 3 übersprungen, 0 Fehler; SDK-Build erfolgreich, erstmals auf dem eigenen Server. Nutzerbild IMG_0349: Beim schnellen Scrollen über den Schreibplatz sprang die Ansicht an der Naht zweier Seiten nach links zur Mitte. **Ursache nicht bestätigt.** Behoben sind zwei belegte Wege: Eine verspätete Antwort auf eine eigene Seitenmeldung galt als Seitenwechsel von außen und setzte das PDF per Sprung in die Bildschirmmitte (`ScrollSelectionEchoes`, neue Tests in `NotebookViewportGeometryTests`). Und Tastatur-, Layout- und Seitenereignisse holten die Ansicht nach dem Scrollen zum Cursor eines offenen Textfelds zurück; das tun jetzt nur noch Tippen und Cursorbewegung. Gerätetest: im Heft mit Schreibplatz mehrfach schnell über die Seitennaht hin und zurück, einmal ohne und einmal mit offenem Textfeld; Tippen nach dem Wegscrollen holt die Ansicht zurück; Seite über Seitenleiste und Seitenzahl springt weiter.
+
+**Gleiche Schriftgröße auf PDFs, im selben Build.** Nutzer: Text soll auf eingefügten PDFs so groß sein wie auf normalen Seiten und auf dem Schreibplatz. Freie Felder auf PDFs speichern ihre Größe in PDF-Einheiten, auf breiten Scans erschien 14 deshalb winzig (Nutzerbild: 43). Formatleiste, A−/A+, Absatzstile, „Formatierung entfernen“ und neue Felder rechnen jetzt in Normalseitenpunkten (`TextSizeUnits`, Faktor PDF-Breite/595). Kein Formatwechsel: Gespeichert bleibt 8–96 in PDF-Einheiten, bestehende Felder sehen unverändert aus, nur die angezeigte Zahl ändert sich. Grenzen: Auf breiten Scans endet die sichtbare Größe bei 96 geteilt durch den Faktor, auf sehr kleinen PDFs beginnt sie bei 8 geteilt durch den Faktor. Text behält beim Einfügen und beim Verschieben zwischen Seiten sein bisheriges Verhalten. Gerätetest: neues Feld auf Scan und Normalseite gleich groß, 43er-Feld zeigt etwa 14, A+/A− ein Schritt, Titel, „Formatierung entfernen“, Vorschau und PDF-Export.
+
+## Build 75 · Ein Tab-Raster je Feld (02.11.2026)
+
+**Implementiert, gebaut und über den Link installiert (Nutzerbestätigung 02.11.2026), Tab-Raster am iPad ungeprüft.** Nutzerbild IMG_0343: Zeilen mit Tab am Anfang standen auf einem anderen Raster als Zeilen mit Text davor. Der Abstand hing an der Schriftgröße des ersten Zeichens der Zeile, und eine Größenänderung ließ im offenen Feld den alten Abstand stehen. Jetzt gilt je Feld ein Raster nach der größten Schrift (`TextTabs.interval(_:)`), in Editor, Vorschau und PDF. Im Textdokument gilt es je Seitenabschnitt. Gerätetest: Zeile mit Tab am Anfang und Zeile mit Text und Tab auf denselben Stopp, Schriftgröße ändern, Feld verlassen und wieder öffnen.
+
+## Build 74 · Mehrzeilige Textauswahl (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Nutzerbilder IMG_0341/0342: Bei einer Auswahl über mehrere Zeilen waren nur erste, letzte und eine mittlere Zeile markiert. Ursache: UIKit meldet die Zeilen dazwischen als ein Rechteck, `selectionRects` kürzte es auf die Zeile in seiner Mitte. Jetzt je Zeile ein Band. Kein Core-Test möglich (UIKit). Gerätetest: Auswahl über drei und mehr Zeilen mit Leerzeilen, Griffe ziehen, im Heft und im Textdokument.
+
+## Build 73 · Leerzeichen vor dem Rechenergebnis (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Das Rechnen nach „=“ kommt von iPadOS, die App kann es nur ein- oder ausschalten. `MathResultSpacing` erkennt die Einfügung nach der Textänderung und ergänzt das Leerzeichen; von Hand getippte Ergebnisse gelten mit. Ungeprüft ist, ob iPadOS das Ergebnis über den normalen Änderungsweg einfügt und ob die Rechnung danach weiterläuft. Gerätetest: `2+3=` mit angenommenem Vorschlag im Heft und im Textdokument, danach Undo; der neue Texteditor (Test) ist nicht angebunden.
+
+## Build 72 · Tabstopps ohne Ende (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Nutzer: Tab kam im Textfeld nur bis etwa zur Mitte und brach dann um. Ursache: Ohne eigene Stopps gelten die zwölf Stopps von iOS bis 336 pt. Jetzt ein gleichmäßiges Raster von 2,5 Schriftgrößen ab linker Textkante (14 pt: 35 pt), gemeinsam für Editor, Vorschau und PDF, kein Formatwechsel; der Bestand vom 31.10.2026 enthielt keine Tabs. Automatische Feldbreite wächst bis zum Stopp mit. Gerätetest: Tab bis zum rechten Rand im Heft und im Textdokument, zwei Zeilen mit Tabs stehen in einer Spalte, ⇧Tab, mehrere Zeilen markieren und Tab, PDF-Export gleich wie Editor.
+
+## Build 71 · Helix experimentell, nur in Textdokumenten (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** Ein Schalter in Einstellungen › Editor, Standard aus. Gerätetest: Schalter aus, im Textdokument und im Heft normal tippen, kein INS-Hinweis; Schalter an, im Textdokument Esc und `i`, im Heft und in der Bibliothek keine Helix-Tasten; zwei Ansichten mit Textdokument und Heft, beim Wechsel der aktiven Ansicht tippt das Heft normal.
+
+## Build 70 · Textfelder erreichbar, Update unterwegs (02.11.2026)
+
+**Implementiert, gebaut und auf dem Server bereitgestellt, nicht installiert, am iPad ungeprüft.** 1014 Core-Tests, 3 übersprungen, 0 Fehler; SDK-Build erfolgreich; IPA-ID und Profil geprüft (`scripts/ota_check.py`), Download über HTTPS geprüft. Enthält Build 69 und die Bedienfluss-Durchsicht.
+
+Nutzer: Felder rechts unten auf einer Scan-Seite lassen sich weder antippen noch per Zeiger erreichen, die übrigen schon. **Ursache nicht bestätigt.** Behoben sind drei belegte Mechanismen: gespeicherte leere Felder fingen Berührungen im ganzen Rahmen ab (im Geräteabzug vorhanden, teils seitengroß), ein nicht endender Zeiger-Touch sperrte die Tipp-Erkennung eines Felds dauerhaft, die Griffzone des bearbeiteten Felds verdeckte Text daneben. Zur Klärung: Einstellungen › Über noty › Tipp-Diagnose nennt nach jedem Tipp Fenster, getroffene Ansicht und die Felder an der Stelle.
+
+**Nutzerbestätigung 02.11.2026:** Mit Build 70 lassen sich wieder alle Felder antippen. Welcher der drei Mechanismen die Ursache war, ist nicht belegt; die Tipp-Diagnose wurde dafür nicht gebraucht und bleibt als Schalter erhalten.
+
+Offener Gerätetest: Vergleich des Bestands gegen eine USB-Sicherung nach der Rückkehr, weil die Installation über den Link ohne Vorher-Sicherung per USB lief.
+
+## Bedienfluss-Durchsicht (31.10.2026, Branch `audit/flow-2026-10-31`)
+
+Basis: `feat/textneubau` afe37fe, ohne die uncommitteten Arbeiten dort und auf `feat/tastatur`. Implementiert, Core-Tests, Host-Roundtrip und SDK-Build bestanden. **Nicht installiert, am iPad ungeprüft.** Gezielt am Gerät prüfen: aufgelegter Finger beim Halten und Radieren, Bild einfügen mit Stift und Universal Clipboard, Zuschneiden eines großen HEIC, `.noty` per AirDrop bei offenem Heft, Gesetzesfenster mit Leiste am selben Rand, PDF-Import eines gesperrten PDFs (Prüfung läuft jetzt über CoreGraphics statt PDFKit), Screenshot über 5 MB. WebDAV-Änderungen sind nicht gegen einen echten Server geprüft.
+
 ## Nutzungsfeedback Tag 1 (22.10.2026)
 
 Lasso-Kontur (`SelectionContour`) sowie Fingertipp-Auswahl bei aktivem Stift und Doppeltipp „Textfeld hinzufügen“ (`PageObjectHitTest`, `FingerObjectGestures`) als zwei Merge-Commits nach `main`. Bedienung: [DESIGN](DESIGN.md), Technik: [ARCHITECTURE](ARCHITECTURE.md).
@@ -17,6 +200,10 @@ Gerätetests (gebündelt, isolierter Bereich/Testheft):
 3. Fingerziehen auf der Auswahl verschiebt (auch über Seitengrenzen im fortlaufenden Heft), außerhalb scrollt/zoomt der Finger unverändert; Seitentext und gesperrte Bilder werden nicht gewählt; Checkboxen bleiben antippbar; mit „Auch mit dem Finger zeichnen“ keine Fingerauswahl.
 4. Doppeltipp auf freie Fläche (Papier- und PDF-Seite): nur „Textfeld hinzufügen“, kein „Platz einfügen“; neues freies Textfeld an der Tippstelle mit Tastatur; Doppeltipp auf ein Objekt zeigt kein Menü.
 5. Undo/Redo nach Fingerverschiebung, Neustart der App: Stand erhalten.
+
+## KI-Assistent
+
+Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
 
 ## Native Gesetzessammlung – Feature-Worktree
 

@@ -52,7 +52,6 @@ struct PageWorkflowCheck {
         richStyle.link = "https://example.org"; richStyle.indent = 12
         richStyle.fontName = "Courier"; richStyle.ink = InkColor(0.2, 0.6, 0.3)
         richStyle.strikethrough = true; richStyle.baseline = 1
-        textObjects[1].flowID = UUID(); textObjects[1].flowRegion = .left
         var colorStyle = textObjects[1].style; colorStyle.color = .black; colorStyle.automaticColor = true
         colorStyle.highlighted = true; colorStyle.highlightColor = .green
         textObjects[1].runs = [TextRun(location: 0, length: 3, style: richStyle), TextRun(location: 3, length: 2, style: colorStyle)]
@@ -61,8 +60,9 @@ struct PageWorkflowCheck {
         document.appearance = appearance
         document.pages[1].geometry = appearance.geometry
         let flowRect = document.pages[1].writingRect(.page)!
-        var continuation = TextBox(x: flowRect.x, y: flowRect.y, width: flowRect.width, height: flowRect.height, text: "Fortsetzung")
-        continuation.flowID = textObjects[1].flowID; continuation.flowRegion = .page
+        // Page text (flows) no longer exists in notebooks (Textneubau, schema 14):
+        // a plain free field here; the flow migration is checked separately.
+        let continuation = TextBox(x: flowRect.x, y: flowRect.y, width: flowRect.width, height: flowRect.height, text: "Fortsetzung")
         try document.replaceTextBoxes([continuation], pageID: document.pages[1].id)
         // Schema 11: the paper sheet grows right/down in its own paper (seamless lines).
         try document.applyMargins(PageMargins(right: 300, bottom: 120, style: .blank, color: .white), pageIDs: [document.pages[1].id])
@@ -103,7 +103,8 @@ struct PageWorkflowCheck {
         let legacyCurrent = try Self.legacyJSON(document, originals: [imageAsset.sha256: imageData])
         try legacyCurrent.write(to: root.appendingPathComponent("current-v11.json"))
         // Format 2 through the app's streaming file writer; format 1 as older builds wrote it.
-        let backupURL = root.appendingPathComponent("heft.notybackup")
+        // Written as `.noty` (TEXT-REBUILD-62 §5): same format-2 content as `.notybackup`.
+        let backupURL = root.appendingPathComponent("heft.noty")
         let writtenBackup = try BackupArchive.write(document, assets: revisionStore.assets, to: backupURL)
         let backup = try Data(contentsOf: backupURL)
         guard writtenBackup.formatVersion == 2, writtenBackup.file == (try BoundedFile.checksum(backupURL)),
@@ -114,7 +115,7 @@ struct PageWorkflowCheck {
         // One flipped byte inside the asset record (SHA-256) must be refused.
         guard let assetRange = backup.range(of: imageData) else { throw StorageError.invalidDocument }
         var corrupt = backup; corrupt[assetRange.lowerBound + imageData.count / 2] ^= 1
-        try corrupt.write(to: root.appendingPathComponent("corrupt.notybackup"))
+        try corrupt.write(to: root.appendingPathComponent("corrupt.noty"))
         // Format 1 as Build 53 wrote it: schema 11 with the embedded original.
         let legacyBackupURL = root.appendingPathComponent("heft-v1.notybackup")
         try BackupArchive.encodeVersion1(payload: legacyCurrent).write(to: legacyBackupURL)
@@ -128,7 +129,7 @@ struct PageWorkflowCheck {
             let restoredOriginal = try Data(contentsOf: restoredCopy.directory.appendingPathComponent("Assets/\(imageAsset.sha256)"))
             guard reopened.id != document.id, reopened.pages == document.pages, reopened.deletedPages == document.deletedPages,
                   reopened.schemaVersion == 12, restoredOriginal == imageData,
-                  reopened.title == document.title + " (Wiederhergestellt)" else { throw StorageError.invalidDocument }
+                  reopened.title == document.title else { throw StorageError.invalidDocument }
             restoredBackups.append(try BackupArchive.verify(url).formatVersion)
         }
         let library = LibraryStore(root: storeRoot)
@@ -165,16 +166,32 @@ struct PageWorkflowCheck {
         var editedImage = image; editedImage.locked = false; editedImage.rotation = -45
         try independent.replaceImages([editedImage], pageID: beforeTrim.id)
         var changedShapes = shapes; changedShapes[0] = changedShapes[0].translated(x: 20, y: 10)
+        // Schema 13: a bent arrow and a polygon as held shapes with corners.
+        changedShapes += [ShapeObject(kind: .arrow, vertices: [.init(x: 20, y: 250), .init(x: 20, y: 290), .init(x: 150, y: 290)], lineWidth: 2.5),
+                          ShapeObject(kind: .polygon, vertices: [.init(x: 60, y: 300), .init(x: 160, y: 300), .init(x: 110, y: 380)], color: InkColor(0.8, 0, 0))]
+        let schemaBeforeVertices = independent.schemaVersion
         try independent.replaceShapes(changedShapes, pageID: beforeTrim.id)
         let independentURL = try await restoredLibrary.documentURL(id: independent.id)
-        try RevisionStore(directory: independentURL).save(independent)
+        let independentStore = RevisionStore(directory: independentURL)
+        try independentStore.save(independent)
         guard try RevisionStore(directory: storeRoot).load() == document,
               try RevisionStore(directory: independentURL).load() == independent,
+              schemaBeforeVertices == 12, independent.schemaVersion == 13,
               independent.pages.count == document.pages.count + 1,
               old.pages[0].text == "BULK-12 · Seite 1" else { throw StorageError.invalidDocument }
+        // The schema-13 copy as a format-2 backup, checked by the Python verifier.
+        _ = try BackupArchive.write(independent, assets: independentStore.assets, to: root.appendingPathComponent("heft-v13.notybackup"))
+        try JSONEncoder().encode(independent).write(to: root.appendingPathComponent("current-v13.json"))
+        let migrated = try FileManager.default.contentsOfDirectory(at: independentURL.appendingPathComponent("Migrations"), includingPropertiesForKeys: nil)
+        guard migrated.contains(where: { FileManager.default.fileExists(atPath: $0.appendingPathComponent("notebook-v12.json").path) }) else {
+            throw StorageError.invalidDocument
+        }
         let legacyPackage = try await Self.checkLegacyPackage(root: root, image: imageData)
+        let flowPackage = try await Self.checkTextFlowMigration(root: root)
+        let textDocument = try await Self.checkTextDocument(root: root)
+        let textDocumentExtras = try await Self.checkTextDocumentExtras(root: root)
         let report: [String: Any] = ["schemaVersion": document.schemaVersion,
-            "textFlowSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first?.flowID == continuation.flowID,
+            "textFieldSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first == continuation,
             "unmaterializedDraftExcludedFromNotebookArchive": !roundTrip.documents[0].pages.contains(where: { $0.id == document.writingDraft().id }),
             "richFormattingSurvivesLibraryRestore": roundTrip.documents[0].pages.first(where: { $0.id == beforeTrim.id })?.textBoxes?[1].runs == textObjects[1].runs,
             "automaticColorAndHighlightSurviveLibraryRestore": roundTrip.documents[0].pages.first(where: { $0.id == beforeTrim.id })?.textBoxes?[1].runs?.last?.style == colorStyle,
@@ -192,7 +209,14 @@ struct PageWorkflowCheck {
             "archiveAssets": written.assetCount + writtenBackup.assets.count,
             "legacySchema11OpenWritesNothing": legacyPackage.openWritesNothing,
             "legacySchema11EditKeepsExactBytesUnderMigrations": legacyPackage.exactBytesArchived,
-            "legacySchema11EditWritesAssetThenSchema12": legacyPackage.assetWritten]
+            "legacySchema11EditWritesAssetThenSchema12": legacyPackage.assetWritten,
+            "pageTextSchema13OpenWritesNothing": flowPackage.openWritesNothing,
+            "pageTextSchema13EditKeepsExactBytesUnderMigrations": flowPackage.exactBytesArchived,
+            "pageTextBecomesFieldsAtSameFrameInSchema14": flowPackage.sameFrames,
+            "textDocumentSchema15KeepsFlowAndHandwritingPage": textDocument.flowKept,
+            "textDocumentKindAndFieldStyleSurviveNotyImportAndLibraryRestore": textDocument.kindKept,
+            "textDocumentMarkdownExport": textDocument.markdown,
+            "textDocumentPageBreakKept": textDocumentExtras.breakKept, "textDocumentPaperChanged": textDocumentExtras.paperChanged]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
     }
@@ -291,4 +315,181 @@ struct PageWorkflowCheck {
         guard openWritesNothing, exactBytesArchived, assetWritten else { throw StorageError.invalidDocument }
         return (openWritesNothing, exactBytesArchived, assetWritten)
     }
+
+    /// Text document (schema 15, Textneubau Stufe 3): created in a library,
+    /// text flowing over three pages around a page with handwriting, a free
+    /// field; shared as `.noty`, imported again (kind recognised), backed up
+    /// with the library and restored into a new area (kind taken from the
+    /// document even though the archived index lost the hint). Python checks
+    /// the package, the `.noty` file and the library archive.
+    static func checkTextDocument(root: URL) async throws -> (flowKept: Bool, kindKept: Bool, markdown: Bool) {
+        let libraryRoot = root.appendingPathComponent("TextDocument", isDirectory: true)
+        let library = LibraryStore(root: libraryRoot); _ = try await library.load()
+        var document = try Notebook.textDocument(title: "Referat Ökologie", landscape: false, paper: .lined)
+        var draft = document.writingDraft(); draft.drawing = Data([7, 7, 7])
+        try document.materializeWritingDraft(draft)
+        let first = document.textFlowSegments[0]
+        var typed = first.box
+        typed.text = "Einleitung\n• Punkt eins\n☐ offen\n" + String(repeating: "Text ", count: 40)
+        var heading = typed.style; TextStylePreset.title.apply(to: &heading)
+        typed.runs = [TextRun(location: 0, length: 10, style: heading)]
+        (document, _) = try document.reflowText(pageID: first.pageID, previous: first.box, replacement: typed,
+            selection: NSRange(location: (typed.text as NSString).length, length: 0),
+            pageCapacity: { _, box in min(90, (box.text as NSString).length) })
+        var boxes = document.pages[0].effectiveTextBoxes
+        var field = TextBox(x: 300, y: 600, width: 120, height: 24, text: "Randnotiz"); field.autoWidth = true
+        field.fill = .blue; field.border = .accent // Feldstil (Stufe 4), schema 14 inside the text document's 15
+        boxes.append(field)
+        try document.replaceTextBoxes(boxes, pageID: document.pages[0].id)
+        let flowKept = document.schemaVersion == 15 && document.isTextDocument && document.pages.count == 3
+            && document.pages[1].id == draft.id && document.pages[1].drawing == Data([7, 7, 7])
+            && document.textFlowSegments.count == 3 && document.textFlowContent?.text == typed.text
+        _ = try await library.createDocument(document, parentID: nil)
+        let package = try await library.documentURL(id: document.id)
+        let reopened = try RevisionStore(directory: package, readOnly: true).load()
+        let shareURL = root.appendingPathComponent("textdokument.noty")
+        _ = try BackupArchive.write(reopened, to: shareURL)
+        try JSONEncoder().encode(reopened).write(to: root.appendingPathComponent("current-textdokument.json"))
+        let repository = NotebookRepository(directory: libraryRoot)
+        let prepared = try await repository.prepareRestore(from: shareURL)
+        let imported = try await NotebookImport.commit(prepared, repository: repository, library: library, parentID: nil, replacing: nil)
+        // An older build rewrote the index without the hint: the restore takes the kind from the documents.
+        var plan = try await library.backupBundle()
+        plan.snapshot.items = plan.snapshot.items.map { var item = $0; item.kind = nil; return item }
+        let archiveURL = root.appendingPathComponent("textdokument.notylibrary")
+        try LibraryArchive.encode(plan).write(to: archiveURL)
+        let written = try LibraryArchive.write(try await library.backupPlan(), to: root.appendingPathComponent("textdokument-index.notylibrary"))
+        let workspaces = WorkspaceStore(root: root.appendingPathComponent("TextDocumentWorkspaces"))
+        let staged = try await workspaces.prepareRestore(file: archiveURL)
+        let restored = try await workspaces.commitRestore(staged, title: "Textdokument-Restore")
+        let restoredSnapshot = try await LibraryStore(root: try await workspaces.directory(for: restored.id)).load().snapshot
+        let importedDocument = try RevisionStore(directory: try await library.documentURL(id: imported.id), readOnly: true).load()
+        let restoredLibrary = LibraryStore(root: try await workspaces.directory(for: restored.id))
+        var restoredStyles: [TextBox?] = []
+        for item in try await restoredLibrary.load().snapshot.items where !item.isFolder {
+            let restoredDocument = try RevisionStore(directory: try await restoredLibrary.documentURL(id: item.id), readOnly: true).load()
+            restoredStyles.append(restoredDocument.pages[0].textBoxes?.first(where: { $0.flowID == nil }))
+        }
+        let styleKept = importedDocument.pages[0].textBoxes?.first(where: { $0.flowID == nil })?.fill == .blue
+            && restoredStyles.count == 2 && restoredStyles.allSatisfy { $0?.fill == .blue && $0?.border == .accent }
+        let kindKept = reopened == document && styleKept
+            && imported.snapshot.items.first(where: { $0.id == imported.id })?.kind == .textDocument
+            && written.notebooks.count == 2
+            && restoredSnapshot.items.filter { !$0.isFolder }.allSatisfy { $0.kind == .textDocument }
+            && restoredSnapshot.items.filter { !$0.isFolder }.count == 2
+        let markdown = TextDocumentExport.markdown(document).hasPrefix("# Einleitung\n\n- Punkt eins\n- [ ] offen\n\nText Text")
+        guard flowKept, kindKept, markdown else { throw StorageError.invalidDocument }
+        return (flowKept, kindKept, markdown)
+    }
+
+    /// A manual page break needs no format of its own: U+000C stands in the
+    /// text of schema 15, Python reads the package, `.noty` and library archive
+    /// as usual. The paper changes on all pages, Word and RTF of the same
+    /// document go to `verify_office_export.py`.
+    static func checkTextDocumentExtras(root: URL) async throws -> (breakKept: Bool, paperChanged: Bool) {
+        let libraryRoot = root.appendingPathComponent("TextDocumentExtras", isDirectory: true)
+        let library = LibraryStore(root: libraryRoot); _ = try await library.load()
+        var document = try Notebook.textDocument(title: "Umbruch & Papier", paper: .lined)
+        let capacity: (Page, TextBox) throws -> Int = { page, box in min(page.paper == .lined ? 90 : 70, (box.text as NSString).length) }
+        let layout = TextFlowLayout(capacity: capacity)
+        let first = document.textFlowSegments[0]
+        var typed = first.box
+        typed.text = "Kapitel\n• Punkt\n1. eins\n☐ offen\nLink" + TextLines.pageBreakText + "Zweite Seite\n" + String(repeating: "Text ", count: 30)
+        (document, _) = try document.reflowText(pageID: first.pageID, previous: first.box, replacement: typed,
+            selection: NSRange(location: 0, length: 0), pageCapacity: capacity)
+        let formats: [(Int, Int, (inout TextBoxStyle) -> Void)] = [
+            (0, 7, { TextStylePreset.heading.apply(to: &$0) }), (32, 4, { $0.link = "https://example.org/?a=1&b=2" }),
+            (37, 6, { $0.bold = true }), (44, 5, { $0.italic = true }), (50, 4, { $0.underline = true }), (55, 4, { $0.strikethrough = true }),
+            (60, 4, { $0.color = .red; $0.automaticColor = nil }), (65, 4, { $0.highlighted = true })]
+        for (location, length, change) in formats {
+            document = try document.restylingTextFlow(range: NSRange(location: location, length: length), layout: layout, change: change).0
+        }
+        let breakKept = document.textFlowSegments[0].box.text.hasSuffix(TextLines.pageBreakText) && document.schemaVersion == 15
+        document = try document.changingTextDocumentPaper(.grid, color: .dark, layout: layout)
+        let paperChanged = document.pages.allSatisfy { $0.paper == .grid && $0.paperColor == .dark } && document.appearance?.paper == .grid
+            && document.textFlowContent?.text == typed.text && document.textFlowSegments[0].box.text.hasSuffix(TextLines.pageBreakText)
+        _ = try await library.createDocument(document, parentID: nil)
+        let reopened = try RevisionStore(directory: try await library.documentURL(id: document.id), readOnly: true).load()
+        _ = try BackupArchive.write(reopened, to: root.appendingPathComponent("textdokument-umbruch.noty"))
+        try JSONEncoder().encode(reopened).write(to: root.appendingPathComponent("current-textdokument-umbruch.json"))
+        _ = try LibraryArchive.write(try await library.backupPlan(), to: root.appendingPathComponent("textdokument-umbruch.notylibrary"))
+        try TextDocumentExport.data(reopened, as: .word).write(to: root.appendingPathComponent("textdokument.docx"))
+        try TextDocumentExport.data(reopened, as: .rtf).write(to: root.appendingPathComponent("textdokument.rtf"))
+        guard reopened == document, breakKept, paperChanged else { throw StorageError.invalidDocument }
+        return (breakKept, paperChanged)
+    }
+
+    /// Page text as Build ≤ 62 stored it (schema 13, flow segments over two
+    /// pages and in the page trash). Opening writes nothing; the notebook is
+    /// shown with free fields at exactly the same frames (schema 14 in
+    /// memory). The first edit keeps the exact old bytes under Migrations/
+    /// and commits schema 14; Python verifies the package and a backup.
+    static func checkTextFlowMigration(root: URL) async throws -> (openWritesNothing: Bool, exactBytesArchived: Bool, sameFrames: Bool) {
+        let fm = FileManager.default
+        let package = root.appendingPathComponent("FlowMigration", isDirectory: true)
+        let revisions = package.appendingPathComponent("Revisions", isDirectory: true)
+        try fm.createDirectory(at: revisions, withIntermediateDirectories: true)
+        var appearance = NotebookAppearance(); appearance.paper = .lined
+        var old = try Notebook.blank(title: "Seitentext", appearance: appearance)
+        _ = try old.insertPaper(.lined, at: 1, geometry: PaperStyle.geometry)
+        old = try old.preparedForTextEditing()
+        let rect = old.pages[0].writingRect(.page)!
+        let flow = UUID()
+        var first = TextBox(x: rect.x, y: rect.y, width: rect.width, height: rect.height, text: "Mitschrift ÄÖÜ ß\n• Punkt")
+        first.flowID = flow; first.flowRegion = .page
+        var bold = first.style; bold.bold = true
+        first.runs = [TextRun(location: 0, length: 10, style: bold)]
+        var second = first; second.id = UUID(); second.text = "Fortsetzung"; second.runs = nil
+        try old.replaceTextBoxes([first], pageID: old.pages[0].id)
+        try old.replaceTextBoxes([second], pageID: old.pages[1].id)
+        let trashed = try old.duplicatePage(old.pages[0].id)
+        try old.trashPage(trashed)
+        old.schemaVersion = 13
+        let bytes = try JSONEncoder().encode(old)
+        guard try NotebookDecoding.decode(bytes).storedSchemaVersion == 13 else { throw StorageError.invalidDocument }
+        let file = "21111111-2222-4333-8444-555555555555.json"
+        try bytes.write(to: revisions.appendingPathComponent(file))
+        let manifest = """
+        {"formatVersion":1,"checksumAlgorithm":"crc32-iso-hdlc","revisions":[{"file":"\(file)","byteCount":\(bytes.count),"crc32":\(SnapshotChecksum.crc32(bytes)),"savedAtUnix":1800000000}]}
+        """
+        try Data(manifest.utf8).write(to: package.appendingPathComponent("manifest.json"))
+        func inventory() throws -> [String: Data] {
+            var result: [String: Data] = [:]
+            let enumerator = fm.enumerator(at: package, includingPropertiesForKeys: nil)!
+            for case let url as URL in enumerator {
+                let isFile = (try url.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true
+                result[String(url.path.dropFirst(package.path.count))] = isFile ? try Data(contentsOf: url) : Data()
+            }
+            return result
+        }
+        let before = try inventory()
+        let repository = NotebookRepository(directory: package)
+        var (notebook, recovered) = try await repository.load()
+        try await repository.save(notebook, revision: 1) // the editor's save right after opening
+        let openWritesNothing = try inventory() == before
+        let fields = notebook.pages.compactMap { $0.textBoxes?.first }
+        let trashedField = notebook.deletedPages?.first?.page.textBoxes?.first
+        let sameFrames = !recovered && notebook.schemaVersion == 14 && !notebook.containsTextFlow
+            && fields.map(\.rect) == [first.rect, second.rect] && fields.map(\.text) == [first.text, second.text]
+            && fields[0].runs == first.runs && fields.allSatisfy { $0.flowRegion == .page && $0.flowID == nil }
+            && trashedField?.text == first.text && trashedField?.flowID == nil
+        // A typical first edit after the update: a rotated, automatically wide field.
+        var boxes = notebook.pages[0].effectiveTextBoxes
+        var turned = TextBox(x: 300, y: 500, width: 120, height: 24, text: "Gedreht")
+        turned.rotation = -30; turned.autoWidth = true
+        turned.fill = .yellow; turned.border = .text // Feldstil (Stufe 4): schema 14, no further raise
+        boxes.append(turned)
+        try notebook.replaceTextBoxes(boxes, pageID: notebook.pages[0].id)
+        try await repository.save(notebook, revision: 2)
+        let archived = try fm.contentsOfDirectory(at: package.appendingPathComponent("Migrations"), includingPropertiesForKeys: nil)
+            .map { $0.appendingPathComponent("notebook-v13.json") }.filter { fm.fileExists(atPath: $0.path) }
+        let exactBytesArchived = try archived.count == 1 && Data(contentsOf: archived[0]) == bytes
+        let reopened = try RevisionStore(directory: package).load()
+        guard openWritesNothing, sameFrames, exactBytesArchived, reopened == notebook else { throw StorageError.invalidDocument }
+        // Schema 14 written by Swift, verified independently by Python.
+        _ = try BackupArchive.write(notebook, assets: repository.assets, to: root.appendingPathComponent("heft-v14.notybackup"))
+        try JSONEncoder().encode(notebook).write(to: root.appendingPathComponent("current-v14.json"))
+        return (openWritesNothing, exactBytesArchived, sameFrames)
+    }
 }
+

@@ -5,6 +5,18 @@ import XCTest
 final class LibraryStoreTests: XCTestCase {
     private func root() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString) }
 
+    func testMoveIntoTheCurrentFolderKeepsTheOrder() async throws {
+        let root = root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = LibraryStore(root: root)
+        _ = try await store.load()
+        _ = try await store.createFolder(title: "A", parentID: nil)
+        let snapshot = try await store.createFolder(title: "B", parentID: nil)
+        let order = snapshot.items.map(\.id)
+        let first = try XCTUnwrap(snapshot.items.first(where: { $0.title == "A" }))
+        let moved = try await store.move(first.id, to: nil)
+        XCTAssertEqual(moved.items.map(\.id), order)
+    }
+
     func testAdoptsMainAndRestoreWithoutChangingAnyDocumentBytesOrIDs() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         var main = Notebook(); main.pages[0].text = "Altbestand ÄÖÜ"

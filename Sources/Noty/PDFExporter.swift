@@ -16,6 +16,15 @@ import NotebookCore
 enum PDFExporter {
     static let pageBounds = CGRect(x: 0, y: 0, width: 595, height: 842)
 
+    /// Pages of a whole-document PDF, the same from the editor and the
+    /// library: a text document without its trailing pages that hold nothing
+    /// (the reserve page is never part of it), a notebook every page (nil).
+    static func wholeDocumentPages(_ notebook: Notebook) -> Set<UUID>? {
+        notebook.isTextDocument ? Set(notebook.exportedPageIDs(drawingIsEmpty: EditorModel.drawingIsEmpty)) : nil
+    }
+    /// File name of an exported PDF (whole document or one page): the document title.
+    static func fileName(for title: String) -> String { NotyFile.fileStem(for: title) }
+
     enum ExportError: LocalizedError {
         case invalidSource
         case textOverflow([Int])
@@ -38,11 +47,11 @@ enum PDFExporter {
         let ink: UIImage?
     }
 
-    /// One finished page: a single-page PDF from UIKit's renderer plus its link
-    /// rectangles (UIKit page space; `drawPDFPage` does not carry annotations).
+    /// One finished page: a single-page PDF file from UIKit's renderer plus its
+    /// link rectangles (UIKit page space; `drawPDFPage` does not carry
+    /// annotations). On disk: a notebook full of photos does not fit in memory twice.
     private struct RenderedPage {
-        let document: CGPDFDocument
-        let page: CGPDFPage
+        let file: URL
         let bounds: CGRect
         let links: [(URL, CGRect)]
     }
@@ -75,15 +84,18 @@ enum PDFExporter {
         for (position, (index, page)) in selected.enumerated() {
             for image in page.images ?? [] { try ImageRendering.validate(image, assets: provider) }
             let layout = try PageLayout(page: page, source: sources[position])
-            let bounds = layout.canonicalInkBounds.insetBy(dx: -0.01, dy: -0.01)
+            let bounds = PageRect(layout.canonicalInkBounds)
             if page.resolvedTextBoxes.contains(where: { box in
-                TextObjectLayout(box, on: page).usedHeight > box.height + 0.5 || !bounds.contains(box.rect.cgRect)
+                TextObjectLayout.overflows(box, on: page) || !box.fits(in: bounds)
             }) { overflow.append(index + 1) }
             layouts.append(layout)
             if position % 16 == 15 { await Task.yield(); try Task.checkCancellation() }
         }
         guard overflow.isEmpty else { throw ExportError.textOverflow(overflow) }
 
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("noty-pdf-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
         var rendered: [RenderedPage] = []
         for (position, (_, page)) in selected.enumerated() {
             try Task.checkCancellation()
@@ -91,51 +103,65 @@ enum PDFExporter {
             let layout = layouts[position]
             let assets = try await Task.detached(priority: .userInitiated) { try Self.assets(page, layout: layout, images: provider) }.value
             try Task.checkCancellation()
-            rendered.append(try autoreleasepool { try render(page, layout: layout, source: sources[position], assets: assets) })
+            let file = folder.appendingPathComponent("\(position).pdf")
+            rendered.append(try autoreleasepool { try render(page, layout: layout, source: sources[position], assets: assets, to: file) })
             await Task.yield()
         }
         try Task.checkCancellation()
-        let data = assemble(rendered, title: snapshot.title)
+        let result = folder.appendingPathComponent("noty.pdf")
+        try assemble(rendered, title: snapshot.title, to: result)
         withExtendedLifetime((documents, catalogue)) {}
-        guard let check = CGDataProvider(data: data as CFData).flatMap(CGPDFDocument.init),
-              check.numberOfPages == rendered.count else { throw ExportError.writeFailed }
+        guard let check = CGPDFDocument(result as CFURL), check.numberOfPages == rendered.count else { throw ExportError.writeFailed }
+        // Mapped: the bytes stay on disk, and stay readable after the file's removal.
+        let data = try Data(contentsOf: result, options: .alwaysMapped)
         progress(selected.count, selected.count)
         return data
     }
 
-    /// The page in its own single-page PDF, drawn by UIKit's renderer.
-    private static func render(_ page: Page, layout: PageLayout, source: CGPDFPage?, assets: PageAssets) throws -> RenderedPage {
+    /// The page in its own single-page PDF file, drawn by UIKit's renderer.
+    private static func render(_ page: Page, layout: PageLayout, source: CGPDFPage?, assets: PageAssets, to file: URL) throws -> RenderedPage {
         let bounds = layout.canvas.bounds
         var links: [(URL, CGRect)] = []
-        let data = UIGraphicsPDFRenderer(bounds: bounds).pdfData { output in
+        try UIGraphicsPDFRenderer(bounds: bounds).writePDF(to: file) { output in
             links = drawPage(page, layout: layout, source: source, assets: assets, in: output)
         }
-        guard let document = CGDataProvider(data: data as CFData).flatMap(CGPDFDocument.init),
-              document.numberOfPages == 1, let pdfPage = document.page(at: 1) else { throw ExportError.writeFailed }
-        return RenderedPage(document: document, page: pdfPage, bounds: bounds, links: links)
+        guard let document = CGPDFDocument(file as CFURL), document.numberOfPages == 1 else { throw ExportError.writeFailed }
+        return RenderedPage(file: file, bounds: bounds, links: links)
     }
 
     /// The finished pages, unchanged and in order, in one document (again via
     /// UIKit's renderer). Links are set anew because a placed page has none.
-    private static func assemble(_ pages: [RenderedPage], title: String) -> Data {
+    private static func assemble(_ pages: [RenderedPage], title: String, to file: URL) throws {
         let format = UIGraphicsPDFRendererFormat()
         format.documentInfo = [kCGPDFContextTitle as String: title, kCGPDFContextCreator as String: "noty"]
-        return UIGraphicsPDFRenderer(bounds: pageBounds, format: format).pdfData { output in
+        var complete = true
+        try UIGraphicsPDFRenderer(bounds: pageBounds, format: format).writePDF(to: file) { output in
             for rendered in pages {
-                output.beginPage(withBounds: rendered.bounds, pageInfo: [:])
-                let context = output.cgContext
-                context.saveGState()
-                // From UIKit's y-down page space back to the page's own PDF space.
-                context.translateBy(x: 0, y: rendered.bounds.height); context.scaleBy(x: 1, y: -1)
-                context.drawPDFPage(rendered.page)
-                context.restoreGState()
-                for (url, rect) in rendered.links { output.setURL(url, for: rect) }
+                autoreleasepool {
+                    // A CGPDFPage does not keep its document alive.
+                    guard let document = CGPDFDocument(rendered.file as CFURL), let page = document.page(at: 1) else { complete = false; return }
+                    defer { withExtendedLifetime(document) {} }
+                    output.beginPage(withBounds: rendered.bounds, pageInfo: [:])
+                    let context = output.cgContext
+                    context.saveGState()
+                    // From UIKit's y-down page space back to the page's own PDF space.
+                    context.translateBy(x: 0, y: rendered.bounds.height); context.scaleBy(x: 1, y: -1)
+                    context.drawPDFPage(page)
+                    context.restoreGState()
+                    for (url, rect) in rendered.links { output.setURL(url, for: rect) }
+                }
             }
         }
+        guard complete else { throw ExportError.writeFailed }
     }
 
     nonisolated private static func assets(_ page: Page, layout: PageLayout, images provider: ImageAssetProviding) throws -> PageAssets {
-        let images = try (page.images ?? []).map { try ImageRendering.decoded($0, limit: 4096, assets: provider) }
+        let objects = page.images ?? []
+        let images = try objects.map { object in
+            // 300 dpi from the third image on.
+            let limit = ImageRendering.outputLimit(object, imagesOnPage: objects.count, maximum: 4096, pixelsPerPoint: 300.0 / 72)
+            return try ImageRendering.decoded(object, limit: limit, assets: provider)
+        }
         guard !page.drawing.isEmpty else { return PageAssets(images: images, ink: nil) }
         let drawing = try PKDrawing(data: page.drawing)
         // Bound the temporary raster for unusually large PDF pages.
@@ -179,6 +205,8 @@ enum PDFExporter {
                 for box in page.resolvedTextBoxes {
                     let text = TextObjectLayout(box, on: page)
                     let origin = CGPoint(x: box.x + layout.contentOrigin.x, y: box.y + layout.contentOrigin.y)
+                    // Feldstil below its own text (vector fill/frame; the text stays real, searchable text).
+                    TextFieldStyleRendering.draw(box, at: origin, context: context)
                     text.draw(at: origin)
                     links += text.links(at: origin)
                 }

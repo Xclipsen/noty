@@ -98,7 +98,7 @@ extension Page {
     /// Text bound to a margin flow belongs to that margin; free annotations
     /// are judged by their frame. Anything over the PDF scan stays unchanged.
     func textBoxLiesInMargins(_ box: TextBox) -> Bool {
-        if let region = box.flowRegion, region != .page { return true }
-        return liesInMargins(box.rect)
+        if box.flowID != nil, let region = box.flowRegion, region != .page { return true }
+        return liesInMargins(box.rotatedBounds)
     }
 }

@@ -39,7 +39,9 @@ enum ImageCompression {
         if data.count <= limit && pixelsFit { return Result(data: data, originalBytes: nil) }
         guard limit >= minimumBudget else { throw ImageImportError.fileTooLarge }
 
-        let alpha = properties[kCGImagePropertyHasAlpha] as? Bool ?? false
+        // Screenshots declare an alpha channel without using it: only real
+        // transparency needs PNG, which would shrink them far more than JPEG.
+        let alpha = (properties[kCGImagePropertyHasAlpha] as? Bool ?? false) && usesTransparency(source)
         var side = min(max(width, height), maximumSide)
         var quality = 0.85
         for _ in 0..<12 {
@@ -58,6 +60,21 @@ enum ImageCompression {
             guard side >= 256 else { break }
         }
         throw ImageImportError.fileTooLarge
+    }
+
+    /// Reduced copy on an RGBA canvas: averaging keeps any transparent area visible as alpha below 255.
+    private static func usesTransparency(_ source: CGImageSource) -> Bool {
+        let side = 256
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: side
+        ] as CFDictionary), let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+            bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let pixels = context.data else { return true }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let bytes = pixels.bindMemory(to: UInt8.self, capacity: image.width * image.height * 4)
+        for index in 0..<(image.width * image.height) where bytes[index * 4 + 3] < 250 { return true }
+        return false
     }
 
     private static func encode(_ image: CGImage, png: Bool, quality: Double) throws -> Data {

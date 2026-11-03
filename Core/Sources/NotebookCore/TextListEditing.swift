@@ -12,9 +12,9 @@ public enum TextListEditing {
         let source = text as NSString
         return selectedLines(in: text, range: NSRange(location: 0, length: source.length)).compactMap { line in
             guard matches(.checkbox, line.prefix) else { return nil }
-            let range = source.lineRange(for: NSRange(location: line.location, length: 0))
+            let range = TextLines.lineRange(source, NSRange(location: line.location, length: 0))
             var end = NSMaxRange(range)
-            while end > line.location && [10, 13].contains(source.character(at: end - 1)) { end -= 1 }
+            while end > line.location && [10, TextLines.pageBreak, 13].contains(source.character(at: end - 1)) { end -= 1 }
             let start = line.location + (line.prefix as NSString).length
             return TaskItem(marker: NSRange(location: line.location, length: 1),
                 body: NSRange(location: start, length: max(0, end - start)), checked: line.prefix == "☑ ")
@@ -28,12 +28,16 @@ public enum TextListEditing {
     public static func newline(in text: String, range: NSRange) -> Edit? {
         let source = text as NSString
         guard range.location >= 0, range.length >= 0, range.location <= source.length, range.length <= source.length - range.location else { return nil }
-        let line = source.lineRange(for: NSRange(location: range.location, length: 0))
+        let line = TextLines.lineRange(source, NSRange(location: range.location, length: 0))
         let before = source.substring(with: NSRange(location: line.location, length: range.location - line.location))
         let indent = String(before.prefix { $0 == " " || $0 == "\t" })
         guard let prefix = prefix(String(before.dropFirst(indent.count))) else { return nil }
         let content = String(before.dropFirst(indent.count + prefix.count))
-        if content.trimmingCharacters(in: .whitespaces).isEmpty {
+        var end = NSMaxRange(range)
+        while end < source.length, !TextLines.isBreak(source.character(at: end)) { end += 1 }
+        let rest = source.substring(with: NSRange(location: NSMaxRange(range), length: end - NSMaxRange(range)))
+        // An empty item ends the list; with text behind the caret it is a normal split.
+        if content.trimmingCharacters(in: .whitespaces).isEmpty, rest.trimmingCharacters(in: .whitespaces).isEmpty {
             return Edit(range: NSRange(location: line.location, length: range.location + range.length - line.location), replacement: "")
         }
         let next: String
@@ -102,7 +106,7 @@ public enum TextListEditing {
         let all = selectedLines(in: text, range: NSRange(location: 0, length: source.length))
         guard let index = all.firstIndex(where: { $0.location == current.location }) else { return selected }
         func indentation(_ line: (location: Int, prefix: String)) -> String {
-            let start = source.lineRange(for: NSRange(location: line.location, length: 0)).location
+            let start = TextLines.lineRange(source, NSRange(location: line.location, length: 0)).location
             return source.substring(with: NSRange(location: start, length: line.location - start))
         }
         let indent = indentation(current), depth = level?(lineStart(text, current.location))
@@ -119,10 +123,10 @@ public enum TextListEditing {
         let source = text as NSString
         guard range.location >= 0, range.length >= 0, range.location <= source.length,
               range.length <= source.length - range.location else { return [] }
-        let selected = source.lineRange(for: NSRange(location: range.location, length: max(0, range.length - 1)))
+        let selected = TextLines.lineRange(source, NSRange(location: range.location, length: max(0, range.length - 1)))
         var cursor = selected.location, result: [(Int, String)] = []
         repeat {
-            let line = source.lineRange(for: NSRange(location: cursor, length: 0))
+            let line = TextLines.lineRange(source, NSRange(location: cursor, length: 0))
             let value = source.substring(with: line)
             let indent = value.prefix { $0 == " " || $0 == "\t" }
             let start = cursor + (String(indent) as NSString).length
