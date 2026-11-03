@@ -1,6 +1,6 @@
 # Mit Apple anmelden
 
-Status: in Arbeit auf `feat/ki-panel` (App) und im Konto-Backend `gesetzessammlung-noty` (Server, Website). Vom Nutzer am 03.11.2026 beauftragt: App und Web, bestehendes Konto „Leon“ verknüpfen, Live-Backend mit Sicherung ausrollen. Ersetzt die frühere Grenze „kein Apple-Login im kostenlosen Signierungssetup“ (seit 29.10.2026 bezahltes Developer-Konto).
+Status: in Arbeit auf `exp/ki` (App) und im Konto-Backend `gesetzessammlung-noty` (Server, Website). Vom Nutzer am 03.11.2026 beauftragt: App und Web, bestehendes Konto „Leon“ verknüpfen, Live-Backend mit Sicherung ausrollen. Ersetzt die frühere Grenze „kein Apple-Login im kostenlosen Signierungssetup“ (seit 29.10.2026 bezahltes Developer-Konto).
 
 ## Grundsätze
 
@@ -51,7 +51,7 @@ Fehlermeldungen deutsch. Ratelimits wie bei Login. Konten ohne Passwort, die nur
 
 ## Admin-Panel
 
-Das Admin-Panel gehört zum KI-Dienst. Ein experimenteller KI-Assistent existiert separat auf dem Branch feat/ki-panel und ist nicht Teil dieses Release-Kandidaten.
+Das Admin-Panel gehört zum KI-Dienst. Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
 
 ## Apple-Developer-Portal (nur der Nutzer)
 

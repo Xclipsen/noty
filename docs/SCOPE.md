@@ -14,7 +14,7 @@ Appweites E-Mail-/Passwortkonto auf dem bestehenden IONOS-Backend, auch auf der 
 
 ## KI-Assistent
 
-Ein experimenteller KI-Assistent existiert separat auf dem Branch feat/ki-panel und ist nicht Teil dieses Release-Kandidaten.
+Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
 
 ## Bestätigte Entscheidungen
 

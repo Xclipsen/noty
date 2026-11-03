@@ -50,9 +50,19 @@ Archivprüfer: `python3 -B scripts/verify_backup.py ARCHIV --compare REVISION.js
 
 `origin` ist das **öffentliche** Repo `github.com/Xclipsen/noty`; es soll immer `main` spiegeln. Lokale Hooks (`post-commit`, `post-merge`, `post-rewrite` → `.git/hooks/noty-autopush`) pushen jeden neuen Stand von `main` im Hintergrund, Protokoll in `.git/autopush.log`; andere Branches bleiben lokal. Nach Merges prüfen: `git rev-list --count origin/main..main` muss 0 sein, sonst manuell pushen. Wegen Öffentlichkeit nie private Hefte, Gerätesicherungen, UDIDs, Zugangsdaten oder `.tools/`-Artefakte committen.
 
-## Arbeitsweise: nur in dev
+## Branches und Apps
 
-Gearbeitet wird nur in der App **noty dev** (`de.la.noty.dev`, eigene Daten). `bash scripts/publish_ota.sh` veröffentlicht ohne Angabe dorthin. Die normale App noty (`de.la.noty.prototype`) mit den echten Heften und `main` bekommen eine Änderung erst, wenn der Nutzer mit ihr in dev zufrieden ist und das sagt. Dann: Stand nach `main` übernehmen und mit `NOTY_CHANNEL=stable bash scripts/publish_ota.sh` veröffentlichen. Details: [ENVIRONMENT](docs/ENVIRONMENT.md).
+| Branch | Worktree | App | Regel |
+| --- | --- | --- | --- |
+| `main` | `/home/la/workspace/noty` | **noty** (`de.la.noty.prototype`, echte Hefte) | Nur freigegebene Stände aus `dev`, per `git merge --no-ff dev`, nachdem der Nutzer den Stand in noty dev getestet und ausdrücklich freigegeben hat. Spiegelt GitHub. Jede Installation bekommt das Tag `stable/build-N`. |
+| `dev` | `/home/la/workspace/noty-dev` | **noty dev** (`de.la.noty.dev`, eigene Daten) | Alles, was in die nächste normale Version soll. Hier wird gearbeitet. |
+| `exp/<name>` | eigener Worktree, z. B. `noty-ki` für `exp/ki` | noty dev, nur auf ausdrücklichen Wunsch | Experimente wie der KI-Assistent. Nehmen `dev` regelmäßig auf (`git merge dev`), gehen nur nach Entscheidung des Nutzers nach `dev`. `exp/ki` trägt zusätzlich `bridge/`, von dem der Dienst `noty-ai` läuft. |
+| `feat/<name>` | eigener Worktree | noty dev | Größere Einzelthemen, von `dev` abgezweigt, nach dem Merge in `dev` gelöscht. |
+
+- `scripts/publish_ota.sh` setzt das durch: noty dev nur von `dev`, `exp/*` oder `feat/*` und nur committet (`NOTY_ALLOW_DIRTY=1` als bewusste Ausnahme); die normale noty nur von `main`, sauber und mit `NOTY_STABLE_CONFIRMED=1`, nachdem der Nutzer zugestimmt und vorher ein Bibliotheksbackup bzw. eine Sicherung gemacht hat. Die Installationsseite nennt Branch und Commit.
+- Buildnummern (`CFBundleVersion`) zählen über beide Apps durchgehend hoch; das Skript lehnt eine Nummer ab, die nicht größer als die zuletzt veröffentlichte ist.
+- Ablauf einer Änderung: in `dev` (oder `feat/*`) bauen und testen → noty dev → Nutzer prüft → auf Wunsch `main` + normale noty. Ohne ausdrückliche Freigabe nichts auf `main` oder die normale noty.
+- Nicht mehr gebrauchte Branches nach dem Merge löschen; vorher prüfen, dass sie enthalten sind (`git merge-base --is-ancestor`).
 
 ## Geräteupdates und Nachweise
 

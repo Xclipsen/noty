@@ -67,7 +67,7 @@ Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Pla
 
 ## KI-Assistent
 
-Ein experimenteller KI-Assistent existiert separat auf dem Branch feat/ki-panel und ist nicht Teil dieses Release-Kandidaten.
+Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
 
 ## Native Gesetzessammlung – Feature-Worktree, 20.10.2026
 

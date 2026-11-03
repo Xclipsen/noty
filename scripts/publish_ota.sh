@@ -25,6 +25,28 @@ case "${NOTY_CHANNEL:-dev}" in
           PAGE_NOTE="Testversion mit eigenen Daten. Die normale noty und ihre Hefte bleiben unberührt." ;;
   *) echo "NOTY_CHANNEL muss stable oder dev sein" >&2; exit 1 ;;
 esac
+
+# Branch-Regeln (AGENTS.md, „Branches und Apps“): Die normale noty bekommt nur
+# freigegebene, committete Stände von main; noty dev nur committete Stände von
+# dev, exp/* oder feat/*. So steht immer fest, was auf welchem iPad läuft.
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"; COMMIT="$(git rev-parse --short HEAD)"
+DIRTY="$(git status --porcelain --untracked-files=no)"
+case "${NOTY_CHANNEL:-dev}" in
+  stable)
+    [ "$BRANCH" = main ] || { echo "Die normale noty wird nur von main gebaut (aktuell: $BRANCH)." >&2; exit 1; }
+    [ -z "$DIRTY" ] || { echo "main hat uncommittete Änderungen; nichts veröffentlicht." >&2; exit 1; }
+    [ "${NOTY_STABLE_CONFIRMED:-}" = 1 ] || { echo "Normale noty nur nach Freigabe durch den Nutzer und Sicherung vorher: NOTY_STABLE_CONFIRMED=1 setzen." >&2; exit 1; } ;;
+  dev)
+    case "$BRANCH" in dev|exp/*|feat/*) ;; *) echo "noty dev wird nur von dev, exp/* oder feat/* gebaut (aktuell: $BRANCH)." >&2; exit 1 ;; esac
+    if [ -n "$DIRTY" ] && [ "${NOTY_ALLOW_DIRTY:-}" != 1 ]; then echo "Uncommittete Änderungen; erst committen (Ausnahme: NOTY_ALLOW_DIRTY=1)." >&2; exit 1; fi ;;
+esac
+SOURCE="$BRANCH · $COMMIT"; [ -z "$DIRTY" ] || SOURCE="$SOURCE · mit uncommitteten Änderungen"
+# Buildnummern zählen über beide Apps durchgehend hoch.
+NEXT="$(sed -n 's#.*<key>CFBundleVersion</key><string>\([0-9]*\)</string>.*#\1#p' Info.plist)"
+LAST="$( { if [ -d "$OTA_DIR" ]; then ls "$OTA_DIR" "$OTA_DIR-dev"; else ssh "$OTA_HOST" "ls '$OTA_DIR' '$OTA_DIR-dev'"; fi; } 2>/dev/null | sed -n 's/^Noty-\([0-9]*\)\.ipa$/\1/p' | sort -n | tail -1)"
+if [ -n "$LAST" ] && [ "$NEXT" -le "$LAST" ] && [ "${NOTY_SAME_BUILD:-}" != 1 ]; then
+  echo "Build $NEXT ist nicht größer als der zuletzt veröffentlichte Build $LAST; CFBundleVersion erhöhen." >&2; exit 1
+fi
 INSTALLED_ID="XTL-BAFXLQ964V.XTL-BAFXLQ964V.$BASE_ID"
 ORIGINAL="$(mktemp)"; ORIGINAL_INFO="$(mktemp)"
 cp xtool.yml "$ORIGINAL"; cp Info.plist "$ORIGINAL_INFO"
@@ -70,7 +92,7 @@ cat > "$STAGE/index.html" <<HTML
 <meta name="robots" content="noindex,nofollow"><title>$APP_NAME</title>
 <style>body{font:17px -apple-system,sans-serif;background:#111;color:#eee;max-width:32em;margin:3em auto;padding:0 1em;line-height:1.5}
 a.b{display:block;background:#0a84ff;color:#fff;text-align:center;padding:.8em;border-radius:12px;text-decoration:none;font-weight:600;margin:1.5em 0}</style></head>
-<body><h1>$APP_NAME Build $BUILD</h1><p>$PAGE_NOTE</p>
+<body><h1>$APP_NAME Build $BUILD</h1><p>$PAGE_NOTE</p><p style="color:#999">Stand: $SOURCE</p>
 <a class="b" href="$LINK">Build $BUILD installieren</a><p>Auf diesem iPad in Safari öffnen. Nach dem Tippen erscheint die Abfrage „Installieren“, der Fortschritt läuft auf dem Home-Bildschirm.</p></body></html>
 HTML
 if [ -d "$OTA_DIR" ]; then DEST="$PAGE_DIR"; mkdir -p -m 755 "$PAGE_DIR"; else
@@ -83,4 +105,8 @@ rm -rf "$STAGE"
 # Nur die letzten zwei Builds bleiben liegen.
 PRUNE="cd '$PAGE_DIR' && ls -t Noty-*.ipa | tail -n +3 | xargs -r rm --"
 if [ "$DEST" = "$PAGE_DIR" ]; then bash -c "$PRUNE"; else ssh "$OTA_HOST" "$PRUNE"; fi
-echo "Veröffentlicht: $APP_NAME Build $BUILD · $PAGE_URL"
+if [ "${NOTY_CHANNEL:-dev}" = stable ]; then
+  # Jede Installation auf die normale noty bekommt ein Tag; der Hook pusht main, Tags gehen hier mit.
+  git tag -a "stable/build-$BUILD" -m "Normale noty Build $BUILD" && git push -q origin "stable/build-$BUILD" || echo "Tag stable/build-$BUILD nicht gesetzt oder nicht gepusht" >&2
+fi
+echo "Veröffentlicht: $APP_NAME Build $BUILD · $SOURCE · $PAGE_URL"
