@@ -1,8 +1,8 @@
 # noty Kalender – Produkt- und Entwicklungsplan
 
-Stand: 03.11.2026. **Bestätigte Produktplanung, keine implementierte Kalenderfunktion.** Technischer Ausgangsabgleich mit `dev` bei `6524a97`; technische Vorschläge und Quellenhinweise unten bleiben vor der Umsetzung zu prüfen. Dieser Plan erweitert den bisherigen [SCOPE](SCOPE.md).
+Stand: 03.11.2026. **Bestätigte Produktplanung. Stufe A (Design und Navigation mit Beispieldaten) ist auf `feat/kalender` implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft; die Designabnahme durch den Nutzer steht aus.** Es gibt weiterhin keine Kalenderspeicherung, keine echten Termine und keinen WebUntis-/EventKit-Anschluss (Stufe B/C). Technischer Ausgangsabgleich mit `dev` bei `6524a97`; technische Vorschläge und Quellenhinweise unten bleiben vor der Umsetzung zu prüfen. Dieser Plan erweitert den bisherigen [SCOPE](SCOPE.md).
 
-**Aktueller Auftrag: ausschließlich festhalten, nicht bauen.** Der Nutzer hat nach dem Entscheidungsinterview den unten beschriebenen Umfang bestätigt. Das ist eine Bestätigung der Anforderungen, keine Freigabe zur Implementierung, zum Build, zur Installation oder zur Veröffentlichung. Ein späterer Umsetzungsauftrag beginnt mit dem Design zur Ansicht.
+**Aufträge:** Zunächst nur festgehalten (Bestätigung der Anforderungen, keine Freigabe zum Bauen). Am 03.11.2026 folgte der Umsetzungsauftrag für **Stufe A** (Design zur Ansicht mit fiktiven Daten, ohne Installation und Veröffentlichung). Stufen B–D sind weiterhin nicht beauftragt. Umsetzungsstand: [Stufe A](#umsetzungsstand-stufe-a-03112026).
 
 ## 1. Ziel und bestätigte Richtung
 
@@ -71,17 +71,42 @@ Mit ausschließlich fiktiven Daten die folgenden Zustände zeigen und abstimmen:
 
 ## 3. Lieferumfang und Reihenfolge
 
-Alle folgenden Schritte sind **geplant und nicht umgesetzt**. Aktuell ist nur diese Dokumentation beauftragt.
+Stufe A ist implementiert und gebaut (Häkchen = implementiert und erfolgreich gebaut, **nicht** am iPad getestet). Stufen B–D sind **geplant und nicht umgesetzt**.
 
-### Stufe A – Kalenderdesign und Navigation, nach separatem Umsetzungsauftrag
+### Stufe A – Kalenderdesign und Navigation, Umsetzungsauftrag vom 03.11.2026
 
-- [ ] Native Ansichten und Termindetails gemäß Abschnitt 2 mit ausschließlich fiktiven Beispielen.
-- [ ] Jahr, Monat, Woche, Tag, Heute und Datumsauswahl; Fünf-/Siebentageumschaltung.
-- [ ] Direkt beschreibbare Notizseite, Inhaltsindikator, zusätzliche Seiten sowie Vergrößern und Rückkehr gestalten.
-- [ ] Hoch-/Querformat, kleine Fenster, Tastatur und große Schrift berücksichtigen.
-- [ ] Gestaltung und Weg „Termin → daneben schreiben → vergrößern → zurück“ vom Nutzer abnehmen lassen.
+- [x] Native Ansichten und Termindetails gemäß Abschnitt 2 mit ausschließlich fiktiven Beispielen.
+- [x] Jahr, Monat, Woche, Tag, Heute und Datumsauswahl; Fünf-/Siebentageumschaltung.
+- [x] Direkt beschreibbare Notizseite, Inhaltsindikator, zusätzliche Seiten sowie Vergrößern und Rückkehr gestalten (Entwurf, Inhalt nur im Speicher).
+- [ ] Hoch-/Querformat, kleine Fenster, Tastatur und große Schrift berücksichtigen. Im Code berücksichtigt (Breitenregeln, Overlay, waagerechtes Scrollen, ⌘-Kürzel, Dynamic Type, VoiceOver-Beschriftungen), am iPad **ungeprüft**.
+- [ ] Gestaltung und Weg „Termin → daneben schreiben → vergrößern → zurück“ vom Nutzer abnehmen lassen. **Offen.**
 
 **Abnahme:** Bestätigung des konkreten Designs, noch kein Nachweis dauerhafter Speicherung.
+
+#### Umsetzungsstand Stufe A (03.11.2026)
+
+Branch `feat/kalender` (vom Stand `dev` @6524a97). **Implementiert, Core-Tests bestanden (1110 ausgeführt, davon 13 neu in `CalendarLayoutTests`, 0 Fehler, 4 umgebungsbedingt übersprungen), iPad-SDK-Build (`xtool dev build`, unsigniert) erfolgreich ohne Warnungen in den neuen Dateien; nicht installiert, am iPad ungeprüft, Designabnahme offen.**
+
+- **Einstieg:** Zeile „Kalender“ in der Bibliotheksleiste unter „Zuletzt verwendet“. Die Detailspalte zeigt dann den Kalender mit eigener Werkzeugleiste; Namenssuche, Bearbeiten-Modus und Ablegen gehören nur zur Sammlung. Bibliotheksleiste, angeheftete Einträge und Baum bleiben sichtbar; ein dort geöffnetes Heft kehrt beim Schließen in den Kalender zurück. Ansicht, Datum, Auswahl und Entwurfsnotizen bleiben beim Wechsel Kalender ↔ Bibliothek erhalten (Modell lebt mit der Bibliothek, pro Bereich neu). Im Kalender wird ⌘N zu „Neuer Termin …“.
+- **Kopf:** Zeitraum („KW 45 · 2.–6. November 2026“), zurück/vor, „Heute“, Hinweis „Beispieldaten · nichts wird gespeichert“. Werkzeugleiste: Kalenderleiste ein/aus, Segmente „Jahr · Monat · Woche · Tag“, in der Woche „5 Tage/7 Tage“ (gemerkt in `noty.calendar.weekDays`), Suche, „+“.
+- **Woche/Tag:** feste Tagesköpfe (Antippen öffnet den Tag), Ganztagszeile mit Bahnen (nichts abgeschnitten), 24-Stunden-Raster, beim Öffnen zur aktuellen Stunde gescrollt (sonst 07:00), heute rot markiert, rote Linie mit Uhrzeit, Überschneidungen nebeneinander. Karten: Titel, Zeit, Raum, Status in Text und Symbol (Ausfall zusätzlich durchgestrichen und schraffiert), Notizsymbol. Zu schmale Spalten scrollen waagerecht, die Ansicht wechselt nie selbst. Tag mit mehr Detail (Lehrkraft, Vertretung, Beschreibung).
+- **Monat:** sieben Spalten mit KW, kompakte Zeilen; was nicht passt, zählt „+ n weitere“ (öffnet die vollständige Tagesliste mit „Tag öffnen“). Datum antippen öffnet den Tag. Bei großer Schrift behalten Zeilen ihre Mindesthöhe und scrollen.
+- **Jahr:** zwölf Monate mit 44-pt-Tagen, Punkt für Termintage, Band für Beispielferien mit Legende „Ferien (Beispiel – keine echte Ferienquelle)“. Tag antippen öffnet den Tag, Monatsname den Monat.
+- **Linke Leiste** (nur mit genug Platz, einklappbar, `noty.calendar.panel`): Minimonat mit markiertem Zeitraum, Kalender mit Farbpunkten, Herkunft und Schloss für schreibgeschützte, ein-/ausblendbar; Schalter „Beispieldaten anzeigen“ für die leere Ansicht.
+- **Termindetails:** Titel → Datum/Uhrzeit → Kalender (mit Herkunft) → Ort → Lehrkraft/Vertretung → Wiederholung/Erinnerung → Beschreibung → „Notizen“. Schreibgeschützte WebUntis-Beispiele mit Kennzeichnung; „Bearbeiten“/„Löschen“ nur bei eigenen Terminen. Löschen fragt bei Serien nach einzelnem Termin oder Serie, blendet nur in der Sitzung aus und bietet „Rückgängig“.
+- **Notizseite:** A4-Seite in festen Seitenkoordinaten neben den Details, direkt beschreibbar (PencilKit-Stift schwarz, Finger und Pencil) oder umschaltbar auf „Tippen“; Seite x von n, blättern, Seite hinzufügen. Erst echter Inhalt setzt den Notizhinweis, das bloße Öffnen nicht. „Vergrößern“ zeigt dieselbe Seite groß mit „Zurück zu <Termin> · <Datum>“. Schmales Fenster: Details und Seite groß über dem Kalender mit „‹ Kalender“.
+- **Formular:** Titel, Ort, ganztägig, Beginn/Ende (24 h, ungültige Spanne wird erklärt und gesperrt), Kalender „Persönlich“, Wiederholung täglich/wöchentlich/monatlich mit Ende (nie, Datum, Anzahl) und Ausnahmen, Erinnerung standardmäßig aus, Beschreibung. Bei Serien fragt „Fertig“ nach einzelnem Termin oder Serie. Nichts wird gespeichert.
+- **Tastatur:** ⌘← / ⌘→ zurück/vor, ⌘T Heute, ⌘1–⌘4 Tag/Woche/Monat/Jahr, ⌘N neuer Termin, Esc schließt Details bzw. Großansicht. Kalenderkürzel ruhen, solange ein Heft oder ein Kalenderdialog darüber liegt.
+
+**Nur Entwurf (bewusst, Stufe B):** Termine, Notizen, gelöschte Termine und Formulareingaben leben nur im Speicher; kein Heft, keine Ablage in „Kalendernotizen“, kein Backup. Die Notizseite ist kein noty-Editor (keine Werkzeugleiste, kein Undo, ein schwarzer Stift); „Vergrößern“ öffnet noch nicht den normalen Editor. Kein Ziehen/Verschieben von Terminen, keine Wischgesten, keine echte Wiederholungslogik, keine Benachrichtigungen.
+
+**Beispieldaten:** `Sources/Noty/CalendarSampleData.swift`, frei erfunden (Fächer wie Rechnungswesen, Räume, Lehrkräfte, Ferienzeiträume). Die Woche von „heute“ enthält die Designfälle: beschriebene Rechnungswesen-Notiz mit zwei Seiten, Ausfall mit Notiz, Vertretung, Prüfung, Überschneidung, voller Freitag für „+ n weitere“, ganztägiger und mehrtägiger Termin, wöchentliche eigene Serie.
+
+**Code:** Core `CalendarLayout.swift` (ISO-Kalender `de_DE`, Wochen- und Monatsraster, Überlappungsspalten, Ganztagsbahnen, „+ n weitere“, stabile Fachfarben, deutsche Titel/Uhrzeit, alles über `Calendar`-Operationen) mit `CalendarLayoutTests` (Sommerzeit Berlin, Tage ohne Mitternacht in Santiago/Havanna, KW 1/53, Schaltjahr, Jahreswechsel). App: `CalendarView`, `CalendarWeekView`, `CalendarMonthView`, `CalendarEventDetail`, `CalendarEventForm`, `CalendarSampleData`; in `LibraryView` nur Ort `.calendar`, Leistenzeile und Detailweiche, in `NotyCommands` ⌘N.
+
+**Für die Designabnahme zu entscheiden:** Kalender als Ort in der Bibliotheksleiste oder eigener Umschalter; Farbe für „heute“ (jetzt Rot wie Apple Kalender, Blau bleibt Auswahl); kompakte Monatszeilen und Minimonat unter 44 pt Höhe; Breitenregel für Details neben dem Kalender (jetzt ab 860 pt Detailspalte; auf dem iPad Pro 11″ quer passt das auch mit Bibliotheksleiste); Stift-/Tippen-Umschalter der Entwurfsseite gegenüber dem späteren Editorverhalten.
+
+**Gerätetest (gebündelt, alles ungeprüft),** in noty dev: (1) Kalender öffnen, Woche 5/7 umschalten, App neu starten, Wahl bleibt; zurück/vor/Heute, ⌘-Kürzel. (2) Monat mit „+ n weitere“ am Freitag, Tagesliste, Datum → Tag. (3) Jahr: Tag und Monat antippen, Ferienband. (4) Rechnungswesen Di 08:00 antippen, Seite 2 blättern, auf leerer Seite eines anderen Termins schreiben → Notizsymbol erscheint; Vergrößern, schreiben, zurück: Strich auch in der kleinen Seite. (5) Split View/Hochformat: Overlay mit „‹ Kalender“, Woche scrollt waagerecht. (6) Große Schrift, VoiceOver auf Karten und Tagen. (7) Formular mit Wiederholung, Ausnahme, Erinnerung; Serie löschen und Rückgängig. (8) Aus dem Kalender ein Heft über die Leiste öffnen und schließen: Kalender bleibt.
 
 ### Stufe B – Erste nutzbare Version: WebUntis, lokale Termine und Stundennotizen
 
@@ -207,7 +232,9 @@ Vor Freigabe eines direkten Providers: erlaubten Zugang, Beispieldaten, Identit�
 
 ## 8. Prüfungen und Freigabe
 
-**Für diese Aktualisierung:** Abgleich mit den bestätigten Antworten des Entscheidungsinterviews, Prüfung der Dokumentkonsistenz und lokaler Linkziele. Die technischen Quellenhinweise stammen aus dem ursprünglichen Entwurf und wurden in dieser reinen Anforderungsrunde nicht erneut extern geprüft. Keine App-Funktion geändert; kein Build, keine Installation und kein Gerätetest durchgeführt. Kalenderdesign, Terminlogik, WebUntis-Zugang und Backend sind weiterhin ungeprüft.
+**Stufe A (03.11.2026):** siehe [Umsetzungsstand](#umsetzungsstand-stufe-a-03112026). Core-Tests und unsignierter iPad-SDK-Build bestanden; keine Installation, kein Gerätetest, keine Nutzerabnahme.
+
+**Für die Planungsaktualisierung:** Abgleich mit den bestätigten Antworten des Entscheidungsinterviews, Prüfung der Dokumentkonsistenz und lokaler Linkziele. Die technischen Quellenhinweise stammen aus dem ursprünglichen Entwurf und wurden in dieser reinen Anforderungsrunde nicht erneut extern geprüft. Keine App-Funktion geändert; kein Build, keine Installation und kein Gerätetest durchgeführt. Kalenderdesign, Terminlogik, WebUntis-Zugang und Backend sind weiterhin ungeprüft.
 
 **Bei der Umsetzung:**
 
@@ -225,4 +252,4 @@ Der Nutzer hat den zusammengefassten Produktumfang am 03.11.2026 mit „ja so wi
 
 Offen bleiben insbesondere der konkrete erlaubte WebUntis-Zugang samt Datenabdeckung und Backendbedarf, die Ferienquelle, der geeignete Apple-/Outlook-Provider sowie Hosting, Anmeldung und Konfliktregeln der späteren Synchronisierung. Diese Punkte sind keine stillschweigend festgelegten Architekturentscheidungen. Nicht bestätigte Ergänzungen sind in Abschnitt 3 getrennt gekennzeichnet.
 
-**Nächster Schritt nur nach neuem Auftrag:** technische Voraussetzungen klären und das konkrete Kalenderdesign zur Ansicht erstellen. Der aktuelle Auftrag endet beim Festhalten dieses Plans.
+**Nächster Schritt:** Stufe A in noty dev zur Designabnahme installieren (nur mit Freigabe des Nutzers), Rückmeldungen einarbeiten. Stufe B erst nach Abnahme und eigenem Auftrag.

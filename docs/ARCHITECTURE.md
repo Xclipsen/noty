@@ -1,5 +1,9 @@
 # Architektur
 
+## Kalender Stufe A (Design mit Beispieldaten) · 03.11.2026
+
+Implementiert, erfolgreich gebaut, nicht installiert, am iPad ungeprüft; nur `feat/kalender`. Plattformunabhängige Datums-/Layoutlogik in `Core/Sources/NotebookCore/CalendarLayout.swift` (ISO-Kalender `de_DE`, Tagesschritte über Mittag und `Calendar`, nie feste 24 h; Überlappungsspalten, Ganztagsbahnen, „+ n weitere“, FNV-Fachfarben). App: `CalendarDesignModel` (`@MainActor`, lebt als `@StateObject` der `LibraryView`, damit pro Bereich), Ansichten in `Calendar*.swift`. `LibraryView` hat nur den Ort `.calendar`, die Leistenzeile und eine Detailweiche; Suche, Bearbeiten-Modus und Ablegen bleiben an der Sammlung. Die Notizseite ist ein eigener `PKCanvasView` in A4-Seitenkoordinaten (Zoom statt Neuskalierung), je Termin und Seite neu erzeugt, mit Revisionszähler für den Abgleich mit der Großansicht; keine Persistenz, kein `EditorWorkspace`. Kein Kalender-Repository, kein Format- oder Backupwechsel. [Details](CALENDAR-PLAN.md#umsetzungsstand-stufe-a-03112026).
+
 ## Texteditor 2 (Prototyp) · 31.10.2026
 
 Implementiert, erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Hinter dem Schalter `noty.text.editor2`, Standard aus, nur in Textdokumenten: eine Eingabeansicht über allen Seiten, ein Puffer, TextKit 1 mit einem Container je Seite. Das Modell bleibt Quelle und Speicherformat unverändert, die Seitenlängen kommen aus dem gemeinsamen Layout in das bestehende `reflowText`. Mit dem Schalter aus bleibt der Weg über `PageTextView`. [Architektur, Abweichungen, Go/No-Go](TEXT-EDITOR-2.md).

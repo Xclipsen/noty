@@ -7,6 +7,10 @@ Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nut
 
 Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
 
+## Kalender, Stufe A – Featurebranch `feat/kalender`
+
+Kalenderdesign und Navigation mit ausschließlich erfundenen Beispieldaten ([Plan und Umsetzungsstand](docs/CALENDAR-PLAN.md#umsetzungsstand-stufe-a-03112026)): Einstieg „Kalender“ in der Bibliotheksleiste, Woche (Mo–Fr/7 Tage), Monat mit „+ n weitere“, Tag, Jahr, Termindetails mit direkt beschreibbarer Entwurfsseite, Vergrößern/Rückkehr, Terminformular. Keine Kalenderspeicherung, kein WebUntis. Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft; Designabnahme offen.
+
 ## Native Gesetzessammlung – separater Feature-Worktree
 
 Der bestätigte Ausbau ist in `feat/native-law-library` implementiert: optionale native Gesetzessammlung als internes Slide-over oder angedockte zweite Ansicht, lokale Texte/optionale PDFs, Direktfundstellen wie `144 HGB`, Apples Tastaturen und appweites E-Mail-Konto. Drei getrennte Schalter (Aktivierung aus, persönlicher Sync an, automatische Gesetzesupdates an). Notizbücher bleiben lokal; Gesetzesmarkierungen haben eine eigene dauerhafte Warteschlange und Sicherungsdatei.

@@ -2,6 +2,10 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Kalender Stufe A (03.11.2026, `feat/kalender`)
+
+**Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert), nicht installiert, am iPad ungeprüft.** `swift test --package-path Core`: 1110 Tests ausgeführt, 0 Fehler, 4 übersprungen (echter Gesetzeskatalog nicht vorhanden ×2, `SWIFT_DETERMINISTIC_HASHING` nicht gesetzt, Rechteprüfung unter root nicht möglich). Neu: `CalendarLayoutTests` (13) mit Sommer-/Winterzeit Berlin, Tagen ohne Mitternacht (Santiago, Havanna) und halbstündiger Umstellung (Lord Howe), KW 1/53 am Jahreswechsel, Schaltjahr, Überlappung, Ganztagsbahnen, „+ n weitere“ ohne Verlust. Der neue Test fand einen Fehler in der Tageszählung an Tagen ohne Mitternacht (behoben: Zählung von Mittag zu Mittag). Kein Host-Roundtrip nötig: kein Format-, Archiv- oder Layerwechsel. Gebündelter Gerätetest: [CALENDAR-PLAN](CALENDAR-PLAN.md#umsetzungsstand-stufe-a-03112026).
+
 ## Ansicht bleibt nach App-Wechsel stehen (03.11.2026, Release-Kandidat 1)
 
 **Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert), nicht installiert, am iPad ungeprüft.** Nutzerbefund: Textfeld angelegt/bearbeitet, App gewechselt, zurück: noty zieht die Ansicht zum Cursor. Ursachen im Code, Ablauf und Lösung: [BUG-18](BUG-18-TEXT-INPUT.md#app-wechsel-zieht-die-ansicht-zum-cursor-03112026). Core-Tests 1187 (3 übersprungen, 0 Fehler; neu `CaretRevealGateTests`, 12 Tests). Die UIKit-Ereignisfolge beim Wechsel (Tastatur, Snapshot-Größen, Ersthelfer) ist unter Linux nicht ausführbar.
