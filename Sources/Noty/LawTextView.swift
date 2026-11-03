@@ -165,7 +165,7 @@ struct NativeLawText: UIViewRepresentable {
             var outlined = Set(selection.tapped ? selection.marks : [])
             if let adjusting = selection.controller?.adjusting { outlined.insert(adjusting) }
             var fills = markRanges.filter { NSMaxRange($0.range) <= bodyLength }.map {
-                LawMarkLayoutManager.Fill(range: $0.range, color: lawMarkFill($0.color), outline: outlined.contains($0.id) ? .systemBlue : nil)
+                LawMarkLayoutManager.Fill(range: $0.range, color: lawMarkFill($0.color), outline: outlined.contains($0.id) ? UIColor(white: 0.95, alpha: 1) : nil)
             }
             if let preview = strokePreview, NSMaxRange(preview) <= bodyLength {
                 let color = parent.pen.kind == .eraser ? UIColor.systemGray.withAlphaComponent(0.45) : lawMarkColor(parent.pen.hex).withAlphaComponent(0.6)
@@ -252,7 +252,7 @@ struct NativeLawText: UIViewRepresentable {
             }
             var actions: [UIMenuElement] = [UIMenu(title: "Markieren", image: UIImage(systemName: "highlighter"), children: colors)]
             if !marks(in: clipped).isEmpty {
-                actions.append(UIAction(title: "Markierung entfernen", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak controller] _ in
+                actions.append(UIAction(title: "Aus Markierung entfernen", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak controller] _ in
                     controller?.removeText(clipped)
                     controller?.clearSelection()
                 })

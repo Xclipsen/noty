@@ -5,11 +5,16 @@ import NotebookCore
 
 /// The floating mark bar at a text or PDF selection or a tapped mark, in the
 /// look of `SelectionActionBar`: dark capsule (white 0.13, 52 pt), 44-pt
-/// symbol cells, colour dots, thin dividers, remove in red.
+/// symbol cells with 4 pt between them, colour dots, 1 × 26 dividers,
+/// „Entfernen“ red and always last. At most 360 pt wide. A text or PDF
+/// selection: colours | Kopieren, ✕ | Entfernen (if it touches marks). A
+/// tapped mark: colours | Bereich anpassen | Entfernen, without „Kopieren“
+/// and ✕: tapping beside it or Esc closes the bar.
 struct LawMarkBar: View {
     @ObservedObject var controller: LawMarkController
     @ObservedObject var selection: LawTextSelection
     static let height: CGFloat = 52
+    static let maxWidth: CGFloat = 360
 
     private var tappedItem: LawPersonalItem? {
         guard selection.tapped, let id = selection.marks.first else { return nil }
@@ -18,7 +23,7 @@ struct LawMarkBar: View {
     var body: some View {
         ViewThatFits(in: .horizontal) {
             content
-            ScrollView(.horizontal, showsIndicators: false) { content }.frame(maxWidth: 420)
+            ScrollView(.horizontal, showsIndicators: false) { content }.frame(maxWidth: Self.maxWidth)
         }
         .frame(height: Self.height)
         .background(Color(white: 0.13).opacity(0.98), in: Capsule(style: .continuous))
@@ -26,44 +31,65 @@ struct LawMarkBar: View {
         .clipShape(Capsule(style: .continuous))
         .foregroundStyle(.white)
         .buttonStyle(NotyToolStyle())
+        .environment(\.notyTooltipAxis, .horizontal)
+        // Hover names (Pencil, pointer) above the bar, outside its capsule.
+        .notyTooltipHost()
         .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Markieren")
     }
     private var content: some View {
         let item = tappedItem
+        let tapped = item != nil
         let current = item.map { LawMarkEditing.colorKey($0.payload["color"]?.string) }
         let adjusting = controller.adjusting != nil
         let adjustable = item?.payload["kind"]?.string == "text" && item.flatMap { controller.originalRange(of: $0.id) } != nil
-        return HStack(spacing: 2) {
-            ForEach(Array(LawMarkColor.palette.enumerated()), id: \.element.id) { index, color in
-                NotySwatch(Color(lawMarkColor(color.hex)), selected: current == color.hex,
-                           title: item == nil ? "\(color.name) markieren (\(index + 1))" : "Farbe \(color.name) (\(index + 1))") {
-                    controller.mark(color: color.hex)
+        let removable = !selection.marks.isEmpty && !adjusting
+        // A text selection takes only its own text out of the marks it touches.
+        let partial = !selection.tapped && !selection.pdfSelection
+        let middle = adjusting || (tapped ? adjustable : true)
+        return HStack(spacing: 4) {
+            HStack(spacing: 0) {
+                ForEach(Array(LawMarkColor.palette.enumerated()), id: \.element.id) { index, color in
+                    NotySwatch(Color(lawMarkColor(color.hex)), selected: current == color.hex,
+                               title: item == nil ? "\(color.name) markieren (\(index + 1))" : "Farbe \(color.name) (\(index + 1))") {
+                        controller.mark(color: color.hex)
+                    }
                 }
             }
-            NotyGroupDivider()
-            if adjusting {
-                NotySymbolOption("Übernehmen", symbol: "checkmark", help: "Markierung auf die neue Auswahl setzen") { controller.applyAdjusting() }
+            if middle {
+                Self.divider
+                if adjusting {
+                    NotySymbolOption("Übernehmen", symbol: "checkmark", help: "Übernehmen – Markierung auf die neue Auswahl setzen") { controller.applyAdjusting() }
+                    NotySymbolOption("Abbrechen", symbol: "xmark", help: "Anpassen abbrechen (Esc)") { controller.clearSelection() }
+                } else if tapped {
+                    NotySymbolOption("Bereich anpassen", symbol: "selection.pin.in.out", help: "Bereich anpassen – Auswahl auf die Markierung setzen") {
+                        controller.adjustSelectedMark()
+                    }
+                } else {
+                    NotySymbolOption("Kopieren", symbol: "doc.on.doc", help: "Kopieren – Text in die Zwischenablage") { controller.copySelection() }
+                    NotySymbolOption("Schließen", symbol: "xmark", help: "Auswahl aufheben (Esc)") { controller.clearSelection() }
+                }
             }
-            NotySymbolOption("Kopieren", symbol: "doc.on.doc", help: "Kopieren – Text in die Zwischenablage") { controller.copySelection() }
-            if adjustable && !adjusting {
-                NotySymbolOption("Bereich anpassen", symbol: "character.cursor.ibeam", help: "Bereich anpassen – Auswahl auf die Markierung setzen") { controller.adjustSelectedMark() }
-            }
-            if !selection.marks.isEmpty && !adjusting {
-                NotySymbolOption(selection.marks.count == 1 ? "Markierung entfernen" : "Markierungen entfernen", symbol: "trash",
-                                 help: selection.tapped || selection.pdfSelection ? "Entfernen – ganze Markierung" : "Entfernen – nur den ausgewählten Text") {
+            if removable {
+                Self.divider
+                NotySymbolOption(partial ? "Aus Markierung entfernen" : "Entfernen", symbol: "trash",
+                                 help: partial ? "Aus Markierung entfernen – nur den ausgewählten Text (⌫)" : "Entfernen – ganze Markierung (⌫)") {
                     controller.removeSelection()
                 }.foregroundStyle(Color(uiColor: .systemRed))
             }
-            NotyGroupDivider()
-            NotySymbolOption(adjusting ? "Abbrechen" : "Schließen", symbol: "xmark", help: adjusting ? "Anpassen abbrechen" : "Auswahl aufheben") { controller.clearSelection() }
         }
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 4)
+    }
+    /// Like `SelectionActionBar`'s group divider.
+    private static var divider: some View {
+        Rectangle().fill(.white.opacity(0.14)).frame(width: 1, height: 26)
+            .allowsHitTesting(false).accessibilityHidden(true)
     }
 }
 
-/// „Markierung entfernt · Rückgängig“ and short notes under the reader.
+/// „Markiert · Rückgängig“, „Markierung entfernt · Rückgängig“ and short
+/// notes under the reader.
 struct LawMarkToastView: View {
     @ObservedObject var controller: LawMarkController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -75,8 +101,8 @@ struct LawMarkToastView: View {
                     if toast.undo && controller.canUndo {
                         Rectangle().fill(.white.opacity(0.14)).frame(width: 0.5, height: 18).accessibilityHidden(true)
                         Button("Rückgängig") { controller.undoFromToast() }
-                            .font(.subheadline.weight(.semibold)).foregroundStyle(Color(uiColor: .systemBlue))
-                            .frame(minHeight: 44).buttonStyle(NotyPressStyle())
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(Color.notyAccent)
+                            .frame(minHeight: 44).contentShape(Rectangle()).buttonStyle(NotyPressStyle())
                     }
                 }
                 .padding(.horizontal, 16).frame(minHeight: 44)
@@ -86,7 +112,10 @@ struct LawMarkToastView: View {
                 .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
                 .id(toast.id)
                 .accessibilityAddTraits(.isStaticText)
-                .onAppear { UIAccessibility.post(notification: .announcement, argument: toast.message) }
+                .onAppear {
+                    let undo = toast.undo && controller.canUndo
+                    UIAccessibility.post(notification: .announcement, argument: undo ? "\(toast.message). Rückgängig möglich." : toast.message)
+                }
             }
         }
         .animation(NotyMotion.palette(reduceMotion), value: controller.toast?.id)
@@ -156,15 +185,23 @@ final class LawMarkOverlay: UIView {
         let hit = super.hitTest(point, with: event)
         return hit === self ? nil : hit
     }
+    /// Room between the selection and the bar: clear of the selection
+    /// handles below and the system edit menu above.
+    static let selectionGap: CGFloat = 24
+    /// Height kept free for the system edit menu above a text selection.
+    static let editMenuRoom: CGFloat = 52
+
     func reposition(animated: Bool) {
         guard let bar, let toast, let selection, let controller, bounds.width > 0 else { return }
         let reduced = UIAccessibility.isReduceMotionEnabled
-        // Toast: centred at the bottom.
+        // Toast: centred at the bottom; the bar stays above it.
+        var toastTop: CGFloat?
         if controller.toast != nil {
             let toastSize = toast.sizeThatFits(in: CGSize(width: bounds.width - 24, height: 120))
             toast.view.isHidden = false
             toast.view.frame = CGRect(x: (bounds.width - toastSize.width) / 2, y: bounds.height - safeAreaInsets.bottom - bottomReserve - toastSize.height - 12,
                                       width: toastSize.width, height: toastSize.height)
+            toastTop = toast.view.frame.minY
         } else if !toast.view.isHidden {
             // Let the fade-out run, then stop taking touches there.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak toast] in
@@ -184,11 +221,21 @@ final class LawMarkOverlay: UIView {
             } completion: { _ in if !self.barVisible { view.isHidden = true; view.transform = .identity } }
             return
         }
-        let size = bar.sizeThatFits(in: CGSize(width: bounds.width - 16, height: LawMarkBar.height))
-        let width = min(size.width, bounds.width - 16), height = LawMarkBar.height
-        let top = safeAreaInsets.top + 8, bottom = bounds.height - safeAreaInsets.bottom - bottomReserve - 8
-        var y = rect.maxY + 10
-        if y + height > bottom { y = rect.minY - 10 - height }
+        let limit = min(LawMarkBar.maxWidth, bounds.width - 16)
+        let size = bar.sizeThatFits(in: CGSize(width: limit, height: LawMarkBar.height))
+        let width = min(size.width, limit), height = LawMarkBar.height
+        let top = safeAreaInsets.top + 8
+        var bottom = bounds.height - safeAreaInsets.bottom - bottomReserve - 8
+        if let toastTop { bottom = min(bottom, toastTop - 8) }
+        // Below the selection (the edit menu sits above it); without room
+        // there, above it and above where the edit menu appears.
+        let gap = Self.selectionGap
+        var y = rect.maxY + gap
+        if y + height > bottom {
+            let menu = selection.range.length > 0 || selection.pdfSelection ? Self.editMenuRoom : 0
+            y = rect.minY - gap - menu - height
+            if y < top { y = rect.minY - gap - height }
+        }
         y = min(max(top, y), max(top, bottom - height))
         let x = min(max(8, rect.midX - width / 2), max(8, bounds.width - width - 8))
         let frame = CGRect(x: x, y: y, width: width, height: height)
@@ -197,6 +244,8 @@ final class LawMarkOverlay: UIView {
         if !barVisible {
             barVisible = true
             view.transform = .identity; place(); view.isHidden = false
+            // VoiceOver: the bar is new on screen; its first element is next.
+            UIAccessibility.post(notification: .layoutChanged, argument: view)
             if !reduced { view.transform = CGAffineTransform(scaleX: 0.92, y: 0.92) }
             UIView.animate(withDuration: reduced ? 0.12 : 0.36, delay: 0, usingSpringWithDamping: 0.86, initialSpringVelocity: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
                 view.alpha = 1; view.transform = .identity

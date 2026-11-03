@@ -135,7 +135,7 @@ final class LawShortcutsTests: XCTestCase {
         XCTAssertEqual(overview.first?.group, "Fenster")
         let rows = overview.flatMap(\.rows)
         XCTAssertEqual(rows.first { $0.title == "Nächster Treffer" }?.keys, "⌘G, ↩")
-        XCTAssertEqual(rows.first { $0.title == "Eine Ansicht weiter" }?.keys, "⌥↓, Leertaste")
+        XCTAssertEqual(rows.first { $0.title == "Bildschirmseite weiter" }?.keys, "⌥↓, Leertaste")
         XCTAssertFalse(rows.contains { $0.title == "Links andocken" })
         XCTAssertFalse(LawShortcuts.overview(in: .notebook).flatMap(\.rows).contains { $0.title == "Nächster Treffer" })
     }

@@ -333,7 +333,7 @@ Geräteprüfung, gebündelt (jeweils mit eingeschalteter und reduzierter Bewegun
 | Lasche antippen / hereinziehen | holt hervor, Leserzustand unverändert; Druckrückmeldung an der Lasche |
 | kleines ✕ an der Lasche | schließt ganz, animiert |
 | Heft-Menü „Gesetzessammlung“ | Häkchen nur bei sichtbarem Fenster; geschlossen → öffnet, geparkt → holt hervor, sichtbar → schließt |
-| Palette „Gesetzessammlung“ | Titel „✓“ / „(am Rand)“ passend; gleiche Umschaltung |
+| Palette „Gesetzessammlung“ | Titel „… öffnen“ / „… schließen“ / „… vom Rand holen“ passend; gleiche Umschaltung |
 | `Space l`, Esc, ⇧⌘L, ⌥⌘L | (Tastatur-Paket) müssen dieselben animierten Übergänge zeigen |
 | Gesetzessammlung in den Einstellungen ausschalten | Fenster schließt |
 

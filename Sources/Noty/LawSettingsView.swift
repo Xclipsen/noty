@@ -34,7 +34,7 @@ struct NotyAccountSettingsPage: View {
                     }
                     apple(user)
                     Button("Abmelden", role: .destructive) { Task { await laws.logout() } }
-                    Text("Nach dem Abmelden zeigt noty nur Markierungen ohne Konto; die dieses Kontos bleiben auf diesem iPad gespeichert und erscheinen nach erneuter Anmeldung wieder. Noch nicht übertragene Änderungen bleiben erhalten.").font(.caption).foregroundStyle(.secondary)
+                    Text("Nach dem Abmelden erscheinen nur Markierungen, die ohne Konto angelegt wurden. Lesezeichen und Markierungen dieses Kontos bleiben auf diesem iPad, auch noch nicht gesendete, und sind nach der nächsten Anmeldung wieder da.").font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 if laws.sessionExpired, let user = laws.user {
@@ -90,7 +90,7 @@ struct NotyAccountSettingsPage: View {
             if !message.isEmpty { Section { Text(message).foregroundStyle(.secondary) } }
             if laws.accountBusy { ProgressView() }
             Section {
-                NavigationLink("Gesetzessammlung & Synchronisierung") { LawSettingsPage() }
+                NavigationLink("Gesetzessammlung und Abgleich") { LawSettingsPage() }
             }
         }.navigationTitle("Konto").disabled(laws.accountBusy)
             .task { if laws.user != nil, laws.user?.apple == nil { await laws.refreshAccount() } }
@@ -136,10 +136,10 @@ struct LawSettingsPage: View {
         Form {
             Section {
                 symbolToggle("Gesetzessammlung aktivieren", systemImage: "books.vertical", isOn: $enabled)
-                symbolToggle("Lesezeichen und Markierungen synchronisieren", systemImage: "arrow.triangle.2.circlepath", isOn: $sync)
+                symbolToggle("Lesezeichen und Markierungen abgleichen", systemImage: "arrow.triangle.2.circlepath", isOn: $sync)
                 symbolToggle("Neue Gesetzesfassungen automatisch laden", systemImage: "arrow.down.circle", isOn: $updates)
             } footer: {
-                Text("Der Kontoabgleich und öffentliche Gesetzesupdates sind unabhängig. Ohne Konto bleiben Markierungen lokal. Nach einem vollständigen Erstdownload sind die Texte offline verfügbar; PDFs lassen sich einzeln laden.")
+                Text("Der Abgleich mit dem Konto und neue Gesetzesfassungen sind unabhängig voneinander. Ohne Konto bleiben Markierungen auf diesem iPad. Nach dem ersten vollständigen Laden sind die Texte offline da; PDFs lassen sich einzeln laden.")
             }
             if let error = laws.error {
                 Section {
@@ -162,8 +162,8 @@ struct LawSettingsPage: View {
                     NavigationLink { LawReaderView() } label: { Label("Gesetzessammlung öffnen", systemImage: "book") }
                 }
                 Section("Persönliche Daten") {
-                    LabeledContent { Text(laws.syncStatus).multilineTextAlignment(.trailing) } label: { Label("Status", systemImage: "checkmark.icloud") }
-                    Button("Jetzt synchronisieren", systemImage: "arrow.triangle.2.circlepath") { Task { await laws.synchronize() } }.keyOption(.action { Task { await laws.synchronize() } }).disabled(laws.syncing || !sync || laws.user == nil || laws.sessionExpired)
+                    LabeledContent { Text(laws.syncStatus).multilineTextAlignment(.trailing) } label: { Label("Abgleich", systemImage: "checkmark.icloud") }
+                    Button("Jetzt abgleichen", systemImage: "arrow.triangle.2.circlepath") { Task { await laws.synchronize() } }.keyOption(.action { Task { await laws.synchronize() } }).disabled(laws.syncing || !sync || laws.user == nil || laws.sessionExpired)
                     Button("Markierungen und Lesezeichen sichern …", systemImage: "archivebox") {
                         Task { do { exported = try await laws.exportPersonal() } catch { laws.error = error.localizedDescription } }
                     }
@@ -172,7 +172,7 @@ struct LawSettingsPage: View {
                     Text("Diese Sicherung enthält persönliche Gesetzesdaten, keine Anmeldeschlüssel. Sie ergänzt Heft- und Bibliotheksbackups und bleibt von Gesetzesdownloads getrennt.").font(.caption).foregroundStyle(.secondary)
                     if laws.hiddenItemCount > 0 {
                         LabeledContent { Text("\(laws.hiddenItemCount)") } label: { Label("Einträge anderer Konten", systemImage: "person.2") }
-                        Text("Gehören zu einem anderen Konto (oder ohne Konto angelegt): bleiben auf diesem iPad gespeichert, werden aber nicht angezeigt oder gesendet, bis dieses Konto wieder angemeldet ist.").font(.caption).foregroundStyle(.secondary)
+                        Text("Diese Einträge gehören zu einem anderen Konto oder wurden ohne Konto angelegt. Sie bleiben auf diesem iPad und erscheinen wieder, sobald ihr Konto angemeldet ist – ohne Konto angelegte nach dem Abmelden. Bis dahin werden sie nicht gesendet.").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 if let notice = laws.personalNotice {
@@ -203,7 +203,7 @@ struct LawSettingsPage: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(rejectedTitle(item)).font(.subheadline)
                     if let rejection = item.rejection {
-                        Text("\(rejection.message) (\(rejection.status))").font(.caption).foregroundStyle(.secondary)
+                        Text(rejection.message).font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .swipeActions {

@@ -13,7 +13,8 @@ import NotebookCore
 // - `selectionActive`: Text- oder PDF-Auswahl oder angetippte Markierung.
 // - `canUndo`/`canRedo`: eigener Stapel dieses Lesers (keine fremden oder
 //   synchronisierten Markierungen).
-// - `toast`: kurze Meldung, ggf. mit „Rückgängig“ (≈ 4 s).
+// - `toast`: kurze Meldung, ggf. mit „Rückgängig“ (≈ 4 s, mit VoiceOver 10 s);
+//   Stiftmarkierungen (Farbe `nil`) melden „Markiert · Rückgängig“.
 // - `adjusting`: „Bereich anpassen“ läuft für diese Markierung.
 // - `lastColor`: zuletzt benutzte Farbe (⇧⌘H).
 // - `syncBadge`: Abgleichstatus aus `LawLibraryModel.syncState` (inklusive
@@ -230,10 +231,12 @@ final class LawMarkController: ObservableObject {
     // MARK: Used by the text and PDF views
 
     func markText(_ range: NSRange, color: String?) {
+        // Without colour it comes from Apple Pencil: no bar, so the toast offers undo.
+        let toast = color == nil ? "Markiert" : nil
         let color = resolved(color)
         remember(color)
         selection?.clear()
-        textPlan(range, toast: nil) { start, end in [.add(start: start, end: end, color: color)] }
+        textPlan(range, toast: toast) { start, end in [.add(start: start, end: end, color: color)] }
     }
     /// Removes `range` of the rendered text from every mark (eraser, selection).
     func removeText(_ range: NSRange) {
@@ -257,9 +260,10 @@ final class LawMarkController: ObservableObject {
     /// New PDF marks (stroke or selection); `color` nil = Pencil colour.
     func addPDF(_ payloads: [[String: LawJSON]], color: String? = nil) {
         guard !payloads.isEmpty, let document = context()?.document else { return }
+        let toast = color == nil ? "Markiert" : nil
         let color = resolved(color)
         remember(color)
-        perform(toast: nil) { _, _ in
+        perform(toast: toast) { _, _ in
             LawMarkChange(additions: payloads.map { payload in
                 var payload = payload
                 payload["lawId"] = .string(document.id); payload["versionId"] = .string(document.version)
@@ -297,7 +301,7 @@ final class LawMarkController: ObservableObject {
               !LawTextAnchor.canonical((rendered as NSString).substring(with: range)).isEmpty else { return }
         // The rendered text (HTML) may differ from the stored section text.
         guard let anchor = LawTextAnchor.anchor(rendered: rendered, range: range, sectionText: section.text, sectionID: section.id) else {
-            show(LawMarkToast(message: LawMarkError.invalidRange.localizedDescription, undo: false)); return
+            show(LawMarkToast(message: "Bitte etwas mehr Text auswählen.", undo: false)); return
         }
         let document = context.document
         perform(toast: toast) { laws, _ in
@@ -360,7 +364,8 @@ final class LawMarkController: ObservableObject {
         toast = next
         let id = next.id
         toastTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(next.undo ? 4 : 2.5))
+            // VoiceOver users need time to reach „Rückgängig“.
+            try? await Task.sleep(for: .seconds(UIAccessibility.isVoiceOverRunning ? 10 : next.undo ? 4 : 2.5))
             guard !Task.isCancelled, let self, self.toast?.id == id else { return }
             self.toast = nil
         }
