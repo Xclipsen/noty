@@ -759,7 +759,7 @@ struct LibraryView: View {
     /// All current builds are the prototype bundle; the installed ID is prefixed (`XTL-….de.la.noty.prototype`).
     static var isDevelopmentBuild: Bool {
         let id = Bundle.main.bundleIdentifier ?? ""
-        return id.contains(".prototype") || id.contains(".dev")
+        return id.contains(".prototype") || id.contains(".dev") || id.contains(".calendar")
     }
 
     /// The same manual run as Settings › Backup. Failures and postponements arrive

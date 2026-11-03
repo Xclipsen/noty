@@ -11,6 +11,9 @@
 # Zwei Apps nebeneinander (docs/ENVIRONMENT.md, „noty dev“): Ohne Angabe geht
 # ein Build an „noty dev“ mit eigener App-ID und eigenen Daten. Die normale App
 # mit den echten Heften bekommt ihn nur ausdrücklich: NOTY_CHANNEL=stable.
+# Dritte App „noty calendar“ (NOTY_CHANNEL=calendar, auf Wunsch des Nutzers vom
+# 03.11.2026): eigene App-ID und eigene Daten zum separaten Testen des Kalenders,
+# nur von feat/kalender.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ENV_FILE="${OTA_ENV:-$HOME/workspace/noty/.tools/ota.env}"
@@ -23,7 +26,9 @@ case "${NOTY_CHANNEL:-dev}" in
           PAGE_NOTE="Vorher in noty ein Bibliotheksbackup erstellen und die App schließen. Das Update ersetzt die App, die Hefte bleiben erhalten." ;;
   dev)    BASE_ID=de.la.noty.dev; APP_NAME="noty dev"; PAGE_DIR="$OTA_DIR-dev"; PAGE_URL="$OTA_URL-dev"
           PAGE_NOTE="Testversion mit eigenen Daten. Die normale noty und ihre Hefte bleiben unberührt." ;;
-  *) echo "NOTY_CHANNEL muss stable oder dev sein" >&2; exit 1 ;;
+  calendar) BASE_ID=de.la.noty.calendar; APP_NAME="noty calendar"; PAGE_DIR="$OTA_DIR-calendar"; PAGE_URL="$OTA_URL-calendar"
+          PAGE_NOTE="Kalender-Testversion mit eigenen Daten. noty und noty dev und ihre Hefte bleiben unberührt." ;;
+  *) echo "NOTY_CHANNEL muss stable, dev oder calendar sein" >&2; exit 1 ;;
 esac
 
 # Branch-Regeln (AGENTS.md, „Branches und Apps“): Die normale noty bekommt nur
@@ -39,11 +44,14 @@ case "${NOTY_CHANNEL:-dev}" in
   dev)
     case "$BRANCH" in dev|exp/*|feat/*) ;; *) echo "noty dev wird nur von dev, exp/* oder feat/* gebaut (aktuell: $BRANCH)." >&2; exit 1 ;; esac
     if [ -n "$DIRTY" ] && [ "${NOTY_ALLOW_DIRTY:-}" != 1 ]; then echo "Uncommittete Änderungen; erst committen (Ausnahme: NOTY_ALLOW_DIRTY=1)." >&2; exit 1; fi ;;
+  calendar)
+    [ "$BRANCH" = feat/kalender ] || { echo "noty calendar wird nur von feat/kalender gebaut (aktuell: $BRANCH)." >&2; exit 1; }
+    if [ -n "$DIRTY" ] && [ "${NOTY_ALLOW_DIRTY:-}" != 1 ]; then echo "Uncommittete Änderungen; erst committen (Ausnahme: NOTY_ALLOW_DIRTY=1)." >&2; exit 1; fi ;;
 esac
 SOURCE="$BRANCH · $COMMIT"; [ -z "$DIRTY" ] || SOURCE="$SOURCE · mit uncommitteten Änderungen"
-# Buildnummern zählen über beide Apps durchgehend hoch.
+# Buildnummern zählen über alle Apps durchgehend hoch.
 NEXT="$(sed -n 's#.*<key>CFBundleVersion</key><string>\([0-9]*\)</string>.*#\1#p' Info.plist)"
-LAST="$( { if [ -d "$OTA_DIR" ]; then ls "$OTA_DIR" "$OTA_DIR-dev"; else ssh "$OTA_HOST" "ls '$OTA_DIR' '$OTA_DIR-dev'"; fi; } 2>/dev/null | sed -n 's/^Noty-\([0-9]*\)\.ipa$/\1/p' | sort -n | tail -1)"
+LAST="$( { if [ -d "$OTA_DIR" ]; then ls "$OTA_DIR" "$OTA_DIR-dev" "$OTA_DIR-calendar" || true; else ssh "$OTA_HOST" "ls '$OTA_DIR' '$OTA_DIR-dev' '$OTA_DIR-calendar' || true"; fi; } 2>/dev/null | sed -n 's/^Noty-\([0-9]*\)\.ipa$/\1/p' | sort -n | tail -1)"
 if [ -n "$LAST" ] && [ "$NEXT" -le "$LAST" ] && [ "${NOTY_SAME_BUILD:-}" != 1 ]; then
   echo "Build $NEXT ist nicht größer als der zuletzt veröffentlichte Build $LAST; CFBundleVersion erhöhen." >&2; exit 1
 fi
@@ -53,9 +61,12 @@ cp xtool.yml "$ORIGINAL"; cp Info.plist "$ORIGINAL_INFO"
 restore() { cp "$ORIGINAL" xtool.yml; cp "$ORIGINAL_INFO" Info.plist; rm -f "$ORIGINAL" "$ORIGINAL_INFO"; }
 trap restore EXIT
 sed -i "s/^bundleID: .*/bundleID: XTL-BAFXLQ964V.$BASE_ID/" xtool.yml
-if [ "${NOTY_CHANNEL:-dev}" = dev ]; then
-  sed -i 's#^iconPath: .*#iconPath: Resources/AppIcon-dev.png#' xtool.yml
-  sed -i 's#<key>CFBundleDisplayName</key><string>noty</string>#<key>CFBundleDisplayName</key><string>noty dev</string>#' Info.plist
+case "${NOTY_CHANNEL:-dev}" in
+  dev) ICON=Resources/AppIcon-dev.png ;; calendar) ICON=Resources/AppIcon-calendar.png ;; *) ICON= ;;
+esac
+if [ -n "$ICON" ]; then
+  sed -i "s#^iconPath: .*#iconPath: $ICON#" xtool.yml
+  sed -i "s#<key>CFBundleDisplayName</key><string>noty</string>#<key>CFBundleDisplayName</key><string>$APP_NAME</string>#" Info.plist
 fi
 LOG="$(mktemp)"
 script -qec "xtool dev build --sign --ipa" "$LOG" >/dev/null

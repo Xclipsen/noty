@@ -58,6 +58,7 @@ Archivprüfer: `python3 -B scripts/verify_backup.py ARCHIV --compare REVISION.js
 | `dev` | `/home/la/workspace/noty-dev` | **noty dev** (`de.la.noty.dev`, eigene Daten) | Alles, was in die nächste normale Version soll. Hier wird gearbeitet. |
 | `exp/<name>` | eigener Worktree, z. B. `noty-ki` für `exp/ki` | noty dev, nur auf ausdrücklichen Wunsch | Experimente wie der KI-Assistent. Nehmen `dev` regelmäßig auf (`git merge dev`), gehen nur nach Entscheidung des Nutzers nach `dev`. `exp/ki` trägt zusätzlich `bridge/`, von dem der Dienst `noty-ai` läuft. |
 | `feat/<name>` | eigener Worktree | noty dev | Größere Einzelthemen, von `dev` abgezweigt, nach dem Merge in `dev` gelöscht. |
+| `feat/kalender` | `/home/la/workspace/noty-kalender` | **noty calendar** (`de.la.noty.calendar`, grünes Icon, eigene Daten) | Auf Nutzerwunsch eigene Test-App für den Kalender: `NOTY_CHANNEL=calendar bash scripts/publish_ota.sh`, Installationsseite `…-calendar`. Sonst wie `feat/*`. |
 
 - `scripts/publish_ota.sh` setzt das durch: noty dev nur von `dev`, `exp/*` oder `feat/*` und nur committet (`NOTY_ALLOW_DIRTY=1` als bewusste Ausnahme); die normale noty nur von `main`, sauber und mit `NOTY_STABLE_CONFIRMED=1`, nachdem der Nutzer zugestimmt und vorher ein Bibliotheksbackup bzw. eine Sicherung gemacht hat. Die Installationsseite nennt Branch und Commit.
 - Buildnummern (`CFBundleVersion`) zählen über beide Apps durchgehend hoch; das Skript lehnt eine Nummer ab, die nicht größer als die zuletzt veröffentlichte ist.
