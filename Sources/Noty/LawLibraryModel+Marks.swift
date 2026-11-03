@@ -2,15 +2,17 @@ import Foundation
 import NotebookCore
 
 // Markier-Hilfen im Modell (Paket A2, docs/LAW-REWORK.md). Alle Änderungen an
-// Markierungen laufen durch genau eine Stelle: `commit(plan:)`. Heute ruft sie
-// die bestehenden Einzeloperationen `save`/`remove` auf; die atomare
-// Mehrfachoperation des Daten-Pakets (A1, `batch(puts, removes)`) ersetzt nur
-// den Rumpf dieser Funktion.
+// Markierungen laufen durch genau eine Stelle: `commit(plan:)`, die einen Plan
+// als einen atomaren Schreibvorgang des Daten-Pakets schreibt
+// (`LawLibraryModel.commit(puts:removes:)`, Store `batch`).
 
-/// A new personal item of a mark plan (an ID is assigned when stored).
+/// A new personal item of a mark plan. The ID is chosen here (the caller),
+/// never looked up afterwards: deleted IDs stay blocked on the server, so
+/// every creation, also undo and recolouring, gets a fresh UUID.
 struct LawMarkAddition: Equatable {
     var kind = "annotation"
     var payload: [String: LawJSON]
+    var id = LawMarkEditing.newID()
 }
 
 /// App-level plan: what to create and what to delete, in one undo step.
@@ -28,52 +30,22 @@ struct LawMarkApplied: Equatable {
 }
 
 extension LawLibraryModel {
-    /// Applies `plan` as one step. Returns what was written (nil if nothing
-    /// could be written; the model shows the error).
-    ///
-    /// Interim implementation on `save`/`remove`: each call commits and syncs
-    /// on its own. To be replaced by A1's atomic batch (one store commit, one
-    /// sync, IDs chosen here).
+    /// Applies `plan` as one step: one store write, one sync afterwards, no
+    /// intermediate state. Returns what was written, nil when nothing could
+    /// be written (the model shows the error and the old marks stay complete).
     func commit(plan: LawMarkChange) async -> LawMarkApplied? {
         guard !plan.isEmpty else { return nil }
-        var created: [String] = []
-        for addition in plan.additions {
-            let before = Set(items.map(\.id))
-            await save(kind: addition.kind, payload: addition.payload)
-            // `save` assigns the ID; find the entry it just stored.
-            if let item = storedEntry(for: addition, notIn: before) { created.append(item.id) }
-        }
-        guard created.count == plan.additions.count else {
-            // Nothing is deleted when a creation failed: the old marks stay.
-            return created.isEmpty ? nil : LawMarkApplied(removed: [], created: created)
-        }
-        var removed: [LawPersonalItem] = []
-        for item in plan.removals {
-            guard let current = items.first(where: { $0.id == item.id && $0.owner == item.owner }), !current.deleted else { continue }
-            await remove(current)
-            if items.first(where: { $0.id == item.id && $0.owner == item.owner })?.deleted ?? true { removed.append(current) }
-        }
-        return LawMarkApplied(removed: removed, created: created)
+        // Only live entries of the current owner can be removed (`items`).
+        let removed = plan.removals.compactMap { item in items.first { $0.id == item.id && $0.kind == item.kind } }
+        let puts = plan.additions.map { LawPersonalChange(kind: $0.kind, payload: $0.payload, id: $0.id) }
+        guard !puts.isEmpty || !removed.isEmpty else { return nil }
+        guard await commit(puts: puts, removes: removed.map(\.ref)) else { return nil }
+        return LawMarkApplied(removed: removed, created: plan.additions.map(\.id))
     }
 
-    /// The entry `save` just stored for `addition`. The sync inside `save` may
-    /// already have replaced the payload by the server's answer (extra fields,
-    /// colour kept locally), so the identifying fields decide.
-    private func storedEntry(for addition: LawMarkAddition, notIn before: Set<String>) -> LawPersonalItem? {
-        let fresh = items.filter { !before.contains($0.id) && $0.kind == addition.kind && !$0.deleted }
-        if let exact = fresh.first(where: { Self.samePayload($0.payload, addition.payload) }) { return exact }
-        let keys = ["lawId", "versionId", "kind", "page", "anchor", "sectionId", "view", "color"]
-        return fresh.first { item in keys.allSatisfy { item.payload[$0] == addition.payload[$0] } }
-    }
-    static func samePayload(_ a: [String: LawJSON], _ b: [String: LawJSON]) -> Bool {
-        var a = a, b = b
-        a["id"] = nil; b["id"] = nil
-        return a == b
-    }
-
-    /// Live (not deleted) annotations of one law version.
+    /// The current owner's live annotations of one law version.
     func annotations(law: String, version: String) -> [LawPersonalItem] {
-        items.filter { !$0.deleted && $0.kind == "annotation" && $0.payload["lawId"]?.string == law && $0.payload["versionId"]?.string == version }
+        visibleItems(kind: "annotation", law: law, version: version)
     }
     func liveItem(_ id: String) -> LawPersonalItem? { items.first { $0.id == id && !$0.deleted } }
 
@@ -83,7 +55,7 @@ extension LawLibraryModel {
         let canonical = LawTextAnchor.canonical(section.text) as NSString
         return marks.compactMap { item in
             guard let anchor = item.textAnchor, anchor.sectionId == section.id, anchor.start >= 0, anchor.end > anchor.start, anchor.end <= canonical.length,
-                  canonical.substring(with: NSRange(location: anchor.start, length: anchor.end - anchor.start)) == anchor.quote else { return nil }
+                  canonical.substring(with: NSRange(location: anchor.start, length: anchor.end - anchor.start)).utf16.elementsEqual(anchor.quote.utf16) else { return nil }
             return LawMarkRange(id: item.id, sectionId: section.id, start: anchor.start, end: anchor.end, color: item.payload["color"]?.string, fixed: item.payload["kind"]?.string != "text")
         }
     }
@@ -96,17 +68,17 @@ extension LawLibraryModel {
         change.removals = plan.deletions.compactMap { liveItem($0.id) }
         for range in plan.additions {
             if range.fixed, let source = plan.deletions.first(where: { $0.fixed && $0.start == range.start && $0.end == range.end }).flatMap({ liveItem($0.id) }) {
-                // Recoloured PDF mark: same entry, new colour, new ID.
+                // Recoloured PDF mark: same entry, new colour, the plan's new ID.
                 var payload = source.payload
                 payload["id"] = nil
                 payload["color"] = range.color.map(LawJSON.string)
-                change.additions.append(LawMarkAddition(kind: source.kind, payload: payload))
+                change.additions.append(LawMarkAddition(kind: source.kind, payload: payload, id: range.id))
                 continue
             }
             guard let anchor = LawMarkEditing.anchor(for: range, canonical: canonical), let value = anchor.json else { continue }
             var payload: [String: LawJSON] = ["lawId": .string(document.id), "versionId": .string(document.version), "kind": .string("text"), "page": .number(0), "anchor": value]
             if let color = range.color { payload["color"] = .string(color) }
-            change.additions.append(LawMarkAddition(payload: payload))
+            change.additions.append(LawMarkAddition(payload: payload, id: range.id))
         }
         return change
     }

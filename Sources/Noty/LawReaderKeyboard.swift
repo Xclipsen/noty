@@ -7,9 +7,9 @@ extension LawReaderView {
 
     /// `laws.keyFocus` changed: `Space l`, ⌘L, ⇧⌘L, a tap or a field gave
     /// the window the keys. Registers the shortcuts (`LawKeyboard`) and, with
-    /// the Helix mode on, the panel `GESETZE`.
-    /// LAW-MERGE: LawReaderView `.onAppear { if LawKeyboard.shared.focused { startKeys() } }`,
-    /// sobald der Leser erst beim Sichtbarwerden entsteht (B14).
+    /// the Helix mode on, the panel `GESETZE`. Also called from the reader's
+    /// `onAppear` when the focus came first: the window's reader is created
+    /// only once the window becomes visible (B14).
     func startKeys() {
         let keyboard = LawKeyboard.shared
         keyboard.attach(reader: LawReaderKeyActions(run: { runShortcut($0) }, selectionActive: { textSelection.active },
@@ -57,9 +57,9 @@ extension LawReaderView {
         case .list: showBookmarks = true
         case .toggleView: Task { await togglePDF() }
         case .color(let number): markSelection(LawKeyboard.hex(number))
-        case .lastColor: markSelection(LawKeyboard.shared.lastColor)
+        case .lastColor: markSelection(markController.lastColor)
         case .removeMark: if textSelection.active { markController.removeSelection() }
-        // LAW-MERGE: markController.undo()/redo() mit eigenem Stapel (Markieren); ohne Schritt keine Wirkung.
+        // The reader's own mark stack (never the notebook's undo); no step, no effect.
         case .undoMark: if markController.canUndo { markController.undo() }
         case .redoMark: if markController.canRedo { markController.redo() }
         default: break
@@ -67,31 +67,31 @@ extension LawReaderView {
     }
     /// Esc: selection or chosen mark, then a field, then the window.
     private func escapeOneLevel() {
-        if textSelection.active { textSelection.clear(); return }
-        // LAW-MERGE: Schnellsuche/Paragraphfeld des Leser-Designs, falls umbenannt.
+        if textSelection.active || markController.adjusting != nil { markController.clearSelection(); return }
+        // Quick search (`queryFocused`), then the paragraph field (a UITextField).
         if queryFocused { queryFocused = false; LawKeyboard.shared.claimSoon(); return }
         if let field = UIResponder.currentFirstResponder as? UITextField {
             field.resignFirstResponder(); LawKeyboard.shared.claimSoon(); return
         }
         LawKeyboard.shared.closeWindow()
     }
-    /// ⌘L and ⌘F: the quick search takes the typing (`144 HGB` or words).
+    /// ⌘L and ⌘F: the shared search surface opens in its search mode and
+    /// takes the typing (`144 HGB` or words).
     private func focusQuickSearch(clearing: Bool) {
         if clearing { query = "" }
         textSelection.clear()
-        queryFocused = true
+        openLookup(.query)
     }
     private func zoom(_ step: Int) {
         guard !viewPDF else { return }
         fontSize = step == 0 ? 18 : min(32, max(12, fontSize + Double(step * 2)))
     }
-    /// 1–5, ⇧⌘H, `m1`…`mm`: marks a text selection or recolours the chosen
-    /// mark. `hex` nil: the pen's colour.
+    /// 1–5, ⇧⌘H, `m1`…`mm`: marks the text or PDF selection, recolours the
+    /// chosen mark or finishes „Bereich anpassen“ (`LawMarkController.mark`,
+    /// which also remembers the colour). `hex` nil: the pen's colour.
     private func markSelection(_ hex: String?) {
-        guard textSelection.active else { return }
-        if let hex { LawKeyboard.shared.remember(color: hex) }
-        if textSelection.range.length > 0 { markController.mark(color: hex) }
-        else { markController.recolor(hex ?? pen.hex) }
+        guard textSelection.active || markController.adjusting != nil else { return }
+        markController.mark(color: hex)
     }
 
     // MARK: Helix (`GESETZE`)

@@ -126,7 +126,7 @@ public enum LawShortcuts {
         public var label: String { combo?.label ?? "" }
     }
 
-    /// Namen der fünf Markierfarben in der Reihenfolge von `LawPenMode.presets`.
+    /// Namen der fünf Markierfarben in der Reihenfolge von `LawMarkColor.palette` (App).
     public static let colorNames = ["Gelb", "Grün", "Blau", "Rosa", "Orange"]
 
     public static let all: [Shortcut] = {

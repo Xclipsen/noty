@@ -16,7 +16,8 @@ import NotebookCore
 // - `toast`: kurze Meldung, ggf. mit „Rückgängig“ (≈ 4 s).
 // - `adjusting`: „Bereich anpassen“ läuft für diese Markierung.
 // - `lastColor`: zuletzt benutzte Farbe (⇧⌘H).
-// - `syncBadge`: einfacher Abgleichstatus aus `LawLibraryModel`.
+// - `syncBadge`: Abgleichstatus aus `LawLibraryModel.syncState` (inklusive
+//   Fehler und abgelehnter Einträge) samt Klartext.
 //
 // Befehle (Tastatur, Leiste, Menüs):
 // - `mark(color:)`: Auswahl (Text oder PDF) markieren; bei angetippter
@@ -28,22 +29,16 @@ import NotebookCore
 // - `copySelection()`, `adjustSelectedMark()`, `applyAdjusting()`, `clearSelection()`.
 //
 // Jede Änderung ist ein Plan (Core `LawMarkEditing`) und wird über
-// `LawLibraryModel.commit(plan:)` geschrieben; Änderungen laufen nacheinander.
+// `LawLibraryModel.commit(plan:)` als ein atomarer Schreibvorgang
+// (`commit(puts:removes:)`) geschrieben; Änderungen laufen nacheinander.
 
 /// Abgleichstatus der persönlichen Gesetzesdaten für eine kleine Anzeige.
 struct LawMarkSyncBadge: Equatable {
-    enum State: Equatable {
-        /// Ohne Konto, Abgleich aus oder Anmeldung abgelaufen: bleibt auf diesem iPad.
-        case local
-        case syncing
-        /// Angemeldet; so viele eigene Änderungen sind noch nicht gesendet.
-        case pending(Int)
-        /// Angemeldet, nichts offen.
-        case synced
-    }
-    var state = State.local
-    /// Klartext wie bisher im Menü des Lesers (`LawLibraryModel.syncStatus`).
-    var detail = "Lokal gespeichert"
+    /// Strukturierter Zustand des Daten-Pakets (Gast, pausiert, abgelaufen,
+    /// läuft, Fehler, ausstehend, abgelehnt, synchronisiert).
+    var status = LawSyncStatus(state: .guest)
+    /// Klartext (`LawLibraryModel.syncStatus`).
+    var detail = "Nur auf diesem iPad"
 }
 
 /// A short message under the reader, optionally offering undo.
@@ -124,17 +119,8 @@ final class LawMarkController: ObservableObject {
         context = { nil }
         watching = []
     }
-    /// Früher: Undo-Zustand aus „letzter Markierung“ des Lesers. Der Controller
-    /// führt `canUndo` jetzt selbst; der Aufruf bleibt wirkungslos.
-    func update(canUndo: Bool) {}
-
     private func refreshBadge(_ laws: LawLibraryModel) {
-        let state: LawMarkSyncBadge.State
-        if laws.user == nil || laws.sessionExpired || !laws.syncEnabled { state = .local }
-        else if laws.syncing { state = .syncing }
-        else if laws.pendingCount > 0 { state = .pending(laws.pendingCount) }
-        else { state = .synced }
-        let next = LawMarkSyncBadge(state: state, detail: laws.syncStatus)
+        let next = LawMarkSyncBadge(status: laws.syncState, detail: laws.syncStatus)
         if next != syncBadge { syncBadge = next }
     }
 
@@ -309,7 +295,8 @@ final class LawMarkController: ObservableObject {
         let rendered = context.renderedText
         guard range.location >= 0, NSMaxRange(range) <= (rendered as NSString).length,
               !LawTextAnchor.canonical((rendered as NSString).substring(with: range)).isEmpty else { return }
-        guard let anchor = LawTextAnchor.anchor(text: rendered, range: range, sectionID: section.id) else {
+        // The rendered text (HTML) may differ from the stored section text.
+        guard let anchor = LawTextAnchor.anchor(rendered: rendered, range: range, sectionText: section.text, sectionID: section.id) else {
             show(LawMarkToast(message: LawMarkError.invalidRange.localizedDescription, undo: false)); return
         }
         let document = context.document
@@ -381,8 +368,6 @@ final class LawMarkController: ObservableObject {
 }
 
 extension LawReaderView {
-    /// Kept for the reader's existing `onChange` (no longer used for undo).
-    var lastAnnotation: LawPersonalItem? { nil }
     /// Connects the controller with this reader's state.
     func connectMarkController() {
         markController.connect(laws: laws, selection: textSelection) {

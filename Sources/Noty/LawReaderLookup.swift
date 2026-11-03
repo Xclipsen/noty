@@ -1,24 +1,6 @@
 import SwiftUI
 import NotebookCore
 
-/// Last read section per law and the last law, so reopening a law, a notebook
-/// or the app continues there instead of at the beginning. Display state only.
-enum LawReadingPosition {
-    static let sectionsKey = "noty.laws.readingSections"
-    static let lastKey = "noty.laws.lastLaw"
-    static func section(_ law: String) -> String? {
-        (UserDefaults.standard.dictionary(forKey: sectionsKey) as? [String: String])?[law]
-    }
-    static var lastLaw: String? { UserDefaults.standard.string(forKey: lastKey) }
-    static func remember(law: String, section: String) {
-        var all = UserDefaults.standard.dictionary(forKey: sectionsKey) as? [String: String] ?? [:]
-        guard all[law] != section || lastLaw != law else { return }
-        all[law] = section
-        UserDefaults.standard.set(all, forKey: sectionsKey)
-        UserDefaults.standard.set(law, forKey: lastKey)
-    }
-}
-
 /// Which input started a lookup; that field keeps what was typed there.
 enum LawLookupField { case query, number }
 
@@ -26,14 +8,37 @@ extension LawReaderView {
     /// Opens the law and section the reader showed last (or the first law).
     func openInitial() async {
         guard selectedID.isEmpty, !loading,
-              let entry = laws.entries.first(where: { $0.id == LawReadingPosition.lastLaw }) ?? laws.entries.first else { return }
-        await open(entry, target: LawReadingPosition.section(entry.id), resume: true)
+              let entry = laws.entries.first(where: { $0.id == laws.lastReadingSpot?.lawId }) ?? laws.entries.first else { return }
+        await resume(entry)
     }
     /// Picking the current law keeps the reading position; another law continues
-    /// at its last read section instead of jumping to the beginning.
+    /// at its last read spot instead of jumping to the beginning.
     func choose(_ entry: LawEntry) async {
         guard entry.id != selectedID else { return }
-        await open(entry, target: LawReadingPosition.section(entry.id), resume: true)
+        await resume(entry)
+    }
+    /// Continues `entry` where it was read (B10): the remembered version if
+    /// the catalogue still has it (otherwise the current one), the section,
+    /// and text or PDF with its page. The scroll offset is not restored yet.
+    func resume(_ entry: LawEntry) async {
+        let spot = laws.readingSpot(law: entry.id)
+        let version = spot?.versionId.flatMap { id in entry.versions.contains { $0.id == id } ? id : nil }
+        await open(entry, version: version, target: spot?.sectionId, resume: true)
+        // Only a PDF already on this iPad: reopening never starts a large download.
+        guard spot?.view == .pdf, selectedID == entry.id, !viewPDF, let doc = document,
+              await laws.pdfIsOffline(entry, version: doc.version), selectedID == entry.id else { return }
+        pdfTarget = spot?.pdfPage
+        await togglePDF()
+        // No PDF (offline, missing): the text stays without an error line.
+        if !viewPDF { pdfTarget = nil; loadError = "" }
+    }
+    /// Remembers where the reader is; the current version is stored as nil,
+    /// so a newer version opens once it arrives.
+    func rememberReading() {
+        guard !selectedID.isEmpty, !sectionID.isEmpty, let doc = document else { return }
+        let current = entry?.currentVersion == doc.version
+        laws.rememberReading(LawReadingSpot(lawId: selectedID, versionId: current ? nil : doc.version, view: viewPDF ? .pdf : .text,
+                                            sectionId: sectionID, pdfPage: viewPDF ? pdfPage : nil))
     }
     /// `resume`: a remembered target that no longer exists opens the beginning
     /// silently instead of reporting a missing citation.

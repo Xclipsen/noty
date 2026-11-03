@@ -158,7 +158,7 @@ final class LawLibraryModel: ObservableObject {
     func settingsChanged() async {
         epoch += 1
         refreshStatus()
-        if !enabled { panel.isOpen = false; return }
+        if !enabled { panel.close(); return }
         if catalog == nil { lastAttempt = .distantPast }
         await tick()
     }
@@ -246,6 +246,11 @@ final class LawLibraryModel: ObservableObject {
         let result = try await offline.putPDF(data, id: entry.id, version: version, replacingDamaged: true)
         byteCount = await offline.byteCount()
         return result
+    }
+    /// The PDF of this version is already on this iPad (no download needed).
+    func pdfIsOffline(_ entry: LawEntry, version: String) async -> Bool {
+        guard let url = try? await offline.pdfURL(entry.id, version: version) else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
     }
     /// `true` once signed in; a failed attempt keeps the form as typed.
     func login(email rawName: String, password: String, registering: Bool) async -> Bool {

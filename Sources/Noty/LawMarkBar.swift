@@ -99,6 +99,9 @@ struct LawMarkToastView: View {
 final class LawMarkOverlay: UIView {
     /// Where the bar belongs, in this view's coordinates; nil = no bar.
     var anchor: () -> CGRect? = { nil }
+    /// Room at the bottom taken by the reader's footer (glass navigator):
+    /// neither the toast nor the bar is placed behind it.
+    var bottomReserve: CGFloat = 0 { didSet { if oldValue != bottomReserve { setNeedsLayout() } } }
     private var bar: UIHostingController<LawMarkBar>?
     private var toast: UIHostingController<LawMarkToastView>?
     private weak var controller: LawMarkController?
@@ -160,7 +163,7 @@ final class LawMarkOverlay: UIView {
         if controller.toast != nil {
             let toastSize = toast.sizeThatFits(in: CGSize(width: bounds.width - 24, height: 120))
             toast.view.isHidden = false
-            toast.view.frame = CGRect(x: (bounds.width - toastSize.width) / 2, y: bounds.height - safeAreaInsets.bottom - toastSize.height - 12,
+            toast.view.frame = CGRect(x: (bounds.width - toastSize.width) / 2, y: bounds.height - safeAreaInsets.bottom - bottomReserve - toastSize.height - 12,
                                       width: toastSize.width, height: toastSize.height)
         } else if !toast.view.isHidden {
             // Let the fade-out run, then stop taking touches there.
@@ -183,7 +186,7 @@ final class LawMarkOverlay: UIView {
         }
         let size = bar.sizeThatFits(in: CGSize(width: bounds.width - 16, height: LawMarkBar.height))
         let width = min(size.width, bounds.width - 16), height = LawMarkBar.height
-        let top = safeAreaInsets.top + 8, bottom = bounds.height - safeAreaInsets.bottom - 8
+        let top = safeAreaInsets.top + 8, bottom = bounds.height - safeAreaInsets.bottom - bottomReserve - 8
         var y = rect.maxY + 10
         if y + height > bottom { y = rect.minY - 10 - height }
         y = min(max(top, y), max(top, bottom - height))

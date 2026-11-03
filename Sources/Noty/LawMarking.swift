@@ -158,42 +158,5 @@ var lawTouchTypesWithoutPencil: [NSNumber] { [UITouch.TouchType.direct, .indirec
 var lawAllTouchTypes: [NSNumber] { [UITouch.TouchType.direct, .indirect, .pencil, .indirectPointer].map { NSNumber(value: $0.rawValue) } }
 
 extension LawReaderView {
-    /// What Apple Pencil does in the law text and PDF, in the grammar of the
-    /// notebook's option rows. Fingers always scroll and select; choosing the
-    /// highlighter or an eraser in the notebook switches along.
-    func penSwitch(_ change: @escaping (LawPenMode) -> Void) -> some View {
-        func set(_ kind: LawPenMode.Kind) { var next = pen; next.kind = kind; change(next) }
-        return HStack(spacing: 0) {
-            Image(systemName: "applepencil").font(.system(size: 15)).foregroundStyle(.secondary).frame(width: 28).accessibilityHidden(true)
-            NotySymbolOption("Lesen", symbol: "hand.point.up.left", selected: pen.kind == .none, help: "Apple Pencil scrollt und wählt aus") { set(.none) }
-            NotySymbolOption("Markieren", symbol: "highlighter", selected: pen.kind == .marker, help: "Apple Pencil markiert Wörter") { set(.marker) }
-            NotySymbolOption("Radieren", symbol: "eraser", selected: pen.kind == .eraser, help: "Apple Pencil entfernt Markierungen") { set(.eraser) }
-            NotyGroupDivider()
-            ForEach(LawMarkColor.palette) { color in
-                NotySwatch(Color(lawMarkColor(color.hex)), selected: pen.kind == .marker && pen.hex == color.hex, title: "Stiftfarbe \(color.name)") {
-                    var next = pen; next.kind = .marker
-                    next.color = LawPenMode.presets.first { $0.name == color.name }?.color ?? next.color
-                    change(next)
-                }
-            }
-        }.buttonStyle(NotyToolStyle())
-    }
-    /// The floating mark bar lives in the text and PDF views themselves
-    /// (`LawMarkOverlay`); this former bottom bar stays empty.
-    var selectionBar: some View { EmptyView() }
     func basePayload(_ doc: LawDocument) -> [String: LawJSON] { ["lawId": .string(doc.id), "versionId": .string(doc.version)] }
-    /// Marks the given range of the rendered section text (keyboard, edit
-    /// menu, Pencil); `color` (`#RRGGBB`) defaults to the pen's colour.
-    func mark(_ range: NSRange, color: String? = nil) {
-        markController.markText(range, color: color)
-    }
-    /// Removes marks: the selected text from the marks it touches when `ids`
-    /// are the marks under the selection, otherwise these marks completely.
-    func unmark(_ ids: [String]) {
-        if textSelection.range.length > 0, ids == textSelection.marks, !textSelection.tapped {
-            markController.removeSelection()
-        } else {
-            markController.removeMarks(ids)
-        }
-    }
 }

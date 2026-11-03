@@ -171,6 +171,14 @@ extension LawReaderView {
                     Label("Jetzt synchronisieren", systemImage: "arrow.triangle.2.circlepath").frame(minHeight: 44)
                 }
                 .buttonStyle(.bordered).disabled(laws.syncing)
+                if markController.syncBadge.status.rejected > 0 {
+                    Button { Task { await laws.retryRejected() } } label: {
+                        Label("Abgelehnte erneut versuchen", systemImage: "arrow.clockwise").frame(minHeight: 44)
+                    }
+                    .buttonStyle(.bordered).disabled(laws.syncing)
+                    Text("Einzelne Einträge „Nur lokal behalten“: Einstellungen › Gesetzessammlung.")
+                        .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .padding(20).frame(width: 320, alignment: .leading)
@@ -180,7 +188,8 @@ extension LawReaderView {
 
     // MARK: Overflow
 
-    /// Versions as a section with a check mark, undo, the official source.
+    /// Versions as a section with a check mark and the official source.
+    /// Undo of marks: the toast, ⌘Z/⇧⌘Z and Helix `u`/`U` (own stack).
     private var moreMenu: some View {
         Menu {
             if let entry, !entry.versions.isEmpty {
@@ -195,10 +204,6 @@ extension LawReaderView {
                         }
                     }
                 }
-            }
-            Section {
-                Button("Letzte Markierung rückgängig", systemImage: "arrow.uturn.backward") { markController.undo() }
-                    .disabled(!markController.canUndo)
             }
             if let doc = document, let source = URL(string: doc.sourceUrl), source.scheme == "https" {
                 Section { Link(destination: source) { Label("Amtliche Quelle öffnen", systemImage: "safari") } }
@@ -236,8 +241,8 @@ extension LawReaderView {
     func toggleLookup(_ mode: LawLookupField) {
         if lookupShown == mode { closeLookup() } else { openLookup(mode) }
     }
-    /// LAW-MERGE: openLookup — ⌘F (Tastatur-Paket) ruft `openLookup(.query)`,
-    /// eine Paragrapheingabe `openLookup(.number)`; beide teilen diese Fläche.
+    /// ⌘F, ⌘L and the Helix `/` open `.query` (`focusQuickSearch`), the
+    /// paragraph field `.number`; both share this surface.
     func openLookup(_ mode: LawLookupField) {
         lookupMode = mode
         if mode == .query {
@@ -404,35 +409,19 @@ extension LawReaderView {
 
     // MARK: Marks in other versions (B10)
 
-    /// LAW-MERGE: markCountsByVersion — vorerst lokal aus `laws.items` gezählt
-    /// (Markierungen des geöffneten Gesetzes je Fassung, ohne Lesezeichen und
-    /// Gelöschtes); das Daten-Paket liefert die Funktion samt Eigentümerfilter
-    /// (B12), dann nur diesen Rumpf ersetzen.
-    func markCountsByVersion() -> [String: Int] {
-        guard !selectedID.isEmpty else { return [:] }
-        var counts: [String: Int] = [:]
-        for item in laws.items where !item.deleted && item.kind == "annotation" && item.payload["lawId"]?.string == selectedID {
-            if let version = item.payload["versionId"]?.string { counts[version, default: 0] += 1 }
-        }
-        return counts
-    }
-
     /// „n Markierungen in Fassung … – anzeigen“ while the open version is
     /// another one than where marks of this law were made.
     @ViewBuilder var versionHint: some View {
         if let entry, let doc = document {
-            // Only versions the catalogue can still open.
-            let others = markCountsByVersion()
-                .filter { other in other.key != doc.version && other.value > 0 && entry.versions.contains { $0.id == other.key } }
-                .sorted { a, b in
-                    let ia = entry.versions.firstIndex { $0.id == a.key } ?? .max, ib = entry.versions.firstIndex { $0.id == b.key } ?? .max
-                    return ia == ib ? a.key < b.key : ia < ib
-                }
-            let total = others.reduce(0) { $0 + $1.value }
-            let key = "\(entry.id)|\(doc.version)|\(others.map { "\($0.key):\($0.value)" }.joined(separator: ","))"
+            // The current owner's marks per version in catalogue order (B10, B12);
+            // only versions the catalogue can still open.
+            let others = laws.markCounts(law: entry.id)
+                .filter { other in other.versionId != doc.version && other.count > 0 && entry.versions.contains { $0.id == other.versionId } }
+            let total = others.reduce(0) { $0 + $1.count }
+            let key = "\(entry.id)|\(doc.version)|\(others.map { "\($0.versionId):\($0.count)" }.joined(separator: ","))"
             if total > 0, dismissedVersionHint != key {
                 let count = total == 1 ? "1 Markierung" : "\(total) Markierungen"
-                let text = others.count == 1 ? "\(count) in Fassung \(versionTitle(others[0].key))" : "\(count) in \(others.count) anderen Fassungen"
+                let text = others.count == 1 ? "\(count) in Fassung \(versionTitle(others[0].versionId))" : "\(count) in \(others.count) anderen Fassungen"
                 let label = HStack(spacing: 8) {
                     Image(systemName: "highlighter").font(.caption).foregroundStyle(Color.notyAccent).accessibilityHidden(true)
                     Text("\(text) – \(Text("anzeigen").foregroundStyle(Color.notyAccent).fontWeight(.semibold))")
@@ -441,13 +430,13 @@ extension LawReaderView {
                 }.frame(minHeight: 36).contentShape(Rectangle())
                 HStack(spacing: 4) {
                     if others.count == 1 {
-                        Button { Task { await open(entry, version: others[0].key, target: sectionID, resume: true) } } label: { label }
+                        Button { Task { await open(entry, version: others[0].versionId, target: sectionID, resume: true) } } label: { label }
                             .accessibilityLabel(text).accessibilityHint("Öffnet diese Fassung an derselben Vorschrift")
                     } else {
                         Menu {
-                            ForEach(others, id: \.key) { other in
-                                Button("\(versionTitle(other.key)) · \(other.value)") {
-                                    Task { await open(entry, version: other.key, target: sectionID, resume: true) }
+                            ForEach(others, id: \.versionId) { other in
+                                Button("\(versionTitle(other.versionId)) · \(other.count)") {
+                                    Task { await open(entry, version: other.versionId, target: sectionID, resume: true) }
                                 }
                             }
                         } label: { label }
@@ -472,21 +461,27 @@ struct LawSyncLook {
     var tint: Color
     var title: String
     var count: Int?
+    /// From the data package's structured state (`LawSyncStatus`), never from its text.
     init(_ badge: LawMarkSyncBadge) {
-        // LAW-MERGE: syncBadge.failed — bis das Daten-Paket einen eigenen
-        // Fehlerzustand liefert, erkennt die Anzeige ihn am Statustext.
-        let detail = badge.detail
-        let failed = detail.hasPrefix("Offline") || detail.hasPrefix("Anmeldung abgelaufen") || detail.contains("nicht übertragen")
-        switch badge.state {
-        case _ where failed:
-            symbol = "exclamationmark.triangle.fill"; tint = .orange; title = "Abgleich gestört"
-        case .local:
+        let status = badge.status
+        switch status.state {
+        case .guest:
             symbol = "ipad"; tint = .white.opacity(0.55); title = "Nur auf diesem iPad"
+        case .paused:
+            symbol = "pause.circle"; tint = .white.opacity(0.55); title = "Abgleich aus – bleibt auf diesem iPad"
+        case .expired:
+            symbol = "exclamationmark.triangle.fill"; tint = .orange; title = "Anmeldung abgelaufen"
+        case .failed:
+            symbol = "exclamationmark.triangle.fill"; tint = .orange; title = "Abgleich gestört"
+        case .rejected:
+            symbol = "exclamationmark.triangle.fill"; tint = .orange; count = status.rejected
+            title = status.rejected == 1 ? "1 Eintrag abgelehnt" : "\(status.rejected) Einträge abgelehnt"
         case .syncing:
             symbol = "arrow.triangle.2.circlepath"; tint = .white.opacity(0.75); title = "Wird synchronisiert"
-        case .pending(let n):
-            symbol = "arrow.up"; tint = .notyAccent; count = n
-            title = n == 1 ? "1 Änderung noch nicht synchronisiert" : "\(n) Änderungen noch nicht synchronisiert"
+        case .pending:
+            symbol = "arrow.up"; tint = .notyAccent; count = status.pending > 0 ? status.pending : nil
+            title = status.pending == 0 ? "Noch nicht synchronisiert"
+                : status.pending == 1 ? "1 Änderung noch nicht synchronisiert" : "\(status.pending) Änderungen noch nicht synchronisiert"
         case .synced:
             symbol = "checkmark"; tint = .green; title = "Synchronisiert"
         }

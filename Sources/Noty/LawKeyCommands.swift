@@ -40,15 +40,12 @@ final class LawKeyboard: ObservableObject {
     /// A text field of the window is being typed into: Esc comes from `LawKeyAnchor`.
     @Published private(set) var fieldEditing = false
 
-    static let lastColorKey = "noty.laws.lastMarkColor"
-    /// `#RRGGBB` of the last colour chosen with 1–5 (⇧⌘H, `mm`); nil: the pen's.
-    var lastColor: String? { UserDefaults.standard.string(forKey: Self.lastColorKey) }
-    func remember(color: String) { UserDefaults.standard.set(color, forKey: Self.lastColorKey) }
-    /// Colour 1–5 of the reader's palette.
-    // LAW-MERGE: LawPenMode.presets (Markieren); hier nur gelesen.
+    /// Colour 1–5 of the reader's palette (`LawMarkColor.palette`, as in the
+    /// mark bar and the edit menu). The last colour (⇧⌘H, `mm`) is the mark
+    /// controller's `lastColor`.
     static func hex(_ number: Int) -> String? {
-        guard LawPenMode.presets.indices.contains(number - 1) else { return nil }
-        return LawPenMode(kind: .marker, color: LawPenMode.presets[number - 1].color).hex
+        guard LawMarkColor.palette.indices.contains(number - 1) else { return nil }
+        return LawMarkColor.palette[number - 1].hex
     }
 
     private weak var laws: LawLibraryModel?
@@ -101,8 +98,8 @@ final class LawKeyboard: ObservableObject {
     func detachReader() { reader = nil; watchingMarks = nil }
 
     /// Live state of the window; `windowShown`/`windowStashed` follow it for the menu.
-    private var isShown: Bool { panel.map { $0.isOpen && !$0.stashed } ?? false }
-    private var isStashed: Bool { panel.map { $0.isOpen && $0.stashed } ?? false }
+    private var isShown: Bool { panel?.isVisible ?? false }
+    private var isStashed: Bool { panel?.phase == .parked }
     private func panelChanged() {
         let shown = isShown, stashed = isStashed
         if windowShown != shown { windowShown = shown }
@@ -124,7 +121,7 @@ final class LawKeyboard: ObservableObject {
         guard isShown, available else { return }
         if !focused { focused = true }
     }
-    /// A tap into the window. LAW-MERGE: LawPanelView wendet `.lawKeyFocusArea()` auf das ganze Fenster an.
+    /// A tap into the window (`LawPanelView` applies `.lawKeyFocusArea()` to all of it).
     func windowTouched() {
         guard isShown, available else { return }
         if reader == nil || !focused { focus(claiming: true) } else { claimSoon() }
@@ -190,31 +187,21 @@ final class LawKeyboard: ObservableObject {
 
     // MARK: Window
 
-    private func animate(_ change: () -> Void) {
-        withAnimation(NotyMotion.panel(UIAccessibility.isReduceMotionEnabled)) { change() }
-    }
-    func openWindow() {
-        guard let panel else { return }
-        // LAW-MERGE: panel.open() (öffnet und holt vom Rand)
-        animate { panel.isOpen = true; panel.stashed = false }
-    }
+    // `LawPanelModel` animates every change itself (`NotyMotion.panel`).
+    /// Opens a closed window or brings a parked one out.
+    func openWindow() { panel?.open() }
+    /// Closes the window for real (✕, Esc, `Space l`), not to the edge.
     func closeWindow() {
         guard let panel else { return }
         blur()
-        // LAW-MERGE: panel.close()
-        animate { panel.isOpen = false }
+        panel.close()
     }
     func parkWindow() {
         guard let panel else { return }
         blur()
-        // LAW-MERGE: panel.park()
-        animate { panel.stashed = true }
+        panel.park()
     }
-    func unparkWindow() {
-        guard let panel else { return }
-        // LAW-MERGE: panel.unpark()
-        animate { panel.stashed = false }
-    }
+    func unparkWindow() { panel?.unpark() }
 
     // MARK: Actions
 
@@ -222,24 +209,25 @@ final class LawKeyboard: ObservableObject {
         guard available, panel != nil else { return }
         switch action {
         case .toggleWindow:
-            // LAW-MERGE: panel.toggle() (sichtbar → schließen, sonst öffnen)
-            if isShown { closeWindow() } else { openWindow(); focus(claiming: true) }
+            // Visible → closed, parked or closed → visible with the keys.
+            let wasShown = isShown
+            if wasShown { blur() }
+            panel?.toggle()
+            if !wasShown { focus(claiming: true) }
         case .parkWindow:
-            if isShown { parkWindow() }
-            else if isStashed { unparkWindow(); focus(claiming: true) }
-            else { openWindow(); focus(claiming: true) }
+            // Visible → parked, parked or closed → visible with the keys.
+            let wasShown = isShown
+            if wasShown { blur() }
+            panel?.togglePark()
+            if !wasShown { focus(claiming: true) }
         case .lookup:
             openWindow()
             pendingSearch = true
             focus(claiming: false)
         case .dock(let edge):
-            guard let panel else { return }
-            // LAW-MERGE: panel.dock(edge)
-            animate { panel.edge = edge; panel.docked = true; panel.isOpen = true; panel.stashed = false }
+            panel?.dock(edge)
         case .float:
-            guard let panel else { return }
-            // LAW-MERGE: panel.float()
-            animate { panel.docked = false }
+            panel?.float()
         case .find:
             guard focused, !covered else { return }
             if let reader { reader.run(.find) } else { pendingSearch = false; focus(claiming: false) }
@@ -264,9 +252,8 @@ final class LawKeyboard: ObservableObject {
             return !row.requiresSelection || selection
         }
     }
-    /// The same commands for the law text and PDF while they are first
-    /// responder (a touch selection). LAW-MERGE: LawTextView/LawPDFView
-    /// `override var keyCommands { (super.keyCommands ?? []) + LawKeyboard.shared.keyCommands() }`.
+    /// The same commands serve the law text and PDF while they are first
+    /// responder (a touch selection): `LawKeyTextView`, `LawKeyPDFView`.
     private static let commands: [UIKeyCommand] = LawShortcuts.all.compactMap { row in
         guard row.route == .keyCommand, let combo = row.combo else { return nil }
         let command = UIKeyCommand(title: row.title, action: #selector(UIResponder.noty_lawKey(_:)), input: combo.keyInput,
@@ -404,8 +391,8 @@ struct LawKeyAnchor: View {
 }
 
 extension View {
-    /// A tap anywhere in the law window gives it the keys (`LawKeyboard`).
-    /// LAW-MERGE: LawPanelView `.lawKeyFocusArea()` am Fensterinhalt (Kopf und Leser).
+    /// A tap anywhere in the law window gives it the keys (`LawKeyboard`);
+    /// applied by `LawPanelView` to the whole window (bar and reader).
     func lawKeyFocusArea() -> some View {
         simultaneousGesture(TapGesture().onEnded { LawKeyboard.shared.windowTouched() })
     }

@@ -34,7 +34,7 @@ struct NotyAccountSettingsPage: View {
                     }
                     apple(user)
                     Button("Abmelden", role: .destructive) { Task { await laws.logout() } }
-                    Text("Markierungen bleiben nach dem Abmelden auf diesem iPad sichtbar. Noch nicht übertragene Änderungen bleiben gespeichert.").font(.caption).foregroundStyle(.secondary)
+                    Text("Nach dem Abmelden zeigt noty nur Markierungen ohne Konto; die dieses Kontos bleiben auf diesem iPad gespeichert und erscheinen nach erneuter Anmeldung wieder. Noch nicht übertragene Änderungen bleiben erhalten.").font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 if laws.sessionExpired, let user = laws.user {
@@ -170,7 +170,18 @@ struct LawSettingsPage: View {
                     if let exported { ShareLink(item: exported) { Label("Sicherungsdatei teilen …", systemImage: "square.and.arrow.up") } }
                     Button("Markierungen aus Sicherung ergänzen …", systemImage: "square.and.arrow.down") { restoring = true }
                     Text("Diese Sicherung enthält persönliche Gesetzesdaten, keine Anmeldeschlüssel. Sie ergänzt Heft- und Bibliotheksbackups und bleibt von Gesetzesdownloads getrennt.").font(.caption).foregroundStyle(.secondary)
+                    if laws.hiddenItemCount > 0 {
+                        LabeledContent { Text("\(laws.hiddenItemCount)") } label: { Label("Einträge anderer Konten", systemImage: "person.2") }
+                        Text("Gehören zu einem anderen Konto (oder ohne Konto angelegt): bleiben auf diesem iPad gespeichert, werden aber nicht angezeigt oder gesendet, bis dieses Konto wieder angemeldet ist.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
+                if let notice = laws.personalNotice {
+                    Section {
+                        Label(notice, systemImage: "doc.on.doc")
+                        Button("Hinweis schließen", systemImage: "xmark") { laws.personalNotice = nil }
+                    } header: { Text("Reparatur") }
+                }
+                if !laws.rejectedItems.isEmpty { rejected }
             }
         }.navigationTitle("Gesetzessammlung")
             .keyboardSheet()
@@ -183,6 +194,38 @@ struct LawSettingsPage: View {
             .fileImporter(isPresented: $restoring, allowedContentTypes: [.json]) { result in
                 switch result { case .success(let url): Task { await laws.restorePersonal(url) }; case .failure(let error): laws.error = error.localizedDescription }
             }
+    }
+    /// Entries the server refused for good (B9): send again, or keep them
+    /// only on this iPad (visible here, never sent).
+    private var rejected: some View {
+        Section {
+            ForEach(laws.rejectedItems, id: \.key) { item in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(rejectedTitle(item)).font(.subheadline)
+                    if let rejection = item.rejection {
+                        Text("\(rejection.message) (\(rejection.status))").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .swipeActions {
+                    Button("Nur lokal") { Task { await laws.keepLocal([item]) } }.tint(.gray)
+                    Button("Erneut") { Task { await laws.retryRejected([item]) } }.tint(.accentColor)
+                }
+            }
+            Button("Erneut versuchen", systemImage: "arrow.clockwise") { Task { await laws.retryRejected() } }
+                .keyOption(.action { Task { await laws.retryRejected() } })
+                .disabled(laws.syncing || laws.user == nil || laws.sessionExpired)
+            Button("Nur lokal behalten", systemImage: "ipad") { Task { await laws.keepLocal(laws.rejectedItems) } }
+                .keyOption(.action { Task { await laws.keepLocal(laws.rejectedItems) } })
+        } header: {
+            Label("Vom Server abgelehnt", systemImage: "exclamationmark.triangle")
+        } footer: {
+            Text("„Nur lokal behalten“: Die Einträge bleiben auf diesem iPad sichtbar und werden nicht mehr gesendet. Einzelne Einträge per Wischen.")
+        }
+    }
+    private func rejectedTitle(_ item: LawPersonalItem) -> String {
+        let law = item.payload["lawId"]?.string.flatMap { id in laws.entries.first { $0.id == id }?.abbr } ?? item.payload["lawId"]?.string ?? "Gesetz"
+        let what = item.kind == "bookmark" ? "Lesezeichen" : "Markierung"
+        return "\(what) · \(law)"
     }
     /// `keyToggle` with a symbol, like the other settings pages.
     private func symbolToggle(_ title: String, systemImage: String, isOn: Binding<Bool>) -> some View {

@@ -13,15 +13,14 @@ struct NativeLawText: UIViewRepresentable {
     var paragraph: String?
     var selection: LawTextSelection
     var pen: LawPenMode
-    /// Kept for the reader's call site; marking goes through `LawMarkController`.
-    var onMark: (NSRange) -> Void
-    var onRemove: ([String]) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> LawTextContainer {
         let container = LawTextContainer()
         let v = container.textView
-        v.isEditable = false; v.isSelectable = true; v.backgroundColor = .systemBackground
-        v.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: 40, right: 12); v.delegate = context.coordinator
+        v.isEditable = false; v.isSelectable = true; v.backgroundColor = LawReadingStyle.background
+        // Below the last line: room for the footer and a mark bar under it.
+        v.textContainerInset = UIEdgeInsets(top: 8, left: 12, bottom: LawReadingStyle.bottomInset, right: 12); v.delegate = context.coordinator
+        container.overlay.bottomReserve = LawReadingStyle.footerReserve
         v.scrollsToTop = false
         let stroke = LawPencilStroke(target: context.coordinator, action: #selector(Coordinator.pencil(_:)))
         v.addGestureRecognizer(stroke)
@@ -56,10 +55,12 @@ struct NativeLawText: UIViewRepresentable {
             let offset = v.contentOffset
             // The first visible character stays on top when the size changes.
             let topCharacter = resized ? v.closestPosition(to: CGPoint(x: v.textContainerInset.left + 1, y: offset.y + v.textContainerInset.top + 1)) .map { v.offset(from: v.beginningOfDocument, to: $0) } : nil
-            let attributes: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: fontSize), .foregroundColor: UIColor.label]
+            let attributes = LawReadingStyle.attributes(fontSize: fontSize)
             let richKey = "\(sectionID):\(text.hashValue):\(html.hashValue)"
             if c.richKey != richKey { c.richKey = richKey; c.importRich(html: html, text: text) }
             let body = c.rich.map { c.scaled($0, to: fontSize) } ?? NSMutableAttributedString(string: text, attributes: attributes)
+            // One reading colour and spacing for HTML and plain text.
+            LawReadingStyle.apply(to: body, fontSize: fontSize)
             let rendered = body.string
             if !notes.isEmpty { body.append(NSAttributedString(string: "\n\n" + notes, attributes: attributes)) }
             c.renderedText = rendered; c.bodyLength = (rendered as NSString).length
@@ -133,10 +134,11 @@ struct NativeLawText: UIViewRepresentable {
             rich = nil
             guard let html, !html.isEmpty, html.utf8.count <= 250_000,
                   html.range(of: "<(?:script|iframe|img|link|object|style)|(?:src|href)\\s*=", options: [.regularExpression, .caseInsensitive]) == nil else { return }
-            let markup = "<html><head><meta charset='utf-8'><style>body{font-family:-apple-system;font-size:17px;color:#eeeeee}table{border-collapse:collapse}td,th{border:1px solid #666;padding:4px}</style></head><body>" + html + "</body></html>"
+            let markup = "<html><head><meta charset='utf-8'><style>\(LawReadingStyle.css)</style></head><body>" + html + "</body></html>"
             guard let data = markup.data(using: .utf8),
                   let imported = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil),
-                  LawTextAnchor.canonical(imported.string) == LawTextAnchor.canonical(text) else { return }
+                  // UTF-16 like the anchor contract, not Swift's canonical equivalence.
+                  LawTextAnchor.canonical(imported.string).utf16.elementsEqual(LawTextAnchor.canonical(text).utf16) else { return }
             // Body size as the importer actually produced it (its px/pt mapping).
             var lengths: [CGFloat: Int] = [:]
             imported.enumerateAttribute(.font, in: NSRange(location: 0, length: imported.length)) { value, range, _ in
@@ -346,7 +348,7 @@ final class LawTextContainer: UIView {
         layout.addTextContainer(textContainer)
         // TextKit 1 (explicit stack): marks are drawn in place by the layout
         // manager. TextKit 2 did not reliably redraw changed highlights.
-        textView = UITextView(frame: .zero, textContainer: textContainer)
+        textView = LawKeyTextView(frame: .zero, textContainer: textContainer)
         super.init(frame: .zero)
         addSubview(textView)
         addSubview(overlay)
@@ -357,6 +359,12 @@ final class LawTextContainer: UIView {
         textView.frame = bounds
         overlay.frame = bounds
     }
+}
+
+/// The law text view: while it is first responder (a touch selection) the
+/// law window's shortcuts stay available (`LawKeyboard`).
+final class LawKeyTextView: UITextView {
+    override var keyCommands: [UIKeyCommand]? { (super.keyCommands ?? []) + LawKeyboard.shared.keyCommands() }
 }
 
 /// Draws marks as rounded areas in glyph height behind the text: one shape

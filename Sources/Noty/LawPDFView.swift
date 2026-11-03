@@ -11,13 +11,11 @@ struct NativeLawPDF: UIViewRepresentable {
     var onPage: (Int) -> Void
     var items: [LawPersonalItem]
     var pen: LawPenMode
-    /// Kept for the reader's call site; marking goes through `LawMarkController`.
-    var onMark: ([String: LawJSON]) -> Void
-    var onRemove: ([String]) -> Void
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> LawPDFContainer {
         let c = context.coordinator
         let container = LawPDFContainer()
+        container.overlay.bottomReserve = LawReadingStyle.footerReserve
         let v = container.pdf
         v.autoScales = true; v.displayMode = .singlePageContinuous; v.displayDirection = .vertical
         v.document = PDFDocument(url: url)
@@ -502,7 +500,7 @@ struct NativeLawPDF: UIViewRepresentable {
 
 /// The PDF view with the mark overlay above it.
 final class LawPDFContainer: UIView {
-    let pdf = PDFView()
+    let pdf: PDFView = LawKeyPDFView()
     let overlay = LawMarkOverlay()
     init() {
         super.init(frame: .zero)
@@ -515,6 +513,12 @@ final class LawPDFContainer: UIView {
         pdf.frame = bounds
         overlay.frame = bounds
     }
+}
+
+/// The law PDF: while it is first responder (a text selection) the law
+/// window's shortcuts stay available (`LawKeyboard`).
+final class LawKeyPDFView: PDFView {
+    override var keyCommands: [UIKeyCommand]? { (super.keyCommands ?? []) + LawKeyboard.shared.keyCommands() }
 }
 
 /// Live preview of a Pencil stroke over the PDF. Points are kept in PDF page

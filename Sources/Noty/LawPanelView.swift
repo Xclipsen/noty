@@ -44,6 +44,8 @@ struct LawPanelView<Drag: Gesture>: View {
             .background(Color(white: 0.065))
         }
         .clipShape(shape)
+        // A tap anywhere in the window gives it the keyboard shortcuts.
+        .lawKeyFocusArea()
         .overlay { if !docked { shape.strokeBorder(.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) } }
         .shadow(color: .black.opacity(docked ? 0 : 0.45), radius: 18, y: 8)
         .environment(\.colorScheme, .dark)

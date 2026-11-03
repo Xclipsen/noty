@@ -64,8 +64,10 @@ struct LawReaderView: View {
     }
     var entry: LawEntry? { laws.entries.first { $0.id == selectedID } }
     var section: LawSection? { document?.sections.first { $0.id == sectionID } }
+    /// The current owner's entries of the open version (B12).
     var marks: [LawPersonalItem] {
-        laws.items.filter { !$0.deleted && $0.payload["lawId"]?.string == selectedID && $0.payload["versionId"]?.string == document?.version }
+        guard let version = document?.version, !selectedID.isEmpty else { return [] }
+        return laws.visibleItems(law: selectedID, version: version)
     }
     private var textMarks: [LawTextMark] {
         guard let section else { return [] }
@@ -91,11 +93,9 @@ struct LawReaderView: View {
                 ZStack(alignment: .bottom) {
                     reading(doc, section: section)
                     // Floating like the notebook's page navigator; the text keeps
-                    // room for it below its last line.
-                    VStack(spacing: 0) {
-                        if !viewPDF, textSelection.active { selectionBar }
-                        footer(doc, section: section)
-                    }
+                    // room for it below its last line (`LawReadingStyle.bottomInset`),
+                    // the mark bar floats at the selection inside the text/PDF view.
+                    footer(doc, section: section)
                 }
             } else if !loading {
                 emptyState
@@ -114,10 +114,7 @@ struct LawReaderView: View {
         .transformPreference(NotyTooltipKey.self) { $0 = nil }
         .task { await laws.start(); await openInitial() }
         .onChange(of: laws.entries.count) { _, _ in Task { await openInitial() } }
-        .onChange(of: "\(selectedID)|\(sectionID)") { _, _ in
-            guard !selectedID.isEmpty, !sectionID.isEmpty else { return }
-            LawReadingPosition.remember(law: selectedID, section: sectionID)
-        }
+        .onChange(of: "\(selectedID)|\(sectionID)|\(document?.version ?? "")|\(viewPDF)|\(pdfPage)") { _, _ in rememberReading() }
         .task(id: query) {
             guard !query.isEmpty else { return }
             loadError = ""
@@ -142,11 +139,15 @@ struct LawReaderView: View {
             showErrors(!hidden)
         }
         .onChange(of: laws.keyFocus) { _, _ in if inPanel { startKeys() } }
-        .onAppear { showErrors(!hidden) }
+        .onAppear {
+            showErrors(!hidden)
+            // The window's reader is created only when it becomes visible (B14):
+            // a focus set by ⌘L/⇧⌘L/`Space l` before that is picked up here.
+            if inPanel, !hidden, LawKeyboard.shared.focused { startKeys() }
+        }
         .onDisappear { showErrors(false); leaveKeys() }
         .onAppear { connectMarkController() }
         .onChange(of: pen) { _, _ in connectMarkController() }
-        .onChange(of: lastAnnotation?.id, initial: true) { _, id in markController.update(canUndo: id != nil) }
         .onDisappear { markController.disconnect() }
         .sheet(isPresented: $showContents) { contents.keyboardSheet().preferredColorScheme(.dark) }
         .sheet(isPresented: $showBookmarks) { bookmarks.keyboardSheet().preferredColorScheme(.dark) }
@@ -159,17 +160,11 @@ struct LawReaderView: View {
     @ViewBuilder private func reading(_ doc: LawDocument, section: LawSection) -> some View {
         if viewPDF, let pdfURL {
             NativeLawPDF(url: pdfURL, page: pdfTarget ?? section.pdf?.page ?? 1, top: pdfTarget == nil ? (section.pdf?.top ?? 0) : 0, selection: textSelection, onPage: { pdfPage = $0 },
-                items: marks.filter { $0.kind == "annotation" }, pen: pen,
-                onMark: { payload in
-                    var payload = payload.merging(basePayload(doc)) { _, new in new }
-                    payload["color"] = .string(pen.hex)
-                    Task { await laws.save(kind: "annotation", payload: payload) }
-                }, onRemove: { unmark($0) })
+                items: marks.filter { $0.kind == "annotation" }, pen: pen)
                 .id(pdfURL)
         } else {
             NativeLawText(text: section.text, html: section.html, notes: section.notes, sectionID: section.id, fontSize: fontSize,
-                marks: textMarks, paragraph: jumpParagraph, selection: textSelection, pen: pen,
-                onMark: { mark($0) }, onRemove: { unmark($0) })
+                marks: textMarks, paragraph: jumpParagraph, selection: textSelection, pen: pen)
         }
     }
 
@@ -243,17 +238,9 @@ struct LawReaderView: View {
 /// Reading look of the law text: one colour for HTML and plain text, a calm
 /// line height and room between paragraphs, on noty's dark reading surface.
 /// The reader's chrome uses it directly; `NativeLawText` applies it to the
-/// text view (see the LAW-MERGE notes).
-///
-/// LAW-MERGE: readingStyle — `LawTextView.swift` (Markier-Paket) soll statt
-/// eigener Werte verwenden:
-/// - `v.backgroundColor = LawReadingStyle.background` (statt `.systemBackground`),
-/// - Klartext und Anmerkungen: `LawReadingStyle.attributes(fontSize:)`
-///   (statt `UIColor.label`),
-/// - HTML-Import: `LawReadingStyle.css` als `<style>`-Inhalt (statt `color:#eeeeee`),
-/// - nach `scaled(_:to:)` bzw. für den Klartext:
-///   `LawReadingStyle.apply(to: body, fontSize: fontSize)` (eine Textfarbe,
-///   Zeilenabstand, Absatzabstand; Hervorhebungen setzen nur die Hintergrundfarbe).
+/// text view: background, `attributes(fontSize:)` for plain text and notes,
+/// `css` for the HTML import and `apply(to:fontSize:)` on the rendered body
+/// (marks only draw behind the text, see `LawMarkLayoutManager`).
 enum LawReadingStyle {
     /// noty's dark surface (`white 0.065`), also behind the reader's chrome.
     static var background: UIColor { UIColor(white: 0.065, alpha: 1) }
@@ -265,6 +252,13 @@ enum LawReadingStyle {
     /// so the section header lines up with the text below.
     static let textLeading: CGFloat = 17
     static let lineHeightMultiple: CGFloat = 1.28
+    /// Height of the floating footer (44-pt cells, 4 pt glass padding, 10 pt
+    /// to the bottom edge, which keeps it clear of the floating window's
+    /// 16-pt corners); the mark overlay keeps its bar and toast above it.
+    static let footerReserve: CGFloat = 44 + 2 * 4 + 10
+    /// Room below the last line of text: the footer plus a mark bar placed
+    /// under a selection on the last line.
+    @MainActor static var bottomInset: CGFloat { footerReserve + LawMarkBar.height + 20 }
     static func paragraphSpacing(_ fontSize: Double) -> CGFloat { CGFloat(fontSize) * 0.55 }
 
     /// CSS for the HTML import: the same colour as the plain text.
