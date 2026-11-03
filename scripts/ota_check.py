@@ -69,6 +69,9 @@ def allowed(value, permitted):
     """Signed `value` within the profile's `permitted` (wildcards like `TEAM.*`)."""
     if isinstance(permitted, str) and isinstance(value, str):
         return fnmatch.fnmatchcase(value, permitted)
+    # A text wildcard in the profile (e.g. "*") covers each entry of a signed list.
+    if isinstance(permitted, str) and isinstance(value, list):
+        return all(isinstance(v, str) and fnmatch.fnmatchcase(v, permitted) for v in value)
     if isinstance(permitted, bool):
         return value == permitted or (permitted is True and isinstance(value, bool))
     if isinstance(permitted, list):

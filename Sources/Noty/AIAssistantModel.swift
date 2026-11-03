@@ -263,14 +263,20 @@ final class AIAssistantModel: ObservableObject {
         consents.insert(consentKey); storeConsents()
         return true
     }
-    func withdrawConsent() { consents = []; storeConsents() }
+    /// Ends any question on its way: nothing may leave after the consent is gone.
+    func withdrawConsent() { consents = []; storeConsents(); invalidate() }
     private func storeConsents() { UserDefaults.standard.set(consents.sorted(), forKey: Self.consentKey) }
 
     func isExcluded(_ document: UUID) -> Bool { exclusions.contains(document) }
     func setExcluded(_ document: UUID, _ excluded: Bool) {
         exclusions.set(document, excluded: excluded)
         UserDefaults.standard.set(exclusions.stored, forKey: Self.exclusionsKey)
+        // A question being prepared for this notebook must not go out any more.
+        if excluded, document == documentID { invalidate() }
     }
+    /// Checked right before anything leaves: consent and exclusion of this moment.
+    private func mayShare(_ document: UUID) -> Bool { hasConsent && !isExcluded(document) }
+    var panelVisible: Bool { panelPresence.visible }
     func includeAllDocuments() {
         exclusions = AIDocumentExclusions()
         UserDefaults.standard.removeObject(forKey: Self.exclusionsKey)
@@ -311,7 +317,7 @@ final class AIAssistantModel: ObservableObject {
     }
 
     func loadSessions(resume: Bool = false) async {
-        guard let route, access.canSend, let document = documentID else { return }
+        guard let route, access.canSend, let document = documentID, mayShare(document) else { return }
         let expected = generation
         do {
             let list = try await client.json([AISessionSummary].self, base: route.base, token: route.token, path: "/v1/sessions",
@@ -428,7 +434,7 @@ final class AIAssistantModel: ObservableObject {
     }
 
     private func deliver(_ request: AITurnRequest, document: UUID, expected: Int) async -> Bool {
-        guard let route else { return false }
+        guard let route, mayShare(document) else { return false }
         do {
             var target = session?.id
             if target == nil {
@@ -439,6 +445,8 @@ final class AIAssistantModel: ObservableObject {
                 guard generation == expected else { return false }
                 session = created; target = created.id
             }
+            // The chat may have been created meanwhile; check again right before the content leaves.
+            guard generation == expected, mayShare(document) else { return false }
             let body = try await client.encoded(request)
             let updated = try await client.json(AISession.self, base: route.base, token: route.token, path: "/v1/sessions/\(target ?? "")/turns", method: "POST", body: body)
             guard generation == expected else { return false }

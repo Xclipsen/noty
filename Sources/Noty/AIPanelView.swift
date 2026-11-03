@@ -105,7 +105,10 @@ struct AIPanelView: View {
     private var lastQuestion: String? { ai.session?.messages.last { $0.role == .user }?.text }
     private var previewKey: PreviewKey? {
         guard mayRead, let document, let page = activePage else { return nil }
-        let query = preview?.plan.context.selected == true ? trimmedDraft : ""
+        // The query's whole-notebook wish is part of the key itself, not taken
+        // from the last result: otherwise budget and key would chase each other.
+        let whole = AIContextSize.wantsWholeNotebook(trimmedDraft)
+        let query = whole ? "#ganz" : (preview?.plan.context.selected == true ? trimmedDraft : "")
         let reading = (reader.progress?.done ?? 0) * 2 + (reader.running ? 1 : 0)
         return PreviewKey(document: document, scope: scope, page: page.id, revision: editor.contentChanges, query: query, reading: reading)
     }
@@ -552,6 +555,7 @@ struct AIPanelView: View {
             try await Task.sleep(for: .milliseconds(key.sameContent(as: preview?.key) ? 1_200 : 350))
             for _ in 0..<20 where editor.inputInProgress { try await Task.sleep(for: .milliseconds(250)) }
             let request = AIContextRequest(scope: key.scope, current: pageNumber, question: key.query, previousQuestion: lastQuestion,
+                                           wholeNotebook: key.query == "#ganz",
                                            limit: ai.limits.maxContextChars, maxImages: ai.limits.maxImages)
             let plan = try await AIContextCollector.plan(editor, notebook: editor.notebook, pageID: page.id, request: request,
                                                          area: area, priority: .utility)
@@ -569,7 +573,8 @@ struct AIPanelView: View {
             try await Task.sleep(for: .seconds(1))
             for _ in 0..<40 where editor.inputInProgress { try await Task.sleep(for: .milliseconds(250)) }
         } catch { return }
-        guard !Task.isCancelled, self.document == document, mayRead else { return }
+        // Started from a send: the panel may be closed by now, and then nothing reads.
+        guard !Task.isCancelled, ai.panelVisible, self.document == document, mayRead else { return }
         let editor = self.editor
         reader.collectsHits = false
         reader.shouldPause = { editor.inputInProgress }
