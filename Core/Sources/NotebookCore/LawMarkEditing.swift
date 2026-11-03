@@ -179,20 +179,33 @@ public enum LawMarkEditing {
             }
         }
         var plan = LawMarkPlan()
-        // Another colour gives way to the new one: only its outside parts stay.
-        for mark in other where mark.overlaps(lo, hi) {
+        // Another colour gives way only inside the new selection: its parts
+        // before `start` and after `end` stay, even within the merged range.
+        var remaining: [(Int, Int)] = []
+        for mark in other {
+            guard mark.overlaps(start, end) else { remaining.append((mark.start, mark.end)); continue }
             plan.deletions.append(mark)
-            if mark.start < lo { plan.additions.append(piece(of: mark, mark.start, lo, newID)) }
-            if mark.end > hi { plan.additions.append(piece(of: mark, hi, mark.end, newID)) }
+            if mark.start < start { plan.additions.append(piece(of: mark, mark.start, start, newID)); remaining.append((mark.start, start)) }
+            if mark.end > end { plan.additions.append(piece(of: mark, end, mark.end, newID)); remaining.append((end, mark.end)) }
         }
-        if merged.count == 1, merged[0].start == lo, merged[0].end == hi { return plan }
+        // The same colour joins across lo…hi only where no other colour is
+        // left; there it is stored as separate pieces.
+        var spans: [(Int, Int)] = [], from = lo
+        for (a, b) in remaining.filter({ $0.0 < hi && $0.1 > lo }).sorted(by: { $0.0 < $1.0 }) {
+            if a > from { spans.append((from, a)) }
+            from = max(from, b)
+        }
+        if from < hi { spans.append((from, hi)) }
+        if merged.count == 1, spans.count == 1, merged[0].start == spans[0].0, merged[0].end == spans[0].1 { return plan }
         plan.deletions += merged
         // A merge beyond the contract's limit is stored as adjoining pieces.
-        var from = lo
-        while from < hi {
-            let to = min(hi, from + maxLength)
-            plan.additions.append(LawMarkRange(id: newID(), sectionId: sectionId, start: from, end: to, color: color ?? merged.first?.color))
-            from = to
+        for (a, b) in spans {
+            var from = a
+            while from < b {
+                let to = min(b, from + maxLength)
+                plan.additions.append(LawMarkRange(id: newID(), sectionId: sectionId, start: from, end: to, color: color ?? merged.first?.color))
+                from = to
+            }
         }
         return plan
     }
@@ -244,6 +257,108 @@ public enum LawMarkEditing {
     }
 }
 
+// MARK: - Undo/redo of written changes
+
+/// One written change of the current owner: the entries it removed (to bring
+/// back) and the IDs it created (to delete again).
+public struct LawMarkStep: Equatable, Sendable {
+    public var owner: String?
+    public var removed: [LawPersonalItem]
+    public var created: [String]
+    public init(owner: String?, removed: [LawPersonalItem], created: [String]) {
+        self.owner = owner; self.removed = removed; self.created = created
+    }
+}
+
+/// What replaying a step writes: the still live created entries go, the
+/// removed ones come back with new IDs (deleted IDs stay blocked on the server).
+public struct LawMarkReplay: Equatable, Sendable {
+    public var removals: [LawPersonalItem]
+    public var additions: [LawPersonalChange]
+    /// Old ID → new ID of every entry brought back.
+    public var renamed: [String: String]
+    public var isEmpty: Bool { removals.isEmpty && additions.isEmpty }
+}
+
+/// The reader's own undo and redo stacks. Every replay gives the entries it
+/// brings back new IDs; the older steps on both stacks follow them
+/// (`didUndo`/`didRedo`), so several undos in a row keep working after
+/// dependent steps (mark → extend → undo → undo). Steps belong to one
+/// owner: another one (sign-in, sign-out, account switch) empties both
+/// stacks, so an undo never writes one account's entries for another.
+public struct LawMarkHistory: Equatable, Sendable {
+    public static let limit = 100
+    public private(set) var undo: [LawMarkStep] = []
+    public private(set) var redo: [LawMarkStep] = []
+    public private(set) var owner: String?
+    public init(owner: String? = nil) { self.owner = owner }
+    public var canUndo: Bool { !undo.isEmpty }
+    public var canRedo: Bool { !redo.isEmpty }
+
+    /// Another owner than the stacks': both are emptied.
+    public mutating func align(owner: String?) {
+        guard owner != self.owner else { return }
+        undo = []; redo = []; self.owner = owner
+    }
+    /// A new change of the user: last undo step, redo is gone.
+    public mutating func record(_ step: LawMarkStep) {
+        align(owner: step.owner)
+        undo.append(step)
+        if undo.count > Self.limit { undo.removeFirst(undo.count - Self.limit) }
+        redo = []
+    }
+    public mutating func popUndo() -> LawMarkStep? { undo.popLast() }
+    public mutating func popRedo() -> LawMarkStep? { redo.popLast() }
+    /// A popped step that could not be written goes back where it was.
+    public mutating func putBack(_ step: LawMarkStep, undo isUndo: Bool) {
+        guard step.owner == owner else { return }
+        if isUndo { undo.append(step) } else { redo.append(step) }
+    }
+    /// An undo was written as `result`: it can be redone, and the remaining
+    /// steps refer to the entries brought back by their new IDs.
+    public mutating func didUndo(_ result: LawMarkStep, renamed: [String: String]) {
+        follow(renamed)
+        guard result.owner == owner else { return }
+        redo.append(result)
+    }
+    public mutating func didRedo(_ result: LawMarkStep, renamed: [String: String]) {
+        follow(renamed)
+        guard result.owner == owner else { return }
+        undo.append(result)
+        if undo.count > Self.limit { undo.removeFirst(undo.count - Self.limit) }
+    }
+    private mutating func follow(_ renamed: [String: String]) {
+        guard !renamed.isEmpty else { return }
+        func map(_ step: LawMarkStep) -> LawMarkStep {
+            var step = step
+            step.created = step.created.map { renamed[$0] ?? $0 }
+            step.removed = step.removed.map { item in
+                guard let id = renamed[item.id] else { return item }
+                var item = item; item.id = id
+                if item.payload["id"] != nil { item.payload["id"] = .string(id) }
+                return item
+            }
+            return step
+        }
+        undo = undo.map(map); redo = redo.map(map)
+    }
+
+    /// What replaying `step` writes now: `live` finds a live entry of the
+    /// current owner by ID (others are gone and stay gone).
+    public static func replay(_ step: LawMarkStep, live: (String) -> LawPersonalItem?,
+                              newID: () -> String = LawMarkEditing.newID) -> LawMarkReplay {
+        var renamed: [String: String] = [:], additions: [LawPersonalChange] = []
+        for item in step.removed {
+            var payload = item.payload
+            payload["id"] = nil
+            let id = newID()
+            renamed[item.id] = id
+            additions.append(LawPersonalChange(kind: item.kind, payload: payload, id: id))
+        }
+        return LawMarkReplay(removals: step.created.compactMap(live), additions: additions, renamed: renamed)
+    }
+}
+
 /// Keeps a Pencil stroke on the line it started on: another line is taken
 /// only when Pencil is more than `threshold` line heights away from the bound
 /// line's middle.
@@ -260,6 +375,13 @@ public enum LawPencilLine {
 public struct LawPDFRect: Hashable, Sendable {
     public var x: Double, y: Double, width: Double, height: Double
     public init(x: Double, y: Double, width: Double, height: Double) { self.x = x; self.y = y; self.width = width; self.height = height }
+    /// As stored in a `pdf-text` payload.
+    public var json: LawJSON { .object(["x": .number(x), "y": .number(y), "width": .number(width), "height": .number(height)]) }
+    public init?(json: LawJSON) {
+        guard case let .object(r) = json, case let .number(x) = r["x"], case let .number(y) = r["y"],
+              case let .number(w) = r["width"], case let .number(h) = r["height"] else { return nil }
+        self.init(x: x, y: y, width: w, height: h)
+    }
 }
 public struct LawPDFPoint: Hashable, Sendable {
     public var x: Double, y: Double
@@ -421,10 +543,69 @@ public enum LawPDFAnchoring {
         let step = Double(points.count - 1) / Double(limit - 1)
         return (0..<limit).map { points[min(points.count - 1, Int((Double($0) * step).rounded()))] }
     }
-    /// Merges line rectangles of one page and keeps at most `maxRectangles`.
-    public static func limitedRectangles(_ rects: [LawPDFRect]) -> [LawPDFRect] {
-        guard rects.count > maxRectangles else { return rects }
-        // Rarely reached (a whole page in narrow columns): join neighbours per line.
+    /// The server takes a request body of at most 64 KiB.
+    public static let maxBody = 65_536
+    /// Stroke points as the server keeps them: 0…1, five decimals.
+    public static func rounded(_ points: [LawPDFPoint]) -> [LawPDFPoint] {
+        func unit(_ v: Double) -> Double { v.isFinite ? (min(1, max(0, v)) * 100_000).rounded() / 100_000 : 0 }
+        return points.map { LawPDFPoint(unit($0.x), unit($0.y)) }
+    }
+    /// Rectangles inside the page (0…1; the server refuses anything beyond),
+    /// six decimals like the server; empty ones are dropped.
+    public static func clamped(_ rects: [LawPDFRect]) -> [LawPDFRect] {
+        func unit(_ v: Double) -> Double { v.isFinite ? (min(1, max(0, v)) * 1_000_000).rounded() / 1_000_000 : 0 }
+        return rects.compactMap { r in
+            guard r.x.isFinite, r.y.isFinite, r.width.isFinite, r.height.isFinite else { return nil }
+            let x = unit(r.x), y = unit(r.y), right = unit(r.x + r.width), bottom = unit(r.y + r.height)
+            guard right > x, bottom > y else { return nil }
+            return LawPDFRect(x: x, y: y, width: ((right - x) * 1_000_000).rounded() / 1_000_000, height: ((bottom - y) * 1_000_000).rounded() / 1_000_000)
+        }
+    }
+    /// Bytes of `payload` as sent (JSON), with room for an `id` it gets later.
+    public static func bodySize(_ payload: [String: LawJSON]) -> Int {
+        var payload = payload
+        if payload["id"] == nil { payload["id"] = .string(String(repeating: "0", count: 36)) }
+        return (try? JSONEncoder().encode(payload).count) ?? Int.max
+    }
+    /// A `pdf`/`pdf-text` payload the server accepts: coordinates rounded and
+    /// inside the page, at most 1500 points or 500 rectangles, and a body of
+    /// at most 64 KiB including the anchor; a stroke is thinned further
+    /// instead of being refused (413), rectangles of a line are joined.
+    /// Other payloads come back unchanged; nil if nothing valid is left.
+    public static func fitted(_ payload: [String: LawJSON]) -> [String: LawJSON]? {
+        var payload = payload
+        switch payload["kind"]?.string {
+        case "pdf":
+            guard case let .array(values) = payload["points"] else { return nil }
+            var points = rounded(values.compactMap { value -> LawPDFPoint? in
+                guard case let .array(xy) = value, xy.count == 2, case let .number(x) = xy[0], case let .number(y) = xy[1] else { return nil }
+                return LawPDFPoint(x, y)
+            })
+            points = thinned(points)
+            func encode() { payload["points"] = .array(points.map { .array([.number($0.x), .number($0.y)]) }) }
+            encode()
+            while bodySize(payload) > maxBody {
+                guard points.count > 2 else { return nil }
+                points = thinned(points, limit: max(2, points.count * 3 / 4))
+                encode()
+            }
+            return points.count >= 2 ? payload : nil
+        case "pdf-text":
+            guard case let .array(values) = payload["rectangles"] else { return nil }
+            var rects = clamped(limitedRectangles(values.compactMap(LawPDFRect.init(json:))))
+            guard !rects.isEmpty else { return nil }
+            payload["rectangles"] = .array(rects.map(\.json))
+            if bodySize(payload) > maxBody {
+                rects = clamped(joinedLines(rects))
+                payload["rectangles"] = .array(rects.map(\.json))
+            }
+            return bodySize(payload) <= maxBody && !rects.isEmpty ? payload : nil
+        default:
+            return payload
+        }
+    }
+    /// Every line's rectangles as one (`limitedRectangles` without the count limit).
+    static func joinedLines(_ rects: [LawPDFRect]) -> [LawPDFRect] {
         var result: [LawPDFRect] = []
         for rect in rects {
             if var prior = result.last, abs(prior.y - rect.y) < rect.height * 0.3 {
@@ -434,5 +615,11 @@ public enum LawPDFAnchoring {
             } else { result.append(rect) }
         }
         return Array(result.prefix(maxRectangles))
+    }
+    /// Merges line rectangles of one page and keeps at most `maxRectangles`.
+    public static func limitedRectangles(_ rects: [LawPDFRect]) -> [LawPDFRect] {
+        guard rects.count > maxRectangles else { return rects }
+        // Rarely reached (a whole page in narrow columns): join neighbours per line.
+        return joinedLines(rects)
     }
 }

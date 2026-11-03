@@ -10,7 +10,7 @@ Stand 03.11.2026, ermittelt aus App (`LawPersonalStore`, `LawLibrary`, Leser), K
 - `pdf`: 2–1 500 Punkte, normiert 0…1 auf die ungedrehte CropBox, Ursprung oben links; `width` setzt der Server fest. `pdf-text`: 1–500 Rechtecke, normiert.
 - Der Server speichert nur `{lawId, versionId, kind, page, points?, width?, rectangles?, anchor?}`. **`color` und alle weiteren Felder verwirft er**; die App hält `color` nur lokal (`localOnlyKeys`). Andere Geräte und die Website zeigen deshalb Gelb.
 - Einträge sind unveränderlich: kein UPDATE. Gleiche ID mit anderem Inhalt → 409; gelöschte ID ist für immer gesperrt (409 `deleted`). Ändern heißt löschen und mit neuer UUID neu anlegen.
-- Grenzen: 10 000 Markierungen und 20 MiB je Konto, Körper ≤ 64 KiB, 240 Schreibzugriffe je Minute.
+- Grenzen: 10 000 Markierungen und 20 MiB je Konto, Körper ≤ 64 KiB, 240 Schreibzugriffe je Minute. Die App rundet Strichpunkte auf 5 Nachkommastellen, begrenzt Rechtecke auf 0…1 und dünnt Striche weiter aus, bis der Körper samt Anker unter 64 KiB liegt (`LawPDFAnchoring.fitted`).
 
 ## Lesezeichen
 
@@ -20,7 +20,7 @@ Stand 03.11.2026, ermittelt aus App (`LawPersonalStore`, `LawLibrary`, Leser), K
 ## Abgleich
 
 - App: `GET /api/sync?after=N` (≤ 500 Ereignisse, Cursor, `hasMore`), dann ausstehende Einträge senden; Löschungen vom Server gewinnen; lokal geänderte oder gelöschte Einträge werden nicht überschrieben.
-- App sendet Neuanlagen vor Löschungen (Ersetzen = neue ID anlegen, dann alte löschen). Ein Aufruf während eines laufenden Abgleichs löst einen weiteren Lauf aus. „Synchronisiert“ nur bei leerer Warteschlange.
+- App sendet bei Markierungen Neuanlagen vor Löschungen (Ersetzen = neue ID anlegen, dann alte löschen), bei Lesezeichen Löschungen zuerst: Der Server beantwortet ein neues Lesezeichen an einem noch belegten Ziel mit der vorhandenen ID, eine danach gesendete Löschung entfernte sonst das neue. Die App übernimmt nie die ID eines lokal gelöschten Eintrags, dessen Löschung noch aussteht; der neue bleibt dann in der Warteschlange. Ein Aufruf während eines laufenden Abgleichs löst einen weiteren Lauf aus. „Synchronisiert“ nur bei leerer Warteschlange.
 - Antworten: 2xx und 404 auf DELETE gelten als übernommen; 409 `deleted` macht den Eintrag lokal endgültig gelöscht; 400, 409 ohne `deleted` und 413 gelten als dauerhaft abgelehnt: Der Eintrag bleibt lokal, wird nicht erneut gesendet und wartet auf „Erneut versuchen“ oder „Nur lokal behalten“ (nie senden). 5xx/408/429 und andere 4xx werden beim nächsten Lauf wiederholt.
 - Art + UUID ist in der App über alle Eigentümer eindeutig; eine Sicherung legt nichts doppelt an. Bestätigte Löschmarken verlieren nach 30 Tagen ihren Inhalt, ihre ID bleibt gesperrt.
 - Website: fragt je Fassung `GET /api/annotations` ab und hält eine eigene Warteschlange.

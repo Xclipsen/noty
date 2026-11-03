@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PDFKit
 import Combine
 import NotebookCore
 
@@ -115,6 +116,18 @@ final class LawKeyboard: ObservableObject {
         // The reader registers itself, enters Helix and focuses a pending search.
         laws?.keyFocus += 1
         if claiming { claimSoon() }
+    }
+    /// `Space l` from the page: opens the window (or brings it out) with the
+    /// keys. A reader that exists takes them at once (`laws.keyFocus`); one
+    /// created by this opening picks the set focus up when it appears
+    /// (`LawReaderView.onAppear`), however long that takes. False without
+    /// an editor anchor (the caller then only opens the window).
+    @discardableResult
+    func openWithKeys() -> Bool {
+        guard available, let panel else { return false }
+        panel.open()
+        focus(claiming: true)
+        return true
     }
     /// From the reader (`Space l`, a selection): focus without asking it again.
     func markFocused() {
@@ -340,6 +353,36 @@ final class LawKeyHostView: UIView {
         }
         return nil
     }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.handle(presses) { super.pressesBegan(presses, with: event) }
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesEnded(presses, with: event) }
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesCancelled(presses, with: event) }
+    }
+}
+
+/// The law text view: while it is first responder (a touch selection) the
+/// law window's shortcuts stay available (`LawKeyboard`), and with the Helix
+/// mode its keys (`GESETZE`) reach `KeyboardRouter` like from `LawKeyHostView`.
+final class LawKeyTextView: UITextView {
+    override var keyCommands: [UIKeyCommand]? { (super.keyCommands ?? []) + LawKeyboard.shared.keyCommands() }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.handle(presses) { super.pressesBegan(presses, with: event) }
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesEnded(presses, with: event) }
+    }
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !KeyboardRouter.shared.pressEnded(presses) { super.pressesCancelled(presses, with: event) }
+    }
+}
+
+/// The law PDF: like `LawKeyTextView` while it holds a text selection.
+final class LawKeyPDFView: PDFView {
+    override var keyCommands: [UIKeyCommand]? { (super.keyCommands ?? []) + LawKeyboard.shared.keyCommands() }
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         if !KeyboardRouter.shared.handle(presses) { super.pressesBegan(presses, with: event) }
     }

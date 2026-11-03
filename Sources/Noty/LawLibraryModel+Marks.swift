@@ -23,24 +23,33 @@ struct LawMarkChange: Equatable {
     var isEmpty: Bool { removals.isEmpty && additions.isEmpty }
 }
 
-/// What `commit` actually changed; enough to undo it with new IDs.
-struct LawMarkApplied: Equatable {
-    var removed: [LawPersonalItem]
-    var created: [String]
-}
+/// What `commit` actually changed; enough to undo it with new IDs (Core
+/// `LawMarkStep`, kept in the reader's `LawMarkHistory`).
+typealias LawMarkApplied = LawMarkStep
 
 extension LawLibraryModel {
     /// Applies `plan` as one step: one store write, one sync afterwards, no
-    /// intermediate state. Returns what was written, nil when nothing could
-    /// be written (the model shows the error and the old marks stay complete).
-    func commit(plan: LawMarkChange) async -> LawMarkApplied? {
+    /// intermediate state. Returns what was written, nil when there was
+    /// nothing to write. Throws, writing nothing, when an entry to remove is
+    /// no longer live (`LawPersonalConflict`: a sync deleted it meanwhile;
+    /// its pieces must not come back), when a PDF mark cannot be made to fit
+    /// the server's limits, or when the store refuses; the old marks stay
+    /// complete and the caller tells the user.
+    func commit(plan: LawMarkChange) async throws -> LawMarkApplied? {
         guard !plan.isEmpty else { return nil }
         // Only live entries of the current owner can be removed (`items`).
         let removed = plan.removals.compactMap { item in items.first { $0.id == item.id && $0.kind == item.kind } }
-        let puts = plan.additions.map { LawPersonalChange(kind: $0.kind, payload: $0.payload, id: $0.id) }
-        guard !puts.isEmpty || !removed.isEmpty else { return nil }
-        guard await commit(puts: puts, removes: removed.map(\.ref)) else { return nil }
-        return LawMarkApplied(removed: removed, created: plan.additions.map(\.id))
+        guard removed.count == plan.removals.count else { await refreshItems(); throw LawPersonalConflict.changedMeanwhile }
+        let puts = try plan.additions.map { addition in
+            // Rounded, inside the page and below 64 KiB: never a 413 later.
+            guard let payload = addition.kind == "annotation" ? LawPDFAnchoring.fitted(addition.payload) : addition.payload else {
+                throw LawError.invalid("Diese PDF-Markierung lässt sich nicht speichern. Bitte kürzer markieren.")
+            }
+            return LawPersonalChange(kind: addition.kind, payload: payload, id: addition.id)
+        }
+        let owner = owner
+        try await commitMarks(puts: puts, removes: removed.map(\.ref))
+        return LawMarkApplied(owner: owner, removed: removed, created: plan.additions.map(\.id))
     }
 
     /// The current owner's live annotations of one law version.
@@ -62,10 +71,13 @@ extension LawLibraryModel {
 
     /// Turns a canonical plan into items: deletions are the stored entries,
     /// additions text annotations with base payload, anchor and colour.
-    func change(for plan: LawMarkPlan, section: LawSection, document: LawDocument) -> LawMarkChange {
+    /// Throws `LawPersonalConflict` when a mark the plan replaces is gone
+    /// (deleted by a sync since the plan was made): its pieces are not written.
+    func change(for plan: LawMarkPlan, section: LawSection, document: LawDocument) throws -> LawMarkChange {
         let canonical = LawTextAnchor.canonical(section.text)
         var change = LawMarkChange()
         change.removals = plan.deletions.compactMap { liveItem($0.id) }
+        guard change.removals.count == plan.deletions.count else { throw LawPersonalConflict.changedMeanwhile }
         for range in plan.additions {
             if range.fixed, let source = plan.deletions.first(where: { $0.fixed && $0.start == range.start && $0.end == range.end }).flatMap({ liveItem($0.id) }) {
                 // Recoloured PDF mark: same entry, new colour, the plan's new ID.
@@ -101,14 +113,5 @@ extension LawPersonalItem {
 extension LawAnchor {
     var json: LawJSON? {
         .object(["sectionId": .string(sectionId), "start": .number(Double(start)), "end": .number(Double(end)), "quote": .string(quote)])
-    }
-}
-
-extension LawPDFRect {
-    var json: LawJSON { .object(["x": .number(x), "y": .number(y), "width": .number(width), "height": .number(height)]) }
-    init?(json: LawJSON) {
-        guard case let .object(r) = json, case let .number(x) = r["x"], case let .number(y) = r["y"],
-              case let .number(w) = r["width"], case let .number(h) = r["height"] else { return nil }
-        self.init(x: x, y: y, width: w, height: h)
     }
 }

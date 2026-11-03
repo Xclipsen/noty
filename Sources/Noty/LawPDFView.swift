@@ -348,8 +348,10 @@ struct NativeLawPDF: UIViewRepresentable {
         /// One `pdf-text` entry per page with all line rectangles, plus a text
         /// anchor when exactly one provision there contains the quote (website rule).
         func pdfSelectionPayloads() -> [[String: LawJSON]] {
-            selectionRects().sorted { $0.key < $1.key }.map { index, value in
-                let rects = LawPDFAnchoring.limitedRectangles(value.rects)
+            selectionRects().sorted { $0.key < $1.key }.compactMap { index, value in
+                // Inside the page and rounded like the server (it refuses anything beyond 0…1).
+                let rects = LawPDFAnchoring.clamped(LawPDFAnchoring.limitedRectangles(value.rects))
+                guard !rects.isEmpty else { return nil }
                 var payload: [String: LawJSON] = ["kind": .string("pdf-text"), "page": .number(Double(index + 1)), "rectangles": .array(rects.map(\.json))]
                 let top = rects.map(\.y).min() ?? 0, bottom = rects.map { $0.y + $0.height }.max() ?? 0
                 if let anchor = LawPDFAnchoring.match(sections, page: index + 1, quote: value.text.joined(separator: " "), top: top, bottom: bottom), let json = anchor.json {
@@ -426,8 +428,9 @@ struct NativeLawPDF: UIViewRepresentable {
                 } else {
                     if parent.pen.straight && !straightened { ink.straighten() }
                     if let stroke = ink.finish(), stroke.points.count >= 2 {
+                        // Five decimals like the server: a full stroke stays far below its 64 KiB.
                         var payload: [String: LawJSON] = ["kind": .string("pdf"), "page": .number(Double(stroke.index + 1)),
-                                                          "points": .array(stroke.points.map { .array([.number($0.x), .number($0.y)]) })]
+                                                          "points": .array(LawPDFAnchoring.rounded(stroke.points).map { .array([.number($0.x), .number($0.y)]) })]
                         if let layout = layout(stroke.index), let quote = LawPDFAnchoring.quoteUnderStroke(layout, points: stroke.points),
                            let anchor = LawPDFAnchoring.match(sections, page: stroke.index + 1, quote: quote.quote, top: quote.top, bottom: quote.bottom), let json = anchor.json {
                             payload["anchor"] = json
@@ -449,7 +452,10 @@ struct NativeLawPDF: UIViewRepresentable {
                 return
             }
             guard let layout = layout(index), let word = LawPDFAnchoring.word(at: p, layout: layout) else { return }
-            var payload: [String: LawJSON] = ["kind": .string("pdf-text"), "page": .number(Double(index + 1)), "rectangles": .array(word.rectangles.map(\.json))]
+            // Glyph boxes may reach past the page edge; the server refuses that.
+            let rects = LawPDFAnchoring.clamped(word.rectangles)
+            guard !rects.isEmpty else { return }
+            var payload: [String: LawJSON] = ["kind": .string("pdf-text"), "page": .number(Double(index + 1)), "rectangles": .array(rects.map(\.json))]
             if let anchor = LawPDFAnchoring.match(sections, page: index + 1, quote: word.quote, top: word.top, bottom: word.bottom), let json = anchor.json {
                 payload["anchor"] = json
             }
@@ -515,11 +521,7 @@ final class LawPDFContainer: UIView {
     }
 }
 
-/// The law PDF: while it is first responder (a text selection) the law
-/// window's shortcuts stay available (`LawKeyboard`).
-final class LawKeyPDFView: PDFView {
-    override var keyCommands: [UIKeyCommand]? { (super.keyCommands ?? []) + LawKeyboard.shared.keyCommands() }
-}
+/// `LawKeyPDFView` (the PDF view's class) lives in LawKeyCommands.swift.
 
 /// Live preview of a Pencil stroke over the PDF. Points are kept in PDF page
 /// coordinates; the source PDF is never saved with the derived annotations.
