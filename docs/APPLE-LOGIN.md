@@ -19,7 +19,7 @@ Umgebung: `APPLE_AUDIENCES` (kommagetrennt: App-Bundle-IDs und Services ID; für
 
 | Pfad | Eingabe | Antwort |
 | --- | --- | --- |
-| `POST /api/apple/login` | `{ identityToken, nonce, name?, create? }`; `nonce` ist der Rohwert, im Token steht immer `sha256(nonce)` hex; `create: false` legt kein neues Konto an (Admin-Panel) | wie `/api/login`: Sitzung, mit `X-Noty-Client: 1` Token im JSON; `created: true` bei neuem Konto |
+| `POST /api/apple/login` | `{ identityToken, nonce, name?, create? }`; `nonce` ist der Rohwert, im Token steht immer `sha256(nonce)` hex; `create: false` legt kein neues Konto an | wie `/api/login`: Sitzung, mit `X-Noty-Client: 1` Token im JSON; `created: true` bei neuem Konto |
 | `POST /api/apple/link` | `{ identityToken, nonce }`, angemeldet | `200 { user, apple: true }`; `409` wenn `sub` schon an anderem Konto oder Konto schon verknüpft |
 | `DELETE /api/apple` | angemeldet | `200 { apple: false }`; abgelehnt, wenn das Konto sonst kein Passwort hätte |
 | `GET /api/session` | | zusätzlich `user.apple: true\|false` |
@@ -48,10 +48,6 @@ Fehlermeldungen deutsch. Ratelimits wie bei Login. Konten ohne Passwort, die nur
 - Abbruch 1001 innerhalb von 0,8 s (oder mit unterliegendem `AKAuthenticationError` -7026/-7027) gilt als „kein Apple-Fenster“ und zeigt den Hinweis auf eine angemeldete Apple-ID; ein echter Abbruch bleibt still. Die Erkennung ist eine Heuristik, nur am Gerät prüfbar.
 - `refreshAccount` übernimmt seine Antwort nur, wenn seitdem keine lokale Kontoänderung (Verknüpfen, Trennen, Anmeldung, E-Mail) lief (`AccountUpdateGate`) und kein Kontovorgang aktiv ist.
 - Nachweise: `AppleSignInTests` (Request-Körper mit `create: false`, Plan, Gate, Abbruchhinweis), SDK-Build. Signierung: xtool 1.24.0, Build 93 enthält die Fähigkeit in Signatur und Profil (ENVIRONMENT). Nicht installiert durch diese Änderung, am iPad ungeprüft.
-
-## Admin-Panel
-
-Das Admin-Panel gehört zum KI-Dienst. Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
 
 ## Apple-Developer-Portal (nur der Nutzer)
 

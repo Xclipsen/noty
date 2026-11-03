@@ -493,8 +493,8 @@ struct IncomingFilingView: View {
             .toolbar {
                 if model.done == nil {
                     ToolbarItem(placement: .cancellationAction) {
+                        // Bewusst ohne Esc: Abbrechen verwirft die einzige Kopie auf dem iPad.
                         Button("Abbrechen", role: .cancel) { model.discard() }.disabled(model.working != nil)
-                            .keyboardShortcut(.cancelAction)
                             .help("Verwirft die empfangene Kopie. Hefte und Bibliothek bleiben unverändert.")
                     }
                 }
@@ -735,7 +735,8 @@ struct IncomingFilingView: View {
                     Button("Trotzdem erneut ablegen") { model.refile() }.buttonStyle(.bordered)
                         .help("Fügt die Datei ein zweites Mal ein.")
                 }
-                Button(done.offersRefiling ? "Kopie entfernen" : "Fertig") { model.finish() }.buttonStyle(.bordered).keyboardShortcut(.cancelAction)
+                Button(done.offersRefiling ? "Kopie entfernen" : "Fertig") { model.finish() }.buttonStyle(.bordered)
+                    .keyboardShortcut(done.offersRefiling ? nil : .cancelAction)
             }
             Spacer()
         }

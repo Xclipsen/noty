@@ -27,7 +27,6 @@ final class EditorWorkspace: ObservableObject {
     /// Either view holds this notebook (also while it is being closed).
     func holds(_ id: UUID) -> Bool { models[id] != nil }
     /// The model of the view the user works in.
-    var activeModel: EditorModel { activePane == 1 ? secondary ?? primary : primary }
     func openSecondary(_ document: OpenNotebook) async {
         guard !closing else { return }
         // Reserved before waiting for the old second view: no library append
