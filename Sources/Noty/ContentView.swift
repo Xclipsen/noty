@@ -28,6 +28,8 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var toolbox: ToolbarSettingsModel
+    /// Law window focus: ⌘G then means its next hit (docs/KEYBOARD.md).
+    @ObservedObject private var lawKeys = LawKeyboard.shared
     @Environment(\.editorSettings) private var editorSettings
     @Environment(\.searchIndexArea) private var searchIndexArea
     @State private var showingSettings = false
@@ -273,6 +275,8 @@ struct ContentView: View {
             .interactiveDismissDisabled(isLibraryDocument || isRestoredCopy)
         }
         .preference(key: EditorCommandsPreference.self, value: editorCommands)
+        // Shortcuts of the law window: model, key responder, Esc in its fields.
+        .background { if !isRestoredCopy { LawKeyAnchor(active: isPaneActive()) } }
     }
 
     /// The whole document now has this paper colour: a neutral pen or marker
@@ -791,7 +795,8 @@ struct ContentView: View {
             }.frame(width: 48, height: 40).contentShape(Rectangle())
         }
         .foregroundStyle(.white)
-        .keyboardShortcut("g", modifiers: .command)
+        // With the law window focused ⌘G is its next hit (menu „Gesetze“).
+        .keyboardShortcut(lawKeys.focused ? nil : KeyboardShortcut("g", modifiers: .command))
         .accessibilityLabel(onDraft ? "Neue Seite nach Seite \(count), zum Springen tippen" : "Seite \(currentPageIndex + 1) von \(count), zum Springen tippen")
         .popover(isPresented: $pageEntry, arrowEdge: .trailing) { pageEntryPanel(count: count) }
     }
@@ -1056,7 +1061,7 @@ struct ContentView: View {
             onPencilSqueeze: { handlePencilSqueeze($0) },
             onInteraction: { id, active in
                 model.setInteraction(id, active: active)
-                if active { KeyboardRouter.shared.pageTouched() }
+                if active { KeyboardRouter.shared.pageTouched(); LawKeyboard.shared.pageTouched() }
             },
             onUndo: { redo in performUndo(redo: redo) },
             undoState: UndoAvailability(undo: model.canUndo, redo: model.canRedo),
