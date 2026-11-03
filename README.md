@@ -5,7 +5,7 @@ Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nut
 
 ## KI-Assistent (experimentell, nur noty dev)
 
-Fragen zu Heft und Seite über das eigene ChatGPT-Abo, standardmäßig aus. Branch `feat/ki-panel`, Bridge in `bridge/`, Vertrag und Betrieb in [AI-ASSISTANT](docs/AI-ASSISTANT.md). Admin-Web-App: `noty.xclipsen.de/admin`. Lernkarten und automatische Chats fehlen noch. Implementiert und gebaut, am iPad ungeprüft.
+Fragen zu Heft und Seite über das eigene ChatGPT-Abo, standardmäßig aus. Branch `feat/ki-panel`, Bridge in `bridge/`, Vertrag und Betrieb in [AI-ASSISTANT](docs/AI-ASSISTANT.md). Admin-Web-App: `noty.xclipsen.de/admin`. Lernkarten und automatische Chats fehlen noch. Antworten laufen über Long-Polling wortweise und gleichmäßig ein, Markdown inkrementell, die Ansicht folgt nur am Ende ([TESTING](docs/TESTING.md#flüssiges-einlaufen-der-antworten-03112026)). Implementiert und gebaut, am iPad ungeprüft.
 
 ## Native Gesetzessammlung – separater Feature-Worktree
 

@@ -509,6 +509,8 @@ final class KeyboardRouter: ObservableObject {
     /// True when a press was used (not passed on, no text is typed). One event
     /// can carry several presses (⇧ and a letter in one report of the keyboard).
     func handle(_ presses: Set<UIPress>, text: (any KeyboardTextTarget)? = nil) -> Bool {
+        // A key press is the user's input, also when the keyboard mode is off.
+        UserInputClock.note()
         guard isEnabled || helpVisible else { return false }
         var used = false
         for press in presses.sorted(by: { $0.timestamp < $1.timestamp }) {
@@ -562,6 +564,7 @@ final class KeyboardRouter: ObservableObject {
     /// keyboard mode (a tab, leaving the text).
     @discardableResult
     func handle(token: String, text: (any KeyboardTextTarget)? = nil) -> Bool {
+        UserInputClock.note()
         guard isEnabled || helpVisible else { return false }
         if !keyboardSeen { keyboardSeen = true }
         cancelRepeat()

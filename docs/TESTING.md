@@ -2,6 +2,12 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Ansicht bleibt nach App-Wechsel stehen (03.11.2026, Branch `feat/ki-panel`)
+
+**Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert), nicht installiert, am iPad ungeprüft.** Nutzerbefund: Textfeld angelegt/bearbeitet, App gewechselt, zurück: noty zieht die Ansicht zum Cursor. Ursachen im Code, Ablauf und Lösung: [BUG-18](BUG-18-TEXT-INPUT.md#app-wechsel-zieht-die-ansicht-zum-cursor-03112026). Core-Tests 1187 (3 übersprungen, 0 Fehler; neu `CaretRevealGateTests`, 12 Tests). Die UIKit-Ereignisfolge beim Wechsel (Tastatur, Snapshot-Größen, Ersthelfer) ist unter Linux nicht ausführbar.
+
+Gerätetest (gebündelt, Testheft): jeweils Textfeld anlegen bzw. bearbeiten, Cursor im Feld, App über App-Umschalter und über Home verlassen, zurückkehren. Zoom und Scrollposition müssen exakt gleich bleiben, auch wenn die Tastatur jetzt etwas verdeckt. Varianten: (1) Bildschirmtastatur, Feld im unteren Drittel; (2) Hardwaretastatur (nur Formatleiste); (3) stark gezoomt und so gescrollt, dass der Cursor außerhalb liegt; (4) nur gezoomt (Pinch, ohne Ziehen); (5) zweite Ansicht offen, Text in der linken und in der rechten; (6) Textdokument-Modus; (7) Querformat verlassen, im Hochformat zurück (darf wie eine Drehung umrechnen, aber nicht zum Cursor springen). Danach: ein Zeichen tippen holt den Cursor sichtbar; Antippen einer verdeckten Stelle bzw. Pfeiltaste ebenso; Control Center herunterziehen und zurück verändert nichts; Scribble mit dem Pencil in ein Feld und normales Schreiben fühlen sich unverändert an.
+
 ## PDFs und Bilder aus dem Teilen-Menü (03.11.2026, Branch `feat/ki-panel`)
 
 **Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert), nicht installiert, am iPad ungeprüft.** Core-Tests 1132 (3 übersprungen, neu `IncomingFilesTests`: Typ nach Inhalt, Warteschlange, Namensvorschlag, Ziellisten, Einfügeposition mit neuen IDs und unveränderter Quelle, Eingangsordner inkl. Neustart und Reste, Anhängen an ein geschlossenes Heft mit Fehlerfällen), `check_page_workflow.sh` bestanden. Nicht belegt: ob „noty dev“ im Teilen-Menü (App-Reihe) überhaupt erscheint, für welche Quell-Apps (Dateien, Safari, Mail; Fotos zeigt erfahrungsgemäß nur Apps mit Share-Extension), Security-Scope/iCloud-Download, Präsentation über offenem Heft und Dialog, Fokus, Stift und Tastatur dabei, Kaltstart.
@@ -216,6 +222,21 @@ Gerätetests (gebündelt, Testheft im isolierten Bereich):
 7. Eingabe: wächst bis 5 Zeilen, dann scrollt sie; Return sendet, Shift-Return bricht um (Hardware-Tastatur), Bildschirmtastatur-Return sendet; Platzhalter; Senden/Stopp im Feld.
 8. Darstellung: Dynamic Type groß, Tabellen als Monospace-Block horizontal scrollbar, Fundstellen-Pillen antippbar, Kopieren/Erneut fragen, Reduce Motion (keine Punkt-/Pulsanimation), Panel angedockt und schwebend neben Gesetzesfenster.
 9. Tokens der letzten Antwort im Titelmenü erscheinen nur, wenn die Bridge `usage` liefert.
+
+### Flüssiges Einlaufen der Antworten (03.11.2026)
+
+Implementiert auf `feat/ki-panel`: Long-Polling `wait=1` in Bridge und App, gedrosselte Revisionen beim Streamen, wortweises Einlaufen mit Anzeigepuffer, inkrementelles Markdown, Mitlaufen nur am Ende (Vertrag: [AI-ASSISTANT](AI-ASSISTANT.md)). Geprüft: Bridge-Tests (`node --test --test-skip-pattern='Befund 6'`, darin `tests/longpoll.test.mjs`), Core-Tests `AIStreamingTests` und `AILongPollTests` unter Linux, `xtool dev build`. Nicht installiert, am iPad ungeprüft.
+
+Echter Lauf gegen eine eigene lokale Bridge (Codex 0.166, Modus „Schnell“, Antwort ≈ 1 150 Zeichen in 3,8 s, 282 Deltas in Schüben etwa alle 120 ms): 39 Revisionen, Abstand Median 101 ms, 90 % 104 ms, höchstens 162 ms; eine wartende Abfrage antwortete im Median 1,0 ms (höchstens 1,7 ms) nach der neuen Revision, lokal ohne Netz; 7 Plattenschreibvorgänge der Sitzung während des Laufs; erster Text 2,5 bis 4 s nach dem Senden (Modell).
+
+Gerätetests (gebündelt, nur am iPad prüfbar):
+
+1. Lange Antwort („Fasse das Heft zusammen“): Text läuft gleichmäßig Wort für Wort ein, keine sichtbaren Sprünge, kein kurz aufblitzendes `**`, `##`, `- ` oder `[S.`; Überschriften, Listen und Tabellenzeilen erscheinen gleich in ihrer Form; am Ende sofort vollständig.
+2. Während der Antwort hochscrollen: Leseposition bleibt stehen, auch wenn darunter Text wächst; „Nach unten“ erscheint; selbst ganz nach unten scrollen oder Pille tippen folgt wieder; eine neue eigene Frage springt nach unten; anderer Chat öffnet unten.
+3. Schreibindikator kommt und geht ohne Höhensprung; Kopieren/Erneut fragen erscheinen am Ende ohne Verschiebung.
+4. Gleichzeitig mit dem Stift im Heft schreiben, während eine Antwort einläuft (angedockt und schwebend): Strich ohne Ruckeln.
+5. Reduce Motion: Text erscheint ohne Takt, Ansicht springt statt zu gleiten.
+6. Panel schließen oder App in den Hintergrund während einer Antwort: Abfrage endet (Bridge-Protokoll), Rückkehr holt den Stand nach. Über Tailscale: Abstände der Aktualisierungen und Verbrauch bei langen Chats (jede Antwort überträgt die ganze Sitzung).
 
 ## Native Gesetzessammlung – Feature-Worktree
 

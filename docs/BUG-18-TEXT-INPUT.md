@@ -34,3 +34,24 @@ Installation inzwischen erfolgreich: Geräteabfrage bestätigt Build 18. Vor-/Na
 Nutzer bestätigt „ja passt und funktioniert“. Log zeigt Textmodus aktiv, Fläche 1030×742 pt, erstes eingefügtes Feld, später `Insertion touch type=0 accepted=true` und zweites eingefügtes Feld. Kein Notiztext protokolliert. Aktueller Knopf-/Fingertipp-/Eingabeweg bestätigt; die ursprüngliche Build-17-Ursache damit nicht rückwirkend einzeln bewiesen. Weiterer Text-/Neustart-/Export-/Restoretest bleibt getrennt offen.
 
 Weiterer Gerätetest bestätigt Verschieben/Breite, Fett/Farbe/Kursiv/Unterstrichen/Größe sowie Erhalt nach Schließen/Öffnen. Echte PDF-/Backupausgabe geprüft, Schema-4-Migrationsarchiv am Gerät belegt, Host-Restore erfolgreich. Neuer externer Schema-4-Geräte-Restore einschließlich Textbearbeitung/Neustart inzwischen mit „jo hat geklappt“ bestätigt; Einzelheiten in TESTING.md.
+
+## App-Wechsel zieht die Ansicht zum Cursor (03.11.2026)
+
+Nutzerbefund: Textfeld angelegt oder bearbeitet, App über Umschalter/Home verlassen, zurück: die Ansicht springt zum Textfeld bzw. Cursor. Erwartet: Zoom und Scrollposition wie verlassen; nur echte Eingabe holt den Cursor.
+
+Codebefund (`Sources/Noty/NotebookEditor.swift`, Stand vor der Änderung): Alle Wege laufen in `revealCaret()`, das bisher nicht wusste, ob die App gerade zurückkam.
+
+- iPadOS verkleinert/dreht das Fenster im Hintergrund für die Umschalter-Snapshots (alle vier Orientierungen in `Info.plist`). `layoutSubviews` rechnet bei jeder Größenänderung Zoom relativ zur Fitbreite und Offset um die Mitte um (L. 343–357, mit Begrenzung auf den Zoombereich der anderen Größe) und ruft danach `revealCaret()` auf (L. 378). Im schmaleren Snapshot liegt der Cursor oft „verdeckt“ und wird hereingeholt; die Rückkehr zur Originalgröße rechnet von dort weiter: Ansicht und Zoom sind verschoben.
+- Die Tastatur verschwindet beim Verlassen und erscheint (bzw. die Formatleiste bei Hardwaretastatur) beim Zurückkommen: `keyboardChanged`/`keyboardSettled` (L. 657–669) rufen `revealCaret()` ohne Eingabeart auf. Liegt der Cursor dann unter Tastatur/Formatleiste und hatte der Nutzer nicht *gezogen*, scrollt noty zu ihm. Ein Pinch setzte `scrolledFromCaret` nicht (nur `scrollViewWillBeginDragging`, L. 951–952), ein nur gezoomter Cursor außerhalb des Bilds wurde deshalb immer zurückgeholt.
+- Von UIKit selbst ausgelöste Cursor-/Textrückmeldungen (`textViewDidBeginEditing`, `textViewDidChangeSelection`, abgeschlossene Markierung in `TextObjectLayer.swift` L. 754/1062/796, `DocumentTextSurface.becomeFirstResponder`) gelten als `.navigation` bzw. `.typing`, setzen `scrolledFromCaret` zurück und dürfen scrollen. Ob iPadOS sie beim Zurückkommen tatsächlich sendet, ist ohne Gerätetrace **unbewiesen**; abgefangen werden sie trotzdem.
+
+Welcher Weg am Gerät überwiegt, ist nicht per Trace belegt; die Snapshot-Größenänderung und die Tastaturrückkehr sind im Code eindeutige Wege zum Sprung.
+
+Änderung:
+
+- `CaretRevealGate` (Core, `CaretRevealGateTests`): Ab `UIScene.willDeactivate` bis `didActivate` kein Reveal. Danach *hält* das Tor: Tastatur-, Layout- und Seitenereignisse ohne Eingabeart verschieben nicht; eine Cursorbewegung nur, wenn seit der Rückkehr eine Berührung im App-Fenster oder ein Tastendruck kam oder das Beruhigungsfenster (1,5 s) vorbei ist; Tippen immer. Die erste solche echte Anforderung beendet das Halten. Abgelehnte Anforderungen sind verbraucht.
+- `ViewportResumePoint`: Beim Deaktivieren merkt sich jeder `NotebookViewport` Größe, Zoom, Offset und Seite (nicht während Pinch, Einrasten, Wurf, Sprung). Kehrt die Größe zurück, setzt `layoutSubviews` genau diese Werte statt der Umrechnung; dasselbe beim Aktivieren und bei den Tastaturereignissen im Beruhigungsfenster, solange der Nutzer nichts berührt hat und dieselbe Seite gewählt ist.
+- `UserInputClock`: passiver Fenster-Recognizer, der bei der ersten Berührung nur die Zeit notiert und sofort scheitert (kein Verzögern/Abbrechen anderer Gesten, auch nicht PencilKit/Scribble); Tastendrücke über `KeyboardRouter.handle`. Keine Positionen oder Inhalte.
+- Pinch setzt `scrolledFromCaret` wie Ziehen: Wegzoomen ist Wegscrollen.
+
+Gilt für beide Ansichten (jede Ansicht ihr eigenes Tor) und den Textdokument-Modus (gleicher `revealCaret`-Weg). Kein Schema-/Speicherwechsel. Geräteprüfung siehe TESTING.md „Ansicht bleibt nach App-Wechsel stehen“.

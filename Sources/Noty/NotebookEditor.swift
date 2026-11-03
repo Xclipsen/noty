@@ -115,6 +115,8 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     fileprivate var focusScrolling = false
     private var pendingTextFocus: TextFlowFocus?
     private var caretRevealQueued = false
+    /// Leaving the app and coming back moves nothing (`CaretRevealGate`).
+    private var revealGate = CaretRevealGate()
     private var keyboardScreenFrame: CGRect?
     private var configurationRevision = 0
     private var sheetRevisions: [UUID: Int] = [:]
@@ -176,6 +178,10 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             name: UIResponder.keyboardDidChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(memoryWarning),
             name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(sceneDeactivating(_:)),
+            name: UIScene.willDeactivateNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(sceneActivated(_:)),
+            name: UIScene.didActivateNotification, object: nil)
         for direction: UISwipeGestureRecognizer.Direction in [.left, .right] {
             let swipe = UISwipeGestureRecognizer(target: self, action: #selector(turnPage(_:)))
             swipe.direction = direction; swipe.delegate = self
@@ -350,9 +356,14 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             fitWidth = range.fit; logicalZoomRange = range
             maximumZoomScale = max(range.maximum, minimumZoomScale)
             minimumZoomScale = range.minimum; maximumZoomScale = range.maximum
-            setZoomScale(min(max(pendingFit ? fitWidth : fitWidth * relative, minimumZoomScale), maximumZoomScale), animated: false)
-            if !pendingJump {
-                contentOffset = CGPoint(x: center.x * zoomScale - bounds.width / 2, y: center.y * zoomScale - bounds.height / 2)
+            // Back at the size the app was left at (iPadOS resizes it for the
+            // app switcher's snapshots): the exact zoom and offset, not the
+            // rounded way through the other orientation.
+            if pendingFit || !restoreResumePoint() {
+                setZoomScale(min(max(pendingFit ? fitWidth : fitWidth * relative, minimumZoomScale), maximumZoomScale), animated: false)
+                if !pendingJump {
+                    contentOffset = CGPoint(x: center.x * zoomScale - bounds.width / 2, y: center.y * zoomScale - bounds.height / 2)
+                }
             }
             previousSize = bounds.size; pendingFit = false
         }
@@ -551,6 +562,9 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
         guard pinchGestureRecognizer?.state == .began || pinchGestureRecognizer?.state == .changed else { return }
         stopZoomTransition(); stopElastic()
+        // Zooming away from the caret is like scrolling away: keyboard and
+        // layout events no longer fetch the view back, typing does.
+        scrolledFromCaret = true
         if !isEditingText, let pinch = pinchGestureRecognizer {
             let point = pinch.location(in: surface)
             if let id = frames.first(where: { $0.value.contains(point) })?.key, id != selected {
@@ -631,6 +645,41 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil { scrollSelection?.cancel(); scrollSelection = nil; stopZoomTransition(); stopElastic(); userZoomPage = nil; hideFloatingSelection(); laser.reset() }
+        if let window { UserInputClock.install(on: window) }
+    }
+    // MARK: App switch
+    /// App switcher, Home, Control Center: remember zoom and offset. A view in
+    /// motion (pinch, snap, fling, jump) is left to its usual handling.
+    @objc private func sceneDeactivating(_ note: Notification) {
+        guard let scene = note.object as? UIScene, scene === window?.windowScene else { return }
+        let still = !pendingFit && !pendingJump && !liveZoom && zoomTransition == nil && !isDragging && !isDecelerating
+            && !focusScrolling && elasticLink == nil && bounds.width > 40 && bounds.height > 40
+        revealGate.deactivate(at: CACurrentMediaTime(), resume: still ? ViewportResumePoint(
+            size: PageSize(width: bounds.width, height: bounds.height), zoom: Double(zoomScale),
+            offset: PagePoint(x: contentOffset.x, y: contentOffset.y), pageID: selected) : nil)
+    }
+    @objc private func sceneActivated(_ note: Notification) {
+        guard let scene = note.object as? UIScene, scene === window?.windowScene else { return }
+        revealGate.activate(at: CACurrentMediaTime())
+        restoreResumePoint()
+    }
+    /// Puts back zoom and offset from before the app switch while the gate
+    /// still offers them (same size and page, no input since the return).
+    @discardableResult
+    private func restoreResumePoint() -> Bool {
+        guard !pendingJump, !liveZoom, zoomTransition == nil, !isDragging, !isDecelerating,
+              let point = revealGate.resume(size: PageSize(width: bounds.width, height: bounds.height), pageID: selected,
+                                            now: CACurrentMediaTime(), lastUserInput: UserInputClock.last) else { return false }
+        let zoom = min(max(CGFloat(point.zoom), minimumZoomScale), maximumZoomScale)
+        let offset = CGPoint(x: point.offset.x, y: point.offset.y)
+        guard abs(zoomScale - zoom) > 0.0001 || abs(contentOffset.x - offset.x) > 0.5 || abs(contentOffset.y - offset.y) > 0.5 else { return true }
+        // Inside layoutSubviews (`changing`) the caller goes on with insets and sheets.
+        let outer = !changing
+        changing = true
+        if abs(zoomScale - zoom) > 0.0001 { setZoomScale(zoom, animated: false) }
+        contentOffset = offset
+        if outer { changing = false; updateInsets(); refreshSheets() }
+        return true
     }
     private var keyboardOverlap: CGFloat {
         guard let window else { return 0 }
@@ -656,11 +705,13 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     /// The bar reaches its place after `keyboardChanged`.
     @objc private func keyboardSettled() {
         if activeSheet?.editingCaret == nil, documentText?.view.editingCaret == nil { caretInset = .zero }
-        updateInsets(); revealCaret()
+        updateInsets(); restoreResumePoint(); revealCaret()
     }
     @objc private func keyboardChanged(_ note: Notification) {
         keyboardScreenFrame = note.name == UIResponder.keyboardWillHideNotification ? nil
             : (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)
+        // The keyboard coming back with the app covers what it covers; nothing moves.
+        restoreResumePoint()
         let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
         let rawCurve = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt) ?? 7
         UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0 : duration, delay: 0,
@@ -702,6 +753,9 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         updateInsets()
         let document = documentText?.view.editingCaret != nil ? documentText?.view : nil
         let kind = document?.takeCaretReveal() ?? sheet.takeCaretReveal()
+        // After an app switch only the user's input brings the caret into view;
+        // a refused request is used up, it does not come back later.
+        guard revealGate.admit(CaretRevealGate.Source(kind), now: CACurrentMediaTime(), lastUserInput: UserInputClock.last) else { return }
         // Keyboard, layout and page changes do not fetch the view back after
         // the user scrolled away; typing or moving the caret does.
         if kind != nil { scrolledFromCaret = false } else if scrolledFromCaret { return }
