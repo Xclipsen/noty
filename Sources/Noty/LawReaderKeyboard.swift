@@ -1,24 +1,101 @@
 import SwiftUI
+import UIKit
 import NotebookCore
 
 extension LawReaderView {
-    // MARK: Keyboard mode (docs/KEYBOARD.md)
+    // MARK: Keys (docs/KEYBOARD.md, „Gesetzessammlung“)
 
+    /// `laws.keyFocus` changed: `Space l`, ⌘L, ⇧⌘L, a tap or a field gave
+    /// the window the keys. Registers the shortcuts (`LawKeyboard`) and, with
+    /// the Helix mode on, the panel `GESETZE`.
+    /// LAW-MERGE: LawReaderView `.onAppear { if LawKeyboard.shared.focused { startKeys() } }`,
+    /// sobald der Leser erst beim Sichtbarwerden entsteht (B14).
     func startKeys() {
+        let keyboard = LawKeyboard.shared
+        keyboard.attach(reader: LawReaderKeyActions(run: { runShortcut($0) }, selectionActive: { textSelection.active },
+                                                    leave: { leaveHelixKeys() }), marks: markController)
+        keyboard.markFocused()
+        if let clearing = keyboard.takePendingSearch() { focusQuickSearch(clearing: clearing) } else { keyboard.claimSoon() }
+        // Helix only in its mode; the shortcuts above work without it.
         let router = KeyboardRouter.shared
+        guard router.isEnabled else { return }
         if let keyPanel { router.setTyping(keyPanel, false); return }
         let panel = KeyPanel(context: .law, label: "GESETZE")
         panel.leavesOnPageTouch = true
         panel.run = { runKey($0, count: $1) }
-        panel.onLeave = { keyPanel = nil }
+        panel.onLeave = {
+            keyPanel = nil
+            LawKeyboard.shared.blur()
+        }
         keyPanel = panel
         router.enter(panel)
     }
-    func leaveKeys() { if let keyPanel { KeyboardRouter.shared.leave(keyPanel) } }
-    private func close() {
-        leaveKeys()
-        withAnimation(NotyMotion.panel(reduceMotion)) { panel.stashed = true }
+    /// Hidden, closed or gone: the keys go back to the page.
+    func leaveKeys() {
+        LawKeyboard.shared.blur()
+        leaveHelixKeys()
+        LawKeyboard.shared.detachReader()
     }
+    private func leaveHelixKeys() { if let keyPanel { KeyboardRouter.shared.leave(keyPanel) } }
+
+    // MARK: Shortcuts (Core `LawShortcuts`)
+
+    private func runShortcut(_ action: LawShortcuts.Action) {
+        switch action {
+        case .escape: escapeOneLevel()
+        case .find: focusQuickSearch(clearing: false)
+        case .hit(let forward):
+            if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { focusQuickSearch(clearing: false) } else { followHit(forward: forward) }
+        case .section(let delta): move(delta)
+        case .scrollLines(let lines): textSelection.scroll(lines: lines)
+        case .scrollScreens(let screens): textSelection.scroll(screens: 0.9 * Double(screens))
+        case .edge(let end): textSelection.scrollToEdge(end: end)
+        case .font(let step): zoom(step)
+        case .bookmark: toggleBookmark()
+        case .chooseLaw: showLaws = true
+        case .contents: showContents = true
+        case .list: showBookmarks = true
+        case .toggleView: Task { await togglePDF() }
+        case .color(let number): markSelection(LawKeyboard.hex(number))
+        case .lastColor: markSelection(LawKeyboard.shared.lastColor)
+        case .removeMark: if textSelection.active { markController.removeSelection() }
+        // LAW-MERGE: markController.undo()/redo() mit eigenem Stapel (Markieren); ohne Schritt keine Wirkung.
+        case .undoMark: if markController.canUndo { markController.undo() }
+        case .redoMark: if markController.canRedo { markController.redo() }
+        default: break
+        }
+    }
+    /// Esc: selection or chosen mark, then a field, then the window.
+    private func escapeOneLevel() {
+        if textSelection.active { textSelection.clear(); return }
+        // LAW-MERGE: Schnellsuche/Paragraphfeld des Leser-Designs, falls umbenannt.
+        if queryFocused { queryFocused = false; LawKeyboard.shared.claimSoon(); return }
+        if let field = UIResponder.currentFirstResponder as? UITextField {
+            field.resignFirstResponder(); LawKeyboard.shared.claimSoon(); return
+        }
+        LawKeyboard.shared.closeWindow()
+    }
+    /// ⌘L and ⌘F: the quick search takes the typing (`144 HGB` or words).
+    private func focusQuickSearch(clearing: Bool) {
+        if clearing { query = "" }
+        textSelection.clear()
+        queryFocused = true
+    }
+    private func zoom(_ step: Int) {
+        guard !viewPDF else { return }
+        fontSize = step == 0 ? 18 : min(32, max(12, fontSize + Double(step * 2)))
+    }
+    /// 1–5, ⇧⌘H, `m1`…`mm`: marks a text selection or recolours the chosen
+    /// mark. `hex` nil: the pen's colour.
+    private func markSelection(_ hex: String?) {
+        guard textSelection.active else { return }
+        if let hex { LawKeyboard.shared.remember(color: hex) }
+        if textSelection.range.length > 0 { markController.mark(color: hex) }
+        else { markController.recolor(hex ?? pen.hex) }
+    }
+
+    // MARK: Helix (`GESETZE`)
+
     /// Quick search and paragraph are typed through the router into the
     /// reader's own fields, whose live lookup then does the rest.
     private func startInput(_ field: HelixLawField) {
@@ -55,30 +132,39 @@ extension LawReaderView {
         case .gotoPage:
             if let count { Task { await search(String(count), from: .number) } } else { startInput(.paragraph) }
         case .lawField(let field): startInput(field)
-        case .confirm: followNextHit()
-        case .cancelPanel, .laws: close()
+        case .confirm: followHit(forward: true)
+        // Esc: a selection first, then the window closes (`Space l` closes at once).
+        case .cancelPanel: if textSelection.active { textSelection.clear() } else { LawKeyboard.shared.closeWindow() }
+        case .laws: LawKeyboard.shared.closeWindow()
+        case .lawPark: LawKeyboard.shared.parkWindow()
         case .lawChoose: showLaws = true
         case .lawContents: showContents = true
         case .lawBookmarks: showBookmarks = true
         case .bookmark: toggleBookmark()
         case .lawView: Task { await togglePDF() }
-        case .zoom(let step): if !viewPDF { fontSize = min(32, max(12, fontSize + Double(step * 2))) }
-        case .lawMark(let on):
-            if on, textSelection.range.length > 0 { mark(textSelection.range) }
-            else if !on, !textSelection.marks.isEmpty { unmark(textSelection.marks) }
+        case .zoom(let step): zoom(step * times)
+        case .lawColor(let number): runShortcut(.color(number))
+        case .lawMark(let on): runShortcut(on ? .lastColor : .removeMark)
+        case .undo: runShortcut(.undoMark)
+        case .redo: runShortcut(.redoMark)
         default: break
         }
     }
-    /// Enter in the reader: the next section with the searched words.
-    private func followNextHit() {
+    /// Enter, ⌘G, ⇧⌘G: the next or previous section with the searched words.
+    private func followHit(forward: Bool) {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !term.isEmpty, let sections = document?.sections, let index = sections.firstIndex(where: { $0.id == sectionID }) else { return }
-        let order = sections[(index + 1)...] + sections[...index]
-        guard let found = order.first(where: { "\($0.label) \($0.title) \($0.text) \($0.notes)".lowercased().contains(term) }) else {
-            KeyboardRouter.shared.show(note: "Kein Treffer"); return
+        let order = forward ? Array(sections[(index + 1)...]) + Array(sections[...index])
+                            : Array(sections[..<index].reversed()) + Array(sections[index...].reversed())
+        guard let found = order.first(where: { "\($0.label) \($0.title) \($0.text) \($0.notes)".lowercased().contains(term) }),
+              let foundIndex = sections.firstIndex(where: { $0.id == found.id }) else {
+            if KeyboardRouter.shared.isEnabled { KeyboardRouter.shared.show(note: "Kein Treffer") }
+            else { loadError = "„\(query)“ wurde in \(entry?.abbr ?? "diesem Dokument") nicht gefunden." }
+            return
         }
         textSelection.clear()
         pdfTarget = nil; sectionID = found.id; jumpParagraph = nil; loadError = ""
-        if found.id == sections[index].id { KeyboardRouter.shared.show(note: "Suche von vorn") }
+        follow(found, from: .query)
+        if forward ? foundIndex <= index : foundIndex >= index { KeyboardRouter.shared.show(note: "Suche von vorn") }
     }
 }

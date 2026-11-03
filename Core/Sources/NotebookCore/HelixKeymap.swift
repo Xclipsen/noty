@@ -56,8 +56,14 @@ public enum HelixAction: Equatable, Sendable {
     case panelTab, panelFilter
     case pageItem(HelixPageItem)
     case lawField(HelixLawField), lawContents, lawBookmarks, lawChoose, lawView
-    /// The touch selection in the law text: mark it, or remove what it covers.
+    /// The touch selection in the law text: mark it (last colour), or remove
+    /// what it or the chosen mark covers.
     case lawMark(Bool)
+    /// Mark the selection, or recolour the chosen mark, in colour 1–5 of
+    /// `LawShortcuts.colorNames`.
+    case lawColor(Int)
+    /// Push the law window to its edge (`P`); Esc and `Space l` close it.
+    case lawPark
     /// A manual page break at the caret (text documents).
     case pageBreak
     /// Asks for a pattern, then `TextEngine.splitMatches`.
@@ -234,7 +240,8 @@ public enum HelixKeymap {
             act("<Space> o", .outline, "Gliederung", "Menü", editor),
             act("<Space> m", .bookmarks, "Lesezeichen", "Menü", editor),
             act("<Space> M", .bookmark, "Lesezeichen setzen/entfernen", "Menü", editor),
-            act("<Space> l", .laws, "Gesetzessammlung", "Menü", editor.union(law)),
+            act("<Space> l", .laws, "Gesetzessammlung", "Menü", editor),
+            act("<Space> l", .laws, "Gesetzessammlung schließen", "Menü", law),
             act("<Space> c", .colors, "Farbe und Strich", "Menü", editor),
             act("<Space> f", .searchAll, "Alle Hefte suchen", "Menü", all),
             act("<Space> q", .close, "Schließen", "Menü", editor),
@@ -418,7 +425,8 @@ public enum HelixKeymap {
             act("p", .lawField(.paragraph), "Paragraph eingeben", "Gesetze", law),
             act("/", .lawField(.query), "Schnellsuche (144 HGB oder Volltext)", "Gesetze", law),
             act("<CR>", .confirm, "Nächstem Treffer folgen", "Gesetze", law),
-            act("<Esc>", .cancelPanel, "Schließen", "Gesetze", law),
+            act("<Esc>", .cancelPanel, "Auswahl aufheben, sonst schließen", "Gesetze", law),
+            act("P", .lawPark, "An den Rand schieben", "Gesetze", law),
             act("t", .lawChoose, "Gesetz wählen", "Gesetze", law),
             act("o", .lawContents, "Inhaltsverzeichnis", "Gesetze", law),
             act("B", .lawBookmarks, "Lesezeichen und Markierungen", "Gesetze", law),
@@ -427,8 +435,12 @@ public enum HelixKeymap {
             act("+", .zoom(1), "Schrift größer", "Gesetze", law, repeats: true),
             act("=", .zoom(1), "Schrift größer", "Gesetze", law, repeats: true),
             act("-", .zoom(-1), "Schrift kleiner", "Gesetze", law, repeats: true),
-            act("m", .lawMark(true), "Auswahl markieren", "Gesetze", law),
-            act("M", .lawMark(false), "Markierung in der Auswahl entfernen", "Gesetze", law),
+            menu("m", "Markieren", law),
+            act("m m", .lawMark(true), "Mit letzter Farbe markieren", "Markieren", law),
+            act("d", .lawMark(false), "Markierung entfernen", "Markieren", law),
+            act("M", .lawMark(false), "Markierung entfernen", "Markieren", law),
+            act("u", .undo, "Markierung rückgängig", "Markieren", law),
+            act("U", .redo, "Markierung wiederholen", "Markieren", law),
 
             // Colour panel
             act("<CR>", .confirm, "Wählen", "Farbe", color),
@@ -463,6 +475,10 @@ public enum HelixKeymap {
         for (key, tool, title) in tools {
             rows.append(act("t \(key)", .tool(tool), title, "Werkzeuge", page))
             rows.append(act("<Space> t \(key)", .tool(tool), title, "Werkzeuge", editor))
+        }
+        // `m1`–`m5`: the colours of the law reader's palette.
+        for (index, name) in LawShortcuts.colorNames.enumerated() {
+            rows.append(act("m \(index + 1)", .lawColor(index + 1), "\(name) markieren", "Markieren", law))
         }
         // One line in the overview: the digits choose, they count nothing here.
         for number in 1...9 { rows.append(act("\(number)", .pickEntry(number), "Eintrag 1–9 der Reihe wählen", "Farbe", color)) }
