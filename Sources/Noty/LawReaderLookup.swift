@@ -59,19 +59,40 @@ extension LawReaderView {
             await open(entry, target: target.reference.key, paragraph: target.reference.paragraph, from: field)
         } else if bareReference, let ref = LawReference.parse(value), let entry {
             if let doc = document, let s = doc.sections.first(where: { $0.keys.contains(ref.key) }) {
-                textSelection.clear()
-                pdfTarget = nil; sectionID = s.id; jumpParagraph = ref.paragraph; loadError = ""
-                follow(s, from: field)
+                showSection(s, from: field)
+                jumpParagraph = ref.paragraph
             } else { await open(entry, version: document?.version, target: ref.key, paragraph: ref.paragraph, from: field) }
         } else if allowFullText, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard let doc = document else { loadError = "Bitte zuerst ein Gesetz wählen."; return }
-            let term = value.lowercased()
-            if let found = doc.sections.first(where: { ("\($0.label) \($0.title) \($0.text) \($0.notes)").lowercased().contains(term) }) {
-                textSelection.clear()
-                sectionID = found.id; jumpParagraph = nil; loadError = ""
-                follow(found, from: field)
+            let term = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            // Every section with the words, for the hit stepper; the first one opens.
+            let found = doc.sections.filter { "\($0.label) \($0.title) \($0.text) \($0.notes)".lowercased().contains(term) }
+            if field == .query { hits = found.map(\.id); hitTerm = value }
+            if let first = found.first {
+                showSection(first, from: field)
             } else { loadError = "„\(value)“ wurde in \(entry?.abbr ?? "diesem Dokument") nicht gefunden." }
         }
+    }
+    /// Return in the search field: a new term searches, the same term goes to the next hit.
+    func submitQuery() async {
+        if !hits.isEmpty, query == hitTerm { stepHit(1); return }
+        await search(query, allowFullText: true, from: .query)
+    }
+    /// Previous/next section among the hits, wrapping around; from a section
+    /// outside the hits the nearest one in that direction.
+    func stepHit(_ delta: Int) {
+        guard !hits.isEmpty, let sections = document?.sections else { return }
+        let next: Int
+        if let i = hits.firstIndex(of: sectionID) {
+            next = (i + delta % hits.count + hits.count) % hits.count
+        } else {
+            let order = Dictionary(sections.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let here = order[sectionID] ?? -1
+            let positions = hits.map { order[$0] ?? -1 }
+            next = delta > 0 ? (positions.firstIndex { $0 > here } ?? 0) : (positions.lastIndex { $0 < here } ?? hits.count - 1)
+        }
+        guard let target = sections.first(where: { $0.id == hits[next] }) else { return }
+        showSection(target, from: .query)
     }
     func togglePDF() async {
         guard let entry, let doc = document else { return }
