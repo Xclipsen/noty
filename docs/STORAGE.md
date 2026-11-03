@@ -1,5 +1,14 @@
 # Lokaler Revisionsspeicher – Format 1
 
+## Ergänzung 03.11.2026 · Gesetzes-Markierungen (`NotyLaws/personal.json`)
+
+Getrennt von den Heftpaketen; einziger Schreiber ist der Actor `LawPersonalStore` (Core). Weiter `schemaVersion` 1, nur optionale Felder ergänzt (`deletedAt`, `rejection`, `localOnly` je Eintrag, `forgotten` im Stand); andere Schemata sperren den Bestand ohne Schreiben.
+
+- **Ein Schreibvorgang je Änderungssatz:** `batch(puts:removes:owner:)`, `record(_:)` (alle Antworten eines Push), `apply(_:owner:)` (eine Pull-Seite) prüfen vollständig und schreiben einmal atomar oder gar nicht; ohne Änderung wird nicht geschrieben. Ein Schreibfehler lässt Datei und Speicherstand unverändert. Vor dem Schreiben wird ausgeschlossen, dass ein Stand mit Duplikaten entsteht.
+- **Eindeutigkeit:** Art + UUID ist über alle Eigentümer eindeutig. Ältere Dateien mit Duplikaten werden beim Laden zusammengeführt (höchste Revision gewinnt, eine Löschung irgendeiner Kopie bleibt erhalten), nachdem die exakten Altbytes als `personal.json.before-repair-<UTC-Zeit>` daneben gesichert und zurückgelesen wurden.
+- **Löschmarken:** bestätigte Löschungen (bzw. Gastlöschungen) verlieren nach 30 Tagen ihren Inhalt; Art + ID bleibt in `forgotten` und wird nie wieder angelegt, wiederhergestellt oder aus dem Abgleich übernommen. Sicherungen tragen `forgotten` mit.
+- Nachweise: `LawPersonalSyncTests`, `LawLibraryTests`. Am iPad ungeprüft.
+
 ## Ergänzung 03.11.2026 · Ein Schreiber je Heftpaket
 
 Befund: Lud ein Editor ein Heft, bevor das Anhängen einer geteilten Datei über die Bibliothek fertig war, schrieb er beim nächsten Speichern ein Manifest aus seinem alten Stand, und sein Aufräumen löschte die angehängte Revision (unbekannt, nicht im eigenen Manifest).

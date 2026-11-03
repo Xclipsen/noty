@@ -61,15 +61,27 @@ final class LawLibraryModel: ObservableObject {
     private let personal = LawPersonalStore(root: root)
     private let session: URLSession
     private let base = URL(string: "https://law.xclipsen.de")!
-    @Published private(set) var user: NotyAccountUser?
+    @Published private(set) var user: NotyAccountUser? { didSet { if oldValue?.id != user?.id { publishItems() } } }
     @Published private(set) var catalog: LawCatalog?
+    /// The current owner's live entries (B12): signed in the account's, signed
+    /// out the guest's. Readers and lists show only these; entries of other
+    /// owners stay stored (`hiddenItemCount`) and are never shown or deleted.
     @Published private(set) var items: [LawPersonalItem] = []
+    /// The current owner's entries the server refused for good (B9), for
+    /// „Erneut versuchen“ (`retryRejected`) or „Nur lokal behalten“ (`keepLocal`).
+    @Published private(set) var rejectedItems: [LawPersonalItem] = []
+    /// Live entries of other owners kept on this iPad, not shown.
+    @Published private(set) var hiddenItemCount = 0
+    /// Structured sync state (B9); `syncStatus` is its one-line text.
+    @Published private(set) var syncState = LawSyncStatus(state: .guest)
+    /// Set once when loading merged duplicate entries (B1); says where the
+    /// exact prior file was kept. For the settings page.
+    @Published var personalNotice: String?
     @Published private(set) var downloading = false
     @Published private(set) var syncing = false
     @Published private(set) var accountBusy = false
-    @Published private(set) var sessionExpired = false
+    @Published private(set) var sessionExpired = false { didSet { if oldValue != sessionExpired { refreshStatus() } } }
     @Published private(set) var progress = ""
-    @Published private(set) var syncStatus = "Lokal gespeichert"
     @Published private(set) var byteCount: Int64 = 0
     @Published var error: String?
     /// Visible pages that show `error` themselves; the app alert stays silent then.
@@ -88,12 +100,29 @@ final class LawLibraryModel: ObservableObject {
     private var lastCheck = Date.distantPast
     private var lastAttempt = Date.distantPast
     private var lastSync = Date.distantPast
-    private var lastOwner: String?
+    /// Every stored entry of every owner.
+    private var allItems: [LawPersonalItem] = []
+    private var ownPending = 0
+    private var syncGate = LawSyncGate()
+    private var lastSyncError: String?
+    private var lastSynced: Date?
+    static let readingSpotsKey = "noty.laws.readingSpots"
+    private var readingSpots = LawReadingSpots.decode(UserDefaults.standard.data(forKey: LawLibraryModel.readingSpotsKey),
+        legacySections: UserDefaults.standard.dictionary(forKey: "noty.laws.readingSections") as? [String: String],
+        legacyLast: UserDefaults.standard.string(forKey: "noty.laws.lastLaw"))
     var enabled: Bool { UserDefaults.standard.bool(forKey: Self.enabledKey) }
     var syncEnabled: Bool { UserDefaults.standard.object(forKey: Self.syncKey) as? Bool ?? true }
     var automaticUpdates: Bool { UserDefaults.standard.object(forKey: Self.updatesKey) as? Bool ?? true }
     var entries: [LawEntry] { catalog?.entries ?? [] }
-    var pendingCount: Int { items.filter { $0.dirty && $0.owner == user?.id }.count }
+    /// The signed-in account's entries waiting to be sent (0 for the guest).
+    var pendingCount: Int { user == nil ? 0 : ownPending }
+    /// Owner of new entries and of what is shown: the account, signed out the guest (`nil`).
+    var owner: String? { user?.id }
+    var syncStatus: String {
+        var text = syncState.text(time: NotyText.statusDate)
+        if user == nil, hiddenItemCount > 0 { text += " · \(NotyText.count(hiddenItemCount, "Eintrag", "Einträge")) eines Kontos bleiben gespeichert" }
+        return text
+    }
     init() {
         panel = LawPanelModel()
         let config = URLSessionConfiguration.ephemeral
@@ -105,12 +134,19 @@ final class LawLibraryModel: ObservableObject {
     func start() async {
         guard !started else { return }
         started = true
+        // B15: a damaged catalogue must not keep the personal data from loading.
+        do { catalog = try await offline.catalog() }
+        catch { self.error = "Lokaler Gesetzesbestand: \(error.localizedDescription)" }
+        byteCount = await offline.byteCount()
         do {
-            catalog = try await offline.catalog()
-            items = try await personal.items(); lastOwner = try await personal.lastOwner()
-            byteCount = await offline.byteCount()
-            if let user { try await personal.adoptGuests(owner: user.id); await refreshItems() }
-        } catch { self.error = "Lokaler Gesetzesbestand: \(error.localizedDescription)" }
+            allItems = try await personal.items()
+            if let repair = try await personal.takeRepairReport() {
+                personalNotice = "\(NotyText.count(repair.merged, "doppelter Eintrag", "doppelte Einträge")) zusammengeführt. Vorheriger Stand gesichert als \(repair.backup.lastPathComponent)."
+            }
+            if let user { try await personal.adoptGuests(owner: user.id) }
+            _ = try? await personal.pruneTombstones()
+            await refreshItems()
+        } catch { self.error = "Persönliche Gesetzesdaten: \(error.localizedDescription)"; publishItems() }
         await tick()
     }
     func tick() async {
@@ -121,6 +157,7 @@ final class LawLibraryModel: ObservableObject {
     }
     func settingsChanged() async {
         epoch += 1
+        refreshStatus()
         if !enabled { panel.isOpen = false; return }
         if catalog == nil { lastAttempt = .distantPast }
         await tick()
@@ -237,7 +274,7 @@ final class LawLibraryModel: ObservableObject {
         try NotyAccountKeychain.save(account)
         epoch += 1; accountUpdates.changed(); user = account; sessionExpired = false
         try await personal.adoptGuests(owner: account.id)
-        lastOwner = account.id; await refreshItems()
+        lastSyncError = nil; lastSynced = nil; await refreshItems()
         Task { await synchronize() }
     }
     private let apple = AppleSignInController()
@@ -245,7 +282,7 @@ final class LawLibraryModel: ObservableObject {
     /// older `refreshAccount` answer never overwrites a newer change.
     private var accountUpdates = AccountUpdateGate()
     /// Markings of another account that are not transferred yet.
-    private var foreignPendingCount: Int { items.filter { $0.dirty && $0.owner != nil && $0.owner != user?.id }.count }
+    private var foreignPendingCount: Int { allItems.filter { $0.dirty && $0.owner != nil && $0.owner != user?.id }.count }
     /// „Mit Apple anmelden“: `true` once signed in. Cancelling the Apple sheet
     /// is silent; a new account is reported in `message`. No account appears
     /// silently while the iPad belongs to another one (`AppleLoginPlan`):
@@ -355,7 +392,7 @@ final class LawLibraryModel: ObservableObject {
         do { try NotyAccountKeychain.save(nil) }
         catch { self.error = error.localizedDescription; return }
         let token = user?.token
-        epoch += 1; user = nil; sessionExpired = false; syncStatus = "Abgemeldet · Markierungen bleiben lokal"
+        epoch += 1; user = nil; sessionExpired = false; lastSyncError = nil; lastSynced = nil; refreshStatus()
         if let token { _ = try? await fetch("/api/logout", method: "POST", body: [:], token: token, limit: 65536) }
     }
     func accountAction(_ path: String, email: String = "", password: String = "", code: String = "") async -> Bool {
@@ -379,25 +416,88 @@ final class LawLibraryModel: ObservableObject {
         } catch { self.error = error.localizedDescription; return false }
     }
     func refreshItems() async {
-        do { items = try await personal.items() } catch { self.error = error.localizedDescription }
+        do { allItems = try await personal.items(); publishItems() } catch { self.error = error.localizedDescription }
+    }
+    private func publishItems() {
+        let owner = user?.id
+        let visible = allItems.visible(to: owner)
+        if visible != items { items = visible }
+        let rejected = allItems.filter { $0.owner == owner && $0.isRejected }
+        if rejected != rejectedItems { rejectedItems = rejected }
+        let hidden = allItems.filter { $0.owner != owner && !$0.deleted }.count
+        if hidden != hiddenItemCount { hiddenItemCount = hidden }
+        ownPending = allItems.filter { $0.owner == owner && $0.awaitsUpload }.count
+        refreshStatus()
+    }
+    private func refreshStatus() {
+        let next = LawSyncStatus.derive(signedIn: user != nil, sessionExpired: sessionExpired, enabled: enabled, syncEnabled: syncEnabled,
+                                        running: syncing, pending: pendingCount, rejected: rejectedItems.count, lastError: lastSyncError, lastSynced: lastSynced)
+        if next != syncState { syncState = next }
+    }
+    /// The current owner's live entries, optionally of one kind, law and version.
+    func visibleItems(kind: String? = nil, law: String? = nil, version: String? = nil) -> [LawPersonalItem] {
+        items.filter { item in
+            (kind.map { item.kind == $0 } ?? true) && (law.map { item.payload["lawId"]?.string == $0 } ?? true)
+                && (version.map { item.payload["versionId"]?.string == $0 } ?? true)
+        }
+    }
+    /// Visible markings of `law` per version, in catalogue order (B10), e.g.
+    /// for „n Markierungen in Fassung …“ when another version is open.
+    func markCounts(law: String) -> [LawVersionMarkCount] {
+        items.markCounts(law: law, versionOrder: entries.first { $0.id == law }?.versions.map(\.id) ?? [])
+    }
+    /// Any number of new and removed entries of the current owner as one
+    /// atomic write and one sync (B16). `false` (with `error` set) leaves the
+    /// prior state complete. Removing another owner's entry does nothing.
+    @discardableResult
+    func commit(puts: [LawPersonalChange] = [], removes: [LawPersonalRef] = []) async -> Bool {
+        guard !puts.isEmpty || !removes.isEmpty else { return true }
+        do { try await personal.batch(puts: puts, removes: removes, owner: owner) }
+        catch { self.error = error.localizedDescription; await refreshItems(); return false }
+        await refreshItems()
+        Task { await synchronize() }
+        return true
     }
     func save(kind: String, payload: [String: LawJSON]) async {
-        let owner = user?.id ?? lastOwner
         if kind == "bookmark", items.contains(where: { item in
-            item.kind == kind && !item.deleted && item.owner == owner && ["lawId", "versionId", "view", "sectionId", "page"].allSatisfy { item.payload[$0] == payload[$0] }
+            item.kind == kind && ["lawId", "versionId", "view", "sectionId", "page"].allSatisfy { item.payload[$0] == payload[$0] }
         }) { return }
-        do { try await personal.put(kind: kind, payload: payload, owner: user?.id ?? lastOwner); await refreshItems(); await synchronize() }
-        catch { self.error = error.localizedDescription }
+        await commit(puts: [LawPersonalChange(kind: kind, payload: payload)])
     }
     func remove(_ item: LawPersonalItem) async {
-        do { try await personal.remove(id: item.id, owner: item.owner); await refreshItems(); await synchronize() }
-        catch { self.error = error.localizedDescription }
+        guard item.owner == owner else { return }
+        await commit(removes: [item.ref])
     }
+    /// „Erneut versuchen“ for refused entries; `nil` = all of the current owner.
+    func retryRejected(_ entries: [LawPersonalItem]? = nil) async {
+        do { try await personal.retry(entries?.map(\.ref), owner: owner) } catch { self.error = error.localizedDescription }
+        await refreshItems()
+        await synchronize()
+    }
+    /// „Nur lokal behalten“: the entries stay visible here and are never sent.
+    func keepLocal(_ entries: [LawPersonalItem]) async {
+        do { try await personal.keepLocal(entries.map(\.ref), owner: owner) } catch { self.error = error.localizedDescription }
+        await refreshItems()
+    }
+    private var canSync: Bool { enabled && syncEnabled && !sessionExpired && user?.token != nil }
+    /// Pull, push, pull. During a run another call does not return silently
+    /// unseen: the running one goes once more (at most five runs in a row).
     func synchronize() async {
-        guard enabled, syncEnabled, !syncing, !sessionExpired, let u = user, let token = u.token else { return }
-        syncing = true
+        guard canSync else { refreshStatus(); return }
+        guard syncGate.request() else { return }
+        syncing = true; refreshStatus()
+        var runs = 0
+        while true {
+            await synchronizeOnce()
+            runs += 1
+            guard syncGate.finish() else { break }
+            if runs >= 5 || !canSync { syncGate.stop(); break }
+        }
+        syncing = false; refreshStatus()
+    }
+    private func synchronizeOnce() async {
+        guard canSync, let u = user, let token = u.token else { return }
         let generation = epoch
-        defer { syncing = false }
         func current() -> Bool { generation == epoch && user?.id == u.id && syncEnabled && enabled }
         func pull() async throws {
             var more = true, pages = 0
@@ -412,42 +512,71 @@ final class LawLibraryModel: ObservableObject {
             }
             if more { throw LawError.invalid("Viele Änderungen: Synchronisierung wird beim nächsten Versuch fortgesetzt.") }
         }
-        do {
-            syncStatus = "Wird synchronisiert …"
-            try await pull()
-            // One refused entry must not hold back the ones behind it.
+        /// All answers of one push are written together (B16), also when it stops early.
+        func push() async throws {
+            var receipts: [LawPushReceipt] = []
             var failures = LawPushFailures()
-            for item in try await personal.pending(owner: u.id) {
-                guard current() else { throw CancellationError() }
-                let path = item.kind == "bookmark" ? "/api/bookmarks" : "/api/annotations"
-                do {
-                    let data = try await fetch(item.deleted ? path + "/" + item.id : path, method: item.deleted ? "DELETE" : "POST", body: item.deleted ? [:] : item.payload, token: token, limit: 65536)
+            do {
+                // New entries before deletions (`pending`). One refused entry
+                // must not hold back the ones behind it.
+                for item in try await personal.pending(owner: u.id) {
                     guard current() else { throw CancellationError() }
-                    let response = try await decode([String: LawJSON].self, from: data)
-                    var payload: [String: LawJSON]?
-                    if case let .object(value) = response[item.kind] { payload = value }
-                    try await personal.acknowledge(item, payload: payload)
-                } catch let error as LawAPIError where item.deleted && error.status == 404 {
-                    guard current() else { throw CancellationError() }
-                    try await personal.acknowledge(item)
-                } catch let error as LawAPIError where error.status == 401 {
-                    throw error
-                } catch let error as LawAPIError {
-                    // Pull authoritative tombstones, retaining any unrelated pending work.
-                    if error.status == 409 { try await pull() }
-                    if failures.record(status: error.status) == .stop { throw error }
-                } catch is DecodingError {
-                    _ = failures.record(status: 422)
+                    let path = item.kind == "bookmark" ? "/api/bookmarks" : "/api/annotations"
+                    do {
+                        let data = try await fetch(item.deleted ? path + "/" + item.id : path, method: item.deleted ? "DELETE" : "POST", body: item.deleted ? [:] : item.payload, token: token, limit: 65536)
+                        let response = try await decode([String: LawJSON].self, from: data)
+                        var payload: [String: LawJSON]?
+                        if case let .object(value) = response[item.kind] { payload = value }
+                        receipts.append(LawPushReceipt(sent: item, outcome: .accepted(payload)))
+                    } catch let error as LawAPIError where item.deleted && error.status == 404 {
+                        receipts.append(LawPushReceipt(sent: item, outcome: .accepted(nil)))
+                    } catch let error as LawAPIError where error.status == 401 {
+                        throw error
+                    } catch let error as LawAPIError where error.status == 409 && error.code == "deleted" {
+                        // Deleted on the server for ever: the deletion wins here too.
+                        receipts.append(LawPushReceipt(sent: item, outcome: .deletedOnServer))
+                    } catch let error as LawAPIError where LawPushFailures.isPermanent(status: error.status, code: error.code) {
+                        _ = failures.record(status: error.status)
+                        receipts.append(LawPushReceipt(sent: item, outcome: .rejected(status: error.status, message: error.message)))
+                    } catch let error as LawAPIError {
+                        if failures.record(status: error.status) == .stop { throw error }
+                    } catch is DecodingError {
+                        _ = failures.record(status: 422)
+                    }
                 }
+            } catch {
+                try? await personal.record(receipts)
+                throw error
             }
-            try await pull(); lastSync = Date(); await refreshItems()
-            let time = NotyText.statusDate(Date())
-            syncStatus = failures.refused == 0 ? "Synchronisiert · \(time)"
-                : "Synchronisiert · \(time) · \(failures.refused == 1 ? "1 Eintrag" : "\(failures.refused) Einträge") nicht übertragen, bleibt lokal"
-        } catch is CancellationError { syncStatus = "Synchronisierung pausiert" }
+            try await personal.record(receipts)
+        }
+        do {
+            try await pull()
+            try await push()
+            try await pull()
+            lastSync = Date(); lastSynced = Date(); lastSyncError = nil
+            _ = try? await personal.pruneTombstones()
+        } catch is CancellationError { lastSyncError = nil }
         catch let error as LawAPIError where error.status == 401 {
-            sessionExpired = true; syncStatus = "Anmeldung abgelaufen · Unter Einstellungen › Konto erneut anmelden; Änderungen bleiben lokal"
-        } catch { syncStatus = "Offline/Fehler · Änderungen bleiben lokal: \(error.localizedDescription)" }
+            if generation == epoch, user?.id == u.id { sessionExpired = true }
+        } catch { if generation == epoch { lastSyncError = error.localizedDescription } }
+        await refreshItems()
+    }
+    /// Where the reader was in `law` (B10): version, text/PDF, section, PDF page, offset.
+    func readingSpot(law: String) -> LawReadingSpot? { readingSpots.spot(law: law) }
+    /// The spot of the law read last.
+    var lastReadingSpot: LawReadingSpot? { readingSpots.last }
+    /// Remembers the reading spot of its law (and the law read last). Cheap
+    /// when nothing changed; also keeps the older section-only keys current.
+    func rememberReading(_ spot: LawReadingSpot) {
+        guard readingSpots.remember(spot), let data = try? JSONEncoder().encode(readingSpots) else { return }
+        let defaults = UserDefaults.standard
+        defaults.set(data, forKey: Self.readingSpotsKey)
+        if let section = spot.sectionId {
+            var sections = defaults.dictionary(forKey: "noty.laws.readingSections") as? [String: String] ?? [:]
+            if sections[spot.lawId] != section { sections[spot.lawId] = section; defaults.set(sections, forKey: "noty.laws.readingSections") }
+        }
+        defaults.set(spot.lawId, forKey: "noty.laws.lastLaw")
     }
     func exportPersonal() async throws -> URL {
         let bytes = try await personal.exportData()
@@ -457,7 +586,7 @@ final class LawLibraryModel: ObservableObject {
     }
     func restorePersonal(_ url: URL) async {
         let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
-        do { let data = try Data(contentsOf: url, options: .mappedIfSafe); try await personal.importData(data); await refreshItems() }
+        do { let data = try Data(contentsOf: url, options: .mappedIfSafe); try await personal.importData(data); await refreshItems(); Task { await synchronize() } }
         catch { self.error = error.localizedDescription }
     }
 }

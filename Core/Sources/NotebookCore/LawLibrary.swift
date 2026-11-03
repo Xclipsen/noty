@@ -113,10 +113,11 @@ public struct LawQuickTarget: Equatable, Sendable {
     }
 }
 
-/// What one refused entry means for the rest of a sync push. A permanent refusal
-/// (4xx) only skips that entry, it stays local and is sent again next time.
-/// Temporary server trouble may be one bad entry too, but three in a row stop
-/// the push instead of hammering a broken server.
+/// What one refused entry means for the rest of a sync push. One refused entry
+/// only skips that entry. A permanent refusal (`isPermanent`) is marked in the
+/// store and waits for „Erneut versuchen“/„Nur lokal behalten“; any other 4xx
+/// is sent again next time. Temporary server trouble may be one bad entry too,
+/// but three in a row stop the push instead of hammering a broken server.
 public struct LawPushFailures: Sendable {
     public enum Step: Equatable, Sendable { case next, stop }
     public private(set) var refused = 0
@@ -127,6 +128,157 @@ public struct LawPushFailures: Sendable {
         guard status >= 500 || status == 408 || status == 429 else { return .next }
         serverFailures += 1
         return serverFailures >= 3 ? .stop : .next
+    }
+    /// 400, 409 (except `deleted`, which means the ID is deleted on the
+    /// server for ever) and 413: sending the same entry again cannot succeed.
+    public static func isPermanent(status: Int, code: String?) -> Bool {
+        status == 400 || status == 413 || (status == 409 && code != "deleted")
+    }
+}
+
+/// One sync run at a time (B9): a request during a run is not dropped but
+/// makes that run go once more when it ends.
+public struct LawSyncGate: Sendable {
+    public private(set) var running = false
+    public private(set) var requested = false
+    public init() {}
+    /// `true`: start a run now. `false`: a run is going; it runs once more.
+    public mutating func request() -> Bool {
+        if running { requested = true; return false }
+        running = true
+        return true
+    }
+    /// After each run. `true`: requested meanwhile, run again (still running).
+    public mutating func finish() -> Bool {
+        if requested { requested = false; return true }
+        running = false
+        return false
+    }
+    /// Stops without another run (e.g. signed out); a later `request` starts afresh.
+    public mutating func stop() { running = false; requested = false }
+}
+
+/// The personal sync state for display (B9). „Synchronisiert“ only with an
+/// empty outbox; refused entries are counted apart and keep the state from
+/// reading as synchronised.
+public struct LawSyncStatus: Equatable, Sendable {
+    public enum State: Equatable, Sendable {
+        /// Not signed in: everything stays on this iPad.
+        case guest
+        /// Signed in, but the collection or the sync switch is off.
+        case paused
+        /// Signed in, the session has expired.
+        case expired
+        case syncing
+        /// The last run failed (offline, server); the text says why.
+        case failed(String)
+        /// Entries wait to be sent (`pending` > 0).
+        case pending
+        /// Nothing waits, but `rejected` entries need a decision.
+        case rejected
+        /// Outbox empty, nothing refused.
+        case synced
+    }
+    public var state: State
+    /// The owner's entries waiting to be sent (refused and kept-local ones excluded).
+    public var pending: Int
+    /// Refused for good, waiting for „Erneut versuchen“ or „Nur lokal behalten“.
+    public var rejected: Int
+    public var lastSynced: Date?
+    public init(state: State, pending: Int = 0, rejected: Int = 0, lastSynced: Date? = nil) {
+        self.state = state; self.pending = pending; self.rejected = rejected; self.lastSynced = lastSynced
+    }
+    public static func derive(signedIn: Bool, sessionExpired: Bool, enabled: Bool, syncEnabled: Bool, running: Bool,
+                              pending: Int, rejected: Int, lastError: String?, lastSynced: Date?) -> Self {
+        let state: State
+        if !signedIn { state = .guest }
+        else if sessionExpired { state = .expired }
+        else if !enabled || !syncEnabled { state = .paused }
+        else if running { state = .syncing }
+        else if let lastError { state = .failed(lastError) }
+        else if pending > 0 { state = .pending }
+        else if rejected > 0 { state = .rejected }
+        else if lastSynced == nil { state = .pending }
+        else { state = .synced }
+        return Self(state: state, pending: pending, rejected: rejected, lastSynced: lastSynced)
+    }
+    /// Nothing leaves this iPad now (guest, paused, expired).
+    public var isLocalOnly: Bool { [.guest, .paused, .expired].contains(state) }
+    public var isSynced: Bool { state == .synced }
+    /// German one-line description; `time` formats `lastSynced`.
+    public func text(time: (Date) -> String) -> String {
+        let waiting = pending == 1 ? "1 Änderung ausstehend" : "\(pending) Änderungen ausstehend"
+        let refused = rejected == 1 ? "1 Eintrag abgelehnt" : "\(rejected) Einträge abgelehnt"
+        var parts: [String]
+        switch state {
+        case .guest: parts = ["Nur auf diesem iPad"]
+        case .paused: parts = ["Abgleich aus · Änderungen bleiben lokal"]
+        case .expired: parts = ["Anmeldung abgelaufen · Unter Einstellungen › Konto erneut anmelden; Änderungen bleiben lokal"]
+        case .syncing: parts = ["Wird synchronisiert …"]
+        case .failed(let message): parts = ["Offline/Fehler · Änderungen bleiben lokal: \(message)"]
+        case .pending: parts = [pending > 0 ? waiting : "Noch nicht synchronisiert"]
+        case .rejected: parts = [refused]
+        case .synced: parts = ["Synchronisiert" + (lastSynced.map { " · \(time($0))" } ?? "")]
+        }
+        if state != .guest {
+            if pending > 0, state != .pending { parts.append(waiting) }
+            if rejected > 0, state != .rejected { parts.append(refused) }
+        }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// Where the reader was in one law (B10): version, text or PDF, section,
+/// PDF page and offset. Stored per law by `LawReadingSpots`.
+public struct LawReadingSpot: Codable, Equatable, Sendable {
+    public enum View: String, Codable, Sendable { case text, pdf }
+    public var lawId: String
+    /// `nil`: the current version.
+    public var versionId: String?
+    public var view: View
+    public var sectionId: String?
+    /// PDF page, 1-based (`view == .pdf`).
+    public var pdfPage: Int?
+    /// Reader-defined offset (finite): text, points from the top of the
+    /// section; PDF, 0…1 of the page height from its top.
+    public var offset: Double?
+    public init(lawId: String, versionId: String? = nil, view: View = .text, sectionId: String? = nil, pdfPage: Int? = nil, offset: Double? = nil) {
+        self.lawId = lawId; self.versionId = versionId; self.view = view; self.sectionId = sectionId; self.pdfPage = pdfPage; self.offset = offset
+    }
+    public var isValid: Bool {
+        LawEntry.safeID(lawId) && (versionId.map(LawEntry.safeID) ?? true) && (sectionId.map { !$0.isEmpty && $0.count <= 200 } ?? true)
+            && (pdfPage.map { (1...100_000).contains($0) } ?? true) && (offset.map(\.isFinite) ?? true)
+    }
+}
+public struct LawReadingSpots: Codable, Equatable, Sendable {
+    public private(set) var spots: [String: LawReadingSpot] = [:]
+    public private(set) var lastLawId: String?
+    public static let limit = 1000
+    public init() {}
+    /// Stored JSON, else the older section-only keys (`noty.laws.readingSections`,
+    /// `noty.laws.lastLaw`). Invalid entries are dropped, never trusted.
+    public static func decode(_ data: Data?, legacySections: [String: String]? = nil, legacyLast: String? = nil) -> Self {
+        var result = Self()
+        if let data, data.count <= 2_000_000, let stored = try? JSONDecoder().decode(Self.self, from: data) {
+            for (law, spot) in stored.spots where spot.lawId == law && spot.isValid && result.spots.count < limit { result.spots[law] = spot }
+            result.lastLawId = stored.lastLawId.flatMap { result.spots[$0] == nil ? nil : $0 }
+        }
+        for (law, section) in legacySections ?? [:] where result.spots[law] == nil && result.spots.count < limit {
+            let spot = LawReadingSpot(lawId: law, sectionId: section)
+            if spot.isValid { result.spots[law] = spot }
+        }
+        if result.lastLawId == nil, let legacyLast, result.spots[legacyLast] != nil { result.lastLawId = legacyLast }
+        return result
+    }
+    public func spot(law: String) -> LawReadingSpot? { spots[law] }
+    public var last: LawReadingSpot? { lastLawId.flatMap { spots[$0] } }
+    /// `false` when nothing changed or the spot is invalid.
+    @discardableResult
+    public mutating func remember(_ spot: LawReadingSpot) -> Bool {
+        guard spot.isValid, spots[spot.lawId] != spot || lastLawId != spot.lawId else { return false }
+        if spots[spot.lawId] == nil, spots.count >= Self.limit, let drop = spots.keys.first(where: { $0 != lastLawId }) { spots[drop] = nil }
+        spots[spot.lawId] = spot; lastLawId = spot.lawId
+        return true
     }
 }
 
@@ -204,43 +356,142 @@ public actor LawOfflineStore {
 
 /// The website's canonical anchors count UTF-16 code units after NFKC/lowercase
 /// and removal of every non-letter/non-number, including combining marks.
+///
+/// Mirrors `canonicalText`, `canonicalMap` and `anchorFromSelection` of the
+/// website (`lib/annotations.ts`) and `canonical` of the account server
+/// exactly, code unit for code unit (fixture: `Core/Tests/Fixtures/law-canonical.json`,
+/// made by `scripts/make_law_canonical_fixture.mjs`):
+/// - lowercase like JavaScript `toLowerCase()`: full Unicode mappings without
+///   locale, capital sigma becomes final `ς` by the Final_Sigma context rule;
+/// - mapping clusters like `/\P{M}\p{M}*|\p{M}+/gu` (a base plus its marks),
+///   not Swift's grapheme clusters;
+/// - comparisons on UTF-16 code units, not Swift's canonical equivalence.
 public enum LawTextAnchor {
     public static func canonical(_ text: String) -> String {
-        let normalized = text.precomposedStringWithCompatibilityMapping.lowercased()
-        return String(String.UnicodeScalarView(normalized.unicodeScalars.filter {
-            switch $0.properties.generalCategory {
-            case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter, .decimalNumber, .letterNumber, .otherNumber: true
-            default: false
+        let lowered = lowercasedLikeJavaScript(text.precomposedStringWithCompatibilityMapping)
+        return String(String.UnicodeScalarView(lowered.unicodeScalars.filter(isLetterOrNumber)))
+    }
+    static func isLetterOrNumber(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter, .decimalNumber, .letterNumber, .otherNumber: true
+        default: false
+        }
+    }
+    static func isMark(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .nonspacingMark, .spacingMark, .enclosingMark: true
+        default: false
+        }
+    }
+    /// `String.prototype.toLowerCase()`: context-free full mappings plus the
+    /// one unconditional context rule, Final_Sigma (Unicode 3.13).
+    public static func lowercasedLikeJavaScript(_ text: String) -> String {
+        let scalars = Array(text.unicodeScalars)
+        var result = String.UnicodeScalarView()
+        for (index, scalar) in scalars.enumerated() {
+            if scalar.value == 0x03A3 {
+                result.append(finalSigma(scalars, at: index) ? "\u{03C2}" : "\u{03C3}")
+            } else {
+                result.append(contentsOf: scalar.properties.lowercaseMapping.unicodeScalars)
             }
-        }))
+        }
+        return String(result)
+    }
+    private static func finalSigma(_ scalars: [Unicode.Scalar], at index: Int) -> Bool {
+        var before = index - 1
+        while before >= 0, scalars[before].properties.isCaseIgnorable { before -= 1 }
+        guard before >= 0, scalars[before].properties.isCased else { return false }
+        var after = index + 1
+        while after < scalars.count, scalars[after].properties.isCaseIgnorable { after += 1 }
+        return !(after < scalars.count && scalars[after].properties.isCased)
+    }
+    /// The canonical text with, for each of its UTF-16 code units, the
+    /// original UTF-16 range it came from; `nil` where context-sensitive
+    /// lowercasing makes offsets uncertain (website `canonicalMap`).
+    public struct Map: Equatable, Sendable {
+        public var text: String
+        public var units: [UInt16]
+        public var starts: [Int]
+        public var ends: [Int]
+    }
+    public static func canonicalMap(_ source: String) -> Map? {
+        var units: [UInt16] = [], starts: [Int] = [], ends: [Int] = []
+        var cluster = String.UnicodeScalarView(), clusterStart = 0, offset = 0
+        func flush() {
+            guard !cluster.isEmpty else { return }
+            defer { cluster = String.UnicodeScalarView() }
+            // Fast path, identical result: a lone ASCII scalar is unchanged by
+            // NFKC and kept (lowercased) only as letter or digit.
+            if cluster.count == 1, let only = cluster.first, only.isASCII {
+                var value = UInt16(only.value)
+                switch value {
+                case 0x41...0x5A: value += 0x20
+                case 0x61...0x7A, 0x30...0x39: break
+                default: return
+                }
+                units.append(value); starts.append(clusterStart); ends.append(offset)
+                return
+            }
+            for unit in canonical(String(cluster)).utf16 { units.append(unit); starts.append(clusterStart); ends.append(offset) }
+        }
+        for scalar in source.unicodeScalars {
+            // A new cluster starts at every non-mark; leading marks stay together.
+            if !isMark(scalar) { flush(); clusterStart = offset }
+            else if cluster.isEmpty { clusterStart = offset }
+            cluster.append(scalar)
+            offset += scalar.utf16.count
+        }
+        flush()
+        let text = canonical(source)
+        guard Array(text.utf16) == units else { return nil }
+        return Map(text: text, units: units, starts: starts, ends: ends)
     }
     public static func originalRange(text: String, anchor: LawAnchor) -> NSRange? {
         originalRanges(text: text, anchors: [anchor]).first ?? nil
     }
+    /// The original range of each anchor in `text`; `nil` when the quote no
+    /// longer matches exactly or offsets are uncertain.
     public static func originalRanges(text: String, anchors: [LawAnchor]) -> [NSRange?] {
-        var mapped = "", starts: [Int] = [], ends: [Int] = []
-        text.enumerateSubstrings(in: text.startIndex..., options: .byComposedCharacterSequences) { substring, range, _, _ in
-            guard let substring else { return }
-            let value = canonical(substring), original = NSRange(range, in: text)
-            mapped += value
-            for _ in value.utf16 { starts.append(original.location); ends.append(original.location + original.length) }
-        }
-        guard mapped == canonical(text) else { return anchors.map { _ in nil } }
+        guard let map = canonicalMap(text) else { return anchors.map { _ in nil } }
         return anchors.map { anchor in
-            guard anchor.start >= 0, anchor.end > anchor.start, anchor.end <= starts.count,
-                  (mapped as NSString).substring(with: NSRange(location: anchor.start, length: anchor.end - anchor.start)) == anchor.quote else { return nil }
-            return NSRange(location: starts[anchor.start], length: ends[anchor.end - 1] - starts[anchor.start])
+            guard anchor.start >= 0, anchor.end > anchor.start, anchor.end <= map.units.count,
+                  map.units[anchor.start..<anchor.end].elementsEqual(anchor.quote.utf16) else { return nil }
+            return NSRange(location: map.starts[anchor.start], length: map.ends[anchor.end - 1] - map.starts[anchor.start])
         }
     }
+    /// Anchor for a selection in `text`, which is also the section's stored text.
     public static func anchor(text: String, range: NSRange, sectionID: String) -> LawAnchor? {
-        let original = text as NSString
-        guard range.location != NSNotFound, range.location >= 0, range.length > 0, range.location <= original.length, range.length <= original.length - range.location else { return nil }
-        let start = (canonical(original.substring(to: range.location)) as NSString).length
-        let quote = canonical(original.substring(with: range))
-        let length = (quote as NSString).length, full = canonical(text) as NSString
-        guard !quote.isEmpty, length <= 12000, start + length <= full.length,
-              full.substring(with: NSRange(location: start, length: length)) == quote else { return nil }
-        return LawAnchor(sectionId: sectionID, start: start, end: start + (quote as NSString).length, quote: quote)
+        anchor(rendered: text, range: range, sectionText: text, sectionID: sectionID)
+    }
+    /// Website `anchorFromSelection`: a selection in the rendered text covers
+    /// every canonical unit whose source overlaps it. When the rendered text
+    /// differs from the section's stored text (tables, image alternatives),
+    /// only a unique exact quote bridges the difference.
+    public static func anchor(rendered: String, range: NSRange, sectionText: String, sectionID: String) -> LawAnchor? {
+        let length = (rendered as NSString).length
+        guard range.location != NSNotFound, range.location >= 0, range.length > 0, range.location <= length,
+              range.length <= length - range.location, let map = canonicalMap(rendered) else { return nil }
+        let end = range.location + range.length
+        guard let from = map.ends.firstIndex(where: { $0 > range.location }) else { return nil }
+        var to = from
+        while to < map.starts.count, map.starts[to] < end { to += 1 }
+        guard to > from, to - from <= 12000 else { return nil }
+        let quoteUnits = Array(map.units[from..<to])
+        let quote = String(decoding: quoteUnits, as: UTF16.self)
+        let section = Array(canonical(sectionText).utf16)
+        if section == map.units { return LawAnchor(sectionId: sectionID, start: from, end: to, quote: quote) }
+        guard let start = uniqueIndex(of: quoteUnits, in: section) else { return nil }
+        return LawAnchor(sectionId: sectionID, start: start, end: start + quoteUnits.count, quote: quote)
+    }
+    /// Website `uniqueIndex` on UTF-16 code units.
+    static func uniqueIndex(of quote: [UInt16], in text: [UInt16]) -> Int? {
+        guard !quote.isEmpty, quote.count <= text.count else { return nil }
+        var found: Int?
+        for start in 0...(text.count - quote.count) where text[start] == quote[0] && text[start..<(start + quote.count)].elementsEqual(quote) {
+            if found != nil { return nil }
+            found = start
+        }
+        return found
     }
 }
 public struct LawAnchor: Codable, Sendable, Hashable {
