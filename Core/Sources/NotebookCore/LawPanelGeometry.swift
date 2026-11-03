@@ -175,6 +175,30 @@ public struct LawPanelLayout: Equatable, Sendable {
         return .float(location.x < w / 2 ? .left : .right)
     }
 
+    /// Top band of an app window that iPadOS 26+ uses to move the window
+    /// when it is not full screen (Apple: „the top ~30 points“), with a
+    /// little margin for the size of a fingertip.
+    public static let windowDragZone = 32.0
+
+    /// Height of the strip at the top of the law window's bar that stays
+    /// free for moving the app window, so grabbing the bar never moves both.
+    /// `barTopInWindow`: top of the bar in app-window points, `nil` when the
+    /// scene is full screen (no window to move, no strip).
+    public static func windowDragClearance(barTopInWindow: Double?) -> Double {
+        guard let top = barTopInWindow, top.isFinite else { return 0 }
+        return min(windowDragZone, max(0, (windowDragZone - top).rounded(.up)))
+    }
+
+    /// Where a released drag would come to rest, for flicks measured by a
+    /// UIKit pan (velocity in points per second): projected with
+    /// `UIScrollView`'s normal deceleration (0.998 per millisecond), as in
+    /// Apple's fluid-interface guidance. Stands in for SwiftUI's
+    /// `predictedEndTranslation`, which a UIKit recognizer does not report.
+    public static func predictedTranslation(_ translation: PagePoint, velocity: PagePoint) -> PagePoint {
+        let rate = 0.998, seconds = rate / (1 - rate) / 1000
+        return PagePoint(x: translation.x + velocity.x * seconds, y: translation.y + velocity.y * seconds)
+    }
+
     /// Whether a drop changes anything (no preview for the current place).
     public func changes(_ drop: LawPanelDrop) -> Bool {
         switch drop {

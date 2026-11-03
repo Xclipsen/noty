@@ -127,7 +127,12 @@ struct EditorWorkspaceView: View {
     /// Live drag of the law window's top bar or of its edge tab, with the drop
     /// that releasing now would perform (shown as a preview).
     @State private var lawDrag: LawDrag?
+    /// The edge tab's drag (the bar reports its own cancellation).
     @GestureState private var lawDragActive = false
+    /// Top of the workspace in app-window points while the scene is a window
+    /// (not full screen): the law window's bar then leaves the band free that
+    /// moves the app window (`LawPanelLayout.windowDragClearance`).
+    @State private var appWindowTop: CGFloat?
     /// Set once the law window was on screen; the reader is created only then
     /// and kept while parked, dropped again when the window closes (B14).
     @State private var lawReaderLoaded = false
@@ -244,6 +249,7 @@ struct EditorWorkspaceView: View {
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+            .background(AppWindowPlacementReader { top in if appWindowTop != top { appWindowTop = top } })
             .overlay {
                 if lawsEnabled { lawLayer(law, phase: lawPhase, hidesSecond: workspace.secondary != nil) }
             }
@@ -398,6 +404,8 @@ struct EditorWorkspaceView: View {
         let frame = l.frame
         let out = CGSize(width: l.hiddenShift * l.outward.x, height: l.hiddenShift * l.outward.y)
         let preview = lawDrag.flatMap { l.changes($0.drop) ? $0.drop : nil }
+        // Measured at the resting place: the strip does not change while dragging.
+        let windowClearance = CGFloat(LawPanelLayout.windowDragClearance(barTopInWindow: appWindowTop.map { Double($0) + frame.y }))
         ZStack {
             // Own container: only the preview animates when its target changes.
             ZStack {
@@ -408,7 +416,7 @@ struct EditorWorkspaceView: View {
             .allowsHitTesting(false)
             .animation(NotyMotion.highlight(reduceMotion), value: preview)
             if phase != .closed {
-                LawPanelView(drag: lawMoveGesture(l), pen: lawPen, onPenChange: { next in
+                LawPanelView(move: lawMoveActions(l), moveSpace: Self.space, windowDragClearance: windowClearance, pen: lawPen, onPenChange: { next in
                     lawPencil = next.kind == .marker ? "marker" : next.kind == .eraser ? "eraser" : "none"
                     // One highlighter colour for notebook and law reader.
                     if next.color != toolbox.preferences.markerColor { toolbox.preferences.markerColor = next.color }
@@ -519,25 +527,28 @@ struct EditorWorkspaceView: View {
     /// The top bar drags the window like a card; `LawPanelLayout.drop`
     /// decides on release (stash behind an edge tab, dock left/right/bottom,
     /// or float). Measured in the fixed workspace space because the bar
-    /// itself moves with the finger.
-    private func lawMoveGesture(_ l: LawPanelLayout) -> some Gesture {
-        DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.space))
-            .updating($lawDragActive) { _, state, _ in state = true }
-            .onChanged { value in lawDrag = LawDrag(translation: value.translation, drop: lawDrop(value, l, flick: false), fromTab: false) }
-            .onEnded { value in
-                let drop = lawDrop(value, l, flick: true)
-                withAnimation(NotyMotion.panel(reduceMotion)) {
-                    lawDrag = nil
-                    lawPanel.apply(drop)
-                }
+    /// itself moves with the finger (`lawWindowMove`, UIKit pan on iOS 18+
+    /// so the app window's own drag waits for it).
+    private func lawMoveActions(_ l: LawPanelLayout) -> LawMoveActions {
+        LawMoveActions(changed: { sample in
+            lawDrag = LawDrag(translation: sample.translation, drop: lawDrop(sample, l), fromTab: false)
+        }, ended: { sample in
+            let drop = lawDrop(sample, l)
+            withAnimation(NotyMotion.panel(reduceMotion)) {
+                lawDrag = nil
+                lawPanel.apply(drop)
             }
+        }, cancelled: {
+            // A cancelled drag never reaches `ended`: drop the preview.
+            if lawDrag != nil { withAnimation(NotyMotion.panel(reduceMotion)) { lawDrag = nil } }
+        })
     }
 
-    private func lawDrop(_ value: DragGesture.Value, _ l: LawPanelLayout, flick: Bool) -> LawPanelDrop {
-        l.drop(translation: PagePoint(x: value.translation.width, y: value.translation.height),
-               location: PagePoint(x: value.location.x, y: value.location.y),
-               predictedTranslation: flick ? PagePoint(x: value.predictedEndTranslation.width, y: value.predictedEndTranslation.height) : nil,
-               predictedLocation: flick ? PagePoint(x: value.predictedEndLocation.x, y: value.predictedEndLocation.y) : nil)
+    private func lawDrop(_ sample: LawMoveSample, _ l: LawPanelLayout) -> LawPanelDrop {
+        l.drop(translation: PagePoint(x: sample.translation.width, y: sample.translation.height),
+               location: PagePoint(x: sample.location.x, y: sample.location.y),
+               predictedTranslation: sample.predictedTranslation.map { PagePoint(x: $0.width, y: $0.height) },
+               predictedLocation: sample.predictedLocation.map { PagePoint(x: $0.x, y: $0.y) })
     }
 
     /// Where the window lands: docked area, floating outline or the edge tab,

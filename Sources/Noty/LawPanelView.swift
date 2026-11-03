@@ -7,15 +7,22 @@ import NotebookCore
 /// `LawReaderView`, which gets the full window width and the remaining
 /// height without extra insets (see `LawPanelView.barHeight`). While the
 /// window has the keys (`LawKeyboard.focused`) the title is bright and a
-/// 2-pt accent line runs under the bar.
-struct LawPanelView<Drag: Gesture>: View {
-    /// Height of the title bar plus its hairline; the reader starts below it.
+/// 2-pt accent line runs under the bar. In an app window (not full screen)
+/// the bar starts with a strip that moves the app window instead
+/// (`windowDragClearance`, see `LawWindowDrag.swift`).
+struct LawPanelView: View {
+    /// Height of the title bar plus its hairline (without the app-window
+    /// strip); the reader starts below it.
     static var barHeight: CGFloat { 52.5 }
     @EnvironmentObject private var panel: LawPanelModel
     @ObservedObject private var keyboard = LawKeyboard.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Moves the window live; the workspace decides side, dock and stash on release.
-    var drag: Drag
+    var move: LawMoveActions
+    /// Named coordinate space the move is measured in (the workspace).
+    var moveSpace: String
+    /// Top strip of the bar left to the app window's own drag (0 full screen).
+    var windowDragClearance: CGFloat = 0
     /// What Apple Pencil does in the reader, and how the reader changes it.
     var pen = LawPenMode()
     var onPenChange: ((LawPenMode) -> Void)? = nil
@@ -30,6 +37,9 @@ struct LawPanelView<Drag: Gesture>: View {
     var loadsReader = true
     /// A second notebook is open: docking hides it until the window floats again.
     var hidesSecondNotebook = false
+
+    /// Lets the app-window strip wait for the bar's pan.
+    @State private var dragLink = LawWindowDragLink()
 
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: docked ? 0 : 16, style: .continuous) }
     private var focused: Bool { keyboard.focused }
@@ -59,6 +69,29 @@ struct LawPanelView<Drag: Gesture>: View {
     // MARK: Title bar
 
     private var bar: some View {
+        VStack(spacing: 0) {
+            if windowDragClearance > 0 {
+                // Grabbing here moves the app window, not the law window.
+                AppWindowDragStrip(link: dragLink)
+                    .frame(height: windowDragClearance)
+                    .accessibilityHidden(true)
+            }
+            controls
+        }
+        // Keyboard focus: an accent line along the bar's lower edge (the
+        // layout keeps its 0.5-pt hairline, the reader does not move).
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.notyAccent).frame(height: 2)
+                .opacity(focused ? 1 : 0)
+                .allowsHitTesting(false).accessibilityHidden(true)
+        }
+        .animation(NotyMotion.highlight(reduceMotion), value: focused)
+        .lawGlass(Rectangle())
+        .environment(\.notyTooltipAxis, .horizontal)
+    }
+
+    /// Title menu, „An den Rand“, ✕ and the grip; the whole row is the grip.
+    private var controls: some View {
         HStack(spacing: 0) {
             titleMenu
             Spacer(minLength: 8)
@@ -70,19 +103,9 @@ struct LawPanelView<Drag: Gesture>: View {
         .padding(.horizontal, 4).padding(.top, 8)
         .frame(height: 52)
         .overlay(alignment: .top) { grip.padding(.top, 6) }
-        // Keyboard focus: an accent line along the bar's lower edge (the
-        // layout keeps its 0.5-pt hairline, the reader does not move).
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(Color.notyAccent).frame(height: 2)
-                .opacity(focused ? 1 : 0)
-                .allowsHitTesting(false).accessibilityHidden(true)
-        }
-        .animation(NotyMotion.highlight(reduceMotion), value: focused)
-        .lawGlass(Rectangle())
-        // The whole bar is the grip, not only the dots.
+        // The whole row is the grip, not only the dots.
         .contentShape(Rectangle())
-        .gesture(drag)
-        .environment(\.notyTooltipAxis, .horizontal)
+        .lawWindowMove(space: moveSpace, link: dragLink, actions: move)
     }
 
     private var parkSymbol: String {
