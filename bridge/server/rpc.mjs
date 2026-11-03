@@ -9,9 +9,16 @@ import { ApiError, writeAtomic } from './store.mjs';
 // und je nach Modell liefert der Katalog exec, apply_patch und Unteragenten. Siehe toolFreeCatalog.
 const FEATURES_OFF = ['shell_tool', 'unified_exec', 'code_mode', 'code_mode_host', 'apply_patch_freeform', 'view_image', 'image_generation',
   'multi_agent', 'goals', 'plugins', 'apps', 'tool_suggest', 'skill_search', 'sleep_tool', 'browser_use', 'computer_use', 'in_app_browser', 'hooks'];
+// Prompt-Bausteine, die eine Lernhilfe nicht braucht und die nur Tokens kosten: Sandbox-/Freigabe-Text,
+// Umgebung (Arbeitsordner, Shell, Datum), Apps, Arbeitsmodus, Skill-Liste, AGENTS.md aus dem Arbeitsordner
+// oder einem Git-Wurzelordner darüber, Erinnerungen. Gemessen mit Codex 0.166; die Grundanweisung ersetzt
+// thread/start über `baseInstructions`, siehe hub.mjs.
+export const PROMPT_OFF = ['include_permissions_instructions=false', 'include_environment_context=false', 'include_apps_instructions=false',
+  'include_collaboration_mode_instructions=false', 'skills.include_instructions=false', 'project_doc_max_bytes=0', 'features.memories=false'];
 export const CODEX_ARGS = ['app-server', '--stdio',
   ...FEATURES_OFF.flatMap(name => ['-c', `features.${name}=false`]),
-  '-c', 'web_search="disabled"', '-c', 'history.persistence="none"', '-c', 'analytics.enabled=false'];
+  '-c', 'web_search="disabled"', '-c', 'history.persistence="none"', '-c', 'analytics.enabled=false',
+  ...PROMPT_OFF.flatMap(setting => ['-c', setting])];
 
 /** Modelleintrag ohne Shell, Patch, Code-Modus und Unteragenten; übrig bleibt allein request_user_input, das die Bridge zurückweist. */
 export function toolFreeModel(model) {

@@ -36,7 +36,9 @@ export async function setup(t, { activate = [USER, 'konto-b'], rpc = {}, hub: hu
     await accounts.update(user.id, { status: 'active' });
   }
   const instances = [];
-  const hub = new Hub({ store, accounts, metering, runlog, cwd: root, prepareCatalog: async () => path.join(root, 'katalog.json'), rpcFactory: options => { const fake = new FakeRpc(rpc); fake.options = options; instances.push(fake); return fake; }, ...hubOptions });
+  const hub = new Hub({ store, accounts, metering, runlog, cwd: root, prepareCatalog: async () => path.join(root, 'katalog.json'), rpcFactory: options => { const fake = new FakeRpc(rpc); fake.options = options; instances.push(fake); return fake; },
+    // Ruhende Threads nur, wo ein Test sie ausdrücklich prüft; sonst gilt je Lauf ein neuer Prozess.
+    maxWarm: 0, ...hubOptions });
   t.after(() => hub.close());
   return { root, store, accounts, metering, runlog, hub, instances };
 }

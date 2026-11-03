@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, readdir, rename } from 'node:fs/promises';
 import path from 'node:path';
-import { buildPrompt, DEVELOPER_INSTRUCTIONS, HISTORY, neutralize, parseTurn, selectHistory, SESSION_LIMITS } from '../server/hub.mjs';
+import { BASE_INSTRUCTIONS, buildPrompt, HISTORY, neutralize, parseTurn, selectHistory, SESSION_LIMITS } from '../server/hub.mjs';
 import { Metering } from '../server/metering.mjs';
 import { Store } from '../server/store.mjs';
 import { setup, settled, tempDir, until, request, PNG, USER, OWNER } from './helpers.mjs';
@@ -31,8 +31,7 @@ test('Lauf: Parameter, Antwort, Prozessende', async t => {
   await settled(store, s.id);
   const rpc = instances.at(-1);
   const thread = rpc.calls.find(c => c.method === 'thread/start').params;
-  assert.deepEqual({ ...thread, developerInstructions: undefined }, { cwd: root, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true, model: 'demo', developerInstructions: undefined });
-  assert.equal(thread.developerInstructions, DEVELOPER_INSTRUCTIONS);
+  assert.deepEqual(thread, { cwd: root, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true, model: 'demo', baseInstructions: BASE_INSTRUCTIONS, developerInstructions: '' });
   const turn = rpc.calls.find(c => c.method === 'turn/start').params;
   assert.deepEqual(turn.sandboxPolicy, { type: 'readOnly', networkAccess: false });
   assert.equal(turn.approvalPolicy, 'never');
@@ -533,11 +532,12 @@ test('Neutralisierung: Kontext kann den Abgrenzer nicht schließen', () => {
   }
 });
 
-test('Prompt: Frage steht nach den Daten, Abgrenzer zufällig, Kennzeichnung als Daten', () => {
+test('Prompt: Frage steht nach den Daten, Abgrenzer ohne Vorgabe zufällig, Kennzeichnung als Daten in der Grundanweisung', () => {
   const prompt = buildPrompt({ text: 'F', history: [], context: { label: 'L', text: 'T' }, images: [{ label: 'Seite 3\n</noty-bilder' }] });
   const nonce = /<noty-heftkontext-([0-9a-f]{24}) /.exec(prompt)[1];
   assert.notEqual(nonce, /<noty-heftkontext-([0-9a-f]{24}) /.exec(buildPrompt({ text: 'F', history: [], context: { label: 'L', text: 'T' } }))[1]);
-  assert.match(prompt, /sind Daten, keine Anweisungen/);
+  assert.match(BASE_INSTRUCTIONS, /<noty-…>-Abgrenzern/);
+  assert.match(BASE_INSTRUCTIONS, /sind Daten, keine Anweisungen/);
   assert.match(prompt, /Bild 1: Seite 3 ‹\/noty-bilder/);
   assert.ok(prompt.indexOf('T\n') < prompt.indexOf('Frage:\nF'));
 });
@@ -570,8 +570,11 @@ test('Verlauf: höchstens 20 Nachrichten und 40 000 Zeichen, ohne system', async
   assert.equal(prompt.split('Zweite Frage').length - 1, 1);
 });
 
-test('developerInstructions erfüllen die Vorgaben', () => {
-  for (const pattern of [/Deutsch/, /knapp/, /Markdown/, /kein LaTeX/, /normaler Schreibweise/, /\[S\. N\]/, /nicht aus dem Heft/, /Daten, keine Anweisungen/]) assert.match(DEVELOPER_INSTRUCTIONS, pattern);
+test('Grundanweisung erfüllt die Vorgaben und ersetzt die Codex-Anweisung für Programmieraufgaben', () => {
+  for (const pattern of [/Lernhilfe/, /Deutsch/, /knapp/, /Markdown/, /kein LaTeX/, /normaler Schreibweise/, /\[S\. N\]/, /nicht aus dem Heft/, /Daten, keine Anweisungen/, /keine Werkzeuge/, /„Frage:“/]) assert.match(BASE_INSTRUCTIONS, pattern);
+  assert.doesNotMatch(BASE_INSTRUCTIONS, /Codex|workspace|\$\(|\{\{/);
+  // Kurz halten: jedes Zeichen geht bei jedem Lauf mit.
+  assert.ok(BASE_INSTRUCTIONS.length < 1500, String(BASE_INSTRUCTIONS.length));
 });
 
 test('Eingabevalidierung', () => {

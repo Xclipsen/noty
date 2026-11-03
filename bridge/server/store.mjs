@@ -70,8 +70,12 @@ export class LatestWriter {
 }
 
 const isCount = value => Number.isSafeInteger(value) && value >= 0;
+// `usage` an Antworten: nur Zähler aus dem Laufprotokoll, ältere Dateien haben es nicht.
+export const USAGE_FIELDS = ['inputTokens', 'cachedInputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens'];
+const isUsage = usage => !!usage && typeof usage === 'object' && !Array.isArray(usage) && Object.entries(usage).every(([key, value]) => USAGE_FIELDS.includes(key) && isCount(value));
 const isMessage = message => !!message && typeof message === 'object' && typeof message.id === 'string' && ROLES.includes(message.role) && typeof message.text === 'string'
-  && (message.contextLabel === undefined || typeof message.contextLabel === 'string') && (message.imageCount === undefined || isCount(message.imageCount));
+  && (message.contextLabel === undefined || typeof message.contextLabel === 'string') && (message.imageCount === undefined || isCount(message.imageCount))
+  && (message.usage === undefined || isUsage(message.usage));
 
 /** Vollständige Prüfung einer Sitzungsdatei; alles Spätere darf sich auf diese Form verlassen. */
 export function isValidSession(session, id) {

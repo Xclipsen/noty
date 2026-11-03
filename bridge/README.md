@@ -1,6 +1,6 @@
 # noty KI-Bridge
 
-Verbindet die App über HTTPS-Proxy mit einem kurzlebigen `codex app-server` je Lauf. Vertrag: [docs/AI-ASSISTANT.md](../docs/AI-ASSISTANT.md). Node 22, keine npm-Abhängigkeiten.
+Verbindet die App über HTTPS-Proxy mit einem kurzlebigen `codex app-server` je Lauf; nach einem sauberen Lauf ruht er bis zu 5 Minuten für die nächste Frage derselben Sitzung. Vertrag: [docs/AI-ASSISTANT.md](../docs/AI-ASSISTANT.md). Node 22, keine npm-Abhängigkeiten.
 
 ```bash
 node --test                # alle Tests, ohne Netz und ohne echtes Codex
@@ -16,8 +16,8 @@ node --test                # alle Tests, ohne Netz und ohne echtes Codex
 - `server/metering.mjs`: Zähler je Konto und UTC-Tag (`metering.json`).
 - `server/runlog.mjs`: Laufprotokoll ohne Inhalte (`runs.json`), Kontingent davor und danach.
 - `server/analytics.mjs`: Abfrageprüfung, Tagesreihe und CSV für `/admin/api/usage`, `/runs`, `/export`.
-- `server/hub.mjs`: Läufe, Validierung, Prompt, Limits.
-- `server/rpc.mjs`: Codex-Prozess und Katalog ohne Werkzeuge.
+- `server/hub.mjs`: Läufe, Validierung, Grundanweisung und Prompt, ruhende Threads, Limits.
+- `server/rpc.mjs`: Codex-Prozess, Schalter für Werkzeuge und Prompt-Bausteine, Katalog ohne Werkzeuge.
 - `server/store.mjs`: Sitzungsdateien, Prüfung beim Laden, atomares Schreiben mit Wiederholung, Aufbewahrung.
 
 Zustand in `STATE_DIR`, alles Modus 600: `sessions/*.json`, `accounts.json`, `metering.json`, `runs.json`, `tool-free-catalog.json`. Kontext und Bilder liegen nur während eines Laufs im Speicher.
@@ -28,7 +28,21 @@ Scheitert ein Schreiben, zum Beispiel bei voller Platte, wiederholt `LatestWrite
 
 ## Werkzeuge
 
-Die `-c`-Schalter reichen allein nicht: das Modell bekommt seine Werkzeuge auch aus dem Modellkatalog. Jeder Lauf nutzt deshalb einen aus `CODEX_HOME/models_cache.json` erzeugten Katalog ohne Shell, Patch, Code-Modus und Unteragenten. Fehlt der Cache, startet kein Lauf. Übrig bleibt nur `request_user_input`, das die Bridge zurückweist. Bei jedem Codex-Update die tatsächliche Werkzeugliste neu prüfen.
+Die `-c`-Schalter reichen allein nicht: das Modell bekommt seine Werkzeuge auch aus dem Modellkatalog. Jeder Lauf nutzt deshalb einen aus `CODEX_HOME/models_cache.json` erzeugten Katalog ohne Shell, Patch, Code-Modus und Unteragenten. Fehlt der Cache, startet kein Lauf. Übrig bleibt nur `request_user_input`, das die Bridge zurückweist, auch während ein Thread ruht. Bei jedem Codex-Update die tatsächliche Werkzeugliste neu prüfen.
+
+## Tokens und Prompt-Cache
+
+Vertrag: [docs/AI-ASSISTANT.md](../docs/AI-ASSISTANT.md), Abschnitt Bridge. Kurz: `baseInstructions` ersetzt die Codex-Grundanweisung (rund 17 700 Zeichen für Programmieraufgaben) durch `BASE_INSTRUCTIONS`, `PROMPT_OFF` in `rpc.mjs` schaltet Umgebung, Freigabetext, Skills, Apps, Arbeitsmodus und AGENTS.md ab. Die Nutzernachricht beginnt mit dem Heftkontext, dann Verlauf, Bildnamen, Frage; die Abgrenzer sind je Sitzung fest. `prompt_cache_key` ist bei Codex die Thread-ID, deshalb ruht der Thread nach einem sauberen Lauf im Speicher (`WARM` in `hub.mjs`). Laufende und ruhende Codex-Prozesse zusammen bleiben bei 2, damit `MemoryMax=1G` und `TasksMax=128` der Unit halten: gemessen 154 MiB RSS und 27 Threads je ruhendem Prozess.
+
+Gemessen am 03.11.2026 mit Codex 0.166, `gpt-5.6-sol`, `effort: low`, synthetischem Heft (30 104 Zeichen), Eingabetokens (davon aus dem Cache):
+
+| Lauf | vorher | nachher |
+| --- | --- | --- |
+| Kurze Frage ohne Kontext | 4 894 (3 712) | 608 (0) |
+| Frage mit Heftkontext | 11 348 (3 712) | 7 064 (0) |
+| Folgefrage, gleicher Kontext | 11 453 (0) | 7 193 (0) im neuen Thread, 7 201 (7 040) im ruhenden Thread |
+
+Antworten blieben richtig, mit Fundstellen und ohne LaTeX; ein Injektionsversuch im Kontext (Shell, `auth.json`, `request_user_input`) wurde ignoriert, ohne Werkzeugaufruf. Was die Grundanweisung, Schalter und Wiederverwendung tun, hängt an internen Codex-Details (`baseInstructions` als Entwicklernachricht im responses-lite-Modus, Schlüsselnamen der Konfiguration, `prompt_cache_key` = Thread-ID). Nach jedem Codex-Update die tatsächliche Anfrage prüfen, etwa mit einem Ersatz-Anbieter über `-c model_provider=…` und `model_providers.…base_url` auf `127.0.0.1`: das kostet kein Kontingent.
 
 ## Einrichtung
 
