@@ -65,6 +65,25 @@ test('Standard-Boot hängt /admin wirklich ein: Seite, Anmeldung, Übersicht', a
   assert.deepEqual(Object.keys(await overview.json()).sort(), ['account', 'plan', 'running', 'today', 'users']);
 });
 
+test('Standard-Boot mit NOTY_AI_APPLE_SERVICES_ID: Apple-Start mit Standard-Rücksprung, ohne sie 404', async t => {
+  const backend = await startAccountBackend(new Map());
+  t.after(() => backend.close());
+  const origin = 'https://noty.xclipsen.de';
+  const extra = { NOTY_AI_ACCOUNT_URL: backend.url, NOTY_AI_ADMIN_IDS: 'konto-admin', NOTY_AI_ADMIN_ORIGIN: origin };
+  const on = await boot(await env(t, { ...extra, NOTY_AI_APPLE_SERVICES_ID: 'de.xclipsen.noty.web' }));
+  t.after(on.close);
+  const start = await fetch(`http://127.0.0.1:${on.adminAddress.port}/admin/api/apple/start`, { redirect: 'manual' });
+  assert.equal(start.status, 302);
+  const location = new URL(start.headers.get('location'));
+  assert.deepEqual([location.searchParams.get('client_id'), location.searchParams.get('redirect_uri')], ['de.xclipsen.noty.web', 'https://noty.xclipsen.de/admin/api/apple/callback']);
+  const other = await boot(await env(t, { ...extra, NOTY_AI_APPLE_SERVICES_ID: 'de.xclipsen.noty.web', NOTY_AI_APPLE_REDIRECT: 'https://law.xclipsen.de/api/apple/callback' }));
+  t.after(other.close);
+  assert.equal((await fetch(`http://127.0.0.1:${other.adminAddress.port}/admin/api/apple/start`, { redirect: 'manual' })).status, 404, 'Rücksprung muss auf diesen Dienst zeigen');
+  const off = await boot(await env(t, extra));
+  t.after(off.close);
+  assert.equal((await fetch(`http://127.0.0.1:${off.adminAddress.port}/admin/api/apple/start`, { redirect: 'manual' })).status, 404);
+});
+
 test('Standard-Boot ohne NOTY_AI_ADMIN_ORIGIN: /admin lehnt ab, /v1 läuft', async t => {
   const backend = await startAccountBackend(new Map([[TOKEN, { id: 'konto-admin', name: 'Chefin' }]]));
   t.after(() => backend.close());

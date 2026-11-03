@@ -23,6 +23,9 @@ Environment=NOTY_AI_ACCOUNT_URL=http://127.0.0.1:18083
 Environment=NOTY_AI_ADMIN_IDS=
 # Ohne diesen exakten Ursprung lehnt /admin alles ab.
 Environment=NOTY_AI_ADMIN_ORIGIN=https://noty.xclipsen.de
+# Mit Apple anmelden im Admin-Panel: Services ID aus dem Apple-Developer-Portal, leer = Knopf aus.
+# Rücksprung ohne NOTY_AI_APPLE_REDIRECT: https://noty.xclipsen.de/admin/api/apple/callback
+Environment=NOTY_AI_APPLE_SERVICES_ID=
 Environment=NOTY_AI_DAILY_LIMIT=200
 Environment=NOTY_AI_RETENTION_DAYS=30
 Environment=NOTY_AI_USAGE_DAYS=400

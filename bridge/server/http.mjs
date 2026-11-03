@@ -108,6 +108,12 @@ export async function readJson(req, limit, { optional = false } = {}) {
   return body;
 }
 
+/** Formularkörper wie das `form_post` von Apple; Typ exakt, ohne Typ oder mit anderem `415`. */
+export async function readForm(req, limit) {
+  if ((req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase() !== 'application/x-www-form-urlencoded') throw new ApiError(415, 'Formular erforderlich.');
+  return new URLSearchParams((await readBody(req, limit)).toString('utf8'));
+}
+
 /** Gemeinsamer HTTP-Rahmen beider Listener: Rohpfadprüfung, Fehlerabbildung, Nachlesen. */
 export function createListener(route, { headers = BASE_HEADERS } = {}) {
   return createServer(async (req, res) => {
@@ -129,6 +135,8 @@ export function createListener(route, { headers = BASE_HEADERS } = {}) {
       const known = error instanceof ApiError;
       if (known && error.retryAfter) res.setHeader('Retry-After', String(error.retryAfter));
       if (!req.complete) closeAfterDrain(req, res);
+      // Browser-Ablauf ohne JSON-Leser, zum Beispiel der Rücksprung von Apple: Fehler als Weiterleitung.
+      if (known && error.location) { res.setHeader('Location', error.location); reply(error.status); return; }
       reply(known ? error.status : 500, { error: known ? error.message : 'Interner Fehler.', ...(error.code && known ? { code: error.code } : {}) });
     }
   });

@@ -69,7 +69,18 @@ Eigenständige Web-App unter `/admin` auf `ADMIN_PORT`, Vertrag in [docs/AI-ASSI
 - Übersicht: Kontodaten kommen immer. Codex-Abfragen enden nach 12 Sekunden, die Übersicht wartet höchstens 15 Sekunden, Fehlschläge werden 20 Sekunden gemerkt. `account` und `plan` sind dann `null`. Die Oberfläche zeigt nur bei `401` die Anmeldemaske, sonst das Panel mit Hinweis.
 - nginx muss `/admin` an `127.0.0.1:8791` leiten, `X-Real-IP` selbst setzen, `Origin` und `Host` unverändert weiterreichen und nur `/admin` freigeben.
 
-Browser-Rauchtest, nicht Teil von `node --test`, nur synthetische Daten, Screenshots nach `/tmp/noty-admin-*.png`:
+### Mit Apple anmelden
+
+Vertrag: [docs/APPLE-LOGIN.md](../docs/APPLE-LOGIN.md), Abschnitt Admin-Panel. Aus, solange `NOTY_AI_APPLE_SERVICES_ID` fehlt oder ungültig ist: Dann antworten beide Apple-Pfade `404` und der Knopf bleibt verborgen. `NOTY_AI_APPLE_REDIRECT` (Standard `https://noty.xclipsen.de/admin/api/apple/callback`) muss genau `NOTY_AI_ADMIN_ORIGIN` plus `/admin/api/apple/callback` sein, sonst ist Apple ebenfalls aus; an einer anderen Adresse käme das Bindungs-Cookie nie an. Ob der Knopf erscheint, steht ohne Anmeldung und ohne Geheimnis als `<body data-apple="on">` in der ausgelieferten Seite.
+
+- `GET /admin/api/apple/start`: `302` zu `https://appleid.apple.com/auth/authorize` mit `client_id`, `redirect_uri`, `response_type=code id_token`, `response_mode=form_post`, `state` und `nonce = sha256(Rohwert)`, ohne `scope`. `state` und Rohwert liegen 10 Minuten im Speicher, höchstens 200 offene Abläufe, davon 10 je `X-Real-IP`. Cookie `noty_ai_apple` (`HttpOnly; Secure; SameSite=None; Path=/admin/api/apple`, 10 Minuten) bindet den Ablauf an den Browser, gespeichert nur als Hash.
+- `POST /admin/api/apple/callback`: nur `application/x-www-form-urlencoded`, höchstens 16 KiB, keine `Origin`-Prüfung. `state` muss offen, nicht abgelaufen und an das Cookie gebunden sein; erst dann ist er verbraucht. Danach `POST NOTY_AI_ACCOUNT_URL/api/apple/login { identityToken, nonce: Rohwert, create: false }` mit `X-Noty-Client: 1`, dieselbe Sperre wie beim Passwort (gemeinsame Zähler je IP und global), Admin-Prüfung, sofortiges Abmelden der Backend-Sitzung mit Wiederholung, Admin-Cookie wie beim Passwort. Unbekanntes Apple-Konto und Nicht-Admin ergeben dieselbe Meldung. Der Code von Apple wird nicht eingelöst.
+- Antwort ist immer `303` auf `GET /admin/api/apple/callback?ergebnis=…`, nie JSON: eine Zwischenseite ohne Skript, die per Meta-Refresh auf `/admin` weiterleitet, bei Fehlern mit `#apple=abgelehnt|abgelaufen|abgebrochen|gesperrt|nicht-erreichbar|ungueltig`. `admin/app.js` zeigt das deutsch an und entfernt das Fragment.
+- SameSite: Apples `form_post` ist eine seitenübergreifende Navigation. Das `SameSite=None`-Bindungs-Cookie kommt dabei an, und das `SameSite=Strict`-Admin-Cookie lässt sich in der Antwort setzen. Ein `303` direkt auf `/admin` käme aber ohne das Strict-Cookie an, weil die Weiterleitungskette seitenübergreifend begonnen hat. Der Meta-Refresh der Zwischenseite ist eine neue Navigation vom eigenen Ursprung und sendet es mit. In Chromium 153 im Rauchtest nachgewiesen; Safari ist ungeprüft.
+
+nginx-Allowlist dafür: `apple\.svg` neben `app\.css` und `apple/(start|callback)` unter `api/`.
+
+Browser-Rauchtest, nicht Teil von `node --test`, nur synthetische Daten, Screenshots nach `/tmp/noty-admin-*.png`. Für Apple läuft ein Ersatz von `appleid.apple.com` auf `127.0.0.1`, die Bridge auf `localhost`, also auf einer anderen Site; der Test schneidet mit, welche Cookies bei der Bridge ankommen:
 
 ```bash
 PLAYWRIGHT_MODULE=/pfad/zu/node_modules/playwright node tests/admin-browser.mjs

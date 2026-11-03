@@ -8,6 +8,15 @@ const STATUS_LABEL = { active: 'Aktiv', pending: 'Wartet', blocked: 'Gesperrt' }
 const STATUS_ORDER = { pending: 0, active: 1, blocked: 2 };
 const ROLE_LABEL = { admin: 'Admin', user: 'Nutzer' };
 const USAGE_COLUMNS = [['today', 'Heute'], ['last7', '7 Tage'], ['last30', '30 Tage'], ['total', 'Gesamt']];
+// Ergebnisse des Apple-Rücksprungs, siehe APPLE_RESULTS in server/admin.mjs.
+const APPLE_RESULTS = {
+  abgelehnt: 'Mit diesem Apple-Konto ist keine Anmeldung möglich.',
+  abgelaufen: 'Die Anmeldung mit Apple ist abgelaufen oder wurde in einem anderen Browser begonnen. Bitte erneut versuchen.',
+  abgebrochen: 'Die Anmeldung mit Apple wurde abgebrochen.',
+  gesperrt: 'Zu viele Anmeldeversuche. Bitte in 15 Minuten erneut versuchen.',
+  'nicht-erreichbar': 'Das Konto-Backend ist nicht erreichbar.',
+  ungueltig: 'Die Antwort von Apple war ungültig. Bitte erneut versuchen.'
+};
 
 const integer = new Intl.NumberFormat('de-DE');
 const compact = new Intl.NumberFormat('de-DE', { notation: 'compact', maximumFractionDigits: 1 });
@@ -16,7 +25,7 @@ const moment = new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeri
 const clock = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
 const $ = id => document.getElementById(id);
-const state = { signedIn: false, data: null, editing: null, busy: false, loading: false, reload: false, timer: null };
+const state = { signedIn: false, data: null, editing: null, busy: false, loading: false, reload: false, timer: null, notice: '' };
 
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -225,6 +234,14 @@ function render() {
 
 /* Ablauf */
 
+/** Liest das Ergebnis eines Apple-Rücksprungs aus dem Fragment und entfernt es aus der Adresszeile. */
+function takeAppleResult() {
+  const match = /^#apple=([a-z-]+)$/.exec(location.hash);
+  if (!match) return '';
+  history.replaceState(null, '', location.pathname + location.search);
+  return Object.hasOwn(APPLE_RESULTS, match[1]) ? APPLE_RESULTS[match[1]] : APPLE_RESULTS.ungueltig;
+}
+
 function schedule() {
   clearTimeout(state.timer);
   if (state.signedIn && document.visibilityState === 'visible') state.timer = setTimeout(refresh, REFRESH_MS);
@@ -252,12 +269,13 @@ async function refresh() {
   try {
     const data = await api('/admin/api/overview');
     state.data = data;
+    state.notice = '';
     signedIn();
     render();
     show($('banner'));
     $('updated').textContent = `Stand ${clock.format(new Date())}`;
   } catch (error) {
-    if (error instanceof SignedOut) { signedOut(state.signedIn ? error.message : ''); return; }
+    if (error instanceof SignedOut) { signedOut(state.signedIn ? error.message : state.notice); state.notice = ''; return; }
     // Nur 401 heißt abgemeldet. Bei 5xx oder Netzfehlern ist das Cookie weiter gültig; die nächste Abfrage holt die Daten.
     signedIn();
     show($('banner'), `Aktualisierung fehlgeschlagen: ${error.message}`);
@@ -304,4 +322,7 @@ document.addEventListener('visibilitychange', () => {
   else clearTimeout(state.timer);
 });
 
+// Der Server markiert die Seite nur mit eingerichteter Services ID; sonst gibt es den Knopf nicht.
+$('apple-area').hidden = document.body.dataset.apple !== 'on';
+state.notice = takeAppleResult();
 refresh();

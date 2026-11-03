@@ -65,7 +65,8 @@ export async function boot(env, options = {}) {
   const hub = new Hub({ store, accounts, metering, cwd,
     prepareCatalog: () => toolFreeCatalog({ codexHome, file: path.join(stateDir, 'tool-free-catalog.json') }),
     rpcFactory: ({ catalog } = {}) => new CodexRpc({ cwd, codexHome, catalog, command: env.CODEX_BIN ?? 'codex' }) });
-  const admin = options.admin ?? await createAdmin({ hub, accounts, accountUrl, origin: env.NOTY_AI_ADMIN_ORIGIN });
+  const admin = options.admin ?? await createAdmin({ hub, accounts, accountUrl, origin: env.NOTY_AI_ADMIN_ORIGIN,
+    apple: { servicesId: env.NOTY_AI_APPLE_SERVICES_ID, redirect: env.NOTY_AI_APPLE_REDIRECT } });
   const api = createApi({ hub, accounts, auth: new SessionAuth({ accountUrl, knownFile: path.join(stateDir, 'known-sessions.json') }) });
   const adminApi = createAdminApi(admin);
   await hub.startRetention();

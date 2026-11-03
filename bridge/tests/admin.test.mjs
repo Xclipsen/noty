@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { request as httpRequest } from 'node:http';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { AdminSessions, CONTRACT_HEADERS, LoginThrottle, createAdmin, createAdminApi, parseAdminOrigin } from '../server/admin.mjs';
+import { APPLE_DEFAULT_REDIRECT, APPLE_RESULTS, AdminSessions, AppleFlows, CONTRACT_HEADERS, LoginThrottle, createAdmin, createAdminApi, parseAdminOrigin, parseAppleConfig } from '../server/admin.mjs';
 import { SessionAuth } from '../server/auth.mjs';
 import { createApi } from '../server/http.mjs';
 import { emptyCounters } from '../server/metering.mjs';
 import { TOKEN, USER, request, setup, until } from './helpers.mjs';
-import { appSession, startAccountBackend } from './fake-account-backend.mjs';
+import { appSession, fakeIdToken, startAccountBackend } from './fake-account-backend.mjs';
 
 const ORIGIN = 'https://noty.example.invalid';
 const ADMIN = { id: 'konto-admin', name: 'Chefin' };
@@ -16,15 +17,19 @@ const CSP = "default-src 'none'; style-src 'self'; script-src 'self'; connect-sr
 const PASSWORD = 'synthetisches-passwort';
 const LOGINS = [{ ...ADMIN, email: 'chefin@example.invalid', password: PASSWORD }, { id: USER, name: 'Anna', password: 'anna-passwort' }];
 const FAKE_COOKIE = `noty_ai_admin=${'f'.repeat(64)}`;
+const CALLBACK = '/admin/api/apple/callback';
+const APPLE = { servicesId: 'de.example.noty.web', redirect: `${ORIGIN}${CALLBACK}` };
+const APPLE_LOGINS = [{ sub: 'apple-sub-admin', ...ADMIN }, { sub: 'apple-sub-anna', id: USER, name: 'Anna' }];
+const sha256 = value => createHash('sha256').update(value).digest('hex');
 
 async function panel(t, { origin = ORIGIN, adminIds = [ADMIN.id], now, options = {}, ...rest } = {}) {
-  const backend = await startAccountBackend(new Map([[TOKEN, { id: USER, name: 'Anna' }]]), { logins: LOGINS });
+  const backend = await startAccountBackend(new Map([[TOKEN, { id: USER, name: 'Anna' }]]), { logins: LOGINS, apple: structuredClone(APPLE_LOGINS) });
   t.after(() => backend.close());
   const ctx = await setup(t, { activate: [], accounts: { adminIds }, ...rest });
   await ctx.accounts.seen(ADMIN);
   await ctx.accounts.seen({ id: USER, name: 'Anna' });
   await ctx.accounts.seen({ id: 'konto-c/d', name: 'Clara' });
-  const admin = await createAdmin({ hub: ctx.hub, accounts: ctx.accounts, accountUrl: `${backend.url}/`, origin, now, logoutRetryMs: 5, ...options });
+  const admin = await createAdmin({ hub: ctx.hub, accounts: ctx.accounts, accountUrl: `${backend.url}/`, origin, now, logoutRetryMs: 5, apple: APPLE, ...options });
   const api = createAdminApi(admin);
   const app = createApi({ hub: ctx.hub, accounts: ctx.accounts, auth: new SessionAuth({ accountUrl: backend.url }) });
   for (const server of [api, app]) {
@@ -43,8 +48,32 @@ async function panel(t, { origin = ORIGIN, adminIds = [ADMIN.id], now, options =
     assert.equal(res.status, 200);
     return res.headers.getSetCookie()[0].split(';')[0];
   };
-  return { ...ctx, api, backend, base, send, appGet, login, signIn };
+  // Apple-Ablauf wie ein Browser, aber ohne Weiterleitungen zu folgen.
+  const appleStart = async (ip = '198.51.100.1') => {
+    const res = await fetch(`${base}/admin/api/apple/start`, { redirect: 'manual', headers: { 'x-real-ip': ip } });
+    assert.equal(res.status, 302);
+    const location = new URL(res.headers.get('location'));
+    return { res, location, cookie: res.headers.getSetCookie()[0].split(';')[0], state: location.searchParams.get('state'), nonceHash: location.searchParams.get('nonce') };
+  };
+  const appleCallback = (flow, { sub = 'apple-sub-admin', ip = '198.51.100.1', state = flow?.state, cookie = flow?.cookie, fields, body, type = 'application/x-www-form-urlencoded', headers = {} } = {}) => fetch(base + CALLBACK, {
+    method: 'POST', redirect: 'manual',
+    headers: { 'x-real-ip': ip, ...(type ? { 'content-type': type } : {}), ...(cookie ? { cookie } : {}), ...headers },
+    body: body ?? new URLSearchParams(fields ?? { state, code: 'synthetischer-code', id_token: fakeIdToken({ sub, nonceHash: flow?.nonceHash }) }).toString()
+  });
+  const appleLogin = async (options = {}) => appleCallback(await appleStart(options.ip), options);
+  return { ...ctx, api, app, backend, base, send, appGet, login, signIn, appleStart, appleCallback, appleLogin };
 }
+
+/** Ergebnis eines Rücksprungs: `ok` oder das Kennzeichen, das die Zwischenseite ins Fragment legt. */
+function appleResult(res) {
+  assert.equal(res.status, 303);
+  const location = res.headers.get('location');
+  if (location === CALLBACK) return 'ok';
+  const url = new URL(location, 'http://x.invalid');
+  assert.equal(url.pathname, CALLBACK);
+  return url.searchParams.get('ergebnis');
+}
+const adminCookieOf = res => res.headers.getSetCookie().find(value => value.startsWith('noty_ai_admin='))?.split(';')[0];
 
 const rawGet = (port, path) => new Promise((resolve, reject) => {
   const req = httpRequest({ port, host: '127.0.0.1', method: 'GET', path }, res => {
@@ -306,7 +335,7 @@ test('Vertrags-Header und no-store auf jeder Antwort, auch bei Fehlern', async t
 
 test('Statische Dateien: richtige Typen, keine externen Ressourcen, keine Inline-Skripte oder -Styles', async t => {
   const ctx = await panel(t);
-  const types = { '/admin': 'text/html', '/admin/app.js': 'text/javascript', '/admin/app.css': 'text/css' };
+  const types = { '/admin': 'text/html', '/admin/app.js': 'text/javascript', '/admin/app.css': 'text/css', '/admin/apple.svg': 'image/svg+xml' };
   for (const [pathname, type] of Object.entries(types)) assert.ok((await ctx.send('GET', pathname)).headers.get('content-type').startsWith(type));
   const html = await (await ctx.send('GET', '/admin')).text();
   const js = await (await ctx.send('GET', '/admin/app.js')).text();
@@ -320,9 +349,12 @@ test('Statische Dateien: richtige Typen, keine externen Ressourcen, keine Inline
   assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\b|new Function|setAttribute\('style'|\.style\b/.test(js), 'unsichere DOM-API');
   assert.ok(!/https?:\/\//.test(js), 'externe Adresse');
   assert.ok(!/localStorage|sessionStorage/.test(js), 'kein clientseitiger Speicher');
+  const svg = await (await ctx.send('GET', '/admin/apple.svg')).text();
+  assert.ok(!/<script|\son[a-z]+\s*=|href|<image|<foreignObject|url\(/i.test(svg), 'SVG ohne Skript und ohne Verweise');
+  assert.deepEqual([...svg.matchAll(/https?:\/\/[^"\s]+/g)].map(m => m[0]), ['http://www.w3.org/2000/svg']);
 });
 
-test('Pfad-Traversal: nur die drei festen Dateien, nichts aus server/', async t => {
+test('Pfad-Traversal: nur die festen Dateien, nichts aus server/', async t => {
   const ctx = await panel(t);
   const port = ctx.api.address().port;
   for (const path of ['/admin/../server/main.mjs', '/admin/..%2fserver%2fmain.mjs', '/admin/%2e%2e/server/admin.mjs', '/admin/%2e%2e%2fpackage.json', '/admin/..%5cserver%5cmain.mjs', '/admin/app.js/../../server/hub.mjs', '/admin/app.js%2f..%2f..%2fserver%2fhub.mjs', '/admin/index.html', '/admin/app.js%00.html', '/admin//app.js', '/admin/./../admin.mjs', '/admin/admin.mjs', '/admin/']) {
@@ -522,7 +554,7 @@ test('Befund 4: hängendes Codex: Übersicht kommt rechtzeitig mit Kontodaten', 
 });
 
 /** Führt die echte admin/app.js gegen ein minimales DOM aus. */
-async function loadPanel(t, answers) {
+async function loadPanel(t, answers, { hash = '', apple = false } = {}) {
   const source = await readFile(new URL('../admin/app.js', import.meta.url), 'utf8');
   const nodes = new Map();
   const element = () => ({ hidden: false, textContent: '', dataset: {}, className: '', style: {}, title: '', addEventListener() {}, focus() {}, append() {}, replaceChildren() {}, querySelector: () => element() });
@@ -534,11 +566,14 @@ async function loadPanel(t, answers) {
     if (answer.offline) throw new Error('offline');
     return new Response(JSON.stringify(answer.data ?? { error: answer.error }), { status: answer.status });
   };
-  const document = { visibilityState: 'visible', getElementById: $, querySelector: element, createElement: element, addEventListener() {} };
+  for (const id of ['apple-area']) $(id).hidden = true;
+  const location = { hash, pathname: '/admin', search: '' };
+  const history = { calls: [], replaceState(...args) { this.calls.push(args); location.hash = ''; } };
+  const document = { visibilityState: 'visible', body: { dataset: apple ? { apple: 'on' } : {} }, getElementById: $, querySelector: element, createElement: element, addEventListener() {} };
   const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(setImmediate); };
-  vm.runInNewContext(source, { document, fetch, setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {}, console });
+  vm.runInNewContext(source, { document, location, history, fetch, setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {}, console });
   await flush();
-  return { $, flush, queue: (...next) => answers.push(...next), poll: async () => { timers.pop()(); await flush(); } };
+  return { $, flush, history, queue: (...next) => answers.push(...next), poll: async () => { timers.pop()(); await flush(); } };
 }
 
 test('Befund 4: 5xx zeigt das Panel mit Hinweis, nur 401 die Anmeldemaske', async t => {
@@ -566,4 +601,341 @@ test('Befund 4: 5xx im laufenden Betrieb lässt das Panel stehen, 401 meldet ab'
   await ui.poll();
   assert.equal(ui.$('login-view').hidden, false);
   assert.equal(ui.$('panel-view').hidden, true);
+});
+
+/* Mit Apple anmelden, Vertrag in docs/APPLE-LOGIN.md */
+
+test('Apple-Start: Autorisierungs-URL und Bindungs-Cookie nach Vertrag, kein Backend-Aufruf', async t => {
+  const ctx = await panel(t);
+  const flow = await ctx.appleStart();
+  assertContractHeaders(flow.res, 'start');
+  assert.equal(`${flow.location.origin}${flow.location.pathname}`, 'https://appleid.apple.com/auth/authorize');
+  assert.match(flow.location.search, /[?&]response_type=code%20id_token(&|$)/, 'Leerzeichen als %20, nicht als +');
+  assert.deepEqual([...flow.location.searchParams.keys()].sort(), ['client_id', 'nonce', 'redirect_uri', 'response_mode', 'response_type', 'state']);
+  const params = Object.fromEntries(flow.location.searchParams);
+  assert.deepEqual([params.client_id, params.redirect_uri, params.response_type, params.response_mode], [APPLE.servicesId, `${ORIGIN}${CALLBACK}`, 'code id_token', 'form_post']);
+  assert.match(params.state, /^[a-f0-9]{64}$/);
+  assert.match(params.nonce, /^[a-f0-9]{64}$/);
+  const cookies = flow.res.headers.getSetCookie();
+  assert.equal(cookies.length, 1);
+  assert.match(cookies[0], /^noty_ai_apple=[a-f0-9]{64}; /);
+  assert.deepEqual(cookies[0].split('; ').slice(1).sort(), ['HttpOnly', 'Max-Age=600', 'Path=/admin/api/apple', 'SameSite=None', 'Secure']);
+  const other = await ctx.appleStart();
+  assert.notEqual(other.state, flow.state);
+  assert.notEqual(other.nonceHash, flow.nonceHash);
+  assert.notEqual(other.cookie, flow.cookie);
+  assert.ok(![flow.state, flow.cookie.split('=')[1]].includes(flow.nonceHash));
+  const post = await ctx.send('POST', '/admin/api/apple/start', { body: {} });
+  assert.equal(post.status, 405);
+  assert.equal(post.headers.get('allow'), 'GET');
+  assert.equal(ctx.backend.appleBodies.length + ctx.backend.loginBodies.length, 0);
+});
+
+test('Apple-Rücksprung: Admin kommt rein, Nonce-Rohwert ans Backend, Backend-Sitzung sofort beendet', async t => {
+  const ctx = await panel(t);
+  const flow = await ctx.appleStart();
+  // Apple schickt das Formular seitenübergreifend: Origin von Apple ist kein Hindernis.
+  const res = await ctx.appleCallback(flow, { headers: { origin: 'https://appleid.apple.com' } });
+  assert.equal(appleResult(res), 'ok');
+  assertContractHeaders(res, 'callback');
+  assert.equal(await res.text(), '');
+  const [sent] = ctx.backend.appleBodies;
+  assert.deepEqual(Object.keys(sent).sort(), ['create', 'identityToken', 'nonce']);
+  assert.equal(sent.create, false);
+  assert.match(sent.nonce, /^[a-f0-9]{64}$/);
+  assert.equal(sha256(sent.nonce), flow.nonceHash, 'Rohwert ans Backend, an Apple nur der Hash');
+  const cookies = res.headers.getSetCookie();
+  assert.equal(cookies.length, 2);
+  assert.deepEqual(cookies.find(value => value.startsWith('noty_ai_apple=')).split('; ').sort(), ['HttpOnly', 'Max-Age=0', 'Path=/admin/api/apple', 'SameSite=None', 'Secure', 'noty_ai_apple=']);
+  const admin = cookies.find(value => value.startsWith('noty_ai_admin='));
+  assert.match(admin, /^noty_ai_admin=[a-f0-9]{64}; /);
+  assert.deepEqual(admin.split('; ').slice(1).sort(), ['HttpOnly', 'Max-Age=28800', 'Path=/admin', 'SameSite=Strict', 'Secure']);
+  assert.ok(!cookies.some(value => value.includes('law_session')));
+  assert.equal((await ctx.send('GET', '/admin/api/overview', { cookie: admin.split(';')[0] })).status, 200);
+  await until(() => ctx.backend.logoutCalls === 1);
+  await until(() => ctx.backend.sessions.size === 0);
+  // Ohne Origin-Kopf geht es genauso.
+  assert.equal(appleResult(await ctx.appleLogin()), 'ok');
+});
+
+test('Zwischenseite: Meta-Refresh auf /admin, nur bekannte Ergebnisse im Fragment, kein Skript', async t => {
+  const ctx = await panel(t);
+  const page = async query => {
+    const res = await ctx.send('GET', `${CALLBACK}${query}`);
+    assert.equal(res.status, 200);
+    assert.ok(res.headers.get('content-type').startsWith('text/html'));
+    assertContractHeaders(res, query);
+    const html = await res.text();
+    assert.ok(!/<script|\sstyle\s*=|<style|\son[a-z]+\s*=|https?:\/\//i.test(html), query);
+    return /<meta http-equiv="refresh" content="0; url=([^"]*)">/.exec(html)?.[1];
+  };
+  assert.equal(await page(''), '/admin');
+  for (const result of APPLE_RESULTS) assert.equal(await page(`?ergebnis=${result}`), `/admin#apple=${result}`);
+  for (const query of ['?ergebnis=%3Cscript%3E', '?ergebnis=abgelehnt%22%3E', '?ergebnis=ok', '?ergebnis=toString', '?anders=1']) assert.equal(await page(query), '/admin', query);
+  const put = await ctx.send('PUT', CALLBACK, { body: {} });
+  assert.equal(put.status, 405);
+  assert.equal(put.headers.get('allow'), 'GET, POST');
+});
+
+test('Apple: derselbe state wirkt nur einmal', async t => {
+  const ctx = await panel(t);
+  const flow = await ctx.appleStart();
+  assert.equal(appleResult(await ctx.appleCallback(flow)), 'ok');
+  const replay = await ctx.appleCallback(flow);
+  assert.equal(appleResult(replay), 'abgelaufen');
+  assert.equal(adminCookieOf(replay), undefined);
+  assert.equal(ctx.backend.appleBodies.length, 1);
+});
+
+test('Apple: Ablauf nach 10 Minuten', async t => {
+  let now = Date.parse('2026-03-01T12:00:00Z');
+  const ctx = await panel(t, { now: () => now });
+  const early = await ctx.appleStart();
+  now += 10 * 60_000 - 1;
+  assert.equal(appleResult(await ctx.appleCallback(early)), 'ok');
+  const late = await ctx.appleStart();
+  now += 10 * 60_000;
+  const res = await ctx.appleCallback(late);
+  assert.equal(appleResult(res), 'abgelaufen');
+  assert.equal(adminCookieOf(res), undefined);
+  assert.equal(ctx.backend.appleBodies.length, 1);
+});
+
+test('Apple: falscher state, fehlendes oder fremdes Cookie gehen nicht ans Backend; der echte Ablauf bleibt möglich', async t => {
+  const ctx = await panel(t);
+  const mine = await ctx.appleStart();
+  const foreign = await ctx.appleStart('203.0.113.50');
+  const idToken = fakeIdToken({ sub: 'apple-sub-admin', nonceHash: mine.nonceHash });
+  for (const [label, options] of [
+    ['fremdes Cookie', { cookie: foreign.cookie }],
+    ['ohne Cookie', { cookie: null }],
+    ['leeres Cookie', { cookie: 'noty_ai_apple=' }],
+    ['Cookie unter anderem Namen', { cookie: `noty_ai_admin=${mine.cookie.split('=')[1]}` }],
+    ['state des anderen', { state: foreign.state }],
+    ['unbekannter state', { state: 'e'.repeat(64) }],
+    ['kaputter state', { state: 'kurz' }],
+    ['state doppelt', { body: `state=${mine.state}&state=${mine.state}&id_token=${idToken}` }],
+    ['ohne state', { body: `id_token=${idToken}` }]
+  ]) {
+    const res = await ctx.appleCallback(mine, options);
+    assert.equal(appleResult(res), 'abgelaufen', label);
+    assert.equal(adminCookieOf(res), undefined, label);
+  }
+  assert.equal(ctx.backend.appleBodies.length, 0);
+  assert.equal(appleResult(await ctx.appleCallback(mine)), 'ok');
+  assert.equal(appleResult(await ctx.appleCallback(foreign, { ip: '203.0.113.50' })), 'ok');
+});
+
+test('Apple: Nicht-Admin, unbekanntes Apple-Konto und falsche Nonce ergeben dieselbe Antwort, kein Konto, keine verwaiste Sitzung', async t => {
+  const ctx = await panel(t);
+  const flows = { anna: await ctx.appleStart('198.51.100.11'), fremd: await ctx.appleStart('198.51.100.12'), nonce: await ctx.appleStart('198.51.100.13') };
+  const answers = [
+    await ctx.appleCallback(flows.anna, { sub: 'apple-sub-anna', ip: '198.51.100.11' }),
+    await ctx.appleCallback(flows.fremd, { sub: 'apple-sub-unbekannt', ip: '198.51.100.12' }),
+    await ctx.appleCallback(flows.nonce, { ip: '198.51.100.13', fields: { state: flows.nonce.state, id_token: fakeIdToken({ sub: 'apple-sub-admin', nonceHash: flows.anna.nonceHash }) } })
+  ];
+  assert.deepEqual(answers.map(appleResult), ['abgelehnt', 'abgelehnt', 'abgelehnt']);
+  assert.deepEqual(answers.map(adminCookieOf), [undefined, undefined, undefined]);
+  assert.ok(ctx.backend.appleBodies.every(body => body.create === false));
+  await until(() => ctx.backend.logoutCalls === 1);
+  assert.equal(ctx.backend.sessions.size, 0);
+  assert.equal(ctx.accounts.get(USER).status, 'pending');
+  assert.equal(ctx.accounts.list().length, 3, 'die Bridge legt kein Konto an');
+  assert.deepEqual(ctx.backend.appleBodies.map(body => body.create), [false, false, false]);
+});
+
+test('Apple: Backend-Ausfälle kosten keinen Versuch und öffnen nichts', async t => {
+  const ctx = await panel(t);
+  for (const [status, expected] of [[500, 'nicht-erreichbar'], [403, 'nicht-erreichbar'], [404, 'nicht-erreichbar'], [503, 'nicht-erreichbar'], [429, 'gesperrt']]) {
+    ctx.backend.appleStatus = status;
+    for (let i = 0; i < 6; i++) {
+      const res = await ctx.appleLogin();
+      assert.equal(appleResult(res), expected, `Status ${status}`);
+      assert.equal(adminCookieOf(res), undefined);
+    }
+  }
+  ctx.backend.appleStatus = null;
+  assert.equal(appleResult(await ctx.appleLogin()), 'ok');
+
+  for (const fetcher of [
+    async () => { throw new Error('Verbindung abgelehnt'); },
+    async () => new Response('kein json', { status: 200 }),
+    async () => new Response(JSON.stringify({ user: { id: ADMIN.id, name: ADMIN.name } }), { status: 200 }),
+    async () => new Response(JSON.stringify({ user: { token: 'a'.repeat(64) } }), { status: 200 })
+  ]) {
+    const down = await panel(t, { options: { fetcher } });
+    for (let i = 0; i < 6; i++) assert.equal(appleResult(await down.appleLogin()), 'nicht-erreichbar');
+  }
+});
+
+test('Apple: Sperren gelten gemeinsam mit dem Passwortweg, je IP und global', async t => {
+  const ctx = await panel(t);
+  for (let i = 0; i < 5; i++) assert.equal(appleResult(await ctx.appleLogin({ sub: 'apple-sub-unbekannt' })), 'abgelehnt');
+  const locked = await ctx.appleLogin();
+  assert.equal(appleResult(locked), 'gesperrt');
+  assert.equal(adminCookieOf(locked), undefined);
+  assert.equal(ctx.backend.appleBodies.length, 5);
+  assert.equal((await ctx.login(ADMIN.name, PASSWORD)).status, 429, 'Passwortweg derselben IP ist mitgesperrt');
+  assert.equal(appleResult(await ctx.appleLogin({ ip: '198.51.100.99' })), 'ok', 'andere IP bleibt frei');
+
+  const mixed = await panel(t);
+  for (let i = 0; i < 5; i++) assert.equal((await mixed.login(ADMIN.name, 'falsch')).status, 401);
+  assert.equal(appleResult(await mixed.appleLogin()), 'gesperrt', 'Fehlversuche mit Passwort sperren auch Apple');
+  assert.equal(mixed.backend.appleBodies.length, 0);
+
+  const wide = await panel(t);
+  for (let i = 0; i < 20; i++) assert.equal(appleResult(await wide.appleLogin({ sub: 'apple-sub-unbekannt', ip: `203.0.113.${i + 1}` })), 'abgelehnt');
+  assert.equal(appleResult(await wide.appleLogin({ ip: '192.0.2.77' })), 'gesperrt');
+  assert.equal((await wide.login(ADMIN.name, PASSWORD, '192.0.2.78')).status, 429);
+  assert.equal(wide.backend.appleBodies.length, 20);
+
+  const parallel = await panel(t);
+  const flows = await Promise.all(Array.from({ length: 10 }, () => parallel.appleStart()));
+  const results = await Promise.all(flows.map(flow => parallel.appleCallback(flow, { sub: 'apple-sub-unbekannt' })));
+  assert.equal(results.filter(res => appleResult(res) === 'abgelehnt').length, 5);
+  assert.equal(results.filter(res => appleResult(res) === 'gesperrt').length, 5);
+  assert.equal(parallel.backend.appleBodies.length, 5);
+});
+
+test('Apple: scheitert das Abmelden im Backend, wird es wiederholt', async t => {
+  const ctx = await panel(t);
+  ctx.backend.logoutFailures = 2;
+  assert.equal(appleResult(await ctx.appleLogin()), 'ok');
+  await until(() => ctx.backend.logoutCalls === 3);
+  await until(() => ctx.backend.sessions.size === 0);
+});
+
+test('Apple ohne Services ID oder mit fremder Rücksprungadresse: 404, kein Knopf; Passwortweg bleibt', async t => {
+  const id = APPLE.servicesId;
+  for (const apple of [undefined, {}, { servicesId: '' }, { servicesId: '  ' }, { servicesId: 'mit leerzeichen' }, { servicesId: '.punkt' }, { servicesId: id },
+    { servicesId: id, redirect: `https://andere.example.invalid${CALLBACK}` }, { servicesId: id, redirect: `${ORIGIN}${CALLBACK}?x=1` }, { servicesId: id, redirect: `${ORIGIN}/admin/api/apple/anders` }, { servicesId: id, redirect: `http://noty.example.invalid${CALLBACK}` }]) {
+    const ctx = await panel(t, { options: { apple } });
+    const label = JSON.stringify(apple);
+    for (const [method, pathname] of [['GET', '/admin/api/apple/start'], ['GET', CALLBACK], ['POST', CALLBACK]]) {
+      const res = await fetch(ctx.base + pathname, { method, redirect: 'manual', headers: method === 'POST' ? { 'content-type': 'application/x-www-form-urlencoded' } : {}, body: method === 'POST' ? 'state=x' : undefined });
+      assert.equal(res.status, 404, `${method} ${pathname} ${label}`);
+      assertContractHeaders(res, label);
+    }
+    const html = await (await ctx.send('GET', '/admin')).text();
+    assert.ok(!html.includes('data-apple'), label);
+    assert.match(html, /id="apple-area" class="apple-area" hidden/);
+    assert.equal((await ctx.login(ADMIN.name, PASSWORD)).status, 200, label);
+  }
+  const on = await panel(t);
+  assert.match(await (await on.send('GET', '/admin')).text(), /<body data-apple="on">/);
+  const off = await panel(t, { options: { origin: undefined } });
+  assert.equal((await fetch(`${off.base}/admin/api/apple/start`, { redirect: 'manual' })).status, 503);
+
+  assert.equal(APPLE_DEFAULT_REDIRECT, 'https://noty.xclipsen.de/admin/api/apple/callback');
+  assert.deepEqual(parseAppleConfig({ servicesId: ' de.xclipsen.noty.web ' }, 'https://noty.xclipsen.de'), { servicesId: 'de.xclipsen.noty.web', redirect: APPLE_DEFAULT_REDIRECT, authorizeUrl: 'https://appleid.apple.com/auth/authorize' });
+  assert.equal(parseAppleConfig({ servicesId: 'de.xclipsen.noty.web' }, null), null);
+});
+
+test('Apple: Körpergröße, Formulartyp und Felder; zu große oder falsche Körper verbrauchen den Ablauf nicht', async t => {
+  const ctx = await panel(t);
+  const flow = await ctx.appleStart();
+  const idToken = fakeIdToken({ sub: 'apple-sub-admin', nonceHash: flow.nonceHash });
+  const big = `state=${flow.state}&id_token=${idToken}&code=${'x'.repeat(16 * 1024)}`;
+  for (const [label, options] of [
+    ['zu groß', { body: big }],
+    ['JSON', { type: 'application/json', body: JSON.stringify({ state: flow.state, id_token: idToken }) }],
+    ['ohne Typ', { type: null }],
+    ['multipart', { type: 'multipart/form-data; boundary=x' }],
+    ['Typ mit Anhang', { type: 'application/x-www-form-urlencodedx' }]
+  ]) {
+    const res = await ctx.appleCallback(flow, options);
+    assert.equal(appleResult(res), 'ungueltig', label);
+    assertContractHeaders(res, label);
+  }
+  assert.equal(ctx.backend.appleBodies.length, 0);
+  assert.equal(appleResult(await ctx.appleCallback(flow, { type: 'application/x-www-form-urlencoded; charset=utf-8' })), 'ok', 'Ablauf war noch offen');
+
+  for (const [label, fields, expected] of [
+    ['ohne id_token', state => ({ state, code: 'c' }), 'ungueltig'],
+    ['id_token kein JWT', state => ({ state, id_token: 'kein.jwt' }), 'ungueltig'],
+    ['id_token zu lang', state => ({ state, id_token: `${'a'.repeat(8000)}.${'b'.repeat(200)}.c` }), 'ungueltig'],
+    ['Abbruch bei Apple', state => ({ state, error: 'user_cancelled_authorize' }), 'abgebrochen']
+  ]) {
+    const next = await ctx.appleStart();
+    assert.equal(appleResult(await ctx.appleCallback(next, { fields: fields(next.state) })), expected, label);
+    assert.equal(appleResult(await ctx.appleCallback(next)), 'abgelaufen', `${label}: Ablauf verbraucht`);
+  }
+  assert.equal(ctx.backend.appleBodies.length, 1);
+});
+
+test('Apple: Ein abgerissener übergroßer Körper bekommt trotzdem die Weiterleitung', async t => {
+  const ctx = await panel(t);
+  const flow = await ctx.appleStart();
+  const status = await new Promise((resolve, reject) => {
+    const req = httpRequest({ port: ctx.api.address().port, host: '127.0.0.1', method: 'POST', path: CALLBACK, headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: flow.cookie, 'transfer-encoding': 'chunked' } }, res => { res.resume(); resolve([res.statusCode, res.headers.location]); });
+    req.on('error', reject);
+    req.write(`state=${flow.state}&code=${'x'.repeat(40 * 1024)}`);
+    req.end();
+  });
+  assert.deepEqual(status, [303, `${CALLBACK}?ergebnis=ungueltig`]);
+});
+
+test('Apple-Anmeldung öffnet kein /v1, und /v1 kennt die Apple-Pfade nicht', async t => {
+  const ctx = await panel(t);
+  const flow = await ctx.appleStart();
+  const res = await ctx.appleCallback(flow);
+  const cookie = adminCookieOf(res);
+  assert.equal((await ctx.send('GET', '/admin/api/overview', { cookie })).status, 200);
+  const idToken = fakeIdToken({ sub: 'apple-sub-admin', nonceHash: flow.nonceHash });
+  for (const pathname of ['/v1/me', '/v1/info', '/v1/sessions']) {
+    assert.equal((await ctx.appGet(pathname, { cookie })).status, 401, pathname);
+    assert.equal((await ctx.appGet(pathname, { authorization: `Bearer ${cookie.split('=')[1]}` })).status, 401, pathname);
+    assert.equal((await ctx.appGet(pathname, { authorization: `Bearer ${idToken}` })).status, 401, pathname);
+  }
+  const appBase = `http://127.0.0.1:${ctx.app.address().port}`;
+  assert.equal((await fetch(`${appBase}/admin/api/apple/start`, { redirect: 'manual' })).status, 404);
+  assert.equal((await fetch(`${appBase}${CALLBACK}`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'state=x' })).status, 404);
+});
+
+test('Offene Apple-Abläufe: einmalig, begrenzt je IP und insgesamt, nur Hashes von state und Cookie', () => {
+  let now = 0;
+  const flows = new AppleFlows({ now: () => now, max: 30, perIp: 3 });
+  const victim = flows.create('192.0.2.1');
+  for (let i = 0; i < 100; i++) flows.create('203.0.113.1');
+  assert.equal(flows.entries.size, 4, 'eine IP verdrängt fremde Abläufe nicht');
+  for (let i = 0; i < 40; i++) flows.create(`203.0.113.${i + 10}`);
+  assert.equal(flows.entries.size, 30);
+  const raw = JSON.stringify([...flows.entries]);
+  const fresh = flows.create('192.0.2.2');
+  assert.ok(!JSON.stringify([...flows.entries]).includes(fresh.state) && !JSON.stringify([...flows.entries]).includes(fresh.binding));
+  assert.ok(!raw.includes(victim.binding));
+  assert.equal(flows.take(fresh.state, 'f'.repeat(64)), null);
+  assert.equal(flows.take(fresh.state, fresh.binding), fresh.nonce);
+  assert.equal(flows.take(fresh.state, fresh.binding), null);
+  for (const bad of [null, undefined, '', 'x', 'A'.repeat(64), 42]) assert.equal(flows.take(bad, fresh.binding), null);
+  const late = flows.create('192.0.2.3');
+  now += 10 * 60_000;
+  assert.equal(flows.take(late.state, late.binding), null);
+  assert.equal(flows.entries.has(sha256(late.state)), false);
+});
+
+test('Oberfläche: Apple-Knopf nur mit Markierung, Ergebnis aus dem Fragment deutsch und danach entfernt', async t => {
+  const signedOut = { status: 401, error: 'Die Sitzung ist abgelaufen. Bitte neu anmelden.' };
+  const hidden = await loadPanel(t, [signedOut]);
+  assert.equal(hidden.$('apple-area').hidden, true);
+  assert.equal(hidden.$('login-error').hidden, true);
+  const shown = await loadPanel(t, [signedOut], { apple: true });
+  assert.equal(shown.$('apple-area').hidden, false);
+  const messages = new Set();
+  for (const result of APPLE_RESULTS) {
+    const ui = await loadPanel(t, [signedOut], { apple: true, hash: `#apple=${result}` });
+    assert.equal(ui.$('login-view').hidden, false, result);
+    assert.equal(ui.$('login-error').hidden, false, result);
+    assert.match(ui.$('login-error').textContent, /Apple|Konto-Backend|Anmeldeversuche/, result);
+    messages.add(ui.$('login-error').textContent);
+    assert.deepEqual(ui.history.calls, [[null, '', '/admin']], result);
+  }
+  assert.equal(messages.size, APPLE_RESULTS.length);
+  const unknown = await loadPanel(t, [signedOut], { hash: '#apple=constructor' });
+  assert.match(unknown.$('login-error').textContent, /ungültig/);
+  const other = await loadPanel(t, [signedOut], { hash: '#anders' });
+  assert.deepEqual([other.history.calls, other.$('login-error').hidden], [[], true]);
+  const signedIn = await loadPanel(t, [], { hash: '#apple=abgelehnt' });
+  assert.equal(signedIn.$('panel-view').hidden, false);
+  assert.deepEqual(signedIn.history.calls, [[null, '', '/admin']]);
 });
