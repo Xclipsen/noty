@@ -21,10 +21,6 @@ struct ContentView: View {
     var onLaws: (() -> Void)?
     /// `Space l`: shows the law window and hands it the keys.
     var onLawKeys: (() -> Void)?
-    /// Shows or hides the assistant; nil while it is switched off.
-    var onAI: (() -> Void)?
-    /// A citation of the assistant: goes the way of a search hit.
-    var pageJump: AIPageJump?
     /// Reports the selected tool, e.g. so Pencil highlights in the law reader.
     var onToolChange: ((EditorTool) -> Void)?
     @State private var selectedPageID: UUID?
@@ -255,11 +251,6 @@ struct ContentView: View {
                 }
             }
             .onChange(of: selectedPageID) { _, _ in if isPaneActive() { model.pageIndex = currentPageIndex } }
-            .onChange(of: pageJump) { _, jump in
-                guard let jump, let page = model.notebook.pages.first(where: { $0.id == jump.pageID }) else { return }
-                selectedPageID = page.id; searchHighlight = page.textBounds; searchHighlightPageID = page.id; fitRequest += 1
-                fadeSearchHighlightLater()
-            }
             .onChange(of: model.pageContentGeneration) { _, _ in textFocus = nil; writingDraft = Page() }
             .onChange(of: tool) { old, value in
                 if value != .text { textFocus = nil }; if value.isInk { lastInkTool = value }
@@ -414,7 +405,6 @@ struct ContentView: View {
                       PaletteCommand(title: "Papier für neue Seiten") { editingDefaults = true }]
         }
         if let onLaws { items.append(PaletteCommand(title: "Gesetzessammlung", run: onLaws)) }
-        if let onAI { items.append(PaletteCommand(title: "KI-Assistent", run: onAI)) }
         if editorSettings != nil { items.append(PaletteCommand(title: "Einstellungen") { showingSettings = true }) }
         return items
     }
@@ -873,7 +863,6 @@ struct ContentView: View {
             }
             Section {
                 if let onLaws { Button("Gesetzessammlung", systemImage: "books.vertical", action: onLaws) }
-                if let onAI { Button("KI-Assistent", systemImage: "sparkles", action: onAI) }
                 Menu("Ansicht", systemImage: "eye") {
                     Toggle("Schreibscrollen bis zur Bildschirmmitte", systemImage: "arrow.left.and.right.square", isOn: $writingScroll)
                     Toggle("Blättern statt Scrollen", systemImage: "book.pages", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))

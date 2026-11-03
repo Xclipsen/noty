@@ -31,8 +31,6 @@ enum AppSettingsKey {
     /// Lasso: what it selects (`SelectionFilter.bits`) and freeform/rectangle.
     static let lassoFilter = "noty.lasso.filter"
     static let lassoMode = "noty.lasso.mode"
-    /// KI-Assistent (docs/AI-ASSISTANT.md): off unless switched on.
-    static let aiEnabled = "noty.ai.enabled"
 }
 
 enum LibraryLayout: String, CaseIterable, Identifiable {
@@ -70,14 +68,13 @@ enum LibrarySort: String, CaseIterable, Identifiable {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
-    case general, account, laws, ai, editor, tools, paper, backup, trash, about, diagnostics
+    case general, account, laws, editor, tools, paper, backup, trash, about, diagnostics
     var id: String { rawValue }
     var title: String {
         switch self {
         case .general: "Allgemein"
         case .account: "Konto"
         case .laws: "Gesetzessammlung"
-        case .ai: "KI (experimentell)"
         case .editor: "Editor"
         case .tools: "Stift & Werkzeuge"
         case .paper: "Papier für neue Hefte"
@@ -92,7 +89,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .general: "gearshape"
         case .account: "person.crop.circle"
         case .laws: "books.vertical"
-        case .ai: "sparkles"
         case .editor: "rectangle.and.pencil.and.ellipsis"
         case .tools: "pencil.tip.crop.circle"
         case .paper: "squareshape.split.3x3"
@@ -105,7 +101,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     /// True when the page edits data stored per area (Bereich).
     var perArea: Bool { [.tools, .paper, .backup, .trash].contains(self) }
     /// Rows of the settings root, grouped.
-    static let rootSections: [[SettingsPage]] = [[.general, .account, .laws, .ai, .editor, .tools, .paper], [.backup, .trash], [.about, .diagnostics]]
+    static let rootSections: [[SettingsPage]] = [[.general, .account, .laws, .editor, .tools, .paper], [.backup, .trash], [.about, .diagnostics]]
 }
 
 struct SettingsRequest: Identifiable {
@@ -204,7 +200,6 @@ struct SettingsView: View {
         case .general: GeneralSettingsPage()
         case .account: NotyAccountSettingsPage()
         case .laws: LawSettingsPage()
-        case .ai: AISettingsPage()
         case .editor: EditorSettingsPage(toolbox: toolbox, area: workspaces.title)
         case .tools: ToolSettingsPage(toolbox: toolbox, area: workspaces.title)
         case .paper: PaperSettingsPage(toolbox: toolbox, area: workspaces.title)
@@ -214,129 +209,6 @@ struct SettingsView: View {
         case .about: AboutSettingsPage(toolbox: toolbox, workspaces: workspaces)
         case .diagnostics: DiagnosticsSettingsPage()
         }
-    }
-}
-
-private struct AISettingsPage: View {
-    @EnvironmentObject private var ai: AIAssistantModel
-    @AppStorage(AppSettingsKey.aiEnabled) private var enabled = false
-    @State private var address = ""
-    @State private var addressError: String?
-    @State private var askingConsent = false
-    var body: some View {
-        Form {
-            Section {
-                // Switching on asks once; the consent belongs to server and account.
-                keyToggle("KI-Assistent aktivieren", isOn: Binding(get: { enabled }, set: { on in
-                    if on { askingConsent = true } else { enabled = false }
-                }))
-            } footer: {
-                Text("Mit deiner Zustimmung liest die KI das gerade geöffnete Heft mit, ohne Rückfrage je Heft. Auf dem Server bleiben Frage, Antwort und ein Kontextname, Chats 30 Tage lang. Die KI schreibt nie in ein Heft.")
-            }
-            if enabled, ai.consentKey != nil, !ai.hasConsent {
-                Section {
-                    Text(AIAssistantModel.consentText(host: ai.serverHost)).font(.callout)
-                    Button("Zustimmen") { ai.giveConsent() }
-                } header: { Text("Zustimmung") } footer: {
-                    Text("Nötig nach einem Wechsel von Server oder Konto. Bis dahin sendet der KI-Assistent nichts.")
-                }
-            }
-            if enabled {
-                Section {
-                    TextField("https://server.example.ts.net", text: $address)
-                        .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    if let addressError { Text(addressError).font(.caption).foregroundStyle(.orange) }
-                    Button("Adresse übernehmen") {
-                        addressError = ai.setServer(address) ? nil : "Nur eine https-Adresse ohne Pfad und ohne Benutzerangabe."
-                        if addressError == nil { address = ai.serverAddress }
-                    }
-                    .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines) == ai.serverAddress)
-                } header: { Text("Server-Adresse") } footer: {
-                    Text("Der Anmeldeschlüssel deines noty-Kontos geht an diese Adresse. Bitte nur den eigenen Server eintragen.")
-                }
-                Section("Konto") {
-                    if let name = ai.accountName, ai.signedIn { LabeledContent("Angemeldet", value: name) }
-                    else {
-                        Text("Der KI-Assistent braucht ein noty-Konto.").font(.caption).foregroundStyle(.secondary)
-                    }
-                    if !ai.signedIn || ai.access == .expired {
-                        NavigationLink(value: SettingsPage.account) { Label("Zur Kontoseite", systemImage: SettingsPage.account.symbol) }
-                    }
-                    LabeledContent("Status", value: statusText)
-                    if let reason = ai.access.reason, ai.access != .noServer || ai.signedIn { Text(reason).font(.caption).foregroundStyle(.orange) }
-                    if let error = ai.statusError { Text(error).font(.caption).foregroundStyle(.orange) }
-                    if ai.server != nil, ai.signedIn {
-                        Button("Status prüfen") { Task { await ai.refreshStatus() } }.disabled(ai.checking)
-                    }
-                }
-                if let me = ai.me { today(me) }
-                if let usage = ai.usage, !usage.limits.isEmpty { plan(usage) }
-                Section {
-                    LabeledContent("Ausgeschlossene Hefte", value: "\(ai.exclusions.count)")
-                    Button("Alle Hefte wieder einbeziehen") { ai.includeAllDocuments() }.disabled(ai.exclusions.count == 0)
-                    Button("Zustimmung widerrufen", role: .destructive) { ai.withdrawConsent() }.disabled(!ai.hasConsent)
-                } header: { Text("Datenschutz") } footer: {
-                    Text("Ein Heft schließt du im KI-Fenster über das Menü am Titel aus. Ohne Zustimmung sendet der KI-Assistent nichts.")
-                }
-            }
-        }
-        .navigationTitle(SettingsPage.ai.title)
-        .keyboardSheet()
-        .alert("KI-Assistent einschalten?", isPresented: $askingConsent) {
-            Button("Zustimmen und einschalten") { enabled = true; ai.giveConsent() }
-            Button("Abbrechen", role: .cancel) {}
-        } message: { Text(AIAssistantModel.consentText(host: ai.serverHost)) }
-        .onAppear { address = ai.serverAddress }
-        .task(id: [enabled ? 1 : 0, ai.accountEpoch]) { if enabled { await ai.refreshStatus() } }
-        .onChange(of: enabled) { _, _ in ai.settingsChanged() }
-    }
-
-    private var statusText: String {
-        if ai.checking { return "Wird geprüft …" }
-        switch ai.access {
-        case .noServer: return "Keine Adresse"
-        case .signedOut: return "Nicht angemeldet"
-        case .expired: return "Anmeldung abgelaufen"
-        case .pending: return "Wartet auf Freischaltung"
-        case .blocked: return "Gesperrt"
-        case .noRuns: return "Keine Fragen freigegeben"
-        case .open:
-            guard ai.me != nil else { return ai.statusError == nil ? "Noch nicht geprüft" : "Nicht erreichbar" }
-            return ai.info?.account == nil && ai.info != nil ? "Server ohne ChatGPT-Anmeldung" : "Bereit"
-        }
-    }
-
-    private func today(_ me: AIMe) -> some View {
-        Section("Heute") {
-            if let use = ai.dailyUse { LabeledContent("Fragen", value: "\(use.used) von \(use.limit)") }
-            else { LabeledContent("Fragen", value: "\(me.today.turns)") }
-            if me.today.failedTurns > 0 { LabeledContent("Fehlgeschlagen", value: "\(me.today.failedTurns)") }
-            LabeledContent("Bilder", value: "\(me.today.images)")
-            LabeledContent("Tokens gelesen", value: me.today.inputTokens.formatted())
-            LabeledContent("Tokens geschrieben", value: me.today.outputTokens.formatted())
-        }
-    }
-
-    private func plan(_ usage: AIUsage) -> some View {
-        Section("Abo-Kontingent") {
-            ForEach(usage.limits) { limit in
-                ForEach(Array(limit.windows.enumerated()), id: \.offset) { _, window in
-                    VStack(alignment: .leading, spacing: 4) {
-                        LabeledContent(windowName(limit, window), value: "\(Int(window.usedPercent.rounded())) % genutzt")
-                        ProgressView(value: min(100, max(0, window.usedPercent)), total: 100)
-                        if let reset = window.resetsAt {
-                            Text("Neu ab \(reset.date.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func windowName(_ limit: AIUsageLimit, _ window: AIUsageWindow) -> String {
-        guard let minutes = window.windowDurationMins else { return limit.name ?? "Kontingent" }
-        let span = minutes >= 1_440 ? "\(Int(minutes / 1_440)) Tage" : "\(Int(minutes / 60)) Stunden"
-        return limit.name.map { "\($0), \(span)" } ?? span
     }
 }
 

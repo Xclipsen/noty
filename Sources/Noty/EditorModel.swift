@@ -9,9 +9,7 @@ final class EditorModel: ObservableObject {
     /// Until the stored document is installed this is a neutral blank sheet,
     /// never the prototype test page; the editor does not show it anyway
     /// (`documentLoaded`), and it is never saved (`writable` is false).
-    @Published var notebook = Notebook.blank(title: "") { didSet { contentChanges &+= 1 } }
-    /// Moves with every change of `notebook`; a cheap sign for observers.
-    private(set) var contentChanges = 0
+    @Published var notebook = Notebook.blank(title: "")
     @Published var pageIndex = 0 { didSet { if pageIndex != oldValue { rememberPage() } } }
     @Published var status = "Noch nicht gespeichert"
     @Published var error: String?

@@ -257,7 +257,7 @@ final class LawLibraryModel: ObservableObject {
         } catch { self.error = error.localizedDescription; return false }
     }
     /// The same session for every way in (password, Apple): Keychain, account
-    /// switch, guest markings, and through `user` the AI panel as well.
+    /// switch and guest markings.
     private func signedIn(_ account: NotyAccountUser) async throws {
         guard let token = account.token, token.count == 64 else { throw LawError.invalid("Server unterstützt die native Anmeldung noch nicht.") }
         try NotyAccountKeychain.save(account)

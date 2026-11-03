@@ -3,9 +3,9 @@
 Native iPad-App für Schulnotizen, entwickelt auf `la@lab` unter Omarchy.
 Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nutzer auf **noty** geändert.
 
-## KI-Assistent (experimentell, nur noty dev)
+## KI-Assistent
 
-Fragen zu Heft und Seite über das eigene ChatGPT-Abo, standardmäßig aus. Branch `feat/ki-panel`, Bridge in `bridge/`, Vertrag und Betrieb in [AI-ASSISTANT](docs/AI-ASSISTANT.md). Admin-Web-App: `noty.xclipsen.de/admin`. Lernkarten und automatische Chats fehlen noch. Antworten laufen über Long-Polling wortweise und gleichmäßig ein, Markdown inkrementell, die Ansicht folgt nur am Ende ([TESTING](docs/TESTING.md#flüssiges-einlaufen-der-antworten-03112026)). Implementiert und gebaut, am iPad ungeprüft.
+Ein experimenteller KI-Assistent existiert separat auf dem Branch feat/ki-panel und ist nicht Teil dieses Release-Kandidaten.
 
 ## Native Gesetzessammlung – separater Feature-Worktree
 

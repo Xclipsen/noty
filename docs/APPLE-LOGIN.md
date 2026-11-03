@@ -1,6 +1,6 @@
 # Mit Apple anmelden
 
-Status: in Arbeit auf `feat/ki-panel` (App, Admin-Panel) und im Konto-Backend `gesetzessammlung-noty` (Server, Website). Vom Nutzer am 03.11.2026 beauftragt: App und Web, bestehendes Konto „Leon“ verknüpfen, Live-Backend mit Sicherung ausrollen. Ersetzt die frühere Grenze „kein Apple-Login im kostenlosen Signierungssetup“ (seit 29.10.2026 bezahltes Developer-Konto).
+Status: in Arbeit auf `feat/ki-panel` (App) und im Konto-Backend `gesetzessammlung-noty` (Server, Website). Vom Nutzer am 03.11.2026 beauftragt: App und Web, bestehendes Konto „Leon“ verknüpfen, Live-Backend mit Sicherung ausrollen. Ersetzt die frühere Grenze „kein Apple-Login im kostenlosen Signierungssetup“ (seit 29.10.2026 bezahltes Developer-Konto).
 
 ## Grundsätze
 
@@ -49,13 +49,9 @@ Fehlermeldungen deutsch. Ratelimits wie bei Login. Konten ohne Passwort, die nur
 - `refreshAccount` übernimmt seine Antwort nur, wenn seitdem keine lokale Kontoänderung (Verknüpfen, Trennen, Anmeldung, E-Mail) lief (`AccountUpdateGate`) und kein Kontovorgang aktiv ist.
 - Nachweise: `AppleSignInTests` (Request-Körper mit `create: false`, Plan, Gate, Abbruchhinweis), SDK-Build. Signierung: xtool 1.24.0, Build 93 enthält die Fähigkeit in Signatur und Profil (ENVIRONMENT). Nicht installiert durch diese Änderung, am iPad ungeprüft.
 
-## Admin-Panel (`bridge`, noty.xclipsen.de/admin)
+## Admin-Panel
 
-- `GET /admin/api/apple/start` → `302` zu Apple, `state` und Nonce-Rohwert im Speicher, an Apple geht `sha256(Rohwert)` (10 Minuten, einmalig), zusätzlich ein Cookie `noty_ai_apple` (`HttpOnly; Secure; SameSite=None; Path=/admin/api/apple`) bindet den Ablauf an den Browser.
-- `POST /admin/api/apple/callback` (Formular von Apple, ohne `Origin`-Prüfung, aber `state` plus Cookie) reicht `id_token` und Nonce an `POST /api/apple/login` weiter, prüft wie beim Passwortweg Admin-Rechte, meldet die Backend-Sitzung sofort ab und setzt das Admin-Cookie. Kein neues Konto über das Admin-Panel: unbekanntes `sub` ergibt dieselbe Fehlermeldung wie ein falsches Passwort (Backend-Option `create: false`).
-- Rücksprung immer als `303` auf `GET /admin/api/apple/callback?ergebnis=…`: Zwischenseite ohne Skript, Meta-Refresh auf `/admin`, bei Fehlern mit `#apple=<Kennzeichen>`, das die Seite deutsch anzeigt. Grund: Nach Apples seitenübergreifendem `form_post` sendet der Browser das `SameSite=Strict`-Admin-Cookie bei einer direkten Weiterleitung auf `/admin` nicht mit; der Meta-Refresh ist eine Navigation vom eigenen Ursprung (Chromium nachgewiesen, Safari ungeprüft).
-- Konfiguration: `NOTY_AI_APPLE_SERVICES_ID` (ohne sie `404` und kein Knopf), `NOTY_AI_APPLE_REDIRECT` (Standard `https://noty.xclipsen.de/admin/api/apple/callback`, muss zu `NOTY_AI_ADMIN_ORIGIN` passen).
-- nginx-Allowlist um genau diese zwei Pfade und das Logo `/admin/apple.svg` erweitern.
+Das Admin-Panel gehört zum KI-Dienst. Ein experimenteller KI-Assistent existiert separat auf dem Branch feat/ki-panel und ist nicht Teil dieses Release-Kandidaten.
 
 ## Apple-Developer-Portal (nur der Nutzer)
 

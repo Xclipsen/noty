@@ -12,9 +12,9 @@ Die in [UI-REBUILD.md](UI-REBUILD.md) beschriebenen und anschließend präzisier
 
 Appweites E-Mail-/Passwortkonto auf dem bestehenden IONOS-Backend, auch auf der Website verwendbar. Ohne Login lokal lesen und markieren. Gastmarkierungen beim Login automatisch zuordnen; nach Logout lokal sichtbar erhalten, fremde Konten nicht vermischen. Persistenter beidseitiger Abgleich ausschließlich für Gesetzesmarkierungen/Lesezeichen. Separat abschaltbare automatische öffentliche Fassungsupdates; alte markierte Fassungen erhalten. Drei Schalter: Gesetzessammlung anfangs **aus**, persönlicher Sync **an**, automatische Gesetzesupdates **an**. Kein Apple-Login im jetzigen kostenlosen Signierungssetup. Diese Umfangsbestätigung ist kein Geräte-/Serverabnahmenachweis.
 
-## Bestätigte Erweiterung vom 02.11.2026: KI-Assistent (experimentell)
+## KI-Assistent
 
-Vom Nutzer beauftragt, zunächst nur in noty dev: Fragen zu Heft und Seite über das eigene ChatGPT-Abo, standardmäßig aus, Handschrift als Seitenbild. Statt einer Freigabe je Heft gilt seit 03.11.2026 (Nutzerentscheidung) eine einmalige Zustimmung beim Einschalten, gebunden an Server und Konto; danach geht das aktive Heft automatisch mit (sichtbar „Ganzes Heft“/„Diese Seite“), einzelne Hefte lassen sich ausschließen. Ausgewählte Inhalte gehen dafür an den eigenen Server und OpenAI; alle Kernfunktionen bleiben offline und ohne KI nutzbar. An das noty-Konto gebunden, Admin-Web-App unter `noty.xclipsen.de/admin`. Lernkarten und automatische Chats sind geplant, aber nicht Teil dieser Version. Vertrag: [AI-ASSISTANT](AI-ASSISTANT.md). Diese Umfangsbestätigung ist kein Abnahmenachweis.
+Ein experimenteller KI-Assistent existiert separat auf dem Branch feat/ki-panel und ist nicht Teil dieses Release-Kandidaten.
 
 ## Bestätigte Entscheidungen
 
@@ -73,7 +73,7 @@ Vom Nutzer beauftragt, zunächst nur in noty dev: Fragen zu Heft und Seite über
 
 ## Bewusst außerhalb der ersten vollständigen Version
 
-Audioaufnahme, eigener Kamerascanner, automatische Umwandlung von Handschrift in bearbeitbaren Tastaturtext, Fließtext mit automatischem Umbruch über Seiten, Tabelleneditor, weitere KI-Funktionen außerhalb des experimentellen Assistenten, Live-Synchronisierung von Notizbüchern zwischen Geräten und Zusammenarbeit. Der bestätigte Gesetzes-/Markierungsabgleich ist davon ausgenommen. Gestrichelte freie Handschrift ist ebenfalls ausgeschlossen. Scans können über die Dateien-App als PDF importiert werden; lokale OCR dient der Suche.
+Audioaufnahme, eigener Kamerascanner, automatische Umwandlung von Handschrift in bearbeitbaren Tastaturtext, Fließtext mit automatischem Umbruch über Seiten, Tabelleneditor, KI-Funktionen, Live-Synchronisierung von Notizbüchern zwischen Geräten und Zusammenarbeit. Der bestätigte Gesetzes-/Markierungsabgleich ist davon ausgenommen. Gestrichelte freie Handschrift ist ebenfalls ausgeschlossen. Scans können über die Dateien-App als PDF importiert werden; lokale OCR dient der Suche.
 
 ## Qualitätsgrenze für die persönliche Alltagsfreigabe
 

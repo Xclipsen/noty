@@ -6,7 +6,6 @@ import NotebookCore
 @MainActor
 struct NotyApp: App {
     @StateObject private var laws = LawLibraryModel()
-    @StateObject private var ai = AIAssistantModel()
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var workspaces = WorkspaceAppModel()
     init() {
@@ -23,7 +22,6 @@ struct NotyApp: App {
         WindowGroup {
             WorkspaceLibraryHost(workspaces: workspaces).id(workspaces.root.path).preferredColorScheme(.dark)
                 .environmentObject(laws)
-                .environmentObject(ai)
                 .task {
                     await laws.start()
                     while !Task.isCancelled {
@@ -31,9 +29,7 @@ struct NotyApp: App {
                         if laws.sceneActive { await laws.tick() }
                     }
                 }
-                .onChange(of: laws.user?.token, initial: true) { _, _ in ai.accountChanged(laws) }
-                .onChange(of: laws.sessionExpired) { _, _ in ai.accountChanged(laws) }
-                .onChange(of: scenePhase, initial: true) { _, phase in ai.setSceneActive(phase == .active); laws.sceneActive = phase == .active; if phase == .active { TapDiagnostics.shared.refresh(); Task { await laws.tick() } } }
+                .onChange(of: scenePhase, initial: true) { _, phase in laws.sceneActive = phase == .active; if phase == .active { TapDiagnostics.shared.refresh(); Task { await laws.tick() } } }
                 .alert("Gesetzessammlung", isPresented: Binding(get: { laws.error != nil && laws.inlineErrorPages == 0 }, set: { if !$0 { laws.error = nil } })) {
                     Button("OK") { laws.error = nil }
                 } message: { Text(laws.error ?? "") }

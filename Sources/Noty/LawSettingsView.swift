@@ -186,7 +186,7 @@ struct LawPanelView<Drag: Gesture>: View {
     var onPenChange: ((LawPenMode) -> Void)? = nil
     /// Room to dock at the current edge; without it the window can only float.
     var canDock = true
-    /// Whether it really is docked now: the assistant may hold the dock.
+    /// Whether it really is docked now (the layout also needs room to dock).
     var docked = false
     var body: some View {
         VStack(spacing: 0) {

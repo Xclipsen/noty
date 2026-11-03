@@ -51,12 +51,6 @@ final class ContentSearchModel: ObservableObject {
     @Published var collectingTasks = false
     private(set) var tasksCollected = false
     private var taskWorker: Task<Void, Never>?
-    /// False for background reading (KI panel): only the index is filled, no hit list is built.
-    var collectsHits = true
-    /// Checked between pages: while it holds, reading waits (pen or text input under way).
-    var shouldPause: (@MainActor () -> Bool)?
-    /// Pages of the current notebook that need recognition, and how many are done.
-    @Published private(set) var progress: AIReadingProgress?
     func cancel() { generation += 1; worker?.cancel(); worker = nil; running = false }
     func cancelTasks() { taskWorker?.cancel(); taskWorker = nil; collectingTasks = false }
     /// Unchecked checkboxes only: no OCR, so the list is ready quickly.
@@ -122,7 +116,7 @@ final class ContentSearchModel: ObservableObject {
     /// `retain`: all notebook IDs of the area (library search); other indexes are removed.
     func start(documents: [OpenNotebook], current: Notebook? = nil, currentSources: (@MainActor (Page) -> PDFPage?)? = nil,
                area: String, retain: Set<UUID>? = nil, rebuild: Bool = false) {
-        cancel(); running = true; error = nil; progress = nil
+        cancel(); running = true; error = nil
         let expected = generation
         let store = ContentSearchIndexLocation.store(area: area)
         order = documents.map(\.id); pageHits = [:]; publish(force: true)
@@ -196,19 +190,12 @@ final class ContentSearchModel: ObservableObject {
             return catalog?.sourcePage(for: page)
         }
         var lastSave = ContinuousClock.now
-        let open = prepared.indices.filter { !ContentSearchPlanner.pending(prepared[$0], index.pages[$0]).isEmpty }.count
-        var reading = AIReadingProgress(done: 0, total: open)
-        progress = open > 0 ? reading : nil
         do {
             for (offset, entry) in prepared.enumerated() {
                 let pending = ContentSearchPlanner.pending(entry, index.pages[offset])
                 guard !pending.isEmpty else { continue }
                 try Task.checkCancellation()
                 guard generation == expected else { throw CancellationError() }
-                while shouldPause?() == true {
-                    try await Task.sleep(for: .milliseconds(300))
-                    guard generation == expected else { throw CancellationError() }
-                }
                 status = "\(document.title) · Seite \(offset + 1)/\(prepared.count)"
                 let page = notebook.pages[offset]
                 var record = index.pages[offset]
@@ -248,8 +235,6 @@ final class ContentSearchModel: ObservableObject {
                 }
                 index.pages[offset] = record
                 summary.pages += 1
-                reading.done += 1
-                if generation == expected { progress = reading }
                 guard generation == expected else { throw CancellationError() }
                 show(page: offset, record, document); publish()
                 if lastSave.duration(to: .now) > .seconds(3) { await store.save(index); lastSave = .now }
@@ -272,18 +257,16 @@ final class ContentSearchModel: ObservableObject {
     }
 
     private func show(_ index: SearchDocumentIndex, _ document: OpenNotebook) {
-        guard collectsHits else { return }
         pageHits[document.id] = index.pages.enumerated().map { offset, record in
             ContentSearchPlanner.hits(record, pageNumber: offset + 1, documentID: document.id, title: document.title)
         }
     }
     private func show(page offset: Int, _ record: SearchPageRecord, _ document: OpenNotebook) {
-        guard collectsHits, pageHits[document.id]?.indices.contains(offset) == true else { return }
+        guard pageHits[document.id]?.indices.contains(offset) == true else { return }
         pageHits[document.id]?[offset] = ContentSearchPlanner.hits(record, pageNumber: offset + 1, documentID: document.id, title: document.title)
     }
     /// Notebook order, then page order; capped like the original search.
     private func publish(force: Bool = false) {
-        guard collectsHits else { return }
         guard force || lastPublish.duration(to: .now) > .milliseconds(250) else { return }
         lastPublish = .now
         let limit = ContentSearchIndexFormat.hitLimit
