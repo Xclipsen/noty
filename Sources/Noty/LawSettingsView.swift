@@ -135,30 +135,40 @@ struct LawSettingsPage: View {
     var body: some View {
         Form {
             Section {
-                keyToggle("Gesetzessammlung aktivieren", isOn: $enabled)
-                keyToggle("Lesezeichen und Markierungen synchronisieren", isOn: $sync)
-                keyToggle("Neue Gesetzesfassungen automatisch laden", isOn: $updates)
+                symbolToggle("Gesetzessammlung aktivieren", systemImage: "books.vertical", isOn: $enabled)
+                symbolToggle("Lesezeichen und Markierungen synchronisieren", systemImage: "arrow.triangle.2.circlepath", isOn: $sync)
+                symbolToggle("Neue Gesetzesfassungen automatisch laden", systemImage: "arrow.down.circle", isOn: $updates)
             } footer: {
                 Text("Der Kontoabgleich und öffentliche Gesetzesupdates sind unabhängig. Ohne Konto bleiben Markierungen lokal. Nach einem vollständigen Erstdownload sind die Texte offline verfügbar; PDFs lassen sich einzeln laden.")
             }
-            if let error = laws.error { Section { Text(error).foregroundStyle(.orange); Button("Hinweis schließen") { laws.error = nil } } }
+            if let error = laws.error {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Button("Hinweis schließen", systemImage: "xmark") { laws.error = nil }
+                }
+            }
             if enabled {
                 Section("Offlinebestand") {
-                    LabeledContent("Dokumente", value: "\(laws.entries.count)")
-                    LabeledContent("Speicher", value: ByteCountFormatter.string(fromByteCount: laws.byteCount, countStyle: .file))
-                    if !laws.progress.isEmpty { Text(laws.progress).font(.caption) }
-                    if laws.downloading { ProgressView() }
-                    Button("Gesetzesbestand jetzt laden / aktualisieren") { Task { await laws.updateLaws() } }.keyOption(.action { Task { await laws.updateLaws() } }).disabled(laws.downloading)
-                    NavigationLink("Gesetzessammlung öffnen") { LawReaderView() }
+                    LabeledContent { Text("\(laws.entries.count)") } label: { Label("Dokumente", systemImage: "doc.text") }
+                    LabeledContent { Text(ByteCountFormatter.string(fromByteCount: laws.byteCount, countStyle: .file)) } label: { Label("Speicher", systemImage: "internaldrive") }
+                    if laws.downloading || !laws.progress.isEmpty {
+                        LabeledContent {
+                            if laws.downloading { ProgressView() }
+                        } label: {
+                            Label(laws.progress.isEmpty ? "Wird geladen …" : laws.progress, systemImage: "arrow.down.circle")
+                        }
+                    }
+                    Button("Gesetzesbestand jetzt laden / aktualisieren", systemImage: "arrow.clockwise") { Task { await laws.updateLaws() } }.keyOption(.action { Task { await laws.updateLaws() } }).disabled(laws.downloading)
+                    NavigationLink { LawReaderView() } label: { Label("Gesetzessammlung öffnen", systemImage: "book") }
                 }
                 Section("Persönliche Daten") {
-                    Text(laws.syncStatus).font(.caption)
-                    Button("Jetzt synchronisieren") { Task { await laws.synchronize() } }.keyOption(.action { Task { await laws.synchronize() } }).disabled(laws.syncing || !sync || laws.user == nil || laws.sessionExpired)
-                    Button("Markierungen und Lesezeichen sichern …") {
+                    LabeledContent { Text(laws.syncStatus).multilineTextAlignment(.trailing) } label: { Label("Status", systemImage: "checkmark.icloud") }
+                    Button("Jetzt synchronisieren", systemImage: "arrow.triangle.2.circlepath") { Task { await laws.synchronize() } }.keyOption(.action { Task { await laws.synchronize() } }).disabled(laws.syncing || !sync || laws.user == nil || laws.sessionExpired)
+                    Button("Markierungen und Lesezeichen sichern …", systemImage: "archivebox") {
                         Task { do { exported = try await laws.exportPersonal() } catch { laws.error = error.localizedDescription } }
                     }
-                    if let exported { ShareLink("Sicherungsdatei teilen …", item: exported) }
-                    Button("Markierungen aus Sicherung ergänzen …") { restoring = true }
+                    if let exported { ShareLink(item: exported) { Label("Sicherungsdatei teilen …", systemImage: "square.and.arrow.up") } }
+                    Button("Markierungen aus Sicherung ergänzen …", systemImage: "square.and.arrow.down") { restoring = true }
                     Text("Diese Sicherung enthält persönliche Gesetzesdaten, keine Anmeldeschlüssel. Sie ergänzt Heft- und Bibliotheksbackups und bleibt von Gesetzesdownloads getrennt.").font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -173,5 +183,9 @@ struct LawSettingsPage: View {
             .fileImporter(isPresented: $restoring, allowedContentTypes: [.json]) { result in
                 switch result { case .success(let url): Task { await laws.restorePersonal(url) }; case .failure(let error): laws.error = error.localizedDescription }
             }
+    }
+    /// `keyToggle` with a symbol, like the other settings pages.
+    private func symbolToggle(_ title: String, systemImage: String, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) { Label(title, systemImage: systemImage) }.keyOption(.toggle(isOn))
     }
 }
