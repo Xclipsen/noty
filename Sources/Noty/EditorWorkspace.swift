@@ -366,7 +366,7 @@ struct EditorWorkspaceView: View {
     }
     /// Touch width of the edge tab; the visible tab is narrower and sits at the screen edge.
     private static let lawTabTouch = 48.0
-    static let lawDockHintText = "Zweites Heft ausgeblendet – kommt beim Lösen zurück"
+    static let lawDockHintText = "Zweites Heft ausgeblendet – kommt zurück, sobald die Gesetze wieder schweben"
 
     private func lawAlignment(_ edge: LawPanelEdge) -> Alignment {
         switch edge { case .left: .leading; case .right: .trailing; case .bottom: .bottom }
@@ -438,7 +438,15 @@ struct EditorWorkspaceView: View {
         .notyTooltipHost()
     }
 
-    /// Short note over the notebooks when docking hides the second one.
+    /// Near the bottom of the notebooks, away from a toolbar at the top; near
+    /// the top when the toolbar is docked at the bottom.
+    private func lawDockHintY(in area: PageRect) -> CGFloat {
+        let top = CGFloat(area.y) + 72
+        if toolbox.preferences.effectiveDock == .bottom { return top }
+        return max(top, CGFloat(area.y + area.height) - 120)
+    }
+    /// Short note over the notebooks when docking hides the second one; at
+    /// the edge away from the notebook toolbar, never over it.
     private func lawDockHintView(in area: PageRect) -> some View {
         Label(Self.lawDockHintText, systemImage: "eye.slash")
             .font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
@@ -448,7 +456,7 @@ struct EditorWorkspaceView: View {
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.16), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
             .frame(maxWidth: max(0, area.width - 32))
-            .position(x: area.x + area.width / 2, y: area.y + 72)
+            .position(x: area.x + area.width / 2, y: lawDockHintY(in: area))
             .allowsHitTesting(false)
             .accessibilityHidden(true)
     }
@@ -623,7 +631,7 @@ struct EditorWorkspaceView: View {
                 })
             .accessibilityLabel("Gesetzessammlung hervorholen")
             .accessibilityAction(named: "Schließen") { lawPanel.close() }
-            .notyTooltip("Hervorholen")
+            .notyTooltip("Hervorholen (⌥⌘L)")
         let close = Button { lawPanel.close() } label: {
             Image(systemName: "xmark").font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.88))
@@ -635,8 +643,8 @@ struct EditorWorkspaceView: View {
         }
             .buttonStyle(NotyPressStyle())
             .accessibilityLabel("Gesetzessammlung schließen")
-            .accessibilityHint("Auch ohne Lasche. Über „Gesetzessammlung“ im Heft wieder öffnen.")
-            .notyTooltip("Schließen")
+            .accessibilityHint("Schließt ganz, auch die Lasche. Wieder öffnen: Heft-Menü › Gesetzessammlung oder ⇧⌘L.")
+            .notyTooltip("Ganz schließen")
         return Group {
             if edge == .bottom {
                 HStack(alignment: .bottom, spacing: 6) { tab; close.padding(.bottom, -6) }

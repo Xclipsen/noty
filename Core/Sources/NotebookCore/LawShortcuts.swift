@@ -84,7 +84,7 @@ public enum LawShortcuts {
         case dock(LawPanelEdge)
         case float
         // Gesetzfokus
-        /// Eine Ebene: Auswahl/gewählte Markierung, dann Eingabefeld, dann Fenster schließen.
+        /// Eine Ebene: Auswahl/gewählte Markierung, dann Eingabefeld, dann offene Suchfläche, dann Fenster schließen.
         case escape
         /// Im offenen Gesetz suchen (Menütitel von ⌘F wechselt).
         case find
@@ -138,8 +138,8 @@ public enum LawShortcuts {
         let window = "Fenster", find = "Suchen", move = "Lesen", view = "Ansicht", mark = "Markieren"
         var rows: [Shortcut] = [
             // Im Heft (Menü „Gesetze“), mit und ohne Fokus.
-            row("window.toggle", .toggleWindow, .notebook, .menu, Combo("l", [.command, .shift]), "Gesetzessammlung öffnen/schließen", window),
-            row("window.park", .parkWindow, .notebook, .menu, Combo("l", [.command, .option]), "An den Rand/Vom Rand holen", window),
+            row("window.toggle", .toggleWindow, .notebook, .menu, Combo("l", [.command, .shift]), "Gesetzessammlung öffnen oder schließen", window),
+            row("window.park", .parkWindow, .notebook, .menu, Combo("l", [.command, .option]), "An den Rand schieben oder vom Rand holen", window),
             row("window.lookup", .lookup, .notebook, .menu, Combo("l", [.command]), "Fundstelle suchen", window),
             // ⌃⌘Pfeil liegt zu nah an der Fensteranordnung von iPadOS (🌐⌃Pfeil,
             // auf Tastaturen ohne 🌐 umgelegt): nur Menüeinträge.
@@ -156,29 +156,29 @@ public enum LawShortcuts {
             row("focus.bottom", .edge(end: true), .focus, .menu, Combo(.down, [.command]), "Ende der Vorschrift", move, displaces: "Nächste Seite"),
             row("focus.font.larger", .font(1), .focus, .menu, Combo("+", [.command]), "Schrift größer", view, displaces: "Schrift größer (Text)"),
             row("focus.font.smaller", .font(-1), .focus, .menu, Combo("-", [.command]), "Schrift kleiner", view, displaces: "Schrift kleiner (Text)"),
-            row("focus.font.reset", .font(0), .focus, .menu, Combo("0", [.command]), "Standardschrift", view),
-            row("focus.bookmark", .bookmark, .focus, .menu, Combo("d", [.command]), "Lesezeichen setzen/entfernen", view, displaces: "Duplizieren"),
+            row("focus.font.reset", .font(0), .focus, .menu, Combo("0", [.command]), "Normale Schriftgröße", view),
+            row("focus.bookmark", .bookmark, .focus, .menu, Combo("d", [.command]), "Lesezeichen setzen oder entfernen", view, displaces: "Duplizieren"),
             row("focus.choose", .chooseLaw, .focus, .menu, Combo("t", [.command]), "Gesetz wählen", view),
             row("focus.contents", .contents, .focus, .menu, Combo("t", [.command, .shift]), "Inhaltsverzeichnis", view),
             row("focus.list", .list, .focus, .menu, Combo("b", [.command, .option]), "Lesezeichen und Markierungen", view),
-            row("focus.view", .toggleView, .focus, .menu, Combo("p", [.command, .option]), "Lesetext oder PDF", view),
+            row("focus.view", .toggleView, .focus, .menu, Combo("p", [.command, .option]), "PDF oder Lesetext zeigen", view),
             row("focus.color.last", .lastColor, .focus, .menu, Combo("h", [.command, .shift]), "Mit letzter Farbe markieren", mark, selection: true, displaces: "Markieren (Text)"),
 
             // Gesetzfokus: Tasten ohne ⌘ und ⌘Z als UIKeyCommand am Fenster.
-            row("focus.escape", .escape, .focus, .keyCommand, Combo(.escape), "Auswahl aufheben, Eingabe verlassen, schließen", move),
+            row("focus.escape", .escape, .focus, .keyCommand, Combo(.escape), "Auswahl aufheben, Eingabe verlassen, Suche schließen, Fenster schließen", move),
             row("focus.enter.next", .hit(forward: true), .focus, .keyCommand, Combo(.enter), "Nächster Treffer", find),
             row("focus.enter.previous", .hit(forward: false), .focus, .keyCommand, Combo(.enter, [.shift]), "Vorheriger Treffer", find),
             row("focus.section.previous", .section(-1), .focus, .keyCommand, Combo(.left), "Vorherige Vorschrift", move),
             row("focus.section.next", .section(1), .focus, .keyCommand, Combo(.right), "Nächste Vorschrift", move),
             row("focus.line.up", .scrollLines(-1), .focus, .keyCommand, Combo(.up), "Nach oben scrollen", move),
             row("focus.line.down", .scrollLines(1), .focus, .keyCommand, Combo(.down), "Nach unten scrollen", move),
-            row("focus.screen.up", .scrollScreens(-1), .focus, .keyCommand, Combo(.up, [.option]), "Eine Ansicht zurück", move),
-            row("focus.screen.down", .scrollScreens(1), .focus, .keyCommand, Combo(.down, [.option]), "Eine Ansicht weiter", move),
-            row("focus.space.down", .scrollScreens(1), .focus, .keyCommand, Combo(.space), "Eine Ansicht weiter", move, hidden: true),
-            row("focus.space.up", .scrollScreens(-1), .focus, .keyCommand, Combo(.space, [.shift]), "Eine Ansicht zurück", move, hidden: true),
+            row("focus.screen.up", .scrollScreens(-1), .focus, .keyCommand, Combo(.up, [.option]), "Bildschirmseite zurück", move),
+            row("focus.screen.down", .scrollScreens(1), .focus, .keyCommand, Combo(.down, [.option]), "Bildschirmseite weiter", move),
+            row("focus.space.down", .scrollScreens(1), .focus, .keyCommand, Combo(.space), "Bildschirmseite weiter", move, hidden: true),
+            row("focus.space.up", .scrollScreens(-1), .focus, .keyCommand, Combo(.space, [.shift]), "Bildschirmseite zurück", move, hidden: true),
             row("focus.remove", .removeMark, .focus, .keyCommand, Combo(.delete), "Markierung entfernen", mark, selection: true),
-            row("focus.undo", .undoMark, .focus, .keyCommand, Combo("z", [.command]), "Markierung rückgängig", mark, displaces: "Rückgängig (Heft)"),
-            row("focus.redo", .redoMark, .focus, .keyCommand, Combo("z", [.command, .shift]), "Markierung wiederholen", mark, displaces: "Wiederholen (Heft)"),
+            row("focus.undo", .undoMark, .focus, .keyCommand, Combo("z", [.command]), "Markieren widerrufen", mark, displaces: "Rückgängig (Heft)"),
+            row("focus.redo", .redoMark, .focus, .keyCommand, Combo("z", [.command, .shift]), "Markieren wiederholen", mark, displaces: "Wiederholen (Heft)"),
         ]
         for (index, name) in colorNames.enumerated() {
             let number = index + 1

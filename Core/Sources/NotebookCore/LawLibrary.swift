@@ -205,20 +205,22 @@ public struct LawSyncStatus: Equatable, Sendable {
     /// Nothing leaves this iPad now (guest, paused, expired).
     public var isLocalOnly: Bool { [.guest, .paused, .expired].contains(state) }
     public var isSynced: Bool { state == .synced }
-    /// German one-line description; `time` formats `lastSynced`.
+    /// German one-line description („Abgleich“ throughout); `time` formats
+    /// `lastSynced`. A failure says what it means for the user, never a
+    /// server message or HTTP code.
     public func text(time: (Date) -> String) -> String {
-        let waiting = pending == 1 ? "1 Änderung ausstehend" : "\(pending) Änderungen ausstehend"
+        let waiting = pending == 1 ? "1 Änderung wartet" : "\(pending) Änderungen warten"
         let refused = rejected == 1 ? "1 Eintrag abgelehnt" : "\(rejected) Einträge abgelehnt"
         var parts: [String]
         switch state {
         case .guest: parts = ["Nur auf diesem iPad"]
-        case .paused: parts = ["Abgleich aus · Änderungen bleiben lokal"]
-        case .expired: parts = ["Anmeldung abgelaufen · Unter Einstellungen › Konto erneut anmelden; Änderungen bleiben lokal"]
-        case .syncing: parts = ["Wird synchronisiert …"]
-        case .failed(let message): parts = ["Offline/Fehler · Änderungen bleiben lokal: \(message)"]
-        case .pending: parts = [pending > 0 ? waiting : "Noch nicht synchronisiert"]
+        case .paused: parts = ["Abgleich ist aus · Einschalten unter Einstellungen › Gesetzessammlung"]
+        case .expired: parts = ["Anmeldung abgelaufen · Unter Einstellungen › Konto erneut anmelden"]
+        case .syncing: parts = ["Wird abgeglichen …"]
+        case .failed: parts = ["Keine Verbindung – Änderungen bleiben auf diesem iPad und werden später gesendet"]
+        case .pending: parts = [pending > 0 ? waiting : "Noch nicht abgeglichen"]
         case .rejected: parts = [refused]
-        case .synced: parts = ["Synchronisiert" + (lastSynced.map { " · \(time($0))" } ?? "")]
+        case .synced: parts = ["Abgeglichen" + (lastSynced.map { " · \(time($0))" } ?? "")]
         }
         if state != .guest {
             if pending > 0, state != .pending { parts.append(waiting) }

@@ -102,7 +102,7 @@ extension LawReaderView {
     func togglePDF() async {
         guard let entry, let doc = document else { return }
         if viewPDF { viewPDF = false; pdfTarget = pdfPage; return }
-        guard section?.pdf != nil || pdfTarget != nil else { loadError = "Keine eindeutig zugeordnete PDF-Fundstelle; der Lesetext bleibt geöffnet."; return }
+        guard section?.pdf != nil || pdfTarget != nil else { loadError = LawReaderView.noPDFPosition; return }
         let id = requestID
         do { let url = try await laws.pdf(entry, version: doc.version); guard requestID == id else { return }; textSelection.clear(); pdfURL = url; viewPDF = true; loadError = "" }
         catch { loadError = error.localizedDescription }

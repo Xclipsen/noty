@@ -143,7 +143,7 @@ struct LawMarkListView: View {
                         ForEach(groups) { group in
                             Section {
                                 ForEach(group.sections) { section in
-                                    Text(section.title).font(.caption.weight(.semibold)).foregroundStyle(section.current ? Color.accentColor : .secondary)
+                                    Text(section.title).font(.caption.weight(.semibold)).foregroundStyle(section.current ? Color.notyAccent : .secondary)
                                         .lineLimit(1).listRowSeparator(.hidden).padding(.top, 4)
                                         .accessibilityAddTraits(.isHeader)
                                     ForEach(section.rows) { row in rowView(row, current: section.current) }
@@ -189,18 +189,18 @@ struct LawMarkListView: View {
             .padding(.vertical, 4).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(current ? Color.accentColor.opacity(0.08) : Color.clear)
+        .listRowBackground(current ? Color.notyAccent.opacity(0.08) : Color.clear)
         .keyOption(.action(go))
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button(role: .destructive) { controller.removeItems([item]) } label: { Label("Löschen", systemImage: "trash") }
+            Button(role: .destructive) { controller.removeItems([item]) } label: { Label("Entfernen", systemImage: "trash") }
         }
         .contextMenu {
             Button(action: go) { Label("Öffnen", systemImage: "arrow.forward") }
-            Button(role: .destructive) { controller.removeItems([item]) } label: { Label("Löschen", systemImage: "trash") }
+            Button(role: .destructive) { controller.removeItems([item]) } label: { Label("Entfernen", systemImage: "trash") }
         }
         .accessibilityLabel(item.kind == "bookmark" ? "Lesezeichen: \(row.excerpt)" : "Markierung: \(row.excerpt)")
         .accessibilityHint(row.detail)
-        .accessibilityAction(named: "Löschen") { controller.removeItems([item]) }
+        .accessibilityAction(named: "Entfernen") { controller.removeItems([item]) }
     }
     /// Loads the law versions the entries refer to (offline store) for the
     /// original text and provision names.

@@ -84,11 +84,17 @@ struct NotyCommands: Commands {
     @FocusedValue(\.libraryCommands) private var library
     @FocusedValue(\.editorCommands) private var editor
     @ObservedObject private var laws = LawKeyboard.shared
+    @ObservedObject private var reader = LawReaderMenuState.shared
+    /// Settings › Gesetzessammlung: without it there is no menu „Gesetze“.
+    @AppStorage(LawLibraryModel.enabledKey) private var lawCollection = false
     /// The law collection is on and a notebook is open.
     private var lawsOn: Bool { laws.available && editor != nil }
     /// The law window has the keys: some notebook shortcuts are its own then
     /// (`LawShortcuts.displaces`).
     private var lawFocus: Bool { lawsOn && laws.focused }
+    /// The window is on screen: its entries work from the menu, their
+    /// shortcuts only with the focus.
+    private var lawVisible: Bool { lawsOn && laws.windowShown }
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -132,19 +138,23 @@ struct NotyCommands: Commands {
             Button("Tastenübersicht") { KeyboardRouter.shared.toggleHelp() }
                 .keyboardShortcut("/", modifiers: .command)
         }
-        CommandMenu("Gesetze") { lawMenu }
+        if lawCollection {
+            CommandMenu("Gesetze") { lawMenu }
+        }
     }
 
-    /// Menu „Gesetze“: the window always, the rest with the law focus
-    /// (Core `LawShortcuts`, docs/KEYBOARD.md). Without the focus those
-    /// entries carry no shortcut, so the keys stay with the notebook.
+    /// Menu „Gesetze“: the window always, the rest while the window is on
+    /// screen (Core `LawShortcuts`, docs/KEYBOARD.md). Without the focus those
+    /// entries carry no shortcut, so the keys stay with the notebook; choosing
+    /// one in the menu gives the window the focus first.
     @ViewBuilder private var lawMenu: some View {
         Button(laws.windowShown ? "Gesetzessammlung schließen" : "Gesetzessammlung öffnen") { laws.perform(.toggleWindow) }
             .keyboardShortcut(LawShortcuts.keyboardShortcut("window.toggle"))
             .disabled(!lawsOn)
+        // Closed: nothing to push to the edge (⇧⌘L opens).
         Button(laws.windowStashed ? "Vom Rand holen" : "An den Rand schieben") { laws.perform(.parkWindow) }
             .keyboardShortcut(LawShortcuts.keyboardShortcut("window.park"))
-            .disabled(!lawsOn)
+            .disabled(!lawsOn || !(laws.windowShown || laws.windowStashed))
         Button("Fundstelle suchen …") { laws.perform(.lookup) }
             .keyboardShortcut(LawShortcuts.keyboardShortcut("window.lookup"))
             .disabled(!lawsOn)
@@ -156,9 +166,27 @@ struct NotyCommands: Commands {
         Divider()
         // ⌘F stays in „Heft“ with the title „Im Gesetz suchen“.
         ForEach(LawShortcuts.all.filter { $0.context == .focus && $0.route == .menu && $0.id != "focus.find" }, id: \.id) { row in
-            Button(row.title) { laws.perform(row.action) }
+            Button(menuTitle(row)) { performFocused(row.action) }
                 .keyboardShortcut(lawFocus ? row.combo?.shortcut : nil)
-                .disabled(!lawFocus)
+                .disabled(!lawVisible)
         }
+    }
+
+    /// Titles that say what the entry does now.
+    private func menuTitle(_ row: LawShortcuts.Shortcut) -> String {
+        switch row.id {
+        case "focus.bookmark": reader.bookmarked ? "Lesezeichen entfernen" : "Lesezeichen setzen"
+        case "focus.view": reader.showsPDF ? "Lesetext zeigen" : "PDF zeigen"
+        default: row.title
+        }
+    }
+
+    /// From the menu without the focus: the window takes it (as after a tap
+    /// into it), then the action runs once its reader has the keys.
+    private func performFocused(_ action: LawShortcuts.Action) {
+        if laws.focused { laws.perform(action); return }
+        let keyboard = LawKeyboard.shared
+        keyboard.windowTouched()
+        DispatchQueue.main.async { keyboard.perform(action) }
     }
 }

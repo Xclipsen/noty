@@ -3,6 +3,8 @@ import UIKit
 import NotebookCore
 
 struct LawReaderView: View {
+    /// One message wherever a section has no PDF position.
+    static let noPDFPosition = "Für diese Vorschrift gibt es keine PDF-Fundstelle – der Lesetext bleibt offen."
     @EnvironmentObject var laws: LawLibraryModel
     /// State of the law window the reader may be shown in.
     @EnvironmentObject var panel: LawPanelModel
@@ -35,8 +37,9 @@ struct LawReaderView: View {
     /// Keyboard mode: set while the reader has the keys.
     @State var keyPanel: KeyPanel?
     @State var inputField = HelixLawField.query
-    /// Reading size of the law text, kept across sections, notebooks and launches.
-    @AppStorage("noty.laws.fontSize") var fontSize = 18.0
+    /// Reading size of the law text, kept across sections, notebooks and
+    /// launches; starts at the body size of Dynamic Type.
+    @AppStorage("noty.laws.fontSize") var fontSize = LawReadingStyle.defaultFontSize
     @State var jumpParagraph: String?
     @State var requestID = UUID()
     @FocusState var queryFocused: Bool
@@ -115,6 +118,10 @@ struct LawReaderView: View {
         .task { await laws.start(); await openInitial() }
         .onChange(of: laws.entries.count) { _, _ in Task { await openInitial() } }
         .onChange(of: "\(selectedID)|\(sectionID)|\(document?.version ?? "")|\(viewPDF)|\(pdfPage)") { _, _ in rememberReading() }
+        // Titles of the menu bar entries „Lesezeichen setzen/entfernen“, „PDF/Lesetext zeigen“.
+        .onChange(of: [bookmarkItem != nil, viewPDF, !hidden], initial: true) { _, _ in
+            if inPanel, !hidden { LawReaderMenuState.shared.update(bookmarked: bookmarkItem != nil, showsPDF: viewPDF) }
+        }
         .task(id: query) {
             guard !query.isEmpty else { return }
             loadError = ""
@@ -168,23 +175,46 @@ struct LawReaderView: View {
         }
     }
 
-    /// Number and title of the open section above its text, aligned with the text.
+    /// Number and title of the open section above its text, aligned with the
+    /// text, and „Lesezeichen setzen“ for this place right beside it.
     private func sectionHeader(_ section: LawSection) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(section.label)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(Color(uiColor: LawReadingStyle.text))
-            if !section.title.isEmpty {
-                Text(section.title)
-                    .font(.subheadline)
-                    .foregroundStyle(Color(uiColor: LawReadingStyle.secondaryText))
-                    .lineLimit(3)
+        HStack(alignment: .top, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(section.label)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(Color(uiColor: LawReadingStyle.text))
+                if !section.title.isEmpty {
+                    Text(section.title)
+                        .font(.subheadline)
+                        .foregroundStyle(Color(uiColor: LawReadingStyle.secondaryText))
+                        .lineLimit(3)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 14)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
+            bookmarkButton
+                .padding(.top, 4)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, LawReadingStyle.textLeading).padding(.top, 14).padding(.bottom, 2)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
+        .padding(.leading, LawReadingStyle.textLeading).padding(.trailing, 6).padding(.bottom, 2)
+    }
+
+    /// 44 × 44 beside the heading: sets or removes the bookmark of this place
+    /// (section, text or PDF page).
+    private var bookmarkButton: some View {
+        let set = bookmarkItem != nil
+        return Button { toggleBookmark() } label: {
+            Image(systemName: set ? "bookmark.fill" : "bookmark").font(.system(size: 18))
+                .foregroundStyle(set ? Color.notyAccent : .white.opacity(0.85))
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+        }
+        .buttonStyle(NotyToolStyle())
+        .environment(\.notyTooltipAxis, .horizontal)
+        .accessibilityLabel("Lesezeichen")
+        .accessibilityValue(set ? "gesetzt" : "nicht gesetzt")
+        .accessibilityHint(set ? "Entfernt das Lesezeichen dieser Stelle" : "Merkt diese Stelle")
+        .notyTooltip(keyHint(set ? "Lesezeichen entfernen" : "Lesezeichen setzen", "focus.bookmark"))
     }
 
     /// Loading, errors and the hint about marks in other versions: one quiet
@@ -213,10 +243,10 @@ struct LawReaderView: View {
             Text(text).font(.caption).foregroundStyle(.white.opacity(0.85)).frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
             Button(action: close) {
-                Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).frame(width: 44, height: 36).contentShape(Rectangle())
+                Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
             }.buttonStyle(NotyPressStyle()).foregroundStyle(.white.opacity(0.7)).accessibilityLabel(closeLabel)
         }
-        .padding(.leading, 16).padding(.trailing, 4).padding(.vertical, 2)
+        .padding(.leading, 16).padding(.trailing, 4)
         .background(Color.white.opacity(0.05))
         .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.14)).frame(height: 0.5) }
     }
@@ -228,7 +258,15 @@ struct LawReaderView: View {
             Text(laws.entries.isEmpty ? "Unter Einstellungen › Gesetzessammlung den Offlinebestand laden." : "Ein Gesetz wählen oder zum Beispiel nach 144 HGB suchen.")
         } actions: {
             if !laws.entries.isEmpty {
-                Button("Gesetz wählen") { showLaws = true }.buttonStyle(.borderedProminent)
+                // Black on the light accent: about 12.6:1 (white on it would be 1.7:1).
+                Button { showLaws = true } label: {
+                    Text("Gesetz wählen").font(.body.weight(.semibold)).foregroundStyle(.black)
+                        .padding(.horizontal, 20).frame(minHeight: 44)
+                        .background(Color.notyAccent, in: Capsule(style: .continuous))
+                        .contentShape(Capsule(style: .continuous))
+                }
+                .buttonStyle(NotyPressStyle())
+                .notyTooltip(keyHint("Gesetz wählen", "focus.choose"))
             }
         }
         .frame(maxHeight: .infinity)
@@ -242,6 +280,14 @@ struct LawReaderView: View {
 /// `css` for the HTML import and `apply(to:fontSize:)` on the rendered body
 /// (marks only draw behind the text, see `LawMarkLayoutManager`).
 enum LawReadingStyle {
+    /// Reading size range (⌘+/⌘-, „…“ › Schriftgröße).
+    static let fontRange: ClosedRange<Double> = 12...32
+    /// Start and ⌘0: the body size of Dynamic Type plus one point (18 at the
+    /// default size), within `fontRange`.
+    static var defaultFontSize: Double {
+        let scaled = UIFontMetrics(forTextStyle: .body).scaledValue(for: 18)
+        return min(fontRange.upperBound, max(fontRange.lowerBound, scaled.rounded()))
+    }
     /// noty's dark surface (`white 0.065`), also behind the reader's chrome.
     static var background: UIColor { UIColor(white: 0.065, alpha: 1) }
     /// One text colour for HTML and plain text.

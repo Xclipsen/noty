@@ -1,15 +1,19 @@
 import SwiftUI
 import NotebookCore
 
-/// The law window: its own title bar (grip, arrangement menu, „An den Rand“,
-/// ✕) and the reader below it. The bar is the window chrome; everything
-/// under the bar's hairline belongs to `LawReaderView`, which gets the full
-/// window width and the remaining height without extra insets (see
-/// `LawPanelView.barHeight`).
+/// The law window: its own title bar (grip, the title „Gesetze ⌄“ as the
+/// arrangement menu, „An den Rand“, ✕) and the reader below it. The bar is
+/// the window chrome; everything under the bar's hairline belongs to
+/// `LawReaderView`, which gets the full window width and the remaining
+/// height without extra insets (see `LawPanelView.barHeight`). While the
+/// window has the keys (`LawKeyboard.focused`) the title is bright and a
+/// 2-pt accent line runs under the bar.
 struct LawPanelView<Drag: Gesture>: View {
     /// Height of the title bar plus its hairline; the reader starts below it.
     static var barHeight: CGFloat { 52.5 }
     @EnvironmentObject private var panel: LawPanelModel
+    @ObservedObject private var keyboard = LawKeyboard.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Moves the window live; the workspace decides side, dock and stash on release.
     var drag: Drag
     /// What Apple Pencil does in the reader, and how the reader changes it.
@@ -28,6 +32,7 @@ struct LawPanelView<Drag: Gesture>: View {
     var hidesSecondNotebook = false
 
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: docked ? 0 : 16, style: .continuous) }
+    private var focused: Bool { keyboard.focused }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,19 +60,24 @@ struct LawPanelView<Drag: Gesture>: View {
 
     private var bar: some View {
         HStack(spacing: 0) {
-            arrangeMenu
-            Text("Gesetze").font(.headline).foregroundStyle(.white)
-                .lineLimit(1).padding(.leading, 2)
-                .accessibilityAddTraits(.isHeader)
+            titleMenu
             Spacer(minLength: 8)
-            barButton("Gesetzesfenster an den Rand schieben", symbol: parkSymbol, tooltip: "An den Rand",
+            barButton("An den Rand schieben", symbol: parkSymbol, tooltip: keyHint("An den Rand", "window.park"),
                       hint: "Bleibt als Lasche am Bildschirmrand; die Lesestelle bleibt.") { panel.park() }
-            barButton("Gesetzesfenster schließen", symbol: "xmark", weight: .semibold, tooltip: "Schließen",
-                      hint: "Über „Gesetzessammlung“ im Heft wieder öffnen; Lage und Größe bleiben.") { panel.close() }
+            barButton("Gesetzessammlung schließen", symbol: "xmark", weight: .semibold, tooltip: keyHint("Schließen", "window.toggle"),
+                      hint: "Wieder öffnen: Heft-Menü › Gesetzessammlung oder ⇧⌘L.") { panel.close() }
         }
         .padding(.horizontal, 4).padding(.top, 8)
         .frame(height: 52)
         .overlay(alignment: .top) { grip.padding(.top, 6) }
+        // Keyboard focus: an accent line along the bar's lower edge (the
+        // layout keeps its 0.5-pt hairline, the reader does not move).
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.notyAccent).frame(height: 2)
+                .opacity(focused ? 1 : 0)
+                .allowsHitTesting(false).accessibilityHidden(true)
+        }
+        .animation(NotyMotion.highlight(reduceMotion), value: focused)
         .lawGlass(Rectangle())
         // The whole bar is the grip, not only the dots.
         .contentShape(Rectangle())
@@ -77,6 +87,9 @@ struct LawPanelView<Drag: Gesture>: View {
 
     private var parkSymbol: String {
         switch panel.edge { case .left: "arrow.left.to.line"; case .right: "arrow.right.to.line"; case .bottom: "arrow.down.to.line" }
+    }
+    private func keyHint(_ text: String, _ id: String) -> String {
+        LawShortcuts.shortcut(id: id)?.combo.map { "\(text) (\($0.label))" } ?? text
     }
 
     private func barButton(_ label: String, symbol: String, weight: Font.Weight = .regular, tooltip: String, hint: String,
@@ -98,28 +111,30 @@ struct LawPanelView<Drag: Gesture>: View {
             .frame(width: 44, height: 8)
             .allowsHitTesting(false)
             .accessibilityElement()
-            .accessibilityLabel("Gesetzesfenster verschieben")
+            .accessibilityLabel("Gesetzessammlung verschieben")
             .accessibilityHint("Leiste ziehen: an einen Rand andocken, schweben lassen oder über den Rand schieben.")
             .accessibilityAction(named: "An den Rand schieben") { panel.park() }
             .accessibilityAction(named: "Schließen") { panel.close() }
     }
 
-    private var arrangeMenu: some View {
+    /// The title is the arrangement menu („Gesetze ⌄“); bright while the
+    /// window has the keyboard focus, dimmed otherwise.
+    private var titleMenu: some View {
         Menu {
-            if canDock {
-                if panel.docked {
-                    Button { panel.float() } label: {
-                        Text("Über dem Heft schweben")
-                        if hidesSecondNotebook { Text("Zweites Heft kommt zurück") }
-                        Image(systemName: "rectangle.on.rectangle")
-                    }
-                } else {
-                    Button { panel.dock(panel.edge) } label: {
-                        Text(panel.edge == .bottom ? "Unter dem Heft andocken" : "Neben dem Heft andocken")
-                        if hidesSecondNotebook { Text("Zweites Heft wird ausgeblendet") }
-                        Image(systemName: panel.edge == .bottom ? "rectangle.split.1x2" : "rectangle.split.2x1")
-                    }
+            if panel.docked {
+                Button { panel.float() } label: {
+                    Text("Über dem Heft schweben")
+                    if hidesSecondNotebook { Text("Zweites Heft kommt zurück") }
+                    Image(systemName: "rectangle.on.rectangle")
                 }
+            } else {
+                // Shown also without room, so the way is visible.
+                Button { panel.dock(panel.edge) } label: {
+                    Text(panel.edge == .bottom ? "Unter dem Heft andocken" : "Neben dem Heft andocken")
+                    if !canDock { Text("Braucht mehr Breite") } else if hidesSecondNotebook { Text("Zweites Heft wird ausgeblendet") }
+                    Image(systemName: panel.edge == .bottom ? "rectangle.split.1x2" : "rectangle.split.2x1")
+                }
+                .disabled(!canDock)
             }
             // Left, right or along the bottom edge (also by dragging the bar).
             Picker("Position", selection: Binding(get: { panel.edge }, set: { panel.move(to: $0) })) {
@@ -132,12 +147,16 @@ struct LawPanelView<Drag: Gesture>: View {
                 Button("Schließen", systemImage: "xmark") { panel.close() }
             }
         } label: {
-            Image(systemName: "ellipsis").font(.system(size: 18))
-                .frame(width: 44, height: 44).contentShape(Rectangle())
+            HStack(spacing: 5) {
+                Text("Gesetze").font(.headline).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundStyle(.white.opacity(focused ? 1 : 0.55))
+            .padding(.horizontal, 10).frame(minHeight: 44).contentShape(Rectangle())
         }
         .buttonStyle(NotyToolStyle())
-        .foregroundStyle(.white)
-        .accessibilityLabel("Gesetzesfenster anordnen")
+        .accessibilityLabel("Gesetze, Fenster anordnen")
+        .accessibilityValue(focused ? "Tastaturfokus" : "")
         .notyTooltip("Anordnen")
     }
 }
@@ -153,12 +172,13 @@ struct LawPanelMenuToggle: View {
     }
 }
 
-/// Palette title of the same switch; the palette has no check marks of its own.
+/// Palette title of the same switch, worded like the menu bar: what the
+/// command does now.
 func lawPanelPaletteTitle(_ phase: LawPanelState.Phase) -> String {
     switch phase {
-    case .visible: "Gesetzessammlung ✓"
-    case .parked: "Gesetzessammlung (am Rand)"
-    case .closed: "Gesetzessammlung"
+    case .visible: "Gesetzessammlung schließen"
+    case .parked: "Gesetzessammlung vom Rand holen"
+    case .closed: "Gesetzessammlung öffnen"
     }
 }
 

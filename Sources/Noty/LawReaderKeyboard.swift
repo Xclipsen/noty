@@ -50,7 +50,7 @@ extension LawReaderView {
         case .scrollLines(let lines): textSelection.scroll(lines: lines)
         case .scrollScreens(let screens): textSelection.scroll(screens: 0.9 * Double(screens))
         case .edge(let end): textSelection.scrollToEdge(end: end)
-        case .font(let step): zoom(step)
+        case .font(let step): changeFontSize(step)
         case .bookmark: toggleBookmark()
         case .chooseLaw: showLaws = true
         case .contents: showContents = true
@@ -65,7 +65,8 @@ extension LawReaderView {
         default: break
         }
     }
-    /// Esc: selection or chosen mark, then a field, then the window.
+    /// Esc, one level each: selection or chosen mark, then a field, then the
+    /// open search surface, then the window.
     private func escapeOneLevel() {
         if textSelection.active || markController.adjusting != nil { markController.clearSelection(); return }
         // Quick search (`queryFocused`), then the paragraph field (a UITextField).
@@ -73,6 +74,7 @@ extension LawReaderView {
         if let field = UIResponder.currentFirstResponder as? UITextField {
             field.resignFirstResponder(); LawKeyboard.shared.claimSoon(); return
         }
+        if lookupShown != nil { closeLookup(); LawKeyboard.shared.claimSoon(); return }
         LawKeyboard.shared.closeWindow()
     }
     /// ⌘L and ⌘F: the shared search surface opens in its search mode and
@@ -81,10 +83,6 @@ extension LawReaderView {
         if clearing { query = "" }
         textSelection.clear()
         openLookup(.query)
-    }
-    private func zoom(_ step: Int) {
-        guard !viewPDF else { return }
-        fontSize = step == 0 ? 18 : min(32, max(12, fontSize + Double(step * 2)))
     }
     /// 1–5, ⇧⌘H, `m1`…`mm`: marks the text or PDF selection, recolours the
     /// chosen mark or finishes „Bereich anpassen“ (`LawMarkController.mark`,
@@ -133,8 +131,10 @@ extension LawReaderView {
             if let count { Task { await search(String(count), from: .number) } } else { startInput(.paragraph) }
         case .lawField(let field): startInput(field)
         case .confirm: followHit(forward: true)
-        // Esc: a selection first, then the window closes (`Space l` closes at once).
-        case .cancelPanel: if textSelection.active { textSelection.clear() } else { LawKeyboard.shared.closeWindow() }
+        // Esc: a selection first, then the open search surface, then the
+        // window closes (`Space l` closes at once).
+        case .cancelPanel:
+            if textSelection.active { textSelection.clear() } else if lookupShown != nil { closeLookup() } else { LawKeyboard.shared.closeWindow() }
         case .laws: LawKeyboard.shared.closeWindow()
         case .lawPark: LawKeyboard.shared.parkWindow()
         case .lawChoose: showLaws = true
@@ -142,7 +142,7 @@ extension LawReaderView {
         case .lawBookmarks: showBookmarks = true
         case .bookmark: toggleBookmark()
         case .lawView: Task { await togglePDF() }
-        case .zoom(let step): zoom(step * times)
+        case .zoom(let step): changeFontSize(step * times)
         case .lawColor(let number): runShortcut(.color(number))
         case .lawMark(let on): runShortcut(on ? .lastColor : .removeMark)
         case .undo: runShortcut(.undoMark)
@@ -166,5 +166,19 @@ extension LawReaderView {
         pdfTarget = nil; sectionID = found.id; jumpParagraph = nil; loadError = ""
         follow(found, from: .query)
         if forward ? foundIndex <= index : foundIndex >= index { KeyboardRouter.shared.show(note: "Suche von vorn") }
+    }
+}
+
+/// What the menu bar needs to know about the law window's reader for its
+/// titles („Lesezeichen setzen“/„Lesezeichen entfernen“, „PDF zeigen“/
+/// „Lesetext zeigen“); set by the visible window's `LawReaderView`.
+@MainActor
+final class LawReaderMenuState: ObservableObject {
+    static let shared = LawReaderMenuState()
+    @Published private(set) var bookmarked = false
+    @Published private(set) var showsPDF = false
+    func update(bookmarked: Bool, showsPDF: Bool) {
+        if self.bookmarked != bookmarked { self.bookmarked = bookmarked }
+        if self.showsPDF != showsPDF { self.showsPDF = showsPDF }
     }
 }

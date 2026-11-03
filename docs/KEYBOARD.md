@@ -18,7 +18,7 @@ Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur 
 | ⌘G | Gehe zu Seite (bei Gesetzfokus: nächster Treffer) | Editor |
 | ⌘W | Schließen | Editor |
 | ⌘Z / ⇧⌘Z | Rückgängig / Wiederholen (bei Gesetzfokus: nur Markierungen) | Editor |
-| ⇧⌘L, ⌥⌘L, ⌘L | Gesetzessammlung öffnen/schließen, an den Rand/vom Rand, Fundstelle suchen (Menü „Gesetze“) | Editor, Sammlung eingeschaltet |
+| ⇧⌘L, ⌥⌘L, ⌘L | Gesetzessammlung öffnen oder schließen, an den Rand schieben oder vom Rand holen, Fundstelle suchen (Menü „Gesetze“) | Editor, Sammlung eingeschaltet |
 | ⌘A | Alles auswählen (siehe unten) | Editor |
 | ⌘C ⌘X ⌘V ⌘D | Kopieren, Ausschneiden, Einfügen, Duplizieren | Text und Auswahl |
 | ⌫, Pfeile, ⇧Pfeile | Auswahl löschen, um 1 pt / 10 pt schieben | Objektauswahl |
@@ -40,33 +40,33 @@ Außerhalb von INS: ⌘V ersetzt eine breite Auswahl, sonst wie `P`; ⌘X schnei
 
 Gilt im geöffneten Heft oder Textdokument, solange Einstellungen › Gesetzessammlung eingeschaltet ist, mit und ohne Helix. Eine Tabelle für Menü, Key Commands und Hilfe: Core `LawShortcuts` (`LawShortcutsTests`: Eindeutigkeit je Kontext, Sperrliste, jede Überschneidung mit dem Heft benannt).
 
-**Menü „Gesetze“** (Menüleiste und ⌘-Übersicht, immer im Editor):
+**Menü „Gesetze“** (Menüleiste und ⌘-Übersicht, im Editor; nicht vorhanden, solange die Sammlung in den Einstellungen abgeschaltet ist). Titel nach Apple-Konvention ohne Schrägstriche, je Zustand: „Gesetzessammlung öffnen“ / „Gesetzessammlung schließen“, „An den Rand schieben“ / „Vom Rand holen“; die Befehlspalette benutzt dieselben Wörter („… öffnen“, „… schließen“, „… vom Rand holen“).
 
 | Taste | Wirkung |
 | --- | --- |
 | ⇧⌘L | Gesetzessammlung öffnen (mit Fokus) oder schließen, wenn sie sichtbar ist |
-| ⌥⌘L | An den Rand schieben; vom Rand oder aus dem geschlossenen Zustand holen (mit Fokus) |
+| ⌥⌘L | An den Rand schieben oder vom Rand holen (mit Fokus); bei geschlossenem Fenster deaktiviert |
 | ⌘L | Fundstelle suchen: Fenster zeigen, Schnellsuche leeren und fokussieren (`144 HGB`) |
 | – | Anordnen › Links, Rechts, Unten andocken, Über dem Heft schweben (ohne Kürzel, siehe unten) |
 
-**Gesetzfokus:** ⇧⌘L, ⌥⌘L (beim Hervorholen), ⌘L, `Space l`, ein Feld des Fensters oder eine Auswahl im Gesetzestext setzen ihn. Berührung der Heftseite mit Finger oder Stift, ein Text auf der Seite, Schließen und Parken nehmen ihn zurück. Mit Fokus wird der unsichtbare Tastenempfänger `LawKeyHostView` First Responder, solange kein Feld des Fensters tippt; der Seite gehören die Tasten danach wieder (`KeyboardRouter.reclaim`). Mit Fokus gilt zusätzlich:
+**Gesetzfokus:** ⇧⌘L, ⌥⌘L (beim Hervorholen), ⌘L, `Space l`, ein Feld des Fensters oder eine Auswahl im Gesetzestext setzen ihn. Sichtbar: Titel „Gesetze“ im Fensterkopf hell (sonst gedimmt) und eine 2-pt-Linie in der Akzentfarbe unter dem Kopf. Berührung der Heftseite mit Finger oder Stift, ein Text auf der Seite, Schließen und Parken nehmen ihn zurück. Mit Fokus wird der unsichtbare Tastenempfänger `LawKeyHostView` First Responder, solange kein Feld des Fensters tippt; der Seite gehören die Tasten danach wieder (`KeyboardRouter.reclaim`). Die Einträge des Fokus stehen im Menü „Gesetze“, sobald das Fenster sichtbar ist, und lassen sich dort auch ohne Fokus wählen (das Fenster nimmt dann den Fokus); ihre Kürzel gelten nur mit Fokus. Mit Fokus gilt zusätzlich:
 
 | Taste | Wirkung | Weg |
 | --- | --- | --- |
-| Esc | Eine Ebene: Auswahl oder gewählte Markierung aufheben, sonst Eingabefeld verlassen, sonst Fenster schließen | Key Command; im Feld über einen verborgenen `.cancelAction` |
+| Esc | Eine Ebene: Auswahl oder gewählte Markierung aufheben, sonst Eingabefeld verlassen, sonst offene Suchfläche schließen, sonst Fenster schließen | Key Command; im Feld über einen verborgenen `.cancelAction` |
 | ⌘F | Im Gesetz suchen (Schnellsuche fokussieren); Menü „Heft“ heißt dann „Im Gesetz suchen“ | Menü |
 | ⌘G, ↩ / ⇧⌘G, ⇧↩ | Nächster / vorheriger Volltexttreffer der Schnellsuche, ohne Suchbegriff in die Schnellsuche | Menü / Key Command |
 | ← → | Vorherige / nächste Vorschrift | Key Command |
-| ↑ ↓, ⌥↑ ⌥↓, Leertaste, ⇧Leertaste | Scrollen: Zeile, Ansicht | Key Command |
+| ↑ ↓, ⌥↑ ⌥↓, Leertaste, ⇧Leertaste | Scrollen: Zeile, „Bildschirmseite weiter/zurück“ | Key Command |
 | ⌘↑ / ⌘↓ | Anfang / Ende der Vorschrift | Menü |
-| ⌘+ ⌘- ⌘0 | Schrift größer, kleiner, Standard (18 pt), nur im Lesetext | Menü |
-| ⌘D | Lesezeichen setzen/entfernen | Menü |
+| ⌘+ ⌘- ⌘0 | Schrift größer, kleiner, „Normale Schriftgröße“ (Fließtextgröße von Dynamic Type + 1 pt, 18 pt bei Standardgröße), nur im Lesetext | Menü |
+| ⌘D | „Lesezeichen setzen“ bzw. „Lesezeichen entfernen“ (Titel je Zustand) | Menü |
 | ⌘T, ⇧⌘T, ⌥⌘B | Gesetz wählen, Inhaltsverzeichnis, Lesezeichen und Markierungen | Menü |
-| ⌥⌘P | Lesetext oder PDF | Menü |
+| ⌥⌘P | „PDF zeigen“ bzw. „Lesetext zeigen“ (Titel je Zustand) | Menü |
 | 1–5 | Auswahl in Gelb, Grün, Blau, Rosa, Orange markieren; gewählte Markierung umfärben. Nur bei Auswahl, sonst bleibt die Ziffer frei | Key Command |
 | ⇧⌘H | Mit der zuletzt mit 1–5 gewählten Farbe markieren (sonst Stiftfarbe) | Menü |
 | ⌫ | Markierung unter Auswahl bzw. gewählte Markierung entfernen; nur dann | Key Command |
-| ⌘Z / ⇧⌘Z | Markierung rückgängig / wiederholen, Vorrang vor dem Heft-Undo; ohne Schritt keine Wirkung, das Heft bleibt unberührt | Key Command |
+| ⌘Z / ⇧⌘Z | „Markieren widerrufen“ / „Markieren wiederholen“, Vorrang vor dem Heft-Undo; ohne Schritt keine Wirkung, das Heft bleibt unberührt. Mit Touch: „…“ › Markieren widerrufen / Wiederholen | Key Command |
 
 **Warum zwei Wege:** ⌘-Kürzel stehen im Menü „Gesetze“ und bekommen ihr Kürzel nur bei Fokus; so wirken sie aus jedem Teil des Fensters (Suchfeld, Gesetzestext, Tastenempfänger) und stehen in Menüleiste und ⌘-Übersicht. Tasten ohne ⌘ wären im Menü auch beim Tippen aktiv, und ⌘Z stieße dort mit „Bearbeiten › Widerrufen“ des Systems zusammen: beides sind `UIKeyCommand`s mit `discoverabilityTitle` am Tastenempfänger, nur bei Fokus und nicht unter einem Sheet. Mit eingeschaltetem Helix gehen die Tasten ohne ⌘ an `GESETZE` (unten), die ⌘-Kürzel gelten weiter.
 
@@ -74,11 +74,11 @@ Gilt im geöffneten Heft oder Textdokument, solange Einstellungen › Gesetzessa
 
 **Kürzelübersicht für die Hilfe im Leser** (Text; `LawShortcuts.overview()` liefert dasselbe):
 
-> Fenster: ⇧⌘L öffnen/schließen · ⌥⌘L an den Rand · ⌘L Fundstelle suchen
+> Fenster: ⇧⌘L öffnen oder schließen · ⌥⌘L an den Rand · ⌘L Fundstelle suchen
 > Suchen: ⌘F im Gesetz suchen · ⌘G/↩ nächster, ⇧⌘G/⇧↩ vorheriger Treffer
-> Lesen: ←/→ Vorschrift · ↑/↓ scrollen · ⌥↑/⌥↓ oder Leertaste eine Ansicht · ⌘↑/⌘↓ Anfang/Ende · Esc zurück/schließen
+> Lesen: ←/→ Vorschrift · ↑/↓ scrollen · ⌥↑/⌥↓ oder Leertaste Bildschirmseite · ⌘↑/⌘↓ Anfang/Ende · Esc zurück/schließen
 > Ansicht: ⌘+/⌘-/⌘0 Schrift · ⌘D Lesezeichen · ⌘T Gesetz · ⇧⌘T Inhalt · ⌥⌘B Liste · ⌥⌘P Text/PDF
-> Markieren (bei Auswahl): 1–5 Farbe · ⇧⌘H letzte Farbe · ⌫ entfernen · ⌘Z/⇧⌘Z rückgängig/wiederholen
+> Markieren (bei Auswahl): 1–5 Farbe · ⇧⌘H letzte Farbe · ⌫ entfernen · ⌘Z/⇧⌘Z widerrufen/wiederholen
 
 ## Tastaturmodus
 

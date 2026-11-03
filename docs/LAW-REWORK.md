@@ -85,3 +85,7 @@ Nachweise: Core-Tests 1165 (3 übersprungen, 0 Fehler), `check_page_workflow.sh`
 - PDF-Nutzlasten gerundet, auf 0…1 begrenzt und unter 64 KiB (`LawPDFAnchoring.fitted`); `Space l` gibt den Fokus ohne feste Verzögerung (`LawKeyboard.openWithKeys`); Text- und PDF-Ansicht des Lesers geben Tastendrücke an den `KeyboardRouter` weiter.
 
 Nachweise: Core-Tests 1181 (3 übersprungen, 0 Fehler, zweimal), `check_page_workflow.sh` grün, `xtool dev build` erfolgreich. **Nicht installiert, am iPad ungeprüft** (Tastatur/Split/Caret-Reveal, Helix nach Touch-Auswahl, `Space l`).
+
+## Bedien- und Designbefunde (feat/gesetze-fix-ux)
+
+Umgesetzt nach dem Prüfbericht zur überarbeiteten Sammlung, Einzelheiten in [DESIGN](DESIGN.md#gesetzessammlung-bedien--und-designbefunde--03112026) und [KEYBOARD](KEYBOARD.md#gesetzessammlung-normale-tastatur): kompakte Leserleiste (Suchen/§ eine Zelle, Lesezeichen an der Überschrift, Schrift im „…“), Abgleichzeichen nur bei Bedarf und Details ohne Servercodes, Markierleiste ≤ 360 pt mit Abstand zur Auswahl, Touch-Rückgängig im „…“-Menü und Toast nach Stiftmarkierungen, sichtbarer Tastaturfokus im Fensterkopf, Esc-Kaskade mit Suchfläche, Menü „Gesetze“ nur bei eingeschalteter Sammlung mit Titeln je Zustand. **Implementiert, SDK-Build und Core-Tests grün; nicht installiert, am iPad ungeprüft.**
