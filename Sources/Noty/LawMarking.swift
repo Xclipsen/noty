@@ -147,7 +147,8 @@ extension LawReaderView {
     func basePayload(_ doc: LawDocument) -> [String: LawJSON] { ["lawId": .string(doc.id), "versionId": .string(doc.version)] }
     /// Marks the given range of the rendered section text (selection, edit menu
     /// or Pencil stroke). Pure punctuation/whitespace strokes are ignored.
-    func mark(_ range: NSRange) {
+    /// `color` (`#RRGGBB`) defaults to the pen's colour.
+    func mark(_ range: NSRange, color: String? = nil) {
         guard let doc = document, let section else { return }
         let text = textSelection.text as NSString
         guard range.location >= 0, NSMaxRange(range) <= text.length,
@@ -158,7 +159,7 @@ extension LawReaderView {
         }
         guard (anchor.quote as NSString).length <= 4000 else { loadError = "Bitte eine kürzere Textstelle markieren."; return }
         var payload = basePayload(doc); payload["kind"] = .string("text"); payload["page"] = .number(0); payload["anchor"] = value
-        payload["color"] = .string(pen.hex)
+        payload["color"] = .string(color ?? pen.hex)
         loadError = ""
         textSelection.clear()
         Task { await laws.save(kind: "annotation", payload: payload) }

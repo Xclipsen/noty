@@ -119,12 +119,10 @@ final class EditorWorkspace: ObservableObject {
 
 struct EditorWorkspaceView: View {
     @EnvironmentObject private var laws: LawLibraryModel
+    /// Open/stashed/docked, edge, live width and height of the law window.
+    @EnvironmentObject private var lawPanel: LawPanelModel
     @AppStorage(LawLibraryModel.enabledKey) private var lawsEnabled = false
-    /// Live width while resizing; stored when the resize ends.
-    @State private var lawWidth = UserDefaults.standard.object(forKey: LawLibraryModel.panelWidthKey) as? Double ?? 380
     @State private var lawResizeStart: Double?
-    /// Height of a window at the bottom edge; stored like the width.
-    @State private var lawHeight = UserDefaults.standard.object(forKey: LawLibraryModel.panelHeightKey) as? Double ?? 360
     @GestureState private var lawResizing = false
     /// Live drag of the law window's top bar or of its edge tab, with the drop
     /// that releasing now would perform (shown as a preview).
@@ -185,13 +183,13 @@ struct EditorWorkspaceView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let lawShown = lawsEnabled && laws.panelOpen
-            let lawStashed = lawShown && laws.stashed
-            let lawVisible = lawShown && !laws.stashed
+            let lawShown = lawsEnabled && lawPanel.isOpen
+            let lawStashed = lawShown && lawPanel.stashed
+            let lawVisible = lawShown && !lawPanel.stashed
             // A stashed window keeps its docked/floating shape for the way back
             // but gives the notebook its full width meanwhile.
             let law = LawPanelLayout(size: PageSize(width: geometry.size.width, height: geometry.size.height),
-                                     width: lawWidth, height: lawHeight, docked: laws.docked, edge: laws.panelEdge)
+                                     width: lawPanel.width, height: lawPanel.height, docked: lawPanel.docked, edge: lawPanel.edge)
             let docking = lawVisible && law.docked
             // Docked at a side or along the bottom: the notebooks keep the rest.
             let notebookArea = docking ? law.notebookFrame : PageRect(x: 0, y: 0, width: geometry.size.width, height: geometry.size.height)
@@ -253,8 +251,7 @@ struct EditorWorkspaceView: View {
         .onChange(of: lawResizing) { _, active in
             if !active {
                 lawResizeStart = nil
-                UserDefaults.standard.set(lawWidth, forKey: LawLibraryModel.panelWidthKey)
-                UserDefaults.standard.set(lawHeight, forKey: LawLibraryModel.panelHeightKey)
+                lawPanel.saveSize()
             }
         }
         .onChange(of: lawDragActive) { _, active in if !active, lawDrag != nil { withAnimation(NotyMotion.panel(reduceMotion)) { lawDrag = nil } } }
@@ -267,7 +264,7 @@ struct EditorWorkspaceView: View {
                 update { $0.vertical = vertical; $0.place(.secondary, in: slot) }
                 Task {
                     await workspace.openSecondary(document)
-                    if workspace.secondary != nil && laws.panelOpen && laws.docked { laws.docked = false }
+                    if workspace.secondary != nil && lawPanel.isOpen && lawPanel.docked { lawPanel.docked = false }
                 }
             }
         }
@@ -299,10 +296,10 @@ struct EditorWorkspaceView: View {
             } },
             onSecondView: { choose() }, onLaws: lawsEnabled ? {
                 // Shows the window; a visible one goes to its edge tab like its ✕.
-                if !laws.panelOpen { laws.panelOpen = true; laws.stashed = false }
-                else { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed.toggle() } }
+                if !lawPanel.isOpen { lawPanel.isOpen = true; lawPanel.stashed = false }
+                else { withAnimation(NotyMotion.panel(reduceMotion)) { lawPanel.stashed.toggle() } }
             } : nil, onLawKeys: lawsEnabled ? {
-                withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelOpen = true; laws.stashed = false }
+                withAnimation(NotyMotion.panel(reduceMotion)) { lawPanel.isOpen = true; lawPanel.stashed = false }
                 laws.keyFocus += 1
             } : nil, onToolChange: { tool in
                 // Picking the highlighter or an eraser in the active notebook
@@ -396,11 +393,11 @@ struct EditorWorkspaceView: View {
                         if lawResizeStart == nil { lawResizeStart = l.frame.height }
                         let height = (lawResizeStart ?? l.frame.height) - drag.translation.height
                         let limit = l.docked ? l.size.height - LawPanelLayout.notebookHeight : l.size.height - 84
-                        lawHeight = min(max(LawPanelLayout.minimumHeight, height), max(LawPanelLayout.minimumHeight, limit))
+                        lawPanel.height = min(max(LawPanelLayout.minimumHeight, height), max(LawPanelLayout.minimumHeight, limit))
                     } else {
                         if lawResizeStart == nil { lawResizeStart = l.frame.width }
                         let width = (lawResizeStart ?? l.frame.width) + drag.translation.width * (l.edge == .left ? 1 : -1)
-                        lawWidth = min(max(LawPanelLayout.minimumWidth, width), max(LawPanelLayout.minimumWidth, l.size.width - LawPanelLayout.notebookWidth))
+                        lawPanel.width = min(max(LawPanelLayout.minimumWidth, width), max(LawPanelLayout.minimumWidth, l.size.width - LawPanelLayout.notebookWidth))
                     }
                 }.onEnded { _ in lawResizeStart = nil })
             .accessibilityLabel(bottom ? "Höhe der Gesetzessammlung ändern" : "Breite der Gesetzessammlung ändern")
@@ -456,9 +453,9 @@ struct EditorWorkspaceView: View {
     private func applyLawDrop(_ drop: LawPanelDrop) {
         switch drop {
         case .stay: break
-        case .float(let edge): laws.docked = false; laws.panelEdge = edge
-        case .dock(let edge): laws.docked = true; laws.panelEdge = edge
-        case .stash(let edge): laws.panelEdge = edge; laws.stashed = true
+        case .float(let edge): lawPanel.docked = false; lawPanel.edge = edge
+        case .dock(let edge): lawPanel.docked = true; lawPanel.edge = edge
+        case .stash(let edge): lawPanel.edge = edge; lawPanel.stashed = true
         }
     }
 
@@ -467,7 +464,7 @@ struct EditorWorkspaceView: View {
     private func lawDropPreview(_ drop: LawPanelDrop, _ l: LawPanelLayout) -> some View {
         switch drop {
         case .dock(let edge):
-            let target = LawPanelLayout(size: l.size, width: lawWidth, height: lawHeight, docked: true, edge: edge).frame
+            let target = LawPanelLayout(size: l.size, width: lawPanel.width, height: lawPanel.height, docked: true, edge: edge).frame
             RoundedRectangle(cornerRadius: 14).fill(Color.accentColor.opacity(0.16))
                 .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.accentColor.opacity(0.8), lineWidth: 2))
                 .overlay {
@@ -478,7 +475,7 @@ struct EditorWorkspaceView: View {
                 .frame(width: max(0, target.width - 8), height: max(0, target.height - 8))
                 .position(x: target.x + target.width / 2, y: target.y + target.height / 2)
         case .float(let edge):
-            let target = LawPanelLayout(size: l.size, width: lawWidth, height: lawHeight, docked: false, edge: edge).frame
+            let target = LawPanelLayout(size: l.size, width: lawPanel.width, height: lawPanel.height, docked: false, edge: edge).frame
             RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06))
                 .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [8, 6])))
                 .overlay { Label("Schweben", systemImage: "rectangle.on.rectangle").font(.headline).foregroundStyle(.white.opacity(0.85)) }
@@ -517,7 +514,7 @@ struct EditorWorkspaceView: View {
             .frame(width: edge == .bottom ? 140 : Self.lawTabTouch, height: edge == .bottom ? Self.lawTabTouch : 140,
                    alignment: lawAlignment(edge))
             .contentShape(Rectangle())
-            .onTapGesture { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = false } }
+            .onTapGesture { withAnimation(NotyMotion.panel(reduceMotion)) { lawPanel.stashed = false } }
             .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.space))
                 .updating($lawDragActive) { _, state, _ in state = true }
                 .onChanged { lawDrag = LawDrag(translation: $0.translation, drop: .stay, fromTab: true) }
@@ -527,17 +524,17 @@ struct EditorWorkspaceView: View {
                     let extent = l.hiddenShift
                     withAnimation(NotyMotion.panel(reduceMotion)) {
                         lawDrag = nil
-                        if inward > extent * 0.25 || (inward > 12 && flung > extent * 0.5) { laws.stashed = false }
+                        if inward > extent * 0.25 || (inward > 12 && flung > extent * 0.5) { lawPanel.stashed = false }
                     }
                 })
             .accessibilityElement()
             .accessibilityLabel("Gesetzessammlung hervorholen")
             .accessibilityAddTraits(.isButton)
-            .accessibilityAction { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = false } }
-            .accessibilityAction(named: "Ganz schließen") { withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelOpen = false } }
+            .accessibilityAction { withAnimation(NotyMotion.panel(reduceMotion)) { lawPanel.stashed = false } }
+            .accessibilityAction(named: "Ganz schließen") { withAnimation(NotyMotion.panel(reduceMotion)) { lawPanel.isOpen = false } }
             .help("Gesetzessammlung hervorholen")
         let close = Button {
-            withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelOpen = false }
+            withAnimation(NotyMotion.panel(reduceMotion)) { lawPanel.isOpen = false }
         } label: {
             Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.white.opacity(0.9))

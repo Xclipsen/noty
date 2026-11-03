@@ -2,7 +2,7 @@ import SwiftUI
 import NotebookCore
 
 struct LawPanelView<Drag: Gesture>: View {
-    @EnvironmentObject private var laws: LawLibraryModel
+    @EnvironmentObject private var panel: LawPanelModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Moves the window live; the workspace decides side, dock and stash on release.
     var drag: Drag
@@ -18,25 +18,25 @@ struct LawPanelView<Drag: Gesture>: View {
             HStack {
                 Menu {
                     if canDock {
-                    Button(laws.docked ? "Über dem Heft schweben" : laws.panelEdge == .bottom ? "Unter dem Heft andocken" : "Neben dem Heft andocken",
-                           systemImage: laws.docked ? "rectangle.on.rectangle" : laws.panelEdge == .bottom ? "rectangle.split.1x2" : "rectangle.split.2x1") {
-                        withAnimation(NotyMotion.panel(reduceMotion)) { laws.docked.toggle() }
+                    Button(panel.docked ? "Über dem Heft schweben" : panel.edge == .bottom ? "Unter dem Heft andocken" : "Neben dem Heft andocken",
+                           systemImage: panel.docked ? "rectangle.on.rectangle" : panel.edge == .bottom ? "rectangle.split.1x2" : "rectangle.split.2x1") {
+                        withAnimation(NotyMotion.panel(reduceMotion)) { panel.docked.toggle() }
                     }
                     }
                     // Left, right or along the bottom edge (also by dragging the bar).
-                    Picker("Position", selection: Binding(get: { laws.panelEdge }, set: { edge in
-                        withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelEdge = edge }
+                    Picker("Position", selection: Binding(get: { panel.edge }, set: { edge in
+                        withAnimation(NotyMotion.panel(reduceMotion)) { panel.edge = edge }
                     })) {
                         Label("Links", systemImage: "rectangle.lefthalf.inset.filled").tag(LawPanelEdge.left)
                         Label("Rechts", systemImage: "rectangle.righthalf.inset.filled").tag(LawPanelEdge.right)
                         Label("Unten", systemImage: "rectangle.bottomhalf.inset.filled").tag(LawPanelEdge.bottom)
                     }.pickerStyle(.menu)
-                    Button("An den Rand schieben", systemImage: laws.panelEdge == .left ? "arrow.left.to.line" : laws.panelEdge == .right ? "arrow.right.to.line" : "arrow.down.to.line") {
-                        withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = true }
+                    Button("An den Rand schieben", systemImage: panel.edge == .left ? "arrow.left.to.line" : panel.edge == .right ? "arrow.right.to.line" : "arrow.down.to.line") {
+                        withAnimation(NotyMotion.panel(reduceMotion)) { panel.stashed = true }
                     }
                     // The only way to remove the edge tab as well; the notebook
                     // menu „Gesetzessammlung“ opens the window again.
-                    Button("Ganz schließen (ohne Pfeil)", systemImage: "xmark.rectangle") { laws.panelOpen = false }
+                    Button("Ganz schließen (ohne Pfeil)", systemImage: "xmark.rectangle") { panel.isOpen = false }
                 } label: { Image(systemName: "rectangle.split.2x1").frame(width: 44, height: 36) }.accessibilityLabel("Gesetzesfenster anordnen")
                 Spacer()
                 Capsule().fill(.secondary).frame(width: 44, height: 5).frame(width: 80, height: 36)
@@ -44,7 +44,7 @@ struct LawPanelView<Drag: Gesture>: View {
                 Spacer()
                 // Closing slides the window past its edge and leaves the arrow
                 // tab, like iPad Slide Over; the reader keeps its state.
-                Button { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = true } } label: { Image(systemName: "xmark").frame(width: 44, height: 36) }
+                Button { withAnimation(NotyMotion.panel(reduceMotion)) { panel.stashed = true } } label: { Image(systemName: "xmark").frame(width: 44, height: 36) }
                     .accessibilityLabel("Gesetzesfenster schließen").accessibilityHint("Bleibt als Pfeil am Bildschirmrand; das ✕ daneben schließt es ganz.")
                     .help("Schließen – bleibt als Pfeil am Rand, erneut ✕ schließt ganz")
             }.background(.ultraThinMaterial)

@@ -4,6 +4,8 @@ import NotebookCore
 
 struct LawReaderView: View {
     @EnvironmentObject var laws: LawLibraryModel
+    /// State of the law window the reader may be shown in.
+    @EnvironmentObject var panel: LawPanelModel
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     /// Shown in the notebook's law window, which can be closed or stashed.
     var inPanel = false
@@ -11,6 +13,8 @@ struct LawReaderView: View {
     /// Lets the reader switch what Apple Pencil does; nil hides the switch.
     var onPenChange: ((LawPenMode) -> Void)? = nil
     @StateObject var textSelection = LawTextSelection()
+    /// Interface of the marking controls for subviews (LawMarkController.swift).
+    @StateObject var markController = LawMarkController()
     @State var query = ""
     @State var number = ""
     @State var letters = false
@@ -37,7 +41,7 @@ struct LawReaderView: View {
     @State var requestID = UUID()
     @FocusState var queryFocused: Bool
     /// Closed or stashed at the screen edge: no hidden field may keep the keyboard.
-    var hidden: Bool { inPanel && (!laws.panelOpen || laws.stashed) }
+    var hidden: Bool { inPanel && (!panel.isOpen || panel.stashed) }
     @State private var errorsShownHere = false
     /// While the reader is visible it shows `laws.error` itself.
     private func showErrors(_ shown: Bool) {
@@ -138,8 +142,14 @@ struct LawReaderView: View {
         .onChange(of: laws.keyFocus) { _, _ in if inPanel { startKeys() } }
         .onAppear { showErrors(!hidden) }
         .onDisappear { showErrors(false); leaveKeys() }
+        .onAppear { connectMarkController() }
+        .onChange(of: pen) { _, _ in connectMarkController() }
+        .onChange(of: lastAnnotation?.id, initial: true) { _, id in markController.update(canUndo: id != nil) }
+        .onDisappear { markController.disconnect() }
         .sheet(isPresented: $showContents) { contents.keyboardSheet() }
         .sheet(isPresented: $showBookmarks) { bookmarks.keyboardSheet() }
         .sheet(isPresented: $showLaws) { lawList.keyboardSheet() }
+        // Last, so the sheets above receive it as well.
+        .environmentObject(markController)
     }
 }

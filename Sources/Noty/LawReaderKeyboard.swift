@@ -17,7 +17,7 @@ extension LawReaderView {
     func leaveKeys() { if let keyPanel { KeyboardRouter.shared.leave(keyPanel) } }
     private func close() {
         leaveKeys()
-        withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = true }
+        withAnimation(NotyMotion.panel(reduceMotion)) { panel.stashed = true }
     }
     /// Quick search and paragraph are typed through the router into the
     /// reader's own fields, whose live lookup then does the rest.

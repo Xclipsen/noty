@@ -79,36 +79,9 @@ final class LawLibraryModel: ObservableObject {
     /// Mail delivery is switched off on the server (user decision, see
     /// LAW-INTEGRATION-PLAN). Everything waiting for an e-mail stays hidden until then.
     static let mailDelivery = false
-    /// Where the law window was last: open/stashed, docked/floating, side and
-    /// width, kept across notebooks and launches. Display state only.
-    static let panelOpenKey = "noty.laws.panelOpen"
-    static let panelStashedKey = "noty.laws.panelStashed"
-    static let panelDockedKey = "noty.laws.panelDocked"
-    static let panelLeftKey = "noty.laws.panelLeft"
-    static let panelWidthKey = "noty.laws.panelWidth"
-    /// Edge of the window: `left`, `right` or `bottom` (22.10.2026). Older
-    /// builds only know `panelLeftKey`, which stays in step for the sides.
-    static let panelEdgeKey = "noty.laws.panelEdge"
-    static let panelHeightKey = "noty.laws.panelHeight"
-    @Published var panelOpen = UserDefaults.standard.bool(forKey: LawLibraryModel.panelOpenKey) {
-        didSet { if !panelOpen { stashed = false }; UserDefaults.standard.set(panelOpen, forKey: Self.panelOpenKey) }
-    }
-    /// Pushed past the screen edge like iPad Slide Over: hidden behind an edge
-    /// tab, reader state kept. Closing the window completely clears it.
-    @Published var stashed = UserDefaults.standard.bool(forKey: LawLibraryModel.panelStashedKey) {
-        didSet { UserDefaults.standard.set(stashed, forKey: Self.panelStashedKey) }
-    }
-    @Published var docked = UserDefaults.standard.bool(forKey: LawLibraryModel.panelDockedKey) {
-        didSet { UserDefaults.standard.set(docked, forKey: Self.panelDockedKey) }
-    }
-    @Published var panelEdge: LawPanelEdge = UserDefaults.standard.string(forKey: LawLibraryModel.panelEdgeKey).flatMap(LawPanelEdge.init(rawValue:))
-        ?? (UserDefaults.standard.bool(forKey: LawLibraryModel.panelLeftKey) ? .left : .right) {
-        didSet {
-            UserDefaults.standard.set(panelEdge.rawValue, forKey: Self.panelEdgeKey)
-            if panelEdge.isSide { UserDefaults.standard.set(panelEdge == .left, forKey: Self.panelLeftKey) }
-        }
-    }
-    var panelOnLeft: Bool { panelEdge == .left }
+    /// Window state (open, stashed, docked, edge, size), see `LawPanelModel`.
+    /// Kept here only so that switching the collection off closes the window.
+    let panel: LawPanelModel
     var sceneActive = true
     private var started = false
     private var epoch = 0
@@ -122,6 +95,7 @@ final class LawLibraryModel: ObservableObject {
     var entries: [LawEntry] { catalog?.entries ?? [] }
     var pendingCount: Int { items.filter { $0.dirty && $0.owner == user?.id }.count }
     init() {
+        panel = LawPanelModel()
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil; config.httpShouldSetCookies = false
         config.timeoutIntervalForRequest = 25; config.timeoutIntervalForResource = 300
@@ -147,7 +121,7 @@ final class LawLibraryModel: ObservableObject {
     }
     func settingsChanged() async {
         epoch += 1
-        if !enabled { panelOpen = false; return }
+        if !enabled { panel.isOpen = false; return }
         if catalog == nil { lastAttempt = .distantPast }
         await tick()
     }
