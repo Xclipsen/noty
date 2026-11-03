@@ -133,6 +133,9 @@ struct EditorWorkspaceView: View {
     @State private var lawReaderLoaded = false
     /// Shown for a moment when docking hides the second notebook.
     @State private var lawDockHint: UUID?
+    /// A field of the law window is typed into (`LawKeyboard.fieldEditing`):
+    /// only then does the window move above the on-screen keyboard.
+    @State private var lawFieldTyping = false
     /// What Apple Pencil does in the law reader (`none`/`marker`/`eraser`).
     @AppStorage("noty.laws.pencil") private var lawPencil = "none"
     /// Display preference only (global, like the sidebar): side, axis, size.
@@ -187,9 +190,12 @@ struct EditorWorkspaceView: View {
     }
 
     var body: some View {
-        // The workspace ignores the on-screen keyboard (the notebooks handle it
-        // themselves, a docked window must not start floating because of it);
-        // only the law window avoids it, by the difference of both readers.
+        // The law window is laid out on the whole workspace (a docked window
+        // must not start floating because a keyboard appeared); the keyboard
+        // is the difference of both readers. The notebooks give way to it as
+        // before the law window (`LawPanelLayout.notebookFrame`, a vertical
+        // split keeps its lower notebook above it); the window only while one
+        // of its own fields types, so it never covers notebook text being typed.
         GeometryReader { avoiding in
         GeometryReader { geometry in
             let lawPhase: LawPanelState.Phase = lawsEnabled ? lawPanel.phase : .closed
@@ -199,11 +205,14 @@ struct EditorWorkspaceView: View {
             // but gives the notebook its full width meanwhile.
             let law = LawPanelLayout(size: PageSize(width: geometry.size.width, height: geometry.size.height),
                                      width: lawPanel.width, height: lawPanel.height, docked: lawPanel.docked, edge: lawPanel.edge,
-                                     keyboard: keyboard)
+                                     keyboard: keyboard, avoidsKeyboard: lawVisible && lawFieldTyping)
             let docking = lawVisible && law.docked
             let hidesSecond = docking && workspace.secondary != nil
             // Docked at a side or along the bottom: the notebooks keep the rest.
-            let notebookArea = docking ? law.notebookFrame : PageRect(x: 0, y: 0, width: geometry.size.width, height: geometry.size.height)
+            let notebookArea = docking ? law.notebookFrame : PageRect(x: 0, y: 0, width: geometry.size.width, height: law.freeHeight)
+            // Notebooks at the bottom reach on under the keyboard as before:
+            // their viewport keeps its size and measures the keyboard itself.
+            let overhang = docking ? law.notebookOverhang : keyboard
             let editorWidth = notebookArea.width
             let size = PageSize(width: editorWidth, height: notebookArea.height)
             let split = workspace.secondary != nil && !docking
@@ -217,8 +226,9 @@ struct EditorWorkspaceView: View {
                         let frame = hidden ? PageRect(x: 0, y: 0, width: 0, height: 0) : (split ? current.frame(of: entry.pane, in: size) : PageRect(x: 0, y: 0, width: size.width, height: size.height))
                         let preservedSize = PageSize(width: geometry.size.width, height: geometry.size.height)
                         let preservedFrame = current.frame(of: entry.pane, in: preservedSize)
+                        let reach = frame.y + frame.height >= size.height - 0.5 ? overhang : 0
                         paneView(entry, split: hidden ? true : split, current: current, size: hidden ? preservedSize : size)
-                            .frame(width: max(0, hidden ? preservedFrame.width : frame.width), height: max(0, hidden ? preservedFrame.height : frame.height))
+                            .frame(width: max(0, hidden ? preservedFrame.width : frame.width), height: max(0, hidden ? preservedFrame.height : frame.height + reach))
                             .frame(width: max(0, frame.width), height: max(0, frame.height), alignment: .topLeading)
                             .clipped()
                             .opacity(hidden ? 0 : (paneDrag?.pane == entry.pane ? 0.4 : 1))
@@ -243,6 +253,10 @@ struct EditorWorkspaceView: View {
             // Panes clip themselves already; this keeps a stashed law window
             // from drawing beyond the workspace edge.
             .clipped()
+            .onReceive(LawKeyboard.shared.$fieldEditing.removeDuplicates()) { typing in
+                guard typing != lawFieldTyping else { return }
+                withAnimation(NotyMotion.panel(reduceMotion)) { lawFieldTyping = typing }
+            }
             .onChange(of: lawPhase, initial: true) { _, phase in
                 if phase == .visible { lawReaderLoaded = true } else if phase == .closed { lawReaderLoaded = false }
             }
@@ -328,12 +342,9 @@ struct EditorWorkspaceView: View {
                 // Real switch: closed → open, parked → brought out, visible → closed.
                 _ = panelModel.toggle()
             } : nil, lawsPhase: lawsEnabled ? { panelModel.phase } : nil, onLawKeys: lawsEnabled ? {
-                let loaded = lawReaderLoaded
-                panelModel.open()
-                // A reader created by this opening is not there yet to see the request.
-                if loaded { laws.keyFocus += 1 } else {
-                    Task { @MainActor in try? await Task.sleep(for: .milliseconds(120)); laws.keyFocus += 1 }
-                }
+                // Opens with the keys; a reader created by this opening takes
+                // the set focus when it appears (no timed second request).
+                if !LawKeyboard.shared.openWithKeys() { panelModel.open(); laws.keyFocus += 1 }
             } : nil, onToolChange: { tool in
                 // Picking the highlighter or an eraser in the active notebook
                 // switches the law reader along; other tools leave its choice.
@@ -462,12 +473,12 @@ struct EditorWorkspaceView: View {
                     if bottom {
                         if lawResizeStart == nil { lawResizeStart = l.frame.height }
                         let height = (lawResizeStart ?? l.frame.height) - drag.translation.height
-                        let limit = l.docked ? l.size.height - LawPanelLayout.notebookHeight : l.size.height - 84
-                        lawPanel.height = min(max(LawPanelLayout.minimumHeight, height), max(LawPanelLayout.minimumHeight, limit))
+                        // Above an open keyboard: the handle cannot be dragged into it.
+                        lawPanel.height = min(max(LawPanelLayout.minimumHeight, height), l.heightLimit)
                     } else {
                         if lawResizeStart == nil { lawResizeStart = l.frame.width }
                         let width = (lawResizeStart ?? l.frame.width) + drag.translation.width * (l.edge == .left ? 1 : -1)
-                        lawPanel.width = min(max(LawPanelLayout.minimumWidth, width), max(LawPanelLayout.minimumWidth, l.size.width - LawPanelLayout.notebookWidth))
+                        lawPanel.width = min(max(LawPanelLayout.minimumWidth, width), l.widthLimit)
                     }
                 }.onEnded { _ in lawResizeStart = nil })
             .sensoryFeedback(.selection, trigger: lawResizing) { _, active in active }
@@ -527,7 +538,7 @@ struct EditorWorkspaceView: View {
     private func lawDropPreview(_ drop: LawPanelDrop, _ l: LawPanelLayout, hidesSecond: Bool) -> some View {
         switch drop {
         case .dock(let edge):
-            let target = LawPanelLayout(size: l.size, width: lawPanel.width, height: lawPanel.height, docked: true, edge: edge, keyboard: l.keyboard).frame
+            let target = LawPanelLayout(size: l.size, width: lawPanel.width, height: lawPanel.height, docked: true, edge: edge, keyboard: l.keyboard, avoidsKeyboard: l.avoidsKeyboard).frame
             RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.accentColor.opacity(0.16))
                 .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.accentColor, lineWidth: 2))
                 .overlay {
@@ -542,7 +553,7 @@ struct EditorWorkspaceView: View {
                 .frame(width: max(0, target.width - 12), height: max(0, target.height - 12))
                 .position(x: target.x + target.width / 2, y: target.y + target.height / 2)
         case .float(let edge):
-            let target = LawPanelLayout(size: l.size, width: lawPanel.width, height: lawPanel.height, docked: false, edge: edge, keyboard: l.keyboard).frame
+            let target = LawPanelLayout(size: l.size, width: lawPanel.width, height: lawPanel.height, docked: false, edge: edge, keyboard: l.keyboard, avoidsKeyboard: l.avoidsKeyboard).frame
             RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.06))
                 .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [8, 6])))
                 .overlay { lawPreviewLabel("Schweben", symbol: "rectangle.on.rectangle", accent: false) }

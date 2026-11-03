@@ -258,22 +258,34 @@ public actor LawPersonalStore {
     }
     public func adoptGuests(owner: String) throws {
         var s = try load()
+        try Self.adopt(&s, owner: owner)
+        try commit(s)
+    }
+    private static func adopt(_ s: inout LawPersonalState, owner: String) throws {
         // IDs are unique across owners, so adoption cannot create duplicates.
         for i in s.items.indices where s.items[i].owner == nil {
-            s.items[i].owner = owner; s.items[i].dirty = true; s.items[i].revision = try nextRevision(s.items[i].revision)
+            guard s.items[i].revision >= 0, s.items[i].revision < 1_000_000_000 else { throw LawError.invalid("Ungültige Markierungsrevision. Bestand bleibt erhalten.") }
+            s.items[i].owner = owner; s.items[i].dirty = true; s.items[i].revision += 1
         }
         s.lastOwner = owner
-        try commit(s)
     }
     /// Any number of new/replaced and removed entries of one owner as one
     /// write; all or nothing. Puts are checked first: an invalid kind or ID,
     /// a deleted or pruned ID, an ID of another owner, or a key that is both
     /// put and removed rejects the whole batch. Removing an unknown, already
-    /// deleted or other owner's entry changes nothing. Returns the put IDs.
+    /// deleted or other owner's entry changes nothing, unless `requireLive`:
+    /// then it rejects the batch with `LawPersonalConflict` (a plan made on
+    /// entries a sync has deleted meanwhile must not recreate their pieces).
+    /// Returns the put IDs.
     @discardableResult
-    public func batch(puts: [LawPersonalChange], removes: [LawPersonalRef] = [], owner: String?) throws -> [String] {
+    public func batch(puts: [LawPersonalChange], removes: [LawPersonalRef] = [], owner: String?, requireLive: Bool = false) throws -> [String] {
         var s = try load()
         let forgotten = Set(s.forgotten ?? []), index = s.index()
+        if requireLive {
+            for ref in removes {
+                guard let i = index[ref.key], s.items[i].owner == owner, !s.items[i].deleted else { throw LawPersonalConflict.changedMeanwhile }
+            }
+        }
         var putKeys = Set<String>()
         for change in puts {
             let key = LawPersonalRef(kind: change.kind, id: change.id).key
@@ -309,11 +321,15 @@ public actor LawPersonalStore {
         let refs = try load().items.filter { $0.id == id && $0.owner == owner }.map(\.ref)
         try batch(puts: [], removes: refs, owner: owner)
     }
-    /// What to send for `owner`, new entries before deletions: replacing a
-    /// marking (delete + create) never leaves the website without it meanwhile.
+    /// What to send for `owner`. Markings: new entries before deletions, so
+    /// replacing one (delete + create) never leaves the website without it
+    /// meanwhile. Bookmarks: deletions first. The server keys a bookmark by
+    /// its target and answers a new one with the ID of a still existing one
+    /// there; removed and set again offline, the creation would otherwise
+    /// take over the old ID that the deletion right after removes.
     public func pending(owner: String) throws -> [LawPersonalItem] {
         let mine = try load().items.filter { $0.owner == owner && $0.awaitsUpload }
-        return mine.filter { !$0.deleted } + mine.filter(\.deleted)
+        return mine.filter { $0.deleted && $0.kind == "bookmark" } + mine.filter { !$0.deleted } + mine.filter { $0.deleted && $0.kind != "bookmark" }
     }
     public func cursor(owner: String) throws -> Int { try load().cursors[owner] ?? 0 }
     public func acknowledge(_ sent: LawPersonalItem, payload: [String: LawJSON]? = nil) throws {
@@ -339,6 +355,15 @@ public actor LawPersonalStore {
                 s.items[i].rejection = LawPersonalRejection(status: status, message: String(message.prefix(500)), at: at)
             case .accepted(let payload):
                 guard s.items[i].revision == sent.revision else { continue }
+                if !s.items[i].deleted, let remoteID = payload?["id"]?.string, UUID(uuidString: remoteID) != nil,
+                   let other = index[LawPersonalRef(kind: sent.kind, id: remoteID).key], other != i,
+                   s.items[other].owner == sent.owner, s.items[other].deleted, s.items[other].awaitsUpload {
+                    // The server chose the ID of an entry deleted here whose
+                    // deletion is still to be sent: taking it over would let
+                    // that deletion remove this one. It stays in the outbox and
+                    // goes again once the deletion is through.
+                    continue
+                }
                 s.items[i].dirty = false; s.items[i].rejection = nil
                 if s.items[i].deleted { s.items[i].deletedAt = at }
                 guard let payload, let remoteID = payload["id"]?.string, UUID(uuidString: remoteID) != nil else { continue }
@@ -433,8 +458,10 @@ public actor LawPersonalStore {
     /// Merge an independently validated personal archive; never overwrite later
     /// local data, and never automatically send a restored other-account record.
     /// An entry whose kind and ID exist here already, under any owner, or were
-    /// pruned as deleted, is skipped (B1).
-    public func importData(_ data: Data) throws {
+    /// pruned as deleted, is skipped (B1). Signed in (`adoptingGuestsFor`),
+    /// guest entries go to the account in the same write, as at sign-in:
+    /// restored guest entries would otherwise stay hidden until the next login.
+    public func importData(_ data: Data, adoptingGuestsFor account: String? = nil) throws {
         guard data.count <= 128_000_000 else { throw LawError.invalid("Sicherungsdatei zu groß.") }
         let decoded = try JSONDecoder().decode(LawPersonalState.self, from: data)
         guard decoded.isWellFormed else { throw LawError.invalid("Ungültige Gesetzessicherung.") }
@@ -448,7 +475,17 @@ public actor LawPersonalStore {
         // An archive never deletes here: a key still live locally stays live.
         forgotten.subtract(s.items.map(\.key))
         s.forgotten = forgotten.isEmpty ? nil : forgotten.sorted()
+        if let account { try Self.adopt(&s, owner: account) }
         try commit(s)
+    }
+}
+
+/// `batch(requireLive:)`: an entry to remove is no longer there (a sync
+/// deleted it meanwhile); the whole change is dropped.
+public enum LawPersonalConflict: Error, Equatable, LocalizedError {
+    case changedMeanwhile
+    public var errorDescription: String? {
+        "Diese Markierung wurde inzwischen auf einem anderen Gerät geändert oder entfernt. Nichts wurde geändert; bitte erneut markieren."
     }
 }
 

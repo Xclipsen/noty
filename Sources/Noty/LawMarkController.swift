@@ -90,8 +90,9 @@ final class LawMarkController: ObservableObject {
     /// Law version shown in the reader (for the PDF's provision positions).
     var document: LawDocument? { context()?.document }
     private var watching: [AnyCancellable] = []
-    private var undoStack: [LawMarkApplied] = []
-    private var redoStack: [LawMarkApplied] = []
+    /// Own undo/redo stacks (Core `LawMarkHistory`): older steps follow the
+    /// new IDs of every replay; another owner empties them.
+    private var history = LawMarkHistory()
     private var queue: Task<Void, Never>?
     private var toastTask: Task<Void, Never>?
 
@@ -110,9 +111,16 @@ final class LawMarkController: ObservableObject {
             .store(in: &watching)
         // objectWillChange kommt vor der Änderung: danach neu lesen.
         laws.objectWillChange.receive(on: DispatchQueue.main)
-            .sink { [weak self, weak laws] _ in if let laws { self?.refreshBadge(laws) } }
+            .sink { [weak self, weak laws] _ in if let laws { self?.refreshBadge(laws); self?.followOwner(laws) } }
             .store(in: &watching)
         refreshBadge(laws)
+        followOwner(laws)
+    }
+    /// Sign-in, sign-out or another account: the steps of the previous owner
+    /// can no longer be undone (they would write its entries for the new one).
+    private func followOwner(_ laws: LawLibraryModel) {
+        history.align(owner: laws.owner)
+        refreshStacks()
     }
     /// Löst die Verbindung (der Leser verschwindet); hält keinen Leserstand fest.
     func disconnect() {
@@ -161,7 +169,7 @@ final class LawMarkController: ObservableObject {
                 let ranges = laws.markRanges(in: section, of: laws.annotations(law: context.document.id, version: context.document.version))
                 let plan = try LawMarkEditing.plan(.recolor(text.map(\.id), color: color), existing: ranges, sectionId: section.id,
                                                    textLength: (LawTextAnchor.canonical(section.text) as NSString).length)
-                change = laws.change(for: plan, section: section, document: context.document)
+                change = try laws.change(for: plan, section: section, document: context.document)
             }
             // PDF marks and text marks of other sections: same entry, new colour, new ID.
             for item in items where !text.contains(item) && LawMarkEditing.colorKey(item.payload["color"]?.string) != color {
@@ -172,16 +180,8 @@ final class LawMarkController: ObservableObject {
             return change
         }
     }
-    func undo() {
-        guard let last = undoStack.popLast() else { return }
-        refreshStacks()
-        replay(last) { [weak self] applied in self?.redoStack.append(applied) }
-    }
-    func redo() {
-        guard let last = redoStack.popLast() else { return }
-        refreshStacks()
-        replay(last) { [weak self] applied in self?.undoStack.append(applied) }
-    }
+    func undo() { replay(undo: true) }
+    func redo() { replay(undo: false) }
     func copySelection() {
         guard let selection else { return }
         var text: String?
@@ -310,7 +310,7 @@ final class LawMarkController: ObservableObject {
                 plan = plan.then(step)
                 marks = LawMarkEditing.apply(step, to: marks)
             }
-            return laws.change(for: plan, section: section, document: document)
+            return try laws.change(for: plan, section: section, document: document)
         }
     }
     /// Runs `build` after every earlier change has been written, on the then
@@ -323,10 +323,8 @@ final class LawMarkController: ObservableObject {
             guard let self, let laws = self.laws else { return }
             do {
                 guard let change = try build(laws, self.context()), !change.isEmpty else { return }
-                guard let applied = await laws.commit(plan: change) else { return }
-                self.undoStack.append(applied)
-                if self.undoStack.count > 100 { self.undoStack.removeFirst() }
-                self.redoStack = []
+                guard let applied = try await laws.commit(plan: change) else { return }
+                self.history.record(applied)
                 self.refreshStacks()
                 if selectCreated, let selection = self.selection, selection.tapped {
                     selection.select(mark: applied.created.count == 1 ? applied.created[0] : nil)
@@ -338,22 +336,42 @@ final class LawMarkController: ObservableObject {
         }
     }
     /// Undo/redo: the created entries are deleted, the removed ones come back
-    /// with new IDs (deleted IDs stay blocked on the server).
-    private func replay(_ applied: LawMarkApplied, then record: @escaping (LawMarkApplied) -> Void) {
+    /// with new IDs (deleted IDs stay blocked on the server); the remaining
+    /// steps follow those IDs (`LawMarkHistory`), so undo works step by step
+    /// also after dependent changes (mark → extend → undo → undo).
+    private func replay(undo: Bool) {
+        if let laws { history.align(owner: laws.owner) }
+        guard let step = undo ? history.popUndo() : history.popRedo() else { refreshStacks(); return }
+        refreshStacks()
         let previous = queue
         selection?.select(mark: nil)
         queue = Task { @MainActor [weak self] in
             await previous?.value
-            guard let self, let laws = self.laws else { return }
-            let change = LawMarkChange(removals: applied.created.compactMap(laws.liveItem), additions: applied.removed.map(\.recreation))
-            if change.isEmpty { self.show(LawMarkToast(message: "Nichts mehr rückgängig zu machen", undo: false)); return }
-            if let done = await laws.commit(plan: change) { record(done) }
+            guard let self else { return }
+            guard let laws = self.laws, step.owner == laws.owner else {
+                // Signed in or out meanwhile: the step belonged to another owner.
+                if let laws = self.laws { self.history.align(owner: laws.owner) }
+                self.refreshStacks(); return
+            }
+            let replay = LawMarkHistory.replay(step, live: laws.liveItem)
+            if replay.isEmpty { self.show(LawMarkToast(message: "Nichts mehr rückgängig zu machen", undo: false)); self.refreshStacks(); return }
+            let change = LawMarkChange(removals: replay.removals,
+                                       additions: replay.additions.map { LawMarkAddition(kind: $0.kind, payload: $0.payload, id: $0.id) })
+            do {
+                if let done = try await laws.commit(plan: change) {
+                    if undo { self.history.didUndo(done, renamed: replay.renamed) } else { self.history.didRedo(done, renamed: replay.renamed) }
+                }
+            } catch {
+                // Nothing was written: the step stays available.
+                self.history.putBack(step, undo: undo)
+                self.show(LawMarkToast(message: error.localizedDescription, undo: false))
+            }
             self.refreshStacks()
         }
     }
     private func refreshStacks() {
-        if canUndo != !undoStack.isEmpty { canUndo = !undoStack.isEmpty }
-        if canRedo != !redoStack.isEmpty { canRedo = !redoStack.isEmpty }
+        if canUndo != history.canUndo { canUndo = history.canUndo }
+        if canRedo != history.canRedo { canRedo = history.canRedo }
     }
     func show(_ next: LawMarkToast) {
         toastTask?.cancel()

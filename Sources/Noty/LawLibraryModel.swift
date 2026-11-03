@@ -463,6 +463,17 @@ final class LawLibraryModel: ObservableObject {
         Task { await synchronize() }
         return true
     }
+    /// `commit(puts:removes:)` for mark plans (`commit(plan:)`): every entry
+    /// to remove must still be live, else nothing is written
+    /// (`LawPersonalConflict`). Errors are thrown for the caller's message,
+    /// not shown as an alert.
+    func commitMarks(puts: [LawPersonalChange], removes: [LawPersonalRef]) async throws {
+        guard !puts.isEmpty || !removes.isEmpty else { return }
+        do { try await personal.batch(puts: puts, removes: removes, owner: owner, requireLive: true) }
+        catch { await refreshItems(); throw error }
+        await refreshItems()
+        Task { await synchronize() }
+    }
     func save(kind: String, payload: [String: LawJSON]) async {
         if kind == "bookmark", items.contains(where: { item in
             item.kind == kind && ["lawId", "versionId", "view", "sectionId", "page"].allSatisfy { item.payload[$0] == payload[$0] }
@@ -591,7 +602,13 @@ final class LawLibraryModel: ObservableObject {
     }
     func restorePersonal(_ url: URL) async {
         let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
-        do { let data = try Data(contentsOf: url, options: .mappedIfSafe); try await personal.importData(data); await refreshItems(); Task { await synchronize() } }
+        do {
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            // Signed in, restored guest entries go to the account like at
+            // sign-in; otherwise they would stay hidden until the next login.
+            try await personal.importData(data, adoptingGuestsFor: user?.id)
+            await refreshItems(); Task { await synchronize() }
+        }
         catch { self.error = error.localizedDescription }
     }
 }

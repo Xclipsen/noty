@@ -73,3 +73,15 @@ Gemeinsame Vorarbeit (Schritt 0b): `LawPanelModel` aus `LawLibraryModel` herausl
 - **Tastatur ↔ Fenster/Leser**: Fensteraktionen über `LawPanelModel` (`toggle`, `togglePark`, `close`, `park`, `dock`, `float`); Esc/`Space l` schließen wirklich. ⌘F/⌘L öffnen die gemeinsame Suchfläche. 1–5, ⇧⌘H (`lastColor` des Controllers), ⌫, `m1`–`m5`/`mm`/`d` laufen über `LawMarkController` und wirken auch im PDF. Text- und PDF-Ansicht hängen die Kürzel an ihre `keyCommands`; ein Tipp ins Fenster setzt den Fokus; der erst beim Sichtbarwerden entstehende Leser übernimmt einen vorher gesetzten Fokus im `onAppear`.
 
 Nachweise: Core-Tests 1165 (3 übersprungen, 0 Fehler), `check_page_workflow.sh` grün, `check_law_workflow.sh` mit dem echten Katalog grün (`LawRealCatalogTests` 2 Tests, ≈ 264 s), `xtool dev build` erfolgreich ohne neue Warnungen in Law*-Dateien. **Nicht installiert, am iPad ungeprüft.** Offen: SCOPE nennt „nach Logout lokal sichtbar“, B12 zeigt nach dem Abmelden nur Gast-Einträge (Kontoeinträge bleiben gespeichert) – Nutzerentscheidung bestätigen; Scrollversatz der Lesestelle.
+
+## Korrekturen nach Code-Prüfung (feat/gesetze-fix-code)
+
+- Lesezeichen offline entfernt und am selben Ziel neu gesetzt ging beim Abgleich verloren: Lesezeichen-Löschungen gehen jetzt vor Neuanlagen; `record` übernimmt keine Server-ID eines gelöschten, noch ausstehenden Eintrags (`testBookmarkToggledOffAndOnOfflineSurvivesSync`, `testBookmarkNeverTakesOverTheIDOfAPendingDeletion`).
+- `LawMarkEditing.add` teilt andere Farben nur an der neuen Auswahl, nicht am zusammengeführten Bereich; gleiche Farbe verbindet nur, wo keine fremde übrig bleibt.
+- Undo/Redo: Core `LawMarkHistory` zieht neue IDs jeder Wiedergabe in beiden Stapeln nach; Eigentümerwechsel leert die Stapel, Schritte eines anderen Eigentümers werden nie geschrieben.
+- Heftfläche (auch Split) endet wieder an der Bildschirmtastatur wie vor dem Gesetzesfenster (`LawPanelLayout.notebookFrame`/`notebookOverhang`, unten anliegende Hefte reichen wie früher unter die Tastatur); das Fenster weicht nur aus, solange eines seiner Felder tippt (`avoidsKeyboard` ← `LawKeyboard.fieldEditing`). Drop-Zonen und Größengriff beziehen sich auf die freie Höhe.
+- Wiederherstellen im angemeldeten Zustand übernimmt Gasteinträge ins Konto (`importData(_:adoptingGuestsFor:)`).
+- Pläne verlangen lebende Einträge (`batch(requireLive:)`, `LawPersonalConflict`): Teilstücke einer inzwischen vom Abgleich gelöschten Markierung werden nicht angelegt, Hinweis als Meldung.
+- PDF-Nutzlasten gerundet, auf 0…1 begrenzt und unter 64 KiB (`LawPDFAnchoring.fitted`); `Space l` gibt den Fokus ohne feste Verzögerung (`LawKeyboard.openWithKeys`); Text- und PDF-Ansicht des Lesers geben Tastendrücke an den `KeyboardRouter` weiter.
+
+Nachweise: Core-Tests 1181 (3 übersprungen, 0 Fehler, zweimal), `check_page_workflow.sh` grün, `xtool dev build` erfolgreich. **Nicht installiert, am iPad ungeprüft** (Tastatur/Split/Caret-Reveal, Helix nach Touch-Auswahl, `Space l`).

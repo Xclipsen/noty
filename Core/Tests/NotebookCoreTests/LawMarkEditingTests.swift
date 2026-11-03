@@ -329,4 +329,186 @@ final class LawMarkEditingTests: XCTestCase {
         XCTAssertEqual(limited.first?.width ?? 0, 0.8, accuracy: 1e-9)
         XCTAssertEqual(LawPDFAnchoring.limitedRectangles(Array(rects.prefix(3))), Array(rects.prefix(3)))
     }
+
+    // MARK: Prüfbefund 03.11.2026
+
+    func testOtherColourIsCutOnlyAtTheNewSelectionNotAtTheMergedRange() throws {
+        // Yellow 0–100 with green 40–50 on top; 10–45 marked yellow.
+        let existing = [mark("y", 0, 100), mark("g", 40, 50, green)]
+        XCTAssertEqual(try after(.add(start: 10, end: 45, color: yellow), existing),
+                       ["0-45 \(yellow)", "45-50 \(green)", "50-100 \(yellow)"])
+        // A green part outside the selection, untouched, stays as it is.
+        let apart = [mark("y", 0, 100), mark("g", 60, 70, green)]
+        XCTAssertEqual(try after(.add(start: 95, end: 110, color: yellow), apart),
+                       ["0-60 \(yellow)", "60-70 \(green)", "70-110 \(yellow)"])
+        // Joined across the gap where no other colour is left.
+        let gap = [mark("a", 0, 10), mark("g", 10, 20, green), mark("b", 20, 30)]
+        XCTAssertEqual(try after(.add(start: 5, end: 25, color: yellow), gap), ["0-30 \(yellow)"])
+        XCTAssertEqual(try after(.add(start: 5, end: 12, color: yellow), gap), ["0-12 \(yellow)", "12-20 \(green)", "20-30 \(yellow)"])
+    }
+
+    // MARK: Undo-Stapel (Core `LawMarkHistory`) gegen einen echten Store
+
+    private struct Marks {
+        let store: LawPersonalStore
+        let owner: String?
+        var history = LawMarkHistory()
+        init(store: LawPersonalStore, owner: String?) { self.store = store; self.owner = owner; history.align(owner: owner) }
+        func live() async throws -> [LawPersonalItem] { try await store.items().filter { $0.owner == owner && !$0.deleted } }
+        func ranges() async throws -> [LawMarkRange] {
+            try await live().compactMap { item in
+                guard let start = item.payload["start"]?.int, let end = item.payload["end"]?.int else { return nil }
+                return LawMarkRange(id: item.id, sectionId: "s1", start: start, end: end, color: item.payload["color"]?.string)
+            }
+        }
+        /// Like `LawMarkController.perform`: plan, one batch, one undo step.
+        mutating func edit(_ edit: LawMarkEdit) async throws {
+            let plan = try LawMarkEditing.plan(edit, existing: try await ranges(), sectionId: "s1", textLength: 1000)
+            let all = try await live()
+            let removed = plan.deletedIDs.compactMap { id in all.first { $0.id == id } }
+            let puts = plan.additions.map { r in
+                LawPersonalChange(kind: "annotation", payload: ["kind": .string("text"), "start": .number(Double(r.start)), "end": .number(Double(r.end)),
+                                                                "color": .string(r.color ?? LawMarkEditing.defaultColor)], id: r.id)
+            }
+            try await store.batch(puts: puts, removes: removed.map(\.ref), owner: owner, requireLive: true)
+            history.record(LawMarkStep(owner: owner, removed: removed, created: puts.map(\.id)))
+        }
+        /// Like `LawMarkController.replay`.
+        mutating func replay(undo: Bool) async throws {
+            let step = try XCTUnwrap(undo ? history.popUndo() : history.popRedo())
+            let all = try await live()
+            let replay = LawMarkHistory.replay(step) { id in all.first { $0.id == id } }
+            XCTAssertFalse(replay.isEmpty, "nothing left to replay")
+            XCTAssertEqual(replay.removals.count, step.created.count, "every entry of the step is still there")
+            try await store.batch(puts: replay.additions, removes: replay.removals.map(\.ref), owner: owner, requireLive: true)
+            let done = LawMarkStep(owner: owner, removed: replay.removals, created: replay.additions.map(\.id))
+            if undo { history.didUndo(done, renamed: replay.renamed) } else { history.didRedo(done, renamed: replay.renamed) }
+        }
+        func shape() async throws -> [String] {
+            try await ranges().sorted { ($0.start, $0.end) < ($1.start, $1.end) }.map { "\($0.start)-\($0.end) \(LawMarkEditing.colorKey($0.color))" }
+        }
+    }
+    private func store() throws -> LawPersonalStore {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("noty-law-undo-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return LawPersonalStore(root: url)
+    }
+
+    func testMarkExtendThenUndoTwiceAndRedoTwice() async throws {
+        var marks = Marks(store: try store(), owner: "A")
+        try await marks.edit(.add(start: 10, end: 20, color: yellow))
+        try await marks.edit(.add(start: 15, end: 30, color: yellow))
+        var shape = try await marks.shape(); XCTAssertEqual(shape, ["10-30 \(yellow)"])
+        try await marks.replay(undo: true)
+        shape = try await marks.shape(); XCTAssertEqual(shape, ["10-20 \(yellow)"])
+        // Before: the first step still pointed at the ID the undo had replaced.
+        try await marks.replay(undo: true)
+        shape = try await marks.shape(); XCTAssertEqual(shape, [])
+        XCTAssertFalse(marks.history.canUndo)
+        try await marks.replay(undo: false)
+        shape = try await marks.shape(); XCTAssertEqual(shape, ["10-20 \(yellow)"])
+        try await marks.replay(undo: false)
+        shape = try await marks.shape(); XCTAssertEqual(shape, ["10-30 \(yellow)"])
+        XCTAssertFalse(marks.history.canRedo)
+        // And back again: the stacks keep following the new IDs.
+        try await marks.replay(undo: true); try await marks.replay(undo: true)
+        shape = try await marks.shape(); XCTAssertEqual(shape, [])
+    }
+    func testMarkRecolorThenUndoTwiceAndRedoTwice() async throws {
+        var marks = Marks(store: try store(), owner: nil)
+        try await marks.edit(.add(start: 0, end: 10, color: yellow))
+        let first = try await marks.ranges()[0].id
+        try await marks.edit(.recolor([first], color: green))
+        var shape = try await marks.shape(); XCTAssertEqual(shape, ["0-10 \(green)"])
+        try await marks.replay(undo: true)
+        shape = try await marks.shape(); XCTAssertEqual(shape, ["0-10 \(yellow)"])
+        try await marks.replay(undo: true)
+        shape = try await marks.shape(); XCTAssertEqual(shape, [])
+        try await marks.replay(undo: false)
+        shape = try await marks.shape(); XCTAssertEqual(shape, ["0-10 \(yellow)"])
+        try await marks.replay(undo: false)
+        shape = try await marks.shape(); XCTAssertEqual(shape, ["0-10 \(green)"])
+        // Every recreation had a new ID; no deleted ID came back.
+        let all = try await marks.store.items()
+        XCTAssertEqual(Set(all.map(\.id)).count, all.count)
+        XCTAssertEqual(all.filter { !$0.deleted }.count, 1)
+    }
+    func testAnotherOwnerEmptiesTheStacks() {
+        let item = LawPersonalItem(id: "a", owner: "A", kind: "annotation", payload: [:], deleted: false, dirty: true, revision: 1)
+        var history = LawMarkHistory(owner: "A")
+        history.record(LawMarkStep(owner: "A", removed: [item], created: ["b"]))
+        _ = history.popUndo()
+        history.didUndo(LawMarkStep(owner: "A", removed: [], created: ["c"]), renamed: ["a": "c"])
+        history.record(LawMarkStep(owner: "A", removed: [], created: ["d"]))
+        XCTAssertTrue(history.canUndo)
+        history.align(owner: "A")
+        XCTAssertTrue(history.canUndo)
+        // Signed out (guest) or another account: nothing of A can be replayed for them.
+        history.align(owner: nil)
+        XCTAssertFalse(history.canUndo); XCTAssertFalse(history.canRedo)
+        XCTAssertNil(history.owner)
+        // A late answer of A's replay is not stacked for the guest either.
+        history.didUndo(LawMarkStep(owner: "A", removed: [], created: ["e"]), renamed: [:])
+        XCTAssertFalse(history.canRedo)
+        history.putBack(LawMarkStep(owner: "A", removed: [], created: ["f"]), undo: true)
+        XCTAssertFalse(history.canUndo)
+    }
+    func testHistoryKeepsAtMostHundredSteps() {
+        var history = LawMarkHistory()
+        for i in 0..<130 { history.record(LawMarkStep(owner: nil, removed: [], created: ["\(i)"])) }
+        XCTAssertEqual(history.undo.count, LawMarkHistory.limit)
+        XCTAssertEqual(history.undo.first?.created, ["30"])
+    }
+
+    // MARK: PDF-Nutzlast
+
+    func testStrokePointsAreRoundedAndClampedLikeTheServer() {
+        let points = LawPDFAnchoring.rounded([LawPDFPoint(0.1234567891, 1.0000001), LawPDFPoint(-0.2, .nan)])
+        XCTAssertEqual(points, [LawPDFPoint(0.12346, 1), LawPDFPoint(0, 0)])
+    }
+    func testWordAndSelectionRectanglesStayInsideThePage() {
+        let rects = LawPDFAnchoring.clamped([LawPDFRect(x: 0.95, y: -0.01, width: 0.08, height: 0.03),
+                                             LawPDFRect(x: 1.2, y: 0.5, width: 0.1, height: 0.1),
+                                             LawPDFRect(x: 0.1, y: 0.2, width: 0.3, height: 0.02)])
+        XCTAssertEqual(rects.count, 2, "a rectangle wholly beyond the page is dropped")
+        XCTAssertEqual(rects[0].x, 0.95, accuracy: 1e-12); XCTAssertEqual(rects[0].y, 0, accuracy: 1e-12)
+        XCTAssertLessThanOrEqual(rects[0].x + rects[0].width, 1.000001)
+        XCTAssertEqual(rects[0].height, 0.02, accuracy: 1e-9)
+        for r in rects { XCTAssertTrue(r.x >= 0 && r.y >= 0 && r.width > 0 && r.height > 0 && r.y + r.height <= 1.000001) }
+    }
+    func testStrokePayloadIsThinnedBelowTheBodyLimitInsteadOfRefused() throws {
+        // 1500 points at full precision with a long anchor: far beyond 64 KiB as sent before.
+        let raw = (0..<1500).map { i in LawJSON.array([.number(Double(i) / 1499 * 0.987654321987), .number(0.123456789123 + Double(i % 7) * 1e-9)]) }
+        let quote = String(repeating: "ä", count: 4000)
+        let anchor: LawJSON = .object(["sectionId": .string("s1"), "start": .number(0), "end": .number(4000), "quote": .string(quote)])
+        var payload: [String: LawJSON] = ["kind": .string("pdf"), "page": .number(1), "points": .array(raw), "anchor": anchor,
+                                          "lawId": .string("hgb"), "versionId": .string("v1"), "color": .string("#F3CC37")]
+        let fitted = try XCTUnwrap(LawPDFAnchoring.fitted(payload))
+        XCTAssertLessThanOrEqual(LawPDFAnchoring.bodySize(fitted), LawPDFAnchoring.maxBody)
+        guard case let .array(points) = fitted["points"] else { return XCTFail("no points") }
+        XCTAssertGreaterThanOrEqual(points.count, 2); XCTAssertLessThanOrEqual(points.count, 1500)
+        XCTAssertEqual(fitted["anchor"], anchor, "the anchor is kept")
+        // Five decimals, first and last point kept.
+        XCTAssertEqual(points.first, .array([.number(0), .number(0.12346)]))
+        XCTAssertEqual(points.last, .array([.number(0.98765), .number(0.12346)]))
+        // A huge anchor alone: thinned down to two points, then it fits.
+        payload["anchor"] = .object(["quote": .string(String(repeating: "€", count: 21_000))])
+        let tight = try XCTUnwrap(LawPDFAnchoring.fitted(payload))
+        XCTAssertLessThanOrEqual(LawPDFAnchoring.bodySize(tight), LawPDFAnchoring.maxBody)
+        payload["anchor"] = .object(["quote": .string(String(repeating: "€", count: 30_000))])
+        XCTAssertNil(LawPDFAnchoring.fitted(payload), "nothing to thin any more: not sent")
+        // Text marks are left alone.
+        let text: [String: LawJSON] = ["kind": .string("text"), "page": .number(0)]
+        XCTAssertEqual(LawPDFAnchoring.fitted(text), text)
+    }
+    func testRectanglePayloadIsClampedAndLimited() throws {
+        let rects = (0..<900).map { LawPDFRect(x: 0.9, y: Double($0) * 0.001, width: 0.2, height: 0.0008).json }
+        let fitted = try XCTUnwrap(LawPDFAnchoring.fitted(["kind": .string("pdf-text"), "page": .number(1), "rectangles": .array(rects)]))
+        guard case let .array(values) = fitted["rectangles"] else { return XCTFail("no rectangles") }
+        let out = values.compactMap(LawPDFRect.init(json:))
+        XCTAssertLessThanOrEqual(out.count, LawPDFAnchoring.maxRectangles)
+        XCTAssertTrue(out.allSatisfy { $0.x + $0.width <= 1.000001 })
+        XCTAssertLessThanOrEqual(LawPDFAnchoring.bodySize(fitted), LawPDFAnchoring.maxBody)
+        XCTAssertNil(LawPDFAnchoring.fitted(["kind": .string("pdf-text"), "page": .number(1), "rectangles": .array([LawPDFRect(x: 1.5, y: 0, width: 0.1, height: 0.1).json])]))
+    }
 }

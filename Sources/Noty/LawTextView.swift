@@ -361,11 +361,7 @@ final class LawTextContainer: UIView {
     }
 }
 
-/// The law text view: while it is first responder (a touch selection) the
-/// law window's shortcuts stay available (`LawKeyboard`).
-final class LawKeyTextView: UITextView {
-    override var keyCommands: [UIKeyCommand]? { (super.keyCommands ?? []) + LawKeyboard.shared.keyCommands() }
-}
+/// `LawKeyTextView` (the law text view's class) lives in LawKeyCommands.swift.
 
 /// Draws marks as rounded areas in glyph height behind the text: one shape
 /// per line, trimmed of spaces at the line ends, with an outline for the

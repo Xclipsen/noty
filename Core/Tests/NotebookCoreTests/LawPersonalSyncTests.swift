@@ -315,4 +315,150 @@ final class LawPersonalSyncTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(loaded.spot(law: "estg")?.sectionId, "s2")
         XCTAssertEqual(LawReadingSpots.decode(Data("{\"spots\":{\"hgb\":{\"lawId\":\"bgb\",\"view\":\"text\"}}}".utf8)).spots.count, 0, "A spot under another law's key is dropped")
     }
+
+    // MARK: Prüfbefund 03.11.2026
+
+    /// Bookmarks and markings like `gesetzessammlung-noty/server/api.mjs`:
+    /// a bookmark is keyed by its target and a new one at an existing target
+    /// gets the existing ID back; every change is a sync event.
+    private final class FakeServer {
+        var bookmarks: [String: String] = [:]   // target → id
+        var annotations: Set<String> = []
+        var deleted: Set<String> = []
+        var events: [LawSyncChange] = []
+        var failDeletions = false
+        private func target(_ p: [String: LawJSON]) -> String {
+            ["lawId", "versionId", "view", "sectionId"].map { p[$0]?.string ?? "" }.joined(separator: ":")
+        }
+        private func event(_ kind: String, _ id: String, _ payload: [String: LawJSON]?) {
+            events.append(LawSyncChange(seq: events.count + 1, kind: kind, id: id, payload: payload, deleted: payload == nil))
+        }
+        /// nil: a transient failure (5xx), no answer recorded.
+        func send(_ item: LawPersonalItem) -> LawPushReceipt? {
+            let key = "\(item.kind):\(item.id)"
+            if item.deleted {
+                if failDeletions { return nil }
+                if item.kind == "bookmark", let target = bookmarks.first(where: { $0.value == item.id })?.key {
+                    bookmarks[target] = nil; deleted.insert(key); event(item.kind, item.id, nil)
+                } else if item.kind == "annotation", annotations.remove(item.id) != nil {
+                    deleted.insert(key); event(item.kind, item.id, nil)
+                }
+                return LawPushReceipt(sent: item, outcome: .accepted(nil))   // 200, or 404 = accepted too
+            }
+            if item.kind == "bookmark" {
+                let t = target(item.payload)
+                let id = bookmarks[t] ?? item.id
+                if deleted.contains("bookmark:\(id)") { return LawPushReceipt(sent: item, outcome: .deletedOnServer) }
+                var echo = item.payload; echo["id"] = .string(id); echo["color"] = nil
+                if bookmarks[t] == nil { bookmarks[t] = id; event("bookmark", id, echo) }
+                return LawPushReceipt(sent: item, outcome: .accepted(echo))
+            }
+            if deleted.contains(key) { return LawPushReceipt(sent: item, outcome: .deletedOnServer) }
+            if annotations.insert(item.id).inserted { event("annotation", item.id, item.payload) }
+            return LawPushReceipt(sent: item, outcome: .accepted(item.payload))
+        }
+        func page(after cursor: Int) -> LawSyncPage {
+            LawSyncPage(changes: events.filter { $0.seq > cursor }, cursor: events.count, hasMore: false)
+        }
+    }
+    /// One run of `LawLibraryModel.synchronizeOnce`: pull, push, pull.
+    private func sync(_ store: LawPersonalStore, _ server: FakeServer, owner: String) async throws {
+        try await store.apply(server.page(after: try await store.cursor(owner: owner)), owner: owner)
+        var receipts: [LawPushReceipt] = []
+        for item in try await store.pending(owner: owner) { if let receipt = server.send(item) { receipts.append(receipt) } }
+        try await store.record(receipts)
+        try await store.apply(server.page(after: try await store.cursor(owner: owner)), owner: owner)
+    }
+    private func bookmark(_ section: String = "§ 1") -> [String: LawJSON] {
+        ["lawId": .string("hgb"), "versionId": .string("v1"), "view": .string("text"), "sectionId": .string(section)]
+    }
+
+    func testBookmarkToggledOffAndOnOfflineSurvivesSync() async throws {
+        let store = LawPersonalStore(root: try root()), server = FakeServer()
+        let first = try await store.put(kind: "bookmark", payload: bookmark(), owner: "A")
+        try await sync(store, server, owner: "A")
+        XCTAssertEqual(server.bookmarks.count, 1)
+        // Offline: removed and set again at the same place.
+        try await store.remove(id: first, owner: "A")
+        let second = try await store.put(kind: "bookmark", payload: bookmark(), owner: "A")
+        let order = try await store.pending(owner: "A")
+        XCTAssertEqual(order.map(\.id), [first, second], "bookmark deletions go first")
+        try await sync(store, server, owner: "A")
+        let live = try await store.items().visible(to: "A").filter { $0.kind == "bookmark" }
+        XCTAssertEqual(live.map(\.id), [second])
+        XCTAssertEqual(Array(server.bookmarks.values), [second])
+        let left = try await store.pending(owner: "A"); XCTAssertTrue(left.isEmpty)
+    }
+    func testBookmarkNeverTakesOverTheIDOfAPendingDeletion() async throws {
+        let store = LawPersonalStore(root: try root()), server = FakeServer()
+        let first = try await store.put(kind: "bookmark", payload: bookmark(), owner: "A")
+        try await sync(store, server, owner: "A")
+        try await store.remove(id: first, owner: "A")
+        let second = try await store.put(kind: "bookmark", payload: bookmark(), owner: "A")
+        // The deletion fails for now; the server answers the new one with the old ID.
+        server.failDeletions = true
+        try await sync(store, server, owner: "A")
+        var items = try await store.items()
+        XCTAssertEqual(items.visible(to: "A").map(\.id), [second], "not renamed to the deleted one")
+        XCTAssertTrue(items.first { $0.id == first }?.deleted ?? false)
+        var pending = try await store.pending(owner: "A")
+        XCTAssertEqual(pending.map(\.id), [first, second], "both are sent again")
+        server.failDeletions = false
+        try await sync(store, server, owner: "A")
+        items = try await store.items()
+        XCTAssertEqual(items.visible(to: "A").map(\.id), [second])
+        XCTAssertEqual(Array(server.bookmarks.values), [second])
+        pending = try await store.pending(owner: "A"); XCTAssertTrue(pending.isEmpty)
+    }
+    func testMarkingsStillSendCreationsBeforeDeletions() async throws {
+        let store = LawPersonalStore(root: try root())
+        let mark = try await store.put(kind: "annotation", payload: text(), owner: "A")
+        let mark2 = try await store.put(kind: "annotation", payload: text(), owner: "A")
+        let mark3 = try await store.put(kind: "bookmark", payload: bookmark(), owner: "A")
+        try await store.record(try await store.pending(owner: "A").map { LawPushReceipt(sent: $0, outcome: .accepted(nil)) })
+        let next = try await store.put(kind: "annotation", payload: text(), owner: "A")
+        let place = try await store.put(kind: "bookmark", payload: bookmark("§ 2"), owner: "A")
+        try await store.batch(puts: [], removes: [LawPersonalRef(kind: "annotation", id: mark), LawPersonalRef(kind: "bookmark", id: mark3)], owner: "A")
+        let order = try await store.pending(owner: "A").map(\.id)
+        XCTAssertEqual(order, [mark3, next, place, mark])
+        _ = mark2
+    }
+    func testRestoredGuestEntriesAreAdoptedWhenSignedIn() async throws {
+        let store = LawPersonalStore(root: try root()), other = LawPersonalStore(root: try root())
+        let restored = try await other.put(kind: "annotation", payload: text(), owner: nil)
+        let foreign = try await other.put(kind: "annotation", payload: text(), owner: "B")
+        let archive = try await other.exportData()
+        try await store.adoptGuests(owner: "A")
+        let before = await store.writes
+        try await store.importData(archive, adoptingGuestsFor: "A")
+        let after = await store.writes
+        XCTAssertEqual(after - before, 1, "restore and adoption are one write")
+        let items = try await store.items()
+        // Before: restored as guest entries, invisible while signed in.
+        XCTAssertEqual(items.visible(to: "A").map(\.id), [restored])
+        let pending = try await store.pending(owner: "A")
+        XCTAssertEqual(pending.map(\.id), [restored])
+        // Another account's entry stays its own, hidden and unsent.
+        XCTAssertEqual(items.first { $0.id == foreign }?.owner, "B")
+        // Signed out: restored guest entries stay the guest's.
+        let guest = LawPersonalStore(root: try root())
+        try await guest.importData(archive)
+        let guestItems = try await guest.items()
+        XCTAssertEqual(guestItems.visible(to: nil).map(\.id), [restored])
+    }
+    func testPlanOnEntryDeletedBySyncMeanwhileWritesNothing() async throws {
+        let store = LawPersonalStore(root: try root())
+        let mark = try await store.put(kind: "annotation", payload: text(), owner: "A")
+        // A plan splitting `mark` was made; then a pull deleted it.
+        try await store.apply(LawSyncPage(changes: [LawSyncChange(seq: 1, kind: "annotation", id: mark, payload: nil, deleted: true)], cursor: 1, hasMore: false), owner: "A")
+        let before = try await store.items()
+        do {
+            try await store.batch(puts: [LawPersonalChange(kind: "annotation", payload: text())], removes: [LawPersonalRef(kind: "annotation", id: mark)], owner: "A", requireLive: true)
+            XCTFail("pieces of a deleted mark were written")
+        } catch { XCTAssertEqual(error as? LawPersonalConflict, .changedMeanwhile) }
+        let after = try await store.items()
+        XCTAssertEqual(after, before)
+        // Without the check (plain removal) nothing changes for a deleted entry either.
+        try await store.batch(puts: [], removes: [LawPersonalRef(kind: "annotation", id: mark)], owner: "A")
+    }
 }
