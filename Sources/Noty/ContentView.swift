@@ -18,7 +18,10 @@ struct ContentView: View {
     var onActivatePane: (() -> Void)?
     var onCloseWorkspace: (() -> Void)?
     var onSecondView: (() -> Void)?
+    /// Switches the law window: closed → open, parked → brought out, visible → closed.
     var onLaws: (() -> Void)?
+    /// Current state of the law window, read when the palette lists its commands.
+    var lawsPhase: (() -> LawPanelState.Phase)?
     /// `Space l`: shows the law window and hands it the keys.
     var onLawKeys: (() -> Void)?
     /// Reports the selected tool, e.g. so Pencil highlights in the law reader.
@@ -28,6 +31,8 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var toolbox: ToolbarSettingsModel
+    /// Law window focus: ⌘G then means its next hit (docs/KEYBOARD.md).
+    @ObservedObject private var lawKeys = LawKeyboard.shared
     @Environment(\.editorSettings) private var editorSettings
     @Environment(\.searchIndexArea) private var searchIndexArea
     @State private var showingSettings = false
@@ -273,6 +278,8 @@ struct ContentView: View {
             .interactiveDismissDisabled(isLibraryDocument || isRestoredCopy)
         }
         .preference(key: EditorCommandsPreference.self, value: editorCommands)
+        // Shortcuts of the law window: model, key responder, Esc in its fields.
+        .background { if !isRestoredCopy { LawKeyAnchor(active: isPaneActive()) } }
     }
 
     /// The whole document now has this paper colour: a neutral pen or marker
@@ -404,7 +411,7 @@ struct ContentView: View {
                       PaletteCommand(title: "Seite anpassen") { marginsPage = MarginPage(id: page.id) },
                       PaletteCommand(title: "Papier für neue Seiten") { editingDefaults = true }]
         }
-        if let onLaws { items.append(PaletteCommand(title: "Gesetzessammlung", run: onLaws)) }
+        if let onLaws { items.append(PaletteCommand(title: lawPanelPaletteTitle(lawsPhase?() ?? .closed), run: onLaws)) }
         if editorSettings != nil { items.append(PaletteCommand(title: "Einstellungen") { showingSettings = true }) }
         return items
     }
@@ -791,7 +798,8 @@ struct ContentView: View {
             }.frame(width: 48, height: 40).contentShape(Rectangle())
         }
         .foregroundStyle(.white)
-        .keyboardShortcut("g", modifiers: .command)
+        // With the law window focused ⌘G is its next hit (menu „Gesetze“).
+        .keyboardShortcut(lawKeys.focused ? nil : KeyboardShortcut("g", modifiers: .command))
         .accessibilityLabel(onDraft ? "Neue Seite nach Seite \(count), zum Springen tippen" : "Seite \(currentPageIndex + 1) von \(count), zum Springen tippen")
         .popover(isPresented: $pageEntry, arrowEdge: .trailing) { pageEntryPanel(count: count) }
     }
@@ -862,7 +870,7 @@ struct ContentView: View {
                 }
             }
             Section {
-                if let onLaws { Button("Gesetzessammlung", systemImage: "books.vertical", action: onLaws) }
+                if let onLaws { LawPanelMenuToggle(action: onLaws) }
                 Menu("Ansicht", systemImage: "eye") {
                     Toggle("Schreibscrollen bis zur Bildschirmmitte", systemImage: "arrow.left.and.right.square", isOn: $writingScroll)
                     Toggle("Blättern statt Scrollen", systemImage: "book.pages", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
@@ -1056,7 +1064,7 @@ struct ContentView: View {
             onPencilSqueeze: { handlePencilSqueeze($0) },
             onInteraction: { id, active in
                 model.setInteraction(id, active: active)
-                if active { KeyboardRouter.shared.pageTouched() }
+                if active { KeyboardRouter.shared.pageTouched(); LawKeyboard.shared.pageTouched() }
             },
             onUndo: { redo in performUndo(redo: redo) },
             undoState: UndoAvailability(undo: model.canUndo, redo: model.canRedo),

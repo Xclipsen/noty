@@ -119,17 +119,23 @@ final class EditorWorkspace: ObservableObject {
 
 struct EditorWorkspaceView: View {
     @EnvironmentObject private var laws: LawLibraryModel
+    /// Open/stashed/docked, edge, live width and height of the law window.
+    @EnvironmentObject private var lawPanel: LawPanelModel
     @AppStorage(LawLibraryModel.enabledKey) private var lawsEnabled = false
-    /// Live width while resizing; stored when the resize ends.
-    @State private var lawWidth = UserDefaults.standard.object(forKey: LawLibraryModel.panelWidthKey) as? Double ?? 380
     @State private var lawResizeStart: Double?
-    /// Height of a window at the bottom edge; stored like the width.
-    @State private var lawHeight = UserDefaults.standard.object(forKey: LawLibraryModel.panelHeightKey) as? Double ?? 360
     @GestureState private var lawResizing = false
     /// Live drag of the law window's top bar or of its edge tab, with the drop
     /// that releasing now would perform (shown as a preview).
     @State private var lawDrag: LawDrag?
     @GestureState private var lawDragActive = false
+    /// Set once the law window was on screen; the reader is created only then
+    /// and kept while parked, dropped again when the window closes (B14).
+    @State private var lawReaderLoaded = false
+    /// Shown for a moment when docking hides the second notebook.
+    @State private var lawDockHint: UUID?
+    /// A field of the law window is typed into (`LawKeyboard.fieldEditing`):
+    /// only then does the window move above the on-screen keyboard.
+    @State private var lawFieldTyping = false
     /// What Apple Pencil does in the law reader (`none`/`marker`/`eraser`).
     @AppStorage("noty.laws.pencil") private var lawPencil = "none"
     /// Display preference only (global, like the sidebar): side, axis, size.
@@ -184,17 +190,29 @@ struct EditorWorkspaceView: View {
     }
 
     var body: some View {
+        // The law window is laid out on the whole workspace (a docked window
+        // must not start floating because a keyboard appeared); the keyboard
+        // is the difference of both readers. The notebooks give way to it as
+        // before the law window (`LawPanelLayout.notebookFrame`, a vertical
+        // split keeps its lower notebook above it); the window only while one
+        // of its own fields types, so it never covers notebook text being typed.
+        GeometryReader { avoiding in
         GeometryReader { geometry in
-            let lawShown = lawsEnabled && laws.panelOpen
-            let lawStashed = lawShown && laws.stashed
-            let lawVisible = lawShown && !laws.stashed
+            let lawPhase: LawPanelState.Phase = lawsEnabled ? lawPanel.phase : .closed
+            let lawVisible = lawPhase == .visible
+            let keyboard = max(0, geometry.size.height - avoiding.size.height)
             // A stashed window keeps its docked/floating shape for the way back
             // but gives the notebook its full width meanwhile.
             let law = LawPanelLayout(size: PageSize(width: geometry.size.width, height: geometry.size.height),
-                                     width: lawWidth, height: lawHeight, docked: laws.docked, edge: laws.panelEdge)
+                                     width: lawPanel.width, height: lawPanel.height, docked: lawPanel.docked, edge: lawPanel.edge,
+                                     keyboard: keyboard, avoidsKeyboard: lawVisible && lawFieldTyping)
             let docking = lawVisible && law.docked
+            let hidesSecond = docking && workspace.secondary != nil
             // Docked at a side or along the bottom: the notebooks keep the rest.
-            let notebookArea = docking ? law.notebookFrame : PageRect(x: 0, y: 0, width: geometry.size.width, height: geometry.size.height)
+            let notebookArea = docking ? law.notebookFrame : PageRect(x: 0, y: 0, width: geometry.size.width, height: law.freeHeight)
+            // Notebooks at the bottom reach on under the keyboard as before:
+            // their viewport keeps its size and measures the keyboard itself.
+            let overhang = docking ? law.notebookOverhang : keyboard
             let editorWidth = notebookArea.width
             let size = PageSize(width: editorWidth, height: notebookArea.height)
             let split = workspace.secondary != nil && !docking
@@ -208,8 +226,9 @@ struct EditorWorkspaceView: View {
                         let frame = hidden ? PageRect(x: 0, y: 0, width: 0, height: 0) : (split ? current.frame(of: entry.pane, in: size) : PageRect(x: 0, y: 0, width: size.width, height: size.height))
                         let preservedSize = PageSize(width: geometry.size.width, height: geometry.size.height)
                         let preservedFrame = current.frame(of: entry.pane, in: preservedSize)
+                        let reach = frame.y + frame.height >= size.height - 0.5 ? overhang : 0
                         paneView(entry, split: hidden ? true : split, current: current, size: hidden ? preservedSize : size)
-                            .frame(width: max(0, hidden ? preservedFrame.width : frame.width), height: max(0, hidden ? preservedFrame.height : frame.height))
+                            .frame(width: max(0, hidden ? preservedFrame.width : frame.width), height: max(0, hidden ? preservedFrame.height : frame.height + reach))
                             .frame(width: max(0, frame.width), height: max(0, frame.height), alignment: .topLeading)
                             .clipped()
                             .opacity(hidden ? 0 : (paneDrag?.pane == entry.pane ? 0.4 : 1))
@@ -226,11 +245,30 @@ struct EditorWorkspaceView: View {
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
             .overlay {
-                if lawsEnabled { lawLayer(law, shown: lawShown, visible: lawVisible, stashed: lawStashed) }
+                if lawsEnabled { lawLayer(law, phase: lawPhase, hidesSecond: workspace.secondary != nil) }
+            }
+            .overlay(alignment: .top) {
+                if lawDockHint != nil && hidesSecond { lawDockHintView(in: notebookArea).transition(.opacity) }
             }
             // Panes clip themselves already; this keeps a stashed law window
             // from drawing beyond the workspace edge.
             .clipped()
+            .onReceive(LawKeyboard.shared.$fieldEditing.removeDuplicates()) { typing in
+                guard typing != lawFieldTyping else { return }
+                withAnimation(NotyMotion.panel(reduceMotion)) { lawFieldTyping = typing }
+            }
+            .onChange(of: lawPhase, initial: true) { _, phase in
+                if phase == .visible { lawReaderLoaded = true } else if phase == .closed { lawReaderLoaded = false }
+            }
+            .onChange(of: hidesSecond) { _, hides in
+                withAnimation(NotyMotion.highlight(reduceMotion)) { lawDockHint = hides ? UUID() : nil }
+                if hides { AccessibilityNotification.Announcement(Self.lawDockHintText).post() }
+            }
+            .task(id: lawDockHint) {
+                guard lawDockHint != nil else { return }
+                do { try await Task.sleep(for: .seconds(4)) } catch { return }
+                withAnimation(NotyMotion.highlight(reduceMotion)) { lawDockHint = nil }
+            }
             .onChange(of: docking) { _, docked in
                 if docked && workspace.activePane == 1 {
                     // Finish marked/IME text while its original pane still owns
@@ -249,12 +287,13 @@ struct EditorWorkspaceView: View {
             .sensoryFeedback(.selection, trigger: dividerFraction)
             .sensoryFeedback(.selection, trigger: lawDrag.flatMap { $0.drop == .stay ? nil : $0.drop })
         }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        }
         // A cancelled gesture never reaches onEnded: drop the preview.
         .onChange(of: lawResizing) { _, active in
             if !active {
                 lawResizeStart = nil
-                UserDefaults.standard.set(lawWidth, forKey: LawLibraryModel.panelWidthKey)
-                UserDefaults.standard.set(lawHeight, forKey: LawLibraryModel.panelHeightKey)
+                lawPanel.saveSize()
             }
         }
         .onChange(of: lawDragActive) { _, active in if !active, lawDrag != nil { withAnimation(NotyMotion.panel(reduceMotion)) { lawDrag = nil } } }
@@ -267,7 +306,8 @@ struct EditorWorkspaceView: View {
                 update { $0.vertical = vertical; $0.place(.secondary, in: slot) }
                 Task {
                     await workspace.openSecondary(document)
-                    if workspace.secondary != nil && laws.panelOpen && laws.docked { laws.docked = false }
+                    // A second notebook is never hidden by a docked window it was opened beside.
+                    if workspace.secondary != nil && lawPanel.isOpen && lawPanel.docked { lawPanel.docked = false }
                 }
             }
         }
@@ -287,7 +327,8 @@ struct EditorWorkspaceView: View {
     }
 
     private func pane(_ model: EditorModel, index: Int) -> some View {
-        ContentView(model: model, isRestoredCopy: false, isLibraryDocument: true, initialSearchBounds: index == 0 ? workspace.primaryDocument.searchBounds : nil,
+        let panelModel = lawPanel
+        return ContentView(model: model, isRestoredCopy: false, isLibraryDocument: true, initialSearchBounds: index == 0 ? workspace.primaryDocument.searchBounds : nil,
             initialFlowRange: index == 0 ? workspace.primaryDocument.searchFlowRange : nil,
             isPaneActive: { workspace.activePane == index && !workspace.closing }, isPaneSelected: { workspace.activePane == index }, onActivatePane: { workspace.activePane = index },
             onCloseWorkspace: { Task {
@@ -298,12 +339,12 @@ struct EditorWorkspaceView: View {
                 if closed { library.notebookClosedByUser(); dismiss() }
             } },
             onSecondView: { choose() }, onLaws: lawsEnabled ? {
-                // Shows the window; a visible one goes to its edge tab like its ✕.
-                if !laws.panelOpen { laws.panelOpen = true; laws.stashed = false }
-                else { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed.toggle() } }
-            } : nil, onLawKeys: lawsEnabled ? {
-                withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelOpen = true; laws.stashed = false }
-                laws.keyFocus += 1
+                // Real switch: closed → open, parked → brought out, visible → closed.
+                _ = panelModel.toggle()
+            } : nil, lawsPhase: lawsEnabled ? { panelModel.phase } : nil, onLawKeys: lawsEnabled ? {
+                // Opens with the keys; a reader created by this opening takes
+                // the set focus when it appears (no timed second request).
+                if !LawKeyboard.shared.openWithKeys() { panelModel.open(); laws.keyFocus += 1 }
             } : nil, onToolChange: { tool in
                 // Picking the highlighter or an eraser in the active notebook
                 // switches the law reader along; other tools leave its choice.
@@ -325,6 +366,7 @@ struct EditorWorkspaceView: View {
     }
     /// Touch width of the edge tab; the visible tab is narrower and sits at the screen edge.
     private static let lawTabTouch = 48.0
+    static let lawDockHintText = "Zweites Heft ausgeblendet – kommt zurück, sobald die Gesetze wieder schweben"
 
     private func lawAlignment(_ edge: LawPanelEdge) -> Alignment {
         switch edge { case .left: .leading; case .right: .trailing; case .bottom: .bottom }
@@ -344,49 +386,93 @@ struct EditorWorkspaceView: View {
     }
     private func lawTabEdges(_ edge: LawPanelEdge) -> Edge.Set { edge == .bottom ? .trailing : .bottom }
 
+    /// Window, edge tab and drop preview. A closed window is not in the view
+    /// tree at all; a parked one keeps its reader (B14). Every way in or out
+    /// (✕, „An den Rand“, tab, its ✕, menus, keys, dragging) animates the
+    /// same: along the window's edge, with `NotyMotion.panel`.
     @ViewBuilder
-    private func lawLayer(_ l: LawPanelLayout, shown: Bool, visible: Bool, stashed: Bool) -> some View {
-        let side = lawAlignment(l.edge)
+    private func lawLayer(_ l: LawPanelLayout, phase: LawPanelState.Phase, hidesSecond: Bool) -> some View {
+        let visible = phase == .visible, stashed = phase == .parked
         let offset = lawPanelOffset(l, stashed: stashed)
         let lifted = lawDrag.map { !$0.fromTab } ?? false
         let frame = l.frame
+        let out = CGSize(width: l.hiddenShift * l.outward.x, height: l.hiddenShift * l.outward.y)
+        let preview = lawDrag.flatMap { l.changes($0.drop) ? $0.drop : nil }
         ZStack {
-            if let drop = lawDrag?.drop, l.changes(drop) {
-                lawDropPreview(drop, l).allowsHitTesting(false).transition(.opacity)
-            }
-            LawPanelView(drag: lawMoveGesture(l), pen: lawPen, onPenChange: { next in
-                lawPencil = next.kind == .marker ? "marker" : next.kind == .eraser ? "eraser" : "none"
-                // One highlighter colour for notebook and law reader.
-                if next.color != toolbox.preferences.markerColor { toolbox.preferences.markerColor = next.color }
-            }, canDock: l.canDock, docked: l.docked)
-                .frame(width: frame.width, height: frame.height)
-                .opacity(shown ? 1 : 0).allowsHitTesting(visible).accessibilityHidden(!visible)
-                .scaleEffect(lifted ? 0.97 : 1)
-                .padding(l.margin)
-                .overlay(alignment: l.edge == .left ? .trailing : l.edge == .right ? .leading : .top) {
-                    if visible && lawDrag == nil { lawResizeHandle(l) }
+            // Own container: only the preview animates when its target changes.
+            ZStack {
+                if let preview {
+                    lawDropPreview(preview, l, hidesSecond: hidesSecond && preview.docks).transition(.opacity)
                 }
-                .offset(offset)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: side)
+            }
+            .allowsHitTesting(false)
+            .animation(NotyMotion.highlight(reduceMotion), value: preview)
+            if phase != .closed {
+                LawPanelView(drag: lawMoveGesture(l), pen: lawPen, onPenChange: { next in
+                    lawPencil = next.kind == .marker ? "marker" : next.kind == .eraser ? "eraser" : "none"
+                    // One highlighter colour for notebook and law reader.
+                    if next.color != toolbox.preferences.markerColor { toolbox.preferences.markerColor = next.color }
+                }, canDock: l.canDock, docked: l.docked, dragging: lifted,
+                   loadsReader: lawReaderLoaded || visible, hidesSecondNotebook: hidesSecond)
+                    .frame(width: frame.width, height: frame.height)
+                    .allowsHitTesting(visible).accessibilityHidden(!visible)
+                    .scaleEffect(lifted && !reduceMotion ? 0.97 : 1)
+                    .padding(l.margin)
+                    .overlay(alignment: l.edge == .left ? .trailing : l.edge == .right ? .leading : .top) {
+                        if visible && lawDrag == nil { lawResizeHandle(l) }
+                    }
+                    .offset(offset)
+                    .position(x: frame.x + frame.width / 2, y: frame.y + frame.height / 2)
+                    // Opening and closing slide along the same way as parking.
+                    .transition(.offset(out))
+            }
             if stashed {
                 lawEdgeTab(l)
-                    .offset(x: offset.width - l.hiddenShift * l.outward.x, y: offset.height - l.hiddenShift * l.outward.y)
+                    .offset(x: offset.width - out.width, y: offset.height - out.height)
                     .padding(lawTabEdges(l.edge), lawTabClearsToolbar(l.edge) ? 24 : 0)
+                    .padding(.bottom, l.keyboard)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: lawTabAlignment(l.edge))
                     .transition(.opacity)
             }
         }
+        .notyTooltipHost()
+    }
+
+    /// Near the bottom of the notebooks, away from a toolbar at the top; near
+    /// the top when the toolbar is docked at the bottom.
+    private func lawDockHintY(in area: PageRect) -> CGFloat {
+        let top = CGFloat(area.y) + 72
+        if toolbox.preferences.effectiveDock == .bottom { return top }
+        return max(top, CGFloat(area.y + area.height) - 120)
+    }
+    /// Short note over the notebooks when docking hides the second one; at
+    /// the edge away from the notebook toolbar, never over it.
+    private func lawDockHintView(in area: PageRect) -> some View {
+        Label(Self.lawDockHintText, systemImage: "eye.slash")
+            .font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
+            .lineLimit(2).multilineTextAlignment(.center)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Color(white: 0.11).opacity(0.96), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.16), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+            .frame(maxWidth: max(0, area.width - 32))
+            .position(x: area.x + area.width / 2, y: lawDockHintY(in: area))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     /// Width handle on the inner edge of a side window, height handle on the
     /// top edge of a bottom window. Measured in the fixed workspace space: the
-    /// handle itself moves while the size changes.
+    /// handle itself moves while the size changes. Brightens while held.
     private func lawResizeHandle(_ l: LawPanelLayout) -> some View {
         let bottom = l.edge == .bottom
-        return Capsule().fill(.secondary.opacity(0.5))
-            .frame(width: bottom ? 56 : 5, height: bottom ? 5 : 56)
-            .frame(width: bottom ? 120 : 20, height: bottom ? 20 : nil)
+        return Capsule().fill(.white.opacity(lawResizing ? 0.9 : 0.5))
+            .frame(width: bottom ? 44 : 5, height: bottom ? 5 : 44)
+            .scaleEffect(lawResizing && !reduceMotion ? 1.15 : 1)
+            .shadow(color: .black.opacity(0.35), radius: 3)
+            .frame(width: bottom ? 120 : 20, height: bottom ? 20 : 120)
             .contentShape(Rectangle())
+            .animation(NotyMotion.highlight(reduceMotion), value: lawResizing)
             // Docked at the bottom the handle straddles the seam instead of the top bar (the grip).
             .offset(y: bottom && l.docked ? -10 : 0)
             .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .named(Self.space))
@@ -395,16 +481,17 @@ struct EditorWorkspaceView: View {
                     if bottom {
                         if lawResizeStart == nil { lawResizeStart = l.frame.height }
                         let height = (lawResizeStart ?? l.frame.height) - drag.translation.height
-                        let limit = l.docked ? l.size.height - LawPanelLayout.notebookHeight : l.size.height - 84
-                        lawHeight = min(max(LawPanelLayout.minimumHeight, height), max(LawPanelLayout.minimumHeight, limit))
+                        // Above an open keyboard: the handle cannot be dragged into it.
+                        lawPanel.height = min(max(LawPanelLayout.minimumHeight, height), l.heightLimit)
                     } else {
                         if lawResizeStart == nil { lawResizeStart = l.frame.width }
                         let width = (lawResizeStart ?? l.frame.width) + drag.translation.width * (l.edge == .left ? 1 : -1)
-                        lawWidth = min(max(LawPanelLayout.minimumWidth, width), max(LawPanelLayout.minimumWidth, l.size.width - LawPanelLayout.notebookWidth))
+                        lawPanel.width = min(max(LawPanelLayout.minimumWidth, width), l.widthLimit)
                     }
                 }.onEnded { _ in lawResizeStart = nil })
+            .sensoryFeedback(.selection, trigger: lawResizing) { _, active in active }
             .accessibilityLabel(bottom ? "Höhe der Gesetzessammlung ändern" : "Breite der Gesetzessammlung ändern")
-            .help(bottom ? "Höhe ändern" : "Breite ändern")
+            .notyTooltip(bottom ? "Höhe ändern" : "Breite ändern")
     }
 
     /// Marking uses the notebook highlighter's colour and straightening options.
@@ -441,7 +528,7 @@ struct EditorWorkspaceView: View {
                 let drop = lawDrop(value, l, flick: true)
                 withAnimation(NotyMotion.panel(reduceMotion)) {
                     lawDrag = nil
-                    applyLawDrop(drop)
+                    lawPanel.apply(drop)
                 }
             }
     }
@@ -453,109 +540,117 @@ struct EditorWorkspaceView: View {
                predictedLocation: flick ? PagePoint(x: value.predictedEndLocation.x, y: value.predictedEndLocation.y) : nil)
     }
 
-    private func applyLawDrop(_ drop: LawPanelDrop) {
-        switch drop {
-        case .stay: break
-        case .float(let edge): laws.docked = false; laws.panelEdge = edge
-        case .dock(let edge): laws.docked = true; laws.panelEdge = edge
-        case .stash(let edge): laws.panelEdge = edge; laws.stashed = true
-        }
-    }
-
-    /// Where the window lands: docked area, floating outline or the edge tab.
+    /// Where the window lands: docked area, floating outline or the edge tab,
+    /// drawn like the pane drop preview (accent area, label in a capsule).
     @ViewBuilder
-    private func lawDropPreview(_ drop: LawPanelDrop, _ l: LawPanelLayout) -> some View {
+    private func lawDropPreview(_ drop: LawPanelDrop, _ l: LawPanelLayout, hidesSecond: Bool) -> some View {
         switch drop {
         case .dock(let edge):
-            let target = LawPanelLayout(size: l.size, width: lawWidth, height: lawHeight, docked: true, edge: edge).frame
-            RoundedRectangle(cornerRadius: 14).fill(Color.accentColor.opacity(0.16))
-                .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.accentColor.opacity(0.8), lineWidth: 2))
+            let target = LawPanelLayout(size: l.size, width: lawPanel.width, height: lawPanel.height, docked: true, edge: edge, keyboard: l.keyboard, avoidsKeyboard: l.avoidsKeyboard).frame
+            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.accentColor.opacity(0.16))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.accentColor, lineWidth: 2))
                 .overlay {
-                    Label("Andocken", systemImage: edge == .left ? "rectangle.lefthalf.inset.filled"
-                          : edge == .right ? "rectangle.righthalf.inset.filled" : "rectangle.bottomhalf.inset.filled")
-                        .font(.headline).foregroundStyle(Color.accentColor)
+                    VStack(spacing: 6) {
+                        lawPreviewLabel("Andocken", symbol: edge == .left ? "rectangle.lefthalf.inset.filled"
+                                        : edge == .right ? "rectangle.righthalf.inset.filled" : "rectangle.bottomhalf.inset.filled", accent: true)
+                        if hidesSecond {
+                            Text("Zweites Heft wird ausgeblendet").font(.caption.weight(.medium)).foregroundStyle(.white.opacity(0.9))
+                        }
+                    }
                 }
-                .frame(width: max(0, target.width - 8), height: max(0, target.height - 8))
+                .frame(width: max(0, target.width - 12), height: max(0, target.height - 12))
                 .position(x: target.x + target.width / 2, y: target.y + target.height / 2)
         case .float(let edge):
-            let target = LawPanelLayout(size: l.size, width: lawWidth, height: lawHeight, docked: false, edge: edge).frame
-            RoundedRectangle(cornerRadius: 16).fill(Color.white.opacity(0.06))
-                .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [8, 6])))
-                .overlay { Label("Schweben", systemImage: "rectangle.on.rectangle").font(.headline).foregroundStyle(.white.opacity(0.85)) }
+            let target = LawPanelLayout(size: l.size, width: lawPanel.width, height: lawPanel.height, docked: false, edge: edge, keyboard: l.keyboard, avoidsKeyboard: l.avoidsKeyboard).frame
+            RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.06))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [8, 6])))
+                .overlay { lawPreviewLabel("Schweben", symbol: "rectangle.on.rectangle", accent: false) }
                 .frame(width: max(0, target.width), height: max(0, target.height))
                 .position(x: target.x + target.width / 2, y: target.y + target.height / 2)
         case .stash(let edge):
             lawTabShape(edge, highlighted: true)
                 .padding(lawTabEdges(edge), lawTabClearsToolbar(edge) ? 24 : 0)
+                .padding(.bottom, l.keyboard)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: lawTabAlignment(edge))
         case .stay:
             EmptyView()
         }
     }
 
+    private func lawPreviewLabel(_ title: String, symbol: String, accent: Bool) -> some View {
+        Label(title, systemImage: symbol)
+            .font(.headline).foregroundStyle(.white)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(Capsule().fill(accent ? Color.accentColor.opacity(0.85) : Color(white: 0.16).opacity(0.94)))
+            .overlay(Capsule().strokeBorder(.white.opacity(accent ? 0 : 0.18)))
+    }
+
     private func lawTabShape(_ edge: LawPanelEdge, highlighted: Bool = false) -> some View {
         let shape = UnevenRoundedRectangle(topLeadingRadius: edge == .left ? 0 : 12, bottomLeadingRadius: edge == .right ? 12 : 0,
-                                           bottomTrailingRadius: edge == .left ? 12 : 0, topTrailingRadius: edge == .right ? 0 : 12)
+                                           bottomTrailingRadius: edge == .left ? 12 : 0, topTrailingRadius: edge == .right ? 0 : 12,
+                                           style: .continuous)
         let symbol = switch edge { case .left: "chevron.compact.right"; case .right: "chevron.compact.left"; case .bottom: "chevron.compact.up" }
         return Image(systemName: symbol)
-            .font(.system(size: 24, weight: .semibold))
-            .foregroundStyle(highlighted ? Color.accentColor : Color.white.opacity(0.9))
+            .font(.system(size: 20, weight: .regular))
+            .foregroundStyle(highlighted ? Color.accentColor : Color.white.opacity(0.88))
             .frame(width: edge == .bottom ? 92 : 30, height: edge == .bottom ? 30 : 92)
-            .background(Color(white: 0.28), in: shape)
-            .overlay(shape.stroke(Color.white.opacity(0.18), lineWidth: 1))
+            .lawGlass(shape)
+            .overlay(shape.stroke(highlighted ? Color.accentColor.opacity(0.8) : Color.white.opacity(0.18), lineWidth: 1))
             .shadow(color: .black.opacity(0.4), radius: 6)
     }
 
-    /// The arrow tab left at the screen edge while the window is stashed, like
-    /// iPad Slide Over: tap it, or pull it inward and the window follows. The
-    /// small ✕ beside it is the second ✕: it closes the window completely
-    /// (feedback 22.10.2026); the notebook menu „Gesetzessammlung“ opens it again.
+    /// The tab left at the screen edge while the window is parked, like iPad
+    /// Slide Over: tap it, or pull it inward and the window follows. The small
+    /// ✕ beside it closes the window completely; the notebook menu
+    /// „Gesetzessammlung“ opens it again.
     private func lawEdgeTab(_ l: LawPanelLayout) -> some View {
         let edge = l.edge, out = l.outward
-        let tab = lawTabShape(edge)
-            // Larger touch area than the visible tab, extending inward only.
-            .frame(width: edge == .bottom ? 140 : Self.lawTabTouch, height: edge == .bottom ? Self.lawTabTouch : 140,
-                   alignment: lawAlignment(edge))
-            .contentShape(Rectangle())
-            .onTapGesture { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = false } }
-            .gesture(DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.space))
+        let tab = Button { lawPanel.unpark() } label: {
+            lawTabShape(edge)
+                // Larger touch area than the visible tab, extending inward only.
+                .frame(width: edge == .bottom ? 140 : Self.lawTabTouch, height: edge == .bottom ? Self.lawTabTouch : 140,
+                       alignment: lawAlignment(edge))
+                .contentShape(Rectangle())
+        }
+            .buttonStyle(NotyPressStyle())
+            .simultaneousGesture(DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.space))
                 .updating($lawDragActive) { _, state, _ in state = true }
-                .onChanged { lawDrag = LawDrag(translation: $0.translation, drop: .stay, fromTab: true) }
+                .onChanged {
+                    // Pulled in: the window follows with its reader (B14).
+                    if !lawReaderLoaded { lawReaderLoaded = true }
+                    lawDrag = LawDrag(translation: $0.translation, drop: .stay, fromTab: true)
+                }
                 .onEnded { value in
                     let inward = -(value.translation.width * out.x + value.translation.height * out.y)
                     let flung = -(value.predictedEndTranslation.width * out.x + value.predictedEndTranslation.height * out.y)
                     let extent = l.hiddenShift
                     withAnimation(NotyMotion.panel(reduceMotion)) {
                         lawDrag = nil
-                        if inward > extent * 0.25 || (inward > 12 && flung > extent * 0.5) { laws.stashed = false }
+                        if inward > extent * 0.25 || (inward > 12 && flung > extent * 0.5) { lawPanel.unpark() }
                     }
                 })
-            .accessibilityElement()
             .accessibilityLabel("Gesetzessammlung hervorholen")
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = false } }
-            .accessibilityAction(named: "Ganz schließen") { withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelOpen = false } }
-            .help("Gesetzessammlung hervorholen")
-        let close = Button {
-            withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelOpen = false }
-        } label: {
-            Image(systemName: "xmark").font(.system(size: 12, weight: .bold))
-                .foregroundStyle(.white.opacity(0.9))
+            .accessibilityAction(named: "Schließen") { lawPanel.close() }
+            .notyTooltip("Hervorholen (⌥⌘L)")
+        let close = Button { lawPanel.close() } label: {
+            Image(systemName: "xmark").font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.88))
                 .frame(width: 28, height: 28)
-                .background(Color(white: 0.28), in: Circle())
+                .lawGlass(Circle())
                 .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
                 .shadow(color: .black.opacity(0.4), radius: 4)
                 .frame(width: 44, height: 44).contentShape(Rectangle())
         }
             .buttonStyle(NotyPressStyle())
-            .accessibilityLabel("Gesetzessammlung ganz schließen")
-            .accessibilityHint("Ohne Pfeil am Rand. Über „Gesetzessammlung“ im Heft wieder öffnen.")
-            .help("Ganz schließen – ohne Pfeil am Rand")
+            .accessibilityLabel("Gesetzessammlung schließen")
+            .accessibilityHint("Schließt ganz, auch die Lasche. Wieder öffnen: Heft-Menü › Gesetzessammlung oder ⇧⌘L.")
+            .notyTooltip("Ganz schließen")
         return Group {
             if edge == .bottom {
                 HStack(alignment: .bottom, spacing: 6) { tab; close.padding(.bottom, -6) }
             } else {
                 VStack(alignment: edge == .left ? .leading : .trailing, spacing: 6) { close.padding(edge == .left ? .leading : .trailing, -6); tab }
+                    .environment(\.notyTooltipAxis, .vertical)
             }
         }
     }

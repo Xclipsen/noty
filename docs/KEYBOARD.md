@@ -2,20 +2,23 @@
 
 Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur in Seitenleiste, Suche, Gesetzen, Dialogen und Farbe, Textdokument-Extras und die Befunde des Reviews. **Implementiert, erfolgreich gebaut, Core-Tests bestanden, am iPad ungeprüft.** Linux hat keinen iOS-Simulator: Engine, Tastentabelle, Parser, Bereichsbearbeitung, Tastensperre und Fokusziele sind getestet, Tastenzustellung, Fokus, Anzeige und TextKit-Messung **nicht**. Ein Simulator-Lauf auf Stand Build 67 hat die Tastenzustellung einmal bestätigt, das ersetzt den Gerätetest nicht.
 
-**Seit Build 71 experimentell und nur in Textdokumenten.** Die Helix-Bedienung ist standardmäßig aus und gilt, wenn eingeschaltet, nur solange ein Textdokument im aktiven Bereich offen ist, einschließlich der daraus geöffneten Bedienfelder. Bibliothek, Hefte und deren Seiten kennen sie nicht mehr; die Abschnitte dazu unten beschreiben den Stand bis Build 70. Der frühere Schalter `noty.keyboard.mode` wird nicht mehr gelesen.
+**Seit Build 71 experimentell und nur in Textdokumenten.** Die Helix-Bedienung ist standardmäßig aus und gilt, wenn eingeschaltet, nur solange ein Textdokument im aktiven Bereich offen ist, einschließlich der daraus geöffneten Bedienfelder (auch des Gesetzesfensters). Bibliothek, Hefte und deren Seiten kennen sie nicht mehr; die Abschnitte „Bibliothek“, „Seite“ und „Seitenleiste“ unten beschreiben den Stand bis Build 70. Der frühere Schalter `noty.keyboard.mode` wird nicht mehr gelesen.
+
+**Gesetzessammlung mit normaler Tastatur (feat/gesetze-tastatur, 03.11.2026):** Menü „Gesetze“ und Gesetzfokus, siehe den eigenen Abschnitt unten. **Implementiert, erfolgreich gebaut (`xtool dev build`), Core-Tests bestanden, nicht installiert, am iPad ungeprüft.**
 
 ## ⌘-Kürzel (immer aktiv, auch ohne Tastaturmodus)
 
 | Taste | Wirkung | Wo |
 | --- | --- | --- |
 | ⌘N / ⇧⌘N | Neues Heft / neues Textdokument | Bibliothek |
-| ⌘F | Suchen | überall |
+| ⌘F | Suchen; bei Gesetzfokus „Im Gesetz suchen“ | überall |
 | ⌘S | Speichern | Editor |
 | ⌘E / ⇧⌘E | PDF ganz / diese Seite | Editor |
-| ⌘↑ / ⌘↓ | Vorherige / nächste Seite (im Text: Anfang/Ende dieses Texts, Systemverhalten) | Editor |
-| ⌘G | Gehe zu Seite | Editor |
+| ⌘↑ / ⌘↓ | Vorherige / nächste Seite (im Text: Anfang/Ende dieses Texts, Systemverhalten; bei Gesetzfokus Anfang/Ende der Vorschrift) | Editor |
+| ⌘G | Gehe zu Seite (bei Gesetzfokus: nächster Treffer) | Editor |
 | ⌘W | Schließen | Editor |
-| ⌘Z / ⇧⌘Z | Rückgängig / Wiederholen | Editor |
+| ⌘Z / ⇧⌘Z | Rückgängig / Wiederholen (bei Gesetzfokus: nur Markierungen) | Editor |
+| ⇧⌘L, ⌥⌘L, ⌘L | Gesetzessammlung öffnen oder schließen, an den Rand schieben oder vom Rand holen, Fundstelle suchen (Menü „Gesetze“) | Editor, Sammlung eingeschaltet |
 | ⌘A | Alles auswählen (siehe unten) | Editor |
 | ⌘C ⌘X ⌘V ⌘D | Kopieren, Ausschneiden, Einfügen, Duplizieren | Text und Auswahl |
 | ⌫, Pfeile, ⇧Pfeile | Auswahl löschen, um 1 pt / 10 pt schieben | Objektauswahl |
@@ -32,6 +35,50 @@ Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur 
 **⌘A:** Im Text das ganze Feld; im Textdokument der ganze Text über alle Seiten (blau markiert; ⌘C/⌘X/⌘V, ⌫ und Formatierung wirken auf alles, beim Schreiben auch Tippen, ⌘Z als ein Schritt). Ohne Cursor im Textdokument dasselbe, dann in NOR, damit kein Buchstabe versehentlich alles ersetzt. Außerhalb von INS wirkt ⌘A wie `%`. Im Heft alles Auswählbare der Seite, mit jedem Werkzeug. Das Bearbeitungsmenü „Alles auswählen“ bleibt die native Auswahl dieser Seite.
 
 Außerhalb von INS: ⌘V ersetzt eine breite Auswahl, sonst wie `P`; ⌘X schneidet eine breite Auswahl aus. Beides läuft über Engine und Register.
+
+## Gesetzessammlung (normale Tastatur)
+
+Gilt im geöffneten Heft oder Textdokument, solange Einstellungen › Gesetzessammlung eingeschaltet ist, mit und ohne Helix. Eine Tabelle für Menü, Key Commands und Hilfe: Core `LawShortcuts` (`LawShortcutsTests`: Eindeutigkeit je Kontext, Sperrliste, jede Überschneidung mit dem Heft benannt).
+
+**Menü „Gesetze“** (Menüleiste und ⌘-Übersicht, im Editor; nicht vorhanden, solange die Sammlung in den Einstellungen abgeschaltet ist). Titel nach Apple-Konvention ohne Schrägstriche, je Zustand: „Gesetzessammlung öffnen“ / „Gesetzessammlung schließen“, „An den Rand schieben“ / „Vom Rand holen“; die Befehlspalette benutzt dieselben Wörter („… öffnen“, „… schließen“, „… vom Rand holen“).
+
+| Taste | Wirkung |
+| --- | --- |
+| ⇧⌘L | Gesetzessammlung öffnen (mit Fokus) oder schließen, wenn sie sichtbar ist |
+| ⌥⌘L | An den Rand schieben oder vom Rand holen (mit Fokus); bei geschlossenem Fenster deaktiviert |
+| ⌘L | Fundstelle suchen: Fenster zeigen, Schnellsuche leeren und fokussieren (`144 HGB`) |
+| – | Anordnen › Links, Rechts, Unten andocken, Über dem Heft schweben (ohne Kürzel, siehe unten) |
+
+**Gesetzfokus:** ⇧⌘L, ⌥⌘L (beim Hervorholen), ⌘L, `Space l`, ein Feld des Fensters oder eine Auswahl im Gesetzestext setzen ihn. Sichtbar: Titel „Gesetze“ im Fensterkopf hell (sonst gedimmt) und eine 2-pt-Linie in der Akzentfarbe unter dem Kopf. Berührung der Heftseite mit Finger oder Stift, ein Text auf der Seite, Schließen und Parken nehmen ihn zurück. Mit Fokus wird der unsichtbare Tastenempfänger `LawKeyHostView` First Responder, solange kein Feld des Fensters tippt; der Seite gehören die Tasten danach wieder (`KeyboardRouter.reclaim`). Die Einträge des Fokus stehen im Menü „Gesetze“, sobald das Fenster sichtbar ist, und lassen sich dort auch ohne Fokus wählen (das Fenster nimmt dann den Fokus); ihre Kürzel gelten nur mit Fokus. Mit Fokus gilt zusätzlich:
+
+| Taste | Wirkung | Weg |
+| --- | --- | --- |
+| Esc | Eine Ebene: Auswahl oder gewählte Markierung aufheben, sonst Eingabefeld verlassen, sonst offene Suchfläche schließen, sonst Fenster schließen | Key Command; im Feld über einen verborgenen `.cancelAction` |
+| ⌘F | Im Gesetz suchen (Schnellsuche fokussieren); Menü „Heft“ heißt dann „Im Gesetz suchen“ | Menü |
+| ⌘G, ↩ / ⇧⌘G, ⇧↩ | Nächster / vorheriger Volltexttreffer der Schnellsuche, ohne Suchbegriff in die Schnellsuche | Menü / Key Command |
+| ← → | Vorherige / nächste Vorschrift | Key Command |
+| ↑ ↓, ⌥↑ ⌥↓, Leertaste, ⇧Leertaste | Scrollen: Zeile, „Bildschirmseite weiter/zurück“ | Key Command |
+| ⌘↑ / ⌘↓ | Anfang / Ende der Vorschrift | Menü |
+| ⌘+ ⌘- ⌘0 | Schrift größer, kleiner, „Normale Schriftgröße“ (Fließtextgröße von Dynamic Type + 1 pt, 18 pt bei Standardgröße), nur im Lesetext | Menü |
+| ⌘D | „Lesezeichen setzen“ bzw. „Lesezeichen entfernen“ (Titel je Zustand) | Menü |
+| ⌘T, ⇧⌘T, ⌥⌘B | Gesetz wählen, Inhaltsverzeichnis, Lesezeichen und Markierungen | Menü |
+| ⌥⌘P | „PDF zeigen“ bzw. „Lesetext zeigen“ (Titel je Zustand) | Menü |
+| 1–5 | Auswahl in Gelb, Grün, Blau, Rosa, Orange markieren; gewählte Markierung umfärben. Nur bei Auswahl, sonst bleibt die Ziffer frei | Key Command |
+| ⇧⌘H | Mit der zuletzt mit 1–5 gewählten Farbe markieren (sonst Stiftfarbe) | Menü |
+| ⌫ | Markierung unter Auswahl bzw. gewählte Markierung entfernen; nur dann | Key Command |
+| ⌘Z / ⇧⌘Z | „Markieren widerrufen“ / „Markieren wiederholen“, Vorrang vor dem Heft-Undo; ohne Schritt keine Wirkung, das Heft bleibt unberührt. Mit Touch: „…“ › Markieren widerrufen / Wiederholen | Key Command |
+
+**Warum zwei Wege:** ⌘-Kürzel stehen im Menü „Gesetze“ und bekommen ihr Kürzel nur bei Fokus; so wirken sie aus jedem Teil des Fensters (Suchfeld, Gesetzestext, Tastenempfänger) und stehen in Menüleiste und ⌘-Übersicht. Tasten ohne ⌘ wären im Menü auch beim Tippen aktiv, und ⌘Z stieße dort mit „Bearbeiten › Widerrufen“ des Systems zusammen: beides sind `UIKeyCommand`s mit `discoverabilityTitle` am Tastenempfänger, nur bei Fokus und nicht unter einem Sheet. Mit eingeschaltetem Helix gehen die Tasten ohne ⌘ an `GESETZE` (unten), die ⌘-Kürzel gelten weiter.
+
+**Konflikte, aufgelöst:** ⌘G (Gehe zu Seite) und ⌘↑/⌘↓ (Seite) verlieren bei Fokus ihr Kürzel an das Fenster; ⌘F behält das Kürzel und wechselt Titel und Ziel; ⌘+ ⌘- ⌘D ⇧⌘H ⌘Z gehören sonst Text, Objektauswahl oder Seite, die bei Fokus nicht First Responder sind. Nicht belegt: ⌘H, ⌘Leertaste, ⌘Tab, ⇧⌘3/4/5, ⌥⌘D, ⌘W (Heft schließen), ⌘, ⌘Q ⌘M ⌃⌘F ⌘`, ⇧⌘P, ⌘/ und 🌐-Kombinationen. **Andocken ohne Kürzel:** ⌃⌘Pfeil liegt neben der Fensteranordnung von iPadOS (🌐⌃Pfeil; auf Tastaturen ohne 🌐-Taste oft auf ⌃ umgelegt) und ließe sich hier nicht prüfen; die vier Einträge stehen deshalb nur im Menü „Gesetze › Anordnen“.
+
+**Kürzelübersicht für die Hilfe im Leser** (Text; `LawShortcuts.overview()` liefert dasselbe):
+
+> Fenster: ⇧⌘L öffnen oder schließen · ⌥⌘L an den Rand · ⌘L Fundstelle suchen
+> Suchen: ⌘F im Gesetz suchen · ⌘G/↩ nächster, ⇧⌘G/⇧↩ vorheriger Treffer
+> Lesen: ←/→ Vorschrift · ↑/↓ scrollen · ⌥↑/⌥↓ oder Leertaste Bildschirmseite · ⌘↑/⌘↓ Anfang/Ende · Esc zurück/schließen
+> Ansicht: ⌘+/⌘-/⌘0 Schrift · ⌘D Lesezeichen · ⌘T Gesetz · ⇧⌘T Inhalt · ⌥⌘B Liste · ⌥⌘P Text/PDF
+> Markieren (bei Auswahl): 1–5 Farbe · ⇧⌘H letzte Farbe · ⌫ entfernen · ⌘Z/⇧⌘Z widerrufen/wiederholen
 
 ## Tastaturmodus
 
@@ -147,7 +194,7 @@ Ein angetippter Text im Suchfeld bleibt nativ (Tottasten gehen dort), dann wirke
 
 ### Gesetzessammlung (`GESETZE`)
 
-`Space l` öffnet das Fenster und gibt ihm die Tasten. Esc oder `Space l` schiebt es wie das ✕ an den Rand, die Tasten gehen an die Seite, der Text bleibt, wo er war. Fokus wandert dabei nie: Die Tasten kommen weiter über den Responder der Seite.
+Seit Build 71 nur mit eingeschaltetem Helix in einem offenen Textdokument; in Heften gelten allein die normalen Kürzel (Abschnitt „Gesetzessammlung (normale Tastatur)“), die auch hier weiter wirken. `Space l` öffnet das Fenster, setzt den Gesetzfokus und gibt ihm die Tasten. Esc (ohne Auswahl) und `Space l` schließen es wie das ✕, `P` schiebt es an den Rand; die Tasten gehen an die Seite, der Text bleibt, wo er war. Kommt `Space l` aus einem Text in NOR, bleibt dessen Responder: Die Tasten laufen weiter über ihn zum Router. Sonst nimmt der Tastenempfänger des Fensters den Fokus und reicht die Tasten an den Router weiter.
 
 | Taste | |
 | --- | --- |
@@ -159,7 +206,10 @@ Ein angetippter Text im Suchfeld bleibt nativ (Tottasten gehen dort), dann wirke
 | Enter | In der Eingabezeile suchen, danach nächster Volltexttreffer |
 | `t`, `o`, `B` | Gesetz wählen, Inhaltsverzeichnis, Lesezeichen und Markierungen |
 | `b`, `v`, `+ = -` | Lesezeichen, Lesetext oder PDF, Schrift |
-| `m`, `M` | Touch-Auswahl markieren, Markierung darin entfernen |
+| `m1`–`m5`, `mm` | Auswahl in Farbe 1–5 bzw. der letzten Farbe markieren, gewählte Markierung umfärben |
+| `d`, `M` | Markierung unter der Auswahl bzw. gewählte Markierung entfernen |
+| `u`, `U` | Markierung rückgängig, wiederholen |
+| Esc, `Space l`, `P` | Auswahl aufheben, sonst schließen; schließen; an den Rand |
 
 ### Dialoge (`DIALOG`)
 
@@ -198,10 +248,11 @@ Ein Titelfeld ist eine Option wie jede andere: Steht der Rahmen darauf, tippen a
 
 ## Grenzen
 
-- Nicht per Tastenbelegung erreichbar: Systemdialoge (Dateiauswahl, Teilen, Fotos, Farbkreis des Systems) und Zeichnen; dazu Anmeldung und Zugangsdaten (Einstellungen › Konto, Backup › Weitere Optionen: nur Esc und natives Tippen, Passwörter laufen bewusst nicht über den Router), Menüs der Werkzeugoptionen außer Farbe, Strichstärke und Linienart, das Umordnen in „Werkzeugleiste anpassen“ und „Seiten anordnen“, Bereich entfernen, Gesetzesfenster andocken. Dort hilft iPadOS: Bedienungshilfen › Tastaturen › „Voller Tastaturzugriff“ (Tab/Pfeile/Leertaste für jedes Element).
+- Nicht per Tastenbelegung erreichbar: Systemdialoge (Dateiauswahl, Teilen, Fotos, Farbkreis des Systems) und Zeichnen; dazu Anmeldung und Zugangsdaten (Einstellungen › Konto, Backup › Weitere Optionen: nur Esc und natives Tippen, Passwörter laufen bewusst nicht über den Router), Menüs der Werkzeugoptionen außer Farbe, Strichstärke und Linienart, das Umordnen in „Werkzeugleiste anpassen“ und „Seiten anordnen“, Bereich entfernen. Das Gesetzesfenster andocken geht nur über Menü „Gesetze › Anordnen“, ohne Kürzel. Dort hilft iPadOS: Bedienungshilfen › Tastaturen › „Voller Tastaturzugriff“ (Tab/Pfeile/Leertaste für jedes Element).
 - Systemalerts und `confirmationDialog` (Fehler, Touch-Rückfragen): OK und Speichern sind als Standardaktion hinterlegt, Abbrechen kommt vom System. Ob Enter und Esc dort wirken, ist ungeprüft.
 - Felder, die Tasten über den Router füllen (Suchsheet, Titel, Paragraph, Namen), haben keinen Cursor und keine Tottasten, wie die Eingabezeile von `/`. Nach dem Antippen sind sie nativ. ⌘V geht im Sheet und über die Objektauswahl; mit Stiftwerkzeug fehlt es in der Eingabezeile der Gesetze.
-- Markieren im Gesetzestext: nur eine Touch-Auswahl (`m`, `M`). Der Leser hat keinen Tastaturcursor; ihn zu bauen hieße, einen zweiten Texteditor in einem schreibgeschützten Text zu pflegen.
+- Markieren im Gesetzestext: nur eine Touch-Auswahl (1–5, ⇧⌘H, ⌫; Helix `m1`–`m5`, `mm`, `d`). Der Leser hat keinen Tastaturcursor; ihn zu bauen hieße, einen zweiten Texteditor in einem schreibgeschützten Text zu pflegen.
+- Gesetzfokus: Solange der Gesetzestext oder das PDF nach einer Touch-Auswahl First Responder ist, fehlen ihm die Key Commands des Fensters (Esc, Pfeile, 1–5, ⌫, ⌘Z), bis `LawTextView`/`LawPDFView` sie übernehmen (`LawKeyboard.keyCommands()`, Zusammenführung des Markier-Pakets); die ⌘-Kürzel im Menü wirken trotzdem. Ein Tipp ins Fenster setzt den Fokus erst, wenn `LawPanelView` `.lawKeyFocusArea()` anwendet; bis dahin setzen ihn Felder, Auswahl, ⌘L, ⇧⌘L, ⌥⌘L und `Space l`. Aus einem Helix-Text in NOR bleiben ⌘Z und ⌘+/⌘- beim Text.
 - Sehr lange Listen in Dialogen (Inhaltsverzeichnis) wandern nur durch sichtbare Zeilen und scrollen dann weiter; `ge` meint dort die letzte sichtbare Zeile.
 - Die App zeigt nur die Hauptauswahl (`C`, ⌥C, `s`, `S`, ⌥s bilden die übrigen in der Engine); Register nur als Klartext. **Mehrere Auswahlen:** `d`, `y`, `~`, `r` usw. wirken auf alle. Getippt wird im bisherigen Weg nur an einem Cursor: `c`, `i`, `a`, `I`, `A`, `o`, `O` und ebenso `.` und dieselben Befehle in einem Makro behalten deshalb vorher nur die Hauptauswahl, die Anzeige meldet `Nur Hauptauswahl`. Texteditor 2 tippt an allen Cursorn und zeigt „n Auswahlen“ auch in INS.
 - `~`, `` ` `` und `r` erhalten die Formatierung in der Auswahl, solange die Ersetzung gleich lang ist. Ändert sie die UTF-16-Länge (`ß` zu `SS`, `r` mit einem Emoji über einfachen Buchstaben), wird die Auswahl einheitlich im Format ihres Anfangs.
@@ -239,7 +290,7 @@ Ein Titelfeld ist eine Option wie jede andere: Steht der Rahmen darauf, tippen a
 23. **Seitenleiste:** `Space s`, `j k h l`, `gg`, `ge`, Enter öffnet und `j` scrollt sofort die Seite; `Space s`, Esc; `Space s` zweimal klappt ein. `b`, `y`, `p`, `D`, `K`, `J`, `a` (Sheet, Esc, Tasten stehen wieder in der Leiste), `d` und `X` fragen, Enter und Esc. Dasselbe aus einem Text in NOR: Esc lässt ihn weiterlaufen. Während die Leiste die Tasten hat, schreibt `p` nichts in den Text, `⌫` und Pfeile lassen ein gewähltes Objekt stehen. Schreiben mit dem Stift gibt die Tasten an die Seite zurück.
 24. **Gliederung, Lesezeichen:** `Space o` im Textdokument und in einem Heft mit PDF-Inhalt (geschlossene Zweige öffnen sich beim Wandern), `Space m`, Enter springt; `Space M` setzt; leere Listen: Esc führt zurück.
 25. **Suchsheet:** ⌘F und `/` im Heft, `Space f` und `/` in der Bibliothek, auch als allererste Taste nach dem Start. Tippen füllt das Feld, ⌫, ⌘V; ↓ wählt, `j k`, ⌃n ⌃p, `gg`, `ge`, ein Buchstabe oder eine Ziffer geht zurück ins Feld; Enter springt, danach `j` auf der Seite; Esc schließt, danach `j`. Feld antippen, tippen, Esc schließt.
-26. **Gesetze:** `Space l` geschlossen, am Rand, offen und ohne aktivierte Sammlung (Hinweis). `j k`, `n N`, `144G`, `p` 144 Enter, `/` `144 HGB`, `/` Wort Enter, Enter wandert zum nächsten Treffer; `t`, `o`, `B` je mit `j`, Enter, Esc; `v`; `+ -`. Esc und `Space l` schließen, `j` wirkt sofort auf der Seite, auch mit Stiftwerkzeug und aus einem Text in NOR. ⌫ in der Eingabezeile löscht kein gewähltes Objekt.
+26. **Gesetze (Helix, Textdokument):** `Space l` geschlossen, am Rand, offen und ohne aktivierte Sammlung (Hinweis). `j k`, `n N`, `144G`, `p` 144 Enter, `/` `144 HGB`, `/` Wort Enter, Enter wandert zum nächsten Treffer; `t`, `o`, `B` je mit `j`, Enter, Esc; `v`; `+ -`. Auswahl per Touch, `m2` (grün), `mm`, `d`, `u`, `U`. Esc und `Space l` schließen (kein Pfeil am Rand), `P` parkt, `j` wirkt sofort auf der Seite, auch mit Stiftwerkzeug und aus einem Text in NOR. ⌫ in der Eingabezeile löscht kein gewähltes Objekt.
 27. **Dialoge:** Neues Heft mit `n`: Titel tippen, Tab, `j`, Leertaste auf Umschlag, `h l` auf Papier, Enter erstellt, im neuen Heft wirken Tasten. Esc bricht ab, in der Bibliothek geht `j` weiter. `N`, `m` (Enter wählt Ordner), PDF importieren aus der Palette, Seite anpassen, Papier für neue Seiten, Lokale Wiederherstellungspunkte, zweite Ansicht. Rahmen läuft mit, auch nach unten scrollend. Einstellungen: `j`, Enter, Toggle per Leertaste, Esc eine Ebene, Esc schließt; aus Bibliothek und aus dem Heft.
 28. **Rückfragen:** `d` in der Bibliothek, Enter; `d`, Esc; Einstellungen › Papierkorb: Enter auf Eintrag, Endgültig löschen: Enter allein bricht ab. `r` und `f`: Name, ⌫, Enter, Esc, in der Bibliothek geht es danach weiter. Fehleralert: Enter, Esc, danach Tasten. **Ohne Antippen:** nach jedem Punkt dieser Liste muss die nächste Taste wirken.
 29. **Farbe:** `Space c` mit Stift, Marker, Formen (Linienart), genauem Radierer, Laser, Lasso (Hinweis), im Text (Farbe, Marker auf der Auswahl, `Aus`); `1`, `hjkl`, Enter, Esc ändert nichts. Tafel offen, Text antippen: Tippen schreibt.
@@ -254,6 +305,7 @@ Ein Titelfeld ist eine Option wie jede andere: Steht der Rahmen darauf, tippen a
 38. **Einzug:** Zeile mit Leerzeichen: Enter, `o`, `O`, je tippen; Enter, Esc nimmt den Einzug weg, `u`; Liste mit Enter und `o` wie bisher (kein doppeltes Listenzeichen); Marked Text und Enter; `o` auf der letzten Seitenzeile einer eingerückten Zeile.
 39. **Texteditor 2:** `.`, `q`, `c` mit mehreren Cursorn, Klammerpaar an mehreren Cursorn, ⌫ dort; Undo je ein Schritt.
 40. **Tasten bei gehaltenem Makro:** Während `REC` wiederholt gehaltenes `j` nicht (ein Schritt je Druck). `Q` in der Palette, `Makro abspielen` in der Palette.
+41. **Gesetze, normale Tastatur (Heft, Helix aus):** Zustellung zuerst: ⇧⌘L öffnet, dann ↓ scrollt das Gesetz und nicht die Seite (sonst erreicht der Tastenempfänger die Tasten nicht). ⌘-Halten zeigt „Gesetze“ und die Key Commands; Menüleiste „Gesetze“ mit wechselnden Titeln. ⇧⌘L schließt (kein Pfeil), ⌥⌘L parkt und holt, ⌘L fokussiert die Schnellsuche, tippen, Esc verlässt das Feld, zweites Esc schließt. Mit Fokus: ⌘F (Titel im Menü „Heft“), ⌘G/⇧⌘G und ↩/⇧↩, ← →, ↑ ↓, ⌥↑ ⌥↓, Leertaste, ⌘↑ ⌘↓ (Seite wechselt nicht), ⌘+ ⌘- ⌘0, ⌘D, ⌘T, ⇧⌘T, ⌥⌘B, ⌥⌘P. Touch-Auswahl, 1–5, ⇧⌘H, ⌫ auf einer Markierung; ohne Auswahl tippen Ziffern und ⌫ nichts. ⌘Z nimmt die Markierung zurück, nicht den letzten Heftstrich; ohne Fokus wieder das Heft. Stift auf die Seite: ⌘G öffnet „Gehe zu Seite“, ⌘↑ blättert. Sheet über dem Fenster (Inhaltsverzeichnis): Esc schließt das Sheet, nicht das Fenster. **Vorrang:** Key Command ⌘Z am Responder gegen „Bearbeiten › Widerrufen“, Menü-⌘G gegen den Seitennavigator. Gleiches mit Helix im Textdokument: Tasten ohne ⌘ nach `GESETZE`, ⌘-Kürzel wie oben.
 
 **Diagnose:** Mit Einstellungen › Diagnose (ab Neustart) protokolliert `KeyboardRouter` jede Taste mit Kontext, Ergebnis und First Responder: `idevicesyslog | rg noty.keys`. Dazu Zustandszeilen `textBegan`, `textEnded` (auch `waits`, `kept`), `applyTextFocus refused` und `second-way` bei abgewiesenem Key Command, je mit Modus, `editing`, `handoff` und Responder. Der Esc-Weg nennt sein Ergebnis (`one level`, `leaves text`, `text gone`). Getippter Text erscheint nur als `(typing)`, auch in der Eingabezeile, im Suchsheet und in Dialogfeldern. Kommt zu einer Taste keine Zeile, hat sie keinen unserer Responder erreicht.
 
@@ -309,10 +361,12 @@ Bewusst wie Helix, ebenso überraschend: `.` ohne vorherige Einfügung verlässt
 
 ## Aufbau
 
-**Core:** `HelixKeymap`, `HelixParser`, `TextEngine` (Sprungliste, `.`, Makros und `EditComposer` in `TextEngine+Macros.swift`), `TextTyping` (Einzug und Paare, für Engine und beide Textwege), `KeyPressGate`, `KeyDeliveryLatch` und `KeyPalette` (`KeyboardCommands.swift`), `TextLines`, `Notebook.editingTextFlow`/`restylingTextFlow` (`TextFlowRange.swift`). `KeyboardPanels.swift`: `KeyList`, `KeyOptionRing`, `KeyChoice`, `KeyChoiceCursor`, `KeyInputLine`, `KeyPanelStack`, `KeyFocusTarget` (`KeyboardPanelsTests`).
+**Core:** `LawShortcuts` (Gesetzeskürzel der normalen Tastatur, `LawShortcutsTests`), `HelixKeymap`, `HelixParser`, `TextEngine` (Sprungliste, `.`, Makros und `EditComposer` in `TextEngine+Macros.swift`), `TextTyping` (Einzug und Paare, für Engine und beide Textwege), `KeyPressGate`, `KeyDeliveryLatch` und `KeyPalette` (`KeyboardCommands.swift`), `TextLines`, `Notebook.editingTextFlow`/`restylingTextFlow` (`TextFlowRange.swift`). `KeyboardPanels.swift`: `KeyList`, `KeyOptionRing`, `KeyChoice`, `KeyChoiceCursor`, `KeyInputLine`, `KeyPanelStack`, `KeyFocusTarget` (`KeyboardPanelsTests`).
 
 
 **App:** `KeyboardRouter` nimmt die Tastendrücke entgegen (`pressesBegan` in `PageTextView`, `DrawingCanvasView`, `WorksheetView`, `KeyboardHostView`), ⌘-Kürzel bleiben bei Menü und Key Commands. Er hält Parser und Engine und bindet `HelixAction` an `ContentView.runKey`, `LibraryView.runKey` und `ObjectEditingLayer`. INS läuft am Parser vorbei, nur Esc geht an die Engine.
+
+**Gesetze** (`LawKeyCommands.swift`): `LawKeyboard` hält Gesetzfokus, Fenstermodell und die Aktionen des Lesers (`LawReaderKeyboard.swift`, registriert über `laws.keyFocus`); `LawKeyAnchor` im Editor verbindet den aktiven Bereich und trägt den Tastenempfänger `LawKeyHostView`; `NotyCommands` baut das Menü „Gesetze“ aus `LawShortcuts`. `KeyboardRouter.claimResponder` lässt bei Fokus die Seite in Ruhe, `textBegan`, `tappedText` und Berührungen der Seite nehmen den Fokus zurück.
 
 **Panels** (`KeyboardPanels.swift`): Alles außer Seite, Text und Bibliothek ist ein `KeyPanel` mit eigenem `HelixContext` auf einem Stapel; das neueste hat die Tasten, sein `run` bindet die Aktionen. Seitenleiste, Gesetze, Rückfragen und Farbe nehmen keinen Fokus, die Tasten kommen weiter über den bisherigen Responder. Nur Sheets bringen mit `KeyPanelHostView` einen eigenen mit; er hält auch Esc, Tab, Enter, Leertaste und Pfeile als Key Commands, weil das Fokussystem einer Liste sie sonst nehmen könnte. Wer den Fokus zu holen hat, entscheidet `KeyFocusTarget`, ausgeführt von `reclaim()`: jedes Schließen eines Panels läuft über `leave` und holt zurück, auch was nicht durch `presenting` geht (Sheets der Seitenleiste und des Lesers). Eine neue Option braucht nur `keyOption`; die Reihenfolge ergibt sich aus der Lage (`KeyOptionRing`). Ein neuer Dialog braucht `keyboardSheet()`. Sheets legen ihre Overlays selbst darüber (`KeyboardOverlay(panel:)`), die der Bibliothek lägen darunter. Ohne Tastatur (`hasKeyboard`) übernimmt nichts den Fokus, es erscheint kein Rahmen.
 

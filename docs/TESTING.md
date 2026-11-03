@@ -2,6 +2,16 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Gesetze: fünf Pakete zusammengeführt (03.11.2026, Branch `feat/gesetze`)
+
+**Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert), nicht installiert, am iPad ungeprüft.** Daten, Markieren, Fenster, Tastatur und Design verbunden ([LAW-REWORK](LAW-REWORK.md#stand-nach-zusammenführung)). Core-Tests 1165 (3 übersprungen, 0 Fehler), `check_page_workflow.sh` grün, `check_law_workflow.sh` mit echtem Katalog grün (`LawRealCatalogTests` 2 Tests). Die Gerätetests der Pakete unten gelten gebündelt für den zusammengeführten Stand; zusätzlich: ⌘F/⌘L öffnen die gemeinsame Suchfläche, 1–5/⇧⌘H/⌫ wirken auch auf eine PDF-Auswahl, Tastenkürzel bleiben bei einer Auswahl im Text bzw. PDF verfügbar, Esc schließt das Fenster ganz, letzte Zeilen stehen über Fußzeile und Markierleiste, Lesestelle mit Fassung und Text/PDF nach Neustart, abgelehnte Einträge in den Einstellungen.
+
+## Gesetze: Markieren überarbeitet (03.11.2026, Branch `feat/gesetze-markieren`)
+
+**Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert), nicht installiert, am iPad ungeprüft.** Plan und Fehler: [LAW-REWORK](LAW-REWORK.md) (B4–B8, B11), Vertrag: [LAW-MARKS-CONTRACT](LAW-MARKS-CONTRACT.md). Bereichsrechnung, PDF-Anker und Ausdünnen im Core (`LawMarkEditing`, `LawPDFAnchoring`): `LawMarkEditingTests` 29 Tests; volle Core-Suite 1126 Tests (3 übersprungen, 0 Fehler). Wortgrenzen kommen am Gerät vom System-Tokenizer (`.byWords`), unter Linux nur vom Ersatz; PDFKit, TextKit-Zeichnung, Gesten und Leiste sind unter Linux nicht ausführbar. Seit der Zusammenführung (unten) schreibt `LawLibraryModel.commit(plan:)` jeden Plan als einen atomaren Vorgang (`commit(puts:removes:)`, IDs vom Aufrufer).
+
+Gerätetest (gebündelt, Testgesetz in noty dev, einmal ohne und einmal mit Konto): (1) Text auswählen: Leiste erscheint unter der Auswahl (bzw. darüber ohne Platz), Farbpunkt markiert sofort; Editmenü „Markieren ›“ mit fünf Farben; Kopieren. (2) Gleiche Farbe überlappend/angrenzend → eine Fläche; andere Farbe in der Mitte → alte Farbe links und rechts bleibt; Teil einer Markierung auswählen → „Entfernen“ entfernt nur diesen Teil; genau dieselbe Stelle erneut → nichts Neues in der Liste. (3) Markierung antippen: blaue Kontur und Leiste; Farbe ändern (bleibt ausgewählt), Entfernen mit Toast „Markierung entfernt · Rückgängig“ (≈ 4 s), „Bereich anpassen“ setzt die Auswahl, Griffe ziehen, ✓ oder Farbe übernimmt. (4) ⌘Z/⇧⌘Z bzw. Toast: Rückgängig/Wiederholen über mehrere Schritte, auch nach Abgleich; synchronisierte fremde Markierungen bleiben unberührt. (5) Pencil mit Textmarker: schräger Strich bleibt in der Startzeile, mehrzeilig erst deutlich in der nächsten Zeile; Stifttipp markiert ein Wort; Radierer-Strich teilt, Radierer-Tipp entfernt das Wort unter dem Stift. (6) Darstellung: abgerundete Flächen in Glyphenhöhe ohne Überlagerungsfehler, HTML-Tabellen, große Schrift, Dunkelmodus; Gelb wie auf der Website. (7) PDF: Auswahl → dieselbe Leiste statt „Markieren“-Knopf; mehrzeilig ergibt **eine** Markierung je Seite (Liste prüfen) mit sauberen Quads; Textmarkierungen erscheinen auch im PDF; PDF-Markierung antippen → Kontur und Leiste; langer Freihandstrich (> 1500 Punkte) wird gespeichert statt abzubrechen; Stifttipp markiert ein Wort. (8) Liste: gruppiert nach Gesetz/Fassung/Vorschrift, Originaltext statt kanonischem Schlüssel, Farbpunkt, PDF-Seite, Suchfeld, Wischen löscht mit Rückgängig, Leerzustand. (9) Website: in der App angelegte Text- und PDF-Markierungen erscheinen dort (Farbe dort weiter Gelb).
+
 ## Ansicht bleibt nach App-Wechsel stehen (03.11.2026, Release-Kandidat 1)
 
 **Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert), nicht installiert, am iPad ungeprüft.** Nutzerbefund: Textfeld angelegt/bearbeitet, App gewechselt, zurück: noty zieht die Ansicht zum Cursor. Ursachen im Code, Ablauf und Lösung: [BUG-18](BUG-18-TEXT-INPUT.md#app-wechsel-zieht-die-ansicht-zum-cursor-03112026). Core-Tests 1187 (3 übersprungen, 0 Fehler; neu `CaretRevealGateTests`, 12 Tests). Die UIKit-Ereignisfolge beim Wechsel (Tastatur, Snapshot-Größen, Ersthelfer) ist unter Linux nicht ausführbar.
@@ -304,6 +314,30 @@ Geräteabnahme gebündelt:
 5. Neue/fehlerhafte/unterbrochene Fassungsdownloads und Platzmangel: alter Bestand bleibt gültig, markierte alte Fassung erreichbar, aktive Lesestelle erhalten. Automatische Aktualisierung bei beendeter App ist nicht zugesichert.
 
 Deployment, SMTP-Einrichtung und Geräteupdate folgen den Freigabe-/Sicherungsregeln in AGENTS/ENVIRONMENT. Ein lokales Releasepaket und eine erfolgreiche Installation sind kein Laufzeitnachweis.
+
+### Überarbeitung Fensterverhalten · `feat/gesetze-fenster` · 03.11.2026
+
+Plan: [LAW-REWORK](LAW-REWORK.md#zielbild-fenster) (B2, B14), Bedienung: [DESIGN](DESIGN.md#gesetzessammlung--bestätigte-bedienung-20102026) „Schließen parkt“.
+
+- **Implementiert**: Core `LawPanelState` (geschlossen/geparkt/sichtbar, angedockt, Kante; `open/close/park/unpark/toggle/togglePark/dock/float/apply`), `LawPanelLayout` mit Tastaturhöhe (`keyboard`, `freeHeight`); `LawPanelModel` mit denselben UserDefaults-Schlüsseln und animierten Aktionen; ✕ schließt, eigener Parkknopf, Heft-Menü als Umschalter mit Häkchen, Palettentitel nach Zustand; geschlossenes Fenster nicht im View-Baum, Leser erst beim ersten Sichtbarwerden; Hinweis beim Andocken mit zweitem Heft; Arbeitsfläche ignoriert die Bildschirmtastatur; neues Fenster-/Laschen-/Vorschau-/Griffdesign; Einstellungsseite mit Symbolen. Keine Speicher- oder Formatänderung.
+- **Core-Tests**: volle Suite 1108 XCTests ohne Fehler (3 übersprungen), davon neu `LawPanelStateTests` (7) und `LawPanelKeyboardTests` (4).
+- **SDK-Build** (`xtool dev build`) erfolgreich. **Nicht installiert, auf dem iPad ungeprüft.**
+
+Geräteprüfung, gebündelt (jeweils mit eingeschalteter und reduzierter Bewegung, einmal mit „Transparenz reduzieren“):
+
+| Weg | Erwartung |
+| --- | --- |
+| ✕ oben rechts | gleitet über die Kante hinaus, keine Lasche; erneutes Öffnen an gleicher Kante, gleich angedockt, gleiche Größe, gleiche Lesestelle |
+| Parkknopf (Kantensymbol) | parkt mit Lasche; Tooltip „An den Rand“ bei Pencil-Hover/Trackpad |
+| Leiste über den Rand ziehen / schnippen | parkt an der jeweiligen Kante |
+| Lasche antippen / hereinziehen | holt hervor, Leserzustand unverändert; Druckrückmeldung an der Lasche |
+| kleines ✕ an der Lasche | schließt ganz, animiert |
+| Heft-Menü „Gesetzessammlung“ | Häkchen nur bei sichtbarem Fenster; geschlossen → öffnet, geparkt → holt hervor, sichtbar → schließt |
+| Palette „Gesetzessammlung“ | Titel „… öffnen“ / „… schließen“ / „… vom Rand holen“ passend; gleiche Umschaltung |
+| `Space l`, Esc, ⇧⌘L, ⌥⌘L | (Tastatur-Paket) müssen dieselben animierten Übergänge zeigen |
+| Gesetzessammlung in den Einstellungen ausschalten | Fenster schließt |
+
+Außerdem: App mit geparktem Fenster neu starten (Lasche da, Leser lädt erst beim Hervorholen bzw. Hereinziehen); mit zweitem Heft andocken (Hinweis, Drop-Vorschau „Zweites Heft wird ausgeblendet“, beim Schweben kommt das Heft mit Seite/Zoom/Entwurf zurück); Bildschirmtastatur aus dem Gesetzessuchfeld und aus einem Heft-Textfeld bei Fenster links/rechts/unten, angedockt und schwebend (Heft bleibt stehen, Fenster weicht aus, unten angedocktes bleibt angedockt); Heft-Canvas und Textfelder behalten Auswahl, Zoom und Entwurf beim Öffnen/Schließen/Andocken (keine neue Editor-Instanz); Größengriff (Aufhellen, Haptik, gespeicherte Größe).
 
 ## Prüfungen auf diesem Rechner
 
