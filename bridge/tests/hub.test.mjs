@@ -16,7 +16,9 @@ async function grepState(root, needle) {
   for (const entry of await readdir(root, { recursive: true, withFileTypes: true })) {
     if (!entry.isFile()) continue;
     const file = path.join(entry.parentPath, entry.name);
-    if ((await readFile(file)).includes(needle)) hits.push(file);
+    // Atomares Schreiben benennt .tmp-Dateien um; was dabei verschwindet, steht in der Zieldatei.
+    const content = await readFile(file).catch(error => { if (error.code === 'ENOENT') return Buffer.alloc(0); throw error; });
+    if (content.includes(needle)) hits.push(file);
   }
   return hits;
 }
@@ -335,7 +337,10 @@ test('Tokenzählung: je Lauf nur der letzte Gesamtstand, auch spät, auch bei Fe
   await hub.turn(USER, s.id, request('anfrage-0002'));
   await settled(store, s.id);
   await until(() => hub.runs.size === 0);
-  assert.deepEqual(metering.forToday(USER), { turns: 2, failedTurns: 0, images: 2, inputTokens: 600, cachedInputTokens: 60, outputTokens: 30, reasoningOutputTokens: 6 });
+  const today = metering.forToday(USER);
+  assert.ok(today.durationMs >= 0 && today.timedTurns === 2);
+  assert.deepEqual({ ...today, durationMs: 0 }, { turns: 2, failedTurns: 0, images: 2, imageBytes: 2 * PNG.length, contextChars: 0, inputTokens: 600, cachedInputTokens: 60, cacheWriteInputTokens: 0,
+    outputTokens: 30, reasoningOutputTokens: 6, totalTokens: 630, durationMs: 0, timedTurns: 2 });
 
   const late = r => { r.complete(); r.usage(a); };
   const second = await setup(t, { rpc: { onTurn: late } });

@@ -59,7 +59,8 @@ test('Status: pending und blocked sehen nur /v1/me, active alles', async t => {
   const me = await body.json();
   assert.deepEqual(Object.keys(me).sort(), ['dailyLimit', 'role', 'status', 'today', 'user']);
   assert.deepEqual([me.user, me.status, me.role, me.dailyLimit], [{ id: USER, name: 'Anna' }, 'pending', 'user', 200]);
-  assert.deepEqual(Object.keys(me.today), ['turns', 'failedTurns', 'images', 'inputTokens', 'cachedInputTokens', 'outputTokens', 'reasoningOutputTokens']);
+  assert.deepEqual(Object.keys(me.today), ['turns', 'failedTurns', 'images', 'imageBytes', 'contextChars', 'inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens',
+    'outputTokens', 'reasoningOutputTokens', 'totalTokens', 'durationMs', 'timedTurns']);
   for (const [status, code] of [['pending', /wartet/], ['blocked', /gesperrt/]]) {
     if (status === 'blocked') await ctx.accounts.update(USER, { status });
     assert.equal((await (await ctx.call('GET', '/v1/me')).json()).status, status);

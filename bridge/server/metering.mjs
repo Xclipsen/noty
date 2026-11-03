@@ -2,13 +2,21 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DAY_MS, LatestWriter } from './store.mjs';
 
-export const COUNTERS = ['turns', 'failedTurns', 'images', 'inputTokens', 'cachedInputTokens', 'outputTokens', 'reasoningOutputTokens'];
+export const TOKEN_COUNTERS = ['inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens'];
+// `durationMs` summiert die Laufzeit der Läufe mit bekanntem Ende, `timedTurns` zählt diese Läufe für den Durchschnitt.
+export const COUNTERS = ['turns', 'failedTurns', 'images', 'imageBytes', 'contextChars', ...TOKEN_COUNTERS, 'durationMs', 'timedTurns'];
 export const emptyCounters = () => Object.fromEntries(COUNTERS.map(name => [name, 0]));
 export const dayKey = time => new Date(time).toISOString().slice(0, 10);
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const isPlainObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
 const isUsageFile = saved => isPlainObject(saved) && Object.entries(saved).every(([day, users]) =>
   DAY.test(day) && isPlainObject(users) && Object.values(users).every(isPlainObject));
+/**
+ * Ältere Dateien kennen `totalTokens` nicht. Codex rechnet ihn als inputTokens + outputTokens (der Cache steckt
+ * schon in inputTokens), also wird er dort abgeleitet; Cache-Schreiben, Bildbytes, Kontext und Laufzeit bleiben 0.
+ */
+const upgrade = counters => Object.hasOwn(counters, 'totalTokens') ? counters
+  : { ...counters, totalTokens: (Number.isSafeInteger(counters.inputTokens) ? counters.inputTokens : 0) + (Number.isSafeInteger(counters.outputTokens) ? counters.outputTokens : 0) };
 const addTo = (target, delta) => {
   for (const name of COUNTERS) {
     const value = delta[name];
@@ -33,7 +41,7 @@ export class Metering {
     }
     if (!isUsageFile(saved)) throw new Error('Verbrauchsdatei ist unlesbar.');
     for (const [day, users] of Object.entries(saved)) {
-      this.days.set(day, new Map(Object.entries(users).map(([id, counters]) => [id, addTo(emptyCounters(), counters)])));
+      this.days.set(day, new Map(Object.entries(users).map(([id, counters]) => [id, addTo(emptyCounters(), upgrade(counters))])));
     }
     return this;
   }
@@ -50,8 +58,7 @@ export class Metering {
   close() { return this.writer.close(); }
   /** Letzter Gesamtstand eines Laufs aus `tokenUsage.total` von thread/tokenUsage/updated. */
   static tokens(total) {
-    const { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens } = total ?? {};
-    return { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens };
+    return Object.fromEntries(TOKEN_COUNTERS.map(name => [name, total?.[name]]));
   }
   /** Zähler eines Kontos; `days` zählt den heutigen UTC-Tag mit, ohne Angabe gilt alles. */
   sum(userId, days) {
@@ -59,6 +66,31 @@ export class Metering {
     const result = emptyCounters();
     for (const [day, users] of this.days) if (day >= first && users.has(userId)) addTo(result, users.get(userId));
     return result;
+  }
+  /** Tagesreihe der letzten `days` UTC-Tage einschließlich heute: je Konto und gesamt, nur Tage mit Einträgen. */
+  series(days) {
+    const to = this.today();
+    const from = dayKey(this.now() - (days - 1) * DAY_MS);
+    const users = new Map();
+    const total = { sum: emptyCounters(), days: {} };
+    for (const [day, entries] of this.days) {
+      if (day < from || day > to) continue;
+      for (const [id, counters] of entries) {
+        if (!users.has(id)) users.set(id, { sum: emptyCounters(), days: {} });
+        const user = users.get(id);
+        user.days[day] = addTo(emptyCounters(), counters);
+        addTo(user.sum, counters);
+        total.days[day] = addTo(total.days[day] ?? emptyCounters(), counters);
+        addTo(total.sum, counters);
+      }
+    }
+    return { from, to, users, total };
+  }
+  /** Alle Tage aufsteigend, je Konto, für den CSV-Export. */
+  rows() {
+    const rows = [];
+    for (const day of [...this.days.keys()].sort()) for (const [id, counters] of this.days.get(day)) rows.push({ day, userId: id, counters: { ...counters } });
+    return rows;
   }
   forToday(userId) { return { ...emptyCounters(), ...this.days.get(this.today())?.get(userId) }; }
   /** Heutige Zähler über alle Konten. */

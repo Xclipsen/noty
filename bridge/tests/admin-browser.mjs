@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { createAdmin, createAdminApi } from '../server/admin.mjs';
 import { request, setup, until } from './helpers.mjs';
+import { dayKey } from '../server/metering.mjs';
 import { fakeIdToken, startAccountBackend } from './fake-account-backend.mjs';
 
 const OUT = process.env.NOTY_ADMIN_SHOTS ?? '/tmp/noty-admin';
@@ -22,7 +23,7 @@ const backend = await startAccountBackend(new Map(), {
 cleanups.push(() => backend.close());
 const ctx = await setup(t, { activate: [], accounts: { adminIds: ['konto-admin'] }, rpc: { onTurn: () => {} } });
 
-const big = { inputTokens: 1_284_330, cachedInputTokens: 900_000, outputTokens: 48_211, reasoningOutputTokens: 9000 };
+const big = { inputTokens: 1_284_330, cachedInputTokens: 900_000, cacheWriteInputTokens: 1234, outputTokens: 48_211, reasoningOutputTokens: 9000, totalTokens: 1_332_541, imageBytes: 345_678, contextChars: 120_000, durationMs: 54_321, timedTurns: 3 };
 await ctx.accounts.seen({ id: 'konto-admin', name: 'Chefin' });
 for (const [id, name, status] of [['konto-anna', 'Anna', 'active'], ['konto-ben', 'Ben', 'active'], ['konto-clara', 'Clara', 'pending'], ['konto-dora', 'Dora', 'blocked'], ['konto-x', HOSTILE_NAME, 'pending']]) {
   await ctx.accounts.seen({ id, name });
@@ -31,7 +32,36 @@ for (const [id, name, status] of [['konto-anna', 'Anna', 'active'], ['konto-ben'
 await ctx.accounts.update('konto-anna', { dailyLimit: 25 });
 ctx.metering.add('konto-admin', { turns: 3, images: 1, ...big });
 ctx.metering.add('konto-anna', { turns: 12, failedTurns: 1, images: 4, ...big });
-ctx.metering.add('konto-ben', { turns: 1, inputTokens: 1800, outputTokens: 240 });
+ctx.metering.add('konto-ben', { turns: 1, inputTokens: 1800, outputTokens: 240, totalTokens: 2040 });
+
+// Synthetische Tagesreihe über 120 Tage und ein Laufprotokoll mit allen Status, ohne jeden Inhalt.
+const DAY = 86_400_000;
+const start = Date.now();
+for (let i = 1; i < 120; i++) {
+  const day = dayKey(start - i * DAY);
+  const turns = 1 + (i * 7) % 11;
+  ctx.metering.add(i % 3 ? 'konto-anna' : 'konto-admin', { turns, failedTurns: i % 5 === 0 ? 1 : 0, images: i % 4, imageBytes: (i % 4) * 210_000,
+    inputTokens: turns * 18_000, cachedInputTokens: turns * 9000, outputTokens: turns * 700, reasoningOutputTokens: turns * 120, totalTokens: turns * 18_700,
+    durationMs: turns * 9500, timedTurns: turns }, day);
+}
+const STATUSES = ['completed', 'completed', 'failed', 'completed', 'interrupted', 'timeout', 'completed', 'restarted'];
+const realNow = ctx.runlog.now;
+const users = ['konto-anna', 'konto-admin', 'konto-ben', 'konto-x'];
+for (let i = 0; i < 40; i++) {
+  const at = start - (40 - i) * 3_600_000;
+  ctx.runlog.now = () => at;
+  const entry = ctx.runlog.start({ userId: users[i % users.length], sessionId: crypto.randomUUID(), day: dayKey(at), model: i % 2 ? 'gpt-5.5' : 'gpt-5.4-mini', effort: i % 3 ? 'medium' : null,
+    parallel: i % 9 === 0, images: i % 3, imageBytes: (i % 3) * 180_000, contextChars: i * 1000, questionChars: 40 + i });
+  Object.assign(entry.tokens, { inputTokens: 10_000 + i * 321, cachedInputTokens: 6000 + i * 100, cacheWriteInputTokens: i % 4 ? 0 : 512, outputTokens: 800 + i * 13, reasoningOutputTokens: 120 + i, totalTokens: 10_800 + i * 334 });
+  const used = 20 + Math.floor(i / 2);
+  const resetsAt = Math.floor(start / 1000) + 7200;
+  entry.quotaBefore = [{ id: 'codex', windows: [{ slot: 'primary', usedPercent: used - 1, windowDurationMins: 300, resetsAt }, { slot: 'secondary', usedPercent: 60, windowDurationMins: 10080, resetsAt: resetsAt + 86400 }] }];
+  entry.quota = [{ id: 'codex', windows: [{ slot: 'primary', usedPercent: used, windowDurationMins: 300, resetsAt }, { slot: 'secondary', usedPercent: 60 + (i % 2), windowDurationMins: 10080, resetsAt: resetsAt + 86400 }] }];
+  const status = STATUSES[i % STATUSES.length];
+  if (status === 'restarted') Object.assign(entry, { status, endedAt: null, durationMs: null });
+  else ctx.runlog.finish(entry, status, { answerChars: status === 'completed' ? 900 + i : 0 }, at + 4000 + i * 250);
+}
+ctx.runlog.now = realNow;
 ctx.hub.usage = async () => ({ checkedAt: Date.now(), limits: [
   { id: 'codex', name: 'Codex', windows: [
     { usedPercent: 32, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 7200 },
@@ -114,6 +144,95 @@ assert.equal(await row('onerror').locator('.cell-name').textContent(), HOSTILE_N
 step('feindlicher Name erscheint als Text');
 
 await page.screenshot({ path: `${OUT}-desktop.png`, fullPage: true });
+
+// Auswertung: exakte Zahlen, Zeitraum, Balken, Laufprotokoll mit Filtern und Seiten, Kontingentverlauf, CSV.
+await page.waitForSelector('#stats-body tr.total');
+await page.waitForSelector('#runs-body tr');
+const total = page.locator('#stats-body tr.total');
+assert.equal(await page.getAttribute('#period button[data-days="7"]', 'aria-pressed'), 'true');
+assert.match(await total.locator('td[data-label="Tokens rein"]').textContent(), /^\d{1,3}(\.\d{3})+$/, 'Tausendertrennzeichen, keine Abkürzung');
+assert.ok(!/Mio|Tsd|\d,\d\s?[kM]/.test(await page.textContent('#panel-view')), 'keine gerundeten Kurzformen');
+assert.equal(await page.locator('#chart-tokens .col').count(), 7);
+assert.equal(await page.locator('#chart-turns .col').count(), 7);
+const todayTokens = await page.locator('#stats-body tr', { hasText: 'Anna' }).locator('td[data-label="Tokens gesamt"]').textContent();
+await page.click('#period button[data-days="30"]');
+await page.waitForFunction(() => document.querySelectorAll('#chart-tokens .col').length === 30);
+assert.equal(await page.getAttribute('#period button[data-days="30"]', 'aria-pressed'), 'true');
+assert.notEqual(await page.locator('#stats-body tr', { hasText: 'Anna' }).locator('td[data-label="Tokens gesamt"]').textContent(), todayTokens);
+await page.locator('#chart-tokens .col').nth(29).hover();
+assert.match(await page.textContent('#chart-tokens-detail'), /Tokens/);
+await page.click('#period button[data-days="400"]');
+await page.waitForFunction(() => document.querySelectorAll('#chart-turns .col').length === 400 && document.querySelector('#chart-turns').classList.contains('dense'));
+await page.click('#period button[data-days="1"]');
+await page.waitForFunction(() => document.querySelectorAll('#chart-turns .col').length === 1);
+await page.click('#period button[data-days="90"]');
+await page.waitForFunction(() => document.querySelectorAll('#chart-turns .col').length === 90);
+await page.selectOption('#chart-user', 'konto-anna');
+assert.ok(await page.locator('#chart-tokens .fill:not(.h0)').count() > 0);
+await page.selectOption('#chart-user', '');
+step('Zeitraum heute, 7, 30, 90, gesamt; Tagesbalken je Konto; Zahlen exakt');
+
+assert.equal(await page.locator('#runs-body tr').count(), 25);
+assert.equal(await page.isVisible('#runs-more'), true);
+await page.click('#runs-more');
+await page.waitForFunction(() => document.querySelectorAll('#runs-body tr').length === 40);
+assert.equal(await page.isVisible('#runs-more'), false);
+assert.ok(await page.locator('#runs-body img').count() === 0);
+assert.equal(await page.evaluate(() => window.pwned), undefined);
+await page.selectOption('#runs-status', 'failed');
+await page.waitForFunction(() => [...document.querySelectorAll('#runs-body .badge')].every(badge => badge.textContent === 'Fehler'));
+assert.equal(await page.locator('#runs-body tr').count(), 5);
+await page.selectOption('#runs-status', '');
+await page.selectOption('#runs-user', 'konto-ben');
+await page.waitForFunction(() => document.querySelectorAll('#runs-body tr').length === 10);
+assert.equal(await page.locator('#runs-body td.cell-name', { hasText: 'Ben' }).count(), 10);
+await page.selectOption('#runs-status', 'restarted');
+await page.waitForSelector('#runs-empty:not([hidden])');
+await page.selectOption('#runs-user', '');
+await page.waitForSelector('#runs-body tr');
+assert.equal(await page.locator('#runs-body tr').count(), 5);
+await page.selectOption('#runs-status', '');
+await page.waitForFunction(() => document.querySelectorAll('#runs-body tr').length === 25);
+assert.match(await page.locator('#runs-body tr').first().locator('.cell-quota').textContent(), /\+1/);
+step('Läufe: 25 je Seite, Weitere laden, Filter Konto und Status, leere Auswahl');
+
+assert.ok(await page.locator('#quota-history-body tr').count() >= 6);
+assert.match(await page.textContent('#quota-history-body'), /\+1\u00a0Punkt(?!e)/);
+step('Kontingentverlauf aus dem Laufprotokoll mit Anteil je Lauf');
+
+for (const [type, header] of [['daily', 'Tag (UTC);Konto-ID;Name;Läufe'], ['runs', 'Start (UTC);Ende (UTC);Tag (UTC);Konto-ID']]) {
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click(`a[href="/admin/api/export?type=${type}"]`)]);
+  const file = await download.path();
+  const text = (await import('node:fs')).readFileSync(file, 'utf8');
+  assert.ok(text.startsWith(`\ufeff${header}`), type);
+  assert.match(download.suggestedFilename(), /^noty-ki-(tage|laeufe)-\d{4}-\d{2}-\d{2}\.csv$/);
+  if (type === 'runs') assert.ok(text.includes(`"${HOSTILE_NAME}"`) || text.includes(`;${HOSTILE_NAME};`));
+}
+step('CSV-Knöpfe laden Tage und Läufe als Datei');
+
+await page.click('#period button[data-days="30"]');
+await page.waitForFunction(() => document.querySelectorAll('#chart-tokens .col').length === 30);
+await page.locator('section.plan').screenshot({ path: `${OUT}-analyse-kontingent.png` });
+await page.screenshot({ path: `${OUT}-analyse-desktop.png`, fullPage: true });
+for (const [width, height, name] of [[1180, 820, 'ipad-quer'], [820, 1180, 'ipad'], [390, 844, 'schmal']]) {
+  await page.setViewportSize({ width, height });
+  await page.waitForTimeout(100);
+  // Bei Überlauf die Texte nennen, die über den Rand ragen; Elemente selbst können schmal bleiben.
+  const wide = await page.evaluate(() => {
+    const hits = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node && hits.length < 8; node = walker.nextNode()) {
+      const range = document.createRange(); range.selectNodeContents(node);
+      const right = range.getBoundingClientRect().right;
+      if (right > window.innerWidth + 0.5) hits.push(`${node.parentElement.closest('[id]')?.id}: ${node.textContent.trim().slice(0, 30)} ${Math.round(right)}`);
+    }
+    return hits;
+  });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${name} ohne Querscrollen: ${wide.join(', ')}`);
+  await page.screenshot({ path: `${OUT}-analyse-${name}.png`, fullPage: true });
+}
+await page.setViewportSize({ width: 1440, height: 900 });
+step('Auswertung auf 1440, 1180, 820, 390 ohne Querscrollen, Screenshots');
 
 await row('Clara').locator('button', { hasText: 'Freischalten' }).click();
 await row('Clara').locator('.badge.active').waitFor();

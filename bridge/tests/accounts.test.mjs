@@ -137,7 +137,8 @@ test('Nur bekannte Zähler; Fremdfelder werden nicht gespeichert', async t => {
   const raw = await readFile(metering.file, 'utf8');
   assert.ok(!raw.includes('INHALT'));
   assert.deepEqual(metering.forToday('a'), { ...emptyCounters(), turns: 1 });
-  assert.deepEqual(Metering.tokens({ inputTokens: 1, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 4, totalTokens: 10 }), { inputTokens: 1, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 4 });
+  assert.deepEqual(Metering.tokens({ inputTokens: 1, cachedInputTokens: 2, cacheWriteInputTokens: 5, outputTokens: 3, reasoningOutputTokens: 4, totalTokens: 10, extra: 9 }),
+    { inputTokens: 1, cachedInputTokens: 2, cacheWriteInputTokens: 5, outputTokens: 3, reasoningOutputTokens: 4, totalTokens: 10 });
 });
 
 test('Tage älter als NOTY_AI_USAGE_DAYS werden gelöscht', async t => {

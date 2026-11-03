@@ -5,6 +5,7 @@ import { Store } from '../server/store.mjs';
 import { Hub } from '../server/hub.mjs';
 import { Accounts } from '../server/accounts.mjs';
 import { Metering } from '../server/metering.mjs';
+import { RunLog } from '../server/runlog.mjs';
 import { SessionAuth } from '../server/auth.mjs';
 import { UploadGate, createApi } from '../server/http.mjs';
 import { FakeRpc } from './fake-rpc.mjs';
@@ -22,20 +23,22 @@ export async function tempDir(t) {
   return root;
 }
 
-export async function setup(t, { activate = [USER, 'konto-b'], rpc = {}, hub: hubOptions = {}, store: storeOptions = {}, accounts: accountOptions = {}, metering: meteringOptions = {}, root } = {}) {
+export async function setup(t, { activate = [USER, 'konto-b'], rpc = {}, hub: hubOptions = {}, store: storeOptions = {}, accounts: accountOptions = {}, metering: meteringOptions = {}, runs: runOptions = {}, root } = {}) {
   root ??= await tempDir(t);
   const store = await new Store({ root, ...storeOptions }).init();
   const accounts = await new Accounts({ root, ...accountOptions }).init();
   const metering = await new Metering({ root, ...meteringOptions }).init();
+  // Eine Uhr für Zähler und Laufprotokoll, damit Mitternachtstests beide gleich sehen.
+  const runlog = await new RunLog({ root, ...(meteringOptions.now ? { now: meteringOptions.now } : {}), ...runOptions }).init();
   for (const user of USERS.values()) {
     if (!activate.includes(user.id)) continue;
     await accounts.seen(user);
     await accounts.update(user.id, { status: 'active' });
   }
   const instances = [];
-  const hub = new Hub({ store, accounts, metering, cwd: root, prepareCatalog: async () => path.join(root, 'katalog.json'), rpcFactory: options => { const fake = new FakeRpc(rpc); fake.options = options; instances.push(fake); return fake; }, ...hubOptions });
+  const hub = new Hub({ store, accounts, metering, runlog, cwd: root, prepareCatalog: async () => path.join(root, 'katalog.json'), rpcFactory: options => { const fake = new FakeRpc(rpc); fake.options = options; instances.push(fake); return fake; }, ...hubOptions });
   t.after(() => hub.close());
-  return { root, store, accounts, metering, hub, instances };
+  return { root, store, accounts, metering, runlog, hub, instances };
 }
 
 /** Echte HTTP-Schicht mit Kontoprüfung gegen ein Ersatz-Backend im Speicher. */

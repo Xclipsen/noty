@@ -3,6 +3,7 @@ import { ApiError, DAY_MS } from './store.mjs';
 import { usageSnapshot } from './usage.mjs';
 import { buildOverview, statusError } from './accounts.mjs';
 import { Metering, dayKey } from './metering.mjs';
+import { EFFORT, MODEL, mergeQuota, quotaFromRead } from './runlog.mjs';
 
 export const LIMITS = { maxImages: 4, maxImageBytes: 4 * 1024 * 1024, maxContextChars: 200_000, maxQuestionChars: 20_000 };
 export const HISTORY = { messages: 20, chars: 40_000 };
@@ -42,7 +43,8 @@ const FAILED = 'Die Anfrage an den KI-Dienst ist fehlgeschlagen.';
 const IMAGE_REJECTED = 'Das Modell konnte die Anfrage mit Bild nicht verarbeiten. Prüfe das Bild oder lass es weg.';
 const NO_ANSWER = 'Das Modell hat keine Antwort geliefert. Bitte erneut versuchen.';
 const UNREACHABLE = 'Der KI-Dienst ist gerade nicht erreichbar.';
-const failure = text => ({ status: 'error', text });
+// `kind` trennt im Laufprotokoll Zeitlimit von übrigen Fehlern; die Sitzung sieht beides als error.
+const failure = (text, kind = 'failed') => ({ status: 'error', text, kind });
 const INTERRUPTED = { status: 'interrupted' };
 const notSignedIn = () => new ApiError(503, NOT_SIGNED_IN, 'not_signed_in');
 
@@ -76,7 +78,7 @@ function parseImage(image) {
   const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
   if (base64.length / 4 * 3 - padding > LIMITS.maxImageBytes) throw new ApiError(413, 'Ein Bild ist zu groß.');
   if (!Buffer.from(base64.slice(0, 16), 'base64').subarray(0, magic.length).equals(magic)) throw new ApiError(400, 'Bilddaten passen nicht zum Bildtyp.');
-  return { mimeType: image.mimeType, base64, label: image.label };
+  return { mimeType: image.mimeType, base64, label: image.label, bytes: base64.length / 4 * 3 - padding };
 }
 
 export function parseTurn(body) {
@@ -143,10 +145,10 @@ function trimSession(session) {
 }
 
 export class Hub {
-  constructor({ store, accounts, metering, rpcFactory, prepareCatalog, cwd, turnTimeoutMs = 300_000, cancelGraceMs = 10_000, maxSessions = MAX_SESSIONS,
+  constructor({ store, accounts, metering, runlog, rpcFactory, prepareCatalog, cwd, turnTimeoutMs = 300_000, cancelGraceMs = 10_000, maxSessions = MAX_SESSIONS,
     queryTimeoutMs = QUERY_TIMEOUT_MS, overviewTimeoutMs = OVERVIEW_TIMEOUT_MS, failureCacheMs = FAILURE_CACHE_MS }) {
     this.creating = Promise.resolve();
-    Object.assign(this, { store, accounts, metering, rpcFactory, prepareCatalog, cwd, turnTimeoutMs, cancelGraceMs, maxSessions, queryTimeoutMs, overviewTimeoutMs, failureCacheMs });
+    Object.assign(this, { store, accounts, metering, runlog, rpcFactory, prepareCatalog, cwd, turnTimeoutMs, cancelGraceMs, maxSessions, queryTimeoutMs, overviewTimeoutMs, failureCacheMs });
     this.runs = new Map(); this.closing = false; this.cache = new Map();
   }
   async startRetention() {
@@ -165,6 +167,7 @@ export class Hub {
   async purge() {
     await this.store.purge(id => this.runs.has(id));
     await this.metering.prune().catch(() => {});
+    await this.runlog.prune().catch(() => {});
   }
   /** Kurzer Cache und nur ein Prozess zugleich: diese Abfragen sind Abfragen, keine Läufe. */
   cached(key, read, isFailure = () => false) {
@@ -258,7 +261,7 @@ export class Hub {
     if (this.metering.forToday(userId).turns >= limit) throw new ApiError(429, 'Das Tageslimit ist erreicht.');
     const run = this.reserve(s, input.images.length > 0);
     const previous = { status: s.status, title: s.title, messages: [...s.messages], requests: [...s.requests] };
-    const counted = { turns: 1, images: input.images.length };
+    const counted = { turns: 1, images: input.images.length, imageBytes: input.images.reduce((sum, image) => sum + image.bytes, 0), contextChars: input.context?.text.length ?? 0 };
     let booked = false;
     try {
       const prompt = buildPrompt({ history: selectHistory(s.messages), ...input });
@@ -272,11 +275,12 @@ export class Hub {
       booked = true;
       const saved = await Promise.allSettled([this.store.save(s), this.metering.save()]);
       if (saved.some(result => result.status === 'rejected')) throw new Error('Schreiben gescheitert');
+      this.logStart(run, input, counted);
       run.settled = this.execute(run, { ...input, prompt });
     } catch {
       // Nichts ist gestartet: Stand zurücknehmen, damit die Wiederholung möglich bleibt und der Platz frei wird.
       Object.assign(s, previous);
-      if (booked) this.metering.add(userId, { turns: -counted.turns, images: -counted.images }, run.day);
+      if (booked) this.metering.add(userId, Object.fromEntries(Object.entries(counted).map(([name, value]) => [name, -value])), run.day);
       this.runs.delete(s.id); run.end(INTERRUPTED);
       // Eine der beiden Dateien kann den Laufbeginn schon enthalten.
       this.store.touch(s);
@@ -285,17 +289,38 @@ export class Hub {
     }
     return this.store.public(s);
   }
+  /** Eintrag im Laufprotokoll, nur Zahlen. Modell ohne Wahl: vorerst der bekannte Standard, Codex meldet später das tatsächliche. */
+  logStart(run, input, counted) {
+    const others = [...this.runs.values()].filter(other => other !== run);
+    for (const other of others) if (other.entry) other.entry.parallel = true;
+    const standard = this.cache.get('info')?.value?.models?.find(model => model.isDefault)?.id;
+    run.entry = this.runlog.start({
+      userId: run.session.userId, sessionId: run.session.id, day: run.day, model: input.model ?? (typeof standard === 'string' && MODEL.test(standard) ? standard : null),
+      effort: input.effort ?? null, parallel: others.length > 0, images: counted.images, imageBytes: counted.imageBytes,
+      contextChars: counted.contextChars, questionChars: input.text.length
+    });
+  }
+  /** Schließt den Eintrag ab und bucht die Laufzeit auf den Tag der Reservierung. */
+  logFinish(run, { status, kind, discard }) {
+    if (!run.entry) return;
+    const result = discard ? (this.closing ? 'restarted' : 'interrupted') : status === 'idle' ? 'completed' : status === 'interrupted' ? 'interrupted' : kind ?? 'failed';
+    const answerChars = [...run.items.values()].reduce((sum, item) => sum + item.message.text.length, 0);
+    const durationMs = this.runlog.finish(run.entry, result, { answerChars }, run.endedAt);
+    if (Number.isSafeInteger(durationMs)) this.metering.add(run.session.userId, { durationMs, timedTurns: 1 }, run.day);
+    this.metering.save().catch(() => {});
+  }
   reserve(session, hasImages) {
     let end;
     const finished = new Promise(resolve => { end = resolve; });
     // Der Tag steht ab hier fest: alle Zähler dieses Laufs gehören zu ihm, auch nach Mitternacht.
     const run = { session, day: this.metering.today(), hasImages, finished, rpc: null, threadId: null, turnId: null, tokens: {}, cancelled: false, ended: false, interrupting: false, items: new Map(), queue: Promise.resolve(), settled: Promise.resolve(), timers: [] };
-    run.end = outcome => { run.ended = true; end(outcome); };
+    // Das Ende zählt ab der ersten Entscheidung, nicht erst nach dem Beenden des Prozesses.
+    run.end = outcome => { if (!run.ended) run.endedAt = this.runlog.now(); run.ended = true; end(outcome); };
     this.runs.set(session.id, run);
     return run;
   }
   async execute(run, input) {
-    run.timers.push(setTimeout(() => run.end(failure('Die Anfrage hat das Zeitlimit von 5 Minuten überschritten.')), this.turnTimeoutMs));
+    run.timers.push(setTimeout(() => run.end(failure('Die Anfrage hat das Zeitlimit von 5 Minuten überschritten.', 'timeout')), this.turnTimeoutMs));
     this.drive(run, input).catch(error => run.end(failure(error instanceof ApiError ? error.message : FAILED)));
     const outcome = await run.finished;
     run.timers.forEach(clearTimeout);
@@ -323,9 +348,11 @@ export class Hub {
     const { account } = await rpc.request('account/read', { refreshToken: false });
     if (account?.type !== 'chatgpt') throw notSignedIn();
     if (run.cancelled) { run.end(INTERRUPTED); return; }
+    this.readQuotaBefore(run, rpc);
     const model = input.model ? { model: input.model } : {};
-    const { thread } = await rpc.request('thread/start', { cwd: this.cwd, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true, developerInstructions: DEVELOPER_INSTRUCTIONS, ...model });
+    const { thread, model: actual, reasoningEffort } = await rpc.request('thread/start', { cwd: this.cwd, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true, developerInstructions: DEVELOPER_INSTRUCTIONS, ...model });
     run.threadId = thread.id;
+    this.noteModel(run, actual, input.effort ?? reasoningEffort);
     if (run.cancelled) { run.end(INTERRUPTED); return; }
     const { turn } = await rpc.request('turn/start', {
       threadId: thread.id, approvalPolicy: 'never', sandboxPolicy: { type: 'readOnly', networkAccess: false }, ...model,
@@ -335,9 +362,29 @@ export class Hub {
     run.turnId ??= turn.id;
     if (run.cancelled) this.interrupt(run);
   }
+  /**
+   * Kontingent vor dem Lauf, parallel zum Start und ohne ihn aufzuhalten. Zählt nur, wenn die Antwort vor
+   * der ersten Kontingentmeldung des Laufs ankommt; sonst könnte sie den Stand danach zeigen.
+   */
+  readQuotaBefore(run, rpc) {
+    rpc.request('account/rateLimits/read').then(response => {
+      if (!run.entry || run.quotaUpdated || run.ended) return;
+      run.entry.quotaBefore = quotaFromRead(response);
+      this.runlog.touch();
+    }, () => {});
+  }
+  /** Tatsächliches Modell aus Codex (Antwort auf thread/start, später model/rerouted); nur gültige Kennungen. */
+  noteModel(run, model, effort) {
+    if (!run.entry) return;
+    if (typeof model === 'string' && MODEL.test(model)) run.entry.model = model;
+    if (typeof effort === 'string' && EFFORT.test(effort)) run.entry.effort = effort;
+    this.runlog.touch();
+  }
   /** Die einzige Stelle, die Laufergebnisse in die Sitzung schreibt. */
-  async finish(run, { status, text, discard }) {
+  async finish(run, outcome) {
+    const { status, text, discard } = outcome;
     const s = run.session;
+    this.logFinish(run, outcome);
     if (status === 'error') {
       this.metering.add(s.userId, { failedTurns: 1 }, run.day);
       this.metering.save().catch(() => {});
@@ -355,6 +402,8 @@ export class Hub {
     const params = message.params ?? {};
     if (params.threadId && run.threadId && params.threadId !== run.threadId) return;
     if (message.method === 'thread/tokenUsage/updated') { this.bookTokens(run, params.tokenUsage?.total); return; }
+    if (message.method === 'account/rateLimits/updated') { this.noteQuota(run, params.rateLimits); return; }
+    if (message.method === 'model/rerouted') { this.noteModel(run, params.toModel); return; }
     if (run.ended) return;
     const s = run.session;
     if (message.method === 'turn/started') {
@@ -387,6 +436,17 @@ export class Hub {
     }
     this.metering.add(run.session.userId, delta, run.day);
     this.metering.save().catch(() => {});
+    if (run.entry?.status === 'running') {
+      for (const [name, value] of Object.entries(run.tokens)) if (value >= 0) run.entry.tokens[name] = value;
+      this.runlog.touch();
+    }
+  }
+  /** Spärliche Kontingentmeldung von Codex: Stand nach dem Lauf, letzter Wert je Fenster gewinnt. */
+  noteQuota(run, snapshot) {
+    run.quotaUpdated = true;
+    if (run.entry?.status !== 'running') return;
+    run.entry.quota = mergeQuota(run.entry.quota, snapshot);
+    this.runlog.touch();
   }
   answered(run) { return [...run.items.values()].some(item => item.message.text.trim()); }
   assistantItem(run, itemId) {
@@ -440,6 +500,7 @@ export class Hub {
     await Promise.all(runs.map(run => run.settled));
     await this.store.close();
     await this.metering.close();
+    await this.runlog.close();
     await this.accounts.close();
   }
 }

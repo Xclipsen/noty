@@ -8,6 +8,7 @@ import { CodexRpc, toolFreeCatalog } from './rpc.mjs';
 import { SessionAuth } from './auth.mjs';
 import { Accounts } from './accounts.mjs';
 import { Metering } from './metering.mjs';
+import { RunLog } from './runlog.mjs';
 import { createApi } from './http.mjs';
 import { createAdmin, createAdminApi } from './admin.mjs';
 
@@ -62,7 +63,8 @@ export async function boot(env, options = {}) {
   const store = await new Store({ root: stateDir, retentionDays }).init();
   const accounts = await new Accounts({ root: stateDir, adminIds, defaultDailyLimit: dailyLimit }).init();
   const metering = await new Metering({ root: stateDir, usageDays }).init();
-  const hub = new Hub({ store, accounts, metering, cwd,
+  const runlog = await new RunLog({ root: stateDir, usageDays }).init();
+  const hub = new Hub({ store, accounts, metering, runlog, cwd,
     prepareCatalog: () => toolFreeCatalog({ codexHome, file: path.join(stateDir, 'tool-free-catalog.json') }),
     rpcFactory: ({ catalog } = {}) => new CodexRpc({ cwd, codexHome, catalog, command: env.CODEX_BIN ?? 'codex' }) });
   const admin = options.admin ?? await createAdmin({ hub, accounts, accountUrl, origin: env.NOTY_AI_ADMIN_ORIGIN,

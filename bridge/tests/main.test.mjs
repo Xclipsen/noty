@@ -117,3 +117,14 @@ test('Kein Inhalt im Server-Code landet in Logs', async () => {
     assert.ok(!/console\.(log|error|warn|info|debug)/.test(source), name);
   }
 });
+
+test('Standard-Boot legt das Laufprotokoll an; ein kaputtes runs.json stoppt den Start wie metering.json', async t => {
+  const config = await env(t);
+  const { close } = await boot(config);
+  await close();
+  const { mkdir, writeFile, readFile: read } = await import('node:fs/promises');
+  assert.deepEqual(JSON.parse(await read(path.join(config.STATE_DIR, 'runs.json'), 'utf8').catch(() => '[]')), []);
+  await mkdir(config.STATE_DIR, { recursive: true });
+  await writeFile(path.join(config.STATE_DIR, 'runs.json'), '[{"kaputt": true}]');
+  await assert.rejects(boot(config), /Laufprotokoll ist unlesbar/);
+});

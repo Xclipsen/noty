@@ -14,13 +14,15 @@ node --test                # alle Tests, ohne Netz und ohne echtes Codex
 - `server/auth.mjs`: prüft die noty-Kontositzung gegen `NOTY_AI_ACCOUNT_URL/api/session` und drosselt diese Abfragen.
 - `server/accounts.mjs`: Status, Rolle, Limit, Admin-Übersicht (`accounts.json`).
 - `server/metering.mjs`: Zähler je Konto und UTC-Tag (`metering.json`).
+- `server/runlog.mjs`: Laufprotokoll ohne Inhalte (`runs.json`), Kontingent davor und danach.
+- `server/analytics.mjs`: Abfrageprüfung, Tagesreihe und CSV für `/admin/api/usage`, `/runs`, `/export`.
 - `server/hub.mjs`: Läufe, Validierung, Prompt, Limits.
 - `server/rpc.mjs`: Codex-Prozess und Katalog ohne Werkzeuge.
 - `server/store.mjs`: Sitzungsdateien, Prüfung beim Laden, atomares Schreiben mit Wiederholung, Aufbewahrung.
 
-Zustand in `STATE_DIR`, alles Modus 600: `sessions/*.json`, `accounts.json`, `metering.json`, `tool-free-catalog.json`. Kontext und Bilder liegen nur während eines Laufs im Speicher.
+Zustand in `STATE_DIR`, alles Modus 600: `sessions/*.json`, `accounts.json`, `metering.json`, `runs.json`, `tool-free-catalog.json`. Kontext und Bilder liegen nur während eines Laufs im Speicher.
 
-Ungültige Sitzungsdateien wandern nach `sessions/*.json.corrupt`, blockieren den Start nicht und fallen nach der Aufbewahrungsfrist weg. `accounts.json` und `metering.json` stoppen den Start dagegen weiter, auch bei falscher Struktur wie `[5]` oder `"abc"`: Sonst gingen Sperren und Limits still verloren.
+Ungültige Sitzungsdateien wandern nach `sessions/*.json.corrupt`, blockieren den Start nicht und fallen nach der Aufbewahrungsfrist weg. `accounts.json`, `metering.json` und `runs.json` stoppen den Start dagegen weiter, auch bei falscher Struktur wie `[5]` oder `"abc"`: Sonst gingen Sperren, Limits und Nachweise still verloren. Ein kaputtes `runs.json` lässt sich zur Untersuchung beiseitelegen; ohne Datei startet das Protokoll leer, die Tageszähler bleiben unberührt.
 
 Scheitert ein Schreiben, zum Beispiel bei voller Platte, wiederholt `LatestWriter` es mit Backoff (1 Sekunde bis 1 Minute), bis der neueste Stand auf der Platte ist. Neue Sitzungen und neue Konten rollen stattdessen sofort zurück und liefern `503`. Löschen ist ganz oder gar nicht: Scheitert es, bleibt die Sitzung bestehen und ein Lauf läuft weiter.
 
@@ -80,7 +82,15 @@ Vertrag: [docs/APPLE-LOGIN.md](../docs/APPLE-LOGIN.md), Abschnitt Admin-Panel. A
 
 nginx-Allowlist dafür: `apple\.svg` neben `app\.css` und `apple/(start|callback)` unter `api/`.
 
-Browser-Rauchtest, nicht Teil von `node --test`, nur synthetische Daten, Screenshots nach `/tmp/noty-admin-*.png`. Für Apple läuft ein Ersatz von `appleid.apple.com` auf `127.0.0.1`, die Bridge auf `localhost`, also auf einer anderen Site; der Test schneidet mit, welche Cookies bei der Bridge ankommen:
+### Auswertung
+
+Kennzahlen je Konto und gesamt für heute, 7, 30, 90 Tage oder alles Gespeicherte (höchstens 400 Tage), Tagesbalken für Tokens und Läufe als CSS-Klassen `h0` bis `h100` ohne Inline-Styles, Laufliste mit Konto- und Statusfilter (25 je Seite), Kontingentverlauf aus dem Laufprotokoll und CSV-Export. Zähler stehen exakt mit Tausenderpunkten, nur Durchschnitte und Quoten haben eine Nachkommastelle. Vertrag: [docs/AI-ASSISTANT.md](../docs/AI-ASSISTANT.md).
+
+Der Anteil eines Laufs am Kontingent ist nur eine Näherung: Codex meldet ganze Prozent, und Nutzung desselben Abos außerhalb der Bridge zählt mit. Läufe vor dieser Version haben keinen Eintrag im Laufprotokoll; ihre Tageszähler haben Laufzeit, Bildbytes, Kontextzeichen und Cache-Schreiben 0, `totalTokens` ist dort abgeleitet.
+
+nginx-Allowlist dafür: `usage|runs|export` unter `api/`; die Abfrage passt schon auf `(\?[A-Za-z0-9=&_-]*)?`, Konto-IDs dort als UUID.
+
+Browser-Rauchtest, nicht Teil von `node --test`, nur synthetische Daten, Screenshots nach `/tmp/noty-admin-*.png`, die Auswertung nach `/tmp/noty-admin-analyse-*.png` (1440, 1180, 820 und 390 Pixel breit, ohne Querscrollen). Für Apple läuft ein Ersatz von `appleid.apple.com` auf `127.0.0.1`, die Bridge auf `localhost`, also auf einer anderen Site; der Test schneidet mit, welche Cookies bei der Bridge ankommen:
 
 ```bash
 PLAYWRIGHT_MODULE=/pfad/zu/node_modules/playwright node tests/admin-browser.mjs

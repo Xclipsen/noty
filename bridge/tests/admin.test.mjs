@@ -8,6 +8,7 @@ import { APPLE_DEFAULT_REDIRECT, APPLE_RESULTS, AdminSessions, AppleFlows, CONTR
 import { SessionAuth } from '../server/auth.mjs';
 import { createApi } from '../server/http.mjs';
 import { emptyCounters } from '../server/metering.mjs';
+import { DAILY_HEADER, RUNS_HEADER, csvCell, csvTable } from '../server/analytics.mjs';
 import { TOKEN, USER, request, setup, until } from './helpers.mjs';
 import { appSession, fakeIdToken, startAccountBackend } from './fake-account-backend.mjs';
 
@@ -554,15 +555,24 @@ test('Befund 4: hängendes Codex: Übersicht kommt rechtzeitig mit Kontodaten', 
 });
 
 /** Führt die echte admin/app.js gegen ein minimales DOM aus. */
-async function loadPanel(t, answers, { hash = '', apple = false } = {}) {
+const EMPTY_USAGE = { from: '2026-03-01', to: '2026-03-07', days: 7, users: [], total: { sum: emptyCounters(), days: {} } };
+const emptyAnalysis = path => ({ status: 200, data: path.startsWith('/admin/api/usage') ? EMPTY_USAGE : { runs: [], next: null } });
+async function loadPanel(t, answers, { hash = '', apple = false, analysis = emptyAnalysis } = {}) {
   const source = await readFile(new URL('../admin/app.js', import.meta.url), 'utf8');
   const nodes = new Map();
-  const element = () => ({ hidden: false, textContent: '', dataset: {}, className: '', style: {}, title: '', addEventListener() {}, focus() {}, append() {}, replaceChildren() {}, querySelector: () => element() });
+  const element = () => ({ hidden: false, textContent: '', dataset: {}, className: '', style: {}, title: '', value: '', classList: { add() {}, remove() {} }, addEventListener() {}, focus() {}, append() {}, replaceChildren() {}, querySelector: () => element(), querySelectorAll: () => [] });
   const $ = id => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
   for (const id of ['login-view', 'panel-view', 'banner', 'login-error']) $(id).hidden = true;
   const timers = [];
-  const fetch = async () => {
-    const answer = answers.shift() ?? { status: 200, data: { account: 'chatgpt', plan: null, running: 0, today: { turns: 0, failedTurns: 0, images: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 }, users: [] } };
+  const requests = [];
+  // Nur die Übersicht folgt der Warteschlange; Auswertungen antworten leer, außer `analysis` gibt etwas vor.
+  const fetch = async path => {
+    requests.push(path);
+    if (!path.startsWith('/admin/api/overview') && path !== '/admin/api/login' && path !== '/admin/api/logout') {
+      const answer = analysis(path);
+      return new Response(JSON.stringify(answer.data ?? { error: answer.error }), { status: answer.status });
+    }
+    const answer = answers.shift() ?? { status: 200, data: { account: 'chatgpt', plan: null, running: 0, today: emptyCounters(), users: [] } };
     if (answer.offline) throw new Error('offline');
     return new Response(JSON.stringify(answer.data ?? { error: answer.error }), { status: answer.status });
   };
@@ -571,9 +581,9 @@ async function loadPanel(t, answers, { hash = '', apple = false } = {}) {
   const history = { calls: [], replaceState(...args) { this.calls.push(args); location.hash = ''; } };
   const document = { visibilityState: 'visible', body: { dataset: apple ? { apple: 'on' } : {} }, getElementById: $, querySelector: element, createElement: element, addEventListener() {} };
   const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(setImmediate); };
-  vm.runInNewContext(source, { document, location, history, fetch, setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {}, console });
+  vm.runInNewContext(source, { document, location, history, fetch, setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {}, console, URLSearchParams });
   await flush();
-  return { $, flush, history, queue: (...next) => answers.push(...next), poll: async () => { timers.pop()(); await flush(); } };
+  return { $, flush, history, requests, queue: (...next) => answers.push(...next), poll: async () => { timers.pop()(); await flush(); } };
 }
 
 test('Befund 4: 5xx zeigt das Panel mit Hinweis, nur 401 die Anmeldemaske', async t => {
@@ -584,7 +594,7 @@ test('Befund 4: 5xx zeigt das Panel mit Hinweis, nur 401 die Anmeldemaske', asyn
     assert.equal(ui.$('banner').hidden, false, JSON.stringify(answer));
     assert.match(ui.$('banner').textContent, /fehlgeschlagen/);
     await ui.poll();
-    assert.equal(ui.$('banner').hidden, true, 'nächste Abfrage heilt');
+    assert.equal(ui.$('banner').hidden, true, `nächste Abfrage heilt: ${ui.$('banner').textContent}`);
   }
   const signedOut = await loadPanel(t, [{ status: 401, error: 'Die Sitzung ist abgelaufen.' }]);
   assert.equal(signedOut.$('login-view').hidden, false);
@@ -938,4 +948,175 @@ test('Oberfläche: Apple-Knopf nur mit Markierung, Ergebnis aus dem Fragment deu
   const signedIn = await loadPanel(t, [], { hash: '#apple=abgelehnt' });
   assert.equal(signedIn.$('panel-view').hidden, false);
   assert.deepEqual(signedIn.history.calls, [[null, '', '/admin']]);
+});
+
+/* Auswertungen: /admin/api/usage, /admin/api/runs, /admin/api/export */
+
+const ANALYTICS = ['/admin/api/usage', '/admin/api/runs', '/admin/api/export?type=runs', '/admin/api/export?type=daily'];
+const MARKERS = { text: 'FRAGE-MARKER', answer: 'ANTWORT-MARKER', context: { label: 'KONTEXTNAME-MARKER', text: 'KONTEXT-MARKER' } };
+
+async function withRuns(t, count = 3, options = {}) {
+  const ctx = await panel(t, { rpc: { answer: MARKERS.answer, tokens: [{ inputTokens: 100, cachedInputTokens: 40, cacheWriteInputTokens: 2, outputTokens: 10, reasoningOutputTokens: 3, totalTokens: 110 }] }, ...options });
+  const cookie = await ctx.signIn();
+  await ctx.accounts.update(USER, { status: 'active' });
+  for (let i = 0; i < count; i++) {
+    const session = await ctx.store.create({ userId: USER, title: 'TITEL-MARKER' });
+    await ctx.hub.turn(USER, session.id, request(`anfrage-${String(i).padStart(4, '0')}`, { text: MARKERS.text, context: MARKERS.context }));
+    await until(() => ctx.hub.runs.size === 0);
+  }
+  return { ...ctx, cookie };
+}
+
+test('Auswertung: ohne gültiges Cookie 401 vor jeder Abfrageprüfung, Vertrags-Header, nur GET', async t => {
+  const ctx = await panel(t);
+  const cookie = await ctx.signIn();
+  for (const pathname of [...ANALYTICS, '/admin/api/usage?days=kaputt', '/admin/api/export']) {
+    for (const headers of [{}, { cookie: FAKE_COOKIE }, { authorization: `Bearer ${TOKEN}` }]) {
+      const res = await ctx.send('GET', pathname, { headers });
+      assert.equal(res.status, 401, pathname);
+      assertContractHeaders(res, pathname);
+      assert.deepEqual(Object.keys(await res.json()), ['error']);
+    }
+    const post = await ctx.send('POST', pathname, { cookie, body: {} });
+    assert.equal(post.status, 405, pathname);
+    assert.equal(post.headers.get('allow'), 'GET');
+  }
+  for (const pathname of ANALYTICS) assertContractHeaders(await ctx.send('GET', pathname, { cookie }), pathname);
+});
+
+test('Auswertung /usage: Tagesreihe je Konto und gesamt, days 1 bis 400, Standard 30', async t => {
+  let now = Date.parse('2026-03-10T12:00:00Z');
+  const ctx = await panel(t, { metering: { now: () => now } });
+  const cookie = await ctx.signIn();
+  ctx.metering.add(USER, { turns: 2, inputTokens: 100, totalTokens: 110, durationMs: 5000, timedTurns: 2 }, '2026-03-10');
+  ctx.metering.add(USER, { turns: 1, failedTurns: 1 }, '2026-03-04');
+  ctx.metering.add(ADMIN.id, { turns: 4, imageBytes: 99 }, '2026-03-09');
+  ctx.metering.add('konto-geloescht', { turns: 1 }, '2026-01-01');
+  const get = async query => { const res = await ctx.send('GET', `/admin/api/usage${query}`, { cookie }); assert.equal(res.status, 200, query); return res.json(); };
+  const standard = await get('');
+  assert.deepEqual([standard.days, standard.from, standard.to], [30, '2026-02-09', '2026-03-10']);
+  assert.deepEqual(standard.total.sum.turns, 7);
+  assert.deepEqual(Object.keys(standard.total.days).sort(), ['2026-03-04', '2026-03-09', '2026-03-10']);
+  const anna = standard.users.find(user => user.id === USER);
+  assert.deepEqual([anna.name, anna.status, anna.sum.turns, anna.sum.totalTokens, anna.sum.durationMs, anna.days['2026-03-04'].failedTurns], ['Anna', 'pending', 3, 110, 5000, 1]);
+  assert.deepEqual(Object.keys(anna.sum), Object.keys(emptyCounters()));
+  assert.deepEqual(standard.users.find(user => user.id === 'konto-c/d').days, {});
+  assert.equal(standard.users.some(user => user.id === 'konto-geloescht'), false);
+  const today = await get('?days=1');
+  assert.deepEqual([today.from, today.to, today.total.sum.turns], ['2026-03-10', '2026-03-10', 2]);
+  const all = await get('?days=400');
+  const gone = all.users.find(user => user.id === 'konto-geloescht');
+  assert.deepEqual([all.total.sum.turns, gone.name, gone.status], [8, null, null]);
+  for (const query of ['?days=0', '?days=401', '?days=-1', '?days=1.5', '?days=abc', '?days=', '?days=0030', '?days=7&days=8', '?tage=7', '?days=7&x=1', '?days=%37%30%30']) {
+    const res = await ctx.send('GET', `/admin/api/usage${query}`, { cookie });
+    assert.equal(res.status, 400, query);
+    assert.match((await res.json()).error, /days|Abfrage/, query);
+  }
+  assert.equal((await get('?days=030')).days, 30, 'führende Null bei höchstens drei Ziffern ist erlaubt');
+});
+
+test('Auswertung /runs: neueste zuerst, limit, before, user, status; keine Inhalte', async t => {
+  const ctx = await withRuns(t, 5);
+  const session = await ctx.store.create({ userId: ADMIN.id });
+  await ctx.hub.turn(ADMIN.id, session.id, request('anfrage-9999'));
+  await until(() => ctx.hub.runs.size === 0);
+  const get = async query => { const res = await ctx.send('GET', `/admin/api/runs${query}`, { cookie: ctx.cookie }); assert.equal(res.status, 200, query); return [await res.clone().text(), await res.json()]; };
+  const [raw, page] = await get('');
+  for (const marker of ['MARKER', 'anfrage-0', 'privat@', 'privates-konto', 'Antwort']) assert.ok(!raw.includes(marker), marker);
+  assert.deepEqual(Object.keys(page), ['runs', 'next']);
+  assert.equal(page.runs.length, 6);
+  assert.equal(page.next, null);
+  assert.equal(page.runs[0].userId, ADMIN.id);
+  assert.ok(page.runs.every((run, i) => i === 0 || run.startedAt < page.runs[i - 1].startedAt));
+  assert.deepEqual(Object.keys(page.runs[1]).sort(), ['answerChars', 'contextChars', 'day', 'durationMs', 'effort', 'endedAt', 'id', 'imageBytes', 'images', 'model', 'parallel', 'questionChars', 'quota', 'quotaBefore', 'quotaShare', 'sessionId', 'startedAt', 'status', 'tokens', 'userId']);
+  assert.deepEqual([page.runs[1].status, page.runs[1].questionChars, page.runs[1].contextChars, page.runs[1].answerChars, page.runs[1].tokens.totalTokens], ['completed', MARKERS.text.length, MARKERS.context.text.length, MARKERS.answer.length, 110]);
+  const [, first] = await get('?limit=2');
+  assert.deepEqual([first.runs.length, first.next], [2, first.runs[1].startedAt]);
+  const [, second] = await get(`?limit=2&before=${first.next}`);
+  assert.ok(second.runs.every(run => run.startedAt < first.next));
+  assert.notEqual(second.runs[0].id, first.runs[1].id);
+  const [, mine] = await get(`?user=${encodeURIComponent(USER)}&status=completed&limit=200`);
+  assert.equal(mine.runs.length, 5);
+  assert.ok(mine.runs.every(run => run.userId === USER));
+  const [, none] = await get('?status=failed');
+  assert.deepEqual(none, { runs: [], next: null });
+  const [, slash] = await get(`?user=${encodeURIComponent('konto-c/d')}`);
+  assert.deepEqual(slash.runs, []);
+  for (const query of ['?limit=0', '?limit=201', '?limit=x', '?limit=', '?before=0', '?before=-5', '?before=1e9', '?before=99999999999999999', '?status=idle', '?status=', '?user=', `?user=${'x'.repeat(201)}`, '?limit=1&limit=2', '?seite=2', '?type=runs']) {
+    const res = await ctx.send('GET', `/admin/api/runs${query}`, { cookie: ctx.cookie });
+    assert.equal(res.status, 400, query);
+  }
+});
+
+test('Auswertung /export: CSV mit Semikolon, deutschen Spalten, Anhang, maskiert, ohne Inhalte', async t => {
+  const ctx = await withRuns(t, 2, { now: () => Date.parse('2026-05-01T08:00:00Z') });
+  await ctx.accounts.seen({ id: USER, name: '=HYPERLINK("x");Anna\n"Zeile"' });
+  for (const [type, filename, header] of [['runs', 'noty-ki-laeufe-2026-05-01.csv', RUNS_HEADER], ['daily', 'noty-ki-tage-2026-05-01.csv', DAILY_HEADER]]) {
+    const res = await ctx.send('GET', `/admin/api/export?type=${type}`, { cookie: ctx.cookie });
+    assert.equal(res.status, 200, type);
+    assertContractHeaders(res, type);
+    assert.equal(res.headers.get('content-type'), 'text/csv; charset=utf-8');
+    assert.equal(res.headers.get('content-disposition'), `attachment; filename="${filename}"`);
+    const body = Buffer.from(await res.arrayBuffer()).toString('utf8');
+    assert.ok(body.startsWith('﻿'), 'BOM');
+    for (const marker of ['MARKER', 'anfrage-0', 'privat@', 'privates-konto']) assert.ok(!body.includes(marker), `${type} ${marker}`);
+    assert.ok(body.endsWith('\r\n'), 'endet mit CRLF');
+    const rows = parseCsv(body.slice(1));
+    assert.deepEqual(rows[0], header);
+    assert.ok(rows.every(row => row.length === header.length), `${type}: jede Zeile hat alle Spalten`);
+    assert.ok(body.includes(`"'=HYPERLINK(""x"");Anna\n""Zeile"""`), `${type}: Formel entschärft, Semikolon, Anführungszeichen und Umbruch maskiert`);
+    if (type === 'runs') {
+      const row = rows[1];
+      assert.equal(row[header.indexOf('Name')], `'=HYPERLINK("x");Anna\n"Zeile"`);
+      assert.equal(row[header.indexOf('Status')], 'completed');
+      assert.equal(row[header.indexOf('Tokens gesamt')], '110');
+      assert.equal(row[header.indexOf('Fragezeichen')], String(MARKERS.text.length));
+      assert.match(row[header.indexOf('Start (UTC)')], /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    } else {
+      const row = rows.find(cells => cells[1] === USER);
+      assert.equal(row[header.indexOf('Läufe')], '2');
+      assert.equal(row[header.indexOf('Tokens gesamt')], '220');
+    }
+  }
+  for (const query of ['', '?type=', '?type=csv', '?type=runs&type=daily', '?type=runs&days=7']) {
+    assert.equal((await ctx.send('GET', `/admin/api/export${query}`, { cookie: ctx.cookie })).status, 400, query);
+  }
+});
+
+/** Kleiner RFC-4180-Leser mit Semikolon für die Prüfung; unabhängig vom Schreiber. */
+function parseCsv(text) {
+  const rows = []; let row = []; let cell = ''; let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (char === '"') quoted = false; else cell += char;
+    } else if (char === '"') quoted = true;
+    else if (char === ';') { row.push(cell); cell = ''; } else if (char === '\r' && text[i + 1] === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; i++; } else cell += char;
+  }
+  return rows;
+}
+
+test('CSV-Zellen: Zahlen, Kommazahlen, leere Werte, Formeln, Trennzeichen, Ränder', () => {
+  assert.deepEqual([csvCell(null), csvCell(undefined), csvCell(1234567), csvCell(32.5), csvCell(true), csvCell(false), csvCell(NaN)], ['', '', '1234567', '32,5', 'ja', 'nein', '']);
+  assert.equal(csvCell('a;b'), '"a;b"');
+  assert.equal(csvCell('sagt "hallo"'), '"sagt ""hallo"""');
+  assert.equal(csvCell('zwei\r\nZeilen'), '"zwei\r\nZeilen"');
+  assert.equal(csvCell(' rand'), '" rand"');
+  for (const start of ['=', '+', '-', '@', '\t', '|', '%']) assert.equal(csvCell(`${start}1+1`).replace(/^"/, '')[0], "'", JSON.stringify(start));
+  assert.equal(csvCell('\ud83d'), '�');
+  assert.equal(csvTable(['A', 'B'], [[1, 'x;y']]), '﻿A;B\r\n1;"x;y"\r\n');
+});
+
+test('Oberfläche: lädt Auswertung nach der Übersicht, 401 dort meldet ab, 5xx lässt das Panel stehen', async t => {
+  const ui = await loadPanel(t, []);
+  assert.ok(ui.requests.includes('/admin/api/usage?days=7'));
+  assert.ok(ui.requests.includes('/admin/api/runs?limit=25'));
+  assert.ok(ui.requests.includes('/admin/api/runs?limit=100'));
+  assert.equal(ui.$('banner').hidden, true);
+  const broken = await loadPanel(t, [], { analysis: () => ({ status: 503, error: 'Gestört' }) });
+  assert.equal(broken.$('panel-view').hidden, false);
+  assert.match(broken.$('banner').textContent, /Auswertung fehlgeschlagen: Gestört/);
+  const expired = await loadPanel(t, [], { analysis: () => ({ status: 401, error: 'Die Sitzung ist abgelaufen.' }) });
+  assert.equal(expired.$('login-view').hidden, false);
+  assert.equal(expired.$('panel-view').hidden, true);
 });

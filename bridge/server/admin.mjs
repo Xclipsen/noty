@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { ApiError } from './store.mjs';
 import { createListener, readForm, readJson } from './http.mjs';
+import { buildUsage, exportCsv, parseExportQuery, parseRunsQuery, parseUsageQuery } from './analytics.mjs';
 
 const COOKIE = 'noty_ai_admin';
 const SESSION_SECONDS = 8 * 60 * 60;
@@ -402,6 +403,16 @@ export async function createAdmin({ hub, accounts, accountUrl, origin, apple: ap
       return;
     }
     if (pathname === '/admin/api/overview') { allow(req, res, 'GET'); requireSession(req); sendJson(res, 200, await hub.overview()); return; }
+    // Auswertungen: nur lesen, erst die Sitzung, dann die Abfrage prüfen; Antworten ohne Inhalte.
+    if (pathname === '/admin/api/usage') { allow(req, res, 'GET'); requireSession(req); sendJson(res, 200, buildUsage({ accounts, metering: hub.metering, ...parseUsageQuery(url) })); return; }
+    if (pathname === '/admin/api/runs') { allow(req, res, 'GET'); requireSession(req); sendJson(res, 200, hub.runlog.list(parseRunsQuery(url))); return; }
+    if (pathname === '/admin/api/export') {
+      allow(req, res, 'GET'); requireSession(req);
+      const { filename, body } = exportCsv({ ...parseExportQuery(url), accounts, metering: hub.metering, runlog: hub.runlog, now: now() });
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${filename}"` });
+      res.end(body);
+      return;
+    }
     const user = /^\/admin\/api\/users\/([^/]+)$/.exec(pathname);
     if (user) { allow(req, res, 'PATCH'); requireWrite(req); requireSession(req); await patchUser(req, res, user[1]); return; }
     throw new ApiError(404, 'Pfad nicht gefunden.');

@@ -3,9 +3,9 @@ import { randomUUID } from 'node:crypto';
 
 /** Spielt das JSON-RPC-Verhalten von Codex nach; `onTurn` steuert den Lauf. */
 export class FakeRpc extends EventEmitter {
-  constructor({ authType = 'chatgpt', failStart = false, failThread = false, failUsage = false, hangQueries = false, onTurn, answer = 'Antwort [S. 3]', tokens = [] } = {}) {
+  constructor({ authType = 'chatgpt', failStart = false, failThread = false, failUsage = false, hangQueries = false, onTurn, answer = 'Antwort [S. 3]', tokens = [], reasoningEffort, rateLimits } = {}) {
     super();
-    Object.assign(this, { authType, failStart, failThread, failUsage, hangQueries, onTurn, answer, tokens });
+    Object.assign(this, { authType, failStart, failThread, failUsage, hangQueries, onTurn, answer, tokens, reasoningEffort, rateLimits });
     this.calls = []; this.responses = []; this.closed = false;
   }
   emitLater(message) { setImmediate(() => this.emit('message', message)); }
@@ -19,11 +19,11 @@ export class FakeRpc extends EventEmitter {
       { id: 'versteckt', displayName: 'Versteckt', isDefault: false, hidden: true }] };
     if (method === 'account/rateLimits/read') {
       if (this.failUsage) throw new Error('Synthetischer Fehler mit privaten Details');
-      return { accountId: 'privates-konto', rateLimits: { limitId: 'codex', primary: { usedPercent: 32, windowDurationMins: 300, resetsAt: 1900000000 }, secondary: null } };
+      return this.rateLimits ?? { accountId: 'privates-konto', rateLimits: { limitId: 'codex', primary: { usedPercent: 32, windowDurationMins: 300, resetsAt: 1900000000 }, secondary: null } };
     }
     if (method === 'thread/start') {
       if (this.failThread) throw new Error('Synthetischer Fehler mit privaten Details');
-      return { thread: { id: 'thread-test' } };
+      return { thread: { id: 'thread-test' }, model: params?.model ?? 'demo', modelProvider: 'openai', reasoningEffort: this.reasoningEffort ?? null };
     }
     if (method === 'turn/start') {
       this.threadId = params.threadId; this.turnId = randomUUID();
@@ -42,6 +42,7 @@ export class FakeRpc extends EventEmitter {
     this.complete();
   }
   usage(total) { this.emit('message', { method: 'thread/tokenUsage/updated', params: { threadId: this.threadId, turnId: this.turnId, tokenUsage: { total, last: { ...total, inputTokens: 1 } } } }); }
+  quota(rateLimits) { this.emit('message', { method: 'account/rateLimits/updated', params: { rateLimits } }); }
   complete(status = 'completed', error) { this.emit('message', { method: 'turn/completed', params: { threadId: this.threadId, turn: { id: this.turnId, status, error } } }); }
   respond(id, result) { this.responses.push({ id, result }); }
   reject(id, code, message) { this.responses.push({ id, error: { code, message } }); }
