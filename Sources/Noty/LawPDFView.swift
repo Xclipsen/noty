@@ -47,7 +47,11 @@ struct NativeLawPDF: UIViewRepresentable {
         c.parent = self
         selection.pdf = v
         selection.controller?.pdfHost = c
-        container.overlay.attach(controller: selection.controller, selection: selection)
+        // Like the text view: never build hosting controllers inside SwiftUI's update.
+        if container.overlay.needsAttach(controller: selection.controller, selection: selection) {
+            let controller = selection.controller, selection = selection
+            DispatchQueue.main.async { [weak container] in container?.overlay.attach(controller: controller, selection: selection) }
+        }
         c.stroke?.isEnabled = pen.kind != .none
         c.tap?.allowedTouchTypes = pen.kind == .none ? lawAllTouchTypes : lawTouchTypesWithoutPencil
         // PDFKit builds its scroll view lazily; route Pencil on every update.

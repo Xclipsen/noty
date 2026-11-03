@@ -34,11 +34,18 @@ struct NativeLawText: UIViewRepresentable {
         return container
     }
     func updateUIView(_ container: LawTextContainer, context: Context) {
+        updateUIView(container, coordinator: context.coordinator)
+    }
+    func updateUIView(_ container: LawTextContainer, coordinator c: Coordinator) {
         let v = container.textView
-        let c = context.coordinator
         c.parent = self
         selection.view = v
-        container.overlay.attach(controller: selection.controller, selection: selection)
+        // Building the bar's hosting controllers inside SwiftUI's update pass
+        // re-entered the graph (watchdog hang in Build 97): attach afterwards.
+        if container.overlay.needsAttach(controller: selection.controller, selection: selection) {
+            let controller = selection.controller, selection = selection
+            DispatchQueue.main.async { [weak container] in container?.overlay.attach(controller: controller, selection: selection) }
+        }
         // Highlighter/eraser: Pencil marks; fingers keep scrolling and selecting.
         // Other notebook tools: Pencil scrolls and selects like a finger.
         let penActive = pen.kind != .none
@@ -57,7 +64,22 @@ struct NativeLawText: UIViewRepresentable {
             let topCharacter = resized ? v.closestPosition(to: CGPoint(x: v.textContainerInset.left + 1, y: offset.y + v.textContainerInset.top + 1)) .map { v.offset(from: v.beginningOfDocument, to: $0) } : nil
             let attributes = LawReadingStyle.attributes(fontSize: fontSize)
             let richKey = "\(sectionID):\(text.hashValue):\(html.hashValue)"
-            if c.richKey != richKey { c.richKey = richKey; c.importRich(html: html, text: text) }
+            if c.richKey != richKey {
+                // The HTML importer spins a nested run loop through WebKit; inside
+                // updateUIView that re-entered SwiftUI's update and hung the app
+                // (Build 97). Show the plain text now, the rich text right after.
+                c.richKey = richKey; c.rich = nil
+                let html = html, text = text, key = richKey
+                if html?.isEmpty == false {
+                    DispatchQueue.main.async { [weak c, weak container] in
+                        guard let c, let container, c.richKey == key else { return }
+                        c.importRich(html: html, text: text)
+                        guard c.richKey == key, c.rich != nil else { return }
+                        c.bodyKey = ""
+                        c.parent.updateUIView(container, coordinator: c)
+                    }
+                }
+            }
             let body = c.rich.map { c.scaled($0, to: fontSize) } ?? NSMutableAttributedString(string: text, attributes: attributes)
             // One reading colour and spacing for HTML and plain text.
             LawReadingStyle.apply(to: body, fontSize: fontSize)

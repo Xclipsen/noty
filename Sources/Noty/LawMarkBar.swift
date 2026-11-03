@@ -145,6 +145,11 @@ final class LawMarkOverlay: UIView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// True when `attach` would rebuild the bar (callers defer that out of SwiftUI updates).
+    func needsAttach(controller: LawMarkController?, selection: LawTextSelection) -> Bool {
+        guard let controller else { return false }
+        return controller !== self.controller || selection !== self.selection
+    }
     func attach(controller: LawMarkController?, selection: LawTextSelection) {
         guard let controller, controller !== self.controller || selection !== self.selection else { return }
         self.controller = controller; self.selection = selection
