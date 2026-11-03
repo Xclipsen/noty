@@ -73,4 +73,41 @@ final class AppleSignInTests: XCTestCase {
             XCTAssertFalse(message!.isEmpty)
         }
     }
+    func testExpiredSessionOrForeignDataNeverCreatesAnAccountSilently() {
+        XCTAssertTrue(AppleLoginPlan.mayCreate(sessionExpired: false, foreignPendingCount: 0))
+        XCTAssertFalse(AppleLoginPlan.mayCreate(sessionExpired: true, foreignPendingCount: 0))
+        XCTAssertFalse(AppleLoginPlan.mayCreate(sessionExpired: false, foreignPendingCount: 3))
+        XCTAssertEqual(AppleSignIn.loginBody(identityToken: "t", nonce: "n", givenName: nil, create: false),
+                       ["identityToken": .string("t"), "nonce": .string("n"), "create": .bool(false)])
+        XCTAssertEqual(AppleSignIn.loginBody(identityToken: "t", nonce: "n", givenName: nil, create: true),
+                       ["identityToken": .string("t"), "nonce": .string("n")])
+        guard case .explainLinking(let text) = AppleLoginPlan.unknown(sessionExpired: true, accountName: "Leon", foreignPendingCount: 2) else {
+            return XCTFail("expired session must explain linking")
+        }
+        XCTAssertTrue(text.contains("„Leon“"))
+        XCTAssertTrue(text.contains("Apple verknüpfen"))
+        XCTAssertTrue(text.contains("kein neues Konto"))
+        guard case .confirmCreation(_, let message) = AppleLoginPlan.unknown(sessionExpired: false, accountName: nil, foreignPendingCount: 1) else {
+            return XCTFail("foreign data must ask")
+        }
+        XCTAssertTrue(message.contains("1 Markierung"))
+    }
+
+    func testOlderRefreshDoesNotOverwriteALaterAccountChange() {
+        var gate = AccountUpdateGate()
+        let refresh = gate.begin()
+        XCTAssertTrue(gate.isCurrent(refresh))
+        gate.changed() // Apple linked while the refresh was under way
+        XCTAssertFalse(gate.isCurrent(refresh))
+        XCTAssertTrue(gate.isCurrent(gate.begin()))
+    }
+
+    func testImmediateCancelWithoutAppleIDGivesAHint() {
+        XCTAssertNil(AppleSignInFailure.message(code: 1001, elapsed: 4, underlyingDomain: nil, underlyingCode: nil), "the user closed the sheet")
+        XCTAssertEqual(AppleSignInFailure.message(code: 1001, elapsed: 0.1, underlyingDomain: nil, underlyingCode: nil), AppleSignInFailure.noAppleIDHint)
+        XCTAssertEqual(AppleSignInFailure.message(code: 1001, elapsed: 5, underlyingDomain: "AKAuthenticationError", underlyingCode: -7026),
+                       AppleSignInFailure.noAppleIDHint)
+        XCTAssertEqual(AppleSignInFailure.message(code: 1004, elapsed: 0.1, underlyingDomain: nil, underlyingCode: nil),
+                       AppleSignInFailure.message(code: 1004))
+    }
 }

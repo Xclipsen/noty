@@ -85,15 +85,34 @@ final class EditorModel: ObservableObject {
     /// The user chose to close without the changes since the last commit.
     func abandonUnsavedChanges() {
         retryTask?.cancel(); saveFailed = false; writable = false
+        releaseWriteClaim()
+    }
+    /// The process-wide single-writer claim of this package
+    /// (`PackageWriteLock`): held from before loading until this model is
+    /// closed (last commit and asset GC done) or goes away. Without it the
+    /// model never becomes writable, so a library append (or another view)
+    /// can never commit between this model's load and its next save.
+    private var writeClaim: PackageWriteLock.Claim?
+    /// Saving failed with an error the automatic retry may still fix.
+    var saveRetrying: Bool { saveFailed && saveBlocked == nil }
+    /// After the last commit and asset GC of a closed editor; idempotent.
+    func releaseWriteClaim() {
+        guard !writable else { return }
+        writeClaim?.release(); writeClaim = nil
     }
     private var heldDrawings: [UUID: (data: Data, generation: Int)] = [:]
     /// The package's asset GC after opening (repository actor, before its
     /// first commit; skipped there once a commit happened).
     private var openingCleanup: Task<Void, Never>?
 
+    /// `writeClaim`: reserved by the caller before it had to wait (second
+    /// view); otherwise the model claims the package itself and waits briefly
+    /// for a running append to finish before it loads.
     init(storageRoot root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true),
-         restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil) {
+         restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil,
+         writeClaim: PackageWriteLock.Claim? = nil) {
         storageRoot = root
+        self.writeClaim = writeClaim ?? PackageWriteLock.shared.claim(root)
         libraryRoot = restoreDirectory?.deletingLastPathComponent() ?? root
         store = NotebookRepository(directory: root, restoreDirectory: restoreDirectory)
         // Image layers, thumbnails and exports of this editor resolve its
@@ -112,6 +131,12 @@ final class EditorModel: ObservableObject {
         }
         Task {
             defer { busy = false }
+            if self.writeClaim == nil { self.writeClaim = await PackageWriteLock.shared.claim(root, waitingUpTo: 15) }
+            guard self.writeClaim != nil else {
+                status = "Heft wird an anderer Stelle bearbeitet – nicht geöffnet"
+                self.error = "Dieses Heft ist gerade in einer anderen Ansicht geöffnet oder wird ergänzt. Bitte schließen und gleich noch einmal öffnen; es wurde nichts verändert."
+                return
+            }
             do {
                 var (loaded, recovered) = try await store.load()
                 // Opening speed: decode every PencilKit drawing and image off the
@@ -426,13 +451,17 @@ final class EditorModel: ObservableObject {
     /// insertion, clear, restore, bookmark, margins) are one undo step each.
     /// A change that cannot be recorded safely (legacy notebook migrated by
     /// this very operation) only prunes, as before.
-    private func recordPageOperation(before: Notebook, undoPageID: UUID) {
+    /// True when the operation became an undo step.
+    @discardableResult
+    private func recordPageOperation(before: Notebook, undoPageID: UUID) -> Bool {
         pendingDraft = nil
         let redoPageID = notebook.pages.indices.contains(pageIndex) ? notebook.pages[pageIndex].id : undoPageID
         if history.recordPages(before: before, after: notebook, undoPageID: undoPageID, redoPageID: redoPageID) {
             publishHistory()
+            return true
         } else {
             pruneHistory()
+            return false
         }
     }
     func backspaceFlowText(pageID: UUID, box: TextBox) -> TextFlowFocus? {
@@ -781,11 +810,13 @@ final class EditorModel: ObservableObject {
     /// model is the package's single writer, so the pages go in as one undo
     /// step and the normal autosave commits them. The current page stays
     /// (insertion is behind it or at the end), canvases are kept. Returns the
-    /// new page IDs once the commit is acknowledged; a refused or failed
-    /// insertion changes nothing, a failed save keeps the pages in the editor
-    /// (it retries like every save) and is reported as not saved.
+    /// new page IDs once the commit is acknowledged, and whether the
+    /// insertion became an undo step (not for a legacy single-PDF notebook);
+    /// a refused or failed insertion changes nothing, a failed save keeps the
+    /// pages in the editor (retried unless the error is permanent) and is
+    /// reported as `notSaved` with these page IDs.
     func insertIncomingPDF(_ data: Data, geometries: [PDFPageGeometry], placement: IncomingPlacement,
-                           writingArea: PageMargins?) async throws -> [UUID] {
+                           writingArea: PageMargins?) async throws -> (pageIDs: [UUID], undoable: Bool) {
         await awaitMutationAccess()
         var waited = 0
         while (busy || imageReading || mutationsPaused) && waited < 100 {
@@ -802,10 +833,12 @@ final class EditorModel: ObservableObject {
         pdfOutline = catalogue.outline
         notebook = candidate
         pageIndex = candidate.pages.firstIndex { $0.id == selected } ?? min(pageIndex, candidate.pages.count - 1)
-        recordPageOperation(before: previous, undoPageID: selected)
+        let undoable = recordPageOperation(before: previous, undoPageID: selected)
         save()
-        guard await waitForSave() else { throw IncomingFilingError.notSaved }
-        return ids
+        guard await waitForSave() else {
+            throw IncomingFilingError.notSaved(pageIDs: ids, retrying: saveRetrying, reason: saveBlocked)
+        }
+        return (ids, undoable)
     }
 
     /// „Öffnen“ after filing into this notebook: shows the first new page.
@@ -817,7 +850,7 @@ final class EditorModel: ObservableObject {
     /// On failure the editor stays open with its unsaved in-memory snapshot.
     func flushBeforeClosing() async -> Bool {
         guard !busy, !imageReading else { error = "Bitte den laufenden Vorgang abwarten, dann erneut schließen."; return false }
-        guard writable else { return true }
+        guard writable else { releaseWriteClaim(); return true }
         busy = true
         defer { busy = false }
         save()
@@ -828,6 +861,7 @@ final class EditorModel: ObservableObject {
                 if saveFailed { return false }
                 writable = false
                 await collectAssetGarbageAfterClosing()
+                releaseWriteClaim()
                 return true
             }
         }
@@ -860,7 +894,7 @@ final class EditorModel: ObservableObject {
     }
 
     func save(delayed: Bool = false) {
-        guard writable else { return }
+        guard writable, writeClaim != nil else { return }
         rememberPage()
         if let recoveredSnapshot {
             // Flushes (close, background, backup) keep the recovered notice and
@@ -931,7 +965,8 @@ final class EditorModel: ObservableObject {
         }
         guard let error = error as? RevisionError else { return true }
         switch error {
-        case .snapshotTooLarge, .unsupportedFormat: return false
+        // Another writer committed: retrying the stale state can never succeed.
+        case .snapshotTooLarge, .unsupportedFormat, .concurrentChange: return false
         default: return true
         }
     }

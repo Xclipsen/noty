@@ -45,6 +45,8 @@ private final class LawSessionDelegate: NSObject, URLSessionTaskDelegate, @unche
 private struct LawAPIError: LocalizedError {
     let status: Int
     let message: String
+    /// The server's machine-readable `code` (e.g. `apple_unknown`), if any.
+    var code: String? = nil
     var errorDescription: String? { message }
 }
 
@@ -165,8 +167,9 @@ final class LawLibraryModel: ObservableObject {
             data.append(byte)
         }
         guard (200..<300).contains(response.statusCode) else {
-            let message = (try? JSONDecoder().decode([String: String].self, from: data)["error"]) ?? (response.statusCode >= 500 ? "Server nicht erreichbar (\(response.statusCode))." : "Der Server hat die Anfrage abgelehnt (\(response.statusCode)).")
-            throw LawAPIError(status: response.statusCode, message: message)
+            let fields = try? JSONDecoder().decode([String: String].self, from: data)
+            let message = fields?["error"] ?? (response.statusCode >= 500 ? "Server nicht erreichbar (\(response.statusCode))." : "Der Server hat die Anfrage abgelehnt (\(response.statusCode)).")
+            throw LawAPIError(status: response.statusCode, message: message, code: fields?["code"])
         }
         return data
     }
@@ -258,24 +261,50 @@ final class LawLibraryModel: ObservableObject {
     private func signedIn(_ account: NotyAccountUser) async throws {
         guard let token = account.token, token.count == 64 else { throw LawError.invalid("Server unterstützt die native Anmeldung noch nicht.") }
         try NotyAccountKeychain.save(account)
-        epoch += 1; user = account; sessionExpired = false
+        epoch += 1; accountUpdates.changed(); user = account; sessionExpired = false
         try await personal.adoptGuests(owner: account.id)
         lastOwner = account.id; await refreshItems()
         Task { await synchronize() }
     }
     private let apple = AppleSignInController()
+    /// Local account changes (sign-in, Apple linked/unlinked, e-mail): an
+    /// older `refreshAccount` answer never overwrites a newer change.
+    private var accountUpdates = AccountUpdateGate()
+    /// Markings of another account that are not transferred yet.
+    private var foreignPendingCount: Int { items.filter { $0.dirty && $0.owner != nil && $0.owner != user?.id }.count }
     /// „Mit Apple anmelden“: `true` once signed in. Cancelling the Apple sheet
-    /// is silent; a new account is reported in `message`.
+    /// is silent; a new account is reported in `message`. No account appears
+    /// silently while the iPad belongs to another one (`AppleLoginPlan`):
+    /// with an expired session of a known account an unknown Apple ID only
+    /// explains linking; with another account's untransferred markings the
+    /// user is asked before a new account is created.
     func appleLogin() async -> (signedIn: Bool, created: Bool) {
         guard !accountBusy else { return (false, false) }
         accountBusy = true; defer { accountBusy = false }
+        let expired = sessionExpired && user != nil
+        let expiredName = expired ? (user?.email ?? user?.name) : nil
+        let foreign = foreignPendingCount
         switch await apple.authorize(withName: true) {
         case .canceled: return (false, false)
         case .failed(let message): error = message; return (false, false)
         case .authorized(let auth):
+            func login(create: Bool) async throws -> AppleLoginResponse<NotyAccountUser> {
+                let body = AppleSignIn.loginBody(identityToken: auth.identityToken, nonce: auth.nonce, givenName: auth.givenName, create: create)
+                return try await decode(AppleLoginResponse<NotyAccountUser>.self, from: await fetch("/api/apple/login", method: "POST", body: body, limit: 65536))
+            }
             do {
-                let body = AppleSignIn.loginBody(identityToken: auth.identityToken, nonce: auth.nonce, givenName: auth.givenName)
-                var response = try await decode(AppleLoginResponse<NotyAccountUser>.self, from: await fetch("/api/apple/login", method: "POST", body: body, limit: 65536))
+                var response: AppleLoginResponse<NotyAccountUser>
+                do {
+                    response = try await login(create: AppleLoginPlan.mayCreate(sessionExpired: expired, foreignPendingCount: foreign))
+                } catch let failure as LawAPIError where failure.status == 401 && failure.code == AppleSignIn.unknownCode {
+                    switch AppleLoginPlan.unknown(sessionExpired: expired, accountName: expiredName, foreignPendingCount: foreign) {
+                    case .explainLinking(let text): self.error = text; return (false, false)
+                    case .confirmCreation(let title, let message):
+                        guard await TopAlert.ask(title, message, confirm: "Neues Konto anlegen") else { return (false, false) }
+                        // The same token, still within its few minutes of validity.
+                        response = try await login(create: true)
+                    }
+                }
                 response.user.apple = true
                 try await signedIn(response.user)
                 return (true, response.created)
@@ -299,6 +328,12 @@ final class LawLibraryModel: ObservableObject {
                 try storeApple(response.apple, fresh: response.user, account: account.id, generation: generation)
                 return true
             } catch is CancellationError { return false }
+            catch let failure as LawAPIError where failure.status == 401 {
+                // The account session ended (the Apple token is checked separately): sign in again.
+                if generation == epoch, user?.id == account.id { sessionExpired = true }
+                self.error = "Die Anmeldung als „\(account.email ?? account.name)“ ist abgelaufen. Bitte erneut anmelden und Apple danach verknüpfen."
+                return false
+            }
             catch { self.error = appleMessage(error); return false }
         }
     }
@@ -322,17 +357,22 @@ final class LawLibraryModel: ObservableObject {
         if let fresh, fresh.id == account { next.name = fresh.name; next.email = fresh.email; next.emailVerified = fresh.emailVerified }
         next.apple = linked
         try NotyAccountKeychain.save(next); user = next
+        accountUpdates.changed()
     }
     /// Best effort: learns `apple` (and name/e-mail changes) for the stored session.
     func refreshAccount() async {
         guard let account = user, let token = account.token, !sessionExpired else { return }
         let generation = epoch
+        // A link/unlink finishing meanwhile wins over this older answer.
+        let update = accountUpdates.begin()
         struct Session: Decodable, Sendable { var user: NotyAccountUser? }
         do {
             let session = try await decode(Session.self, from: await fetch("/api/session", token: token, limit: 65536))
             guard generation == epoch, user?.id == account.id else { return }
             guard var fresh = session.user, fresh.id == account.id else { sessionExpired = true; return }
+            guard accountUpdates.isCurrent(update), !accountBusy else { return }
             fresh.token = token; try NotyAccountKeychain.save(fresh); user = fresh
+            accountUpdates.changed()
         } catch let error as LawAPIError where error.status == 401 {
             if generation == epoch, user?.id == account.id { sessionExpired = true }
         } catch {}
@@ -358,6 +398,7 @@ final class LawLibraryModel: ObservableObject {
                 struct Session: Decodable, Sendable { var user: NotyAccountUser? }
                 if var fresh = try await decode(Session.self, from: await fetch("/api/session", token: token, limit: 65536)).user {
                     fresh.token = token; try NotyAccountKeychain.save(fresh); user = fresh
+                    accountUpdates.changed()
                 }
             }
             return true

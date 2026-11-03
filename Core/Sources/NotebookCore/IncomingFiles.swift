@@ -49,6 +49,8 @@ public enum IncomingFileError: Error, LocalizedError, Equatable {
     case missing
     case notAppendable
     case notebookUnreadable
+    /// Another writer (an open editor, another append) holds the package.
+    case notebookInUse
 
     public var errorDescription: String? {
         switch self {
@@ -59,6 +61,7 @@ public enum IncomingFileError: Error, LocalizedError, Equatable {
         case .missing: "Die empfangene Kopie ist nicht mehr vorhanden. Bitte die Datei erneut teilen."
         case .notAppendable: "Textdokumente nehmen keine PDF-Seiten auf. Bitte ein Heft wählen."
         case .notebookUnreadable: "Der neueste Stand dieses Hefts ist nicht lesbar. Bitte das Heft öffnen und prüfen; es wurde nichts eingefügt."
+        case .notebookInUse: "Das Heft ist gerade in einer Ansicht geöffnet oder wird ergänzt. Bitte gleich noch einmal versuchen; es wurde nichts eingefügt."
         }
     }
 }
@@ -73,11 +76,20 @@ public struct IncomingItem: Codable, Equatable, Identifiable, Sendable {
     public let imageFormat: String?
     public let byteCount: Int
     public let receivedAt: Date
+    /// SHA-256 of the received bytes (lowercase hex): the same file delivered
+    /// twice is recognised (`IncomingInbox.duplicate`). nil for copies an
+    /// older build received.
+    public var sha256: String?
+    /// Where the file went, written into `item.json` right after the commit
+    /// (`IncomingInbox.record`): a copy that is still there after a restart
+    /// is then not offered as new again.
+    public var filing: IncomingFilingRecord?
 
     public init(id: UUID = UUID(), originalName: String, kind: IncomingFileKind, imageFormat: String? = nil,
-                byteCount: Int, receivedAt: Date) {
+                byteCount: Int, receivedAt: Date, sha256: String? = nil) {
         self.id = id; self.originalName = originalName; self.kind = kind
         self.imageFormat = imageFormat; self.byteCount = byteCount; self.receivedAt = receivedAt
+        self.sha256 = sha256
     }
 
     /// „PDF“, „Bild (HEIC)“ …
@@ -93,6 +105,98 @@ public struct IncomingItem: Codable, Equatable, Identifiable, Sendable {
             case nil: nil
             }
             return name.map { "Bild (\($0))" } ?? "Bild"
+        }
+    }
+}
+
+/// The outcome of filing one incoming file.
+public struct IncomingFilingRecord: Codable, Equatable, Sendable {
+    public enum Status: String, Codable, Sendable {
+        /// Committed (new notebook or appended pages).
+        case filed
+        /// The pages went into an open notebook whose save was not confirmed:
+        /// they are in the notebook only if a later save succeeded.
+        case unsaved
+    }
+    public var status: Status
+    public var notebookID: UUID
+    public var notebookTitle: String
+    /// The new pages (all pages of a new notebook).
+    public var pageIDs: [UUID]
+    public var filedAt: Date
+    /// The commit was read back and matched; false after a failed check.
+    public var verified: Bool
+
+    public init(status: Status, notebookID: UUID, notebookTitle: String, pageIDs: [UUID], filedAt: Date, verified: Bool = true) {
+        self.status = status; self.notebookID = notebookID; self.notebookTitle = notebookTitle
+        self.pageIDs = pageIDs; self.filedAt = filedAt; self.verified = verified
+    }
+
+    /// An `unsaved` record whose pages all stand in the committed notebook
+    /// (`committedPageIDs`) was saved after all.
+    public func resolved(committedPageIDs: some Sequence<UUID>) -> IncomingFilingRecord {
+        guard status == .unsaved, !pageIDs.isEmpty, Set(pageIDs).isSubset(of: Set(committedPageIDs)) else { return self }
+        var result = self; result.status = .filed; return result
+    }
+}
+
+/// A file received again: the same bytes are waiting already or were filed
+/// before (`IncomingInbox.duplicate`). Shown, never silently dropped.
+public enum IncomingDuplicate: Equatable, Sendable {
+    case waiting(IncomingItem)
+    case filed(IncomingFiledEntry)
+}
+
+/// One entry of the inbox's list of filed files (`filed.json`).
+public struct IncomingFiledEntry: Codable, Equatable, Sendable {
+    public var sha256: String
+    public var originalName: String
+    public var notebookID: UUID
+    public var notebookTitle: String
+    public var pageCount: Int
+    public var filedAt: Date
+}
+
+/// Texts of the filing sheet that depend on what really happened.
+public enum IncomingFilingText {
+    public static let undoPromise = "Rückgängig im Heft nimmt sie wieder heraus."
+    public static let noUndo = "Dieses Heft hat noch das ältere Speicherformat, deshalb nimmt Rückgängig das Einfügen nicht zurück; die Seiten lassen sich in der Seitenleiste wieder löschen."
+
+    /// `undoable`: the open editor recorded an undo step (its return value).
+    public static func appendedToOpenNotebook(pages: String, place: String, title: String, undoable: Bool) -> String {
+        "\(pages) \(place) von „\(title)“ eingefügt und gespeichert. " + (undoable ? undoPromise : noUndo)
+    }
+
+    /// Footer of the position choice for an open notebook.
+    public static func openNotebookFooter(page: Int, of count: Int, undoable: Bool) -> String {
+        "Aktuelle Seite: \(page) von \(count). Das geöffnete Heft speichert die Seiten selbst" + (undoable ? "; Rückgängig nimmt sie wieder heraus." : ". Rückgängig nimmt das Einfügen bei diesem Heft (älteres Format) nicht zurück.")
+    }
+
+    /// The editor holds the pages, its save was not confirmed. `retrying`:
+    /// the editor retries by itself (`EditorModel.retryable`).
+    public static func notSaved(title: String, retrying: Bool, reason: String?) -> String {
+        let state = retrying
+            ? "sind aber noch nicht gespeichert; noty versucht es automatisch weiter."
+            : "konnten aber nicht gespeichert werden" + (reason.map { ": \($0)" } ?? ".") + " Ein erneuter Versuch hilft hier nicht von selbst."
+        return "Die Seiten stehen im geöffneten Heft „\(title)“, \(state) Die empfangene Kopie bleibt erhalten; nach einem Neustart prüft noty, ob die Seiten im gespeicherten Heft stehen, und bietet sie nur dann erneut an, wenn nicht."
+    }
+
+    /// Committed, but reading the new state back did not confirm it.
+    public static func committedUnverified(pages: String, title: String) -> String {
+        "\(pages) wurden in „\(title)“ gespeichert, aber die anschließende Prüfung konnte den gespeicherten Stand nicht bestätigen. Bitte das Heft öffnen und prüfen. Die empfangene Kopie bleibt erhalten und ist als bereits eingefügt markiert, damit sie nicht doppelt eingefügt wird."
+    }
+
+    /// A leftover copy whose filing was already committed.
+    public static func alreadyFiled(_ record: IncomingFilingRecord, date: String) -> String {
+        "Diese Datei wurde am \(date) in „\(record.notebookTitle)“ abgelegt (\(record.pageIDs.count == 1 ? "1 Seite" : "\(record.pageIDs.count) Seiten")). Die Kopie im Eingang wird nicht mehr gebraucht."
+    }
+
+    public static func duplicate(_ duplicate: IncomingDuplicate, date: (Date) -> String) -> String {
+        switch duplicate {
+        case .waiting(let other):
+            return "Dieselbe Datei liegt bereits ein weiteres Mal im Eingang („\(other.originalName)“, empfangen \(date(other.receivedAt))). Wenn sie doppelt geteilt wurde, hier „Abbrechen“ wählen."
+        case .filed(let entry):
+            return "Dieselbe Datei wurde bereits am \(date(entry.filedAt)) in „\(entry.notebookTitle)“ abgelegt (\(entry.pageCount == 1 ? "1 Seite" : "\(entry.pageCount) Seiten")). Erneut ablegen fügt sie ein zweites Mal ein."
         }
     }
 }
@@ -354,7 +458,8 @@ public final class IncomingInbox: @unchecked Sendable {
             case .unsupported(let reason): throw IncomingFileError.unsupported(reason)
             }
             let name = String(originalName.prefix(255))
-            let item = IncomingItem(originalName: name, kind: kind, imageFormat: format, byteCount: size, receivedAt: now)
+            let item = IncomingItem(originalName: name, kind: kind, imageFormat: format, byteCount: size, receivedAt: now,
+                                    sha256: try Self.sha256(of: stage))
             let folder = directory.appendingPathComponent(item.id.uuidString, isDirectory: true)
             try fm.createDirectory(at: folder, withIntermediateDirectories: false)
             try fm.moveItem(at: stage, to: folder.appendingPathComponent("content"))
@@ -365,6 +470,59 @@ public final class IncomingInbox: @unchecked Sendable {
             discardStage(stage)
             throw error
         }
+    }
+
+    static func sha256(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256Stream()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(chunk) }
+        return hasher.finalizeHex()
+    }
+
+    private var ledgerURL: URL { directory.appendingPathComponent("filed.json") }
+    static let ledgerLimit = 200
+
+    /// Notes the outcome in the item's `item.json` (atomic replacement) right
+    /// after the commit; a committed filing also enters the list of filed
+    /// files (`filed.json`), so a later delivery of the same bytes is
+    /// recognised after the copy itself is gone.
+    @discardableResult
+    public func record(_ id: UUID, filing: IncomingFilingRecord) throws -> IncomingItem {
+        let folder = directory.appendingPathComponent(id.uuidString, isDirectory: true)
+        let file = folder.appendingPathComponent("item.json")
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .secondsSince1970
+        var item = try decoder.decode(IncomingItem.self, from: BoundedFile.read(file, limit: 64_000))
+        guard item.id == id else { throw IncomingFileError.missing }
+        item.filing = filing
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .secondsSince1970
+        try encoder.encode(item).write(to: file, options: .atomic)
+        if filing.status == .filed, let sha = item.sha256 {
+            let entry = IncomingFiledEntry(sha256: sha, originalName: item.originalName, notebookID: filing.notebookID,
+                                           notebookTitle: filing.notebookTitle, pageCount: filing.pageIDs.count, filedAt: filing.filedAt)
+            var list = filedEntries().filter { !($0.sha256 == sha && $0.notebookID == filing.notebookID && $0.filedAt == filing.filedAt) }
+            list.insert(entry, at: 0)
+            try? encoder.encode(Array(list.prefix(Self.ledgerLimit))).write(to: ledgerURL, options: .atomic)
+        }
+        return item
+    }
+
+    /// Filed files, newest first; a missing or damaged list is empty.
+    public func filedEntries() -> [IncomingFiledEntry] {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .secondsSince1970
+        guard let data = try? BoundedFile.read(ledgerURL, limit: 1_000_000),
+              let list = try? decoder.decode([IncomingFiledEntry].self, from: data) else { return [] }
+        return list
+    }
+
+    /// The same bytes waiting a second time, or filed before (newest first).
+    public func duplicate(of item: IncomingItem, now: Date = Date()) -> IncomingDuplicate? {
+        guard let sha = item.sha256 else { return nil }
+        if let other = items(now: now).first(where: { $0.id != item.id && $0.sha256 == sha && $0.filing?.status != .filed }) {
+            return .waiting(other)
+        }
+        if let entry = filedEntries().first(where: { $0.sha256 == sha }) { return .filed(entry) }
+        return nil
     }
 
     public func contentURL(_ item: IncomingItem) -> URL {
@@ -410,24 +568,48 @@ extension LibraryStore {
     /// added with new IDs and one complete new revision is committed (manifest
     /// last) and read back. An older fallback state is refused instead of
     /// building on it; any failure leaves the committed state as it was.
+    ///
+    /// The package's write claim (`PackageWriteLock`) is held from before
+    /// loading until after the commit, so no editor can load the old state
+    /// meanwhile and commit over it later. A thrown error means nothing was
+    /// committed. Once the commit succeeded nothing throws any more: a failed
+    /// read-back is reported as `verified == false` (the pages are in the
+    /// notebook; the caller must not offer the file as new again).
     public func appendIncomingPDF(to id: UUID, data: Data, geometries: [PDFPageGeometry], placement: IncomingPlacement,
-                                  writingArea: PageMargins?) throws -> (pageIDs: [UUID], title: String) {
+                                  writingArea: PageMargins?) throws -> IncomingAppendResult {
         let snapshot = try committedSnapshot()
         guard let item = snapshot.items.first(where: { $0.id == id }), !item.isFolder, !snapshot.isTrashed(id) else {
             throw LibraryError.unavailable
         }
         guard !item.isTextDocument else { throw IncomingFileError.notAppendable }
         let url = try documentURL(id: id)
+        guard let claim = PackageWriteLock.shared.claim(url) else { throw IncomingFileError.notebookInUse }
+        defer { claim.release() }
         let store = RevisionStore(directory: url)
         var document = try store.load()
         guard !store.recovered, document.id == id else { throw IncomingFileError.notebookUnreadable }
         guard !document.isTextDocument else { throw IncomingFileError.notAppendable }
         let ids = try document.insertIncomingPDF(data, geometries: geometries, placement: placement, writingArea: writingArea)
         try store.save(document)
-        let reopened = RevisionStore(directory: url, readOnly: true)
-        guard try reopened.load() == document, !reopened.recovered else { throw LibraryError.invalidIndex }
-        return (ids, item.title)
+        // Committed. From here on only the confirmation can fail.
+        let verified: Bool
+        do {
+            try Self.incomingReadBackFault()
+            let reopened = RevisionStore(directory: url, readOnly: true)
+            verified = try reopened.load() == document && !reopened.recovered
+        } catch { verified = false }
+        return IncomingAppendResult(pageIDs: ids, title: item.title, verified: verified)
     }
+
+    /// Test hook: fails the read-back after a successful append commit.
+    nonisolated(unsafe) static var incomingReadBackFault: () throws -> Void = {}
+}
+
+public struct IncomingAppendResult: Sendable, Equatable {
+    public let pageIDs: [UUID]
+    public let title: String
+    /// The committed state was read back and matched.
+    public let verified: Bool
 }
 
 extension BoundedFile {

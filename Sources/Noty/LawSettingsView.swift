@@ -82,7 +82,7 @@ struct NotyAccountSettingsPage: View {
                         ? "Ein Konto braucht nur einen Benutzernamen (2–32 Buchstaben, Zahlen oder . _ -) und ein Passwort mit mindestens 12 Zeichen. Es wird keine E-Mail verschickt. Ohne E-Mail-Adresse lässt sich ein vergessenes Passwort nicht zurücksetzen."
                         : "Lesen, Suchen und Markieren funktionieren ohne Konto; Markierungen bleiben dann nur auf diesem iPad. Mit Konto werden Lesezeichen und Markierungen mit law.xclipsen.de und anderen Geräten abgeglichen.").font(.caption).foregroundStyle(.secondary)
                     if !recovery {
-                        Text("„Mit Apple anmelden“ öffnet das noty-Konto, das mit dieser Apple-ID verknüpft ist, sonst entsteht ein neues. Ein bestehendes Konto zuerst mit Passwort anmelden und dann Apple verknüpfen. noty speichert von Apple keine E-Mail-Adresse.").font(.caption).foregroundStyle(.secondary)
+                        Text("„Mit Apple anmelden“ öffnet das noty-Konto, das mit dieser Apple-ID verknüpft ist, sonst entsteht ein neues – nach einer abgelaufenen Anmeldung nicht, und wenn noch Markierungen eines anderen Kontos auf diesem iPad warten, fragt noty vorher. Ein bestehendes Konto zuerst mit Passwort anmelden und dann Apple verknüpfen. noty speichert von Apple keine E-Mail-Adresse.").font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }

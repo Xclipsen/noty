@@ -425,29 +425,26 @@ final class AIAssistantTests: XCTestCase {
 
     // MARK: Consent
 
-    func testApprovalBelongsToServerAccountAndDocument() throws {
+    func testConsentBelongsToServerAndAccount() throws {
         let server = try XCTUnwrap(AIServerAddress.parse("https://a.ts.net:8443"))
         let other = try XCTUnwrap(AIServerAddress.parse("https://b.ts.net:8443"))
         let otherPort = try XCTUnwrap(AIServerAddress.parse("https://a.ts.net:9443"))
-        let document = UUID()
-        let key = try XCTUnwrap(AIApproval.key(server: server, account: "u1", document: document))
-        XCTAssertEqual(AIApproval.key(server: server, account: "u1", document: document), key)
-        XCTAssertNotEqual(AIApproval.key(server: other, account: "u1", document: document), key)
-        XCTAssertNotEqual(AIApproval.key(server: otherPort, account: "u1", document: document), key)
-        XCTAssertNotEqual(AIApproval.key(server: server, account: "u2", document: document), key)
-        XCTAssertNotEqual(AIApproval.key(server: server, account: "u1", document: UUID()), key)
-        XCTAssertNil(AIApproval.key(server: server, account: "", document: document))
-        XCTAssertNotEqual(AIApproval.key(server: server, account: "a|b", document: document),
-                          AIApproval.key(server: server, account: "a%7Cb", document: document))
+        let key = try XCTUnwrap(AIConsent.key(server: server, account: "u1"))
+        XCTAssertEqual(AIConsent.key(server: server, account: "u1"), key)
+        XCTAssertNotEqual(AIConsent.key(server: other, account: "u1"), key)
+        XCTAssertNotEqual(AIConsent.key(server: otherPort, account: "u1"), key)
+        XCTAssertNotEqual(AIConsent.key(server: server, account: "u2"), key)
+        XCTAssertNil(AIConsent.key(server: server, account: ""))
+        XCTAssertNotEqual(AIConsent.key(server: server, account: "a|b"), AIConsent.key(server: server, account: "a%7Cb"))
         XCTAssertEqual(AIServerAddress.authority(of: server), "a.ts.net:8443")
         XCTAssertEqual(AIServerAddress.authority(of: try XCTUnwrap(AIServerAddress.parse("https://a.ts.net"))), "a.ts.net")
     }
 
-    func testOldApprovalsCountForNothing() throws {
+    func testOldApprovalsPerNotebookCountForNothing() throws {
         let server = try XCTUnwrap(AIServerAddress.parse("https://a.ts.net"))
+        let key = try XCTUnwrap(AIConsent.key(server: server, account: "u1"))
         let document = UUID()
-        let key = try XCTUnwrap(AIApproval.key(server: server, account: "u1", document: document))
-        XCTAssertEqual(AIApproval.valid([document.uuidString, key]), [key])
+        XCTAssertEqual(AIConsent.valid([document.uuidString, "v2|a.ts.net|u1|\(document.uuidString)", key, "c1|a.ts.net|u1|x"]), [key])
     }
 
     // MARK: Repeating a delivery

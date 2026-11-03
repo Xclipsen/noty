@@ -41,8 +41,17 @@ grep -q 'COMMAND_EXIT_CODE="0"' "$LOG" || { tail -20 "$LOG"; exit 1; }
 restore; trap - EXIT
 
 mkdir -p .tools
-python3 -I scripts/ota_check.py xtool/Noty.ipa "$INSTALLED_ID" > .tools/ota-check.json
+# Prüft ID, Profil, Gerät, Ablauf und ob das Profil alle Entitlements der
+# App-Signatur erlaubt (sonst verweigert iOS die Installation). Jedes Problem
+# bricht ab, bevor etwas veröffentlicht wird.
+CHECK_STATUS=0
+python3 -I scripts/ota_check.py xtool/Noty.ipa "$INSTALLED_ID" > .tools/ota-check.json || CHECK_STATUS=$?
 cat .tools/ota-check.json
+PROBLEMS="$(python3 -I -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["problems"]))' .tools/ota-check.json 2>/dev/null || echo unlesbar)"
+if [ "$CHECK_STATUS" -ne 0 ] || [ "$PROBLEMS" != 0 ]; then
+  echo "OTA-Prüfung meldet Probleme (siehe problems); nichts veröffentlicht." >&2
+  exit 1
+fi
 BUILD="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["build"])')"
 SHORT="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["version"])')"
 

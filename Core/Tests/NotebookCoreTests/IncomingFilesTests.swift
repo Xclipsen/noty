@@ -274,4 +274,103 @@ final class IncomingFilesTests: XCTestCase {
             XCTFail("trashed notebook accepted")
         } catch LibraryError.unavailable { }
     }
+    // MARK: Honest results (undo, saving, delivery)
+
+    /// A notebook imported as one PDF (schema 2, `pdf`) records no undo step
+    /// for appended pages; the sheet may only promise undo when one was recorded.
+    func testUndoIsPromisedOnlyWhenTheInsertionBecameAnUndoStep() throws {
+        var legacy = Notebook()
+        legacy.title = "Skript"
+        legacy.pdf = Data("%PDF-alt".utf8)
+        var page = Page(); page.geometry = geometry
+        legacy.pages = [page]
+        XCTAssertFalse(legacy.pageOperationsAreUndoable)
+        var appended = legacy
+        _ = try appended.insertIncomingPDF(Data("%PDF-neu".utf8), geometries: [geometry], placement: .end, writingArea: nil)
+        var history = NotebookUndoHistory()
+        let legacyRecorded = history.recordPages(before: legacy, after: appended, undoPageID: page.id, redoPageID: page.id)
+        XCTAssertFalse(legacyRecorded)
+        XCTAssertFalse(history.canUndo)
+        let legacyText = IncomingFilingText.appendedToOpenNotebook(pages: "1 Seite", place: "am Ende", title: "Skript", undoable: legacyRecorded)
+        XCTAssertFalse(legacyText.contains(IncomingFilingText.undoPromise))
+        XCTAssertTrue(legacyText.contains("nimmt Rückgängig das Einfügen nicht zurück"))
+        XCTAssertFalse(IncomingFilingText.openNotebookFooter(page: 1, of: 1, undoable: legacy.pageOperationsAreUndoable).contains("Rückgängig nimmt sie wieder heraus"))
+
+        var modern = Notebook.blank(title: "Heft")
+        modern = try modern.preparedForPageEditing()
+        XCTAssertTrue(modern.pageOperationsAreUndoable)
+        var grown = modern
+        _ = try grown.insertIncomingPDF(Data("%PDF-neu".utf8), geometries: [geometry], placement: .end, writingArea: nil)
+        let recorded = history.recordPages(before: modern, after: grown, undoPageID: modern.pages[0].id, redoPageID: modern.pages[0].id)
+        XCTAssertTrue(recorded)
+        XCTAssertEqual(history.undo(grown)?.notebook, modern, "the promised undo really takes them out")
+        XCTAssertTrue(IncomingFilingText.appendedToOpenNotebook(pages: "1 Seite", place: "am Ende", title: "Heft", undoable: recorded)
+            .hasSuffix(IncomingFilingText.undoPromise))
+    }
+
+    func testSaveFailureTextsDistinguishRetryAndCommittedStates() {
+        let retrying = IncomingFilingText.notSaved(title: "Bio", retrying: true, reason: nil)
+        XCTAssertTrue(retrying.contains("versucht es automatisch weiter"))
+        let permanent = IncomingFilingText.notSaved(title: "Bio", retrying: false, reason: "Zu groß.")
+        XCTAssertFalse(permanent.contains("versucht es"), "no retry promise for an error a retry cannot fix")
+        XCTAssertTrue(permanent.contains("Zu groß."))
+        let unverified = IncomingFilingText.committedUnverified(pages: "2 Seiten", title: "Bio")
+        XCTAssertTrue(unverified.contains("gespeichert"))
+        XCTAssertFalse(unverified.contains("unverändert"), "after the commit the notebook is not unchanged")
+    }
+
+    func testUnsavedFilingCountsAsFiledOnceItsPagesAreCommitted() {
+        let pages = [UUID(), UUID()]
+        let record = IncomingFilingRecord(status: .unsaved, notebookID: UUID(), notebookTitle: "Bio", pageIDs: pages, filedAt: Date())
+        XCTAssertEqual(record.resolved(committedPageIDs: [UUID()] + pages).status, .filed)
+        XCTAssertEqual(record.resolved(committedPageIDs: [pages[0]]).status, .unsaved, "not all pages saved")
+        var filed = record; filed.status = .filed
+        XCTAssertEqual(filed.resolved(committedPageIDs: []), filed)
+    }
+
+    func testFilingIsRecordedInItemJSONAndDuplicatesAreRecognised() throws {
+        let folder = directory(); defer { try? FileManager.default.removeItem(at: folder) }
+        let inbox = IncomingInbox(directory: folder)
+        let pdf = Data("%PDF-1.7\nArbeitsblatt".utf8)
+        func receive(_ name: String, _ bytes: Data, at time: Double) throws -> IncomingItem {
+            let stage = try inbox.newStage()
+            try bytes.write(to: stage)
+            return try inbox.adopt(stage: stage, originalName: name, now: Date(timeIntervalSince1970: time))
+        }
+        let first = try receive("Blatt.pdf", pdf, at: 1_000)
+        XCTAssertEqual(first.sha256, SHA256.hexDigest(pdf))
+        XCTAssertNil(inbox.duplicate(of: first))
+        // Delivered twice (share sheet and „In noty öffnen“): visible as such.
+        let second = try receive("Blatt (1).pdf", pdf, at: 1_001)
+        XCTAssertEqual(inbox.duplicate(of: second), .waiting(first))
+        XCTAssertNil(inbox.duplicate(of: try receive("anders.pdf", Data("%PDF-1.7 anders".utf8), at: 1_002)))
+
+        // Filed: noted in item.json at once, before the copy is removed.
+        let notebook = UUID(), pageIDs = [UUID()]
+        let record = IncomingFilingRecord(status: .filed, notebookID: notebook, notebookTitle: "Bio", pageIDs: pageIDs,
+                                          filedAt: Date(timeIntervalSince1970: 2_000))
+        try inbox.record(first.id, filing: record)
+        let relisted = IncomingInbox(directory: folder).items().first { $0.id == first.id }
+        XCTAssertEqual(relisted?.filing, record, "a restart before the removal knows it was filed")
+        XCTAssertEqual(relisted?.sha256, first.sha256)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("\(first.id.uuidString)/item.json.tmp").path))
+        // After the copy is gone, the same bytes are reported as filed before.
+        inbox.remove(first.id)
+        guard case .filed(let entry)? = inbox.duplicate(of: second) else { return XCTFail("duplicate not recognised") }
+        XCTAssertEqual(entry.notebookTitle, "Bio")
+        XCTAssertEqual(entry.pageCount, 1)
+        XCTAssertTrue(IncomingFilingText.duplicate(.filed(entry), date: { _ in "heute" }).contains("„Bio“"))
+        XCTAssertFalse(inbox.items().contains { $0.originalName == "filed.json" })
+
+        // An older build's item.json (no hash, no state) still loads.
+        let legacy = folder.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: false)
+        try pdf.write(to: legacy.appendingPathComponent("content"))
+        let id = UUID(uuidString: legacy.lastPathComponent)!
+        try Data(#"{"id":"\#(id.uuidString)","originalName":"alt.pdf","kind":"pdf","byteCount":5,"receivedAt":10}"#.utf8)
+            .write(to: legacy.appendingPathComponent("item.json"))
+        let old = try XCTUnwrap(inbox.items().first { $0.id == id })
+        XCTAssertNil(old.sha256)
+        XCTAssertNil(inbox.duplicate(of: old))
+    }
 }

@@ -14,7 +14,7 @@ Appweites E-Mail-/Passwortkonto auf dem bestehenden IONOS-Backend, auch auf der 
 
 ## Bestätigte Erweiterung vom 02.11.2026: KI-Assistent (experimentell)
 
-Vom Nutzer beauftragt, zunächst nur in noty dev: Fragen zu Heft und Seite über das eigene ChatGPT-Abo, standardmäßig aus, Kontext sichtbar wählbar und je Heft freigegeben, Handschrift als Seitenbild. Ausgewählte Inhalte gehen dafür an den eigenen Server und OpenAI; alle Kernfunktionen bleiben offline und ohne KI nutzbar. An das noty-Konto gebunden, Admin-Web-App unter `noty.xclipsen.de/admin`. Lernkarten und automatische Chats sind geplant, aber nicht Teil dieser Version. Vertrag: [AI-ASSISTANT](AI-ASSISTANT.md). Diese Umfangsbestätigung ist kein Abnahmenachweis.
+Vom Nutzer beauftragt, zunächst nur in noty dev: Fragen zu Heft und Seite über das eigene ChatGPT-Abo, standardmäßig aus, Handschrift als Seitenbild. Statt einer Freigabe je Heft gilt seit 03.11.2026 (Nutzerentscheidung) eine einmalige Zustimmung beim Einschalten, gebunden an Server und Konto; danach geht das aktive Heft automatisch mit (sichtbar „Ganzes Heft“/„Diese Seite“), einzelne Hefte lassen sich ausschließen. Ausgewählte Inhalte gehen dafür an den eigenen Server und OpenAI; alle Kernfunktionen bleiben offline und ohne KI nutzbar. An das noty-Konto gebunden, Admin-Web-App unter `noty.xclipsen.de/admin`. Lernkarten und automatische Chats sind geplant, aber nicht Teil dieser Version. Vertrag: [AI-ASSISTANT](AI-ASSISTANT.md). Diese Umfangsbestätigung ist kein Abnahmenachweis.
 
 ## Bestätigte Entscheidungen
 

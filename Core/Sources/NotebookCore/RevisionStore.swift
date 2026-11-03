@@ -50,6 +50,9 @@ public enum RevisionError: Error, LocalizedError {
     case noCompleteRevision
     case snapshotTooLarge
     case revisionUnavailable
+    /// manifest.json changed on disk since this store last read or wrote it:
+    /// another writer committed. Nothing is replaced or cleaned up.
+    case concurrentChange
 
     public var errorDescription: String? {
         switch self {
@@ -58,6 +61,7 @@ public enum RevisionError: Error, LocalizedError {
         case .noCompleteRevision: "Kein vollständiger, geprüfter Speicherstand gefunden. Vorhandene Dateien bleiben erhalten."
         case .snapshotTooLarge: "Der Speicherstand überschreitet das Größenlimit von 200 MB (Bildoriginale zählen nicht mit, sie liegen getrennt). Bitte große PDFs entfernen, auch aus dem Seitenpapierkorb."
         case .revisionUnavailable: "Dieser lokale Stand ist nicht mehr verfügbar. Bitte die Liste neu öffnen."
+        case .concurrentChange: "Das Heft wurde inzwischen an anderer Stelle gespeichert (zum Beispiel durch das Anhängen einer geteilten Datei). Damit nichts überschrieben wird, wurde dieser Stand nicht gespeichert; der gespeicherte Stand bleibt erhalten, die Änderungen seitdem sind nur im Speicher. Bitte das Heft schließen und neu öffnen."
         }
     }
 }
@@ -108,6 +112,15 @@ public final class RevisionStore {
     private var fallbackLoaded = false
     /// Quarantine set of the current commit, created on first use.
     private var quarantineSet: URL?
+    /// manifest.json as this store last read (before parsing it) or wrote
+    /// it; nil when absent. A commit only proceeds while the file on disk is
+    /// still exactly this, so a second writer is detected instead of being
+    /// overwritten (`RevisionError.concurrentChange`).
+    private var observedPrimary: Data?
+    /// Revision files present right after loading. Unknown files that appear
+    /// later belong to someone else (possibly a newer commit) and are never
+    /// removed by this store's cleanup.
+    private var presentAtLoad = Set<String>()
     /// A commit happened since loading: the opening asset GC is over.
     private var committedSinceLoad = false
     /// The closing asset GC ran: no further opening run on this store.
@@ -144,6 +157,9 @@ public final class RevisionStore {
 
     private func loadDecoded() throws -> DecodedNotebook {
         var skipped = Set<String>()
+        // Before parsing: a commit in between makes this store's next commit
+        // refuse (safe) instead of overwriting the newer manifest.
+        let fingerprint = primaryFingerprint()
         for manifestURL in [primary, previous] where fm.fileExists(atPath: manifestURL.path) {
             do {
                 let manifest = try readManifest(manifestURL)
@@ -172,6 +188,8 @@ public final class RevisionStore {
                         lastStoredSchema = decoded.storedSchemaVersion
                         recovered = manifestURL != primary || offset > 0
                         fallbackLoaded = recovered
+                        observedPrimary = fingerprint
+                        presentAtLoad = revisionFiles()
                         loaded = true
                         return decoded
                     } catch StorageError.unsupportedSchema(let version) {
@@ -207,6 +225,8 @@ public final class RevisionStore {
         preexisting = []
         fallbackLoaded = false // Prototype files stay untouched; revision rests are uncommitted.
         damagedPrimary = false
+        observedPrimary = fingerprint
+        presentAtLoad = revisionFiles()
         return decoded
     }
 
@@ -218,6 +238,8 @@ public final class RevisionStore {
         if !loaded { _ = try load() }
         if lastManifest != nil, !recovered, lastDocument == document,
            fm.fileExists(atPath: primary.path) { return }
+        // Another writer committed since: refuse before writing anything.
+        try requireUnchangedPrimary()
         quarantineSet = nil
         let bytes = try JSONEncoder().encode(document)
         guard bytes.count <= Self.maximumBytes else { throw RevisionError.snapshotTooLarge }
@@ -241,6 +263,7 @@ public final class RevisionStore {
         let manifest: RevisionManifest
         var nextCheckpoints: [RevisionRecord] = []
         var checkpointsWritten = false
+        var manifestBytes = Data()
         do {
             if old == nil, hasLegacyFiles, let legacy = lastDocument {
                 // The first package commit also has a valid previous pointer to the
@@ -254,6 +277,8 @@ public final class RevisionStore {
             let record = try writeRevision(bytes)
             written.append(record.file)
             try commitFault(.revisionWritten)
+            // Before touching shared files (checkpoints, previous pointer).
+            try requireUnchangedPrimary()
             // Exactly the Build 46 manifest rule; older states go to checkpoints.json.
             let older = old?.revisions ?? []
             manifest = RevisionManifest(revisions: [record] + Array(older.prefix(2)))
@@ -263,15 +288,20 @@ public final class RevisionStore {
             try commitFault(.checkpointsWritten)
             if let old { try JSONEncoder().encode(old).write(to: previous, options: .atomic) }
             try commitFault(.previousWritten)
+            // Checked again right before the commit point (a writer outside
+            // this process cannot be locked out, only detected).
+            try requireUnchangedPrimary()
             // After the valid previous pointer exists; a crash now loads it again.
             if damagedPrimary { preserveDamagedPrimary() }
             // Commit point: no UI may claim success before this atomic replacement.
-            try JSONEncoder().encode(manifest).write(to: primary, options: .atomic)
+            manifestBytes = try JSONEncoder().encode(manifest)
+            try manifestBytes.write(to: primary, options: .atomic)
         } catch {
             discardUncommitted(written)
             throw error
         }
         lastManifest = manifest
+        observedPrimary = manifestBytes
         lastDocument = document
         lastBytes = bytes
         lastStoredSchema = document.schemaVersion
@@ -439,6 +469,9 @@ public final class RevisionStore {
             if checkpointsUncertain, preexisting.contains(file) { continue }
             // Possibly newer data the fallback skipped: keep it in quarantine.
             if !known.contains(file), fallbackLoaded { moveToQuarantine(url); continue }
+            // Appeared after loading and not written by this store: another
+            // writer's revision, possibly newer than this manifest. Never removed.
+            if !known.contains(file), !presentAtLoad.contains(file) { continue }
             // Dropped acknowledged states, or unacknowledged rests of an interrupted commit.
             if (try? fm.removeItem(at: url)) != nil { known.remove(file) }
         }
@@ -506,6 +539,35 @@ public final class RevisionStore {
 
     /// Does not follow a final symlink.
     private func itemExists(_ url: URL) -> Bool { (try? fm.attributesOfItem(atPath: url.path)) != nil }
+
+    /// Exact bytes of manifest.json (nil when absent); a file that cannot be
+    /// read as such is identified by type, size and date instead.
+    private func primaryFingerprint() -> Data? {
+        guard let attributes = try? fm.attributesOfItem(atPath: primary.path) else { return nil }
+        if attributes[.type] as? FileAttributeType == .typeRegular,
+           let size = (attributes[.size] as? NSNumber)?.intValue, size <= 1_000_000,
+           let data = try? Data(contentsOf: primary) { return data }
+        let type = (attributes[.type] as? FileAttributeType)?.rawValue ?? "?"
+        let size = (attributes[.size] as? NSNumber)?.intValue ?? -1
+        let date = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return Data("other:\(type):\(size):\(date)".utf8)
+    }
+
+    /// Only a usable manifest that differs from the observed one is another
+    /// writer's commit (every commit replaces it atomically with a valid one).
+    /// A missing, damaged or blocked manifest.json is no such evidence: the
+    /// commit goes on and fails or succeeds as before.
+    private func requireUnchangedPrimary() throws {
+        guard primaryFingerprint() != observedPrimary else { return }
+        do { _ = try readManifest(primary) }
+        catch RevisionError.unsupportedFormat { throw RevisionError.concurrentChange }
+        catch { return }
+        throw RevisionError.concurrentChange
+    }
+
+    private func revisionFiles() -> Set<String> {
+        Set(((try? fm.contentsOfDirectory(atPath: revisions.path)) ?? []).filter(validFilename))
+    }
 
     private func readManifest(_ url: URL) throws -> RevisionManifest {
         let bytes = try readRegularFile(url, limit: 128_000)

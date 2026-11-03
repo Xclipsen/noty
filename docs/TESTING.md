@@ -197,9 +197,25 @@ Gerätetests (gebündelt, isolierter Bereich/Testheft):
 
 ## KI-Assistent – `feat/ki-panel`
 
-Vertrag: [AI-ASSISTANT](AI-ASSISTANT.md). Implementiert in `AIAssistant.swift` (Core), `AIAssistantModel.swift`, `AIPanelView.swift`, Einstellungsseite und `EditorWorkspace`. Geprüft: `AIAssistantTests` und `AIPanelSupportTests` unter Linux (Logik von Freigabeschlüssel, Prüfsumme, Fundstellen, Platzierung, Zwischenspeicher), `xtool dev build`. Nicht installiert, gegen eine laufende Bridge ungeprüft, am iPad ungeprüft.
+Vertrag: [AI-ASSISTANT](AI-ASSISTANT.md). Implementiert in `AIAssistant.swift` (Core), `AIAssistantModel.swift`, `AIPanelView.swift`, Einstellungsseite und `EditorWorkspace`. Geprüft: `AIAssistantTests` und `AIPanelSupportTests` unter Linux (Logik von Freigabeschlüssel (inzwischen Zustimmungsschlüssel), Prüfsumme, Fundstellen, Platzierung, Zwischenspeicher), `xtool dev build`. Nicht installiert, gegen eine laufende Bridge ungeprüft, am iPad ungeprüft.
 
 Am Gerät offen: Anmeldung, `pending`/`blocked`/401 im Panel; Frage ohne, mit Seite und mit ganzem Heft; Seitenbild samt Ink und Text; Abbruch, App in den Hintergrund und zurück während eines Laufs, Heft- und Ansichtswechsel während eines Laufs; Fundstellensprung; Panel angedockt, schwebend, neben Gesetzesfenster und zweiter Ansicht, Hochformat, Seitenwechsel über den Kopfknopf, Griffleiste und Randpfeil des Gesetzesfensters; Dock-Einstellung des Gesetzesfensters nach dem Schließen des Panels; Freigabedialog nach Adress- und Kontowechsel; Wiederholung nach Verbindungsabbruch mit geänderter Seite; Fundstellen nach Verschieben und Löschen von Seiten; Vorschau während des Schreibens (Ruckeln, Neuberechnung); lange Antwort beim Mitlaufen; Tastaturfokus im Panel neben Pencil und Texteingabe im Heft, Bildschirmtastatur im Panel.
+
+### Panel neu gestaltet, einmalige Zustimmung, automatischer Kontext (03.11.2026)
+
+Implementiert auf `feat/ki-panel`: einmalige Zustimmung je Server und Konto statt Freigabe je Heft, Ausschluss je Heft, Kontext „Ganzes Heft“/„Diese Seite“ mit Budget 40 000 Zeichen und Relevanzauswahl (BM25) darüber, Bildregeln, Lesen im Hintergrund über den Suchindex, Antwortmodi `low`/`medium`/`high`, neues Panel (Kopf, Vorschläge, Blöcke, Eingabe). Geprüft unter Linux: `AIContextPlanTests` (Modi und Prüfsumme, Ausschluss, Budget, Auswahl, Gliederung, Grenzen, Bildregeln, Ranking, Vorschläge, `usage`, Markdown-Blöcke) und angepasste `AIAssistantTests` (Zustimmungsschlüssel), Core gesamt 1164 Tests ohne Fehler; `xtool dev build` siehe Bericht. Nicht installiert, am iPad und gegen die Bridge ungeprüft.
+
+Gerätetests (gebündelt, Testheft im isolierten Bereich):
+
+1. Einschalten in den Einstellungen zeigt den Zustimmungsdialog; nach „Zustimmen“ keine Rückfrage je Heft. Adresse oder Konto wechseln: Panel und Einstellungen bieten die Zustimmung neu an, vorher geht nichts hinaus. „Zustimmung widerrufen“ sperrt das Senden.
+2. Scan-PDF ohne Textebene (wie im Screenshot vom 03.11.2026): Panel öffnen, „Heft wird gelesen … n/m“ erscheint, Stiftschreiben währenddessen ruckelfrei (Lesen pausiert), Abbrechen per ✕; danach nennt die Kontextzeile Seiten statt „noch kein Text“. Frage sofort nach dem Öffnen: unerkannte Seiten gehen als Bild mit (höchstens 4, geöffnete zuerst), Antwort kennt den Inhalt.
+3. „Diese Seite“ auf einer PDF-Seite mit Rand-Schreibplatz, Handschrift, Formen, Textfeld und Bild: die Antwort sieht alle Ebenen und den Rand; leere Seite schickt kein Bild (Herkunftszeile ohne „1 Bild“).
+4. Großes Heft (> 40 000 Zeichen): Kontextzeile „x von y Seiten passend zur Frage“ ändert sich beim Tippen; Fundstelle auf eine Seite nur aus der Gliederung springt richtig; „Fasse das Heft zusammen“ nimmt mehr Seiten.
+5. Heft ausschließen über das Menü am Titel: Leerzustand und Kontextzeile sagen es, Frage geht ohne Inhalt; „Alle Hefte wieder einbeziehen“ in den Einstellungen.
+6. Moduspille: „Nachdenken“ zeigt „Denkt nach …“ bis zum ersten Text, Wechsel während eines Laufs gilt erst für die nächste Frage, Auswahl übersteht Neustart. Menüeinträge zeigen Untertitel (ungeprüft, ob iOS 17 Untertitel im Inline-Picker anzeigt).
+7. Eingabe: wächst bis 5 Zeilen, dann scrollt sie; Return sendet, Shift-Return bricht um (Hardware-Tastatur), Bildschirmtastatur-Return sendet; Platzhalter; Senden/Stopp im Feld.
+8. Darstellung: Dynamic Type groß, Tabellen als Monospace-Block horizontal scrollbar, Fundstellen-Pillen antippbar, Kopieren/Erneut fragen, Reduce Motion (keine Punkt-/Pulsanimation), Panel angedockt und schwebend neben Gesetzesfenster.
+9. Tokens der letzten Antwort im Titelmenü erscheinen nur, wenn die Bridge `usage` liefert.
 
 ## Native Gesetzessammlung – Feature-Worktree
 

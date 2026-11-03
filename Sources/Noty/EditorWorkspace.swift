@@ -30,21 +30,29 @@ final class EditorWorkspace: ObservableObject {
     var activeModel: EditorModel { activePane == 1 ? secondary ?? primary : primary }
     func openSecondary(_ document: OpenNotebook) async {
         guard !closing else { return }
-        // The library appends a shared file to this closed package right now.
-        guard !LibraryModel.filingPackages.contains(document.id) else {
-            error = "Dieses Heft wird gerade ergänzt. Bitte gleich noch einmal öffnen."; return
+        // Reserved before waiting for the old second view: no library append
+        // (or any other writer) can commit to this package between now and
+        // the new model's load (`PackageWriteLock`). A pane holding it already
+        // owns the claim.
+        var reservation: PackageWriteLock.Claim?
+        if models[document.id] == nil {
+            guard let claim = PackageWriteLock.shared.claim(document.directory) else {
+                error = "Dieses Heft wird gerade ergänzt oder ist an anderer Stelle geöffnet. Bitte gleich noch einmal öffnen."; return
+            }
+            reservation = claim
         }
         closing = true; defer { closing = false }
         if let secondary, secondary !== primary, secondaryID != document.id {
-            guard await secondary.flushBeforeClosing() else { return }
+            // A failed flush keeps the old view; the reservation ends with this call.
+            guard await secondary.flushBeforeClosing() else { reservation?.release(); return }
             if let secondaryID { models.removeValue(forKey: secondaryID) }
         }
         let model: EditorModel
-        if let existing = models[document.id] { model = existing }
+        if let existing = models[document.id] { reservation?.release(); model = existing }
         else {
             model = EditorModel(storageRoot: document.directory,
                 restoreDirectory: root.appendingPathComponent("Restores", isDirectory: true),
-                preferredPageID: document.preferredPageID, libraryTitle: document.title)
+                preferredPageID: document.preferredPageID, libraryTitle: document.title, writeClaim: reservation)
             models[document.id] = model
         }
         secondary = model; secondaryID = document.id; activePane = 1
@@ -105,6 +113,7 @@ final class EditorWorkspace: ObservableObject {
         for model in models.values { model.writable = false }
         // After every pane's last commit: each package's asset GC.
         for model in models.values { await model.collectAssetGarbageAfterClosing() }
+        for model in models.values { model.releaseWriteClaim() }
         return true
     }
 }

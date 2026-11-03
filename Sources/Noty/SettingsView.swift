@@ -222,12 +222,24 @@ private struct AISettingsPage: View {
     @AppStorage(AppSettingsKey.aiEnabled) private var enabled = false
     @State private var address = ""
     @State private var addressError: String?
+    @State private var askingConsent = false
     var body: some View {
         Form {
             Section {
-                keyToggle("KI-Assistent aktivieren", isOn: $enabled)
+                // Switching on asks once; the consent belongs to server and account.
+                keyToggle("KI-Assistent aktivieren", isOn: Binding(get: { enabled }, set: { on in
+                    if on { askingConsent = true } else { enabled = false }
+                }))
             } footer: {
-                Text("Fragen, ausgewählte Heftinhalte und Seitenbilder gehen an deinen eigenen Server und von dort an OpenAI, nur nach Freigabe je Heft. Auf dem Server bleiben Frage, Antwort und ein Kontextname, Chats 30 Tage lang. Die KI schreibt nie in ein Heft.")
+                Text("Mit deiner Zustimmung liest die KI das gerade geöffnete Heft mit, ohne Rückfrage je Heft. Auf dem Server bleiben Frage, Antwort und ein Kontextname, Chats 30 Tage lang. Die KI schreibt nie in ein Heft.")
+            }
+            if enabled, ai.consentKey != nil, !ai.hasConsent {
+                Section {
+                    Text(AIAssistantModel.consentText(host: ai.serverHost)).font(.callout)
+                    Button("Zustimmen") { ai.giveConsent() }
+                } header: { Text("Zustimmung") } footer: {
+                    Text("Nötig nach einem Wechsel von Server oder Konto. Bis dahin sendet der KI-Assistent nichts.")
+                }
             }
             if enabled {
                 Section {
@@ -260,15 +272,20 @@ private struct AISettingsPage: View {
                 if let me = ai.me { today(me) }
                 if let usage = ai.usage, !usage.limits.isEmpty { plan(usage) }
                 Section {
-                    LabeledContent("Freigegebene Hefte", value: "\(ai.approvals.count)")
-                    Button("Heftfreigaben zurücksetzen", role: .destructive) { ai.resetApprovals() }.disabled(ai.approvals.isEmpty)
-                } footer: {
-                    Text("Danach fragt noty je Heft erneut, bevor Inhalte mitgehen.")
+                    LabeledContent("Ausgeschlossene Hefte", value: "\(ai.exclusions.count)")
+                    Button("Alle Hefte wieder einbeziehen") { ai.includeAllDocuments() }.disabled(ai.exclusions.count == 0)
+                    Button("Zustimmung widerrufen", role: .destructive) { ai.withdrawConsent() }.disabled(!ai.hasConsent)
+                } header: { Text("Datenschutz") } footer: {
+                    Text("Ein Heft schließt du im KI-Fenster über das Menü am Titel aus. Ohne Zustimmung sendet der KI-Assistent nichts.")
                 }
             }
         }
         .navigationTitle(SettingsPage.ai.title)
         .keyboardSheet()
+        .alert("KI-Assistent einschalten?", isPresented: $askingConsent) {
+            Button("Zustimmen und einschalten") { enabled = true; ai.giveConsent() }
+            Button("Abbrechen", role: .cancel) {}
+        } message: { Text(AIAssistantModel.consentText(host: ai.serverHost)) }
         .onAppear { address = ai.serverAddress }
         .task(id: [enabled ? 1 : 0, ai.accountEpoch]) { if enabled { await ai.refreshStatus() } }
         .onChange(of: enabled) { _, _ in ai.settingsChanged() }

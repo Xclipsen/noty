@@ -1,5 +1,14 @@
 # Lokaler Revisionsspeicher – Format 1
 
+## Ergänzung 03.11.2026 · Ein Schreiber je Heftpaket
+
+Befund: Lud ein Editor ein Heft, bevor das Anhängen einer geteilten Datei über die Bibliothek fertig war, schrieb er beim nächsten Speichern ein Manifest aus seinem alten Stand, und sein Aufräumen löschte die angehängte Revision (unbekannt, nicht im eigenen Manifest).
+
+- **Sperre:** `PackageWriteLock.shared` (Core, prozessweit, Schlüssel = standardisierter Paketpfad ohne Symlinks). Jedes `EditorModel` beansprucht sie für seine Lebensdauer (vor dem Laden, freigegeben nach letztem Commit und Asset-GC beim Schließen oder mit dem Objekt), `LibraryStore.appendIncomingPDF` vom Laden bis nach dem Commit. Ohne Sperre wird ein Editor nie beschreibbar.
+- **Manifestprüfung im Commit:** `RevisionStore` merkt sich die exakten Bytes von `manifest.json`, die es vor dem Parsen gelesen bzw. zuletzt geschrieben hat. Vor dem ersten Schreiben, vor `checkpoints.json`/`manifest-previous.json` und unmittelbar vor dem Manifest wird verglichen; liegt dort ein anderes gültiges (oder neueres) Manifest, bricht der Commit mit `RevisionError.concurrentChange` ab. Eigene neue Revisionsdateien werden entfernt, nichts Fremdes ersetzt oder aufgeräumt, der Altstand bleibt, ungesicherte Änderungen bleiben im Editor (nicht wiederholbar, Hinweis zum Schließen/Neuöffnen). Ein fehlendes, beschädigtes oder blockiertes `manifest.json` gilt nicht als fremder Commit; dafür gelten die bisherigen Fehler-/Rückfallregeln.
+- **Aufräumen:** Unbekannte Revisionsdateien, die erst nach dem Laden erschienen sind und nicht von diesem Store stammen, werden nie gelöscht (sie können neuer als das eigene Manifest sein). Reste unterbrochener Commits, die schon beim Laden da waren, gehen wie bisher.
+- Kein Format- oder Schemawechsel; Python-Prüfer unverändert. Nachweise: `WriterExclusionTests`, alle Core-Tests, Host-Roundtrip. Am iPad ungeprüft.
+
 ## Ergänzung 31.10.2026 · Manueller Seitenumbruch ohne neues Schema
 
 Ein manueller Seitenumbruch im Textdokument ist das Zeichen U+000C im Flusstext, am Ende des Segments vor dem Umbruch (`TextLines.pageBreak`). Kein neues Schema, keine neue Eigenschaft, keine Migration: Textdokumente bleiben Schema 15, Hefte unverändert.

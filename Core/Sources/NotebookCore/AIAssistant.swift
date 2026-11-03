@@ -17,8 +17,49 @@ public struct AIMessage: Codable, Equatable, Identifiable, Sendable {
     public var text: String
     public var contextLabel: String?
     public var imageCount: Int?
-    public init(id: String, role: AIMessageRole, text: String, contextLabel: String? = nil, imageCount: Int? = nil) {
+    /// Tokens of the run behind an answer, if the server reports them.
+    public var usage: AIMessageUsage?
+    public init(id: String, role: AIMessageRole, text: String, contextLabel: String? = nil, imageCount: Int? = nil,
+                usage: AIMessageUsage? = nil) {
         self.id = id; self.role = role; self.text = text; self.contextLabel = contextLabel; self.imageCount = imageCount
+        self.usage = usage
+    }
+}
+
+/// Optional in the contract: older bridges send nothing, and nothing is made up then.
+public struct AIMessageUsage: Codable, Equatable, Sendable {
+    public var inputTokens: Int?
+    public var cachedInputTokens: Int?
+    public var outputTokens: Int?
+    public var reasoningOutputTokens: Int?
+    public init(inputTokens: Int? = nil, cachedInputTokens: Int? = nil, outputTokens: Int? = nil, reasoningOutputTokens: Int? = nil) {
+        self.inputTokens = inputTokens; self.cachedInputTokens = cachedInputTokens
+        self.outputTokens = outputTokens; self.reasoningOutputTokens = reasoningOutputTokens
+    }
+    /// `12 400 gelesen (8 000 aus dem Cache) · 640 geschrieben`; nil without any count.
+    public var summary: String? {
+        var parts: [String] = []
+        if let inputTokens {
+            var read = "\(AIUsageFormat.number(inputTokens)) gelesen"
+            if let cachedInputTokens, cachedInputTokens > 0 { read += " (\(AIUsageFormat.number(cachedInputTokens)) aus dem Cache)" }
+            parts.append(read)
+        }
+        if let outputTokens { parts.append("\(AIUsageFormat.number(outputTokens)) geschrieben") }
+        if let reasoningOutputTokens, reasoningOutputTokens > 0 { parts.append("davon \(AIUsageFormat.number(reasoningOutputTokens)) Nachdenken") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+enum AIUsageFormat {
+    /// Thousands with a thin space, independent of the device locale.
+    static func number(_ value: Int) -> String {
+        let digits = String(abs(value))
+        var result = ""
+        for (offset, digit) in digits.enumerated() {
+            if offset > 0, (digits.count - offset) % 3 == 0 { result += "\u{202F}" }
+            result.append(digit)
+        }
+        return (value < 0 ? "-" : "") + result
     }
 }
 
@@ -342,22 +383,6 @@ public enum AIServerAddress {
     }
 }
 
-/// Consent to send a notebook's content goes to one server under one account.
-/// Entries without this form (older builds: the bare document ID) count for nothing.
-public enum AIApproval {
-    private static let version = "v2"
-
-    /// nil without account: nobody can have agreed.
-    public static func key(server: URL, account: String, document: UUID) -> String? {
-        guard !account.isEmpty, let encoded = account.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { return nil }
-        return [version, AIServerAddress.authority(of: server), encoded, document.uuidString].joined(separator: "|")
-    }
-
-    public static func valid(_ stored: [String]) -> Set<String> {
-        Set(stored.filter { $0.hasPrefix(version + "|") })
-    }
-}
-
 // MARK: Notebook context
 
 /// What is known of one page: typed text plus lines recognised earlier (the
@@ -372,13 +397,20 @@ public struct AIContextPage: Equatable, Sendable {
     public var handwriting: [SearchLine]
     public var missing: Set<SearchLayer>
     public var hasImages: Bool
+    /// Strokes on the page, recognised or not.
+    public var hasInk: Bool
+    /// The page shows a PDF page.
+    public var hasPDF: Bool
+    public var hasShapes: Bool
     /// PDF text left unread because the context was full: counts as omitted.
     public private(set) var skippedAtLimit = false
 
     public init(number: Int, pageID: UUID, text: [SearchLine] = [], pdfText: [SearchLine] = [], imageOCR: [SearchLine] = [],
-                handwriting: [SearchLine] = [], missing: Set<SearchLayer> = [], hasImages: Bool = false) {
+                handwriting: [SearchLine] = [], missing: Set<SearchLayer> = [], hasImages: Bool = false,
+                hasInk: Bool = false, hasPDF: Bool = false, hasShapes: Bool = false) {
         self.number = number; self.pageID = pageID; self.text = text; self.pdfText = pdfText; self.imageOCR = imageOCR
         self.handwriting = handwriting; self.missing = missing; self.hasImages = hasImages
+        self.hasInk = hasInk; self.hasPDF = hasPDF; self.hasShapes = hasShapes
     }
 
     /// The exact text layer, read without the search index.
@@ -404,6 +436,34 @@ public struct AIContextPage: Equatable, Sendable {
         if missing.contains(.handwriting) || missing.contains(.pdfText) { return true }
         guard missing.contains(.imageOCR) else { return false }
         return hasImages || !ContentSearchPlanner.hasMeaningfulTextLayer(pdfText)
+    }
+
+    /// Handwriting, inserted images or a scan without text layer.
+    public var hasVisualContent: Bool {
+        if hasInk || hasImages { return true }
+        return hasPDF && !skippedAtLimit && !missing.contains(.pdfText) && !ContentSearchPlanner.hasMeaningfulTextLayer(pdfText)
+    }
+
+    /// Enough typed or recognised text to stand for the page: 32 letters or
+    /// digits, the same bar as for a PDF text layer.
+    public var hasUsableText: Bool {
+        var count = 0
+        for lines in [text, pdfText, imageOCR, handwriting] {
+            for line in lines {
+                count += line.text.unicodeScalars.lazy.filter { CharacterSet.alphanumerics.contains($0) }.count
+                if count >= 32 { return true }
+            }
+        }
+        return false
+    }
+
+    /// Whole notebook: an image costs far more than text, so a page goes as
+    /// image only where its text is missing or unusable.
+    public var wantsImage: Bool { needsRecognition || (hasVisualContent && !hasUsableText) }
+
+    /// Anything at all on the page: an empty page sends no image.
+    public var hasContent: Bool {
+        hasInk || hasImages || hasPDF || hasShapes || !text.isEmpty || !handwriting.isEmpty
     }
 
     /// Same order as the search hits; OCR lines equal to the exact PDF text are
@@ -432,15 +492,33 @@ public struct AIContext: Equatable, Sendable {
     public var includedPageIDs: [Int: UUID] = [:]
     /// Page cut off at the limit.
     public var truncatedPage: Int?
-    /// Pages with text that did not fit any more.
+    /// Pages with text that did not fit any more (in a selection: not chosen).
     public var omittedPages: [Int]
     /// Pages with handwriting, scans or images nobody recognised yet.
     public var unrecognizedPages: [Int]
+    /// The notebook was above its budget: an outline of all pages plus the
+    /// pages chosen for the question.
+    public var selected = false
+    /// Pages named in the outline, by stable ID.
+    public var outlinedPageIDs: [Int: UUID] = [:]
+    /// Pages with any text (a selection takes some of them).
+    public var textPageCount = 0
+    /// Pages that go along as images.
+    public var imagePages: [Int] = []
 
     public var isEmpty: Bool { text.isEmpty }
+    /// Some page text is in it, not only a note.
+    public var hasPageText: Bool { !includedPages.isEmpty }
     public var wasTruncated: Bool { truncatedPage != nil || !omittedPages.isEmpty }
+    /// Pages an answer may cite: whole pages and those of the outline.
+    public var citablePageIDs: [Int: UUID] { includedPageIDs.merging(outlinedPageIDs) { first, _ in first } }
     /// For the user: what did not fit (nil: nothing was shortened).
     public var truncationNotice: String? {
+        if selected {
+            var text = "Auswahl: \(includedPages.count) von \(textPageCount) Seiten vollständig"
+            if let truncatedPage { text += ", Seite \(truncatedPage) nur teilweise" }
+            return text + "."
+        }
         var parts: [String] = []
         if let truncatedPage { parts.append("Seite \(truncatedPage) nur teilweise") }
         if !omittedPages.isEmpty {
@@ -459,6 +537,8 @@ public enum AIContextBuilder {
     private static let noteReserve = 400
     /// Below this a cut page is not worth sending; it counts as missing.
     private static let shortestPart = 200
+    /// Characters of a page's first line in the outline.
+    static let outlineLineLength = 60
 
     /// The pages of a notebook snapshot with every still-valid layer of `index`
     /// (nil: no index yet). With `only`, the cost is that of the one page; the
@@ -481,10 +561,14 @@ public enum AIContextBuilder {
             let prepared = ContentSearchPlanner.prepared(page, at: offset, identities)
             let record = ContentSearchPlanner.record(of: prepared, stored: stored)
             var missing = Set(ContentSearchPlanner.pending(prepared, record))
-            if missing.contains(.handwriting), drawingIsEmpty(page.drawing) { missing.remove(.handwriting) }
+            // Recognised lines prove strokes; otherwise only decoding tells.
+            let hasInk = prepared.fingerprints.handwriting != nil
+                && (!(record.handwriting?.lines ?? []).isEmpty || !drawingIsEmpty(page.drawing))
+            if !hasInk { missing.remove(.handwriting) }
             result.append(AIContextPage(number: offset + 1, pageID: page.id, text: ContentSearchPlanner.textLines(page),
                                         pdfText: record.pdfText?.lines ?? [], imageOCR: record.imageOCR?.lines ?? [],
-                                        handwriting: record.handwriting?.lines ?? [], missing: missing, hasImages: !(page.images ?? []).isEmpty))
+                                        handwriting: record.handwriting?.lines ?? [], missing: missing, hasImages: !(page.images ?? []).isEmpty,
+                                        hasInk: hasInk, hasPDF: prepared.hasPDF, hasShapes: !(page.shapes ?? []).isEmpty))
         }
         return result
     }
@@ -496,17 +580,51 @@ public enum AIContextBuilder {
         return prefix(name, utf16: 200 - 2 - place.utf16.count) + ", " + place
     }
 
-    /// `limit` in UTF-16 units, as the server counts. Pages are taken in order;
-    /// once one no longer fits, it is cut and all after it count as missing
-    /// (no skipping ahead to small pages: the gap stays easy to name).
-    public static func build(_ pages: [AIContextPage], limit: Int = defaultLimit) -> AIContext {
-        let room = max(0, limit - noteReserve)
+    /// `limit` in UTF-16 units, as the server counts.
+    ///
+    /// Without `budget` and `focus`, or while everything fits the budget, pages
+    /// are taken in order; once one no longer fits, it is cut and all after it
+    /// count as missing (no skipping ahead to small pages: the gap stays easy
+    /// to name). Above the budget a selection is made: an outline of every page
+    /// first (it does not depend on the question, so a provider's prompt cache
+    /// keeps it), then the open page, its neighbours and the pages that match
+    /// `query` best, in page order. `fill` adds further pages by distance to
+    /// the open one up to the budget. Everything that changes between
+    /// questions stands in the closing note at the end.
+    public static func build(_ pages: [AIContextPage], limit: Int = defaultLimit, budget: Int? = nil, focus: Int? = nil,
+                             query: [String] = [], fill: Bool = false, imagePages: [Int] = []) -> AIContext {
         var result = AIContext(text: "", pageCount: pages.count, includedPages: [], truncatedPage: nil, omittedPages: [],
                                unrecognizedPages: pages.filter(\.needsRecognition).map(\.number))
+        result.imagePages = imagePages.sorted()
+        let bodies = pages.map { $0.skippedAtLimit ? "" : $0.body }
+        result.textPageCount = zip(pages, bodies).filter { $0.0.skippedAtLimit || !$0.1.isEmpty }.count
+        if let budget, let focus, let focusIndex = pages.firstIndex(where: { $0.number == focus }),
+           pages.contains(where: \.skippedAtLimit) || fullSize(pages, bodies) > max(0, min(budget, limit) - noteReserve) {
+            select(pages, bodies: bodies, room: max(0, min(budget, limit) - noteReserve), focus: focusIndex,
+                   query: query, fill: fill, into: &result)
+        } else {
+            inOrder(pages, bodies: bodies, room: max(0, limit - noteReserve), into: &result)
+        }
+        if !result.isEmpty || !result.imagePages.isEmpty, let note = closingNote(result, focus: focus) {
+            let joined = (result.isEmpty ? "" : "\n\n") + note
+            let cap = result.selected ? min(limit, budget ?? limit) : limit
+            if result.text.utf16.count + joined.utf16.count <= cap { result.text += joined }
+        }
+        return result
+    }
+
+    private static func head(_ number: Int) -> String { "\n\n--- Seite \(number) ---\n" }
+
+    private static func fullSize(_ pages: [AIContextPage], _ bodies: [String]) -> Int {
+        zip(pages, bodies).reduce(0) { sum, entry in
+            entry.1.isEmpty ? sum : sum + head(entry.0.number).utf16.count + entry.1.utf16.count
+        }
+    }
+
+    private static func inOrder(_ pages: [AIContextPage], bodies: [String], room: Int, into result: inout AIContext) {
         var used = 0, full = false
-        for page in pages {
+        for (page, body) in zip(pages, bodies) {
             if page.skippedAtLimit { full = true; result.omittedPages.append(page.number); continue }
-            let body = page.body
             guard !body.isEmpty else { continue }
             if full { result.omittedPages.append(page.number); continue }
             let head = (used == 0 ? "" : "\n\n") + "--- Seite \(page.number) ---\n"
@@ -524,17 +642,84 @@ public enum AIContextBuilder {
             result.includedPages.append(page.number); result.truncatedPage = page.number
             result.includedPageIDs[page.number] = page.pageID
         }
-        if !result.isEmpty, let note = closingNote(result), used + note.utf16.count <= limit { result.text += note }
-        return result
     }
 
-    private static func closingNote(_ context: AIContext) -> String? {
-        var parts: [String] = []
-        if let notice = context.truncationNotice { parts.append(notice) }
-        if !context.unrecognizedPages.isEmpty {
-            parts.append("Noch nicht erkannt und daher hier nicht enthalten: Handschrift oder Scans auf \(context.unrecognizedPages.count == 1 ? "Seite" : "den Seiten") \(pageList(context.unrecognizedPages)).")
+    private static func select(_ pages: [AIContextPage], bodies: [String], room: Int, focus: Int, query: [String], fill: Bool,
+                               into result: inout AIContext) {
+        result.selected = true
+        // Outline: at most a quarter of the room, the same for every question.
+        var outline = "--- Gliederung ---"
+        var outlined: [Int: UUID] = [:]
+        for (page, body) in zip(pages, bodies) where !body.isEmpty {
+            let line = "\nS. \(page.number): " + headline(body)
+            if outline.utf16.count + line.utf16.count + 2 > room / 4 { outline += "\n…"; break }
+            outline += line; outlined[page.number] = page.pageID
         }
-        return parts.isEmpty ? nil : "\n\n[noty: " + parts.joined(separator: " ") + "]"
+        if outlined.isEmpty { outline = "" }
+        var used = outline.utf16.count
+
+        let focusNumber = pages[focus].number
+        func distance(_ index: Int) -> Int { abs(pages[index].number - focusNumber) }
+        let scores = AITextRanking.scores(query: query.joined(separator: "\n"), documents: bodies)
+        let neighbours = [focus, focus + 1, focus - 1].filter { pages.indices.contains($0) }
+        let ranked = pages.indices.filter { scores[$0] > 0 }.sorted {
+            scores[$0] != scores[$1] ? scores[$0] > scores[$1] : distance($0) != distance($1) ? distance($0) < distance($1) : $0 < $1
+        }
+        let rest = fill ? pages.indices.sorted { distance($0) != distance($1) ? distance($0) < distance($1) : $0 > $1 } : []
+        var chosen = Set<Int>()
+        var cut: (index: Int, text: String)?
+        for index in neighbours + ranked + rest where !chosen.contains(index) && !bodies[index].isEmpty {
+            let headSize = head(pages[index].number).utf16.count, size = bodies[index].utf16.count
+            if used + headSize + size <= room { chosen.insert(index); used += headSize + size; continue }
+            // Only the open page is worth a part; any other is left whole to the outline.
+            guard index == focus else { continue }
+            let free = room - used - headSize
+            guard free >= shortestPart else { continue }
+            let part = prefix(bodies[index], utf16: free)
+            cut = (index, part); chosen.insert(index); used += headSize + part.utf16.count
+        }
+        result.text = outline
+        for index in pages.indices {
+            let page = pages[index]
+            guard chosen.contains(index) else {
+                if page.skippedAtLimit || !bodies[index].isEmpty { result.omittedPages.append(page.number) }
+                continue
+            }
+            result.text += (result.text.isEmpty ? "" : "\n\n") + "--- Seite \(page.number) ---\n"
+                + (cut?.index == index ? cut?.text ?? "" : bodies[index])
+            result.includedPages.append(page.number)
+            result.includedPageIDs[page.number] = page.pageID
+        }
+        if let cut { result.truncatedPage = pages[cut.index].number }
+        result.outlinedPageIDs = outlined
+    }
+
+    /// First line of a page, without list or heading marks.
+    static func headline(_ body: String) -> String {
+        let first = body.split(whereSeparator: \.isNewline).lazy
+            .map { $0.trimmingCharacters(in: .whitespaces).drop { "#-*• ".contains($0) } }
+            .first { !$0.isEmpty }.map(String.init) ?? ""
+        guard first.count > outlineLineLength else { return first }
+        return String(first.prefix(outlineLineLength)).trimmingCharacters(in: .whitespaces) + " …"
+    }
+
+    private static func closingNote(_ context: AIContext, focus: Int?) -> String? {
+        var parts: [String] = []
+        if context.selected {
+            var text = "Auswahl: \(context.includedPages.count) von \(context.textPageCount) Seiten vollständig (passend zur Frage und rund um die geöffnete Seite), die übrigen nur in der Gliederung."
+            if let page = context.truncatedPage { text += " Seite \(page) nur teilweise." }
+            parts.append(text)
+        } else if let notice = context.truncationNotice { parts.append(notice) }
+        if !context.imagePages.isEmpty {
+            parts.append("Als Bild beigefügt: \(context.imagePages.count == 1 ? "Seite" : "Seiten") \(pageList(context.imagePages)).")
+        }
+        let images = Set(context.imagePages)
+        let unseen = context.unrecognizedPages.filter { !images.contains($0) }
+        if !unseen.isEmpty {
+            parts.append("Noch nicht erkannt und daher hier nicht enthalten: Handschrift oder Scans auf \(unseen.count == 1 ? "Seite" : "den Seiten") \(pageList(unseen)).")
+        }
+        if let focus, context.pageCount > 1 { parts.append("Geöffnet ist Seite \(focus).") }
+        return parts.isEmpty ? nil : "[noty: " + parts.joined(separator: " ") + "]"
     }
 
     /// `3, 5–9, 12`; long lists end in `…`.
@@ -567,7 +752,7 @@ public enum AIContextBuilder {
     }
 
     /// Whole characters only: never half an emoji at the cut.
-    private static func prefix(_ text: String, utf16 limit: Int) -> String {
+    static func prefix(_ text: String, utf16 limit: Int) -> String {
         var used = 0
         var end = text.startIndex
         for index in text.indices {

@@ -409,11 +409,12 @@ final class LibraryModel: ObservableObject {
         guard opening != item.id else { return }
         await settle()
         guard accepting, !item.isFolder else { return }
-        guard !Self.filingPackages.contains(item.id) else { error = "Dieses Heft wird gerade ergänzt. Bitte gleich noch einmal öffnen."; return }
         busy = true; opening = item.id
         defer { busy = false; opening = nil }
         do {
             let url = try await store.documentURL(id: item.id)
+            // Another writer (an append of a shared file) holds the package.
+            guard !PackageWriteLock.shared.isHeld(url) else { error = "Dieses Heft wird gerade ergänzt. Bitte gleich noch einmal öffnen."; return }
             snapshot = try await store.markOpened(item.id)
             opened = OpenNotebook(id: item.id, directory: url, title: item.title,
                                   isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds, searchFlowRange: flowRange)
@@ -578,9 +579,6 @@ final class LibraryModel: ObservableObject {
     /// The open editor workspace (set by `EditorWorkspaceView`): an open
     /// notebook takes a shared file through its own editor model.
     weak var workspace: EditorWorkspace?
-    /// Closed packages a shared file is being appended to right now; neither
-    /// view may open them meanwhile (one writer per package).
-    static var filingPackages = Set<UUID>()
 
     /// Unlike the library's own actions, filing is allowed above an open
     /// notebook: it writes the index and new or closed packages only, never a
@@ -594,7 +592,8 @@ final class LibraryModel: ObservableObject {
 
     /// A new notebook from the shared file in `parent`; the title is made
     /// unique among the active notebooks like every import.
-    func fileIncomingNotebook(_ pdf: IncomingPDF, title: String, parent: UUID?, writingArea: PageMargins?) async throws -> NotebookCore.LibraryItem {
+    /// Throws only before the commit (the index write of `createDocument`).
+    func fileIncomingNotebook(_ pdf: IncomingPDF, title: String, parent: UUID?, writingArea: PageMargins?) async throws -> (item: NotebookCore.LibraryItem, pageIDs: [UUID]) {
         try await filingAccess()
         busy = true; defer { busy = false }
         if let parent { guard snapshot.items.contains(where: { $0.id == parent && $0.isFolder }), !snapshot.isTrashed(parent) else { throw LibraryError.unavailable } }
@@ -603,22 +602,28 @@ final class LibraryModel: ObservableObject {
             try Self.importedNotebook(data: pdf.data, geometries: pdf.geometries, title: name, writingArea: writingArea)
         }.value
         snapshot = try await store.createDocument(document, parentID: parent)
-        guard let item = snapshot.items.first(where: { $0.id == document.id }) else { throw LibraryError.unavailable }
-        return item
+        let item = snapshot.items.first(where: { $0.id == document.id })
+            ?? NotebookCore.LibraryItem(id: document.id, title: name, parentID: parent, source: .library)
+        return (item, document.pages.map(\.id))
     }
 
     /// Appends the shared file to a notebook no view has open, through the
     /// library actor (one complete new revision, `LibraryStore.appendIncomingPDF`).
-    func appendIncoming(_ pdf: IncomingPDF, to id: UUID, writingArea: PageMargins?) async throws -> [UUID] {
+    /// The package's write claim (`PackageWriteLock`) is taken there, so any
+    /// editor holding it (also a restored copy opened full screen, which is
+    /// neither `opened` nor in the workspace) refuses the append, and an
+    /// editor opened meanwhile waits for it. Throws only when nothing was
+    /// committed; `verified == false` means committed but not confirmed.
+    func appendIncoming(_ pdf: IncomingPDF, to id: UUID, writingArea: PageMargins?) async throws -> IncomingAppendResult {
         guard opened?.id != id, workspace?.holds(id) != true else { throw IncomingFilingError.editorBusy }
         try await filingAccess()
         guard opened?.id != id, workspace?.holds(id) != true else { throw IncomingFilingError.editorBusy }
-        busy = true; Self.filingPackages.insert(id)
-        defer { busy = false; Self.filingPackages.remove(id) }
+        busy = true
+        defer { busy = false }
         let result = try await store.appendIncomingPDF(to: id, data: pdf.data, geometries: pdf.geometries,
                                                        placement: .end, writingArea: writingArea)
         artworkRevision[id, default: 0] += 1
-        return result.pageIDs
+        return result
     }
 
     func createIncomingFolder(_ title: String, parent: UUID?) async throws -> UUID {

@@ -342,6 +342,13 @@ public struct NotebookUndoHistory: Sendable {
     }
 }
 
+extension Notebook {
+    /// A page operation starting from this state can become an undo step
+    /// (`NotebookUndoHistory.recordPages`). False for the legacy single-PDF
+    /// representation (schema 2, `pdf`): undoing would lower the format.
+    public var pageOperationsAreUndoable: Bool { pdfSources != nil && pdf == nil }
+}
+
 /// What one page operation changed, by stable ID. `before`/`after` hold only
 /// the touched pages and trash entries (absent key = not present on that side)
 /// plus the complete active and trash order of each side.
@@ -365,7 +372,7 @@ struct PageStructureChange: Sendable {
     /// nil when `before` still uses the legacy single-PDF representation (no
     /// page-editing structure): undoing would have to lower the format.
     init?(before old: Notebook, after new: Notebook) {
-        guard old.id == new.id, old.pdfSources != nil, new.pdfSources != nil, old.pdf == nil, new.pdf == nil else { return nil }
+        guard old.id == new.id, old.pageOperationsAreUndoable, new.pageOperationsAreUndoable else { return nil }
         let oldPages = Dictionary(old.pages.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let newPages = Dictionary(new.pages.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let oldTrash = Dictionary((old.deletedPages ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })

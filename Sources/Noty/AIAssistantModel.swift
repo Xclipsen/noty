@@ -76,21 +76,21 @@ struct AIAttachment: Sendable {
     var pages: [Int: UUID] = [:]
 }
 
-enum AIContextChoice: String, CaseIterable, Identifiable, Sendable {
-    case none, page, notebook
-    var id: String { rawValue }
-    var title: String {
-        switch self { case .none: "Keiner"; case .page: "Diese Seite"; case .notebook: "Ganzes Heft" }
-    }
-}
-
 /// App-wide, outside the per-notebook writers; it reads snapshots and never
 /// touches a notebook. The bearer is read from the noty account for every
 /// request (`LawLibraryModel.user?.token`) and kept nowhere here.
 @MainActor
 final class AIAssistantModel: ObservableObject {
     static let serverKey = "noty.ai.serverURL"
-    static let approvalsKey = "noty.ai.approvedDocuments"
+    /// One consent per server and account (`AIConsent`).
+    static let consentKey = "noty.ai.consent"
+    /// Notebooks the assistant must not read, by document ID.
+    static let exclusionsKey = "noty.ai.excludedDocuments"
+    /// Display state of the panel: answer mode and context scope.
+    static let modeKey = "noty.ai.answerMode"
+    static let scopeKey = "noty.ai.contextScope"
+    /// Per-notebook approvals of the first version, no longer read.
+    private static let legacyApprovalsKey = "noty.ai.approvedDocuments"
     /// Local bookkeeping of the panel, not part of any notebook or backup.
     static let citationsKey = "noty.ai.citationPages"
     /// Display state only, like the law window.
@@ -114,7 +114,8 @@ final class AIAssistantModel: ObservableObject {
     @Published private(set) var stalled = false
     @Published private(set) var limitReached = false
     @Published var error: String?
-    @Published private(set) var approvals = AIApproval.valid(UserDefaults.standard.stringArray(forKey: AIAssistantModel.approvalsKey) ?? [])
+    @Published private(set) var consents = AIConsent.valid(UserDefaults.standard.stringArray(forKey: AIAssistantModel.consentKey) ?? [])
+    @Published private(set) var exclusions = AIDocumentExclusions(stored: UserDefaults.standard.stringArray(forKey: AIAssistantModel.exclusionsKey) ?? [])
     @Published private(set) var citations = UserDefaults.standard.data(forKey: AIAssistantModel.citationsKey)
         .flatMap { try? JSONDecoder().decode(AICitationLedger.self, from: $0) } ?? AICitationLedger()
 
@@ -135,6 +136,12 @@ final class AIAssistantModel: ObservableObject {
     private var pending: AIPendingDelivery?
     /// Set by a failed list or chat request, gone with the next one that works.
     private var loadError: String?
+    /// Mode of each question sent while the app runs, for „Denkt nach …“.
+    private var turnModes: [String: AIAnswerMode] = [:]
+
+    init() {
+        UserDefaults.standard.removeObject(forKey: Self.legacyApprovalsKey)
+    }
 
     var enabled: Bool { UserDefaults.standard.bool(forKey: AppSettingsKey.aiEnabled) }
     var serverAddress: String { server?.absoluteString ?? "" }
@@ -236,18 +243,45 @@ final class AIAssistantModel: ObservableObject {
         return "Der KI-Server konnte nicht erreicht werden."
     }
 
-    // MARK: Consent per notebook
+    // MARK: Consent and exclusions
 
-    /// nil while no server or no account is set: nothing can be approved then.
-    func approvalKey(for document: UUID) -> String? {
-        guard let server, let account = laws?.user?.id else { return nil }
-        return AIApproval.key(server: server, account: account, document: document)
+    static func consentText(host: String?) -> String {
+        "Bei jeder Frage gehen Inhalte des gerade geöffneten Hefts (Text, erkannte Handschrift und Seitenbilder) an deinen eigenen Server\(host.map { " \($0)" } ?? "") und von dort an OpenAI. Die Zustimmung gilt für diesen Server und dieses Konto. Einzelne Hefte lassen sich ausschließen."
     }
-    func isApproved(_ document: UUID) -> Bool { approvalKey(for: document).map(approvals.contains) ?? false }
-    /// The key of the moment the dialog was shown: it named that server.
-    func approve(key: String) { approvals.insert(key); storeApprovals() }
-    func resetApprovals() { approvals = []; storeApprovals() }
-    private func storeApprovals() { UserDefaults.standard.set(approvals.sorted(), forKey: Self.approvalsKey) }
+
+    /// nil while no server or no account is set: nobody can have agreed then.
+    var consentKey: String? {
+        guard let server, let account = laws?.user?.id else { return nil }
+        return AIConsent.key(server: server, account: account)
+    }
+    /// Consent for the server and account of this moment.
+    var hasConsent: Bool { consentKey.map(consents.contains) ?? false }
+    /// Records consent for the server and account of this moment; false if there is none yet.
+    @discardableResult
+    func giveConsent() -> Bool {
+        guard let consentKey else { return false }
+        consents.insert(consentKey); storeConsents()
+        return true
+    }
+    func withdrawConsent() { consents = []; storeConsents() }
+    private func storeConsents() { UserDefaults.standard.set(consents.sorted(), forKey: Self.consentKey) }
+
+    func isExcluded(_ document: UUID) -> Bool { exclusions.contains(document) }
+    func setExcluded(_ document: UUID, _ excluded: Bool) {
+        exclusions.set(document, excluded: excluded)
+        UserDefaults.standard.set(exclusions.stored, forKey: Self.exclusionsKey)
+    }
+    func includeAllDocuments() {
+        exclusions = AIDocumentExclusions()
+        UserDefaults.standard.removeObject(forKey: Self.exclusionsKey)
+    }
+
+    /// Mode the question `requestID` was sent with, while the app runs.
+    func mode(of requestID: String) -> AIAnswerMode? { turnModes[requestID] }
+    /// Tokens of the newest answer, if the server reported them.
+    var lastUsage: AIMessageUsage? {
+        session?.messages.last { $0.role == .assistant && $0.usage?.summary != nil }?.usage
+    }
 
     // MARK: Citations
 
@@ -357,7 +391,7 @@ final class AIAssistantModel: ObservableObject {
     /// `prepare` runs for every attempt: what goes out is always today's
     /// content. A repeat with the same content keeps its `requestId`, changed
     /// content is a new question. True once the server took the question.
-    func send(question: String, document: UUID, prepare: @escaping @MainActor () async throws -> AIAttachment) async -> Bool {
+    func send(question: String, document: UUID, mode: AIAnswerMode, prepare: @escaping @MainActor () async throws -> AIAttachment) async -> Bool {
         guard !sending, session?.status != .running, document == documentID else { return false }
         sending = true
         // From here on any change of account, server, notebook or chat ends this question.
@@ -376,7 +410,10 @@ final class AIAssistantModel: ObservableObject {
             return false
         }
         guard generation == expected else { return false }
-        var request = AITurnRequest(text: question, context: attachment.context, images: attachment.images.isEmpty ? nil : attachment.images)
+        // Only the effort: the account's default model applies. It is part of
+        // the fingerprint, so another mode is never a repeat.
+        var request = AITurnRequest(text: question, context: attachment.context, images: attachment.images.isEmpty ? nil : attachment.images,
+                                    effort: mode.effort)
         if let problem = request.violation(of: limits) { error = problem; return false }
         let content = request
         let fingerprint = await Task.detached(priority: .userInitiated) { content.contentFingerprint }.value
@@ -385,6 +422,8 @@ final class AIAssistantModel: ObservableObject {
         request.requestId = delivery.requestID
         pending = delivery
         noteCitations(requestID: delivery.requestID, document: document, pages: attachment.pages)
+        turnModes[delivery.requestID] = mode
+        if turnModes.count > 400 { turnModes = [delivery.requestID: mode] }
         return await deliver(request, document: document, expected: expected)
     }
 
@@ -498,7 +537,8 @@ final class AIAssistantModel: ObservableObject {
 }
 
 /// Snapshots of an open notebook for one question. Recognition is never
-/// started here: what the search index does not know is reported instead.
+/// started here: what the search index does not know is reported instead
+/// (the panel starts background reading separately).
 @MainActor
 enum AIContextCollector {
     private static var pdfTexts = AIPDFTextCache()
@@ -509,19 +549,22 @@ enum AIContextCollector {
         return await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
 
-    /// `pageID` nil: the whole notebook. PDF text missing from the index comes
-    /// from the PDF itself, read once per page and source and not past `limit`;
-    /// PDFKit stays on the main actor with a pause per page.
-    static func context(_ editor: EditorModel, notebook: Notebook, pageID: UUID?, area: String, limit: Int,
-                        priority: TaskPriority) async throws -> AIContext {
+    /// Text and image choice for `request`. PDF text missing from the index
+    /// comes from the PDF itself, nearest to the open page first, read once per
+    /// page and source and not past the limit; PDFKit stays on the main actor
+    /// with a pause per page.
+    static func plan(_ editor: EditorModel, notebook: Notebook, pageID: UUID, request: AIContextRequest, area: String,
+                     priority: TaskPriority) async throws -> AIContextPlan {
         let index = await ContentSearchIndexLocation.store(area: area).loadRemembered(notebook.id)
+        let only: UUID? = request.scope == .page ? pageID : nil
         var pages = await detached(priority) {
-            AIContextBuilder.pages(of: notebook, index: index, only: pageID, drawingIsEmpty: EditorModel.drawingIsEmpty)
+            AIContextBuilder.pages(of: notebook, index: index, only: only, drawingIsEmpty: EditorModel.drawingIsEmpty)
         }
         try Task.checkCancellation()
         if pages.contains(where: { $0.missing.contains(.pdfText) }) {
-            var budget = AIContextBudget(limit: limit)
-            for offset in pages.indices {
+            var budget = AIContextBudget(limit: request.limit)
+            let order = pages.indices.sorted { abs(pages[$0].number - request.current) < abs(pages[$1].number - request.current) }
+            for offset in order {
                 if pages[offset].missing.contains(.pdfText) {
                     if budget.exhausted { pages[offset].skipAtLimit(); continue }
                     try await readPDFText(&pages[offset], editor, notebook: notebook)
@@ -530,7 +573,7 @@ enum AIContextCollector {
             }
         }
         let finished = pages
-        return await detached(priority) { AIContextBuilder.build(finished, limit: limit) }
+        return await detached(priority) { AIContextPlan.make(finished, request: request) }
     }
 
     private static func readPDFText(_ target: inout AIContextPage, _ editor: EditorModel, notebook: Notebook) async throws {
@@ -544,7 +587,8 @@ enum AIContextCollector {
         try await Task.sleep(for: .milliseconds(10))
     }
 
-    /// Every layer of the page through the thumbnail renderer, JPEG off the main actor.
+    /// The whole page with every layer and its margins, through the renderer
+    /// of thumbnails and export; JPEG off the main actor.
     static func image(_ editor: EditorModel, page: Page, label: String, limit: Int) async throws -> AITurnImage {
         let source = editor.sourcePage(for: page)
         // A PDFPage holds its document weakly, its CGPDFPage needs it alive.

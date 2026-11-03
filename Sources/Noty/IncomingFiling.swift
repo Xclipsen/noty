@@ -145,12 +145,17 @@ enum IncomingFiling {
 }
 
 enum IncomingFilingError: LocalizedError {
-    case libraryBusy, editorBusy, notSaved
+    case libraryBusy, editorBusy
+    /// The pages are in the open editor, its save was not confirmed.
+    /// `retrying`: the editor retries by itself; `reason`: a permanent error.
+    case notSaved(pageIDs: [UUID], retrying: Bool, reason: String?)
     var errorDescription: String? {
         switch self {
         case .libraryBusy: "Die Bibliothek ist gerade beschäftigt. Bitte gleich noch einmal versuchen."
         case .editorBusy: "Das Heft ist gerade beschäftigt (Speichern, Import oder Schließen). Bitte gleich noch einmal versuchen."
-        case .notSaved: "Die Seiten sind im geöffneten Heft, aber noch nicht gespeichert; noty versucht es weiter."
+        case .notSaved(_, let retrying, let reason):
+            retrying ? "Die Seiten sind im geöffneten Heft, aber noch nicht gespeichert; noty versucht es automatisch weiter."
+                : "Die Seiten sind im geöffneten Heft, konnten aber nicht gespeichert werden" + (reason.map { ": \($0)" } ?? ".")
         }
     }
 }
@@ -236,6 +241,8 @@ final class IncomingFilingModel: ObservableObject {
         let openLabel: String?
         let open: (@MainActor () async -> Void)?
         let keepCopy: Bool
+        /// A leftover copy that was filed before: it may still be filed again on purpose.
+        var offersRefiling = false
     }
 
     let item: IncomingItem
@@ -253,6 +260,9 @@ final class IncomingFilingModel: ObservableObject {
     @Published var working: String?
     @Published var done: Done?
     @Published var preview: IncomingPreview?
+    /// The same file again (waiting twice, or filed before), or an earlier
+    /// attempt whose pages were not saved: shown prominently, never dropped.
+    @Published var notice: String?
     @Published var extraSpace = true
     @Published var left = false
     @Published var fraction = 1.0
@@ -313,6 +323,52 @@ final class IncomingFilingModel: ObservableObject {
         preview = await Task.detached(priority: .userInitiated) { IncomingPreview.read(url, item: item) }.value
     }
 
+    /// Before the choice: a copy whose filing was committed (noted in its
+    /// `item.json`) is shown as already filed, not as new; one whose pages
+    /// went into an open notebook without a confirmed save counts as filed
+    /// once those pages stand in the committed notebook. A second delivery
+    /// of the same bytes is pointed out.
+    func checkEarlierFiling() async {
+        let item = item
+        var record = item.filing
+        if let current = record, current.status == .unsaved,
+           let committed = try? await library.committedNotebook(current.notebookID).0 {
+            let resolved = current.resolved(committedPageIDs: committed.pages.map(\.id))
+            if resolved.status == .filed {
+                record = resolved
+                _ = try? await Task.detached(priority: .utility) { try IncomingFiling.inbox.record(item.id, filing: resolved) }.value
+            }
+        }
+        if let record, record.status == .filed {
+            done = Done(title: "Bereits abgelegt", message: IncomingFilingText.alreadyFiled(record, date: NotyText.statusDate(record.filedAt)),
+                        openLabel: nil, open: nil, keepCopy: false, offersRefiling: true)
+            return
+        }
+        if let record, record.status == .unsaved {
+            notice = "Ein früherer Versuch hat diese Datei in „\(record.notebookTitle)“ eingefügt, aber nicht gespeichert; im gespeicherten Heft stehen die Seiten nicht. Sie kann jetzt erneut abgelegt werden."
+        }
+        let duplicate = await Task.detached(priority: .utility) { IncomingFiling.inbox.duplicate(of: item) }.value
+        if let duplicate {
+            let text = IncomingFilingText.duplicate(duplicate, date: NotyText.statusDate)
+            notice = notice.map { $0 + "\n" + text } ?? text
+        }
+    }
+
+    /// „Trotzdem erneut ablegen“ for a copy that was filed before.
+    func refile() {
+        guard done?.offersRefiling == true, !answered else { return }
+        done = nil
+    }
+
+    /// Noted in `item.json` right after the commit, before the copy is
+    /// removed: after a crash in between the copy is not offered as new.
+    private func noteFiling(_ status: IncomingFilingRecord.Status, notebook: UUID, title: String, pageIDs: [UUID], verified: Bool = true) async {
+        let record = IncomingFilingRecord(status: status, notebookID: notebook, notebookTitle: title, pageIDs: pageIDs,
+                                          filedAt: Date(), verified: verified)
+        let id = item.id
+        _ = try? await Task.detached(priority: .userInitiated) { try IncomingFiling.inbox.record(id, filing: record) }.value
+    }
+
     /// One answer per offer (a second tap during the dismissal is no second one).
     private var answered = false
     func discard() { guard working == nil, !answered else { return }; answered = true; close(false, nil) }
@@ -341,17 +397,20 @@ final class IncomingFilingModel: ObservableObject {
             case .newNotebook: try await fileAsNotebook(pdf)
             case .append: try await append(pdf)
             }
-        } catch IncomingFilingError.notSaved {
+        } catch IncomingFilingError.notSaved(let pageIDs, let retrying, let reason) {
             let target = snapshot.items.first { $0.id == notebook }?.title ?? "Heft"
-            done = Done(title: "Noch nicht gespeichert", message: "Die Seiten stehen im geöffneten Heft „\(target)“, sind aber noch nicht gespeichert; noty versucht es weiter. Die empfangene Kopie bleibt erhalten und wird nach einem Neustart erneut angeboten.",
+            if let notebook { await noteFiling(.unsaved, notebook: notebook, title: target, pageIDs: pageIDs) }
+            done = Done(title: "Noch nicht gespeichert", message: IncomingFilingText.notSaved(title: target, retrying: retrying, reason: reason),
                         openLabel: nil, open: nil, keepCopy: true)
         } catch {
+            // Every error that reaches here was thrown before a commit.
             self.error = "Nicht abgelegt: \(error.localizedDescription) Heft und Bibliothek sind unverändert, die empfangene Kopie bleibt erhalten."
         }
     }
 
     private func fileAsNotebook(_ pdf: IncomingPDF) async throws {
-        let entry = try await library.fileIncomingNotebook(pdf, title: title, parent: folder, writingArea: writingArea)
+        let (entry, pageIDs) = try await library.fileIncomingNotebook(pdf, title: title, parent: folder, writingArea: writingArea)
+        await noteFiling(.filed, notebook: entry.id, title: entry.title, pageIDs: pageIDs)
         UserDefaults.standard.set(IncomingTargets.encode(IncomingTargets.remember(folder, in: rememberedFolders)), forKey: recentKey)
         let place = IncomingTargets.path(of: folder, in: snapshot)
         let library = library
@@ -379,9 +438,11 @@ final class IncomingFilingModel: ObservableObject {
             // Open in a view: its editor model is the only writer (undo, autosave).
             guard !workspace.closing, let model = workspace.model(for: id) else { throw IncomingFilingError.editorBusy }
             let placement: IncomingPlacement = position == .afterCurrent ? .after(model.page.id) : .end
-            let ids = try await model.insertIncomingPDF(pdf.data, geometries: pdf.geometries, placement: placement, writingArea: writingArea)
+            let (ids, undoable) = try await model.insertIncomingPDF(pdf.data, geometries: pdf.geometries, placement: placement, writingArea: writingArea)
+            await noteFiling(.filed, notebook: id, title: target.title, pageIDs: ids)
             let place = position == .afterCurrent ? "hinter der aktuellen Seite" : "am Ende"
-            done = Done(title: "Angehängt", message: "\(pages) \(place) von „\(target.title)“ eingefügt und gespeichert. Rückgängig im Heft nimmt sie wieder heraus.",
+            // Undo is promised only when the editor really recorded a step.
+            done = Done(title: "Angehängt", message: IncomingFilingText.appendedToOpenNotebook(pages: pages, place: place, title: target.title, undoable: undoable),
                         openLabel: "Zur ersten neuen Seite", open: { [weak workspace, weak model] in
                             guard let workspace, let model, let first = ids.first else { return }
                             if workspace.secondary === model && workspace.primary !== model { workspace.activePane = 1 }
@@ -389,7 +450,10 @@ final class IncomingFilingModel: ObservableObject {
                             model.showPage(first)
                         }, keepCopy: false)
         } else {
-            let ids = try await library.appendIncoming(pdf, to: id, writingArea: writingArea)
+            let result = try await library.appendIncoming(pdf, to: id, writingArea: writingArea)
+            let ids = result.pageIDs
+            // Committed: from here on the pages are in the notebook.
+            await noteFiling(.filed, notebook: id, title: target.title, pageIDs: ids, verified: result.verified)
             let open: (@MainActor () async -> Void)?, label: String?
             if let workspace = library.workspace {
                 label = "In zweiter Ansicht öffnen"
@@ -402,8 +466,13 @@ final class IncomingFilingModel: ObservableObject {
                 label = "Öffnen"
                 open = { if let item = library.snapshot.items.first(where: { $0.id == id }) { await library.open(item, pageID: ids.first) } }
             } else { label = nil; open = nil }
-            done = Done(title: "Angehängt", message: "\(pages) am Ende von „\(target.title)“ eingefügt und gespeichert.",
-                        openLabel: label, open: open, keepCopy: false)
+            if result.verified {
+                done = Done(title: "Angehängt", message: "\(pages) am Ende von „\(target.title)“ eingefügt und gespeichert.",
+                            openLabel: label, open: open, keepCopy: false)
+            } else {
+                done = Done(title: "Angehängt – bitte prüfen", message: IncomingFilingText.committedUnverified(pages: pages, title: target.title),
+                            openLabel: label, open: open, keepCopy: true)
+            }
         }
     }
 }
@@ -432,6 +501,7 @@ struct IncomingFilingView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .task { await model.checkEarlierFiling() }
         .task { await model.loadPreview() }
         .alert("Neuer Ordner", isPresented: $naming) {
             TextField("Name", text: $folderName)
@@ -443,6 +513,11 @@ struct IncomingFilingView: View {
 
     private var chooser: some View {
         List {
+            if let notice = model.notice {
+                Section {
+                    Label(notice, systemImage: "doc.on.doc.fill").foregroundStyle(.orange).font(.callout.weight(.medium))
+                }
+            }
             header
             Section {
                 Picker("Ablage", selection: $model.mode) {
@@ -595,7 +670,8 @@ struct IncomingFilingView: View {
                 .disabled(model.openModel == nil)
             } header: { Text("Position") } footer: {
                 if let open = model.openModel, open.notebook.pages.indices.contains(open.pageIndex) {
-                    Text("Aktuelle Seite: \(open.pageIndex + 1) von \(open.notebook.pages.count). Das geöffnete Heft speichert die Seiten selbst; Rückgängig nimmt sie wieder heraus.")
+                    Text(IncomingFilingText.openNotebookFooter(page: open.pageIndex + 1, of: open.notebook.pages.count,
+                                                                undoable: open.notebook.pageOperationsAreUndoable))
                 } else {
                     Text("„Hinter aktuelle Seite“ gibt es nur für ein geöffnetes Heft.")
                 }
@@ -655,7 +731,11 @@ struct IncomingFilingView: View {
                 if let label = done.openLabel {
                     Button(label) { model.openResult() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                 }
-                Button("Fertig") { model.finish() }.buttonStyle(.bordered).keyboardShortcut(.cancelAction)
+                if done.offersRefiling {
+                    Button("Trotzdem erneut ablegen") { model.refile() }.buttonStyle(.bordered)
+                        .help("Fügt die Datei ein zweites Mal ein.")
+                }
+                Button(done.offersRefiling ? "Kopie entfernen" : "Fertig") { model.finish() }.buttonStyle(.bordered).keyboardShortcut(.cancelAction)
             }
             Spacer()
         }
