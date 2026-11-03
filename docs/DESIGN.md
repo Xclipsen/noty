@@ -80,6 +80,22 @@ Nutzer: Die Vorschau einer gehaltenen Form ist nicht so dick wie die fertige For
 
 Format: Notebook-Schema 13 nur für Polylinien/Vielecke ([STORAGE](STORAGE.md)). Stand: implementiert, Core-Tests, Host-Roundtrip, SDK-Build. Nicht installiert; Erkennung echter Striche, Stärke im Vergleich zur Tinte und Griffbedienung am iPad ungeprüft.
 
+## Gesetzesleser im noty-Design – 03.11.2026
+
+Teil der Überarbeitung [LAW-REWORK](LAW-REWORK.md) (Paket C). Löst die Leserkopf-Beschreibungen der Builds 57–60 unten ab; Fensterkopf, Markierleiste und Markierungsliste gehören zu anderen Paketen.
+
+- **Eine Leiste** in der Grammatik der Werkzeugoptionen (44-pt-Zellen, weiße 18-pt-Symbole, Auswahlplatte, Trenner, Hover-Namen) statt bis zu fünf Zeilen: Gesetz (Abkürzung, einziger Ort der Gesetzwahl) · Inhaltsverzeichnis | Suchen · § | Lesetext/PDF · Lesezeichen setzen · Liste | Schrift kleiner/größer, dann Apple-Pencil-Gruppe, am Ende Abgleichstatus und „…“. Passt sie nicht in eine Zeile, rückt die Pencil-Gruppe in eine zweite; jede Zeile scrollt seitlich. Symbole eindeutig (`books.vertical` nur Gesetz, `bookmark` nur Lesezeichen setzen, `list.star` Liste).
+- **„…“**: Abschnitt „Fassung“ mit Häkchen an der geöffneten Fassung, „Letzte Markierung rückgängig“, „Amtliche Quelle öffnen“. Kein Statustext mehr.
+- **Gemeinsame Eingabefläche** für Suche und Paragraph (r10, ≥ 44 pt), erscheint über die Zellen Suchen bzw. §, Lupe/§ links wechselt den Modus. Suche mit Treffern = Vorschriften mit dem Begriff, Zähler und vor/zurück; Return mit demselben Begriff geht zum nächsten Treffer. Schließen leert die Suche; das Paragraphfeld folgt wie bisher der angezeigten Vorschrift, abc/123 wechselt die Tastatur.
+- **Apple Pencil** als Werkzeugzellen (Glyphen Lesen, Textmarker in Markierfarbe, Radierer) und fünf Farbpunkten direkt in der Leiste; eine Farbe schaltet auf Markieren.
+- **Lesefläche** `white 0.065`, Leser immer im dunklen noty-Stil (auch bei hellem System); Vorschrift als Überschrift (`.title3`, Titel darunter) bündig zum Text. Gemeinsamer Lesestil `LawReadingStyle` (eine Textfarbe für HTML und Klartext, Zeilenhöhe 1,28, Absatzabstand); die Textansicht übernimmt ihn erst mit dem Markier-Paket (`LAW-MERGE: readingStyle`).
+- **Fußzeile** als schwebender Glas-Navigator wie im Heft: ‹ Vorschrift · Fassung · n/N › (`.caption`, „Ältere Fassung“ orange); Tippen auf die Mitte öffnet das Inhaltsverzeichnis.
+- **Sheets** Gesetz wählen und Inhaltsverzeichnis: Inline-Titel, schlichte Listen mit Suche, aktueller Eintrag in Akzentfarbe mit Häkchen und beim Öffnen im Blick, Leerzustände.
+- **Hinweise** als ruhige Zeilen unter der Leiste: Ladefehler, Fehler, und „n Markierungen in Fassung … – anzeigen“, wenn Markierungen des Gesetzes in einer anderen (im Katalog vorhandenen) Fassung liegen (B10); ausblendbar.
+- **Abgleichstatus** als kleines Zeichen: „Nur auf diesem iPad“, ✓, ↑ n, Synchronisieren, ⚠; Tippen zeigt Konto, Status und „Jetzt synchronisieren“.
+
+Stand: implementiert, SDK-Build und Core-Tests grün; nicht installiert, am iPad ungeprüft.
+
 ## Gesetzessammlung – bestätigte Bedienung, 20.10.2026
 
 Appweites **Konto** in den Einstellungen, eigener Punkt **Gesetzessammlung** mit drei unabhängigen Schaltern: Aktivierung (aus), persönlicher Abgleich (an), automatische neue Gesetzesfassungen (an). Ohne Anmeldung lesen/markieren; nach Logout bleiben Markierungen sichtbar. Gesetzesfenster über das Editor-Optionenmenü öffnen. Griff ziehen für Seite bzw. Andock-/Schwebemodus, Menü für explizite Anordnung, seitlicher Griff für Breite. Angedockt erhält das Heft eigenen Platz; das zweite Heft wird erhalten, schwebend sind zwei Hefte plus Gesetzesfenster möglich. Bei zu geringer Breite schwebend anzeigen.
