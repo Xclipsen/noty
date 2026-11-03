@@ -18,7 +18,10 @@ struct ContentView: View {
     var onActivatePane: (() -> Void)?
     var onCloseWorkspace: (() -> Void)?
     var onSecondView: (() -> Void)?
+    /// Switches the law window: closed → open, parked → brought out, visible → closed.
     var onLaws: (() -> Void)?
+    /// Current state of the law window, read when the palette lists its commands.
+    var lawsPhase: (() -> LawPanelState.Phase)?
     /// `Space l`: shows the law window and hands it the keys.
     var onLawKeys: (() -> Void)?
     /// Reports the selected tool, e.g. so Pencil highlights in the law reader.
@@ -404,7 +407,7 @@ struct ContentView: View {
                       PaletteCommand(title: "Seite anpassen") { marginsPage = MarginPage(id: page.id) },
                       PaletteCommand(title: "Papier für neue Seiten") { editingDefaults = true }]
         }
-        if let onLaws { items.append(PaletteCommand(title: "Gesetzessammlung", run: onLaws)) }
+        if let onLaws { items.append(PaletteCommand(title: lawPanelPaletteTitle(lawsPhase?() ?? .closed), run: onLaws)) }
         if editorSettings != nil { items.append(PaletteCommand(title: "Einstellungen") { showingSettings = true }) }
         return items
     }
@@ -862,7 +865,7 @@ struct ContentView: View {
                 }
             }
             Section {
-                if let onLaws { Button("Gesetzessammlung", systemImage: "books.vertical", action: onLaws) }
+                if let onLaws { LawPanelMenuToggle(action: onLaws) }
                 Menu("Ansicht", systemImage: "eye") {
                     Toggle("Schreibscrollen bis zur Bildschirmmitte", systemImage: "arrow.left.and.right.square", isOn: $writingScroll)
                     Toggle("Blättern statt Scrollen", systemImage: "book.pages", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))

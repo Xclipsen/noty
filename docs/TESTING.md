@@ -305,6 +305,30 @@ Geräteabnahme gebündelt:
 
 Deployment, SMTP-Einrichtung und Geräteupdate folgen den Freigabe-/Sicherungsregeln in AGENTS/ENVIRONMENT. Ein lokales Releasepaket und eine erfolgreiche Installation sind kein Laufzeitnachweis.
 
+### Überarbeitung Fensterverhalten · `feat/gesetze-fenster` · 03.11.2026
+
+Plan: [LAW-REWORK](LAW-REWORK.md#zielbild-fenster) (B2, B14), Bedienung: [DESIGN](DESIGN.md#gesetzessammlung--bestätigte-bedienung-20102026) „Schließen parkt“.
+
+- **Implementiert**: Core `LawPanelState` (geschlossen/geparkt/sichtbar, angedockt, Kante; `open/close/park/unpark/toggle/togglePark/dock/float/apply`), `LawPanelLayout` mit Tastaturhöhe (`keyboard`, `freeHeight`); `LawPanelModel` mit denselben UserDefaults-Schlüsseln und animierten Aktionen; ✕ schließt, eigener Parkknopf, Heft-Menü als Umschalter mit Häkchen, Palettentitel nach Zustand; geschlossenes Fenster nicht im View-Baum, Leser erst beim ersten Sichtbarwerden; Hinweis beim Andocken mit zweitem Heft; Arbeitsfläche ignoriert die Bildschirmtastatur; neues Fenster-/Laschen-/Vorschau-/Griffdesign; Einstellungsseite mit Symbolen. Keine Speicher- oder Formatänderung.
+- **Core-Tests**: volle Suite 1108 XCTests ohne Fehler (3 übersprungen), davon neu `LawPanelStateTests` (7) und `LawPanelKeyboardTests` (4).
+- **SDK-Build** (`xtool dev build`) erfolgreich. **Nicht installiert, auf dem iPad ungeprüft.**
+
+Geräteprüfung, gebündelt (jeweils mit eingeschalteter und reduzierter Bewegung, einmal mit „Transparenz reduzieren“):
+
+| Weg | Erwartung |
+| --- | --- |
+| ✕ oben rechts | gleitet über die Kante hinaus, keine Lasche; erneutes Öffnen an gleicher Kante, gleich angedockt, gleiche Größe, gleiche Lesestelle |
+| Parkknopf (Kantensymbol) | parkt mit Lasche; Tooltip „An den Rand“ bei Pencil-Hover/Trackpad |
+| Leiste über den Rand ziehen / schnippen | parkt an der jeweiligen Kante |
+| Lasche antippen / hereinziehen | holt hervor, Leserzustand unverändert; Druckrückmeldung an der Lasche |
+| kleines ✕ an der Lasche | schließt ganz, animiert |
+| Heft-Menü „Gesetzessammlung“ | Häkchen nur bei sichtbarem Fenster; geschlossen → öffnet, geparkt → holt hervor, sichtbar → schließt |
+| Palette „Gesetzessammlung“ | Titel „✓“ / „(am Rand)“ passend; gleiche Umschaltung |
+| `Space l`, Esc, ⇧⌘L, ⌥⌘L | (Tastatur-Paket) müssen dieselben animierten Übergänge zeigen |
+| Gesetzessammlung in den Einstellungen ausschalten | Fenster schließt |
+
+Außerdem: App mit geparktem Fenster neu starten (Lasche da, Leser lädt erst beim Hervorholen bzw. Hereinziehen); mit zweitem Heft andocken (Hinweis, Drop-Vorschau „Zweites Heft wird ausgeblendet“, beim Schweben kommt das Heft mit Seite/Zoom/Entwurf zurück); Bildschirmtastatur aus dem Gesetzessuchfeld und aus einem Heft-Textfeld bei Fenster links/rechts/unten, angedockt und schwebend (Heft bleibt stehen, Fenster weicht aus, unten angedocktes bleibt angedockt); Heft-Canvas und Textfelder behalten Auswahl, Zoom und Entwurf beim Öffnen/Schließen/Andocken (keine neue Editor-Instanz); Größengriff (Aufhellen, Haptik, gespeicherte Größe).
+
 ## Prüfungen auf diesem Rechner
 
 ```bash

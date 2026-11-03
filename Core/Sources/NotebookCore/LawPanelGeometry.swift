@@ -13,6 +13,9 @@ public enum LawPanelDrop: Equatable, Sendable {
     case float(LawPanelEdge)
     case dock(LawPanelEdge)
     case stash(LawPanelEdge)
+
+    /// Releasing docks the window (e.g. to warn that a second notebook hides).
+    public var docks: Bool { if case .dock = self { true } else { false } }
 }
 
 /// Geometry of the law window in one workspace size. Docking needs room for
@@ -33,11 +36,17 @@ public struct LawPanelLayout: Equatable, Sendable {
     public let floatWidth: Double
     public let dockHeight: Double
     public let floatHeight: Double
+    /// Height of the on-screen keyboard over the workspace's bottom edge.
+    /// Only the law window avoids it (`frame`); the notebooks, docking and
+    /// the notebook area keep the full workspace, so a docked window never
+    /// starts floating because a keyboard appeared.
+    public let keyboard: Double
 
     /// `width`: preferred width of a side window, `height`: preferred height
     /// of a bottom window (both as last chosen by the user).
-    public init(size: PageSize, width: Double, height: Double, docked: Bool, edge: LawPanelEdge) {
+    public init(size: PageSize, width: Double, height: Double, docked: Bool, edge: LawPanelEdge, keyboard: Double = 0) {
         self.size = size; self.edge = edge
+        self.keyboard = min(max(0, keyboard), max(0, size.height))
         canDock = Self.canDock(edge, in: size)
         self.docked = docked && canDock
         let w = max(0, size.width), h = max(0, size.height)
@@ -52,19 +61,23 @@ public struct LawPanelLayout: Equatable, Sendable {
     }
 
     public var margin: Double { docked ? 0 : 10 }
-    /// Resting frame of the window in workspace points.
+    /// Workspace height above the on-screen keyboard.
+    public var freeHeight: Double { max(0, size.height - keyboard) }
+    /// Resting frame of the window in workspace points, above the keyboard:
+    /// a side window gets shorter, a bottom window is lifted (and only gets
+    /// shorter when it would no longer fit), covering the notebook meanwhile.
     public var frame: PageRect {
-        let m = margin
+        let m = margin, free = freeHeight
         switch edge {
         case .left:
             let width = docked ? dockWidth : floatWidth
-            return PageRect(x: m, y: m, width: width, height: max(0, size.height - 2 * m))
+            return PageRect(x: m, y: m, width: width, height: max(0, free - 2 * m))
         case .right:
             let width = docked ? dockWidth : floatWidth
-            return PageRect(x: size.width - m - width, y: m, width: width, height: max(0, size.height - 2 * m))
+            return PageRect(x: size.width - m - width, y: m, width: width, height: max(0, free - 2 * m))
         case .bottom:
-            let height = docked ? dockHeight : floatHeight
-            return PageRect(x: m, y: size.height - m - height, width: max(0, size.width - 2 * m), height: height)
+            let height = min(docked ? dockHeight : floatHeight, max(0, free - 2 * m))
+            return PageRect(x: m, y: free - m - height, width: max(0, size.width - 2 * m), height: height)
         }
     }
     /// Unit direction out of the screen through the window's edge.
@@ -76,7 +89,7 @@ public struct LawPanelLayout: Equatable, Sendable {
         }
     }
     /// Shift that puts the window completely past its screen edge.
-    public var hiddenShift: Double { (edge.isSide ? frame.width : frame.height) + margin }
+    public var hiddenShift: Double { edge.isSide ? frame.width + margin : frame.height + margin + keyboard }
     /// Area left to the notebooks while the window is docked (and visible).
     public var notebookFrame: PageRect {
         guard docked else { return PageRect(x: 0, y: 0, width: size.width, height: size.height) }
