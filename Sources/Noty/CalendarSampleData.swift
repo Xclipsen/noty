@@ -1,5 +1,4 @@
 import SwiftUI
-import PencilKit
 import NotebookCore
 
 // Shared calendar view types and the BEISPIELDATEN of the design review
@@ -80,12 +79,28 @@ struct CalendarEntry: Identifiable, Hashable {
     var localID: UUID?
     /// Further status lines beside the main status.
     var statusNotes: [String] = []
+    /// Generated date of a series occurrence (its identity, also of its note).
+    var originalDate: CivilDate?
+    /// What a note written beside this entry belongs to (nil: no notes).
+    var noteTarget: CalendarNoteTarget?
+    /// Colour by name (`CalendarSubjectColor`); nil: automatic from the subject.
+    var colorName: String?
+    /// Subject identity of a lesson (its adjustable colour).
+    var subjectKey: String?
+    /// Read-only stand-in of a lesson note whose lesson is gone or not loaded.
+    var ghostLinkID: UUID?
+
+    /// Entry id of an own event: „local/<id>“, a series occurrence
+    /// „local/<id>/<YYYY-MM-DD>“ (equal to its note target's key).
+    static func localID(_ id: UUID, _ date: CivilDate?) -> String {
+        CalendarNoteTarget.local(event: id, date: date).key
+    }
 }
 
 enum CalendarPalette {
-    /// Automatic subject colours. Blue stays reserved for selection and
-    /// actions, red for today and the current time, green for own entries.
-    static let subjects: [Color] = [.orange, .purple, .teal, .pink, .yellow, .brown, .cyan, Color(red: 0.62, green: 0.68, blue: 0.2)]
+    /// Subject colours: `CalendarSubjectColor` (by name). Blue stays reserved
+    /// for selection and actions, red for today and the current time, green
+    /// for own entries.
     static let personal = Color.green
     static let holidays = Color.gray
     static let selection = Color(uiColor: .systemBlue)
@@ -100,11 +115,32 @@ enum CalendarPalette {
     }
 
     static func color(_ event: CalendarEntry) -> Color {
+        if let name = event.colorName { return color(named: name) }
         switch event.source {
         case .personal: return personal
         case .holidays: return holidays
         case .timetable:
-            return subjects[CalendarSubjectColor.index(for: event.subject ?? event.title, paletteCount: subjects.count)]
+            let key = CalendarSubjectColor.key(subjectID: nil, name: event.subject ?? event.title)
+            return color(named: CalendarSubjectColor.name(for: key, chosen: [:]))
+        }
+    }
+
+    /// The named colours of `CalendarSubjectColor` (stored by name).
+    static func color(named name: String) -> Color {
+        switch name {
+        case "orange": .orange
+        case "purple": .purple
+        case "teal": .teal
+        case "pink": .pink
+        case "yellow": .yellow
+        case "brown": .brown
+        case "cyan": .cyan
+        case "olive": Color(red: 0.62, green: 0.68, blue: 0.2)
+        case "indigo": .indigo
+        case "mint": .mint
+        case "gray": .gray
+        case "green": personal
+        default: .gray
         }
     }
 }
@@ -258,18 +294,8 @@ enum CalendarSamples {
     }
 }
 
-/// One note page of the design stage: handwriting and typed text, memory only.
-struct CalendarNotePage: Identifiable {
-    let id = UUID()
-    var drawing = PKDrawing()
-    var text = ""
-    /// Bumped on every handwriting change; canvases reload only on a revision they have not written.
-    var revision = 0
-    var isEmpty: Bool { drawing.strokes.isEmpty && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-}
-
-/// Draft of the event form. B1 stores single events only; repetition and
-/// reminders stay in the type for B2 but are not offered in the form.
+/// Draft of the event form: single events and series (B2). Reminders stay
+/// in the type for B3 but are not offered in the form.
 struct CalendarDraft: Identifiable {
     enum Repeat: String, CaseIterable, Identifiable {
         case never, daily, weekly, monthly
@@ -306,9 +332,13 @@ struct CalendarDraft: Identifiable {
     var repeatEnd = RepeatEnd.never
     var repeatUntil: Date
     var repeatCount = 10
-    var exceptions: [Date] = []
+    /// Original dates removed from the series (shown, can be taken back).
+    var exceptionDates: [CivilDate] = []
+    var exceptionsEdited = false
     var reminder = false
     var reminderMinutes = 10
+    /// The series rule as it was (an edit of „Nur dieser Termin“ must not change it).
+    var originalRule: CalendarRecurrence?
 
     init(start: Date, calendar: Calendar) {
         self.start = start
@@ -316,16 +346,31 @@ struct CalendarDraft: Identifiable {
         self.repeatUntil = calendar.date(byAdding: .month, value: 2, to: start) ?? start
     }
 
-    init(editing event: CalendarEntry, calendar: Calendar) {
+    init(editing event: CalendarEntry, rule: CalendarRecurrence?, base: LocalCalendarEvent?, calendar: Calendar) {
         self.init(start: event.start, calendar: calendar)
         editing = event
         title = event.title; location = event.room ?? ""; details = event.details ?? ""
         allDay = event.allDay
         // All-day entries end exclusively; the form shows the last day.
         end = event.allDay ? max(event.start, CalendarDates.day(-1, after: event.end, calendar: calendar)) : event.end
-        if event.seriesID != nil { repeatRule = .weekly }
+        originalRule = rule
+        if let rule {
+            switch rule.frequency {
+            case .daily: repeatRule = .daily
+            case .weekly: repeatRule = .weekly
+            case .monthly: repeatRule = .monthly
+            }
+            switch rule.end {
+            case .never: repeatEnd = .never
+            case .afterCount(let count): repeatEnd = .afterCount; repeatCount = count
+            case .until(let date): repeatEnd = .onDate; repeatUntil = date.start(in: calendar)
+            }
+            exceptionDates = rule.exceptions.sorted()
+        }
         reminder = event.reminder != nil
     }
+
+    var isSeriesOccurrence: Bool { editing?.originalDate != nil && originalRule != nil }
 
     /// The timing to store; nil with an explanation when invalid.
     func timing(calendar: Calendar) -> (CalendarEventTiming?, String?) {
@@ -338,6 +383,41 @@ struct CalendarDraft: Identifiable {
         }
         if let problem = timing.problem { return (nil, problem) }
         return (timing, nil)
+    }
+
+    func exceptions(calendar: Calendar) -> [CivilDate] { exceptionDates }
+
+    /// The repetition to store (nil: single event), or why it is invalid.
+    func recurrence(calendar: Calendar) -> (CalendarRecurrence?, String?) {
+        let frequency: CalendarRecurrence.Frequency
+        switch repeatRule {
+        case .never: return (nil, nil)
+        case .daily: frequency = .daily
+        case .weekly: frequency = .weekly
+        case .monthly: frequency = .monthly
+        }
+        let end: CalendarRecurrence.End
+        switch repeatEnd {
+        case .never: end = .never
+        case .afterCount:
+            guard (1...CalendarRecurrence.maximumCount).contains(repeatCount) else {
+                return (nil, "Eine Serie hat 1 bis \(CalendarRecurrence.maximumCount) Termine.")
+            }
+            end = .afterCount(repeatCount)
+        case .onDate:
+            let last = CivilDate(repeatUntil, calendar: calendar)
+            guard last >= CivilDate(start, calendar: calendar) else { return (nil, "Das Ende der Wiederholung liegt vor dem ersten Termin.") }
+            end = .until(last)
+        }
+        return (CalendarRecurrence(frequency: frequency, interval: originalRule?.frequency == frequency ? originalRule?.interval ?? 1 : 1,
+                                   end: end, exceptions: exceptionDates), nil)
+    }
+
+    /// The series part changed (frequency, end, exceptions): only „Alle“ fits.
+    func changesSeries(calendar: Calendar) -> Bool {
+        guard let originalRule else { return repeatRule != .never }
+        guard let rule = recurrence(calendar: calendar).0 else { return true }
+        return rule.frequency != originalRule.frequency || rule.end != originalRule.end || exceptionsEdited
     }
 }
 

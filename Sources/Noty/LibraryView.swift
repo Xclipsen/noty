@@ -843,6 +843,8 @@ struct LibraryView: View {
             if toolbox.writable {
                 guard await toolbox.flush() else { model.error = toolbox.status; return }
             }
+            // The calendar's note beside an event commits and lets go first.
+            await calendar.closeNote()
             // The new area's store must not start beside a running import.
             await model.waitUntilIdle()
             await workspaces.select(area)

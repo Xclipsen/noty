@@ -14,6 +14,8 @@ struct CalendarTimeGrid: View {
     @ScaledMetric(relativeTo: .caption) private var laneHeight: CGFloat = 24
     @ScaledMetric(relativeTo: .headline) private var headerHeight: CGFloat = 44
     private let topInset: CGFloat = 10
+    /// An own event is being moved or stretched: the grid does not scroll meanwhile.
+    @State private var dragging = false
     private var calendar: Calendar { model.calendar }
     private var minimumColumn: CGFloat { days.count == 1 ? 260 : 96 }
 
@@ -137,6 +139,7 @@ struct CalendarTimeGrid: View {
                 }
                 .frame(width: gutter + column * CGFloat(days.count), height: y(24 * 60) + topInset, alignment: .topLeading)
             }
+            .scrollDisabled(dragging)
             .onAppear {
                 let hour = days.contains { calendar.isDate($0, inSameDayAs: model.today) }
                     ? max(0, calendar.component(.hour, from: Date()) - 1) : 7
@@ -197,7 +200,10 @@ struct CalendarTimeGrid: View {
                 let inner = column - 8
                 let width = inner / CGFloat(item.placement.columns)
                 let height = max(22, (CGFloat(item.end - item.start) / 60) * hourHeight - 3)
-                CalendarEventCard(event: item.event, model: model, height: height, detailed: detailed && item.placement.columns == 1)
+                CalendarEventCard(event: item.event, model: model, height: height, detailed: detailed && item.placement.columns == 1,
+                                  movable: item.event.writable && !model.showsSamples && model.canWrite,
+                                  hourHeight: hourHeight, column: days.count > 1 ? column : nil,
+                                  onDragState: { dragging = $0 })
                     .frame(width: max(20, width - 2), height: height)
                     .offset(x: 4 + CGFloat(item.placement.column) * width, y: y(item.start) + 1.5)
             }
@@ -236,6 +242,23 @@ struct CalendarEventCard: View {
     @ObservedObject var model: CalendarModel
     let height: CGFloat
     var detailed = false
+    /// Own event: long press + drag moves it (across days in the week), the
+    /// handle at the bottom edge changes its duration.
+    var movable = false
+    var hourHeight: CGFloat = 60
+    /// Width of one day column (week); nil: day view, no change of day.
+    var column: CGFloat?
+    var onDragState: (Bool) -> Void = { _ in }
+    @GestureState private var move: CGSize?
+    @GestureState private var stretch: CGFloat?
+
+    /// 15-minute steps in the week, 5 in the wider day view.
+    private var snap: Int { column == nil ? 5 : 15 }
+    private func minutes(_ dy: CGFloat) -> Int { Int((dy / hourHeight * 60 / CGFloat(snap)).rounded()) * snap }
+    private func days(_ dx: CGFloat) -> Int {
+        guard let column, column > 0 else { return 0 }
+        return Int((dx / column).rounded())
+    }
 
     var body: some View {
         let color = CalendarPalette.color(event)
@@ -243,6 +266,7 @@ struct CalendarEventCard: View {
         let cancelled = event.status == .cancelled
         let notes = model.hasNotes(event)
         let time = event.timeText(model.calendar)
+        let stretched = stretch.map { CGFloat(minutes($0)) / 60 * hourHeight } ?? 0
         // Day view: room and teacher; week: state or room, whichever exists.
         let extra: String? = detailed ? [event.status.label, event.room, event.teacher].compactMap { $0 }.joined(separator: " · ")
                              : event.status.label ?? event.room
@@ -259,6 +283,9 @@ struct CalendarEventCard: View {
                         Spacer(minLength: 0)
                         if notes {
                             Image(systemName: "note.text").font(.caption2).foregroundStyle(.secondary).accessibilityHidden(true)
+                        }
+                        if event.originalDate != nil {
+                            Image(systemName: "repeat").font(.system(size: 8)).foregroundStyle(.tertiary).accessibilityHidden(true)
                         }
                         if event.source.readOnly {
                             Image(systemName: "lock.fill").font(.system(size: 8)).foregroundStyle(.tertiary).accessibilityHidden(true)
@@ -278,17 +305,87 @@ struct CalendarEventCard: View {
             }
             .foregroundStyle(.primary)
             .opacity(cancelled ? 0.55 : 1)
-            .background(RoundedRectangle(cornerRadius: 5).fill(CalendarPalette.tint(color, selected: selected, cancelled: cancelled)))
+            .background(RoundedRectangle(cornerRadius: 5).fill(CalendarPalette.tint(color, selected: selected || move != nil, cancelled: cancelled)))
             .clipShape(RoundedRectangle(cornerRadius: 5))
             .overlay {
-                if selected { RoundedRectangle(cornerRadius: 5).strokeBorder(CalendarPalette.selection, lineWidth: 1.5) }
+                if selected || move != nil || stretch != nil {
+                    RoundedRectangle(cornerRadius: 5).strokeBorder(CalendarPalette.selection, lineWidth: 1.5)
+                }
             }
             .contentShape(RoundedRectangle(cornerRadius: 5))
         }
         .buttonStyle(.plain)
+        .frame(height: max(20, height + stretched), alignment: .top)
+        .frame(height: height, alignment: .top)
+        .overlay(alignment: .top) { if let preview = previewText { dragLabel(preview) } }
+        .overlay(alignment: .bottom) { if movable && selected && move == nil { resizeHandle.offset(y: stretched) } }
+        .offset(x: move.map { CGFloat(days($0.width)) * (column ?? 0) } ?? 0,
+                y: move.map { CGFloat(minutes($0.height)) / 60 * hourHeight } ?? 0)
+        .zIndex(move != nil || stretch != nil ? 1 : 0)
+        .gesture(LongPressGesture(minimumDuration: 0.35).sequenced(before: DragGesture(minimumDistance: 0))
+            .updating($move) { value, state, _ in
+                if case .second(true, let drag) = value { state = drag?.translation ?? .zero }
+            }
+            .onEnded { value in
+                guard case .second(true, let drag?) = value else { return }
+                model.drag(event, days: days(drag.translation.width), minutes: minutes(drag.translation.height), resize: false)
+            }, including: movable ? .all : .subviews)
+        .onChange(of: move != nil || stretch != nil) { _, active in onDragState(active) }
+        .sensoryFeedback(.selection, trigger: move.map { minutes($0.height) + 10_000 * days($0.width) })
         .accessibilityLabel(event.accessibilityText(model.calendar, notes: notes))
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityHint("Zeigt Details und Notizseite")
+        .accessibilityHint(movable ? "Zeigt Details und Notizseite. Lange drücken und ziehen verschiebt den Termin." : "Zeigt Details und Notizseite")
+        .accessibilityActions {
+            if movable {
+                Button("\(snap) Minuten früher") { model.drag(event, days: 0, minutes: -snap, resize: false) }
+                Button("\(snap) Minuten später") { model.drag(event, days: 0, minutes: snap, resize: false) }
+                if column != nil {
+                    Button("Einen Tag früher") { model.drag(event, days: -1, minutes: 0, resize: false) }
+                    Button("Einen Tag später") { model.drag(event, days: 1, minutes: 0, resize: false) }
+                }
+                Button("\(snap) Minuten länger") { model.drag(event, days: 0, minutes: snap, resize: true) }
+                Button("\(snap) Minuten kürzer") { model.drag(event, days: 0, minutes: -snap, resize: true) }
+            }
+        }
+    }
+
+    /// New times while dragging („09:15–10:45“, „+1 Tag“).
+    private var previewText: String? {
+        let calendar = model.calendar
+        if let move {
+            let shift = days(move.width), delta = minutes(move.height)
+            let start = calendar.date(byAdding: .minute, value: delta, to: calendar.date(byAdding: .day, value: shift, to: event.start) ?? event.start) ?? event.start
+            let end = calendar.date(byAdding: .minute, value: delta, to: calendar.date(byAdding: .day, value: shift, to: event.end) ?? event.end) ?? event.end
+            let day = shift == 0 ? "" : " · " + CalendarText.shortWeekdays[CalendarDates.weekdayIndex(start, calendar: calendar)]
+            return CalendarText.timeRange(start, end, calendar: calendar) + day
+        }
+        if let stretch {
+            let end = calendar.date(byAdding: .minute, value: minutes(stretch), to: event.end) ?? event.end
+            return end <= event.start ? "zu kurz" : CalendarText.timeRange(event.start, end, calendar: calendar)
+        }
+        return nil
+    }
+
+    private func dragLabel(_ text: String) -> some View {
+        Text(text).font(.caption2.weight(.semibold)).monospacedDigit()
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(CalendarPalette.selection, in: Capsule())
+            .foregroundStyle(.white)
+            .offset(y: -18)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
+    /// Bottom edge: drag to change the duration (same steps as moving).
+    private var resizeHandle: some View {
+        Capsule().fill(CalendarPalette.selection).frame(width: 30, height: 5)
+            .frame(maxWidth: .infinity).frame(height: 22)
+            .contentShape(Rectangle())
+            .offset(y: 11)
+            .gesture(DragGesture(minimumDistance: 1)
+                .updating($stretch) { value, state, _ in state = value.translation.height }
+                .onEnded { value in model.drag(event, days: 0, minutes: minutes(value.translation.height), resize: true) })
+            .accessibilityHidden(true)
     }
 }
 

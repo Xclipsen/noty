@@ -1,6 +1,21 @@
 # Lokaler Revisionsspeicher – Format 1
 
 
+## Ergänzung 04.11.2026 · Kalenderpaket Format 2 und Terminnotizen (B2)
+
+Nur `feat/kalender`, Test-App „noty calendar“ Build 102; implementiert und gebaut, **am iPad ungeprüft**. Paketaufbau und Commitregeln wie B1 (unten); neu ist das Inhaltsformat 2 und das Verzeichnis `Migration/`. Heftformat, Bibliotheksindex und Archive bleiben unverändert.
+
+```
+<Bereich>/Calendar/Migration/format-1-<Revisionsdatei>.json   exakte Bytes der zuletzt geladenen Format-1-Revision
+```
+
+- **Migration 1 → 2:** Format-1-Revisionen werden gelesen (neue Felder mit Leerwerten; ein „Format 1“ mit Format-2-Feldern gilt als ungültig). Lesen schreibt nichts. Vor dem ersten Commit im Format 2 kopiert `CalendarStore` die exakten Bytes der geladenen Revision nach `Migration/` und liest sie zurück; schlägt das fehl, gibt es keinen Commit. Die alte Revision bleibt außerdem als Rückfall im neuen Manifest. Unbekannt neueres Format (≥ 3) sperrt wie bisher, Build 101 sperrt Format 2.
+- **CalendarState Format 2** zusätzlich: `events[].recurrence` (optional: `frequency daily|weekly|monthly`, `interval 1–99`, `end {kind never|count|until}` mit `count 1–999` bzw. `date` einschließlich, `exceptions[]` ursprüngliche Termindaten, `overrides[] {originalDate, title, location, details, timing}` einzeln geänderte Termine); `noteLinks[] {id, target, documentID, pageID?, createdAt, hasContent, contextTitle, contextStart, contextEnd}` mit `target` `{"kind":"local","event":UUID,"date"?:"YYYY-MM-DD"}` (eigener Termin bzw. eine Durchführung einer Serie) oder `{"kind":"lesson","lesson":{source, periodID, lessonID?, originalDate, originalStart}}`; `lessonMappings[] {id, source, fromPeriodID, fromDate, toPeriodID, toDate, confirmedAt}`; `settings.subjectColors {Fachschlüssel → Farbname}` und `settings.notesFolderID`; `connection.sourceIdentity` (SHA-256 über Server, Schule, Benutzer – ohne Schlüssel). Höchstens 20 000 Links und 20 000 Zuordnungen.
+- **Links nur über Identitäten:** Dokument-ID (optional Startseiten-ID), nie Name, Pfad oder Position. Der Bereich ist implizit das Paket des Bereichs; bereichsübergreifende Links gibt es nicht. Ein Link löscht nichts: Termin löschen, Serie kürzen, Quelle trennen oder Link lösen lassen das Heft in der Bibliothek.
+- **Terminhefte** sind gewöhnliche Hefte unter `Library/Documents/<UUID>` im Ordner „Kalendernotizen“ (Ordner nur über `notesFolderID`, fehlt er oder liegt er im Papierkorb, wird ein neuer angelegt). Anlage erst bei echter Eingabe, Reihenfolge (Regel 8): (1) das Paket des Hefts wird von seinem einzigen Schreiber (`EditorModel`) vollständig committet, (2) `LibraryStore.adoptImported` trägt es in den Index ein, (3) erst dann wird der Link committet. Ein Fehler hält an; der nächste Versuch setzt mit derselben Dokument-ID an derselben Stelle fort. Ein Paket ohne Indexeintrag findet `LibraryStore.load()` als verwaisten Eintrag wieder.
+- **WebUntis-Stunden:** Notizen hängen an `source` + Perioden-`id`; dieselbe ID an anderem Tag/zu anderer Zeit oder mit Ausfall bleibt dieselbe Stunde. Fehlt die ID an einem geladenen Tag, ist die Notiz „ungeklärt“ und wird an ihrer letzten Zeit angezeigt; Vorschläge nur aus demselben Kurs (`lessonId`, ±14 Tage), nie über Titel. Erst eine Auswahl des Nutzers legt eine Zuordnung in `lessonMappings` ab. Der Cache speichert zusätzlich `subjectID` (optional, Cacheformat bleibt 1).
+- Nachweise: `CalendarB2Tests` (Serien, Grenzen, Links, Regel 8 mit echten `RevisionStore`/`LibraryStore`/`CalendarRepository`, Zuordnung, Farben, Migration mit Fehlerinjektion). Bibliotheksbackup/Restore und `verify_*.py` kennen `Calendar/` weiterhin **nicht** (Terminhefte selbst sind gewöhnliche Hefte und damit im Bibliotheksbackup, ihre Links nicht).
+
 ## Ergänzung 04.11.2026 · Kalenderpaket (B1)
 
 Nur `feat/kalender`, Test-App „noty calendar“ Build 101; implementiert und gebaut, am iPad ungeprüft. Neues Paket je Bereich, **kein** Heftformat- oder Schemawechsel; Bibliotheksindex, Heftpakete und Archive bleiben unverändert.

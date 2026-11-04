@@ -25,11 +25,14 @@ struct CalendarView: View {
     @State private var dayList: CalendarDayListRequest?
     @State private var searching = false
     @State private var connecting = false
-    @State private var enlarged: CalendarEnlargeRequest?
+    @State private var choosingColors = false
     private var calendar: Calendar { model.calendar }
     private var shownWeekDays: Int { model.weekDays == 7 ? 7 : 5 }
     /// Calendar keys only while nothing is presented over it.
-    private var keys: Bool { keysActive && enlarged == nil && dayList == nil && !searching && !connecting && model.draft == nil }
+    private var keys: Bool {
+        keysActive && model.enlargedDraft == nil && dayList == nil && !searching && !connecting && !choosingColors && model.draft == nil
+            && model.pendingSeriesChange == nil
+    }
     private func key(_ key: KeyEquivalent) -> KeyboardShortcut? { keys ? KeyboardShortcut(key, modifiers: .command) : nil }
 
     var body: some View {
@@ -40,12 +43,12 @@ struct CalendarView: View {
                     header
                     statusLine
                     content
-                        .overlay(alignment: .bottom) { removalBanner }
+                        .overlay(alignment: .bottom) { undoBanner }
                 }
                 .frame(maxWidth: .infinity)
                 if layout.inlineDetail, let event = model.selectedEvent {
                     Rectangle().fill(CalendarPalette.hairline).frame(width: 0.5)
-                    CalendarEventPanel(event: event, model: model, escapes: keys) { enlarged = CalendarEnlargeRequest(event: event, page: $0) }
+                    CalendarEventPanel(event: event, model: model, escapes: keys)
                         .frame(width: layout.detailWidth)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
@@ -53,7 +56,7 @@ struct CalendarView: View {
             .overlay {
                 // Narrow window/portrait: the note large over the calendar, clear way back.
                 if !layout.inlineDetail, let event = model.selectedEvent {
-                    CalendarEventPanel(event: event, model: model, overlay: true, escapes: keys) { enlarged = CalendarEnlargeRequest(event: event, page: $0) }
+                    CalendarEventPanel(event: event, model: model, overlay: true, escapes: keys)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
@@ -79,10 +82,15 @@ struct CalendarView: View {
         .sheet(item: $dayList) { CalendarDayListSheet(day: $0.day, model: model) }
         .sheet(isPresented: $searching) { CalendarSearchSheet(model: model) }
         .sheet(isPresented: $connecting) { CalendarConnectionSheet(model: model) }
-        .fullScreenCover(item: $enlarged) { request in
-            if let event = model.event(request.event.id) {
-                CalendarEnlargedNote(event: event, model: model, page: request.page)
-            }
+        .sheet(isPresented: $choosingColors) { CalendarColorsSheet(model: model) }
+        .fullScreenCover(item: $model.enlargedDraft) { session in CalendarEnlargedDraft(session: session, model: model) }
+        .confirmationDialog(model.pendingSeriesChange?.text ?? "", isPresented: Binding(
+            get: { model.pendingSeriesChange != nil }, set: { if !$0 { model.pendingSeriesChange = nil } }), titleVisibility: .visible) {
+            Button("Nur dieser Termin") { model.applyPendingSeriesChange(.single) }
+            Button("Alle Termine der Serie") { model.applyPendingSeriesChange(.all) }
+            Button("Abbrechen", role: .cancel) { model.pendingSeriesChange = nil }
+        } message: {
+            Text("Dieser Termin gehört zu einer Serie.")
         }
         .background { shortcuts }
     }
@@ -262,6 +270,13 @@ struct CalendarView: View {
         if let notice = model.recoveredNotice {
             items.append(StatusItem(symbol: "clock.arrow.circlepath", text: notice, warning: true, action: .dismiss))
         }
+        if let notice = model.notice {
+            items.append(StatusItem(symbol: "info.circle", text: notice, warning: true, action: .dismiss))
+        }
+        if !model.truncatedSeries.isEmpty {
+            items.append(StatusItem(symbol: "repeat", text: "Nicht alle Wiederholungen angezeigt (höchstens \(CalendarSeries.maximumPerSeries) je Serie im angezeigten Jahr): "
+                                    + model.truncatedSeries.prefix(3).map { "„\($0)“" }.joined(separator: ", ")))
+        }
         if model.showsSamples {
             items.append(StatusItem(symbol: "theatermasks", text: "Beispieldaten – frei erfunden, nichts wird gespeichert",
                                     action: .hideSamples))
@@ -293,12 +308,12 @@ struct CalendarView: View {
         return StatusItem(symbol: "lock", text: "Stundenplan aus WebUntis · " + (stand ?? "noch nicht geladen"))
     }
 
-    @ViewBuilder private var removalBanner: some View {
-        if let removal = model.lastRemoval {
+    @ViewBuilder private var undoBanner: some View {
+        if let step = model.lastUndo {
             HStack(spacing: CalendarSpace.m) {
-                Text("\(removal.title) gelöscht").font(.subheadline).lineLimit(1)
-                Button("Rückgängig") { Task { await model.undoRemoval() } }.font(.subheadline.weight(.semibold))
-                Button { model.dismissRemoval() } label: { Image(systemName: "xmark").frame(width: 32, height: 32) }
+                Text(step.text).font(.subheadline).lineLimit(1)
+                Button("Rückgängig") { Task { await model.undoLast() } }.font(.subheadline.weight(.semibold))
+                Button { model.dismissUndo() } label: { Image(systemName: "xmark").frame(width: 32, height: 32) }
                     .accessibilityLabel("Hinweis schließen")
             }
             .padding(.leading, CalendarSpace.l).padding(.trailing, 6).padding(.vertical, 6)
@@ -358,6 +373,8 @@ struct CalendarView: View {
             }
             .pickerStyle(.menu)
             Button { searching = true } label: { Label("Termine suchen", systemImage: "magnifyingglass") }
+            Button { choosingColors = true } label: { Label("Fachfarben …", systemImage: "paintpalette") }
+                .disabled(model.showsSamples || !model.canWrite)
         }
         Section("Kalender") {
             ForEach(CalendarSource.allCases) { source in
@@ -415,10 +432,42 @@ private struct CalendarDayListRequest: Identifiable {
     var id: Date { day }
 }
 
-private struct CalendarEnlargeRequest: Identifiable {
-    let id = UUID()
-    let event: CalendarEntry
-    let page: Int
+/// „Fachfarben“: one automatic, adjustable colour per subject; own events
+/// keep their own colour. State is never shown by colour alone.
+struct CalendarColorsSheet: View {
+    @ObservedObject var model: CalendarModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(model.subjects, id: \.key) { subject in
+                        let name = CalendarSubjectColor.name(for: subject.key, chosen: model.subjectColors)
+                        Menu {
+                            CalendarColorPicker(key: subject.key, model: model)
+                        } label: {
+                            HStack {
+                                Circle().fill(CalendarPalette.color(named: name)).frame(width: 12, height: 12)
+                                Text(subject.name).foregroundStyle(.primary)
+                                Spacer()
+                                Text(model.subjectColors[subject.key] == nil ? "Automatisch · \(CalendarSubjectColor.title(name))" : CalendarSubjectColor.title(name))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(minHeight: 44)
+                        }
+                    }
+                } footer: {
+                    Text(model.subjects.isEmpty ? "Fächer erscheinen, sobald der Stundenplan aus WebUntis geladen ist."
+                         : "Jedes Fach bekommt automatisch eine feste Farbe. Eigene Termine bleiben grün; Ausfall, Prüfung und Änderungen stehen zusätzlich als Symbol und Text.")
+                }
+            }
+            .navigationTitle("Fachfarben")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
+        }
+        .preferredColorScheme(.dark)
+    }
 }
 
 /// Search over the sample entries; never silently limited.
@@ -449,7 +498,7 @@ struct CalendarSearchSheet: View {
                 if query.trimmingCharacters(in: .whitespaces).isEmpty {
                     ContentUnavailableView("Termine suchen", systemImage: "magnifyingglass",
                                            description: Text(model.showsSamples ? "Titel, Raum, Lehrkraft oder Beschreibung (Beispieldaten des angezeigten Jahres)."
-                                                             : "Titel, Ort, Raum oder Beschreibung: eigene Termine und geladener Stundenplan."))
+                                                             : "Titel, Ort, Raum oder Beschreibung: eigene Termine (Serien im angezeigten Jahr) und geladener Stundenplan."))
                 } else if results.isEmpty {
                     ContentUnavailableView.search(text: query)
                 }

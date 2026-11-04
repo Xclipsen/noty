@@ -143,6 +143,8 @@ struct WorkspaceLibraryHost: View {
                 else { Task { await IncomingBackup.receive(url, library: library, workspaces: workspaces) } }
             }
             .task { IncomingFiling.attach(library: library, workspaces: workspaces, defaults: toolbox.preferences.defaultAppearance) }
+            // Event notes are notebooks of this library (Kalender B2).
+            .task { calendar.attach(library: library, defaultAppearance: { [toolbox] in toolbox.preferences.defaultAppearance ?? NotebookAppearance() }) }
     }
 }
 

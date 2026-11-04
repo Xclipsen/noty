@@ -1,25 +1,30 @@
 import SwiftUI
-import PencilKit
+import Combine
 import NotebookCore
 
-/// Calendar of one area (Stufe B1, docs/CALENDAR-PLAN.md). Lives with the
-/// library of that area (`LibraryView`), so an area switch gives a new model
-/// and repository. Own events and settings are committed through
-/// `CalendarRepository` (`<Bereich>/Calendar/`); WebUntis lessons and
-/// holidays come from the replaceable source cache. „Beispieldaten“ is an
-/// explicit demo mode that shows only fictitious entries and stores nothing.
+/// Calendar of one area (Stufe B2, docs/CALENDAR-PLAN.md). Lives with the
+/// library of that area (`WorkspaceLibraryHost`), so an area switch gives a
+/// new model and repository. Own events (also series), settings, note links
+/// and lesson mappings are committed through `CalendarRepository`
+/// (`<Bereich>/Calendar/`); WebUntis lessons and holidays come from the
+/// replaceable source cache. Event notes are ordinary notebooks of the
+/// library (`CalendarNoteSession`). „Beispieldaten“ is an explicit demo mode
+/// that shows only fictitious entries and stores nothing.
 @MainActor
 final class CalendarModel: ObservableObject {
     let calendar = CalendarDates.german()
     let root: URL
     private let repository: CalendarRepository
+    private(set) weak var library: LibraryModel?
+    private var defaultAppearance: () -> NotebookAppearance = { NotebookAppearance() }
+    private var subscriptions = Set<AnyCancellable>()
 
     // MARK: View state
     @Published var mode = CalendarMode.week { didSet { if mode != oldValue { persistSettings() } } }
     /// 5 = Monday–Friday, 7 = whole week (stored per area).
     @Published var weekDays = 5 { didSet { if weekDays != oldValue { persistSettings() } } }
-    @Published var anchor = Date() { didSet { if showsSamples { prepareSamples() } } }
-    @Published var selection: String?
+    @Published var anchor = Date() { didSet { anchorMoved() } }
+    @Published var selection: String? { didSet { if selection != oldValue { selectionChanged() } } }
     @Published var draft: CalendarDraft?
     @Published var hiddenSources: Set<CalendarSource> = []
     /// Demo mode: only fictitious entries, nothing editable or stored. Off by default.
@@ -27,7 +32,10 @@ final class CalendarModel: ObservableObject {
     @Published private(set) var today = Date()
     /// The calendar is on screen; WebUntis is only asked while it is.
     var visible = false {
-        didSet { if visible && !oldValue { refreshIfDue() } }
+        didSet {
+            if visible && !oldValue { refreshIfDue(); if let entry = selectedEvent { showNote(for: entry) } }
+            if !visible && oldValue { releaseNote() }
+        }
     }
 
     // MARK: Storage state
@@ -38,7 +46,9 @@ final class CalendarModel: ObservableObject {
     @Published private(set) var saveError: String?
     @Published private(set) var unsaved = false
     @Published private(set) var recoveredNotice: String?
-    private var state = CalendarState()
+    /// A short notice (rejected drag, failed change), dismissible.
+    @Published var notice: String?
+    private(set) var state = CalendarState()
     private var revision = 0
     private var applyingSettings = false
 
@@ -54,17 +64,48 @@ final class CalendarModel: ObservableObject {
     private var generation = 0
     static let automaticInterval: TimeInterval = 15 * 60
 
-    // MARK: Removal with a way back (session)
-    @Published private(set) var lastRemoval: (title: String, event: LocalCalendarEvent)?
+    // MARK: Undo of the last change (session; banner)
+    struct UndoStep {
+        let text: String
+        /// The event as it was before (nil: it did not exist).
+        let before: LocalCalendarEvent?
+        let eventID: UUID
+    }
+    @Published private(set) var lastUndo: UndoStep?
 
-    // MARK: Notes (memory only in B1)
-    @Published private var notes: [String: [CalendarNotePage]] = [:]
+    /// A drag of a series occurrence waits for „Nur dieser Termin“ / „Alle“.
+    struct SeriesChange: Identifiable {
+        let id = UUID()
+        let entry: CalendarEntry
+        /// The occurrence's new timing („Nur dieser Termin“).
+        let timing: CalendarEventTiming
+        /// The drag itself („Alle“: the first occurrence moves the same way).
+        let days: Int, minutes: Int, resize: Bool
+        let text: String
+    }
+    @Published var pendingSeriesChange: SeriesChange?
+
+    // MARK: Notes
+    @Published private(set) var noteSession: CalendarNoteSession?
+    @Published private(set) var noteState: CalendarNoteState = .none
+    /// A note not yet saved (draft) shown large over the calendar.
+    @Published var enlargedDraft: CalendarNoteSession?
+    /// Editors that could not commit when they were closed: kept (and retried)
+    /// until they did, reused when their note is opened again.
+    private var lingering: [UUID: EditorModel] = [:]
+    /// Rule-8 runs per note target (resume after a failed step, same document).
+    private var creations: [String: CalendarNoteCreation] = [:]
+    private var noteQueue: Task<Void, Never>?
 
     // MARK: Index
     private var all: [CalendarEntry] = []
     private var byID: [String: CalendarEntry] = [:]
     private var byDay: [Date: [CalendarEntry]] = [:]
+    private var linkByEntry: [String: CalendarNoteLink] = [:]
+    private(set) var candidates: [UUID: [CalendarLesson]] = [:]
+    @Published private(set) var truncatedSeries: [String] = []
     private var sampleYear: Int?
+    private var window: (start: CivilDate, end: CivilDate)?
 
     init(root: URL) {
         self.root = root
@@ -77,10 +118,32 @@ final class CalendarModel: ObservableObject {
         Task { await repository.close() }
     }
 
+    /// The library of this area (notes are its notebooks) and the default
+    /// appearance of new notebooks.
+    func attach(library: LibraryModel, defaultAppearance: @escaping () -> NotebookAppearance) {
+        guard self.library !== library else { return }
+        self.library = library
+        self.defaultAppearance = defaultAppearance
+        library.releaseCalendarNote = { [weak self] in await self?.closeNote() }
+        library.$snapshot.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.libraryChanged() }
+        }.store(in: &subscriptions)
+        library.$opened.dropFirst().receive(on: RunLoop.main).sink { [weak self] opened in
+            let closed = opened == nil
+            MainActor.assumeIsolated {
+                // Back from the full editor: the note beside the event opens again.
+                guard let self, closed, self.visible, let entry = self.selectedEvent else { return }
+                self.showNote(for: entry)
+            }
+        }.store(in: &subscriptions)
+        libraryChanged()
+    }
+
     var connection: CalendarConnectionRecord? { state.connection }
     var canWrite: Bool { loaded && storageError == nil }
     var localEventCount: Int { state.events.count }
     var hasRealData: Bool { !state.events.isEmpty || state.connection != nil }
+    var subjectColors: [String: String] { state.settings.subjectColors }
 
     // MARK: Loading and committing
 
@@ -96,9 +159,16 @@ final class CalendarModel: ObservableObject {
                 recoveredNotice = "Der neueste Kalenderstand war nicht lesbar; ein älterer geprüfter Stand wurde geladen. Die beschädigte Datei bleibt erhalten."
             }
             if let connection = state.connection {
-                credentialsMissing = WebUntisKeychain.load(connection.id) == nil
+                let setup = WebUntisKeychain.load(connection.id)
+                credentialsMissing = setup == nil
                 do { snapshot = try await repository.sourceSnapshot() }
                 catch { syncError = error.localizedDescription }
+                // A B1 connection gets its account identity before any lesson note exists.
+                if connection.sourceIdentity == nil, let setup, !state.noteLinks.contains(where: { if case .lesson = $0.target { true } else { false } }) {
+                    let identity = WebUntis.sourceIdentity(setup)
+                    loaded = true
+                    await commit { $0.connection?.sourceIdentity = identity }
+                }
             }
         } catch {
             storageError = error.localizedDescription
@@ -152,58 +222,239 @@ final class CalendarModel: ObservableObject {
         Task { await commit { $0.settings.weekDays = days; $0.settings.mode = mode } }
     }
 
-    func dismissNotices() { recoveredNotice = nil; if !unsaved { saveError = nil } }
+    func dismissNotices() { recoveredNotice = nil; notice = nil; if !unsaved { saveError = nil } }
 
     // MARK: Own events
 
-    /// New or changed own event from the form. Single events only in B1.
-    /// Nil: applied (committed, or unsaved with the retry banner); otherwise
-    /// the reason it was rejected and not applied.
-    func save(_ draft: CalendarDraft) async -> String? {
+    enum SeriesScope { case single, all }
+
+    /// New or changed own event from the form. `scope`: for an occurrence of
+    /// a series, „Nur dieser Termin“ or „Alle Termine der Serie“. Nil:
+    /// applied (committed, or unsaved with the retry banner); otherwise the
+    /// reason it was rejected and not applied.
+    func save(_ draft: CalendarDraft, scope: SeriesScope = .all) async -> String? {
         guard !showsSamples else { return "Im Beispielmodus werden keine Termine gespeichert." }
         guard let title = CalendarState.validTitle(draft.title) else { return "Bitte einen Titel mit höchstens 200 Zeichen eingeben." }
         let (timing, problem) = draft.timing(calendar: calendar)
         guard let timing else { return problem }
         let location = draft.location.trimmingCharacters(in: .whitespacesAndNewlines)
         let details = draft.details.trimmingCharacters(in: .whitespacesAndNewlines)
+        let (rule, ruleProblem) = draft.recurrence(calendar: calendar)
+        if let ruleProblem { return ruleProblem }
         let now = Date()
-        var savedID: UUID?
+        var savedEntryID: String?
+        var before: LocalCalendarEvent?
+        var problemText: String?
         let ok = await commit { state in
-            if let id = draft.editing?.localID, let index = state.events.firstIndex(where: { $0.id == id }) {
-                state.events[index].title = title
-                state.events[index].location = location
-                state.events[index].details = details
-                state.events[index].timing = timing
-                state.events[index].modifiedAt = now
-                savedID = id
-            } else {
-                let event = LocalCalendarEvent(title: title, location: location, details: details, timing: timing, createdAt: now)
+            guard let id = draft.editing?.localID, let index = state.events.firstIndex(where: { $0.id == id }) else {
+                let event = LocalCalendarEvent(title: title, location: location, details: details, timing: timing, recurrence: rule, createdAt: now)
                 state.events.append(event)
-                savedID = event.id
+                savedEntryID = rule == nil ? CalendarEntry.localID(event.id, nil) : CalendarEntry.localID(event.id, CalendarSeries.firstDate(of: timing))
+                return
             }
+            var event = state.events[index]
+            before = event
+            if let occurrence = draft.editing?.originalDate, event.recurrence != nil, scope == .single {
+                // „Nur dieser Termin“: a changed occurrence with its own data.
+                var series = event.recurrence!
+                series.overrides.removeAll { $0.originalDate == occurrence }
+                series.overrides.append(CalendarOccurrenceOverride(originalDate: occurrence, title: title, location: location,
+                                                                   details: details, timing: timing))
+                event.recurrence = series
+                savedEntryID = CalendarEntry.localID(id, occurrence)
+            } else {
+                let oldFirst = CalendarSeries.firstDate(of: event.timing)
+                var newTiming = timing
+                var shift = 0
+                if let shown = draft.editing, shown.originalDate != nil, event.recurrence != nil {
+                    // „Alle Termine“ from one occurrence: the series moves by the days
+                    // this occurrence moved (also when it was changed on its own before).
+                    shift = CivilDate(shown.start, calendar: calendar).days(to: CivilDate(draft.start, calendar: calendar))
+                    newTiming = Self.timing(timing, movedToDate: oldFirst.adding(days: shift), calendar: calendar)
+                }
+                event.title = title; event.location = location; event.details = details
+                event.timing = newTiming
+                if var newRule = rule {
+                    // Keep exceptions/changes of the old series, moved along.
+                    if let old = event.recurrence {
+                        let moved = CalendarSeries.shifted(old, byDays: shift)
+                        newRule.exceptions = draft.exceptionsEdited ? draft.exceptions(calendar: calendar) : moved.exceptions
+                        newRule.overrides = moved.overrides
+                    }
+                    event.recurrence = newRule
+                } else {
+                    event.recurrence = nil
+                }
+                Self.retarget(&state.noteLinks, event: id, old: before, new: event)
+                savedEntryID = CalendarEntry.localID(id, event.recurrence == nil ? nil : (draft.editing?.originalDate?.adding(days: shift) ?? CalendarSeries.firstDate(of: newTiming)))
+            }
+            event.modifiedAt = now
+            if let problem = event.timing.problem { problemText = problem; return }
+            state.events[index] = event
         }
-        if let savedID { selection = Self.entryID(savedID) }
+        if let problemText { return problemText }
+        if let before, ok || unsaved { lastUndo = UndoStep(text: "„\(before.title)“ geändert", before: before, eventID: before.id) }
+        if let savedEntryID { selection = savedEntryID }
         // A failed write keeps the change in memory (banner with retry); only a
         // rejected change keeps the form open – a second tap must not duplicate.
         return ok || unsaved ? nil : saveError
     }
 
-    func remove(_ entry: CalendarEntry) async {
-        guard let id = entry.localID, let event = state.events.first(where: { $0.id == id }) else { return }
-        if selection == entry.id { selection = nil }
-        if await commit({ $0.events.removeAll { $0.id == id } }) || unsaved {
-            lastRemoval = ("„\(event.title)“", event)
+    /// Note links of a series follow its changes: single → series gives the
+    /// old note to the first occurrence, series → single keeps the first
+    /// occurrence's note, a moved series moves its occurrence notes along.
+    private static func retarget(_ links: inout [CalendarNoteLink], event id: UUID, old: LocalCalendarEvent?, new: LocalCalendarEvent) {
+        guard let old else { return }
+        let oldFirst = CalendarSeries.firstDate(of: old.timing), newFirst = CalendarSeries.firstDate(of: new.timing)
+        let shift = oldFirst.days(to: newFirst)
+        for index in links.indices {
+            guard case .local(let event, let date) = links[index].target, event == id else { continue }
+            switch (old.recurrence != nil, new.recurrence != nil, date) {
+            case (false, true, nil): links[index].target = .local(event: id, date: newFirst)
+            case (true, false, let day?) where day == oldFirst: links[index].target = .local(event: id, date: nil)
+            case (true, true, let day?) where shift != 0: links[index].target = .local(event: id, date: day.adding(days: shift))
+            default: break
+            }
         }
     }
 
-    /// Restores the removed event with its identity (later note links stay valid).
-    func undoRemoval() async {
-        guard let removal = lastRemoval else { return }
-        lastRemoval = nil
-        guard !state.events.contains(where: { $0.id == removal.event.id }) else { return }
-        await commit { $0.events.append(removal.event) }
+    /// `timing` (as entered for one occurrence) with its civil start date
+    /// replaced by `date`, wall clock and length kept.
+    private static func timing(_ timing: CalendarEventTiming, movedToDate date: CivilDate, calendar: Calendar) -> CalendarEventTiming {
+        CalendarSeries.timing(on: date, base: timing)
     }
-    func dismissRemoval() { lastRemoval = nil }
+
+    /// Deletes an own event, or – `scope == .single` – one occurrence of a
+    /// series (an exception). Notes stay in the library; the link stays for
+    /// „Rückgängig“.
+    func remove(_ entry: CalendarEntry, scope: SeriesScope = .all) async {
+        guard let id = entry.localID, let event = state.events.first(where: { $0.id == id }) else { return }
+        if selection == entry.id { selection = nil }
+        let single = scope == .single && event.recurrence != nil && entry.originalDate != nil
+        let ok = await commit { state in
+            if single, let index = state.events.firstIndex(where: { $0.id == id }), let date = entry.originalDate {
+                if !state.events[index].recurrence!.exceptions.contains(date) { state.events[index].recurrence!.exceptions.append(date) }
+                state.events[index].modifiedAt = Date()
+            } else {
+                state.events.removeAll { $0.id == id }
+            }
+        }
+        if ok || unsaved {
+            lastUndo = UndoStep(text: single ? "Termin „\(entry.title)“ am \(CalendarText.numericDate(entry.start, calendar: calendar)) gelöscht"
+                                             : "„\(event.title)“ gelöscht", before: event, eventID: id)
+        }
+    }
+
+    /// Restores the event as it was before the last change, with its
+    /// identity (note links stay valid).
+    func undoLast() async {
+        guard let step = lastUndo else { return }
+        lastUndo = nil
+        await commit { state in
+            if let index = state.events.firstIndex(where: { $0.id == step.eventID }) {
+                if let before = step.before { state.events[index] = before } else { state.events.remove(at: index) }
+            } else if let before = step.before {
+                state.events.append(before)
+            }
+        }
+    }
+    func dismissUndo() { lastUndo = nil }
+
+    // MARK: Drag and resize (own events, week/day)
+
+    /// Snaps a drag to whole `snap` minutes and moves or stretches the event.
+    /// Rejected spans are explained (`notice`); series ask first.
+    func drag(_ entry: CalendarEntry, days: Int, minutes: Int, resize: Bool) {
+        guard entry.writable, !entry.allDay, canWrite, !showsSamples, days != 0 || minutes != 0 else { return }
+        guard let event = state.events.first(where: { $0.id == entry.localID }) else { return }
+        let zone = event.timing.timeZoneID ?? calendar.timeZone.identifier
+        var zoned = calendar; zoned.timeZone = TimeZone(identifier: zone) ?? calendar.timeZone
+        func moved(_ date: Date) -> Date {
+            let day = zoned.date(byAdding: .day, value: days, to: date) ?? date
+            return zoned.date(byAdding: .minute, value: minutes, to: day) ?? day
+        }
+        let start = resize ? entry.start : moved(entry.start)
+        let end = moved(entry.end)
+        guard end.timeIntervalSince(start) >= 5 * 60 else {
+            notice = "Ein Termin muss mindestens 5 Minuten dauern. Die Dauer wurde nicht geändert."
+            return
+        }
+        let timing = CalendarEventTiming.timed(start: start, end: end, timeZone: zone)
+        if let problem = timing.problem { notice = problem + " Der Termin wurde nicht verschoben."; return }
+        let text = resize ? "Dauer von „\(entry.title)“ geändert" : "„\(entry.title)“ verschoben"
+        let change = SeriesChange(entry: entry, timing: timing, days: days, minutes: minutes, resize: resize, text: text)
+        if event.recurrence != nil, entry.originalDate != nil {
+            pendingSeriesChange = change
+            return
+        }
+        Task { await apply(change, scope: .all) }
+    }
+
+    func applyPendingSeriesChange(_ scope: SeriesScope) {
+        guard let change = pendingSeriesChange else { return }
+        pendingSeriesChange = nil
+        Task { await apply(change, scope: scope) }
+    }
+
+    /// The first occurrence moved/stretched like the dragged one (wall clock
+    /// in the series' time zone), or nil when that is no valid span.
+    private func moved(_ timing: CalendarEventTiming, by change: SeriesChange) -> CalendarEventTiming? {
+        guard case .timed(let start, let end, let zone) = timing else { return nil }
+        var zoned = calendar; zoned.timeZone = TimeZone(identifier: zone) ?? calendar.timeZone
+        func shift(_ date: Date) -> Date {
+            let day = zoned.date(byAdding: .day, value: change.days, to: date) ?? date
+            return zoned.date(byAdding: .minute, value: change.minutes, to: day) ?? day
+        }
+        let result = CalendarEventTiming.timed(start: change.resize ? start : shift(start), end: shift(end), timeZone: zone)
+        return result.problem == nil ? result : nil
+    }
+
+    private func apply(_ change: SeriesChange, scope: SeriesScope) async {
+        let timing = change.timing, entry = change.entry, text = change.text
+        guard let id = entry.localID, let before = state.events.first(where: { $0.id == id }) else { return }
+        let ok = await commit { state in
+            guard let index = state.events.firstIndex(where: { $0.id == id }) else { return }
+            var event = state.events[index]
+            if let occurrence = entry.originalDate, var series = event.recurrence {
+                if scope == .single {
+                    let existing = series.overrides.first { $0.originalDate == occurrence }
+                    series.overrides.removeAll { $0.originalDate == occurrence }
+                    series.overrides.append(CalendarOccurrenceOverride(originalDate: occurrence, title: existing?.title ?? event.title,
+                        location: existing?.location ?? event.location, details: existing?.details ?? event.details, timing: timing))
+                    event.recurrence = series
+                } else {
+                    guard let first = moved(event.timing, by: change) else { return }
+                    let shift = CalendarSeries.firstDate(of: event.timing).days(to: CalendarSeries.firstDate(of: first))
+                    event.timing = first
+                    event.recurrence = CalendarSeries.shifted(series, byDays: shift)
+                    Self.retarget(&state.noteLinks, event: id, old: before, new: event)
+                }
+            } else {
+                event.timing = timing
+            }
+            event.modifiedAt = Date()
+            state.events[index] = event
+        }
+        if ok || unsaved { lastUndo = UndoStep(text: text, before: before, eventID: id) }
+    }
+
+    // MARK: Subject colours
+
+    func setSubjectColor(_ key: String, to name: String?) {
+        guard canWrite, !showsSamples else { return }
+        Task { await commit { if let name { $0.settings.subjectColors[key] = name } else { $0.settings.subjectColors[key] = nil } } }
+    }
+
+    /// Subjects of the offline timetable (key, shown name), sorted by name.
+    var subjects: [(key: String, name: String)] {
+        var seen: [String: String] = [:]
+        for lesson in snapshot?.lessons ?? [] {
+            let name = lesson.subjectLong ?? lesson.subject ?? lesson.title
+            let key = CalendarSubjectColor.key(subjectID: lesson.subjectID, name: name)
+            if seen[key] == nil { seen[key] = name }
+        }
+        return seen.map { (key: $0.key, name: $0.value) }.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+    }
 
     // MARK: WebUntis connection
 
@@ -212,7 +463,8 @@ final class CalendarModel: ObservableObject {
     func connect(_ setup: WebUntisSetup, label: String) async throws {
         guard canWrite else { throw CalendarStoreError.locked }
         let old = state.connection
-        let record = CalendarConnectionRecord(label: String(label.prefix(200)), timeZone: "Europe/Berlin")
+        let record = CalendarConnectionRecord(label: String(label.prefix(200)), timeZone: "Europe/Berlin",
+                                              sourceIdentity: WebUntis.sourceIdentity(setup))
         try WebUntisKeychain.save(setup, id: record.id)
         var next = state
         next.connection = record
@@ -238,7 +490,8 @@ final class CalendarModel: ObservableObject {
     }
 
     /// Removes connection record, offline timetable and access data. Own
-    /// events and notes stay.
+    /// events, notes and their links stay (the same „Freigabe“ connected
+    /// again finds them).
     func disconnect() async -> String? {
         guard let record = state.connection else { return nil }
         var next = state
@@ -254,7 +507,7 @@ final class CalendarModel: ObservableObject {
         var problems: [String] = []
         do { try await repository.removeSourceCache(connection: record.id) } catch { problems.append("Offline-Stundenplan: \(error.localizedDescription)") }
         do { try WebUntisKeychain.delete(record.id) } catch { problems.append("Zugangsdaten: \(error.localizedDescription)") }
-        if selection?.hasPrefix("webuntis/") == true || selection?.hasPrefix("holiday/") == true { selection = nil }
+        if let entry = selectedEvent, entry.source != .personal { selection = nil }
         rebuild()
         return problems.isEmpty ? nil : "Getrennt, aber nicht alles entfernt: " + problems.joined(separator: "; ")
     }
@@ -333,21 +586,43 @@ final class CalendarModel: ObservableObject {
 
     // MARK: Index of shown entries
 
-    static func entryID(_ id: UUID) -> String { "local/\(id.uuidString)" }
+    /// Series are expanded around the anchor's year (Jahr view included).
+    private func expansionWindow() -> (start: CivilDate, end: CivilDate) {
+        let year = CalendarDates.startOfYear(anchor, calendar: calendar)
+        let start = CivilDate(year, calendar: calendar).adding(days: -42)
+        return (start, start.adding(days: 366 + 42 + 49))
+    }
+
+    private func anchorMoved() {
+        if showsSamples { prepareSamples(); return }
+        let needed = CivilDate(anchor, calendar: calendar)
+        if let window, needed >= window.start.adding(days: 42), needed < window.end.adding(days: -49) { return }
+        rebuild()
+    }
 
     private func rebuild() {
         var entries: [CalendarEntry] = []
+        linkByEntry = [:]
+        candidates = [:]
+        var truncated: [String] = []
         if showsSamples {
             let year = calendar.component(.year, from: anchor)
             sampleYear = year
             entries = CalendarSamples.events(year: anchor, today: today, calendar: calendar)
         } else {
-            entries = state.events.map(entry)
+            let range = expansionWindow()
+            window = range
+            let expansion = CalendarSeries.expand(state.events, from: range.start, to: range.end)
+            let byEvent = Dictionary(state.events.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            entries = expansion.occurrences.compactMap { occurrence in byEvent[occurrence.eventID].map { entry(occurrence, of: $0) } }
+            truncated = expansion.truncated.compactMap { byEvent[$0]?.title }
             if let snapshot, snapshot.connection == state.connection?.id {
                 entries += snapshot.lessons.map(entry)
                 entries += snapshot.holidays.map { entry($0, connection: snapshot.connection) }
             }
+            entries += indexLinks(entries)
         }
+        truncatedSeries = truncated
         all = entries
         byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var index: [Date: [CalendarEntry]] = [:]
@@ -365,18 +640,79 @@ final class CalendarModel: ObservableObject {
         objectWillChange.send()
     }
 
+    /// Links → shown entries; lesson notes whose lesson is gone or not
+    /// loaded become a read-only „Notiz“ entry at their last known time, so
+    /// they stay reachable („ungeklärt“ with candidates of the same course).
+    private func indexLinks(_ entries: [CalendarEntry]) -> [CalendarEntry] {
+        let byKey = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var ghosts: [CalendarEntry] = []
+        var lessonLinks: [CalendarNoteLink] = []
+        for link in state.noteLinks {
+            switch link.target {
+            case .local:
+                if byKey[link.target.key] != nil, linkByEntry[link.target.key] == nil { linkByEntry[link.target.key] = link }
+            case .lesson(let anchor):
+                if anchor.source == state.connection?.source { lessonLinks.append(link) }
+            }
+        }
+        var taken = Set<String>()
+        var open: [(CalendarNoteLink, CalendarLessonAnchor)] = []
+        for link in lessonLinks {
+            guard case .lesson(let anchor) = link.target else { continue }
+            if case .found(let lesson) = CalendarLessonMatching.resolve(anchor, mappings: state.lessonMappings, snapshot: snapshot) {
+                taken.insert(lesson.key.sourceID)
+                if linkByEntry[lesson.id] == nil { linkByEntry[lesson.id] = link }
+            } else {
+                open.append((link, anchor))
+            }
+        }
+        for (link, anchor) in open {
+            let resolution = CalendarLessonMatching.resolve(anchor, mappings: state.lessonMappings, snapshot: snapshot, taken: taken)
+            var ghost = CalendarEntry(id: "note/\(link.id.uuidString)", title: link.contextTitle, subject: link.contextTitle,
+                                      source: .timetable, start: link.contextStart, end: link.contextEnd)
+            ghost.ghostLinkID = link.id
+            switch resolution {
+            case .unresolved(let found):
+                ghost.status = .other("Ungeklärt: Die Stunde steht so nicht mehr im Stundenplan. Die Notiz bleibt erhalten.")
+                candidates[link.id] = found
+            default:
+                ghost.status = .other("Stunde nicht im Offline-Stundenplan. Die Notiz bleibt erhalten.")
+            }
+            ghost.colorName = CalendarSubjectColor.name(for: CalendarSubjectColor.key(subjectID: nil, name: link.contextTitle),
+                                                        chosen: state.settings.subjectColors)
+            linkByEntry[ghost.id] = link
+            ghosts.append(ghost)
+        }
+        return ghosts
+    }
+
+    /// The note of an „ungeklärt“ lesson belongs to `lesson` (user choice):
+    /// stored as a mapping, never guessed from titles.
+    func assign(_ entry: CalendarEntry, to lesson: CalendarLesson) async {
+        guard let linkID = entry.ghostLinkID, let link = state.noteLinks.first(where: { $0.id == linkID }),
+              case .lesson(let anchor) = link.target else { return }
+        let current = CalendarLessonMatching.currentPeriod(anchor, mappings: state.lessonMappings)
+        let mapping = CalendarLessonMapping(source: anchor.source, fromPeriodID: current.period, fromDate: current.date,
+                                            toPeriodID: lesson.key.sourceID, toDate: lesson.date)
+        if await commit({ $0.lessonMappings.append(mapping) }) || unsaved { selection = lesson.id }
+    }
+
     private func prepareSamples() {
         guard calendar.component(.year, from: anchor) != sampleYear else { return }
         rebuild()
     }
 
-    private func entry(_ event: LocalCalendarEvent) -> CalendarEntry {
-        let interval = event.timing.interval(in: calendar)
-        var entry = CalendarEntry(id: Self.entryID(event.id), title: event.title, source: .personal,
-                                  start: interval.start, end: interval.end, allDay: event.timing.isAllDay,
-                                  room: event.location.isEmpty ? nil : event.location,
-                                  details: event.details.isEmpty ? nil : event.details)
+    private func entry(_ occurrence: CalendarOccurrence, of event: LocalCalendarEvent) -> CalendarEntry {
+        let interval = occurrence.timing.interval(in: calendar)
+        var entry = CalendarEntry(id: CalendarEntry.localID(event.id, occurrence.originalDate), title: occurrence.title, source: .personal,
+                                  start: interval.start, end: interval.end, allDay: occurrence.timing.isAllDay,
+                                  room: occurrence.location.isEmpty ? nil : occurrence.location,
+                                  details: occurrence.details.isEmpty ? nil : occurrence.details)
         entry.localID = event.id
+        entry.originalDate = occurrence.originalDate
+        entry.noteTarget = occurrence.noteTarget
+        entry.repeatText = event.recurrence.map { $0.text + (occurrence.isOverride ? " · dieser Termin geändert" : "") }
+        entry.colorName = CalendarSubjectColor.personal
         return entry
     }
 
@@ -404,12 +740,17 @@ final class CalendarModel: ObservableObject {
         for status in statuses.dropFirst() {
             if let label = status.label { notes.append([label, status.note].compactMap { $0 }.joined(separator: ": ")) }
         }
-        var entry = CalendarEntry(id: lesson.id, title: lesson.title, subject: lesson.subjectLong ?? lesson.subject ?? lesson.title,
+        let subject = lesson.subjectLong ?? lesson.subject ?? lesson.title
+        var entry = CalendarEntry(id: lesson.id, title: lesson.title, subject: subject,
                                   source: .timetable, start: lesson.start, end: lesson.end,
                                   room: lesson.rooms.isEmpty ? nil : lesson.rooms.joined(separator: ", "),
                                   teacher: lesson.teachers.isEmpty ? nil : lesson.teachers.joined(separator: ", "),
                                   status: main, details: lesson.text)
         entry.statusNotes = notes
+        let key = CalendarSubjectColor.key(subjectID: lesson.subjectID, name: subject)
+        entry.subjectKey = key
+        entry.colorName = CalendarSubjectColor.name(for: key, chosen: state.settings.subjectColors)
+        if let source = state.connection?.source { entry.noteTarget = .lesson(CalendarLessonAnchor(lesson: lesson, source: source)) }
         return entry
     }
 
@@ -470,6 +811,14 @@ final class CalendarModel: ObservableObject {
         return "Stand: \(CalendarText.numericDate(date, calendar: calendar)) \(clock)"
     }
 
+    /// The series of an own entry (form, details).
+    func recurrence(of entry: CalendarEntry) -> CalendarRecurrence? {
+        entry.localID.flatMap { id in state.events.first { $0.id == id }?.recurrence }
+    }
+    func baseEvent(of entry: CalendarEntry) -> LocalCalendarEvent? {
+        entry.localID.flatMap { id in state.events.first { $0.id == id } }
+    }
+
     // MARK: Navigation
 
     func step(_ steps: Int) {
@@ -492,41 +841,338 @@ final class CalendarModel: ObservableObject {
         draft = CalendarDraft(start: start, calendar: calendar)
     }
 
-    // MARK: Notes (memory only in B1; real notebooks follow in B2)
-
-    func pages(for event: CalendarEntry) -> [CalendarNotePage] {
-        if let pages = notes[event.id] { return pages }
-        if !event.samplePages.isEmpty { return event.samplePages.map { CalendarNotePage(text: $0) } }
-        return [CalendarNotePage()]
+    func editDraft(for entry: CalendarEntry) -> CalendarDraft {
+        CalendarDraft(editing: entry, rule: recurrence(of: entry), base: baseEvent(of: entry), calendar: calendar)
     }
 
-    /// Indicator: only real content counts, an opened empty page does not.
+    // MARK: Notes beside the event
+
+    /// Indicator: a linked notebook with real content that is still in the
+    /// library. An opened empty page shows nothing.
     func hasNotes(_ event: CalendarEntry) -> Bool {
-        if let pages = notes[event.id] { return pages.contains { !$0.isEmpty } }
-        return !event.samplePages.isEmpty
+        if event.isSample { return !event.samplePages.isEmpty }
+        guard let link = linkByEntry[event.id], link.hasContent else { return false }
+        guard let library else { return true }
+        return library.snapshot.items.contains { $0.id == link.documentID } && !library.snapshot.isTrashed(link.documentID)
     }
 
-    func setText(_ text: String, page: Int, of event: CalendarEntry) {
-        var pages = pages(for: event)
-        guard pages.indices.contains(page), pages[page].text != text else { return }
-        pages[page].text = text
-        notes[event.id] = pages
+    func link(for entry: CalendarEntry) -> CalendarNoteLink? { linkByEntry[entry.id] }
+
+    private func selectionChanged() {
+        guard visible else { return }
+        if let entry = selectedEvent { showNote(for: entry) } else { releaseNote() }
     }
 
-    /// Returns the new revision for the canvas that wrote it.
-    func setDrawing(_ drawing: PKDrawing, page: Int, of event: CalendarEntry) -> Int {
-        var pages = pages(for: event)
-        guard pages.indices.contains(page) else { return 0 }
-        pages[page].drawing = drawing
-        pages[page].revision += 1
-        notes[event.id] = pages
-        return pages[page].revision
+    /// Opens the note area of `entry` (after the previous one is committed
+    /// and closed). Serialized: a late close never overlaps a new open.
+    func showNote(for entry: CalendarEntry) {
+        let previous = noteQueue
+        noteQueue = Task { [weak self] in
+            await previous?.value
+            await self?.prepareNote(for: entry)
+        }
     }
 
-    func addPage(to event: CalendarEntry) -> Int {
-        var pages = pages(for: event)
-        pages.append(CalendarNotePage())
-        notes[event.id] = pages
-        return pages.count - 1
+    /// Calendar hidden, nothing selected or the library opens a notebook.
+    func releaseNote() {
+        let previous = noteQueue
+        noteQueue = Task { [weak self] in
+            await previous?.value
+            await self?.closeNoteSession()
+        }
     }
+
+    /// For the library: commits and closes the note before it opens a notebook.
+    func closeNote() async {
+        releaseNote()
+        await noteQueue?.value
+    }
+
+    private func prepareNote(for entry: CalendarEntry) async {
+        if let session = noteSession, session.entryID == entry.id { return }
+        await closeNoteSession()
+        guard selection == entry.id else { return }
+        guard !entry.isSample else { noteState = .sample; return }
+        guard let target = entry.noteTarget ?? linkByEntry[entry.id]?.target else {
+            noteState = .unavailable("Für diesen Eintrag gibt es keine Notizen.")
+            return
+        }
+        guard let library, library.ready else { noteState = .unavailable("Die Bibliothek wird noch geladen."); return }
+        guard library.opened == nil else { noteState = .unavailable("Die Notiz ist im Editor geöffnet."); return }
+        guard canWrite else { noteState = .unavailable(storageError ?? "Der Kalender ist noch nicht geladen."); return }
+        let restores = root.appendingPathComponent("Restores", isDirectory: true)
+        if let link = linkByEntry[entry.id] {
+            guard let item = library.snapshot.items.first(where: { $0.id == link.documentID }) else {
+                noteState = .missing(.deleted, link); return
+            }
+            if library.snapshot.isTrashed(item.id) { noteState = .missing(.trashed(item.title), link); return }
+            guard let document = await library.openDocument(item.id) else { noteState = .missing(.deleted, link); return }
+            let model = lingering.removeValue(forKey: item.id)
+                ?? EditorModel(storageRoot: document.directory, restoreDirectory: restores, libraryTitle: item.title)
+            start(CalendarNoteSession(entry: entry, target: link.target, documentID: item.id, title: item.title, model: model, phase: .saved))
+            return
+        }
+        // A note whose creation stopped: the same document again, never a second one.
+        if let creation = creations[target.key] {
+            let committed = await creation.stage >= .notebookCommitted
+            if let model = lingering.removeValue(forKey: creation.documentID)
+                ?? (committed ? EditorModel(storageRoot: library.newDocumentDirectory(creation.documentID), restoreDirectory: restores) : nil) {
+                let session = CalendarNoteSession(entry: entry, target: target, documentID: creation.documentID,
+                                                  title: model.notebook.title.isEmpty ? noteTitle(for: entry) : model.notebook.title,
+                                                  model: model, phase: .failed("Noch nicht fertig angelegt."))
+                start(session)
+                continueCreation(session)
+                return
+            }
+            // Nothing of it exists anywhere: start afresh.
+            creations[target.key] = nil
+        }
+        let id = UUID()
+        let title = noteTitle(for: entry)
+        var notebook = (try? Notebook.blank(title: title, appearance: defaultAppearance())) ?? Notebook.blank(title: title)
+        notebook.id = id
+        let model = EditorModel(storageRoot: library.newDocumentDirectory(id), restoreDirectory: restores, deferred: notebook)
+        start(CalendarNoteSession(entry: entry, target: target, documentID: id, title: title, model: model, phase: .draft))
+    }
+
+    private func noteTitle(for entry: CalendarEntry) -> String {
+        let day = entry.originalDate ?? CivilDate(entry.start, calendar: calendar)
+        let taken = library?.snapshot.activeNotebookTitles() ?? []
+        return CalendarNotesFolder.noteTitle(subject: entry.subject ?? entry.title, date: day, taken: taken)
+    }
+
+    private func start(_ session: CalendarNoteSession) {
+        noteSession = session
+        noteState = .session(session)
+        session.observe { [weak self, weak session] notebook in
+            guard let self, let session else { return }
+            self.noteChanged(session, notebook: notebook)
+        }
+    }
+
+    private func noteChanged(_ session: CalendarNoteSession, notebook: Notebook) {
+        let content = EditorModel.hasContent(notebook)
+        switch session.phase {
+        case .draft:
+            // First real input: create the notebook, then link it (rule 8).
+            if content { continueCreation(session) }
+        case .saved:
+            if let index = state.noteLinks.firstIndex(where: { $0.documentID == session.documentID && $0.target == session.target }),
+               state.noteLinks[index].hasContent != content {
+                Task { await commit { if let i = $0.noteLinks.firstIndex(where: { $0.documentID == session.documentID && $0.target == session.target }) { $0.noteLinks[i].hasContent = content } } }
+            }
+        case .creating, .failed: break
+        }
+    }
+
+    /// Runs (or resumes) rule 8 for the session's note. Input meanwhile goes
+    /// into the same model and its next autosave; nothing is created twice.
+    func continueCreation(_ session: CalendarNoteSession) {
+        guard session.phase != .creating, session.phase != .saved, let library else { return }
+        let key = session.target.key
+        let creation = creations[key] ?? CalendarNoteCreation(documentID: session.documentID, target: session.target)
+        guard creation.documentID == session.documentID else { return }
+        creations[key] = creation
+        session.phase = .creating
+        let model = session.model, entry = session.entry
+        let documentID = session.documentID, title = session.title, target = session.target
+        let pageID = model.notebook.pages.first?.id
+        let folder = CalendarFolderBox()
+        session.creation = Task { [weak self] in
+            do {
+                try await creation.run(commitNotebook: { @MainActor in
+                    guard await model.beginCommitting() else {
+                        throw CalendarNoteError.notSaved(model.saveBlocked ?? "Die Notiz wurde noch nicht gespeichert; noty versucht es weiter.")
+                    }
+                }, addToLibrary: { @MainActor [weak self] in
+                    folder.id = try await library.adoptCalendarNote(documentID, title: title, folder: self?.state.settings.notesFolderID)
+                }, link: { @MainActor [weak self] in
+                    guard let self else { throw CalendarNoteError.closed }
+                    let link = CalendarNoteLink(target: target, documentID: documentID, pageID: pageID, hasContent: true,
+                                                contextTitle: String(entry.title.prefix(300)), contextStart: entry.start, contextEnd: entry.end)
+                    let usedFolder = folder.id ?? CalendarNotesFolder.usable(self.state.settings.notesFolderID, in: library.snapshot)
+                    let ok = await self.commit { state in
+                        if !state.noteLinks.contains(where: { $0.target == target && $0.documentID == documentID }) { state.noteLinks.append(link) }
+                        if let usedFolder { state.settings.notesFolderID = usedFolder }
+                    }
+                    guard ok else { throw CalendarNoteError.linkNotSaved(self.saveError ?? "") }
+                })
+                session.phase = .saved
+                self?.creations[key] = nil
+            } catch {
+                session.phase = .failed(CalendarNoteError.message(error))
+            }
+        }
+    }
+
+    private func closeNoteSession() async {
+        noteState = .none
+        enlargedDraft = nil
+        guard let session = noteSession else { await retryLingering(); return }
+        noteSession = nil
+        session.stopObserving()
+        let model = session.model
+        // Written just before switching (the debounce had not fired yet): create it now.
+        if session.phase == .draft, EditorModel.hasContent(model.notebook) { continueCreation(session) }
+        await session.creation?.value
+        if model.deferredCommit {
+            // Never committed: an empty page leaves nothing behind. Written
+            // content that could not be committed stays in memory and is
+            // shown again with this event (same document, no second one).
+            if EditorModel.hasContent(model.notebook) {
+                lingering[session.documentID] = model
+                notice = "Die Notiz zu „\(session.entry.title)“ ist noch nicht gespeichert. Bitte den Termin erneut öffnen."
+            }
+        } else {
+            if case .failed = session.phase {
+                notice = "Die Notiz zu „\(session.entry.title)“ liegt in „Kalendernotizen“, ist aber noch nicht fertig mit dem Termin verknüpft. Beim nächsten Öffnen des Termins wird es erneut versucht."
+            }
+            if !(await model.flushBeforeClosing()) {
+                lingering[session.documentID] = model
+                notice = "Die Notiz zu „\(session.entry.title)“ konnte noch nicht gespeichert werden; noty versucht es weiter."
+            }
+        }
+        await retryLingering()
+    }
+
+    private func retryLingering() async {
+        for (id, model) in lingering where !model.deferredCommit {
+            if await model.flushBeforeClosing() { lingering[id] = nil }
+        }
+    }
+
+    /// The library changed (trash, restore, rename): the note follows.
+    private func libraryChanged() {
+        objectWillChange.send()
+        guard let session = noteSession, let library else { return }
+        let gone = session.phase == .saved && (!library.snapshot.items.contains { $0.id == session.documentID } || library.snapshot.isTrashed(session.documentID))
+        if gone, let entry = selectedEvent {
+            releaseNote()
+            showNote(for: entry)
+        }
+    }
+
+    /// „Vergrößern“: a saved note opens in the normal editor (the library's
+    /// full-screen path) with „Zurück zu <Termin> · <Datum>“; a note that
+    /// has no notebook yet is shown large over the calendar.
+    func enlarge(_ entry: CalendarEntry) {
+        guard let session = noteSession, session.entryID == entry.id else { return }
+        if session.model.deferredCommit || session.phase == .creating { enlargedDraft = session; return }
+        let id = session.documentID, page = session.model.page.id
+        let back = "\(entry.title) · \(CalendarText.shortDate(entry.start, calendar: calendar))"
+        Task {
+            await closeNote()
+            guard let library, let item = library.snapshot.items.first(where: { $0.id == id }), !library.snapshot.isTrashed(id) else { return }
+            await library.open(item, pageID: page, returnTitle: back)
+        }
+    }
+
+    /// Restores a trashed note from the library's trash.
+    func restoreNote(_ link: CalendarNoteLink) async {
+        await library?.restore(link.documentID)
+        if let entry = selectedEvent { showNote(for: entry) }
+    }
+
+    /// Removes only the link; the notebook stays in the library.
+    func unlink(_ link: CalendarNoteLink) async {
+        await commit { $0.noteLinks.removeAll { $0.id == link.id } }
+        if let entry = selectedEvent { noteState = .none; showNote(for: entry) }
+    }
+
+    /// Links an existing notebook of „Kalendernotizen“ again (after a failed
+    /// link or a removed one). The notebook itself is not changed.
+    func relink(_ entry: CalendarEntry, to item: NotebookCore.LibraryItem) async {
+        guard let target = entry.noteTarget, linkByEntry[entry.id] == nil else { return }
+        if let session = noteSession, session.entryID == entry.id, session.phase != .draft || EditorModel.hasContent(session.model.notebook) { return }
+        await closeNote()
+        let link = CalendarNoteLink(target: target, documentID: item.id, hasContent: true, contextTitle: String(entry.title.prefix(300)),
+                                    contextStart: entry.start, contextEnd: entry.end)
+        await commit { $0.noteLinks.append(link) }
+        showNote(for: entry)
+    }
+
+    /// Notebooks of the notes folder that no link of this calendar uses.
+    var unlinkedNotebooks: [NotebookCore.LibraryItem] {
+        guard let library else { return [] }
+        let used = Set(state.noteLinks.map(\.documentID))
+        return library.calendarNotebooks(in: state.settings.notesFolderID).filter { !used.contains($0.id) }
+    }
+
+    /// Page flip and „Seite hinzufügen“ beside the event (the editor's own model).
+    func addNotePage() {
+        guard let model = noteSession?.model, model.writable, let last = model.notebook.pages.last else { return }
+        let defaults = model.notebook.pageDefaults
+        model.insertPaper(defaults.paper, color: defaults.color, relativeTo: last.id)
+        model.pageIndex = model.notebook.pages.count - 1
+    }
+}
+
+/// The folder the library step used, handed to the link step.
+@MainActor private final class CalendarFolderBox { var id: UUID? }
+
+extension CalendarEventTiming {
+    var timeZoneID: String? { if case .timed(_, _, let zone) = self { zone } else { nil } }
+}
+
+enum CalendarNoteError: Error, LocalizedError {
+    case notSaved(String)
+    case linkNotSaved(String)
+    case closed
+    var errorDescription: String? {
+        switch self {
+        case .notSaved(let reason): "Die Notiz ist noch nicht gespeichert: \(reason)"
+        case .linkNotSaved(let reason): "Die Notiz liegt in „Kalendernotizen“, die Verknüpfung mit dem Termin ist aber noch nicht gespeichert. \(reason)"
+        case .closed: "Der Kalender wurde geschlossen."
+        }
+    }
+    static func message(_ error: Error) -> String {
+        if let error = error as? LocalizedError, let text = error.errorDescription { return text }
+        return error.localizedDescription
+    }
+}
+
+/// What the note area beside an event shows.
+enum CalendarNoteState {
+    enum Missing: Equatable { case trashed(String), deleted }
+    case none
+    case sample
+    case unavailable(String)
+    case missing(Missing, CalendarNoteLink)
+    case session(CalendarNoteSession)
+}
+
+/// The note of one event while it is shown: the normal editor model of its
+/// notebook (or of the not yet created one). One at a time; a new event gets
+/// a new session and a new editor view, so late callbacks of the previous
+/// canvas can only reach the previous notebook's model.
+@MainActor
+final class CalendarNoteSession: ObservableObject, Identifiable {
+    enum Phase: Equatable {
+        /// Only in memory: nothing written yet.
+        case draft
+        case creating
+        case saved
+        case failed(String)
+    }
+    let id = UUID()
+    let entry: CalendarEntry
+    var entryID: String { entry.id }
+    let target: CalendarNoteTarget
+    let documentID: UUID
+    let title: String
+    let model: EditorModel
+    @Published var phase: Phase
+    var creation: Task<Void, Never>?
+    private var observer: AnyCancellable?
+
+    init(entry: CalendarEntry, target: CalendarNoteTarget, documentID: UUID, title: String, model: EditorModel, phase: Phase) {
+        self.entry = entry; self.target = target; self.documentID = documentID; self.title = title; self.model = model; self.phase = phase
+    }
+
+    func observe(_ changed: @escaping @MainActor (Notebook) -> Void) {
+        observer = model.$notebook.dropFirst()
+            .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
+            .sink { notebook in MainActor.assumeIsolated { changed(notebook) } }
+    }
+    func stopObserving() { observer = nil }
 }
