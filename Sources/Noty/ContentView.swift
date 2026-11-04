@@ -23,6 +23,14 @@ struct ContentView: View {
     var onLawKeys: (() -> Void)?
     /// Reports the selected tool, e.g. so Pencil highlights in the law reader.
     var onToolChange: ((EditorTool) -> Void)?
+    /// Embedded beside a calendar event (Kalender B2): no own navigation
+    /// stack, the app's bars stay, the page overview starts closed and does
+    /// not change the app-wide setting.
+    var embedded = false
+    /// Replaces „Zur Bibliothek“ + title of the header button, e.g. the way
+    /// back to a calendar event or „Vergrößern“ beside it.
+    var closeTitle: String? = nil
+    var closeSymbol = "arrow.left"
     @State private var selectedPageID: UUID?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -59,6 +67,12 @@ struct ContentView: View {
     @State private var showingHistory = false
     @State private var selectedLocalRevision: UUID?
     @AppStorage(AppSettingsKey.sidebarVisible) private var showingPages = true
+    @State private var embeddedPages = false
+    /// The page overview: app-wide setting, or local while embedded.
+    private var pagesShown: Bool {
+        get { embedded ? embeddedPages : showingPages }
+        nonmutating set { if embedded { embeddedPages = newValue } else { showingPages = newValue } }
+    }
     @AppStorage(AppSettingsKey.writingScroll) private var writingScroll = false
     @State private var customizingTools = false
     @State private var toolbarMore = false
@@ -132,147 +146,158 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            workspaceSurface.ignoresSafeArea(.keyboard, edges: .bottom).overlay {
-                if !isPaneSelected() {
-                    Color.clear.contentShape(Rectangle()).onTapGesture { onActivatePane?(); model.pageIndex = currentPageIndex }
-                        .accessibilityLabel("Diese Ansicht aktivieren").accessibilityAddTraits(.isButton)
+        Group {
+            if embedded {
+                // Inside the calendar: its own navigation bar and status bar stay.
+                editorBody
+            } else {
+                NavigationStack {
+                    editorBody
+                        .toolbar(.hidden, for: .navigationBar)
+                        // Full-screen writing surface: no iPadOS status bar, home indicator auto-hides.
+                        .statusBarHidden(true)
+                        .persistentSystemOverlays(.hidden)
                 }
             }
-            .toolbar(.hidden, for: .navigationBar)
-            // Full-screen writing surface: no iPadOS status bar, home indicator auto-hides.
-            .statusBarHidden(true)
-            .persistentSystemOverlays(.hidden)
-            .sheet(isPresented: $addingPage) {
-                AddPageSheet(position: .after, enabled: canEdit, defaults: model.notebook.appearance,
-                    onPaper: { style, color, geometry, position in
-                        let anchor = position == .end ? model.notebook.pages.last!.id : anchorPageID
-                        model.insertPaper(style, color: color, relativeTo: anchor, before: position == .before, geometry: geometry)
-                        addingPage = false
-                    }, onPDF: { url, margins, position in
-                        let anchor = position == .end ? model.notebook.pages.last!.id : anchorPageID
-                        model.insertPDF(url, relativeTo: anchor, before: position == .before, writingArea: margins)
-                        addingPage = false
-                    }, onError: { model.error = $0 })
-            }
-            .fileImporter(isPresented: $importingImage, allowedContentTypes: [.image]) { result in
-                switch result {
-                case .success(let url): if let imageTarget { if imageTarget == writingDraft.id { guard model.materializeDraft(draftPage) else { return } }; model.insertImageFile(url, pageID: imageTarget) }
-                case .failure(let error): model.error = error.localizedDescription
-                }
-            }
-            .photosPicker(isPresented: $choosingPhoto, selection: $selectedPhoto, matching: .images, preferredItemEncoding: .current)
-            .onChange(of: selectedPhoto) { _, item in
-                guard let item, let target = imageTarget else { return }
-                // Always clear, otherwise the same photo can't be picked again after a failure.
-                defer { selectedPhoto = nil }
-                if target == writingDraft.id { guard model.materializeDraft(draftPage) else { return } }
-                model.insertPhoto(item, pageID: target)
-            }
-            .fileExporter(isPresented: $exporting, document: exportFile,
-                          contentType: exportType, defaultFilename: exportType == .pdf ? PDFExporter.fileName(for: model.notebook.title)
-                            : NotyFile.fileStem(for: model.notebook.title)) { result in
-                // The system wrote its copy: the scratch archive is no longer needed.
-                if let scratch = exportFile?.fileURL { BackupScratch.remove(scratch) }
-                switch result {
-                case .success:
-                    if exportType == .pdf { model.fileStatus = "Als PDF exportiert" }
-                    else { model.backupExported() }
-                case .failure(let error):
-                    if exportType == .noty { model.backupStatus = "In Dateien sichern nicht abgeschlossen" }
-                    model.error = error.localizedDescription
-                }
-            }
-            .fullScreenCover(item: $model.openedRestore) { restored in
-                RestoredNotebookView(restored: restored).id(restored.id)
-            }
-            .sheet(isPresented: $contentSearch) {
-                ContentSearchView(documents: [OpenNotebook(id: model.notebook.id, directory: model.storageRoot, title: model.notebook.title, isRestored: false)],
-                                  current: model.notebook, currentSources: { model.sourcePage(for: $0) },
-                                  area: searchIndexArea ?? StableDefaults.scope(model.storageRoot)) { hit in
-                    selectedPageID = hit.pageID; searchHighlight = hit.bounds; searchHighlightPageID = hit.pageID; fitRequest += 1
-                    fadeSearchHighlightLater()
-                    if let range = hit.flowRange { selectFlowLater(range) }
-                }
-            }
-            .sheet(isPresented: $customizingTools) { ToolbarCustomizationView(settings: toolbox) }
-            .sheet(isPresented: $showingSettings) { editorSettings?.make() }
-            .sheet(isPresented: $editingDefaults) {
-                if isTextDocument {
-                    TextDocumentPaperView(current: model.notebook.pageDefaults) { paper, color in
-                        if model.setDocumentPaper(paper: paper, color: color, trailingDraft: draftPage) { toolsFollowPaper(color) }
-                    }
-                } else {
-                    NotebookDefaultsView(current: model.notebook.pageDefaults) { paper, color, scope in
-                        guard model.setPageDefaults(paper: paper, color: color, convertEmptyPages: scope),
-                              scope == .wholeNotebook else { return }
-                        toolsFollowPaper(color)
-                    }
-                }
-            }
-            .sheet(item: $marginsPage) { selection in PageMarginsView(model: model, pageID: selection.id) }
-            .sheet(isPresented: $showingHistory, onDismiss: {
-                if let id = selectedLocalRevision {
-                    selectedLocalRevision = nil
-                    model.openLocalRevisionAsCopy(id)
-                }
-            }) {
-                LocalHistoryView(model: model) { id in
-                    selectedLocalRevision = id
-                    showingHistory = false
-                }
-            }
-            .alert(isTextDocument ? "Textdokument" : "Heft", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
-                if model.saveFailed && model.writable {
-                    Button("Erneut speichern") { model.save() }
-                }
-                Button("OK") { model.error = nil }.keyboardShortcut(.defaultAction)
-            } message: { Text(model.error ?? "") }
-            .onChange(of: scenePhase) { _, phase in
-                if phase != .active { model.save(); toolbox.save() }
-            }
-            .onChange(of: toolbox.preferences) { _, _ in toolbox.save() }
-            .onChange(of: model.fileStatus) { _, note in showRecentNote(note) }
-            .onChange(of: model.backupStatus) { _, note in showRecentNote(note) }
-            .onChange(of: model.pageIndex) { _, index in
-                if isPaneActive(), model.notebook.pages.indices.contains(index) { selectedPageID = model.notebook.pages[index].id }
-            }
-            .onChange(of: model.notebook.pages.map(\.id)) { old, ids in
-                if ids.contains(writingDraft.id) { writingDraft = Page() }
-                if let selectedPageID, let index = ids.firstIndex(of: selectedPageID) {
-                    if isPaneActive() { model.pageIndex = index }
-                }
-                // The selected page was deleted (here or in the other pane): focus the
-                // page before it, or the one after it if it was the first page. The
-                // viewport jumps there because the selection was not reported by it.
-                else if let selectedPageID, selectedPageID != writingDraft.id, !ids.isEmpty {
-                    self.selectedPageID = PageRemovalFocus.focus(removed: selectedPageID, before: old, after: ids)
-                        ?? ids[min(max(0, model.pageIndex), ids.count - 1)]
-                }
-            }
-            .onChange(of: selectedPageID) { _, _ in if isPaneActive() { model.pageIndex = currentPageIndex } }
-            .onChange(of: model.pageContentGeneration) { _, _ in textFocus = nil; writingDraft = Page() }
-            .onChange(of: tool) { old, value in
-                if value != .text { textFocus = nil }; if value.isInk { lastInkTool = value }
-                if value == .text, old != .text { toolBeforeText = old }
-                // Every way into the eraser (bar, palette, Pencil) counts, not only the toggle.
-                if value.isEraser, !old.isEraser { toolBeforeEraser = old }
-                previousTool = old
-            }
-            .onChange(of: tool, initial: true) { _, value in onToolChange?(value) }
-            .onChange(of: model.notebook.id) { _, _ in selectedPageID = model.page.id; searchHighlightPageID = model.page.id }
-            .onAppear {
-                selectedPageID = model.page.id; searchHighlight = initialSearchBounds; searchHighlightPageID = model.page.id
-                EditorOpenTrace.begin()
-                if model.documentLoaded { markNotebookShown() }
-            }
-            .onChange(of: model.documentLoaded) { _, loaded in if loaded { markNotebookShown() } }
-            .onChange(of: canEdit) { _, editable in if !editable { pageEntry = false } }
-            // Managed editors flush before dismissal; no late onDisappear save
-            // may race a new editor for the same package.
-            .interactiveDismissDisabled(isLibraryDocument || isRestoredCopy)
         }
         .preference(key: EditorCommandsPreference.self, value: editorCommands)
+    }
+
+    @ViewBuilder private var editorBody: some View {
+        workspaceSurface.ignoresSafeArea(.keyboard, edges: .bottom).overlay {
+            if !isPaneSelected() {
+                Color.clear.contentShape(Rectangle()).onTapGesture { onActivatePane?(); model.pageIndex = currentPageIndex }
+                    .accessibilityLabel("Diese Ansicht aktivieren").accessibilityAddTraits(.isButton)
+            }
+        }
+        .sheet(isPresented: $addingPage) {
+            AddPageSheet(position: .after, enabled: canEdit, defaults: model.notebook.appearance,
+                onPaper: { style, color, geometry, position in
+                    let anchor = position == .end ? model.notebook.pages.last!.id : anchorPageID
+                    model.insertPaper(style, color: color, relativeTo: anchor, before: position == .before, geometry: geometry)
+                    addingPage = false
+                }, onPDF: { url, margins, position in
+                    let anchor = position == .end ? model.notebook.pages.last!.id : anchorPageID
+                    model.insertPDF(url, relativeTo: anchor, before: position == .before, writingArea: margins)
+                    addingPage = false
+                }, onError: { model.error = $0 })
+        }
+        .fileImporter(isPresented: $importingImage, allowedContentTypes: [.image]) { result in
+            switch result {
+            case .success(let url): if let imageTarget { if imageTarget == writingDraft.id { guard model.materializeDraft(draftPage) else { return } }; model.insertImageFile(url, pageID: imageTarget) }
+            case .failure(let error): model.error = error.localizedDescription
+            }
+        }
+        .photosPicker(isPresented: $choosingPhoto, selection: $selectedPhoto, matching: .images, preferredItemEncoding: .current)
+        .onChange(of: selectedPhoto) { _, item in
+            guard let item, let target = imageTarget else { return }
+            // Always clear, otherwise the same photo can't be picked again after a failure.
+            defer { selectedPhoto = nil }
+            if target == writingDraft.id { guard model.materializeDraft(draftPage) else { return } }
+            model.insertPhoto(item, pageID: target)
+        }
+        .fileExporter(isPresented: $exporting, document: exportFile,
+                      contentType: exportType, defaultFilename: exportType == .pdf ? PDFExporter.fileName(for: model.notebook.title)
+                        : NotyFile.fileStem(for: model.notebook.title)) { result in
+            // The system wrote its copy: the scratch archive is no longer needed.
+            if let scratch = exportFile?.fileURL { BackupScratch.remove(scratch) }
+            switch result {
+            case .success:
+                if exportType == .pdf { model.fileStatus = "Als PDF exportiert" }
+                else { model.backupExported() }
+            case .failure(let error):
+                if exportType == .noty { model.backupStatus = "In Dateien sichern nicht abgeschlossen" }
+                model.error = error.localizedDescription
+            }
+        }
+        .fullScreenCover(item: $model.openedRestore) { restored in
+            RestoredNotebookView(restored: restored).id(restored.id)
+        }
+        .sheet(isPresented: $contentSearch) {
+            ContentSearchView(documents: [OpenNotebook(id: model.notebook.id, directory: model.storageRoot, title: model.notebook.title, isRestored: false)],
+                              current: model.notebook, currentSources: { model.sourcePage(for: $0) },
+                              area: searchIndexArea ?? StableDefaults.scope(model.storageRoot)) { hit in
+                selectedPageID = hit.pageID; searchHighlight = hit.bounds; searchHighlightPageID = hit.pageID; fitRequest += 1
+                fadeSearchHighlightLater()
+                if let range = hit.flowRange { selectFlowLater(range) }
+            }
+        }
+        .sheet(isPresented: $customizingTools) { ToolbarCustomizationView(settings: toolbox) }
+        .sheet(isPresented: $showingSettings) { editorSettings?.make() }
+        .sheet(isPresented: $editingDefaults) {
+            if isTextDocument {
+                TextDocumentPaperView(current: model.notebook.pageDefaults) { paper, color in
+                    if model.setDocumentPaper(paper: paper, color: color, trailingDraft: draftPage) { toolsFollowPaper(color) }
+                }
+            } else {
+                NotebookDefaultsView(current: model.notebook.pageDefaults) { paper, color, scope in
+                    guard model.setPageDefaults(paper: paper, color: color, convertEmptyPages: scope),
+                          scope == .wholeNotebook else { return }
+                    toolsFollowPaper(color)
+                }
+            }
+        }
+        .sheet(item: $marginsPage) { selection in PageMarginsView(model: model, pageID: selection.id) }
+        .sheet(isPresented: $showingHistory, onDismiss: {
+            if let id = selectedLocalRevision {
+                selectedLocalRevision = nil
+                model.openLocalRevisionAsCopy(id)
+            }
+        }) {
+            LocalHistoryView(model: model) { id in
+                selectedLocalRevision = id
+                showingHistory = false
+            }
+        }
+        .alert(isTextDocument ? "Textdokument" : "Heft", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
+            if model.saveFailed && model.writable {
+                Button("Erneut speichern") { model.save() }
+            }
+            Button("OK") { model.error = nil }.keyboardShortcut(.defaultAction)
+        } message: { Text(model.error ?? "") }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { model.save(); toolbox.save() }
+        }
+        .onChange(of: toolbox.preferences) { _, _ in toolbox.save() }
+        .onChange(of: model.fileStatus) { _, note in showRecentNote(note) }
+        .onChange(of: model.backupStatus) { _, note in showRecentNote(note) }
+        .onChange(of: model.pageIndex) { _, index in
+            if isPaneActive(), model.notebook.pages.indices.contains(index) { selectedPageID = model.notebook.pages[index].id }
+        }
+        .onChange(of: model.notebook.pages.map(\.id)) { old, ids in
+            if ids.contains(writingDraft.id) { writingDraft = Page() }
+            if let selectedPageID, let index = ids.firstIndex(of: selectedPageID) {
+                if isPaneActive() { model.pageIndex = index }
+            }
+            // The selected page was deleted (here or in the other pane): focus the
+            // page before it, or the one after it if it was the first page. The
+            // viewport jumps there because the selection was not reported by it.
+            else if let selectedPageID, selectedPageID != writingDraft.id, !ids.isEmpty {
+                self.selectedPageID = PageRemovalFocus.focus(removed: selectedPageID, before: old, after: ids)
+                    ?? ids[min(max(0, model.pageIndex), ids.count - 1)]
+            }
+        }
+        .onChange(of: selectedPageID) { _, _ in if isPaneActive() { model.pageIndex = currentPageIndex } }
+        .onChange(of: model.pageContentGeneration) { _, _ in textFocus = nil; writingDraft = Page() }
+        .onChange(of: tool) { old, value in
+            if value != .text { textFocus = nil }; if value.isInk { lastInkTool = value }
+            if value == .text, old != .text { toolBeforeText = old }
+            // Every way into the eraser (bar, palette, Pencil) counts, not only the toggle.
+            if value.isEraser, !old.isEraser { toolBeforeEraser = old }
+            previousTool = old
+        }
+        .onChange(of: tool, initial: true) { _, value in onToolChange?(value) }
+        .onChange(of: model.notebook.id) { _, _ in selectedPageID = model.page.id; searchHighlightPageID = model.page.id }
+        .onAppear {
+            selectedPageID = model.page.id; searchHighlight = initialSearchBounds; searchHighlightPageID = model.page.id
+            EditorOpenTrace.begin()
+            if model.documentLoaded { markNotebookShown() }
+        }
+        .onChange(of: model.documentLoaded) { _, loaded in if loaded { markNotebookShown() } }
+        .onChange(of: canEdit) { _, editable in if !editable { pageEntry = false } }
+        // Managed editors flush before dismissal; no late onDisappear save
+        // may race a new editor for the same package.
+        .interactiveDismissDisabled(isLibraryDocument || isRestoredCopy)
     }
 
     /// The whole document now has this paper colour: a neutral pen or marker
@@ -316,9 +341,9 @@ struct ContentView: View {
         case .lastPage: go(to: count ?? pages.count)
         case .gotoPage: if let count { go(to: count) } else { openPageEntry() }
         case .fit: fitRequest += 1
-        case .sidebar: showingPages = true; sidebarKeys = SidebarKeyRequest(target: .pages)
-        case .outline: showingPages = true; sidebarKeys = SidebarKeyRequest(target: .outline)
-        case .bookmarks: showingPages = true; sidebarKeys = SidebarKeyRequest(target: .bookmarks)
+        case .sidebar: pagesShown = true; sidebarKeys = SidebarKeyRequest(target: .pages)
+        case .outline: pagesShown = true; sidebarKeys = SidebarKeyRequest(target: .outline)
+        case .bookmarks: pagesShown = true; sidebarKeys = SidebarKeyRequest(target: .bookmarks)
         case .laws:
             if let onLawKeys { onLawKeys() } else { KeyboardRouter.shared.show(note: "Gesetzessammlung ist ausgeschaltet") }
         case .colors: openKeyColors()
@@ -523,19 +548,19 @@ struct ContentView: View {
             let compact = geometry.size.width < 760
             let width = min(320, max(0, geometry.size.width - (compact ? 32 : 360)))
             ZStack(alignment: .trailing) {
-                editorSurface.padding(.trailing, showingPages && !compact ? width : 0)
-                if showingPages && compact {
+                editorSurface.padding(.trailing, pagesShown && !compact ? width : 0)
+                if pagesShown && compact {
                     Color.black.opacity(0.35).contentShape(Rectangle())
-                        .onTapGesture { showingPages = false }
+                        .onTapGesture { pagesShown = false }
                         .transition(.opacity)
                         .accessibilityLabel("Seitenleiste schließen")
                         .accessibilityAddTraits(.isButton)
                 }
-                if showingPages {
+                if pagesShown {
                     Group {
                         if notebookLoaded {
-                            PageSidebarView(model: model, selectedPageID: $selectedPageID, onBack: closeEditor, onCollapse: { showingPages = false },
-                                onSelect: { if compact { showingPages = false } },
+                            PageSidebarView(model: model, selectedPageID: $selectedPageID, onBack: closeEditor, onCollapse: { pagesShown = false },
+                                onSelect: { if compact { pagesShown = false } },
                                 onMargins: { id in marginsPage = MarginPage(id: id) },
                                 onOutline: { jumpToOutline($0) }, keyRequest: $sidebarKeys)
                         } else {
@@ -547,7 +572,7 @@ struct ContentView: View {
                     .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
                 }
             }
-            .animation(NotyMotion.panel(reduceMotion), value: showingPages)
+            .animation(NotyMotion.panel(reduceMotion), value: pagesShown)
         }
     }
 
@@ -701,13 +726,13 @@ struct ContentView: View {
             // Arrow and title form one button: tapping the name also leaves the notebook.
             Button(action: closeEditor) {
                 HStack(spacing: 0) {
-                    Image(systemName: "arrow.left").frame(width: 44, height: 44)
-                    if layout.headerLeadingFrame.width >= 100, notebookLoaded {
-                        Text(model.notebook.title).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.tail)
+                    Image(systemName: closeSymbol).frame(width: 44, height: 44)
+                    if layout.headerLeadingFrame.width >= 100, notebookLoaded || closeTitle != nil {
+                        Text(closeTitle ?? model.notebook.title).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.tail)
                             .padding(.trailing, 14)
                     }
                 }.contentShape(Rectangle())
-            }.accessibilityLabel("Zur Bibliothek").accessibilityValue(notebookLoaded ? model.notebook.title : "")
+            }.accessibilityLabel(closeTitle ?? "Zur Bibliothek").accessibilityValue(notebookLoaded ? model.notebook.title : "")
                 .padding(.horizontal, 4).frame(height: 44).notyGlass()
                 .frame(maxWidth: max(52, layout.headerLeadingFrame.width), alignment: .leading)
                 .frame(width: max(52, layout.headerLeadingFrame.width), height: 44, alignment: .leading)
@@ -742,7 +767,7 @@ struct ContentView: View {
                         Image(systemName: "doc.badge.plus").frame(width: 44, height: 44).contentShape(Rectangle())
                     }.accessibilityLabel("Neue Seite")
                 }
-                Button { showingPages.toggle() } label: {
+                Button { pagesShown.toggle() } label: {
                     Image(systemName: "sidebar.right").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Seitenübersicht rechts")
             }.padding(.horizontal, 4).frame(width: layout.headerActionsFrame.width, height: 44)

@@ -45,6 +45,10 @@ final class EditorModel: ObservableObject {
     /// Local history copies get titles unique in this area.
     private let libraryRoot: URL
     @Published private(set) var mutationsPaused = false
+    /// Calendar note before its first real input (Kalender B2, plan §4 rule 8):
+    /// the document lives only in memory, nothing exists on disk and nothing
+    /// is saved. `beginCommitting()` claims the package and commits it.
+    @Published private(set) var deferredCommit = false
     /// An image is being fetched: nothing is locked meanwhile, closing waits.
     var imageReading = false
     private var activeInteractions = Set<UUID>()
@@ -106,11 +110,13 @@ final class EditorModel: ObservableObject {
     /// `writeClaim`: reserved by the caller before it had to wait (second
     /// view); otherwise the model claims the package itself and waits briefly
     /// for a running append to finish before it loads.
+    /// `deferred`: a new calendar note shown before its first input; nothing
+    /// is read, claimed or written until `beginCommitting()`.
     init(storageRoot root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true),
          restoreDirectory: URL? = nil, preferredPageID: UUID? = nil, libraryTitle: String? = nil,
-         writeClaim: PackageWriteLock.Claim? = nil) {
+         writeClaim: PackageWriteLock.Claim? = nil, deferred: Notebook? = nil) {
         storageRoot = root
-        self.writeClaim = writeClaim ?? PackageWriteLock.shared.claim(root)
+        self.writeClaim = deferred != nil ? writeClaim : writeClaim ?? PackageWriteLock.shared.claim(root)
         libraryRoot = restoreDirectory?.deletingLastPathComponent() ?? root
         store = NotebookRepository(directory: root, restoreDirectory: restoreDirectory)
         // Image layers, thumbnails and exports of this editor resolve its
@@ -126,6 +132,15 @@ final class EditorModel: ObservableObject {
         let legacyDate = legacyPageKeysAllowed ? UserDefaults.standard.object(forKey: "noty.backupExport.\(root.lastPathComponent)") as? Date : nil
         if let date = UserDefaults.standard.object(forKey: backupDateKey) as? Date ?? legacyDate {
             backupStatus = "Zuletzt in Dateien gesichert: \(NotyText.statusDate(date))"
+        }
+        if let deferred {
+            notebook = deferred
+            sources = try? NotebookPDFCatalog(deferred)
+            deferredCommit = true
+            status = "Noch nicht gespeichert"
+            busy = false
+            writable = true
+            return
         }
         Task {
             defer { busy = false }
@@ -871,7 +886,8 @@ final class EditorModel: ObservableObject {
     /// a notebook opened again never overlaps it. Originals on the in-app
     /// object clipboard are kept for pasting elsewhere.
     func collectAssetGarbageAfterClosing() async {
-        guard !writable else { return }
+        // A calendar note that was never committed has no package.
+        guard !writable, !deferredCommit else { return }
         await openingCleanup?.value
         openingCleanup = nil
         _ = try? await store.collectAssetGarbage(.closing, current: notebook, keeping: ImageAssetRegistry.shared.clipboardHashes)
@@ -887,12 +903,39 @@ final class EditorModel: ObservableObject {
 
     /// Remembered per notebook so a relaunch reopens the last viewed page, also without edits.
     private func rememberPage() {
-        guard writable, notebook.pages.indices.contains(pageIndex) else { return }
+        guard writable, !deferredCommit, notebook.pages.indices.contains(pageIndex) else { return }
         UserDefaults.standard.set(page.id.uuidString, forKey: pageKeyPrefix + notebook.id.uuidString)
     }
 
+    /// Calendar note, first real input: claims the package and commits the
+    /// current state as a complete package (this model stays its only
+    /// writer; input meanwhile simply goes into the next autosave). True once
+    /// the newest state is committed; a failure keeps everything in memory
+    /// and the automatic save retry running.
+    func beginCommitting() async -> Bool {
+        if deferredCommit {
+            if writeClaim == nil { writeClaim = await PackageWriteLock.shared.claim(storageRoot, waitingUpTo: 5) }
+            guard writeClaim != nil else {
+                status = "Notiz kann gerade nicht gespeichert werden"
+                return false
+            }
+            deferredCommit = false
+        }
+        save()
+        return await waitForSave()
+    }
+
+    /// Handwriting, text, images or shapes on any page (Kalender: the note
+    /// symbol and the first real input). An empty page is no content.
+    nonisolated static func hasContent(_ document: Notebook) -> Bool {
+        document.pages.contains { page in
+            !drawingIsEmpty(page.drawing) || !(page.images ?? []).isEmpty || !(page.shapes ?? []).isEmpty
+                || !page.searchableText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
     func save(delayed: Bool = false) {
-        guard writable, writeClaim != nil else { return }
+        guard writable, writeClaim != nil, !deferredCommit else { return }
         rememberPage()
         if let recoveredSnapshot {
             // Flushes (close, background, backup) keep the recovered notice and

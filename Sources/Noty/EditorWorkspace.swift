@@ -313,7 +313,7 @@ struct EditorWorkspaceView: View {
                 case .strokeEraser, .precisionEraser: lawPencil = "eraser"
                 default: break
                 }
-            })
+            }, closeTitle: index == 0 ? workspace.primaryDocument.returnTitle.map { "Zurück zu \($0)" } : nil)
     }
 
     // MARK: Law window

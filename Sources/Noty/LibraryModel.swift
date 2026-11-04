@@ -11,6 +11,9 @@ struct OpenNotebook: Identifiable {
     var searchBounds: PageRect?
     /// A search hit over a page change, in flow offsets.
     var searchFlowRange: NSRange?
+    /// Opened from a calendar event („Vergrößern“): the header button names
+    /// the way back („Rechnungswesen · Di, 3. Nov.“) instead of the library.
+    var returnTitle: String?
 }
 
 @MainActor
@@ -404,12 +407,19 @@ final class LibraryModel: ObservableObject {
     }
     func reorder(_ ids: [UUID], parent: UUID?) async { await change { try await store.reorder(ids, parentID: parent) } }
 
-    func open(_ item: NotebookCore.LibraryItem, pageID: UUID? = nil, searchBounds: PageRect? = nil, flowRange: NSRange? = nil) async {
+    func open(_ item: NotebookCore.LibraryItem, pageID: UUID? = nil, searchBounds: PageRect? = nil, flowRange: NSRange? = nil,
+              returnTitle: String? = nil) async {
         // A second tap on the notebook being opened is no second request.
         guard opening != item.id else { return }
         await settle()
         guard accepting, !item.isFolder else { return }
-        busy = true; opening = item.id
+        opening = item.id
+        // The calendar's note beside an event commits and lets go of its
+        // notebook first (it may still file a new note, which needs the
+        // library): one writer per package, and none behind the editor.
+        if let releaseCalendarNote { await releaseCalendarNote() }
+        guard accepting else { opening = nil; return }
+        busy = true
         defer { busy = false; opening = nil }
         do {
             let url = try await store.documentURL(id: item.id)
@@ -417,7 +427,8 @@ final class LibraryModel: ObservableObject {
             guard !PackageWriteLock.shared.isHeld(url) else { error = "Dieses Heft wird gerade ergänzt. Bitte gleich noch einmal öffnen."; return }
             snapshot = try await store.markOpened(item.id)
             opened = OpenNotebook(id: item.id, directory: url, title: item.title,
-                                  isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds, searchFlowRange: flowRange)
+                                  isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds, searchFlowRange: flowRange,
+                                  returnTitle: returnTitle)
             lastEditedID = item.id
             UserDefaults.standard.set(item.id.uuidString, forKey: lastOpenedKey)
         } catch { self.error = error.localizedDescription }
@@ -632,6 +643,44 @@ final class LibraryModel: ObservableObject {
         snapshot = try await store.createFolder(title: title, parentID: parent)
         guard let folder = snapshot.items.last, folder.isFolder else { throw LibraryError.unavailable }
         return folder.id
+    }
+
+    // MARK: Calendar notes (Kalender B2, docs/CALENDAR-PLAN.md §4)
+
+    /// Set by the calendar of this area: commits and closes its note editor
+    /// beside an event before the library opens any notebook.
+    var releaseCalendarNote: (() async -> Void)?
+
+    /// Package of a new library notebook that is not in the index yet.
+    func newDocumentDirectory(_ id: UUID) -> URL {
+        root.appendingPathComponent("Library/Documents/\(id.uuidString)", isDirectory: true)
+    }
+
+    /// Rule 8, second step: the completely committed package of a new event
+    /// note joins the library in the folder „Kalendernotizen“. The folder is
+    /// found by its stored identity only; a missing or trashed one is created
+    /// anew (never a same-named folder of the user). Returns the folder used.
+    /// Allowed above an open notebook like filing; touches only the index.
+    func adoptCalendarNote(_ id: UUID, title: String, folder: UUID?) async throws -> UUID {
+        try await filingAccess()
+        busy = true; defer { busy = false }
+        var parent = CalendarNotesFolder.usable(folder, in: snapshot)
+        if parent == nil {
+            snapshot = try await store.createFolder(title: CalendarNotesFolder.title, parentID: nil)
+            guard let created = snapshot.items.last, created.isFolder, created.title == CalendarNotesFolder.title else { throw LibraryError.unavailable }
+            parent = created.id
+        }
+        // An earlier attempt already filed it (or a library load found the package).
+        if let existing = snapshot.items.first(where: { $0.id == id }), existing.parentID == parent, !snapshot.isTrashed(id) { return parent! }
+        let name = NotebookTitles.unique(title, taken: snapshot.activeNotebookTitles(excluding: id))
+        snapshot = try await store.adoptImported(id, title: name, parentID: parent, replacing: nil)
+        return parent!
+    }
+
+    /// Active notebooks of the notes folder (for linking one again).
+    func calendarNotebooks(in folder: UUID?) -> [NotebookCore.LibraryItem] {
+        guard let folder = CalendarNotesFolder.usable(folder, in: snapshot) else { return [] }
+        return snapshot.children(of: folder).filter { !$0.isFolder }
     }
 
     /// The editor's description of a library notebook (second view, „Öffnen“).
