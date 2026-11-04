@@ -2,6 +2,10 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Kalender B1 (04.11.2026, `feat/kalender`, noty calendar Build 101)
+
+**Implementiert, erfolgreich gebaut (`xtool dev build`) und als noty calendar Build 101 veröffentlicht; nicht installiert geprüft, am iPad ungeprüft.** `swift test --package-path Core`: 1133 Tests ausgeführt, 0 Fehler, 3 übersprungen (echter Gesetzeskatalog nicht vorhanden ×2, `SWIFT_DETERMINISTIC_HASHING` nicht gesetzt). Neu: `CalendarRepositoryTests` (12) und `WebUntisTests` (11), ausschließlich mit erfundenen Daten (Server, Schule, Benutzer, Schlüssel = RFC-6238-Testgeheimnis, Fächer, Räume). Kein Host-Roundtrip nötig: kein Heft-, Archiv- oder Layerformat geändert; das neue Kalenderpaket ist nicht Teil der Archive. Nicht belegt: URLSession/WebUntis aus der App, Schlüsselbund, Kamera/QR, SwiftUI-Abläufe. Gebündelter Gerätetest: [CALENDAR-PLAN](CALENDAR-PLAN.md#umsetzungsstand-b1-04112026).
+
 ## Kalender Stufe A (03.11.2026, `feat/kalender`)
 
 **Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert), nicht installiert, am iPad ungeprüft.** `swift test --package-path Core`: 1110 Tests ausgeführt, 0 Fehler, 4 übersprungen (echter Gesetzeskatalog nicht vorhanden ×2, `SWIFT_DETERMINISTIC_HASHING` nicht gesetzt, Rechteprüfung unter root nicht möglich). Neu: `CalendarLayoutTests` (13) mit Sommer-/Winterzeit Berlin, Tagen ohne Mitternacht (Santiago, Havanna) und halbstündiger Umstellung (Lord Howe), KW 1/53 am Jahreswechsel, Schaltjahr, Überlappung, Ganztagsbahnen, „+ n weitere“ ohne Verlust. Der neue Test fand einen Fehler in der Tageszählung an Tagen ohne Mitternacht (behoben: Zählung von Mittag zu Mittag). Kein Host-Roundtrip nötig: kein Format-, Archiv- oder Layerwechsel. Gebündelter Gerätetest: [CALENDAR-PLAN](CALENDAR-PLAN.md#umsetzungsstand-stufe-a-03112026).

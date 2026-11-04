@@ -113,15 +113,18 @@ struct WorkspaceLibraryHost: View {
     @StateObject private var library: LibraryModel
     @StateObject private var toolbox: ToolbarSettingsModel
     @StateObject private var externalBackup: ExternalBackupModel
+    /// Calendar of this area (`<Bereich>/Calendar/`); a new area gets a new model.
+    @StateObject private var calendar: CalendarModel
     @Environment(\.scenePhase) private var scenePhase
     init(workspaces: WorkspaceAppModel) {
         self.workspaces = workspaces
         _library = StateObject(wrappedValue: LibraryModel(root: workspaces.root))
+        _calendar = StateObject(wrappedValue: CalendarModel(root: workspaces.root))
         _toolbox = StateObject(wrappedValue: ToolbarSettingsModel(root: workspaces.root))
         _externalBackup = StateObject(wrappedValue: ExternalBackupModel(root: workspaces.root))
     }
     var body: some View {
-        LibraryView(model: library, workspaces: workspaces).environmentObject(toolbox).environmentObject(externalBackup)
+        LibraryView(model: library, workspaces: workspaces, calendar: calendar).environmentObject(toolbox).environmentObject(externalBackup)
             .task {
                 // `scenePhase` captured by this long-running closure would stay at its
                 // first value; the model holds the current phase instead.

@@ -1,5 +1,26 @@
 # Lokaler Revisionsspeicher – Format 1
 
+
+## Ergänzung 04.11.2026 · Kalenderpaket (B1)
+
+Nur `feat/kalender`, Test-App „noty calendar“ Build 101; implementiert und gebaut, am iPad ungeprüft. Neues Paket je Bereich, **kein** Heftformat- oder Schemawechsel; Bibliotheksindex, Heftpakete und Archive bleiben unverändert.
+
+```
+<Bereich>/Calendar/manifest.json           Commitpunkt: RevisionManifest Format 1 (1–3 Einträge, crc32-iso-hdlc)
+<Bereich>/Calendar/manifest-previous.json  vorheriges Manifest (Rückfall)
+<Bereich>/Calendar/Revisions/<UUID>.json   unveränderliche vollständige CalendarState-Revisionen
+<Bereich>/Calendar/Quarantine/             beschädigtes manifest.json vor dem Ersetzen
+<Bereich>/Calendar/Cache/<Verbindung>.json ersetzbarer WebUntis-Bestand (kein bestätigter Stand)
+```
+
+- `<Bereich>` ist der Bibliotheksroot (`Documents/Noty` bzw. `NotyWorkspaces/Areas/<UUID>/Data`). Ein Schreiber: `CalendarRepository` (Actor) mit `PackageWriteLock` auf `Calendar/`; zusätzlich bricht ein Commit mit `concurrentChange` ab, wenn `manifest.json` seit dem eigenen Lesen/Schreiben von anderer Stelle ersetzt wurde.
+- **Commit:** Zustand validieren, kodieren (sortierte Schlüssel), zurückdekodieren, Revision schreiben und Bytes zurücklesen, altes Manifest nach `manifest-previous.json`, Manifest zuletzt atomar. Fehler vor dem Commitpunkt entfernen die eigene neue Revision; Altstand bleibt. Aufgeräumt werden nur selbst bestätigte, nicht mehr referenzierte Revisionen (neues + vorheriges Manifest bleiben vollständig), unbekannte Dateien nie. Ein Revisionszähler je Repository verhindert, dass ein älterer Save einen neueren ersetzt.
+- **Laden:** Manifest, dann vorheriges Manifest, je neueste zuerst; CRC und Größe je Revision, dann Inhalt prüfen. Älterer Stand → `recovered`, Hinweis in der App, übersprungene Dateien bleiben; beschädigtes `manifest.json` wird beim nächsten Commit nach `Quarantine/` verschoben. Kein Paket → leerer Kalender (Öffnen schreibt nichts). Paket ohne lesbare Revision → `noCompleteRevision`, **neueres Manifest- oder Inhaltsformat → `unsupportedFormat`**: beides sperrt jedes Schreiben; nie leer neu anlegen.
+- **CalendarState Format 1:** `formatVersion`, `events[]` (`id` UUID, `title` 1–200 Zeichen, `location`, `details`, `timing`, `createdAt`, `modifiedAt`), `settings {weekDays 5|7, mode}`, optional `connection {id, kind "webUntis", label, timeZone, connectedAt}`. `timing`: `{"kind":"allDay","startDate":"YYYY-MM-DD","endDate":"YYYY-MM-DD"}` (Ende exklusiv) oder `{"kind":"timed","start":…,"end":…,"timeZone":"Europe/Berlin"}`. **Alle Zeitpunkte in Kalenderdateien sind Sekunden seit 2001-01-01 00:00 UTC** (Foundation-Referenzdatum, exakter Rundlauf; Unix = Wert + 978307200); nur `savedAtUnix` im Manifest ist Unix-Zeit wie bei Heften. Höchstens 20 000 Termine, Termindauer höchstens fünf Jahre.
+- **Keine Geheimnisse im Paket:** Benutzer und Schlüssel der Untis-Mobile-Freigabe liegen nur im Schlüsselbund (Dienst `noty.calendar.webuntis`, Konto = Verbindungs-UUID, `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`).
+- **Cache (`CalendarSourceSnapshot` Format 1):** `connection`, `lessons[]` (Schlüssel aus Anbieter, Verbindung, Perioden-ID, Kurs-ID, gelieferter lokaler Beginn; zivile Startdatum-Zuordnung, Fach, Räume, ursprüngliche Räume, Lehrkräfte, Klassen, normalisierte und rohe Status, Text), `days` (geladener ziviler Tag → Abrufzeit), `holidays[]` (Ende exklusiv), `holidaysFetchedAt`. Nur vollständig geprüfte Antworten werden übernommen, und nur für die angefragten Tage, deren gespeicherter Abruf nicht neuer ist; Tage ohne Eintrag in `days` gelten als „nicht geladen“, nie als „kein Unterricht“. Höchstens 1 200 Tage/40 000 Stunden, die vom letzten Abruf entferntesten Tage gehen zuerst. Atomar ersetzt; beschädigt → wie leer (wird neu geladen); neueres Format → nicht gelesen und nicht überschrieben. „Trennen“ entfernt Verbindungseintrag (Commit), dann diese Datei und den Schlüsselbundeintrag.
+- **Nicht enthalten:** Bibliotheksbackup, Restore und `verify_*.py` kennen `Calendar/` noch nicht (B-Folgeschritt); ein Restore-Bereich hat keinen Kalender. `verify_device_store.py` ignoriert das Verzeichnis. Nachweise: `CalendarRepositoryTests`, `WebUntisTests`; Host-Roundtrip nicht betroffen (kein Heft-/Archivformat geändert).
+
 ## Ergänzung 03.11.2026 · Ein Schreiber je Heftpaket
 
 Befund: Lud ein Editor ein Heft, bevor das Anhängen einer geteilten Datei über die Bibliothek fertig war, schrieb er beim nächsten Speichern ein Manifest aus seinem alten Stand, und sein Aufräumen löschte die angehängte Revision (unbekannt, nicht im eigenen Manifest).

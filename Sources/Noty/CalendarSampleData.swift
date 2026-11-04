@@ -2,13 +2,12 @@ import SwiftUI
 import PencilKit
 import NotebookCore
 
-// BEISPIELDATEN – Kalender Stufe A (docs/CALENDAR-PLAN.md).
-// Frei erfundener Stundenplan, erfundene Lehrkräfte, Räume und Termine,
-// erfundene Ferienzeiträume. Keine echten oder privaten Stundenplandaten,
-// keine WebUntis-Anbindung und keine Speicherung: alles lebt nur im
-// Speicher dieser Sitzung und wird beim Bereichswechsel/Neustart verworfen.
+// Shared calendar view types and the BEISPIELDATEN of the design review
+// (docs/CALENDAR-PLAN.md). The samples are frei erfunden (Stundenplan,
+// Lehrkräfte, Räume, Termine, Ferien), shown only with „Beispieldaten
+// anzeigen“, never stored and never mixed with real entries.
 
-/// Calendars of the design stage. Only „Persönlich“ is writable.
+/// Calendars shown. Only own entries of „Persönlich“ are writable.
 enum CalendarSource: String, CaseIterable, Identifiable, Hashable {
     case timetable, personal, holidays
     var id: String { rawValue }
@@ -19,27 +18,24 @@ enum CalendarSource: String, CaseIterable, Identifiable, Hashable {
         case .holidays: "Ferien"
         }
     }
-    /// Where the entries come from; every source here is fictitious.
-    var origin: String {
-        switch self {
-        case .timetable: "WebUntis (Beispiel)"
-        case .personal: "noty, lokal (Beispiel)"
-        case .holidays: "Beispiel, keine echte Ferienquelle"
-        }
-    }
     var readOnly: Bool { self != .personal }
 }
 
 enum CalendarEventStatus: Hashable {
     case normal, cancelled, exam
     case substitution(String)
+    case roomChanged(String)
+    /// A source state this version does not know; shown neutrally.
+    case other(String)
 
     var label: String? {
         switch self {
         case .normal: nil
         case .cancelled: "Ausfall"
         case .exam: "Prüfung"
-        case .substitution: "Vertretung"
+        case .substitution: "Änderung"
+        case .roomChanged: "Raumänderung"
+        case .other: "Hinweis"
         }
     }
     var symbol: String? {
@@ -48,12 +44,20 @@ enum CalendarEventStatus: Hashable {
         case .cancelled: "xmark.circle"
         case .exam: "pencil.and.list.clipboard"
         case .substitution: "arrow.triangle.swap"
+        case .roomChanged: "door.left.hand.open"
+        case .other: "info.circle"
+        }
+    }
+    var note: String? {
+        switch self {
+        case .substitution(let text), .roomChanged(let text), .other(let text): text
+        default: nil
         }
     }
 }
 
 /// One shown occurrence. All-day entries use day starts with an exclusive end.
-struct CalendarSampleEvent: Identifiable, Hashable {
+struct CalendarEntry: Identifiable, Hashable {
     let id: String
     var title: String
     var subject: String?
@@ -70,6 +74,12 @@ struct CalendarSampleEvent: Identifiable, Hashable {
     var reminder: String?
     /// Fictitious, already written note pages (typed text) of the sample.
     var samplePages: [String] = []
+    /// Fictitious entry of the design samples: never stored, never editable.
+    var isSample = false
+    /// Own event of the confirmed state (`LocalCalendarEvent.id`).
+    var localID: UUID?
+    /// Further status lines beside the main status.
+    var statusNotes: [String] = []
 }
 
 enum CalendarPalette {
@@ -89,7 +99,7 @@ enum CalendarPalette {
         color.opacity(selected ? 0.30 : cancelled ? 0.06 : 0.15)
     }
 
-    static func color(_ event: CalendarSampleEvent) -> Color {
+    static func color(_ event: CalendarEntry) -> Color {
         switch event.source {
         case .personal: return personal
         case .holidays: return holidays
@@ -134,7 +144,7 @@ enum CalendarSamples {
         ("Weihnachtsferien (Beispiel)", 1, 1, 1, 6),
     ]
 
-    static func events(year anchor: Date, today: Date, calendar: Calendar) -> [CalendarSampleEvent] {
+    static func events(year anchor: Date, today: Date, calendar: Calendar) -> [CalendarEntry] {
         let yearStart = CalendarDates.startOfYear(anchor, calendar: calendar)
         let year = calendar.component(.year, from: yearStart)
         let first = CalendarDates.day(-14, after: yearStart, calendar: calendar)
@@ -147,14 +157,14 @@ enum CalendarSamples {
             calendar.date(bySettingHour: h, minute: m, second: 0, of: day) ?? day
         }
 
-        var result: [CalendarSampleEvent] = []
+        var result: [CalendarEntry] = []
         var holidayRanges: [(Date, Date)] = []
         for y in [year - 1, year, year + 1] {
             for (title, m1, d1, m2, d2) in holidays {
                 let start = date(y, m1, d1), end = date(y, m2, d2)
                 guard end > first && start < last else { continue }
                 holidayRanges.append((start, end))
-                result.append(CalendarSampleEvent(id: "holiday-\(y)-\(m1)-\(d1)", title: title, source: .holidays,
+                result.append(CalendarEntry(id: "holiday-\(y)-\(m1)-\(d1)", title: title, source: .holidays,
                                                   start: start, end: end, allDay: true,
                                                   details: "Ferienzeitraum frei erfunden. Eine echte Ferienquelle ist noch nicht festgelegt."))
             }
@@ -171,7 +181,7 @@ enum CalendarSamples {
                 for (slot, lesson) in timetable[weekday].enumerated() {
                     guard let lesson else { continue }
                     let (h1, m1, h2, m2) = slots[slot]
-                    var event = CalendarSampleEvent(id: "lesson-\(key)-\(slot)", title: lesson.subject, subject: lesson.subject,
+                    var event = CalendarEntry(id: "lesson-\(key)-\(slot)", title: lesson.subject, subject: lesson.subject,
                                                     source: .timetable, start: time(day, h1, m1), end: time(day, h2, m2),
                                                     room: lesson.room, teacher: lesson.teacher)
                     special(&event, weekday: weekday, slot: slot, weekOffset: weekOffset)
@@ -180,24 +190,24 @@ enum CalendarSamples {
             }
             // Own weekly series: Thursday evening, outside the holidays too.
             if weekday == 3 {
-                result.append(CalendarSampleEvent(id: "own-volleyball-\(key)", title: "Volleyball", source: .personal,
+                result.append(CalendarEntry(id: "own-volleyball-\(key)", title: "Volleyball", source: .personal,
                                                   start: time(day, 18, 30), end: time(day, 20, 0), room: "Sporthalle Nord",
                                                   details: "Training im Verein (Beispiel).", seriesID: "own-volleyball",
                                                   repeatText: "Wöchentlich am Donnerstag"))
             }
             if weekOffset == 0 { result += ownEvents(weekday: weekday, day: day, key: key, time: time) }
             if weekOffset == 1 && weekday == 3 {
-                result.append(CalendarSampleEvent(id: "own-messe-\(key)", title: "Messebesuch Wirtschaft", source: .personal,
+                result.append(CalendarEntry(id: "own-messe-\(key)", title: "Messebesuch Wirtschaft", source: .personal,
                                                   start: day, end: CalendarDates.day(2, after: day, calendar: calendar), allDay: true,
                                                   room: "Messegelände", details: "Zweitägiger Ausflug (Beispiel)."))
             }
             day = CalendarDates.day(1, after: day, calendar: calendar)
         }
-        return result
+        return result.map { var sample = $0; sample.isSample = true; return sample }
     }
 
     /// Design cases of the current (and the next) week.
-    private static func special(_ event: inout CalendarSampleEvent, weekday: Int, slot: Int, weekOffset: Int) {
+    private static func special(_ event: inout CalendarEntry, weekday: Int, slot: Int, weekOffset: Int) {
         switch (weekOffset, weekday, slot) {
         case (0, 1, 0):
             event.samplePages = [
@@ -224,10 +234,10 @@ enum CalendarSamples {
         }
     }
 
-    private static func ownEvents(weekday: Int, day: Date, key: String, time: (Date, Int, Int) -> Date) -> [CalendarSampleEvent] {
+    private static func ownEvents(weekday: Int, day: Date, key: String, time: (Date, Int, Int) -> Date) -> [CalendarEntry] {
         func own(_ suffix: String, _ title: String, _ h1: Int, _ m1: Int, _ h2: Int, _ m2: Int, room: String? = nil,
-                 details: String? = nil, reminder: String? = nil) -> CalendarSampleEvent {
-            CalendarSampleEvent(id: "own-\(suffix)-\(key)", title: title, source: .personal, start: time(day, h1, m1),
+                 details: String? = nil, reminder: String? = nil) -> CalendarEntry {
+            CalendarEntry(id: "own-\(suffix)-\(key)", title: title, source: .personal, start: time(day, h1, m1),
                                 end: time(day, h2, m2), room: room, details: details, reminder: reminder)
         }
         switch weekday {
@@ -235,7 +245,7 @@ enum CalendarSamples {
         case 2: return [own("lerngruppe", "Lerngruppe Statistik", 8, 30, 10, 15, room: "Bibliothek, Gruppenraum 3",
                             details: "Überschneidet sich mit dem Unterricht (Designfall: Termine nebeneinander).")]
         case 3:
-            return [CalendarSampleEvent(id: "own-abgabe-\(key)", title: "Abgabe Projektmappe", source: .personal,
+            return [CalendarEntry(id: "own-abgabe-\(key)", title: "Abgabe Projektmappe", source: .personal,
                                         start: day, end: time(day, 0, 0), allDay: true, details: "Ganztägiger Termin (Beispiel).")]
         case 4:
             // Crowded Friday for „+ n weitere“ in the month.
@@ -258,7 +268,8 @@ struct CalendarNotePage: Identifiable {
     var isEmpty: Bool { drawing.strokes.isEmpty && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 }
 
-/// Draft of the event form (no saving in Stufe A).
+/// Draft of the event form. B1 stores single events only; repetition and
+/// reminders stay in the type for B2 but are not offered in the form.
 struct CalendarDraft: Identifiable {
     enum Repeat: String, CaseIterable, Identifiable {
         case never, daily, weekly, monthly
@@ -284,7 +295,7 @@ struct CalendarDraft: Identifiable {
         }
     }
     let id = UUID()
-    var editing: CalendarSampleEvent?
+    var editing: CalendarEntry?
     var title = ""
     var location = ""
     var details = ""
@@ -305,177 +316,44 @@ struct CalendarDraft: Identifiable {
         self.repeatUntil = calendar.date(byAdding: .month, value: 2, to: start) ?? start
     }
 
-    init(editing event: CalendarSampleEvent, calendar: Calendar) {
+    init(editing event: CalendarEntry, calendar: Calendar) {
         self.init(start: event.start, calendar: calendar)
         editing = event
         title = event.title; location = event.room ?? ""; details = event.details ?? ""
-        allDay = event.allDay; end = event.end
+        allDay = event.allDay
+        // All-day entries end exclusively; the form shows the last day.
+        end = event.allDay ? max(event.start, CalendarDates.day(-1, after: event.end, calendar: calendar)) : event.end
         if event.seriesID != nil { repeatRule = .weekly }
         reminder = event.reminder != nil
     }
-}
 
-/// State of the calendar design stage, kept by the library while it lives
-/// (switching between library and calendar keeps view, date and drafts).
-@MainActor
-final class CalendarDesignModel: ObservableObject {
-    let calendar = CalendarDates.german()
-    @Published var mode = CalendarMode.week
-    /// Every change of the shown date makes sure its sample year exists.
-    @Published var anchor = Date() { didSet { prepare() } }
-    @Published var selection: String?
-    @Published var draft: CalendarDraft?
-    @Published var hiddenSources: Set<CalendarSource> = []
-    @Published var showsSamples = true
-    @Published private(set) var removed: Set<String> = []
-    @Published private(set) var lastRemoval: (title: String, ids: Set<String>)?
-    /// Note pages written in this session, per event.
-    @Published private var notes: [String: [CalendarNotePage]] = [:]
-    @Published private(set) var today = Date()
-    private var generatedYear: Int?
-    private var all: [CalendarSampleEvent] = []
-    private var byID: [String: CalendarSampleEvent] = [:]
-    private var byDay: [Date: [CalendarSampleEvent]] = [:]
-
-    func refreshToday() {
-        let now = Date()
-        if !calendar.isDate(now, inSameDayAs: today) { today = now; generatedYear = nil }
-        prepare()
-    }
-
-    /// Generates the sample year around the anchor once per year.
-    func prepare() {
-        let year = calendar.component(.year, from: anchor)
-        guard generatedYear != year else { return }
-        generatedYear = year
-        all = CalendarSamples.events(year: anchor, today: today, calendar: calendar)
-        byID = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        var index: [Date: [CalendarSampleEvent]] = [:]
-        for event in all {
-            var day = calendar.startOfDay(for: event.start)
-            let stop = event.allDay ? max(event.end, CalendarDates.day(1, after: day, calendar: calendar)) : event.end
-            repeat {
-                index[day, default: []].append(event)
-                day = CalendarDates.day(1, after: day, calendar: calendar)
-            } while day < stop
-        }
-        byDay = index
-        objectWillChange.send()
-    }
-
-    private func visible(_ event: CalendarSampleEvent) -> Bool {
-        showsSamples && !hiddenSources.contains(event.source) && !removed.contains(event.id)
-    }
-
-    /// All-day entries first, then by start; nothing is filtered by space.
-    func events(on day: Date) -> [CalendarSampleEvent] {
-        (byDay[calendar.startOfDay(for: day)] ?? []).filter(visible).sorted {
-            if $0.allDay != $1.allDay { return $0.allDay }
-            if $0.start != $1.start { return $0.start < $1.start }
-            return $0.end > $1.end
-        }
-    }
-
-    func event(_ id: String?) -> CalendarSampleEvent? {
-        guard let id, let event = byID[id], visible(event) else { return nil }
-        return event
-    }
-
-    var selectedEvent: CalendarSampleEvent? { event(selection) }
-
-    func search(_ query: String) -> [CalendarSampleEvent] {
-        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return [] }
-        return all.filter { event in
-            visible(event) && [event.title, event.room, event.teacher, event.details].contains { $0?.localizedCaseInsensitiveContains(text) == true }
-        }.sorted { $0.start < $1.start }
-    }
-
-    var hasVisibleSamples: Bool { showsSamples && hiddenSources.count < CalendarSource.allCases.count }
-
-    // MARK: Navigation
-
-    func step(_ steps: Int) {
-        anchor = CalendarDates.shift(anchor, mode: mode, by: steps, calendar: calendar)
-    }
-    func goToToday() { refreshToday(); anchor = today }
-    func open(_ day: Date, in mode: CalendarMode) { anchor = day; self.mode = mode }
-    func show(_ event: CalendarSampleEvent) {
-        anchor = calendar.startOfDay(for: event.start)
-        if mode == .year { mode = .day }
-        selection = event.id
-    }
-
-    /// New entry: next full hour on the shown day.
-    func requestNewEvent() {
-        guard draft == nil else { return }
-        let hour = calendar.component(.hour, from: Date())
-        let day = calendar.startOfDay(for: mode == .day || mode == .week ? anchor : today)
-        let start = calendar.date(bySettingHour: min(22, hour + 1), minute: 0, second: 0, of: day) ?? day
-        draft = CalendarDraft(start: start, calendar: calendar)
-    }
-
-    // MARK: Removal (session only, with a way back)
-
-    func remove(_ event: CalendarSampleEvent, wholeSeries: Bool) {
-        let ids: Set<String>
-        if wholeSeries, let series = event.seriesID {
-            ids = Set(all.filter { $0.seriesID == series }.map(\.id))
+    /// The timing to store; nil with an explanation when invalid.
+    func timing(calendar: Calendar) -> (CalendarEventTiming?, String?) {
+        let timing: CalendarEventTiming
+        if allDay {
+            let first = CivilDate(start, calendar: calendar), last = CivilDate(end, calendar: calendar)
+            timing = .allDay(start: first, end: last.adding(days: 1))
         } else {
-            ids = [event.id]
+            timing = .timed(start: start, end: end, timeZone: calendar.timeZone.identifier)
         }
-        removed.formUnion(ids)
-        lastRemoval = (wholeSeries ? "Serie „\(event.title)“" : "„\(event.title)“", ids)
-        if let selection, ids.contains(selection) { self.selection = nil }
-    }
-    func undoRemoval() {
-        guard let last = lastRemoval else { return }
-        removed.subtract(last.ids)
-        lastRemoval = nil
-    }
-    func dismissRemoval() { lastRemoval = nil }
-
-    // MARK: Notes (memory only)
-
-    func pages(for event: CalendarSampleEvent) -> [CalendarNotePage] {
-        if let pages = notes[event.id] { return pages }
-        if !event.samplePages.isEmpty { return event.samplePages.map { CalendarNotePage(text: $0) } }
-        return [CalendarNotePage()]
-    }
-
-    /// Indicator: only real content counts, an opened empty page does not.
-    func hasNotes(_ event: CalendarSampleEvent) -> Bool {
-        if let pages = notes[event.id] { return pages.contains { !$0.isEmpty } }
-        return !event.samplePages.isEmpty
-    }
-
-    func setText(_ text: String, page: Int, of event: CalendarSampleEvent) {
-        var pages = pages(for: event)
-        guard pages.indices.contains(page), pages[page].text != text else { return }
-        pages[page].text = text
-        notes[event.id] = pages
-    }
-
-    /// Returns the new revision for the canvas that wrote it.
-    func setDrawing(_ drawing: PKDrawing, page: Int, of event: CalendarSampleEvent) -> Int {
-        var pages = pages(for: event)
-        guard pages.indices.contains(page) else { return 0 }
-        pages[page].drawing = drawing
-        pages[page].revision += 1
-        notes[event.id] = pages
-        return pages[page].revision
-    }
-
-    func addPage(to event: CalendarSampleEvent) -> Int {
-        var pages = pages(for: event)
-        pages.append(CalendarNotePage())
-        notes[event.id] = pages
-        return pages.count - 1
+        if let problem = timing.problem { return (nil, problem) }
+        return (timing, nil)
     }
 }
 
-extension CalendarSampleEvent {
-    var writable: Bool { !source.readOnly }
+extension CalendarEntry {
+    /// Only own, stored events; samples and WebUntis never.
+    var writable: Bool { localID != nil && !isSample }
+
+    /// Where the entry comes from (details, VoiceOver).
+    var originText: String {
+        if isSample { return source == .holidays ? "Beispiel, keine echte Ferienquelle" : "Beispieldaten" }
+        switch source {
+        case .timetable: return "WebUntis, inoffiziell über Untis-Mobile-Freigabe"
+        case .holidays: return "WebUntis-Ferien"
+        case .personal: return "noty, nur auf diesem iPad"
+        }
+    }
 
     /// „Rechnungswesen · 03.11.2026“: the later name in „Kalendernotizen“.
     func noteTitle(_ calendar: Calendar) -> String {

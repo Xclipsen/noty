@@ -6,7 +6,7 @@ import NotebookCore
 /// instead of switching the chosen view.
 struct CalendarTimeGrid: View {
     let days: [Date]
-    @ObservedObject var model: CalendarDesignModel
+    @ObservedObject var model: CalendarModel
     /// Day view: more detail on the cards.
     var detailed = false
     @ScaledMetric(relativeTo: .body) private var hourHeight: CGFloat = 60
@@ -75,14 +75,14 @@ struct CalendarTimeGrid: View {
     // MARK: All-day row
 
     private struct AllDayItem: Identifiable {
-        let event: CalendarSampleEvent
+        let event: CalendarEntry
         let first: Int, last: Int, lane: Int
         var id: String { event.id }
     }
 
     private var allDayItems: [AllDayItem] {
         var seen = Set<String>()
-        var spans: [(CalendarSampleEvent, Int, Int)] = []
+        var spans: [(CalendarEntry, Int, Int)] = []
         for day in days {
             for event in model.events(on: day) where event.allDay && seen.insert(event.id).inserted {
                 if let range = CalendarAllDayLayout.columns(start: event.start, endExclusive: event.end, days: days, calendar: calendar) {
@@ -175,7 +175,7 @@ struct CalendarTimeGrid: View {
     }
 
     private struct TimedItem: Identifiable {
-        let event: CalendarSampleEvent
+        let event: CalendarEntry
         let start: Int, end: Int
         let placement: CalendarColumnPlacement
         var id: String { event.id }
@@ -232,8 +232,8 @@ struct CalendarTimeGrid: View {
 /// when it fits. Thin colour stripe and a faint tint; state is shown by
 /// symbol (and strikethrough when cancelled), never by colour alone.
 struct CalendarEventCard: View {
-    let event: CalendarSampleEvent
-    @ObservedObject var model: CalendarDesignModel
+    let event: CalendarEntry
+    @ObservedObject var model: CalendarModel
     let height: CGFloat
     var detailed = false
 
@@ -259,6 +259,9 @@ struct CalendarEventCard: View {
                         Spacer(minLength: 0)
                         if notes {
                             Image(systemName: "note.text").font(.caption2).foregroundStyle(.secondary).accessibilityHidden(true)
+                        }
+                        if event.source.readOnly {
+                            Image(systemName: "lock.fill").font(.system(size: 8)).foregroundStyle(.tertiary).accessibilityHidden(true)
                         }
                     }
                     if height >= 36 {
@@ -291,8 +294,8 @@ struct CalendarEventCard: View {
 
 /// All-day entry in the week/day row: same stripe and tint as the cards.
 struct CalendarAllDayChip: View {
-    let event: CalendarSampleEvent
-    @ObservedObject var model: CalendarDesignModel
+    let event: CalendarEntry
+    @ObservedObject var model: CalendarModel
 
     var body: some View {
         let color = CalendarPalette.color(event)

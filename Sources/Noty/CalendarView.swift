@@ -1,11 +1,6 @@
 import SwiftUI
 import NotebookCore
 
-enum CalendarSettingsKey {
-    /// 5 = Monday–Friday (default), 7 = whole week.
-    static let weekDays = "noty.calendar.weekDays"
-}
-
 /// Spacing scale of the calendar: 4 · 8 · 12 · 16 · 24.
 enum CalendarSpace {
     static let xs: CGFloat = 4
@@ -15,25 +10,26 @@ enum CalendarSpace {
     static let xl: CGFloat = 24
 }
 
-/// Calendar design stage (docs/CALENDAR-PLAN.md, Stufe A) in the library's
-/// detail column: Jahr · Monat · Woche · Tag with fictitious sample data.
-/// No calendar storage, no providers; notes live in memory only.
+/// Calendar in the library's detail column (docs/CALENDAR-PLAN.md, Stufe B1):
+/// Jahr · Monat · Woche · Tag from own stored events, WebUntis lessons and
+/// holidays of the offline cache, or – explicitly – fictitious samples.
 /// Deliberately lean: period title, ‹ Heute ›, view switcher, „+“; the rest
-/// (week length, calendars, sample data, search) lives in one „…“ menu.
+/// (week length, calendars, WebUntis, sample data, search) lives in one „…“ menu.
 struct CalendarView: View {
-    @ObservedObject var model: CalendarDesignModel
+    @ObservedObject var model: CalendarModel
     /// False while a notebook is open above the library: its keys must not reach the calendar behind it.
     var keysActive = true
-    @AppStorage(CalendarSettingsKey.weekDays) private var weekDays = 5
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.scenePhase) private var scenePhase
     @State private var dayList: CalendarDayListRequest?
     @State private var searching = false
+    @State private var connecting = false
     @State private var enlarged: CalendarEnlargeRequest?
     private var calendar: Calendar { model.calendar }
-    private var shownWeekDays: Int { weekDays == 7 ? 7 : 5 }
+    private var shownWeekDays: Int { model.weekDays == 7 ? 7 : 5 }
     /// Calendar keys only while nothing is presented over it.
-    private var keys: Bool { keysActive && enlarged == nil && dayList == nil && !searching && model.draft == nil }
+    private var keys: Bool { keysActive && enlarged == nil && dayList == nil && !searching && !connecting && model.draft == nil }
     private func key(_ key: KeyEquivalent) -> KeyboardShortcut? { keys ? KeyboardShortcut(key, modifiers: .command) : nil }
 
     var body: some View {
@@ -42,6 +38,7 @@ struct CalendarView: View {
             HStack(spacing: 0) {
                 VStack(spacing: 0) {
                     header
+                    statusLine
                     content
                         .overlay(alignment: .bottom) { removalBanner }
                 }
@@ -67,10 +64,21 @@ struct CalendarView: View {
         .navigationTitle("Kalender")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbar }
-        .onAppear { model.refreshToday() }
-        .sheet(item: $model.draft) { CalendarEventForm(draft: $0, calendar: calendar) }
+        .onAppear { model.refreshToday(); model.visible = true }
+        .onDisappear { model.visible = false }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { model.refreshToday(); model.refreshIfDue() } }
+        // While shown: at most every 15 minutes (the model enforces the interval).
+        .task {
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) } catch { break }
+                // Not while a notebook covers the calendar.
+                if scenePhase == .active && keysActive { model.refreshIfDue() }
+            }
+        }
+        .sheet(item: $model.draft) { CalendarEventForm(draft: $0, model: model) }
         .sheet(item: $dayList) { CalendarDayListSheet(day: $0.day, model: model) }
         .sheet(isPresented: $searching) { CalendarSearchSheet(model: model) }
+        .sheet(isPresented: $connecting) { CalendarConnectionSheet(model: model) }
         .fullScreenCover(item: $enlarged) { request in
             if let event = model.event(request.event.id) {
                 CalendarEnlargedNote(event: event, model: model, page: request.page)
@@ -128,21 +136,41 @@ struct CalendarView: View {
         .overlay(alignment: .top) { emptyHint }
     }
 
-    /// Empty range or hidden samples: a quiet hint, the grid stays usable.
+    private var shownRange: (start: Date, end: Date) {
+        CalendarDates.range(model.mode, anchor: model.anchor, weekDays: shownWeekDays, calendar: calendar)
+    }
+
+    /// Empty range: a quiet hint, the grid stays usable. Never claims „keine
+    /// Termine“ for a range whose timetable was not loaded.
     @ViewBuilder private var emptyHint: some View {
-        let range = CalendarDates.range(model.mode, anchor: model.anchor, weekDays: shownWeekDays, calendar: calendar)
-        let empty = !model.hasVisibleSamples || !stride(from: 0, to: CalendarDates.days(from: range.start, to: range.end, calendar: calendar), by: 1)
+        let range = shownRange
+        let coverage = model.coverage(range.start, range.end)
+        let empty = !stride(from: 0, to: CalendarDates.days(from: range.start, to: range.end, calendar: calendar), by: 1)
             .contains { !model.events(on: CalendarDates.day($0, after: range.start, calendar: calendar)).isEmpty }
-        if empty {
-            VStack(spacing: CalendarSpace.xs) {
-                Text(emptyText).font(.subheadline.weight(.semibold))
-                Text(model.showsSamples ? "Alle Kalender sind ausgeblendet (Menü „…“)." : "Beispieldaten sind ausgeblendet (Menü „…“).")
+        if model.loaded, model.mode != .year, coverage == .notLoaded {
+            VStack(spacing: CalendarSpace.s) {
+                Text("Zeitraum noch nicht geladen").font(.subheadline.weight(.semibold))
+                Text("Der Stundenplan liegt für diesen Zeitraum nicht offline vor. Eigene Termine werden angezeigt.")
                     .font(.caption).foregroundStyle(.secondary)
+                if model.mode != .year {
+                    Button("Laden") { model.loadShownRange() }.font(.subheadline.weight(.semibold)).disabled(model.syncing)
+                }
             }
             .multilineTextAlignment(.center)
             .padding(.horizontal, CalendarSpace.l).padding(.vertical, CalendarSpace.m)
             .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
             .padding(.top, model.mode == .week || model.mode == .day ? 140 : 80)
+            .frame(maxWidth: 420)
+        } else if model.loaded, empty {
+            VStack(spacing: CalendarSpace.xs) {
+                Text(emptyText).font(.subheadline.weight(.semibold))
+                Text(emptyDetail).font(.caption).foregroundStyle(.secondary)
+            }
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, CalendarSpace.l).padding(.vertical, CalendarSpace.m)
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+            .padding(.top, model.mode == .week || model.mode == .day ? 140 : 80)
+            .frame(maxWidth: 420)
             .allowsHitTesting(false)
         }
     }
@@ -156,11 +184,120 @@ struct CalendarView: View {
         }
     }
 
+    private var emptyDetail: String {
+        if model.hiddenSources.count == CalendarSource.allCases.count { return "Alle Kalender sind ausgeblendet (Menü „…“)." }
+        if model.showsSamples { return "Beispieldaten: frei erfunden, nichts wird gespeichert." }
+        if model.connection == nil {
+            return model.mode == .year
+                ? "Eigene Termine mit „+“ anlegen oder WebUntis im Menü „…“ verbinden."
+                : "Eigene Termine mit „+“ anlegen oder WebUntis im Menü „…“ verbinden. Zum Ansehen: „Beispieldaten anzeigen“."
+        }
+        if model.mode == .year { return "Unterricht erscheint nur für geladene Zeiträume." }
+        return "Laut WebUntis kein Unterricht; keine eigenen Termine."
+    }
+
+    /// One quiet line under the title: WebUntis „Stand“, refresh, errors,
+    /// storage problems and the demo hint. Hidden when there is nothing to say.
+    @ViewBuilder private var statusLine: some View {
+        let items = statusItems
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(items.indices, id: \.self) { index in
+                    let item = items[index]
+                    HStack(spacing: CalendarSpace.s) {
+                        if let symbol = item.symbol {
+                            Image(systemName: symbol).font(.caption).foregroundStyle(item.warning ? Color.orange : Color.secondary)
+                        }
+                        Text(item.text).font(.caption).foregroundStyle(item.warning ? Color.primary : Color.secondary)
+                            .lineLimit(2)
+                        if let action = item.action {
+                            Button(action.title) { perform(action) }.font(.caption.weight(.semibold)).buttonStyle(.borderless)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            .padding(.leading, CalendarSpace.xl).padding(.trailing, CalendarSpace.l).padding(.bottom, CalendarSpace.xs)
+        }
+    }
+
+    private enum StatusAction {
+        case retrySave, dismiss, hideSamples, connect, refresh
+        var title: String {
+            switch self {
+            case .retrySave: "Erneut speichern"
+            case .dismiss: "OK"
+            case .hideSamples: "Ausblenden"
+            case .connect: "Verbinden …"
+            case .refresh: "Erneut"
+            }
+        }
+    }
+
+    private struct StatusItem {
+        var symbol: String?
+        var text: String
+        var warning = false
+        var action: StatusAction?
+    }
+
+    private func perform(_ action: StatusAction) {
+        switch action {
+        case .retrySave: Task { await model.retrySave() }
+        case .dismiss: model.dismissNotices()
+        case .hideSamples: model.showsSamples = false
+        case .connect: connecting = true
+        case .refresh: model.refreshNow()
+        }
+    }
+
+    private var statusItems: [StatusItem] {
+        var items: [StatusItem] = []
+        if let error = model.storageError { items.append(StatusItem(symbol: "lock.trianglebadge.exclamationmark", text: error, warning: true)) }
+        if let error = model.saveError {
+            items.append(StatusItem(symbol: "exclamationmark.triangle", text: error, warning: true,
+                                    action: model.unsaved ? .retrySave : .dismiss))
+        }
+        if let notice = model.recoveredNotice {
+            items.append(StatusItem(symbol: "clock.arrow.circlepath", text: notice, warning: true, action: .dismiss))
+        }
+        if model.showsSamples {
+            items.append(StatusItem(symbol: "theatermasks", text: "Beispieldaten – frei erfunden, nichts wird gespeichert",
+                                    action: .hideSamples))
+        } else if model.connection != nil, !model.hiddenSources.contains(.timetable) {
+            items.append(sourceItem)
+        }
+        return items
+    }
+
+    private var sourceItem: StatusItem {
+        if model.credentialsMissing {
+            return StatusItem(symbol: "key", text: "WebUntis: Zugangsdaten fehlen auf diesem iPad", warning: true,
+                              action: .connect)
+        }
+        let range = shownRange
+        var stand: String?
+        switch model.coverage(range.start, range.end) {
+        case .loaded(let oldest)?: stand = model.standText(oldest)
+        case .partial(let oldest)?: stand = model.standText(oldest) + " · teilweise geladen"
+        default: stand = nil
+        }
+        if model.syncing {
+            return StatusItem(symbol: "arrow.triangle.2.circlepath", text: "Stundenplan wird aktualisiert …" + (stand.map { " · \($0)" } ?? ""))
+        }
+        if let error = model.syncError {
+            return StatusItem(symbol: "exclamationmark.icloud", text: "Aktualisierung fehlgeschlagen: \(error)" + (stand.map { " · \($0)" } ?? ""),
+                              warning: true, action: .refresh)
+        }
+        return StatusItem(symbol: "lock", text: "Stundenplan aus WebUntis · " + (stand ?? "noch nicht geladen"))
+    }
+
     @ViewBuilder private var removalBanner: some View {
         if let removal = model.lastRemoval {
             HStack(spacing: CalendarSpace.m) {
-                Text("\(removal.title) ausgeblendet").font(.subheadline).lineLimit(1)
-                Button("Rückgängig") { model.undoRemoval() }.font(.subheadline.weight(.semibold))
+                Text("\(removal.title) gelöscht").font(.subheadline).lineLimit(1)
+                Button("Rückgängig") { Task { await model.undoRemoval() } }.font(.subheadline.weight(.semibold))
                 Button { model.dismissRemoval() } label: { Image(systemName: "xmark").frame(width: 32, height: 32) }
                     .accessibilityLabel("Hinweis schließen")
             }
@@ -202,6 +339,7 @@ struct CalendarView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Button { model.requestNewEvent() } label: { Label("Neuer Termin", systemImage: "plus") }
                 .help("Neuer Termin (⌘N)")
+                .disabled(!model.canWrite || model.showsSamples)
         }
     }
 
@@ -212,7 +350,7 @@ struct CalendarView: View {
 
     @ViewBuilder private var optionsMenu: some View {
         Section {
-            Picker(selection: $weekDays) {
+            Picker(selection: $model.weekDays) {
                 Text("Montag – Freitag").tag(5)
                 Text("Ganze Woche").tag(7)
             } label: {
@@ -231,9 +369,19 @@ struct CalendarView: View {
                 }
             }
         }
-        Section("Designentwurf") {
+        Section("WebUntis (inoffiziell)") {
+            if model.connection != nil {
+                Button { model.refreshNow() } label: { Label("Aktualisieren", systemImage: "arrow.clockwise") }
+                    .disabled(model.syncing || model.credentialsMissing || model.showsSamples)
+                Button { connecting = true } label: { Label("WebUntis-Verbindung …", systemImage: "link") }
+            } else {
+                Button { connecting = true } label: { Label("WebUntis verbinden …", systemImage: "link.badge.plus") }
+                    .disabled(!model.canWrite)
+            }
+        }
+        Section("Ansicht") {
             Toggle("Beispieldaten anzeigen", isOn: $model.showsSamples)
-            Text("Erfundene Termine, nichts wird gespeichert.")
+            Text("Nur zum Ansehen: frei erfundene Termine, nichts wird gespeichert.")
         }
     }
 
@@ -269,13 +417,13 @@ private struct CalendarDayListRequest: Identifiable {
 
 private struct CalendarEnlargeRequest: Identifiable {
     let id = UUID()
-    let event: CalendarSampleEvent
+    let event: CalendarEntry
     let page: Int
 }
 
 /// Search over the sample entries; never silently limited.
 struct CalendarSearchSheet: View {
-    @ObservedObject var model: CalendarDesignModel
+    @ObservedObject var model: CalendarModel
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     private static let shownLimit = 200
@@ -300,7 +448,8 @@ struct CalendarSearchSheet: View {
             .overlay {
                 if query.trimmingCharacters(in: .whitespaces).isEmpty {
                     ContentUnavailableView("Termine suchen", systemImage: "magnifyingglass",
-                                           description: Text("Titel, Raum, Lehrkraft oder Beschreibung (Beispieldaten des geladenen Jahres)."))
+                                           description: Text(model.showsSamples ? "Titel, Raum, Lehrkraft oder Beschreibung (Beispieldaten des angezeigten Jahres)."
+                                                             : "Titel, Ort, Raum oder Beschreibung: eigene Termine und geladener Stundenplan."))
                 } else if results.isEmpty {
                     ContentUnavailableView.search(text: query)
                 }

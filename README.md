@@ -7,9 +7,11 @@ Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nut
 
 Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
 
-## Kalender, Stufe A – Featurebranch `feat/kalender`
+## Kalender – Featurebranch `feat/kalender` (Test-App „noty calendar“)
 
-Kalenderdesign und Navigation mit ausschließlich erfundenen Beispieldaten ([Plan und Umsetzungsstand](docs/CALENDAR-PLAN.md#umsetzungsstand-stufe-a-03112026)): Einstieg „Kalender“ in der Bibliotheksleiste, Woche (Mo–Fr/7 Tage), Monat mit „+ n weitere“, Tag, Jahr, Termindetails mit direkt beschreibbarer Entwurfsseite, Vergrößern/Rückkehr, Terminformular. Keine Kalenderspeicherung, kein WebUntis. Implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft; Designabnahme offen.
+Stufe A: Kalenderdesign und Navigation ([Plan und Umsetzungsstand](docs/CALENDAR-PLAN.md#umsetzungsstand-stufe-a-03112026)): Einstieg „Kalender“ in der Bibliotheksleiste, Woche (Mo–Fr/7 Tage), Monat mit „+ n weitere“, Tag, Jahr, Termindetails mit direkt beschreibbarer Entwurfsseite, Vergrößern/Rückkehr, Terminformular. Designabnahme offen.
+
+Meilenstein B1 (Build 101, [Umsetzungsstand](docs/CALENDAR-PLAN.md#umsetzungsstand-b1-04112026)): WebUntis-Stundenplan und -Ferien über den **inoffiziellen Zugang per Untis-Mobile-Freigabe** (QR-Code oder Handeingabe, Zugangsdaten nur im Schlüsselbund), schreibgeschützt und offline mit „Stand“; eigene Einzeltermine gespeichert im Kalenderpaket des Bereichs (`Calendar/`); Beispieldaten nur noch als Schalter. Terminnotizen weiterhin nur im Speicher; keine Wiederholungen, Erinnerungen, kein Kalender im Backup. Implementiert, erfolgreich gebaut und veröffentlicht, am iPad ungeprüft.
 
 ## Native Gesetzessammlung – separater Feature-Worktree
 

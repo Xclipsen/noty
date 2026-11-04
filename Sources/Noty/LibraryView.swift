@@ -53,8 +53,8 @@ struct LibraryView: View {
     @State private var sidebarSize = CGSize(width: 280, height: 600)
     @State private var detailSize = CGSize(width: 600, height: 600)
     @StateObject private var pdfExport = PDFExportJob()
-    /// Lives with the library (per area): switching to the calendar and back keeps both.
-    @StateObject private var calendar = CalendarDesignModel()
+    /// Calendar of this area, owned by the host (per area): switching to the calendar and back keeps both.
+    @ObservedObject var calendar: CalendarModel
     @State private var exportedPDF: ExportFile?
     @State private var exportingPDF = false
     @State private var exportedPDFName = "noty-export"

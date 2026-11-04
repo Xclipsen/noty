@@ -1,17 +1,21 @@
 import SwiftUI
 import NotebookCore
 
-/// Event form of the design stage: every field of the planned first
-/// version, nothing is saved (Stufe A).
+/// Form for own events of „Persönlich“ (Stufe B1): single events, timed or
+/// all-day (also several days). „Hinzufügen“/„Fertig“ closes only after the
+/// commit; a failed commit keeps the form open with its input.
+/// Repetitions and reminders follow in B2 and are not offered yet.
 struct CalendarEventForm: View {
     @State var draft: CalendarDraft
-    let calendar: Calendar
+    @ObservedObject var model: CalendarModel
     @Environment(\.dismiss) private var dismiss
-    @State private var askingScope = false
-    @State private var newException = Date()
+    @State private var saving = false
+    @State private var failure: String?
+    private var calendar: Calendar { model.calendar }
 
-    private var invalidRange: Bool { draft.allDay ? calendar.startOfDay(for: draft.end) < calendar.startOfDay(for: draft.start) : draft.end <= draft.start }
-    private var editingSeries: Bool { draft.editing?.seriesID != nil }
+    private var invalidRange: Bool {
+        draft.allDay ? calendar.startOfDay(for: draft.end) < calendar.startOfDay(for: draft.start) : draft.end <= draft.start
+    }
 
     var body: some View {
         NavigationStack {
@@ -30,108 +34,48 @@ struct CalendarEventForm: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                repeatSection
-                reminderSection
                 Section {
                     LabeledContent("Kalender") {
                         Label { Text("Persönlich") } icon: { Circle().fill(CalendarPalette.personal).frame(width: 8, height: 8) }
                     }
                     TextField("Beschreibung", text: $draft.details, axis: .vertical).lineLimit(2...8)
                 } footer: {
-                    Text("Entwurf: Eingaben werden nicht gespeichert. Unterricht aus WebUntis bleibt schreibgeschützt.")
+                    Text("Wird nur auf diesem iPad in diesem Bereich gespeichert. Wiederholungen und Erinnerungen folgen in einem späteren Build. Unterricht aus WebUntis bleibt schreibgeschützt.")
+                }
+                if let failure {
+                    Section {
+                        Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    }
                 }
             }
+            .disabled(saving)
             .navigationTitle(draft.editing == nil ? "Neuer Termin" : "Termin bearbeiten")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.disabled(saving) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(draft.editing == nil ? "Hinzufügen" : "Fertig") {
-                        if editingSeries { askingScope = true } else { dismiss() }
-                    }
-                    .disabled(draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || invalidRange)
+                    Button(draft.editing == nil ? "Hinzufügen" : "Fertig") { save() }
+                        .disabled(saving || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || invalidRange)
                 }
             }
-            .confirmationDialog("Änderung übernehmen für", isPresented: $askingScope, titleVisibility: .visible) {
-                Button("Nur diesen Termin") { dismiss() }
-                Button("Gesamte Serie") { dismiss() }
-            } message: { Text("Entwurf: Es wird nichts gespeichert.") }
         }
         .environment(\.locale, Locale(identifier: "de_DE"))
         .environment(\.calendar, calendar)
         .preferredColorScheme(.dark)
+        .interactiveDismissDisabled(saving)
         .onChange(of: draft.start) { old, new in
             // Moving the start keeps the duration.
             if let moved = calendar.date(byAdding: .second, value: Int(draft.end.timeIntervalSince(old)), to: new) { draft.end = moved }
         }
     }
 
-    /// „Wiederholen“ stays one row until a rule is chosen; end and
-    /// exceptions are behind a disclosure.
-    @ViewBuilder private var repeatSection: some View {
-        Section {
-            Picker("Wiederholen", selection: $draft.repeatRule) {
-                ForEach(CalendarDraft.Repeat.allCases) { Text($0.title).tag($0) }
-            }
-            if draft.repeatRule != .never {
-                Picker("Endet", selection: $draft.repeatEnd) {
-                    ForEach(CalendarDraft.RepeatEnd.allCases) { Text($0.title).tag($0) }
-                }
-                switch draft.repeatEnd {
-                case .never: EmptyView()
-                case .onDate: DatePicker("Letzter Termin", selection: $draft.repeatUntil, in: draft.start..., displayedComponents: [.date])
-                case .afterCount: Stepper("Nach \(draft.repeatCount) Terminen", value: $draft.repeatCount, in: 2...500)
-                }
-                DisclosureGroup(draft.exceptions.isEmpty ? "Ausnahmen" : "Ausnahmen (\(draft.exceptions.count))") {
-                    ForEach(draft.exceptions, id: \.self) { date in
-                        Text(CalendarText.longDate(date, calendar: calendar))
-                    }
-                    .onDelete { draft.exceptions.remove(atOffsets: $0) }
-                    HStack {
-                        DatePicker("Ausnahme am", selection: $newException, displayedComponents: [.date])
-                        Button("Hinzufügen") {
-                            let day = calendar.startOfDay(for: newException)
-                            if !draft.exceptions.contains(day) { draft.exceptions.append(day); draft.exceptions.sort() }
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                }
-            }
-        } footer: {
-            if draft.repeatRule != .never { Text(repeatSummary) }
-        }
-    }
-
-    private var repeatSummary: String {
-        let weekday = CalendarText.weekdays[CalendarDates.weekdayIndex(draft.start, calendar: calendar)]
-        var parts: [String]
-        switch draft.repeatRule {
-        case .never: return ""
-        case .daily: parts = ["Täglich"]
-        case .weekly: parts = ["Wöchentlich am \(weekday)"]
-        case .monthly: parts = ["Monatlich am \(calendar.component(.day, from: draft.start))."]
-        }
-        switch draft.repeatEnd {
-        case .never: parts.append("ohne Ende")
-        case .onDate: parts.append("bis \(CalendarText.numericDate(draft.repeatUntil, calendar: calendar))")
-        case .afterCount: parts.append("\(draft.repeatCount) Termine")
-        }
-        if !draft.exceptions.isEmpty { parts.append(NotyText.count(draft.exceptions.count, "Ausnahme", "Ausnahmen")) }
-        return parts.joined(separator: ", ") + "."
-    }
-
-    @ViewBuilder private var reminderSection: some View {
-        Section {
-            Toggle("Erinnerung", isOn: $draft.reminder)
-            if draft.reminder {
-                Picker("Zeitpunkt", selection: $draft.reminderMinutes) {
-                    Text("Zum Beginn").tag(0)
-                    ForEach([5, 10, 15, 30, 60], id: \.self) { Text("\($0) Minuten vorher").tag($0) }
-                    Text("1 Tag vorher").tag(1440)
-                }
-            }
-        } footer: {
-            if draft.reminder { Text("Für Unterricht folgt eine allgemeine Einstellung (z. B. 10 Minuten vorher); doppelte Hinweise werden vermieden.") }
+    private func save() {
+        saving = true
+        failure = nil
+        Task {
+            let problem = await model.save(draft)
+            saving = false
+            if let problem { failure = problem } else { dismiss() }
         }
     }
 }

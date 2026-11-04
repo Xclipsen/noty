@@ -7,8 +7,8 @@ import NotebookCore
 /// writable page as the main element. `overlay`: large view over the
 /// calendar in narrow windows, with a clear way back.
 struct CalendarEventPanel: View {
-    let event: CalendarSampleEvent
-    @ObservedObject var model: CalendarDesignModel
+    let event: CalendarEntry
+    @ObservedObject var model: CalendarModel
     var overlay = false
     /// Esc closes the panel only while nothing is presented over the calendar.
     var escapes = true
@@ -47,14 +47,9 @@ struct CalendarEventPanel: View {
         .background(Color(uiColor: .systemBackground))
         .onChange(of: event.id) { _, _ in page = 0 }
         .confirmationDialog("Termin löschen?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
-            if event.seriesID != nil {
-                Button("Nur diesen Termin löschen", role: .destructive) { model.remove(event, wholeSeries: false) }
-                Button("Gesamte Serie löschen", role: .destructive) { model.remove(event, wholeSeries: true) }
-            } else {
-                Button("Termin löschen", role: .destructive) { model.remove(event, wholeSeries: false) }
-            }
+            Button("Termin löschen", role: .destructive) { Task { await model.remove(event) } }
         } message: {
-            Text("Entwurf: Der Termin wird nur in dieser Sitzung ausgeblendet und lässt sich zurückholen. Notizen bleiben erhalten.")
+            Text("„\(event.title)“ wird aus dem Kalender gelöscht. Direkt danach lässt sich das mit „Rückgängig“ zurücknehmen.")
         }
     }
 
@@ -111,7 +106,7 @@ struct CalendarEventPanel: View {
                 }
                 HStack(spacing: 6) {
                     Circle().fill(CalendarPalette.color(event)).frame(width: 7, height: 7)
-                    Text(event.source.readOnly ? "\(event.source.title) · \(event.source.origin)" : event.source.title)
+                    Text("\(event.source.title) · \(event.originText)")
                     if event.source.readOnly { Image(systemName: "lock").font(.caption2).accessibilityLabel("schreibgeschützt") }
                 }
                 .accessibilityElement(children: .combine)
@@ -123,6 +118,9 @@ struct CalendarEventPanel: View {
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(event.status == .cancelled ? Color.orange : .primary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(event.statusNotes, id: \.self) { note in
+                Text(note).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             // Only rows with content; „keine Erinnerung“ is not shown.
             if event.repeatText != nil || event.reminder != nil {
@@ -140,7 +138,7 @@ struct CalendarEventPanel: View {
     }
 
     private func statusText(_ label: String) -> String {
-        if case .substitution(let note) = event.status { return "\(label): \(note)" }
+        if let note = event.status.note { return "\(label): \(note)" }
         return label
     }
 
@@ -153,8 +151,8 @@ struct CalendarEventPanel: View {
             CalendarNoteControls(pages: pages.count, page: Binding(get: { index }, set: { page = $0 }), input: $input,
                                  addPage: { page = model.addPage(to: event) }, enlarge: { enlarge(index) })
             CalendarNotePageView(event: event, model: model, page: index, input: input)
-            Text("Entwurf · wird nicht gespeichert")
-                .font(.caption2).foregroundStyle(CalendarPalette.quiet).lineLimit(1)
+            Text(event.isSample ? "Beispiel · wird nicht gespeichert" : "Notizen werden noch nicht gespeichert – ab dem nächsten Build")
+                .font(.caption2).foregroundStyle(CalendarPalette.quiet).lineLimit(2).multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
         }
     }
@@ -247,8 +245,8 @@ struct CalendarNoteControls: View {
 /// A4 page in canonical page points, scaled to the available space; the
 /// same page shows inline and enlarged without changing its content.
 struct CalendarNotePageView: View {
-    let event: CalendarSampleEvent
-    @ObservedObject var model: CalendarDesignModel
+    let event: CalendarEntry
+    @ObservedObject var model: CalendarModel
     let page: Int
     let input: CalendarNoteInput
     static let size = CGSize(width: 595, height: 842)
@@ -376,8 +374,8 @@ struct CalendarNoteCanvas: UIViewRepresentable {
 /// „Vergrößern“: the page large, with a clear way back to event and date.
 /// From Stufe B on this opens the normal noty editor.
 struct CalendarEnlargedNote: View {
-    let event: CalendarSampleEvent
-    @ObservedObject var model: CalendarDesignModel
+    let event: CalendarEntry
+    @ObservedObject var model: CalendarModel
     @State var page: Int
     @State private var input = CalendarNoteInput.pen
     @Environment(\.dismiss) private var dismiss
@@ -404,7 +402,7 @@ struct CalendarEnlargedNote: View {
             Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
             CalendarNotePageView(event: event, model: model, page: min(page, pages.count - 1), input: input)
                 .padding(CalendarSpace.xl)
-            Text("Entwurf · wird nicht gespeichert · ab Stufe B öffnet hier der normale noty-Editor")
+            Text("Notizen werden noch nicht gespeichert – ab dem nächsten Build, dann im normalen noty-Editor")
                 .font(.caption2).foregroundStyle(CalendarPalette.quiet).lineLimit(1).padding(.bottom, CalendarSpace.s)
         }
         .background(Color(uiColor: .systemBackground))

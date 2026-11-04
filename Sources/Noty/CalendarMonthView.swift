@@ -5,7 +5,7 @@ import NotebookCore
 /// compact lines per day. What does not fit is counted in „+ n weitere“,
 /// never dropped.
 struct CalendarMonthView: View {
-    @ObservedObject var model: CalendarDesignModel
+    @ObservedObject var model: CalendarModel
     let showAll: (Date) -> Void
     @ScaledMetric(relativeTo: .caption) private var line: CGFloat = 20
     @ScaledMetric(relativeTo: .caption) private var weekColumn: CGFloat = 28
@@ -101,8 +101,8 @@ struct CalendarMonthView: View {
 /// One compact line of the month: colour dot, title, time if it fits.
 /// All-day entries get the stripe and tint of the week chips.
 struct CalendarMonthRow: View {
-    let event: CalendarSampleEvent
-    @ObservedObject var model: CalendarDesignModel
+    let event: CalendarEntry
+    @ObservedObject var model: CalendarModel
 
     var body: some View {
         let color = CalendarPalette.color(event)
@@ -151,7 +151,7 @@ struct CalendarMonthRow: View {
 /// Complete list of one day („+ n weitere“).
 struct CalendarDayListSheet: View {
     let day: Date
-    @ObservedObject var model: CalendarDesignModel
+    @ObservedObject var model: CalendarModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -167,7 +167,7 @@ struct CalendarDayListSheet: View {
                         .accessibilityLabel(event.accessibilityText(model.calendar, notes: model.hasNotes(event)))
                     }
                 } footer: {
-                    Text(NotyText.count(events.count, "Termin", "Termine") + " · Beispieldaten")
+                    Text(NotyText.count(events.count, "Termin", "Termine") + (model.showsSamples ? " · Beispieldaten" : ""))
                 }
             }
             .overlay { if events.isEmpty { ContentUnavailableView("Keine Termine", systemImage: "calendar") } }
@@ -186,8 +186,8 @@ struct CalendarDayListSheet: View {
 
 /// Row of lists (day list, search).
 struct CalendarListRow: View {
-    let event: CalendarSampleEvent
-    @ObservedObject var model: CalendarDesignModel
+    let event: CalendarEntry
+    @ObservedObject var model: CalendarModel
     var showsDate = false
 
     var body: some View {
@@ -214,7 +214,7 @@ struct CalendarListRow: View {
 /// Year: twelve light months; a quiet dot marks event days, a faint band
 /// the sample holidays. Tapping a day opens it, the month name the month.
 struct CalendarYearView: View {
-    @ObservedObject var model: CalendarDesignModel
+    @ObservedObject var model: CalendarModel
     @ScaledMetric(relativeTo: .body) private var cell: CGFloat = 44
     private var calendar: Calendar { model.calendar }
 
@@ -236,10 +236,17 @@ struct CalendarYearView: View {
         }
     }
 
+    /// Missing holiday data is never presented as „no holidays“.
+    private var holidayLegend: String {
+        if model.showsSamples { return "Ferien (Beispiel, keine echte Ferienquelle)" }
+        if model.connection == nil { return "Ferien erst mit WebUntis-Verbindung" }
+        return model.snapshot?.holidaysFetchedAt == nil ? "Ferien noch nicht geladen" : "Ferien laut WebUntis"
+    }
+
     private var legend: some View {
         HStack(spacing: CalendarSpace.l) {
             Label { Text("Termine") } icon: { Circle().fill(Color.secondary).frame(width: 4, height: 4) }
-            Label { Text("Ferien (Beispiel, keine echte Ferienquelle)") } icon: {
+            Label { Text(holidayLegend) } icon: {
                 Capsule().fill(CalendarPalette.holidays.opacity(0.3)).frame(width: 16, height: 8)
             }
         }
