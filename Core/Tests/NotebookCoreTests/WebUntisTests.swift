@@ -204,6 +204,38 @@ final class WebUntisTests: XCTestCase {
         XCTAssertEqual(autumn[0].start.timeIntervalSince1970, 1_792_998_000) // 07:00 UTC (CET again)
     }
 
+    /// First device run (04.11.2026): the strict „YYYY-MM-DDTHH:MM“ parser
+    /// rejected the real answer („Stundenzeit“). Every tolerated form is the
+    /// same local wall-clock time.
+    func testLessonTimesAreReadTolerantlyAsLocalTime() throws {
+        let forms = ["2026-11-04T07:45Z", "2026-11-04T07:45", "2026-11-04T07:45:00", "2026-11-04T07:45:00.000Z",
+                     "2026-11-04 07:45", "2026-11-04T7:45Z"]
+        for form in forms {
+            let parsed = try XCTUnwrap(WebUntis.localDateTime(form), form)
+            XCTAssertEqual(parsed.date, day("2026-11-04"), form)
+            XCTAssertEqual(parsed.components.hour, 7, form)
+            XCTAssertEqual(parsed.components.minute, 45, form)
+            XCTAssertEqual(parsed.text, "2026-11-04T07:45", form) // identity independent of the form
+        }
+        for bad in ["2026-11-04T07:45+01:00", "2026-11-04", "2026-11-04T24:00Z", "2026-11-04T07:5Z", "04.11.2026 07:45", "2026-11-04T07:45:7"] {
+            XCTAssertNil(WebUntis.localDateTime(bad), bad)
+        }
+        let data = timetable([period(301, "2026-11-04T07:45Z", "2026-11-04T09:15Z"),
+                              period(302, "2026-11-04T09:30Z", "2026-11-04T09:30Z"),   // zero length (e.g. a note)
+                              period(303, "2026-11-05T08:00Z", "2026-11-06T13:00Z")])  // event over two days
+        let lessons = try WebUntis.parseTimetable(data, user: user(), connection: connection, timeZone: berlin,
+                                                  start: day("2026-11-02"), end: day("2026-11-09"))
+        XCTAssertEqual(lessons.map(\.key.sourceID), ["301", "302", "303"])
+        XCTAssertEqual(lessons[0].start, berlinDate(2026, 11, 4, 7, 45)) // local, not UTC
+        XCTAssertEqual(lessons[0].end, berlinDate(2026, 11, 4, 9, 15))
+        // The error names the shape only, never the value.
+        XCTAssertThrowsError(try WebUntis.parseTimetable(timetable([period(304, "2026-11-04T07:45+01:00", "2026-11-04T09:15Z")]),
+                                                         user: user(), connection: connection, timeZone: berlin,
+                                                         start: day("2026-11-02"), end: day("2026-11-09"))) {
+            XCTAssertEqual($0 as? WebUntisError, .invalidResponse("Stundenzeit „dddd-dd-ddTdd:dd+dd:dd“"))
+        }
+    }
+
     func testPartialOrInvalidAnswersAreRejectedNotEmpty() throws {
         let start = day("2026-11-02"), end = day("2026-11-09")
         func parse(_ data: Data) throws -> [CalendarLesson] {
@@ -223,7 +255,7 @@ final class WebUntisTests: XCTestCase {
         // One broken period rejects everything.
         XCTAssertThrowsError(try parse(timetable([period(101, "2026-11-02T08:00", "2026-11-02T09:30"),
                                                   period(102, "2026-11-02T09:45", "2026-11-02T09:00")])))
-        XCTAssertThrowsError(try parse(timetable([period(101, "2026-11-02 08:00", "2026-11-02T09:30")])))
+        XCTAssertThrowsError(try parse(timetable([period(101, "2026-11-02T08h00", "2026-11-02T09:30")])))
         XCTAssertThrowsError(try parse(timetable([period(101, "2026-11-02T08:00", "2026-11-02T09:30"),
                                                   period(101, "2026-11-02T08:00", "2026-11-02T09:30")])))
         // A really empty week is a valid, empty answer.

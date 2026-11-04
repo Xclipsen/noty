@@ -290,10 +290,16 @@ public enum WebUntis {
         var lessons: [CalendarLesson] = []
         var seen = Set<String>()
         for period in result.timetable.periods {
+            // Unreadable times reject the whole answer; the message names the
+            // shape only (digits masked), never the value.
             guard let from = localDateTime(period.startDateTime), let to = localDateTime(period.endDateTime),
-                  let startDate = calendar.date(from: from.components), let endDate = calendar.date(from: to.components),
-                  endDate > startDate, endDate.timeIntervalSince(startDate) <= 86_400 else {
-                throw WebUntisError.invalidResponse("Stundenzeit")
+                  let startDate = calendar.date(from: from.components), let endDate = calendar.date(from: to.components) else {
+                throw WebUntisError.invalidResponse("Stundenzeit „\(shape(period.startDateTime))“")
+            }
+            // Zero-length entries and events over several days exist; only a
+            // reversed or absurd span is an error.
+            guard endDate >= startDate, endDate.timeIntervalSince(startDate) <= 31 * 86_400 else {
+                throw WebUntisError.invalidResponse("Stundenzeit Ende vor Beginn")
             }
             guard from.date >= start, from.date < end else { continue }
             let key = CalendarOccurrenceKey(provider: "webuntis", connection: connection, sourceID: String(period.id),
@@ -345,14 +351,34 @@ public enum WebUntis {
         }
     }
 
-    /// „YYYY-MM-DDTHH:MM“ (optionally „:SS“) in the school's local time.
+    /// Digits masked („dddd-dd-ddTdd:ddZ“) for error messages.
+    static func shape(_ text: String) -> String {
+        String(text.prefix(40).map { $0.isNumber ? "d" : $0 })
+    }
+
+    /// School-local „YYYY-MM-DDTHH:MM“, tolerantly: „T“ or space, „H:MM“,
+    /// optional „:SS“ and fractions, and a trailing „Z“. The mobile API
+    /// writes local wall-clock times with a literal „Z“ (community clients
+    /// read it as local time; first device run on 04.11.2026 rejected the
+    /// strict form). Explicit offsets (+01:00) are not expected and rejected.
     static func localDateTime(_ text: String) -> (date: CivilDate, components: DateComponents, text: String)? {
-        let parts = text.split(separator: "T", omittingEmptySubsequences: false)
+        var raw = text.trimmingCharacters(in: .whitespaces)
+        if raw.hasSuffix("Z") || raw.hasSuffix("z") { raw.removeLast() }
+        let separator: Character = raw.contains("T") ? "T" : " "
+        let parts = raw.split(separator: separator, omittingEmptySubsequences: false)
         guard parts.count == 2, let date = CivilDate(String(parts[0])) else { return nil }
         let time = parts[1].split(separator: ":", omittingEmptySubsequences: false)
-        guard (2...3).contains(time.count), time.allSatisfy({ $0.count == 2 && $0.allSatisfy { $0.isASCII && $0.isNumber } }),
+        guard (2...3).contains(time.count) else { return nil }
+        if time.count == 3 {
+            // Seconds, optionally with a fraction („00.000“).
+            let seconds = time[2].split(separator: ".", omittingEmptySubsequences: false)
+            guard (1...2).contains(seconds.count), seconds[0].count == 2,
+                  seconds.allSatisfy({ !$0.isEmpty && $0.allSatisfy { $0.isASCII && $0.isNumber } }) else { return nil }
+        }
+        guard (1...2).contains(time[0].count), time[1].count == 2,
+              time[0].allSatisfy({ $0.isASCII && $0.isNumber }), time[1].allSatisfy({ $0.isASCII && $0.isNumber }),
               let hour = Int(time[0]), let minute = Int(time[1]), (0...23).contains(hour), (0...59).contains(minute) else { return nil }
-        let second = time.count == 3 ? Int(time[2]) ?? 0 : 0
+        let second = time.count == 3 ? Int(time[2].prefix(2)) ?? 0 : 0
         guard (0...59).contains(second) else { return nil }
         return (date, DateComponents(year: date.year, month: date.month, day: date.day, hour: hour, minute: minute, second: second),
                 "\(date)T" + String(format: "%02d:%02d", hour, minute))
