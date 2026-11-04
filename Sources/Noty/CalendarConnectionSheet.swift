@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import VisionKit
 import NotebookCore
 
@@ -22,7 +23,7 @@ struct CalendarConnectionSheet: View {
     @State private var confirmingDisconnect = false
     @State private var replacing = false
 
-    private var setup: WebUntisSetup? { try? WebUntisSetup(server: server, school: school, user: user, key: key) }
+    @FocusState private var focused: WebUntisEntryField?
     private var scannerAvailable: Bool { DataScannerViewController.isSupported }
 
     var body: some View {
@@ -91,32 +92,113 @@ struct CalendarConnectionSheet: View {
     }
 
     @ViewBuilder private var entrySections: some View {
+        let check = self.check
         Section {
-            Button { scanning = true } label: { Label("QR-Code der Freigabe scannen", systemImage: "qrcode.viewfinder") }
-                .disabled(!scannerAvailable)
+            Button { scanning = true } label: {
+                Label("QR-Code der Freigabe scannen", systemImage: "qrcode.viewfinder").font(.headline)
+            }
+            .disabled(!scannerAvailable)
             if !scannerAvailable {
-                Text("Auf diesem Gerät ist kein Scannen möglich. Bitte die Angaben unten eingeben.").font(.footnote).foregroundStyle(.secondary)
+                Text("Auf diesem Gerät ist kein Scannen möglich. Bitte die Freigabe einfügen oder die Angaben unten eingeben.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Button { pasteFromClipboard() } label: {
+                Label("Freigabe aus Zwischenablage einfügen", systemImage: "doc.on.clipboard")
             }
         } footer: { notice }
         Section {
-            TextField("Server (z. B. schule.webuntis.com)", text: $server)
-                .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-            TextField("Schule (Anmeldename)", text: $school).textInputAutocapitalization(.never).autocorrectionDisabled()
-            TextField("Benutzer", text: $user).textInputAutocapitalization(.never).autocorrectionDisabled()
-                .textContentType(.username)
-            SecureField("Schlüssel", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled()
+            entryField(.server, text: $server, prompt: "schulname.webuntis.com",
+                       help: "Adresse, z. B. schulname.webuntis.com – steht in der Adresszeile, wenn WebUntis im Browser offen ist. Die ganze Adresse einzufügen geht auch.")
+            entryField(.school, text: $school, prompt: "schulname",
+                       help: "Schul-Anmeldename ohne Punkt, z. B. schulname – in der WebUntis-Adresse hinter „school=“.")
+            entryField(.user, text: $user, prompt: "Benutzername",
+                       help: "Der WebUntis-Benutzername aus der Freigabe.")
+            entryField(.key, text: $key, prompt: "ABCD EFGH IJKL MNOP", secure: true,
+                       help: "Lange Buchstaben-Zahlen-Folge unter WebUntis → Profil → Freigaben (neben dem QR-Code). Leerzeichen und Kleinschreibung sind egal.")
+            if check.swapSuggested {
+                Button { apply(check.entry.swapped, normalize: false) } label: {
+                    Label("Vertauscht? Server und Schule tauschen", systemImage: "arrow.up.arrow.down")
+                }
+            }
         } header: { Text("Oder von Hand") } footer: {
-            Text("Die Angaben stehen unter WebUntis → Profil → Freigaben → Untis Mobile (Benutzer und Schlüssel neben dem QR-Code).")
+            Text("Ein kompletter Freigabe-Link (untis://…) darf in jedes Feld eingefügt werden; dann werden alle Felder ausgefüllt.")
         }
         Section {
-            Button("Verbindung testen") { test() }.disabled(setup == nil)
-            Button("Verbinden") { connect() }.disabled(setup == nil || !model.canWrite)
+            Button("Verbindung testen") { test() }.disabled(check.setup == nil)
+            Button("Verbinden") { connect() }.disabled(check.setup == nil || !model.canWrite)
             if replacing { Button("Abbrechen", role: .cancel) { replacing = false; failure = nil; result = nil } }
         } footer: {
-            if !model.canWrite, let error = model.storageError { Text(error) }
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(check.lines, id: \.self) { line in
+                    Label(line, systemImage: "info.circle").foregroundStyle(.orange)
+                }
+                if !model.canWrite, let error = model.storageError { Text(error) }
+            }
         }
         if let result { Section { Label(result, systemImage: "checkmark.circle").foregroundStyle(.green) } }
         if let failure { Section { Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) } }
+    }
+
+    /// Field with a fixed visible label and help line (the placeholder alone
+    /// disappeared while typing and fields were filled the wrong way round).
+    /// VoiceOver reads label and help once, via the field itself.
+    @ViewBuilder private func entryField(_ field: WebUntisEntryField, text: Binding<String>, prompt: String,
+                                         secure: Bool = false, help: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(field.rawValue).font(.subheadline.weight(.semibold)).accessibilityHidden(true)
+            Group {
+                if secure {
+                    SecureField(field.rawValue, text: text, prompt: Text(prompt))
+                } else {
+                    TextField(field.rawValue, text: text, prompt: Text(prompt))
+                        .keyboardType(field == .server ? .URL : .default)
+                        .textContentType(field == .user ? .username : nil)
+                }
+            }
+            .textInputAutocapitalization(.never).autocorrectionDisabled()
+            .focused($focused, equals: field)
+            .submitLabel(.next)
+            .onSubmit { normalizeFields() }
+            .onChange(of: text.wrappedValue) { old, new in
+                // A pasted link or URL (a jump of several characters) is
+                // resolved at once; normal typing only on leaving the field.
+                if new.count - old.count > 8, new.contains("://") { normalizeFields() }
+            }
+            .accessibilityLabel(field.rawValue)
+            .accessibilityHint(help)
+            Text(help).font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var entry: WebUntisEntry { WebUntisEntry(server: server, school: school, user: user, key: key) }
+    private var check: WebUntisEntryCheck { WebUntis.check(entry) }
+
+    private func apply(_ entry: WebUntisEntry, normalize: Bool = true) {
+        let entry = normalize ? WebUntis.normalizedEntry(entry) : entry
+        server = entry.server; school = entry.school; user = entry.user; key = entry.key
+    }
+
+    private func normalizeFields() {
+        let normalized = WebUntis.normalizedEntry(entry)
+        if normalized != entry { apply(normalized, normalize: false) }
+    }
+
+    /// Reads the pasteboard only on this tap (iPadOS may ask for permission).
+    private func pasteFromClipboard() {
+        result = nil; failure = nil
+        guard let text = UIPasteboard.general.string, let pasted = WebUntis.parseEntry(text) else {
+            failure = "In der Zwischenablage ist keine Freigabe (untis://setschool?…) und keine WebUntis-Adresse. In WebUntis unter Profil → Freigaben den Link kopieren oder den QR-Code scannen."
+            return
+        }
+        var merged = entry
+        var filled: [WebUntisEntryField] = []
+        if !pasted.server.isEmpty { merged.server = pasted.server; filled.append(.server) }
+        if !pasted.school.isEmpty { merged.school = pasted.school; filled.append(.school) }
+        if !pasted.user.isEmpty { merged.user = pasted.user; filled.append(.user) }
+        if !pasted.key.isEmpty { merged.key = pasted.key; filled.append(.key) }
+        apply(merged)
+        result = "Aus der Zwischenablage übernommen: " + filled.map(\.rawValue).joined(separator: ", ") + "."
     }
 
     private func apply(scanned text: String) {
@@ -131,8 +213,15 @@ struct CalendarConnectionSheet: View {
         }
     }
 
+    /// Uses the normalized values and writes them back into the fields.
+    private func preparedSetup() -> WebUntisSetup? {
+        let setup = check.setup
+        normalizeFields()
+        return setup
+    }
+
     private func test() {
-        guard let setup else { return }
+        guard let setup = preparedSetup() else { return }
         working = true; failure = nil; result = nil
         Task {
             let client = WebUntisClient(setup: setup)
@@ -140,13 +229,13 @@ struct CalendarConnectionSheet: View {
             do {
                 let user = try await client.user()
                 result = "Verbindung funktioniert: \(user.subjects.count) Fächer, \(user.holidays.count) Ferienzeiträume, \(user.teachers.isEmpty ? "keine Lehrkräfte freigegeben" : "\(user.teachers.count) Lehrkräfte")."
-            } catch { failure = WebUntisClient.message(error) }
+            } catch { failure = WebUntisClient.testMessage(error) }
             working = false
         }
     }
 
     private func connect() {
-        guard let setup else { return }
+        guard let setup = preparedSetup() else { return }
         working = true; failure = nil; result = nil
         Task {
             let client = WebUntisClient(setup: setup)
@@ -158,7 +247,7 @@ struct CalendarConnectionSheet: View {
                 replacing = false
                 key = ""; user = ""
                 result = nil
-            } catch { failure = (error as? CalendarStoreError)?.localizedDescription ?? WebUntisClient.message(error) }
+            } catch { failure = (error as? CalendarStoreError)?.localizedDescription ?? WebUntisClient.testMessage(error) }
             working = false
         }
     }

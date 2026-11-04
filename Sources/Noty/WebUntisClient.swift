@@ -116,11 +116,37 @@ final class WebUntisClient: Sendable {
             }
         }
         if let error = error as? WebUntisError {
-            if case .server(let code, let message) = error {
-                return code.map { "WebUntis-Fehler \($0): \(message)" } ?? "WebUntis-Fehler: \(message)"
+            switch WebUntis.problem(error) {
+            case .schoolUnknown: return "Schule unbekannt – bitte neu verbinden"
+            case .authentication: return "Anmeldung abgelehnt (Benutzer/Schlüssel oder Uhrzeit des iPads) – bitte neu verbinden"
+            case .serverUnreachable, .unreadable: return error.localizedDescription
+            case .other(let text): return text
             }
-            return error.localizedDescription
         }
+        return error.localizedDescription
+    }
+
+    /// Full plain-German sentence for „Verbindung testen“/„Verbinden“:
+    /// server unreachable, school unknown, user/key rejected or answer
+    /// unreadable (shape only). Never contains the key.
+    static func testMessage(_ error: Error) -> String {
+        if let error = error as? URLError {
+            switch error.code {
+            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
+                return "Keine Internetverbindung. Bitte WLAN prüfen und erneut testen."
+            case .cannotFindHost, .dnsLookupFailed:
+                return WebUntisProblem.serverUnreachable("Diese Adresse gibt es nicht.").message
+            case .cannotConnectToHost:
+                return WebUntisProblem.serverUnreachable("Der Server nimmt keine Verbindung an.").message
+            case .timedOut:
+                return WebUntisProblem.serverUnreachable("Zeitüberschreitung.").message
+            case .serverCertificateUntrusted, .serverCertificateHasBadDate, .secureConnectionFailed, .serverCertificateHasUnknownRoot:
+                return WebUntisProblem.serverUnreachable("Sichere Verbindung fehlgeschlagen.").message
+            default:
+                return "Netzwerkfehler (\(error.code.rawValue)). Bitte erneut testen."
+            }
+        }
+        if let error = error as? WebUntisError { return WebUntis.problem(error).message }
         return error.localizedDescription
     }
 }

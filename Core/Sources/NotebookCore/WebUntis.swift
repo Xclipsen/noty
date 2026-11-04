@@ -89,7 +89,7 @@ public enum WebUntis {
             guard text[..<range.lowerBound].lowercased() == "https" else { return nil }
             text = String(text[range.upperBound...])
         }
-        if let slash = text.firstIndex(of: "/") { text = String(text[..<slash]) }
+        if let end = text.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) { text = String(text[..<end]) }
         text = text.lowercased()
         let parts = text.split(separator: ":", omittingEmptySubsequences: false)
         guard (1...2).contains(parts.count), let host = parts.first, (3...253).contains(host.count),
@@ -213,6 +213,11 @@ public enum WebUntis {
 
     private static func decode<R: Decodable>(_ type: R.Type, _ data: Data) throws -> R {
         guard data.count <= maximumResponseBytes else { throw WebUntisError.tooLarge }
+        // A web page (login page, error page of a proxy or a wrong host)
+        // instead of JSON: named as such, content never shown.
+        if let first = data.first(where: { !($0 == 0x20 || $0 == 0x0A || $0 == 0x0D || $0 == 0x09) }), first == UInt8(ascii: "<") {
+            throw WebUntisError.invalidResponse("Webseite statt Daten – Server-Adresse und Schule prüfen")
+        }
         let envelope: Envelope<R>
         do { envelope = try JSONDecoder().decode(Envelope<R>.self, from: data) }
         catch { throw WebUntisError.invalidResponse("Format") }
