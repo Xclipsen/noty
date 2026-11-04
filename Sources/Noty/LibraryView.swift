@@ -844,7 +844,15 @@ struct LibraryView: View {
                 guard await toolbox.flush() else { model.error = toolbox.status; return }
             }
             // The calendar's note beside an event commits and lets go first.
-            await calendar.closeNote()
+            // The switch disposes this area's calendar model: a note or a
+            // calendar change that exists only in memory is never dropped
+            // silently, only after the explicit choice to discard it.
+            if let unsaved = await calendar.prepareAreaSwitch() {
+                guard await TopAlert.ask("Kalender nicht gespeichert",
+                                         unsaved + "\n\nBeim Wechseln des Bereichs gehen diese Änderungen verloren. Ohne Wechsel versucht noty es weiter.",
+                                         confirm: "Verwerfen und wechseln") else { return }
+                calendar.discardUnsavedForAreaSwitch()
+            }
             // The new area's store must not start beside a running import.
             await model.waitUntilIdle()
             await workspaces.select(area)

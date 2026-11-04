@@ -138,6 +138,8 @@ struct WorkspaceLibraryHost: View {
                 if phase == .active { Task { await externalBackup.attempt(library: library, toolbox: toolbox) } }
                 // Kalender B3: the rolling reminder window moves on with every activation.
                 if phase == .active { calendar.rescheduleReminders() }
+                // A new event note is created now, not only after its input pause.
+                if phase != .active { calendar.sceneLeftForeground() }
             }
             // Shared PDFs/pictures go to the filing sheet, noty files keep their way.
             .onOpenURL { url in

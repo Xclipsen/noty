@@ -315,10 +315,32 @@ public actor CalendarRepository {
     func setFault(_ fault: @escaping (CalendarStore.CommitStage) throws -> Void) { store.commitFault = fault }
     func setClock(_ clock: @escaping () -> Date) { store.clock = clock }
 
+    /// One acquisition at a time: concurrent callers wait for the same one
+    /// (never a second claim attempt that the first one blocks).
+    private var claiming: Task<PackageWriteLock.Claim?, Never>?
+    /// Bumped by `close()`: a claim that arrives after closing is let go.
+    private var closings = 0
+
     private func requireClaim() async throws {
         if let claim, !claim.isReleased { return }
-        guard let claim = await PackageWriteLock.shared.claim(directory, waitingUpTo: claimWait) else { throw CalendarStoreError.busy }
-        self.claim = claim
+        let attempt: Task<PackageWriteLock.Claim?, Never>
+        if let claiming {
+            attempt = claiming
+        } else {
+            let directory = directory, wait = claimWait
+            attempt = Task { await PackageWriteLock.shared.claim(directory, waitingUpTo: wait) }
+            claiming = attempt
+        }
+        let closed = closings
+        let result = await attempt.value
+        if claiming == attempt { claiming = nil }
+        // Another waiter of the same attempt may have stored it already.
+        if let claim, !claim.isReleased { return }
+        guard let result, !result.isReleased, closed == closings else {
+            if closed != closings { result?.release() }
+            throw CalendarStoreError.busy
+        }
+        claim = result
     }
 
     public func load() async throws -> CalendarLoad {
@@ -334,6 +356,9 @@ public actor CalendarRepository {
     public func save(_ state: CalendarState, revision: Int) async throws -> Bool {
         guard revision >= savedRevision else { return false }
         try await requireClaim()
+        // Waiting for the claim is a suspension point: a newer save may have
+        // committed meanwhile and must not be replaced by this older one.
+        guard revision >= savedRevision else { return false }
         try store.save(state)
         savedRevision = revision
         return true
@@ -341,6 +366,8 @@ public actor CalendarRepository {
 
     /// Releases the write claim (area switch, model gone).
     public func close() {
+        closings += 1
+        claiming = nil
         claim?.release()
         claim = nil
     }

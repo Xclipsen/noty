@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import Combine
 import NotebookCore
 
@@ -50,6 +51,9 @@ final class CalendarModel: ObservableObject {
     @Published var notice: String?
     private(set) var state = CalendarState()
     private var revision = 0
+    /// Every change of `state` (events, links, settings, connection) runs in
+    /// turn on the newest state, after the previous one finished writing.
+    private let mutations = CalendarMutationQueue()
     private var applyingSettings = false
 
     // MARK: WebUntis
@@ -67,11 +71,9 @@ final class CalendarModel: ObservableObject {
     // MARK: Undo of the last change (session; banner)
     struct UndoStep {
         let text: String
-        /// The event as it was before (nil: it did not exist).
-        let before: LocalCalendarEvent?
-        let eventID: UUID
-        /// The „Gelöschte Termine“ entry a deletion created (removed again by „Rückgängig“).
-        var trashID: UUID?
+        /// The event and the targets of its note links before the change,
+        /// plus the „Gelöschte Termine“ entry a deletion created.
+        let snapshot: CalendarUndoSnapshot
     }
 
     // MARK: Reminders (B3)
@@ -103,6 +105,10 @@ final class CalendarModel: ObservableObject {
     /// Editors that could not commit when they were closed: kept (and retried)
     /// until they did, reused when their note is opened again.
     private var lingering: [UUID: EditorModel] = [:]
+    /// Sessions of lingering notes that were never committed (no notebook
+    /// yet): kept so their creation can be resumed without the event shown
+    /// (background, area switch).
+    private var parked: [UUID: CalendarNoteSession] = [:]
     /// Rule-8 runs per note target (resume after a failed step, same document).
     private var creations: [String: CalendarNoteCreation] = [:]
     private var noteQueue: Task<Void, Never>?
@@ -136,7 +142,7 @@ final class CalendarModel: ObservableObject {
         guard self.library !== library else { return }
         self.library = library
         self.defaultAppearance = defaultAppearance
-        library.releaseCalendarNote = { [weak self] in await self?.closeNote() }
+        library.releaseCalendarNote = { [weak self] in _ = await self?.closeNote() }
         library.$snapshot.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in
             MainActor.assumeIsolated { self?.libraryChanged() }
         }.store(in: &subscriptions)
@@ -195,6 +201,8 @@ final class CalendarModel: ObservableObject {
     /// shown but unsaved (with a retry); the committed state on disk is kept.
     @discardableResult
     private func commit(_ change: (inout CalendarState) -> Void) async -> Bool {
+        await mutations.acquire()
+        defer { mutations.release() }
         guard canWrite else {
             saveError = storageError ?? "Der Kalender ist noch nicht geladen."
             return false
@@ -226,7 +234,11 @@ final class CalendarModel: ObservableObject {
         }
     }
 
-    func retrySave() async { _ = await write(state) }
+    func retrySave() async {
+        await mutations.acquire()
+        defer { mutations.release() }
+        _ = await write(state)
+    }
 
     private func persistSettings() {
         guard !applyingSettings, loaded, canWrite else { return }
@@ -257,7 +269,7 @@ final class CalendarModel: ObservableObject {
         let reminder = draft.reminder ? draft.reminderMinutes : nil
         let now = Date()
         var savedEntryID: String?
-        var before: LocalCalendarEvent?
+        var undo: CalendarUndoSnapshot?
         var problemText: String?
         let ok = await commit { state in
             guard let id = draft.editing?.localID, let index = state.events.firstIndex(where: { $0.id == id }) else {
@@ -268,7 +280,8 @@ final class CalendarModel: ObservableObject {
                 return
             }
             var event = state.events[index]
-            before = event
+            let before = event
+            let snapshot = CalendarUndoSnapshot(capturing: state, event: id)
             // The reminder belongs to the event (every occurrence of a series).
             event.reminderMinutes = reminder
             if let occurrence = draft.editing?.originalDate, event.recurrence != nil, scope == .single {
@@ -292,9 +305,13 @@ final class CalendarModel: ObservableObject {
                 event.title = title; event.location = location; event.details = details
                 event.timing = newTiming
                 if var newRule = rule {
-                    // Keep exceptions/changes of the old series, moved along.
-                    if let old = event.recurrence {
-                        let moved = CalendarSeries.shifted(old, byDays: shift)
+                    // Keep exceptions/changes of the old series, moved along like
+                    // the series (days and wall clock, CalendarSeries.moved). The
+                    // occurrence the form was opened from takes the series' new
+                    // values: its own change (if any) is dropped.
+                    if var old = event.recurrence {
+                        if let occurrence = draft.editing?.originalDate { old.overrides.removeAll { $0.originalDate == occurrence } }
+                        let moved = CalendarSeries.moved(old, from: before.timing, to: newTiming)
                         newRule.exceptions = draft.exceptionsEdited ? draft.exceptions(calendar: calendar) : moved.exceptions
                         newRule.overrides = moved.overrides
                     }
@@ -302,37 +319,20 @@ final class CalendarModel: ObservableObject {
                 } else {
                     event.recurrence = nil
                 }
-                Self.retarget(&state.noteLinks, event: id, old: before, new: event)
+                CalendarNoteLinks.retarget(&state.noteLinks, event: id, old: before, new: event)
                 savedEntryID = CalendarEntry.localID(id, event.recurrence == nil ? nil : (draft.editing?.originalDate?.adding(days: shift) ?? CalendarSeries.firstDate(of: newTiming)))
             }
             event.modifiedAt = now
-            if let problem = event.timing.problem { problemText = problem; return }
+            if let problem = event.timing.problem { problemText = problem; snapshot.restore(in: &state); return }
             state.events[index] = event
+            undo = snapshot
         }
         if let problemText { return problemText }
-        if let before, ok || unsaved { lastUndo = UndoStep(text: "„\(before.title)“ geändert", before: before, eventID: before.id) }
+        if let undo, let before = undo.event, ok || unsaved { lastUndo = UndoStep(text: "„\(before.title)“ geändert", snapshot: undo) }
         if let savedEntryID { selection = savedEntryID }
         // A failed write keeps the change in memory (banner with retry); only a
         // rejected change keeps the form open – a second tap must not duplicate.
         return ok || unsaved ? nil : saveError
-    }
-
-    /// Note links of a series follow its changes: single → series gives the
-    /// old note to the first occurrence, series → single keeps the first
-    /// occurrence's note, a moved series moves its occurrence notes along.
-    private static func retarget(_ links: inout [CalendarNoteLink], event id: UUID, old: LocalCalendarEvent?, new: LocalCalendarEvent) {
-        guard let old else { return }
-        let oldFirst = CalendarSeries.firstDate(of: old.timing), newFirst = CalendarSeries.firstDate(of: new.timing)
-        let shift = oldFirst.days(to: newFirst)
-        for index in links.indices {
-            guard case .local(let event, let date) = links[index].target, event == id else { continue }
-            switch (old.recurrence != nil, new.recurrence != nil, date) {
-            case (false, true, nil): links[index].target = .local(event: id, date: newFirst)
-            case (true, false, let day?) where day == oldFirst: links[index].target = .local(event: id, date: nil)
-            case (true, true, let day?) where shift != 0: links[index].target = .local(event: id, date: day.adding(days: shift))
-            default: break
-            }
-        }
     }
 
     /// `timing` (as entered for one occurrence) with its civil start date
@@ -346,22 +346,30 @@ final class CalendarModel: ObservableObject {
     /// can be restored there with its identity; notes stay in the library and
     /// their links stay, so a restored event has its notes again.
     func remove(_ entry: CalendarEntry, scope: SeriesScope = .all) async {
-        guard let id = entry.localID, let event = state.events.first(where: { $0.id == id }) else { return }
+        guard let id = entry.localID, state.events.contains(where: { $0.id == id }) else { return }
         if selection == entry.id { selection = nil }
-        let single = scope == .single && event.recurrence != nil && entry.originalDate != nil
-        let trash = CalendarDeletedEvent(event: event, occurrence: single ? entry.originalDate : nil)
+        var undo: CalendarUndoSnapshot?
+        var single = false
+        var title = entry.title
         let ok = await commit { state in
-            if single, let index = state.events.firstIndex(where: { $0.id == id }), let date = entry.originalDate {
+            // The newest state (an earlier change may have finished meanwhile).
+            guard let index = state.events.firstIndex(where: { $0.id == id }) else { return }
+            let event = state.events[index]
+            title = event.title
+            single = scope == .single && event.recurrence != nil && entry.originalDate != nil
+            let trash = CalendarDeletedEvent(event: event, occurrence: single ? entry.originalDate : nil)
+            undo = CalendarUndoSnapshot(capturing: state, event: id, trashID: trash.id)
+            if single, let date = entry.originalDate {
                 if !state.events[index].recurrence!.exceptions.contains(date) { state.events[index].recurrence!.exceptions.append(date) }
                 state.events[index].modifiedAt = Date()
             } else {
-                state.events.removeAll { $0.id == id }
+                state.events.remove(at: index)
             }
             Self.addToTrash(trash, in: &state)
         }
-        if ok || unsaved {
+        if let undo, ok || unsaved {
             lastUndo = UndoStep(text: single ? "Termin „\(entry.title)“ am \(CalendarText.numericDate(entry.start, calendar: calendar)) gelöscht"
-                                             : "„\(event.title)“ gelöscht", before: event, eventID: id, trashID: trash.id)
+                                             : "„\(title)“ gelöscht", snapshot: undo)
         }
     }
 
@@ -375,18 +383,12 @@ final class CalendarModel: ObservableObject {
     }
 
     /// Restores the event as it was before the last change, with its
-    /// identity (note links stay valid).
+    /// identity, and the targets of its note links in the same commit (a
+    /// moved series takes its occurrence notes back).
     func undoLast() async {
         guard let step = lastUndo else { return }
         lastUndo = nil
-        await commit { state in
-            if let index = state.events.firstIndex(where: { $0.id == step.eventID }) {
-                if let before = step.before { state.events[index] = before } else { state.events.remove(at: index) }
-            } else if let before = step.before {
-                state.events.append(before)
-            }
-            if let trash = step.trashID { state.deletedEvents.removeAll { $0.id == trash } }
-        }
+        await commit { step.snapshot.restore(in: &$0) }
     }
 
     // MARK: Gelöschte Termine (B3)
@@ -518,10 +520,13 @@ final class CalendarModel: ObservableObject {
 
     private func apply(_ change: SeriesChange, scope: SeriesScope) async {
         let timing = change.timing, entry = change.entry, text = change.text
-        guard let id = entry.localID, let before = state.events.first(where: { $0.id == id }) else { return }
+        guard let id = entry.localID else { return }
+        var undo: CalendarUndoSnapshot?
         let ok = await commit { state in
             guard let index = state.events.firstIndex(where: { $0.id == id }) else { return }
-            var event = state.events[index]
+            let before = state.events[index]
+            let snapshot = CalendarUndoSnapshot(capturing: state, event: id)
+            var event = before
             if let occurrence = entry.originalDate, var series = event.recurrence {
                 if scope == .single {
                     let existing = series.overrides.first { $0.originalDate == occurrence }
@@ -531,18 +536,19 @@ final class CalendarModel: ObservableObject {
                     event.recurrence = series
                 } else {
                     guard let first = moved(event.timing, by: change) else { return }
-                    let shift = CalendarSeries.firstDate(of: event.timing).days(to: CalendarSeries.firstDate(of: first))
+                    // Changed occurrences move the same way (days and wall clock).
                     event.timing = first
-                    event.recurrence = CalendarSeries.shifted(series, byDays: shift)
-                    Self.retarget(&state.noteLinks, event: id, old: before, new: event)
+                    event.recurrence = CalendarSeries.moved(series, from: before.timing, to: first)
+                    CalendarNoteLinks.retarget(&state.noteLinks, event: id, old: before, new: event)
                 }
             } else {
                 event.timing = timing
             }
             event.modifiedAt = Date()
             state.events[index] = event
+            undo = snapshot
         }
-        if ok || unsaved { lastUndo = UndoStep(text: text, before: before, eventID: id) }
+        if let undo, ok || unsaved { lastUndo = UndoStep(text: text, snapshot: undo) }
     }
 
     // MARK: Subject colours
@@ -569,24 +575,23 @@ final class CalendarModel: ObservableObject {
     /// and loads the timetable. A failed commit removes the keychain item again.
     func connect(_ setup: WebUntisSetup, label: String) async throws {
         guard canWrite else { throw CalendarStoreError.locked }
-        let old = state.connection
         let record = CalendarConnectionRecord(label: String(label.prefix(200)), timeZone: "Europe/Berlin",
                                               sourceIdentity: WebUntis.sourceIdentity(setup))
         try WebUntisKeychain.save(setup, id: record.id)
-        var next = state
-        next.connection = record
-        guard await write(next) else {
+        // In turn with every other calendar change: the record is set on the
+        // newest state and nothing else can commit (or be replaced) meanwhile.
+        let result = await transition { $0.connection = record }
+        guard let old = result.before else {
             try? WebUntisKeychain.delete(record.id)
-            throw CalendarStoreError.invalidState
+            throw CalendarConnectionCommitError(reason: result.failure)
         }
-        state = next
         generation += 1
         syncing = false
         syncError = nil
         snapshot = nil
         lastSuccess = nil
         credentialsMissing = false
-        if let old {
+        if let old = old.connection {
             try? await repository.removeSourceCache(connection: old.id)
             try? WebUntisKeychain.delete(old.id)
         }
@@ -601,11 +606,11 @@ final class CalendarModel: ObservableObject {
     /// events, notes and their links stay (the same „Freigabe“ connected
     /// again finds them).
     func disconnect() async -> String? {
-        guard let record = state.connection else { return nil }
-        var next = state
-        next.connection = nil
-        guard await write(next) else { return saveError ?? "Trennen wurde nicht gespeichert." }
-        state = next
+        guard state.connection != nil else { return nil }
+        // In turn: no other change can bring the record back after this commit.
+        let result = await transition { $0.connection = nil }
+        guard let old = result.before else { return "Trennen wurde nicht gespeichert: " + (result.failure ?? "unbekannter Fehler") }
+        guard let record = old.connection else { return nil }
         generation += 1
         syncing = false
         syncError = nil
@@ -618,6 +623,32 @@ final class CalendarModel: ObservableObject {
         if let entry = selectedEvent, entry.source != .personal { selection = nil }
         rebuild()
         return problems.isEmpty ? nil : "Getrennt, aber nicht alles entfernt: " + problems.joined(separator: "; ")
+    }
+
+    /// Connection change as one transaction in the mutation queue: applied to
+    /// the newest state and kept only when committed (a failed write leaves
+    /// the state, and an earlier unsaved change, exactly as they were).
+    /// `before`: the state before the change, nil when it was not committed
+    /// (then `failure` says why).
+    private func transition(_ change: (inout CalendarState) -> Void) async -> (before: CalendarState?, failure: String?) {
+        await mutations.acquire()
+        defer { mutations.release() }
+        guard canWrite else { return (nil, storageError ?? "Der Kalender ist noch nicht geladen.") }
+        let before = state
+        var next = state
+        change(&next)
+        do { try next.validate() } catch { return (nil, error.localizedDescription) }
+        let wasUnsaved = unsaved, previousError = saveError
+        guard await write(next) else {
+            // Memory still matches what was on disk before this attempt: no
+            // retry banner for a state that was never shown.
+            let failure = saveError
+            unsaved = wasUnsaved
+            saveError = wasUnsaved ? previousError : nil
+            return (nil, failure)
+        }
+        state = next
+        return (before, nil)
     }
 
     /// Calendar shown or app active again: refresh when the last automatic
@@ -994,9 +1025,74 @@ final class CalendarModel: ObservableObject {
     }
 
     /// For the library: commits and closes the note before it opens a notebook.
-    func closeNote() async {
+    /// False while a note's changes are still only in memory (kept and
+    /// retried; the caller must not drop this model then).
+    @discardableResult
+    func closeNote() async -> Bool {
         releaseNote()
         await noteQueue?.value
+        return lingering.isEmpty
+    }
+
+    /// Area switch (the switch disposes this model and everything it keeps
+    /// in memory): commits and closes the note, resumes notes not created
+    /// yet, retries notes not saved yet and an unsaved calendar change. Nil:
+    /// nothing is only in memory any more; otherwise what would be lost
+    /// (the switch then needs `discardUnsavedForAreaSwitch()` explicitly).
+    func prepareAreaSwitch() async -> String? {
+        await closeNote()
+        await retryLingering(resumingCreations: true)
+        // A commit still running finishes first.
+        await mutations.acquire(); mutations.release()
+        if unsaved { await retrySave() }
+        var parts: [String] = []
+        let titles = lingering.values.map { $0.notebook.title.isEmpty ? "Notiz" : "„\($0.notebook.title)“" }.sorted()
+        if !titles.isEmpty {
+            parts.append((titles.count == 1 ? "Die Kalendernotiz \(titles[0]) ist" : "Die Kalendernotizen \(titles.joined(separator: ", ")) sind")
+                         + " noch nicht gespeichert (zum Beispiel weil ein Import noch läuft oder das Speichern fehlschlägt).")
+        }
+        if unsaved {
+            parts.append("Die letzte Kalenderänderung ist noch nicht gespeichert. \(saveError ?? "")")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
+
+    /// The user chose to switch the area anyway: the notes and calendar
+    /// changes that exist only in memory are let go explicitly.
+    func discardUnsavedForAreaSwitch() {
+        for model in lingering.values { model.abandonUnsavedChanges() }
+        lingering = [:]
+        parked = [:]
+        creations = [:]
+        unsaved = false
+        saveError = nil
+    }
+
+    /// The app leaves the foreground: a note that has content but no
+    /// notebook yet (its 400 ms input pause has not passed, or input kept
+    /// resetting it) is created and committed now, and every running
+    /// creation is protected by background time until it finished. Saved
+    /// notes save themselves (`EditorModel.save`, own background time).
+    func sceneLeftForeground() {
+        var runs: [CalendarNoteSession] = []
+        if let session = noteSession, session.phase != .saved {
+            if session.phase != .creating, EditorModel.hasContent(session.model.notebook) || !session.model.deferredCommit {
+                continueCreation(session)
+            }
+            if session.phase == .creating { runs.append(session) }
+        }
+        for (id, session) in parked where lingering[id] != nil && session.model.deferredCommit && session.phase != .saved {
+            if session.phase != .creating { continueCreation(session) }
+            if session.phase == .creating { runs.append(session) }
+        }
+        guard !runs.isEmpty else { return }
+        let background = CalendarBackgroundTask(name: "noty-calendar-note")
+        Task {
+            for session in runs { await session.creation?.value }
+            // A note created from the parked list commits its newest state and lets go.
+            await retryLingering()
+            background.end()
+        }
     }
 
     private func prepareNote(for entry: CalendarEntry) async {
@@ -1018,6 +1114,7 @@ final class CalendarModel: ObservableObject {
             }
             if library.snapshot.isTrashed(item.id) { noteState = .missing(.trashed(item.title), link); return }
             guard let document = await library.openDocument(item.id) else { noteState = .missing(.deleted, link); return }
+            parked[item.id] = nil
             let model = lingering.removeValue(forKey: item.id)
                 ?? EditorModel(storageRoot: document.directory, restoreDirectory: restores, libraryTitle: item.title)
             start(CalendarNoteSession(entry: entry, target: link.target, documentID: item.id, title: item.title, model: model, phase: .saved))
@@ -1026,6 +1123,7 @@ final class CalendarModel: ObservableObject {
         // A note whose creation stopped: the same document again, never a second one.
         if let creation = creations[target.key] {
             let committed = await creation.stage >= .notebookCommitted
+            parked[creation.documentID] = nil
             if let model = lingering.removeValue(forKey: creation.documentID)
                 ?? (committed ? EditorModel(storageRoot: library.newDocumentDirectory(creation.documentID), restoreDirectory: restores) : nil) {
                 let session = CalendarNoteSession(entry: entry, target: target, documentID: creation.documentID,
@@ -1132,6 +1230,7 @@ final class CalendarModel: ObservableObject {
             // shown again with this event (same document, no second one).
             if EditorModel.hasContent(model.notebook) {
                 lingering[session.documentID] = model
+                parked[session.documentID] = session
                 notice = "Die Notiz zu „\(session.entry.title)“ ist noch nicht gespeichert. Bitte den Termin erneut öffnen."
             }
         } else {
@@ -1146,9 +1245,18 @@ final class CalendarModel: ObservableObject {
         await retryLingering()
     }
 
-    private func retryLingering() async {
+    /// `resumingCreations`: notes without a notebook yet run their creation
+    /// again first (area switch; not on every note change, where a blocked
+    /// package would make each switch wait).
+    private func retryLingering(resumingCreations: Bool = false) async {
+        if resumingCreations {
+            for (id, session) in parked where lingering[id] != nil && session.model.deferredCommit && session.phase != .creating {
+                continueCreation(session)
+                await session.creation?.value
+            }
+        }
         for (id, model) in lingering where !model.deferredCommit {
-            if await model.flushBeforeClosing() { lingering[id] = nil }
+            if await model.flushBeforeClosing() { lingering[id] = nil; parked[id] = nil }
         }
     }
 
@@ -1216,6 +1324,28 @@ final class CalendarModel: ObservableObject {
         model.insertPaper(defaults.paper, color: defaults.color, relativeTo: last.id)
         model.pageIndex = model.notebook.pages.count - 1
     }
+}
+
+/// Background execution time for a note's creation (as the editor's own
+/// `BackgroundSaveTask`): iOS may otherwise suspend the app in between.
+@MainActor private final class CalendarBackgroundTask {
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+    init(name: String) {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+}
+
+/// A connection change that was not committed (the access data are removed again).
+struct CalendarConnectionCommitError: Error, LocalizedError {
+    let reason: String?
+    var errorDescription: String? { "Die Verbindung wurde nicht gespeichert. " + (reason ?? "") }
 }
 
 /// The folder the library step used, handed to the link step.
