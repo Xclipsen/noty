@@ -160,7 +160,8 @@ final class CalendarStore {
 
     /// The state in the current format and the format it was stored in. An
     /// older (migratable) format is read with the defaults of the new fields
-    /// (format 1 → 2: no series, links, mappings, colours or notes folder).
+    /// (format 1 → 2: no series, links, mappings, colours or notes folder;
+    /// 2 → 3: no reminders, lesson reminder setting or deleted events).
     static func decodeStored(_ bytes: Data) throws -> (state: CalendarState, format: Int) {
         struct Header: Decodable { var formatVersion: Int }
         let version = try JSONDecoder().decode(Header.self, from: bytes).formatVersion
@@ -169,13 +170,18 @@ final class CalendarStore {
             throw CalendarStoreError.invalidState
         }
         var state = try JSONDecoder().decode(CalendarState.self, from: bytes)
-        if version < CalendarState.currentFormat {
-            // Format 1 knows none of the new fields; anything else is not format 1.
+        if version < 3 {
+            // Format 1/2 know none of the B3 fields; anything else is not that format.
+            guard state.deletedEvents.isEmpty, state.settings.lessonReminderMinutes == nil,
+                  state.events.allSatisfy({ $0.reminderMinutes == nil }) else { throw CalendarStoreError.invalidState }
+        }
+        if version < 2 {
+            // Format 1 knows none of the B2 fields either.
             guard state.noteLinks.isEmpty, state.lessonMappings.isEmpty, state.settings.subjectColors.isEmpty,
                   state.settings.notesFolderID == nil, state.connection?.sourceIdentity == nil,
                   state.events.allSatisfy({ $0.recurrence == nil }) else { throw CalendarStoreError.invalidState }
-            state.formatVersion = CalendarState.currentFormat
         }
+        state.formatVersion = CalendarState.currentFormat
         try state.validate()
         return (state, version)
     }

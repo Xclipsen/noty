@@ -160,7 +160,7 @@ final class CalendarRepositoryTests: XCTestCase {
         // A newer noty wrote format 2 into the newest revision (same file, new bytes + record).
         let manifestURL = package.appendingPathComponent("manifest.json")
         var manifest = try JSONDecoder().decode(RevisionManifest.self, from: Data(contentsOf: manifestURL))
-        let futureBytes = Data(#"{"formatVersion":3,"events":[],"unknownField":true}"#.utf8)
+        let futureBytes = Data(#"{"formatVersion":4,"events":[],"unknownField":true}"#.utf8)
         let futureFile = UUID().uuidString + ".json"
         try futureBytes.write(to: package.appendingPathComponent("Revisions/\(futureFile)"))
         manifest.revisions.insert(RevisionRecord(file: futureFile, byteCount: futureBytes.count, crc32: SnapshotChecksum.crc32(futureBytes)), at: 0)
@@ -169,9 +169,9 @@ final class CalendarRepositoryTests: XCTestCase {
 
         let locked = CalendarRepository(areaRoot: root)
         do { _ = try await locked.load(); XCTFail("gesperrt erwartet") }
-        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(3)) }
+        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(4)) }
         do { try await locked.save(state(["B"]), revision: 1); XCTFail("gesperrt erwartet") }
-        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(3)) }
+        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(4)) }
         XCTAssertEqual(try snapshotOfFiles(), before)
 
         // A newer manifest format locks as well.
@@ -318,16 +318,16 @@ final class CalendarRepositoryTests: XCTestCase {
         XCTAssertEqual(damaged?.days, [:]) // nothing loaded – never „no lessons“
         await repository.close()
 
-        let future = Data(#"{"formatVersion":3,"connection":"x"}"#.utf8)
+        let future = Data(#"{"formatVersion":4,"connection":"x"}"#.utf8)
         try future.write(to: cacheURL)
         let other = CalendarRepository(areaRoot: root)
         _ = try await other.load()
         do { _ = try await other.sourceSnapshot(); XCTFail("gesperrt erwartet") }
-        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(3)) }
+        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(4)) }
         let fetch = CalendarTimetableFetch(connection: record.id, start: day("2026-11-02"), end: day("2026-11-03"),
                                            fetchedAt: Date(), lessons: [])
         do { _ = try await other.merge(fetch); XCTFail("gesperrt erwartet") }
-        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(3)) }
+        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(4)) }
         XCTAssertEqual(try Data(contentsOf: cacheURL), future)
         await other.close()
     }

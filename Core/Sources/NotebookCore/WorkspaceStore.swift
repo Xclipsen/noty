@@ -283,6 +283,19 @@ public actor WorkspaceStore {
                 throw LibraryArchiveError.incomplete
             }
         }
+        // B3: the calendar of a format-3 archive becomes this area's own
+        // `Calendar/` package. Restore keeps notebook and folder ids, so the
+        // explicit maps are identities over exactly this archive's items: a
+        // link can only reach a notebook of the new area, never another area.
+        // The connection is detached (new id, no keychain item): never active
+        // until the user reconnects on this device.
+        if let calendar = summary.calendar {
+            let documents = Dictionary(uniqueKeysWithValues: summary.notebooks.map { ($0.id, $0.id) })
+            let folders = Dictionary(uniqueKeysWithValues: summary.snapshot.items.filter(\.isFolder).map { ($0.id, $0.id) })
+            let restored = try CalendarArchive.restored(calendar, documents: documents, folders: folders)
+            try restored.validate(documents: Set(plan.documents.map(\.id)), folders: Set(plan.snapshot.items.filter(\.isFolder).map(\.id)))
+            try CalendarArchive.populate(restored, areaRoot: data)
+        }
         // Copied into every package: the scratch is not part of the area.
         try fm.removeItem(at: scratch)
         // The checked source file is kept as part of this workspace's provenance.

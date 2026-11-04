@@ -73,14 +73,16 @@ struct CalendarConnectionSheet: View {
             }
             if let error = model.syncError { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
             if model.credentialsMissing {
-                Label("Die Zugangsdaten fehlen auf diesem iPad (zum Beispiel nach einer Wiederherstellung). Bitte neu verbinden.", systemImage: "key")
+                Label("Zugang auf diesem Gerät neu verbinden: Die Zugangsdaten fehlen auf diesem iPad (zum Beispiel nach einer Wiederherstellung aus einem Bibliotheksbackup – Zugangsdaten sind nie darin enthalten). Der gesicherte Stundenplan bleibt bis dahin mit altem Stand sichtbar.", systemImage: "key")
                     .foregroundStyle(.orange)
             }
         } footer: { notice }
         Section {
             Button { model.refreshNow() } label: { Label("Aktualisieren", systemImage: "arrow.clockwise") }
                 .disabled(model.syncing || model.credentialsMissing)
-            Button { replacing = true } label: { Label("Mit anderer Freigabe verbinden …", systemImage: "qrcode") }
+            Button { replacing = true } label: {
+                Label(model.credentialsMissing ? "Auf diesem Gerät neu verbinden …" : "Mit anderer Freigabe verbinden …", systemImage: "qrcode")
+            }
             Button(role: .destructive) { confirmingDisconnect = true } label: { Label("Trennen", systemImage: "link.badge.minus") }
         } footer: {
             Text("Automatisch aktualisiert beim Öffnen des Kalenders und beim Zurückkehren in die App, während der Kalender sichtbar ist höchstens alle 15 Minuten.")

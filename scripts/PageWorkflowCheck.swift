@@ -190,6 +190,7 @@ struct PageWorkflowCheck {
         let flowPackage = try await Self.checkTextFlowMigration(root: root)
         let textDocument = try await Self.checkTextDocument(root: root)
         let textDocumentExtras = try await Self.checkTextDocumentExtras(root: root)
+        let calendarBackup = try await Self.checkCalendarBackup(root: root)
         let report: [String: Any] = ["schemaVersion": document.schemaVersion,
             "textFieldSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first == continuation,
             "unmaterializedDraftExcludedFromNotebookArchive": !roundTrip.documents[0].pages.contains(where: { $0.id == document.writingDraft().id }),
@@ -216,7 +217,12 @@ struct PageWorkflowCheck {
             "textDocumentSchema15KeepsFlowAndHandwritingPage": textDocument.flowKept,
             "textDocumentKindAndFieldStyleSurviveNotyImportAndLibraryRestore": textDocument.kindKept,
             "textDocumentMarkdownExport": textDocument.markdown,
-            "textDocumentPageBreakKept": textDocumentExtras.breakKept, "textDocumentPaperChanged": textDocumentExtras.paperChanged]
+            "textDocumentPageBreakKept": textDocumentExtras.breakKept, "textDocumentPaperChanged": textDocumentExtras.paperChanged,
+            "calendarArchiveFormat3": calendarBackup.format3, "calendarRestoredIdentical": calendarBackup.identical,
+            "calendarLinksPointIntoRestoredArea": calendarBackup.linksLocal, "calendarConnectionDetachedOnRestore": calendarBackup.detached,
+            "calendarArchiveWithoutAccessData": calendarBackup.secretFree, "calendarCorruptionRejectedBeforePublishing": calendarBackup.corruptRejected]
+        guard calendarBackup.format3, calendarBackup.identical, calendarBackup.linksLocal, calendarBackup.detached,
+              calendarBackup.secretFree, calendarBackup.corruptRejected else { throw StorageError.invalidDocument }
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
     }

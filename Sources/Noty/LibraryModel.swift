@@ -122,9 +122,23 @@ final class LibraryModel: ObservableObject {
             var olderStates: [String] = []
             let summary = try LibraryArchive.write(plan, to: url, validate: BackupValidation.validate,
                                                    olderState: { olderStates.append($0.title) })
-            return PreparedLibraryArchive(url: url, summary: summary, olderStates: olderStates)
+            var archive = PreparedLibraryArchive(url: url, summary: summary, olderStates: olderStates)
+            archive.calendarWarning = Self.calendarWarning(plan.calendar)
+            return archive
         }
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    /// What the calendar part of a backup could not carry as it is (never silent).
+    nonisolated static func calendarWarning(_ capture: CalendarBackupCapture?) -> String? {
+        guard let capture else { return nil }
+        var parts: [String] = []
+        if capture.olderState { parts.append("Kalender: älterer lesbarer Stand gesichert, neuere Revision beschädigt") }
+        if capture.droppedLinks > 0 {
+            parts.append("Kalender: \(NotyText.count(capture.droppedLinks, "Verknüpfung", "Verknüpfungen")) zu endgültig gelöschten Heften nicht gesichert")
+        }
+        if capture.sourceMissing { parts.append("Kalender: Offline-Stundenplan nicht lesbar, nicht gesichert") }
+        return parts.isEmpty ? nil : parts.joined(separator: "; ")
     }
 
     /// Manual export from Settings: closed editors, visible progress, alert on error.

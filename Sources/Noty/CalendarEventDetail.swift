@@ -51,8 +51,8 @@ struct CalendarEventPanel: View {
             }
         } message: {
             Text(event.originalDate != nil
-                 ? "„\(event.title)“ wiederholt sich. Notizen bleiben in „Kalendernotizen“ erhalten; direkt danach lässt sich das mit „Rückgängig“ zurücknehmen."
-                 : "„\(event.title)“ wird aus dem Kalender gelöscht. Notizen bleiben in „Kalendernotizen“ erhalten; direkt danach lässt sich das mit „Rückgängig“ zurücknehmen.")
+                 ? "„\(event.title)“ wiederholt sich. Gelöschtes lässt sich unter „…“ › „Gelöschte Termine“ wiederherstellen; Notizen bleiben in „Kalendernotizen“ erhalten."
+                 : "„\(event.title)“ kommt in „Gelöschte Termine“ (Menü „…“) und lässt sich dort wiederherstellen. Notizen bleiben in „Kalendernotizen“ erhalten.")
         }
     }
 

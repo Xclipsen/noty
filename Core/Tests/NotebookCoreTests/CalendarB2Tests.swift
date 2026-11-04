@@ -408,7 +408,7 @@ final class CalendarB2Tests: XCTestCase {
         XCTAssertEqual(reopened.state, next)
         let manifest = try JSONDecoder().decode(RevisionManifest.self, from: Data(contentsOf: package.appendingPathComponent("manifest.json")))
         let newest = try Data(contentsOf: package.appendingPathComponent("Revisions/\(manifest.revisions[0].file)"))
-        XCTAssertEqual((try JSONSerialization.jsonObject(with: newest) as? [String: Any])?["formatVersion"] as? Int, 2)
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: newest) as? [String: Any])?["formatVersion"] as? Int, CalendarState.currentFormat)
         // The old revision stays the fallback of the new manifest.
         XCTAssertEqual(manifest.revisions.map(\.file).last, file)
     }
@@ -416,8 +416,8 @@ final class CalendarB2Tests: XCTestCase {
     func testFormat1WithFormat2FieldsIsRejected() throws {
         let bytes = Data(#"{"events":[],"formatVersion":1,"noteLinks":[{"x":1}],"settings":{"mode":"week","weekDays":5}}"#.utf8)
         XCTAssertThrowsError(try CalendarStore.decode(bytes))
-        let newer = Data(#"{"events":[],"formatVersion":3}"#.utf8)
-        XCTAssertThrowsError(try CalendarStore.decode(newer)) { XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(3)) }
+        let newer = Data(#"{"events":[],"formatVersion":4}"#.utf8)
+        XCTAssertThrowsError(try CalendarStore.decode(newer)) { XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(4)) }
     }
 }
 

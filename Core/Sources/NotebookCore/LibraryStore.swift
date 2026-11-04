@@ -302,14 +302,19 @@ public actor LibraryStore {
             packages[item.id] = url
         }
         let preferences = try ToolbarPreferenceStore.read(root: root)
-        return LibraryBackupPlan(snapshot: result.snapshot, toolbar: preferences.0, packages: packages)
+        var plan = LibraryBackupPlan(snapshot: result.snapshot, toolbar: preferences.0, packages: packages)
+        // B3: the area's committed calendar goes into the same archive (read-only).
+        let calendar = try CalendarArchive.capture(areaRoot: root, library: result.snapshot)
+        if calendar.content != nil { plan.calendar = calendar }
+        return plan
     }
 
     /// Complete library in memory (tests, small libraries). Includes independently
     /// trashed children and folders; an older recovered revision aborts.
     public func backupBundle() throws -> LibraryBundle {
         let plan = try backupPlan()
-        let bundle = LibraryBundle(snapshot: plan.snapshot, documents: try plan.documents.map(plan.committedNotebook), toolbar: plan.toolbar)
+        let bundle = LibraryBundle(snapshot: plan.snapshot, documents: try plan.documents.map(plan.committedNotebook), toolbar: plan.toolbar,
+                                   calendar: plan.calendar?.content)
         try bundle.validate(); return bundle
     }
 

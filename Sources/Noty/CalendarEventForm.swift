@@ -6,7 +6,8 @@ import NotebookCore
 /// einzelne Ausnahmen), timed or all-day (also several days). A changed
 /// occurrence of a series asks „Nur dieser Termin“ / „Alle Termine der
 /// Serie“. „Hinzufügen“/„Fertig“ closes only after the commit; a rejected
-/// change keeps the form open with its input. Reminders follow in B3.
+/// change keeps the form open with its input. Optional reminder (B3, off by
+/// default): switching it on asks iPadOS for permission once.
 struct CalendarEventForm: View {
     @State var draft: CalendarDraft
     @ObservedObject var model: CalendarModel
@@ -39,13 +40,14 @@ struct CalendarEventForm: View {
                     }
                 }
                 repeatSection
+                reminderSection
                 Section {
                     LabeledContent("Kalender") {
                         Label { Text("Persönlich") } icon: { Circle().fill(CalendarPalette.personal).frame(width: 8, height: 8) }
                     }
                     TextField("Beschreibung", text: $draft.details, axis: .vertical).lineLimit(2...8)
                 } footer: {
-                    Text("Wird nur auf diesem iPad in diesem Bereich gespeichert. Erinnerungen folgen in einem späteren Build. Unterricht aus WebUntis bleibt schreibgeschützt.")
+                    Text("Wird nur auf diesem iPad in diesem Bereich gespeichert. Unterricht aus WebUntis bleibt schreibgeschützt.")
                 }
                 if let failure {
                     Section {
@@ -84,6 +86,33 @@ struct CalendarEventForm: View {
         .onChange(of: draft.start) { old, new in
             // Moving the start keeps the duration.
             if let moved = calendar.date(byAdding: .second, value: Int(draft.end.timeIntervalSince(old)), to: new) { draft.end = moved }
+        }
+    }
+
+    /// Off by default; presets from „Zum Beginn“ to „1 Tag vorher“. A series
+    /// reminds before every occurrence.
+    @ViewBuilder private var reminderSection: some View {
+        Section {
+            Toggle("Erinnerung", isOn: $draft.reminder)
+                .onChange(of: draft.reminder) { _, on in
+                    if on { Task { await model.requestReminderPermission() } }
+                }
+            if draft.reminder {
+                Picker("Wann", selection: $draft.reminderMinutes) {
+                    ForEach(CalendarReminder.presets, id: \.self) { Text(CalendarReminder.text($0)).tag($0) }
+                }
+            }
+        } footer: {
+            if draft.reminder {
+                switch model.reminderPermission {
+                case .denied:
+                    Label("Mitteilungen für noty sind ausgeschaltet. Bitte in den iPad-Einstellungen › Mitteilungen › noty erlauben; bis dahin erscheint keine Erinnerung.",
+                          systemImage: "bell.slash").foregroundStyle(.orange)
+                default:
+                    Text(draft.allDay ? "Ganztägige Termine erinnern ausgehend von 9:00 Uhr am ersten Tag." :
+                         (draft.repeatRule != .never ? "Gilt für jeden Termin der Serie." : "Mitteilung auf diesem iPad."))
+                }
+            }
         }
     }
 

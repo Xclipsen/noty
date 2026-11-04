@@ -1,4 +1,5 @@
 import Foundation
+import NotebookCore
 
 /// Shared German wording (Build 65): real plurals instead of „Heft(e)“ and
 /// one date format for lists and one for status lines.
@@ -40,4 +41,20 @@ enum NotyText {
 
     /// After restoring a library backup as a new area (all three ways).
     static let restoredAreaMessage = "Der neue Bereich ist unter Einstellungen › Backup › Bereiche verfügbar. Die aktuelle Bibliothek bleibt erhalten."
+
+    /// Kalender B3: what the calendar part of a library backup brings into the new area.
+    static func calendarRestoreSummary(_ calendar: CalendarArchiveContent) -> String {
+        var parts = ["Kalender: \(count(calendar.state.events.count, "eigener Termin", "eigene Termine"))",
+                     count(calendar.state.noteLinks.count, "Terminnotiz", "Terminnotizen")]
+        if !calendar.state.deletedEvents.isEmpty { parts.append("\(calendar.state.deletedEvents.count) gelöschte") }
+        var text = parts.joined(separator: ", ") + "."
+        if calendar.state.connection != nil {
+            text += " WebUntis-Stundenplan"
+            if let newest = calendar.source?.days.values.max() {
+                text += " mit Stand \(listDate(Date(timeIntervalSinceReferenceDate: newest)))"
+            }
+            text += "; Zugangsdaten sind nicht enthalten – im neuen Bereich auf diesem Gerät neu verbinden."
+        }
+        return text
+    }
 }

@@ -7,7 +7,12 @@ the same limits as noty: archive <= 4 GB, notebook chunk <= 200 MB, index
 record stream of record_archive.py: index, toolbar, then per notebook its
 record followed by those of its image assets no earlier group carried, then
 the end record. Each asset hash occurs once, is referenced by the notebook of
-its group and is checked with SHA-256. Exit code 1 on any violation.
+its group and is checked with SHA-256. Format 3 (Kalender B3) adds, right
+after the toolbar, one `calendar` record (calendar state format 3; every note
+link must name a notebook of this archive, the notes folder a folder of its
+index; the connection record has exactly its non-secret keys) and optionally
+one `calendarSource` record (the offline timetable of that connection).
+Exit code 1 on any violation.
 """
 import argparse
 import json
@@ -18,12 +23,15 @@ from pathlib import Path
 from uuid import UUID
 from notebook_format import appearance, uuid_string, validate_notebook
 from record_archive import ASSET_LIMIT, MAXIMUM_HEADER as RECORD_HEADER, RecordReader, check_date, check_references
+from calendar_format import CURRENT_FORMAT as CALENDAR_FORMAT, validate_source, validate_state
 
 MAXIMUM_BYTES = 4_000_000_000
 MAXIMUM_NOTEBOOK = 200_000_000
 MAXIMUM_HEADER = 2_000_000
 MAXIMUM_INDEX = 4_000_000
 MAXIMUM_TOOLBAR = 64_000
+MAXIMUM_CALENDAR = 64_000_000
+MAXIMUM_CALENDAR_SOURCE = 120_000_000
 
 
 class VerificationError(ValueError):
@@ -117,16 +125,35 @@ def verify(path):
         header = json.loads(stream.read(length))
         require(isinstance(header, dict), "Invalid header")
         version = header.get("libraryBackupVersion")
-    require(version in (1, 2) and type(version) is int, "Unsupported archive version")
-    return verify_v1(path, size) if version == 1 else verify_v2(path, size)
+    require(version in (1, 2, 3) and type(version) is int, "Unsupported archive version")
+    return verify_v1(path, size) if version == 1 else verify_v2(path, size, version)
 
 
-def verify_v2(path, size):
+def verify_calendar(reader, items, expected):
+    """Format 3: calendar record (+ optional timetable). Returns (summary, pending descriptor)."""
+    record = reader.descriptor()
+    require(record["kind"] == "calendar", "Format 3 requires the calendar record after the toolbar")
+    state = json.loads(reader.payload(record, MAXIMUM_CALENDAR))
+    require(isinstance(state, dict) and state.get("formatVersion") == CALENDAR_FORMAT, "Unsupported calendar format in archive")
+    summary, documents, folder, connection = validate_state(state, formats=(CALENDAR_FORMAT,))
+    require(documents <= set(expected), "A note link names a notebook that is not in the archive")
+    folders = {uuid_string(i["id"]) for i in items if i.get("source") is None}
+    require(folder is None or folder in folders, "Notes folder is not a folder of the archive")
+    pending = reader.descriptor()
+    summary["timetable"] = None
+    if pending["kind"] == "calendarSource":
+        source = json.loads(reader.payload(pending, MAXIMUM_CALENDAR_SOURCE))
+        summary["timetable"] = validate_source(source, connection)
+        pending = None
+    return summary, pending
+
+
+def verify_v2(path, size, version=2):
     with path.open("rb") as stream:
         reader = RecordReader(stream, size)
         header = reader.header(b"NOTYLIB\n", RECORD_HEADER)
         require(set(header) == HEADER_KEYS, "Unexpected header fields")
-        require(header["libraryBackupVersion"] == 2 and header["checksumAlgorithm"] == "crc32-iso-hdlc"
+        require(header["libraryBackupVersion"] == version and header["checksumAlgorithm"] == "crc32-iso-hdlc"
                 and header["assetHashAlgorithm"] == "sha256", "Unexpected format or algorithm")
         check_date(header["createdAt"])
         first = reader.descriptor()
@@ -137,6 +164,7 @@ def verify_v2(path, size):
         toolbar = json.loads(reader.payload(second, MAXIMUM_TOOLBAR))
         verify_toolbar(toolbar)
         expected = {uuid_string(i["id"]): i["id"] for i in items if i.get("source") is not None}
+        calendar, pending = verify_calendar(reader, items, expected) if version == 3 else (None, None)
         emitted, ids, shared = {}, set(), set()
         text_documents = 0
         group = None  # references of the current notebook
@@ -146,7 +174,7 @@ def verify_v2(path, size):
                 require(all(emitted.get(sha) == count for sha, count in group.items()), "Referenced asset missing")
 
         while True:
-            record = reader.descriptor()
+            record, pending = (pending, None) if pending is not None else (reader.descriptor(), None)
             kind = record["kind"]
             if kind == "notebook":
                 finish(group)
@@ -170,9 +198,9 @@ def verify_v2(path, size):
                 reader.end(record)
                 break
             else:
-                require(False, "Index or toolbar record out of place")
+                require(False, "Index, toolbar or calendar record out of place")
         require(ids == set(expected), "Incomplete document set")
-    return {"formatVersion": 2, "documents": len(expected), "textDocuments": text_documents, "folders": len(items) - len(expected),
+    return {"formatVersion": version, "documents": len(expected), "calendar": calendar, "textDocuments": text_documents, "folders": len(items) - len(expected),
             "explicitly_trashed": sum(i.get("deletedAt") is not None for i in items),
             "presets": len(toolbar["presets"]), "assets": len(emitted), "assetBytes": sum(emitted.values()),
             "sharedAssets": len(shared), "bytes": size, "crc32": reader.crc, "all_payload_checksums_valid": True}

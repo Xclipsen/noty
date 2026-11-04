@@ -26,11 +26,14 @@ struct CalendarView: View {
     @State private var searching = false
     @State private var connecting = false
     @State private var choosingColors = false
+    @State private var editingReminders = false
+    @State private var showingDeleted = false
     private var calendar: Calendar { model.calendar }
     private var shownWeekDays: Int { model.weekDays == 7 ? 7 : 5 }
     /// Calendar keys only while nothing is presented over it.
     private var keys: Bool {
-        keysActive && model.enlargedDraft == nil && dayList == nil && !searching && !connecting && !choosingColors && model.draft == nil
+        keysActive && model.enlargedDraft == nil && dayList == nil && !searching && !connecting && !choosingColors
+            && !editingReminders && !showingDeleted && model.draft == nil
             && model.pendingSeriesChange == nil
     }
     private func key(_ key: KeyEquivalent) -> KeyboardShortcut? { keys ? KeyboardShortcut(key, modifiers: .command) : nil }
@@ -83,6 +86,8 @@ struct CalendarView: View {
         .sheet(isPresented: $searching) { CalendarSearchSheet(model: model) }
         .sheet(isPresented: $connecting) { CalendarConnectionSheet(model: model) }
         .sheet(isPresented: $choosingColors) { CalendarColorsSheet(model: model) }
+        .sheet(isPresented: $editingReminders) { CalendarReminderSettingsSheet(model: model) }
+        .sheet(isPresented: $showingDeleted) { CalendarDeletedEventsSheet(model: model) }
         .fullScreenCover(item: $model.enlargedDraft) { session in CalendarEnlargedDraft(session: session, model: model) }
         .confirmationDialog(model.pendingSeriesChange?.text ?? "", isPresented: Binding(
             get: { model.pendingSeriesChange != nil }, set: { if !$0 { model.pendingSeriesChange = nil } }), titleVisibility: .visible) {
@@ -288,8 +293,10 @@ struct CalendarView: View {
 
     private var sourceItem: StatusItem {
         if model.credentialsMissing {
-            return StatusItem(symbol: "key", text: "WebUntis: Zugangsdaten fehlen auf diesem iPad", warning: true,
-                              action: .connect)
+            var text = "WebUntis: Zugang auf diesem Gerät neu verbinden"
+            if case .loaded(let oldest)? = model.coverage(shownRange.start, shownRange.end) { text += " · " + model.standText(oldest) + " (veraltet)" }
+            else if case .partial(let oldest)? = model.coverage(shownRange.start, shownRange.end) { text += " · " + model.standText(oldest) + " (veraltet)" }
+            return StatusItem(symbol: "key", text: text, warning: true, action: .connect)
         }
         let range = shownRange
         var stand: String?
@@ -375,6 +382,12 @@ struct CalendarView: View {
             Button { searching = true } label: { Label("Termine suchen", systemImage: "magnifyingglass") }
             Button { choosingColors = true } label: { Label("Fachfarben …", systemImage: "paintpalette") }
                 .disabled(model.showsSamples || !model.canWrite)
+            Button { editingReminders = true } label: { Label("Erinnerungen …", systemImage: "bell") }
+                .disabled(model.showsSamples)
+            Button { showingDeleted = true } label: {
+                Label(model.deletedEvents.isEmpty ? "Gelöschte Termine …" : "Gelöschte Termine (\(model.deletedEvents.count)) …", systemImage: "trash")
+            }
+            .disabled(model.showsSamples)
         }
         Section("Kalender") {
             ForEach(CalendarSource.allCases) { source in

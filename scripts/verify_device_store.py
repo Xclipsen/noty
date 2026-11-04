@@ -11,7 +11,16 @@ Image assets (schema 12): `Assets/` of a package must be a real directory
 without symlinks; every original referenced by a checked revision must be a
 regular file `Assets/<sha256>` of the right size and SHA-256. Unreferenced
 assets and rests of interrupted writes (`<sha256>.partial-<UUID>`) are counted,
-not rejected (the app's GC removes them); contents are never printed."""
+not rejected (the app's GC removes them); contents are never printed.
+
+Calendar (Kalender B1-B3): `Calendar/` of the root, if present, must be a
+real directory; both manifests (format 1, 1-3 entries), every referenced
+revision (canonical `<UUID>.json`, regular file, size <= 64 MB, CRC-32) and
+its calendar state (formats 1-3, calendar_format.py) are checked, symlinks
+anywhere in the package are rejected. Links to notebooks missing from the
+store (deleted for good) are counted, not rejected (the app shows a hint).
+The offline timetable `Cache/<connection>.json` is replaceable: an unreadable
+one is counted; other cache names are rejected."""
 import argparse
 import hashlib
 import json
@@ -20,6 +29,7 @@ import zlib
 from pathlib import Path
 from notebook_format import (UNIX_RANGE, base64_bytes, check, foundation_date, number, strict,
                              uuid_string, valid_title, validate_notebook)
+from calendar_format import validate_source, validate_state
 
 CANONICAL_UUID = r"[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}"
 REVISION_FILE = re.compile(CANONICAL_UUID + r"\.json")
@@ -31,6 +41,8 @@ REVISION_LIMIT = 200_000_000
 INDEX_LIMIT = 4_000_000
 MAXIMUM_REVISIONS = 3  # Build 46 manifest format; older states are in checkpoints.json
 MAXIMUM_CHECKPOINTS = 8
+CALENDAR_REVISION_LIMIT = 64_000_000
+CALENDAR_CACHE_LIMIT = 256_000_000
 
 
 def present(path):
@@ -177,6 +189,76 @@ def check_index(root, documents, locations):
             "unindexed_packages": len(set(documents) - indexed), "checked_index_files": len(snapshots)}
 
 
+def no_symlinks(directory):
+    for path in directory.rglob("*"):
+        check(not path.is_symlink(), "Symlink in the calendar package")
+
+
+def read_calendar_manifest(directory, name, checked):
+    listing = json.loads(regular_file(directory / name, MANIFEST_LIMIT, f"Invalid calendar {name}"))
+    check(isinstance(listing, dict) and listing["formatVersion"] == 1, f"Unsupported calendar {name} format")
+    check(listing["checksumAlgorithm"] == "crc32-iso-hdlc", f"Unexpected checksum algorithm in calendar {name}")
+    records = listing["revisions"]
+    check(isinstance(records, list) and 1 <= len(records) <= MAXIMUM_REVISIONS, f"Revision count outside limits in calendar {name}")
+    check(len({record["file"] for record in records}) == len(records), f"Duplicate revision entries in calendar {name}")
+    revisions = directory / "Revisions"
+    real_directory(revisions, "Invalid calendar Revisions directory")
+    states = []
+    for record in records:
+        file, count, crc = record["file"], record["byteCount"], record["crc32"]
+        check(isinstance(file, str) and REVISION_FILE.fullmatch(file) is not None, "Invalid calendar revision file name")
+        check(type(count) is int and 1 <= count <= CALENDAR_REVISION_LIMIT, "Calendar revision size outside limits")
+        check(type(crc) is int and 0 <= crc <= 0xFFFF_FFFF, "Invalid calendar revision checksum")
+        if file not in checked:
+            payload = regular_file(revisions / file, count, "Missing or invalid calendar revision file")
+            check(len(payload) == count and zlib.crc32(payload) == crc, "Calendar revision checksum mismatch")
+            checked[file] = (count, crc, json.loads(payload))
+            validate_state(checked[file][2])
+        check(checked[file][:2] == (count, crc), "Calendar manifests disagree about a revision")
+        states.append(checked[file][2])
+    return states
+
+
+def check_calendar(root, documents, index_items):
+    """The area's calendar package; None when the area has none."""
+    directory = root / "Calendar"
+    if not present(directory):
+        return None
+    real_directory(directory, "Invalid Calendar directory")
+    no_symlinks(directory)
+    checked = {}
+    head = None
+    for name in ("manifest.json", "manifest-previous.json"):
+        if present(directory / name):
+            states = read_calendar_manifest(directory, name, checked)
+            head = head or states[0]
+    if head is None:
+        # Nothing committed yet: only an empty package is tolerated (the app would lock otherwise).
+        check(not present(directory / "Revisions") or not any((directory / "Revisions").iterdir()), "Calendar revisions without manifest")
+        return {"committed": False}
+    summary, linked, folder, connection = validate_state(head)
+    folders = {uuid_string(item["id"]) for item in index_items if item.get("source") is None}
+    summary.update({"committed": True, "checked_revisions": len(checked),
+                    "links_without_notebook": sum(1 for document in linked if document not in documents),
+                    "notes_folder_present": None if folder is None else folder in folders,
+                    "timetable": None, "unreadable_timetables": 0})
+    cache = directory / "Cache"
+    if present(cache):
+        real_directory(cache, "Invalid calendar Cache directory")
+        for path in cache.iterdir():
+            check(REVISION_FILE.fullmatch(path.name) is not None and path.is_file(), "Unexpected entry in calendar Cache")
+            if connection is None or path.name != connection + ".json":
+                continue
+            try:
+                summary["timetable"] = validate_source(json.loads(regular_file(path, CALENDAR_CACHE_LIMIT, "Invalid timetable")), connection)
+            except ValueError:
+                summary["unreadable_timetables"] += 1
+    for name in ("Migration", "Quarantine"):
+        folder_path = directory / name
+        summary[name.lower() + "_files"] = sum(1 for p in folder_path.iterdir() if p.is_file()) if present(folder_path) else 0
+    return summary
+
+
 @strict
 def load_store(root):
     real_directory(root, "Root is not a directory")
@@ -223,9 +305,13 @@ def load_store(root):
         if quarantine.is_dir() and not quarantine.is_symlink():
             quarantined += sum(1 for path in quarantine.rglob("*") if path.is_file() and not path.is_symlink())
     index = check_index(root, documents, locations)
+    index_items = []
+    if present(root / "Library" / "index.json"):
+        index_items = read_index_file(root / "Library" / "index.json")["items"]
+    calendar = check_calendar(root, set(documents), index_items)
     return (documents, locations, package_assets), dict({"documents": len(documents), "checked_revisions": revisions,
                        "checkpoints": checkpoints, "missing_checkpoint_files": missing_checkpoints,
-                       "library_index": index, "quarantined_files": quarantined}, **asset_totals)
+                       "library_index": index, "quarantined_files": quarantined, "calendar": calendar}, **asset_totals)
 
 
 def main():

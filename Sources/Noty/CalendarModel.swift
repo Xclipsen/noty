@@ -70,7 +70,17 @@ final class CalendarModel: ObservableObject {
         /// The event as it was before (nil: it did not exist).
         let before: LocalCalendarEvent?
         let eventID: UUID
+        /// The „Gelöschte Termine“ entry a deletion created (removed again by „Rückgängig“).
+        var trashID: UUID?
     }
+
+    // MARK: Reminders (B3)
+    /// Notification permission as last seen (asked only when a reminder is switched on).
+    @Published private(set) var reminderPermission: CalendarReminderCenter.Permission = .notDetermined
+    /// „Erinnerungen geplant bis …“; nil when no reminder is on.
+    @Published private(set) var remindersPlannedUntil: Date?
+    @Published private(set) var plannedReminderCount = 0
+    @Published private(set) var reminderError: String?
     @Published private(set) var lastUndo: UndoStep?
 
     /// A drag of a series occurrence waits for „Nur dieser Termin“ / „Alle“.
@@ -110,6 +120,8 @@ final class CalendarModel: ObservableObject {
     init(root: URL) {
         self.root = root
         repository = CalendarRepository(areaRoot: root)
+        // Only the shown area plans reminders (an area switch replaces them).
+        CalendarReminderCenter.shared.activate(root: root)
         Task { await load() }
     }
 
@@ -175,6 +187,7 @@ final class CalendarModel: ObservableObject {
         }
         loaded = true
         rebuild()
+        rescheduleReminders()
         if visible { refreshIfDue() }
     }
 
@@ -202,7 +215,7 @@ final class CalendarModel: ObservableObject {
         let current = revision
         do {
             try await repository.save(next, revision: current)
-            if current == revision { unsaved = false; saveError = nil }
+            if current == revision { unsaved = false; saveError = nil; rescheduleReminders() }
             return true
         } catch {
             if current == revision {
@@ -241,19 +254,23 @@ final class CalendarModel: ObservableObject {
         let details = draft.details.trimmingCharacters(in: .whitespacesAndNewlines)
         let (rule, ruleProblem) = draft.recurrence(calendar: calendar)
         if let ruleProblem { return ruleProblem }
+        let reminder = draft.reminder ? draft.reminderMinutes : nil
         let now = Date()
         var savedEntryID: String?
         var before: LocalCalendarEvent?
         var problemText: String?
         let ok = await commit { state in
             guard let id = draft.editing?.localID, let index = state.events.firstIndex(where: { $0.id == id }) else {
-                let event = LocalCalendarEvent(title: title, location: location, details: details, timing: timing, recurrence: rule, createdAt: now)
+                let event = LocalCalendarEvent(title: title, location: location, details: details, timing: timing, recurrence: rule,
+                                               reminderMinutes: reminder, createdAt: now)
                 state.events.append(event)
                 savedEntryID = rule == nil ? CalendarEntry.localID(event.id, nil) : CalendarEntry.localID(event.id, CalendarSeries.firstDate(of: timing))
                 return
             }
             var event = state.events[index]
             before = event
+            // The reminder belongs to the event (every occurrence of a series).
+            event.reminderMinutes = reminder
             if let occurrence = draft.editing?.originalDate, event.recurrence != nil, scope == .single {
                 // „Nur dieser Termin“: a changed occurrence with its own data.
                 var series = event.recurrence!
@@ -325,12 +342,14 @@ final class CalendarModel: ObservableObject {
     }
 
     /// Deletes an own event, or – `scope == .single` – one occurrence of a
-    /// series (an exception). Notes stay in the library; the link stays for
-    /// „Rückgängig“.
+    /// series (an exception). The event goes to „Gelöschte Termine“ (B3) and
+    /// can be restored there with its identity; notes stay in the library and
+    /// their links stay, so a restored event has its notes again.
     func remove(_ entry: CalendarEntry, scope: SeriesScope = .all) async {
         guard let id = entry.localID, let event = state.events.first(where: { $0.id == id }) else { return }
         if selection == entry.id { selection = nil }
         let single = scope == .single && event.recurrence != nil && entry.originalDate != nil
+        let trash = CalendarDeletedEvent(event: event, occurrence: single ? entry.originalDate : nil)
         let ok = await commit { state in
             if single, let index = state.events.firstIndex(where: { $0.id == id }), let date = entry.originalDate {
                 if !state.events[index].recurrence!.exceptions.contains(date) { state.events[index].recurrence!.exceptions.append(date) }
@@ -338,10 +357,20 @@ final class CalendarModel: ObservableObject {
             } else {
                 state.events.removeAll { $0.id == id }
             }
+            Self.addToTrash(trash, in: &state)
         }
         if ok || unsaved {
             lastUndo = UndoStep(text: single ? "Termin „\(entry.title)“ am \(CalendarText.numericDate(entry.start, calendar: calendar)) gelöscht"
-                                             : "„\(event.title)“ gelöscht", before: event, eventID: id)
+                                             : "„\(event.title)“ gelöscht", before: event, eventID: id, trashID: trash.id)
+        }
+    }
+
+    /// Newest first; beyond the limit the oldest entries make room (never an active event).
+    private static func addToTrash(_ entry: CalendarDeletedEvent, in state: inout CalendarState) {
+        state.deletedEvents.append(entry)
+        if state.deletedEvents.count > CalendarState.maximumDeleted {
+            state.deletedEvents.sort { $0.deletedAt < $1.deletedAt }
+            state.deletedEvents.removeFirst(state.deletedEvents.count - CalendarState.maximumDeleted)
         }
     }
 
@@ -356,7 +385,85 @@ final class CalendarModel: ObservableObject {
             } else if let before = step.before {
                 state.events.append(before)
             }
+            if let trash = step.trashID { state.deletedEvents.removeAll { $0.id == trash } }
         }
+    }
+
+    // MARK: Gelöschte Termine (B3)
+
+    /// Newest first.
+    var deletedEvents: [CalendarDeletedEvent] { state.deletedEvents.sorted { $0.deletedAt > $1.deletedAt } }
+
+    /// Brings a deleted event (with its identity, so its notes appear again)
+    /// or a deleted occurrence of a series back. Nil on success, otherwise why not.
+    func restoreDeleted(_ id: UUID) async -> String? {
+        guard canWrite else { return storageError ?? "Der Kalender ist noch nicht geladen." }
+        guard let entry = state.deletedEvents.first(where: { $0.id == id }) else { return nil }
+        var problem: String?
+        let ok = await commit { state in
+            if let date = entry.occurrence {
+                guard let index = state.events.firstIndex(where: { $0.id == entry.event.id }) else {
+                    problem = "Die Serie „\(entry.event.title)“ ist selbst gelöscht. Bitte zuerst die Serie wiederherstellen."; return
+                }
+                guard state.events[index].recurrence?.exceptions.contains(date) == true else {
+                    problem = "Dieser Termin ist in der Serie nicht mehr gelöscht (die Serie wurde inzwischen geändert)."; return
+                }
+                state.events[index].recurrence!.exceptions.removeAll { $0 == date }
+                state.events[index].modifiedAt = Date()
+            } else {
+                guard !state.events.contains(where: { $0.id == entry.event.id }) else {
+                    problem = "Der Termin ist bereits vorhanden."; return
+                }
+                state.events.append(entry.event)
+            }
+            state.deletedEvents.removeAll { $0.id == id }
+        }
+        if let problem { return problem }
+        return ok || unsaved ? nil : saveError
+    }
+
+    /// Removes an entry from „Gelöschte Termine“ for good. Notes and their
+    /// links are never removed with it.
+    func purgeDeleted(_ ids: Set<UUID>) async {
+        guard canWrite, !ids.isEmpty else { return }
+        await commit { $0.deletedEvents.removeAll { ids.contains($0.id) } }
+    }
+
+    // MARK: Reminders (B3)
+
+    /// Hands the reminders of this area to iPadOS (rolling window). Called on
+    /// load, after every commit, after a WebUntis refresh and on app activation.
+    func rescheduleReminders() {
+        guard loaded else { return }
+        let root = root
+        Task {
+            reminderPermission = await CalendarReminderCenter.shared.permission()
+            // A detached connection (restored area, access data missing) shows its
+            // timetable as outdated but never reminds from it.
+            let plan = CalendarReminderPlanner.plan(state: state, snapshot: credentialsMissing ? nil : snapshot, now: Date(), calendar: calendar)
+            remindersPlannedUntil = plan.plannedUntil
+            plannedReminderCount = plan.requests.count
+            reminderError = await CalendarReminderCenter.shared.apply(plan, root: root)
+        }
+    }
+
+    /// The user switched a reminder on: asks iPadOS once.
+    @discardableResult
+    func requestReminderPermission() async -> CalendarReminderCenter.Permission {
+        reminderPermission = await CalendarReminderCenter.shared.requestPermission()
+        return reminderPermission
+    }
+
+    func refreshReminderPermission() async {
+        reminderPermission = await CalendarReminderCenter.shared.permission()
+    }
+
+    var lessonReminderMinutes: Int? { state.settings.lessonReminderMinutes }
+
+    /// „Unterricht: Erinnerung X Minuten vorher“ (nil = aus).
+    func setLessonReminder(_ minutes: Int?) async {
+        if minutes != nil { await requestReminderPermission() }
+        await commit { $0.settings.lessonReminderMinutes = minutes }
     }
     func dismissUndo() { lastUndo = nil }
 
@@ -486,6 +593,7 @@ final class CalendarModel: ObservableObject {
         showsSamples = false
         snapshot = try? await repository.sourceSnapshot()
         rebuild()
+        rescheduleReminders()
         await refresh(manual: true)
     }
 
@@ -551,7 +659,7 @@ final class CalendarModel: ObservableObject {
         guard let connection = state.connection, !syncing else { return }
         guard let setup = WebUntisKeychain.load(connection.id) else {
             credentialsMissing = true
-            syncError = "Zugangsdaten fehlen auf diesem iPad. Bitte WebUntis neu verbinden."
+            syncError = "Zugang auf diesem Gerät neu verbinden (Zugangsdaten fehlen auf diesem iPad, zum Beispiel nach einer Wiederherstellung)."
             return
         }
         var ranges = windows ?? [defaultWindow()]
@@ -582,6 +690,7 @@ final class CalendarModel: ObservableObject {
             syncError = WebUntisClient.message(error)
         }
         rebuild()
+        rescheduleReminders()
     }
 
     // MARK: Index of shown entries
@@ -712,6 +821,7 @@ final class CalendarModel: ObservableObject {
         entry.originalDate = occurrence.originalDate
         entry.noteTarget = occurrence.noteTarget
         entry.repeatText = event.recurrence.map { $0.text + (occurrence.isOverride ? " · dieser Termin geändert" : "") }
+        entry.reminder = event.reminderMinutes.map(CalendarReminder.text)
         entry.colorName = CalendarSubjectColor.personal
         return entry
     }
@@ -751,6 +861,7 @@ final class CalendarModel: ObservableObject {
         entry.subjectKey = key
         entry.colorName = CalendarSubjectColor.name(for: key, chosen: state.settings.subjectColors)
         if let source = state.connection?.source { entry.noteTarget = .lesson(CalendarLessonAnchor(lesson: lesson, source: source)) }
+        if let minutes = state.settings.lessonReminderMinutes, !lesson.isCancelled { entry.reminder = "Unterricht: \(minutes) Minuten vorher" }
         return entry
     }
 

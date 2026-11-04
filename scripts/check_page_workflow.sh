@@ -5,7 +5,7 @@ cd "$task_root"
 . ./scripts/env.sh
 mkdir -p .tools
 task_check="$(mktemp -d "$task_root/.tools/page-workflow-XXXXXX")"
-swiftc -swift-version 6 -parse-as-library Core/Sources/NotebookCore/*.swift scripts/PageWorkflowCheck.swift -o "$task_check/check"
+swiftc -swift-version 6 -parse-as-library Core/Sources/NotebookCore/*.swift scripts/PageWorkflowCheck.swift scripts/CalendarBackupCheck.swift -o "$task_check/check"
 "$task_check/check" "$task_root/fixtures/Seitenformate.pdf" "$task_check/results"
 # `.noty` (format 2) written by Swift; the verifier ignores the extension.
 python3 -B scripts/verify_backup.py "$task_check/results/heft.noty" --compare "$task_check/results/current.json"
@@ -40,6 +40,16 @@ if python3 -B scripts/verify_library_backup.py "$task_check/results/corrupt.noty
     echo 'FEHLER: beschädigtes Bibliotheksbackup wurde akzeptiert' >&2
     exit 1
 fi
+# Kalender B3: library archive format 3 with calendar, source area and restored area;
+# a damaged calendar part and rebuilt mutations must be rejected.
+python3 -B scripts/verify_library_backup.py "$task_check/results/kalender.notylibrary"
+python3 -B scripts/verify_device_store.py "$task_check/results/Kalender"
+python3 -B scripts/verify_device_store.py "$(cat "$task_check/results/kalender-restore-path.txt")"
+if python3 -B scripts/verify_library_backup.py "$task_check/results/kalender-corrupt.notylibrary" > "$task_check/expected-calendar-corruption.log" 2>&1; then
+    echo 'FEHLER: beschädigter Kalenderteil wurde akzeptiert' >&2
+    exit 1
+fi
+python3 -B scripts/check_calendar_backup.py "$task_check/results"
 # Real schema-12 asset records written by Swift, verified independently by Python.
 python3 -B - "$task_root/scripts" "$task_check/results" <<'PY'
 import json, sys

@@ -104,7 +104,12 @@ struct PreparedLibraryArchive: Sendable {
     let summary: LibraryArchiveSummary
     /// Notebooks archived in their newest readable older state (newer revision damaged).
     var olderStates: [String] = []
-    var warning: String? { ExternalBackupPolicy.olderStateWarning(olderStates) }
+    /// Kalender B3: older calendar state, links to notebooks deleted for good, missing timetable.
+    var calendarWarning: String?
+    var warning: String? {
+        let parts = [ExternalBackupPolicy.olderStateWarning(olderStates), calendarWarning].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "; ")
+    }
 }
 
 /// Temporary archive files: never inside a library or workspace tree, so an

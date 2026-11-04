@@ -163,16 +163,21 @@ public struct LocalCalendarEvent: Identifiable, Equatable, Sendable, Codable {
     public var timing: CalendarEventTiming
     /// Repetition (format 2); nil: a single event. `timing` is the first occurrence.
     public var recurrence: CalendarRecurrence?
+    /// Reminder (format 3): minutes before the start (`CalendarReminder.presets`);
+    /// nil = none (the default). Applies to every occurrence of a series.
+    public var reminderMinutes: Int?
     public var createdAt: Date
     public var modifiedAt: Date
 
     public init(id: UUID = UUID(), title: String, location: String = "", details: String = "",
-                timing: CalendarEventTiming, recurrence: CalendarRecurrence? = nil, createdAt: Date = Date(), modifiedAt: Date? = nil) {
+                timing: CalendarEventTiming, recurrence: CalendarRecurrence? = nil, reminderMinutes: Int? = nil,
+                createdAt: Date = Date(), modifiedAt: Date? = nil) {
         self.id = id; self.title = title; self.location = location; self.details = details
-        self.timing = timing; self.recurrence = recurrence; self.createdAt = createdAt; self.modifiedAt = modifiedAt ?? createdAt
+        self.timing = timing; self.recurrence = recurrence; self.reminderMinutes = reminderMinutes
+        self.createdAt = createdAt; self.modifiedAt = modifiedAt ?? createdAt
     }
 
-    private enum CodingKeys: String, CodingKey { case id, title, location, details, timing, recurrence, createdAt, modifiedAt }
+    private enum CodingKeys: String, CodingKey { case id, title, location, details, timing, recurrence, reminderMinutes, createdAt, modifiedAt }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -181,6 +186,7 @@ public struct LocalCalendarEvent: Identifiable, Equatable, Sendable, Codable {
         details = try c.decodeIfPresent(String.self, forKey: .details) ?? ""
         timing = try c.decode(CalendarEventTiming.self, forKey: .timing)
         recurrence = try c.decodeIfPresent(CalendarRecurrence.self, forKey: .recurrence)
+        reminderMinutes = try c.decodeIfPresent(Int.self, forKey: .reminderMinutes)
         createdAt = Date(timeIntervalSinceReferenceDate: try c.decode(Double.self, forKey: .createdAt))
         modifiedAt = Date(timeIntervalSinceReferenceDate: try c.decode(Double.self, forKey: .modifiedAt))
     }
@@ -190,6 +196,7 @@ public struct LocalCalendarEvent: Identifiable, Equatable, Sendable, Codable {
         try c.encode(location, forKey: .location); try c.encode(details, forKey: .details)
         try c.encode(timing, forKey: .timing)
         try c.encodeIfPresent(recurrence, forKey: .recurrence)
+        try c.encodeIfPresent(reminderMinutes, forKey: .reminderMinutes)
         try c.encode(createdAt.timeIntervalSinceReferenceDate, forKey: .createdAt)
         try c.encode(modifiedAt.timeIntervalSinceReferenceDate, forKey: .modifiedAt)
     }
@@ -206,21 +213,26 @@ public struct CalendarSettings: Equatable, Sendable, Codable {
     public var subjectColors: [String: String] = [:]
     /// Library folder „Kalendernotizen“ by identity (format 2); never by name.
     public var notesFolderID: UUID?
+    /// „Unterricht: Erinnerung X Minuten vorher“ (format 3); nil = off (the
+    /// default). One of `CalendarReminder.lessonPresets`; cancelled lessons never.
+    public var lessonReminderMinutes: Int?
     public init() {}
 
-    private enum CodingKeys: String, CodingKey { case weekDays, mode, subjectColors, notesFolderID }
+    private enum CodingKeys: String, CodingKey { case weekDays, mode, subjectColors, notesFolderID, lessonReminderMinutes }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         weekDays = try c.decodeIfPresent(Int.self, forKey: .weekDays) ?? 5
         mode = try c.decodeIfPresent(String.self, forKey: .mode) ?? CalendarMode.week.rawValue
         subjectColors = try c.decodeIfPresent([String: String].self, forKey: .subjectColors) ?? [:]
         notesFolderID = try c.decodeIfPresent(UUID.self, forKey: .notesFolderID)
+        lessonReminderMinutes = try c.decodeIfPresent(Int.self, forKey: .lessonReminderMinutes)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(weekDays, forKey: .weekDays); try c.encode(mode, forKey: .mode)
         if !subjectColors.isEmpty { try c.encode(subjectColors, forKey: .subjectColors) }
         try c.encodeIfPresent(notesFolderID, forKey: .notesFolderID)
+        try c.encodeIfPresent(lessonReminderMinutes, forKey: .lessonReminderMinutes)
     }
 }
 
@@ -272,8 +284,9 @@ public struct CalendarConnectionRecord: Identifiable, Equatable, Sendable, Codab
 public struct CalendarState: Equatable, Sendable, Codable {
     /// Content format. A newer one locks the package (never read partially,
     /// never replaced by an older state). 1 = B1; 2 = B2 (series, note links,
-    /// lesson mappings, subject colours, notes folder, source identity).
-    public static let currentFormat = 2
+    /// lesson mappings, subject colours, notes folder, source identity);
+    /// 3 = B3 (reminders, lesson reminder setting, deleted events).
+    public static let currentFormat = 3
     /// Older formats this version reads and migrates on its next commit
     /// (the exact old bytes are archived first, `CalendarStore`).
     public static let migratableFormats = 1..<currentFormat
@@ -281,6 +294,7 @@ public struct CalendarState: Equatable, Sendable, Codable {
     public static let maximumEventDays = 5 * 366
     public static let maximumLinks = 20_000
     public static let maximumMappings = 20_000
+    public static let maximumDeleted = 1_000
     public var formatVersion = CalendarState.currentFormat
     public var events: [LocalCalendarEvent] = []
     public var settings = CalendarSettings()
@@ -291,10 +305,14 @@ public struct CalendarState: Equatable, Sendable, Codable {
     /// Lessons the user assigned anew after WebUntis delivered them under
     /// another period id (format 2); notes follow them.
     public var lessonMappings: [CalendarLessonMapping] = []
+    /// „Gelöschte Termine“ (format 3): own events or single occurrences
+    /// deleted by the user, recoverable until removed for good. Their note
+    /// links stay in `noteLinks` (notes are never deleted with an event).
+    public var deletedEvents: [CalendarDeletedEvent] = []
 
     public init() {}
 
-    private enum CodingKeys: String, CodingKey { case formatVersion, events, settings, connection, noteLinks, lessonMappings }
+    private enum CodingKeys: String, CodingKey { case formatVersion, events, settings, connection, noteLinks, lessonMappings, deletedEvents }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         formatVersion = try c.decode(Int.self, forKey: .formatVersion)
@@ -303,12 +321,29 @@ public struct CalendarState: Equatable, Sendable, Codable {
         connection = try c.decodeIfPresent(CalendarConnectionRecord.self, forKey: .connection)
         noteLinks = try c.decodeIfPresent([CalendarNoteLink].self, forKey: .noteLinks) ?? []
         lessonMappings = try c.decodeIfPresent([CalendarLessonMapping].self, forKey: .lessonMappings) ?? []
+        deletedEvents = try c.decodeIfPresent([CalendarDeletedEvent].self, forKey: .deletedEvents) ?? []
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(formatVersion, forKey: .formatVersion); try c.encode(events, forKey: .events)
         try c.encode(settings, forKey: .settings); try c.encodeIfPresent(connection, forKey: .connection)
         try c.encode(noteLinks, forKey: .noteLinks); try c.encode(lessonMappings, forKey: .lessonMappings)
+        if !deletedEvents.isEmpty { try c.encode(deletedEvents, forKey: .deletedEvents) }
+    }
+
+    static func validate(_ event: LocalCalendarEvent) throws {
+        guard validTitle(event.title) == event.title, event.location.count <= 500, event.details.count <= 20_000,
+              event.timing.problem == nil, validInstant(event.createdAt), validInstant(event.modifiedAt),
+              event.reminderMinutes.map({ CalendarReminder.presets.contains($0) }) ?? true else {
+            throw CalendarStoreError.invalidState
+        }
+        if let recurrence = event.recurrence { try recurrence.validate(for: event.timing) }
+    }
+
+    /// Nothing but defaults: an area without calendar data.
+    public var isEmpty: Bool {
+        events.isEmpty && connection == nil && noteLinks.isEmpty && lessonMappings.isEmpty && deletedEvents.isEmpty
+            && settings == CalendarSettings()
     }
 
     static func validInstant(_ date: Date) -> Bool {
@@ -329,12 +364,25 @@ public struct CalendarState: Equatable, Sendable, Codable {
               [5, 7].contains(settings.weekDays), CalendarMode(rawValue: settings.mode) != nil else {
             throw CalendarStoreError.invalidState
         }
-        for event in events {
-            guard Self.validTitle(event.title) == event.title, event.location.count <= 500, event.details.count <= 20_000,
-                  event.timing.problem == nil, Self.validInstant(event.createdAt), Self.validInstant(event.modifiedAt) else {
-                throw CalendarStoreError.invalidState
+        for event in events { try Self.validate(event) }
+        guard deletedEvents.count <= Self.maximumDeleted, Set(deletedEvents.map(\.id)).count == deletedEvents.count else {
+            throw CalendarStoreError.invalidState
+        }
+        let active = Set(events.map(\.id))
+        for deleted in deletedEvents {
+            try Self.validate(deleted.event)
+            guard Self.validInstant(deleted.deletedAt) else { throw CalendarStoreError.invalidState }
+            if let date = deleted.occurrence {
+                // One occurrence of a series: the series knows the date.
+                guard let rule = deleted.event.recurrence,
+                      CalendarSeries.generates(date, timing: deleted.event.timing, rule: rule) else { throw CalendarStoreError.invalidState }
+            } else {
+                // A whole event is either active or deleted, never both.
+                guard !active.contains(deleted.event.id) else { throw CalendarStoreError.invalidState }
             }
-            if let recurrence = event.recurrence { try recurrence.validate(for: event.timing) }
+        }
+        guard settings.lessonReminderMinutes.map({ CalendarReminder.lessonPresets.contains($0) }) ?? true else {
+            throw CalendarStoreError.invalidState
         }
         if let connection {
             guard !connection.label.isEmpty, connection.label.count <= 200, TimeZone(identifier: connection.timeZone) != nil,
@@ -350,6 +398,37 @@ public struct CalendarState: Equatable, Sendable, Codable {
               noteLinks.allSatisfy({ $0.isValid }) else { throw CalendarStoreError.invalidState }
         guard lessonMappings.count <= Self.maximumMappings, Set(lessonMappings.map(\.id)).count == lessonMappings.count,
               lessonMappings.allSatisfy({ $0.isValid }) else { throw CalendarStoreError.invalidState }
+    }
+}
+
+/// One entry of „Gelöschte Termine“ (format 3).
+public struct CalendarDeletedEvent: Identifiable, Equatable, Sendable, Codable {
+    public let id: UUID
+    /// The event as it was when deleted (a series with all its exceptions).
+    public var event: LocalCalendarEvent
+    /// Nil: the whole event (or series) was deleted. Otherwise one occurrence
+    /// of the series `event.id` („Nur dieser Termin“), stored as an exception
+    /// of the active series; restoring removes that exception again.
+    public var occurrence: CivilDate?
+    public var deletedAt: Date
+
+    public init(id: UUID = UUID(), event: LocalCalendarEvent, occurrence: CivilDate? = nil, deletedAt: Date = Date()) {
+        self.id = id; self.event = event; self.occurrence = occurrence; self.deletedAt = deletedAt
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, event, occurrence, deletedAt }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        event = try c.decode(LocalCalendarEvent.self, forKey: .event)
+        occurrence = try c.decodeIfPresent(CivilDate.self, forKey: .occurrence)
+        deletedAt = Date(timeIntervalSinceReferenceDate: try c.decode(Double.self, forKey: .deletedAt))
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(event, forKey: .event)
+        try c.encodeIfPresent(occurrence, forKey: .occurrence)
+        try c.encode(deletedAt.timeIntervalSinceReferenceDate, forKey: .deletedAt)
     }
 }
 

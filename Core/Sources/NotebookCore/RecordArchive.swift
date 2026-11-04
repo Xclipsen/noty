@@ -217,13 +217,15 @@ public enum BoundedFile {
 ///     end descriptor {kind:"end", records, payloadBytes}, then end of file
 ///
 /// Header and descriptors are encoded with sorted keys (reproducible bytes).
-/// Data records (`index`, `toolbar`, `notebook`) carry `byteCount` and a CRC-32
+/// Data records (`index`, `toolbar`, `notebook`; library format 3 also
+/// `calendar`, `calendarSource`) carry `byteCount` and a CRC-32
 /// of their payload; an `asset` record carries `sha256` and `byteCount`, and
 /// its payload must hash to exactly that name. `end` counts the records before
 /// it and the sum of their payload bytes. CRC-32 and SHA-256 detect accidental
 /// damage; neither protects against deliberate manipulation.
 struct RecordDescriptor: Codable, Equatable {
-    enum Kind: String, Codable { case index, toolbar, notebook, asset, end }
+    /// `calendar`/`calendarSource`: library archive format 3 only (B3).
+    enum Kind: String, Codable { case index, toolbar, notebook, asset, end, calendar, calendarSource }
     var kind: Kind
     var id: UUID?
     var byteCount: Int?
@@ -236,7 +238,8 @@ struct RecordDescriptor: Codable, Equatable {
     static let keys: [Kind: Set<String>] = [
         .index: ["kind", "byteCount", "crc32"], .toolbar: ["kind", "byteCount", "crc32"],
         .notebook: ["kind", "id", "byteCount", "crc32"], .asset: ["kind", "sha256", "byteCount"],
-        .end: ["kind", "records", "payloadBytes"]
+        .end: ["kind", "records", "payloadBytes"],
+        .calendar: ["kind", "byteCount", "crc32"], .calendarSource: ["kind", "byteCount", "crc32"]
     ]
 
     static func data(_ kind: Kind, id: UUID? = nil, payload: Data) -> RecordDescriptor {
@@ -417,7 +420,7 @@ struct RecordReader<Source: RecordArchiveSource> {
         let value = try JSONDecoder().decode(RecordDescriptor.self, from: data)
         try RecordArchive.requireKeys(data, RecordDescriptor.keys[value.kind]!)
         switch value.kind {
-        case .index, .toolbar, .notebook:
+        case .index, .toolbar, .notebook, .calendar, .calendarSource:
             guard let count = value.byteCount, count >= 1, value.crc32 != nil, (value.kind == .notebook) == (value.id != nil) else {
                 throw RecordArchiveInvalid()
             }

@@ -425,12 +425,14 @@ private struct BackupSettingsPage: View {
                 }
                 NavigationLink("Weitere Optionen") { backupForm }.keyOption(.action { showingForm = true })
             }
-            Section("Bibliotheksbackup") {
+            Section {
                 LabeledContent("Letzter Export", value: library.lastLibraryExport.map(NotyText.statusDate) ?? NotyText.never)
                 Button("Exportieren …", systemImage: "square.and.arrow.up", action: exportLibrary).disabled(!libraryIdle)
                     .keyOption(.action(exportLibrary))
                 Button("Als neuen Bereich wiederherstellen …", systemImage: "arrow.down.doc") { pick(.libraryArchive) }
                     .disabled(!libraryIdle).keyOption(.action { pick(.libraryArchive) })
+            } header: { Text("Bibliotheksbackup") } footer: {
+                Text("Enthält alle Hefte, Ordner, Papierkorb und Einstellungen dieses Bereichs sowie den Kalender (eigene und gelöschte Termine, Terminnotiz-Verknüpfungen, Fachfarben, Offline-Stundenplan). WebUntis-Zugangsdaten sind nie enthalten. Ein einzelnes Heftbackup enthält keinen Kalender.")
             }
             Section {
                 NavigationLink {

@@ -1,6 +1,16 @@
 # Lokaler Revisionsspeicher – Format 1
 
 
+## Ergänzung 04.11.2026 · Kalenderpaket Format 3 (B3)
+
+Nur `feat/kalender`, Test-App „noty calendar“ Build 103; implementiert und gebaut, **am iPad ungeprüft**. Paketaufbau und Commitregeln unverändert (B1/B2 unten); neu ist das Inhaltsformat 3.
+
+- **CalendarState Format 3** zusätzlich: `events[].reminderMinutes` (optional, nur `0, 5, 10, 15, 30, 60, 1440`; fehlt = keine Erinnerung, gilt für jede Durchführung einer Serie), `settings.lessonReminderMinutes` (optional, `5, 10, 15, 30, 60`; fehlt = aus) und `deletedEvents[] {id, event, occurrence?, deletedAt}` („Gelöschte Termine“, höchstens 1000; ohne `occurrence` ein ganzer Termin bzw. eine ganze Serie, der nicht gleichzeitig aktiv sein darf; mit `occurrence` eine einzelne gelöschte Durchführung, die die Serie erzeugt und die in der aktiven Serie als Ausnahme steht). Links bleiben beim Löschen in `noteLinks`; Wiederherstellen bringt den Termin mit derselben ID zurück, die Notizen hängen wieder daran. Endgültig entfernen löscht nur den Eintrag, nie ein Heft.
+- **Migration 1/2 → 3** wie 1 → 2: Lesen schreibt nichts, vor dem ersten Commit im Format 3 die exakten Altbytes nach `Migration/format-<n>-<Datei>`; ein „Format 2“ mit Format-3-Feldern (bzw. „Format 1“ mit Format-2/3-Feldern) gilt als ungültig. Format ≥ 4 sperrt; Build 102 sperrt Format 3.
+- **Erinnerungen** werden nicht gespeichert, sondern bei jedem Start/jeder Aktivierung, nach jedem Commit und nach jeder WebUntis-Aktualisierung aus dem Stand geplant (`CalendarReminderPlanner`, Core): höchstens 50 einmalige Mitteilungen in den nächsten 30 Tagen, Kennung je Durchführung `noty.calendar.event.<Termin-ID>.<Datum|single>` bzw. `noty.calendar.lesson.<Perioden-ID>.<Datum>`; ausgefallene Stunden nie; bei fehlenden Zugangsdaten (wiederhergestellter Bereich) keine Stundenerinnerungen aus dem veralteten Stundenplan.
+- **Bibliotheksbackup:** `Calendar/` ist jetzt Teil des Bibliotheksarchivs (Format 3, [LIBRARY-BACKUP](LIBRARY-BACKUP.md)); `verify_device_store.py` prüft das Paket mit.
+
+
 ## Ergänzung 04.11.2026 · Kalenderpaket Format 2 und Terminnotizen (B2)
 
 Nur `feat/kalender`, Test-App „noty calendar“ Build 102; implementiert und gebaut, **am iPad ungeprüft**. Paketaufbau und Commitregeln wie B1 (unten); neu ist das Inhaltsformat 2 und das Verzeichnis `Migration/`. Heftformat, Bibliotheksindex und Archive bleiben unverändert.

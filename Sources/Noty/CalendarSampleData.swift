@@ -367,7 +367,8 @@ struct CalendarDraft: Identifiable {
             }
             exceptionDates = rule.exceptions.sorted()
         }
-        reminder = event.reminder != nil
+        reminder = base?.reminderMinutes != nil
+        reminderMinutes = base?.reminderMinutes ?? 10
     }
 
     var isSeriesOccurrence: Bool { editing?.originalDate != nil && originalRule != nil }

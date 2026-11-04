@@ -30,6 +30,9 @@ KEYS = {
     "notebook": {"kind", "id", "byteCount", "crc32"},
     "asset": {"kind", "sha256", "byteCount"},
     "end": {"kind", "records", "payloadBytes"},
+    # Library archive format 3 only (Kalender B3); verify_backup.py never accepts them.
+    "calendar": {"kind", "byteCount", "crc32"},
+    "calendarSource": {"kind", "byteCount", "crc32"},
 }
 
 
@@ -85,7 +88,7 @@ class RecordReader:
         check(isinstance(value, dict) and value.get("kind") in KEYS, "Unknown record kind")
         check(set(value) == KEYS[value["kind"]], "Unexpected record fields")
         kind = value["kind"]
-        if kind in ("index", "toolbar", "notebook"):
+        if kind in ("index", "toolbar", "notebook", "calendar", "calendarSource"):
             check(integer(value["byteCount"], 1, self.size) and integer(value["crc32"], 0, 2**32 - 1), "Invalid data record")
             if kind == "notebook":
                 value["id"] = uuid_string(value["id"])
