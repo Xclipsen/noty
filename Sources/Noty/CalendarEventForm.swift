@@ -30,22 +30,15 @@ struct CalendarEventForm: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                Section {
-                    LabeledContent("Kalender") {
-                        Label { Text("Persönlich") } icon: { Circle().fill(CalendarPalette.personal).frame(width: 10, height: 10) }
-                    }
-                } footer: {
-                    Text("Unterricht aus WebUntis ist schreibgeschützt; eigene Ergänzungen sind separate Termine oder Notizen.")
-                }
                 repeatSection
                 reminderSection
-                Section("Beschreibung") {
-                    TextField("Beschreibung", text: $draft.details, axis: .vertical).lineLimit(3...8)
-                }
                 Section {
-                    EmptyView()
+                    LabeledContent("Kalender") {
+                        Label { Text("Persönlich") } icon: { Circle().fill(CalendarPalette.personal).frame(width: 8, height: 8) }
+                    }
+                    TextField("Beschreibung", text: $draft.details, axis: .vertical).lineLimit(2...8)
                 } footer: {
-                    Label("Designentwurf (Stufe A): Eingaben werden nicht gespeichert.", systemImage: "flask")
+                    Text("Entwurf: Eingaben werden nicht gespeichert. Unterricht aus WebUntis bleibt schreibgeschützt.")
                 }
             }
             .navigationTitle(draft.editing == nil ? "Neuer Termin" : "Termin bearbeiten")
@@ -73,6 +66,8 @@ struct CalendarEventForm: View {
         }
     }
 
+    /// „Wiederholen“ stays one row until a rule is chosen; end and
+    /// exceptions are behind a disclosure.
     @ViewBuilder private var repeatSection: some View {
         Section {
             Picker("Wiederholen", selection: $draft.repeatRule) {
@@ -87,21 +82,21 @@ struct CalendarEventForm: View {
                 case .onDate: DatePicker("Letzter Termin", selection: $draft.repeatUntil, in: draft.start..., displayedComponents: [.date])
                 case .afterCount: Stepper("Nach \(draft.repeatCount) Terminen", value: $draft.repeatCount, in: 2...500)
                 }
-                ForEach(draft.exceptions, id: \.self) { date in
-                    LabeledContent("Ausnahme", value: CalendarText.longDate(date, calendar: calendar))
-                }
-                .onDelete { draft.exceptions.remove(atOffsets: $0) }
-                HStack {
-                    DatePicker("Ausnahme am", selection: $newException, displayedComponents: [.date])
-                    Button("Hinzufügen") {
-                        let day = calendar.startOfDay(for: newException)
-                        if !draft.exceptions.contains(day) { draft.exceptions.append(day); draft.exceptions.sort() }
+                DisclosureGroup(draft.exceptions.isEmpty ? "Ausnahmen" : "Ausnahmen (\(draft.exceptions.count))") {
+                    ForEach(draft.exceptions, id: \.self) { date in
+                        Text(CalendarText.longDate(date, calendar: calendar))
                     }
-                    .buttonStyle(.borderless)
+                    .onDelete { draft.exceptions.remove(atOffsets: $0) }
+                    HStack {
+                        DatePicker("Ausnahme am", selection: $newException, displayedComponents: [.date])
+                        Button("Hinzufügen") {
+                            let day = calendar.startOfDay(for: newException)
+                            if !draft.exceptions.contains(day) { draft.exceptions.append(day); draft.exceptions.sort() }
+                        }
+                        .buttonStyle(.borderless)
+                    }
                 }
             }
-        } header: {
-            Text("Wiederholung")
         } footer: {
             if draft.repeatRule != .never { Text(repeatSummary) }
         }
@@ -122,7 +117,7 @@ struct CalendarEventForm: View {
         case .afterCount: parts.append("\(draft.repeatCount) Termine")
         }
         if !draft.exceptions.isEmpty { parts.append(NotyText.count(draft.exceptions.count, "Ausnahme", "Ausnahmen")) }
-        return parts.joined(separator: ", ") + ". Ändern oder Löschen fragt später nach einzelnem Termin oder ganzer Serie."
+        return parts.joined(separator: ", ") + "."
     }
 
     @ViewBuilder private var reminderSection: some View {
@@ -135,10 +130,8 @@ struct CalendarEventForm: View {
                     Text("1 Tag vorher").tag(1440)
                 }
             }
-        } header: {
-            Text("Erinnerung")
         } footer: {
-            Text("Standardmäßig aus. Für Unterricht folgt eine allgemeine Einstellung, z. B. 10 Minuten vorher; doppelte Hinweise werden vermieden.")
+            if draft.reminder { Text("Für Unterricht folgt eine allgemeine Einstellung (z. B. 10 Minuten vorher); doppelte Hinweise werden vermieden.") }
         }
     }
 }

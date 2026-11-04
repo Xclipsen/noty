@@ -371,6 +371,27 @@ public enum CalendarText {
         }
     }
 
+    /// Calm toolbar headline: the month(s) of the shown days, the exact
+    /// range stays in `title` (VoiceOver) and the KW in the grid.
+    /// Week: „November 2026“, „Okt. – Nov. 2026“, „Dez. 2026 – Jan. 2027“;
+    /// day: „3. November 2026“ (the weekday stands in the column head).
+    public static func headline(_ mode: CalendarMode, anchor: Date, weekDays count: Int, calendar: Calendar) -> String {
+        switch mode {
+        case .year, .month: return title(mode, anchor: anchor, weekDays: count, calendar: calendar)
+        case .day:
+            let p = calendar.dateComponents([.year, .month, .day], from: anchor)
+            return "\(p.day ?? 1). \(months[(p.month ?? 1) - 1]) \(p.year ?? 0)"
+        case .week:
+            let days = CalendarDates.weekDays(containing: anchor, count: count, calendar: calendar)
+            let a = calendar.dateComponents([.year, .month], from: days[0])
+            let b = calendar.dateComponents([.year, .month], from: days[days.count - 1])
+            let (am, ay, bm, by) = ((a.month ?? 1) - 1, a.year ?? 0, (b.month ?? 1) - 1, b.year ?? 0)
+            if ay != by { return "\(shortMonths[am]) \(ay) – \(shortMonths[bm]) \(by)" }
+            if am != bm { return "\(shortMonths[am]) – \(shortMonths[bm]) \(by)" }
+            return "\(months[am]) \(ay)"
+        }
+    }
+
     /// „+ 3 weitere“.
     public static func more(_ count: Int) -> String { "+ \(count) weitere" }
 }

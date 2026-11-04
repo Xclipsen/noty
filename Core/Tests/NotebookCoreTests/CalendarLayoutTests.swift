@@ -212,6 +212,13 @@ final class CalendarLayoutTests: XCTestCase {
         XCTAssertEqual(CalendarText.timeRange(date(2026, 11, 3, 8), date(2026, 11, 3, 9, 30), calendar: berlin), "08:00–09:30")
         XCTAssertEqual(CalendarText.timeRange(date(2026, 11, 3, 22), date(2026, 11, 4, 1), calendar: berlin), "22:00 – Mi 01:00")
         XCTAssertEqual(CalendarText.dayRange(tuesday, tuesday, calendar: berlin), "3. November 2026")
+        XCTAssertEqual(CalendarText.headline(.week, anchor: tuesday, weekDays: 5, calendar: berlin), "November 2026")
+        XCTAssertEqual(CalendarText.headline(.week, anchor: date(2026, 10, 28), weekDays: 5, calendar: berlin), "Oktober 2026")
+        XCTAssertEqual(CalendarText.headline(.week, anchor: date(2026, 10, 28), weekDays: 7, calendar: berlin), "Okt. – Nov. 2026")
+        XCTAssertEqual(CalendarText.headline(.week, anchor: date(2027, 1, 2), weekDays: 5, calendar: berlin), "Dez. 2026 – Jan. 2027")
+        XCTAssertEqual(CalendarText.headline(.month, anchor: tuesday, weekDays: 5, calendar: berlin), "November 2026")
+        XCTAssertEqual(CalendarText.headline(.year, anchor: tuesday, weekDays: 5, calendar: berlin), "2026")
+        XCTAssertEqual(CalendarText.headline(.day, anchor: tuesday, weekDays: 5, calendar: berlin), "3. November 2026")
         XCTAssertEqual(CalendarText.more(3), "+ 3 weitere")
         XCTAssertEqual(CalendarMode.allCases.map(\.title), ["Jahr", "Monat", "Woche", "Tag"])
     }

@@ -80,6 +80,14 @@ enum CalendarPalette {
     static let holidays = Color.gray
     static let selection = Color(uiColor: .systemBlue)
     static let today = Color(uiColor: .systemRed)
+    /// Hairlines of grids and cells: quieter than the system separator.
+    static let hairline = Color(uiColor: .separator).opacity(0.45)
+    /// Hour labels, week numbers and other quiet captions.
+    static let quiet = Color(uiColor: .tertiaryLabel)
+    /// Event background: a faint tint of the subject colour, stronger when selected.
+    static func tint(_ color: Color, selected: Bool = false, cancelled: Bool = false) -> Color {
+        color.opacity(selected ? 0.30 : cancelled ? 0.06 : 0.15)
+    }
 
     static func color(_ event: CalendarSampleEvent) -> Color {
         switch event.source {

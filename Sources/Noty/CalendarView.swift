@@ -4,20 +4,29 @@ import NotebookCore
 enum CalendarSettingsKey {
     /// 5 = Monday–Friday (default), 7 = whole week.
     static let weekDays = "noty.calendar.weekDays"
-    /// Left panel (mini month, calendars) when there is room.
-    static let panel = "noty.calendar.panel"
+}
+
+/// Spacing scale of the calendar: 4 · 8 · 12 · 16 · 24.
+enum CalendarSpace {
+    static let xs: CGFloat = 4
+    static let s: CGFloat = 8
+    static let m: CGFloat = 12
+    static let l: CGFloat = 16
+    static let xl: CGFloat = 24
 }
 
 /// Calendar design stage (docs/CALENDAR-PLAN.md, Stufe A) in the library's
 /// detail column: Jahr · Monat · Woche · Tag with fictitious sample data.
 /// No calendar storage, no providers; notes live in memory only.
+/// Deliberately lean: period title, ‹ Heute ›, view switcher, „+“; the rest
+/// (week length, calendars, sample data, search) lives in one „…“ menu.
 struct CalendarView: View {
     @ObservedObject var model: CalendarDesignModel
     /// False while a notebook is open above the library: its keys must not reach the calendar behind it.
     var keysActive = true
     @AppStorage(CalendarSettingsKey.weekDays) private var weekDays = 5
-    @AppStorage(CalendarSettingsKey.panel) private var panelPreferred = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var dayList: CalendarDayListRequest?
     @State private var searching = false
     @State private var enlarged: CalendarEnlargeRequest?
@@ -29,23 +38,16 @@ struct CalendarView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let layout = CalendarScreenLayout(width: geo.size.width, panelPreferred: panelPreferred, hasSelection: model.selectedEvent != nil)
+            let layout = CalendarScreenLayout(width: geo.size.width)
             HStack(spacing: 0) {
-                if layout.panel {
-                    CalendarSidePanel(model: model, weekDays: shownWeekDays)
-                        .frame(width: CalendarScreenLayout.panelWidth)
-                        .transition(.move(edge: .leading).combined(with: .opacity))
-                    Divider()
-                }
                 VStack(spacing: 0) {
                     header
-                    Divider()
                     content
                         .overlay(alignment: .bottom) { removalBanner }
                 }
                 .frame(maxWidth: .infinity)
                 if layout.inlineDetail, let event = model.selectedEvent {
-                    Divider()
+                    Rectangle().fill(CalendarPalette.hairline).frame(width: 0.5)
                     CalendarEventPanel(event: event, model: model, escapes: keys) { enlarged = CalendarEnlargeRequest(event: event, page: $0) }
                         .frame(width: layout.detailWidth)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -77,37 +79,37 @@ struct CalendarView: View {
         .background { shortcuts }
     }
 
-    // MARK: Header (date range, back/forward, Heute)
+    // MARK: Header (period, ‹ Heute ›)
 
     private var header: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(CalendarText.title(model.mode, anchor: model.anchor, weekDays: shownWeekDays, calendar: calendar))
-                    .font(.title2.bold()).lineLimit(1).minimumScaleFactor(0.7)
-                    .accessibilityAddTraits(.isHeader)
-                Label("Beispieldaten · nichts wird gespeichert", systemImage: "flask")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 8)
+        HStack(spacing: 0) {
+            Text(CalendarText.headline(model.mode, anchor: model.anchor, weekDays: shownWeekDays, calendar: calendar))
+                .font(.title2.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.7)
+                .accessibilityLabel(CalendarText.title(model.mode, anchor: model.anchor, weekDays: shownWeekDays, calendar: calendar))
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: CalendarSpace.s)
             Button { model.step(-1) } label: {
-                Image(systemName: "chevron.left").font(.body.weight(.semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
+                Image(systemName: "chevron.left").font(.body.weight(.medium)).frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .accessibilityLabel("Zurück")
             .help("Zurück (⌘←)")
             .keyboardShortcut(key(.leftArrow))
-            Button("Heute") { model.goToToday() }
-                .buttonStyle(.bordered)
-                .frame(minHeight: 44)
-                .keyboardShortcut(key("t"))
-                .help("Heute (⌘T)")
+            Button { model.goToToday() } label: {
+                Text("Heute").font(.body.weight(.medium)).padding(.horizontal, CalendarSpace.xs)
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+            }
+            .keyboardShortcut(key("t"))
+            .help("Heute (⌘T)")
             Button { model.step(1) } label: {
-                Image(systemName: "chevron.right").font(.body.weight(.semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
+                Image(systemName: "chevron.right").font(.body.weight(.medium)).frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .accessibilityLabel("Vor")
             .help("Vor (⌘→)")
             .keyboardShortcut(key(.rightArrow))
         }
-        .padding(.horizontal, 16).padding(.vertical, 6)
+        .buttonStyle(.borderless)
+        .padding(.leading, CalendarSpace.xl).padding(.trailing, CalendarSpace.m)
+        .padding(.top, CalendarSpace.xs).padding(.bottom, CalendarSpace.xs)
     }
 
     @ViewBuilder private var content: some View {
@@ -132,14 +134,15 @@ struct CalendarView: View {
         let empty = !model.hasVisibleSamples || !stride(from: 0, to: CalendarDates.days(from: range.start, to: range.end, calendar: calendar), by: 1)
             .contains { !model.events(on: CalendarDates.day($0, after: range.start, calendar: calendar)).isEmpty }
         if empty {
-            VStack(spacing: 4) {
-                Label(emptyText, systemImage: "calendar").font(.subheadline.weight(.semibold))
-                Text(model.showsSamples ? "Alle Kalender sind ausgeblendet." : "Beispieldaten sind ausgeblendet (Ansicht ohne Termine).")
+            VStack(spacing: CalendarSpace.xs) {
+                Text(emptyText).font(.subheadline.weight(.semibold))
+                Text(model.showsSamples ? "Alle Kalender sind ausgeblendet (Menü „…“)." : "Beispieldaten sind ausgeblendet (Menü „…“).")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 16).padding(.vertical, 10)
-            .notyGlass()
-            .padding(.top, model.mode == .week || model.mode == .day ? 120 : 60)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, CalendarSpace.l).padding(.vertical, CalendarSpace.m)
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+            .padding(.top, model.mode == .week || model.mode == .day ? 140 : 80)
             .allowsHitTesting(false)
         }
     }
@@ -155,55 +158,82 @@ struct CalendarView: View {
 
     @ViewBuilder private var removalBanner: some View {
         if let removal = model.lastRemoval {
-            HStack(spacing: 12) {
+            HStack(spacing: CalendarSpace.m) {
                 Text("\(removal.title) ausgeblendet").font(.subheadline).lineLimit(1)
                 Button("Rückgängig") { model.undoRemoval() }.font(.subheadline.weight(.semibold))
                 Button { model.dismissRemoval() } label: { Image(systemName: "xmark").frame(width: 32, height: 32) }
                     .accessibilityLabel("Hinweis schließen")
             }
-            .padding(.leading, 16).padding(.trailing, 6).padding(.vertical, 6)
+            .padding(.leading, CalendarSpace.l).padding(.trailing, 6).padding(.vertical, 6)
             .notyGlass()
-            .padding(.bottom, 16)
+            .padding(.bottom, CalendarSpace.l)
         }
     }
 
     // MARK: Toolbar
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            Button { withAnimation(NotyMotion.panel(reduceMotion)) { panelPreferred.toggle() } } label: {
-                Label(panelPreferred ? "Kalenderleiste ausblenden" : "Kalenderleiste einblenden", systemImage: "sidebar.squares.left")
-            }
-            .help("Monatsübersicht und Kalender")
-        }
         ToolbarItem(placement: .principal) {
-            Picker("Ansicht", selection: $model.mode) {
-                ForEach(CalendarMode.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .frame(minWidth: 260, maxWidth: 340)
-            .accessibilityLabel("Ansicht")
-        }
-        if model.mode == .week {
-            ToolbarItem(placement: .topBarTrailing) {
+            if sizeClass == .compact {
+                // Narrow window: one compact menu instead of four segments.
                 Menu {
-                    Picker("Wochentage", selection: $weekDays) {
-                        Text("Montag – Freitag").tag(5)
-                        Text("Ganze Woche").tag(7)
-                    }
+                    Picker("Ansicht", selection: $model.mode) { modes }
                 } label: {
-                    Label(shownWeekDays == 5 ? "5 Tage" : "7 Tage", systemImage: shownWeekDays == 5 ? "calendar.day.timeline.left" : "calendar")
-                        .labelStyle(.titleAndIcon)
+                    HStack(spacing: CalendarSpace.xs) {
+                        Text(model.mode.title).font(.headline)
+                        Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
+                    }
+                    .foregroundStyle(.primary)
+                    .frame(minHeight: 44)
                 }
-                .accessibilityLabel("Wochentage: \(shownWeekDays == 5 ? "Montag bis Freitag" : "ganze Woche")")
+                .accessibilityLabel("Ansicht: \(model.mode.title)")
+            } else {
+                Picker("Ansicht", selection: $model.mode) { modes }
+                    .pickerStyle(.segmented)
+                    .frame(width: 280)
+                    .accessibilityLabel("Ansicht")
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            Button { searching = true } label: { Label("Termine suchen", systemImage: "magnifyingglass") }
+            Menu { optionsMenu } label: {
+                Label("Weitere Optionen", systemImage: "ellipsis.circle")
+            }
         }
         ToolbarItem(placement: .topBarTrailing) {
             Button { model.requestNewEvent() } label: { Label("Neuer Termin", systemImage: "plus") }
                 .help("Neuer Termin (⌘N)")
+        }
+    }
+
+    /// Tag · Woche · Monat · Jahr, in the order of ⌘1–⌘4.
+    private var modes: some View {
+        ForEach([CalendarMode.day, .week, .month, .year]) { Text($0.title).tag($0) }
+    }
+
+    @ViewBuilder private var optionsMenu: some View {
+        Section {
+            Picker(selection: $weekDays) {
+                Text("Montag – Freitag").tag(5)
+                Text("Ganze Woche").tag(7)
+            } label: {
+                Label("Wochentage", systemImage: "calendar.day.timeline.left")
+            }
+            .pickerStyle(.menu)
+            Button { searching = true } label: { Label("Termine suchen", systemImage: "magnifyingglass") }
+        }
+        Section("Kalender") {
+            ForEach(CalendarSource.allCases) { source in
+                Toggle(isOn: Binding(
+                    get: { !model.hiddenSources.contains(source) },
+                    set: { shown in if shown { model.hiddenSources.remove(source) } else { model.hiddenSources.insert(source) } }
+                )) {
+                    Text(source.readOnly ? "\(source.title) · schreibgeschützt" : source.title)
+                }
+            }
+        }
+        Section("Designentwurf") {
+            Toggle("Beispieldaten anzeigen", isOn: $model.showsSamples)
+            Text("Erfundene Termine, nichts wird gespeichert.")
         }
     }
 
@@ -219,20 +249,16 @@ struct CalendarView: View {
     }
 }
 
-/// Which columns fit: no forced three columns on small space.
+/// Whether the details fit beside the calendar: no forced columns on small space.
 struct CalendarScreenLayout: Equatable {
-    static let panelWidth: CGFloat = 304
     /// The calendar itself keeps at least this width beside the details.
     static let minimumCalendar: CGFloat = 500
-    let panel: Bool
     let inlineDetail: Bool
     let detailWidth: CGFloat
 
-    init(width: CGFloat, panelPreferred: Bool, hasSelection: Bool) {
-        detailWidth = min(460, max(360, width * 0.36))
+    init(width: CGFloat) {
+        detailWidth = min(440, max(360, width * 0.36))
         inlineDetail = width - detailWidth >= Self.minimumCalendar
-        let remaining = width - (hasSelection && inlineDetail ? detailWidth : 0)
-        panel = panelPreferred && remaining - Self.panelWidth >= 600
     }
 }
 
@@ -245,125 +271,6 @@ private struct CalendarEnlargeRequest: Identifiable {
     let id = UUID()
     let event: CalendarSampleEvent
     let page: Int
-}
-
-/// Left panel: mini month and the calendars with colour dots.
-struct CalendarSidePanel: View {
-    @ObservedObject var model: CalendarDesignModel
-    let weekDays: Int
-    @State private var month: Date?
-    @ScaledMetric(relativeTo: .body) private var cell: CGFloat = 38
-    private var calendar: Calendar { model.calendar }
-
-    var body: some View {
-        let shown = month ?? CalendarDates.startOfMonth(model.anchor, calendar: calendar)
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                miniMonth(shown)
-                calendars
-                Toggle(isOn: $model.showsSamples) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Beispieldaten anzeigen")
-                        Text("Aus: leere Ansicht prüfen").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .frame(minHeight: 44)
-                Label("Stufe A: Design mit erfundenen Daten. Kein WebUntis-Zugang, keine Speicherung.", systemImage: "flask")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(16)
-        }
-        .background(Color(uiColor: .secondarySystemBackground))
-        .onChange(of: model.anchor) { _, _ in month = nil }
-    }
-
-    private func miniMonth(_ shown: Date) -> some View {
-        let grid = CalendarMonthGrid(month: shown, calendar: calendar)
-        let range = CalendarDates.range(model.mode, anchor: model.anchor, weekDays: weekDays, calendar: calendar)
-        let index = calendar.component(.month, from: shown) - 1
-        return VStack(spacing: 2) {
-            HStack {
-                Text("\(CalendarText.months[index]) \(String(calendar.component(.year, from: shown)))").font(.headline)
-                Spacer()
-                Button { month = calendar.date(byAdding: .month, value: -1, to: shown) } label: {
-                    Image(systemName: "chevron.left").frame(width: 44, height: 44).contentShape(Rectangle())
-                }
-                .accessibilityLabel("Vorheriger Monat")
-                Button { month = calendar.date(byAdding: .month, value: 1, to: shown) } label: {
-                    Image(systemName: "chevron.right").frame(width: 44, height: 44).contentShape(Rectangle())
-                }
-                .accessibilityLabel("Nächster Monat")
-            }
-            HStack(spacing: 0) {
-                ForEach(0..<7, id: \.self) { Text(CalendarText.shortWeekdays[$0]).frame(width: cell) }
-            }
-            .font(.caption2).foregroundStyle(.secondary).accessibilityHidden(true)
-            ForEach(grid.weeks, id: \.days.first) { week in
-                HStack(spacing: 0) {
-                    ForEach(week.days, id: \.self) { day in
-                        let inMonth = grid.contains(day, calendar: calendar)
-                        let isToday = calendar.isDate(day, inSameDayAs: model.today)
-                        let inRange = model.mode != .year && day >= range.start && day < range.end
-                        Button { model.anchor = day } label: {
-                            Text("\(calendar.component(.day, from: day))")
-                                .font(.callout.weight(isToday ? .bold : .regular)).monospacedDigit()
-                                .foregroundStyle(isToday ? Color.white : inMonth ? .primary : .secondary)
-                                .frame(width: 30, height: 30)
-                                .background { if isToday { Circle().fill(CalendarPalette.today) } }
-                                .frame(width: cell, height: cell)
-                                .background { if inRange { Rectangle().fill(CalendarPalette.selection.opacity(0.22)) } }
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(CalendarText.longDate(day, calendar: calendar) + (isToday ? ", heute" : ""))
-                        .accessibilityAddTraits(inRange ? .isSelected : [])
-                    }
-                }
-            }
-        }
-    }
-
-    private var calendars: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Kalender").font(.headline).padding(.bottom, 4).accessibilityAddTraits(.isHeader)
-            ForEach(CalendarSource.allCases) { source in
-                let shown = !model.hiddenSources.contains(source)
-                Button {
-                    if shown { model.hiddenSources.insert(source) } else { model.hiddenSources.remove(source) }
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: shown ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(shown ? CalendarPalette.selection : .secondary)
-                        dots(source)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(source.title).foregroundStyle(.primary)
-                            Text(source.origin).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if source.readOnly { Image(systemName: "lock").font(.caption).foregroundStyle(.secondary) }
-                    }
-                    .frame(minHeight: 44).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(source.title), \(source.origin)\(source.readOnly ? ", schreibgeschützt" : "")")
-                .accessibilityValue(shown ? "eingeblendet" : "ausgeblendet")
-                .accessibilityHint("Blendet den Kalender ein oder aus")
-            }
-        }
-    }
-
-    /// Timetable: several subject colours (automatic per subject).
-    @ViewBuilder private func dots(_ source: CalendarSource) -> some View {
-        switch source {
-        case .timetable:
-            HStack(spacing: -3) {
-                ForEach(0..<3, id: \.self) { Circle().fill(CalendarPalette.subjects[$0]).frame(width: 10, height: 10) }
-            }
-            .frame(width: 24)
-        case .personal: Circle().fill(CalendarPalette.personal).frame(width: 10, height: 10).frame(width: 24)
-        case .holidays: Circle().fill(CalendarPalette.holidays).frame(width: 10, height: 10).frame(width: 24)
-        }
-    }
 }
 
 /// Search over the sample entries; never silently limited.

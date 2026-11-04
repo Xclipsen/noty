@@ -2,8 +2,9 @@ import SwiftUI
 import PencilKit
 import NotebookCore
 
-/// Termindetails: Titel → Datum/Uhrzeit → Kalender → Ort → Beschreibung →
-/// „Notizen“ with a directly writable page. `overlay`: large view over the
+/// Termindetails: a minimal head (Titel, Datum/Uhrzeit, Kalender, Ort),
+/// only the rows that have content, then „Notizen“ with the directly
+/// writable page as the main element. `overlay`: large view over the
 /// calendar in narrow windows, with a clear way back.
 struct CalendarEventPanel: View {
     let event: CalendarSampleEvent
@@ -15,36 +16,35 @@ struct CalendarEventPanel: View {
     @State private var page = 0
     @State private var input = CalendarNoteInput.pen
     @State private var confirmingRemoval = false
-    @State private var detailsHeight: CGFloat = 220
+    @State private var detailsHeight: CGFloat = 160
     private var calendar: Calendar { model.calendar }
 
     var body: some View {
         VStack(spacing: 0) {
             bar
-            Divider()
             GeometryReader { geo in
                 // Wide overlay: details beside the page; otherwise stacked.
                 if overlay && geo.size.width >= 760 {
                     HStack(alignment: .top, spacing: 0) {
-                        ScrollView { details.padding(20) }.frame(width: 340)
-                        Divider()
-                        notes.padding(16)
+                        ScrollView { details.padding(CalendarSpace.xl) }.frame(width: 320)
+                        Rectangle().fill(CalendarPalette.hairline).frame(width: 0.5)
+                        notes.padding(CalendarSpace.l)
                     }
                 } else {
                     VStack(spacing: 0) {
-                        // As tall as the details, at most 40 %: the page keeps most of the room.
+                        // As tall as the details, at most a third: the page keeps the room.
                         ScrollView {
-                            details.padding(16)
+                            details.padding(.horizontal, CalendarSpace.l).padding(.bottom, CalendarSpace.m)
                                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailsHeight = $0 }
                         }
-                        .frame(height: min(detailsHeight, max(160, geo.size.height * 0.4)))
-                        Divider()
-                        notes.padding(.horizontal, 14).padding(.vertical, 10)
+                        .frame(height: min(detailsHeight, max(120, geo.size.height * 0.34)))
+                        Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
+                        notes.padding(.horizontal, CalendarSpace.m).padding(.vertical, CalendarSpace.s)
                     }
                 }
             }
         }
-        .background(Color(uiColor: overlay ? .systemBackground : .secondarySystemBackground))
+        .background(Color(uiColor: .systemBackground))
         .onChange(of: event.id) { _, _ in page = 0 }
         .confirmationDialog("Termin löschen?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
             if event.seriesID != nil {
@@ -58,99 +58,90 @@ struct CalendarEventPanel: View {
         }
     }
 
+    /// Back/close and, for own entries, one menu with Bearbeiten/Löschen.
     private var bar: some View {
-        HStack {
+        HStack(spacing: 0) {
             if overlay {
                 Button { model.selection = nil } label: {
-                    Label("Kalender", systemImage: "chevron.backward").font(.body.weight(.semibold))
+                    Label("Kalender", systemImage: "chevron.backward").font(.body.weight(.medium))
+                        .padding(.horizontal, CalendarSpace.xs)
                         .frame(minHeight: 44).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Zurück zum Kalender")
                 .keyboardShortcut(escapes ? .cancelAction : nil)
-                Spacer()
-                Text(CalendarText.shortDate(event.start, calendar: calendar)).font(.subheadline).foregroundStyle(.secondary)
-            } else {
-                Text("Termin").font(.headline)
-                Spacer()
+            }
+            Spacer()
+            if event.writable {
+                Menu {
+                    Button { model.draft = CalendarDraft(editing: event, calendar: calendar) } label: {
+                        Label("Bearbeiten", systemImage: "pencil")
+                    }
+                    Button(role: .destructive) { confirmingRemoval = true } label: {
+                        Label("Löschen", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle").font(.body).frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .accessibilityLabel("Termin bearbeiten oder löschen")
+            }
+            if !overlay {
                 Button { model.selection = nil } label: {
-                    Image(systemName: "xmark").font(.body.weight(.semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
+                    Image(systemName: "xmark").font(.body.weight(.medium)).foregroundStyle(.secondary)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Details schließen")
                 .keyboardShortcut(escapes ? .cancelAction : nil)
             }
         }
-        .padding(.horizontal, 12)
-        .frame(minHeight: 50)
+        .buttonStyle(.borderless)
+        .padding(.horizontal, CalendarSpace.xs)
     }
 
     // MARK: Details
 
     private var details: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(event.title).font(.title2.bold()).strikethrough(event.status == .cancelled)
-                    .accessibilityAddTraits(.isHeader)
-                badges
-            }
-            detailRow("calendar", CalendarText.longDate(event.start, calendar: calendar))
-            detailRow("clock", event.timeText(calendar))
-            HStack(spacing: 10) {
-                Circle().fill(CalendarPalette.color(event)).frame(width: 10, height: 10).frame(width: 22)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(event.source.title)
-                    Text(event.source.origin).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: CalendarSpace.s) {
+            Text(event.title).font(.title3.weight(.semibold)).strikethrough(event.status == .cancelled)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(CalendarText.longDate(event.start, calendar: calendar) + " · " + event.timeText(calendar)).monospacedDigit()
+                if let place = [event.room, event.teacher].compactMap({ $0 }).joined(separator: " · ").nilIfEmpty {
+                    Text(place)
                 }
+                HStack(spacing: 6) {
+                    Circle().fill(CalendarPalette.color(event)).frame(width: 7, height: 7)
+                    Text(event.source.readOnly ? "\(event.source.title) · \(event.source.origin)" : event.source.title)
+                    if event.source.readOnly { Image(systemName: "lock").font(.caption2).accessibilityLabel("schreibgeschützt") }
+                }
+                .accessibilityElement(children: .combine)
             }
-            .accessibilityElement(children: .combine)
-            if let room = event.room { detailRow("mappin.and.ellipse", room) }
-            if let teacher = event.teacher { detailRow("person", teacher) }
-            if case .substitution(let note) = event.status { detailRow("arrow.triangle.swap", note) }
-            if let text = event.repeatText { detailRow("repeat", text) }
-            detailRow(event.reminder == nil ? "bell.slash" : "bell", event.reminder ?? "Keine Erinnerung")
+            .font(.subheadline).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            if let label = event.status.label, let symbol = event.status.symbol {
+                Label(statusText(label), systemImage: symbol)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(event.status == .cancelled ? Color.orange : .primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // Only rows with content; „keine Erinnerung“ is not shown.
+            if event.repeatText != nil || event.reminder != nil {
+                VStack(alignment: .leading, spacing: 3) {
+                    if let text = event.repeatText { Label(text, systemImage: "repeat") }
+                    if let text = event.reminder { Label(text, systemImage: "bell") }
+                }
+                .font(.footnote).foregroundStyle(.secondary).labelStyle(CalendarCompactLabelStyle())
+            }
             if let text = event.details {
-                Text(text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            if event.writable {
-                HStack(spacing: 12) {
-                    Button { model.draft = CalendarDraft(editing: event, calendar: calendar) } label: {
-                        Label("Bearbeiten", systemImage: "pencil").frame(minHeight: 44)
-                    }
-                    .buttonStyle(.bordered)
-                    Button(role: .destructive) { confirmingRemoval = true } label: {
-                        Label("Löschen", systemImage: "trash").frame(minHeight: 44)
-                    }
-                    .buttonStyle(.bordered)
-                }
+                Text(text).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var badges: some View {
-        HStack(spacing: 6) {
-            if let label = event.status.label, let symbol = event.status.symbol {
-                badge(label, symbol, tint: event.status == .cancelled ? .orange : .primary)
-            }
-            if event.source.readOnly {
-                badge(event.source == .timetable ? "Schreibgeschützt · WebUntis" : "Schreibgeschützt", "lock", tint: .secondary)
-            } else {
-                badge("Bearbeitbar", "pencil", tint: .secondary)
-            }
-        }
-    }
-
-    private func badge(_ text: String, _ symbol: String, tint: Color) -> some View {
-        Label(text, systemImage: symbol).font(.caption.weight(.semibold)).foregroundStyle(tint)
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(Capsule().fill(Color.white.opacity(0.08)))
-    }
-
-    private func detailRow(_ symbol: String, _ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 22)
-            Text(text).fixedSize(horizontal: false, vertical: true)
-        }
-        .accessibilityElement(children: .combine)
+    private func statusText(_ label: String) -> String {
+        if case .substitution(let note) = event.status { return "\(label): \(note)" }
+        return label
     }
 
     // MARK: Notes
@@ -158,26 +149,27 @@ struct CalendarEventPanel: View {
     private var notes: some View {
         let pages = model.pages(for: event)
         let index = min(page, pages.count - 1)
-        let written = model.hasNotes(event)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Notizen").font(.headline).accessibilityAddTraits(.isHeader)
-                if written {
-                    Label("Inhalt vorhanden", systemImage: "note.text").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button { enlarge(index) } label: {
-                    Label("Vergrößern", systemImage: "arrow.up.left.and.arrow.down.right").frame(minHeight: 44)
-                }
-                .help("Notiz groß öffnen")
-            }
-            CalendarNoteControls(pages: pages.count, page: Binding(get: { index }, set: { page = $0 }), input: $input) {
-                page = model.addPage(to: event)
-            }
+        return VStack(alignment: .leading, spacing: CalendarSpace.xs) {
+            CalendarNoteControls(pages: pages.count, page: Binding(get: { index }, set: { page = $0 }), input: $input,
+                                 addPage: { page = model.addPage(to: event) }, enlarge: { enlarge(index) })
             CalendarNotePageView(event: event, model: model, page: index, input: input)
-            Text(written ? "Im Entwurf nur bis zum Neustart · später als „\(event.noteTitle(calendar))“ in „Kalendernotizen“"
-                         : "Leere Seite: noch keine Notiz · erst die erste Eingabe legt später ein Heft an")
-                .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+            Text("Entwurf · wird nicht gespeichert")
+                .font(.caption2).foregroundStyle(CalendarPalette.quiet).lineLimit(1)
+                .frame(maxWidth: .infinity)
+        }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+/// Small icon + text with tight spacing for metadata rows.
+struct CalendarCompactLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            configuration.icon.frame(width: 16)
+            configuration.title
         }
     }
 }
@@ -189,38 +181,65 @@ enum CalendarNoteInput: String, CaseIterable, Identifiable {
     var symbol: String { self == .pen ? "pencil.tip" : "keyboard" }
 }
 
-/// Page count and flipping, adding a page, input mode.
+/// One quiet row above the page: „Notizen“, input mode, page flip (only
+/// with several pages), add page and enlarge.
 struct CalendarNoteControls: View {
     let pages: Int
     @Binding var page: Int
     @Binding var input: CalendarNoteInput
     let addPage: () -> Void
+    var enlarge: (() -> Void)?
 
     var body: some View {
-        HStack(spacing: 4) {
-            Button { page = max(0, page - 1) } label: {
-                Image(systemName: "chevron.left").frame(width: 44, height: 44).contentShape(Rectangle())
+        // Narrow panel with several pages: the „Notizen“ caption yields first.
+        ViewThatFits(in: .horizontal) {
+            row(caption: true)
+            row(caption: false)
+        }
+        .font(.body)
+        .buttonStyle(.borderless)
+    }
+
+    private func row(caption: Bool) -> some View {
+        HStack(spacing: 0) {
+            if caption {
+                Text("Notizen").font(.subheadline.weight(.semibold)).accessibilityAddTraits(.isHeader)
+                    .fixedSize().padding(.trailing, CalendarSpace.s)
             }
-            .disabled(page == 0)
-            .accessibilityLabel("Vorherige Seite")
-            Text("Seite \(page + 1) von \(pages)").font(.subheadline).monospacedDigit()
-                .accessibilityAddTraits(.updatesFrequently)
-            Button { page = min(pages - 1, page + 1) } label: {
-                Image(systemName: "chevron.right").frame(width: 44, height: 44).contentShape(Rectangle())
+            Picker("Eingabe", selection: $input) {
+                ForEach(CalendarNoteInput.allCases) { Label($0.title, systemImage: $0.symbol).labelStyle(.iconOnly).tag($0) }
             }
-            .disabled(page >= pages - 1)
-            .accessibilityLabel("Nächste Seite")
+            .pickerStyle(.segmented)
+            .frame(width: 92)
+            .accessibilityLabel("Eingabe: \(input.title)")
+            Spacer(minLength: CalendarSpace.s)
+            if pages > 1 {
+                Button { page = max(0, page - 1) } label: {
+                    Image(systemName: "chevron.left").frame(width: 36, height: 44).contentShape(Rectangle())
+                }
+                .disabled(page == 0)
+                .accessibilityLabel("Vorherige Seite")
+                Text("\(page + 1)/\(pages)").font(.footnote).monospacedDigit().foregroundStyle(.secondary).fixedSize()
+                    .accessibilityLabel("Seite \(page + 1) von \(pages)")
+                    .accessibilityAddTraits(.updatesFrequently)
+                Button { page = min(pages - 1, page + 1) } label: {
+                    Image(systemName: "chevron.right").frame(width: 36, height: 44).contentShape(Rectangle())
+                }
+                .disabled(page >= pages - 1)
+                .accessibilityLabel("Nächste Seite")
+            }
             Button(action: addPage) {
                 Image(systemName: "plus.rectangle.portrait").frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .accessibilityLabel("Seite hinzufügen")
             .help("Seite hinzufügen")
-            Spacer(minLength: 8)
-            Picker("Eingabe", selection: $input) {
-                ForEach(CalendarNoteInput.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
+            if let enlarge {
+                Button(action: enlarge) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right").frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .accessibilityLabel("Vergrößern")
+                .help("Notiz groß öffnen")
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 190)
         }
     }
 }
@@ -266,8 +285,8 @@ struct CalendarNotePageView: View {
                 }
             }
             .frame(width: size.width, height: size.height)
-            .clipShape(RoundedRectangle(cornerRadius: 3))
-            .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .shadow(color: .black.opacity(0.25), radius: 4, y: 1)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onChange(of: input) { _, value in typing = value == .text }
         }
@@ -366,27 +385,27 @@ struct CalendarEnlargedNote: View {
     var body: some View {
         let pages = model.pages(for: event)
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: CalendarSpace.m) {
                 Button { dismiss() } label: {
-                    Label("Zurück zu \(event.title) · \(CalendarText.shortDate(event.start, calendar: model.calendar))",
+                    Label("\(event.title) · \(CalendarText.shortDate(event.start, calendar: model.calendar))",
                           systemImage: "chevron.backward")
-                        .font(.body.weight(.semibold)).lineLimit(1).frame(minHeight: 44).contentShape(Rectangle())
+                        .font(.body.weight(.medium)).lineLimit(1).frame(minHeight: 44).contentShape(Rectangle())
                 }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Zurück zu \(event.title), \(CalendarText.longDate(event.start, calendar: model.calendar))")
                 .keyboardShortcut(.cancelAction)
-                Spacer()
-                Text(event.noteTitle(model.calendar)).font(.headline).lineLimit(1)
-                Spacer()
+                .layoutPriority(1)
+                CalendarNoteControls(pages: pages.count, page: $page, input: $input) {
+                    page = model.addPage(to: event)
+                }
+                .frame(maxWidth: 420)
             }
-            .padding(.horizontal, 16)
-            CalendarNoteControls(pages: pages.count, page: $page, input: $input) {
-                page = model.addPage(to: event)
-            }
-            .padding(.horizontal, 16)
-            Divider()
+            .padding(.horizontal, CalendarSpace.l)
+            Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
             CalendarNotePageView(event: event, model: model, page: min(page, pages.count - 1), input: input)
-                .padding(20)
-            Text("Großansicht (Entwurf, nichts wird gespeichert). Ab Stufe B öffnet „Vergrößern“ den normalen noty-Editor.")
-                .font(.caption).foregroundStyle(.secondary).padding(.bottom, 10)
+                .padding(CalendarSpace.xl)
+            Text("Entwurf · wird nicht gespeichert · ab Stufe B öffnet hier der normale noty-Editor")
+                .font(.caption2).foregroundStyle(CalendarPalette.quiet).lineLimit(1).padding(.bottom, CalendarSpace.s)
         }
         .background(Color(uiColor: .systemBackground))
         .preferredColorScheme(.dark)
