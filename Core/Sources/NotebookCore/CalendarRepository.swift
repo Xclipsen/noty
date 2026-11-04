@@ -6,6 +6,8 @@ import Foundation
 //   Calendar/manifest-previous.json   previous manifest (fallback)
 //   Calendar/Revisions/<UUID>.json    immutable complete CalendarState revisions
 //   Calendar/Quarantine/              damaged manifest moved aside before replacing it
+//   Calendar/Migration/               exact bytes of an older-format revision, archived
+//                                     before the first commit in the new format (B2)
 //   Calendar/Cache/<UUID>.json        replaceable source snapshot per connection
 //
 // The confirmed state (own events, settings, connection record) follows the
@@ -26,7 +28,7 @@ public struct CalendarLoad: Sendable, Equatable {
 final class CalendarStore {
     let directory: URL
     var clock: () -> Date = { Date() }
-    enum CommitStage { case revisionWritten, previousWritten }
+    enum CommitStage { case migrationArchive, revisionWritten, previousWritten }
     /// Test hook after each commit step (injected failures, crash images).
     var commitFault: (CommitStage) throws -> Void = { _ in }
     private(set) var recovered = false
@@ -35,6 +37,13 @@ final class CalendarStore {
     private var lastManifest: RevisionManifest?
     private var observedPrimary: Data?
     private var damagedPrimary = false
+    /// Exact bytes and stored format of the revision `current` came from.
+    /// An older format is archived (`Migration/`) before the first commit
+    /// that would rewrite it in the current format; a failed archive refuses
+    /// the commit.
+    private var loadedBytes: Data?
+    private var loadedFile: String?
+    private(set) var loadedFormat: Int?
     /// Revision files of the acknowledged chain this store loaded or wrote.
     /// Only these are ever deleted; skipped (possibly newer) files stay.
     private var known = Set<String>()
@@ -44,6 +53,7 @@ final class CalendarStore {
     private var previous: URL { directory.appendingPathComponent("manifest-previous.json") }
     private var revisions: URL { directory.appendingPathComponent("Revisions", isDirectory: true) }
     private var quarantine: URL { directory.appendingPathComponent("Quarantine", isDirectory: true) }
+    private var migration: URL { directory.appendingPathComponent("Migration", isDirectory: true) }
 
     init(directory: URL) { self.directory = directory }
 
@@ -59,7 +69,8 @@ final class CalendarStore {
             catch { continue }
             for (offset, record) in manifest.revisions.enumerated() {
                 do {
-                    let state = try decodeRevision(record)
+                    let (state, bytes, format) = try decodeRevision(record)
+                    loadedBytes = bytes; loadedFile = record.file; loadedFormat = format
                     var chain = Set(manifest.revisions.dropFirst(offset).map(\.file))
                     if manifestURL == primary, let older = try? readManifest(previous) { chain.formUnion(older.revisions.map(\.file)) }
                     known = chain
@@ -80,6 +91,7 @@ final class CalendarStore {
         guard !itemExists(primary), !itemExists(previous), !hasRevisions else { throw CalendarStoreError.noCompleteRevision }
         known = []
         lastManifest = nil
+        loadedBytes = nil; loadedFile = nil; loadedFormat = nil
         current = CalendarState()
         recovered = false
         damagedPrimary = false
@@ -98,6 +110,8 @@ final class CalendarStore {
         let bytes = try Self.encoder.encode(state)
         guard bytes.count <= Self.maximumBytes else { throw CalendarStoreError.invalidState }
         guard try Self.decode(bytes) == state else { throw CalendarStoreError.invalidState }
+        // Before anything of the new format is written: the old bytes stay.
+        try archiveOlderFormat()
         try fm.createDirectory(at: revisions, withIntermediateDirectories: true)
         try requireRealDirectory(revisions)
         let old = lastManifest
@@ -123,6 +137,7 @@ final class CalendarStore {
         }
         lastManifest = manifest
         observedPrimary = manifestBytes
+        loadedBytes = bytes; loadedFile = manifest.revisions.first?.file; loadedFormat = state.formatVersion
         current = state
         recovered = false
         damagedPrimary = false
@@ -141,23 +156,53 @@ final class CalendarStore {
     }()
 
     /// Header first: a newer format is reported as such, never parsed further.
-    static func decode(_ bytes: Data) throws -> CalendarState {
+    static func decode(_ bytes: Data) throws -> CalendarState { try decodeStored(bytes).state }
+
+    /// The state in the current format and the format it was stored in. An
+    /// older (migratable) format is read with the defaults of the new fields
+    /// (format 1 → 2: no series, links, mappings, colours or notes folder).
+    static func decodeStored(_ bytes: Data) throws -> (state: CalendarState, format: Int) {
         struct Header: Decodable { var formatVersion: Int }
         let version = try JSONDecoder().decode(Header.self, from: bytes).formatVersion
-        guard version == CalendarState.currentFormat else {
-            throw version > CalendarState.currentFormat ? CalendarStoreError.unsupportedFormat(version) : CalendarStoreError.invalidState
+        if version > CalendarState.currentFormat { throw CalendarStoreError.unsupportedFormat(version) }
+        guard version == CalendarState.currentFormat || CalendarState.migratableFormats.contains(version) else {
+            throw CalendarStoreError.invalidState
         }
-        let state = try JSONDecoder().decode(CalendarState.self, from: bytes)
+        var state = try JSONDecoder().decode(CalendarState.self, from: bytes)
+        if version < CalendarState.currentFormat {
+            // Format 1 knows none of the new fields; anything else is not format 1.
+            guard state.noteLinks.isEmpty, state.lessonMappings.isEmpty, state.settings.subjectColors.isEmpty,
+                  state.settings.notesFolderID == nil, state.connection?.sourceIdentity == nil,
+                  state.events.allSatisfy({ $0.recurrence == nil }) else { throw CalendarStoreError.invalidState }
+            state.formatVersion = CalendarState.currentFormat
+        }
         try state.validate()
-        return state
+        return (state, version)
     }
 
-    private func decodeRevision(_ record: RevisionRecord) throws -> CalendarState {
+    private func decodeRevision(_ record: RevisionRecord) throws -> (CalendarState, Data, Int) {
         let bytes = try readRegularFile(revisions.appendingPathComponent(record.file), limit: record.byteCount)
         guard bytes.count == record.byteCount, SnapshotChecksum.crc32(bytes) == record.crc32 else {
             throw CalendarStoreError.noCompleteRevision
         }
-        return try Self.decode(bytes)
+        let decoded = try Self.decodeStored(bytes)
+        return (decoded.state, bytes, decoded.format)
+    }
+
+    /// Copies the exact bytes of an older-format revision into `Migration/`
+    /// and reads them back. Idempotent; a failure refuses the commit.
+    private func archiveOlderFormat() throws {
+        guard let format = loadedFormat, format < CalendarState.currentFormat, let bytes = loadedBytes, let file = loadedFile else { return }
+        try fm.createDirectory(at: migration, withIntermediateDirectories: true)
+        try requireRealDirectory(migration)
+        var url = migration.appendingPathComponent("format-\(format)-\(file)")
+        if itemExists(url) {
+            if (try? readRegularFile(url, limit: bytes.count)) == bytes { return }
+            url = migration.appendingPathComponent("format-\(format)-\(UUID().uuidString)-\(file)")
+        }
+        try commitFault(.migrationArchive)
+        try bytes.write(to: url, options: .atomic)
+        guard try readRegularFile(url, limit: bytes.count) == bytes else { throw CalendarStoreError.invalidState }
     }
 
     private func writeRevision(_ bytes: Data) throws -> RevisionRecord {

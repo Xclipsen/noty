@@ -289,12 +289,52 @@ public enum CalendarOverflow {
 
 /// Stable automatic subject colours: the same subject gets the same palette
 /// slot on every launch and device (Swift's `hashValue` is seeded per process).
+/// Colours are stored by name; blue (selection), red (today) and green (own
+/// events) are not subject colours. State is never shown by colour alone.
 public enum CalendarSubjectColor {
+    /// Automatic palette (order is part of the stable assignment).
+    public static let automatic = ["orange", "purple", "teal", "pink", "yellow", "brown", "cyan", "olive"]
+    /// What the user may choose per subject.
+    public static let choosable = automatic + ["indigo", "mint", "gray"]
+    /// Default of own events („Persönlich“).
+    public static let personal = "green"
+
     public static func index(for subject: String, paletteCount: Int) -> Int {
         guard paletteCount > 0 else { return 0 }
         var hash: UInt32 = 2_166_136_261
         for byte in subject.lowercased().utf8 { hash = (hash ^ UInt32(byte)) &* 16_777_619 }
         return Int(hash % UInt32(paletteCount))
+    }
+
+    /// Identity of a subject: the WebUntis subject id when delivered, else its name.
+    public static func key(subjectID: String?, name: String) -> String {
+        if let id = subjectID?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty { return "webuntis:" + id }
+        return "name:" + name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// The chosen colour, else the automatic one for `key`.
+    public static func name(for key: String, chosen: [String: String]) -> String {
+        if let value = chosen[key], choosable.contains(value) { return value }
+        return automatic[index(for: key, paletteCount: automatic.count)]
+    }
+
+    /// German names for the picker.
+    public static func title(_ name: String) -> String {
+        switch name {
+        case "orange": "Orange"
+        case "purple": "Violett"
+        case "teal": "Petrol"
+        case "pink": "Rosa"
+        case "yellow": "Gelb"
+        case "brown": "Braun"
+        case "cyan": "Türkis"
+        case "olive": "Oliv"
+        case "indigo": "Indigo"
+        case "mint": "Mint"
+        case "gray": "Grau"
+        case "green": "Grün"
+        default: name
+        }
     }
 }
 

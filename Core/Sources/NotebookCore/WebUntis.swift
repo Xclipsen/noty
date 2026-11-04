@@ -101,6 +101,13 @@ public enum WebUntis {
         return text
     }
 
+    /// Non-secret identity of an account for anchoring lesson notes: SHA-256
+    /// over server, school and user (no key). The same „Freigabe“ connected
+    /// again gives the same identity.
+    public static func sourceIdentity(_ setup: WebUntisSetup) -> String {
+        "webuntis:" + SHA256.hexDigest(Data("\(setup.server)\n\(setup.school.lowercased())\n\(setup.user.lowercased())".utf8))
+    }
+
     public static func normalizedKey(_ raw: String) -> String {
         raw.uppercased().filter { !$0.isWhitespace && $0 != "=" && $0 != "-" }
     }
@@ -302,6 +309,7 @@ public enum WebUntis {
                     let names = user.subjects[element.id]
                     lesson.subject = names?.name ?? lesson.subject
                     lesson.subjectLong = names?.longName ?? lesson.subjectLong
+                    if lesson.subjectID == nil { lesson.subjectID = String(element.id) }
                     if changed { add(.substitution) }
                 case "ROOM":
                     if let name = user.rooms[element.id] { lesson.rooms.append(name) }

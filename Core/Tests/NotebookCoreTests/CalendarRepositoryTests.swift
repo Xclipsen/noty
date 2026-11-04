@@ -160,7 +160,7 @@ final class CalendarRepositoryTests: XCTestCase {
         // A newer noty wrote format 2 into the newest revision (same file, new bytes + record).
         let manifestURL = package.appendingPathComponent("manifest.json")
         var manifest = try JSONDecoder().decode(RevisionManifest.self, from: Data(contentsOf: manifestURL))
-        let futureBytes = Data(#"{"formatVersion":2,"events":[],"unknownField":true}"#.utf8)
+        let futureBytes = Data(#"{"formatVersion":3,"events":[],"unknownField":true}"#.utf8)
         let futureFile = UUID().uuidString + ".json"
         try futureBytes.write(to: package.appendingPathComponent("Revisions/\(futureFile)"))
         manifest.revisions.insert(RevisionRecord(file: futureFile, byteCount: futureBytes.count, crc32: SnapshotChecksum.crc32(futureBytes)), at: 0)
@@ -169,9 +169,9 @@ final class CalendarRepositoryTests: XCTestCase {
 
         let locked = CalendarRepository(areaRoot: root)
         do { _ = try await locked.load(); XCTFail("gesperrt erwartet") }
-        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(2)) }
+        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(3)) }
         do { try await locked.save(state(["B"]), revision: 1); XCTFail("gesperrt erwartet") }
-        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(2)) }
+        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(3)) }
         XCTAssertEqual(try snapshotOfFiles(), before)
 
         // A newer manifest format locks as well.

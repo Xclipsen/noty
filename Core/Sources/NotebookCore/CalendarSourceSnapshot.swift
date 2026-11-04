@@ -71,6 +71,8 @@ public struct CalendarLesson: Identifiable, Equatable, Sendable, Codable {
     public var end: Date
     public var subject: String?
     public var subjectLong: String?
+    /// WebUntis subject element id (stable subject colour), when delivered.
+    public var subjectID: String?
     public var rooms: [String] = []
     /// Rooms before a change (`orgId`), when delivered.
     public var originalRooms: [String] = []

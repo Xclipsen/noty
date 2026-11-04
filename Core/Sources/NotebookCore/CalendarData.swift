@@ -161,16 +161,18 @@ public struct LocalCalendarEvent: Identifiable, Equatable, Sendable, Codable {
     public var location: String
     public var details: String
     public var timing: CalendarEventTiming
+    /// Repetition (format 2); nil: a single event. `timing` is the first occurrence.
+    public var recurrence: CalendarRecurrence?
     public var createdAt: Date
     public var modifiedAt: Date
 
     public init(id: UUID = UUID(), title: String, location: String = "", details: String = "",
-                timing: CalendarEventTiming, createdAt: Date = Date(), modifiedAt: Date? = nil) {
+                timing: CalendarEventTiming, recurrence: CalendarRecurrence? = nil, createdAt: Date = Date(), modifiedAt: Date? = nil) {
         self.id = id; self.title = title; self.location = location; self.details = details
-        self.timing = timing; self.createdAt = createdAt; self.modifiedAt = modifiedAt ?? createdAt
+        self.timing = timing; self.recurrence = recurrence; self.createdAt = createdAt; self.modifiedAt = modifiedAt ?? createdAt
     }
 
-    private enum CodingKeys: String, CodingKey { case id, title, location, details, timing, createdAt, modifiedAt }
+    private enum CodingKeys: String, CodingKey { case id, title, location, details, timing, recurrence, createdAt, modifiedAt }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -178,6 +180,7 @@ public struct LocalCalendarEvent: Identifiable, Equatable, Sendable, Codable {
         location = try c.decodeIfPresent(String.self, forKey: .location) ?? ""
         details = try c.decodeIfPresent(String.self, forKey: .details) ?? ""
         timing = try c.decode(CalendarEventTiming.self, forKey: .timing)
+        recurrence = try c.decodeIfPresent(CalendarRecurrence.self, forKey: .recurrence)
         createdAt = Date(timeIntervalSinceReferenceDate: try c.decode(Double.self, forKey: .createdAt))
         modifiedAt = Date(timeIntervalSinceReferenceDate: try c.decode(Double.self, forKey: .modifiedAt))
     }
@@ -186,6 +189,7 @@ public struct LocalCalendarEvent: Identifiable, Equatable, Sendable, Codable {
         try c.encode(id, forKey: .id); try c.encode(title, forKey: .title)
         try c.encode(location, forKey: .location); try c.encode(details, forKey: .details)
         try c.encode(timing, forKey: .timing)
+        try c.encodeIfPresent(recurrence, forKey: .recurrence)
         try c.encode(createdAt.timeIntervalSinceReferenceDate, forKey: .createdAt)
         try c.encode(modifiedAt.timeIntervalSinceReferenceDate, forKey: .modifiedAt)
     }
@@ -197,13 +201,26 @@ public struct CalendarSettings: Equatable, Sendable, Codable {
     public var weekDays: Int = 5
     /// `CalendarMode.rawValue` of the last view.
     public var mode: String = CalendarMode.week.rawValue
+    /// Subject colours chosen by the user (format 2): subject key
+    /// (`CalendarSubjectColor.key`) → colour name. Missing: automatic.
+    public var subjectColors: [String: String] = [:]
+    /// Library folder „Kalendernotizen“ by identity (format 2); never by name.
+    public var notesFolderID: UUID?
     public init() {}
 
-    private enum CodingKeys: String, CodingKey { case weekDays, mode }
+    private enum CodingKeys: String, CodingKey { case weekDays, mode, subjectColors, notesFolderID }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         weekDays = try c.decodeIfPresent(Int.self, forKey: .weekDays) ?? 5
         mode = try c.decodeIfPresent(String.self, forKey: .mode) ?? CalendarMode.week.rawValue
+        subjectColors = try c.decodeIfPresent([String: String].self, forKey: .subjectColors) ?? [:]
+        notesFolderID = try c.decodeIfPresent(UUID.self, forKey: .notesFolderID)
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(weekDays, forKey: .weekDays); try c.encode(mode, forKey: .mode)
+        if !subjectColors.isEmpty { try c.encode(subjectColors, forKey: .subjectColors) }
+        try c.encodeIfPresent(notesFolderID, forKey: .notesFolderID)
     }
 }
 
@@ -218,12 +235,22 @@ public struct CalendarConnectionRecord: Identifiable, Equatable, Sendable, Codab
     /// Time zone of the source's local times (WebUntis: the school's).
     public var timeZone: String
     public var connectedAt: Date
+    /// Non-secret identity of the source account (format 2): a SHA-256 over
+    /// server, school and user (`WebUntis.sourceIdentity`). Reconnecting the
+    /// same „Freigabe“ gives the same identity, so lesson notes come back.
+    /// Nil for B1 records: the connection id stands in.
+    public var sourceIdentity: String?
 
-    public init(id: UUID = UUID(), kind: Kind = .webUntis, label: String, timeZone: String = "Europe/Berlin", connectedAt: Date = Date()) {
+    public init(id: UUID = UUID(), kind: Kind = .webUntis, label: String, timeZone: String = "Europe/Berlin",
+                connectedAt: Date = Date(), sourceIdentity: String? = nil) {
         self.id = id; self.kind = kind; self.label = label; self.timeZone = timeZone; self.connectedAt = connectedAt
+        self.sourceIdentity = sourceIdentity
     }
 
-    private enum CodingKeys: String, CodingKey { case id, kind, label, timeZone, connectedAt }
+    /// The source key lesson notes are anchored to.
+    public var source: String { sourceIdentity ?? "connection:" + id.uuidString }
+
+    private enum CodingKeys: String, CodingKey { case id, kind, label, timeZone, connectedAt, sourceIdentity }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -231,28 +258,58 @@ public struct CalendarConnectionRecord: Identifiable, Equatable, Sendable, Codab
         label = try c.decode(String.self, forKey: .label)
         timeZone = try c.decode(String.self, forKey: .timeZone)
         connectedAt = Date(timeIntervalSinceReferenceDate: try c.decode(Double.self, forKey: .connectedAt))
+        sourceIdentity = try c.decodeIfPresent(String.self, forKey: .sourceIdentity)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id); try c.encode(kind, forKey: .kind); try c.encode(label, forKey: .label)
         try c.encode(timeZone, forKey: .timeZone); try c.encode(connectedAt.timeIntervalSinceReferenceDate, forKey: .connectedAt)
+        try c.encodeIfPresent(sourceIdentity, forKey: .sourceIdentity)
     }
 }
 
 /// The confirmed calendar state of one area (one revision of `Calendar/`).
 public struct CalendarState: Equatable, Sendable, Codable {
     /// Content format. A newer one locks the package (never read partially,
-    /// never replaced by an older state).
-    public static let currentFormat = 1
+    /// never replaced by an older state). 1 = B1; 2 = B2 (series, note links,
+    /// lesson mappings, subject colours, notes folder, source identity).
+    public static let currentFormat = 2
+    /// Older formats this version reads and migrates on its next commit
+    /// (the exact old bytes are archived first, `CalendarStore`).
+    public static let migratableFormats = 1..<currentFormat
     public static let maximumEvents = 20_000
     public static let maximumEventDays = 5 * 366
+    public static let maximumLinks = 20_000
+    public static let maximumMappings = 20_000
     public var formatVersion = CalendarState.currentFormat
     public var events: [LocalCalendarEvent] = []
     public var settings = CalendarSettings()
-    /// At most one source connection in B1 (WebUntis).
+    /// At most one source connection (WebUntis).
     public var connection: CalendarConnectionRecord?
+    /// Event notes: links to ordinary notebooks by identity (format 2).
+    public var noteLinks: [CalendarNoteLink] = []
+    /// Lessons the user assigned anew after WebUntis delivered them under
+    /// another period id (format 2); notes follow them.
+    public var lessonMappings: [CalendarLessonMapping] = []
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey { case formatVersion, events, settings, connection, noteLinks, lessonMappings }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion = try c.decode(Int.self, forKey: .formatVersion)
+        events = try c.decode([LocalCalendarEvent].self, forKey: .events)
+        settings = try c.decodeIfPresent(CalendarSettings.self, forKey: .settings) ?? CalendarSettings()
+        connection = try c.decodeIfPresent(CalendarConnectionRecord.self, forKey: .connection)
+        noteLinks = try c.decodeIfPresent([CalendarNoteLink].self, forKey: .noteLinks) ?? []
+        lessonMappings = try c.decodeIfPresent([CalendarLessonMapping].self, forKey: .lessonMappings) ?? []
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(formatVersion, forKey: .formatVersion); try c.encode(events, forKey: .events)
+        try c.encode(settings, forKey: .settings); try c.encodeIfPresent(connection, forKey: .connection)
+        try c.encode(noteLinks, forKey: .noteLinks); try c.encode(lessonMappings, forKey: .lessonMappings)
+    }
 
     static func validInstant(_ date: Date) -> Bool {
         let t = date.timeIntervalSince1970
@@ -277,11 +334,22 @@ public struct CalendarState: Equatable, Sendable, Codable {
                   event.timing.problem == nil, Self.validInstant(event.createdAt), Self.validInstant(event.modifiedAt) else {
                 throw CalendarStoreError.invalidState
             }
+            if let recurrence = event.recurrence { try recurrence.validate(for: event.timing) }
         }
         if let connection {
             guard !connection.label.isEmpty, connection.label.count <= 200, TimeZone(identifier: connection.timeZone) != nil,
-                  Self.validInstant(connection.connectedAt) else { throw CalendarStoreError.invalidState }
+                  Self.validInstant(connection.connectedAt), (connection.sourceIdentity?.count ?? 0) <= 200 else {
+                throw CalendarStoreError.invalidState
+            }
         }
+        guard settings.subjectColors.count <= 2_000,
+              settings.subjectColors.allSatisfy({ (1...300).contains($0.key.count) && CalendarSubjectColor.choosable.contains($0.value) }) else {
+            throw CalendarStoreError.invalidState
+        }
+        guard noteLinks.count <= Self.maximumLinks, Set(noteLinks.map(\.id)).count == noteLinks.count,
+              noteLinks.allSatisfy({ $0.isValid }) else { throw CalendarStoreError.invalidState }
+        guard lessonMappings.count <= Self.maximumMappings, Set(lessonMappings.map(\.id)).count == lessonMappings.count,
+              lessonMappings.allSatisfy({ $0.isValid }) else { throw CalendarStoreError.invalidState }
     }
 }
 
