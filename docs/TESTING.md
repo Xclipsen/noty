@@ -2,7 +2,7 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
-## Release-Kandidat 2, Build 119 (05.11.2026, Branch `feat/rc2`)
+## Release-Kandidat 2, Build 120 (05.11.2026, Branch `feat/rc2`)
 
 Code-Prüfung von `dev` @ 4ee68d3 durch acht getrennte Prüfungen (nur Lesen): Stifte, Lasso/Objekte/Bilder, Text/Tastatur, Speichern/Migration, Backup/Import/PDF, UI-Logik, Gesetzessammlung, Release-Bereitschaft. Kein kritischer Befund. Speichern und Migration sind seit RC1 unverändert. Die Migration 15→16 ändert bestehende Hefte nicht und ist an das erste ausgerichtete Textfeld gebunden; Altbytes werden gesichert.
 
@@ -19,7 +19,7 @@ Behobene Befunde und offene Punkte stehen im README. Nachweise: Core-Tests 1327 
 
 Rückmeldung zu Build 113, noty dev: Textfelder ließen sich teils noch anlegen, aber nichts ließ sich ziehen und der Stift schrieb nicht, bis die App kurz im Hintergrund war. USB-Abzug am 05.11. 18:05–18:08: kein Absturz- oder Hängerbericht, Berührungen kamen bei der App an, der Hauptthread lief. Also kein Hänger, sondern ein festgefahrener Eingabezustand. Ursache **nicht gefunden**. Verdacht unbelegt: dauerhaft pausierte Eingabe (`commitForBackup` wartet auf Speichern) oder eine Berührung, die UIKit noch als aufliegend zählt.
 
-`InputProbe` (nur beobachtend; seit Build 119 schaltbar, in noty dev standardmäßig an, in noty aus) schreibt nach `Documents/Diagnose/eingabe.txt` (bei 1 MB nach `eingabe.1.txt`) und in OSLog (`de.la.noty`, `input-probe`). Ein Bericht entsteht bei:
+`InputProbe` (nur beobachtend; seit Build 120 schaltbar, in noty dev standardmäßig an, in noty aus) schreibt nach `Documents/Diagnose/eingabe.txt` (bei 1 MB nach `eingabe.1.txt`) und in OSLog (`de.la.noty`, `input-probe`). Ein Bericht entsteht bei:
 - drei Zügen in 30 s, auf die nichts reagiert und die kein Erkenner übernimmt;
 - einer Berührungsfolge, die über 20 s offen ist, während nichts reagiert;
 - pausierter Eingabe über 15 s oder „beschäftigt“ über 90 s;

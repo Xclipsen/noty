@@ -15,7 +15,7 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
-**Release-Kandidat 2, Build 119 (`feat/rc2` → `dev`, 05.11.2026):** Stand von Build 118 (inkl. Abgleich zwischen den noty-Apps) plus Korrekturen aus einer vollständigen Code-Prüfung in acht Bereichen: Stifte, Lasso/Objekte, Text, Speichern, Backup/PDF, Oberfläche, Gesetzessammlung, Release. Kein Formatwechsel gegenüber Build 110–117. Korrigiert:
+**Release-Kandidat 2, Build 120 (`feat/rc2` → `dev`, 05.11.2026):** Stand von Build 118 (inkl. Abgleich zwischen den noty-Apps) plus Korrekturen aus einer vollständigen Code-Prüfung in acht Bereichen: Stifte, Lasso/Objekte, Text, Speichern, Backup/PDF, Oberfläche, Gesetzessammlung, Release. Kein Formatwechsel gegenüber Build 110–117. Korrigiert:
 - **Stift:** Ein spät gemeldeter Strich geht nicht mehr verloren, wenn der nächste Strich zur gehaltenen Form wird. Eine abgebrochene Haltegeste veröffentlicht ihren Strich. Der Wechsel zum Radierer „Ganz“ bricht einen laufenden Strich nicht mehr ab. Ein wartender Lineal-Strich wird vor Rückgängig, Ansichtswechsel und Schließen übernommen.
 - **Bilder:** Ein gesperrtes Bild lässt sich auch mit dem Finger nicht mehr verschieben, eingefügte Kopien sind entsperrt. Ein seitenübergreifendes Verschieben während einer Sicherung meldet sich statt still zurückzuspringen.
 - **Text:** Im Textdokument stimmt die Anzeige nach Tab, Return und ⌫ in Absätzen mit altem Einzug. Tab ersetzt keine Tottaste (^, `) mehr. Ein negativer Cursor-Versatz kann nicht mehr abstürzen.
