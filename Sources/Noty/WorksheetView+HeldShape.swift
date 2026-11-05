@@ -5,7 +5,7 @@ import NotebookCore
 /// Held strokes: shape recognition while the Pencil rests, live resize, commit.
 extension WorksheetView {
     func previewHeldStroke() {
-        guard editable, holdEnabled, heldShape == nil, holdBase != nil, tool.isInk,
+        guard editable, holdEnabled, heldShape == nil, holdBase != nil, tool.isInk, rulerLine == nil,
               let first = holdPoints.first, let last = holdPoints.last else { return }
         let recognized = ShapeRecognition.shape(holdPoints)
             ?? (ShapeRecognition.lineAfterHold(holdPoints) ? .line(start: first, end: LineSnapping.end(from: first, to: last)) : nil)
@@ -14,7 +14,7 @@ extension WorksheetView {
         heldColor = InkColor(Color(lastColor ?? .black))
         // Width of a pen shape: what the drawn ink shows (PencilKit point sizes,
         // learned per tool width from the last stroke, render thinner than
-        // they are). Ink results use the learned point size itself and are
+        // they are; `InkPointMemory`). Ink results use the learned point size itself and are
         // previewed by PencilKit; neither is re-measured at commit.
         heldWidth = min(40, max(0.5, heldPointSize / InkWidthCalibration.pointScale(inkType)))
         // A stroke that left the page/canvas is clipped (lines, arrows) or
@@ -50,8 +50,9 @@ extension WorksheetView {
         let pad = max(width / 2, shape.object(color: heldColor, lineWidth: min(40, max(0.5, width)))?.padding ?? 0) + 0.05
         return HeldShapeFitting.fit(shape, in: PageRect(pageLayout.canonicalInkBounds), padding: pad, allowShift: allowShift)
     }
-    /// PencilKit point size the current tool draws (learned ratio × tool width).
-    var heldPointSize: CGFloat { configuredWidth * (drawnWidthRatio[inkType] ?? 1) }
+    /// PencilKit point size the current tool draws (learned ratio × tool width,
+    /// shared by every page and kept across launches: `InkPointMemory`).
+    var heldPointSize: CGFloat { configuredWidth * (InkPointMemory.shared.widthRatio(inkType) ?? 1) }
     /// Pen results become editable shapes (lines, arrows, polylines, polygons,
     /// rectangles, circles) of the held width; the rest native ink. Pencil
     /// results always stay native ink, keeping the graphite texture.
@@ -74,7 +75,7 @@ extension WorksheetView {
         let ink = heldInk ?? PKInk(inkType, color: heldColor.uiColor)
         let fitted = fittedHeld(shape, width: max(heldWidth, heldPointSize), allowShift: true) ?? shape
         let size = CGSize(width: heldPointSize, height: heldPointSize)
-        let template = drawnPointTemplate[ink.inkType]
+        let template = InkPointMemory.shared.template(ink.inkType)
         let path = fitted.outline(spacing: 8, headLength: heldHeadLength)
         let points = path.indices.map { index in
             PKStrokePoint(location: CGPoint(x: path[index].x, y: path[index].y), timeOffset: Double(index) * 0.01, size: size,
@@ -203,14 +204,12 @@ extension WorksheetView {
         let t = stroke.transform, scale = sqrt(abs(t.a * t.d - t.b * t.c))
         return stroke.path.map { max($0.size.width, $0.size.height) * scale }.max() ?? 0
     }
-    /// Learns PencilKit's drawn width per tool width, so the next held preview
-    /// shows the width the replacement will actually have.
+    /// Learns PencilKit's drawn width per tool width (and a typical point), so
+    /// the next held preview or ruler stroke on any page shows the width and
+    /// look the replacement will actually have.
     func recordDrawnWidth(_ strokes: [PKStroke], previousCount: Int) {
         guard let stroke = strokes.last, configuredWidth > 0, strokes.count == previousCount + 1 else { return }
-        let width = Self.drawnWidth(stroke)
-        if width > 0 { drawnWidthRatio[stroke.ink.inkType] = width / configuredWidth }
-        let points = stroke.path.sorted { min($0.size.width, $0.size.height) < min($1.size.width, $1.size.height) }
-        if !points.isEmpty { drawnPointTemplate[stroke.ink.inkType] = points[points.count / 2] }
+        InkPointMemory.shared.learn(stroke, drawnWidth: Self.drawnWidth(stroke), toolWidth: configuredWidth)
     }
     /// Rebuilds a finished stroke along `path` (page units). Size, opacity,
     /// force and tilt come from the drawn points at the same arc-length

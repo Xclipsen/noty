@@ -88,6 +88,9 @@ struct PageEditor {
     var flowActions: TextFlowActions? = nil
     /// The user left a field while the text tool is not fixed: back to the previous tool.
     var onTextEditingFinished: () -> Void = {}
+    /// A stroke was committed on this page while another one was selected
+    /// (ruler strokes on a visible neighbour): select this page.
+    var onSelectPage: () -> Void = {}
 }
 
 extension PageEditor {
@@ -281,20 +284,23 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var heldColor = InkColor(0, 0, 0)
     /// Drawn width (from PencilKit's own points) for the preview and shape objects.
     var heldWidth: CGFloat = 2
-    /// Ratio of PencilKit's drawn point size to the tool width, per ink type.
-    var drawnWidthRatio: [PKInk.InkType: CGFloat] = [:]
-    /// Opacity, force and tilt of a typical drawn point (median size) of the
-    /// last stroke per ink type: a held ink line is drawn with them.
-    var drawnPointTemplate: [PKInk.InkType: PKStrokePoint] = [:]
+    // Drawn point size per tool width and a typical point per ink type:
+    // `InkPointMemory` (shared by all pages, kept across launches).
     /// Ink of the held stroke (the canvas tool when it was recognised).
     var heldInk: PKInk?
     /// The exact PencilKit stroke a held ink result commits; the preview is
     /// this stroke rendered by PencilKit (`heldStrokeImage`).
     var heldStroke: PKStroke?
-    /// noty's ruler, above the pages; a stroke at its edge is `rulerLine`.
+    /// noty's ruler, above the pages; a stroke at its edge is `rulerLine`
+    /// (WorksheetView+Ruler.swift).
     weak var rulerView: RulerOverlayView?
     let rulerStroke = RulerStrokeGesture(target: nil, action: nil)
+    let rulerWatch = RulerWatchGesture(target: nil, action: nil)
     var rulerLine: RulerLine?
+    var rulerWatching: RulerWatch?
+    let rulerPreview = CAShapeLayer()
+    /// The ruler stroke is committed; its preview stays until PencilKit has drawn it.
+    var rulerPreviewPending: UUID?
     let heldStrokeImage = UIImageView()
     /// The result is committed; the preview stays until PencilKit has drawn it.
     var heldVisualsPending: UUID?
@@ -415,6 +421,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         addGestureRecognizer(checkboxTap)
         canvas.drawingGestureRecognizer.require(toFail: checkboxTap)
         configureRulerStroke()
+        // A Pencil tap on a checkbox toggles it, also at the ruler (as for the canvas).
+        rulerStroke.require(toFail: checkboxTap)
         interactionObserver.cancelsTouchesInView = false
         interactionObserver.delaysTouchesBegan = false; interactionObserver.delaysTouchesEnded = false
         interactionObserver.onChange = { [weak self] active in
@@ -465,6 +473,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         insertSubview(heldInkImage, aboveSubview: canvas)
         heldStrokeImage.isUserInteractionEnabled = false; heldStrokeImage.isHidden = true
         insertSubview(heldStrokeImage, aboveSubview: heldInkImage)
+        installRulerPreview(above: heldStrokeImage.layer)
         // A held shape previews where the finished shape lies: above the
         // shapes, below the ink (`Page.exportLayers`, `heldInkImage` shows it).
         layer.insertSublayer(heldShapeLayer, above: shapeLayer.layer)
@@ -691,6 +700,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if first || contentReplaced || layoutChanged || !editor.enabled || editor.tool != tool {
             holdSerial += 1; clearHeldPreview()
         }
+        // A ruler stroke goes on through a short lock (backup commit) and a
+        // tool change; only another page or page geometry ends it (its edge
+        // is in this page's coordinates).
+        if first || layoutChanged { cancelRulerLine() }
         contentGeneration = editor.contentGeneration
         pageLayout = editor.layout
         if layoutChanged { renderViewport = nil }
@@ -816,9 +829,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         // the app-owned sweep (hold observer) dims first and removes on lift.
         let nativeDrawing = tool != .strokeEraser
         if canvas.drawingGestureRecognizer.isEnabled != nativeDrawing { canvas.drawingGestureRecognizer.isEnabled = nativeDrawing }
-        rulerStroke.allowFinger = editor.fingerDrawing
-        let followsRuler = editor.ruler && editor.focused && editable && tool.isInk
-        if rulerStroke.isEnabled != followsRuler { rulerStroke.isEnabled = followsRuler }
+        updateRulerGestures()
         if eraseSession != nil || shapeErase != nil { dimErasedShapes() }
         pdfView?.isUserInteractionEnabled = tool == .read
         if modeChanged || focusChanged || first { updateInputMode(); fingerObjects.linkNativeDoubleTaps(in: canvas) }
@@ -1157,6 +1168,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         pageContent.drawing = lastDrawing
         onDrawing?(lastDrawing)
         removeScribbledShapes(scribbled)
+        noteRulerHandoff()
     }
     /// Stroke count of `pageContent.drawing`; decoded at most once per distinct value.
     private var publishedStrokeCount: Int {
@@ -1195,15 +1207,18 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         claimSelectionFocus()
         onInkSession?()
         if heldVisualsPending != nil { hideHeldVisuals() } // a new stroke is never hidden
+        if rulerPreviewPending != nil { hideRulerPreview() }
         if heldShape == nil { holdBase = pageContent }
     }
     /// A committed held result is on the canvas now: the preview may go
     /// (no frame without either, no flash of the freehand stroke).
     func canvasViewDidFinishRendering(_ canvasView: PKCanvasView) {
         if heldVisualsPending != nil { hideHeldVisuals() }
+        if rulerPreviewPending != nil { hideRulerPreview() }
     }
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
-        inkActive = false
+        // A stroke handed over to the ruler way is still being drawn.
+        inkActive = rulerLine != nil
         holdCompletion.endNative()
         // Precision eraser lifted over shapes: cut them once PencilKit's own
         // erase is on the canvas (next turn of the run loop).
@@ -1213,6 +1228,31 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
                 self.finishShapeErase(force: true)
             }
         }
+    }
+    /// Finished strokes (canonical) onto the page like PencilKit's own: added
+    /// to what the canvas shows (no decode of the published drawing, one
+    /// encode) and published through `onDrawing`, so they form the stroke's
+    /// undo step and are held, not dropped, while a backup commit pauses edits.
+    func appendInkStrokes(_ strokes: [PKStroke]) {
+        guard !strokes.isEmpty else { return }
+        let translation = pageLayout.inkTranslation
+        var drawing: PKDrawing
+        if canvasSource == pageContent.drawing { drawing = canvas.drawing }
+        else {
+            // The canvas shows a derived preview: start from the page's ink.
+            let data = pageContent.drawing
+            drawing = (data.isEmpty ? PKDrawing() : (try? PKDrawing(data: data)) ?? PKDrawing()).transformed(using: translation)
+        }
+        drawing.strokes.append(contentsOf: strokes.map { stroke in
+            var placed = stroke; placed.transform = stroke.transform.concatenating(translation); return placed
+        })
+        let wasUpdating = updating; updating = true
+        canvas.drawing = drawing
+        updating = wasUpdating
+        let data = canonicalDrawingData(drawing)
+        lastDrawing = data; strokeCountCache = (data, drawing.strokes.count); canvasSource = data
+        pageContent.drawing = data
+        onDrawing?(data)
     }
     func installContent(_ content: PageContent) {
         updating = true

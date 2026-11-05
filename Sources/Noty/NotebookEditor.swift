@@ -170,6 +170,15 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         addSubview(surface)
         laser.install(on: self, surface: surface)
         ruler.install(on: self)
+        // While a stroke is drawn on any page the ruler stays put.
+        ruler.strokeActive = { [weak self] in self?.sheets.values.contains { $0.inkActive } ?? false }
+        ruler.move.fingerDrawing = { [weak self] in self?.state?.fingerDrawing == true }
+        // Its middle is never parked under the toolbar, the palette or the keyboard.
+        ruler.parkingArea = { [weak self] size in
+            guard let self else { return PageRect(x: 0, y: 0, width: size.width, height: size.height) }
+            return NotebookRuler.parkingArea(width: size.width, height: size.height, top: self.topObstruction,
+                                             bottom: self.keyboardOverlap, obstructions: self.obstructions.map { PageRect($0) })
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)),
             name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)),
@@ -476,8 +485,10 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
                 // Spread newly exposed PDF/UITextView construction across frames.
                 if created { queueRefresh(); continue }
                 sheet = WorksheetView(); sheets[page.id] = sheet; surface.addSubview(sheet); created = true
+                // No `require(toFail: ruler.move)`: a hand resting on the ruler
+                // kept the Pencil (eraser, lasso) waiting; `RulerMoveGesture`
+                // only holds back scrolling and zooming (and finger drawing).
                 sheet.rulerView = ruler
-                sheet.canvas.drawingGestureRecognizer.require(toFail: ruler.move)
             }
             // Bounds are canonical points; UIKit converts touches/caret through
             // the common scale for all layers. Never write surface sizes back.
@@ -505,6 +516,11 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
                 callback(id, active)
                 guard let self, active, !self.isZooming, !self.widthSnapInProgress,
                       self.pinchGestureRecognizer?.state != .began, self.pinchGestureRecognizer?.state != .changed else { return }
+                self.reported = page.id
+                self.state?.onSelect(page.id)
+            }
+            config.onSelectPage = { [weak self] in
+                guard let self, self.selected != page.id else { return }
                 self.reported = page.id
                 self.state?.onSelect(page.id)
             }
@@ -717,6 +733,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0 : duration, delay: 0,
             options: [UIView.AnimationOptions(rawValue: rawCurve << 16), .beginFromCurrentState]) {
             self.updateInsets(); self.revealCaret()
+            self.ruler.follow() // not parked under the keyboard
         }
     }
     private func queueCaretReveal() {
