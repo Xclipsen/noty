@@ -312,7 +312,9 @@ extension Notebook {
 
     /// Every text write path calls this next to `raiseSchemaForTextColors`;
     /// it only ever raises the schema.
+    /// Also raises to 16 for fields aligned to the paper lines.
     public mutating func raiseSchemaForTextFields(_ boxes: [TextBox]) {
         if boxes.contains(where: \.usesFieldFormat) { schemaVersion = max(TextBox.fieldSchemaVersion, schemaVersion) }
+        if boxes.contains(where: \.usesLineAlignmentFormat) { schemaVersion = max(TextBox.lineAlignmentSchemaVersion, schemaVersion) }
     }
 }

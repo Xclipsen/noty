@@ -24,8 +24,9 @@ TEXT_FIELD_SCHEMA = 14  # free text fields only: rotation, autoWidth, migrated p
 FIELD_FILLS = ("yellow", "green", "blue", "pink", "gray", "purple")
 FIELD_BORDERS = ("text", "accent")
 TEXT_DOCUMENT_SCHEMA = 15  # text documents (`kind: "textDocument"`): one flow over paper pages
+LINE_ALIGNMENT_SCHEMA = 16  # free text fields aligned to the paper lines (`alignsToLines`, only true)
 MAX_SHAPE_VERTICES = 64
-CURRENT_SCHEMA = 15
+CURRENT_SCHEMA = 16
 ASSET_HASH = re.compile(r"[0-9a-f]{64}")
 # Foundation dates: seconds since 2001 (JSONEncoder default); Swift accepts years 1…9999.
 REFERENCE_DATE_UNIX = 978_307_200
@@ -201,6 +202,12 @@ def _text_boxes(page, version, text_ids):
             check(flow is None, "Flow segments carry no field style")
         check(fill is None or fill in FIELD_FILLS, "Unknown text field fill")
         check(border is None or border in FIELD_BORDERS, "Unknown text field border")
+        # Schema 16: „An Linien ausrichten“; flow segments stand on the lines anyway.
+        aligned = box.get("alignsToLines")
+        if aligned is not None:
+            check(aligned is True, "Invalid line alignment")
+            check(version >= LINE_ALIGNMENT_SCHEMA, "Line alignment needs schema 16")
+            check(flow is None, "Flow segments carry no line alignment")
         box_id = uuid_string(box["id"])
         check(box_id not in text_ids, "Duplicate text object identities")
         text_ids.add(box_id)

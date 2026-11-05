@@ -39,7 +39,9 @@ public struct Notebook: Codable, Equatable, Sendable {
     /// pages, handwriting and objects fixed on their page. Notebooks are never
     /// raised to 15; older builds refuse text documents instead of showing
     /// them as notebooks.
-    public static let currentSchemaVersion = 15
+    /// 16: free text fields aligned to the paper lines (`TextBox.alignsToLines`);
+    /// older builds would lay them out freely, so they refuse them.
+    public static let currentSchemaVersion = 16
     /// Lowest schema of a text document.
     public static let textDocumentSchemaVersion = 15
     /// Lowest schema whose image objects reference assets instead of embedding.
@@ -127,6 +129,7 @@ public struct Notebook: Codable, Equatable, Sendable {
                     if box.usesRichText { guard schemaVersion >= 7 else { throw StorageError.invalidDocument } }
                     if box.usesColorFormat { guard schemaVersion >= 9 else { throw StorageError.invalidDocument } }
                     if box.usesFieldFormat { guard schemaVersion >= TextBox.fieldSchemaVersion else { throw StorageError.invalidDocument } }
+                    if box.usesLineAlignmentFormat { guard schemaVersion >= TextBox.lineAlignmentSchemaVersion else { throw StorageError.invalidDocument } }
                     try box.validate()
                 }
             }

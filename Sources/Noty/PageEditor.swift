@@ -442,8 +442,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         objectLayer.objectHits = { [weak self] point in self?.objectHits(at: point) ?? [] }
         objectLayer.hitsCheckbox = { [weak self] point in self?.fingerTapHitsCheckbox(point) ?? false }
         objectLayer.pageContext = { [weak self] in self?.configuration?.page }
-        textLayer.pageContext = { [weak self] in self?.configuration?.page }
         objectLayer.fittedText = { [weak self] box in self?.textLayer.fitted(box) ?? box }
+        objectLayer.alignedText = { [weak self] box in self?.textLayer.snappedToLines(box) ?? box }
         objectLayer.onEditText = { [weak self] id, point in self?.requestTextEdit(id, at: point) }
         objectLayer.onError = { [weak self] message in self?.configuration?.onError(message) }
         canvas.onPaste = { [weak self] in self?.pasteFromClipboard() }

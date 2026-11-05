@@ -16,6 +16,8 @@ enum AppSettingsKey {
     static let snapping = "noty.editor.snapping"
     /// New text fields start in the automatic colour (default on); off: the last used one.
     static let automaticTextColor = "noty.text.automaticColor"
+    /// New text fields on lined/grid paper stand on its lines (default on).
+    static let alignTextToLines = "noty.text.alignToLines"
     /// „=“ calculates in the text (default on).
     static let calculator = "noty.editor.calculator"
     /// Helix keys (docs/KEYBOARD.md): experimental, text documents only, off
@@ -244,6 +246,7 @@ private struct EditorSettingsPage: View {
     @AppStorage(AppSettingsKey.snapping) private var snapping = true
     @AppStorage(AppSettingsKey.calculator) private var calculator = true
     @AppStorage(AppSettingsKey.automaticTextColor) private var automaticTextColor = true
+    @AppStorage(AppSettingsKey.alignTextToLines) private var alignTextToLines = true
     @AppStorage(AppSettingsKey.helixTextDocuments) private var helix = false
     @AppStorage(AppSettingsKey.autoPairs) private var autoPairs = false
     var body: some View {
@@ -254,6 +257,8 @@ private struct EditorSettingsPage: View {
                 keyToggle("Schreibmaschinen-Modus beim Tippen", isOn: $typewriter)
                 keyToggle("Neue Textfelder in automatischer Farbe", isOn: $automaticTextColor)
                     .accessibilityHint("Schwarz oder Weiß passend zum Papier. Aus: Neue Felder übernehmen die zuletzt benutzte Farbe.")
+                keyToggle("Neue Textfelder an Linien ausrichten", isOn: $alignTextToLines)
+                    .accessibilityHint("Auf liniertem oder kariertem Papier stehen die Zeilen neuer Textfelder auf den Linien. Bestehende Felder bleiben unverändert; jedes Feld lässt sich in der Formatleiste umschalten.")
                 keyToggle("Rechnen mit „=“", isOn: $calculator)
                     .accessibilityHint("2+3= wird zu 2+3=5, 2 + 3 = zu 2 + 3 = 5. Von oben nach unten: Zahlen untereinander, dann = allein in einer neuen Zeile.")
                 keyToggle("Einrasten", isOn: $snapping)
@@ -264,7 +269,7 @@ private struct EditorSettingsPage: View {
                     .disabled(!helix)
                     .accessibilityHint("Mit der Helix-Tastatur schließt die Eingabe runde, eckige und geschweifte Klammern und Anführungszeichen selbst, außer direkt neben einem Wort.")
             } header: { Text("Alle Bereiche") } footer: {
-                Text("Die Helix-Tastatur ist experimentell und wirkt nur in Textdokumenten mit einer Hardware-Tastatur. Die Seitenleiste merkt sich auch das letzte Ein- oder Ausblenden im Editor. Der Schreibmaschinen-Modus hält die Schreibzeile beim Tippen im oberen Drittel, auch mit schwebender oder externer Tastatur. Einrasten wirkt nur bei langsamer Bewegung; ein zweiter Finger auf dem Bildschirm unterdrückt es beim Ziehen.")
+                Text("Die Helix-Tastatur ist experimentell und wirkt nur in Textdokumenten mit einer Hardware-Tastatur. Die Seitenleiste merkt sich auch das letzte Ein- oder Ausblenden im Editor. Der Schreibmaschinen-Modus hält die Schreibzeile beim Tippen im oberen Drittel, auch mit schwebender oder externer Tastatur. Einrasten wirkt nur bei langsamer Bewegung; ein zweiter Finger auf dem Bildschirm unterdrückt es beim Ziehen. „An Linien ausrichten“ wirkt nur auf liniertem oder kariertem Papier und in Schreibplatz mit Linien; bestehende Felder bleiben, wie sie sind.")
             }
             Section {
                 keyToggle("Blättern statt vertikal scrollen", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))

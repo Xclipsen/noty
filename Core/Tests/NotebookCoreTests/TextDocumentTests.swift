@@ -92,10 +92,10 @@ final class TextDocumentTests: XCTestCase {
         try rejects({ $0["schemaVersion"] = 14 }, "text document below schema 15")
         try rejects({ $0["kind"] = "notebook" }, "stored notebook kind")
         try rejects({ $0["kind"] = "unbekannt" }, "unknown kind")
-        // Schema 16 stays locked as a whole, before any other rule.
-        var future = try json(document); future["schemaVersion"] = 16
+        // Schema 17 stays locked as a whole, before any other rule.
+        var future = try json(document); future["schemaVersion"] = 17
         XCTAssertThrowsError(try Notebook.decode(JSONSerialization.data(withJSONObject: future))) { error in
-            guard case StorageError.unsupportedSchema(16) = error else { return XCTFail("\(error)") }
+            guard case StorageError.unsupportedSchema(17) = error else { return XCTFail("\(error)") }
         }
         // Only paper pages, no writing space, no PDF originals, one flow.
         var withMargins = document

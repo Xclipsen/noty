@@ -4,6 +4,16 @@
 
 > Erste Zeile im Textdokument und Cursor per Tipp: seit Feedback zu Build 65 gilt [TEXT-REBUILD-62](TEXT-REBUILD-62.md), letzter Abschnitt.
 
+## Nachtrag 05.11.2026 · An Linien ausrichten (Branch `feat/textlinien`, Schema 16)
+
+Implementiert, Core-Tests, Host-Roundtrip und SDK-Build (`xtool dev build`, unsigniert) bestanden; **nicht installiert, am iPad ungeprüft.**
+
+- **Eigenschaft je Feld** `TextBox.alignsToLines` (nur `true` gespeichert). Wirkung nur, wo Linien gezeichnet sind: liniertes/kariertes Papier, Schreibplatz mit Linien neben einer PDF (dort in dessen Einheiten, `Page.writingCoordinateScale`); maßgeblich ist die linke obere Feldecke. Auf Blanko, auf der PDF selbst, in einem Rand ohne Linien und bei gedrehten Feldern wirkt der Schalter nicht (`TextLinePaper.lineAlignment`: `.noLines`/`.rotated`); er bleibt gespeichert und wirkt, sobald dort Linien sind.
+- **Gleiche Regel wie im Textdokument:** `TextLinePaper.grid(for:)` liefert für ausgerichtete Felder die Papierlinien ab der eigenen Feldoberkante (`TextRuling.lineBaseline`, Grundlinie `baselineLift` über dem Strich, Karo 1,5 pt mit 2 pt Toleranz), für Flusssegmente und migrierte Felder unverändert ihr bisheriges Raster. Editor (`PageTextView.setLineGrid`), Vorschau, Seitenleiste, Suche, PDF-Export, Höhe und Überlauf (`TextObjectLayout(box, paper:)`) lesen denselben Wert. Zeilenhöhe = Linienabstand; Schrift größer als der Abstand belegt mehrere Linien (30 pt: zwei), wie im Textdokument; die erste Zeile wird nie angehoben.
+- **Einrasten:** Die Feldoberkante wird so gesetzt, dass die erste Grundlinie genau auf der nächstgelegenen Linie steht (`TextLinePaper.snappedY`, immer ganz auf der Seite, sonst die nächste passende Linie): beim Anlegen, beim Verschieben (Rahmenzone und Fingerauswahl eines einzelnen Felds, Linie für Linie), bei Breite/Schriftgröße/Feldstil und beim Tippen in die erste Zeile (`TextObjectLayer.fitted`, idempotent; größere erste Zeile: Text bleibt auf seiner Linie, das Feld wächst nach oben). Lasso-Gruppen werden nicht einzeln gerastet; ihr Text steht trotzdem auf Linien, der Rahmen rastet bei der nächsten Änderung. Das weiche Einrasten an Objekten bleibt; Papierlinien sind nur für ausgerichtete Felder und nur senkrecht ein Ziel.
+- **Bedienung:** Formatleiste über der Tastatur, Schalter „An Linien ausrichten“ (Buchstaben auf Linie) neben „Ausrichten“: blau = ein, abgeblendet = hier ohne Wirkung (Tooltip nennt den Grund), ein Tipp ist ein Undo-Schritt; Einschalten ohne Wirkung zeigt kurz „Hier sind keine Linien …“ bzw. „Gedrehte Textfelder …“. Einstellungen › Editor „Neue Textfelder an Linien ausrichten“ (`noty.text.alignToLines`, Standard an): neue Felder bekommen den Schalter nur, wo Linien sind; Felder auf Blanko/PDF bleiben im alten Format. Bestehende Felder bleiben unverändert (Schalter aus).
+- **Format:** Notebook-Schema 16, siehe [STORAGE](STORAGE.md). Duplizieren, Papierkorb, Revisionen, Kopieren/Einfügen, Lasso, Undo und Backups tragen die Eigenschaft mit.
+
 ## Nachtrag 19.10.2026 · Klicken und Schreiben, Karopapier, verschachtelte Listen, offene Aufgaben
 
 Implementiert, Core-Tests/Host-Roundtrip/SDK-Build erfolgreich; auf dem iPad **ungeprüft**. Kein Formatwechsel: Listenzeichen bleiben Textpräfixe, die Verschachtelungsebene ist der vorhandene Absatzeinzug (20 pt je Ebene, Formatgrenze 240 pt = 12 Ebenen).

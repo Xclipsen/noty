@@ -198,7 +198,16 @@ backup("text-flow-rotated.notybackup", texted(14, [text_box(flowID=uid(), flowRe
 backup("text-flow-autowidth.notybackup", texted(14, [text_box(flowID=uid(), flowRegion="page", autoWidth=True)]))
 backup("text-flow-without-region.notybackup", texted(14, [text_box(flowID=uid())]))
 backup("text-region-enum.notybackup", texted(14, [text_box(flowRegion="middle")]))
-backup("text-schema-16.notybackup", texted(16, [text_box(rotation=30)]))
+backup("text-schema-17.notybackup", texted(17, [text_box(rotation=30)]))
+# Schema 16: „An Linien ausrichten“ (only true, free fields only, also on migrated fields).
+backup("text-aligned-schema-16.notybackup",
+       texted(16, [text_box(alignsToLines=True), text_box(alignsToLines=True, autoWidth=True, fill="yellow"),
+                   text_box(alignsToLines=True, flowRegion="page"), text_box(alignsToLines=True, rotation=20), text_box()]))
+backup("text-aligned-schema-15.notybackup", texted(15, [text_box(alignsToLines=True)]))
+backup("text-aligned-false.notybackup", texted(16, [text_box(alignsToLines=False)]))
+backup("text-aligned-type.notybackup", texted(16, [text_box(alignsToLines="true")]))
+backup("text-aligned-number.notybackup", texted(16, [text_box(alignsToLines=1)]))
+backup("text-aligned-flow.notybackup", texted(16, [text_box(flowID=uid(), flowRegion="page", alignsToLines=True)]))
 # Schema 14, Stufe 4: field style (fill, border) of free fields.
 backup("text-style-schema-14.notybackup",
        texted(14, [text_box(fill="yellow"), text_box(border="accent"), text_box(fill="purple", border="text", rotation=12, autoWidth=True)]))
@@ -247,7 +256,11 @@ backup("textdoc-margins.notybackup", text_document_with(lambda d: d["pages"][0].
 backup("textdoc-two-flows.notybackup", text_document_with(lambda d: d["pages"][1]["textBoxes"][0].update(flowID=uid())))
 backup("textdoc-margin-flow.notybackup", text_document_with(lambda d: d["pages"][0]["textBoxes"][0].update(flowRegion="right")))
 backup("textdoc-legacy-paper.notybackup", text_document_with(lambda d: d["pages"][0].update(paper="legacyTest")))
-backup("textdoc-schema-16.notybackup", text_document(version=16))
+backup("textdoc-schema-17.notybackup", text_document(version=17))
+# A free field aligned to the lines raises a text document to 16.
+backup("textdoc-aligned-schema-16.notybackup", text_document_with(lambda d: d.update(schemaVersion=16)
+                                                                   or d["pages"][0]["textBoxes"][1].update(alignsToLines=True)))
+backup("textdoc-aligned-schema-15.notybackup", text_document_with(lambda d: d["pages"][0]["textBoxes"][1].update(alignsToLines=True)))
 
 store("valid")
 store("kind-valid", lambda s: s["items"][2].update(kind="textDocument"))
@@ -466,7 +479,7 @@ schema_case("v2-schema12-pixel-mismatch.notybackup",
             with_images([image_object(sha, len(image)), image_object(sha, len(image), width=9, x=50)]))
 schema_case("v2-schema12-size-mismatch.notybackup",
             with_images([image_object(sha, len(image)), image_object(sha, len(image) + 1, x=50)]))
-schema_case("v2-schema16.notybackup", with_images([image_object(sha, len(image))], version=16))
+schema_case("v2-schema17.notybackup", with_images([image_object(sha, len(image))], version=17))
 # Format 1 has no asset records: a schema-12 notebook with images is refused.
 v1_document = with_images([image_object(sha, len(image))])
 v1_payload = json.dumps(v1_document).encode()
@@ -615,18 +628,21 @@ for name in polyline-schema-12 polygon-schema-12 start-mismatch two-vertices pol
             arrow-without-head flat-polygon vertex-outside vertex-type fill-alpha fill-type; do
     reject verify_backup.py "$work/backups/shapes-$name.notybackup"
 done
-for name in fields-schema-14 plain-schema-13 flow-schema-14 style-schema-14; do
+for name in fields-schema-14 plain-schema-13 flow-schema-14 style-schema-14 aligned-schema-16; do
     accept verify_backup.py "$work/backups/text-$name.notybackup"
 done
 for name in rotation-schema-13 autowidth-schema-13 region-schema-13 rotation-range rotation-type autowidth-false \
-            flow-rotated flow-autowidth flow-without-region region-enum schema-16 style-fill-schema-13 \
-            style-border-schema-13 style-fill-enum style-fill-type style-border-enum style-flow; do
+            flow-rotated flow-autowidth flow-without-region region-enum schema-17 style-fill-schema-13 \
+            style-border-schema-13 style-fill-enum style-fill-type style-border-enum style-flow \
+            aligned-schema-15 aligned-false aligned-type aligned-number aligned-flow; do
     reject verify_backup.py "$work/backups/text-$name.notybackup"
 done
 accept verify_backup.py "$work/backups/textdoc-valid.notybackup"
 accept verify_backup.py "$work/backups/textdoc-dark.notybackup"
 accept verify_backup.py "$work/backups/textdoc-page-break.notybackup"
-for name in schema-14 kind-notebook kind-enum pdf-source pdf-page margins two-flows margin-flow legacy-paper schema-16; do
+accept verify_backup.py "$work/backups/textdoc-aligned-schema-16.notybackup"
+for name in schema-14 kind-notebook kind-enum pdf-source pdf-page margins two-flows margin-flow legacy-paper schema-17 \
+            aligned-schema-15; do
     reject verify_backup.py "$work/backups/textdoc-$name.notybackup"
 done
 accept verify_backup.py "$work/backups/v2.notybackup" --compare "$work/backups/v2.json"
@@ -635,7 +651,7 @@ for name in extra-asset asset-first no-end trailing version-3 header-key crc des
     reject verify_backup.py "$work/backups/v2-$name.notybackup"
 done
 for name in schema12-data-and-asset schema12-data schema11-asset schema11-data-and-asset schema12-hash-upper schema12-hash-63 \
-            schema12-hash-path schema12-asset-over-20mb schema12-over-500mb schema12-pixel-mismatch schema12-size-mismatch schema16; do
+            schema12-hash-path schema12-asset-over-20mb schema12-over-500mb schema12-pixel-mismatch schema12-size-mismatch schema17; do
     reject verify_backup.py "$work/backups/v2-$name.notybackup"
     # The notebook rule itself must refuse (not a missing asset record afterwards).
     if grep -q "Referenced asset missing" "$work/last.log"; then
