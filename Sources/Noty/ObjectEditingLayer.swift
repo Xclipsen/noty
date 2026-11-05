@@ -176,6 +176,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     var textLines: ((TextBox) -> [PageRect])?
     /// The field with its height (and automatic width) from the content.
     var fittedText: ((TextBox) -> TextBox)?
+    /// „An Linien ausrichten“: the moved field's first baseline on the nearest paper line.
+    var alignedText: ((TextBox) -> TextBox)?
     /// Errors of image actions (crop).
     var onError: ((String) -> Void)?
     /// „Bearbeiten“ or a second tap on the selected field: caret at the point (nil: end).
@@ -1419,8 +1421,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         func point(_ p: PagePoint) -> PagePoint { let p = CGPoint(x: p.x, y: p.y).applying(transform); return .init(x: p.x, y: p.y) }
         for i in value.textBoxes.indices where texts.contains(value.textBoxes[i].id) {
             if isFieldSelection { value.textBoxes[i] = fitted(value.textBoxes[i]) }
-            guard let box = try? value.textBoxes[i].scaled(by: scale, around: anchor,
+            guard var box = try? value.textBoxes[i].scaled(by: scale, around: anchor,
                 translation: .init(x: dx, y: dy)), box.fits(in: limits) else { return nil }
+            // A single field aligned to the lines moves from line to line (a group keeps its layout).
+            if isFieldSelection { box = alignedText?(box) ?? box }
             value.textBoxes[i] = box
         }
         for i in value.images.indices where images.contains(value.images[i].id) {

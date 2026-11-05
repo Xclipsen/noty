@@ -4,12 +4,11 @@ import NotebookCore
 @MainActor
 final class PageTextView: UITextView {
     private let ruling = RuledTextLayout()
-    var rulingOrigin: CGFloat? { ruling.originY }
-    var rulingLines: TextRuling { ruling.lines }
-    var rulingPageTop: CGFloat? { ruling.pageTop }
-    func setRulingOrigin(_ y: CGFloat?, lines: TextRuling = .lined, pageTop: CGFloat? = nil) {
-        guard ruling.originY != y || ruling.lines != lines || ruling.pageTop != pageTop else { return }
-        ruling.originY = y; ruling.lines = lines; ruling.pageTop = pageTop
+    /// The lines this field's text stands on (`TextLinePaper.grid(for:)`); nil: free layout.
+    var lineGrid: TextLineGrid? { ruling.grid }
+    func setLineGrid(_ grid: TextLineGrid?) {
+        guard ruling.grid != grid else { return }
+        ruling.grid = grid
         layoutManager.invalidateLayout(forCharacterRange: NSRange(location: 0, length: textStorage.length), actualCharacterRange: nil)
         (layoutManager as? TaskLayoutManager)?.onDisplayChange?()
     }

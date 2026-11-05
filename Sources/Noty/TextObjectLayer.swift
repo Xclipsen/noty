@@ -22,8 +22,6 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var onLeaveField: (() -> Void)?
     /// A tap of the text tool (layer coordinates), remembered for pasting.
     var onTap: ((CGPoint) -> Void)?
-    /// The configured page (paper, margins, region tops) for the shared text layout.
-    var pageContext: (() -> Page?)?
     /// Topmost selectable object at a point (layer coordinates, the sheet's hit test).
     var objectAt: ((CGPoint) -> PageObjectReference?)?
     /// A text-tool tap on an image or shape selects it (finger selection).
@@ -58,6 +56,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var lastHighlight: HighlightColor {
         get { (UserDefaults.standard.string(forKey: "noty.text.highlight")).flatMap(HighlightColor.init(rawValue:)) ?? .yellow }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "noty.text.highlight") }
+    }
+    /// „Neue Textfelder an Linien ausrichten“ (Einstellungen › Editor), default on.
+    static var alignsNewFieldsToLines: Bool {
+        UserDefaults.standard.object(forKey: AppSettingsKey.alignTextToLines) as? Bool ?? true
     }
     /// Off unless chosen (Feedback 44: the page moved too often while typing).
     static var typewriterEnabled: Bool {
@@ -360,13 +362,11 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             }
             field.applyFieldStyle(box.resolvingAutomaticColor(light: light), unitScale: coordinateScale(for: box))
             editor.isFlow = box.flowID != nil
-            // Flow segments and the fields migrated from page text keep the ruling of their region;
-            // migrated fields anchored at their former region (lines move with the field).
-            let lines = box.flowRegion.flatMap { TextRuling(paper: $0 == .page ? paperStyle : marginStyle) }
+            // Flow segments and the fields migrated from page text keep the ruling of their region
+            // (migrated fields anchored at their former region: lines move with the field); fields
+            // aligned to the lines stand on the paper lines. The same rule as previews and PDF.
             let pointScale = coordinateScale(for: box)
-            let anchor = lines == nil ? nil : box.rulingAnchorY(regionTops: regionTops)
-            editor.setRulingOrigin(anchor.map { ($0 + pageLayout.contentOrigin.y) / pointScale }, lines: lines ?? .lined,
-                                   pageTop: box.flowID == nil || lines == nil ? nil : pageLayout.contentOrigin.y / pointScale)
+            editor.setLineGrid(linePaper.grid(for: box))
             editor.isEditable = active; editor.isSelectable = active || readOnly
             editor.isUserInteractionEnabled = active || readOnly
             position(field, for: box); updateRaster(field, for: box)
@@ -455,10 +455,13 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         EditorInteractionPolicy.automaticTextIsLight(box: box, pageSize: pageLayout.contentCanvas, hasPDF: hasPDF,
             darkPaper: darkPaper, darkMargins: darkMargins)
     }
-    /// Margin text keeps normal-page units: flow segments and migrated fields (`flowRegion`).
-    func coordinateScale(for box: TextBox) -> CGFloat {
-        box.flowRegion != nil && box.flowRegion != .page ? pageLayout.writingCoordinateScale : 1
+    /// The configured page's line facts (same values as `Page.linePaper` of that page).
+    var linePaper: TextLinePaper {
+        TextLinePaper(sheet: hasPDF ? nil : paperStyle, margin: marginStyle, contentSize: pageLayout.contentCanvas,
+                      contentTop: pageLayout.contentOrigin.y, scale: pageLayout.writingCoordinateScale, regionTops: regionTops)
     }
+    /// Margin text keeps normal-page units: flow segments and migrated fields (`flowRegion`).
+    func coordinateScale(for box: TextBox) -> CGFloat { CGFloat(linePaper.coordinateScale(for: box)) }
     /// Sizes shown for a free field; flows keep one size over all their pages.
     func sizeUnits(for box: TextBox) -> TextSizeUnits {
         TextSizeUnits(pageWidth: pageLayout.contentCanvas.width, hasPDF: hasPDF && box.flowID == nil,
@@ -496,24 +499,41 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     func minimumWidth(_ box: TextBox) -> Double { max(16, box.style.fontSize) * Double(coordinateScale(for: box)) }
     /// Text height at the box's width in canonical units (the field's own
-    /// editor when it exists, otherwise the shared layout).
+    /// editor when it lays out on the same lines, otherwise the shared layout).
     func measuredHeight(_ box: TextBox) -> Double {
         let scale = coordinateScale(for: box)
-        if let editor = fields[box.id]?.editor, editor.attributedText.string == box.text {
+        if let editor = fields[box.id]?.editor, editor.attributedText.string == box.text, editor.lineGrid == linePaper.grid(for: box) {
             return neededHeight(editor, width: box.width / scale) * scale
         }
         return Double(layout(box).usedHeight)
     }
     /// The shared layout of `box` on this page, ruled like its text view
-    /// (`TextObjectLayout(box, on:)` with the configured page; without it
-    /// the same ruling from this layer's own paper and region tops).
-    func layout(_ box: TextBox) -> TextObjectLayout {
-        if let page = pageContext?() { return TextObjectLayout(box, on: page) }
-        let scale = coordinateScale(for: box)
-        let lines = box.flowRegion.flatMap { TextRuling(paper: $0 == .page ? paperStyle : marginStyle) }
-        let anchor = lines == nil ? nil : box.rulingAnchorY(regionTops: regionTops)
-        return TextObjectLayout(box, ruledOrigin: anchor.map { CGFloat($0 + pageLayout.contentOrigin.y) / scale }, ruling: lines ?? .lined,
-                                pageTop: box.flowID == nil || lines == nil ? nil : pageLayout.contentOrigin.y / scale, coordinateScale: scale)
+    /// (`TextObjectLayout(box, paper:)` with the configured page's lines).
+    func layout(_ box: TextBox) -> TextObjectLayout { TextObjectLayout(box, paper: linePaper) }
+    /// The first line's natural baseline offset (TextKit, no ruling) in the
+    /// field's own units: only the first paragraph is laid out; an empty field
+    /// measures its typing style.
+    func firstLineAscent(_ box: TextBox) -> Double? {
+        let text = box.text as NSString
+        var probe = box
+        if text.length > 0 {
+            var end = NSMaxRange(text.paragraphRange(for: NSRange(location: 0, length: 0)))
+            // A first line is far shorter; never cut inside a composed character.
+            if end > 4000 { end = text.rangeOfComposedCharacterSequence(at: 4000).location }
+            if let first = try? box.fragment(NSRange(location: 0, length: max(1, end))) { probe = first }
+        }
+        if probe.text.isEmpty { probe.text = " "; probe.runs = nil }
+        return TextObjectLayout(probe, coordinateScale: coordinateScale(for: box)).firstBaseline.map(Double.init)
+    }
+    /// „An Linien ausrichten“: the field's top so that its first baseline
+    /// stands on the nearest paper line, completely on the page
+    /// (`TextLinePaper.snappedY`). Other fields are returned unchanged.
+    func snappedToLines(_ box: TextBox) -> TextBox {
+        let paper = linePaper
+        guard paper.lineAlignment(for: box) == .aligned, let ascent = firstLineAscent(box),
+              let y = paper.snappedY(for: box, firstAscent: ascent, within: PageRect(canonicalBounds)) else { return box }
+        var result = box; result.y = y
+        return result
     }
     /// Textneubau: the height follows the content (never beyond the page, more
     /// text stays stored and is marked as overflow); with `autoWidth` the width
@@ -535,11 +555,16 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 box.width = min(widest, max(minimum, ceil(natural) + 4 * scale))
             }
         }
+        // Aligned to the lines: the first baseline onto a paper line before
+        // measuring, so the height has no gap above the first line.
+        box = snappedToLines(box)
         let line = ceil(box.style.fontSize * TextStylePreset.lineHeightFactor * scale)
         let needed = max(line, measuredHeight(box))
         box.height = max(1, min(needed, box.maximumHeight(in: limits, minimum: min(needed, line))))
         if keepOnPage, !box.fits(in: limits), let shifted = box.shifted(into: limits) { box = shifted }
-        return box
+        // Again after a shift onto the page (on creating, moving, a new size,
+        // typing into the first line); idempotent, the height stays.
+        return snappedToLines(box)
     }
     /// Used rects of the laid-out text lines of `box` in its own unrotated
     /// page units (origin: text top-left); what a lasso has to touch.
@@ -635,6 +660,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     func createField(at point: CGPoint, text: String = "", focus: Bool = true) -> UUID? {
         guard active || !focus else { if tracing { inputLog.info("[noty.text-input] Insertion ignored: text mode inactive") }; return nil }
         guard boxes.count < 200 else {
+            noteWork?.cancel(); notice.textColor = .systemRed
             notice.text = "Höchstens 200 Textfelder pro Seite."
             let width = min(360, max(40, bounds.width - 16))
             notice.frame = CGRect(x: min(max(8, point.x - width / 2), max(8, bounds.width - width - 8)),
@@ -653,6 +679,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         guard let frame = TextFieldPlacement.frame(tap: canonical, limits: limits, width: max(16, style.fontSize), lineHeight: line) else { return nil }
         var box = TextBox(x: frame.x, y: frame.y, width: frame.width, height: frame.height, text: text, style: style)
         box.autoWidth = true
+        // „Neue Textfelder an Linien ausrichten“ (default on): only where lines
+        // are drawn, so fields on blank paper or a PDF keep their older format.
+        box.alignsToLines = true
+        if !Self.alignsNewFieldsToLines || linePaper.lineAlignment(for: box) != .aligned { box.alignsToLines = nil }
         boxes.append(box)
         if focus { selectedID = box.id }
         synchronize() // creates the native view the height is measured with
@@ -679,6 +709,44 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             if isEditingField { endTextEditing() }
             onFlowEnd?()
         }
+    }
+
+    /// „An Linien ausrichten“ of the edited field (format bar): one undo step;
+    /// switching on snaps the field onto the nearest line. Where it has no
+    /// effect (no lines there, turned field) a short note says why; the
+    /// setting stays and takes effect on lined paper.
+    func toggleLineAlignment() {
+        guard active, let selectedID, let index = boxes.firstIndex(where: { $0.id == selectedID }), boxes[index].flowID == nil,
+              fields[selectedID]?.editor.markedTextRange == nil else { return }
+        let on = boxes[index].alignsToLines != true
+        boxes[index].alignsToLines = on ? true : nil
+        grow(index); synchronize()
+        onUndoBoundary?(); publish(); onUndoBoundary?()
+        updateAccessory()
+        let state = linePaper.lineAlignment(for: boxes[index])
+        if on, let text = Self.lineAlignmentNote(state) { showNote(text, near: displayFrame(boxes[index])) }
+        else { notice.isHidden = true }
+    }
+    /// Why the switch does nothing at the field's place; nil when it works or is off.
+    static func lineAlignmentNote(_ state: TextLineAlignment) -> String? {
+        switch state {
+        case .noLines: "Hier sind keine Linien. Das Feld richtet sich auf liniertem oder kariertem Papier aus."
+        case .rotated: "Gedrehte Textfelder richten sich nicht an Linien aus."
+        case .off, .aligned: nil
+        }
+    }
+    private var noteWork: DispatchWorkItem?
+    /// A neutral note above `frame` (layer coordinates) that hides itself.
+    private func showNote(_ text: String, near frame: CGRect) {
+        noteWork?.cancel()
+        notice.text = "  " + text; notice.textColor = .label
+        let width = min(420, max(40, bounds.width - 16))
+        notice.frame = CGRect(x: min(max(8, frame.minX), max(8, bounds.width - width - 8)),
+                              y: max(8, frame.minY - 56), width: width, height: 48)
+        notice.isHidden = false; bringSubviewToFront(notice)
+        let work = DispatchWorkItem { [weak self] in self?.notice.isHidden = true; self?.notice.textColor = .systemRed }
+        noteWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: work)
     }
 
     /// Opens an existing field for typing; the caret goes to `point` (layer
@@ -944,6 +1012,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 let shift = ObjectMovement.translation(moving: box.rotatedBounds, by: PagePoint(x: delta.x, y: delta.y), within: limits, snapping: snap)
                 snapping.show(translation: shift, frame: box.rotatedBounds, gesture: gesture, in: self)
                 box.x += shift.x; box.y += shift.y
+                // A field aligned to the lines moves from line to line.
+                box = snappedToLines(box)
             case .left, .right:
                 let radians = box.angle * .pi / 180
                 var along = Double(delta.x) * cos(radians) + Double(delta.y) * sin(radians)
@@ -981,6 +1051,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     private func showDragged(_ index: Int) {
         let box = boxes[index]
         guard let field = fields[box.id] else { return }
+        // A field aligned to the lines keeps standing on them while it moves.
+        field.editor.setLineGrid(linePaper.grid(for: box))
         position(field, for: box); updateRaster(field, for: box)
         let pointScale = coordinateScale(for: box)
         let overflowing = box.overflows(textHeight: overflowHeight(box, editor: field.editor, width: box.width / pointScale) * pointScale)

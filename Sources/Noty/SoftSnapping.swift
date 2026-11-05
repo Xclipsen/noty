@@ -177,13 +177,9 @@ extension WorksheetView: SnapHost {
                          limits: PageRect(layout.canonicalInkBounds))
     }
     func snapBaseline(of box: TextBox) -> Double? {
-        guard box.angle == 0, box.flowID == nil, !box.text.isEmpty, let editor = configuration else { return nil }
-        var page = Page(); page.paper = editor.paper; page.margins = editor.margins
+        guard box.angle == 0, box.flowID == nil, !box.text.isEmpty, configuration != nil else { return nil }
         let scale = textLayer.coordinateScale(for: box)
-        let ruling = page.textRuling(for: box)
-        let anchor = ruling == nil ? nil : box.rulingAnchorY(regionTops: editor.writingRegionTops)
-        let origin: CGFloat? = anchor.map { CGFloat($0 + pageLayout.contentOrigin.y) / scale }
-        guard let first = TextObjectLayout(box, ruledOrigin: origin, ruling: ruling ?? .lined, coordinateScale: scale).firstBaseline else { return nil }
+        guard let first = textLayer.layout(box).firstBaseline else { return nil }
         return box.y + Double(first * scale)
     }
     func showSnapFeedback(_ feedback: SnapFeedback?) {
