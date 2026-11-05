@@ -571,7 +571,15 @@ final class EditorModel: ObservableObject {
                 recordChange(.objects, pageID: pageID, before: previous)
             }
             scheduleSave(); return true
-        } catch { self.error = "Objektänderung nicht übernommen: \(error.localizedDescription)"; return false }
+        } catch {
+            // A broken limit by name, not as a „damaged file“ (`StorageError.invalidDocument`).
+            if let problem = notebook.imageLimitProblem(replacing: pageID, with: content.images) {
+                self.error = "Objektänderung nicht übernommen: \(ImageImportError(problem).localizedDescription)"
+            } else if case StorageError.invalidDocument = error {
+                self.error = "Objektänderung nicht übernommen: Das Ergebnis läge nicht vollständig auf der Seite oder überschreitet eine Grenze der Seite. Der bisherige Stand bleibt erhalten."
+            } else { self.error = "Objektänderung nicht übernommen: \(error.localizedDescription)" }
+            return false
+        }
     }
 
     /// Atomic multi-page content change (selection moved to another page and

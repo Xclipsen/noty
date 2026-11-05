@@ -160,7 +160,8 @@ enum PDFExporter {
         let images = try objects.map { object in
             // 300 dpi from the third image on.
             let limit = ImageRendering.outputLimit(object, imagesOnPage: objects.count, maximum: 4096, pixelsPerPoint: 300.0 / 72)
-            return try ImageRendering.decoded(object, limit: limit, assets: provider)
+            // Only the cropped pixels go into the PDF, never the cut-away parts.
+            return try ImageRendering.exportCrop(ImageRendering.decoded(object, limit: limit, assets: provider), for: object)
         }
         guard !page.drawing.isEmpty else { return PageAssets(images: images, ink: nil) }
         let drawing = try PKDrawing(data: page.drawing)
@@ -194,7 +195,7 @@ enum PDFExporter {
                 drawPaper(style: .legacyTest, bounds: bounds)
             case .images:
                 for (object, image) in zip(page.images ?? [], assets.images) {
-                    ImageRendering.draw(object, image: image, context: context, origin: layout.contentOrigin)
+                    ImageRendering.draw(object, image: image, context: context, origin: layout.contentOrigin, precropped: true)
                 }
             case .shapes:
                 ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)

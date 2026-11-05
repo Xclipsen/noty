@@ -79,8 +79,26 @@ public struct LaserTrail: Equatable, Sendable {
     }
     public mutating func clear() { samples = []; pointer = nil; touching = false; pointerLift = nil; lifts = [:] }
 
+    /// Over `maximumSamples` the oldest samples go, which have faded long
+    /// before. „Bis zum Absetzen“ keeps the whole stroke visible, so there the
+    /// trail is thinned instead: every second inner sample goes, each stroke
+    /// keeps its first and last one. A long stroke keeps its beginning while
+    /// touching (only coarser); just many tiny strokes lose their oldest samples.
     private mutating func append(_ point: PagePoint, time: Double) {
         samples.append(Sample(point: point, time: time, stroke: stroke))
+        guard samples.count > Self.maximumSamples else { return }
+        guard mode == .trail, fade == .untilLift else { samples.removeFirst(samples.count - Self.maximumSamples); return }
+        let all = samples
+        var kept: [Sample] = []; kept.reserveCapacity(all.count / 2 + 2)
+        var inner = 0
+        for index in all.indices {
+            let first = index == 0 || all[index - 1].stroke != all[index].stroke
+            let last = index == all.count - 1 || all[index + 1].stroke != all[index].stroke
+            if first || last { kept.append(all[index]); inner = 0; continue }
+            if inner % 2 == 1 { kept.append(all[index]) }
+            inner += 1
+        }
+        samples = kept
         if samples.count > Self.maximumSamples { samples.removeFirst(samples.count - Self.maximumSamples) }
     }
 

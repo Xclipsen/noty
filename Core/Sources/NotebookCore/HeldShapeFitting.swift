@@ -76,3 +76,31 @@ public enum HeldShapeFitting {
         }
     }
 }
+
+/// A shape drawn with the shape tool (a drag from `start` to `end`) stays
+/// on the page while it is drawn, so the preview is what is saved and
+/// nothing vanishes on lift: the start is held inside the page, a line or
+/// arrow ends where the drag leaves the page (direction kept, like
+/// `HeldShapeFitting` cuts held lines), a rectangle or ellipse corner stops
+/// at the edge. The margin is the stroke's reach (`ShapeObject.padding`,
+/// an arrow's head on every side, as the notebook validates it).
+public enum DrawnShapeFitting {
+    public static func fitted(_ shape: ShapeObject, in bounds: PageRect) -> ShapeObject {
+        guard shape.points == nil, ShapeKind.toolKinds.contains(shape.kind) else { return shape }
+        let pad = shape.padding
+        let inner = PageRect(x: bounds.x + pad, y: bounds.y + pad, width: bounds.width - 2 * pad, height: bounds.height - 2 * pad)
+        guard inner.width > 0, inner.height > 0 else { return shape }
+        func held(_ p: PagePoint) -> PagePoint {
+            PagePoint(x: min(max(p.x, inner.x), inner.x + inner.width), y: min(max(p.y, inner.y), inner.y + inner.height))
+        }
+        var result = shape
+        result.start = held(shape.start)
+        switch shape.kind {
+        case .line, .arrow:
+            result.end = HeldShapeFitting.clip(result.start, shape.end, to: inner)?.1 ?? result.start
+        default:
+            result.end = held(shape.end)
+        }
+        return result
+    }
+}

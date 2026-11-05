@@ -91,6 +91,22 @@ public struct ImageObject: Codable, Equatable, Identifiable, Sendable {
             && crop.x + crop.width <= 1.0000001 && crop.y + crop.height <= 1.0000001
     }
 
+    /// The crop as whole pixels of a rendition `width` × `height` (origin top
+    /// left, orientation applied), rounded inwards: no pixel outside the crop
+    /// is part of it (at least one pixel). The PDF export embeds only these
+    /// pixels; a clip alone would keep the cut-away parts in the file.
+    public static func cropPixels(_ crop: PageRect, width: Int, height: Int) -> (x: Int, y: Int, width: Int, height: Int) {
+        func span(_ start: Double, _ length: Double, _ size: Int) -> (Int, Int) {
+            let total = Double(max(1, size))
+            let low = Int(max(0, min(total, (start * total - 1e-6).rounded(.up))))
+            let high = Int(max(0, min(total, ((start + length) * total + 1e-6).rounded(.down))))
+            guard high > low else { let at = min(max(0, low), max(1, size) - 1); return (at, 1) }
+            return (low, high - low)
+        }
+        let (x, w) = span(crop.x, crop.width, width), (y, h) = span(crop.y, crop.height, height)
+        return (x, y, w, h)
+    }
+
     public var rotatedBounds: PageRect {
         let radians = rotation * .pi / 180
         let w = abs(cos(radians)) * width + abs(sin(radians)) * height
