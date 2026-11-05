@@ -340,6 +340,11 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private let textInteractionID = UUID()
     private var onInteraction: ((UUID, Bool) -> Void)?
     var inkActive = false
+    /// Tool the current/last native stroke began with. A tool change while
+    /// the Pencil still rests (bar, keys) must neither drop that stroke (the
+    /// new tool may not draw at all) nor post-process it with the new tool's
+    /// options (`canvasViewDrawingDidChange`).
+    private var strokeTool: EditorTool?
     var renderViewport: InkRenderViewport?
     private(set) var configuration: PageEditor?
     private var lastObjectPreview: PageContent?
@@ -729,8 +734,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             // inside a SwiftUI update).
             let keepsInk = heldShape != nil && !first && !contentReplaced && !layoutChanged
             holdSerial += 1; clearHeldPreview()
-            if keepsInk { DispatchQueue.main.async { [weak self] in self?.publishUnreportedInk() } }
+            // Pencil still down (shape preview shown): PencilKit owns the
+            // stroke until its tool end, which publishes it.
+            if keepsInk && inkActive { publishInkAtToolEnd = true }
+            else if keepsInk { DispatchQueue.main.async { [weak self] in self?.publishUnreportedInk() } }
         }
+        // Between strokes the next native change belongs to the new tool.
+        if editor.tool != tool, !inkActive { strokeTool = nil }
         // A ruler stroke goes on through a short lock (backup commit) and a
         // tool change; only another page or page geometry ends it (its edge
         // is in this page's coordinates).
@@ -1187,18 +1197,24 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         HangProbe.hit("Sheet.drawingDidChange")
         if !updating { canvasSource = nil } // native change
-        guard !updating, [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(tool) else { return }
+        // The stroke's own tool decides, not one chosen while it was drawn.
+        let drawnWith = strokeTool ?? tool
+        if !updating, !inkActive { strokeTool = nil }
+        guard !updating, [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(drawnWith) else { return }
         if heldShape != nil {
             holdCompletion.drawingChanged(); finishHeldStroke(serial: holdSerial); return
         }
+        // Tool changed during the stroke: published as drawn, no straightening,
+        // scribble erase or width learning with the other tool's options.
+        let processed = drawnWith == tool ? tool : nil
         // Per stroke: no decode of the published drawing (count cached by its
         // bytes) and exactly one encode of the result.
         let previousCount = publishedStrokeCount
-        if tool == .marker, markerStraight { straightenLastMarkerStroke(previousCount: previousCount) }
-        let scribbled = tool == .pen && scribbleErase ? eraseByScribble(previousCount: previousCount) : []
+        if processed == .marker, markerStraight { straightenLastMarkerStroke(previousCount: previousCount) }
+        let scribbled = processed == .pen && scribbleErase ? eraseByScribble(previousCount: previousCount) : []
         let drawing = canvas.drawing, strokes = drawing.strokes
         // A precision eraser that splits a stroke also adds one: no pen width.
-        if tool == .pen || tool == .pencil || tool == .marker { recordDrawnWidth(strokes, previousCount: previousCount) }
+        if processed == .pen || processed == .pencil || processed == .marker { recordDrawnWidth(strokes, previousCount: previousCount) }
         lastDrawing = canonicalDrawingData(drawing)
         if eraseSession == nil { strokeCountCache = (lastDrawing, strokes.count); canvasSource = lastDrawing }
         pageContent.drawing = lastDrawing
@@ -1250,7 +1266,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         canvasSource = nil; updating = wasUpdating
     }
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
-        inkActive = true
+        inkActive = true; strokeTool = tool
         // First stroke in the inactive view: it draws and activates the view
         // (its tool, undo and saving follow), no extra tap needed.
         if pencilWakes { onPencilWake?() }

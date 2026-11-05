@@ -2,6 +2,23 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Schreibwerkzeuge und Zwei-Ansichten-Aktivierung: Review-Befunde (05.11.2026, Branch `feat/fix2-ink`)
+
+**Implementiert, Core-Tests (1290, 3 übersprungen, 0 Fehler; Core unverändert), Seiten-Workflow und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Kein Format- oder Modellwechsel; nur App-Code (`PageEditor.swift`, `WorksheetView+HeldShape.swift`, `ContentView.swift`).
+
+- **Werkzeugwechsel bei aufliegendem Stift** (Form-Vorschau sichtbar): Der Strich wird beim Werkzeugende veröffentlicht (`publishInkAtToolEnd`), auch wenn das neue Werkzeug nicht zeichnet. `canvasViewDrawingDidChange` entscheidet nach dem Werkzeug, mit dem der Strich begann (`strokeTool`); hat es während des Strichs gewechselt, wird er unverändert übernommen (keine Marker-Begradigung, kein Durchkritzeln, kein Breitenlernen mit dem neuen Werkzeug).
+- **Werkzeugwechsel aus Leiste, Optionen, Pencil-Palette und Tasten** übernimmt vorher eine wartende Form (`WorksheetView.settleHeldStrokes()` zentral im Setter von `tool` in `ContentView`), wie Doppeltipp, Drücken und Rückgängig. Nie innerhalb des eigenen Blatt-Updates (`settleHeldStroke` prüft `updating`).
+- **Zwei Ansichten:** Schwebende Leiste, angedockte Werkzeugoptionen, Seitennavigator und Seitenleiste (samt Abdunklung im schmalen Layout) der inaktiven Ansicht liegen nicht mehr im Loch der Aktivierungsebene; ein Tipp dort aktiviert die Ansicht. Das Loch öffnet sich jetzt auch bei sichtbarer Seitenleiste, soweit die Seiten frei liegen (breite Ansicht); im schmalen Layout deckt die Abdunklung die Seiten, dort bleibt es bei der Aktivierungsebene.
+- **Koordinaten:** Loch und Ausnahmen werden im gemeinsamen Raum um Oberfläche und Ebene gemessen und auf den Ursprung der Ebene umgerechnet (Safe Area, Fenstermodus).
+- **Nicht geändert:** `followPaper` macht einen eigenen schwarzen Bleistift nach dunkel → weiß weiter zu Graphit. Beide werden auf dunklem Papier zu demselben Weiß; ohne neues gespeichertes Feld ist der Ursprung nicht unterscheidbar.
+
+Gerätetest (gebündelt, noty dev, Testheft):
+1. Kreis halten bis zur Vorschau, Stift liegen lassen und mit der anderen Hand (a) Text-/Lasso-Werkzeug in der Leiste, (b) Marker, (c) Taste für ein Werkzeug wählen; dann abheben. Strich bleibt sichtbar und ist nach Schließen/Neuöffnen da; bei (b) nicht als Marker begradigt, Stiftbreite danach unverändert.
+2. Linie halten, abheben und sofort (innerhalb ~0,1 s) in der Leiste bzw. per Taste das Werkzeug wechseln: gespeichert ist die erkannte Linie, nicht der Freihandstrich.
+3. Zwei Ansichten, inaktive Ansicht mit Stift: Tipp auf schwebende Leiste, offene Werkzeugoptionen, Seitennavigator und (breite Ansicht) Seitenleiste aktiviert die Ansicht, löst dort nichts aus. Pencil-Strich auf freien Seiten zeichnet und aktiviert, auch mit sichtbarer Seitenleiste in breiter Ansicht. Gleiches im Fenstermodus (Stage Manager) mit oberem Abstand: Rand des Lochs sitzt an der Seitenkante unter der Kopfzeile.
+4. **Unter Last** (großes Heft, viele Striche, schnelle Folge von Formen): keine doppelten Striche durch die 0,12-s-Übernahme, Rückgängig nimmt je Form genau einen Schritt.
+5. Erster Strich in der inaktiven Ansicht: kein Ruckeln, kein Abbruch oder fehlender Anfang, während die Ansicht dabei aufwacht.
+
 ## Einzug und Listen neu (05.11.2026, Branch `feat/einzug2`)
 
 **Implementiert, Core-Tests, Seiten-Workflow und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Kein Formatwechsel. Regeln: [TEXT-FIELDS](TEXT-FIELDS.md), Nachtrag „Einzug und Listen neu“. Core-Tests 1290 (3 übersprungen, 0 Fehler), neu `TextIndentTests` (23, davon 8 aus den Reviews); bewusst angepasst: `TextListStructureTests` (Ebenen als Tabs statt 20-pt-Einzug, „- “ bleibt), `TextTabsTests` (`TextTabs.edits` ersetzt; ⇧Tab löscht keinen Tab mitten in der Zeile mehr), `ZoomAndListTests` (leerer Eintrag auf Ebene 0 behält führende Leerzeichen), Return-Aufrufe über `TextIndentEditing`. Nicht unter Linux prüfbar: TextKit-Layout (ob `defaultTabInterval`-Tabs in Folgezeilen mit `headIndent` auf dem Raster ab Feldkante liegen), `TextBoxStyle(attributes:)` (liest den Einzug über die getestete Core-Regel `storedIndent`), Tastenzustellung und Undo am Gerät.
