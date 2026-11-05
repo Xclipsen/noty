@@ -51,7 +51,7 @@ esac
 SOURCE="$BRANCH · $COMMIT"; [ -z "$DIRTY" ] || SOURCE="$SOURCE · mit uncommitteten Änderungen"
 # Buildnummern zählen über beide Apps durchgehend hoch.
 NEXT="$(sed -n 's#.*<key>CFBundleVersion</key><string>\([0-9]*\)</string>.*#\1#p' Info.plist)"
-LAST="$( { if [ -d "$OTA_DIR" ]; then ls "$OTA_DIR" "$OTA_DIR-dev" "$OTA_DIR-ai"; else ssh "$OTA_HOST" "ls '$OTA_DIR' '$OTA_DIR-dev' '$OTA_DIR-ai'"; fi; } 2>/dev/null | sed -n 's/^Noty-\([0-9]*\)\.ipa$/\1/p' | sort -n | tail -1)"
+LAST="$( { if [ -d "$OTA_DIR" ]; then ls "$OTA_DIR" "$OTA_DIR-dev" "$OTA_DIR-ai" || true; else ssh "$OTA_HOST" "ls '$OTA_DIR' '$OTA_DIR-dev' '$OTA_DIR-ai' || true"; fi; } 2>/dev/null | sed -n 's/^Noty-\([0-9]*\)\.ipa$/\1/p' | sort -n | tail -1)"
 if [ -n "$LAST" ] && [ "$NEXT" -le "$LAST" ] && [ "${NOTY_SAME_BUILD:-}" != 1 ]; then
   echo "Build $NEXT ist nicht größer als der zuletzt veröffentlichte Build $LAST; CFBundleVersion erhöhen." >&2; exit 1
 fi
