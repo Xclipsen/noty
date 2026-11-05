@@ -2,6 +2,24 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Stift, Bleistift, Marker: Prüfbefunde behoben (05.11.2026, Branch `feat/fix-ink`)
+
+**Implementiert, Core-Tests (`InkToolFixTests`), Seiten-Workflow und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Kein Heft- oder Werkzeugformat geändert; die strenge Prüfung von Heften, Archiven und dem Python-Prüfer bleibt.
+
+- **Gehaltene Form/Linie geht nicht mehr verloren.** Meldet PencilKit die Zeichnung nur vor dem Werkzeugende, wird das Ergebnis jetzt 0,12 s nach Abheben und Werkzeugende übernommen statt erst nach 0,75 s oder bei der nächsten Berührung (`StrokeCompletionGate.awaitsFinalDrawing`). Vor Rückgängig/Wiederholen, Ansichtswechsel (`EditorWorkspace.activePane`), Schließen, App-Wechsel und Pencil-Doppeltipp/Drücken wird ein wartender Strich übernommen (`WorksheetView.settleHeldStrokes`); Rückgängig nimmt damit zuerst die neue Linie zurück. Geht die Form nicht, wird der Freihandstrich gespeichert, auch bei Werkzeugwechsel per Taste oder Backup-Sperre (`publishUnreportedInk`). Eine Seite mit wartendem Strich wird nicht entladen.
+- **Farben außerhalb von sRGB** (Farbwähler, Display P3) werden beim Übergang in `InkColor` nach sRGB umgerechnet und auf 0…1 geklemmt: Stiftoptionen, Pencil-Palette, Formfüllung, gehaltene Formen, Textfarbe „Weitere Farben …“, Papierumstellung. Werkzeugeinstellungen klemmen beim Laden und vor dem Speichern statt abzulehnen.
+- **Zwei Ansichten:** In der inaktiven Ansicht mit Stift, Bleistift oder Marker zeichnet der erste Pencil-Strich sofort und aktiviert die Ansicht. Der Fingertipp aktiviert weiter (Kopfzeile/Leiste wie bisher, auf den Seiten über den Viewport). Neu: Ein Finger kann die inaktive Ansicht auf den Seiten scrollen, ohne sie zu aktivieren. Mit anderen Werkzeugen oder offener Seitenleiste bleibt die alte Aktivierungsebene.
+- **„Ganzes Notizbuch umstellen“** wandelt auch die Bleistiftfarbe: Schwarz und das Standard-Graphit werden auf dunklem Papier weiß, ein heller Bleistift auf weißem Papier wieder Graphit; farbige Bleistifte bleiben.
+- **Reserveseite:** Ein spät gemeldeter Strich, den `materializeDraft` ablehnt (Backup-Pause, beschäftigtes Modell), bleibt auf der Reserveseite stehen und wird übernommen, sobald Bearbeiten wieder geht.
+- Bereits im aktuellen Stand erledigt: gelernte Strichbreite gilt für alle Seiten (`InkPointMemory`). Ungeprüft und unverändert: stilles Klemmen an `validWidthRange`, Abbruch eines aufliegenden Strichs beim Radiererwechsel, Streustrich beim Zwei-Finger-Zoom mit Fingermalen.
+
+Gerätetest (gebündelt, noty dev, Testheft):
+1. Linie bzw. Kreis halten bis zur Haptik, abheben und sofort (a) in der Leiste das Werkzeug wechseln, (b) Rückgängig tippen, (c) Pencil-Doppeltipp, (d) Heft schließen. Danach neu öffnen: Form/Linie ist da (bei b nicht, aber mit Wiederholen zurückholbar; die vorige Änderung bleibt).
+2. Stiftoptionen › Farbe › Spektrum: kräftigstes Rot/Grün wählen, Breite ändern, App beenden, neu starten: Farbe und Breite erhalten, keine Meldung „Werkzeugeinstellungen nicht gespeichert“. Externes Backup bzw. Bibliotheksexport läuft durch. Gleiches mit Pencil-Palette „Weitere Farbe“, Formfüllung und Text „Weitere Farben …“ (Text bleibt nach Neustart farbig).
+3. Zwei Ansichten mit demselben und mit verschiedenen Heften: abwechselnd links/rechts mit dem Pencil schreiben, ohne Tipp. Jeder Strich samt Anfang erscheint und bleibt nach Neustart; Leiste und Rückgängig folgen der beschriebenen Ansicht. Fingertipp aktiviert weiterhin, auch auf Kopfzeile und Leiste; mit Textwerkzeug in der inaktiven Ansicht aktiviert der Pencil nur.
+4. Bleistift auf Schwarz stellen, Heft auf dunkles Papier umstellen: Bleistift schreibt weiß. Zurück auf weißes Papier: Graphit.
+5. Selten, nur wenn möglich: auf der leeren Reserveseite schreiben, während ein Backup startet; der Strich bleibt nach Neustart erhalten.
+
 ## Lineal überarbeitet (05.11.2026, Branch `feat/lineal`)
 
 **Implementiert, Core-Tests und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Aus einer Prüfung des eigenen Lineals (Build 88/89). Kein Heftschema geändert; Lage des Lineals und gelerntes Strichbild liegen in `UserDefaults`.

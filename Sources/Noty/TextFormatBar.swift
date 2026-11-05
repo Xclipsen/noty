@@ -262,9 +262,9 @@ extension TextObjectLayer {
     }
     func colorPickerViewControllerDidSelectColor(_ viewController: UIColorPickerViewController) {
         guard restoreFormatSelection() else { return }
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        viewController.selectedColor.getRed(&r, green: &g, blue: &b, alpha: &a)
-        changeStyle { $0.ink = InkColor(r,g,b,a); $0.automaticColor = nil }
+        // „Weitere Farben …“: P3 picks become in-range sRGB (`InkColor(UIColor)`).
+        let ink = InkColor(viewController.selectedColor)
+        changeStyle { $0.ink = ink; $0.automaticColor = nil }
     }
     private func chooseFont() {
         guard let controller = presentingController, rememberFormatSelection() else { return }

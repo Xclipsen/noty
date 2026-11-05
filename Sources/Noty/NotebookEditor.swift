@@ -64,6 +64,9 @@ struct NotebookEditor: UIViewRepresentable {
     /// Attached tool options next to a top/bottom toolbar: the pages slide
     /// out from under them while they are open (viewport points).
     var optionsAvoidance: ToolbarOptionsAvoidance? = nil
+    /// Inactive view whose pages take the Pencil (two views): a finger tap on
+    /// them activates the view, as the tap on its chrome does.
+    var onActivate: (() -> Void)? = nil
     func makeUIView(context: Context) -> NotebookViewport { NotebookViewport() }
     func updateUIView(_ view: NotebookViewport, context: Context) { view.configure(self) }
 }
@@ -134,6 +137,9 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private var floatTarget: UUID?
     private var selectionFeedback: UIFeedbackGenerator?
     private var swipes: [UISwipeGestureRecognizer] = []
+    /// Finger tap on the pages of an inactive view (`NotebookEditor.onActivate`).
+    private let activationTap = UITapGestureRecognizer()
+    private let activationTapDelegate = SimultaneousGestureDelegate()
     /// After a memory warning only on-screen pages get native sheets for a while.
     private var lowMemoryUntil: CFTimeInterval = 0
     /// Sideways finger drag beyond the allowed range (rubber band), see `ElasticState`.
@@ -199,7 +205,13 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             swipe.isEnabled = false
             addGestureRecognizer(swipe); panGestureRecognizer.require(toFail: swipe); swipes.append(swipe)
         }
+        activationTap.addTarget(self, action: #selector(activateView))
+        activationTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        activationTap.cancelsTouchesInView = false; activationTap.delegate = activationTapDelegate
+        activationTap.isEnabled = false
+        addGestureRecognizer(activationTap)
     }
+    @objc private func activateView() { state?.onActivate?() }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     // MARK: Keyboard mode
@@ -255,6 +267,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         panGestureRecognizer.minimumNumberOfTouches = next.fingerDrawing && next.enabled ? 2 : 1
         let swiping = next.paging && next.enabled && !next.fingerDrawing
         for swipe in swipes where swipe.isEnabled != swiping { swipe.isEnabled = swiping }
+        if activationTap.isEnabled != (next.onActivate != nil) { activationTap.isEnabled = next.onActivate != nil }
         laser.configure(next.laser, fingerDrawing: next.fingerDrawing)
         let placement = NotebookViewportLayout(pages: next.pages, selectedPageID: next.selectedPageID,
             paging: mode, normalizeWidths: normalized)
@@ -1333,4 +1346,11 @@ extension NotebookViewport: SelectionTransferHost {
         surface.bringSubviewToFront(floatingSelection)
         positionFloatingSelection()
     }
+}
+
+/// Recognises alongside every other gesture (the activation tap of an
+/// inactive view never blocks scrolling or a Pencil stroke).
+private final class SimultaneousGestureDelegate: NSObject, UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }

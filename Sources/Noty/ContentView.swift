@@ -138,10 +138,16 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            workspaceSurface.ignoresSafeArea(.keyboard, edges: .bottom).overlay {
-                if !isPaneSelected() {
-                    Color.clear.contentShape(Rectangle()).onTapGesture { onActivatePane?(); model.pageIndex = currentPageIndex }
-                        .accessibilityLabel("Diese Ansicht aktivieren").accessibilityAddTraits(.isButton)
+            workspaceSurface.ignoresSafeArea(.keyboard, edges: .bottom).overlayPreferenceValue(PaneWakeArea.self) { area in
+                GeometryReader { proxy in
+                    if !isPaneSelected() {
+                        // With an ink tool the pages stay open below: the first Pencil
+                        // stroke draws and activates this view, a finger tap there
+                        // activates it through the viewport (DEVICE-FEEDBACK-20 §4).
+                        Color.clear.contentShape(PaneWakeArea.Hole(hole: pencilWakes && !showingPages ? area.map { $0.pages(in: proxy) } : nil), eoFill: true)
+                            .onTapGesture { activatePane() }
+                            .accessibilityLabel("Diese Ansicht aktivieren").accessibilityAddTraits(.isButton)
+                    }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -234,7 +240,7 @@ struct ContentView: View {
                 Button("OK") { model.error = nil }.keyboardShortcut(.defaultAction)
             } message: { Text(model.error ?? "") }
             .onChange(of: scenePhase) { _, phase in
-                if phase != .active { model.save(); toolbox.save() }
+                if phase != .active { WorksheetView.settleHeldStrokes(); model.save(); toolbox.save() }
             }
             .onChange(of: toolbox.preferences) { _, _ in toolbox.save() }
             .onChange(of: model.fileStatus) { _, note in showRecentNote(note) }
@@ -257,6 +263,7 @@ struct ContentView: View {
             }
             .onChange(of: selectedPageID) { _, _ in if isPaneActive() { model.pageIndex = currentPageIndex } }
             .onChange(of: model.pageContentGeneration) { _, _ in textFocus = nil; writingDraft = Page() }
+            .onChange(of: model.mutationsPaused || model.busy) { _, blocked in if !blocked { adoptHeldDraftDrawing() } }
             .onChange(of: tool) { old, value in
                 if value != .text { textFocus = nil }; if value.isInk { lastInkTool = value }
                 if value == .text, old != .text { toolBeforeText = old }
@@ -282,16 +289,18 @@ struct ContentView: View {
         .background { if !isRestoredCopy { LawKeyAnchor(active: isPaneActive()) } }
     }
 
-    /// The whole document now has this paper colour: a neutral pen or marker
-    /// of the old contrast colour would write invisibly (white on white).
-    /// Same direction-aware rule as the ink.
-    private func toolsFollowPaper(_ color: PaperColor) {
-        if let pen = PaperInkInversion.converted(toolbox.preferences.penColor, to: color) {
-            toolbox.preferences.penColor = pen
-        }
-        if let marker = PaperInkInversion.converted(toolbox.preferences.markerColor, to: color) {
-            toolbox.preferences.markerColor = marker
-        }
+    /// The whole document now has this paper colour: a neutral pen, marker or
+    /// pencil of the old contrast colour would write invisibly (white on
+    /// white). Same direction-aware rule as the ink (`followPaper`).
+    private func toolsFollowPaper(_ color: PaperColor) { toolbox.preferences.followPaper(color) }
+
+    /// Ink the draft page held while it could not become a page (see `onDrawing`).
+    private func adoptHeldDraftDrawing() {
+        let data = writingDraft.drawing
+        guard !data.isEmpty, model.writable, !model.notebook.pages.contains(where: { $0.id == writingDraft.id }) else { return }
+        var draft = draftPage; draft.drawing = Data()
+        guard model.materializeDraft(draft) else { return }
+        model.updateDrawing(data, pageID: draft.id)
     }
 
     /// App menu / ⌘ shortcuts of this pane while it is the active one.
@@ -512,6 +521,7 @@ struct ContentView: View {
     }
 
     private func closeEditor() {
+        WorksheetView.settleHeldStrokes() // a held stroke right before closing is saved
         if let onCloseWorkspace { onCloseWorkspace(); return }
         Task {
             if await model.flushBeforeClosing() { _ = await toolbox.flush(); dismiss(); return }
@@ -559,6 +569,12 @@ struct ContentView: View {
     }
 
     private var canEdit: Bool { model.writable && !model.busy && !model.mutationsPaused && isPaneActive() }
+    /// Inactive view (two views) whose ink tool takes the Pencil directly:
+    /// the first stroke draws and activates it, no extra tap.
+    private var pencilWakes: Bool {
+        !isPaneSelected() && onActivatePane != nil && notebookLoaded && tool.isInk && model.writable && !model.busy && !model.mutationsPaused
+    }
+    private func activatePane() { onActivatePane?(); model.pageIndex = currentPageIndex }
     /// Text document (TEXT-REBUILD-62 §4): no manual pages, taps go into the flow.
     private var isTextDocument: Bool { model.notebook.isTextDocument }
 
@@ -596,7 +612,8 @@ struct ContentView: View {
                     laser: tool == .laser ? toolbox.preferences.laserStyle : nil,
                     optionsAvoidance: optionsBar(layout).flatMap { bar in
                         ToolbarAvoidanceEdge(dock: toolbox.preferences.effectiveDock).map { ToolbarOptionsAvoidance(edge: $0, bar: bar) }
-                    })
+                    }, onActivate: pencilWakes ? { activatePane() } : nil)
+                    .anchorPreference(key: PaneWakeArea.self, value: .bounds) { PaneWakeArea.Area(bounds: $0, top: layout.topInset) }
                     .ignoresSafeArea(.container, edges: .bottom)
                     .padding(.bottom, layout.bottomInset)
                     .padding(.leading, layout.leftInset)
@@ -953,6 +970,8 @@ struct ContentView: View {
     /// Notebook-wide undo/redo: reverts the most recent change on any page in
     /// order (by stable page ID) and brings that page into view.
     private func performUndo(redo: Bool) {
+        // A held line/shape still waiting for PencilKit is the newest step.
+        WorksheetView.settleHeldStrokes()
         guard canEdit else {
             // Never a silent no-op: an import or backup holds the notebook for the moment.
             if isPaneActive(), model.writable { showRecentNote("\(redo ? "Wiederholen" : "Rückgängig") geht erst nach dem laufenden Vorgang.") }
@@ -1062,6 +1081,7 @@ struct ContentView: View {
             recognizeShapes: tool == .marker ? preferences.markerHoldStraighten ?? true : recognizeShapes, markerStraight: preferences.markerStraight ?? false, markerTip: preferences.effectiveMarkerTip, scribbleErase: preferences.scribbleErase ?? true,
             onPencilAction: { pencilToolSwitch($0) },
             onPencilSqueeze: { handlePencilSqueeze($0) },
+            onPencilWake: pencilWakes ? { activatePane() } : nil,
             onInteraction: { id, active in
                 model.setInteraction(id, active: active)
                 if active { KeyboardRouter.shared.pageTouched(); LawKeyboard.shared.pageTouched() }
@@ -1103,7 +1123,10 @@ struct ContentView: View {
                 guard isPaneSelected(), model.pageContentGeneration == generation else { return }
                 if page.id == writingDraft.id, !model.notebook.pages.contains(where: { $0.id == page.id }) {
                     guard let drawing = try? PKDrawing(data: data), !drawing.strokes.isEmpty else { return }
-                    guard model.materializeDraft(draftPage) else { return }
+                    // Late stroke behind a backup pause or a busy model: kept on
+                    // the draft (its sheet keeps showing it) and adopted when
+                    // editing resumes, like `heldDrawings` of existing pages.
+                    guard model.materializeDraft(draftPage) else { writingDraft.drawing = data; return }
                 }
                 model.updateDrawing(data, pageID: page.id)
             },
@@ -1288,4 +1311,27 @@ private struct RestoredNotebookView: View {
                                                      preferredPageID: restored.preferredPageID))
     }
     var body: some View { ContentView(model: model, isRestoredCopy: true) }
+}
+
+/// Pages of the inactive view in its activation layer: the layer leaves them
+/// open (even-odd hole) when they take the Pencil directly. Below the
+/// header/palette strip (`top`), which keeps its activation tap.
+private struct PaneWakeArea: PreferenceKey {
+    struct Area { var bounds: Anchor<CGRect>; var top: CGFloat }
+    static var defaultValue: Area? { nil }
+    static func reduce(value: inout Area?, nextValue: () -> Area?) { value = value ?? nextValue() }
+    struct Hole: Shape {
+        var hole: CGRect?
+        func path(in rect: CGRect) -> Path {
+            var path = Path(rect)
+            if let hole, hole.width > 0, hole.height > 0 { path.addRect(hole) }
+            return path
+        }
+    }
+}
+private extension PaneWakeArea.Area {
+    func pages(in proxy: GeometryProxy) -> CGRect {
+        let frame = proxy[bounds]
+        return CGRect(x: frame.minX, y: frame.minY + top, width: frame.width, height: max(0, frame.height - top))
+    }
 }

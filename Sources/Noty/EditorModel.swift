@@ -716,9 +716,7 @@ final class EditorModel: ObservableObject {
             let light = UITraitCollection(userInterfaceStyle: .light)
             var changed = false
             let strokes = drawing.strokes.map { stroke -> PKStroke in
-                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-                guard stroke.ink.color.resolvedColor(with: light).getRed(&r, green: &g, blue: &b, alpha: &a),
-                      let next = convert(PageRect(stroke.renderBounds), InkColor(Double(r), Double(g), Double(b), Double(a)))
+                guard let next = convert(PageRect(stroke.renderBounds), InkColor(stroke.ink.color.resolvedColor(with: light)))
                 else { return stroke }
                 var result = stroke
                 result.ink = PKInk(stroke.ink.inkType, color: UIColor(red: next.red, green: next.green, blue: next.blue, alpha: next.alpha))
