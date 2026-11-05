@@ -15,6 +15,8 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**noty 1.0, Build 121 (05.11.2026):** Release-Kandidat 2 (Build 120) als normale noty, vom Nutzer freigegeben. Dazu kommt der Abgleich jetzt auch mit der vierten App „noty calendar“ ([APP-SYNC](docs/APP-SYNC.md)). Veröffentlicht für noty, noty dev, noty AI und noty calendar. Am iPad ungeprüft.
+
 **Release-Kandidat 2, Build 120 (`feat/rc2` → `dev`, 05.11.2026):** Stand von Build 118 (inkl. Abgleich zwischen den noty-Apps) plus Korrekturen aus einer vollständigen Code-Prüfung in acht Bereichen: Stifte, Lasso/Objekte, Text, Speichern, Backup/PDF, Oberfläche, Gesetzessammlung, Release. Kein Formatwechsel gegenüber Build 110–117. Korrigiert:
 - **Stift:** Ein spät gemeldeter Strich geht nicht mehr verloren, wenn der nächste Strich zur gehaltenen Form wird. Eine abgebrochene Haltegeste veröffentlicht ihren Strich. Der Wechsel zum Radierer „Ganz“ bricht einen laufenden Strich nicht mehr ab. Ein wartender Lineal-Strich wird vor Rückgängig, Ansichtswechsel und Schließen übernommen.
 - **Bilder:** Ein gesperrtes Bild lässt sich auch mit dem Finger nicht mehr verschieben, eingefügte Kopien sind entsperrt. Ein seitenübergreifendes Verschieben während einer Sicherung meldet sich statt still zurückzuspringen.

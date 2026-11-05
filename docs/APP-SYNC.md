@@ -1,4 +1,4 @@
-# Abgleich zwischen noty, noty dev und noty AI
+# Abgleich zwischen noty, noty dev, noty AI und noty calendar
 
 Stand 05.11.2026, Build 118 (`feat/appsync`): **implementiert, Core-Tests und SDK-Build erfolgreich.** Installation und iPad-Test stehen bei den Build-Angaben unten; die normale noty hat den Abgleich erst nach Freigabe und Merge nach `main`.
 
@@ -7,6 +7,7 @@ Stand 05.11.2026, Build 118 (`feat/appsync`): **implementiert, Core-Tests und SD
 - Die normale noty **gibt nur ab**: noty dev und noty AI bekommen Kopien, aber nichts fließt zurück. Weder Änderungen noch Löschungen in den anderen Apps erreichen die echten Hefte.
 - Umfang: **die ganze Bibliothek** („Meine Bibliothek“ mit Ordnern, Papierkorb und Werkzeugeinstellungen).
 - Dritte App **„noty AI“** (`de.la.noty.ai`, türkises Icon `Resources/AppIcon-ai.png`), gebaut nur von `exp/*`: `NOTY_CHANNEL=ai bash scripts/publish_ota.sh`, Installationsseite `<OTA_URL>-ai`.
+- Vierte App **„noty calendar“** (`de.la.noty.calendar`, seit Build 121 am Abgleich): gebaut nur von `feat/kalender` mit `NOTY_CHANNEL=calendar`, Installationsseite `<OTA_URL>-calendar`. Spiegelt wie noty AI, legt selbst nichts ab.
 
 ## Wer gibt ab, wer spiegelt
 
@@ -15,6 +16,7 @@ Stand 05.11.2026, Build 118 (`feat/appsync`): **implementiert, Core-Tests und SD
 | noty | `stable` | ja („Meine Bibliothek“) | nie |
 | noty dev | `dev` | ja (ihre eigene „Meine Bibliothek“) | noty |
 | noty AI | `ai` | nein | noty, noty dev |
+| noty calendar | `calendar` | nein | noty, noty dev |
 
 Der Kanal folgt aus der App-ID, nicht allein aus `Info.plist` (`NotyChannel`, setzt `publish_ota.sh`): `de.la.noty.prototype` ist immer `stable`, keine andere App-ID kann `stable` sein, unpassende Paare bekommen gar keinen Abgleich (`AppSyncChannel.resolve`, Test `testOnlyTheRealBundleIDIsStableAndStableNeverMirrors`).
 

@@ -177,7 +177,7 @@ struct AppSyncSection: View {
         } header: { Text("Zwischen noty-Apps") } footer: {
             switch sync.channel {
             case .stable?:
-                Text("noty legt nur eine Kopie von „Meine Bibliothek“ für noty dev und noty AI ab. Sie übernimmt nie etwas von dort; Änderungen und Löschungen in den anderen Apps erreichen deine Hefte hier nicht.")
+                Text("noty legt nur eine Kopie von „Meine Bibliothek“ für noty dev, noty AI und noty calendar ab. Sie übernimmt nie etwas von dort; Änderungen und Löschungen in den anderen Apps erreichen deine Hefte hier nicht.")
             case .some(let channel) where !channel.mirrors.isEmpty:
                 Text("Neue Stände von \(channel.mirrors.map(\.appName).joined(separator: " und ")) erscheinen als eigener Bereich „Von …“ und ersetzen den vorigen Spiegel. Änderungen im Spiegel gehen dabei verloren und kommen nie zurück; Bleibendes vorher in „Meine Bibliothek“ kopieren.")
             default: EmptyView()

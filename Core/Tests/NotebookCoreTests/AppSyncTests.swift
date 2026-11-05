@@ -43,6 +43,10 @@ final class AppSyncTests: XCTestCase {
         XCTAssertEqual(AppSyncChannel.stable.mirrors, [])
         XCTAssertEqual(AppSyncChannel.resolve(declared: "dev", bundleID: "XTL-BAFXLQ964V.de.la.noty.dev"), .dev)
         XCTAssertEqual(AppSyncChannel.resolve(declared: "ai", bundleID: "XTL-A.XTL-A.de.la.noty.ai"), .ai)
+        XCTAssertEqual(AppSyncChannel.resolve(declared: "calendar", bundleID: "XTL-A.XTL-A.de.la.noty.calendar"), .calendar)
+        XCTAssertNil(AppSyncChannel.resolve(declared: "calendar", bundleID: "XTL-A.de.la.noty.ai"))
+        XCTAssertEqual(AppSyncChannel.calendar.mirrors, [.stable, .dev])
+        XCTAssertFalse(AppSyncChannel.calendar.publishes)
         // Keine andere App gibt sich als noty aus; falsche Paare bleiben ohne Abgleich.
         XCTAssertNil(AppSyncChannel.resolve(declared: "stable", bundleID: "XTL-A.de.la.noty.dev"))
         XCTAssertNil(AppSyncChannel.resolve(declared: "ai", bundleID: "XTL-A.de.la.noty.dev"))

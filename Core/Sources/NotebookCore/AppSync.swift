@@ -6,18 +6,19 @@ import Foundation
 /// eigenen Bereich. Die normale noty ist immer nur Quelle: Sie liest nie aus dem
 /// gemeinsamen Ordner, und kein Abgleich schreibt je in ihre Bibliothek.
 public enum AppSyncChannel: String, Codable, CaseIterable, Sendable {
-    case stable, dev, ai
+    case stable, dev, ai, calendar
 
     public var appName: String {
         switch self {
         case .stable: "noty"
         case .dev: "noty dev"
         case .ai: "noty AI"
+        case .calendar: "noty calendar"
         }
     }
 
     /// Legt einen Abzug der eigenen Bibliothek im gemeinsamen Ordner ab.
-    public var publishes: Bool { self != .ai }
+    public var publishes: Bool { self == .stable || self == .dev }
 
     /// Quellen, deren Abzüge diese App als Spiegel übernimmt. Die normale noty
     /// übernimmt nie etwas: ihre Hefte ändert nur sie selbst.
@@ -25,7 +26,7 @@ public enum AppSyncChannel: String, Codable, CaseIterable, Sendable {
         switch self {
         case .stable: []
         case .dev: [.stable]
-        case .ai: [.stable, .dev]
+        case .ai, .calendar: [.stable, .dev]
         }
     }
 
@@ -40,6 +41,7 @@ public enum AppSyncChannel: String, Codable, CaseIterable, Sendable {
         switch (declared.flatMap(AppSyncChannel.init(rawValue:)), base) {
         case (.dev?, "de.la.noty.dev"): return .dev
         case (.ai?, "de.la.noty.ai"): return .ai
+        case (.calendar?, "de.la.noty.calendar"): return .calendar
         default: return nil
         }
     }
