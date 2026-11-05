@@ -365,8 +365,6 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                     next.tabStops = []; next.defaultTabInterval = grid
                     editor.typingAttributes[.paragraphStyle] = next
                 }
-                // Typed text, a new width or format: the hanging edges follow, if they fit.
-                decideHanging(editor, for: box)
             }
             field.applyFieldStyle(box.resolvingAutomaticColor(light: light), unitScale: pointScale)
             editor.isFlow = box.flowID != nil
@@ -374,10 +372,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             // (migrated fields anchored at their former region: lines move with the field); fields
             // aligned to the lines stand on the paper lines. The same rule as previews and PDF.
             editor.setLineGrid(linePaper.grid(for: box))
+            // Typed text, a new width, format or lines: hanging indents only where they fit.
+            decideHanging(field, for: box)
             editor.isEditable = active; editor.isSelectable = active || readOnly
             editor.isUserInteractionEnabled = active || readOnly
             position(field, for: box); updateRaster(field, for: box)
-            let overflowing = box.overflows(textHeight: overflowHeight(box, editor: editor, width: box.width / pointScale) * pointScale)
+            let overflowing = box.overflows(textHeight: overflowHeight(box, editor: editor, scale: pointScale))
             field.configure(editing: active && selectedID == box.id && box.flowID == nil, overflowing: overflowing)
         }
         // Later fields lie on top („Nach vorne“/„Nach hinten“ reorder the array).
@@ -477,40 +477,67 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var selectedSizeUnits: TextSizeUnits {
         selectedID.flatMap { id in boxes.first { $0.id == id } }.map(sizeUnits) ?? .normal
     }
-    /// The editor's text with its hanging indents for `box` at its width
-    /// (`applyHangingIndents`), before a height is measured. Very long text that
-    /// already hangs at this width: only the changed paragraphs (a paste
-    /// included, its edges from elsewhere are derived anew).
-    func ensureHanging(_ editor: PageTextView, for box: TextBox) {
-        guard box.flowID == nil, editor.markedTextRange == nil, let field = fields[box.id], field.editor === editor else { return }
-        let width = CGFloat(box.width) / coordinateScale(for: box), storage = editor.textStorage
-        if let state = field.hanging, state.active, state.matches(box, width: width) { return }
-        var range: NSRange?
-        if storage.length > 20_000, let state = field.hanging, state.active, state.width == width, state.text != box.text,
-           let changed = TextListEditing.changedRange(from: state.text, to: box.text) {
-            let start = max(0, changed.location - 1)
-            range = NSRange(location: start, length: min(storage.length - start, changed.length + 2))
+    /// Keeps the editor's text in its current state (with or without hanging
+    /// indents) for `box`: new text, width or lines derive the edges anew
+    /// (very long text that hangs: only the changed paragraphs, a paste
+    /// included); without, edges from elsewhere are removed. The state itself
+    /// changes only in `decideHanging`. False: the editor does not show `box`.
+    @discardableResult
+    func refreshHanging(_ field: TextFieldContainer, for box: TextBox) -> Bool {
+        let editor = field.editor
+        guard box.flowID == nil, editor.markedTextRange == nil, editor.attributedText.string == box.text else { return false }
+        let width = CGFloat(box.width) / coordinateScale(for: box), grid = linePaper.grid(for: box)
+        if let state = field.hanging, state.matches(box, width: width, grid: grid) { return true }
+        let active = field.hanging?.active ?? false // the text is loaded without them
+        let storage = editor.textStorage
+        if active {
+            var range: NSRange?
+            if storage.length > 20_000, let state = field.hanging, state.width == width, state.text != box.text,
+               let changed = TextListEditing.changedRange(from: state.text, to: box.text) {
+                let start = max(0, changed.location - 1)
+                range = NSRange(location: start, length: min(storage.length - start, changed.length + 2))
+            }
+            storage.applyHangingIndents(width: width, in: range)
+        } else {
+            storage.removeHangingIndents()
         }
-        storage.applyHangingIndents(width: width, in: range)
-        field.hanging = .init(text: box.text, runs: box.runs, style: box.style, width: width, active: true, height: nil)
+        field.hanging = .init(text: box.text, runs: box.runs, style: box.style, width: width, grid: grid, active: active)
+        return true
+    }
+    /// Height of `box`'s text in page units with or without hanging indents,
+    /// rounded like `TextObjectLayout.usedHeight`: the field's own editor when it
+    /// shows `box` in that state on the same lines, otherwise the shared layout.
+    func textHeight(_ box: TextBox, hanging: Bool) -> Double {
+        let scale = coordinateScale(for: box)
+        guard let field = fields[box.id], field.editor.lineGrid == linePaper.grid(for: box), refreshHanging(field, for: box),
+              let state = field.hanging else {
+            return Double(TextObjectLayout(box, paper: linePaper, hanging: hanging ? .always : .never).usedHeight)
+        }
+        if let height = state.heights[hanging] { return height }
+        let height = state.active == hanging
+            ? editorHeight(field.editor, width: box.width / scale, scale: scale)
+            : Double(TextObjectLayout(box, paper: linePaper, hanging: hanging ? .always : .never).usedHeight)
+        field.hanging?.heights[hanging] = height
+        return height
     }
     /// The rule of `TextObjectLayout` (`TextIndentLayout.hangs`) in the editor:
     /// with hanging indents where the text then fits the stored height,
-    /// otherwise exactly as before without them.
-    func decideHanging(_ editor: PageTextView, for box: TextBox) {
-        guard box.flowID == nil, editor.markedTextRange == nil, let field = fields[box.id], field.editor === editor else { return }
-        let scale = coordinateScale(for: box), width = CGFloat(box.width) / scale
-        if let state = field.hanging, state.height == box.height, state.matches(box, width: width) { return }
-        ensureHanging(editor, for: box)
-        if !TextIndentLayout.hangs(box, heightWithHanging: neededHeight(editor, width: box.width / scale) * scale) {
-            editor.textStorage.removeHangingIndents()
-            field.hanging?.active = false
+    /// otherwise exactly as before without them. The whole text changes only
+    /// when the decision flips.
+    func decideHanging(_ field: TextFieldContainer, for box: TextBox) {
+        guard refreshHanging(field, for: box), let state = field.hanging, state.decidedFor != box.height else { return }
+        let hangs = TextIndentLayout.hangs(box, heightWithHanging: textHeight(box, hanging: true))
+        if hangs != state.active {
+            let storage = field.editor.textStorage
+            if hangs { storage.applyHangingIndents(width: state.width) } else { storage.removeHangingIndents() }
+            field.hanging?.active = hangs
         }
-        field.hanging?.height = box.height
+        field.hanging?.decidedFor = box.height
     }
-    /// Flow segments: the older indent stays (a paragraph may go on over
-    /// pages), and the first paragraph may continue one of the page before,
-    /// as `Notebook.reflowText` counts it.
+    /// Return and ⌫ in flow segments: the older indent stays (a paragraph may
+    /// go on over pages; ⇧Tab and the indent buttons reduce it on the whole
+    /// flow, `flowIndentTab`), and the first paragraph may continue one of the
+    /// page before, as `Notebook.reflowText` counts it.
     func indentRules(_ box: TextBox) -> (canChangeIndent: Bool, continuation: Bool) {
         guard box.flowID != nil else { return (true, false) }
         let segments = flowActions?.segments().map(\.box) ?? []
@@ -531,38 +558,24 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     private var canonicalBounds: CGRect { pageLayout.canonicalInkBounds }
     func publish() { if !updating { HangProbe.hit("Text.publish"); onChange?(boxes) } }
-    /// Like `neededHeight`, but the empty line behind a page's final line
-    /// break is no content of a flow segment: the text continues on the next page.
-    func overflowHeight(_ box: TextBox, editor: UITextView, width: Double) -> Double {
-        let needed = neededHeight(editor, width: width), extra = editor.layoutManager.extraLineFragmentRect
-        return box.flowID != nil && extra.height > 0 ? min(needed, ceil(extra.minY)) : needed
+    /// Like `editorHeight`, but the empty line behind a page's final line
+    /// break is no content of a flow segment: the text continues on the next
+    /// page (`TextObjectLayout.contentHeight`). Page units.
+    func overflowHeight(_ box: TextBox, editor: UITextView, scale: CGFloat) -> Double {
+        let needed = editorHeight(editor, width: box.width / scale, scale: scale), extra = editor.layoutManager.extraLineFragmentRect
+        return box.flowID != nil && extra.height > 0 ? min(needed, ceil(Double(extra.minY * scale))) : needed
     }
-    func neededHeight(_ editor: UITextView, width: Double) -> Double {
-        ceil(editor.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+    /// The editor's text height at `width` (own units) in page units, rounded
+    /// as `TextObjectLayout.usedHeight`: scaled first, then up to whole points.
+    func editorHeight(_ editor: UITextView, width: Double, scale: CGFloat) -> Double {
+        ceil(Double(editor.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height * scale))
     }
     /// Height always from the content, width from the text while automatic.
-    /// An edit: measured with hanging indents (`fitted(hanging:)`).
     func grow(_ index: Int) {
         guard boxes[index].flowID == nil else { return }
-        boxes[index] = fitted(boxes[index], keepOnPage: true, hanging: true)
+        boxes[index] = fitted(boxes[index], keepOnPage: true)
     }
     func minimumWidth(_ box: TextBox) -> Double { max(16, box.style.fontSize) * Double(coordinateScale(for: box)) }
-    /// Text height at the box's width in canonical units (the field's own
-    /// editor when it lays out on the same lines, otherwise the shared layout).
-    /// `hanging`: an edit measures with the hanging indents at this width and
-    /// stores the height they need, so the field takes them over
-    /// (`TextIndentLayout.hangs`); otherwise as the field is shown.
-    func measuredHeight(_ box: TextBox, hanging: Bool = false) -> Double {
-        let scale = coordinateScale(for: box)
-        if let field = fields[box.id], field.editor.attributedText.string == box.text, field.editor.lineGrid == linePaper.grid(for: box) {
-            let editor = field.editor
-            if hanging { ensureHanging(editor, for: box) }
-            if hanging || (field.hanging?.height == box.height && field.hanging?.matches(box, width: CGFloat(box.width) / scale) == true) {
-                return neededHeight(editor, width: box.width / scale) * scale
-            }
-        }
-        return Double(TextObjectLayout(box, paper: linePaper, hanging: hanging ? .always : .ifFits).usedHeight)
-    }
     /// The shared layout of `box` on this page, ruled like its text view
     /// (`TextObjectLayout(box, paper:)` with the configured page's lines).
     func layout(_ box: TextBox) -> TextObjectLayout { TextObjectLayout(box, paper: linePaper) }
@@ -595,9 +608,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     /// text stays stored and is marked as overflow); with `autoWidth` the width
     /// follows the longest line up to the page edge, then the text wraps.
     /// `keepOnPage`: shift a field that would no longer fit completely onto the page.
-    /// `hanging`: an edit of the field (typing, formats, width), measured with
-    /// its hanging indents; otherwise the height as the field is shown.
-    func fitted(_ original: TextBox, keepOnPage: Bool = false, hanging: Bool = false) -> TextBox {
+    /// The height is the one decision of every field height (grow, the
+    /// selection frame, snapping, moving): measured with hanging indents, kept
+    /// if that fits the page; otherwise measured without them, clamped and
+    /// overflowing as before. The stored height then decides the layout
+    /// (`TextIndentLayout.hangs`), so it always comes from the shown layout.
+    func fitted(_ original: TextBox, keepOnPage: Bool = false) -> TextBox {
         guard original.flowID == nil else { return original }
         var box = original
         let limits = PageRect(canonicalBounds)
@@ -617,8 +633,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         // measuring, so the height has no gap above the first line.
         box = snappedToLines(box)
         let line = ceil(box.style.fontSize * TextStylePreset.lineHeightFactor * scale)
-        let needed = max(line, measuredHeight(box, hanging: hanging))
-        box.height = max(1, min(needed, box.maximumHeight(in: limits, minimum: min(needed, line))))
+        let probe = box
+        box.height = TextIndentLayout.fittedHeight(hung: textHeight(probe, hanging: true), plain: { self.textHeight(probe, hanging: false) },
+                                                   line: line, room: { probe.maximumHeight(in: limits, minimum: $0) }).height
         if keepOnPage, !box.fits(in: limits), let shifted = box.shifted(into: limits) { box = shifted }
         // Again after a shift onto the page (on creating, moving, a new size,
         // typing into the first line); idempotent, the height stays.
@@ -744,7 +761,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         boxes.append(box)
         if focus { selectedID = box.id }
         synchronize() // creates the native view the height is measured with
-        if let index = boxes.firstIndex(where: { $0.id == box.id }) { boxes[index] = fitted(boxes[index], keepOnPage: true, hanging: true) }
+        if let index = boxes.firstIndex(where: { $0.id == box.id }) { boxes[index] = fitted(boxes[index], keepOnPage: true) }
         if tracing { inputLog.info("[noty.text-input] Text field inserted count=\(self.boxes.count) x=\(Double(box.x)) y=\(Double(box.y))") }
         synchronize(); publish()
         if focus, let editor = fields[box.id]?.editor {
@@ -1092,7 +1109,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                     let width = max(minimum, start.box.width - along), moved = start.box.width - width
                     box.width = width; box.x += moved * cos(radians); box.y += moved * sin(radians)
                 }
-                box = fitted(box, hanging: true)
+                box = fitted(box)
                 guard box.fits(in: limits) else { return } // keep the last frame that fits
             }
             // Live feedback stays local; the model gets one change at the end
@@ -1114,10 +1131,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         guard let field = fields[box.id] else { return }
         // A field aligned to the lines keeps standing on them while it moves.
         field.editor.setLineGrid(linePaper.grid(for: box))
-        decideHanging(field.editor, for: box) // a new width moves a clamped edge
+        decideHanging(field, for: box) // the edges of the new width
         position(field, for: box); updateRaster(field, for: box)
-        let pointScale = coordinateScale(for: box)
-        let overflowing = box.overflows(textHeight: overflowHeight(box, editor: field.editor, width: box.width / pointScale) * pointScale)
+        let overflowing = box.overflows(textHeight: overflowHeight(box, editor: field.editor, scale: coordinateScale(for: box)))
         field.configure(editing: active && selectedID == box.id, overflowing: overflowing)
     }
 

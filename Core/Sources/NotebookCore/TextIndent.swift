@@ -177,6 +177,21 @@ public enum TextIndentLayout {
     public static func hangs(_ box: TextBox, heightWithHanging: Double) -> Bool {
         box.flowID == nil && !box.overflows(textHeight: heightWithHanging)
     }
+
+    /// The height a free field stores (`fitted` in the editor; every height
+    /// comes from here): `hung`, the text height with hanging indents, if it
+    /// fits the room up to the page edge (`room(minimum)`, as
+    /// `TextBox.maximumHeight`); otherwise the height without (`plain`),
+    /// clamped as before. `line`: at least one line. `hangs(_:heightWithHanging:)`
+    /// on the stored height then gives the same answer as `hangs` here.
+    public static func fittedHeight(hung: Double, plain: () -> Double, line: Double,
+                                    room: (Double) -> Double) -> (height: Double, hangs: Bool) {
+        let withHanging = max(line, hung)
+        let space = room(min(withHanging, line))
+        if withHanging <= space + TextBox.overflowTolerance { return (max(1, min(withHanging, space)), true) }
+        let needed = max(line, plain())
+        return (max(1, min(needed, room(min(needed, line)))), false)
+    }
 }
 
 /// Tab, ⇧Tab, the indent buttons, Return and ⌫ (docs/TEXT-FIELDS.md). New
@@ -221,9 +236,9 @@ public enum TextIndentEditing {
     /// - Tab with the caret (or the selection's start) where it indents
     ///   (`TextParagraphPrefix.tabIndents`), or `wholeParagraphs` (the indent
     ///   button): a tab at the paragraph's start. Over several paragraphs: every
-    ///   one that is not empty. An older indent becomes tabs first (rounded to
-    ///   the tab grid), so the paragraph moves exactly one stop and its level is
-    ///   its tabs.
+    ///   one that is not empty. An older indent becomes tabs first (one per
+    ///   20 pt), so the level goes up by exactly one and is the tabs from then
+    ///   on (the paragraph may move further than one stop).
     /// - ⇧Tab and the outdent button: every touched paragraph loses a leading
     ///   tab, else up to four leading spaces, else 20 pt of its older indent.
     /// - `canChangeIndent` false (a buffer without paragraph formats, a flow
@@ -272,15 +287,15 @@ public enum TextIndentEditing {
                 if starts.count > 1 {
                     guard start < source.length, !TextLines.isBreak(source.character(at: start)) else { continue }
                 }
-                var count = 1, converted = false
+                var count = 1
                 if canChangeIndent, indent > 0 {
-                    // The older indent as tabs on the field's grid, then one more.
-                    count += Int((indent / TextTabs.interval(box)).rounded())
+                    // The older indent becomes its levels as tabs (20 pt each), then one more:
+                    // the level goes up by exactly one, whatever the font size.
+                    count += TextListEditing.level(forIndent: indent)
                     indents.append(.init(paragraph: paragraph, indent: 0))
-                    newLevel = prefix.tabs + count; converted = true
-                } else { newLevel += 1 }
+                }
+                newLevel += 1
                 edits.append(.init(range: NSRange(location: start, length: 0), replacement: String(repeating: "\t", count: count)))
-                if converted, newLevel == level, let marker = marker(prefix, in: source, level: newLevel) { edits.append(marker) }
             }
             if newLevel != level, let marker = marker(prefix, in: source, level: newLevel) { edits.append(marker) }
         }

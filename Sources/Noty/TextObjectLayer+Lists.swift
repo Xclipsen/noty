@@ -104,10 +104,25 @@ extension TextObjectLayer {
     func indentTab(_ editor: PageTextView, outdent: Bool, wholeParagraphs: Bool = false) -> Bool {
         guard active, editor.markedTextRange == nil, fields[editor.objectID]?.editor === editor,
               let index = boxes.firstIndex(where: { $0.id == editor.objectID }) else { return false }
-        let rules = indentRules(boxes[index])
-        guard let plan = TextIndentEditing.tab(boxes[index], selection: editor.selectedRange, outdent: outdent, wholeParagraphs: wholeParagraphs,
-                                               canChangeIndent: rules.canChangeIndent, continuation: rules.continuation) else { return false }
+        if boxes[index].flowID != nil { return flowIndentTab(editor, outdent: outdent, wholeParagraphs: wholeParagraphs) }
+        guard let plan = TextIndentEditing.tab(boxes[index], selection: editor.selectedRange, outdent: outdent,
+                                               wholeParagraphs: wholeParagraphs) else { return false }
         applyIndentPlan(plan, at: index, editor: editor)
+        return true
+    }
+    /// Flow segments: the rule on the whole flow, so a paragraph that runs
+    /// over pages (its real start on the page before) changes as a whole; its
+    /// older indent through `restyle`, as the indent buttons did before.
+    private func flowIndentTab(_ editor: PageTextView, outdent: Bool, wholeParagraphs: Bool) -> Bool {
+        guard let flow = flowActions, let content = flow.content(),
+              let start = flow.offset(editor.objectID, editor.selectedRange.location) else { return false }
+        let selection = NSRange(location: start, length: editor.selectedRange.length)
+        guard NSMaxRange(selection) <= (content.text as NSString).length,
+              let plan = TextIndentEditing.tab(content, selection: selection, outdent: outdent, wholeParagraphs: wholeParagraphs) else { return false }
+        editor.placement = nil
+        for change in plan.indents where change.paragraph.length > 0 { flow.restyle(change.paragraph) { $0.indent = change.indent } }
+        // One step for the text; the model renumbers the lists over the pages.
+        if !plan.edits.isEmpty { flow.edit(plan.edits, TextListEditing.selection(selection, after: plan.edits).location) }
         return true
     }
     /// Paragraph indents, then tabs and marks, then the renumbering

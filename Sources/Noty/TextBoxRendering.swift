@@ -351,7 +351,8 @@ extension HighlightColor {
 
 extension TextBox {
     /// The stored text and formats, without hanging indents: the text
-    /// document's buffer (flows hang nowhere, see `attributedText(width:)`).
+    /// document's buffer, the editor's start and every layout without them
+    /// (flows hang nowhere, see `hangingText(width:)`).
     @MainActor var attributedText: NSAttributedString {
         let value = NSMutableAttributedString(string: text, attributes: style.attributes)
         for run in runs ?? [] where run.location >= 0 && run.length > 0 && run.location <= value.length && run.length <= value.length-run.location {

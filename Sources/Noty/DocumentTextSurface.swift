@@ -356,7 +356,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         // Tab and Return by the rules of the text fields (`TextIndentEditing`).
         if text == "\t", indent(outdent: false) { return }
         if text == "\n", let content = flowContent,
-           let action = TextIndentEditing.newline(content, range: selection, canChangeIndent: false) {
+           let action = TextIndentEditing.newline(content, range: selection) {
             switch action {
             case .edit(let edit): type(edit.replacement, over: edit.range, before: selection, separate: true)
             case .plan(let plan): if !applyIndentEdits(plan) { type(text, over: selection, before: selection) }
@@ -404,12 +404,15 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
             type("", over: pair, before: selection)
             return
         }
-        // Right behind a list mark: the mark goes, the leading tabs stay. The
-        // older paragraph indent is not reduced here (the buffer has no paragraph format path).
+        // Right behind a list mark: the mark goes, the leading tabs stay; at a
+        // paragraph start an older indent goes down first (`restyle`).
         // The whole flow only when the paragraph has a list mark right before the caret.
-        if marked == nil, TextParagraphPrefix(in: store.text, at: selection.location).isList, let content = flowContent,
-           case .edit(let edit)? = TextIndentEditing.backspace(content, caret: selection.location, canChangeIndent: false) {
-            type("", over: edit.range, before: selection, separate: true)
+        if marked == nil, mayChangeAtBackspace, let content = flowContent,
+           let action = TextIndentEditing.backspace(content, caret: selection.location) {
+            switch action {
+            case .edit(let edit): type("", over: edit.range, before: selection, separate: true)
+            case .plan(let plan): _ = applyIndentEdits(plan)
+            }
             return
         }
         let start = (store.string as NSString).rangeOfComposedCharacterSequence(at: selection.location - 1).location
@@ -471,18 +474,32 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         guard let content = host?.flow.content(), content.text == store.string else { return nil }
         return content
     }
+    /// ⌫ needs the whole flow only behind a list mark or at a paragraph start.
+    private var mayChangeAtBackspace: Bool {
+        let prefix = TextParagraphPrefix(in: store.text, at: selection.location)
+        return selection.location == prefix.start || (prefix.isList && selection.location == prefix.markEnd)
+    }
     /// Tab or ⇧Tab (`TextIndentEditing.tab`). False: Tab types an ordinary tab.
-    /// Only text changes here: leading tabs and list marks; the older
-    /// paragraph indent stays and counts as a fixed level (`canChangeIndent`
-    /// false), so the plan's levels match what the buffer shows.
     func indent(outdent: Bool) -> Bool {
         guard isActive, marked == nil, let content = flowContent,
-              let plan = TextIndentEditing.tab(content, selection: selection, outdent: outdent, canChangeIndent: false) else { return false }
+              let plan = TextIndentEditing.tab(content, selection: selection, outdent: outdent) else { return false }
         return applyIndentEdits(plan) || outdent
     }
-    /// The text edits of `plan` as one step; the model renumbers the lists.
+    /// `plan` on the flow: older paragraph indents through the model's
+    /// `restyle` over the whole paragraph (as the formats do; text unchanged,
+    /// so the edits keep their places), then the text edits as one step; the
+    /// model renumbers the lists.
     private func applyIndentEdits(_ plan: TextIndentEditing.Plan) -> Bool {
-        guard !plan.edits.isEmpty else { return false }
+        guard !plan.indents.isEmpty || !plan.edits.isEmpty else { return false }
+        for change in plan.indents {
+            if change.paragraph.length > 0 { host?.flow.restyle(change.paragraph) { $0.indent = change.indent } }
+            if TextLines.start(store.text, selection.location) == change.paragraph.location,
+               let typing = (typingAttributes[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle {
+                typing.firstLineHeadIndent = change.indent; typing.headIndent = change.indent
+                typingAttributes[.paragraphStyle] = typing
+            }
+        }
+        guard !plan.edits.isEmpty else { refreshOverlay(); return true }
         let before = selection, after = TextListEditing.selection(selection, after: plan.edits)
         store.apply(plan.edits, fallback: typingAttributes)
         selection = after

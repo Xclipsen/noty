@@ -263,6 +263,27 @@ final class TextIndentTests: XCTestCase {
         XCTAssertFalse(TextIndentLayout.hangs(flow, heightWithHanging: 10), "flow segments never hang")
     }
 
+    func testTheStoredHeightComesFromTheShownLayout() {
+        let page = PageRect(x: 0, y: 0, width: 595, height: 842)
+        for (y, hung, plain) in [(100.0, 80.0, 60.0), (700, 130, 100), (700, 150, 160), (800, 60, 40), (810, 60, 20), (0, 10, 10)] {
+            var box = TextBox(x: 40, y: y, width: 200, height: 20, text: "\t• lang")
+            let result = TextIndentLayout.fittedHeight(hung: hung, plain: { plain }, line: 17,
+                                                       room: { box.maximumHeight(in: page, minimum: $0) })
+            box.height = result.height
+            XCTAssertEqual(TextIndentLayout.hangs(box, heightWithHanging: hung), result.hangs, "y \(y): grow and the layout agree")
+            if result.hangs { XCTAssertEqual(result.height, max(17, hung), accuracy: 1) }
+            else { XCTAssertEqual(result.height, min(max(17, plain), 842 - y), accuracy: 0.01, "without hanging, clamped as before") }
+        }
+        // At the page edge (142 pt left): 142.5 pt with hanging fit within the tolerance, 160 do not, then 100 without.
+        var edge = TextBox(x: 40, y: 700, width: 200, height: 20, text: "x")
+        let fits = TextIndentLayout.fittedHeight(hung: 142.5, plain: { 100 }, line: 17, room: { edge.maximumHeight(in: page, minimum: $0) })
+        XCTAssertEqual(fits.height, 142, accuracy: 0.01); XCTAssertTrue(fits.hangs)
+        let over = TextIndentLayout.fittedHeight(hung: 160, plain: { 100 }, line: 17, room: { edge.maximumHeight(in: page, minimum: $0) })
+        XCTAssertEqual(over.height, 100); XCTAssertFalse(over.hangs)
+        edge.height = over.height
+        XCTAssertFalse(TextIndentLayout.hangs(edge, heightWithHanging: 160))
+    }
+
     // MARK: Arrows
 
     func testArrowsAreReplacedWithTheirSpaceAndComeBackWithBackspace() throws {
@@ -302,15 +323,27 @@ final class TextIndentTests: XCTestCase {
         XCTAssertEqual(tab("-> a", 3)?.text, "\t-> a", "behind an arrow and one space it indents")
         XCTAssertEqual(tab("  • a", 1)?.text, "\t  ◦ a", "inside the leading white space")
     }
-    func testTabTurnsAnOlderIndentIntoTabs() throws {
-        // indent 60 at 14 pt (grid 35): two tabs (70 pt), then one more; the level is the tabs
-        // (3), the mark becomes that level's.
-        var source = box("◦ a", indents: [60]); source.runs = source.runs?.map { var run = $0; run.style.fontSize = 14; return run }
-        source.style.fontSize = 14
-        let plan = try XCTUnwrap(TextIndentEditing.tab(source, selection: NSRange(location: 2, length: 0), outdent: false))
-        let result = source.applying(plan)
-        XCTAssertEqual(result.text, "\t\t\t• a"); XCTAssertEqual(result.style(at: 3).indent, 0)
+    func testTabTurnsAnOlderIndentIntoTabsAndKeepsTheLevel() throws {
+        // One tab per 20 pt of the older indent, then one more: the level goes up by one,
+        // the mark follows it, for every font size (the tab grid does not count).
+        for size in [12.0, 14, 17, 30] {
+            for (text, indent, expected) in [("◦ a", 20.0, "\t\t▪ a"), ("• a", 60, "\t\t\t\t◦ a"), ("▪ a", 100, "\t\t\t\t\t\t• a"),
+                                              ("3. a", 40, "\t\t\t1. a"), ("\t◦ a", 20, "\t\t\t• a"), ("Text", 40, "\t\t\tText")] {
+                var source = box(text, indents: [indent]); source.style.fontSize = size
+                source.runs = source.runs?.map { var run = $0; run.style.fontSize = size; return run }
+                let caret = (text as NSString).length - 1
+                let plan = try XCTUnwrap(TextIndentEditing.tab(source, selection: NSRange(location: caret, length: 0), outdent: false, wholeParagraphs: true))
+                let result = source.applying(plan)
+                XCTAssertEqual(result.text, expected, "\(text) \(indent) pt, \(size) pt")
+                XCTAssertEqual(result.style(at: 0).indent, 0)
+                let old = TextParagraphPrefix(in: source.text as NSString, at: 0).level(indent: indent)
+                XCTAssertEqual(TextParagraphPrefix(in: result.text as NSString, at: 0).level(indent: 0), old + 1)
+            }
+        }
+        // ⇧Tab on an older indent: 20 pt less, as before.
+        XCTAssertEqual(tab("▪ a", 2, outdent: true, indents: [60])?.style(at: 0).indent, 40)
         // Without a paragraph format path the indent stays and counts as a fixed level.
+        let source = box("◦ a", indents: [60])
         let kept = try XCTUnwrap(TextIndentEditing.tab(source, selection: NSRange(location: 2, length: 0), outdent: false, canChangeIndent: false))
         XCTAssertTrue(kept.indents.isEmpty); XCTAssertEqual(source.applying(kept).text, "\t◦ a", "level 3 + 1 tab = 4 (◦)")
     }
