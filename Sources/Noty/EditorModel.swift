@@ -552,7 +552,12 @@ final class EditorModel: ObservableObject {
     /// gesture's coalescing key, so eraser ink and shapes undo together.
     func updateContent(_ content: PageContent, basedOn previous: PageContent, pageID: UUID, inkGesture: Bool = false) -> Bool {
         HangProbe.hit("Model.updateContent")
-        guard writable, !mutationsPaused, !busy, let index = notebook.pages.firstIndex(where: { $0.id == pageID }),
+        // A running backup or page operation is no change elsewhere (Audit 7f8bfe7, Radierer Fund 4).
+        if writable, mutationsPaused || busy {
+            error = "Gerade läuft ein anderer Vorgang (etwa eine Sicherung). Die Änderung wurde nicht übernommen; bitte gleich noch einmal versuchen."
+            return false
+        }
+        guard writable, let index = notebook.pages.firstIndex(where: { $0.id == pageID }),
               PageContent(page: notebook.pages[index]) == previous else {
             error = "Die Seite wurde inzwischen in einer anderen Ansicht geändert. Bitte die Auswahl erneut setzen."
             return false

@@ -12,11 +12,14 @@ public struct LassoRegion: Sendable {
         intersectsPolyline([.init(x: rect.x, y: rect.y), .init(x: rect.x + rect.width, y: rect.y),
             .init(x: rect.x + rect.width, y: rect.y + rect.height), .init(x: rect.x, y: rect.y + rect.height)], closed: true)
     }
+    /// Lasso (Audit 7f8bfe7, Leistung): edges are only compared with the path
+    /// near them (bounding boxes), and since a path that neither crosses nor
+    /// touches the lasso line lies wholly inside or wholly outside it, one
+    /// point decides containment – no longer every path point against every
+    /// lasso edge. Same results as before for every input.
     public func intersectsPolyline(_ path: [PagePoint], radius: Double = 0, closed: Bool = false) -> Bool {
         guard points.count >= 3, !path.isEmpty else { return false }
-        if path.contains(where: contains) { return true }
-        if closed, points.contains(where: LassoRegion(points: path).contains) { return true }
-        let radius = max(0, radius)
+        let radius = max(0, radius), tolerance = radius + 0.0001
         func distance(_ p: PagePoint, _ a: PagePoint, _ b: PagePoint) -> Double {
             let dx = b.x - a.x, dy = b.y - a.y
             let t = min(1, max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / max(0.00000001, dx * dx + dy * dy)))
@@ -25,29 +28,45 @@ public struct LassoRegion: Sendable {
         func side(_ a: PagePoint, _ b: PagePoint, _ p: PagePoint) -> Double {
             (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
         }
+        let xs = path.map(\.x), ys = path.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else { return false }
+        let count = closed ? path.count : path.count - 1
         for edge in points.indices {
             let a = points[edge], b = points[(edge + 1) % points.count]
-            for p in path where distance(p, a, b) <= radius + 0.0001 { return true }
-            let count = closed ? path.count : path.count - 1
-            for index in 0..<count {
+            // Edge far from the whole path: nothing of it can touch or cross.
+            guard max(a.x, b.x) >= minX - tolerance, min(a.x, b.x) <= maxX + tolerance,
+                  max(a.y, b.y) >= minY - tolerance, min(a.y, b.y) <= maxY + tolerance else { continue }
+            for p in path where distance(p, a, b) <= tolerance { return true }
+            for index in 0..<max(0, count) {
                 let c = path[index], d = path[(index + 1) % path.count]
+                guard max(c.x, d.x) >= min(a.x, b.x) - tolerance, min(c.x, d.x) <= max(a.x, b.x) + tolerance,
+                      max(c.y, d.y) >= min(a.y, b.y) - tolerance, min(c.y, d.y) <= max(a.y, b.y) + tolerance else { continue }
                 if side(a, b, c) * side(a, b, d) < 0, side(c, d, a) * side(c, d, b) < 0 { return true }
-                if distance(a, c, d) <= radius + 0.0001 || distance(b, c, d) <= radius + 0.0001 { return true }
+                if distance(a, c, d) <= tolerance || distance(b, c, d) <= tolerance { return true }
             }
         }
+        // No contact: the path is wholly inside or outside, the lasso wholly
+        // inside or outside a closed path.
+        if contains(path[0]) { return true }
+        if closed, path.count >= 3, LassoRegion(points: path).contains(points[0]) { return true }
         return false
     }
+    /// Nonzero winding (Audit 7f8bfe7, Fund 6): a lasso drawn around content
+    /// twice, or overshooting its start, still encloses what it circles; with
+    /// the even/odd rule the doubly wound area fell out. Points on the line count.
     public func contains(_ point: PagePoint) -> Bool {
         guard points.count >= 3, point.x.isFinite, point.y.isFinite else { return false }
-        var inside = false
+        var winding = 0
         for index in points.indices {
             let a = points[index], b = points[(index + 1) % points.count]
             let cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x)
             if abs(cross) < 0.0001, point.x >= min(a.x, b.x) - 0.0001, point.x <= max(a.x, b.x) + 0.0001,
                point.y >= min(a.y, b.y) - 0.0001, point.y <= max(a.y, b.y) + 0.0001 { return true }
-            if (a.y > point.y) != (b.y > point.y), point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x { inside.toggle() }
+            if a.y <= point.y {
+                if b.y > point.y, cross > 0 { winding += 1 }
+            } else if b.y <= point.y, cross < 0 { winding -= 1 }
         }
-        return inside
+        return winding != 0
     }
     public func containsPolyline(_ path: [PagePoint], closed: Bool = false) -> Bool {
         guard !path.isEmpty, path.allSatisfy(contains) else { return false }

@@ -49,6 +49,23 @@ Gerätetest (gebündelt, noty dev, Textdokument und freies Feld): (1) Rechner: `
 
 Gerätetest (gebündelt, noty dev): (1) Screenshot einfügen, links zuschneiden, Seite als PDF exportieren; am PC `pdfimages -list` und `pdfimages -png` (nur der Ausschnitt), `pdftoppm` (Bild an gleicher Stelle, auch gedreht). (2) Pfeil 5 pt vom linken Rand beginnen, Linie/Rechteck mit dem Stift über den Rand ziehen: Form bleibt wie in der Vorschau. (3) Rote Form und gemischte Lasso-Auswahl mit Marker → Stil → nur Breite: Farben bleiben; Stil öffnen/schließen, neue Form hat Leistenbreite. (4) Bild und Form mit dem Finger in den Seitenspalt und neben die Seite ziehen und loslassen: bleibt geklemmt am Rand; über die Nachbarseite: Übergabe wie bisher; Blättermodus. (5) Erkanntes Sechseck über Ecken skalieren, Ecken neben den Formpunkten bedienbar; 1-pt-Form auf 20 % verkleinern. (6) 51. Bild per Duplizieren: Meldung nennt 50 Bilder. (7) Laser „bis Absetzen“ lange kreisen: Spuranfang bleibt.
 
+## Radierer und Lasso: Prüfbefunde behoben (05.11.2026, Branch `feat/fix-eraser-lasso`)
+
+**Implementiert, Core-Tests (`EraserLassoAuditTests`), `check_page_workflow.sh` und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Grundlage: die Prüfberichte zu Radierer und Lasso (Stand 7f8bfe7). Kein Heftschema geändert.
+
+- **Durchkritzeln vs. Schraffur** (`ScribbleErase.erasure`): Liegt ein Kritzel überwiegend (≥ 60 %) in einer geschlossenen Kontur (Rechteck, Ellipse, Vieleck oder geschlossener Stiftstrich) und deckt ≥ 25 % ihrer Fläche, gilt er als Schraffur: nichts wird gelöscht. Sonst gehen nur Striche, die der Kritzel tatsächlich berührt, und Formen, deren Umriss mindestens zwei getrennte Kritzeldurchgänge berühren. Kritzeln über ein Wort in einer großen Umrandung löscht weiter.
+- **Präziser Radierer:** schneidet jede Form ohne sichtbare Füllung (`hasVisibleFill`); neue Linien/Pfeile speichern keine Füllung mehr.
+- **Ganzstrichradierer** beendet eine Fingerauswahl wie Schreiben; nach jedem Radieren erhält die Objektebene den neuen Stand (keine Geisterauswahl). Unlesbare Zeichnung: Radieren bricht mit Meldung ab statt mit leerer Zeichnung.
+- **Meldung** bei laufender Sicherung/Seitenoperation: „Gerade läuft ein anderer Vorgang …“ statt „in einer anderen Ansicht geändert“.
+- **Lasso-Stil:** Der Breitenregler ändert nur die Breite; eine Farbe beendet die automatische Textfarbe (`TextBox.recolored`), statt die ganze Änderung scheitern zu lassen.
+- **Kopieren** schreibt immer in die Systemzwischenablage: PNG der Auswahl plus Feldtext.
+- **Greifen** einer Gruppe nur innerhalb ihrer angezeigten Hülle (+8 Bildschirmpunkte); einzelne Objekte weiter über ihren Rahmen.
+- **Lasso:** gedrehte Bilder nach ihrem gedrehten Rechteck; Nicht-Null-Windung (doppelt umkreist / überschossen wählt aus); `intersectsPolyline` vergleicht nur Kanten nahe am Pfad (Kammlasso mit 600 Punkten über 1500 Striche im Debug-Build 5,3 s → 0,1 s, gleiche Ergebnisse per Zufallsvergleich); Strichgrenzen der Auswahl zwischengespeichert.
+- **Duplizieren/Einfügen:** Versatz weicht am Rand nach links/oben aus (`PasteOffset`); wiederholtes Einfügen auf derselben Seite staffelt.
+- **Fingerauswahl auf andere Seite gezogen:** bleibt dort Fingerauswahl mit Rahmen und Leiste.
+- **Offen:** Pfeiltasten-Schübe einzeln rückgängig; Formen im Bildwerkzeug nur mit Lasso-Filter „Formen“; Verdachtsfälle A–H (Radierer) und die Lasso-Verdachtsliste.
+- **Am iPad zu prüfen:** Schraffur in Rechteck mit Beschriftung (bleibt), Durchkritzeln von Wort/Form (löscht, ein Rückgängig), Präzisionsradierer über Linie mit „Füllung“ an, Fingerauswahl + Ganzstrichradierer, Stilregler über Marker/Textfeld, Kopieren → andere App, Lasso-Ecke einer Gruppe, gedrehtes Bild, Doppelkreis-Lasso, Duplizieren am Rand, Fingerziehen auf Nachbarseite.
+
 ## Lineal überarbeitet (05.11.2026, Branch `feat/lineal`)
 
 **Implementiert, Core-Tests und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Aus einer Prüfung des eigenen Lineals (Build 88/89). Kein Heftschema geändert; Lage des Lineals und gelerntes Strichbild liegen in `UserDefaults`.

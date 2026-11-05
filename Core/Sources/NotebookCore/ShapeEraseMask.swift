@@ -25,7 +25,10 @@ public struct ShapeEraseMask: Equatable, Sendable {
     }
 
     /// Whether the eraser may cut this shape into ink instead of removing it whole.
-    public static func canErasePartially(_ shape: ShapeObject) -> Bool { shape.fill == nil && shape.pattern == .solid }
+    /// Only a drawn fill counts: a line/arrow saved with a fill (the tool's
+    /// switch applied to every kind) or a fill of strength 0 shows none, so
+    /// such shapes are cut like unfilled ones (DESIGN: lines and arrows are cut).
+    public static func canErasePartially(_ shape: ShapeObject) -> Bool { !shape.hasVisibleFill && shape.pattern == .solid }
 
     /// Any sample erased so far.
     public var isTouched: Bool { tracks.contains { $0.erased.contains(true) } }

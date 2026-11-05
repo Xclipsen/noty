@@ -141,4 +141,9 @@ struct ShapeToolOptions: Equatable {
     func fill(stroke: InkColor) -> InkColor? {
         filled ? ShapeFill.color(fillColor ?? stroke, opacity: fillOpacity) : nil
     }
+    /// Fill of a new shape of `kind`: lines and arrows never store one
+    /// (it would be invisible, but made them count as filled).
+    func fill(stroke: InkColor, kind: ShapeKind) -> InkColor? {
+        kind == .line || kind == .arrow ? nil : fill(stroke: stroke)
+    }
 }
