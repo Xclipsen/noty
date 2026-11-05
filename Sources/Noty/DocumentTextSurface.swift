@@ -355,7 +355,8 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         if let marked { replaceMarked(marked, with: text); return }
         // Tab and Return by the rules of the text fields (`TextIndentEditing`).
         if text == "\t", indent(outdent: false) { return }
-        if text == "\n", let content = flowContent, let action = TextIndentEditing.newline(content, range: selection) {
+        if text == "\n", let content = flowContent,
+           let action = TextIndentEditing.newline(content, range: selection, canChangeIndent: false) {
             switch action {
             case .edit(let edit): type(edit.replacement, over: edit.range, before: selection, separate: true)
             case .plan(let plan): if !applyIndentEdits(plan) { type(text, over: selection, before: selection) }
@@ -405,8 +406,9 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         }
         // Right behind a list mark: the mark goes, the leading tabs stay. The
         // older paragraph indent is not reduced here (the buffer has no paragraph format path).
-        if marked == nil, let content = flowContent,
-           case .edit(let edit)? = TextIndentEditing.backspace(content, caret: selection.location) {
+        // The whole flow only when the paragraph has a list mark right before the caret.
+        if marked == nil, TextParagraphPrefix(in: store.text, at: selection.location).isList, let content = flowContent,
+           case .edit(let edit)? = TextIndentEditing.backspace(content, caret: selection.location, canChangeIndent: false) {
             type("", over: edit.range, before: selection, separate: true)
             return
         }
@@ -471,10 +473,11 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     }
     /// Tab or ⇧Tab (`TextIndentEditing.tab`). False: Tab types an ordinary tab.
     /// Only text changes here: leading tabs and list marks; the older
-    /// paragraph indent stays (no paragraph format path in this buffer).
+    /// paragraph indent stays and counts as a fixed level (`canChangeIndent`
+    /// false), so the plan's levels match what the buffer shows.
     func indent(outdent: Bool) -> Bool {
         guard isActive, marked == nil, let content = flowContent,
-              let plan = TextIndentEditing.tab(content, selection: selection, outdent: outdent) else { return false }
+              let plan = TextIndentEditing.tab(content, selection: selection, outdent: outdent, canChangeIndent: false) else { return false }
         return applyIndentEdits(plan) || outdent
     }
     /// The text edits of `plan` as one step; the model renumbers the lists.
@@ -649,13 +652,13 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     }
     override var undoManager: UndoManager? { host?.undoManager() }
     override var keyCommands: [UIKeyCommand]? {
-        (super.keyCommands ?? []) + Self.textCommands + (marked == nil ? Self.arrowCommands : [])
+        // A composition (marked text) keeps Tab: it must not be replaced.
+        (super.keyCommands ?? []) + Self.textCommands + (marked == nil ? Self.arrowCommands + Self.tabCommands : [])
     }
     private static let textCommands: [UIKeyCommand] = {
         let plain: [(String, UIKeyModifierFlags, Selector)] = [
             ("z", .command, #selector(undoKey)), ("z", [.command, .shift], #selector(redoKey)),
-            (UIKeyCommand.inputEscape, [], #selector(escapeKey)), ("a", .command, #selector(selectAllKey)),
-            ("\t", [], #selector(tabKey(_:))), ("\t", .shift, #selector(tabKey(_:)))]
+            (UIKeyCommand.inputEscape, [], #selector(escapeKey)), ("a", .command, #selector(selectAllKey))]
         let formats: [(String, String, UIKeyModifierFlags, String)] = [
             ("Fett", "b", .command, "bold"), ("Kursiv", "i", .command, "italic"), ("Unterstrichen", "u", .command, "underline"),
             ("Titel", "1", .command, "title"), ("Überschrift", "2", .command, "heading"), ("Unterüberschrift", "3", .command, "subheading"),
@@ -671,6 +674,12 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
             return command
         }
     }()
+    /// Tab and ⇧Tab by the rules of the text fields (`tabKey`); only without marked text.
+    private static let tabCommands: [UIKeyCommand] = [UIKeyModifierFlags(), .shift].map { flags in
+        let command = UIKeyCommand(input: "\t", modifierFlags: flags, action: #selector(tabKey(_:)))
+        command.wantsPriorityOverSystemBehavior = true
+        return command
+    }
     /// Key commands repeat while held and win over UIKit's own arrow handling,
     /// which would stop at nothing here but knows no goal column over pages.
     private static let arrowCommands: [UIKeyCommand] = {
@@ -690,8 +699,8 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     @objc private func tabKey(_ command: UIKeyCommand) {
         let outdent = command.modifierFlags.contains(.shift)
         if KeyboardRouter.shared.handle(token: outdent ? "<S-Tab>" : "<Tab>", text: self) { return }
-        guard isActive, KeyboardRouter.shared.allowsTyping else { return }
-        if hasSeveralCarets || marked != nil { if !outdent { insertText("\t") }; return }
+        guard isActive, KeyboardRouter.shared.allowsTyping, marked == nil else { return }
+        if hasSeveralCarets { if !outdent { insertText("\t") }; return }
         inputDelegate?.textWillChange(self)
         if !indent(outdent: outdent), !outdent { type("\t", over: selection, before: selection) }
         inputDelegate?.textDidChange(self)

@@ -85,11 +85,8 @@ enum PDFExporter {
             for image in page.images ?? [] { try ImageRendering.validate(image, assets: provider) }
             let layout = try PageLayout(page: page, source: sources[position])
             let bounds = PageRect(layout.canonicalInkBounds)
-            // A free field's height follows its text: only text that does not
-            // fit onto the page counts (`TextObjectLayout.shown`).
             if page.resolvedTextBoxes.contains(where: { box in
-                let (shown, layout) = TextObjectLayout.shown(box, on: page)
-                return shown.overflows(textHeight: Double(layout.contentHeight(shown))) || !shown.fits(in: bounds)
+                TextObjectLayout.overflows(box, on: page) || !box.fits(in: bounds)
             }) { overflow.append(index + 1) }
             layouts.append(layout)
             if position % 16 == 15 { await Task.yield(); try Task.checkCancellation() }
@@ -207,10 +204,10 @@ enum PDFExporter {
                 assets.ink?.draw(in: bounds)
             case .text:
                 for box in page.resolvedTextBoxes {
-                    let (shown, text) = TextObjectLayout.shown(box, on: page)
+                    let text = TextObjectLayout(box, on: page)
                     let origin = CGPoint(x: box.x + layout.contentOrigin.x, y: box.y + layout.contentOrigin.y)
                     // Feldstil below its own text (vector fill/frame; the text stays real, searchable text).
-                    TextFieldStyleRendering.draw(shown, at: origin, context: context)
+                    TextFieldStyleRendering.draw(box, at: origin, context: context)
                     text.draw(at: origin)
                     links += text.links(at: origin)
                 }

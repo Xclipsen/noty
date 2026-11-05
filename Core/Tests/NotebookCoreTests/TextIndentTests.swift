@@ -57,9 +57,15 @@ final class TextIndentTests: XCTestCase {
         XCTAssertEqual(prefix("☐ a").mark, .list(.checkbox))
         for arrow in ["-> a", "→ a", "=> a", "⇒ a", "->\ta"] { XCTAssertEqual(prefix(arrow).mark, .hanging, arrow) }
         XCTAssertEqual(prefix("•\ta").mark, .hanging, "a mark before a tab only hangs")
-        XCTAssertEqual(prefix("Bsp.:\t\tA aus").mark, .label); XCTAssertEqual(prefix("Bsp.:\t\tA aus").body, 7)
-        XCTAssertNil(prefix("Bsp.: A aus").mark, "a label needs a tab")
-        XCTAssertNil(prefix("Zusammenfassung:\tA").mark, "longer than 12 characters")
+        XCTAssertEqual(prefix("Bsp.:\t\tA aus").label, NSRange(location: 0, length: 5)); XCTAssertEqual(prefix("Bsp.:\t\tA aus").body, 7)
+        XCTAssertNil(prefix("Bsp.:\t\tA aus").mark); XCTAssertEqual(prefix("Bsp.:\t\tA aus").markEnd, 0)
+        XCTAssertNil(prefix("Bsp.: A aus").label, "a label needs a tab")
+        XCTAssertNil(prefix("Zusammenfassung:\tA").label, "longer than 12 characters")
+        // A label also behind a mark: the text hangs behind its tab.
+        let marked = prefix("• Bsp.:\tText")
+        XCTAssertEqual(marked.mark, .list(.bullet)); XCTAssertEqual(marked.markEnd, 2)
+        XCTAssertEqual(marked.label, NSRange(location: 2, length: 5)); XCTAssertEqual(marked.body, 8)
+        XCTAssertEqual(prefix("-> Bsp.:\tText").body, 9)
         XCTAssertNil(prefix("z. B. so").mark)
         XCTAssertNil(prefix("->x").mark)
         XCTAssertNil(prefix("x").mark); XCTAssertEqual(prefix("x").body, 0)
@@ -246,20 +252,15 @@ final class TextIndentTests: XCTestCase {
         }
     }
 
-    // MARK: Heights of older fields
+    // MARK: Older fields
 
-    func testAnOlderFieldGrowsOnThePageAndOverflowsOnlyBeyondIt() {
-        let page = PageRect(x: 0, y: 0, width: 595, height: 842)
-        let field = TextBox(x: 40, y: 700, width: 200, height: 40, text: "x")
-        XCTAssertEqual(field.shownHeight(textHeight: 60, within: page), 60, "more lines from hanging indents: the field grows")
-        XCTAssertFalse(field.shown(textHeight: 60, within: page).overflows(textHeight: 60))
-        XCTAssertEqual(field.shownHeight(textHeight: 30, within: page), 40, "never smaller than stored")
-        XCTAssertEqual(field.shownHeight(textHeight: 300, within: page), 142, accuracy: 0.01, "up to the page edge")
-        XCTAssertTrue(field.shown(textHeight: 300, within: page).overflows(textHeight: 300), "text beyond the page stays marked")
+    func testHangingOnlyWhereItFitsTheStoredHeight() {
+        let field = TextBox(x: 40, y: 700, width: 200, height: 40, text: "\t• lang")
+        XCTAssertTrue(TextIndentLayout.hangs(field, heightWithHanging: 40))
+        XCTAssertTrue(TextIndentLayout.hangs(field, heightWithHanging: 40.9), "the overflow tolerance")
+        XCTAssertFalse(TextIndentLayout.hangs(field, heightWithHanging: 60), "more lines: laid out as before, without")
         var flow = field; flow.flowID = UUID()
-        XCTAssertEqual(flow.shownHeight(textHeight: 60, within: page), 40, "a flow segment keeps its region")
-        let beside = TextBox(x: 700, y: 10, width: 100, height: 20, text: "x")
-        XCTAssertEqual(beside.shownHeight(textHeight: 60, within: page), 20, "a field beside the sheet stays as it is")
+        XCTAssertFalse(TextIndentLayout.hangs(flow, heightWithHanging: 10), "flow segments never hang")
     }
 
     // MARK: Arrows
@@ -289,6 +290,72 @@ final class TextIndentTests: XCTestCase {
         XCTAssertEqual(TextListEditing.selection(NSRange(location: 6, length: 0), after: [back]).location, 7)
         XCTAssertNil(TextArrowReplacement.restoring(replacement, in: written, caret: 5), "not elsewhere")
         XCTAssertNil(TextArrowReplacement.restoring(replacement, in: "Ort x ", caret: 6), "not after another change")
+    }
+
+    // MARK: Review fixes
+
+    func testASecondTabBehindAMarkAndATabIsATab() {
+        XCTAssertNil(tab("1.\tText", 3), "„1.\\t|Text“")
+        XCTAssertNil(tab("•\t", 2)); XCTAssertNil(tab("-\t", 2)); XCTAssertNil(tab("->\t", 3))
+        XCTAssertNil(tab("•  a", 3), "only behind exactly one space")
+        XCTAssertNil(tab("• Bsp.:\tText", 8), "behind a label's tab")
+        XCTAssertEqual(tab("-> a", 3)?.text, "\t-> a", "behind an arrow and one space it indents")
+        XCTAssertEqual(tab("  • a", 1)?.text, "\t  ◦ a", "inside the leading white space")
+    }
+    func testTabTurnsAnOlderIndentIntoTabs() throws {
+        // indent 60 at 14 pt (grid 35): two tabs (70 pt), then one more; the level is the tabs
+        // (3), the mark becomes that level's.
+        var source = box("◦ a", indents: [60]); source.runs = source.runs?.map { var run = $0; run.style.fontSize = 14; return run }
+        source.style.fontSize = 14
+        let plan = try XCTUnwrap(TextIndentEditing.tab(source, selection: NSRange(location: 2, length: 0), outdent: false))
+        let result = source.applying(plan)
+        XCTAssertEqual(result.text, "\t\t\t• a"); XCTAssertEqual(result.style(at: 3).indent, 0)
+        // Without a paragraph format path the indent stays and counts as a fixed level.
+        let kept = try XCTUnwrap(TextIndentEditing.tab(source, selection: NSRange(location: 2, length: 0), outdent: false, canChangeIndent: false))
+        XCTAssertTrue(kept.indents.isEmpty); XCTAssertEqual(source.applying(kept).text, "\t◦ a", "level 3 + 1 tab = 4 (◦)")
+    }
+    func testReturnReplacesASelectionFirst() throws {
+        func enter(_ text: String, _ range: NSRange, indents: [Double] = [], canChangeIndent: Bool = true) -> String? {
+            let source = box(text, indents: indents)
+            switch TextIndentEditing.newline(source, range: range, canChangeIndent: canChangeIndent) {
+            case .edit(let edit)?: return source.applying([edit]).text
+            case .plan(let plan)?: return source.applying(plan).text
+            case nil: return nil
+            }
+        }
+        XCTAssertEqual(enter("• Text", NSRange(location: 2, length: 4)), "", "the item without its selection is empty: it ends")
+        XCTAssertEqual(enter("\t◦ Text", NSRange(location: 3, length: 4)), "• ", "nested: one level out, the selection gone")
+        XCTAssertEqual(enter("• Text mehr", NSRange(location: 2, length: 5)), "• \n• mehr")
+        XCTAssertEqual(enter("\tab cd", NSRange(location: 2, length: 2)), "\ta\n\tcd")
+        XCTAssertNil(enter("• eins\n• zwei", NSRange(location: 4, length: 6)), "over two paragraphs: ordinary")
+        XCTAssertNil(enter("\t• Text", NSRange(location: 1, length: 3)), "starting in the prefix: ordinary")
+        // The older indent cannot change (text document): the mark goes instead of staying.
+        XCTAssertEqual(enter("◦ ", NSRange(location: 2, length: 0), indents: [20], canChangeIndent: false), "")
+        XCTAssertEqual(enter("\t▪ ", NSRange(location: 3, length: 0), indents: [20], canChangeIndent: false), "◦ ")
+    }
+    func testBufferWithoutParagraphFormatsKeepsTheOlderIndent() {
+        let source = box("◦ a", indents: [20])
+        XCTAssertNil(TextIndentEditing.tab(source, selection: NSRange(location: 2, length: 0), outdent: true, canChangeIndent: false))
+        XCTAssertNil(TextIndentEditing.backspace(box("a\nb", indents: [0, 20]), caret: 2, canChangeIndent: false))
+        if case .edit(let edit)? = TextIndentEditing.backspace(source, caret: 2, canChangeIndent: false) {
+            XCTAssertEqual(source.applying([edit]).text, "a")
+        } else { XCTFail("the mark goes") }
+    }
+    func testFlowContinuationIsNotItsParagraphsStart() {
+        let source = box("Rest des Absatzes\n• b")
+        XCTAssertNil(TextIndentEditing.tab(source, selection: NSRange(location: 0, length: 0), outdent: false, wholeParagraphs: true, continuation: true))
+        XCTAssertNil(TextIndentEditing.tab(source, selection: NSRange(location: 0, length: 0), outdent: false, continuation: true))
+        XCTAssertNil(TextIndentEditing.newline(box("\tweiter"), range: NSRange(location: 7, length: 0), continuation: true))
+        XCTAssertNil(TextIndentEditing.backspace(box("• weiter"), caret: 2, continuation: true))
+        XCTAssertEqual(TextIndentEditing.tab(source, selection: NSRange(location: 0, length: 20), outdent: false, continuation: true)
+            .map(source.applying)?.text, "Rest des Absatzes\n\t◦ b", "only the paragraphs starting on this page")
+    }
+    func testBackspaceBehindAMarkWithALabel() throws {
+        let source = box("• Bsp.:\tText")
+        guard case .edit(let edit)? = TextIndentEditing.backspace(source, caret: 2) else { return XCTFail() }
+        XCTAssertEqual(source.applying([edit]).text, "Bsp.:\tText")
+        XCTAssertNil(TextIndentEditing.backspace(source, caret: 8), "behind the label's tab: an ordinary ⌫")
+        XCTAssertEqual(edge("• Bsp.:\tText"), 70, "hangs behind the tab, not under „B“")
     }
 
     // MARK: Plans on whole boxes

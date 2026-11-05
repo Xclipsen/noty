@@ -103,9 +103,10 @@ extension TextObjectLayer {
     @discardableResult
     func indentTab(_ editor: PageTextView, outdent: Bool, wholeParagraphs: Bool = false) -> Bool {
         guard active, editor.markedTextRange == nil, fields[editor.objectID]?.editor === editor,
-              let index = boxes.firstIndex(where: { $0.id == editor.objectID }),
-              let plan = TextIndentEditing.tab(boxes[index], selection: editor.selectedRange, outdent: outdent,
-                                               wholeParagraphs: wholeParagraphs) else { return false }
+              let index = boxes.firstIndex(where: { $0.id == editor.objectID }) else { return false }
+        let rules = indentRules(boxes[index])
+        guard let plan = TextIndentEditing.tab(boxes[index], selection: editor.selectedRange, outdent: outdent, wholeParagraphs: wholeParagraphs,
+                                               canChangeIndent: rules.canChangeIndent, continuation: rules.continuation) else { return false }
         applyIndentPlan(plan, at: index, editor: editor)
         return true
     }
@@ -187,7 +188,8 @@ extension TextObjectLayer {
         case "\t":
             return indentTab(editor, outdent: false) ? false : nil
         case "\n":
-            switch TextIndentEditing.newline(boxes[index], range: range) {
+            let rules = indentRules(boxes[index])
+            switch TextIndentEditing.newline(boxes[index], range: range, canChangeIndent: rules.canChangeIndent, continuation: rules.continuation) {
             case .edit(let edit)?:
                 if edit.replacement.hasPrefix("\n") {
                     // One native insertion: one undo step for the break and its indent.
@@ -208,7 +210,9 @@ extension TextObjectLayer {
     /// ⌫ behind a list mark or at the start of an indented paragraph (`TextIndentEditing.backspace`).
     @discardableResult
     func backspace(_ editor: PageTextView, at index: Int) -> Bool {
-        switch TextIndentEditing.backspace(boxes[index], caret: editor.selectedRange.location) {
+        let rules = indentRules(boxes[index])
+        switch TextIndentEditing.backspace(boxes[index], caret: editor.selectedRange.location,
+                                           canChangeIndent: rules.canChangeIndent, continuation: rules.continuation) {
         case .edit(let edit)?: applyListEdits([edit], at: index, editor: editor)
         case .plan(let plan)?: applyIndentPlan(plan, at: index, editor: editor)
         case nil: return false
