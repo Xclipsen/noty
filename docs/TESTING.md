@@ -2,6 +2,22 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Eingabe-Diagnose für „nichts lässt sich ziehen, Stift schreibt nicht“ (05.11.2026, Branch `feat/eingabe-probe`)
+
+Rückmeldung zu Build 113, noty dev: Textfelder ließen sich teils noch anlegen, aber nichts ließ sich ziehen und der Stift schrieb nicht, bis die App kurz im Hintergrund war. USB-Abzug am 05.11. 18:05–18:08: kein Absturz- oder Hängerbericht, Berührungen kamen bei der App an, der Hauptthread lief. Also kein Hänger, sondern ein festgefahrener Eingabezustand. Ursache **nicht gefunden**. Verdacht unbelegt: dauerhaft pausierte Eingabe (`commitForBackup` wartet auf Speichern) oder eine Berührung, die UIKit noch als aufliegend zählt.
+
+`InputProbe` (immer an, nur beobachtend) schreibt nach `Documents/Diagnose/eingabe.txt` (bei 1 MB nach `eingabe.1.txt`) und in OSLog (`de.la.noty`, `input-probe`). Ein Bericht entsteht bei:
+- drei Zügen in 30 s, auf die nichts reagiert und die kein Erkenner übernimmt;
+- einer Berührungsfolge, die über 20 s offen ist, während nichts reagiert;
+- pausierter Eingabe über 15 s oder „beschäftigt“ über 90 s;
+- dem Verlassen der App kurz nach Zügen ohne sichtbare Reaktion.
+
+Ein Bericht enthält Erkenner und Zustände je Berührung, die Ansichten unter der Stelle mit Blatt- und Objektzustand, den Arbeitsbereich mit Backup-Commit-Stufe sowie die letzten Berührungen. Er besteht nur aus Klassennamen, Zuständen, Maßen und Zeiten, ohne Inhalte.
+
+Auf lab zieht der Nutzerdienst `noty-diagnose-watch` den Ordner bei angeschlossenem iPad alle 5 min nach `~/Backups/noty-diagnose/latest` und schreibt die passenden Logzeilen nach `syslog-DATUM.log`. Er arbeitet nur lesend und startet usbmuxd nie neu, weil der iPad-Monitor-Dienst ihn mitbenutzt.
+
+Zwei Reviews ohne Verhaltensänderung an der Eingabe, Fehlalarme behoben. Build erfolgreich. Auf dem iPad **ungeprüft**: ob normale Nutzung keine Berichte erzeugt; ob UIKit den Fenster-Beobachter erst nach dem Ende aller Berührungen zurücksetzt (Test: einen Finger über 20 s ruhig halten, ohne dass etwas reagiert).
+
 ## Schreibwerkzeuge und Zwei-Ansichten-Aktivierung: Review-Befunde (05.11.2026, Branch `feat/fix2-ink`)
 
 **Implementiert, Core-Tests (1290, 3 übersprungen, 0 Fehler; Core unverändert), Seiten-Workflow und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Kein Format- oder Modellwechsel; nur App-Code (`PageEditor.swift`, `WorksheetView+HeldShape.swift`, `ContentView.swift`).

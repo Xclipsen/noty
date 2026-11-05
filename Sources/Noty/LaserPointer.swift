@@ -80,6 +80,7 @@ final class LaserPointerView: UIView {
     }
     private func begin(_ touch: UITouch) {
         guard style != nil, let point = surfacePoint(touch) else { return }
+        InputProbe.noteEffect()
         hover = nil
         // Configured before installation (no host yet): create on first use.
         if #available(iOS 17.5, *), feedback == nil, let host { feedback = UICanvasFeedbackGenerator(view: host); feedback?.prepare() }

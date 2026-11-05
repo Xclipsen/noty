@@ -54,6 +54,11 @@ final class EditorModel: ObservableObject {
         if active { activeInteractions.insert(id) } else { activeInteractions.remove(id) }
     }
     func pauseMutations() { mutationsPaused = true }
+    /// For input reports (`InputProbe`): flags only, no content.
+    var probeState: String {
+        "schreibbar=\(writable) beschäftigt=\(busy) pausiert=\(mutationsPaused) eingaben=\(activeInteractions.count)"
+            + " speicherfehler=\(saveFailed) bildlesen=\(imageReading) revision=\(revision)"
+    }
     func resumeMutations() {
         mutationsPaused = false
         let waiters = mutationWaiters; mutationWaiters = []

@@ -588,6 +588,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     func adoptCommit(_ onCommit: @escaping (PageContent, PageContent) -> Bool) { self.onCommit = onCommit }
     /// A drag, lift or new shape is shown instead of the committed content.
     var showsTransientPreview: Bool { preview != nil || draft != nil || lift != nil || startContent != nil }
+    /// For input reports (`InputProbe`): states only, no content.
+    var probeState: String {
+        "aktiv=\(active) auswahl=\(hasSelection) heben=\(lift != nil) entwurf=\(draft != nil) vorschau=\(preview != nil) start=\(startContent != nil) ui=\(isUserInteractionEnabled)"
+    }
     /// Memory warning: the decoded drawing and contour are rebuilt when needed.
     func releaseMemory() { if !hasSelection, startContent == nil { cachedDrawing = nil; cachedOutline = nil; cachedInkRects = nil } }
 
@@ -895,8 +899,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         return nil
     }
-    @objc private func drag(_ gesture: UIPanGestureRecognizer) { self.gesture(gesture, requestedMode: nil) }
+    @objc private func drag(_ gesture: UIPanGestureRecognizer) {
+        if gesture.state == .began { InputProbe.noteEffect() }
+        self.gesture(gesture, requestedMode: nil)
+    }
     @objc private func handle(_ gesture: UIPanGestureRecognizer) {
+        if gesture.state == .began { InputProbe.noteEffect() }
         let tag = gesture.view?.tag ?? 2
         if gesture.state == .began { if tag >= 100 { activeAnchor = tag - 100 } else { activeCorner = tag } }
         self.gesture(gesture, requestedMode: tag >= 100 ? 7 : tag < 4 ? 2 : tag)

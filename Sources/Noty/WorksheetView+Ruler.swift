@@ -125,7 +125,7 @@ extension WorksheetView {
 
     @objc func rulerStroked(_ gesture: RulerStrokeGesture) {
         switch gesture.state {
-        case .began: beginRulerLine(gesture)
+        case .began: InputProbe.noteEffect(); beginRulerLine(gesture)
         case .changed: addRulerSamples(gesture.takeSamples())
         case .ended: addRulerSamples(gesture.takeSamples()); finishRulerLine(commit: true)
         // Cancelled by the system: what was drawn stays; a second finger is navigation.
