@@ -116,7 +116,9 @@ public enum CrossPageTransfer {
         }
         for i in result.shapes.indices {
             result.shapes[i] = result.shapes[i].mapped(move.apply)
-            result.shapes[i].lineWidth *= move.scale
+            // Held in 0.5…40 like scaling (`scaledLineWidth`): a thick shape moved
+            // onto a wider page is no invalid object.
+            result.shapes[i].lineWidth = result.shapes[i].scaledLineWidth(move.scale)
             guard (try? result.shapes[i].validate()) != nil else { throw CrossPageTransferError.invalidObject }
         }
         return result

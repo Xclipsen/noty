@@ -29,7 +29,7 @@ public enum ShapeFill {
 
 extension ShapeObject {
     /// Only closed outlines show a fill (renderer, hit test, contour).
-    public var isFillable: Bool { kind == .rectangle || kind == .ellipse || kind == .polygon }
+    public var isFillable: Bool { kind.isFillable }
     /// A fill that is actually drawn: fillable kind and any strength above 0.
     /// Only then the inside counts for taps, the lasso, the eraser and the contour.
     public var hasVisibleFill: Bool { isFillable && (fill?.alpha ?? 0) > 0 }
@@ -52,6 +52,11 @@ extension ShapeObject {
         return result
     }
     public func unfilled() -> ShapeObject { var result = self; result.fill = nil; return result }
+}
+
+extension ShapeKind {
+    /// Closed outlines; lines and arrows never get a fill.
+    public var isFillable: Bool { self == .rectangle || self == .ellipse || self == .polygon }
 }
 
 extension ToolbarPreferences {

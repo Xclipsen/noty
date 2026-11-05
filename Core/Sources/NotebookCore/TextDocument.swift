@@ -245,7 +245,8 @@ public enum TextDocumentExport {
             let rest = String(line.dropFirst(leading.count))
             let leadingLength = (String(leading) as NSString).length
             if let marker = TextListEditing.prefix(rest) {
-                let level = box.listLevel(at: range.location)
+                // The level: older indent plus the tabs in front of the mark.
+                let level = box.listLevel(at: range.location) + leading.filter { $0 == "\t" }.count
                 let indentation = String(repeating: "    ", count: level)
                 let content = NSRange(location: range.location + leadingLength + (marker as NSString).length,
                                       length: range.length - leadingLength - (marker as NSString).length)
@@ -312,11 +313,14 @@ public enum TextDocumentExport {
             else { spans.append((text, bold, italic)) }
         }
         var result = ""
+        // The same white space as `trimmingCharacters(in: .whitespaces)`, no-break space included.
+        let blank = { (character: Character) in character.unicodeScalars.allSatisfy(CharacterSet.whitespaces.contains) }
         for span in spans {
-            let core = span.text.trimmingCharacters(in: .whitespaces)
+            let head = span.text.prefix(while: blank)
+            let rest = span.text.dropFirst(head.count)
+            let tail = String(rest.reversed().prefix(while: blank).reversed())
+            let core = String(rest.dropLast(tail.count))
             guard span.bold || span.italic, !core.isEmpty else { result += escape(span.text); continue }
-            let head = span.text.prefix { $0 == " " || $0 == "\t" }
-            let tail = String(span.text.reversed().prefix { $0 == " " || $0 == "\t" })
             var text = escape(core)
             if span.italic { text = "*" + text + "*" }
             if span.bold { text = "**" + text + "**" }

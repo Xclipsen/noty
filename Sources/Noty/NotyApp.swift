@@ -22,6 +22,7 @@ struct NotyApp: App {
         WindowGroup {
             WorkspaceLibraryHost(workspaces: workspaces).id(workspaces.root.path).preferredColorScheme(.dark)
                 .environmentObject(laws)
+                .environmentObject(laws.panel)
                 .task {
                     await laws.start()
                     while !Task.isCancelled {

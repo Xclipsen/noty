@@ -34,8 +34,21 @@ public enum TextCalculator {
         return inline(line, lineStart: start, caret: caret)
     }
 
+    /// „-“ followed by a space or a tab at the start of a line is a list or
+    /// hanging mark of the app (`TextParagraphPrefix`, the rule of the
+    /// indents), no minus.
+    private static func isDashItem(_ line: String) -> Bool {
+        let source = line as NSString, prefix = TextParagraphPrefix(in: source, at: 0)
+        return prefix.marker.map { source.substring(with: $0) == "-" } ?? false
+    }
+
     private static func inline(_ line: String, lineStart: Int, caret: Int) -> Calculation? {
-        guard let expression = expressionTail(of: line), let value = evaluate(expression), let result = format(value) else { return nil }
+        var body = line
+        // A mark („- “, „-⇥“, „• “, „1.⇥“, „->“) and a label („Bsp.:⇥“, „• Def.:⇥⇥“) in
+        // front are no part of the calculation, as for the indents.
+        let prefix = TextParagraphPrefix(in: line as NSString, at: 0)
+        if prefix.mark != nil || prefix.label != nil { body = (line as NSString).substring(from: prefix.body) }
+        guard let expression = expressionTail(of: body), let value = evaluate(expression), let result = format(value) else { return nil }
         let length = (line.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression) as NSString).length
         let location = lineStart + length
         let spaced = location < caret - 1 || expression.contains(where: \.isWhitespace)
@@ -59,30 +72,39 @@ public enum TextCalculator {
         if scalars.count < line.count {
             let before = line[line.index(line.endIndex, offsetBy: -(scalars.count + 1))]
             if before.isLetter || before.isNumber, scalars.first?.isNumber == true { return nil }
-            if !"=≈".contains(before), tail.range(of: #"^([:.,)]\s+[0-9(]|[0-9])"#, options: .regularExpression) == nil { return nil }
+            if !"=≈".contains(before), tail.range(of: #"^([:.,)]+\s+[0-9(]|[0-9])"#, options: .regularExpression) == nil { return nil }
         }
-        // „Summe: 2+3“, „a) 2+3“, then numbered labels like „3: 2+3“, „1. 2+3“, „(2) 2+3“.
-        if let mark = tail.range(of: #"^[:.,)]\s+"#, options: .regularExpression) { tail.removeSubrange(mark) }
+        // „Summe: 2+3“, „Bsp.: 2+3“, „a) 2+3“, then numbered labels like „3: 2+3“, „1. 2+3“, „(2) 2+3“.
+        if let mark = tail.range(of: #"^[:.,)]+\s+"#, options: .regularExpression) { tail.removeSubrange(mark) }
         while let label = tail.range(of: #"^\(?[0-9]+[:.)]\s+"#, options: .regularExpression) { tail.removeSubrange(label) }
         guard isCalculation(tail), evaluate(tail) != nil else { return nil }
         return tail
     }
-    /// One number alone is none: „Seite 3=“, „x = 5“.
+    /// One number alone is none: „Seite 3=“, „x = 5“, also not with a
+    /// percent sign („10%“). A time („10:30“) is no division.
     private static func isCalculation(_ text: String) -> Bool {
+        guard !containsTime(text) else { return false }
         var seen = false
         for character in text {
             if character.isNumber || character == ")" { seen = true }
-            else if seen, "+-−*×·/÷:^%".contains(character) { return true }
+            else if seen, "+-−*×·/÷:^".contains(character) { return true }
         }
         return false
+    }
+
+    private static func containsTime(_ text: String) -> Bool {
+        text.range(of: #"(?<![0-9.,])([01]?[0-9]|2[0-3]):[0-5][0-9](?![0-9.,])"#, options: .regularExpression) != nil
     }
 
     private static func column(_ source: NSString, sign: Int) -> Calculation? {
         var lines: [String] = [], end = TextLines.start(source, sign)
         var running = false
         while end > 0, !running {
-            let start = TextLines.start(source, end - 1)
-            let line = source.substring(with: NSRange(location: start, length: end - 1 - start))
+            // The line before ends in front of its break, CRLF included.
+            var lineEnd = end - 1
+            if lineEnd > 0, source.character(at: lineEnd) == 10, source.character(at: lineEnd - 1) == 13 { lineEnd -= 1 }
+            let start = TextLines.start(source, lineEnd)
+            let line = source.substring(with: NSRange(location: start, length: lineEnd - start))
                 .trimmingCharacters(in: .whitespaces)
             end = start
             if isRule(line) { continue }
@@ -92,7 +114,8 @@ public enum TextCalculator {
             guard isColumnLine(line) else { break }
             lines.insert(line, at: 0)
         }
-        guard lines.count >= 2, let value = total(lines), let result = format(value) else { return nil }
+        // A list of „- “ items is no calculation, as one of „• “ items.
+        guard lines.count >= 2, !isDashItem(lines[0]), let value = total(lines), let result = format(value) else { return nil }
         let replacement = "= " + result
         return Calculation(edit: .init(range: NSRange(location: sign, length: 1), replacement: replacement),
                            result: NSRange(location: sign + 2, length: (result as NSString).length))
@@ -127,6 +150,7 @@ public enum TextCalculator {
         var operation: Character = "+"
         if let first = body.first, let sign = sign(first) { operation = sign; body = body.dropFirst() }
         let text = String(body).trimmingCharacters(in: .whitespaces)
+        guard !containsTime(text) else { return nil }
         if let value = evaluate(text) {
             let percent = text.hasSuffix("%") && number(String(text.dropLast()).trimmingCharacters(in: .whitespaces)) != nil
             return (operation, value, percent)
@@ -163,11 +187,13 @@ public enum TextCalculator {
     }
 
     /// German notation: comma, no grouping, at most ten decimals, nil beyond
-    /// the size where digits would be invented.
+    /// the size where digits would be invented and for a value that is not 0
+    /// but would show as 0.
     public static func format(_ value: Decimal) -> String? {
         guard !value.isNaN, abs(value) < Decimal(sign: .plus, exponent: 30, significand: 1) else { return nil }
         var input = value, rounded = Decimal()
         NSDecimalRound(&rounded, &input, 10, .plain)
+        guard !rounded.isZero || value.isZero else { return nil }
         return "\(rounded)".replacingOccurrences(of: ".", with: ",")
     }
 
@@ -178,6 +204,10 @@ public enum TextCalculator {
         if let comma, let dot {
             let decimal = comma > dot ? Character(",") : Character(".")
             let grouping = comma > dot ? "." : ","
+            // Grouping only in threes in front of the decimal sign: „1.2,5“ is no number.
+            let whole = text[..<(comma > dot ? comma : dot)]
+            let group = grouping == "." ? #"\."# : ","
+            guard whole.range(of: "^[1-9][0-9]{0,2}(" + group + "[0-9]{3})+$", options: .regularExpression) != nil else { return nil }
             plain = text.replacingOccurrences(of: grouping, with: "")
             guard plain.filter({ $0 == decimal }).count == 1 else { return nil }
             plain = plain.replacingOccurrences(of: String(decimal), with: ".")
@@ -234,21 +264,30 @@ public enum TextCalculator {
             guard let base = percent() else { return nil }
             guard next == "^" else { return base }
             advance()
-            guard let exponent = unary(), exponent == exponent.rounded(), abs(exponent) <= 1_000 else { return nil }
+            // A chain of powers nests like parentheses.
+            guard depth < 64 else { return nil }
+            depth += 1
+            let exponent = unary()
+            depth -= 1
+            // An overflow is NaN, which would pass as exponent 0.
+            guard let exponent, !exponent.isNaN, !base.isNaN, exponent == exponent.rounded(), abs(exponent) <= 1_000 else { return nil }
             lastWasPercent = false
             let whole = NSDecimalNumber(decimal: exponent).intValue
             let raised = Foundation.pow(base, abs(whole))
+            guard !raised.isNaN else { return nil }
             guard whole < 0 else { return raised }
             return raised == 0 ? nil : 1 / raised
         }
-        /// A sign binds weaker than a power: -2^2 is -4, (-2)^2 is 4.
+        /// A sign binds weaker than a power: -2^2 is -4, (-2)^2 is 4. Signs
+        /// are counted in a loop, a long row of them must not use up the stack.
         private mutating func unary() -> Decimal? {
-            if let sign = next, "+-−".contains(sign) {
+            var negative = false
+            while let sign = next, "+-−".contains(sign) {
                 advance()
-                guard let value = unary() else { return nil }
-                return sign == "+" ? value : -value
+                if sign != "+" { negative.toggle() }
             }
-            return power()
+            guard let value = power() else { return nil }
+            return negative ? -value : value
         }
         private mutating func percent() -> Decimal? {
             guard var value = atom() else { return nil }

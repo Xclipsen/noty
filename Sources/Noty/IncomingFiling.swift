@@ -19,7 +19,7 @@ enum IncomingFiling {
     private static var queue = IncomingQueue()
     private static weak var library: LibraryModel?
     private static weak var workspaces: WorkspaceAppModel?
-    private static var defaults: NotebookAppearance?
+    private static var defaults: @MainActor () -> NotebookAppearance? = { nil }
     private static var listedLeftovers = false
     private static var presenting = false
     private static var receiving: Task<Void, Never>?
@@ -32,7 +32,7 @@ enum IncomingFiling {
 
     /// The library of the current area (re-attached after an area switch).
     /// The first attach also offers copies an earlier run left waiting.
-    static func attach(library: LibraryModel, workspaces: WorkspaceAppModel, defaults: NotebookAppearance?) {
+    static func attach(library: LibraryModel, workspaces: WorkspaceAppModel, defaults: @escaping @MainActor () -> NotebookAppearance?) {
         self.library = library; self.workspaces = workspaces; self.defaults = defaults
         if !listedLeftovers {
             listedLeftovers = true
@@ -102,7 +102,7 @@ enum IncomingFiling {
             try? await Task.sleep(for: .milliseconds(800))
             guard let library, library.ready, let item = queue.next() else { presenting = false; return }
             let model = IncomingFilingModel(item: item, url: inbox.contentURL(item), library: library,
-                                            areaTitle: workspaces?.title ?? "Meine Bibliothek", defaults: defaults)
+                                            areaTitle: workspaces?.title ?? "Meine Bibliothek", defaults: defaults())
             let host = UIHostingController(rootView: IncomingFilingView(model: model))
             host.modalPresentationStyle = .formSheet
             host.isModalInPresentation = true

@@ -183,4 +183,36 @@ final class LawPanelLayoutTests: XCTestCase {
         XCTAssertEqual(offset.y, -450)
         XCTAssertEqual(bottom.dragOffset(.init(x: 5000, y: 0)).x, 1170)
     }
+
+    func testWindowDragClearanceOnlyWhereTheAppWindowIsGrabbed() {
+        // Full screen: no app window to move, the bar stays as it is.
+        XCTAssertEqual(LawPanelLayout.windowDragClearance(barTopInWindow: nil), 0)
+        // Docked at the very top of a window: the whole zone stays free.
+        XCTAssertEqual(LawPanelLayout.windowDragClearance(barTopInWindow: 0), LawPanelLayout.windowDragZone)
+        // Floating 10 pt below the top: only the rest of the zone, whole points.
+        XCTAssertEqual(LawPanelLayout.windowDragClearance(barTopInWindow: 10), 22)
+        XCTAssertEqual(LawPanelLayout.windowDragClearance(barTopInWindow: 10.4), 22)
+        // Below the zone (bottom window, workspace further down): nothing.
+        XCTAssertEqual(LawPanelLayout.windowDragClearance(barTopInWindow: 32), 0)
+        XCTAssertEqual(LawPanelLayout.windowDragClearance(barTopInWindow: 400), 0)
+        // Above the window (not expected, clamped).
+        XCTAssertEqual(LawPanelLayout.windowDragClearance(barTopInWindow: -20), LawPanelLayout.windowDragZone)
+        XCTAssertEqual(LawPanelLayout.windowDragClearance(barTopInWindow: .nan), 0)
+    }
+
+    func testPredictedTranslationProjectsAFlick() {
+        let resting = LawPanelLayout.predictedTranslation(.init(x: 30, y: -12), velocity: .init(x: 0, y: 0))
+        XCTAssertEqual(resting.x, 30); XCTAssertEqual(resting.y, -12)
+        // About half a second of travel at UIScrollView's normal deceleration.
+        let flick = LawPanelLayout.predictedTranslation(.init(x: 100, y: 0), velocity: .init(x: 2000, y: -1000))
+        XCTAssertEqual(flick.x, 1098, accuracy: 0.5)
+        XCTAssertEqual(flick.y, -499, accuracy: 0.5)
+        // A flick to the right edge of the test workspace parks the window there.
+        let side = LawPanelLayout(size: size, width: 380, height: 360, docked: false, edge: .right)
+        let translation = PagePoint(x: 80, y: 0)
+        let predicted = LawPanelLayout.predictedTranslation(translation, velocity: .init(x: 1500, y: 0))
+        let location = PagePoint(x: 1000, y: 300)
+        XCTAssertEqual(side.drop(translation: translation, location: location, predictedTranslation: predicted,
+                                 predictedLocation: PagePoint(x: location.x + predicted.x - translation.x, y: location.y)), .stash(.right))
+    }
 }

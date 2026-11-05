@@ -1,6 +1,7 @@
 import UIKit
 import SwiftUI
 import PencilKit
+import UniformTypeIdentifiers
 import NotebookCore
 
 struct SelectionFilter: Equatable {
@@ -36,6 +37,19 @@ enum ObjectClipboard {
     /// `UIPasteboard.general.changeCount` right after the copy.
     static var changeCount: Int?
     static var isNewest: Bool { content != nil && changeCount == UIPasteboard.general.changeCount }
+    /// Page and frame of the last paste of this copy (the next one goes beside it).
+    static var lastPaste: (pageID: UUID?, frame: CGRect)?
+    /// Written with every noty copy to the system pasteboard: whether its
+    /// picture or its text is meant („image“/„text“).
+    static let markerType = "de.la.noty.selection"
+    /// A noty copy on the system pasteboard (also after a restart): true for
+    /// its picture, false for its text, nil for anything from elsewhere.
+    static var pasteboardPrefersImage: Bool? {
+        let board = UIPasteboard.general
+        guard board.contains(pasteboardTypes: [markerType]),
+              let data = board.data(forPasteboardType: markerType) else { return nil }
+        return String(decoding: data, as: UTF8.self) == "image"
+    }
 }
 
 /// The one look of every selection (Build 64): system blue, one line width
@@ -97,6 +111,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// Autostift: black/white by the paper below the shape's start (canonical point).
     var automaticColor: ((PagePoint) -> InkColor?)?
     private var lineWidth: Double = 2
+    /// Width shown and set by the „Stil“ popover; the tool's `lineWidth` for
+    /// new shapes stays what the toolbar shows.
+    private var styleWidth: Double = 2
     private var ink = Set<Int>(), texts = Set<UUID>(), images = Set<UUID>(), shapes = Set<UUID>()
     private var lasso: [CGPoint] = []
     private var initialPoint = CGPoint.zero
@@ -110,6 +127,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private var draft: ShapeObject?
     /// Selection dragged off its page (continuous notebook only).
     private var lift: SelectionLift?
+    /// The last „Duplizieren“ on this page (selection frame before → copy):
+    /// duplicating that copy again goes on in the same direction.
+    private var lastDuplicate: (pageID: UUID?, from: CGRect, to: CGRect)?
     /// Members selected by a cross-page transfer onto this page. Re-applied if a
     /// configure resets the layer while the notebook still publishes exactly
     /// that content, so the moved selection stays visible and can be dragged on.
@@ -174,8 +194,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     var pageContext: (() -> Page?)?
     /// Laid-out text lines of a field (own unrotated page units): what a lasso must touch.
     var textLines: ((TextBox) -> [PageRect])?
-    /// The field with its height (and automatic width) from the content.
-    var fittedText: ((TextBox) -> TextBox)?
+    /// The field with its height (and automatic width) from the content
+    /// (`TextObjectLayer.fitted`): `kept` without a change of its text or
+    /// width (frame, moving: the layout the stored height shows stays),
+    /// `relayout` after a new width or size, `repaired` in place and only if
+    /// its text overflows here (a scaled group, a pasted copy).
+    enum TextFit { case kept, relayout, repaired }
+    var fittedText: ((TextBox, TextFit) -> TextBox)?
+    /// „An Linien ausrichten“: the moved field's first baseline on the nearest paper line.
+    var alignedText: ((TextBox) -> TextBox)?
     /// Errors of image actions (crop).
     var onError: ((String) -> Void)?
     /// „Bearbeiten“ or a second tap on the selected field: caret at the point (nil: end).
@@ -391,7 +418,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         guard isFieldSelection, let id = texts.first, let box = value.textBoxes.first(where: { $0.id == id }) else { return nil }
         return fitted(box)
     }
-    private func fitted(_ box: TextBox) -> TextBox { fittedText?(box) ?? box }
+    private func fitted(_ box: TextBox, _ fit: TextFit = .kept) -> TextBox { fittedText?(box, fit) ?? box }
     private func replacing(_ value: PageContent, with box: TextBox) -> PageContent {
         var result = value
         if let index = result.textBoxes.firstIndex(where: { $0.id == box.id }) { result.textBoxes[index] = box }
@@ -561,8 +588,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     func adoptCommit(_ onCommit: @escaping (PageContent, PageContent) -> Bool) { self.onCommit = onCommit }
     /// A drag, lift or new shape is shown instead of the committed content.
     var showsTransientPreview: Bool { preview != nil || draft != nil || lift != nil || startContent != nil }
+    /// For input reports (`InputProbe`): states only, no content.
+    var probeState: String {
+        "aktiv=\(active) auswahl=\(hasSelection) heben=\(lift != nil) entwurf=\(draft != nil) vorschau=\(preview != nil) start=\(startContent != nil) ui=\(isUserInteractionEnabled)"
+    }
     /// Memory warning: the decoded drawing and contour are rebuilt when needed.
-    func releaseMemory() { if !hasSelection, startContent == nil { cachedDrawing = nil; cachedOutline = nil } }
+    func releaseMemory() { if !hasSelection, startContent == nil { cachedDrawing = nil; cachedOutline = nil; cachedInkRects = nil } }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -627,9 +658,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         fieldWidthHandles.forEach { $0.isHidden = !field }
         if dragMode != 6 || startContent == nil { angleLabel.isHidden = true }
         rotation.isHidden = !active || lifted || !canRotate
-        // A single shape is edited by its own anchors, not the scale corners.
+        // A single shape is edited by its own anchors. Straight lines,
+        // rectangles and ellipses need nothing else; a polygon or polyline
+        // also keeps the scale corners, or it could only change point by point.
         let editableShape = active && !lifted && shapes.count == 1 && ink.isEmpty && texts.isEmpty && images.isEmpty
-        if editableShape { for corner in corners { corner.isHidden = true } }
+        if editableShape, selectedShape(preview ?? content)?.points == nil { for corner in corners { corner.isHidden = true } }
         updateAnchorHandles(count: editableShape ? (selectedShape(preview ?? content)?.anchors.count ?? 0) : 0)
         if active && (hasSelection || startContent != nil) { becomeFirstResponder() }
         else if !active { resignFirstResponder() }
@@ -755,7 +788,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// shape, in the image tool also an unlocked image.
     private func grabsObject(at location: CGPoint) -> Bool {
         let point = canonical(location)
-        if !selectionLocked, selectionBounds(content).map(display)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale).contains(location) == true { return true }
+        if !selectionLocked, selectionGrabArea(contains: location) { return true }
         return shapeHit(at: point) != nil || (tool == .image && imageHit(at: point) != nil)
     }
     /// Topmost unlocked image under `point` (canonical), with the touch tolerance.
@@ -793,8 +826,19 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         guard active, tool == .shape, !touchSelection, touch.type == .pencil else { return false }
         // On a checkbox the Pencil taps it; a real drag still draws after the threshold.
         if hitsCheckbox?(touch.location(in: self)) == true { return false }
-        let inset = -8 / displayScale
-        return selectionBounds(content).map(display)?.insetBy(dx: inset, dy: inset).contains(touch.location(in: self)) != true
+        return !selectionGrabArea(contains: touch.location(in: self))
+    }
+    /// Where a drag picks the selection up (`location` in layer coordinates):
+    /// its frame with a small tolerance, and for a group only inside the
+    /// convex contour it shows (Audit 7f8bfe7, Lasso Fund 4) – an empty
+    /// corner of the bounds starts a new lasso or scrolls. A single member
+    /// keeps its whole frame (an unfilled rectangle is grabbed inside).
+    private func selectionGrabArea(contains location: CGPoint) -> Bool {
+        let tolerance = 8 / displayScale
+        guard let frame = selectionBounds(content).map(display), frame.insetBy(dx: -tolerance, dy: -tolerance).contains(location) else { return false }
+        guard ink.count + texts.count + images.count + shapes.count > 1, let outline = selectionOutline() else { return true }
+        if outline.contains(location) { return true }
+        return outline.copy(strokingWithWidth: 2 * tolerance, lineCap: .round, lineJoin: .round, miterLimit: 4).contains(location)
     }
     @objc private func tap(_ gesture: UITapGestureRecognizer) { selectAtTap(gesture.location(in: self)) }
     private var lassoTool: Bool { tool == .selection || tool == .inkSelection }
@@ -855,8 +899,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         return nil
     }
-    @objc private func drag(_ gesture: UIPanGestureRecognizer) { self.gesture(gesture, requestedMode: nil) }
+    @objc private func drag(_ gesture: UIPanGestureRecognizer) {
+        if gesture.state == .began { InputProbe.noteEffect() }
+        self.gesture(gesture, requestedMode: nil)
+    }
     @objc private func handle(_ gesture: UIPanGestureRecognizer) {
+        if gesture.state == .began { InputProbe.noteEffect() }
         let tag = gesture.view?.tag ?? 2
         if gesture.state == .began { if tag >= 100 { activeAnchor = tag - 100 } else { activeCorner = tag } }
         self.gesture(gesture, requestedMode: tag >= 100 ? 7 : tag < 4 ? 2 : tag)
@@ -880,7 +928,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             shapeTapCandidate = false
             startContent = content; preview = nil; inkTransform = nil; groupTransform = nil; rotationDrag = nil
             if let requestedMode { dragMode = requestedMode }
-            else if !selectionLocked, selectionBounds(content)?.insetBy(dx: -8 / displayScale, dy: -8 / displayScale).contains(initialPoint) == true { dragMode = 1 }
+            else if !selectionLocked, selectionGrabArea(contains: CGPoint(x: initialPoint.x + layout.contentOrigin.x, y: initialPoint.y + layout.contentOrigin.y)) { dragMode = 1 }
             else if (fingerPan && !allowsFingerDrawing) || tool == .image, let hit = shapeHit(at: initialPoint) {
                 // A finger on a shape picks it up and moves it at once.
                 clearSelection(); shapes = [hit.id]; dragMode = 1
@@ -892,9 +940,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             else if tool == .shape {
                 clearSelection(); dragMode = 3
                 let color = automaticColor?(.init(x: initialPoint.x, y: initialPoint.y)) ?? color
-                draft = ShapeObject(kind: ShapeKind.toolKinds.contains(options.kind) ? options.kind : .line,
-                    start: .init(x: initialPoint.x, y: initialPoint.y), end: .init(x: point.x, y: point.y),
-                    color: color, lineWidth: lineWidth, pattern: options.pattern, fill: options.fill(stroke: color))
+                let kind = ShapeKind.toolKinds.contains(options.kind) ? options.kind : .line
+                // Lines and arrows never carry a fill (invisible, but it would keep the precision eraser from cutting them).
+                let shape = ShapeObject(kind: kind, start: .init(x: initialPoint.x, y: initialPoint.y), end: .init(x: point.x, y: point.y),
+                    color: color, lineWidth: lineWidth, pattern: options.pattern, fill: options.fill(stroke: color, kind: kind))
+                draft = DrawnShapeFitting.fitted(shape, in: limits)
                 shapeTapCandidate = gesture === pan && pan.beganOnTouchDown
             } else { clearSelection(); dragMode = 0; lasso = [CGPoint(x: initialPoint.x + layout.contentOrigin.x, y: initialPoint.y + layout.contentOrigin.y)] }
             beginSnapping(content)
@@ -912,25 +962,27 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 lasso = [a, CGPoint(x: b.x, y: a.y), b, CGPoint(x: a.x, y: b.y), a]
             } else { lasso.append(gesture.location(in: self)) }
         case 1:
-            // Outside its own sheet the selection lifts off and follows the
-            // touch above all pages; inside, it keeps the clamped in-page move.
+            // Over another page, or in the autoscroll band at the top/bottom
+            // of the viewport (so a page out of sight can be reached), the
+            // selection lifts off and follows the touch above all pages. On
+            // its own sheet and in the gap or beside it it keeps the clamped
+            // in-page move (IMAGES.md); once lifted it stays lifted until it
+            // is back over its own sheet outside the autoscroll band.
             var lifted = false
-            if let host = transferHost, !CGRect(origin: .zero, size: layout.canvas.cgSize).contains(gesture.location(in: self)) {
-                if lift == nil { lift = makeLift(initial) }
-                if let lift { lifted = true; preview = lift.remainder; inkTransform = nil; host.floatSelection(lift, gesture: gesture); snapping.hide() }
+            if let host = transferHost, let pageID {
+                let onSheet = CGRect(origin: .zero, size: layout.canvas.cgSize).contains(gesture.location(in: self))
+                // Where the drag began, in the window (it moves with an autoscroll).
+                let start = convert(CGPoint(x: initialPoint.x + layout.contentOrigin.x, y: initialPoint.y + layout.contentOrigin.y), to: nil)
+                let wanted = host.liftsForAutoScroll(gesture, from: pageID, start: start)
+                    || (!onSheet && (lift != nil || host.transferTarget(for: gesture).map({ $0 != pageID }) == true))
+                if wanted {
+                    if lift == nil { lift = makeLift(initial) }
+                    if let lift { lifted = true; preview = lift.remainder; inkTransform = nil; host.floatSelection(lift, gesture: gesture); snapping.hide() }
+                }
             }
             if !lifted {
                 if lift != nil { endLift(); preview = initial; inkTransform = nil; groupTransform = nil }
-                // The one move path (`ObjectMovement`) with weiches Einrasten.
-                let proposed = PagePoint(x: point.x - initialPoint.x, y: point.y - initialPoint.y)
-                let snap = snapping.track(gesture, in: self)
-                let shift = selectionBounds(initial).map { bounds -> PagePoint in
-                    let frame = PageRect(bounds)
-                    let shift = ObjectMovement.translation(moving: frame, by: proposed, within: limits, snapping: snap)
-                    snapping.show(translation: shift, frame: frame, gesture: gesture, in: self)
-                    return shift
-                } ?? proposed
-                if let value = transformed(initial, dx: shift.x, dy: shift.y, scale: 1) { preview = value }
+                if let value = clampedMove(initial, to: point, gesture: gesture) { preview = value }
             }
         case 2:
             // Scaling keeps the opposite corner in place (every selection, images
@@ -976,6 +1028,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             if let current = draft, current.kind == .line || current.kind == .arrow {
                 draft?.end = LineSnapping.end(from: current.start, to: .init(x: point.x, y: point.y))
             } else { draft?.end = .init(x: point.x, y: point.y) }
+            // Kept on the page while drawn: what is shown is what is saved.
+            if let current = draft { draft = DrawnShapeFitting.fitted(current, in: limits) }
             // About 4 screen points of travel make it a drawn shape, not a tap.
             if shapeTapCandidate, let down = pan.touchDownLocation,
                hypot(gesture.location(in: self).x - down.x, gesture.location(in: self).y - down.y) * displayScale > 4 { shapeTapCandidate = false }
@@ -998,7 +1052,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                     let width = max(minimum, box.width - along), moved = box.width - width
                     next.width = width; next.x += moved * cos(radians); next.y += moved * sin(radians)
                 }
-                next = fittedText?(next) ?? next
+                next = fitted(next, .relayout) // a new width wraps anew, as in the text editor
                 if next.fits(in: limits), (try? next.validate()) != nil { preview = replacing(initial, with: next) }
             }
         default:
@@ -1020,13 +1074,34 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             }
         }
         if gesture.state == .ended {
-            if dragMode == 1, let lifted = lift {
-                // Dropped off the source sheet: either an atomic transfer to the
-                // page below the touch, or a snap back without any change.
+            if dragMode == 1, let lifted = lift, let host = transferHost,
+               host.transferTarget(for: gesture).map({ $0 != lifted.pageID }) == true {
+                // Dropped over another page: an atomic transfer to it, or (refused,
+                // with a message) a snap back without any change.
                 lift = nil
-                let host = transferHost
-                host?.hideFloatingSelection()
-                _ = host?.dropSelection(lifted, gesture: gesture)
+                host.hideFloatingSelection()
+                _ = host.dropSelection(lifted, gesture: gesture)
+            } else if dragMode == 1, lift != nil, let pageID, transferHost?.transferTarget(for: gesture) != pageID {
+                // Lifted, but dropped in a gap or beside the pages: it snaps back
+                // without any change. Its own sheet may have scrolled far out of
+                // sight; clamping there would change a page nobody sees (Review).
+                // Clamping in the gap stays for a selection that never lifted.
+                endLift(); preview = nil; inkTransform = nil; groupTransform = nil
+            } else if dragMode == 1, lift != nil {
+                // Lifted and dropped over its own sheet (in the autoscroll band):
+                // the clamped in-page move, as without lifting.
+                endLift(); inkTransform = nil; groupTransform = nil
+                if let value = clampedMove(initial, to: point, gesture: gesture) {
+                    var value = value
+                    if let inkTransform {
+                        if let changed = transformedInk(initial, using: inkTransform, inkOnly: false) { value.drawing = changed.drawing }
+                        else {
+                            value = initial
+                            onError?("Die Handschrift würde über den Seitenrand hinausragen. Die Änderung wurde nicht übernommen.")
+                        }
+                    }
+                    _ = commit(value, previous: initial)
+                }
             } else if dragMode == 0 {
                 let points = lasso.map(canonical)
                 if points.count > 2 {
@@ -1047,6 +1122,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                     // Finished form: the same confirmation as a held form or a lasso.
                     haptic(completed: true, at: gesture.location(in: self))
                 }
+            } else if dragMode == 3, let draft, (try? draft.validate()) != nil {
+                // Only possible on a page too small for this stroke: never vanish without a word.
+                onError?("Die Form passt mit dieser Strichstärke nicht auf die Seite und wurde nicht angelegt.")
             } else if dragMode == 1, groupTransform?.isIdentity == true {
                 // Ended where it began: fitting the frame alone is no invisible undo step.
             } else if var preview {
@@ -1063,6 +1141,19 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             angleLabel.isHidden = true; snapping.end(); rotationDrag = nil; groupTransform = nil
         }
         refresh()
+    }
+    /// The one in-page move path (`ObjectMovement`) with weiches Einrasten:
+    /// the selection held inside its own sheet. Sets `inkTransform`.
+    private func clampedMove(_ initial: PageContent, to point: CGPoint, gesture: UIPanGestureRecognizer) -> PageContent? {
+        let proposed = PagePoint(x: point.x - initialPoint.x, y: point.y - initialPoint.y)
+        let snap = snapping.track(gesture, in: self)
+        let shift = selectionBounds(initial).map { bounds -> PagePoint in
+            let frame = PageRect(bounds)
+            let shift = ObjectMovement.translation(moving: frame, by: proposed, within: limits, snapping: snap)
+            snapping.show(translation: shift, frame: frame, gesture: gesture, in: self)
+            return shift
+        } ?? proposed
+        return transformed(initial, dx: shift.x, dy: shift.y, scale: 1)
     }
     /// Weiches Einrasten for this drag: moves (the selection as a whole,
     /// other objects as targets), a field's width points and shape anchors.
@@ -1125,6 +1216,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         clearSelection(); content = value
         adopted = selection.map { (value, $0) }
         if let selection { select(selection, in: value) }
+        // Moved here by a finger selection with an ink tool: it stays one
+        // here, with frame and bar (Audit 7f8bfe7, Lasso Fund 8).
+        if selection != nil, !toolActive, hasSelection {
+            touchSelection = true; isUserInteractionEnabled = active; isHidden = !active
+        }
         refresh()
     }
     // MARK: Finger selection with an ink tool (Nutzerfeedback Tag 1)
@@ -1140,9 +1236,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     /// previews would show (and its commits expect) a stale page.
     func adoptCurrentContent(_ value: PageContent) {
         guard value != content, lift == nil, startContent == nil, preview == nil, draft == nil else { return }
+        let had = hasSelection
         content = value; adopted = nil; ink = []
         texts.formIntersection(value.textBoxes.map(\.id)); images.formIntersection(value.images.map(\.id))
         shapes.formIntersection(value.shapes.map(\.id))
+        // Erased members leave no frame or bar behind.
+        if had { refresh() }
     }
     /// Selects exactly `object` (nil: clears a finger selection).
     func selectByTouch(_ object: PageObjectReference?) {
@@ -1160,7 +1259,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     /// `point` in this layer's coordinates (same as the sheet's).
     func touchSelectionContains(_ point: CGPoint) -> Bool {
-        guard hasTouchSelection, lift == nil, let frame = selectionBounds(content).map(display) else { return false }
+        // A locked image never moves, not by finger either.
+        guard hasTouchSelection, !selectionLocked, lift == nil, let frame = selectionBounds(content).map(display) else { return false }
         let margin = 8 / displayScale
         // A selected field moves when dragged anywhere inside its (rotated) frame.
         if let box = selectedField(content) { return box.contains(PagePoint(x: canonical(point).x, y: canonical(point).y), tolerance: margin) }
@@ -1168,7 +1268,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     /// A finger drag that began on the finger selection moves it (also across pages).
     func dragTouchSelection(_ gesture: UIPanGestureRecognizer) {
-        guard touchSelection else { return }
+        guard touchSelection, !selectionLocked else { return }
         self.gesture(gesture, requestedMode: 1)
     }
     func endTouchSelection() {
@@ -1186,7 +1286,23 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         touchSelection = false; onTouchSelectionEnded?()
     }
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hit = super.hitTest(point, with: event)
+        var hit = super.hitTest(point, with: event)
+        // Shape points of a polygon lie above the scale corners, and a point on
+        // a corner of the frame covered the corner: of the overlapping corner
+        // and point handles the one whose dot is nearest wins, a corner within
+        // a few screen points (`SelectionHandlePriority`).
+        if let current = hit as? SelectionHandle, !anchorHandles.isEmpty,
+           corners.contains(where: { $0 === current }) || anchorHandles.contains(where: { $0 === current }) {
+            let scale = displayScale
+            let overlapping = (corners + anchorHandles).filter {
+                !$0.isHidden && $0.alpha > 0.01 && $0.isUserInteractionEnabled && $0.frame.contains(point)
+            }
+            let distances = overlapping.map { hypot($0.center.x - point.x, $0.center.y - point.y) * scale }
+            let isCorner = overlapping.map { handle in corners.contains { $0 === handle } }
+            if let index = SelectionHandlePriority.preferred(distances: distances.map(Double.init), isCorner: isCorner) {
+                hit = overlapping[index]
+            }
+        }
         // Finger selection: the layer's own surface passes everything through.
         return touchSelection && hit === self ? nil : hit
     }
@@ -1211,7 +1327,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             return region.selects(box, lines: textLines?(box) ?? [])
         }
         if filter.text { texts = Set(content.textBoxes.filter { $0.allowsObjectSelection && selectedField($0) }.map(\.id)) }
-        if filter.images { images = Set(content.images.filter { !$0.locked && selected($0.rotatedBounds.cgRect) }.map(\.id)) }
+        // The rotated image itself, not its empty bounding corners (Audit 7f8bfe7, Lasso Fund 5).
+        if filter.images {
+            images = Set(content.images.filter { image in
+                !image.locked && rect.insetBy(dx: -0.001, dy: -0.001).intersects(image.rotatedBounds.cgRect) && region.selects(image)
+            }.map(\.id))
+        }
         // Shapes count by their stroke (and a visible fill), not their bounds:
         // a lasso or tap inside an unfilled outline leaves the shape alone.
         if filter.shapes {
@@ -1247,13 +1368,23 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         var rects = value.textBoxes.filter { texts.contains($0.id) }.map { (isFieldSelection ? fitted($0) : $0).rotatedBounds.cgRect }
         rects += value.images.filter { images.contains($0.id) }.map { $0.rotatedBounds.cgRect }
         rects += value.shapes.filter { shapes.contains($0.id) }.map { (forSnapping ? $0.snapFrame : $0.bounds).cgRect }
-        if !ink.isEmpty, let drawing = drawing(value.drawing) {
-            rects += drawing.strokes.enumerated().filter { ink.contains($0.offset) }.map {
-                let frame = $0.element.renderBounds
-                return applyingPreview ? frame.applying(inkTransform ?? .identity) : frame
-            }
+        if !ink.isEmpty {
+            let frames = inkRects(value.drawing)
+            rects += applyingPreview ? frames.map { $0.applying(inkTransform ?? .identity) } : frames
         }
         return rects.reduce(nil) { $0?.union($1) ?? $1 }
+    }
+    /// Render bounds of the selected strokes, kept per drawing and selection:
+    /// a drag asks for the bounds several times per touch event, which went
+    /// through every stroke of a large handwriting selection each time
+    /// (Audit 7f8bfe7, Lasso Leistung).
+    private var cachedInkRects: (data: Data, ink: Set<Int>, rects: [CGRect])?
+    private func inkRects(_ data: Data) -> [CGRect] {
+        if let cached = cachedInkRects, cached.ink == ink, cached.data == data { return cached.rects }
+        guard let drawing = drawing(data) else { return [] }
+        let rects = drawing.strokes.enumerated().filter { ink.contains($0.offset) }.map(\.element.renderBounds)
+        cachedInkRects = (data, ink, rects)
+        return rects
     }
     /// Contour gap in page points: a constant few screen points at any zoom.
     private var contourGap: CGFloat { SelectionOutline.gap(displayScale: displayScale) }
@@ -1306,16 +1437,17 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         let title = UILabel(frame: CGRect(x: 20, y: 16, width: 280, height: 24))
         title.text = "Strich"; title.font = .systemFont(ofSize: 17, weight: .semibold); title.textColor = .white; root.addSubview(title)
         let slider = UISlider(frame: CGRect(x: 20, y: 48, width: 280, height: 44))
+        styleWidth = lineWidth
         if let index = ink.first, let drawing = drawing(content.drawing), drawing.strokes.indices.contains(index) {
             let stroke = drawing.strokes[index]
-            lineWidth = (stroke.path.map { max($0.size.width, $0.size.height) }.max() ?? lineWidth)
+            styleWidth = (stroke.path.map { max($0.size.width, $0.size.height) }.max() ?? lineWidth)
                 * max(hypot(stroke.transform.a, stroke.transform.b), hypot(stroke.transform.c, stroke.transform.d))
-        } else if let id = shapes.first, let shape = content.shapes.first(where: { $0.id == id }) { lineWidth = shape.lineWidth }
-        slider.minimumValue = 0.5; slider.maximumValue = 20; slider.value = Float(lineWidth)
+        } else if let id = shapes.first, let shape = content.shapes.first(where: { $0.id == id }) { styleWidth = shape.lineWidth }
+        slider.minimumValue = 0.5; slider.maximumValue = 20; slider.value = Float(styleWidth)
         slider.accessibilityLabel = "Strichstärke der Auswahl"
         slider.addAction(UIAction { [weak self, weak slider] _ in
             guard let self, let slider, self.active else { return }
-            self.lineWidth = Double(slider.value); self.applyStyle(changeWidth: true)
+            self.styleWidth = Double(slider.value); self.applyStyle(changeWidth: true)
         }, for: [.touchUpInside, .touchUpOutside]); root.addSubview(slider)
         let label = UILabel(frame: CGRect(x: 20, y: 98, width: 280, height: 24))
         label.text = "Farben"; label.font = .systemFont(ofSize: 17, weight: .semibold); label.textColor = .white; root.addSubview(label)
@@ -1372,7 +1504,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         let box = fitted(content.textBoxes[index])
         guard box.fill != choice.fill || box.border != choice.border else { return }
         guard var styled = box.styled(fill: choice.fill, border: choice.border, in: limits) else { return }
-        styled = fitted(styled)
+        styled = fitted(styled, styled.width != box.width ? .relayout : .kept) // narrower at the page edge: wraps anew
         if !styled.fits(in: limits), let shifted = styled.shifted(into: limits) { styled = shifted }
         guard styled.fits(in: limits), (try? styled.validate()) != nil else { return }
         var value = content; value.textBoxes[index] = styled
@@ -1402,9 +1534,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             }
             minimum = max(minimum, 1 / box.width, 1 / box.height)
         }
+        // The stroke width is held in its range (`ShapeObject.scaledLineWidth`),
+        // so it limits neither shrinking nor growing.
         for shape in initial.shapes where shapes.contains(shape.id) {
-            minimum = max(minimum, 0.5 / shape.lineWidth, 1 / max(1e-6, shape.frame.width, shape.frame.height))
-            maximum = min(maximum, 40 / shape.lineWidth)
+            minimum = max(minimum, 1 / max(1e-6, shape.frame.width, shape.frame.height))
             if shape.kind == .rectangle || shape.kind == .ellipse || shape.kind == .polygon {
                 minimum = max(minimum, 1 / shape.frame.width, 1 / shape.frame.height)
             }
@@ -1419,8 +1552,12 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         func point(_ p: PagePoint) -> PagePoint { let p = CGPoint(x: p.x, y: p.y).applying(transform); return .init(x: p.x, y: p.y) }
         for i in value.textBoxes.indices where texts.contains(value.textBoxes[i].id) {
             if isFieldSelection { value.textBoxes[i] = fitted(value.textBoxes[i]) }
-            guard let box = try? value.textBoxes[i].scaled(by: scale, around: anchor,
+            guard var box = try? value.textBoxes[i].scaled(by: scale, around: anchor,
                 translation: .init(x: dx, y: dy)), box.fits(in: limits) else { return nil }
+            // A single field aligned to the lines moves from line to line (a group keeps its layout).
+            if isFieldSelection { box = alignedText?(box) ?? box }
+            // A new size wraps anew: a single field like a new width, a group's fields in place where they would overflow.
+            if scale != 1 { box = fitted(box, isFieldSelection ? .relayout : .repaired) }
             value.textBoxes[i] = box
         }
         for i in value.images.indices where images.contains(value.images[i].id) {
@@ -1431,7 +1568,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         for i in value.shapes.indices where shapes.contains(value.shapes[i].id) {
             value.shapes[i] = value.shapes[i].mapped(point)
-            value.shapes[i].lineWidth *= scale
+            value.shapes[i].lineWidth = value.shapes[i].scaledLineWidth(scale)
             guard (try? value.shapes[i].validate()) != nil, limits.contains(value.shapes[i].bounds, tolerance: 0.02) else { return nil }
         }
         inkTransform = ink.isEmpty ? nil : transform
@@ -1458,7 +1595,13 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private func duplicateSelection() {
         guard !selectionLocked, let members = selectedMembers() else { return }
         let field = isFieldSelection
-        paste(members.content, from: members.bounds)
+        // Duplicating the copy just made again goes on in the same direction.
+        let series = lastDuplicate.flatMap { last -> CGPoint? in
+            guard last.pageID == pageID, abs(last.to.minX - members.bounds.minX) < 0.5, abs(last.to.minY - members.bounds.minY) < 0.5 else { return nil }
+            return CGPoint(x: last.to.minX - last.from.minX, y: last.to.minY - last.from.minY)
+        }
+        let placed = paste(members.content, from: members.bounds, direction: series)
+        lastDuplicate = placed.map { (pageID, members.bounds, $0) }
         if field, texts.count == 1, ink.isEmpty, images.isEmpty, shapes.isEmpty { fieldMode = true; refresh() }
     }
     private func copySelection() {
@@ -1466,10 +1609,32 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         ObjectClipboard.content = value; ObjectClipboard.bounds = frame
         // Pasting into another notebook stages the originals from this package.
         ImageAssetRegistry.shared.pinClipboard(value.images.map(\.asset))
-        // Field text also goes to the system pasteboard (other apps, text
-        // fields), in reading order; the copy stays the newest source.
+        ObjectClipboard.lastPaste = nil
+        // The system pasteboard always gets this copy (Audit 7f8bfe7, Lasso
+        // Fund 3): a picture of the selection (handwriting, shapes, images,
+        // fields) and the field text in reading order, so other apps and text
+        // fields never paste something older. The copy stays the newest source.
         let text = value.textBoxes.sorted { ($0.y, $0.x) < ($1.y, $1.x) }.map(\.text).filter { !$0.isEmpty }
-        if !text.isEmpty { UIPasteboard.general.string = text.joined(separator: "\n\n") }
+        var item: [String: Any] = [:]
+        if !text.isEmpty { item[UTType.utf8PlainText.identifier] = text.joined(separator: "\n\n") }
+        let strokes = (try? PKDrawing(data: value.drawing))?.strokes ?? []
+        let objects = MovedObjects(textBoxes: value.textBoxes, images: value.images, shapes: value.shapes)
+        // Rendered on the main thread: at most about 2 megapixels, and never
+        // with a grey placeholder for an image whose rendition is not decoded
+        // (then the picture would be wrong; text and the in-app copy remain).
+        if let png = SelectionTransfer.snapshot(objects: objects, ink: strokes, frame: frame, pixelScale: 2, page: pageContext?(),
+                                                maximumPixels: 2_000_000, placeholders: false)?.pngData() {
+            item[UTType.png.identifier] = png
+        }
+        // A dictionary has no order, so the pasteboard's first type is random:
+        // a marker says what this copy means after a restart, when the in-app
+        // copy is gone (`ObjectClipboard.pasteboardPrefersImage`): text alone
+        // for fields only, otherwise the picture.
+        if !item.isEmpty {
+            let textOnly = strokes.isEmpty && value.images.isEmpty && value.shapes.isEmpty && !text.isEmpty
+            item[ObjectClipboard.markerType] = Data((textOnly || item[UTType.png.identifier] == nil ? "text" : "image").utf8)
+        }
+        UIPasteboard.general.setItems(item.isEmpty ? [] : [item])
         ObjectClipboard.changeCount = UIPasteboard.general.changeCount
     }
     /// The one paste path of the sheet (`WorksheetView.pasteFromClipboard`)
@@ -1486,26 +1651,69 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     private func pasteSelection() {
         guard let copied = ObjectClipboard.content, let frame = ObjectClipboard.bounds else { return }
-        paste(copied, from: frame)
+        // Pasting again on the same page goes beside the last copy instead of
+        // onto it (Audit 7f8bfe7, Lasso Fund 7).
+        let previous = ObjectClipboard.lastPaste.flatMap { $0.pageID == pageID ? $0.frame : nil }
+        // Further pastes keep the direction of the series (original → last copy).
+        let direction = previous.map { CGPoint(x: $0.minX - frame.minX, y: $0.minY - frame.minY) }
+        if let placed = paste(copied, from: frame, beside: previous, direction: direction) { ObjectClipboard.lastPaste = (pageID, placed) }
     }
-    /// New copies (new IDs) of `copied`, 24 pt beside `frame` and on the page; selected.
-    private func paste(_ copied: PageContent, from frame: CGRect) {
+    /// New copies (new IDs) of `copied` (whose members span `frame`), 24 pt
+    /// beside `frame` – or beside `previous`, an earlier copy – and on the
+    /// page (`PasteOffset`: left/up when there is no room, `direction`: the
+    /// way a series of copies went so far); never exactly onto the original
+    /// or an earlier copy while the page has another place. Selected.
+    /// Returns where the copy went.
+    @discardableResult
+    private func paste(_ copied: PageContent, from frame: CGRect, beside previous: CGRect? = nil, direction: CGPoint? = nil) -> CGRect? {
         let bounds = limits.cgRect
         guard frame.width <= bounds.width, frame.height <= bounds.height else {
-            onError?("Die kopierte Auswahl ist zu groß für diese Seite und wurde nicht eingefügt."); return
+            onError?("Die kopierte Auswahl ist zu groß für diese Seite und wurde nicht eingefügt."); return nil
+        }
+        let pasted = copied.drawing.isEmpty ? PKDrawing() : ((try? PKDrawing(data: copied.drawing)) ?? PKDrawing())
+        // An unreadable page drawing is never replaced by the pasted strokes
+        // (like the eraser, `beginErase`): nothing is pasted.
+        guard let drawing = content.drawing.isEmpty ? PKDrawing() : try? PKDrawing(data: content.drawing) else {
+            onError?("Die Handschrift dieser Seite konnte nicht gelesen werden; es wurde nichts eingefügt."); return nil
         }
         clearSelection()
         var value = content
-        let dx = max(bounds.minX - frame.minX, min(24, bounds.maxX - frame.maxX))
-        let dy = max(bounds.minY - frame.minY, min(24, bounds.maxY - frame.maxY))
-        for box in copied.textBoxes { var box = box; box.id = UUID(); box.x += dx; box.y += dy; texts.insert(box.id); value.textBoxes.append(box) }
-        for image in copied.images { var image = image; image.id = UUID(); image.x += dx; image.y += dy; images.insert(image.id); value.images.append(image) }
+        let reference = previous.map { CGRect(origin: $0.origin, size: frame.size) } ?? frame
+        // One member stands for the copy: lying exactly on an object of its
+        // kind means lying on the original or an earlier copy.
+        let probe: (frame: CGRect, existing: [CGRect])? = {
+            func rect(_ image: ImageObject) -> CGRect { CGRect(x: image.x, y: image.y, width: image.width, height: image.height) }
+            func rect(_ box: TextBox) -> CGRect { CGRect(x: box.x, y: box.y, width: box.width, height: box.height) }
+            if let image = copied.images.first { return (rect(image), content.images.map(rect)) }
+            if let shape = copied.shapes.first { return (shape.bounds.cgRect, content.shapes.map(\.bounds.cgRect)) }
+            if let box = copied.textBoxes.first { return (rect(box), content.textBoxes.map(rect)) }
+            if let stroke = pasted.strokes.first { return (stroke.renderBounds, drawing.strokes.map(\.renderBounds)) }
+            return nil
+        }()
+        let step = PasteOffset.offset(for: PageRect(reference), in: PageRect(bounds),
+                                      direction: (Double(direction?.x ?? 1), Double(direction?.y ?? 1))) { sx, sy in
+            guard let probe else { return false }
+            let moved = probe.frame.offsetBy(dx: reference.minX + sx - frame.minX, dy: reference.minY + sy - frame.minY)
+            return probe.existing.contains { abs($0.minX - moved.minX) < 0.5 && abs($0.minY - moved.minY) < 0.5
+                && abs($0.width - moved.width) < 0.5 && abs($0.height - moved.height) < 0.5 }
+        }
+        let dx = reference.minX + step.dx - frame.minX, dy = reference.minY + step.dy - frame.minY
+        for box in copied.textBoxes {
+            var box = box; box.id = UUID(); box.x += dx; box.y += dy
+            box = fitted(box, .repaired) // other lines here (another paper): never overflowing because of them
+            texts.insert(box.id); value.textBoxes.append(box)
+        }
+        for image in copied.images { var image = image; image.id = UUID(); image.locked = false; image.x += dx; image.y += dy; images.insert(image.id); value.images.append(image) }
         for shape in copied.shapes { var shape = shape.translated(x: dx, y: dy); shape.id = UUID(); shapes.insert(shape.id); value.shapes.append(shape) }
-        let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()
-        let pasted = ((try? PKDrawing(data: copied.drawing)) ?? PKDrawing()).transformed(using: .init(translationX: dx, y: dy))
-        ink = Set(drawing.strokes.count..<(drawing.strokes.count + pasted.strokes.count))
-        value.drawing = PKDrawing(strokes: drawing.strokes + pasted.strokes).dataRepresentation()
-        if !commit(value, previous: content) { clearSelection() }; refresh()
+        if !pasted.strokes.isEmpty {
+            // Without pasted strokes the page drawing stays as it is (no re-encoding).
+            let moved = pasted.transformed(using: .init(translationX: dx, y: dy))
+            ink = Set(drawing.strokes.count..<(drawing.strokes.count + moved.strokes.count))
+            value.drawing = PKDrawing(strokes: drawing.strokes + moved.strokes).dataRepresentation()
+        }
+        let placed = commit(value, previous: content)
+        if !placed { clearSelection() }; refresh()
+        return placed ? frame.offsetBy(dx: dx, dy: dy) : nil
     }
     private func deleteSelection() {
         // Without a selection Backspace/„Löschen“ must not re-encode the ink
@@ -1520,8 +1728,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         }
         _ = commit(value, previous: content); clearSelection(); refresh()
     }
+    /// `changeWidth`: only the width changes (`styleWidth`), every colour
+    /// stays; otherwise only the colour (`color`) changes.
     private func applyStyle(changeWidth: Bool = false) {
         var value = content
+        let lineWidth = styleWidth
         if !ink.isEmpty, var drawing = try? PKDrawing(data: content.drawing) {
             drawing.strokes = drawing.strokes.enumerated().map { index, stroke in
                 guard ink.contains(index) else { return stroke }
@@ -1533,20 +1744,27 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                     force: p.force, azimuth: p.azimuth, altitude: p.altitude, secondaryScale: p.secondaryScale) }
                 // Highlighter strokes (chisel marker, round monoline) keep their
                 // translucency: an opaque round marker would hide the text below.
+                // The width slider keeps every colour (Audit 7f8bfe7, Lasso Fund 1).
                 let highlighter = stroke.ink.inkType == .marker || stroke.ink.inkType == .monoline
                 let inkColor = highlighter ? color.uiColor.withAlphaComponent(stroke.ink.color.cgColor.alpha) : color.uiColor
-                return PKStroke(ink: PKInk(stroke.ink.inkType, color: inkColor),
+                // A width change keeps each stroke's own ink (colour included).
+                return PKStroke(ink: changeWidth ? stroke.ink : PKInk(stroke.ink.inkType, color: inkColor),
                     path: PKStrokePath(controlPoints: points, creationDate: stroke.path.creationDate), transform: stroke.transform, mask: stroke.mask)
             }
             value.drawing = drawing.dataRepresentation()
         }
-        for i in value.textBoxes.indices where texts.contains(value.textBoxes[i].id) {
-            value.textBoxes[i].style.ink = color
-            value.textBoxes[i].runs = value.textBoxes[i].runs?.map { run in var run = run; run.style.ink = color; return run }
+        // A colour ends a field's automatic colour (`TextBox.recolored`);
+        // the width slider changes neither fields nor colours.
+        for i in value.textBoxes.indices where !changeWidth && texts.contains(value.textBoxes[i].id) {
+            value.textBoxes[i] = value.textBoxes[i].recolored(color)
         }
         for i in value.shapes.indices where shapes.contains(value.shapes[i].id) {
-            value.shapes[i] = value.shapes[i].recolored(color)
-            if changeWidth { value.shapes[i].lineWidth = lineWidth }
+            if changeWidth { value.shapes[i].lineWidth = lineWidth } else { value.shapes[i] = value.shapes[i].recolored(color) }
+        }
+        // A wider stroke must not reach over the page edge (the notebook would refuse it).
+        if changeWidth, value.shapes.contains(where: { shape in shapes.contains(shape.id) && !limits.contains(shape.bounds, tolerance: 0.02) }) {
+            onError?("Mit dieser Strichstärke würde eine Form über den Seitenrand ragen. Bitte die Form zuerst etwas nach innen schieben.")
+            return
         }
         _ = commit(value, previous: content); refresh()
     }

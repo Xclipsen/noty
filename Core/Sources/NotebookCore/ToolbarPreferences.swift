@@ -22,6 +22,14 @@ public struct InkColor: Codable, Equatable, Sendable {
             throw ToolbarError.invalid
         }
     }
+    /// Each component in 0…1 (not finite: 0, alpha 1). The system colour
+    /// picker can deliver extended-sRGB/P3 values beyond that range, which
+    /// every stored colour (preferences, shapes, text) rejects; app colours
+    /// are converted to sRGB and clamped before they become an `InkColor`.
+    public var clamped: InkColor {
+        func unit(_ value: Double, _ fallback: Double) -> Double { value.isFinite ? min(1, max(0, value)) : fallback }
+        return InkColor(unit(red, 0), unit(green, 0), unit(blue, 0), unit(alpha, 1))
+    }
 }
 
 /// Highlighter tip (Build 45). Round writes PencilKit monoline ink at
@@ -208,6 +216,34 @@ public struct ToolbarPreferences: Codable, Equatable, Sendable {
         for (slot, item) in zip(slots, visible) { order[slot] = item == .inkSelection ? .selection : item }
     }
 
+    /// „Ganzes Notizbuch umstellen“: a neutral pen, highlighter or pencil of
+    /// the old contrast colour would write invisibly, so it swaps like the ink
+    /// (`PaperInkInversion`). The pencil's default graphite (0.23) also turns
+    /// white on dark paper; a light pencil returns to graphite on white paper.
+    public mutating func followPaper(_ color: PaperColor) {
+        if let pen = PaperInkInversion.converted(penColor, to: color) { penColor = pen }
+        if let marker = PaperInkInversion.converted(markerColor, to: color) { markerColor = marker }
+        let pencil = effectivePencilColor
+        switch color {
+        case .dark:
+            if pencilColor == nil || pencil == Self.defaultPencilColor {
+                pencilColor = InkColor(1, 1, 1, pencil.alpha)
+            } else if let converted = PaperInkInversion.converted(pencil, to: .dark) { pencilColor = converted }
+        case .white:
+            if PaperInkInversion.converted(pencil, to: .white) != nil {
+                var graphite = Self.defaultPencilColor; graphite.alpha = pencil.alpha; pencilColor = graphite
+            }
+        }
+    }
+    /// Stored colours in 0…1 (`InkColor.clamped`): preferences are clamped
+    /// when loaded and before they are saved instead of being refused, so one
+    /// out-of-range colour can never block the tool settings or a backup.
+    public mutating func clampColors() {
+        penColor = penColor.clamped; markerColor = markerColor.clamped
+        pencilColor = pencilColor?.clamped; laserColor = laserColor?.clamped; shapeFillColor = shapeFillColor?.clamped
+        for index in presets.indices { presets[index].color = presets[index].color.clamped }
+    }
+
     public var effectiveDock: ToolbarDock { dockOnly != false && dock == .floating ? .top : dock }
     public func dropDestination(near target: ToolbarDock?) -> ToolbarDock {
         target ?? (dockOnly == false ? .floating : effectiveDock)
@@ -271,6 +307,7 @@ public struct ToolbarPreferences: Codable, Equatable, Sendable {
             value.order = Self.addingFormat8Tools(to: value.order)
             value.formatVersion = 8
         }
+        value.clampColors()
         try value.validate(); return value
     }
 }
@@ -323,6 +360,7 @@ public actor ToolbarPreferenceStore {
     public func save(_ preferences: ToolbarPreferences, revision: Int) throws {
         guard revision >= latestRevision else { return }
         if !loaded { _ = try load() }
+        var preferences = preferences; preferences.clampColors()
         try preferences.validate()
         let data = try JSONEncoder().encode(preferences)
         guard data.count <= 64_000 else { throw ToolbarError.invalid }

@@ -1,5 +1,27 @@
 # Lokaler Revisionsspeicher – Format 1
 
+## Ergänzung 05.11.2026 · Notebook-Schema 16 (Textfelder an Linien ausrichten)
+
+Branch `feat/textlinien`, [TEXT-FIELDS](TEXT-FIELDS.md). `TextBox.alignsToLines` (nur `true`; fehlt = freie Zeilen wie bisher).
+
+- **Warum keine vorhandene Eigenschaft:** `flowRegion` ohne `flowID` bedeutet „aus Seitentext migriert“: Raster am Anfang der früheren Region verankert (die Zeilen wandern mit dem Feld, Feedback zu Build 62) und im Rand in Randeinheiten. Das neue Verhalten (Zeilen auf den Papierlinien unter dem Feld, Region nach Lage, Seiteneinheiten) hätte die Bedeutung migrierter Felder geändert und bestehende Felder verschoben. Ohne Sperre würden ältere Builds die Ausrichtung still ignorieren (anderes Layout, Höhe/Überlauf).
+- **Formregeln (Swift `TextBox.validate`/`Notebook.validate`, Python `notebook_format.py`):** Wert nur `true`, nur ab Schema 16, nie an Flusssegmenten (`flowID`); erlaubt mit Drehung, automatischer Breite, Feldstil und an migrierten Feldern (`flowRegion`). Textdokumente (15) werden durch ein ausgerichtetes freies Feld ebenfalls 16.
+- **Schema:** Erst ein Feld mit der Eigenschaft hebt an (`raiseSchemaForTextFields`, alle Textschreibwege inkl. `replaceContent(s)`, `CrossPageTransfer`, Fluss-/Restyle-Pfade; `pastePage` übernimmt das höhere Schema); Ausschalten und Undo senken nie. Felder ohne Schalter bleiben byte-gleich im alten Format; neue Felder auf Blanko/PDF bekommen ihn nicht. Ab 17 gesperrt (`unsupportedSchema`); „ab 16 gesperrt“ in den Abschnitten zu Schema 14/15 ist überholt.
+- **Migration:** keine Datenumwandlung. Der erste Commit mit Schema 16 sichert die exakten bestätigten Altbytes unter `Migrations/<UUID>/notebook-v<alt>.json`; scheitert das, gibt es keinen Commit (`testFirstSchemaSixteenCommitArchivesExactConfirmedOldBytes`, Host-Roundtrip `checkLineAlignment`: Schema-14-Paket aus der Bibliothek, Altbytes exakt, bestehendes gedrehtes Feld unverändert).
+- **Ältere Builds (bis Build 108, `main` Build 96):** sperren Schema-16-Hefte mit „Dokumentformat 16 … nicht unterstützt“, ohne zu schreiben; Bibliotheksbackups mit solchen Heften scheitern dort.
+- **Layer:** Papierkorb, Revisionen, Heft-/Bibliotheksbackup, Seitenkopien (neue Feld-IDs, Schalter bleibt), Vorschau und PDF; Archiv-, Manifest- und Werkzeugformat unverändert.
+
+Nachweise: Core-Tests `TextLineAlignmentTests` (Zukunftsfälle der älteren Tests auf 17 umgestellt), `check_verifiers.sh` (Schema 16 positiv, auch Textdokument; `false`, Typfehler, Zahl, Fluss, Schema 15, Schema 17 negativ, auch mit `python3 -O`), Host-Roundtrip (Paket, `.noty`, Bibliotheksbackup/-restore von Python geprüft). **Nicht installiert, am iPad ungeprüft.**
+
+## Ergänzung 03.11.2026 · Gesetzes-Markierungen (`NotyLaws/personal.json`)
+
+Getrennt von den Heftpaketen; einziger Schreiber ist der Actor `LawPersonalStore` (Core). Weiter `schemaVersion` 1, nur optionale Felder ergänzt (`deletedAt`, `rejection`, `localOnly` je Eintrag, `forgotten` im Stand); andere Schemata sperren den Bestand ohne Schreiben.
+
+- **Ein Schreibvorgang je Änderungssatz:** `batch(puts:removes:owner:)`, `record(_:)` (alle Antworten eines Push), `apply(_:owner:)` (eine Pull-Seite) prüfen vollständig und schreiben einmal atomar oder gar nicht; ohne Änderung wird nicht geschrieben. Ein Schreibfehler lässt Datei und Speicherstand unverändert. Vor dem Schreiben wird ausgeschlossen, dass ein Stand mit Duplikaten entsteht.
+- **Eindeutigkeit:** Art + UUID ist über alle Eigentümer eindeutig. Ältere Dateien mit Duplikaten werden beim Laden zusammengeführt (höchste Revision gewinnt, eine Löschung irgendeiner Kopie bleibt erhalten), nachdem die exakten Altbytes als `personal.json.before-repair-<UTC-Zeit>` daneben gesichert und zurückgelesen wurden.
+- **Löschmarken:** bestätigte Löschungen (bzw. Gastlöschungen) verlieren nach 30 Tagen ihren Inhalt; Art + ID bleibt in `forgotten` und wird nie wieder angelegt, wiederhergestellt oder aus dem Abgleich übernommen. Sicherungen tragen `forgotten` mit.
+- Nachweise: `LawPersonalSyncTests`, `LawLibraryTests`. Am iPad ungeprüft.
+
 ## Ergänzung 03.11.2026 · Ein Schreiber je Heftpaket
 
 Befund: Lud ein Editor ein Heft, bevor das Anhängen einer geteilten Datei über die Bibliothek fertig war, schrieb er beim nächsten Speichern ein Manifest aus seinem alten Stand, und sein Aufräumen löschte die angehängte Revision (unbekannt, nicht im eigenen Manifest).

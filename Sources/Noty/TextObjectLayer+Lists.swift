@@ -14,16 +14,10 @@ final class SimultaneousTap: NSObject, UIGestureRecognizerDelegate {
 
 extension TextObjectLayer {
     func connectListInput(_ editor: PageTextView) {
+        // Hardware Tab/⇧Tab: the same rule as the on-screen Tab (`handleIndentInput`).
         editor.onListTab = { [weak self, weak editor] outdent in
             guard let self, let editor else { return false }
-            if self.nestList(editor, outdent: outdent) { return true }
-            if editor.markedTextRange == nil, let index = self.boxes.firstIndex(where: { $0.id == editor.objectID }),
-               let edits = TextTabs.edits(in: editor.text ?? "", selection: editor.selectedRange, outdent: outdent) {
-                self.applyListEdits(edits, at: index, editor: editor)
-                return true
-            }
-            if outdent { self.indentFromBar(outdent: true) }
-            return outdent
+            return self.indentTab(editor, outdent: outdent) || outdent
         }
         editor.onMaterializePlacement = { [weak self, weak editor] placement in
             guard let self, let editor else { return }
@@ -77,8 +71,7 @@ extension TextObjectLayer {
         guard let result = TextPlacement.below(tap: .init(x: Double(local.x), y: Double(local.y)), top: Double(top), endsWithBreak: ends,
                 width: width, height: Double(editor.bounds.height - inset.top - inset.bottom),
                 lineHeight: Double(font.lineHeight), ascent: ascent, descent: descent,
-                ruling: editor.rulingOrigin == nil ? nil : editor.rulingLines, origin: Double(editor.rulingOrigin ?? 0),
-                pageTop: editor.rulingPageTop.map(Double.init)),
+                ruling: editor.lineGrid?.ruling, origin: editor.lineGrid?.origin ?? 0, pageTop: editor.lineGrid?.pageTop),
               result.newlines > 0 else { return nil }
         return CaretPlacement(location: length, newlines: result.newlines,
             caret: CGRect(x: Double(inset.left), y: result.baseline - ascent + Double(inset.top), width: 2, height: ascent + descent))
@@ -104,45 +97,81 @@ extension TextObjectLayer {
         editor.typingAttributes = typing
     }
 
-    /// Tab, ⇧Tab, the indent buttons and Return on an empty nested item.
-    func nestList(_ editor: PageTextView, outdent: Bool) -> Bool {
+    /// Tab and ⇧Tab of both keyboards and the indent buttons
+    /// (`TextIndentEditing.tab`, `wholeParagraphs` for the buttons). False:
+    /// Tab types an ordinary tab at the caret, ⇧Tab changes nothing.
+    @discardableResult
+    func indentTab(_ editor: PageTextView, outdent: Bool, wholeParagraphs: Bool = false) -> Bool {
         guard active, editor.markedTextRange == nil, fields[editor.objectID]?.editor === editor,
-              let index = boxes.firstIndex(where: { $0.id == editor.objectID }),
-              let plan = boxes[index].listNesting(selection: editor.selectedRange, outdent: outdent) else { return false }
+              let index = boxes.firstIndex(where: { $0.id == editor.objectID }) else { return false }
+        if boxes[index].flowID != nil { return flowIndentTab(editor, outdent: outdent, wholeParagraphs: wholeParagraphs) }
+        guard let plan = TextIndentEditing.tab(boxes[index], selection: editor.selectedRange, outdent: outdent,
+                                               wholeParagraphs: wholeParagraphs) else { return false }
+        applyIndentPlan(plan, at: index, editor: editor)
+        return true
+    }
+    /// Flow segments: the rule on the whole flow, so a paragraph that runs
+    /// over pages (its real start on the page before) changes as a whole; its
+    /// older indent through `restyle`, as the indent buttons did before.
+    private func flowIndentTab(_ editor: PageTextView, outdent: Bool, wholeParagraphs: Bool) -> Bool {
+        guard let flow = flowActions, let content = flow.content(),
+              let start = flow.offset(editor.objectID, editor.selectedRange.location) else { return false }
+        let selection = NSRange(location: start, length: editor.selectedRange.length)
+        guard NSMaxRange(selection) <= (content.text as NSString).length,
+              let plan = TextIndentEditing.tab(content, selection: selection, outdent: outdent, wholeParagraphs: wholeParagraphs) else { return false }
         editor.placement = nil
-        let previous = boxes[index]
+        for change in plan.indents where change.paragraph.length > 0 { flow.restyle(change.paragraph) { $0.indent = change.indent } }
+        // One step for the text; the model renumbers the lists over the pages.
+        if !plan.edits.isEmpty { flow.edit(plan.edits, TextListEditing.selection(selection, after: plan.edits).location) }
+        return true
+    }
+    /// Paragraph indents, then tabs and marks, then the renumbering
+    /// (`TextIndentEditing.Plan`), as one change of the field.
+    func applyIndentPlan(_ plan: TextIndentEditing.Plan, at index: Int, editor: PageTextView) {
+        editor.placement = nil
+        let previous = boxes[index], storage = editor.textStorage
+        let caretStart = TextLines.start(storage.string as NSString, editor.selectedRange.location)
         var selection = editor.selectedRange
         updating = true
-        editor.textStorage.beginEditing()
-        for (range, indent) in zip(plan.paragraphs, plan.indents) where NSMaxRange(range) <= editor.textStorage.length {
-            editor.textStorage.enumerateAttribute(.paragraphStyle, in: range) { value, part, _ in
+        storage.beginEditing()
+        for change in plan.indents where NSMaxRange(change.paragraph) <= storage.length {
+            storage.enumerateAttribute(.paragraphStyle, in: change.paragraph) { value, part, _ in
                 let style = ((value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
-                style.headIndent = indent; style.firstLineHeadIndent = indent
-                editor.textStorage.addAttribute(.paragraphStyle, value: style, range: part)
+                style.firstLineHeadIndent = change.indent; style.headIndent = change.indent
+                storage.addAttribute(.paragraphStyle, value: style, range: part)
             }
         }
-        for batch in [plan.markers, plan.renumbering] {
+        for batch in [plan.edits, plan.renumbering] {
             replace(batch, in: editor); selection = TextListEditing.selection(selection, after: batch)
         }
-        editor.textStorage.endEditing()
+        storage.endEditing()
         editor.selectedRange = selection
+        // Typing in the paragraph (also an empty last one) goes on with its new indent.
+        if let change = plan.indents.first(where: { $0.paragraph.location == caretStart }),
+           let typing = editor.typingAttributes[.paragraphStyle] as? NSParagraphStyle,
+           let next = typing.mutableCopy() as? NSMutableParagraphStyle {
+            next.firstLineHeadIndent = change.indent; next.headIndent = change.indent
+            editor.typingAttributes[.paragraphStyle] = next
+        }
         updating = false
         boxes[index].capture(editor.attributedText); fields[boxes[index].id]?.content = boxes[index]
         grow(index); synchronize()
         if boxes[index].flowID != nil { commitFlow(previous: previous, editor: editor) }
         else { publish() }
         layoutIfNeeded(); requestCaretReveal(.typing)
-        return true
     }
+    /// The indent buttons of the format bar: Tab or ⇧Tab in the prefix of every touched paragraph.
     func indentFromBar(outdent: Bool) {
-        if let editor = selectedID.flatMap({ fields[$0]?.editor }), nestList(editor, outdent: outdent) { return }
-        changeStyle({ $0.indent = outdent ? max(0, ($0.indent ?? 0) - 20) : min(240, ($0.indent ?? 0) + 20) }, paragraph: true)
+        guard let editor = selectedID.flatMap({ fields[$0]?.editor }) else { return }
+        indentTab(editor, outdent: outdent, wholeParagraphs: true)
     }
 
     private func replace(_ edits: [TextListEditing.Edit], in editor: PageTextView) {
         for edit in edits.sorted(by: { $0.range.location > $1.range.location }) where NSMaxRange(edit.range) <= editor.textStorage.length {
             let location = min(edit.range.location, max(0, editor.textStorage.length - 1))
-            let attributes = editor.textStorage.length > 0 ? editor.textStorage.attributes(at: location, effectiveRange: nil) : editor.typingAttributes
+            // At the very end (an empty last paragraph) the typing format, not the line before.
+            let atEnd = edit.range.length == 0 && edit.range.location == editor.textStorage.length
+            let attributes = editor.textStorage.length > 0 && !atEnd ? editor.textStorage.attributes(at: location, effectiveRange: nil) : editor.typingAttributes
             editor.textStorage.replaceCharacters(in: edit.range, with: NSAttributedString(string: edit.replacement, attributes: attributes))
         }
     }
@@ -163,21 +192,59 @@ extension TextObjectLayer {
         boxes[index].capture(editor.attributedText); fields[boxes[index].id]?.content = boxes[index]
     }
 
-    /// Tab inserts no tab in lists; Return on an empty nested item moves it out
-    /// one level instead of ending the list. Remembers a typed space.
-    func handleListInput(_ textView: UITextView, range: NSRange, text: String) -> Bool? {
-        guard let editor = textView as? PageTextView, !insertingList, editor.markedTextRange == nil else { return nil }
+    /// Tab, Return and ⌫ by the rules of `TextIndentEditing` (also the
+    /// on-screen Tab over several lines, like the hardware Tab). nil: the text
+    /// view types as usual. Remembers a typed space.
+    func handleIndentInput(_ textView: UITextView, range: NSRange, text: String) -> Bool? {
+        guard let editor = textView as? PageTextView, !insertingList, editor.markedTextRange == nil,
+              fields[editor.objectID]?.editor === editor, let index = boxes.firstIndex(where: { $0.id == editor.objectID }) else { return nil }
         editor.typedSpace = text == " " && range.length == 0
-        if text == "\t", nestList(editor, outdent: false) { return false }
-        if text == "\n", let edit = TextListEditing.newline(in: editor.text ?? "", range: range), edit.replacement.isEmpty,
-           let box = boxes.first(where: { $0.id == editor.objectID }),
-           box.listLevel(at: TextLines.lineRange((editor.text ?? "") as NSString, NSRange(location: range.location, length: 0)).location) > 0,
-           nestList(editor, outdent: true) { return false }
-        return nil
+        switch text {
+        case "\t":
+            return indentTab(editor, outdent: false) ? false : nil
+        case "\n":
+            let rules = indentRules(boxes[index])
+            switch TextIndentEditing.newline(boxes[index], range: range, canChangeIndent: rules.canChangeIndent, continuation: rules.continuation) {
+            case .edit(let edit)?:
+                if edit.replacement.hasPrefix("\n") {
+                    // One native insertion: one undo step for the break and its indent.
+                    insertingList = true; defer { insertingList = false }
+                    editor.selectedRange = edit.range; editor.insertText(edit.replacement)
+                } else { applyListEdits([edit], at: index, editor: editor) }
+                return false
+            case .plan(let plan)?:
+                applyIndentPlan(plan, at: index, editor: editor)
+                return false
+            case nil: return nil
+            }
+        case "" where range.length > 0 && editor.selectedRange.length == 0 && NSMaxRange(range) == editor.selectedRange.location:
+            return backspace(editor, at: index) ? false : nil
+        default: return nil
+        }
+    }
+    /// ⌫ behind a list mark or at the start of an indented paragraph (`TextIndentEditing.backspace`).
+    @discardableResult
+    func backspace(_ editor: PageTextView, at index: Int) -> Bool {
+        let rules = indentRules(boxes[index])
+        switch TextIndentEditing.backspace(boxes[index], caret: editor.selectedRange.location,
+                                           canChangeIndent: rules.canChangeIndent, continuation: rules.continuation) {
+        case .edit(let edit)?: applyListEdits([edit], at: index, editor: editor)
+        case .plan(let plan)?: applyIndentPlan(plan, at: index, editor: editor)
+        case nil: return false
+        }
+        return true
+    }
+    /// ⌫ at the very start of a free field: UIKit asks no delegate there.
+    func backspaceAtStart(_ editor: PageTextView) -> Bool {
+        guard active, editor.markedTextRange == nil, editor.selectedRange == NSRange(location: 0, length: 0),
+              fields[editor.objectID]?.editor === editor,
+              let index = boxes.firstIndex(where: { $0.id == editor.objectID }), boxes[index].flowID == nil else { return false }
+        return backspace(editor, at: index)
     }
 
-    /// "- ", "* ", "1) ", "[] " … at a paragraph start become a list: a
-    /// separate undo step, so one undo restores the typed characters.
+    /// "* ", "1) ", "[] " … at a paragraph start become a list, „-> “ and the
+    /// like an arrow (`TextArrowReplacement`): each a separate undo step, so
+    /// one undo restores the typed characters.
     func finishListInput(_ editor: PageTextView) {
         guard editor.typedSpace else { return }
         editor.typedSpace = false
@@ -185,9 +252,33 @@ extension TextObjectLayer {
               let index = boxes.firstIndex(where: { $0.id == editor.objectID }) else { return }
         let text = editor.text ?? "", caret = editor.selectedRange.location
         let start = TextLines.lineRange(text as NSString, NSRange(location: max(0, caret - 1), length: 0)).location
-        guard let edit = TextListEditing.autoList(in: text, caret: caret, level: boxes[index].listLevel(at: start)) else { return }
+        if let edit = TextListEditing.autoList(in: text, caret: caret, level: boxes[index].listLevel(at: start)) {
+            onUndoBoundary?()
+            applyListEdits([edit], at: index, editor: editor)
+            onUndoBoundary?()
+            return
+        }
+        let enabled = UserDefaults.standard.object(forKey: AppSettingsKey.arrows) as? Bool ?? true
+        guard enabled, let replacement = TextArrowReplacement.replacement(in: text, caret: caret) else { return }
+        // ⌫ brought these characters back here: they stay.
+        if let kept = keptArrow, kept.id == editor.objectID, kept.location == replacement.edit.range.location { return }
+        keptArrow = nil
         onUndoBoundary?()
+        applyListEdits([replacement.edit], at: index, editor: editor)
+        onUndoBoundary?()
+        replacedArrow = (editor.objectID, replacement)
+    }
+    /// ⌫ right behind an arrow just written: the typed characters come back
+    /// at once (synchronously, no new replacement at this place).
+    func restoreArrow(_ textView: UITextView, range: NSRange, text: String) -> Bool {
+        guard let (id, replacement) = replacedArrow else { return false }
+        replacedArrow = nil
+        guard let editor = textView as? PageTextView, editor.objectID == id, !insertingList, editor.markedTextRange == nil,
+              text.isEmpty, editor.selectedRange.length == 0, NSMaxRange(range) == editor.selectedRange.location,
+              let index = boxes.firstIndex(where: { $0.id == id }),
+              let edit = TextArrowReplacement.restoring(replacement, in: editor.text ?? "", caret: editor.selectedRange.location) else { return false }
+        keptArrow = (id, edit.range.location)
         applyListEdits([edit], at: index, editor: editor)
-        onUndoBoundary?()
+        return true
     }
 }

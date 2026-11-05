@@ -54,6 +54,11 @@ final class EditorModel: ObservableObject {
         if active { activeInteractions.insert(id) } else { activeInteractions.remove(id) }
     }
     func pauseMutations() { mutationsPaused = true }
+    /// For input reports (`InputProbe`): flags only, no content.
+    var probeState: String {
+        "schreibbar=\(writable) beschäftigt=\(busy) pausiert=\(mutationsPaused) eingaben=\(activeInteractions.count)"
+            + " speicherfehler=\(saveFailed) bildlesen=\(imageReading) revision=\(revision)"
+    }
     func resumeMutations() {
         mutationsPaused = false
         let waiters = mutationWaiters; mutationWaiters = []
@@ -409,7 +414,10 @@ final class EditorModel: ObservableObject {
             return outcome
         } catch {
             history.removeAll()
-            self.error = "Rückgängig nicht möglich: \(error.localizedDescription)"
+            // A broken image limit by name, not as a „damaged file“.
+            let reason = notebook.imageLimitProblem(installing: outcome.notebook).map { ImageImportError($0).localizedDescription }
+                ?? error.localizedDescription
+            self.error = "\(redo ? "Wiederholen" : "Rückgängig") nicht möglich: \(reason)"
             return nil
         }
     }
@@ -552,7 +560,12 @@ final class EditorModel: ObservableObject {
     /// gesture's coalescing key, so eraser ink and shapes undo together.
     func updateContent(_ content: PageContent, basedOn previous: PageContent, pageID: UUID, inkGesture: Bool = false) -> Bool {
         HangProbe.hit("Model.updateContent")
-        guard writable, !mutationsPaused, !busy, let index = notebook.pages.firstIndex(where: { $0.id == pageID }),
+        // A running backup or page operation is no change elsewhere (Audit 7f8bfe7, Radierer Fund 4).
+        if writable, mutationsPaused || busy {
+            error = "Gerade läuft ein anderer Vorgang (etwa eine Sicherung). Die Änderung wurde nicht übernommen; bitte gleich noch einmal versuchen."
+            return false
+        }
+        guard writable, let index = notebook.pages.firstIndex(where: { $0.id == pageID }),
               PageContent(page: notebook.pages[index]) == previous else {
             error = "Die Seite wurde inzwischen in einer anderen Ansicht geändert. Bitte die Auswahl erneut setzen."
             return false
@@ -571,7 +584,15 @@ final class EditorModel: ObservableObject {
                 recordChange(.objects, pageID: pageID, before: previous)
             }
             scheduleSave(); return true
-        } catch { self.error = "Objektänderung nicht übernommen: \(error.localizedDescription)"; return false }
+        } catch {
+            // A broken limit by name, not as a „damaged file“ (`StorageError.invalidDocument`).
+            if let problem = notebook.imageLimitProblem(replacing: pageID, with: content.images) {
+                self.error = "Objektänderung nicht übernommen: \(ImageImportError(problem).localizedDescription)"
+            } else if case StorageError.invalidDocument = error {
+                self.error = "Objektänderung nicht übernommen: Das Ergebnis läge nicht vollständig auf der Seite oder überschreitet eine Grenze der Seite. Der bisherige Stand bleibt erhalten."
+            } else { self.error = "Objektänderung nicht übernommen: \(error.localizedDescription)" }
+            return false
+        }
     }
 
     /// Atomic multi-page content change (selection moved to another page and
@@ -580,7 +601,11 @@ final class EditorModel: ObservableObject {
     @discardableResult
     func replaceContents(_ changes: [PageContentReplacement]) -> Bool {
         HangProbe.hit("Model.replaceContents")
-        guard writable, !mutationsPaused, !busy else { return false }
+        guard writable else { return false }
+        if mutationsPaused || busy {
+            error = "Gerade läuft ein anderer Vorgang (etwa eine Sicherung). Die Änderung wurde nicht übernommen; bitte gleich noch einmal versuchen."
+            return false
+        }
         do {
             try adoptImageAssets(changes.flatMap(\.replacement.images))
             var candidate = notebook; try candidate.replaceContents(changes)
@@ -603,7 +628,12 @@ final class EditorModel: ObservableObject {
             scheduleSave(); return true
         } catch CrossPageTransferError.conflict {
             error = "Die Seiten wurden inzwischen geändert. Bitte die Auswahl erneut setzen."; return false
-        } catch { self.error = "Verschieben nicht übernommen: \(error.localizedDescription)"; return false }
+        } catch {
+            let problem = notebook.imageLimitProblem(replacing: Dictionary(changes.map { ($0.pageID, $0.replacement.images) },
+                                                                           uniquingKeysWith: { _, last in last }))
+            self.error = "Verschieben nicht übernommen: \(problem.map { ImageImportError($0).localizedDescription } ?? error.localizedDescription)"
+            return false
+        }
     }
 
     private func scheduleSave() { save(delayed: true) }
@@ -682,8 +712,12 @@ final class EditorModel: ObservableObject {
         let drawingStep: Notebook.InkRecolor? = scope == .wholeNotebook ? inkRecolorStep : nil
         var changed = 0
         let action: (inout Notebook) throws -> UUID? = { document in
+            let before = document
             changed = try document.setPageDefaults(paper: paper, color: color, scope: scope,
                                                    emptyPageIDs: empty, recolorDrawing: drawingStep)
+            // Fields aligned to the lines get the height of their new lines where they would overflow.
+            document = document.refittingText(toLinesOf: before)
+            try document.validate()
             return nil
         }
         let converted = editPages(resetEditor: scope == .wholeNotebook, action)
@@ -702,7 +736,10 @@ final class EditorModel: ObservableObject {
     func setDocumentPaper(paper: PaperStyle, color: PaperColor, trailingDraft: Page?) -> Bool {
         let step = inkRecolorStep, layout = flowLayout(trailingDraft)
         guard editPages(resetEditor: true, { document in
+            let before = document
             document = try document.changingTextDocumentPaper(paper, color: color, layout: layout, recolorDrawing: step)
+                .refittingText(toLinesOf: before)
+            try document.validate()
             return nil
         }) else { return false }
         fileStatus = "Papier geändert"
@@ -716,9 +753,7 @@ final class EditorModel: ObservableObject {
             let light = UITraitCollection(userInterfaceStyle: .light)
             var changed = false
             let strokes = drawing.strokes.map { stroke -> PKStroke in
-                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-                guard stroke.ink.color.resolvedColor(with: light).getRed(&r, green: &g, blue: &b, alpha: &a),
-                      let next = convert(PageRect(stroke.renderBounds), InkColor(Double(r), Double(g), Double(b), Double(a)))
+                guard let next = convert(PageRect(stroke.renderBounds), InkColor(stroke.ink.color.resolvedColor(with: light)))
                 else { return stroke }
                 var result = stroke
                 result.ink = PKInk(stroke.ink.inkType, color: UIColor(red: next.red, green: next.green, blue: next.blue, alpha: next.alpha))

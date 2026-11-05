@@ -222,6 +222,9 @@ extension TextObjectLayer {
         case .paste, .replaceWithRegister, .playMacro: router.adoptPasteboard()
         default: break
         }
+        // `>`/`<` count the older paragraph indents as levels (`TextEngine.paragraphFormats`).
+        router.engine.paragraphFormats = command == .indent || command == .unindent
+            ? (isFlow(editor) ? flowActions?.content() : boxes.first { $0.id == editor.objectID }) : nil
         router.engine.layout = KeyboardLineLayout(layer: self, editor: editor)
         // Editing here types at one caret: `c`, `i`, `o` … must not touch selections out of sight.
         finish(router.engine.performAtPrimary(command, count: count), editor: editor)

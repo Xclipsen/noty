@@ -13,6 +13,9 @@ public enum LawPanelDrop: Equatable, Sendable {
     case float(LawPanelEdge)
     case dock(LawPanelEdge)
     case stash(LawPanelEdge)
+
+    /// Releasing docks the window (e.g. to warn that a second notebook hides).
+    public var docks: Bool { if case .dock = self { true } else { false } }
 }
 
 /// Geometry of the law window in one workspace size. Docking needs room for
@@ -33,11 +36,23 @@ public struct LawPanelLayout: Equatable, Sendable {
     public let floatWidth: Double
     public let dockHeight: Double
     public let floatHeight: Double
+    /// Height of the on-screen keyboard over the workspace's bottom edge.
+    /// Docking is decided on the full workspace, so a docked window never
+    /// starts floating because a keyboard appeared. The notebooks give way
+    /// to it as before the law window existed (`notebookFrame`); the window
+    /// itself only while one of its own fields is typed into (`avoidsKeyboard`).
+    public let keyboard: Double
+    /// A field of the law window has the keyboard: the window moves above
+    /// it. Otherwise (typing in a notebook) it keeps its place and never
+    /// covers the notebook text being typed.
+    public let avoidsKeyboard: Bool
 
     /// `width`: preferred width of a side window, `height`: preferred height
     /// of a bottom window (both as last chosen by the user).
-    public init(size: PageSize, width: Double, height: Double, docked: Bool, edge: LawPanelEdge) {
+    public init(size: PageSize, width: Double, height: Double, docked: Bool, edge: LawPanelEdge, keyboard: Double = 0, avoidsKeyboard: Bool = false) {
         self.size = size; self.edge = edge
+        self.keyboard = min(max(0, keyboard), max(0, size.height))
+        self.avoidsKeyboard = avoidsKeyboard
         canDock = Self.canDock(edge, in: size)
         self.docked = docked && canDock
         let w = max(0, size.width), h = max(0, size.height)
@@ -52,19 +67,23 @@ public struct LawPanelLayout: Equatable, Sendable {
     }
 
     public var margin: Double { docked ? 0 : 10 }
-    /// Resting frame of the window in workspace points.
+    /// Workspace height above the on-screen keyboard.
+    public var freeHeight: Double { max(0, size.height - keyboard) }
+    /// Resting frame of the window in workspace points. While it avoids the
+    /// keyboard it stays above it: a side window gets shorter, a bottom window
+    /// is lifted (and only gets shorter when it would no longer fit).
     public var frame: PageRect {
-        let m = margin
+        let m = margin, free = avoidsKeyboard ? freeHeight : max(0, size.height)
         switch edge {
         case .left:
             let width = docked ? dockWidth : floatWidth
-            return PageRect(x: m, y: m, width: width, height: max(0, size.height - 2 * m))
+            return PageRect(x: m, y: m, width: width, height: max(0, free - 2 * m))
         case .right:
             let width = docked ? dockWidth : floatWidth
-            return PageRect(x: size.width - m - width, y: m, width: width, height: max(0, size.height - 2 * m))
+            return PageRect(x: size.width - m - width, y: m, width: width, height: max(0, free - 2 * m))
         case .bottom:
-            let height = docked ? dockHeight : floatHeight
-            return PageRect(x: m, y: size.height - m - height, width: max(0, size.width - 2 * m), height: height)
+            let height = min(docked ? dockHeight : floatHeight, max(0, free - 2 * m))
+            return PageRect(x: m, y: free - m - height, width: max(0, size.width - 2 * m), height: height)
         }
     }
     /// Unit direction out of the screen through the window's edge.
@@ -76,9 +95,25 @@ public struct LawPanelLayout: Equatable, Sendable {
         }
     }
     /// Shift that puts the window completely past its screen edge.
-    public var hiddenShift: Double { (edge.isSide ? frame.width : frame.height) + margin }
-    /// Area left to the notebooks while the window is docked (and visible).
+    public var hiddenShift: Double { edge.isSide ? frame.width + margin : max(0, size.height - frame.y) }
+    /// Area of the notebooks, above the keyboard like the workspace before
+    /// the law window (a vertical split keeps its lower notebook visible);
+    /// docked (and visible) without the window's part. Never under the
+    /// window: a lifted window only covers notebooks while its own field types.
     public var notebookFrame: PageRect {
+        let area = notebookArea
+        let bottom = min(area.y + area.height, freeHeight)
+        return PageRect(x: area.x, y: area.y, width: area.width, height: max(0, bottom - area.y))
+    }
+    /// How far notebooks at the bottom of `notebookFrame` reach on under the
+    /// keyboard, as the editor did before: the viewport keeps its size and
+    /// measures what the keyboard covers itself (caret reveal, resume point).
+    public var notebookOverhang: Double {
+        let area = notebookArea
+        return max(0, area.y + area.height - (notebookFrame.y + notebookFrame.height))
+    }
+    /// Notebook area without the keyboard.
+    private var notebookArea: PageRect {
         guard docked else { return PageRect(x: 0, y: 0, width: size.width, height: size.height) }
         switch edge {
         case .left:
@@ -89,6 +124,14 @@ public struct LawPanelLayout: Equatable, Sendable {
             return PageRect(x: 0, y: 0, width: size.width, height: max(0, size.height - dockHeight - Self.gap))
         }
     }
+
+    /// Largest height of a bottom window for its resize handle: room for the
+    /// notebook (docked) or a free strip (floating), above an open keyboard.
+    public var heightLimit: Double {
+        max(Self.minimumHeight, docked ? freeHeight - Self.notebookHeight : freeHeight - 84)
+    }
+    /// Largest width of a side window for its resize handle.
+    public var widthLimit: Double { max(Self.minimumWidth, size.width - Self.notebookWidth) }
 
     /// The window follows the finger, but never leaves the workspace completely.
     public func dragOffset(_ translation: PagePoint) -> PagePoint {
@@ -101,18 +144,22 @@ public struct LawPanelLayout: Equatable, Sendable {
     /// mostly past a side edge, or a bottom window mostly below the screen,
     /// or flicked out → stashed behind an edge tab; finger at the left, right
     /// or bottom screen edge → docked there; otherwise floating on the side
-    /// of the finger, in the lower part of the screen at the bottom.
+    /// of the finger, in the lower part of the screen at the bottom. With an
+    /// open keyboard „the bottom“ is its top edge (`freeHeight`): the finger
+    /// cannot reach anything below it.
     public func drop(translation: PagePoint, location: PagePoint,
                      predictedTranslation: PagePoint? = nil, predictedLocation: PagePoint? = nil) -> LawPanelDrop {
-        let f = frame, w = size.width, h = size.height
+        let f = frame, w = size.width, h = freeHeight
         let minX = f.x + translation.x, minY = f.y + translation.y
         // A window along the bottom keeps its shape: pushed sideways it is no
         // side window, it only ever parks at its own edge.
         if edge.isSide, minX + f.width - w > f.width * 0.5 { return .stash(.right) }
         if edge.isSide, -minX > f.width * 0.5 { return .stash(.left) }
         // A side window would be "mostly below" long before the finger
-        // reaches the bottom zones; only a bottom window is pushed out this way.
-        if edge == .bottom, minY + f.height - h > f.height * 0.5 { return .stash(.bottom) }
+        // reaches the bottom zones; only a bottom window is pushed out this
+        // way. Measured from where it rests if that is under the keyboard
+        // already: a short drag of it does not park it.
+        if edge == .bottom, minY + f.height - max(h, f.y + f.height) > f.height * 0.5 { return .stash(.bottom) }
         if let predictedTranslation, let predictedLocation {
             let aheadX = predictedTranslation.x - translation.x, aheadY = predictedTranslation.y - translation.y
             if aheadX > 240, predictedLocation.x > w + 60 { return .stash(edge.isSide ? .right : .bottom) }
@@ -126,6 +173,30 @@ public struct LawPanelLayout: Equatable, Sendable {
         if bottom, location.y > h - 90 { return .dock(.bottom) }
         if location.y > h * 0.62 { return .float(.bottom) }
         return .float(location.x < w / 2 ? .left : .right)
+    }
+
+    /// Top band of an app window that iPadOS 26+ uses to move the window
+    /// when it is not full screen (Apple: „the top ~30 points“), with a
+    /// little margin for the size of a fingertip.
+    public static let windowDragZone = 32.0
+
+    /// Height of the strip at the top of the law window's bar that stays
+    /// free for moving the app window, so grabbing the bar never moves both.
+    /// `barTopInWindow`: top of the bar in app-window points, `nil` when the
+    /// scene is full screen (no window to move, no strip).
+    public static func windowDragClearance(barTopInWindow: Double?) -> Double {
+        guard let top = barTopInWindow, top.isFinite else { return 0 }
+        return min(windowDragZone, max(0, (windowDragZone - top).rounded(.up)))
+    }
+
+    /// Where a released drag would come to rest, for flicks measured by a
+    /// UIKit pan (velocity in points per second): projected with
+    /// `UIScrollView`'s normal deceleration (0.998 per millisecond), as in
+    /// Apple's fluid-interface guidance. Stands in for SwiftUI's
+    /// `predictedEndTranslation`, which a UIKit recognizer does not report.
+    public static func predictedTranslation(_ translation: PagePoint, velocity: PagePoint) -> PagePoint {
+        let rate = 0.998, seconds = rate / (1 - rate) / 1000
+        return PagePoint(x: translation.x + velocity.x * seconds, y: translation.y + velocity.y * seconds)
     }
 
     /// Whether a drop changes anything (no preview for the current place).

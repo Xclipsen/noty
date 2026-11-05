@@ -74,6 +74,12 @@ enum HangProbe {
             let data = Data((text + "\n").utf8)
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            if size >= 2_000_000 {
+                // Rotated like the input probe: the previous history stays as .1.
+                let old = folder.appendingPathComponent("haenger.1.txt")
+                try? FileManager.default.removeItem(at: old)
+                try? FileManager.default.moveItem(at: url, to: old)
+            }
             guard size > 0, size < 2_000_000, let handle = try? FileHandle(forWritingTo: url) else {
                 try? data.write(to: url, options: .atomic); return
             }

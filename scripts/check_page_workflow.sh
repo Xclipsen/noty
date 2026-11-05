@@ -28,6 +28,10 @@ python3 -B scripts/verify_backup.py "$task_check/results/textdokument-umbruch.no
 python3 -B scripts/verify_library_backup.py "$task_check/results/textdokument-umbruch.notylibrary"
 python3 -B scripts/verify_office_export.py "$task_check/results/textdokument.docx" --expect '{"pageBreaks": 1, "styles": ["Heading1"], "links": 1, "listParagraphs": 3, "formats": ["b", "color", "highlight", "i", "strike", "u"]}'
 python3 -B scripts/verify_office_export.py "$task_check/results/textdokument.rtf" --expect '{"pageBreaks": 1, "links": 1}'
+# Schema 16: fields aligned to the paper lines (package, `.noty`, library archive).
+python3 -B scripts/verify_device_store.py "$task_check/results/LineAlignment"
+python3 -B scripts/verify_backup.py "$task_check/results/heft-v16.noty" --compare "$task_check/results/current-v16.json"
+python3 -B scripts/verify_library_backup.py "$task_check/results/linien.notylibrary"
 python3 -B scripts/verify_device_store.py "$task_check/results/Source"
 # Restore copies (Restores/*) and the migrated schema-11 package carry their assets.
 python3 -B scripts/verify_device_store.py "$task_check/results/RestoreCheck"

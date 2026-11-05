@@ -115,6 +115,7 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
     }
 
     @objc private func dragged(_ gesture: UIPanGestureRecognizer) {
+        if gesture.state == .began { InputProbe.noteEffect() }
         sheet?.objectLayer.dragTouchSelection(gesture)
     }
 

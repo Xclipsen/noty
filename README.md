@@ -7,13 +7,30 @@ Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nut
 
 Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
 
-## Native Gesetzessammlung – separater Feature-Worktree
+## Native Gesetzessammlung
 
-Der bestätigte Ausbau ist in `feat/native-law-library` implementiert: optionale native Gesetzessammlung als internes Slide-over oder angedockte zweite Ansicht, lokale Texte/optionale PDFs, Direktfundstellen wie `144 HGB`, Apples Tastaturen und appweites E-Mail-Konto. Drei getrennte Schalter (Aktivierung aus, persönlicher Sync an, automatische Gesetzesupdates an). Notizbücher bleiben lokal; Gesetzesmarkierungen haben eine eigene dauerhafte Warteschlange und Sicherungsdatei.
+Seit Build 97 Teil von `dev` (vorher Feature-Worktree `feat/native-law-library`): optionale native Gesetzessammlung als internes Slide-over oder angedockte zweite Ansicht, lokale Texte/optionale PDFs, Direktfundstellen wie `144 HGB`, Apples Tastaturen und appweites E-Mail-Konto. Drei getrennte Schalter (Aktivierung aus, persönlicher Sync an, automatische Gesetzesupdates an). Notizbücher bleiben lokal; Gesetzesmarkierungen haben eine eigene dauerhafte Warteschlange und Sicherungsdatei.
 
 Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Website und Backend sind seit 20.10.2026 auf IONOS ausgerollt und öffentlich geprüft. Mail bleibt auf Nutzerwunsch aus; E-Mail-Registrierung/Recovery sind deshalb noch nicht verfügbar, bestehende Namenslogins bleiben unterstützt. **Build 60 ist seit 21.10.2026 auf dem iPad installiert** (Gesetzesfenster per Drag & Drop andocken/schweben/parken, Position/Breite gemerkt, ✕ parkt als Pfeil-Lasche am Rand, Blätterleiste mit mitlaufendem Paragraphfeld, Markieren per Auswahl und mit Pencil über den Stiftschalter „Lesen | Markieren | Radieren“, Markierungen sofort sichtbar, gemerkte Lesestelle, direkte Schriftgröße, Registrieren mit Benutzername ohne E-Mail), einschließlich der Funktionen aus Build 53. Vorher-/Nachhervergleich: alle 14 Hefte und 101 Dateien unverändert. Bedienung am iPad weiterhin ungeprüft. Aktivierung unter Einstellungen → Gesetzessammlung. [Umfang und Architektur](docs/LAW-INTEGRATION-PLAN.md), [Prüfungen](docs/TESTING.md#native-gesetzessammlung--feature-worktree).
 
 ## Aktueller Stand der bisherigen Lieferung
+
+**noty 1.0, Build 121 (05.11.2026):** Release-Kandidat 2 (Build 120) als normale noty, vom Nutzer freigegeben. Dazu kommt der Abgleich jetzt auch mit der vierten App „noty calendar“ ([APP-SYNC](docs/APP-SYNC.md)). Veröffentlicht für noty, noty dev, noty AI und noty calendar. Am iPad ungeprüft.
+
+**Release-Kandidat 2, Build 120 (`feat/rc2` → `dev`, 05.11.2026):** Stand von Build 118 (inkl. Abgleich zwischen den noty-Apps) plus Korrekturen aus einer vollständigen Code-Prüfung in acht Bereichen: Stifte, Lasso/Objekte, Text, Speichern, Backup/PDF, Oberfläche, Gesetzessammlung, Release. Kein Formatwechsel gegenüber Build 110–117. Korrigiert:
+- **Stift:** Ein spät gemeldeter Strich geht nicht mehr verloren, wenn der nächste Strich zur gehaltenen Form wird. Eine abgebrochene Haltegeste veröffentlicht ihren Strich. Der Wechsel zum Radierer „Ganz“ bricht einen laufenden Strich nicht mehr ab. Ein wartender Lineal-Strich wird vor Rückgängig, Ansichtswechsel und Schließen übernommen.
+- **Bilder:** Ein gesperrtes Bild lässt sich auch mit dem Finger nicht mehr verschieben, eingefügte Kopien sind entsperrt. Ein seitenübergreifendes Verschieben während einer Sicherung meldet sich statt still zurückzuspringen.
+- **Text:** Im Textdokument stimmt die Anzeige nach Tab, Return und ⌫ in Absätzen mit altem Einzug. Tab ersetzt keine Tottaste (^, `) mehr. Ein negativer Cursor-Versatz kann nicht mehr abstürzen.
+- **Oberfläche:** Geteilte Dateien bekommen die aktuelle Papiervorgabe. Eine unlesbare Werkzeug-Einstellungsdatei sperrt die Werkzeugleiste nicht mehr. Nach dem Schließen einer wiederhergestellten Kopie springen Seite und Suchtreffer nicht zurück.
+- **PDF:** Das Hintergrund-Raster hält sein PDF-Dokument fest, was einen möglichen Absturz beim Schließen oder Seitenwechsel verhindert.
+- **Gesetze:** Der HTML-Import läuft nie verschachtelt, ist für die letzten 12 Abschnitte zwischengespeichert, und `url(`/`@import` sind gesperrt.
+- **Diagnose:** Die Eingabe-Diagnose hat einen Schalter (Einstellungen › Diagnose); in noty dev und noty AI ist sie standardmäßig an, in noty aus. `haenger.txt` wird rotiert statt überschrieben.
+
+1327 Core-Tests (Stand Build 117, Core seither nur Kommentar) und iPad-SDK-Build bestanden. Am iPad ungeprüft. Offen aus der Prüfung (nicht behoben): iCloud-Ordner meldet Erfolg vor dem eigentlichen Upload; Tab über mehrere Absätze im Seitentext hebt die Auswahl auf; ⌘Z bei Gesetzfokus mit Helix im Textdokument trifft das Dokument; Vorschau/„Zuletzt verwendet“ für Hefte der zweiten Ansicht.
+
+**Achtung Schema 16 (seit Build 110):** Das erste neue Textfeld an Linien hebt ein Heft auf Schema 16. Builds ≤ 96 (Release-Kandidat 1) öffnen solche Hefte nicht. Vor dem Update der normalen noty deshalb ein Bibliotheksbackup machen; ein Rückweg geht nur damit oder über die je Heft gesicherten Altbytes unter `Migrations/`.
+
+**Einzug und Listen neu (`feat/einzug2`, 05.11.2026):** Ebenen sind führende Tabs; Tab im Präfix rückt den Absatz ein, sonst tippt er einen Tab (beide Tastaturen gleich), ⇧Tab löscht nie einen Tab mitten in der Zeile; Return und ⌫ nach festen Regeln, „- “ bleibt „- “; hängender Einzug für Listen, Pfeile, Etiketten („Bsp.:\t\t…“) und Tab-Absätze in Textfeldern; `->` wird beim Tippen `→` (abschaltbar). Kein Formatwechsel. Implementiert und gebaut, nicht installiert, am iPad ungeprüft ([Regeln](docs/TEXT-FIELDS.md), [Gerätetest](docs/TESTING.md)).
 
 **Build 69 (`extras/build69`):** Helix-Erweiterungen (Register, `.`, Makros, Sprungliste, Teilen, Absätze, Klammerpaare, Einzug), [Tastatur](docs/KEYBOARD.md) in Seitenleiste, Suche, Gesetzen, eigenen Dialogen und Farbauswahl, im Textdokument manueller Seitenumbruch, Papierwechsel, Word- und RTF-Export, Suche über Seitenwechsel und Zurückrücken beim Kürzen. Kein Formatwechsel. Implementiert und gebaut, am iPad ungeprüft.
 

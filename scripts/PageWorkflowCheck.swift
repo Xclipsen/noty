@@ -190,6 +190,7 @@ struct PageWorkflowCheck {
         let flowPackage = try await Self.checkTextFlowMigration(root: root)
         let textDocument = try await Self.checkTextDocument(root: root)
         let textDocumentExtras = try await Self.checkTextDocumentExtras(root: root)
+        let lineAlignment = try await Self.checkLineAlignment(root: root)
         let report: [String: Any] = ["schemaVersion": document.schemaVersion,
             "textFieldSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first == continuation,
             "unmaterializedDraftExcludedFromNotebookArchive": !roundTrip.documents[0].pages.contains(where: { $0.id == document.writingDraft().id }),
@@ -216,7 +217,9 @@ struct PageWorkflowCheck {
             "textDocumentSchema15KeepsFlowAndHandwritingPage": textDocument.flowKept,
             "textDocumentKindAndFieldStyleSurviveNotyImportAndLibraryRestore": textDocument.kindKept,
             "textDocumentMarkdownExport": textDocument.markdown,
-            "textDocumentPageBreakKept": textDocumentExtras.breakKept, "textDocumentPaperChanged": textDocumentExtras.paperChanged]
+            "textDocumentPageBreakKept": textDocumentExtras.breakKept, "textDocumentPaperChanged": textDocumentExtras.paperChanged,
+            "lineAlignmentSchema16KeepsExactSchema14BytesUnderMigrations": lineAlignment.exactBytesArchived,
+            "lineAlignmentSurvivesCopyTrashBackupAndLibraryRestore": lineAlignment.alignmentKept]
         let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
         print(String(decoding: data, as: UTF8.self))
     }
@@ -417,6 +420,62 @@ struct PageWorkflowCheck {
         try TextDocumentExport.data(reopened, as: .rtf).write(to: root.appendingPathComponent("textdokument.rtf"))
         guard reopened == document, breakKept, paperChanged else { throw StorageError.invalidDocument }
         return (breakKept, paperChanged)
+    }
+
+    /// „An Linien ausrichten“ (schema 16): a schema-14 notebook as the
+    /// installed builds commit it (lined and grid paper, a rotated field)
+    /// gets fields aligned to the lines. The first commit keeps the exact old
+    /// bytes under Migrations/ and writes 16; the existing field is unchanged.
+    /// A duplicated page in the trash, the `.noty` backup and the library
+    /// backup/restore keep the switch; Python checks package, `.noty` and library.
+    static func checkLineAlignment(root: URL) async throws -> (exactBytesArchived: Bool, alignmentKept: Bool) {
+        let fm = FileManager.default
+        let libraryRoot = root.appendingPathComponent("LineAlignment", isDirectory: true)
+        let library = LibraryStore(root: libraryRoot); _ = try await library.load()
+        var appearance = NotebookAppearance(); appearance.paper = .lined
+        var book = try Notebook.blank(title: "Linien", appearance: appearance)
+        _ = try book.insertPaper(.grid, at: 1, geometry: PaperStyle.geometry)
+        var turned = TextBox(x: 60, y: 200, width: 120, height: 24, text: "Gedreht ÄÖÜ"); turned.rotation = 10
+        try book.replaceTextBoxes([turned], pageID: book.pages[0].id)
+        guard book.schemaVersion == 14 else { throw StorageError.invalidDocument }
+        _ = try await library.createDocument(book, parentID: nil)
+        let package = try await library.documentURL(id: book.id)
+        let stored = try fm.contentsOfDirectory(at: package.appendingPathComponent("Revisions"), includingPropertiesForKeys: nil)
+        guard stored.count == 1 else { throw StorageError.invalidDocument }
+        let oldBytes = try Data(contentsOf: stored[0])
+        let repository = NotebookRepository(directory: package)
+        var (notebook, recovered) = try await repository.load()
+        var lined = TextBox(x: 60, y: 305.2, width: 220, height: 40, text: "Auf den Linien\nzweite Zeile"); lined.alignsToLines = true
+        var grid = TextBox(x: 80, y: 401.5, width: 200, height: 20, text: "Karo"); grid.alignsToLines = true; grid.autoWidth = true
+        try notebook.replaceTextBoxes(notebook.pages[0].effectiveTextBoxes + [lined], pageID: notebook.pages[0].id)
+        try notebook.replaceTextBoxes([grid], pageID: notebook.pages[1].id)
+        let copy = try notebook.duplicatePage(notebook.pages[0].id)
+        try notebook.trashPage(copy)
+        try await repository.save(notebook, revision: 1)
+        let archived = try fm.contentsOfDirectory(at: package.appendingPathComponent("Migrations"), includingPropertiesForKeys: nil)
+            .map { $0.appendingPathComponent("notebook-v14.json") }.filter { fm.fileExists(atPath: $0.path) }
+        let exactBytesArchived = try archived.count == 1 && Data(contentsOf: archived[0]) == oldBytes
+        let reopened = try RevisionStore(directory: package, readOnly: true).load()
+        let trashed = reopened.deletedPages?.first?.page.textBoxes ?? []
+        guard !recovered, exactBytesArchived, reopened == notebook, reopened.schemaVersion == 16,
+              reopened.pages[0].textBoxes?.first == turned, reopened.pages[0].textBoxes?.last?.alignsToLines == true,
+              trashed.count == 2, trashed.last?.alignsToLines == true, trashed.last?.id != lined.id else { throw StorageError.invalidDocument }
+        _ = try BackupArchive.write(reopened, assets: repository.assets, to: root.appendingPathComponent("heft-v16.noty"))
+        try JSONEncoder().encode(reopened).write(to: root.appendingPathComponent("current-v16.json"))
+        let archiveURL = root.appendingPathComponent("linien.notylibrary")
+        _ = try LibraryArchive.write(try await library.backupPlan(), to: archiveURL)
+        let workspaces = WorkspaceStore(root: root.appendingPathComponent("LineAlignmentWorkspaces"))
+        let staged = try await workspaces.prepareRestore(file: archiveURL)
+        let restored = try await workspaces.commitRestore(staged, title: "Linien-Restore")
+        let restoredLibrary = LibraryStore(root: try await workspaces.directory(for: restored.id))
+        var restoredDocuments: [Notebook] = []
+        for item in try await restoredLibrary.load().snapshot.items where !item.isFolder {
+            restoredDocuments.append(try RevisionStore(directory: try await restoredLibrary.documentURL(id: item.id), readOnly: true).load())
+        }
+        let alignmentKept = restoredDocuments.count == 1 && restoredDocuments[0].pages == reopened.pages
+            && restoredDocuments[0].deletedPages == reopened.deletedPages && restoredDocuments[0].schemaVersion == 16
+        guard alignmentKept else { throw StorageError.invalidDocument }
+        return (exactBytesArchived, alignmentKept)
     }
 
     /// Page text as Build ≤ 62 stored it (schema 13, flow segments over two

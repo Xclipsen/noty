@@ -70,9 +70,7 @@ struct DocumentPageSlot: Equatable {
         segment.text = ""
         pageID = page.id
         box = PageRect(x: segment.x, y: segment.y, width: segment.width, height: segment.height)
-        rule = DocumentPageRule(height: segment.height, ruling: page.textRuling(for: segment),
-                                origin: page.ruledTextOrigin(for: segment).map { Double($0) },
-                                pageTop: page.ruledPageTop(for: segment).map { Double($0) })
+        rule = DocumentPageRule(height: segment.height, grid: page.linePaper.grid(for: segment))
         frame = placement.map { DocumentPageFrame(page: index, placement: $0, box: box) }
     }
 }
@@ -163,8 +161,12 @@ final class DocumentTextStore: @preconcurrency DocumentTextMetrics {
     func apply(_ edits: [TextListEditing.Edit], fallback: [NSAttributedString.Key: Any]) {
         storage.beginEditing()
         for edit in edits.reversed() {
-            // The neighbour `TextBox.applying` takes the format from.
-            let anchor = edit.range.length > 0 || edit.range.location == 0 ? edit.range.location : edit.range.location - 1
+            // The neighbour `TextBox.applying` takes the format from (at a
+            // paragraph start the paragraph's own first character).
+            let text = storage.string as NSString
+            let opensParagraph = edit.range.location > 0 && edit.range.location < text.length
+                && TextLines.isBreak(text.character(at: edit.range.location - 1))
+            let anchor = edit.range.length > 0 || edit.range.location == 0 || opensParagraph ? edit.range.location : edit.range.location - 1
             let attributes = storage.length > 0 ? storage.attributes(at: min(anchor, storage.length - 1), effectiveRange: nil) : fallback
             storage.replaceCharacters(in: edit.range, with: NSAttributedString(string: edit.replacement, attributes: attributes))
         }

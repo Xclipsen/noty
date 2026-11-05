@@ -10,7 +10,12 @@ extension WorksheetView {
         }
     }
     func beginErase() {
-        let drawing = (try? PKDrawing(data: pageContent.drawing)) ?? PKDrawing()
+        // An unreadable drawing is never treated as an empty page: erasing a
+        // shape would otherwise save the page without its ink (Audit 7f8bfe7, Fund 5).
+        guard let drawing = pageContent.drawing.isEmpty ? PKDrawing() : try? PKDrawing(data: pageContent.drawing) else {
+            configuration?.onError("Die Handschrift dieser Seite konnte nicht gelesen werden; es wurde nichts radiert.")
+            return
+        }
         eraseSession = EraseSession(base: pageContent, strokes: drawing.strokes)
         trailPoints = []; trailLink?.invalidate()
         eraseTrail.removeAllAnimations(); eraseTrail.opacity = 1; eraseTrail.path = nil; eraseTrail.isHidden = false
@@ -173,6 +178,7 @@ extension WorksheetView {
             if pieces.isEmpty { pageContent.shapes = next.shapes } else { installContent(next) }
         }
         shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin)
+        syncObjectPlane()
     }
     /// A remaining shape piece as native pen ink in the shape's colour and
     /// visible width, control points about every 2 pt.
@@ -201,6 +207,9 @@ extension WorksheetView {
             .map { session.unfilled.contains($0.id) ? $0.removingFill : $0 }
         if onContent?(next, session.base) == true { installContent(next) } else { installContent(pageContent) }
         shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin)
+        // The model's update `matches` and does not reconfigure the object
+        // plane; without this a selection would act on the erased content.
+        syncObjectPlane()
     }
     /// "Durchkritzeln löscht": a finished pen scribble over existing ink and
     /// shapes removes the strokes it covers together with itself; the shapes
@@ -219,11 +228,13 @@ extension WorksheetView {
         let hull = CGRect(x: points.map(\.x).min()!, y: points.map(\.y).min()!, width: 0, height: 0)
             .union(CGRect(x: points.map(\.x).max()!, y: points.map(\.y).max()!, width: 0, height: 0)).insetBy(dx: -8, dy: -8)
         let candidates = others.indices.filter { others[$0].renderBounds.intersects(hull) }
-        let padding = max(4, Self.drawnWidth(scribble))
-        let covered = ScribbleErase.coveredStrokes(scribble: points, strokes: candidates.map { Self.polyline(others[$0]) },
-                                                   padding: padding).map { candidates[$0] }
+        let width = Self.drawnWidth(scribble), padding = max(4, width)
         let shapes = pageContent.shapes.filter { $0.bounds.cgRect.intersects(hull) }
-        let coveredShapes = Set(ScribbleErase.coveredShapes(scribble: points, shapes: shapes, padding: padding))
+        // Only what the scribble reaches, never shading inside a frame (`ScribbleErase.erasure`).
+        let erased = ScribbleErase.erasure(scribble: points, strokes: candidates.map { Self.polyline(others[$0]) },
+                                           strokeWidths: candidates.map { Double(Self.drawnWidth(others[$0])) },
+                                           shapes: shapes, padding: padding, reach: width / 2 + 1)
+        let covered = erased.strokes.map { candidates[$0] }, coveredShapes = Set(erased.shapes)
         guard !covered.isEmpty || !coveredShapes.isEmpty else { return [] }
         let removed = Set(covered)
         let wasUpdating = updating; updating = true
@@ -241,5 +252,6 @@ extension WorksheetView {
         guard next.shapes != pageContent.shapes, onEraseShapes?(next, pageContent) == true else { return }
         pageContent.shapes = next.shapes
         shapeLayer.configure(pageContent.shapes, origin: pageLayout.contentOrigin)
+        syncObjectPlane()
     }
 }
