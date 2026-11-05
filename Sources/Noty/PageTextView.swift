@@ -346,7 +346,8 @@ final class PageTextView: UITextView {
     @objc private func listTab(_ command: UIKeyCommand) {
         let outdent = command.modifierFlags.contains(.shift)
         if KeyboardRouter.shared.handle(token: outdent ? "<S-Tab>" : "<Tab>", text: self) { return }
-        guard KeyboardRouter.shared.allowsTyping else { return }
+        // A dead key in composition (^, `) is not replaced by the tab.
+        guard KeyboardRouter.shared.allowsTyping, markedTextRange == nil else { return }
         if onListTab?(outdent) != true, !outdent { insertText("\t") }
     }
     private static let formatCommands: [UIKeyCommand] = {

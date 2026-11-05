@@ -46,6 +46,13 @@ final class DocumentTextController {
     private func committed(_ focus: TextFlowFocus?) {
         guard let flow = view.host?.flow else { return }
         let boxes = flow.segments().map(\.box)
+        let reload = view.reloadAfterCommit; view.reloadAfterCommit = false
+        if reload, focus != nil, boxes.map(\.text).joined() == store.string {
+            // Same text, new paragraph indent: reload, keep the selection.
+            let selection = view.selection
+            load(boxes); view.adopt(selection: selection)
+            return
+        }
         if focus != nil, boxes.map(\.text).joined() == store.string {
             synced = boxes
             store.logDeviations(boxes)

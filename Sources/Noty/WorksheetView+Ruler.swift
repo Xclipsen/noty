@@ -288,7 +288,7 @@ extension WorksheetView {
     }
     /// A lifted handed-over stroke still waiting for PencilKit: settled now,
     /// before the next stroke begins.
-    private func settlePendingRulerLine() {
+    func settlePendingRulerLine() {
         if rulerLine?.finishing == true { finishRulerLine(commit: true, settle: true) }
     }
     func cancelRulerLine() {
@@ -304,6 +304,7 @@ extension WorksheetView {
                 let wait = 0.3 - (CACurrentMediaTime() - handoff.at)
                 if wait > 0, !settle, !line.finishing {
                     line.finishing = true; rulerLine = line
+                    Self.rulerSheets.add(self) // settled before undo, view switch or closing
                     let id = line.id
                     DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
                         guard let self, self.rulerLine?.id == id else { return }
@@ -315,8 +316,8 @@ extension WorksheetView {
                 line.handoff?.kept = false
             }
         }
-        rulerLine = nil; inkActive = false
-        updateRulerGestures()
+        rulerLine = nil; inkActive = false; Self.rulerSheets.remove(self)
+        updateNativeDrawing(); updateRulerGestures()
         guard commit else { hideRulerPreview(); return }
         let (strokes, lost) = rulerInkStrokes(line)
         let drawn = (line.drawsPrefix ? line.handoff?.prefix.count ?? 0 : 0) + line.samples.count

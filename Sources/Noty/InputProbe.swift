@@ -7,7 +7,7 @@ protocol InputProbeDescribing: AnyObject {
     var probeDescription: String { get }
 }
 
-/// Always-on diagnosis for a feedback pattern (Build 113): taps partly work,
+/// Diagnosis for a feedback pattern (Build 113; on by default in noty dev): taps partly work,
 /// but nothing can be dragged and the Pencil does not write, until the app
 /// went to the background. Reports go to Documents/Diagnose/eingabe.txt
 /// (Dateien › Auf meinem iPad › noty dev, or read over USB) and the system log:
@@ -24,6 +24,10 @@ protocol InputProbeDescribing: AnyObject {
 @MainActor
 enum InputProbe {
     private static let log = Logger(subsystem: "de.la.noty", category: "input-probe")
+    /// On by default in noty dev, off in noty; Einstellungen › Diagnose.
+    nonisolated static let defaultEnabled = Bundle.main.bundleIdentifier?.hasSuffix(".dev") ?? false
+    /// Read once at launch: off, no touch is observed, no timer runs.
+    static let enabled = UserDefaults.standard.object(forKey: AppSettingsKey.inputProbe) as? Bool ?? defaultEnabled
 
     // MARK: Registered state
 
@@ -34,9 +38,10 @@ enum InputProbe {
     private struct Lock { var after: CFTimeInterval; var check: Check; var since: CFTimeInterval?; var reported = false }
     private static var providers: [String: Provider] = [:]
     private static var locks: [String: Lock] = [:]
-    static func register(_ key: String, state: @escaping Provider) { providers[key] = state }
+    static func register(_ key: String, state: @escaping Provider) { if enabled { providers[key] = state } }
     /// Reported once per episode when `check` stays locked for `after` seconds of foreground time.
     static func lock(_ key: String, after: CFTimeInterval, check: @escaping Check) {
+        guard enabled else { return }
         locks[key] = Lock(after: after, check: check)
         startTimer()
     }
@@ -97,6 +102,7 @@ enum InputProbe {
 
     /// From `UserInputClock`'s window observer, before it fails.
     static func began(_ touches: Set<UITouch>, event: UIEvent, in window: UIWindow) {
+        guard enabled else { return }
         self.event = event
         if sequenceSince == nil { sequenceSince = CACurrentMediaTime() }
         startTimer()

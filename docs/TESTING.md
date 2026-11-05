@@ -2,11 +2,24 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Release-Kandidat 2, Build 118 (05.11.2026, Branch `feat/rc2`)
+
+Code-Prüfung von `dev` @ 4ee68d3 durch acht getrennte Prüfungen (nur Lesen): Stifte, Lasso/Objekte/Bilder, Text/Tastatur, Speichern/Migration, Backup/Import/PDF, UI-Logik, Gesetzessammlung, Release-Bereitschaft. Kein kritischer Befund. Speichern und Migration sind seit RC1 unverändert. Die Migration 15→16 ändert bestehende Hefte nicht und ist an das erste ausgerichtete Textfeld gebunden; Altbytes werden gesichert.
+
+Behobene Befunde und offene Punkte stehen im README. Nachweise: Core-Tests 1327 (3 übersprungen, 0 Fehler) auf 4ee68d3; danach nur ein Kommentar in Core geändert. `xtool dev build` auf `feat/rc2` erfolgreich. **Nicht installiert, am iPad ungeprüft.** Gebündelter Gerätetest in noty dev:
+1. Linie halten bis zur Form, sofort danach den nächsten Strich halten bis zur Form: beide bleiben.
+2. Beim Schreiben auf den Radierer „Ganz“ tippen: Der Strich bleibt, danach radiert der Radierer.
+3. Lineal-Strich ziehen und sofort ⌘Z: Nur dieser Strich verschwindet.
+4. Bild sperren, mit Stiftwerkzeug per Finger antippen und ziehen: Es bewegt sich nicht. ⌘C/⌘V: Die Kopie ist frei.
+5. Textdokument mit altem eingerücktem Absatz: Tab, Return, ⌫ zeigen den Einzug richtig.
+6. Papiervorgabe ändern, PDF über „Teilen“ als neues Heft ablegen: Es nutzt die neue Vorgabe.
+7. Einstellungen › Diagnose: Der Schalter „Eingabe-Diagnose“ ist in noty dev an.
+
 ## Eingabe-Diagnose für „nichts lässt sich ziehen, Stift schreibt nicht“ (05.11.2026, Branch `feat/eingabe-probe`)
 
 Rückmeldung zu Build 113, noty dev: Textfelder ließen sich teils noch anlegen, aber nichts ließ sich ziehen und der Stift schrieb nicht, bis die App kurz im Hintergrund war. USB-Abzug am 05.11. 18:05–18:08: kein Absturz- oder Hängerbericht, Berührungen kamen bei der App an, der Hauptthread lief. Also kein Hänger, sondern ein festgefahrener Eingabezustand. Ursache **nicht gefunden**. Verdacht unbelegt: dauerhaft pausierte Eingabe (`commitForBackup` wartet auf Speichern) oder eine Berührung, die UIKit noch als aufliegend zählt.
 
-`InputProbe` (immer an, nur beobachtend) schreibt nach `Documents/Diagnose/eingabe.txt` (bei 1 MB nach `eingabe.1.txt`) und in OSLog (`de.la.noty`, `input-probe`). Ein Bericht entsteht bei:
+`InputProbe` (nur beobachtend; seit Build 118 schaltbar, in noty dev standardmäßig an, in noty aus) schreibt nach `Documents/Diagnose/eingabe.txt` (bei 1 MB nach `eingabe.1.txt`) und in OSLog (`de.la.noty`, `input-probe`). Ein Bericht entsteht bei:
 - drei Zügen in 30 s, auf die nichts reagiert und die kein Erkenner übernimmt;
 - einer Berührungsfolge, die über 20 s offen ist, während nichts reagiert;
 - pausierter Eingabe über 15 s oder „beschäftigt“ über 90 s;

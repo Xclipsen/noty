@@ -73,7 +73,11 @@ struct NativeLawText: UIViewRepresentable {
                 if html?.isEmpty == false {
                     DispatchQueue.main.async { [weak c, weak container] in
                         guard let c, let container, c.richKey == key else { return }
-                        c.importRich(html: html, text: text)
+                        // The importer's nested run loop may deliver another
+                        // section's import: never one inside the other (that
+                        // section keeps its plain text).
+                        guard !Coordinator.importing else { return }
+                        c.importRich(html: html, text: text, key: key)
                         guard c.richKey == key, c.rich != nil else { return }
                         c.bodyKey = ""
                         c.parent.updateUIView(container, coordinator: c)
@@ -152,10 +156,16 @@ struct NativeLawText: UIViewRepresentable {
         /// Rich native HTML supports tables/lists. Only use it if its exact
         /// canonical text matches the shared anchor contract; otherwise plain
         /// source text is authoritative. Never fetch remote HTML resources.
-        func importRich(html: String?, text: String) {
+        @MainActor static var importing = false
+        /// Recently imported sections (paging back and forth imports once).
+        @MainActor private static var cache: [String: (rich: NSAttributedString, base: CGFloat)] = [:]
+        @MainActor private static var cacheOrder: [String] = []
+        @MainActor func importRich(html: String?, text: String, key: String) {
             rich = nil
+            if let hit = Self.cache[key] { richBase = hit.base; rich = hit.rich; return }
             guard let html, !html.isEmpty, html.utf8.count <= 250_000,
-                  html.range(of: "<(?:script|iframe|img|link|object|style)|(?:src|href)\\s*=", options: [.regularExpression, .caseInsensitive]) == nil else { return }
+                  html.range(of: "<(?:script|iframe|img|link|object|style)|(?:src|href)\\s*=|url\\s*\\(|@import", options: [.regularExpression, .caseInsensitive]) == nil else { return }
+            Self.importing = true; defer { Self.importing = false }
             let markup = "<html><head><meta charset='utf-8'><style>\(LawReadingStyle.css)</style></head><body>" + html + "</body></html>"
             guard let data = markup.data(using: .utf8),
                   let imported = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil),
@@ -168,6 +178,8 @@ struct NativeLawText: UIViewRepresentable {
             }
             richBase = lengths.max { $0.value < $1.value }?.key ?? 17
             rich = imported
+            Self.cache[key] = (imported, richBase); Self.cacheOrder.append(key)
+            if Self.cacheOrder.count > 12 { Self.cache[Self.cacheOrder.removeFirst()] = nil }
         }
         /// The imported text with every font scaled so the body text is `size` pt.
         func scaled(_ source: NSAttributedString, to size: Double) -> NSMutableAttributedString {

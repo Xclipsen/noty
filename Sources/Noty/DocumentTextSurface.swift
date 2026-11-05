@@ -61,6 +61,9 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     var host: DocumentTextHost?
     /// A commit ended; nil: the model refused it.
     var onCommitted: ((TextFlowFocus?) -> Void)?
+    /// The model's paragraph indent changed beside the text edit: the buffer
+    /// reloads after the commit even when the texts match.
+    var reloadAfterCommit = false
     var isActive = false {
         didSet {
             guard isActive != oldValue else { return }
@@ -514,6 +517,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
             }
         }
         guard !plan.edits.isEmpty else { refreshOverlay(); return true }
+        reloadAfterCommit = plan.indents.contains { $0.paragraph.length > 0 }
         let before = selection, after = TextListEditing.selection(selection, after: plan.edits)
         store.apply(plan.edits, fallback: typingAttributes)
         selection = after
@@ -609,6 +613,13 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset delta: Int) -> UITextPosition? {
         var current = offset(position)
         let text = store.text
+        // A negative offset goes the other way (never a trapping range).
+        var direction = direction, delta = delta
+        if delta < 0 {
+            delta = -delta
+            switch direction { case .left: direction = .right; case .right: direction = .left
+            case .up: direction = .down; case .down: direction = .up; @unknown default: return nil }
+        }
         switch direction {
         case .left: for _ in 0..<delta { current = DocumentCaretMotion.previous(text, current) }
         case .right: for _ in 0..<delta { current = DocumentCaretMotion.next(text, current) }
