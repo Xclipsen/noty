@@ -45,6 +45,20 @@ Gerätetest (gebündelt, noty dev, Testheft mit liniertem und blankem Papier):
 7. **Rechner:** „-⇥5+3=“ → 8; „-⇥5 / -⇥3 / =“ rechnet nicht; „Bsp.:⇥2+3=“, „Def.:⇥⇥2+3=“, „• Bsp.:⇥2+3=“ → 5.
 8. **Papierwechsel und Einfügen:** an Linien ausgerichtetes mehrzeiliges Feld auf blankem Papier, Papier auf liniert stellen (Seite anpassen und ganzes Heft): Feld wird höher, nicht rot; Rückgängig. Dasselbe Feld kopieren und auf einer linierten Seite einfügen.
 
+## Trackpad-Zeiger über Text (05.11.2026, Branch `feat/fix2-pointer`)
+
+**Implementiert, Core-Tests (1295, 3 übersprungen, 0 Fehler; neu `TextCursorGeometryTests`) und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Kein Formatwechsel. Meldung: „Riesiger Cursor, wenn ich mit dem Trackpad über ein Textfeld hover.“
+
+- **Ursache (Code):** Über Text zeigte bisher UIKits eigener I-Beam von `UITextView`/`UITextInteraction`; die App setzte dort keinen Zeiger (`FieldPointerDrag` nur in der Rahmenzone). Die Textgeometrie liegt in Feldkoordinaten unter `coordinateScale`, Seitenskala und Viewport-Zoom (bis 6×). **Vermutet, nicht am Gerät gemessen:** UIKit misst den Beam an Caret bzw. Linienfragment in diesen Koordinaten; auf liniertem Papier ist ein Fragment bis zur vorigen Linie bzw. mehrere Linien hoch.
+- **Fix:** `TextPointerBeam` (eigene `UIPointerInteraction`) auf `PageTextView` und `DocumentTextSurface`: `.verticalBeam` mit Länge = Glyphenhöhe der Schrift unter dem Zeiger × Bildschirmskala, begrenzt auf 12–40 pt (`TextCursorGeometry`). Regionen als festes Raster um den Zeiger, damit der Beam beim Wechsel von Zeile/Schriftgröße neu bemessen wird. UIKits Zeigerinteraktionen auf diesen beiden Ansichten werden abgeschaltet (`isEnabled = false`), Gesten bleiben unberührt. Textdokument: Beam nur auf den Blättern, im Spalt Standardzeiger.
+- **Caret:** `PageTextView.caretRect` nutzte schon das Glyphenband; nur der Rückfall ohne Band gab das ganze Linienfragment zurück, jetzt auf die Schrifthöhe am unteren Rand begrenzt (`limitedCaret`). Linienausrichtung unverändert.
+
+Gerätetest (gebündelt, noty dev, Trackpad/Magic Keyboard, Testheft auf liniertem und kariertem Papier):
+1. Textwerkzeug, freies Feld mit 12-pt-Text und Titel, an Linien ausgerichtet: Zeiger über den Text, bei Fitzoom und stark gezoomt: I-Beam etwa so hoch wie die Schrift, nie über ca. 40 pt; zwischen Titel- und Textzeile ändert er die Länge. Gedrehtes Feld und Randtext gleich.
+2. Über Rahmenzone eines offenen Felds: weiter die Verschiebepfeile; neben Feldern auf der Seite: Standardzeiger, kein Hover-Effekt.
+3. Klicken setzt den Caret, Ziehen markiert, Doppelklick wählt ein Wort, geschlossenes Feld per Zeiger ziehen: wie vorher. Caret selbst nicht höher als die Schrift (auch leere letzte Zeile).
+4. Textdokument: I-Beam auf den Seiten passend zur Schrift; im Seitenspalt Standardzeiger. Gesetzesleser, Lasso und Stift unverändert.
+
 ## Einzug und Listen neu (05.11.2026, Branch `feat/einzug2`)
 
 **Implementiert, Core-Tests, Seiten-Workflow und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Kein Formatwechsel. Regeln: [TEXT-FIELDS](TEXT-FIELDS.md), Nachtrag „Einzug und Listen neu“. Core-Tests 1290 (3 übersprungen, 0 Fehler), neu `TextIndentTests` (23, davon 8 aus den Reviews); bewusst angepasst: `TextListStructureTests` (Ebenen als Tabs statt 20-pt-Einzug, „- “ bleibt), `TextTabsTests` (`TextTabs.edits` ersetzt; ⇧Tab löscht keinen Tab mitten in der Zeile mehr), `ZoomAndListTests` (leerer Eintrag auf Ebene 0 behält führende Leerzeichen), Return-Aufrufe über `TextIndentEditing`. Nicht unter Linux prüfbar: TextKit-Layout (ob `defaultTabInterval`-Tabs in Folgezeilen mit `headIndent` auf dem Raster ab Feldkante liegen), `TextBoxStyle(attributes:)` (liest den Einzug über die getestete Core-Regel `storedIndent`), Tastenzustellung und Undo am Gerät.
