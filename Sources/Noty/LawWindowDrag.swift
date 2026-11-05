@@ -89,9 +89,10 @@ private struct LawWindowMove: ViewModifier {
     @GestureState private var active = false
 
     @ViewBuilder func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
-            content.gesture(LawPanRecognizer(space: space, link: link, actions: actions))
-        } else {
+        // Build 107 used a UIKit pan here (`LawPanRecognizer`); on iPadOS 27 it
+        // never moved the window. The SwiftUI drag works; the glass strip above
+        // the bar (`AppWindowDragStrip`) keeps it out of the system's top band.
+        do {
             content
                 .gesture(DragGesture(minimumDistance: 6, coordinateSpace: .named(space))
                     .updating($active) { _, state, _ in state = true }
