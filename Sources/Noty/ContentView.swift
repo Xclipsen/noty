@@ -27,6 +27,8 @@ struct ContentView: View {
     /// Reports the selected tool, e.g. so Pencil highlights in the law reader.
     var onToolChange: ((EditorTool) -> Void)?
     @State private var selectedPageID: UUID?
+    /// Pages of this view in its surface (activation layer of an inactive view).
+    @State private var paneWakeRect: CGRect?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -138,16 +140,17 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            workspaceSurface.ignoresSafeArea(.keyboard, edges: .bottom).overlayPreferenceValue(PaneWakeArea.self) { area in
-                GeometryReader { proxy in
-                    if !isPaneSelected() {
-                        // With an ink tool the pages stay open below: the first Pencil
-                        // stroke draws and activates this view, a finger tap there
-                        // activates it through the viewport (DEVICE-FEEDBACK-20 §4).
-                        Color.clear.contentShape(PaneWakeArea.Hole(hole: pencilWakes && !showingPages ? area.map { $0.pages(in: proxy) } : nil), eoFill: true)
-                            .onTapGesture { activatePane() }
-                            .accessibilityLabel("Diese Ansicht aktivieren").accessibilityAddTraits(.isButton)
-                    }
+            workspaceSurface.coordinateSpace(name: PaneWakeArea.space).onPreferenceChange(PaneWakeArea.self) { paneWakeRect = $0 }
+                .ignoresSafeArea(.keyboard, edges: .bottom).overlay {
+                // Only an inactive view gets this layer; the active one keeps
+                // nothing above its toolbar and pages (Build 111 regression).
+                if !isPaneSelected() {
+                    // With an ink tool the pages stay open below: the first Pencil
+                    // stroke draws and activates this view, a finger tap there
+                    // activates it through the viewport (DEVICE-FEEDBACK-20 §4).
+                    Color.clear.contentShape(PaneWakeArea.Hole(hole: pencilWakes && !showingPages ? paneWakeRect : nil), eoFill: true)
+                        .onTapGesture { activatePane() }
+                        .accessibilityLabel("Diese Ansicht aktivieren").accessibilityAddTraits(.isButton)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -613,7 +616,9 @@ struct ContentView: View {
                     optionsAvoidance: optionsBar(layout).flatMap { bar in
                         ToolbarAvoidanceEdge(dock: toolbox.preferences.effectiveDock).map { ToolbarOptionsAvoidance(edge: $0, bar: bar) }
                     }, onActivate: pencilWakes ? { activatePane() } : nil)
-                    .anchorPreference(key: PaneWakeArea.self, value: .bounds) { PaneWakeArea.Area(bounds: $0, top: layout.topInset) }
+                    .background { GeometryReader { proxy in
+                        Color.clear.preference(key: PaneWakeArea.self, value: PaneWakeArea.pages(proxy.frame(in: .named(PaneWakeArea.space)), top: layout.topInset))
+                    } }
                     .ignoresSafeArea(.container, edges: .bottom)
                     .padding(.bottom, layout.bottomInset)
                     .padding(.leading, layout.leftInset)
@@ -1315,11 +1320,16 @@ private struct RestoredNotebookView: View {
 
 /// Pages of the inactive view in its activation layer: the layer leaves them
 /// open (even-odd hole) when they take the Pencil directly. Below the
-/// header/palette strip (`top`), which keeps its activation tap.
+/// header/palette strip (`top`), which keeps its activation tap. A plain
+/// rect in the surface's coordinate space, read through `onPreferenceChange`,
+/// so the layer itself is evaluated with the body (its pane state current).
 private struct PaneWakeArea: PreferenceKey {
-    struct Area { var bounds: Anchor<CGRect>; var top: CGFloat }
-    static var defaultValue: Area? { nil }
-    static func reduce(value: inout Area?, nextValue: () -> Area?) { value = value ?? nextValue() }
+    static let space = "noty.paneWake"
+    static var defaultValue: CGRect? { nil }
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) { value = value ?? nextValue() }
+    static func pages(_ frame: CGRect, top: CGFloat) -> CGRect {
+        CGRect(x: frame.minX, y: frame.minY + top, width: frame.width, height: max(0, frame.height - top))
+    }
     struct Hole: Shape {
         var hole: CGRect?
         func path(in rect: CGRect) -> Path {
@@ -1327,11 +1337,5 @@ private struct PaneWakeArea: PreferenceKey {
             if let hole, hole.width > 0, hole.height > 0 { path.addRect(hole) }
             return path
         }
-    }
-}
-private extension PaneWakeArea.Area {
-    func pages(in proxy: GeometryProxy) -> CGRect {
-        let frame = proxy[bounds]
-        return CGRect(x: frame.minX, y: frame.minY + top, width: frame.width, height: max(0, frame.height - top))
     }
 }
