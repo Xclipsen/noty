@@ -55,6 +55,8 @@ public struct LaserTrail: Equatable, Sendable {
     private var stroke = 0
     private var pointerLift: Double?
     private var lifts: [Int: Double] = [:]
+    /// Minimum distance of kept samples in „bis zum Absetzen“ (0: unthinned).
+    private var spacing = 0.0
 
     public init(mode: LaserMode = .trail, fade: LaserFade = .medium) { self.mode = mode; self.fade = fade }
 
@@ -77,29 +79,49 @@ public struct LaserTrail: Equatable, Sendable {
         guard touching else { return }
         touching = false; pointerLift = time; lifts[stroke] = time
     }
-    public mutating func clear() { samples = []; pointer = nil; touching = false; pointerLift = nil; lifts = [:] }
+    public mutating func clear() { samples = []; pointer = nil; touching = false; pointerLift = nil; lifts = [:]; spacing = 0 }
 
     /// Over `maximumSamples` the oldest samples go, which have faded long
     /// before. „Bis zum Absetzen“ keeps the whole stroke visible, so there the
-    /// trail is thinned instead: every second inner sample goes, each stroke
-    /// keeps its first and last one. A long stroke keeps its beginning while
-    /// touching (only coarser); just many tiny strokes lose their oldest samples.
+    /// trail is thinned evenly instead: every overflow doubles one minimum
+    /// distance between kept samples (`spacing`) and applies it to the whole
+    /// trail, old and new parts alike, so no stretch is thinned twice as often
+    /// as another (Review: repeated halving left a chord over thousands of
+    /// points at the beginning). New samples closer than `spacing` to the one
+    /// before the last replace the last one, so the end still follows the
+    /// pointer. Each stroke keeps its first and last sample; only many tiny
+    /// strokes, which thinning cannot shorten, lose their oldest samples.
     private mutating func append(_ point: PagePoint, time: Double) {
+        let thinned = mode == .trail && fade == .untilLift
+        if thinned, spacing > 0, samples.count >= 2, samples[samples.count - 1].stroke == stroke,
+           samples[samples.count - 2].stroke == stroke {
+            let anchor = samples[samples.count - 2].point
+            if hypot(anchor.x - point.x, anchor.y - point.y) < spacing {
+                samples[samples.count - 1] = Sample(point: point, time: time, stroke: stroke); return
+            }
+        }
         samples.append(Sample(point: point, time: time, stroke: stroke))
         guard samples.count > Self.maximumSamples else { return }
-        guard mode == .trail, fade == .untilLift else { samples.removeFirst(samples.count - Self.maximumSamples); return }
-        let all = samples
-        var kept: [Sample] = []; kept.reserveCapacity(all.count / 2 + 2)
-        var inner = 0
-        for index in all.indices {
-            let first = index == 0 || all[index - 1].stroke != all[index].stroke
-            let last = index == all.count - 1 || all[index + 1].stroke != all[index].stroke
-            if first || last { kept.append(all[index]); inner = 0; continue }
-            if inner % 2 == 1 { kept.append(all[index]) }
-            inner += 1
+        guard thinned else { samples.removeFirst(samples.count - Self.maximumSamples); return }
+        while samples.count > Self.maximumSamples, spacing < 1_000_000 {
+            spacing = max(1, spacing * 2)
+            samples = Self.thinned(samples, spacing: spacing)
         }
-        samples = kept
         if samples.count > Self.maximumSamples { samples.removeFirst(samples.count - Self.maximumSamples) }
+    }
+    /// Keeps the first and last sample of every stroke and in between only
+    /// samples at least `spacing` away from the last kept one.
+    static func thinned(_ all: [Sample], spacing: Double) -> [Sample] {
+        var kept: [Sample] = []; kept.reserveCapacity(all.count)
+        for index in all.indices {
+            let sample = all[index]
+            let first = index == 0 || all[index - 1].stroke != sample.stroke
+            let last = index == all.count - 1 || all[index + 1].stroke != sample.stroke
+            if first || last { kept.append(sample); continue }
+            guard let previous = kept.last else { kept.append(sample); continue }
+            if hypot(previous.point.x - sample.point.x, previous.point.y - sample.point.y) >= spacing { kept.append(sample) }
+        }
+        return kept
     }
 
     /// Visibility 0…1 of a trail sample.
@@ -121,6 +143,7 @@ public struct LaserTrail: Equatable, Sendable {
     public mutating func prune(at now: Double) {
         let trail = self
         samples.removeAll { trail.opacity($0, at: now) <= 0 }
+        if samples.isEmpty { spacing = 0 }
         let strokes = Set(samples.map(\.stroke))
         lifts = lifts.filter { strokes.contains($0.key) }
         if !touching, pointerOpacity(at: now) <= 0 { pointer = nil; pointerLift = nil }

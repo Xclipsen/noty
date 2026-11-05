@@ -1304,6 +1304,38 @@ extension NotebookViewport: SelectionTransferHost {
         return dropTarget(at: gesture.location(in: surface))?.id
     }
 
+    func liftsForAutoScroll(_ gesture: UIGestureRecognizer, from pageID: UUID, start: CGPoint) -> Bool {
+        guard state?.enabled == true, state?.onTransfer != nil, !liveZoom, !mode else { return false }
+        let y = gesture.location(in: self).y - contentOffset.y
+        let step = autoScrollStep(at: y)
+        guard step != 0 else { return false }
+        let startY = convert(start, from: nil).y - contentOffset.y
+        guard step < 0 ? y < startY - 8 : y > startY + 8 else { return false }
+        let range = autoScrollRange
+        guard step < 0 ? contentOffset.y > range.lowerBound + 0.5 : contentOffset.y < range.upperBound - 0.5 else { return false }
+        guard let source = placements[pageID] else { return true }
+        let sheet = source.frame.cgRect
+        guard sheet.contains(gesture.location(in: surface)) else { return true }
+        // Over its own sheet: only where its edge on that side is out of view
+        // (otherwise the selection is simply dragged past that edge).
+        let top = convert(CGPoint(x: 0, y: contentOffset.y + topObstruction), to: surface).y
+        let bottom = convert(CGPoint(x: 0, y: contentOffset.y + bounds.height - keyboardOverlap), to: surface).y
+        return step < 0 ? sheet.minY < top - 0.5 : sheet.maxY > bottom + 0.5
+    }
+
+    /// Vertical autoscroll speed for a touch at viewport height `y` (0: not
+    /// in the band at the top or bottom edge).
+    private func autoScrollStep(at y: CGFloat) -> CGFloat {
+        let edge: CGFloat = 72, maximum: CGFloat = 16
+        let top = topObstruction + edge, bottom = bounds.height - keyboardOverlap - edge
+        if y < top { return -maximum * min(1, (top - y) / edge) }
+        if y > bottom { return maximum * min(1, (y - bottom) / edge) }
+        return 0
+    }
+    private var autoScrollRange: ClosedRange<CGFloat> {
+        -contentInset.top...max(-contentInset.top, contentSize.height - bounds.height + contentInset.bottom)
+    }
+
     private func dropTarget(at point: CGPoint) -> NotebookPagePlacement? {
         layoutKey.first { $0.frame.cgRect.contains(point) }
     }
@@ -1332,15 +1364,10 @@ extension NotebookViewport: SelectionTransferHost {
         guard floatingLift != nil, let gesture = floatingGesture,
               gesture.state == .began || gesture.state == .changed else { hideFloatingSelection(); return }
         guard !liveZoom, !mode else { return }
-        let y = gesture.location(in: self).y - contentOffset.y
-        let edge: CGFloat = 72, maximum: CGFloat = 16
-        let top = topObstruction + edge, bottom = bounds.height - keyboardOverlap - edge
-        var step: CGFloat = 0
-        if y < top { step = -maximum * min(1, (top - y) / edge) }
-        else if y > bottom { step = maximum * min(1, (y - bottom) / edge) }
+        let step = autoScrollStep(at: gesture.location(in: self).y - contentOffset.y)
         guard step != 0 else { return }
-        let limit = max(-contentInset.top, contentSize.height - bounds.height + contentInset.bottom)
-        let next = min(max(contentOffset.y + step, -contentInset.top), limit)
+        let range = autoScrollRange
+        let next = min(max(contentOffset.y + step, range.lowerBound), range.upperBound)
         guard abs(next - contentOffset.y) > 0.1 else { return }
         contentOffset.y = next
         surface.bringSubviewToFront(floatingSelection)

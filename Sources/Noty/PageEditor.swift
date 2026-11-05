@@ -986,9 +986,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if ObjectClipboard.isNewest || (!board.hasStrings && !board.hasImages) {
             syncObjectPlane(); objectLayer.pasteCopiedObjects(); return
         }
-        // Both on the board (a copied web image with its address, or an Office
-        // text with a picture of it): what the source offers first is what it means.
-        let imageFirst = board.types.first.flatMap(UTType.init)?.conforms(to: .image) == true
+        // Both on the board: a noty copy (also after a restart) says itself
+        // what it means (`ObjectClipboard.markerType`, its dictionary has no
+        // order). From elsewhere (a copied web image with its address, an
+        // Office text with a picture of it) what the source offers first.
+        let imageFirst = ObjectClipboard.pasteboardPrefersImage
+            ?? (board.types.first.flatMap(UTType.init)?.conforms(to: .image) == true)
         if board.hasImages, imageFirst || !board.hasStrings { pasteImageHere(); return }
         if board.hasStrings { pasteText() } else { pasteImageHere() }
     }

@@ -41,6 +41,15 @@ protocol SelectionTransferHost: AnyObject {
     /// Page below the touch that would accept a drop (nil: gap, beside the
     /// pages, editor locked or zooming).
     func transferTarget(for gesture: UIGestureRecognizer) -> UUID?
+    /// The touch is in the autoscroll band at the top/bottom of the viewport
+    /// and the notebook can scroll that way: a selection from `pageID` lifts
+    /// there, so a page out of sight can be reached (Review: zoomed in with no
+    /// neighbour in view it was only clamped). Over its own sheet only where
+    /// that sheet goes on beyond the screen edge; beside it the selection may
+    /// be in the band anywhere. Only after the touch moved towards that edge
+    /// from `start` (where the drag began, window coordinates): grabbing
+    /// something that already lies in the band does not scroll at once.
+    func liftsForAutoScroll(_ gesture: UIGestureRecognizer, from pageID: UUID, start: CGPoint) -> Bool
     /// Someone works on `sheet` (stroke, tap, lasso, field editing): every
     /// other page drops its selection, so only one selection, one action bar
     /// and one target for key commands exist at a time.
@@ -59,10 +68,15 @@ enum SelectionTransfer {
     /// export renderers like the page itself: text with its automatic colours
     /// resolved and its ruled layout (`page`: paper, margins and PDF of the
     /// source page), images from their decoded renditions or – never left
-    /// out – as the neutral placeholder. Bounded to about 4 megapixels.
-    static func snapshot(objects: MovedObjects, ink: [PKStroke], frame: CGRect, pixelScale: CGFloat, page: Page? = nil) -> UIImage? {
+    /// out – as the neutral placeholder. Bounded to `maximumPixels`.
+    /// `placeholders: false` (system pasteboard): no picture at all (nil)
+    /// when an image has no decoded rendition yet.
+    static func snapshot(objects: MovedObjects, ink: [PKStroke], frame: CGRect, pixelScale: CGFloat, page: Page? = nil,
+                         maximumPixels: CGFloat = 4_000_000, placeholders: Bool = true) -> UIImage? {
         guard frame.width.isFinite, frame.height.isFinite, frame.width > 0, frame.height > 0 else { return nil }
-        let scale = max(0.05, min(pixelScale, 4, (4_000_000 / (frame.width * frame.height)).squareRoot()))
+        let renditions = objects.images.map { ImageRendering.cached($0, limit: 1024) ?? ImageRendering.anyCached($0, near: 1024) }
+        if !placeholders, renditions.contains(where: { $0 == nil }) { return nil }
+        let scale = max(0.05, min(pixelScale, 4, (maximumPixels / (frame.width * frame.height)).squareRoot()))
         let format = UIGraphicsImageRendererFormat()
         format.opaque = false; format.scale = scale
         var inkImage: UIImage?
@@ -74,9 +88,8 @@ enum SelectionTransfer {
         }
         return UIGraphicsImageRenderer(bounds: frame, format: format).image { context in
             let cg = context.cgContext
-            for image in objects.images {
-                // Never decodes an original here: the rendition the page shows.
-                let rendition = ImageRendering.cached(image, limit: 1024) ?? ImageRendering.anyCached(image, near: 1024)
+            // Never decodes an original here: the rendition the page shows.
+            for (image, rendition) in zip(objects.images, renditions) {
                 ImageRendering.draw(rendition, for: image, context: cg, origin: .init(x: 0, y: 0))
             }
             ShapeRendering.draw(objects.shapes, origin: .init(x: 0, y: 0), context: cg)

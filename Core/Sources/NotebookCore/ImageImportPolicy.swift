@@ -115,15 +115,38 @@ extension Notebook {
     /// would break (paste, duplicate, undo of an object change): named in the
     /// message instead of a generic validation failure. nil: within the limits.
     public func imageLimitProblem(replacing pageID: UUID, with images: [ImageObject]) -> ImageInsertionProblem? {
-        let current = pages.first { $0.id == pageID }?.images ?? []
-        if images.count > ImageLimits.maximumImagesPerPage, images.count > current.count { return .pageFull }
-        let currentIDs = Set(current.map(\.id))
+        imageLimitProblem(replacing: [pageID: images])
+    }
+
+    /// The same for several pages at once (a selection moved to another page).
+    public func imageLimitProblem(replacing replacements: [UUID: [ImageObject]]) -> ImageInsertionProblem? {
+        for (pageID, images) in replacements {
+            let current = pages.first { $0.id == pageID }?.images ?? []
+            if images.count > ImageLimits.maximumImagesPerPage, images.count > current.count { return .pageFull }
+        }
+        let currentIDs = Set(replacements.keys.flatMap { pageID in pages.first { $0.id == pageID }?.images ?? [] }.map(\.id))
         var seen = Set<String>(), after = 0
         for image in allImages where !currentIDs.contains(image.id) {
             if seen.insert(image.asset.sha256).inserted { after += image.asset.byteCount }
         }
-        for image in images where seen.insert(image.asset.sha256).inserted { after += image.asset.byteCount }
+        for images in replacements.values {
+            for image in images where seen.insert(image.asset.sha256).inserted { after += image.asset.byteCount }
+        }
         let used = uniqueImageAssetBytes
+        guard after > ImageLimits.maximumNotebookBytes, after > used else { return nil }
+        return .notebookFull(used: used, adding: after - used)
+    }
+
+    /// The image limit that installing `candidate` instead of this notebook
+    /// would break (undo/redo of a change touching images): named in the
+    /// message instead of a generic validation failure. nil: within the limits.
+    public func imageLimitProblem(installing candidate: Notebook) -> ImageInsertionProblem? {
+        for page in candidate.pages {
+            let count = page.images?.count ?? 0
+            let current = pages.first { $0.id == page.id }?.images?.count ?? 0
+            if count > ImageLimits.maximumImagesPerPage, count > current { return .pageFull }
+        }
+        let used = uniqueImageAssetBytes, after = candidate.uniqueImageAssetBytes
         guard after > ImageLimits.maximumNotebookBytes, after > used else { return nil }
         return .notebookFull(used: used, adding: after - used)
     }
