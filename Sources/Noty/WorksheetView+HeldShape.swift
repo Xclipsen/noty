@@ -21,7 +21,7 @@ extension WorksheetView {
         // moved onto the page (closed shapes) instead of being dropped.
         guard let shape = fittedHeld(recognized, width: heldWidth, allowShift: true) else { return }
         hideHeldVisuals() // a previous result still waiting for PencilKit
-        heldShape = shape
+        heldShape = shape; Self.heldSheets.add(self)
         heldAdjustment = HeldShapeAdjustment(shape: shape, grab: last)
         heldInk = (canvas.tool as? PKInkingTool)?.ink ?? PKInk(inkType, color: heldColor.uiColor)
         // The ink below at screen resolution (a coarser image flashed when it replaced the canvas).
@@ -129,7 +129,7 @@ extension WorksheetView {
         hideHeldVisuals()
     }
     private func resetHeldState() {
-        heldShape = nil; heldAdjustment = nil; holdBase = nil; holdPoints = []
+        heldShape = nil; heldAdjustment = nil; holdBase = nil; holdPoints = []; Self.heldSheets.remove(self)
         heldStroke = nil; heldInk = nil
         holdCompletion = StrokeCompletionGate()
     }
@@ -159,6 +159,38 @@ extension WorksheetView {
     func commitPendingHeldStroke() {
         guard heldShape != nil, holdCompletion.lifted, !inkActive else { return }
         finishHeldStroke(serial: holdSerial, force: true)
+    }
+    /// Sheets whose held result still waits for PencilKit (weak).
+    static let heldSheets = NSHashTable<WorksheetView>.weakObjects()
+    /// Before undo/redo, a view switch or closing: every waiting held
+    /// stroke reaches the model first (`settleHeldStroke`), so the action
+    /// sees it — undo then takes back this newest step, not the one before.
+    static func settleHeldStrokes() {
+        for sheet in heldSheets.allObjects { sheet.settleHeldStroke() }
+    }
+    /// Ends a held stroke at once: its result (shape or replacement stroke)
+    /// goes to the model, or, when that is not possible, the freehand stroke
+    /// as drawn. It never stays only on screen.
+    func settleHeldStroke() {
+        guard heldShape != nil else { return }
+        commitPendingHeldStroke()
+        guard heldShape != nil else { return }
+        holdSerial += 1; clearHeldPreview()
+        // PencilKit still owns the stroke: published at its tool end.
+        if inkActive { publishInkAtToolEnd = true } else { publishUnreportedInk() }
+    }
+    /// PencilKit reported the drawing only before its tool-end callback (no
+    /// further change comes): the held result is committed after a short grace
+    /// period (a late final change commits earlier) instead of waiting up to
+    /// 0.75 s or for the next touch, in which a tool change, undo or closing
+    /// could leave the stroke unsaved.
+    func scheduleHeldCommitWithoutFinalDrawing() {
+        guard heldShape != nil, holdCompletion.awaitsFinalDrawing else { return }
+        let serial = holdSerial
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, self.holdSerial == serial, self.heldShape != nil, self.holdCompletion.awaitsFinalDrawing else { return }
+            self.commitPendingHeldStroke()
+        }
     }
     func finishHeldStroke(serial: Int, force: Bool = false) {
         guard serial == holdSerial, force || holdCompletion.canCommit, !inkActive, editable, let shape = heldShape, let base = holdBase else { return }

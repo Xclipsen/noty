@@ -3,10 +3,23 @@ import NotebookCore
 
 extension InkColor {
     var color: Color { Color(.sRGB, red: red, green: green, blue: blue, opacity: alpha) }
-    init(_ color: Color) {
+    init(_ color: Color) { self.init(UIColor(color)) }
+    /// Every UI colour that becomes stored ink goes through here. The system
+    /// colour picker delivers Display P3/extended sRGB; `getRed` alone returns
+    /// components beyond 0…1 for them, which preferences, shapes and text
+    /// refuse (blocked tool settings, saving and backups). Such a colour is
+    /// converted to (non-extended) sRGB and clamped (`InkColor.clamped`);
+    /// in-range colours keep exactly the components they had before.
+    init(_ color: UIColor) {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 1
-        UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a)
-        self.init(Double(r), Double(g), Double(b), Double(a))
+        let direct = color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        if !direct || ![r, g, b, a].allSatisfy({ (0...1).contains($0) }),
+           let space = CGColorSpace(name: CGColorSpace.sRGB),
+           let converted = color.cgColor.converted(to: space, intent: .relativeColorimetric, options: nil),
+           let components = converted.components, components.count == 4 {
+            (r, g, b, a) = (components[0], components[1], components[2], components[3])
+        }
+        self = InkColor(Double(r), Double(g), Double(b), Double(a)).clamped
     }
 }
 

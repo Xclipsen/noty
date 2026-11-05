@@ -10,7 +10,9 @@ final class EditorWorkspace: ObservableObject {
     let root: URL
     @Published var secondary: EditorModel?
     @Published var secondaryID: UUID?
-    @Published var activePane = 0
+    /// Switching views first commits a held stroke of the old view: afterwards
+    /// it may no longer write (`isPaneActive`).
+    @Published var activePane = 0 { willSet { if newValue != activePane { WorksheetView.settleHeldStrokes() } } }
     @Published var closing = false
     @Published var error: String?
     private var models: [UUID: EditorModel]

@@ -303,10 +303,9 @@ extension TextBoxStyle {
             }
             let nearest = choices.min { distance($0) < distance($1) } ?? fallback.color
             color = nearest
-            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-            value.getRed(&r, green: &g, blue: &b, alpha: &a)
-            ink = distance(nearest) < 0.000001 && a == 1 ? nil : InkColor(r, g, b, a)
-            if automaticColor == true { color = r + g + b > 1.5 ? .white : .black; ink = nil }
+            let custom = InkColor(value) // sRGB, clamped: a P3 text colour stays storable
+            ink = distance(nearest) < 0.000001 && custom.alpha == 1 ? nil : custom
+            if automaticColor == true { color = custom.red + custom.green + custom.blue > 1.5 ? .white : .black; ink = nil }
         }
         if let paragraph = attributes[.paragraphStyle] as? NSParagraphStyle {
             alignment = switch paragraph.alignment { case .center: .center; case .right: .right; case .justified: .justified; default: .left }
