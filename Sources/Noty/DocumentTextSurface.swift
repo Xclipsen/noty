@@ -126,6 +126,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         addInteraction(interaction)
         // With the text tool the Pencil scrolls the paper, as on `PageTextView`.
         addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))
+        pointerBeam = TextPointerBeam(on: self) { [weak self] point in self?.pointerTextHeight(at: point) }
         addGestureRecognizer(touchWatcher)
         touchWatcher.onEnded = { [weak self] touch in
             guard let self, self.lastTouchEndedAsTap else { return }
@@ -138,6 +139,19 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
 
     /// Only the text tool: ink stays with PencilKit, free fields with their
     /// layer. The surface is transparent to everything else.
+    /// The trackpad I-beam (`TextPointerBeam`); UITextInteraction's gives way.
+    private var pointerBeam: TextPointerBeam?
+    override func addInteraction(_ interaction: UIInteraction) {
+        super.addInteraction(interaction)
+        TextPointerBeam.silence(interaction)
+    }
+    /// Glyph height (surface points) of the text at the pointer; only on a sheet.
+    private func pointerTextHeight(at point: CGPoint) -> CGFloat? {
+        guard isActive, let frame = store.frames.first(where: { $0.sheet.cgRect.contains(point) }) else { return nil }
+        let offset = store.offset(closestTo: Self.point(point), in: store.frames)
+        let font = store.attributes(at: offset)?[.font] as? UIFont ?? store.typingFont
+        return (font.ascender - font.descender) * CGFloat(frame.scale)
+    }
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         guard isActive, bounds.contains(point) else { return false }
         return host?.passesThrough(point) != true

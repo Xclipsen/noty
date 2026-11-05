@@ -139,7 +139,13 @@ final class PageTextView: UITextView {
         let rect = super.caretRect(for: position)
         guard rect.minY.isFinite, rect.height.isFinite, rect.height > 0 else { return rect }
         let index = offset(from: beginningOfDocument, to: position)
-        guard let band = glyphBand(near: rect, caretIndex: index) else { return rect }
+        guard let band = glyphBand(near: rect, caretIndex: index) else {
+            // No glyph band: still not the whole (ruled) line fragment.
+            let font = caretFont(at: index)
+            let limited = TextCursorGeometry.limitedCaret(top: Double(rect.minY), height: Double(rect.height),
+                                                          fontHeight: Double(font.ascender - font.descender))
+            return CGRect(x: rect.minX, y: CGFloat(limited.top), width: rect.width, height: CGFloat(limited.height))
+        }
         return CGRect(x: rect.minX, y: band.minY, width: rect.width, height: band.height)
     }
     override func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
@@ -167,6 +173,32 @@ final class PageTextView: UITextView {
         return middles.compactMap { glyphBand(near: CGRect(x: rect.minX, y: $0, width: rect.width, height: 0), caretIndex: nil) }
     }
     private static func isBreak(_ c: unichar) -> Bool { c == 10 || c == 13 || c == 0x2028 || c == 0x2029 }
+    // MARK: Trackpad pointer
+    /// The I-beam's own interaction (`TextPointerBeam`); UIKit's give way.
+    private var pointerBeam: TextPointerBeam?
+    override func addInteraction(_ interaction: UIInteraction) {
+        super.addInteraction(interaction)
+        TextPointerBeam.silence(interaction)
+    }
+    /// Glyph height (own units) of the character under the pointer.
+    private func pointerTextHeight(at point: CGPoint) -> CGFloat? {
+        guard isSelectable || isEditable else { return nil }
+        let fallback = typingAttributes[.font] as? UIFont ?? font ?? .systemFont(ofSize: 14)
+        let length = textStorage.length
+        var shown = fallback
+        if length > 0 {
+            let manager = layoutManager, inset = textContainerInset
+            manager.ensureLayout(for: textContainer)
+            var fraction: CGFloat = 0
+            var index = min(length - 1, manager.characterIndex(for: CGPoint(x: point.x - inset.left, y: point.y - inset.top),
+                                                                in: textContainer, fractionOfDistanceBetweenInsertionPoints: &fraction))
+            // Behind a line's end: the line's size, not the break's.
+            let text = textStorage.string as NSString
+            if index > 0, Self.isBreak(text.character(at: index)), !Self.isBreak(text.character(at: index - 1)) { index -= 1 }
+            shown = textStorage.attribute(.font, at: index, effectiveRange: nil) as? UIFont ?? fallback
+        }
+        return shown.ascender - shown.descender
+    }
     private func caretFont(at index: Int) -> UIFont {
         let text = textStorage.string as NSString, length = text.length
         func stored(_ i: Int) -> UIFont? { textStorage.attribute(.font, at: i, effectiveRange: nil) as? UIFont }
@@ -242,6 +274,7 @@ final class PageTextView: UITextView {
         // With the text tool the Pencil scrolls the paper; handwriting-to-text
         // (Scribble) would turn every Pencil drag over text into writing.
         addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))
+        pointerBeam = TextPointerBeam(on: self) { [weak self] point in self?.pointerTextHeight(at: point) }
         addGestureRecognizer(touchWatcher)
         touchWatcher.onEnded = { [weak self] touch in
             guard let self, self.lastTouchEndedAsTap else { return }
