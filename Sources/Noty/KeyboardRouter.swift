@@ -216,6 +216,8 @@ final class KeyboardRouter: ObservableObject {
     }
     private func claimResponder() {
         let sheet = sheetPanel
+        // The law window has the keys (`LawKeyboard`): its responder, not the page.
+        if sheet == nil, scope == .editor, heldEditor == nil, LawKeyboard.shared.claimKeys() { return }
         switch KeyFocusTarget.resolve(hasPanelHost: sheet != nil, inEditor: scope == .editor, heldText: heldEditor != nil,
                                       editorActive: editorActions != nil, libraryActive: libraryActions != nil) {
         case .panelHost: sheet?.host?.claim()
@@ -236,6 +238,7 @@ final class KeyboardRouter: ObservableObject {
         if !handoff {
             dropPrompt()
             pageTouched()
+            LawKeyboard.shared.pageTouched()
             setMode(.insert); insertRun = nil; typedSinceInsert = false
         } else if entering { insertRun = nil; typedSinceInsert = false }
         refreshLabel()
@@ -292,6 +295,7 @@ final class KeyboardRouter: ObservableObject {
     /// A tap in the text writes, also out of NOR and SEL.
     func tappedText(_ editor: any KeyboardTextTarget) {
         pageTouched()
+        LawKeyboard.shared.pageTouched()
         dropPrompt()
         setMode(.insert, editor: editor)
         insertRun = nil; typedSinceInsert = false
@@ -356,6 +360,7 @@ final class KeyboardRouter: ObservableObject {
         case .primaryOnly: "Nur Hauptauswahl"
         case .registerEmpty: "Register leer"
         case .macroStopped: "Makro abgebrochen"
+        case .repeatStopped: "Wiederholung abgebrochen"
         case .notInMacro: "Nicht im Makro"
         }
         show(note: note)

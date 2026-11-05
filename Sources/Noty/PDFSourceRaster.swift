@@ -12,6 +12,13 @@ final class PDFSourceRasterView: UIView {
         let page: CGPDFPage
         let transform: CGAffineTransform
         let frame: CGRect
+        /// A CGPDFPage does not keep its document alive: held here, so a page
+        /// still drawn on the background queue survives closing the editor,
+        /// a page change or the source leaving the catalogue.
+        let document: CGPDFDocument?
+        init(page: CGPDFPage, transform: CGAffineTransform, frame: CGRect) {
+            self.page = page; self.transform = transform; self.frame = frame; document = page.document
+        }
     }
     private struct Image: @unchecked Sendable { let image: CGImage?; let milliseconds: Int }
 

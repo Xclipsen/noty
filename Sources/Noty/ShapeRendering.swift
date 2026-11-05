@@ -68,9 +68,23 @@ enum ShapeRendering {
             if let fill = shape.fill, shape.isFillable {
                 fill.uiColor.setFill(); path.fill()
             }
-            shape.color.uiColor.setStroke(); path.lineWidth = shape.lineWidth
-            path.lineCapStyle = .round; path.lineJoinStyle = .round
+            shape.color.uiColor.setStroke()
             let dashes = dashes(shape)
+            if shape.kind == .arrow, !dashes.isEmpty {
+                // A dashed or dotted arrow keeps a solid head: only the shaft follows the pattern.
+                let shaft = UIBezierPath(), head = UIBezierPath()
+                for (index, point) in shape.vertices.enumerated() {
+                    if index == 0 { shaft.move(to: CGPoint(x: point.x, y: point.y)) } else { shaft.addLine(to: CGPoint(x: point.x, y: point.y)) }
+                }
+                for wing in shape.arrowHead {
+                    head.move(to: CGPoint(x: wing.wing.x, y: wing.wing.y)); head.addLine(to: CGPoint(x: wing.tip.x, y: wing.tip.y))
+                }
+                for part in [shaft, head] { part.lineWidth = shape.lineWidth; part.lineCapStyle = .round; part.lineJoinStyle = .round }
+                shaft.setLineDash(dashes, count: dashes.count, phase: 0); shaft.stroke(); head.stroke()
+                continue
+            }
+            path.lineWidth = shape.lineWidth
+            path.lineCapStyle = .round; path.lineJoinStyle = .round
             path.setLineDash(dashes, count: dashes.count, phase: 0); path.stroke()
         }
     }
@@ -126,5 +140,10 @@ struct ShapeToolOptions: Equatable {
     /// Fill of a new shape drawn in `stroke` (nil when the fill is off).
     func fill(stroke: InkColor) -> InkColor? {
         filled ? ShapeFill.color(fillColor ?? stroke, opacity: fillOpacity) : nil
+    }
+    /// Fill of a new shape of `kind`: lines and arrows never store one
+    /// (it would be invisible, but made them count as filled).
+    func fill(stroke: InkColor, kind: ShapeKind) -> InkColor? {
+        kind == .line || kind == .arrow ? nil : fill(stroke: stroke)
     }
 }

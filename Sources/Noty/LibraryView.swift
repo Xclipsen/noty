@@ -621,7 +621,7 @@ struct LibraryView: View {
     private var sidebarFooter: some View {
         HStack {
             Button { showingAreas = true } label: {
-                Label(workspaces.title, systemImage: workspaces.kind == nil ? "books.vertical" : "flask").lineLimit(1)
+                Label(workspaces.title, systemImage: workspaces.kind.symbol).lineLimit(1)
             }
             .disabled(model.busy && !model.backgroundBusy || workspaces.busy)
             .accessibilityLabel("Bereich \(workspaces.title)").accessibilityHint("Bereich wechseln")

@@ -7,7 +7,13 @@ public enum TextLines {
     public static let pageBreak: unichar = 0x0C
     public static let pageBreakText = "\u{0C}"
 
-    public static func isBreak(_ unit: unichar) -> Bool { [10, pageBreak, 13, 0x2028, 0x2029].contains(unit) }
+    public static func isBreak(_ unit: unichar) -> Bool {
+        // A switch, no array per character: long lines are read unit by unit.
+        switch unit {
+        case 10, pageBreak, 13, 0x2028, 0x2029: true
+        default: false
+        }
+    }
 
     /// Start of the line holding `offset`.
     public static func start(_ text: NSString, _ offset: Int) -> Int {

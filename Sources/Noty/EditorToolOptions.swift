@@ -219,20 +219,12 @@ struct EditorToolOptions: View {
         widthSlider("Breite", value: Binding(get: { preferences.inkWidth(for: tool) }, set: { preferences.setInkWidth($0, for: tool) }),
                     range: ToolbarPreferences.widthRange(for: tool) ?? 1...12, step: tool == .marker ? 1 : 0.5)
     }
+    // Shared cells: NotyOptionComponents.swift.
     private func widthSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, step: Double) -> some View {
-        HStack(spacing: 6) {
-            Slider(value: value, in: range, step: step) { Text(title) }.frame(width: 90, height: 44)
-            Text(value.wrappedValue.formatted()).monospacedDigit().frame(minWidth: 25, alignment: .leading)
-                .accessibilityHidden(true)
-        }.notyTooltip(title)
+        NotyWidthSlider(title, value: value, range: range, step: step)
     }
-    /// Colour dot with the same ring as the selected state elsewhere.
     private func swatch(_ color: Color, selected: Bool, title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Circle().fill(color).frame(width: 22, height: 22)
-                .overlay(Circle().strokeBorder(.white.opacity(selected ? 0.95 : 0.3), lineWidth: selected ? 2.5 : 1))
-                .frame(width: 34, height: 44).contentShape(Rectangle())
-        }.accessibilityLabel(title).accessibilityAddTraits(selected ? .isSelected : []).notyTooltip(title)
+        NotySwatch(color, selected: selected, title: title, action: action)
     }
     /// Short drawing of a line style (solid, dashed, dotted).
     private func patternGlyph(_ pattern: StrokePattern) -> some View {
@@ -241,33 +233,15 @@ struct EditorToolOptions: View {
                                               dash: pattern == .solid ? [] : pattern == .dashed ? [6, 4] : [0.1, 5]))
             .frame(width: 30, height: 18)
     }
-    /// Action with symbol and short label (no selection state), 44-pt target.
     private func labeled(_ title: String, symbol: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: symbol).font(.system(size: 18)).frame(width: 24)
-                Text(title).lineLimit(1)
-            }
-            .padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
-        }.accessibilityLabel(help).notyTooltip(help)
+        NotyLabeledOption(title, symbol: symbol, help: help, action: action)
     }
-    /// Thin group divider like in the toolbar and the selection bars.
-    private var groupDivider: some View {
-        Rectangle().fill(.white.opacity(0.14)).frame(width: 0.5, height: 18).padding(.horizontal, 2)
-            .allowsHitTesting(false).accessibilityHidden(true)
-    }
+    private var groupDivider: some View { NotyGroupDivider() }
     private func option(_ title: String, symbol: String, selected: Bool = false, help: String? = nil, action: @escaping () -> Void) -> some View {
-        glyphOption(title, selected: selected, help: help, action: action) {
-            Image(systemName: symbol).font(.system(size: 18))
-        }
+        NotySymbolOption(title, symbol: symbol, selected: selected, help: help, action: action)
     }
-    /// Toggle/choice cell with any glyph; selected cells get the common plate.
     private func glyphOption<Glyph: View>(_ title: String, selected: Bool = false, help: String? = nil, action: @escaping () -> Void,
                                           @ViewBuilder glyph: () -> Glyph) -> some View {
-        Button(action: action) {
-            glyph()
-                .frame(width: 44, height: 44).contentShape(Rectangle())
-                .background(selected ? .white.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 10))
-        }.accessibilityLabel(title).accessibilityAddTraits(selected ? .isSelected : []).notyTooltip(help ?? title)
+        NotyGlyphOption(title, selected: selected, help: help, action: action, glyph: glyph)
     }
 }

@@ -91,7 +91,7 @@ final class TextDocumentExtrasTests: XCTestCase {
         XCTAssertEqual(TextLines.lineRange(text, NSRange(location: 1, length: 4)), NSRange(location: 0, length: 8))
         XCTAssertEqual(TextLines.paragraphRange(text, NSRange(location: 5, length: 0)), NSRange(location: 4, length: 4))
         XCTAssertEqual(TextLines.lineRange(text, NSRange(location: 9, length: 0)), NSRange(location: 8, length: 1))
-        XCTAssertEqual(TextListEditing.newline(in: text as String, range: NSRange(location: 7, length: 0))?.replacement, "\n- ")
+        XCTAssertEqual(TextIndentEditing.newlineEdit(in: text as String, range: NSRange(location: 7, length: 0))?.replacement, "\n- ")
         let document = try flowing("1. a\u{0C}3. b")
         let (next, _) = try document.editingTextFlow(range: NSRange(location: 4, length: 0), replacement: "x", layout: layout)
         XCTAssertEqual(next.textFlowContent?.text, "1. ax\u{0C}2. b", "numbering runs on over a break")

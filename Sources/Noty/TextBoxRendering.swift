@@ -195,16 +195,13 @@ final class TaskLayoutManager: NSLayoutManager {
 /// Snap native glyph baselines without changing persisted text attributes.
 @MainActor
 final class RuledTextLayout: NSObject, @preconcurrency NSLayoutManagerDelegate {
-    var originY: CGFloat?
-    var lines = TextRuling.lined
-    /// Top edge of the page (ruling coordinates) for a flow segment, whose
-    /// first line may reach above the writing area (`firstLineBaseline`).
-    var pageTop: CGFloat?
+    /// The lines of the laid-out box (`TextLinePaper.grid(for:)`); nil: free layout.
+    /// A flow segment's first line may reach above the writing area (`pageTop`).
+    var grid: TextLineGrid?
     /// Baseline in container coordinates of a line starting at `top`; the one
     /// rule of editor, previews, PDF and flow capacity. Nil without ruling.
     func baseline(top: CGFloat, ascent: CGFloat) -> CGFloat? {
-        guard let originY else { return nil }
-        return CGFloat(lines.lineBaseline(top: Double(top), ascent: Double(ascent), origin: Double(originY), pageTop: pageTop.map { Double($0) }))
+        grid.map { CGFloat($0.baseline(top: Double(top), ascent: Double(ascent))) }
     }
     func layoutManager(_ layoutManager: NSLayoutManager, shouldSetLineFragmentRect rect: UnsafeMutablePointer<CGRect>,
                        lineFragmentUsedRect used: UnsafeMutablePointer<CGRect>, baselineOffset: UnsafeMutablePointer<CGFloat>,
@@ -223,26 +220,6 @@ final class RuledTextLayout: NSObject, @preconcurrency NSLayoutManagerDelegate {
         guard let storage = layoutManager.textStorage, charIndex < storage.length,
               (storage.string as NSString).character(at: charIndex) == TextLines.pageBreak else { return action }
         return .zeroAdvancement
-    }
-}
-
-extension Page {
-    /// Page-bound text stands on lined rows and on grid rows (same baselines
-    /// in editor, previews, PDF and flow capacity): flow segments and the free
-    /// fields migrated from them (schema 14 keeps their region as layout).
-    func textRuling(for box: TextBox) -> TextRuling? {
-        guard box.flowRegion != nil else { return nil }
-        return TextRuling(paper: box.flowRegion == .page ? paper : margins?.style)
-    }
-    func ruledTextOrigin(for box: TextBox) -> CGFloat? {
-        guard textRuling(for: box) != nil, let anchor = box.rulingAnchorY(regionTops: writingRegionTops) else { return nil }
-        return (anchor + (margins?.top ?? 0)) / writingCoordinateScale(for: box)
-    }
-    /// Page top in the coordinates of `ruledTextOrigin`, for the segments of a
-    /// text flow only: migrated fields keep their laid-out lines.
-    func ruledPageTop(for box: TextBox) -> CGFloat? {
-        guard box.flowID != nil, textRuling(for: box) != nil else { return nil }
-        return (margins?.top ?? 0) / writingCoordinateScale(for: box)
     }
 }
 
@@ -269,6 +246,8 @@ extension TextBoxStyle {
         case .right: .right
         case .justified: .justified
         }
+        // The stored indent is the first line's; `headIndent` gets the hanging
+        // edge where the text is laid out (`applyHangingIndents`).
         paragraph.headIndent = indent ?? 0; paragraph.firstLineHeadIndent = indent ?? 0
         // The system's twelve stops end after 336 pt, a tab behind them wrapped
         // the line. One endless grid instead (`TextTabs`).
@@ -326,14 +305,15 @@ extension TextBoxStyle {
             }
             let nearest = choices.min { distance($0) < distance($1) } ?? fallback.color
             color = nearest
-            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-            value.getRed(&r, green: &g, blue: &b, alpha: &a)
-            ink = distance(nearest) < 0.000001 && a == 1 ? nil : InkColor(r, g, b, a)
-            if automaticColor == true { color = r + g + b > 1.5 ? .white : .black; ink = nil }
+            let custom = InkColor(value) // sRGB, clamped: a P3 text colour stays storable
+            ink = distance(nearest) < 0.000001 && custom.alpha == 1 ? nil : custom
+            if automaticColor == true { color = custom.red + custom.green + custom.blue > 1.5 ? .white : .black; ink = nil }
         }
         if let paragraph = attributes[.paragraphStyle] as? NSParagraphStyle {
             alignment = switch paragraph.alignment { case .center: .center; case .right: .right; case .justified: .justified; default: .left }
-            indent = min(240, max(0, paragraph.headIndent))
+            // Never `headIndent`: it holds the derived hanging edge.
+            indent = TextIndentLayout.storedIndent(firstLineHeadIndent: Double(paragraph.firstLineHeadIndent),
+                                                   headIndent: Double(paragraph.headIndent))
         }
         link = (attributes[.link] as? URL)?.absoluteString ?? attributes[.link] as? String
         if let value = link, value.utf8.count > 2048 || !["https", "http", "mailto"].contains(URL(string: value)?.scheme?.lowercased() ?? "") { link = nil }
@@ -370,6 +350,9 @@ extension HighlightColor {
 }
 
 extension TextBox {
+    /// The stored text and formats, without hanging indents: the text
+    /// document's buffer, the editor's start and every layout without them
+    /// (flows hang nowhere, see `hangingText(width:)`).
     @MainActor var attributedText: NSAttributedString {
         let value = NSMutableAttributedString(string: text, attributes: style.attributes)
         for run in runs ?? [] where run.location >= 0 && run.length > 0 && run.location <= value.length && run.length <= value.length-run.location {
@@ -377,6 +360,34 @@ extension TextBox {
         }
         value.applyTabGrid(CGFloat(TextTabs.interval(self)))
         return value
+    }
+    /// The text with its hanging indents at `width` (the field's text width in
+    /// its own units); nil when no paragraph hangs, or for flow segments of a
+    /// text document: their page breaks come from the document's own buffer,
+    /// which knows no hanging indent (docs/TEXT-FIELDS.md). Whether a field is
+    /// laid out with them decides `TextObjectLayout` (`TextIndentLayout.hangs`).
+    @MainActor func hangingText(width: CGFloat) -> NSAttributedString? {
+        guard flowID == nil, let mutable = attributedText.mutableCopy() as? NSMutableAttributedString,
+              mutable.applyHangingIndents(width: width) else { return nil }
+        return mutable
+    }
+    /// A field whose lines changed under it (another paper or writing space,
+    /// a copy pasted onto another page, a scaled lasso group): if its text
+    /// overflows its stored height there, the height comes from the text
+    /// again by the rule of an edit (`TextIndentLayout.fittedHeight`, with
+    /// hanging indents where they fit up to the page edge); otherwise it stays
+    /// as it is. Place and width stay; flow segments belong to their flow.
+    @MainActor func refitted(paper: TextLinePaper, limits: PageRect) -> TextBox {
+        guard flowID == nil else { return self }
+        let hung = Double(TextObjectLayout(self, paper: paper, hanging: .always).usedHeight)
+        if TextIndentLayout.hangs(self, heightWithHanging: hung) { return self }
+        let plain = Double(TextObjectLayout(self, paper: paper, hanging: .never).usedHeight)
+        guard overflows(textHeight: plain) else { return self }
+        let line = ceil(style.fontSize * TextStylePreset.lineHeightFactor * paper.coordinateScale(for: self))
+        var result = self
+        result.height = TextIndentLayout.fittedHeight(hung: hung, plain: { plain }, line: line,
+                                                      room: { maximumHeight(in: limits, minimum: $0) }).height
+        return result
     }
     @MainActor mutating func capture(_ value: NSAttributedString) {
         text = value.string
@@ -389,6 +400,59 @@ extension TextBox {
 }
 
 extension NSMutableAttributedString {
+    /// Hanging indents (`TextIndentLayout.hangingEdge`) of the paragraphs
+    /// touching `range` (nil: all) at text width `width`: `headIndent` becomes
+    /// the edge, `firstLineHeadIndent` (the stored indent) stays. The one place
+    /// that measures a prefix for every layout path. True if anything changed.
+    @MainActor @discardableResult
+    func applyHangingIndents(width: CGFloat, in range: NSRange? = nil) -> Bool {
+        let text = string as NSString
+        guard text.length > 0, width > 0, width.isFinite else { return false }
+        let area = range.map { TextLines.paragraphRange(text, NSRange(location: min($0.location, text.length),
+                                                                       length: min($0.length, text.length - min($0.location, text.length)))) }
+            ?? NSRange(location: 0, length: text.length)
+        var changed = false, cursor = area.location
+        beginEditing()
+        while cursor < NSMaxRange(area), cursor < text.length {
+            let paragraph = TextLines.paragraphRange(text, NSRange(location: cursor, length: 0))
+            guard paragraph.length > 0 else { break }
+            cursor = NSMaxRange(paragraph)
+            let style = attribute(.paragraphStyle, at: paragraph.location, effectiveRange: nil) as? NSParagraphStyle ?? .default
+            let prefix = TextParagraphPrefix(in: text, at: paragraph.location)
+            let fontAt = min(prefix.body < prefix.end ? prefix.body : paragraph.location, text.length - 1)
+            let em = (attribute(.font, at: fontAt, effectiveRange: nil) as? UIFont)?.pointSize ?? 14
+            let alignment: NotebookCore.TextAlignment? = switch style.alignment { case .center: .center; case .right: .right; default: nil }
+            let edge = CGFloat(TextIndentLayout.hangingEdge(in: text, at: paragraph.location, indent: Double(style.firstLineHeadIndent),
+                tabInterval: Double(style.defaultTabInterval > 0 ? style.defaultTabInterval : 35), width: Double(width), em: Double(em),
+                alignment: alignment) { part in Double(self.attributedSubstring(from: part).size().width) })
+            enumerateAttribute(.paragraphStyle, in: paragraph) { value, part, _ in
+                let current = value as? NSParagraphStyle ?? .default
+                guard abs(current.headIndent - edge) > 0.01 else { return }
+                let next = (current.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+                next.headIndent = edge
+                addAttribute(.paragraphStyle, value: next, range: part)
+                changed = true
+            }
+        }
+        endEditing()
+        return changed
+    }
+    /// Back to the layout without hanging indents: `headIndent` = `firstLineHeadIndent`
+    /// (also removes edges pasted from elsewhere). True if anything changed.
+    @discardableResult
+    func removeHangingIndents() -> Bool {
+        var changed = false
+        beginEditing()
+        enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: length)) { value, part, _ in
+            guard let current = value as? NSParagraphStyle, abs(current.headIndent - current.firstLineHeadIndent) > 0.01,
+                  let next = current.mutableCopy() as? NSMutableParagraphStyle else { return }
+            next.headIndent = next.firstLineHeadIndent
+            addAttribute(.paragraphStyle, value: next, range: part)
+            changed = true
+        }
+        endEditing()
+        return changed
+    }
     /// Every paragraph on the same endless grid (`TextTabs`). True if anything changed.
     @discardableResult
     func applyTabGrid(_ interval: CGFloat) -> Bool {
@@ -420,22 +484,43 @@ struct TextObjectLayout {
     let rotation: CGFloat
     /// `limitedTo`: only as many lines as this height (page units) holds, for
     /// measuring a page of a long flow; the rest stays without layout.
+    /// Hanging indents (`TextIndentLayout.hangs`): `ifFits` for everything
+    /// that shows a field, `always` to measure the height an edit stores
+    /// (`TextObjectLayer.fitted`), `never` where only the width counts.
+    enum Hanging { case ifFits, always, never }
+    /// The text is laid out with its hanging indents.
+    private(set) var hangs = false
+
     init(_ box: TextBox, on page: Page, limitedTo limit: Double? = nil) {
-        self.init(box, ruledOrigin: page.ruledTextOrigin(for: box), ruling: page.textRuling(for: box) ?? .lined, pageTop: page.ruledPageTop(for: box),
-            coordinateScale: page.writingCoordinateScale(for: box), limitedTo: limit)
+        self.init(box, paper: page.linePaper, limitedTo: limit)
     }
-    init(_ box: TextBox, ruledOrigin: CGFloat? = nil, ruling lines: TextRuling = .lined, pageTop: CGFloat? = nil, coordinateScale: CGFloat = 1, limitedTo limit: Double? = nil) {
+    /// The line layout of `paper` (`TextLinePaper.grid(for:)`): flow segments,
+    /// migrated fields and fields aligned to the paper lines stand on them.
+    init(_ box: TextBox, paper: TextLinePaper, limitedTo limit: Double? = nil, hanging: Hanging = .ifFits) {
+        self.init(box, grid: paper.grid(for: box), coordinateScale: CGFloat(paper.coordinateScale(for: box)), limitedTo: limit, hanging: hanging)
+    }
+    init(_ box: TextBox, grid: TextLineGrid? = nil, coordinateScale: CGFloat = 1, limitedTo limit: Double? = nil, hanging: Hanging = .ifFits) {
         self.coordinateScale = coordinateScale
         rotation = CGFloat(box.angle * .pi / 180)
-        storage = NSTextStorage(attributedString: box.attributedText)
+        let plain = box.attributedText
+        let hung = hanging == .never || limit != nil ? nil : box.hangingText(width: CGFloat(box.width) / coordinateScale)
+        storage = NSTextStorage(attributedString: hung ?? plain)
         manager = TaskLayoutManager()
-        ruling = RuledTextLayout(); ruling.originY = ruledOrigin; ruling.lines = lines; ruling.pageTop = pageTop; manager.delegate = ruling
+        ruling = RuledTextLayout(); ruling.grid = grid; manager.delegate = ruling
         // A line of the largest size more than the page, so the last one is never cut off by the container.
         let height = limit.map { CGFloat($0) / coordinateScale + Self.glyphOverhang(box) * 4 } ?? .greatestFiniteMagnitude
         container = NSTextContainer(size: CGSize(width: box.width / coordinateScale, height: height))
         container.lineFragmentPadding = 0
         storage.addLayoutManager(manager); manager.addTextContainer(container)
         manager.ensureLayout(for: container)
+        guard hung != nil else { return }
+        hangs = true
+        // Only where the text then fits the stored height; otherwise exactly as before.
+        if hanging == .ifFits, !TextIndentLayout.hangs(box, heightWithHanging: Double(contentHeight(box))) {
+            storage.setAttributedString(plain)
+            manager.ensureLayout(for: container)
+            hangs = false
+        }
     }
     var usedHeight: CGFloat { ceil(manager.usedRect(for: container).height * coordinateScale) }
     /// `usedHeight` without the empty line behind a final line break: in a
@@ -569,5 +654,29 @@ enum TextFieldStyleRendering {
             context.addPath(CGPath(roundedRect: frame, cornerWidth: radius, cornerHeight: radius, transform: nil))
             context.setStrokeColor(stroke.cgColor); context.setLineWidth(CGFloat(TextBox.fieldBorderWidth)); context.strokePath()
         }
+    }
+}
+
+extension Notebook {
+    /// After a change of paper or writing space: the free fields whose lines
+    /// changed (an aligned field from blank onto lined paper) get their
+    /// height from the text where it would overflow now (`TextBox.refitted`);
+    /// every other field and page stays exactly as it was.
+    @MainActor func refittingText(toLinesOf previous: Notebook) -> Notebook {
+        let before = Dictionary(previous.pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var result = self
+        for index in result.pages.indices {
+            let page = result.pages[index]
+            guard let old = before[page.id], var boxes = page.textBoxes, !boxes.isEmpty else { continue }
+            let paper = page.linePaper, oldPaper = old.linePaper
+            guard paper != oldPaper else { continue }
+            var changed = false
+            for box in boxes.indices where boxes[box].flowID == nil && paper.grid(for: boxes[box]) != oldPaper.grid(for: boxes[box]) {
+                let fitted = boxes[box].refitted(paper: paper, limits: page.textBounds)
+                if fitted != boxes[box] { boxes[box] = fitted; changed = true }
+            }
+            if changed { result.pages[index].textBoxes = boxes }
+        }
+        return result
     }
 }

@@ -255,20 +255,49 @@ enum ImageRendering {
     }
 
     /// Background rasterisation with an already decoded rendition.
-    nonisolated static func draw(_ object: ImageObject, image: UIImage, context: CGContext, origin: PagePoint) {
-        draw(image, for: object, context: context, origin: origin)
+    /// `precropped`: `image` is already cropped by `exportCrop(_:for:)`.
+    nonisolated static func draw(_ object: ImageObject, image: UIImage, context: CGContext, origin: PagePoint, precropped: Bool = false) {
+        draw(image, for: object, context: context, origin: origin, precropped: precropped)
+    }
+
+    /// Only the pixels inside the crop, copied into a new bitmap (PDF export).
+    /// A clip alone embeds the whole rendition in the PDF, cut-away parts
+    /// included (readable with `pdfimages`); a `CGImage.cropping` result can
+    /// still reference the full pixel data, so it is redrawn on its own.
+    /// Never fails the export: an 8-bit context in the source's colour space
+    /// first, then in sRGB; if neither exists, the whole rendition with
+    /// `precropped: false`, drawn with the crop as clipping path as before.
+    nonisolated static func exportCrop(_ image: UIImage, for object: ImageObject) -> (image: UIImage, precropped: Bool) {
+        guard let source = image.cgImage else { return (image, false) }
+        let rect = ImageObject.cropPixels(object.crop, width: source.width, height: source.height)
+        if rect.x == 0, rect.y == 0, rect.width == source.width, rect.height == source.height { return (image, true) }
+        guard rect.width > 0, rect.height > 0 else { return (image, false) }
+        let opaque = [CGImageAlphaInfo.none, .noneSkipFirst, .noneSkipLast].contains(source.alphaInfo)
+        let own = source.colorSpace.flatMap { $0.supportsOutput && $0.model == .rgb ? $0 : nil }
+        let spaces = [own, CGColorSpace(name: CGColorSpace.sRGB), CGColorSpaceCreateDeviceRGB()].compactMap { $0 }
+        for space in spaces {
+            guard let context = CGContext(data: nil, width: rect.width, height: rect.height, bitsPerComponent: 8, bytesPerRow: 0,
+                                          space: space, bitmapInfo: (opaque ? CGImageAlphaInfo.noneSkipLast : .premultipliedLast).rawValue)
+            else { continue }
+            // CGContext is y-up: the crop's top-left pixel lands at the top left.
+            context.interpolationQuality = .none
+            context.draw(source, in: CGRect(x: -rect.x, y: rect.y + rect.height - source.height, width: source.width, height: source.height))
+            if let cropped = context.makeImage() { return (UIImage(cgImage: cropped), true) }
+        }
+        return (image, false)
     }
 
     /// The shared crop/rotation transform. `image`: a rendition of `object`
     /// (nil: neutral placeholder of its frame). Safe off the main actor in a
     /// context pushed on the current thread.
-    nonisolated static func draw(_ image: UIImage?, for object: ImageObject, context: CGContext, origin: PagePoint) {
+    nonisolated static func draw(_ image: UIImage?, for object: ImageObject, context: CGContext, origin: PagePoint, precropped: Bool = false) {
         context.saveGState(); defer { context.restoreGState() }
         context.translateBy(x: origin.x + object.x + object.width / 2, y: origin.y + object.y + object.height / 2)
         context.rotate(by: object.rotation * .pi / 180)
         let frame = CGRect(x: -object.width / 2, y: -object.height / 2, width: object.width, height: object.height)
         context.clip(to: frame)
         guard let image else { context.setFillColor(gray: 0.86, alpha: 0.6); context.fill(frame); return }
+        if precropped { image.draw(in: frame); return }
         let fullWidth = object.width / object.crop.width, fullHeight = object.height / object.crop.height
         image.draw(in: CGRect(x: frame.minX - object.crop.x * fullWidth, y: frame.minY - object.crop.y * fullHeight,
                               width: fullWidth, height: fullHeight))

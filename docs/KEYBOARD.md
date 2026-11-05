@@ -2,20 +2,29 @@
 
 Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur in Seitenleiste, Suche, Gesetzen, Dialogen und Farbe, Textdokument-Extras und die Befunde des Reviews. **Implementiert, erfolgreich gebaut, Core-Tests bestanden, am iPad ungeprüft.** Linux hat keinen iOS-Simulator: Engine, Tastentabelle, Parser, Bereichsbearbeitung, Tastensperre und Fokusziele sind getestet, Tastenzustellung, Fokus, Anzeige und TextKit-Messung **nicht**. Ein Simulator-Lauf auf Stand Build 67 hat die Tastenzustellung einmal bestätigt, das ersetzt den Gerätetest nicht.
 
-**Seit Build 71 experimentell und nur in Textdokumenten.** Die Helix-Bedienung ist standardmäßig aus und gilt, wenn eingeschaltet, nur solange ein Textdokument im aktiven Bereich offen ist, einschließlich der daraus geöffneten Bedienfelder. Bibliothek, Hefte und deren Seiten kennen sie nicht mehr; die Abschnitte dazu unten beschreiben den Stand bis Build 70. Der frühere Schalter `noty.keyboard.mode` wird nicht mehr gelesen.
+**Seit Build 71 experimentell und nur in Textdokumenten.** Die Helix-Bedienung ist standardmäßig aus und gilt, wenn eingeschaltet, nur solange ein Textdokument im aktiven Bereich offen ist, einschließlich der daraus geöffneten Bedienfelder (auch des Gesetzesfensters). Bibliothek, Hefte und deren Seiten kennen sie nicht mehr; die Abschnitte „Bibliothek“, „Seite“ und „Seitenleiste“ unten beschreiben den Stand bis Build 70. Der frühere Schalter `noty.keyboard.mode` wird nicht mehr gelesen.
+
+**`>`/`<` im Tastaturmodus (feat/fix2-text, 05.11.2026):** dieselbe Core-Regel wie Tab/⇧Tab im Präfix für jede gewählte, nicht leere Zeile; Zeichen und Nummern folgen der Ebene („1. a / 2. b / 3. c“, `>` auf b: „1. a / ⇥1. b / 2. c“). **Implementiert, Core-Tests und SDK-Build bestanden, am iPad ungeprüft.**
+
+**Tab, ⇧Tab, Return und ⌫ im Text (feat/einzug2, 05.11.2026):** nach den Regeln „Einzug und Listen“ in [TEXT-FIELDS](TEXT-FIELDS.md); Hardware- und Bildschirmtastatur gleich, im Textdokument ⇧Tab neu als Tastenbefehl. **Implementiert, Core-Tests und SDK-Build bestanden, am iPad ungeprüft.**
+
+**Korrekturen aus der Prüfung des Textwerkzeugs (feat/fix-text, 05.11.2026):** Große Zähler frieren nicht mehr ein: `9999.` läuft höchstens 5000 Runden bzw. etwa 2 Sekunden (`Wiederholung abgebrochen`), `.` in einem Makro zählt auf dessen Budget, `9999n` sucht die Treffer einmal, `mim`/`mam`/`mdm`/`mrm` lesen den Text einmal. `3o`/`3O` öffnen im bisherigen Textweg nur eine Zeile (`Nur Hauptauswahl`), `f`/`t`/`F`/`T` mit Enter finden auch CRLF, `*` auf einer Auswahl über einen Seitenumbruch findet sich selbst, `p` mit einer kopierten Leerzeile hinter der letzten Zeile setzt genau eine. **Implementiert, Core-Tests bestanden, am iPad ungeprüft.**
+
+**Gesetzessammlung mit normaler Tastatur (feat/gesetze-tastatur, 03.11.2026):** Menü „Gesetze“ und Gesetzfokus, siehe den eigenen Abschnitt unten. **Implementiert, erfolgreich gebaut (`xtool dev build`), Core-Tests bestanden, nicht installiert, am iPad ungeprüft.**
 
 ## ⌘-Kürzel (immer aktiv, auch ohne Tastaturmodus)
 
 | Taste | Wirkung | Wo |
 | --- | --- | --- |
 | ⌘N / ⇧⌘N | Neues Heft / neues Textdokument | Bibliothek |
-| ⌘F | Suchen | überall |
+| ⌘F | Suchen; bei Gesetzfokus „Im Gesetz suchen“ | überall |
 | ⌘S | Speichern | Editor |
 | ⌘E / ⇧⌘E | PDF ganz / diese Seite | Editor |
-| ⌘↑ / ⌘↓ | Vorherige / nächste Seite (im Text: Anfang/Ende dieses Texts, Systemverhalten) | Editor |
-| ⌘G | Gehe zu Seite | Editor |
+| ⌘↑ / ⌘↓ | Vorherige / nächste Seite (im Text: Anfang/Ende dieses Texts, Systemverhalten; bei Gesetzfokus Anfang/Ende der Vorschrift) | Editor |
+| ⌘G | Gehe zu Seite (bei Gesetzfokus: nächster Treffer) | Editor |
 | ⌘W | Schließen | Editor |
-| ⌘Z / ⇧⌘Z | Rückgängig / Wiederholen | Editor |
+| ⌘Z / ⇧⌘Z | Rückgängig / Wiederholen (bei Gesetzfokus: nur Markierungen) | Editor |
+| ⇧⌘L, ⌥⌘L, ⌘L | Gesetzessammlung öffnen oder schließen, an den Rand schieben oder vom Rand holen, Fundstelle suchen (Menü „Gesetze“) | Editor, Sammlung eingeschaltet |
 | ⌘A | Alles auswählen (siehe unten) | Editor |
 | ⌘C ⌘X ⌘V ⌘D | Kopieren, Ausschneiden, Einfügen, Duplizieren | Text und Auswahl |
 | ⌫, Pfeile, ⇧Pfeile | Auswahl löschen, um 1 pt / 10 pt schieben | Objektauswahl |
@@ -25,19 +34,63 @@ Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur 
 | ⇧⌘7 ⇧⌘8 ⇧⌘9 | Aufzählung, Nummerierung, Checkliste | Text |
 | ⌘K, ⇧⌘H | Link, Markieren | Text |
 | ⌘↩ | Seitenumbruch (in NOR und SEL vor die Auswahl) | Textdokument |
-| Tab | Nächster Tabstopp, ohne Ende bis zum Feldrand; in Listen eine Ebene tiefer; über mehrere markierte Zeilen rückt jede ein | Text |
-| ⇧Tab | Tab vor dem Cursor zurücknehmen, sonst Tab am Zeilenanfang, sonst Einzug; in Listen eine Ebene höher; über mehrere markierte Zeilen rückt jede aus | Text |
+| Tab | Cursor vor dem ersten Textzeichen (im Präfix): ein Tab an den Absatzanfang, Listen eine Ebene tiefer; sonst ein Tab an der Cursorstelle (nächster Tabstopp, auch in Listen); über mehrere Absätze bekommt jeder nicht leere einen Tab. Bildschirmtastatur gleich | Text |
+| ⇧Tab | Je berührtem Absatz den letzten führenden Tab weg (auch hinter Leerzeichen), sonst bis zu vier führende Leerzeichen, sonst 20 pt alten Einzug; ein Tab mitten in der Zeile bleibt | Text |
 | ⇧⌘P, ⌘/ | Befehlspalette, Tastenübersicht (ohne Tastaturmodus enthält die Palette keine Textbefehle und keine Eingabezeile, beides braucht die Engine) | überall |
 
 **⌘A:** Im Text das ganze Feld; im Textdokument der ganze Text über alle Seiten (blau markiert; ⌘C/⌘X/⌘V, ⌫ und Formatierung wirken auf alles, beim Schreiben auch Tippen, ⌘Z als ein Schritt). Ohne Cursor im Textdokument dasselbe, dann in NOR, damit kein Buchstabe versehentlich alles ersetzt. Außerhalb von INS wirkt ⌘A wie `%`. Im Heft alles Auswählbare der Seite, mit jedem Werkzeug. Das Bearbeitungsmenü „Alles auswählen“ bleibt die native Auswahl dieser Seite.
 
 Außerhalb von INS: ⌘V ersetzt eine breite Auswahl, sonst wie `P`; ⌘X schneidet eine breite Auswahl aus. Beides läuft über Engine und Register.
 
+## Gesetzessammlung (normale Tastatur)
+
+Gilt im geöffneten Heft oder Textdokument, solange Einstellungen › Gesetzessammlung eingeschaltet ist, mit und ohne Helix. Eine Tabelle für Menü, Key Commands und Hilfe: Core `LawShortcuts` (`LawShortcutsTests`: Eindeutigkeit je Kontext, Sperrliste, jede Überschneidung mit dem Heft benannt).
+
+**Menü „Gesetze“** (Menüleiste und ⌘-Übersicht, im Editor; nicht vorhanden, solange die Sammlung in den Einstellungen abgeschaltet ist). Titel nach Apple-Konvention ohne Schrägstriche, je Zustand: „Gesetzessammlung öffnen“ / „Gesetzessammlung schließen“, „An den Rand schieben“ / „Vom Rand holen“; die Befehlspalette benutzt dieselben Wörter („… öffnen“, „… schließen“, „… vom Rand holen“).
+
+| Taste | Wirkung |
+| --- | --- |
+| ⇧⌘L | Gesetzessammlung öffnen (mit Fokus) oder schließen, wenn sie sichtbar ist |
+| ⌥⌘L | An den Rand schieben oder vom Rand holen (mit Fokus); bei geschlossenem Fenster deaktiviert |
+| ⌘L | Fundstelle suchen: Fenster zeigen, Schnellsuche leeren und fokussieren (`144 HGB`) |
+| – | Anordnen › Links, Rechts, Unten andocken, Über dem Heft schweben (ohne Kürzel, siehe unten) |
+
+**Gesetzfokus:** ⇧⌘L, ⌥⌘L (beim Hervorholen), ⌘L, `Space l`, ein Feld des Fensters oder eine Auswahl im Gesetzestext setzen ihn. Sichtbar: Titel „Gesetze“ im Fensterkopf hell (sonst gedimmt) und eine 2-pt-Linie in der Akzentfarbe unter dem Kopf. Berührung der Heftseite mit Finger oder Stift, ein Text auf der Seite, Schließen und Parken nehmen ihn zurück. Mit Fokus wird der unsichtbare Tastenempfänger `LawKeyHostView` First Responder, solange kein Feld des Fensters tippt; der Seite gehören die Tasten danach wieder (`KeyboardRouter.reclaim`). Die Einträge des Fokus stehen im Menü „Gesetze“, sobald das Fenster sichtbar ist, und lassen sich dort auch ohne Fokus wählen (das Fenster nimmt dann den Fokus); ihre Kürzel gelten nur mit Fokus. Mit Fokus gilt zusätzlich:
+
+| Taste | Wirkung | Weg |
+| --- | --- | --- |
+| Esc | Eine Ebene: Auswahl oder gewählte Markierung aufheben, sonst Eingabefeld verlassen, sonst offene Suchfläche schließen, sonst Fenster schließen | Key Command; im Feld über einen verborgenen `.cancelAction` |
+| ⌘F | Im Gesetz suchen (Schnellsuche fokussieren); Menü „Heft“ heißt dann „Im Gesetz suchen“ | Menü |
+| ⌘G, ↩ / ⇧⌘G, ⇧↩ | Nächster / vorheriger Volltexttreffer der Schnellsuche, ohne Suchbegriff in die Schnellsuche | Menü / Key Command |
+| ← → | Vorherige / nächste Vorschrift | Key Command |
+| ↑ ↓, ⌥↑ ⌥↓, Leertaste, ⇧Leertaste | Scrollen: Zeile, „Bildschirmseite weiter/zurück“ | Key Command |
+| ⌘↑ / ⌘↓ | Anfang / Ende der Vorschrift | Menü |
+| ⌘+ ⌘- ⌘0 | Schrift größer, kleiner, „Normale Schriftgröße“ (Fließtextgröße von Dynamic Type + 1 pt, 18 pt bei Standardgröße), nur im Lesetext | Menü |
+| ⌘D | „Lesezeichen setzen“ bzw. „Lesezeichen entfernen“ (Titel je Zustand) | Menü |
+| ⌘T, ⇧⌘T, ⌥⌘B | Gesetz wählen, Inhaltsverzeichnis, Lesezeichen und Markierungen | Menü |
+| ⌥⌘P | „PDF zeigen“ bzw. „Lesetext zeigen“ (Titel je Zustand) | Menü |
+| 1–5 | Auswahl in Gelb, Grün, Blau, Rosa, Orange markieren; gewählte Markierung umfärben. Nur bei Auswahl, sonst bleibt die Ziffer frei | Key Command |
+| ⇧⌘H | Mit der zuletzt mit 1–5 gewählten Farbe markieren (sonst Stiftfarbe) | Menü |
+| ⌫ | Markierung unter Auswahl bzw. gewählte Markierung entfernen; nur dann | Key Command |
+| ⌘Z / ⇧⌘Z | „Markieren widerrufen“ / „Markieren wiederholen“, Vorrang vor dem Heft-Undo; ohne Schritt keine Wirkung, das Heft bleibt unberührt. Mit Touch: „…“ › Markieren widerrufen / Wiederholen | Key Command |
+
+**Warum zwei Wege:** ⌘-Kürzel stehen im Menü „Gesetze“ und bekommen ihr Kürzel nur bei Fokus; so wirken sie aus jedem Teil des Fensters (Suchfeld, Gesetzestext, Tastenempfänger) und stehen in Menüleiste und ⌘-Übersicht. Tasten ohne ⌘ wären im Menü auch beim Tippen aktiv, und ⌘Z stieße dort mit „Bearbeiten › Widerrufen“ des Systems zusammen: beides sind `UIKeyCommand`s mit `discoverabilityTitle` am Tastenempfänger, nur bei Fokus und nicht unter einem Sheet. Mit eingeschaltetem Helix gehen die Tasten ohne ⌘ an `GESETZE` (unten), die ⌘-Kürzel gelten weiter.
+
+**Konflikte, aufgelöst:** ⌘G (Gehe zu Seite) und ⌘↑/⌘↓ (Seite) verlieren bei Fokus ihr Kürzel an das Fenster; ⌘F behält das Kürzel und wechselt Titel und Ziel; ⌘+ ⌘- ⌘D ⇧⌘H ⌘Z gehören sonst Text, Objektauswahl oder Seite, die bei Fokus nicht First Responder sind. Nicht belegt: ⌘H, ⌘Leertaste, ⌘Tab, ⇧⌘3/4/5, ⌥⌘D, ⌘W (Heft schließen), ⌘, ⌘Q ⌘M ⌃⌘F ⌘`, ⇧⌘P, ⌘/ und 🌐-Kombinationen. **Andocken ohne Kürzel:** ⌃⌘Pfeil liegt neben der Fensteranordnung von iPadOS (🌐⌃Pfeil; auf Tastaturen ohne 🌐-Taste oft auf ⌃ umgelegt) und ließe sich hier nicht prüfen; die vier Einträge stehen deshalb nur im Menü „Gesetze › Anordnen“.
+
+**Kürzelübersicht für die Hilfe im Leser** (Text; `LawShortcuts.overview()` liefert dasselbe):
+
+> Fenster: ⇧⌘L öffnen oder schließen · ⌥⌘L an den Rand · ⌘L Fundstelle suchen
+> Suchen: ⌘F im Gesetz suchen · ⌘G/↩ nächster, ⇧⌘G/⇧↩ vorheriger Treffer
+> Lesen: ←/→ Vorschrift · ↑/↓ scrollen · ⌥↑/⌥↓ oder Leertaste Bildschirmseite · ⌘↑/⌘↓ Anfang/Ende · Esc zurück/schließen
+> Ansicht: ⌘+/⌘-/⌘0 Schrift · ⌘D Lesezeichen · ⌘T Gesetz · ⇧⌘T Inhalt · ⌥⌘B Liste · ⌥⌘P Text/PDF
+> Markieren (bei Auswahl): 1–5 Farbe · ⇧⌘H letzte Farbe · ⌫ entfernen · ⌘Z/⇧⌘Z widerrufen/wiederholen
+
 ## Tastaturmodus
 
 Einstellungen › Editor › „Helix-Tastatur in Textdokumenten (experimentell)“, Standard aus. Wirkt nur auf Hardware-Tastaturen. Modell wie [Helix](https://helix-editor.com): **erst auswählen, dann handeln**. `w` wählt ein Wort, `d` löscht es.
 
-**Modus:** `NOR` (Buchstaben sind Befehle), `INS` (natives Tippen), `SEL` (Bewegungen erweitern die Auswahl, `v` schaltet um). Auf Seite und Bibliothek steht `NOR` mit `SEITE`/`BIBLIOTHEK` als Kontext. Die Anzeige erscheint, sobald eine Taste gedrückt wurde: im Editor oben links unter der Zurück-Taste, in der Bibliothek unten links. Daneben stehen eine laufende Makroaufnahme (`REC @`, rot), Zähler und angefangene Folge (`3g`, `"a`), „n Auswahlen“ und kurze Hinweise (`Kein Treffer`, `Suche von vorn`, `Kein Paar gefunden`, `Nur Hauptauswahl`, `Register leer`, `Makro abgebrochen`, `Nicht im Makro`).
+**Modus:** `NOR` (Buchstaben sind Befehle), `INS` (natives Tippen), `SEL` (Bewegungen erweitern die Auswahl, `v` schaltet um). Auf Seite und Bibliothek steht `NOR` mit `SEITE`/`BIBLIOTHEK` als Kontext. Die Anzeige erscheint, sobald eine Taste gedrückt wurde: im Editor oben links unter der Zurück-Taste, in der Bibliothek unten links. Daneben stehen eine laufende Makroaufnahme (`REC @`, rot), Zähler und angefangene Folge (`3g`, `"a`), „n Auswahlen“ und kurze Hinweise (`Kein Treffer`, `Suche von vorn`, `Kein Paar gefunden`, `Nur Hauptauswahl`, `Register leer`, `Makro abgebrochen`, `Wiederholung abgebrochen`, `Nicht im Makro`).
 
 **Wege:** `i` führt von der Seite immer in den Text (Textdokument: Cursor auf der sichtbaren Seite; Heft: gewähltes Feld, sonst neues Feld). Esc führt Schritt für Schritt zurück: INS → NOR, SEL → NOR, breite Auswahl → Cursor, mehrere Auswahlen → Hauptauswahl, zuletzt Text verlassen (nach `i` und Tippen also dreimal, denn Getipptes bleibt wie in Helix ausgewählt; die Anzeige steht dabei zweimal auf `NOR`); auf der Seite hebt es die Objektauswahl auf. Ein Druck wirkt genau eine Ebene: Offene Übersicht, Eingabezeile oder angefangene Folge gehen zuerst, Marked Text wird vorher abgeschlossen. ⌃[ und ⌃C wirken wie Esc (Tastaturen ohne Esc-Taste; alternativ iPadOS: Modifikatortasten › Feststelltaste → Escape). Antippen eines Texts schreibt immer, auch aus NOR und SEL heraus; eine offene Eingabezeile geht dabei zu, die Auswahl bleibt, wie sie ist. Ein Fokuswechsel der App (⌘Z, Rückgängig-Knopf, ⌘+ oder ⌘1 mit Sprung auf eine andere Seite, Gliederung) lässt den Modus stehen. Öffnet Rückgängig einen Text von der Seite aus, steht er in NOR.
 
@@ -147,7 +200,7 @@ Ein angetippter Text im Suchfeld bleibt nativ (Tottasten gehen dort), dann wirke
 
 ### Gesetzessammlung (`GESETZE`)
 
-`Space l` öffnet das Fenster und gibt ihm die Tasten. Esc oder `Space l` schiebt es wie das ✕ an den Rand, die Tasten gehen an die Seite, der Text bleibt, wo er war. Fokus wandert dabei nie: Die Tasten kommen weiter über den Responder der Seite.
+Seit Build 71 nur mit eingeschaltetem Helix in einem offenen Textdokument; in Heften gelten allein die normalen Kürzel (Abschnitt „Gesetzessammlung (normale Tastatur)“), die auch hier weiter wirken. `Space l` öffnet das Fenster, setzt den Gesetzfokus und gibt ihm die Tasten. Esc (ohne Auswahl) und `Space l` schließen es wie das ✕, `P` schiebt es an den Rand; die Tasten gehen an die Seite, der Text bleibt, wo er war. Kommt `Space l` aus einem Text in NOR, bleibt dessen Responder: Die Tasten laufen weiter über ihn zum Router. Sonst nimmt der Tastenempfänger des Fensters den Fokus und reicht die Tasten an den Router weiter.
 
 | Taste | |
 | --- | --- |
@@ -159,7 +212,10 @@ Ein angetippter Text im Suchfeld bleibt nativ (Tottasten gehen dort), dann wirke
 | Enter | In der Eingabezeile suchen, danach nächster Volltexttreffer |
 | `t`, `o`, `B` | Gesetz wählen, Inhaltsverzeichnis, Lesezeichen und Markierungen |
 | `b`, `v`, `+ = -` | Lesezeichen, Lesetext oder PDF, Schrift |
-| `m`, `M` | Touch-Auswahl markieren, Markierung darin entfernen |
+| `m1`–`m5`, `mm` | Auswahl in Farbe 1–5 bzw. der letzten Farbe markieren, gewählte Markierung umfärben |
+| `d`, `M` | Markierung unter der Auswahl bzw. gewählte Markierung entfernen |
+| `u`, `U` | Markierung rückgängig, wiederholen |
+| Esc, `Space l`, `P` | Auswahl aufheben, sonst schließen; schließen; an den Rand |
 
 ### Dialoge (`DIALOG`)
 
@@ -188,22 +244,23 @@ Ein Titelfeld ist eine Option wie jede andere: Steht der Rahmen darauf, tippen a
 
 **Register:** `"a` vor `y`, `d`, `c`, `p`, `P`, `R` nimmt ein eigenes Register, jedes Zeichen geht. Es bleibt neben dem Standardregister stehen, berührt die Systemzwischenablage nicht und lebt nur im Speicher, also bis zum Beenden der App, über Texte hinweg. `"_` merkt nichts, `"+`, `"*` und `""` meinen das Standardregister. Ein Zähler gehört hinter das Register: `"a3p`; `3"ap` verliert ihn, wie in Helix.
 
-**`.`** wiederholt den Befehl, der zuletzt in INS führte (`i a I A o O c`), mit dem dabei entstandenen Text. Grundlage ist das Ergebnis, nicht die Tasten: Autokorrektur, Diktat und Tottasten wirken mit, Pfeile und Tippen außerhalb des Laufs nicht. Der Zähler des ersten Befehls (`2o`) zählt nicht mit, Antippen startet keinen neuen Lauf. Das Ergebnis ist ein Undo-Schritt.
+**`.`** wiederholt den Befehl, der zuletzt in INS führte (`i a I A o O c`), mit dem dabei entstandenen Text. Grundlage ist das Ergebnis, nicht die Tasten: Autokorrektur, Diktat und Tottasten wirken mit, Pfeile und Tippen außerhalb des Laufs nicht. Der Zähler des ersten Befehls (`2o`) zählt nicht mit, Antippen startet keinen neuen Lauf. Das Ergebnis ist ein Undo-Schritt. Ein Zähler (`9999.`) läuft höchstens 5000 Runden und etwa 2 Sekunden (vor jeder Runde geprüft), danach `Wiederholung abgebrochen`; die Runden bis dahin bleiben als ein Undo-Schritt.
 
-**Makros:** `Q` nimmt in Register `@` auf (`"aQ` in `a`), noch ein `Q` beendet, Verlassen des Texts auch. `q` spielt ab, `"a2q` zweimal. Aufgenommen wird, was den Text betrifft: Tasten in NOR und SEL, bestätigte Eingabezeilen, das Ergebnis von INS wie bei `.`. `u`, Paletten- und Menübefehle bleiben draußen, die Anzeige sagt `Nicht im Makro`. Abgespielt wird rein in der Engine: Ein Makro ist **ein** Undo-Schritt, `j`/`k` zählen darin Textzeilen statt angezeigter Zeilen, weil die Ansicht den neuen Stand noch nicht kennt. Ein Makro ruft sich nie selbst auf, auch nicht über ein anderes; ein `q` nach dem Muster bleibt wirkungslos. Insgesamt laufen je `q` höchstens 5000 Schritte und 2 Sekunden, danach `Makro abgebrochen`; was bis dahin geschah, bleibt als ein Undo-Schritt.
+**Makros:** `Q` nimmt in Register `@` auf (`"aQ` in `a`), noch ein `Q` beendet, Verlassen des Texts auch. `q` spielt ab, `"a2q` zweimal. Aufgenommen wird, was den Text betrifft: Tasten in NOR und SEL, bestätigte Eingabezeilen, das Ergebnis von INS wie bei `.`. `u`, Paletten- und Menübefehle bleiben draußen, die Anzeige sagt `Nicht im Makro`. Abgespielt wird rein in der Engine: Ein Makro ist **ein** Undo-Schritt, `j`/`k` zählen darin Textzeilen statt angezeigter Zeilen, weil die Ansicht den neuen Stand noch nicht kennt. Ein Makro ruft sich nie selbst auf, auch nicht über ein anderes; ein `q` nach dem Muster bleibt wirkungslos. Je `q` laufen höchstens 5000 Schritte, eingebettete Makros und jede Runde eines `.` im Makro eingerechnet; die Frist von 2 Sekunden wird vor jedem Schritt und zwischen den Runden von `.` geprüft. Danach `Makro abgebrochen`; was bis dahin geschah, bleibt als ein Undo-Schritt. Ein einzelner anderer Befehl wird nicht mittendrin unterbrochen, die Frist kann also um dessen Dauer überschritten werden; Zähler bei `n`/`N` suchen die Treffer einmal und wiederholen keine vollen Runden, sie bleiben deshalb kurz.
 
 **Sprungliste:** `gg`, `ge`, `5G`, bestätigte `/`, `?`, `s`, `S` und ⌃s merken die Stelle davor, höchstens 30. ⌃o geht zurück und merkt beim ersten Mal die aktuelle Stelle, ⌃i wieder vor. Die Einträge wandern mit Änderungen mit, auch mit nativem Tippen; was gelöscht wurde, wird geklemmt. Die Liste gehört zum offenen Text, mit dem Verlassen des Texts ist sie weg. `n`, `N`, `*` tragen nichts ein. Die Gliederung auch nicht: Ihr Sprung läuft am Tastaturmodus vorbei, ein Eintrag davor wäre nicht einfach zu haben.
 
-**Schreiben in INS:** `o`, `O` und Enter übernehmen den führenden Leerraum der Zeile (Tastaturmodus an). Listen gehen vor (`TextListEditing`). Esc auf einer neuen Zeile, auf der nichts entstand, nimmt den Einzug wieder weg. Einstellungen › Editor › „Klammern automatisch schließen“ (`noty.keyboard.autoPairs`, Standard aus): `( [ {` und `" '` schließen sich selbst, außer vor einem Wortzeichen, Anführungszeichen auch nicht dahinter (`don't`). Eine getippte schließende Hälfte läuft über die vorhandene, ⌫ zwischen beiden löscht beide. Nur ein getipptes Zeichen an einem einfachen Cursor zählt: Marked Text, Autokorrektur und Diktat ersetzen Bereiche oder bringen mehr als ein Zeichen und bleiben unberührt. Typografische Anführungszeichen (`„`, `“`) schließen nichts. Auf einer Seite sieht der bisherige Textweg nur den Text dieser Seite: Am Seitenrand gilt das Nachbarzeichen der nächsten Seite als nicht vorhanden.
+**Schreiben in INS:** `o`, `O` und Enter übernehmen den führenden Leerraum der Zeile (Tastaturmodus an). Die Regeln für Listen und eingerückte Absätze gehen vor (`TextIndentEditing`, [TEXT-FIELDS](TEXT-FIELDS.md), Einzug und Listen). Esc auf einer neuen Zeile, auf der nichts entstand, nimmt den Einzug wieder weg. Einstellungen › Editor › „Klammern automatisch schließen“ (`noty.keyboard.autoPairs`, Standard aus): `( [ {` und `" '` schließen sich selbst, außer vor einem Wortzeichen, Anführungszeichen auch nicht dahinter (`don't`). Eine getippte schließende Hälfte läuft über die vorhandene, ⌫ zwischen beiden löscht beide. Nur ein getipptes Zeichen an einem einfachen Cursor zählt: Marked Text, Autokorrektur und Diktat ersetzen Bereiche oder bringen mehr als ein Zeichen und bleiben unberührt. Typografische Anführungszeichen (`„`, `“`) schließen nichts. Auf einer Seite sieht der bisherige Textweg nur den Text dieser Seite: Am Seitenrand gilt das Nachbarzeichen der nächsten Seite als nicht vorhanden.
 
 ## Grenzen
 
-- Nicht per Tastenbelegung erreichbar: Systemdialoge (Dateiauswahl, Teilen, Fotos, Farbkreis des Systems) und Zeichnen; dazu Anmeldung und Zugangsdaten (Einstellungen › Konto, Backup › Weitere Optionen: nur Esc und natives Tippen, Passwörter laufen bewusst nicht über den Router), Menüs der Werkzeugoptionen außer Farbe, Strichstärke und Linienart, das Umordnen in „Werkzeugleiste anpassen“ und „Seiten anordnen“, Bereich entfernen, Gesetzesfenster andocken. Dort hilft iPadOS: Bedienungshilfen › Tastaturen › „Voller Tastaturzugriff“ (Tab/Pfeile/Leertaste für jedes Element).
+- Nicht per Tastenbelegung erreichbar: Systemdialoge (Dateiauswahl, Teilen, Fotos, Farbkreis des Systems) und Zeichnen; dazu Anmeldung und Zugangsdaten (Einstellungen › Konto, Backup › Weitere Optionen: nur Esc und natives Tippen, Passwörter laufen bewusst nicht über den Router), Menüs der Werkzeugoptionen außer Farbe, Strichstärke und Linienart, das Umordnen in „Werkzeugleiste anpassen“ und „Seiten anordnen“, Bereich entfernen. Das Gesetzesfenster andocken geht nur über Menü „Gesetze › Anordnen“, ohne Kürzel. Dort hilft iPadOS: Bedienungshilfen › Tastaturen › „Voller Tastaturzugriff“ (Tab/Pfeile/Leertaste für jedes Element).
 - Systemalerts und `confirmationDialog` (Fehler, Touch-Rückfragen): OK und Speichern sind als Standardaktion hinterlegt, Abbrechen kommt vom System. Ob Enter und Esc dort wirken, ist ungeprüft.
 - Felder, die Tasten über den Router füllen (Suchsheet, Titel, Paragraph, Namen), haben keinen Cursor und keine Tottasten, wie die Eingabezeile von `/`. Nach dem Antippen sind sie nativ. ⌘V geht im Sheet und über die Objektauswahl; mit Stiftwerkzeug fehlt es in der Eingabezeile der Gesetze.
-- Markieren im Gesetzestext: nur eine Touch-Auswahl (`m`, `M`). Der Leser hat keinen Tastaturcursor; ihn zu bauen hieße, einen zweiten Texteditor in einem schreibgeschützten Text zu pflegen.
+- Markieren im Gesetzestext: nur eine Touch-Auswahl (1–5, ⇧⌘H, ⌫; Helix `m1`–`m5`, `mm`, `d`). Der Leser hat keinen Tastaturcursor; ihn zu bauen hieße, einen zweiten Texteditor in einem schreibgeschützten Text zu pflegen.
+- Gesetzfokus: Solange der Gesetzestext oder das PDF nach einer Touch-Auswahl First Responder ist, fehlen ihm die Key Commands des Fensters (Esc, Pfeile, 1–5, ⌫, ⌘Z), bis `LawTextView`/`LawPDFView` sie übernehmen (`LawKeyboard.keyCommands()`, Zusammenführung des Markier-Pakets); die ⌘-Kürzel im Menü wirken trotzdem. Ein Tipp ins Fenster setzt den Fokus erst, wenn `LawPanelView` `.lawKeyFocusArea()` anwendet; bis dahin setzen ihn Felder, Auswahl, ⌘L, ⇧⌘L, ⌥⌘L und `Space l`. Aus einem Helix-Text in NOR bleiben ⌘Z und ⌘+/⌘- beim Text.
 - Sehr lange Listen in Dialogen (Inhaltsverzeichnis) wandern nur durch sichtbare Zeilen und scrollen dann weiter; `ge` meint dort die letzte sichtbare Zeile.
-- Die App zeigt nur die Hauptauswahl (`C`, ⌥C, `s`, `S`, ⌥s bilden die übrigen in der Engine); Register nur als Klartext. **Mehrere Auswahlen:** `d`, `y`, `~`, `r` usw. wirken auf alle. Getippt wird im bisherigen Weg nur an einem Cursor: `c`, `i`, `a`, `I`, `A`, `o`, `O` und ebenso `.` und dieselben Befehle in einem Makro behalten deshalb vorher nur die Hauptauswahl, die Anzeige meldet `Nur Hauptauswahl`. Texteditor 2 tippt an allen Cursorn und zeigt „n Auswahlen“ auch in INS.
+- Die App zeigt nur die Hauptauswahl (`C`, ⌥C, `s`, `S`, ⌥s bilden die übrigen in der Engine); Register nur als Klartext. **Mehrere Auswahlen:** `d`, `y`, `~`, `r` usw. wirken auf alle. Getippt wird im bisherigen Weg nur an einem Cursor: `c`, `i`, `a`, `I`, `A`, `o`, `O` und ebenso `.` und dieselben Befehle in einem Makro behalten deshalb vorher nur die Hauptauswahl, die Anzeige meldet `Nur Hauptauswahl`. Aus demselben Grund öffnen `3o`/`3O` dort nur eine Zeile, der Zähler entfällt (sonst blieben zwei leere Zeilen stehen). Texteditor 2 tippt an allen Cursorn und zeigt „n Auswahlen“ auch in INS.
 - `~`, `` ` `` und `r` erhalten die Formatierung in der Auswahl, solange die Ersetzung gleich lang ist. Ändert sie die UTF-16-Länge (`ß` zu `SS`, `r` mit einem Emoji über einfachen Buchstaben), wird die Auswahl einheitlich im Format ihres Anfangs.
 - Esc als Key Command wiederholt sich beim Halten womöglich (abschalten geht erst ab iOS 26); gehalten kann es also mehrere Ebenen wirken. Ungeprüft.
 - Auf einer deutschen Tastatur sind `^`, `` ` `` und je nach Layout `~` Tottasten: Der Router sieht sie nicht als Zeichen, in der Eingabezeile gehen auch `é`-artige Kompositionen nicht. ⌥ tippt weiter, was es tippt (`[ ] { } | @`), Befehle sind nur ⌥;, in NOR und SEL außerdem ⌥C und ⌥s.
@@ -230,7 +287,7 @@ Ein Titelfeld ist eine Option wie jede andere: Steht der Rahmen darauf, tippen a
 15. **Formate:** `%`, dann `~`, `` ` `` und `r` x in einem Text mit fettem Wort, kursivem Wort und Markierung, auf einer Seite und über eine Seitengrenze: alle Formate bleiben, `u` ist ein Schritt.
 16. **Eingabezeile und Fokus:** `/` öffnen, im selben Text und in einem anderen Feld tippen: Eingabezeile weg, Tasten schreiben, die Auswahl springt nicht zurück.
 17. **Marked Text:** Tottaste `^` oder japanische Eingabe anfangen, Esc: der Text ist übernommen und NOR steht, kein Zeichen doppelt.
-18. **Esc und Tab, ein Druck eine Ebene:** Heft, Stift aktiv: `g` (Popup), einmal Esc schließt nur das Popup; Objekt gewählt, `Space`, Esc lässt die Auswahl stehen, zweites Esc hebt sie auf. Dasselbe mit Textwerkzeug zwischen den Feldern. `Space h`, einmal Esc schließt nur die Übersicht, im Text und auf der Seite. Text mit zwei Auswahlen: je Druck eine Ebene bis zum Verlassen, auch schnell hintereinander. Tab auf der Seite wählt genau ein Objekt weiter, in einer Liste rückt Tab genau einmal ein. Mit Diagnose zeigt `noty.keys`, welcher Weg kam: `command token=…` ist der Key Command, `second-way` die abgewiesene Zweitzustellung.
+18. **Esc und Tab, ein Druck eine Ebene:** Heft, Stift aktiv: `g` (Popup), einmal Esc schließt nur das Popup; Objekt gewählt, `Space`, Esc lässt die Auswahl stehen, zweites Esc hebt sie auf. Dasselbe mit Textwerkzeug zwischen den Feldern. `Space h`, einmal Esc schließt nur die Übersicht, im Text und auf der Seite. Text mit zwei Auswahlen: je Druck eine Ebene bis zum Verlassen, auch schnell hintereinander. Tab auf der Seite wählt genau ein Objekt weiter, im Präfix eines Listeneintrags rückt Tab genau einmal ein, mitten im Text tippt er genau einen Tab. Mit Diagnose zeigt `noty.keys`, welcher Weg kam: `command token=…` ist der Key Command, `second-way` die abgewiesene Zweitzustellung.
 19. **Which-Key beim Wechsel:** `g`, dann Heft per Touch schließen; `Space`, dann ⇧⌘P: das Popup ist jeweils weg, die nächste Taste beginnt neu.
 20. **Letzte Seitenzeile:** Dokument, dessen Text genau mit der letzten Zeile einer Seite endet: `o` dort, von Zeilenmitte und von der letzten Stelle: Cursor steht auf der nächsten Seite, kein roter Rahmen; tippen, Esc, `u`.
 21. **Palette in der Bibliothek:** ⇧⌘P, `q` oder `12` und Enter führt den Treffer der Suche aus, nichts schließt.
@@ -239,14 +296,14 @@ Ein Titelfeld ist eine Option wie jede andere: Steht der Rahmen darauf, tippen a
 23. **Seitenleiste:** `Space s`, `j k h l`, `gg`, `ge`, Enter öffnet und `j` scrollt sofort die Seite; `Space s`, Esc; `Space s` zweimal klappt ein. `b`, `y`, `p`, `D`, `K`, `J`, `a` (Sheet, Esc, Tasten stehen wieder in der Leiste), `d` und `X` fragen, Enter und Esc. Dasselbe aus einem Text in NOR: Esc lässt ihn weiterlaufen. Während die Leiste die Tasten hat, schreibt `p` nichts in den Text, `⌫` und Pfeile lassen ein gewähltes Objekt stehen. Schreiben mit dem Stift gibt die Tasten an die Seite zurück.
 24. **Gliederung, Lesezeichen:** `Space o` im Textdokument und in einem Heft mit PDF-Inhalt (geschlossene Zweige öffnen sich beim Wandern), `Space m`, Enter springt; `Space M` setzt; leere Listen: Esc führt zurück.
 25. **Suchsheet:** ⌘F und `/` im Heft, `Space f` und `/` in der Bibliothek, auch als allererste Taste nach dem Start. Tippen füllt das Feld, ⌫, ⌘V; ↓ wählt, `j k`, ⌃n ⌃p, `gg`, `ge`, ein Buchstabe oder eine Ziffer geht zurück ins Feld; Enter springt, danach `j` auf der Seite; Esc schließt, danach `j`. Feld antippen, tippen, Esc schließt.
-26. **Gesetze:** `Space l` geschlossen, am Rand, offen und ohne aktivierte Sammlung (Hinweis). `j k`, `n N`, `144G`, `p` 144 Enter, `/` `144 HGB`, `/` Wort Enter, Enter wandert zum nächsten Treffer; `t`, `o`, `B` je mit `j`, Enter, Esc; `v`; `+ -`. Esc und `Space l` schließen, `j` wirkt sofort auf der Seite, auch mit Stiftwerkzeug und aus einem Text in NOR. ⌫ in der Eingabezeile löscht kein gewähltes Objekt.
+26. **Gesetze (Helix, Textdokument):** `Space l` geschlossen, am Rand, offen und ohne aktivierte Sammlung (Hinweis). `j k`, `n N`, `144G`, `p` 144 Enter, `/` `144 HGB`, `/` Wort Enter, Enter wandert zum nächsten Treffer; `t`, `o`, `B` je mit `j`, Enter, Esc; `v`; `+ -`. Auswahl per Touch, `m2` (grün), `mm`, `d`, `u`, `U`. Esc und `Space l` schließen (kein Pfeil am Rand), `P` parkt, `j` wirkt sofort auf der Seite, auch mit Stiftwerkzeug und aus einem Text in NOR. ⌫ in der Eingabezeile löscht kein gewähltes Objekt.
 27. **Dialoge:** Neues Heft mit `n`: Titel tippen, Tab, `j`, Leertaste auf Umschlag, `h l` auf Papier, Enter erstellt, im neuen Heft wirken Tasten. Esc bricht ab, in der Bibliothek geht `j` weiter. `N`, `m` (Enter wählt Ordner), PDF importieren aus der Palette, Seite anpassen, Papier für neue Seiten, Lokale Wiederherstellungspunkte, zweite Ansicht. Rahmen läuft mit, auch nach unten scrollend. Einstellungen: `j`, Enter, Toggle per Leertaste, Esc eine Ebene, Esc schließt; aus Bibliothek und aus dem Heft.
 28. **Rückfragen:** `d` in der Bibliothek, Enter; `d`, Esc; Einstellungen › Papierkorb: Enter auf Eintrag, Endgültig löschen: Enter allein bricht ab. `r` und `f`: Name, ⌫, Enter, Esc, in der Bibliothek geht es danach weiter. Fehleralert: Enter, Esc, danach Tasten. **Ohne Antippen:** nach jedem Punkt dieser Liste muss die nächste Taste wirken.
 29. **Farbe:** `Space c` mit Stift, Marker, Formen (Linienart), genauem Radierer, Laser, Lasso (Hinweis), im Text (Farbe, Marker auf der Auswahl, `Aus`); `1`, `hjkl`, Enter, Esc ändert nichts. Tafel offen, Text antippen: Tippen schreibt.
 30. **Ohne Tastatur:** Heft, Suche (Feld fokussiert, Softwaretastatur), Neues Heft (kein Rahmen, kein Autofokus), Einstellungen, Seitenleiste per Touch wie bisher. Tastaturmodus aus: Sheets wie bisher, Esc schließt.
 31. **Register:** `w"ay`, `w"by`, `"ap`, `"bP`, `"aR`, dazwischen in einer anderen App kopieren: Die benannten Register bleiben, `p` nimmt die fremde Zwischenablage. `"_d` lässt `p` unverändert. `"zp` zeigt `Register leer`. `"a` zeigt die Anzeige, Esc nimmt es zurück, ohne dass etwas anderes passiert. Beide Textwege, auch über eine Seitengrenze.
 32. **`.`:** `o`, tippen, Esc, `j`, `.`; `c`, tippen, Esc, `w`, `.`; `A`, tippen, Esc, `3.`. Je Schritt ein `u`, Formate daneben bleiben. Mit Autokorrektur (ein korrigiertes Wort tippen), Diktat und Tottaste: `.` wiederholt das Ergebnis. In einem Text am Seitenende: Der Text läuft auf die nächste Seite, Cursor stimmt.
-33. **Makros:** `Q`, `REC @` erscheint, `A;`, Esc, `j`, `Q`, dann `5q` über eine Seitengrenze: alles ein `u`, fette Wörter dazwischen bleiben fett. `"aQ`/`"aq`. `Q`, `u`, `Nicht im Makro` erscheint. `q` im eigenen Makro: `Q`, `q`, `Q`, `q` endet sofort. `9999q` auf einem Makro: spürbar höchstens 2 s, `Makro abgebrochen`, `u` stellt alles her. Während der Aufnahme den Text per Antippen oder Esc verlassen: `REC` geht weg, das Makro ist da.
+33. **Makros:** `Q`, `REC @` erscheint, `A;`, Esc, `j`, `Q`, dann `5q` über eine Seitengrenze: alles ein `u`, fette Wörter dazwischen bleiben fett. `"aQ`/`"aq`. `Q`, `u`, `Nicht im Makro` erscheint. `q` im eigenen Makro: `Q`, `q`, `Q`, `q` endet sofort. `9999q` auf einem Makro: spürbar höchstens 2 s, `Makro abgebrochen`, `u` stellt alles her. Ebenso `i` Wort Esc `9999.` (`Wiederholung abgebrochen`) und ein Makro mit `9999.` darin, `3q`. Während der Aufnahme den Text per Antippen oder Esc verlassen: `REC` geht weg, das Makro ist da.
 34. **Sprungliste:** `ge`, ⌃o, ⌃i; ⌃s, Wandern, ⌃o; über Seiten (Hand-off zur anderen Seite, Modus bleibt NOR); `/` Enter, ⌃o; tippen über der gemerkten Stelle, dann ⌃o; vom Text in ein anderes Feld: ⌃o tut dort nichts Fremdes. Kommt ⌃i als ⌃i an und nicht als Tab? Fängt iPadOS ⌃s oder ⌃o ab?
 35. **Teilen:** `%`, `S`, `, `, Enter: „n Auswahlen“, Esc in der Zeile stellt her; ⌥s auf mehreren Zeilen; ⌥C und `C`; `d` wirkt auf alle; in Texteditor 2 alle sichtbar.
 36. **`[` `]`:** `]p`, `[p`, `3]p` mit ⌥6/⌥5 und mit `+`/`ü`, Popup zeigt `p`; `v]p` erweitert. `fü`, `r+` tippen das Zeichen. ⌥s und ⌥C tippen in INS und in der Eingabezeile weiter ihr Zeichen.
@@ -254,6 +311,7 @@ Ein Titelfeld ist eine Option wie jede andere: Steht der Rahmen darauf, tippen a
 38. **Einzug:** Zeile mit Leerzeichen: Enter, `o`, `O`, je tippen; Enter, Esc nimmt den Einzug weg, `u`; Liste mit Enter und `o` wie bisher (kein doppeltes Listenzeichen); Marked Text und Enter; `o` auf der letzten Seitenzeile einer eingerückten Zeile.
 39. **Texteditor 2:** `.`, `q`, `c` mit mehreren Cursorn, Klammerpaar an mehreren Cursorn, ⌫ dort; Undo je ein Schritt.
 40. **Tasten bei gehaltenem Makro:** Während `REC` wiederholt gehaltenes `j` nicht (ein Schritt je Druck). `Q` in der Palette, `Makro abspielen` in der Palette.
+41. **Gesetze, normale Tastatur (Heft, Helix aus):** Zustellung zuerst: ⇧⌘L öffnet, dann ↓ scrollt das Gesetz und nicht die Seite (sonst erreicht der Tastenempfänger die Tasten nicht). ⌘-Halten zeigt „Gesetze“ und die Key Commands; Menüleiste „Gesetze“ mit wechselnden Titeln. ⇧⌘L schließt (kein Pfeil), ⌥⌘L parkt und holt, ⌘L fokussiert die Schnellsuche, tippen, Esc verlässt das Feld, zweites Esc schließt. Mit Fokus: ⌘F (Titel im Menü „Heft“), ⌘G/⇧⌘G und ↩/⇧↩, ← →, ↑ ↓, ⌥↑ ⌥↓, Leertaste, ⌘↑ ⌘↓ (Seite wechselt nicht), ⌘+ ⌘- ⌘0, ⌘D, ⌘T, ⇧⌘T, ⌥⌘B, ⌥⌘P. Touch-Auswahl, 1–5, ⇧⌘H, ⌫ auf einer Markierung; ohne Auswahl tippen Ziffern und ⌫ nichts. ⌘Z nimmt die Markierung zurück, nicht den letzten Heftstrich; ohne Fokus wieder das Heft. Stift auf die Seite: ⌘G öffnet „Gehe zu Seite“, ⌘↑ blättert. Sheet über dem Fenster (Inhaltsverzeichnis): Esc schließt das Sheet, nicht das Fenster. **Vorrang:** Key Command ⌘Z am Responder gegen „Bearbeiten › Widerrufen“, Menü-⌘G gegen den Seitennavigator. Gleiches mit Helix im Textdokument: Tasten ohne ⌘ nach `GESETZE`, ⌘-Kürzel wie oben.
 
 **Diagnose:** Mit Einstellungen › Diagnose (ab Neustart) protokolliert `KeyboardRouter` jede Taste mit Kontext, Ergebnis und First Responder: `idevicesyslog | rg noty.keys`. Dazu Zustandszeilen `textBegan`, `textEnded` (auch `waits`, `kept`), `applyTextFocus refused` und `second-way` bei abgewiesenem Key Command, je mit Modus, `editing`, `handoff` und Responder. Der Esc-Weg nennt sein Ergebnis (`one level`, `leaves text`, `text gone`). Getippter Text erscheint nur als `(typing)`, auch in der Eingabezeile, im Suchsheet und in Dialogfeldern. Kommt zu einer Taste keine Zeile, hat sie keinen unserer Responder erreicht.
 
@@ -277,18 +335,19 @@ Die Engine ist in Core gegen das echte Helix geprüft, die App bildet sie ab.
 | Einzug bei `o`, `O`, Enter, `xc` | rundet auf die erkannte Einzugbreite und schreibt sie im erkannten Stil (6 Leerzeichen bei Breite 4 werden 4, bei Tabs 1 Tab) | übernimmt den Leerraum der Zeile genau | proportionale Schrift, Notizen haben keinen Einzugsstil |
 | Enter hinter Leerzeichen auf einer Zeile ohne Einzug | entfernt sie | bleiben stehen, natives Tippen | Enter nach einem Wort mit Leerzeichen ist alltäglich, kein Eingriff in Autokorrektur; auf eingerückten Zeilen wie Helix |
 | ⌫ im Einzug | löscht bis zum Tabstopp | löscht ein Zeichen | natives Löschen |
+| `>`, `<` | ein Tab vor jede Zeile bzw. Leerraum bis zur Einzugbreite weg | wie Tab/⇧Tab im Präfix (`TextIndentEditing.shift`, feat/fix2-text): letzter führender Tab weg, sonst bis zu vier Leerzeichen; Listenzeichen und Nummer folgen der Ebene, die Listen werden neu gezählt; alter Absatzeinzug zählt als Ebene und bleibt | Listen in Notizen: dieselbe Ebene wie mit Tab |
 | Paare für `` ` `` | schließt | nicht | Auftrag: nur `( [ {` und Anführungszeichen |
 | Auswahl nach `i(`, Esc mit automatischem Paar | nur die schließende Hälfte | an einem Cursor bleibt auch die alte Auswahl dahinter gewählt; mehrere Cursor wie Helix | natives Tippen meldet nur Text und Cursor |
 | `.` nach wirkungslosen Tasten (⌫ am Textanfang), nach Pfeilen in INS | spielt die Tasten | wiederholt das Ergebnis | natives Tippen liefert keine Tasten, dafür gehen Autokorrektur und Diktat |
 | Makro in Register und Text in Register | dasselbe Register: `"ap` fügt die Tasten ein, Text läuft als Tasten | getrennte Speicher je Zeichen | Notizen sollen nie als Tasten laufen |
 | Undo nach einem Makro | je Befehl ein Schritt | ein Schritt | Engine läuft allein, die Ansichten folgen danach |
 | `u` und Menüs im Makro, `j`/`k` im Makro | alles läuft | nur Textbefehle, logische Zeilen | Engine kennt kein Undo und keine Ansicht |
-| Unbegrenzte Zähler im Makro | laufen | 5000 Schritte, 2 s | Hauptthread |
+| Unbegrenzte Zähler bei `.` und `q` | laufen | zusammen 5000 Schritte (jede Runde von `.` zählt), 2 s, vor jedem Schritt und jeder Runde geprüft | Hauptthread |
 | `]g`, `[g` und die übrigen `[`/`]`-Einträge | Git, Syntaxbaum, Diagnosen | nicht belegt | Notizen haben nichts davon |
 | Sonderregister `# . % : /` | Lesewerte | gewöhnliche Register | in Notizen ohne Nutzen |
 | `"+`, `"*` | eigene Register der Zwischenablage, getrennt vom Standard `"` | dasselbe wie `"` | das Standardregister folgt hier ohnehin der Systemzwischenablage |
 | `xc` mit mehreren Auswahlen auf direkt benachbarten Zeilen | eine neue Zeile | je Auswahl eine | vorhandenes Verhalten der Engine, nur Texteditor 2 kann daran tippen |
-| ⌃i, Tab | beide vor in der Sprungliste | nur ⌃i | Tab bleibt Listenebene |
+| ⌃i, Tab | beide vor in der Sprungliste | nur ⌃i | Tab bleibt Einzug (Tab im Präfix) bzw. Tab |
 | Spalten bei `C` und im logischen `j`/`k` | Terminalzellen (Tab 4, Emoji 2) | Grapheme; in der App entscheidet das Layout | proportionale Schrift |
 | Wortklassen, `f`/`t`, `r` | Unicode-Zeichen | Grapheme | „Grapheme respektieren“ |
 | ⌃f ⌃b | Ansicht blättert, Cursor bleibt möglichst | Cursor bewegt sich eine Ansicht (wie ⌃d ⌃u) | Engine kennt keine Ansicht |
@@ -301,7 +360,7 @@ Die Engine ist in Core gegen das echte Helix geprüft, die App bildet sie ab.
 | Mehrere Auswahlen | alle sichtbar, Tippen an allen | nur die Hauptauswahl sichtbar, die Modusanzeige nennt „n Auswahlen“; `C`, `s`, `d` wirken auf alle, `c`, `i`, `a`, `o` usw. nur noch auf die Hauptauswahl (`performAtPrimary`) | eine Seite tippt an einem Cursor; Texteditor 2 verhält sich wie Helix |
 | Esc nach einem Antippen | gibt es nicht | Cursor aufs zuletzt getippte Zeichen, ohne Tippen dorthin, wo der Tipp ihn setzte; hinter `i`, `a` usw. wie Helix (getippter Text gehört zur Auswahl) | ein Tipp hat keine Auswahl, die mitwachsen könnte |
 
-Bewusst wie Helix, obwohl es überrascht: `w` wählt auch die Leerzeichen dahinter, `ge` geht an den Anfang der letzten Zeile, `G` ohne Zähler tut nichts, `5G` in SEL zieht die Auswahl zusammen, `r` ersetzt auch Zeilenumbrüche, `n` geht auch nach `?` vorwärts, `p` in SEL lässt die Auswahl stehen, `>` fügt einen Tab ein (`TextEngine.indentUnit`).
+Bewusst wie Helix, obwohl es überrascht: `w` wählt auch die Leerzeichen dahinter, `ge` geht an den Anfang der letzten Zeile, `G` ohne Zähler tut nichts, `5G` in SEL zieht die Auswahl zusammen, `r` ersetzt auch Zeilenumbrüche, `n` geht auch nach `?` vorwärts, `p` in SEL lässt die Auswahl stehen, `>` fügt einen Tab ein (`TextEngine.indentUnit`; mit Tab wie Tab im Präfix, siehe Tabelle).
 
 Bewusst anders als bisher: `Space m` zeigt jetzt die Lesezeichen (setzen: `Space M`, in der Leiste `b`), `Space s` gibt der Leiste die Tasten statt sie umzuschalten (einklappen: `Space s` in der Leiste).
 
@@ -309,10 +368,12 @@ Bewusst wie Helix, ebenso überraschend: `.` ohne vorherige Einfügung verlässt
 
 ## Aufbau
 
-**Core:** `HelixKeymap`, `HelixParser`, `TextEngine` (Sprungliste, `.`, Makros und `EditComposer` in `TextEngine+Macros.swift`), `TextTyping` (Einzug und Paare, für Engine und beide Textwege), `KeyPressGate`, `KeyDeliveryLatch` und `KeyPalette` (`KeyboardCommands.swift`), `TextLines`, `Notebook.editingTextFlow`/`restylingTextFlow` (`TextFlowRange.swift`). `KeyboardPanels.swift`: `KeyList`, `KeyOptionRing`, `KeyChoice`, `KeyChoiceCursor`, `KeyInputLine`, `KeyPanelStack`, `KeyFocusTarget` (`KeyboardPanelsTests`).
+**Core:** `LawShortcuts` (Gesetzeskürzel der normalen Tastatur, `LawShortcutsTests`), `HelixKeymap`, `HelixParser`, `TextEngine` (Sprungliste, `.`, Makros und `EditComposer` in `TextEngine+Macros.swift`), `TextTyping` (Einzug und Paare, für Engine und beide Textwege), `KeyPressGate`, `KeyDeliveryLatch` und `KeyPalette` (`KeyboardCommands.swift`), `TextLines`, `Notebook.editingTextFlow`/`restylingTextFlow` (`TextFlowRange.swift`). `KeyboardPanels.swift`: `KeyList`, `KeyOptionRing`, `KeyChoice`, `KeyChoiceCursor`, `KeyInputLine`, `KeyPanelStack`, `KeyFocusTarget` (`KeyboardPanelsTests`).
 
 
 **App:** `KeyboardRouter` nimmt die Tastendrücke entgegen (`pressesBegan` in `PageTextView`, `DrawingCanvasView`, `WorksheetView`, `KeyboardHostView`), ⌘-Kürzel bleiben bei Menü und Key Commands. Er hält Parser und Engine und bindet `HelixAction` an `ContentView.runKey`, `LibraryView.runKey` und `ObjectEditingLayer`. INS läuft am Parser vorbei, nur Esc geht an die Engine.
+
+**Gesetze** (`LawKeyCommands.swift`): `LawKeyboard` hält Gesetzfokus, Fenstermodell und die Aktionen des Lesers (`LawReaderKeyboard.swift`, registriert über `laws.keyFocus`); `LawKeyAnchor` im Editor verbindet den aktiven Bereich und trägt den Tastenempfänger `LawKeyHostView`; `NotyCommands` baut das Menü „Gesetze“ aus `LawShortcuts`. `KeyboardRouter.claimResponder` lässt bei Fokus die Seite in Ruhe, `textBegan`, `tappedText` und Berührungen der Seite nehmen den Fokus zurück.
 
 **Panels** (`KeyboardPanels.swift`): Alles außer Seite, Text und Bibliothek ist ein `KeyPanel` mit eigenem `HelixContext` auf einem Stapel; das neueste hat die Tasten, sein `run` bindet die Aktionen. Seitenleiste, Gesetze, Rückfragen und Farbe nehmen keinen Fokus, die Tasten kommen weiter über den bisherigen Responder. Nur Sheets bringen mit `KeyPanelHostView` einen eigenen mit; er hält auch Esc, Tab, Enter, Leertaste und Pfeile als Key Commands, weil das Fokussystem einer Liste sie sonst nehmen könnte. Wer den Fokus zu holen hat, entscheidet `KeyFocusTarget`, ausgeführt von `reclaim()`: jedes Schließen eines Panels läuft über `leave` und holt zurück, auch was nicht durch `presenting` geht (Sheets der Seitenleiste und des Lesers). Eine neue Option braucht nur `keyOption`; die Reihenfolge ergibt sich aus der Lage (`KeyOptionRing`). Ein neuer Dialog braucht `keyboardSheet()`. Sheets legen ihre Overlays selbst darüber (`KeyboardOverlay(panel:)`), die der Bibliothek lägen darunter. Ohne Tastatur (`hasKeyboard`) übernimmt nichts den Fokus, es erscheint kein Rahmen.
 

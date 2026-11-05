@@ -64,6 +64,9 @@ struct NotebookEditor: UIViewRepresentable {
     /// Attached tool options next to a top/bottom toolbar: the pages slide
     /// out from under them while they are open (viewport points).
     var optionsAvoidance: ToolbarOptionsAvoidance? = nil
+    /// Inactive view whose pages take the Pencil (two views): a finger tap on
+    /// them activates the view, as the tap on its chrome does.
+    var onActivate: (() -> Void)? = nil
     func makeUIView(context: Context) -> NotebookViewport { NotebookViewport() }
     func updateUIView(_ view: NotebookViewport, context: Context) { view.configure(self) }
 }
@@ -134,6 +137,9 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     private var floatTarget: UUID?
     private var selectionFeedback: UIFeedbackGenerator?
     private var swipes: [UISwipeGestureRecognizer] = []
+    /// Finger tap on the pages of an inactive view (`NotebookEditor.onActivate`).
+    private let activationTap = UITapGestureRecognizer()
+    private let activationTapDelegate = SimultaneousGestureDelegate()
     /// After a memory warning only on-screen pages get native sheets for a while.
     private var lowMemoryUntil: CFTimeInterval = 0
     /// Sideways finger drag beyond the allowed range (rubber band), see `ElasticState`.
@@ -170,6 +176,15 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         addSubview(surface)
         laser.install(on: self, surface: surface)
         ruler.install(on: self)
+        // While a stroke is drawn on any page the ruler stays put.
+        ruler.strokeActive = { [weak self] in self?.sheets.values.contains { $0.inkActive } ?? false }
+        ruler.move.fingerDrawing = { [weak self] in self?.state?.fingerDrawing == true }
+        // Its middle is never parked under the toolbar, the palette or the keyboard.
+        ruler.parkingArea = { [weak self] size in
+            guard let self else { return PageRect(x: 0, y: 0, width: size.width, height: size.height) }
+            return NotebookRuler.parkingArea(width: size.width, height: size.height, top: self.topObstruction,
+                                             bottom: self.keyboardOverlap, obstructions: self.obstructions.map { PageRect($0) })
+        }
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)),
             name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardChanged(_:)),
@@ -190,7 +205,13 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
             swipe.isEnabled = false
             addGestureRecognizer(swipe); panGestureRecognizer.require(toFail: swipe); swipes.append(swipe)
         }
+        activationTap.addTarget(self, action: #selector(activateView))
+        activationTap.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        activationTap.cancelsTouchesInView = false; activationTap.delegate = activationTapDelegate
+        activationTap.isEnabled = false
+        addGestureRecognizer(activationTap)
     }
+    @objc private func activateView() { state?.onActivate?() }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     // MARK: Keyboard mode
@@ -246,6 +267,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         panGestureRecognizer.minimumNumberOfTouches = next.fingerDrawing && next.enabled ? 2 : 1
         let swiping = next.paging && next.enabled && !next.fingerDrawing
         for swipe in swipes where swipe.isEnabled != swiping { swipe.isEnabled = swiping }
+        if activationTap.isEnabled != (next.onActivate != nil) { activationTap.isEnabled = next.onActivate != nil }
         laser.configure(next.laser, fingerDrawing: next.fingerDrawing)
         let placement = NotebookViewportLayout(pages: next.pages, selectedPageID: next.selectedPageID,
             paging: mode, normalizeWidths: normalized)
@@ -476,8 +498,10 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
                 // Spread newly exposed PDF/UITextView construction across frames.
                 if created { queueRefresh(); continue }
                 sheet = WorksheetView(); sheets[page.id] = sheet; surface.addSubview(sheet); created = true
+                // No `require(toFail: ruler.move)`: a hand resting on the ruler
+                // kept the Pencil (eraser, lasso) waiting; `RulerMoveGesture`
+                // only holds back scrolling and zooming (and finger drawing).
                 sheet.rulerView = ruler
-                sheet.canvas.drawingGestureRecognizer.require(toFail: ruler.move)
             }
             // Bounds are canonical points; UIKit converts touches/caret through
             // the common scale for all layers. Never write surface sizes back.
@@ -505,6 +529,11 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
                 callback(id, active)
                 guard let self, active, !self.isZooming, !self.widthSnapInProgress,
                       self.pinchGestureRecognizer?.state != .began, self.pinchGestureRecognizer?.state != .changed else { return }
+                self.reported = page.id
+                self.state?.onSelect(page.id)
+            }
+            config.onSelectPage = { [weak self] in
+                guard let self, self.selected != page.id else { return }
                 self.reported = page.id
                 self.state?.onSelect(page.id)
             }
@@ -560,6 +589,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { surface }
     func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
+        InputProbe.noteEffect()
         guard pinchGestureRecognizer?.state == .began || pinchGestureRecognizer?.state == .changed else { return }
         stopZoomTransition(); stopElastic()
         // Zooming away from the caret is like scrolling away: keyboard and
@@ -717,6 +747,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         UIView.animate(withDuration: UIAccessibility.isReduceMotionEnabled ? 0 : duration, delay: 0,
             options: [UIView.AnimationOptions(rawValue: rawCurve << 16), .beginFromCurrentState]) {
             self.updateInsets(); self.revealCaret()
+            self.ruler.follow() // not parked under the keyboard
         }
     }
     private func queueCaretReveal() {
@@ -1003,6 +1034,7 @@ extension NotebookViewport {
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        InputProbe.noteEffect()
         scrolledFromCaret = true
         stopElastic()
         guard !isZooming, !widthSnapInProgress, !focusScrolling, let allowed = allowedHorizontalRange() else { return }
@@ -1274,6 +1306,38 @@ extension NotebookViewport: SelectionTransferHost {
         return dropTarget(at: gesture.location(in: surface))?.id
     }
 
+    func liftsForAutoScroll(_ gesture: UIGestureRecognizer, from pageID: UUID, start: CGPoint) -> Bool {
+        guard state?.enabled == true, state?.onTransfer != nil, !liveZoom, !mode else { return false }
+        let y = gesture.location(in: self).y - contentOffset.y
+        let step = autoScrollStep(at: y)
+        guard step != 0 else { return false }
+        let startY = convert(start, from: nil).y - contentOffset.y
+        guard step < 0 ? y < startY - 8 : y > startY + 8 else { return false }
+        let range = autoScrollRange
+        guard step < 0 ? contentOffset.y > range.lowerBound + 0.5 : contentOffset.y < range.upperBound - 0.5 else { return false }
+        guard let source = placements[pageID] else { return true }
+        let sheet = source.frame.cgRect
+        guard sheet.contains(gesture.location(in: surface)) else { return true }
+        // Over its own sheet: only where its edge on that side is out of view
+        // (otherwise the selection is simply dragged past that edge).
+        let top = convert(CGPoint(x: 0, y: contentOffset.y + topObstruction), to: surface).y
+        let bottom = convert(CGPoint(x: 0, y: contentOffset.y + bounds.height - keyboardOverlap), to: surface).y
+        return step < 0 ? sheet.minY < top - 0.5 : sheet.maxY > bottom + 0.5
+    }
+
+    /// Vertical autoscroll speed for a touch at viewport height `y` (0: not
+    /// in the band at the top or bottom edge).
+    private func autoScrollStep(at y: CGFloat) -> CGFloat {
+        let edge: CGFloat = 72, maximum: CGFloat = 16
+        let top = topObstruction + edge, bottom = bounds.height - keyboardOverlap - edge
+        if y < top { return -maximum * min(1, (top - y) / edge) }
+        if y > bottom { return maximum * min(1, (y - bottom) / edge) }
+        return 0
+    }
+    private var autoScrollRange: ClosedRange<CGFloat> {
+        -contentInset.top...max(-contentInset.top, contentSize.height - bounds.height + contentInset.bottom)
+    }
+
     private func dropTarget(at point: CGPoint) -> NotebookPagePlacement? {
         layoutKey.first { $0.frame.cgRect.contains(point) }
     }
@@ -1302,18 +1366,20 @@ extension NotebookViewport: SelectionTransferHost {
         guard floatingLift != nil, let gesture = floatingGesture,
               gesture.state == .began || gesture.state == .changed else { hideFloatingSelection(); return }
         guard !liveZoom, !mode else { return }
-        let y = gesture.location(in: self).y - contentOffset.y
-        let edge: CGFloat = 72, maximum: CGFloat = 16
-        let top = topObstruction + edge, bottom = bounds.height - keyboardOverlap - edge
-        var step: CGFloat = 0
-        if y < top { step = -maximum * min(1, (top - y) / edge) }
-        else if y > bottom { step = maximum * min(1, (y - bottom) / edge) }
+        let step = autoScrollStep(at: gesture.location(in: self).y - contentOffset.y)
         guard step != 0 else { return }
-        let limit = max(-contentInset.top, contentSize.height - bounds.height + contentInset.bottom)
-        let next = min(max(contentOffset.y + step, -contentInset.top), limit)
+        let range = autoScrollRange
+        let next = min(max(contentOffset.y + step, range.lowerBound), range.upperBound)
         guard abs(next - contentOffset.y) > 0.1 else { return }
         contentOffset.y = next
         surface.bringSubviewToFront(floatingSelection)
         positionFloatingSelection()
     }
+}
+
+/// Recognises alongside every other gesture (the activation tap of an
+/// inactive view never blocks scrolling or a Pencil stroke).
+private final class SimultaneousGestureDelegate: NSObject, UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }

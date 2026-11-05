@@ -24,8 +24,11 @@ enum UserInputClock {
         }
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
             UserInputClock.note()
+            if let window = view as? UIWindow { InputProbe.began(touches, event: event, in: window) }
             state = .failed
         }
+        // Back to possible once every touch of the window has ended.
+        override func reset() { super.reset(); InputProbe.observerReset() }
         override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }
         override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
     }

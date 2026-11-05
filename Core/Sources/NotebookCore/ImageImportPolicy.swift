@@ -111,6 +111,46 @@ extension Notebook {
         return allImages.reduce(0) { total, image in seen.insert(image.asset.sha256).inserted ? total + image.asset.byteCount : total }
     }
 
+    /// The image limit that replacing the images of `pageID` by `images`
+    /// would break (paste, duplicate, undo of an object change): named in the
+    /// message instead of a generic validation failure. nil: within the limits.
+    public func imageLimitProblem(replacing pageID: UUID, with images: [ImageObject]) -> ImageInsertionProblem? {
+        imageLimitProblem(replacing: [pageID: images])
+    }
+
+    /// The same for several pages at once (a selection moved to another page).
+    public func imageLimitProblem(replacing replacements: [UUID: [ImageObject]]) -> ImageInsertionProblem? {
+        for (pageID, images) in replacements {
+            let current = pages.first { $0.id == pageID }?.images ?? []
+            if images.count > ImageLimits.maximumImagesPerPage, images.count > current.count { return .pageFull }
+        }
+        let currentIDs = Set(replacements.keys.flatMap { pageID in pages.first { $0.id == pageID }?.images ?? [] }.map(\.id))
+        var seen = Set<String>(), after = 0
+        for image in allImages where !currentIDs.contains(image.id) {
+            if seen.insert(image.asset.sha256).inserted { after += image.asset.byteCount }
+        }
+        for images in replacements.values {
+            for image in images where seen.insert(image.asset.sha256).inserted { after += image.asset.byteCount }
+        }
+        let used = uniqueImageAssetBytes
+        guard after > ImageLimits.maximumNotebookBytes, after > used else { return nil }
+        return .notebookFull(used: used, adding: after - used)
+    }
+
+    /// The image limit that installing `candidate` instead of this notebook
+    /// would break (undo/redo of a change touching images): named in the
+    /// message instead of a generic validation failure. nil: within the limits.
+    public func imageLimitProblem(installing candidate: Notebook) -> ImageInsertionProblem? {
+        for page in candidate.pages {
+            let count = page.images?.count ?? 0
+            let current = pages.first { $0.id == page.id }?.images?.count ?? 0
+            if count > ImageLimits.maximumImagesPerPage, count > current { return .pageFull }
+        }
+        let used = uniqueImageAssetBytes, after = candidate.uniqueImageAssetBytes
+        guard after > ImageLimits.maximumNotebookBytes, after > used else { return nil }
+        return .notebookFull(used: used, adding: after - used)
+    }
+
     /// Whether the imported original `reference` may be added to `pageID`.
     /// An original already in the notebook (same hash) adds no bytes.
     public func imageInsertionProblem(adding reference: ImageAssetReference, pageID: UUID) -> ImageInsertionProblem? {

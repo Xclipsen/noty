@@ -99,12 +99,42 @@ final class WorkspaceAppModel: ObservableObject {
         return area
     }
     func discardLibraryRestore(_ prepared: PreparedLibraryRestore) async { try? await store.discardRestore(prepared) }
+    /// Spiegel einer anderen noty-App (AppSyncModel): immer ein neuer Bereich der Art `mirror`.
+    func commitMirror(_ prepared: PreparedLibraryRestore, title: String) async throws -> TestWorkspace {
+        guard !busy else { throw BackupPostponed(reason: "Ein Bereichsvorgang läuft bereits") }
+        busy = true; defer { busy = false }
+        let area = try await store.commitRestore(prepared, title: title, kind: .mirror)
+        await refresh()
+        return area
+    }
+    /// Entfernt einen früheren Spiegel ohne Rückfrage; nur Bereiche der Art
+    /// `mirror`, nie den geöffneten, nie „Meine Bibliothek“ (Store prüft erneut).
+    func removeMirror(_ area: TestWorkspace) async -> Bool {
+        guard !busy, area.kind == .mirror, area.id != areaID else { return false }
+        busy = true; defer { busy = false }
+        let removed = (try? await store.remove(area.id, protecting: [Self.mainRoot])) != nil
+        await refresh()
+        return removed
+    }
     func restoreLibrary(_ url: URL) async -> Bool {
         do {
             let prepared = try await prepareLibraryRestore(url)
             _ = try await commitLibraryRestore(prepared)
             return true
         } catch { self.error = error.localizedDescription; return false }
+    }
+}
+
+extension Optional where Wrapped == WorkspaceKind {
+    var symbol: String { self == nil ? "books.vertical" : self!.symbol }
+}
+extension WorkspaceKind {
+    var symbol: String {
+        switch self {
+        case .test: "flask"
+        case .restored: "archivebox"
+        case .mirror: "arrow.triangle.2.circlepath"
+        }
     }
 }
 
@@ -140,13 +170,32 @@ struct WorkspaceLibraryHost: View {
                 if phase == .active { calendar.rescheduleReminders() }
                 // A new event note is created now, not only after its input pause.
                 if phase != .active { calendar.sceneLeftForeground() }
+                if phase == .active { Task { await AppSyncModel.shared.mirror(workspaces: workspaces) } }
+                // Beim Wechsel in eine andere noty-App den Abzug ablegen.
+                if phase == .background {
+                    Task { await AppSyncModel.shared.publish(library: library, toolbox: toolbox, workspaces: workspaces) }
+                }
+            }
+            .task {
+                // Spiegel prüfen jede Minute (ein kleines JSON lesen), Quellen legen
+                // während der Nutzung höchstens alle 30 Minuten einen Abzug ab.
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(60)) } catch { break }
+                    guard externalBackup.sceneActive else { continue }
+                    await AppSyncModel.shared.mirror(workspaces: workspaces)
+                    await AppSyncModel.shared.publish(library: library, toolbox: toolbox, workspaces: workspaces, minimumInterval: 30 * 60)
+                }
             }
             // Shared PDFs/pictures go to the filing sheet, noty files keep their way.
             .onOpenURL { url in
                 if IncomingFiling.handles(url) { Task { await IncomingFiling.receive(url) } }
                 else { Task { await IncomingBackup.receive(url, library: library, workspaces: workspaces) } }
             }
-            .task { IncomingFiling.attach(library: library, workspaces: workspaces, defaults: toolbox.preferences.defaultAppearance) }
+            // The paper default is read when filing (it loads asynchronously and may change).
+            .task {
+                let toolbox = self.toolbox
+                IncomingFiling.attach(library: library, workspaces: workspaces, defaults: { toolbox.preferences.defaultAppearance })
+            }
             // Event notes are notebooks of this library (Kalender B2).
             .task { calendar.attach(library: library, defaultAppearance: { [toolbox] in toolbox.preferences.defaultAppearance ?? NotebookAppearance() }) }
     }
@@ -194,7 +243,7 @@ struct WorkspacePickerList: View {
                     Button { onSelect?(area) } label: {
                         HStack {
                             VStack(alignment: .leading) {
-                                Label(area.title, systemImage: area.kind == .test ? "flask" : "archivebox")
+                                Label(area.title, systemImage: area.kind.symbol)
                                 Text(area.createdAt, format: .dateTime.day().month().hour().minute().second()).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()

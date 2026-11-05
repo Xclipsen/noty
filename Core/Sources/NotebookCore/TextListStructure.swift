@@ -1,9 +1,11 @@
 import Foundation
 
-/// Nested lists on top of the existing format: list markers stay text prefixes,
-/// the nesting level is the paragraph indent (20-pt steps, at most 240 pt).
-/// Bullets cycle • ◦ ▪ per level; numbering restarts at every level with
-/// decimal numbers (no a./i. markers, which German text like „z. B.“ would hit).
+/// Nested lists on top of the existing format: list markers stay text prefixes.
+/// The level of a paragraph is its leading tabs plus the older paragraph
+/// indent in 20-pt steps (`TextParagraphPrefix.level`); new levels are tabs
+/// (`TextIndentEditing`). Bullets cycle • ◦ ▪ per level; numbering restarts at
+/// every level with decimal numbers (no a./i. markers, which German text like
+/// „z. B.“ would hit).
 extension TextListEditing {
     public static let bulletGlyphs = ["•", "◦", "▪"]
     public static func bullet(forLevel level: Int) -> String { bulletGlyphs[max(0, level) % bulletGlyphs.count] + " " }
@@ -17,19 +19,23 @@ extension TextListEditing {
 
     // MARK: Automatic lists
 
-    static let autoTriggers: [(String, Kind)] = [("- ", .bullet), ("* ", .bullet), ("• ", .bullet),
+    /// „- “ is a list mark of its own and stays as typed (it is no trigger).
+    static let autoTriggers: [(String, Kind)] = [("* ", .bullet), ("• ", .bullet),
         ("1. ", .numbered), ("1) ", .numbered), ("[] ", .checkbox), ("[ ] ", .checkbox)]
 
     /// Typing a trigger at the start of a paragraph (after its space) converts
     /// it to the list marker. nil when the typed text already is that marker.
+    /// `level`: the paragraph's older indent level; its leading tabs add to it.
     public static func autoList(in text: String, caret: Int, level: Int = 0) -> Edit? {
         let source = text as NSString
         guard caret > 0, caret <= source.length else { return nil }
         let start = lineStart(text, caret - 1)
         let typed = source.substring(with: NSRange(location: start, length: caret - start))
-        let body = String(typed.drop { $0 == " " || $0 == "\t" })
+        let leading = typed.prefix { $0 == " " || $0 == "\t" }
+        let body = String(typed.dropFirst(leading.count))
         guard let (trigger, kind) = autoTriggers.first(where: { $0.0 == body }) else { return nil }
-        let marker = switch kind { case .bullet: bullet(forLevel: level); case .checkbox: "☐ "; case .numbered: "1. " }
+        let depth = level + leading.filter { $0 == "\t" }.count
+        let marker = switch kind { case .bullet: bullet(forLevel: depth); case .checkbox: "☐ "; case .numbered: "1. " }
         guard marker != trigger else { return nil }
         let length = (trigger as NSString).length
         return Edit(range: NSRange(location: caret - length, length: length), replacement: marker)
@@ -45,6 +51,8 @@ extension TextListEditing {
     public struct ListContext: Equatable, Sendable {
         struct Open: Equatable, Sendable { var depth: Int; var kind: Kind; var next: Int }
         var open: [Open] = []
+        /// Blank lines behind the last list item (`walk`); nil: no item right before.
+        var blanks: Int?
         public init() {}
     }
     struct Paragraph {
@@ -65,10 +73,11 @@ extension TextListEditing {
         let marker = continuation ? nil : prefix(String(value.dropFirst(space.count)))
         let kind = marker.flatMap { value in [Kind.checkbox, .bullet, .numbered].first { matches($0, value) } }
         let tabs = space.filter { $0 == "\t" }.count
-        let nesting = level(line.location)
+        // The level: older indent plus leading tabs; spaces only keep runs apart.
+        let nesting = level(line.location) + tabs
         return Paragraph(start: line.location, prefixLocation: line.location + (String(space) as NSString).length,
             prefix: marker ?? "", kind: kind, number: kind == .numbered ? Int(marker!.dropLast(2)) : nil,
-            depth: nesting * 1000 + tabs * 4 + (space.count - tabs), level: nesting,
+            depth: nesting * 1000 + (space.count - tabs), level: nesting,
             empty: value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, continuation: continuation)
     }
     static func paragraphs(in text: String, level: (Int) -> Int, continuation: Bool) -> [Paragraph] {
@@ -113,21 +122,35 @@ extension TextListEditing {
         return min(oldLength, max(changed.location, selection - changed.length + removed))
     }
 
-    private struct Walk {
+    struct Walk {
         var open: [(item: ListContext.Open, run: Int)] = []
         var runs: [(touched: Bool, items: [(index: Int, number: Int)])] = []
+        var blanks: Int?
     }
-    /// Runs of list items: deeper items and indented paragraphs stay inside the
-    /// outer run, a normal paragraph ends runs at its depth, a blank line all.
-    private static func walk(_ list: [Paragraph], context: ListContext, touched: (Int) -> Bool,
-                             start: (Int, Paragraph) -> Int) -> Walk {
+    /// Runs of list items, the one rule of renumbering, the list button, Return,
+    /// Tab/⇧Tab and the pages of a flow: deeper items and indented paragraphs
+    /// stay inside the outer run, a normal paragraph ends the runs at its
+    /// depth. One blank line between two items keeps the list (it counts on:
+    /// „1. a / leer / 2. b“, also around a nested item); two blank lines or a
+    /// normal paragraph behind one end all runs. Another kind on the same
+    /// level is another list, as without a blank line.
+    static func walk(_ list: [Paragraph], context: ListContext, touched: (Int) -> Bool,
+                     start: (Int, Paragraph) -> Int) -> Walk {
         var state = Walk(); state.open = context.open.map { ($0, -1) }
+        state.blanks = context.blanks
         for (index, item) in list.enumerated() where !item.continuation {
             guard let kind = item.kind else {
-                let depth = item.empty ? 0 : item.depth
-                state.open.removeAll { $0.item.depth >= depth }
+                if item.empty {
+                    // The first blank line behind an item waits for what follows.
+                    if let blanks = state.blanks, blanks == 0 { state.blanks = 1 }
+                    else { state.open.removeAll(); state.blanks = nil }
+                } else {
+                    if state.blanks ?? 0 > 0 { state.open.removeAll() } else { state.open.removeAll { $0.item.depth >= item.depth } }
+                    state.blanks = nil
+                }
                 continue
             }
+            state.blanks = 0
             state.open.removeAll { $0.item.depth > item.depth }
             if let top = state.open.last, top.item.depth == item.depth, top.item.kind != kind { state.open.removeLast() }
             if state.open.last?.item.depth != item.depth {
@@ -148,6 +171,7 @@ extension TextListEditing {
         let state = walk(paragraphs(in: text, level: level, continuation: continuation), context: context,
             touched: { _ in false }, start: { $1.number ?? 1 })
         var result = ListContext(); result.open = state.open.map(\.item)
+        result.blanks = state.blanks
         return result
     }
 
@@ -165,7 +189,9 @@ extension TextListEditing {
     /// one after): each run counts on from its first item, which keeps its own
     /// number — unless the edit removed the previous first item, whose number
     /// (`restart`) is then reused. After nesting (`freshStarts`) runs beginning
-    /// at a moved item start at 1. Bullets of touched items follow their level.
+    /// at a moved item start at 1. Bullet glyphs stay as they are: only a
+    /// change of level (`TextIndentEditing`) gives a bullet another one, typing
+    /// never changes an older „•“ behind tabs.
     public static func normalize(_ text: String, level: (Int) -> Int, changed: NSRange, restart: NumberedItem? = nil,
                                  context: @autoclosure () -> ListContext = ListContext(), continuation: Bool = false,
                                  freshStarts: Bool = false) -> [Edit] {
@@ -200,11 +226,6 @@ extension TextListEditing {
                 edits.append(Edit(range: NSRange(location: list[index].prefixLocation, length: (list[index].prefix as NSString).length),
                     replacement: "\(number). "))
             }
-        }
-        for (index, item) in list.enumerated() where touched(index) && item.kind == .bullet
-            && bulletGlyphs.contains(String(item.prefix.prefix(1))) && item.prefix != bullet(forLevel: item.level) {
-            edits.append(Edit(range: NSRange(location: item.prefixLocation, length: (item.prefix as NSString).length),
-                replacement: bullet(forLevel: item.level)))
         }
         return edits.sorted { $0.range.location < $1.range.location }
     }
@@ -281,7 +302,8 @@ extension TextBox {
     }
 
     /// Replaces UTF-16 ranges; inserted text takes the style of the replaced
-    /// text (or of the character before an insertion). Formatting elsewhere stays.
+    /// text (or of the character before an insertion, at a paragraph start of
+    /// the paragraph's first character). Formatting elsewhere stays.
     public func applying(_ edits: [TextListEditing.Edit]) -> TextBox {
         guard !edits.isEmpty else { return self }
         let source = text as NSString, sorted = edits.sorted { $0.range.location < $1.range.location }
@@ -300,7 +322,10 @@ extension TextBox {
         for edit in sorted {
             guard edit.range.location >= cursor, NSMaxRange(edit.range) <= source.length else { continue }
             copy(cursor, edit.range.location)
-            let anchor = edit.range.length > 0 || edit.range.location == 0 ? edit.range.location : edit.range.location - 1
+            // An insertion takes the format before it; at the start of a
+            // paragraph the paragraph's own (its indent, as the text views do).
+            let opensParagraph = edit.range.location > 0 && edit.range.location < source.length && TextLines.isBreak(source.character(at: edit.range.location - 1))
+            let anchor = edit.range.length > 0 || edit.range.location == 0 || opensParagraph ? edit.range.location : edit.range.location - 1
             let inserted = (edit.replacement as NSString).length
             output.append(TextRun(location: edit.range.location + delta, length: inserted,
                 style: source.length == 0 ? style : style(at: min(anchor, source.length - 1))))
@@ -329,46 +354,6 @@ extension TextBox {
         }
         var box = self; box.runs = Self.merged(output)
         return box
-    }
-
-    public struct ListNesting: Equatable, Sendable {
-        /// Line ranges and their new paragraph indents (format points).
-        public var paragraphs: [NSRange]
-        public var indents: [Double]
-        /// Marker changes, then renumbering in the coordinates after them.
-        public var markers: [TextListEditing.Edit]
-        public var renumbering: [TextListEditing.Edit]
-    }
-    /// Tab/⇧Tab or the indent buttons on list items: one nesting level per
-    /// step, bullets change glyph, numbering restarts in the new level. nil if
-    /// the selection contains no list item or nothing can move.
-    public func listNesting(selection: NSRange, outdent: Bool, context: TextListEditing.ListContext = .init(),
-                            continuation: Bool = false) -> ListNesting? {
-        let source = text as NSString
-        guard selection.location >= 0, selection.length >= 0, NSMaxRange(selection) <= source.length else { return nil }
-        var plan = ListNesting(paragraphs: [], indents: [], markers: [], renumbering: [])
-        for line in TextListEditing.selectedLines(in: text, range: selection) {
-            let range = TextLines.lineRange(source, NSRange(location: line.location, length: 0))
-            guard !(continuation && range.location == 0),
-                  let kind = [TextListEditing.Kind.checkbox, .bullet, .numbered].first(where: { TextListEditing.matches($0, line.prefix) }) else { continue }
-            let level = listLevel(at: range.location) + (outdent ? -1 : 1)
-            guard level >= 0, Double(level) * TextPlacement.indentStep <= TextPlacement.maximumIndent else { continue }
-            plan.paragraphs.append(range); plan.indents.append(Double(level) * TextPlacement.indentStep)
-            let marker = NSRange(location: line.location, length: (line.prefix as NSString).length)
-            if kind == .numbered, line.prefix != "1. " { plan.markers.append(.init(range: marker, replacement: "1. ")) }
-            if kind == .bullet, TextListEditing.bulletGlyphs.contains(String(line.prefix.prefix(1))), line.prefix != TextListEditing.bullet(forLevel: level) {
-                plan.markers.append(.init(range: marker, replacement: TextListEditing.bullet(forLevel: level)))
-            }
-        }
-        guard let first = plan.paragraphs.first, let last = plan.paragraphs.last else { return nil }
-        var box = self
-        for (range, indent) in zip(plan.paragraphs, plan.indents) { box = box.restyled([range]) { $0.indent = indent } }
-        box = box.applying(plan.markers)
-        let end = NSMaxRange(TextListEditing.selection(last, after: plan.markers))
-        plan.renumbering = TextListEditing.normalize(box.text, level: box.listLevel(at:),
-            changed: NSRange(location: first.location, length: max(0, end - first.location - 1)), context: context,
-            continuation: continuation, freshStarts: true)
-        return plan
     }
 }
 

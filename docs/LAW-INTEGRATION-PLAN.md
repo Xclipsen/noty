@@ -16,7 +16,7 @@ Stand: 20.10.2026. Vom Nutzer nach dem Umfangsinterview bestätigt; Umsetzung im
 - Anmeldung mit **E-Mail und Passwort** am bestehenden IONOS-Backend. Apple-Anmeldung ist nicht Teil dieses Ausbaus; die vorhandene kostenlose Signierung bleibt möglich.
 - E-Mail-Bestätigung und Passwortwiederherstellung im Backend einplanen. Mailtransport bleibt auf ausdrücklichen Nutzerwunsch beim Rollout ausgeschaltet. Neue E-Mail-Registrierung und Recovery sind bis zur späteren Einrichtung nicht verfügbar; bestehende Namenskonten bleiben verwendbar.
 - Lokale Gastmarkierungen beim ersten erfolgreichen Login automatisch übernehmen, ohne zusätzlichen Übernahmedialog. Übernahme wiederholbar und gegen Duplikate geschützt ausführen.
-- Nach dem Abmelden bleiben persönliche Markierungen lokal sichtbar und verfügbar.
+- Nach dem Abmelden sind nur die Einträge des aktuellen Eigentümers sichtbar (abgemeldet: Gast; B12, LAW-REWORK). Markierungen des Kontos bleiben lokal gespeichert, erscheinen aber erst nach erneuter Anmeldung dieses Kontos wieder; neue Markierungen gehören dem Gast.
 - Das Konto synchronisiert ausschließlich Gesetzessammlung/Lesezeichen/Markierungen, keine Notizbücher.
 - Neue Gesetzesfassungen zuerst auf dem Server prüfen und versionieren, dann bei eingeschalteten automatischen Gesetzesupdates an Geräte verteilen. Bei ausgeschaltetem Schalter erhaltene Offlinefassungen weiter nutzen und Updates manuell laden können. Markierte alte Fassungen erhalten; keine Markierungen still auf geänderte Texte übertragen.
 - EStR, LStR und AEAO als vollständige Dokumente importieren und sowohl nativ offline als auch auf der Website les- und durchsuchbar machen. Die vollständigen Quellen wurden importiert und geprüft; bisherige externe Links gelten nicht als Umsetzung.

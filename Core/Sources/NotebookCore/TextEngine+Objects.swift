@@ -132,11 +132,15 @@ extension TextEngine {
 
     // MARK: Find
 
+    /// `f<CR>` means every line break, also the CRLF of pasted Windows text (one grapheme).
+    private func isCharacter(_ grapheme: String, _ character: String) -> Bool {
+        grapheme == character || (character == "\n" && grapheme == "\r\n")
+    }
     private func nextOccurrence(_ character: String, from start: Int, count: Int) -> Int? {
         guard start < text.length, count > 0 else { return nil }
         var position = start, found = 0
         while position < text.length {
-            if grapheme(at: position) == character { found += 1; if found == count { return position } }
+            if isCharacter(grapheme(at: position), character) { found += 1; if found == count { return position } }
             position = text.nextBoundary(position)
         }
         return nil
@@ -146,7 +150,7 @@ extension TextEngine {
         var position = start, found = 0
         while position > 0 {
             position = text.previousBoundary(position)
-            if grapheme(at: position) == character { found += 1; if found == count { return position } }
+            if isCharacter(grapheme(at: position), character) { found += 1; if found == count { return position } }
         }
         return nil
     }
@@ -159,13 +163,13 @@ extension TextEngine {
             if inclusive { target = nextOccurrence(character, from: start, count: count) }
             else {
                 // `t` directly before the character goes on to the next one.
-                let wanted = grapheme(at: start) == character ? count + 1 : count
+                let wanted = isCharacter(grapheme(at: start), character) ? count + 1 : count
                 target = nextOccurrence(character, from: start, count: wanted).map(text.previousBoundary)
             }
         } else if inclusive {
             target = previousOccurrence(character, from: origin, count: count)
         } else {
-            let wanted = grapheme(at: text.previousBoundary(origin)) == character ? count + 1 : count
+            let wanted = isCharacter(grapheme(at: text.previousBoundary(origin)), character) ? count + 1 : count
             target = previousOccurrence(character, from: origin, count: wanted).map(text.nextBoundary)
         }
         guard let target else { return range }
@@ -235,18 +239,28 @@ extension TextEngine {
         return position
     }
 
+    /// One pass from the start of the text: `partners` keeps the open brackets
+    /// of each kind that are still waiting, the same partner `openingPair`
+    /// finds going back, without going back for every closing bracket
+    /// (a list of „1)“ items has many without a partner).
     private func closestPair(around range: Selection, count: Int) -> (open: Int, close: Int)? {
-        var stack: [String] = [], skip = count, position = range.from
+        var stack: [String] = [], skip = count, position = 0
+        var partners = [[Int]](repeating: [], count: Self.brackets.count)
         let reach = (open: text.nextBoundary(range.from), close: text.previousBoundary(range.to))
         while position < text.length {
-            let character = grapheme(at: position)
-            if Self.brackets.contains(where: { $0.open == character }) { stack.append(character) }
-            else if let pair = Self.brackets.first(where: { $0.close == character }) {
-                if stack.last == pair.open { stack.removeLast() }
-                // The pair has to enclose the selection, not only its first character.
-                else if let open = openingPair(pair.open, pair.close, from: position, count: 1), open <= reach.open, position >= reach.close {
-                    skip -= 1
-                    if skip == 0 { return (open, position) }
+            let character = grapheme(at: position), inside = position >= range.from
+            if let kind = Self.brackets.firstIndex(where: { $0.open == character }) {
+                partners[kind].append(position)
+                if inside { stack.append(character) }
+            } else if let kind = Self.brackets.firstIndex(where: { $0.close == character }) {
+                let open = partners[kind].popLast()
+                if inside {
+                    if stack.last == Self.brackets[kind].open { stack.removeLast() }
+                    // The pair has to enclose the selection, not only its first character.
+                    else if let open, open <= reach.open, position >= reach.close {
+                        skip -= 1
+                        if skip == 0 { return (open, position) }
+                    }
                 }
             }
             position = text.nextBoundary(position)
@@ -352,36 +366,117 @@ extension TextEngine {
 
     /// As Helix: line anchors, and lower case ignores case (smart case). What
     /// is no valid expression counts literally: notes hold stray brackets.
-    private func expression(_ pattern: String) -> NSRegularExpression? {
+    fileprivate func expression(_ pattern: String) -> NSRegularExpression? {
         var options: NSRegularExpression.Options = [.anchorsMatchLines]
         if !pattern.contains(where: \.isUppercase) { options.insert(.caseInsensitive) }
         return (try? NSRegularExpression(pattern: pattern, options: options))
             ?? (try? NSRegularExpression(pattern: NSRegularExpression.escapedPattern(for: pattern), options: options))
     }
     func matches(_ pattern: String, in range: NSRange) -> [Selection] {
-        guard let expression = expression(pattern) else { return [] }
-        // A phrase reads on over a page break as over a space; the offsets stay.
-        let subject = string.replacingOccurrences(of: TextLines.pageBreakText, with: " ")
-        return expression.matches(in: subject, options: [.withTransparentBounds, .withoutAnchoringBounds], range: range)
-            .map { Selection(anchor: $0.range.location, head: NSMaxRange($0.range)) }
+        Search(pattern, in: self)?.matches(in: range) ?? []
+    }
+
+    /// One search over the text as it stands: the expression and the text it
+    /// reads are made once. Each regular expression call reads the whole
+    /// text again, so a count (`9999n`) takes the places from one list of all
+    /// matches. That list gives what a search from `start` gives, except
+    /// where one of its matches reaches over `start`: a search from there
+    /// may find a match inside it, so only there it searches again.
+    struct Search {
+        let expression: NSRegularExpression
+        let subject: String
+        let length: Int
+        /// One call per step as before (`n` once): no list needed.
+        let single: Bool
+        private static let options: NSRegularExpression.MatchingOptions = [.withTransparentBounds, .withoutAnchoringBounds]
+        private var list: [Selection]?
+
+        init?(_ pattern: String, in engine: TextEngine, single: Bool = false) {
+            guard let expression = engine.expression(pattern) else { return nil }
+            self.expression = expression
+            // A phrase reads on over a page break as over a space; the offsets stay.
+            subject = engine.string.replacingOccurrences(of: TextLines.pageBreakText, with: " ")
+            length = engine.text.length
+            self.single = single
+        }
+        func matches(in range: NSRange) -> [Selection] {
+            expression.matches(in: subject, options: Self.options, range: range)
+                .map { Selection(anchor: $0.range.location, head: NSMaxRange($0.range)) }
+        }
+        private func first(in range: NSRange) -> Selection? {
+            expression.firstMatch(in: subject, options: Self.options, range: range)
+                .map { Selection(anchor: $0.range.location, head: NSMaxRange($0.range)) }
+        }
+        private func behind(_ start: Int) -> NSRange { NSRange(location: start, length: length - start) }
+
+        /// All matches and the index of the first one starting at `offset`
+        /// or later; nil if a match runs over `offset` (then: search again).
+        private mutating func place(_ offset: Int) -> (all: [Selection], index: Int)? {
+            if list == nil { list = matches(in: NSRange(location: 0, length: length)) }
+            let all = list!
+            var low = 0, high = all.count
+            while low < high {
+                let middle = (low + high) / 2
+                if all[middle].from < offset { low = middle + 1 } else { high = middle }
+            }
+            if low > 0, all[low - 1].to > offset { return nil }
+            return (all, low)
+        }
+        /// The first match behind `start`.
+        mutating func next(from start: Int) -> Selection? {
+            guard !single, let (all, index) = place(start) else { return first(in: behind(start)) }
+            return index < all.count ? all[index] : nil
+        }
+        /// From the start of the text, the way `next` goes round.
+        mutating func first() -> Selection? {
+            guard !single else { return first(in: behind(0)) }
+            if list == nil { list = matches(in: behind(0)) }
+            return list!.first
+        }
+        /// The last match that ends at `start` or in front of it.
+        mutating func previous(before start: Int) -> Selection? {
+            // Right at `start` a search up to there may still find an empty match where the list has a longer one.
+            guard !single, let (all, index) = place(start), index == all.count || all[index].from > start || all[index].to == start else {
+                return matches(in: NSRange(location: 0, length: start)).last
+            }
+            // Behind `index` all start at `start` or later; an empty one there still ends there.
+            var last = index
+            while last < all.count, all[last].to <= start { last += 1 }
+            return last > 0 ? all[last - 1] : nil
+        }
+        /// The last match behind `start`, the way `previous` goes round.
+        mutating func last(from start: Int) -> Selection? {
+            guard !single, let (all, index) = place(start) else { return matches(in: behind(start)).last }
+            return index < all.count ? all.last : nil
+        }
     }
 
     /// `n`/`N`: the next match behind the primary selection, around the end if
-    /// there is none. In select mode it joins the selections.
+    /// there is none. In select mode it joins the selections. A count runs
+    /// round after round only until the places repeat.
     mutating func step(_ pattern: String, backward: Bool, count: Int, extend: Bool) -> Notice? {
-        var notice: Notice?
-        for _ in 0..<count {
+        guard var search = Search(pattern, in: self, single: count == 1) else { return .noMatch }
+        var notice: Notice?, remaining = count, index = 0
+        var seen: [[Int]: Int]? = [:]
+        while remaining > 0 {
             let current = primary
             let start = backward ? current.from : current.to
-            var found = backward ? matches(pattern, in: NSRange(location: 0, length: start)).last
-                                 : matches(pattern, in: NSRange(location: start, length: text.length - start)).first
+            var found = backward ? search.previous(before: start) : search.next(from: start)
             if found == nil {
-                found = backward ? matches(pattern, in: NSRange(location: start, length: text.length - start)).last
-                                 : matches(pattern, in: NSRange(location: 0, length: text.length)).first
+                found = backward ? search.last(from: start) : search.first()
                 notice = found == nil ? .noMatch : .wrapped
             }
             guard let found, found.to > 0 else { break }
             setPrimary(found.directed(backward: current.isBackward), adding: extend)
+            remaining -= 1
+            // The same place with the same selections again: the next rounds only repeat.
+            let covered = selections.reduce(0) { $0 + $1.to - $1.from }
+            let state = [primary.anchor, primary.head, selections.count, covered]
+            if remaining > 0, let earlier = seen?[state] {
+                remaining %= index - earlier
+                seen = nil
+            } else { seen?[state] = index }
+            index += 1
         }
         return notice
     }
@@ -399,7 +494,9 @@ extension TextEngine {
         }
         var seen = Set<String>()
         let parts = selections.compactMap { range -> String? in
-            let body = NSRegularExpression.escapedPattern(for: text.substring(with: range.range))
+            // The search reads a page break as a space (`Search`).
+            let body = NSRegularExpression.escapedPattern(for: text.substring(with: range.range)
+                .replacingOccurrences(of: TextLines.pageBreakText, with: " "))
             let part = (atStart(range.from) ? "\\b" : "") + body + (atEnd(range.to) ? "\\b" : "")
             return seen.insert(part).inserted ? part : nil
         }

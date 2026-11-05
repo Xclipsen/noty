@@ -34,7 +34,7 @@ struct NotyAccountSettingsPage: View {
                     }
                     apple(user)
                     Button("Abmelden", role: .destructive) { Task { await laws.logout() } }
-                    Text("Markierungen bleiben nach dem Abmelden auf diesem iPad sichtbar. Noch nicht übertragene Änderungen bleiben gespeichert.").font(.caption).foregroundStyle(.secondary)
+                    Text("Nach dem Abmelden erscheinen nur Markierungen, die ohne Konto angelegt wurden. Lesezeichen und Markierungen dieses Kontos bleiben auf diesem iPad, auch noch nicht gesendete, und sind nach der nächsten Anmeldung wieder da.").font(.caption).foregroundStyle(.secondary)
                 }
             } else {
                 if laws.sessionExpired, let user = laws.user {
@@ -90,7 +90,7 @@ struct NotyAccountSettingsPage: View {
             if !message.isEmpty { Section { Text(message).foregroundStyle(.secondary) } }
             if laws.accountBusy { ProgressView() }
             Section {
-                NavigationLink("Gesetzessammlung & Synchronisierung") { LawSettingsPage() }
+                NavigationLink("Gesetzessammlung und Abgleich") { LawSettingsPage() }
             }
         }.navigationTitle("Konto").disabled(laws.accountBusy)
             .task { if laws.user != nil, laws.user?.apple == nil { await laws.refreshAccount() } }
@@ -135,32 +135,53 @@ struct LawSettingsPage: View {
     var body: some View {
         Form {
             Section {
-                keyToggle("Gesetzessammlung aktivieren", isOn: $enabled)
-                keyToggle("Lesezeichen und Markierungen synchronisieren", isOn: $sync)
-                keyToggle("Neue Gesetzesfassungen automatisch laden", isOn: $updates)
+                symbolToggle("Gesetzessammlung aktivieren", systemImage: "books.vertical", isOn: $enabled)
+                symbolToggle("Lesezeichen und Markierungen abgleichen", systemImage: "arrow.triangle.2.circlepath", isOn: $sync)
+                symbolToggle("Neue Gesetzesfassungen automatisch laden", systemImage: "arrow.down.circle", isOn: $updates)
             } footer: {
-                Text("Der Kontoabgleich und öffentliche Gesetzesupdates sind unabhängig. Ohne Konto bleiben Markierungen lokal. Nach einem vollständigen Erstdownload sind die Texte offline verfügbar; PDFs lassen sich einzeln laden.")
+                Text("Der Abgleich mit dem Konto und neue Gesetzesfassungen sind unabhängig voneinander. Ohne Konto bleiben Markierungen auf diesem iPad. Nach dem ersten vollständigen Laden sind die Texte offline da; PDFs lassen sich einzeln laden.")
             }
-            if let error = laws.error { Section { Text(error).foregroundStyle(.orange); Button("Hinweis schließen") { laws.error = nil } } }
+            if let error = laws.error {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Button("Hinweis schließen", systemImage: "xmark") { laws.error = nil }
+                }
+            }
             if enabled {
                 Section("Offlinebestand") {
-                    LabeledContent("Dokumente", value: "\(laws.entries.count)")
-                    LabeledContent("Speicher", value: ByteCountFormatter.string(fromByteCount: laws.byteCount, countStyle: .file))
-                    if !laws.progress.isEmpty { Text(laws.progress).font(.caption) }
-                    if laws.downloading { ProgressView() }
-                    Button("Gesetzesbestand jetzt laden / aktualisieren") { Task { await laws.updateLaws() } }.keyOption(.action { Task { await laws.updateLaws() } }).disabled(laws.downloading)
-                    NavigationLink("Gesetzessammlung öffnen") { LawReaderView() }
+                    LabeledContent { Text("\(laws.entries.count)") } label: { Label("Dokumente", systemImage: "doc.text") }
+                    LabeledContent { Text(ByteCountFormatter.string(fromByteCount: laws.byteCount, countStyle: .file)) } label: { Label("Speicher", systemImage: "internaldrive") }
+                    if laws.downloading || !laws.progress.isEmpty {
+                        LabeledContent {
+                            if laws.downloading { ProgressView() }
+                        } label: {
+                            Label(laws.progress.isEmpty ? "Wird geladen …" : laws.progress, systemImage: "arrow.down.circle")
+                        }
+                    }
+                    Button("Gesetzesbestand jetzt laden / aktualisieren", systemImage: "arrow.clockwise") { Task { await laws.updateLaws() } }.keyOption(.action { Task { await laws.updateLaws() } }).disabled(laws.downloading)
+                    NavigationLink { LawReaderView() } label: { Label("Gesetzessammlung öffnen", systemImage: "book") }
                 }
                 Section("Persönliche Daten") {
-                    Text(laws.syncStatus).font(.caption)
-                    Button("Jetzt synchronisieren") { Task { await laws.synchronize() } }.keyOption(.action { Task { await laws.synchronize() } }).disabled(laws.syncing || !sync || laws.user == nil || laws.sessionExpired)
-                    Button("Markierungen und Lesezeichen sichern …") {
+                    LabeledContent { Text(laws.syncStatus).multilineTextAlignment(.trailing) } label: { Label("Abgleich", systemImage: "checkmark.icloud") }
+                    Button("Jetzt abgleichen", systemImage: "arrow.triangle.2.circlepath") { Task { await laws.synchronize() } }.keyOption(.action { Task { await laws.synchronize() } }).disabled(laws.syncing || !sync || laws.user == nil || laws.sessionExpired)
+                    Button("Markierungen und Lesezeichen sichern …", systemImage: "archivebox") {
                         Task { do { exported = try await laws.exportPersonal() } catch { laws.error = error.localizedDescription } }
                     }
-                    if let exported { ShareLink("Sicherungsdatei teilen …", item: exported) }
-                    Button("Markierungen aus Sicherung ergänzen …") { restoring = true }
+                    if let exported { ShareLink(item: exported) { Label("Sicherungsdatei teilen …", systemImage: "square.and.arrow.up") } }
+                    Button("Markierungen aus Sicherung ergänzen …", systemImage: "square.and.arrow.down") { restoring = true }
                     Text("Diese Sicherung enthält persönliche Gesetzesdaten, keine Anmeldeschlüssel. Sie ergänzt Heft- und Bibliotheksbackups und bleibt von Gesetzesdownloads getrennt.").font(.caption).foregroundStyle(.secondary)
+                    if laws.hiddenItemCount > 0 {
+                        LabeledContent { Text("\(laws.hiddenItemCount)") } label: { Label("Einträge anderer Konten", systemImage: "person.2") }
+                        Text("Diese Einträge gehören zu einem anderen Konto oder wurden ohne Konto angelegt. Sie bleiben auf diesem iPad und erscheinen wieder, sobald ihr Konto angemeldet ist – ohne Konto angelegte nach dem Abmelden. Bis dahin werden sie nicht gesendet.").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
+                if let notice = laws.personalNotice {
+                    Section {
+                        Label(notice, systemImage: "doc.on.doc")
+                        Button("Hinweis schließen", systemImage: "xmark") { laws.personalNotice = nil }
+                    } header: { Text("Reparatur") }
+                }
+                if !laws.rejectedItems.isEmpty { rejected }
             }
         }.navigationTitle("Gesetzessammlung")
             .keyboardSheet()
@@ -174,61 +195,40 @@ struct LawSettingsPage: View {
                 switch result { case .success(let url): Task { await laws.restorePersonal(url) }; case .failure(let error): laws.error = error.localizedDescription }
             }
     }
-}
-
-struct LawPanelView<Drag: Gesture>: View {
-    @EnvironmentObject private var laws: LawLibraryModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Moves the window live; the workspace decides side, dock and stash on release.
-    var drag: Drag
-    /// What Apple Pencil does in the reader, and how the reader changes it.
-    var pen = LawPenMode()
-    var onPenChange: ((LawPenMode) -> Void)? = nil
-    /// Room to dock at the current edge; without it the window can only float.
-    var canDock = true
-    /// Whether it really is docked now (the layout also needs room to dock).
-    var docked = false
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Menu {
-                    if canDock {
-                    Button(laws.docked ? "Über dem Heft schweben" : laws.panelEdge == .bottom ? "Unter dem Heft andocken" : "Neben dem Heft andocken",
-                           systemImage: laws.docked ? "rectangle.on.rectangle" : laws.panelEdge == .bottom ? "rectangle.split.1x2" : "rectangle.split.2x1") {
-                        withAnimation(NotyMotion.panel(reduceMotion)) { laws.docked.toggle() }
+    /// Entries the server refused for good (B9): send again, or keep them
+    /// only on this iPad (visible here, never sent).
+    private var rejected: some View {
+        Section {
+            ForEach(laws.rejectedItems, id: \.key) { item in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(rejectedTitle(item)).font(.subheadline)
+                    if let rejection = item.rejection {
+                        Text(rejection.message).font(.caption).foregroundStyle(.secondary)
                     }
-                    }
-                    // Left, right or along the bottom edge (also by dragging the bar).
-                    Picker("Position", selection: Binding(get: { laws.panelEdge }, set: { edge in
-                        withAnimation(NotyMotion.panel(reduceMotion)) { laws.panelEdge = edge }
-                    })) {
-                        Label("Links", systemImage: "rectangle.lefthalf.inset.filled").tag(LawPanelEdge.left)
-                        Label("Rechts", systemImage: "rectangle.righthalf.inset.filled").tag(LawPanelEdge.right)
-                        Label("Unten", systemImage: "rectangle.bottomhalf.inset.filled").tag(LawPanelEdge.bottom)
-                    }.pickerStyle(.menu)
-                    Button("An den Rand schieben", systemImage: laws.panelEdge == .left ? "arrow.left.to.line" : laws.panelEdge == .right ? "arrow.right.to.line" : "arrow.down.to.line") {
-                        withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = true }
-                    }
-                    // The only way to remove the edge tab as well; the notebook
-                    // menu „Gesetzessammlung“ opens the window again.
-                    Button("Ganz schließen (ohne Pfeil)", systemImage: "xmark.rectangle") { laws.panelOpen = false }
-                } label: { Image(systemName: "rectangle.split.2x1").frame(width: 44, height: 36) }.accessibilityLabel("Gesetzesfenster anordnen")
-                Spacer()
-                Capsule().fill(.secondary).frame(width: 44, height: 5).frame(width: 80, height: 36)
-                    .accessibilityLabel("Gesetzesfenster verschieben")
-                Spacer()
-                // Closing slides the window past its edge and leaves the arrow
-                // tab, like iPad Slide Over; the reader keeps its state.
-                Button { withAnimation(NotyMotion.panel(reduceMotion)) { laws.stashed = true } } label: { Image(systemName: "xmark").frame(width: 44, height: 36) }
-                    .accessibilityLabel("Gesetzesfenster schließen").accessibilityHint("Bleibt als Pfeil am Bildschirmrand; das ✕ daneben schließt es ganz.")
-                    .help("Schließen – bleibt als Pfeil am Rand, erneut ✕ schließt ganz")
-            }.background(.ultraThinMaterial)
-                // The whole bar is the grip, not only the small capsule.
-                .contentShape(Rectangle())
-                .gesture(drag)
-            LawReaderView(inPanel: true, pen: pen, onPenChange: onPenChange)
-        }.clipShape(RoundedRectangle(cornerRadius: docked ? 0 : 16))
-            .overlay(RoundedRectangle(cornerRadius: docked ? 0 : 16).strokeBorder(.secondary.opacity(0.25)))
-            .shadow(color: .black.opacity(docked ? 0 : 0.3), radius: 16)
+                }
+                .swipeActions {
+                    Button("Nur lokal") { Task { await laws.keepLocal([item]) } }.tint(.gray)
+                    Button("Erneut") { Task { await laws.retryRejected([item]) } }.tint(.accentColor)
+                }
+            }
+            Button("Erneut versuchen", systemImage: "arrow.clockwise") { Task { await laws.retryRejected() } }
+                .keyOption(.action { Task { await laws.retryRejected() } })
+                .disabled(laws.syncing || laws.user == nil || laws.sessionExpired)
+            Button("Nur lokal behalten", systemImage: "ipad") { Task { await laws.keepLocal(laws.rejectedItems) } }
+                .keyOption(.action { Task { await laws.keepLocal(laws.rejectedItems) } })
+        } header: {
+            Label("Vom Server abgelehnt", systemImage: "exclamationmark.triangle")
+        } footer: {
+            Text("„Nur lokal behalten“: Die Einträge bleiben auf diesem iPad sichtbar und werden nicht mehr gesendet. Einzelne Einträge per Wischen.")
+        }
+    }
+    private func rejectedTitle(_ item: LawPersonalItem) -> String {
+        let law = item.payload["lawId"]?.string.flatMap { id in laws.entries.first { $0.id == id }?.abbr } ?? item.payload["lawId"]?.string ?? "Gesetz"
+        let what = item.kind == "bookmark" ? "Lesezeichen" : "Markierung"
+        return "\(what) · \(law)"
+    }
+    /// `keyToggle` with a symbol, like the other settings pages.
+    private func symbolToggle(_ title: String, systemImage: String, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) { Label(title, systemImage: systemImage) }.keyOption(.toggle(isOn))
     }
 }

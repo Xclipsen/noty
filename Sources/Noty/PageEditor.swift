@@ -45,6 +45,9 @@ struct PageEditor {
     var onPencilAction: (PencilToolSwitch) -> Void
     /// Apple Pencil Pro squeeze phases (palette / double squeeze); nil keeps the plain toggle.
     var onPencilSqueeze: ((PencilSqueezeEvent) -> Void)? = nil
+    /// Inactive view (two views) with an ink tool: a Pencil stroke draws at
+    /// once and activates this view through it (DEVICE-FEEDBACK-20 §4).
+    var onPencilWake: (() -> Void)? = nil
     var onInteraction: (UUID, Bool) -> Void
     /// Notebook-wide undo/redo, also for the system undo gesture/shortcut.
     var onUndo: (Bool) -> Void = { _ in }
@@ -71,7 +74,8 @@ struct PageEditor {
     var onEraseShapes: (PageContent, PageContent) -> Bool = { _, _ in false }
     /// An image from the system pasteboard onto this page (the one paste path).
     /// `near`: where the image should land (canonical), nil for the page's text area.
-    var onPasteImage: (PagePoint?) -> Void = { _ in }
+    /// Its completion tells whether the image arrived (also when it did not).
+    var onPasteImage: (PagePoint?, @escaping @MainActor (Bool) -> Void) -> Void = { _, _ in }
     /// „Textfeld hinzufügen“ from the finger double-tap menu: the editor
     /// switches to the text tool, the sheet then opens the field itself.
     /// Also „Bearbeiten“/second tap on a selected field (caret there).
@@ -88,6 +92,9 @@ struct PageEditor {
     var flowActions: TextFlowActions? = nil
     /// The user left a field while the text tool is not fixed: back to the previous tool.
     var onTextEditingFinished: () -> Void = {}
+    /// A stroke was committed on this page while another one was selected
+    /// (ruler strokes on a visible neighbour): select this page.
+    var onSelectPage: () -> Void = {}
 }
 
 extension PageEditor {
@@ -99,7 +106,8 @@ extension PageEditor {
         guard paper == other.paper, paperColor == other.paperColor, margins == other.margins else { return false }
         guard tool == other.tool, width == other.width, Self.sameColor(color, other.color), enabled == other.enabled,
               focused == other.focused, autoPen == other.autoPen, fingerDrawing == other.fingerDrawing, ruler == other.ruler,
-              textToolLocked == other.textToolLocked, flowDocument == other.flowDocument else { return false }
+              textToolLocked == other.textToolLocked, flowDocument == other.flowDocument,
+              (onPencilWake == nil) == (other.onPencilWake == nil) else { return false }
         return shapeOptions == other.shapeOptions && selectionFilter == other.selectionFilter && lassoMode == other.lassoMode
             && recognizeShapes == other.recognizeShapes && markerStraight == other.markerStraight && markerTip == other.markerTip
             && scribbleErase == other.scribbleErase
@@ -240,7 +248,17 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private var worksheetFocused = true
     private var touching = false
     private var textEditing = false
-    var hasLiveInput: Bool { touching || textEditing }
+    /// A held result waiting for PencilKit also keeps the sheet loaded.
+    var hasLiveInput: Bool { touching || textEditing || heldShape != nil }
+    /// For input reports (`InputProbe`): states only, no content.
+    var probeDescription: String {
+        let drawing = canvas.drawingGestureRecognizer
+        return "werkzeug=\(tool) bearbeitbar=\(editable) fokus=\(worksheetFocused) berührt=\(touching) textbearbeitung=\(textEditing)"
+            + " tinte=\(inkActive) form=\(heldShape != nil) radieren=\(eraseSession != nil || shapeErase != nil)"
+            + " auswahltinte=\(selectionInkSource != nil) lineal=\(rulerLine != nil)/\(rulerWatching != nil)/\(rulerStroke.isEnabled)"
+            + " aktualisiert=\(updating) canvas[ui=\(canvas.isUserInteractionEnabled) zeichnen=\(drawing.isEnabled):\(drawing.state.rawValue)"
+            + " policy=\(canvas.drawingPolicy.rawValue) responder=\(canvas.isFirstResponder)] objekte[\(objectLayer.probeState)]"
+    }
     var editingCaret: CGRect? { textLayer.editingCaret.map { textLayer.convert($0, to: self) } }
     /// Why the caret last moved (typing, typewriter, navigation); read once per reveal.
     func takeCaretReveal() -> CaretReveal? { textLayer.takeCaretReveal() }
@@ -272,6 +290,10 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var onEraseShapes: ((PageContent, PageContent) -> Bool)?
     private var onPencilAction: ((PencilToolSwitch) -> Void)?
     private var onPencilSqueeze: ((PencilSqueezeEvent) -> Void)?
+    private var onPencilWake: (() -> Void)?
+    /// Locked only because another view is active: the Pencil still draws
+    /// with an ink tool and its first stroke activates this view.
+    private var pencilWakes: Bool { !editable && onPencilWake != nil && [.pen, .pencil, .marker].contains(tool) }
     var holdEnabled = true
     var holdPoints: [PagePoint] = []
     var holdBase: PageContent?
@@ -281,25 +303,31 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var heldColor = InkColor(0, 0, 0)
     /// Drawn width (from PencilKit's own points) for the preview and shape objects.
     var heldWidth: CGFloat = 2
-    /// Ratio of PencilKit's drawn point size to the tool width, per ink type.
-    var drawnWidthRatio: [PKInk.InkType: CGFloat] = [:]
-    /// Opacity, force and tilt of a typical drawn point (median size) of the
-    /// last stroke per ink type: a held ink line is drawn with them.
-    var drawnPointTemplate: [PKInk.InkType: PKStrokePoint] = [:]
+    // Drawn point size per tool width and a typical point per ink type:
+    // `InkPointMemory` (shared by all pages, kept across launches).
     /// Ink of the held stroke (the canvas tool when it was recognised).
     var heldInk: PKInk?
     /// The exact PencilKit stroke a held ink result commits; the preview is
     /// this stroke rendered by PencilKit (`heldStrokeImage`).
     var heldStroke: PKStroke?
-    /// noty's ruler, above the pages; a stroke at its edge is `rulerLine`.
+    /// noty's ruler, above the pages; a stroke at its edge is `rulerLine`
+    /// (WorksheetView+Ruler.swift).
     weak var rulerView: RulerOverlayView?
     let rulerStroke = RulerStrokeGesture(target: nil, action: nil)
+    let rulerWatch = RulerWatchGesture(target: nil, action: nil)
     var rulerLine: RulerLine?
+    var rulerWatching: RulerWatch?
+    let rulerPreview = CAShapeLayer()
+    /// The ruler stroke is committed; its preview stays until PencilKit has drawn it.
+    var rulerPreviewPending: UUID?
     let heldStrokeImage = UIImageView()
     /// The result is committed; the preview stays until PencilKit has drawn it.
     var heldVisualsPending: UUID?
     var holdSerial = 0
     var holdCompletion = StrokeCompletionGate()
+    /// A held stroke was settled while PencilKit still drew it: its ink is
+    /// published once the tool use ends (`settleHeldStroke`).
+    var publishInkAtToolEnd = false
     let heldInkImage = UIImageView()
     let heldShapeLayer = CAShapeLayer()
     var holdFeedback: UIFeedbackGenerator?
@@ -321,6 +349,11 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private let textInteractionID = UUID()
     private var onInteraction: ((UUID, Bool) -> Void)?
     var inkActive = false
+    /// Tool the current/last native stroke began with. A tool change while
+    /// the Pencil still rests (bar, keys) must neither drop that stroke (the
+    /// new tool may not draw at all) nor post-process it with the new tool's
+    /// options (`canvasViewDrawingDidChange`).
+    private var strokeTool: EditorTool?
     var renderViewport: InkRenderViewport?
     private(set) var configuration: PageEditor?
     private var lastObjectPreview: PageContent?
@@ -370,8 +403,14 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             self.commitPendingHeldStroke()
             if self.shapeErase?.lifted == true { self.finishShapeErase(force: true) }
             self.cancelErase(); self.cancelShapeErase()
-            if self.editable, self.tool == .strokeEraser { self.beginErase() }
-            if self.editable, self.tool == .precisionEraser { self.beginShapeErase() }
+            if self.editable, self.tool == .strokeEraser {
+                // Its drawing gesture is off, so `canvasViewDidBeginUsingTool`
+                // never ends a finger selection: erasing ends it here, like
+                // writing (Audit 7f8bfe7, Radierer Fund 3).
+                self.objectLayer.endTouchSelection(); self.claimSelectionFocus()
+                self.beginErase(); InputProbe.noteEffect()
+            }
+            if self.editable, self.tool == .precisionEraser { self.beginShapeErase(); InputProbe.noteEffect() }
             let base = self.inkActive ? (self.holdBase ?? self.pageContent) : self.pageContent
             self.clearHeldPreview(); self.holdSerial += 1; self.holdPoints = []
             self.holdBase = base
@@ -386,10 +425,19 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             guard let self else { return }
             if self.eraseSession != nil { if cancelled { self.cancelErase() } else { self.finishErase() } }
             if self.shapeErase != nil { if cancelled { self.cancelShapeErase() } else { self.finishShapeErase() } }
-            if cancelled { self.clearHeldPreview(); return }
+            if cancelled {
+                // A recognized held stroke PencilKit already reported stays
+                // only on the canvas: publish it like a settled one.
+                if self.heldShape != nil {
+                    self.holdSerial += 1; self.clearHeldPreview()
+                    if self.inkActive { self.publishInkAtToolEnd = true } else { self.publishUnreportedInk() }
+                } else { self.clearHeldPreview() }
+                return
+            }
             self.holdCompletion.lift()
             let serial = self.holdSerial
             self.finishHeldStroke(serial: serial)
+            self.scheduleHeldCommitWithoutFinalDrawing()
             // PencilKit may report its final drawing before the tool-end
             // callback; then no further change arrives. Commit the held line
             // once the finished stroke is on the canvas; a cancelled native
@@ -415,6 +463,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         addGestureRecognizer(checkboxTap)
         canvas.drawingGestureRecognizer.require(toFail: checkboxTap)
         configureRulerStroke()
+        // A Pencil tap on a checkbox toggles it, also at the ruler (as for the canvas).
+        rulerStroke.require(toFail: checkboxTap)
         interactionObserver.cancelsTouchesInView = false
         interactionObserver.delaysTouchesBegan = false; interactionObserver.delaysTouchesEnded = false
         interactionObserver.onChange = { [weak self] active in
@@ -442,8 +492,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         objectLayer.objectHits = { [weak self] point in self?.objectHits(at: point) ?? [] }
         objectLayer.hitsCheckbox = { [weak self] point in self?.fingerTapHitsCheckbox(point) ?? false }
         objectLayer.pageContext = { [weak self] in self?.configuration?.page }
-        textLayer.pageContext = { [weak self] in self?.configuration?.page }
-        objectLayer.fittedText = { [weak self] box in self?.textLayer.fitted(box) ?? box }
+        objectLayer.fittedText = { [weak self] box, fit in self?.textLayer.fitted(box, fit) ?? box }
+        objectLayer.alignedText = { [weak self] box in self?.textLayer.snappedToLines(box) ?? box }
         objectLayer.onEditText = { [weak self] id, point in self?.requestTextEdit(id, at: point) }
         objectLayer.onError = { [weak self] message in self?.configuration?.onError(message) }
         canvas.onPaste = { [weak self] in self?.pasteFromClipboard() }
@@ -465,6 +515,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         insertSubview(heldInkImage, aboveSubview: canvas)
         heldStrokeImage.isUserInteractionEnabled = false; heldStrokeImage.isHidden = true
         insertSubview(heldStrokeImage, aboveSubview: heldInkImage)
+        installRulerPreview(above: heldStrokeImage.layer)
         // A held shape previews where the finished shape lies: above the
         // shapes, below the ink (`Page.exportLayers`, `heldInkImage` shows it).
         layer.insertSublayer(heldShapeLayer, above: shapeLayer.layer)
@@ -616,6 +667,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         super.didMoveToWindow()
         interactionObserver.isEnabled = window != nil
         if window == nil { cancelErase(); cancelShapeErase() }
+        // Closing or unloading right after a held stroke: it is committed (or
+        // kept as drawn) once this view update is over, never dropped.
+        if window == nil, heldShape != nil { DispatchQueue.main.async { [self] in settleHeldStroke() } }
         if window == nil { onInteraction?(textInteractionID, false) }
         if window != nil { fingerObjects.linkNativeDoubleTaps(in: canvas) }
         updateInputMode()
@@ -637,7 +691,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         undoForwarder.perform = editor.onUndo; undoForwarder.state = editor.undoState
         onInkSession = editor.onInkSession; onDrawing = editor.onDrawing; onRevealCaret = editor.onRevealCaret
         onInteraction = editor.onInteraction; onContent = editor.onContent; onEraseShapes = editor.onEraseShapes
-        onPencilAction = editor.onPencilAction; onPencilSqueeze = editor.onPencilSqueeze
+        onPencilAction = editor.onPencilAction; onPencilSqueeze = editor.onPencilSqueeze; onPencilWake = editor.onPencilWake
         textLayer.onFlowChange = editor.onFlowEdit; textLayer.onFlowUndo = editor.onFlowUndo
         textLayer.onFlowBackspace = editor.onFlowBackspace; textLayer.onUndoBoundary = editor.onUndoBoundary
         textLayer.readCurrentBoxes = editor.readTextBoxes; textLayer.readFlowText = editor.readFlowText
@@ -658,9 +712,11 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         let focusChanged = worksheetFocused != editor.focused
         worksheetFocused = editor.focused
         objectLayer.offersPaste = editor.focused
-        let policy: PKCanvasViewDrawingPolicy = editor.fingerDrawing ? .anyInput : .pencilOnly
+        // An inactive view draws with the Pencil only: its finger tap activates it.
+        let policy: PKCanvasViewDrawingPolicy = editor.fingerDrawing && editor.enabled ? .anyInput : .pencilOnly
         if canvas.drawingPolicy != policy { canvas.drawingPolicy = policy }
-        holdGesture.allowFinger = editor.fingerDrawing
+        holdGesture.allowFinger = editor.fingerDrawing && editor.enabled
+        onPencilWake = editor.onPencilWake
         defer { updating = false; objectLayer.publishPreview(ifTransientOnly: true) }
         // Search/task jump marker: shown on arrival, fades when the editor clears
         // it (after 3 s, Feedback 44) instead of staying on the page.
@@ -689,8 +745,23 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if let session = shapeErase, first || contentReplaced || layoutChanged || !editor.enabled || editor.tool != .precisionEraser
             || editor.shapes != session.shapes { cancelShapeErase() }
         if first || contentReplaced || layoutChanged || !editor.enabled || editor.tool != tool {
+            // Tool change or lock without a settle before it (keys, backup
+            // pause): the held result is gone, but its freehand stroke on the
+            // canvas is published once this update is done (no model change
+            // inside a SwiftUI update).
+            let keepsInk = heldShape != nil && !first && !contentReplaced && !layoutChanged
             holdSerial += 1; clearHeldPreview()
+            // Pencil still down (shape preview shown): PencilKit owns the
+            // stroke until its tool end, which publishes it.
+            if keepsInk && inkActive { publishInkAtToolEnd = true }
+            else if keepsInk { DispatchQueue.main.async { [weak self] in self?.publishUnreportedInk() } }
         }
+        // Between strokes the next native change belongs to the new tool.
+        if editor.tool != tool, !inkActive { strokeTool = nil }
+        // A ruler stroke goes on through a short lock (backup commit) and a
+        // tool change; only another page or page geometry ends it (its edge
+        // is in this page's coordinates).
+        if first || layoutChanged { cancelRulerLine() }
         contentGeneration = editor.contentGeneration
         pageLayout = editor.layout
         if layoutChanged { renderViewport = nil }
@@ -811,14 +882,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
                 return self.automaticInkIsLight(at: CGPoint(x: point.x + origin.x, y: point.y + origin.y)) ? InkColor(1, 1, 1) : InkColor(0, 0, 0)
             }
         } else { objectLayer.automaticColor = nil }
-        canvas.isUserInteractionEnabled = editable && [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(tool)
+        canvas.isUserInteractionEnabled = (editable && [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(tool)) || pencilWakes
         // "Ganz": PencilKit's vector eraser deletes instantly without preview;
         // the app-owned sweep (hold observer) dims first and removes on lift.
-        let nativeDrawing = tool != .strokeEraser
-        if canvas.drawingGestureRecognizer.isEnabled != nativeDrawing { canvas.drawingGestureRecognizer.isEnabled = nativeDrawing }
-        rulerStroke.allowFinger = editor.fingerDrawing
-        let followsRuler = editor.ruler && editor.focused && editable && tool.isInk
-        if rulerStroke.isEnabled != followsRuler { rulerStroke.isEnabled = followsRuler }
+        // A stroke still being drawn keeps it until its tool end: switching
+        // off the recognizer mid-stroke would cancel (and may drop) it.
+        updateNativeDrawing()
+        updateRulerGestures()
         if eraseSession != nil || shapeErase != nil { dimErasedShapes() }
         pdfView?.isUserInteractionEnabled = tool == .read
         if modeChanged || focusChanged || first { updateInputMode(); fingerObjects.linkNativeDoubleTaps(in: canvas) }
@@ -944,9 +1014,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if ObjectClipboard.isNewest || (!board.hasStrings && !board.hasImages) {
             syncObjectPlane(); objectLayer.pasteCopiedObjects(); return
         }
-        // Both on the board (a copied web image with its address, or an Office
-        // text with a picture of it): what the source offers first is what it means.
-        let imageFirst = board.types.first.flatMap(UTType.init)?.conforms(to: .image) == true
+        // Both on the board: a noty copy (also after a restart) says itself
+        // what it means (`ObjectClipboard.markerType`, its dictionary has no
+        // order). From elsewhere (a copied web image with its address, an
+        // Office text with a picture of it) what the source offers first.
+        let imageFirst = ObjectClipboard.pasteboardPrefersImage
+            ?? (board.types.first.flatMap(UTType.init)?.conforms(to: .image) == true)
         if board.hasImages, imageFirst || !board.hasStrings { pasteImageHere(); return }
         if board.hasStrings { pasteText() } else { pasteImageHere() }
     }
@@ -956,7 +1029,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         let origin = pageLayout.contentOrigin
         let visible = lastVisible ?? bounds
         objectLayer.awaitingPastedImage = true
-        configuration?.onPasteImage(PagePoint(x: visible.midX - origin.x, y: visible.midY - origin.y))
+        // A paste that fails must not leave the marker set: the next image to
+        // appear (e.g. undoing an image deletion) would be selected unasked.
+        guard let configuration else { objectLayer.awaitingPastedImage = false; return }
+        configuration.onPasteImage(PagePoint(x: visible.midX - origin.x, y: visible.midY - origin.y)) { [weak self] inserted in
+            if !inserted { self?.objectLayer.awaitingPastedImage = false }
+        }
     }
     /// Text from outside without an edited field: a new field at the last
     /// tapped place, otherwise in the middle of the visible part, in the
@@ -1140,23 +1218,45 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         HangProbe.hit("Sheet.drawingDidChange")
         if !updating { canvasSource = nil } // native change
-        guard !updating, [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(tool) else { return }
+        // The stroke's own tool decides, not one chosen while it was drawn.
+        let drawnWith = strokeTool ?? tool
+        if !updating, !inkActive { strokeTool = nil }
+        guard !updating, [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(drawnWith) else { return }
         if heldShape != nil {
             holdCompletion.drawingChanged(); finishHeldStroke(serial: holdSerial); return
         }
+        // Tool changed during the stroke: published as drawn, no straightening,
+        // scribble erase or width learning with the other tool's options.
+        let processed = drawnWith == tool ? tool : nil
         // Per stroke: no decode of the published drawing (count cached by its
         // bytes) and exactly one encode of the result.
         let previousCount = publishedStrokeCount
-        if tool == .marker, markerStraight { straightenLastMarkerStroke(previousCount: previousCount) }
-        let scribbled = tool == .pen && scribbleErase ? eraseByScribble(previousCount: previousCount) : []
+        if processed == .marker, markerStraight { straightenLastMarkerStroke(previousCount: previousCount) }
+        let scribbled = processed == .pen && scribbleErase ? eraseByScribble(previousCount: previousCount) : []
         let drawing = canvas.drawing, strokes = drawing.strokes
         // A precision eraser that splits a stroke also adds one: no pen width.
-        if tool == .pen || tool == .pencil || tool == .marker { recordDrawnWidth(strokes, previousCount: previousCount) }
+        if processed == .pen || processed == .pencil || processed == .marker { recordDrawnWidth(strokes, previousCount: previousCount) }
         lastDrawing = canonicalDrawingData(drawing)
         if eraseSession == nil { strokeCountCache = (lastDrawing, strokes.count); canvasSource = lastDrawing }
         pageContent.drawing = lastDrawing
         onDrawing?(lastDrawing)
         removeScribbledShapes(scribbled)
+        noteRulerHandoff()
+        // A previous stroke published late, while the next one is already
+        // drawn: a later held result must build on it, never drop it.
+        if heldShape == nil, holdBase != nil { holdBase = pageContent }
+    }
+    /// Native strokes on the canvas the model has not received (a held
+    /// stroke ended by a tool/view change, lock or closing before PencilKit's
+    /// last callback): published like a finished stroke, whatever the tool is now.
+    func publishUnreportedInk() {
+        guard !updating, !inkActive, heldShape == nil, eraseSession == nil, canvasSource == nil else { return }
+        let drawing = canvas.drawing
+        guard drawing.strokes.count > publishedStrokeCount else { return }
+        lastDrawing = canonicalDrawingData(drawing)
+        strokeCountCache = (lastDrawing, drawing.strokes.count); canvasSource = lastDrawing
+        pageContent.drawing = lastDrawing
+        onDrawing?(lastDrawing)
     }
     /// Stroke count of `pageContent.drawing`; decoded at most once per distinct value.
     private var publishedStrokeCount: Int {
@@ -1190,21 +1290,41 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         canvasSource = nil; updating = wasUpdating
     }
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
-        inkActive = true
+        InputProbe.noteEffect()
+        inkActive = true; strokeTool = tool
+        // First stroke in the inactive view: it draws and activates the view
+        // (its tool, undo and saving follow), no extra tap needed.
+        if pencilWakes { onPencilWake?() }
         objectLayer.endTouchSelection() // writing again ends a finger selection
         claimSelectionFocus()
         onInkSession?()
         if heldVisualsPending != nil { hideHeldVisuals() } // a new stroke is never hidden
+        if rulerPreviewPending != nil { hideRulerPreview() }
         if heldShape == nil { holdBase = pageContent }
     }
     /// A committed held result is on the canvas now: the preview may go
     /// (no frame without either, no flash of the freehand stroke).
     func canvasViewDidFinishRendering(_ canvasView: PKCanvasView) {
         if heldVisualsPending != nil { hideHeldVisuals() }
+        if rulerPreviewPending != nil { hideRulerPreview() }
+    }
+    /// "Ganz": PencilKit's vector eraser deletes instantly without preview;
+    /// the app-owned sweep (hold observer) dims first and removes on lift.
+    func updateNativeDrawing() {
+        let nativeDrawing = tool != .strokeEraser || inkActive
+        if canvas.drawingGestureRecognizer.isEnabled != nativeDrawing { canvas.drawingGestureRecognizer.isEnabled = nativeDrawing }
     }
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
-        inkActive = false
+        // A stroke handed over to the ruler way is still being drawn.
+        inkActive = rulerLine != nil
+        updateNativeDrawing()
         holdCompletion.endNative()
+        scheduleHeldCommitWithoutFinalDrawing()
+        if publishInkAtToolEnd {
+            // A final drawing change, if PencilKit still sends one, comes first.
+            publishInkAtToolEnd = false
+            DispatchQueue.main.async { [weak self] in self?.publishUnreportedInk() }
+        }
         // Precision eraser lifted over shapes: cut them once PencilKit's own
         // erase is on the canvas (next turn of the run loop).
         if shapeErase?.lifted == true {
@@ -1213,6 +1333,31 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
                 self.finishShapeErase(force: true)
             }
         }
+    }
+    /// Finished strokes (canonical) onto the page like PencilKit's own: added
+    /// to what the canvas shows (no decode of the published drawing, one
+    /// encode) and published through `onDrawing`, so they form the stroke's
+    /// undo step and are held, not dropped, while a backup commit pauses edits.
+    func appendInkStrokes(_ strokes: [PKStroke]) {
+        guard !strokes.isEmpty else { return }
+        let translation = pageLayout.inkTranslation
+        var drawing: PKDrawing
+        if canvasSource == pageContent.drawing { drawing = canvas.drawing }
+        else {
+            // The canvas shows a derived preview: start from the page's ink.
+            let data = pageContent.drawing
+            drawing = (data.isEmpty ? PKDrawing() : (try? PKDrawing(data: data)) ?? PKDrawing()).transformed(using: translation)
+        }
+        drawing.strokes.append(contentsOf: strokes.map { stroke in
+            var placed = stroke; placed.transform = stroke.transform.concatenating(translation); return placed
+        })
+        let wasUpdating = updating; updating = true
+        canvas.drawing = drawing
+        updating = wasUpdating
+        let data = canonicalDrawingData(drawing)
+        lastDrawing = data; strokeCountCache = (data, drawing.strokes.count); canvasSource = data
+        pageContent.drawing = data
+        onDrawing?(data)
     }
     func installContent(_ content: PageContent) {
         updating = true
@@ -1231,6 +1376,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// → the app's own tool palette at the Pencil; off → nothing.
     private func pencilTap(palette: () -> PencilSqueezeEvent) {
         guard worksheetFocused, window != nil else { return }
+        settleHeldStroke() // the tool may change now
         switch UIPencilInteraction.preferredTapAction {
         case .ignore: return
         case .switchEraser: onPencilAction?(.eraser)
@@ -1247,6 +1393,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     }
     @available(iOS 17.5, *)
     func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
+        if worksheetFocused, window != nil { settleHeldStroke() }
         guard let onPencilSqueeze else {
             if squeeze.phase == .ended { pencilAction(UIPencilInteraction.preferredSqueezeAction == .switchPrevious ? .previous : .eraser) }
             return
@@ -1298,3 +1445,5 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         return drawing.transformed(using: translation.inverted()).dataRepresentation()
     }
 }
+
+extension WorksheetView: InputProbeDescribing {}

@@ -5,8 +5,9 @@
     <key>CFBundleDisplayName</key><string>noty</string>
     <key>CFBundleDevelopmentRegion</key><string>de</string>
     <key>CFBundleLocalizations</key><array><string>de</string></array>
-    <key>CFBundleShortVersionString</key><string>0.0.1</string>
-    <key>CFBundleVersion</key><string>106</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>123</string>
+    <key>NotyChannel</key><string>stable</string>
     <key>NSCameraUsageDescription</key><string>noty liest mit der Kamera nur den QR-Code der Untis-Mobile-Freigabe, um WebUntis zu verbinden. Es werden keine Bilder gespeichert.</string>
     <key>CFBundleIcons</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon</string></array></dict></dict>
     <key>CFBundleIcons~ipad</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon</string></array></dict></dict>

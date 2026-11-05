@@ -19,6 +19,14 @@ public enum EditorInteractionPolicy {
     /// held shape, erase sweep, lift or object drag) known bytes must match:
     /// an aborted lift (tool change, pane deactivated) left only the remainder
     /// there, and the next stroke would have published it without the lifted ink.
+    /// noty's ruler takes strokes on every visible, editable page (not only
+    /// the selected one: the first stroke on a neighbour went through it), and
+    /// a running stroke is never cut off: a backup commit or closing locks the
+    /// page for a moment, the stroke goes on and is kept like a PencilKit stroke.
+    public static func rulerStrokeEnabled(ruler: Bool, editable: Bool, inkTool: Bool, running: Bool) -> Bool {
+        running || (ruler && editable && inkTool)
+    }
+
     public static func canvasNeedsReset(shown: Data?, model: Data, stroke: Bool, transient: Bool) -> Bool {
         guard let shown, !stroke, !transient else { return false }
         return shown != model

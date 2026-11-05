@@ -70,6 +70,11 @@ extension TextObjectLayer {
             item.addAction(UIAction { [weak self] _ in self?.toggleList(kind) }, for: .touchUpInside)
         }
         _ = button("Ausrichten", symbol: "text.alignleft", action: #selector(showAlignment))
+        let lines = button("An Linien ausrichten")
+        lines.configuration?.image = linesIcon()
+        lines.toolTip = "An Linien ausrichten"
+        lines.accessibilityHint = "Die Zeilen des Textfelds stehen auf den Linien des Papiers"
+        lines.addAction(UIAction { [weak self] _ in self?.toggleLineAlignment() }, for: .touchUpInside)
         separator()
         let decrease = button("Einzug verkleinern", symbol: "decrease.indent")
         decrease.addAction(UIAction { [weak self] _ in self?.indentFromBar(outdent: true) }, for: .touchUpInside)
@@ -257,9 +262,9 @@ extension TextObjectLayer {
     }
     func colorPickerViewControllerDidSelectColor(_ viewController: UIColorPickerViewController) {
         guard restoreFormatSelection() else { return }
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        viewController.selectedColor.getRed(&r, green: &g, blue: &b, alpha: &a)
-        changeStyle { $0.ink = InkColor(r,g,b,a); $0.automaticColor = nil }
+        // „Weitere Farben …“: P3 picks become in-range sRGB (`InkColor(UIColor)`).
+        let ink = InkColor(viewController.selectedColor)
+        changeStyle { $0.ink = ink; $0.automaticColor = nil }
     }
     private func chooseFont() {
         guard let controller = presentingController, rememberFormatSelection() else { return }
@@ -307,6 +312,20 @@ extension TextObjectLayer {
         controller.present(alert, animated: true)
     }
     @objc private func finishEditing() { finishFieldByUser() }
+    /// „An Linien ausrichten“: letters standing on a ruled line, a second line
+    /// below (same 24-pt canvas and white template as the other symbols).
+    private func linesIcon() -> UIImage? {
+        guard let symbol = UIImage(systemName: "textformat", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .regular)) else { return nil }
+        return UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
+            let scale = min(20 / max(1, symbol.size.width), 13 / max(1, symbol.size.height))
+            let size = CGSize(width: symbol.size.width * scale, height: symbol.size.height * scale)
+            symbol.withTintColor(.white, renderingMode: .alwaysOriginal)
+                .draw(in: CGRect(x: (24 - size.width) / 2, y: 15 - size.height, width: size.width, height: size.height))
+            context.cgContext.setFillColor(UIColor.white.cgColor)
+            context.cgContext.fill(CGRect(x: 1, y: 16.5, width: 22, height: 1.5))
+            context.cgContext.fill(CGRect(x: 1, y: 21.5, width: 22, height: 1))
+        }.withRenderingMode(.alwaysTemplate)
+    }
     /// White highlighter symbol with a short stroke in the current marker colour.
     private func highlightIcon(_ color: UIColor) -> UIImage? {
         guard let symbol = UIImage(systemName: "highlighter", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)) else { return nil }
@@ -359,7 +378,8 @@ extension TextObjectLayer {
     }
     func updateAccessory() {
         guard let selectedID, let box = boxes.first(where: { $0.id == selectedID }), let field = fields[selectedID] else { return }
-        field.editor.accessibilityHint = neededHeight(field.editor, width: box.width) > box.height + 1
+        let scale = coordinateScale(for: box)
+        field.editor.accessibilityHint = editorHeight(field.editor, width: box.width / scale, scale: scale) > box.height + 1
             ? "Textfeld am Seitenende · Text bleibt vollständig gespeichert." : nil
         let style = selectionStyle ?? box.style
         var shown = style
@@ -384,6 +404,20 @@ extension TextObjectLayer {
         buttons["Markieren"]?.backgroundColor = style.highlighted == true ? UIColor.systemBlue.withAlphaComponent(0.15) : .clear
         buttons["Markieren"]?.configuration?.image = highlightIcon(lastHighlight.uiColor)
         buttons["Markieren"]?.accessibilityValue = lastHighlight.title
+        // „An Linien ausrichten“: blue while on; dimmed where it has no effect
+        // (no lines at the field, turned field), the tooltip says why.
+        if let lines = buttons["An Linien ausrichten"] {
+            let paper = linePaper, on = box.alignsToLines == true
+            let state = paper.lineAlignment(for: box)
+            let effective = on ? state == .aligned : box.angle == 0 && paper.lines(at: PagePoint(x: box.x, y: box.y)) != nil
+            lines.isHidden = box.flowID != nil
+            lines.isSelected = on
+            lines.backgroundColor = on ? UIColor.systemBlue.withAlphaComponent(effective ? 0.2 : 0.08) : .clear
+            lines.alpha = effective ? 1 : 0.5
+            lines.accessibilityValue = on ? (effective ? "Ein" : "Ein, hier ohne Wirkung") : "Aus"
+            let note = Self.lineAlignmentNote(on ? state : (box.angle != 0 ? .rotated : effective ? .aligned : .noLines))
+            lines.toolTip = note.map { "An Linien ausrichten – \($0)" } ?? "An Linien ausrichten"
+        }
         buttons["Schreibmaschinen-Modus"]?.backgroundColor = Self.typewriterEnabled ? UIColor.systemBlue.withAlphaComponent(0.2) : .clear
         buttons["Schreibmaschinen-Modus"]?.accessibilityValue = Self.typewriterEnabled ? "Ein" : "Aus"
         scheduleCounter()

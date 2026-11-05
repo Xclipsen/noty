@@ -86,6 +86,12 @@ public struct TextBox: Codable, Equatable, Identifiable, Sendable {
     /// With fill or border the field shows rounded corners and an inner
     /// padding around the text (`TextBox.fieldPadding`).
     public var border: TextFieldBorder?
+    /// Schema 16, „An Linien ausrichten“: the field's baselines stand on the
+    /// paper lines under it (lined/grid paper, ruled writing space), like a
+    /// text document's; only `true` is stored, nil: free line layout (every
+    /// older field). No effect without lines, on a rotated field or a flow
+    /// segment (`TextLinePaper.lineAlignment`).
+    public var alignsToLines: Bool?
     public init(id: UUID = UUID(), x: Double = 40, y: Double = 40, width: Double = 220,
                 height: Double = 28, text: String = "", style: TextBoxStyle = TextBoxStyle()) {
         self.id = id; self.x = x; self.y = y; self.width = width; self.height = height
@@ -107,6 +113,8 @@ public struct TextBox: Codable, Equatable, Identifiable, Sendable {
         guard flowID == nil || flowRegion != nil else { throw StorageError.invalidDocument }
         guard rotation.map({ $0.isFinite && (-180...180).contains($0) }) ?? true, autoWidth != false,
               flowID == nil || (rotation == nil && autoWidth == nil && fill == nil && border == nil) else { throw StorageError.invalidDocument }
+        // Flow segments stand on the lines anyway; only `true` is stored.
+        guard alignsToLines != false, flowID == nil || alignsToLines == nil else { throw StorageError.invalidDocument }
         try style.validate()
         let units = Array(text.utf16)
         func boundary(_ i: Int) -> Bool {

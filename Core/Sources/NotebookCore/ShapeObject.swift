@@ -64,7 +64,7 @@ public struct ShapeObject: Codable, Equatable, Identifiable, Sendable {
     public func validate() throws {
         let corners = [start, end] + (points ?? [])
         guard corners.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 14_400 && abs($0.y) <= 14_400 }),
-              lineWidth.isFinite, (0.5...40).contains(lineWidth) else { throw StorageError.invalidDocument }
+              lineWidth.isFinite, Self.lineWidthRange.contains(lineWidth) else { throw StorageError.invalidDocument }
         switch kind {
         case .rectangle, .ellipse:
             guard points == nil, hypot(end.x - start.x, end.y - start.y) >= 1, frame.width >= 1, frame.height >= 1 else {
@@ -90,6 +90,15 @@ public struct ShapeObject: Codable, Equatable, Identifiable, Sendable {
     }
     static func length(_ points: [PagePoint]) -> Double {
         zip(points, points.dropFirst()).reduce(0) { $0 + hypot($1.1.x - $1.0.x, $1.1.y - $1.0.y) }
+    }
+    /// Stored stroke widths (`validate`).
+    public static let lineWidthRange = 0.5...40.0
+    /// Width after scaling the shape by `factor`, held in `lineWidthRange`:
+    /// a thin shape still shrinks, a thick one still grows (only the width stops).
+    public func scaledLineWidth(_ factor: Double) -> Double {
+        let value = lineWidth * factor
+        guard value.isFinite else { return lineWidth }
+        return min(Self.lineWidthRange.upperBound, max(Self.lineWidthRange.lowerBound, value))
     }
     public func translated(x: Double, y: Double) -> ShapeObject {
         mapped { PagePoint(x: $0.x + x, y: $0.y + y) }
