@@ -37,8 +37,7 @@ extension TextDocumentExport {
             let leading = line.prefix { $0 == " " || $0 == "\t" }
             let rest = String(line.dropFirst(leading.count))
             var content = range, marker: Block.Marker?
-            // An arrow („→ “) stays text: Word has no such list.
-            if let prefix = TextListEditing.prefix(rest), !TextListEditing.matches(.arrow, prefix) {
+            if let prefix = TextListEditing.prefix(rest) {
                 let skipped = (String(leading) as NSString).length + (prefix as NSString).length
                 content = NSRange(location: range.location + skipped, length: range.length - skipped)
                 switch prefix {

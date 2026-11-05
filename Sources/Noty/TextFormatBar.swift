@@ -64,11 +64,9 @@ extension TextObjectLayer {
         } + [UIAction(title: "Markierung entfernen", image: UIImage(systemName: "xmark.circle")) { [weak self] _ in self?.applyHighlight(nil) }])
         let link = button("Link", symbol: "link"); link.addAction(UIAction { [weak self] _ in self?.editLink() }, for: .touchUpInside)
         separator()
-        for (key, symbol, kind) in [("Checkbox", "checkmark.circle", TextListEditing.Kind.checkbox), ("Aufzählung", "list.bullet", .bullet),
-                                    ("Nummerierung", "list.number", .numbered), ("Pfeil-Aufzählung", "arrow.right", .arrow)] {
+        for (key, symbol, kind) in [("Checkbox", "checkmark.circle", TextListEditing.Kind.checkbox), ("Aufzählung", "list.bullet", .bullet), ("Nummerierung", "list.number", .numbered)] {
             let item = button(key, symbol: symbol)
             if kind == .checkbox { item.accessibilityLabel = "Checkliste" }
-            if kind == .arrow { item.toolTip = "Pfeil-Aufzählung (→)"; item.accessibilityHint = "Absätze beginnen mit →, Return setzt den Pfeil fort" }
             item.addAction(UIAction { [weak self] _ in self?.toggleList(kind) }, for: .touchUpInside)
         }
         _ = button("Ausrichten", symbol: "text.alignleft", action: #selector(showAlignment))
@@ -428,7 +426,7 @@ extension TextObjectLayer {
         case .left: "text.alignleft"; case .center: "text.aligncenter"; case .right: "text.alignright"; case .justified: "text.justify"
         }
         buttons["Ausrichten"]?.setImage(formatIcon(alignmentSymbol), for: .normal)
-        for (key, kind) in [("Checkbox", TextListEditing.Kind.checkbox), ("Aufzählung", .bullet), ("Nummerierung", .numbered), ("Pfeil-Aufzählung", .arrow)] {
+        for (key, kind) in [("Checkbox", TextListEditing.Kind.checkbox), ("Aufzählung", .bullet), ("Nummerierung", .numbered)] {
             let enabled = TextListEditing.isActive(kind, in: field.editor.text ?? "", range: field.editor.selectedRange)
             buttons[key]?.isSelected = enabled
             buttons[key]?.backgroundColor = enabled ? UIColor.systemBlue.withAlphaComponent(0.2) : .clear

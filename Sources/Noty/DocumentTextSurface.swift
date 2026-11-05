@@ -81,9 +81,6 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     /// The fixed end of a selection extended with ⇧ arrows.
     var selectionAnchor: Int?
     private var pendingReveal: CaretReveal?
-    /// The symbol just written for „->“ and the like, with the text after it:
-    /// ⌫ right behind it brings the typed characters back.
-    private var replacedSymbol: (replacement: TextSymbolReplacement.Replacement, text: String)?
     private var visiblePages: Set<Int> = []
     private let selectionLayer = CAShapeLayer(), cursorLayer = CAShapeLayer(), primaryLayer = CAShapeLayer()
     private let touchWatcher = TouchDownWatcher()
@@ -347,7 +344,6 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
 
     func insertText(_ text: String) {
         guard isActive, KeyboardRouter.shared.allowsTyping else { return }
-        replacedSymbol = nil
         if hasSeveralCarets { applyEngine(KeyboardRouter.shared.engine.insertText(text)); return }
         if let marked { replaceMarked(marked, with: text); return }
         if text == "\n", let edit = TextListEditing.newline(in: store.string, range: selection) {
@@ -365,12 +361,6 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         }
         type(text, over: selection, before: selection)
         if text == " " { finishAutomaticList() }
-        if (text as NSString).length == 1, UserDefaults.standard.object(forKey: AppSettingsKey.symbolReplacement) as? Bool ?? true,
-           let symbol = TextSymbolReplacement.replacement(in: store.string, caret: selection.location) {
-            type(symbol.edit.replacement, over: symbol.edit.range, before: selection, separate: true)
-            replacedSymbol = (symbol, store.string)
-            return
-        }
         if text == "=", UserDefaults.standard.object(forKey: AppSettingsKey.calculator) as? Bool ?? true,
            let calculation = TextCalculator.calculation(in: store.string, caret: selection.location) {
             type(calculation.edit.replacement, over: calculation.edit.range, before: selection, separate: true)
@@ -391,13 +381,6 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         if hasSeveralCarets { applyEngine(KeyboardRouter.shared.engine.deleteBackward()); return }
         if selection.length > 0 { type("", over: selection, before: selection); return }
         guard selection.location > 0 else { return }
-        if marked == nil, let (symbol, text) = replacedSymbol, text == store.string,
-           let edit = TextSymbolReplacement.reverting(symbol, in: text, caret: selection.location) {
-            replacedSymbol = nil
-            type(edit.replacement, over: edit.range, before: selection)
-            return
-        }
-        replacedSymbol = nil
         if marked == nil, KeyboardRouter.shared.pairsTyping, let pair = TextTyping.pairDeletion(in: store.text, at: selection.location) {
             type("", over: pair, before: selection)
             return

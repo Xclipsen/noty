@@ -168,8 +168,7 @@ extension TextObjectLayer {
         guard let editor = textView as? PageTextView, !insertingList, editor.markedTextRange == nil else { return nil }
         editor.typedSpace = text == " " && range.length == 0
         if text == "\t", nestList(editor, outdent: false) { return false }
-        // An edit without a line break ends or outdents the item (`TextListEditing.newline`).
-        if text == "\n", let edit = TextListEditing.newline(in: editor.text ?? "", range: range), !edit.replacement.hasPrefix("\n"),
+        if text == "\n", let edit = TextListEditing.newline(in: editor.text ?? "", range: range), edit.replacement.isEmpty,
            let box = boxes.first(where: { $0.id == editor.objectID }),
            box.listLevel(at: TextLines.lineRange((editor.text ?? "") as NSString, NSRange(location: range.location, length: 0)).location) > 0,
            nestList(editor, outdent: true) { return false }

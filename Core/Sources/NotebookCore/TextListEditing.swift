@@ -25,48 +25,26 @@ public enum TextListEditing {
         public var replacement: String
         public init(range: NSRange, replacement: String) { self.range = range; self.replacement = replacement }
     }
-    /// Return in a paragraph with a marker (list, arrow, „a)“, „(1)“ …): the
-    /// next line gets the same indentation and the next marker. On an empty
-    /// item it moves out one step of its leading white space, without any it
-    /// ends the item (`TextParagraphPrefix`). nil: no marker in front of the caret.
     public static func newline(in text: String, range: NSRange) -> Edit? {
         let source = text as NSString
         guard range.location >= 0, range.length >= 0, range.location <= source.length, range.length <= source.length - range.location else { return nil }
         let line = TextLines.lineRange(source, NSRange(location: range.location, length: 0))
         let before = source.substring(with: NSRange(location: line.location, length: range.location - line.location))
-        guard let item = TextParagraphPrefix(line: before), item.marker != nil else { return nil }
-        let content = (before as NSString).substring(from: item.length)
+        let indent = String(before.prefix { $0 == " " || $0 == "\t" })
+        guard let prefix = prefix(String(before.dropFirst(indent.count))) else { return nil }
+        let content = String(before.dropFirst(indent.count + prefix.count))
         var end = NSMaxRange(range)
         while end < source.length, !TextLines.isBreak(source.character(at: end)) { end += 1 }
         let rest = source.substring(with: NSRange(location: NSMaxRange(range), length: end - NSMaxRange(range)))
         // An empty item ends the list; with text behind the caret it is a normal split.
         if content.trimmingCharacters(in: .whitespaces).isEmpty, rest.trimmingCharacters(in: .whitespaces).isEmpty {
-            if let step = item.outdentStep {
-                // One step out, the marker stays: replaced up to the caret, which stays behind it.
-                let start = line.location + step.location
-                return Edit(range: NSRange(location: start, length: NSMaxRange(range) - start),
-                            replacement: (before as NSString).substring(from: NSMaxRange(step)))
-            }
             return Edit(range: NSRange(location: line.location, length: range.location + range.length - line.location), replacement: "")
         }
-        return Edit(range: range, replacement: "\n" + item.indent + (item.nextMarker.map { $0 + item.separator } ?? ""))
-    }
-    /// Return in an indented paragraph without a marker: the next line starts
-    /// with the same tabs and spaces. On a line of nothing but white space it
-    /// takes one step of it away instead (as on an empty list item). nil: no
-    /// indentation, or the caret stands in it with text behind (a plain break).
-    public static func indentedNewline(in text: String, range: NSRange) -> Edit? {
-        let source = text as NSString
-        guard range.location >= 0, range.length >= 0, NSMaxRange(range) <= source.length else { return nil }
-        let start = TextLines.start(source, range.location), end = TextLines.end(source, start)
-        var first = start
-        while first < end, source.character(at: first) == 32 || source.character(at: first) == 9 { first += 1 }
-        guard first > start else { return nil }
-        let indent = source.substring(with: NSRange(location: start, length: first - start))
-        if range.location > first { return Edit(range: range, replacement: "\n" + indent) }
-        guard first == end, range.length == 0, range.location == end,
-              let step = TextParagraphPrefix.outdentStep(of: indent) else { return nil }
-        return Edit(range: NSRange(location: start + step.location, length: step.length), replacement: "")
+        let next: String
+        if prefix == "☑ " || prefix == "☐ " { next = "☐ " }
+        else if let number = Int(prefix.dropLast(2)), number < 999_999 { next = "\(number + 1). " }
+        else { next = prefix }
+        return Edit(range: range, replacement: "\n" + indent + next)
     }
     public static func checkbox(in text: String, range: NSRange) -> Edit? {
         let source = text as NSString
@@ -76,10 +54,7 @@ public enum TextListEditing {
         guard value.hasPrefix("☐ ") || value.hasPrefix("☑ ") else { return nil }
         return Edit(range: NSRange(location: selected.location, length: 1), replacement: value.hasPrefix("☐") ? "☑" : "☐")
     }
-    public enum Kind: Sendable {
-        case bullet, numbered, checkbox, arrow
-        static let all: [Kind] = [.checkbox, .bullet, .numbered, .arrow]
-    }
+    public enum Kind: Sendable { case bullet, numbered, checkbox }
 
     /// Prefix-only edits keep the attributed text of the actual words intact.
     /// Tasks cycle absent → open → checked → absent; other lists toggle.
@@ -91,7 +66,7 @@ public enum TextListEditing {
             let value: String
             if check { value = "☑ " }
             else if remove { value = "" }
-            else { value = switch kind { case .bullet: bullet(forLevel: level?(lineStart(text, line.location)) ?? 0); case .checkbox: "☐ "; case .numbered: "\(index + 1). "; case .arrow: "→ " } }
+            else { value = switch kind { case .bullet: bullet(forLevel: level?(lineStart(text, line.location)) ?? 0); case .checkbox: "☐ "; case .numbered: "\(index + 1). " } }
             return Edit(range: NSRange(location: line.location, length: (line.prefix as NSString).length), replacement: value)
         }
     }
@@ -120,15 +95,11 @@ public enum TextListEditing {
         let start = mapped(selection.location), end = mapped(NSMaxRange(selection))
         return NSRange(location: start, length: max(0, end - start))
     }
-    /// „→ “ list (Pfeil-Aufzählung); „-> “ and „=> “ stay as typed when the
-    /// typing replacement is off (`TextSymbolReplacement`).
-    static let arrowMarkers = ["→ ", "⇒ ", "-> ", "=> "]
     static func matches(_ kind: Kind, _ prefix: String) -> Bool {
         switch kind {
         case .bullet: prefix == "• " || prefix == "- " || prefix == "◦ " || prefix == "▪ "
         case .checkbox: prefix == "☐ " || prefix == "☑ "
         case .numbered: Int(prefix.dropLast(2)) != nil && prefix.hasSuffix(". ")
-        case .arrow: arrowMarkers.contains(prefix)
         }
     }
     /// Changing a list's kind at a caret affects its connected entries. Explicit
@@ -136,7 +107,7 @@ public enum TextListEditing {
     private static func listLines(for kind: Kind, in text: String, range: NSRange, level: ((Int) -> Int)? = nil) -> [(location: Int, prefix: String)] {
         let selected = selectedLines(in: text, range: range)
         guard range.length == 0, let current = selected.first,
-              let oldKind = Kind.all.first(where: { matches($0, current.prefix) }),
+              let oldKind = [Kind.checkbox, .bullet, .numbered].first(where: { matches($0, current.prefix) }),
               oldKind != kind else { return selected }
         let source = text as NSString
         let all = selectedLines(in: text, range: NSRange(location: 0, length: source.length))
@@ -175,7 +146,7 @@ public enum TextListEditing {
         return result
     }
     static func prefix(_ line: String) -> String? {
-        for value in ["• ", "- ", "◦ ", "▪ ", "☐ ", "☑ "] + arrowMarkers where line.hasPrefix(value) { return value }
+        for value in ["• ", "- ", "◦ ", "▪ ", "☐ ", "☑ "] where line.hasPrefix(value) { return value }
         let digits = line.prefix { $0.isASCII && $0.isNumber }
         if !digits.isEmpty, digits.count <= 6, line.dropFirst(digits.count).hasPrefix(". ") { return digits + ". " }
         return nil

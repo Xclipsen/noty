@@ -20,8 +20,6 @@ enum AppSettingsKey {
     static let alignTextToLines = "noty.text.alignToLines"
     /// „=“ calculates in the text (default on).
     static let calculator = "noty.editor.calculator"
-    /// „->“ becomes „→“ while typing (`TextSymbolReplacement`, default on).
-    static let symbolReplacement = "noty.editor.symbols"
     /// Helix keys (docs/KEYBOARD.md): experimental, text documents only, off
     /// unless switched on. A new key: the former `noty.keyboard.mode` meant
     /// the whole app and was on by default.
@@ -247,7 +245,6 @@ private struct EditorSettingsPage: View {
     @AppStorage(AppSettingsKey.typewriter) private var typewriter = false
     @AppStorage(AppSettingsKey.snapping) private var snapping = true
     @AppStorage(AppSettingsKey.calculator) private var calculator = true
-    @AppStorage(AppSettingsKey.symbolReplacement) private var symbols = true
     @AppStorage(AppSettingsKey.automaticTextColor) private var automaticTextColor = true
     @AppStorage(AppSettingsKey.alignTextToLines) private var alignTextToLines = true
     @AppStorage(AppSettingsKey.helixTextDocuments) private var helix = false
@@ -264,8 +261,6 @@ private struct EditorSettingsPage: View {
                     .accessibilityHint("Auf liniertem oder kariertem Papier stehen die Zeilen neuer Textfelder auf den Linien. Bestehende Felder bleiben unverändert; jedes Feld lässt sich in der Formatleiste umschalten.")
                 keyToggle("Rechnen mit „=“", isOn: $calculator)
                     .accessibilityHint("2+3= wird zu 2+3=5, 2 + 3 = zu 2 + 3 = 5. Von oben nach unten: Zahlen untereinander, dann = allein in einer neuen Zeile.")
-                keyToggle("Pfeile und Zeichen ersetzen (-> wird →)", isOn: $symbols)
-                    .accessibilityHint("Beim Tippen: -> →, => ⇒, <- ←, <-> ↔, <=> ⇔, <= ≤, >= ≥, != ≠, ~= ≈, +- ±. Rückgängig oder ⌫ direkt danach stellt die getippten Zeichen wieder her.")
                 keyToggle("Einrasten", isOn: $snapping)
                     .accessibilityHint("Textfelder, Bilder, Formen und Auswahlen rasten beim langsamen Verschieben an Kanten, Mitten, Linien und Seitenrändern ein.")
                 keyToggle("Helix-Tastatur in Textdokumenten (experimentell)", isOn: $helix)

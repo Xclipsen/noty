@@ -168,11 +168,8 @@ final class KeyboardRouter: ObservableObject {
     /// INS closes pairs by itself (Settings › Editor).
     var pairsTyping: Bool { isEnabled && UserDefaults.standard.bool(forKey: AppSettingsKey.autoPairs) }
     /// Enter keeps the indent of the line; lists go first (`TextListEditing`).
-    /// The keyboard mode keeps Helix's rule (white space before the caret
-    /// moves down, Esc takes a new indent back); otherwise a line of only
-    /// white space moves out one step, as an empty list item.
     func indentedNewline(in text: String, range: NSRange) -> TextListEditing.Edit? {
-        isEnabled ? TextTyping.newline(in: text, range: range) : TextListEditing.indentedNewline(in: text, range: range)
+        isEnabled ? TextTyping.newline(in: text, range: range) : nil
     }
 
     // MARK: State from the views

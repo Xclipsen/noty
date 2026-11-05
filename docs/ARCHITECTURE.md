@@ -1,9 +1,5 @@
 # Architektur
 
-## Hängender Einzug · 05.11.2026 (Branch `feat/einzug`)
-
-Implementiert, erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Kein Format. `HangingTextContainer` (`TextBoxRendering.swift`) ist der Textcontainer jedes Layouts: `PageTextView`, `TextObjectLayout` (Vorschau, PDF, Suche, Höhe, Flusskapazität) und als Basis von `DocumentPageContainer` (Texteditor 2). Er verschiebt Folgezeilen eines Absatzes in `lineFragmentRect(forProposedRect:at:…)` um die Breite des Präfixes; Präfixregeln und Rechnung (`TextParagraphPrefix`, `TextHangingIndent`) liegen plattformfrei in Core, gemessen wird mit CoreText im Format des Texts. Keine Absatzattribute werden geändert, `capture` und gespeicherte Runs bleiben gleich. Der zuletzt gemessene Absatz wird je Container gemerkt; `TaskLayoutManager.processEditing` verwirft das bei jeder Textänderung. Details: [TEXT-FIELDS](TEXT-FIELDS.md).
-
 ## Texteditor 2 (Prototyp) · 31.10.2026
 
 Implementiert, erfolgreich gebaut, nicht installiert, am iPad ungeprüft. Hinter dem Schalter `noty.text.editor2`, Standard aus, nur in Textdokumenten: eine Eingabeansicht über allen Seiten, ein Puffer, TextKit 1 mit einem Container je Seite. Das Modell bleibt Quelle und Speicherformat unverändert, die Seitenlängen kommen aus dem gemeinsamen Layout in das bestehende `reflowText`. Mit dem Schalter aus bleibt der Weg über `PageTextView`. [Architektur, Abweichungen, Go/No-Go](TEXT-EDITOR-2.md).
