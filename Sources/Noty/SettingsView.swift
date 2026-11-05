@@ -152,9 +152,9 @@ struct SettingsView: View {
                     Label {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Bereich „\(workspaces.title)“")
-                            Text(workspaces.kind == nil ? "Standardbereich" : "Getrennter Test-/Restore-Bereich").font(.caption).foregroundStyle(.secondary)
+                            Text(workspaces.kind == nil ? "Standardbereich" : workspaces.kind == .mirror ? "Spiegel einer anderen noty-App, wird beim nächsten Abgleich ersetzt" : "Getrennter Test-/Restore-Bereich").font(.caption).foregroundStyle(.secondary)
                         }
-                    } icon: { Image(systemName: workspaces.kind == nil ? "books.vertical" : "flask") }
+                    } icon: { Image(systemName: workspaces.kind.symbol) }
                 } footer: {
                     Text("Mit „Bereich“ markierte Einstellungen gelten nur für diesen Bereich und sind in seinem Bibliotheksbackup enthalten. Die übrigen gelten für die ganze App auf diesem iPad.")
                 }
@@ -442,6 +442,7 @@ private struct BackupSettingsPage: View {
                 Button("Als neuen Bereich wiederherstellen …", systemImage: "arrow.down.doc") { pick(.libraryArchive) }
                     .disabled(!libraryIdle).keyOption(.action { pick(.libraryArchive) })
             }
+            AppSyncSection(library: library, toolbox: toolbox, workspaces: workspaces)
             Section {
                 NavigationLink {
                     WorkspacePickerList(model: workspaces, onSelect: onSelectArea).keyboardSheet()

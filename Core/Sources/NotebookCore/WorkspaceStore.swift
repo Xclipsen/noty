@@ -1,6 +1,8 @@
 import Foundation
 
-public enum WorkspaceKind: String, Codable, Sendable { case test, restored }
+/// `mirror`: Spiegel einer anderen noty-App (AppSync), wird beim nächsten
+/// Abgleich durch einen neuen Bereich ersetzt. Nur in Spiegel-Apps.
+public enum WorkspaceKind: String, Codable, Sendable { case test, restored, mirror }
 public struct TestWorkspace: Codable, Equatable, Identifiable, Sendable {
     public var formatVersion = 1
     public let id: UUID
@@ -227,20 +229,20 @@ public actor WorkspaceStore {
     /// chunk while writing it into its own new package (one notebook at a time).
     /// Any failure removes this stage (up to the archive size of disk space);
     /// the token is then spent and a new restore starts from the original file.
-    public func commitRestore(_ prepared: PreparedLibraryRestore, title: String) async throws -> TestWorkspace {
+    public func commitRestore(_ prepared: PreparedLibraryRestore, title: String, kind: WorkspaceKind = .restored) async throws -> TestWorkspace {
         let stage = staging.appendingPathComponent(prepared.id.uuidString, isDirectory: true)
         try regularDirectory(stage)
         // Still owned while the commit suspends (actor reentrancy vs. cleanup).
         defer { activeStages.remove(prepared.id) }
         let activity = BackupActivity.shared.begin(); defer { activity.end() }
-        do { return try await commitStage(stage, prepared, title: title) }
+        do { return try await commitStage(stage, prepared, title: title, kind: kind) }
         catch {
             try? removeStage(prepared.id)
             throw error
         }
     }
 
-    private func commitStage(_ stage: URL, _ prepared: PreparedLibraryRestore, title: String) async throws -> TestWorkspace {
+    private func commitStage(_ stage: URL, _ prepared: PreparedLibraryRestore, title: String, kind: WorkspaceKind) async throws -> TestWorkspace {
         let input = stage.appendingPathComponent("input.notylibrary")
         let properties = try input.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard properties.isRegularFile == true, properties.isSymbolicLink != true else { throw BackupError.invalidStaging }
@@ -286,7 +288,7 @@ public actor WorkspaceStore {
         // Copied into every package: the scratch is not part of the area.
         try fm.removeItem(at: scratch)
         // The checked source file is kept as part of this workspace's provenance.
-        return try publish(stage: stage, id: prepared.id, title: title, kind: .restored)
+        return try publish(stage: stage, id: prepared.id, title: title, kind: kind)
     }
 
     /// Verified image originals of a prepared stage (`<sha256>` files).

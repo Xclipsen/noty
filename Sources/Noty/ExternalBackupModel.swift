@@ -52,7 +52,7 @@ private enum BackupKeychain {
 /// A little extra time when the app leaves the foreground mid-backup; always
 /// ended in time (an expired, unended assertion would get the app terminated).
 @MainActor
-private final class BackgroundAssertion {
+final class BackgroundAssertion {
     private var id = UIBackgroundTaskIdentifier.invalid
     init(_ name: String) {
         id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in MainActor.assumeIsolated { self?.end() } }
