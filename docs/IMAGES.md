@@ -34,7 +34,7 @@ Nutzer zu Build 51: „Bilder, die über 20 MB sind, sollen komprimiert werden u
   - mehr Bytes, als im Bildbudget des Notizbuchs noch frei ist (seit Schema 12: 500 MB eindeutige Originale, vorher 40 MB)
 - **Kodierung:**
   - Grundlage ist ein ImageIO-Vorschaubild mit eingerechneter Ausrichtung, längste Seite höchstens 4096 px.
-  - Deckende Bilder werden JPEG (Qualität ab 0,85, dann bis 0,65), Bilder mit Transparenz PNG.
+  - Deckende Bilder werden JPEG (Qualität ab 0,85, dann in Schritten von 0,1 bis 0,55), Bilder mit Transparenz PNG.
   - Passt es dann noch nicht, wird die Kantenlänge schrittweise verkleinert.
 - **Grenzen:**
   - Gelesen werden Quellen bis 250 MB.

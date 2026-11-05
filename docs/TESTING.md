@@ -32,6 +32,23 @@ Gerätetest (gebündelt, noty dev, Testheft):
 
 Gerätetest (gebündelt, noty dev, Textdokument und freies Feld): (1) Rechner: `2^10^200=`, `0,00000000004*1=`, `10:30=`, `10%=`, `1.2,5+0=` bleiben ohne Ergebnis; `- 5+3=` ergibt 8; Windows-Text `500`/`300`/`=` einfügen und `=` tippen. (2) „Milch“ Return „X“, ⌘A: Aufzählungsknopf nicht aktiv, ⌘⇧8 macht beide Zeilen zur Liste; `a`, Leerzeile, `b` markieren, Nummerierung: „1. a“, leer, „2. b“; Liste markieren bis ein Zeichen in den letzten Eintrag, Tab rückt beide ein. (3) Tastaturmodus: `i` Wort Esc `9999.` friert höchstens kurz, Anzeige „Wiederholung abgebrochen“, ein `u` nimmt alles zurück; `Q 9999. Q` und `3q` ebenso mit „Makro abgebrochen“; `9999n` in einem langen Text; `3o` tippen, Esc: keine leeren Zeilen. (4) Markdown-Export eines Texts, in dem vor einem fetten Wort ein geschütztes Leerzeichen (⌥Leertaste) steht: das Leerzeichen bleibt.
 
+## Formen, Bilder, Laserpointer: Prüfbefunde behoben (05.11.2026, Branch `feat/fix-shapes`)
+
+**Implementiert und erfolgreich gebaut (`xtool dev build`, unsigniert). Nicht installiert, am iPad ungeprüft.** Kein Heftschema geändert. Core-Tests 1229 (3 übersprungen, 0 Fehler; neu `ShapeImageLaserFixTests`, 9 Tests), `check_page_workflow.sh` grün.
+
+- **PDF-Export ohne weggeschnittene Bildteile.** Eingebettet werden nur noch die Pixel innerhalb des Zuschnitts (`ImageObject.cropPixels`, nach innen gerundet; `ImageRendering.exportCrop` kopiert sie in eine eigene Bitmap). Vorher kam die ganze Bildfassung samt Beschnittpfad ins PDF. Editor und Vorschau unverändert.
+- **Formen am Seitenrand.** Beim Ziehen bleibt die Form auf der Seite (`DrawnShapeFitting`): Start innerhalb, Linie/Pfeil endet am Rand in gleicher Richtung, Rechteck-/Ellipsenecke stoppt am Rand. Vorschau gleich Ergebnis; passt sie gar nicht, Meldung statt stillem Verwerfen. Der Pfeilrand gilt weiter rundum (Validierung unverändert).
+- **„Stil“:** Der Breitenregler ändert nur die Breite (Farben von Formen, Handschrift, Markern, Textfeldern bleiben); Öffnen des Popovers ändert nicht mehr die Breite der nächsten Form. Würde eine Form über den Rand ragen: Meldung.
+- **Ziehen zum Rand:** Die Auswahl hebt nur über einer anderen Seite ab; im Spalt oder neben den Seiten bleibt sie geklemmt, Loslassen dort übernimmt die geklemmte Position (wie vor `cf3e4b8`, IMAGES.md).
+- **Meldungen:** 51. Bild auf einer Seite bzw. 500-MB-Grenze beim Einfügen/Duplizieren nennen die Grenze (`Notebook.imageLimitProblem`), sonstige Grenzfehler nicht mehr „kein unterstütztes noty-Dokument“.
+- **Skalieren:** Vieleck, Polylinie und geknickter Pfeil zeigen zusätzlich die Ecken; die Strichstärke wird beim Skalieren in 0,5–40 gehalten statt den Faktor zu begrenzen.
+- **Linien und Pfeile** bekommen keine Füllung mehr (bereits gespeicherte bleiben unverändert).
+- **Einfüge-Merker** wird nach gescheitertem Bild-Einfügen zurückgesetzt.
+- **Laser „bis Absetzen“:** über 4000 Punkte wird die Spur ausgedünnt statt vorne abgeschnitten.
+- **Gestrichelte/gepunktete Pfeile** haben eine durchgezogene Spitze. IMAGES.md: JPEG-Qualität bis 0,55 (Doku korrigiert).
+
+Gerätetest (gebündelt, noty dev): (1) Screenshot einfügen, links zuschneiden, Seite als PDF exportieren; am PC `pdfimages -list` und `pdfimages -png` (nur der Ausschnitt), `pdftoppm` (Bild an gleicher Stelle, auch gedreht). (2) Pfeil 5 pt vom linken Rand beginnen, Linie/Rechteck mit dem Stift über den Rand ziehen: Form bleibt wie in der Vorschau. (3) Rote Form und gemischte Lasso-Auswahl mit Marker → Stil → nur Breite: Farben bleiben; Stil öffnen/schließen, neue Form hat Leistenbreite. (4) Bild und Form mit dem Finger in den Seitenspalt und neben die Seite ziehen und loslassen: bleibt geklemmt am Rand; über die Nachbarseite: Übergabe wie bisher; Blättermodus. (5) Erkanntes Sechseck über Ecken skalieren, Ecken neben den Formpunkten bedienbar; 1-pt-Form auf 20 % verkleinern. (6) 51. Bild per Duplizieren: Meldung nennt 50 Bilder. (7) Laser „bis Absetzen“ lange kreisen: Spuranfang bleibt.
+
 ## Lineal überarbeitet (05.11.2026, Branch `feat/lineal`)
 
 **Implementiert, Core-Tests und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Aus einer Prüfung des eigenen Lineals (Build 88/89). Kein Heftschema geändert; Lage des Lineals und gelerntes Strichbild liegen in `UserDefaults`.

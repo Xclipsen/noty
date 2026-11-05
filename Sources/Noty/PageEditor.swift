@@ -74,7 +74,8 @@ struct PageEditor {
     var onEraseShapes: (PageContent, PageContent) -> Bool = { _, _ in false }
     /// An image from the system pasteboard onto this page (the one paste path).
     /// `near`: where the image should land (canonical), nil for the page's text area.
-    var onPasteImage: (PagePoint?) -> Void = { _ in }
+    /// Its completion tells whether the image arrived (also when it did not).
+    var onPasteImage: (PagePoint?, @escaping @MainActor (Bool) -> Void) -> Void = { _, _ in }
     /// „Textfeld hinzufügen“ from the finger double-tap menu: the editor
     /// switches to the text tool, the sheet then opens the field itself.
     /// Also „Bearbeiten“/second tap on a selected field (caret there).
@@ -991,7 +992,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         let origin = pageLayout.contentOrigin
         let visible = lastVisible ?? bounds
         objectLayer.awaitingPastedImage = true
-        configuration?.onPasteImage(PagePoint(x: visible.midX - origin.x, y: visible.midY - origin.y))
+        // A paste that fails must not leave the marker set: the next image to
+        // appear (e.g. undoing an image deletion) would be selected unasked.
+        guard let configuration else { objectLayer.awaitingPastedImage = false; return }
+        configuration.onPasteImage(PagePoint(x: visible.midX - origin.x, y: visible.midY - origin.y)) { [weak self] inserted in
+            if !inserted { self?.objectLayer.awaitingPastedImage = false }
+        }
     }
     /// Text from outside without an edited field: a new field at the last
     /// tapped place, otherwise in the middle of the visible part, in the

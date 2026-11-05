@@ -160,20 +160,24 @@ extension EditorModel {
     }
 
     /// `near`: where to centre the image, nil for the middle of the text area.
-    func pasteImage(pageID: UUID, near place: PagePoint?) {
-        insertImage(pageID: pageID, near: place) { try await ImageImport.clipboardImage(UIPasteboard.general) }
+    /// `finished`: whether the image was inserted (also called when it was not).
+    func pasteImage(pageID: UUID, near place: PagePoint?, finished: (@MainActor (Bool) -> Void)? = nil) {
+        insertImage(pageID: pageID, near: place, finished: finished) { try await ImageImport.clipboardImage(UIPasteboard.general) }
     }
 
     private static var imageBusyMessage: String { "Bild nicht eingefügt: Bitte warten, bis der laufende Vorgang abgeschlossen ist." }
 
-    private func insertImage(pageID: UUID, near place: PagePoint? = nil, read: @escaping @MainActor () async throws -> Data) {
-        guard writable, let target = notebook.pages.first(where: { $0.id == pageID }) else { return }
-        guard !busy, !imageReading else { error = Self.imageBusyMessage; return }
+    private func insertImage(pageID: UUID, near place: PagePoint? = nil, finished: (@MainActor (Bool) -> Void)? = nil,
+                             read: @escaping @MainActor () async throws -> Data) {
+        guard writable, let target = notebook.pages.first(where: { $0.id == pageID }) else { finished?(false); return }
+        guard !busy, !imageReading else { error = Self.imageBusyMessage; finished?(false); return }
         let generation = pageContentGeneration
         // Fetching can take long or never end (Universal Clipboard, iCloud):
         // that happens before the editor is locked, and with a time limit.
         imageReading = true
         Task {
+            var inserted = false
+            defer { finished?(inserted) }
             let source: Data
             do { source = try await withImportTimeLimit(read) }
             catch {
@@ -218,7 +222,7 @@ extension EditorModel {
                 // area (saving keeps failing) refuses with a clear message.
                 guard try imageAssets.stage(data) == reference else { throw ImageImportError.invalid }
                 updateImages((current.images ?? []) + [object], pageID: pageID)
-                let inserted = notebook.pages.first(where: { $0.id == pageID })?.images?.contains { $0.id == object.id } == true
+                inserted = notebook.pages.first(where: { $0.id == pageID })?.images?.contains { $0.id == object.id } == true
                 if inserted, let original = fitted.originalBytes {
                     fileStatus = "Bild verkleinert eingefügt (\(ImageLimits.megabytes(original)) → \(ImageLimits.megabytes(data.count)))"
                 }

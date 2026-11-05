@@ -111,6 +111,23 @@ extension Notebook {
         return allImages.reduce(0) { total, image in seen.insert(image.asset.sha256).inserted ? total + image.asset.byteCount : total }
     }
 
+    /// The image limit that replacing the images of `pageID` by `images`
+    /// would break (paste, duplicate, undo of an object change): named in the
+    /// message instead of a generic validation failure. nil: within the limits.
+    public func imageLimitProblem(replacing pageID: UUID, with images: [ImageObject]) -> ImageInsertionProblem? {
+        let current = pages.first { $0.id == pageID }?.images ?? []
+        if images.count > ImageLimits.maximumImagesPerPage, images.count > current.count { return .pageFull }
+        let currentIDs = Set(current.map(\.id))
+        var seen = Set<String>(), after = 0
+        for image in allImages where !currentIDs.contains(image.id) {
+            if seen.insert(image.asset.sha256).inserted { after += image.asset.byteCount }
+        }
+        for image in images where seen.insert(image.asset.sha256).inserted { after += image.asset.byteCount }
+        let used = uniqueImageAssetBytes
+        guard after > ImageLimits.maximumNotebookBytes, after > used else { return nil }
+        return .notebookFull(used: used, adding: after - used)
+    }
+
     /// Whether the imported original `reference` may be added to `pageID`.
     /// An original already in the notebook (same hash) adds no bytes.
     public func imageInsertionProblem(adding reference: ImageAssetReference, pageID: UUID) -> ImageInsertionProblem? {
