@@ -103,6 +103,13 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var insertingList = false
     /// The field and range of the result just calculated, until the next input.
     private var calculatedResult: (id: UUID, range: NSRange)?
+    /// The field and arrow just written for „->“ and the like, until the next input.
+    var replacedArrow: (id: UUID, replacement: TextArrowReplacement.Replacement)?
+    /// An arrow ⌫ brought back: not replaced again at this place (field, start).
+    var keptArrow: (id: UUID, location: Int)?
+    /// Free fields whose text needs more than the stored height (an older
+    /// layout): shown that high (`TextBox.shown`) until an edit fits them.
+    private var shownHeights: [UUID: Double] = [:]
     private var darkPaper = false
     private var darkMargins = false
     private var hasPDF = false
@@ -341,10 +348,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             let editor = field.editor
             let selectedRange = editor.selectedRange
             let light = automaticLight(box)
+            let pointScale = coordinateScale(for: box)
             if (field.content?.text != box.text || field.content?.runs != box.runs || field.content?.style != box.style || field.automaticLight != light), editor.markedTextRange == nil {
                 let shown = box.resolvingAutomaticColor(light: light)
-                editor.attributedText = shown.attributedText
+                editor.attributedText = shown.attributedText(width: CGFloat(box.width) / pointScale)
                 editor.typingAttributes = shown.style.attributes
+                field.hangingSource = (box, CGFloat(box.width) / pointScale)
                 let length = (box.text as NSString).length
                 editor.selectedRange = NSRange(location: min(selectedRange.location, length),
                                                length: min(selectedRange.length, max(0, length - min(selectedRange.location, length))))
@@ -359,18 +368,21 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                     next.tabStops = []; next.defaultTabInterval = grid
                     editor.typingAttributes[.paragraphStyle] = next
                 }
+                // Typed text, a new width or format: the hanging edges follow.
+                if field.hangingSource?.box != box || field.hangingSource?.width != CGFloat(box.width) / pointScale {
+                    applyHangingIndents(editor, for: box)
+                }
             }
-            field.applyFieldStyle(box.resolvingAutomaticColor(light: light), unitScale: coordinateScale(for: box))
+            field.applyFieldStyle(box.resolvingAutomaticColor(light: light), unitScale: pointScale)
             editor.isFlow = box.flowID != nil
             // Flow segments and the fields migrated from page text keep the ruling of their region
             // (migrated fields anchored at their former region: lines move with the field); fields
             // aligned to the lines stand on the paper lines. The same rule as previews and PDF.
-            let pointScale = coordinateScale(for: box)
             editor.setLineGrid(linePaper.grid(for: box))
             editor.isEditable = active; editor.isSelectable = active || readOnly
             editor.isUserInteractionEnabled = active || readOnly
+            let overflowing = measureShownHeight(box, editor: editor)
             position(field, for: box); updateRaster(field, for: box)
-            let overflowing = box.overflows(textHeight: overflowHeight(box, editor: editor, width: box.width / pointScale) * pointScale)
             field.configure(editing: active && selectedID == box.id && box.flowID == nil, overflowing: overflowing)
         }
         // Later fields lie on top („Nach vorne“/„Nach hinten“ reorder the array).
@@ -470,8 +482,32 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var selectedSizeUnits: TextSizeUnits {
         selectedID.flatMap { id in boxes.first { $0.id == id } }.map(sizeUnits) ?? .normal
     }
+    /// Hanging indents of the editor's text (`applyHangingIndents`), as
+    /// `TextBox.attributedText(width:)` lays them out for previews and PDF.
+    /// Very long text: only the paragraphs around the selection.
+    func applyHangingIndents(_ editor: PageTextView, for box: TextBox) {
+        guard box.flowID == nil, editor.markedTextRange == nil else { return }
+        let storage = editor.textStorage, selection = editor.selectedRange
+        let local = storage.length > 20_000
+            ? NSRange(location: max(0, selection.location - 1), length: min(storage.length - max(0, selection.location - 1), selection.length + 2))
+            : nil
+        let width = CGFloat(box.width) / coordinateScale(for: box)
+        storage.applyHangingIndents(width: width, in: local)
+        fields[box.id]?.hangingSource = local == nil && fields[box.id]?.editor === editor ? (box, width) : nil
+    }
+    /// The field's height as shown (`TextBox.shown`, remembered for
+    /// `position`) and whether its text overflows even so.
+    private func measureShownHeight(_ box: TextBox, editor: PageTextView) -> Bool {
+        let scale = coordinateScale(for: box)
+        let needed = overflowHeight(box, editor: editor, width: box.width / scale) * scale
+        let shown = box.shown(textHeight: needed, within: PageRect(canonicalBounds))
+        shownHeights[box.id] = shown.height > box.height ? shown.height : nil
+        return shown.overflows(textHeight: needed)
+    }
     /// Turned about the field's top-left corner, like preview, PDF and lasso.
-    private func position(_ field: TextFieldContainer, for box: TextBox) {
+    private func position(_ field: TextFieldContainer, for stored: TextBox) {
+        var box = stored
+        if let height = shownHeights[box.id], height > box.height { box.height = height }
         let scale = coordinateScale(for: box), frame = displayFrame(box)
         let local = CGRect(x: 0, y: 0, width: frame.width / scale, height: frame.height / scale)
         let transform = CGAffineTransform(rotationAngle: box.angle * .pi / 180).scaledBy(x: scale, y: scale)
@@ -808,10 +844,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         guard KeyboardRouter.shared.allowsTyping else { return false }
         if replaceFlowSelection(with: text) { return false }
         if replaceCalculatedResult(textView, range: range, text: text) { return false }
-        if let handled = handleListInput(textView, range: range, text: text) { return handled }
+        if restoreArrow(textView, range: range, text: text) { return false }
+        if let handled = handleIndentInput(textView, range: range, text: text) { return handled }
         if let handled = handlePairInput(textView, range: range, text: text) { return handled }
-        guard !insertingList, text == "\n", let edit = TextListEditing.newline(in: textView.text ?? "", range: range)
-                ?? (textView.markedTextRange == nil ? KeyboardRouter.shared.indentedNewline(in: textView.text ?? "", range: range) : nil) else { return true }
+        // Keyboard mode (Helix): Enter keeps the white space also where the rules above leave it alone.
+        guard !insertingList, text == "\n", textView.markedTextRange == nil,
+              let edit = KeyboardRouter.shared.indentedNewline(in: textView.text ?? "", range: range) else { return true }
         insertingList = true; defer { insertingList = false }
         textView.selectedRange = edit.range; textView.insertText(edit.replacement)
         return false
@@ -823,6 +861,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     func textViewDidEndEditing(_ textView: UITextView) {
         KeyboardRouter.shared.textEnded()
+        replacedArrow = nil; keptArrow = nil
         (textView as? PageTextView)?.placement = nil
         onEditingActive?(fields.values.contains { $0.editor.isFirstResponder })
         removeIfEmptyFreeField(textView)
@@ -1053,9 +1092,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         guard let field = fields[box.id] else { return }
         // A field aligned to the lines keeps standing on them while it moves.
         field.editor.setLineGrid(linePaper.grid(for: box))
+        applyHangingIndents(field.editor, for: box) // a new width moves a clamped edge
+        let overflowing = measureShownHeight(box, editor: field.editor)
         position(field, for: box); updateRaster(field, for: box)
-        let pointScale = coordinateScale(for: box)
-        let overflowing = box.overflows(textHeight: overflowHeight(box, editor: field.editor, width: box.width / pointScale) * pointScale)
         field.configure(editing: active && selectedID == box.id, overflowing: overflowing)
     }
 
@@ -1090,6 +1129,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 action(&style); formatted.setAttributes(style.attributes, range: subrange)
             }
             editor.attributedText = formatted; editor.selectedRange = selection
+            fields[selectedID]?.hangingSource = nil // the formats set `headIndent` back to the indent
             if wholeFloatingField, selection.length == 0 {
                 action(&boxes[index].style)
             }
@@ -1117,6 +1157,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     func textViewDidChangeSelection(_ textView: UITextView) {
         // The caret left the result: coming back later is ordinary typing.
         if let result = calculatedResult?.range, textView.selectedRange != NSRange(location: NSMaxRange(result), length: 0) { calculatedResult = nil }
+        if let written = replacedArrow?.replacement.written, textView.selectedRange != NSRange(location: NSMaxRange(written), length: 0) { replacedArrow = nil }
         // The keyboard mode's own selections keep a marking over pages, a user's selection ends it.
         let own = KeyboardRouter.shared.showingSelection || KeyboardRouter.shared.handoff
         if !updating, !applyingFlow, !own { TextFlowSelection.shared.set(nil) }

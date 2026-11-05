@@ -84,8 +84,9 @@ enum SelectionTransfer {
             var context = page ?? Page()
             context.textBoxes = objects.textBoxes
             for box in context.resolvedTextBoxes {
-                TextFieldStyleRendering.draw(box, at: CGPoint(x: box.x, y: box.y), context: cg)
-                TextObjectLayout(box, on: context).draw(at: CGPoint(x: box.x, y: box.y))
+                let (shown, layout) = TextObjectLayout.shown(box, on: context)
+                TextFieldStyleRendering.draw(shown, at: CGPoint(x: box.x, y: box.y), context: cg)
+                layout.draw(at: CGPoint(x: box.x, y: box.y))
             }
         }
     }

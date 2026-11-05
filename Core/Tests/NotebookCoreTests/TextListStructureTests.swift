@@ -142,7 +142,9 @@ final class TextListStructureTests: XCTestCase {
     // MARK: Automatic lists
 
     func testAutoListTriggersAtParagraphStartOnly() {
-        for (typed, marker) in [("- ", "• "), ("* ", "• "), ("1) ", "1. "), ("[] ", "☐ "), ("[ ] ", "☐ ")] {
+        // „- “ is a mark of its own since the Einzug rebuild and stays as typed.
+        XCTAssertNil(TextListEditing.autoList(in: "Davor\n- ", caret: 8))
+        for (typed, marker) in [("* ", "• "), ("1) ", "1. "), ("[] ", "☐ "), ("[ ] ", "☐ ")] {
             let text = "Davor\n" + typed
             let edit = TextListEditing.autoList(in: text, caret: (text as NSString).length)
             XCTAssertEqual(apply(edit.map { [$0] } ?? [], to: text), "Davor\n" + marker, typed)
@@ -152,54 +154,72 @@ final class TextListStructureTests: XCTestCase {
         XCTAssertEqual(TextListEditing.autoList(in: "• ", caret: 2, level: 1)?.replacement, "◦ ")
         XCTAssertNil(TextListEditing.autoList(in: "Text - ", caret: 7))
         XCTAssertNil(TextListEditing.autoList(in: "z. B. ", caret: 6))
-        XCTAssertEqual(apply([TextListEditing.autoList(in: "  - x", caret: 4)!], to: "  - x"), "  • x")
+        XCTAssertEqual(apply([TextListEditing.autoList(in: "  * x", caret: 4)!], to: "  * x"), "  • x")
     }
 
     // MARK: Nesting
+    // Since the Einzug rebuild (05.11.2026) a level is a leading tab: Tab in
+    // the prefix inserts one, ⇧Tab removes one; the older 20-pt indent is only
+    // reduced. These tests replaced the former `listNesting` (indent steps).
+
+    /// Levels by the rule of `TextParagraphPrefix.level` (indent + leading tabs).
+    private func tabLevels(_ box: TextBox) -> [Int] {
+        let source = box.text as NSString
+        var result: [Int] = [], cursor = 0
+        repeat {
+            let line = source.lineRange(for: NSRange(location: cursor, length: 0))
+            result.append(TextParagraphPrefix(in: source, at: line.location).level(indent: box.style(at: line.location).indent))
+            cursor = NSMaxRange(line)
+        } while cursor < source.length
+        return result
+    }
 
     func testTabNestsBulletsWithCyclingGlyphsAndShiftTabReturns() throws {
         var current = box([("• a", 0), ("• b", 0), ("• c", 0)])
-        let caret = ("• a\n• b" as NSString).length
-        let nested = try XCTUnwrap(current.nestingList(selection: .init(location: caret, length: 0), outdent: false))
-        XCTAssertEqual(nested.box.text, "• a\n◦ b\n• c"); XCTAssertEqual(levels(nested.box), [0, 1, 0])
-        XCTAssertEqual(nested.selection.location, caret)
+        let nested = try XCTUnwrap(current.nestingList(selection: .init(location: 6, length: 0), outdent: false))
+        XCTAssertEqual(nested.box.text, "• a\n\t◦ b\n• c"); XCTAssertEqual(tabLevels(nested.box), [0, 1, 0])
+        XCTAssertEqual(nested.selection.location, 7, "the caret stays in front of the text")
         current = nested.box
-        for expected in ["▪ b", "• b"] {
+        for expected in ["\t\t▪ b", "\t\t\t• b"] {
             current = try XCTUnwrap(current.nestingList(selection: .init(location: 6, length: 0), outdent: false)).box
-            XCTAssertTrue(current.text.contains(expected))
+            XCTAssertTrue(current.text.contains(expected), current.text)
         }
-        XCTAssertEqual(levels(current), [0, 3, 0])
+        XCTAssertEqual(tabLevels(current), [0, 3, 0])
         for _ in 0..<3 { current = try XCTUnwrap(current.nestingList(selection: .init(location: 6, length: 0), outdent: true)).box }
-        XCTAssertEqual(current.text, "• a\n• b\n• c"); XCTAssertEqual(levels(current), [0, 0, 0])
+        XCTAssertEqual(current.text, "• a\n• b\n• c"); XCTAssertEqual(tabLevels(current), [0, 0, 0])
         XCTAssertNil(current.nestingList(selection: .init(location: 6, length: 0), outdent: true), "level 0 cannot outdent")
+        // Normal paragraphs move the same way in their prefix, inside the text Tab types a tab.
+        XCTAssertEqual(try XCTUnwrap(box([("Normal", 0)]).nestingList(selection: .init(location: 0, length: 0), outdent: false)).box.text, "\tNormal")
         XCTAssertNil(box([("Normal", 0)]).nestingList(selection: .init(location: 2, length: 0), outdent: false))
-        var deep = box([("• x", 12)])
-        XCTAssertNil(deep.nestingList(selection: .init(location: 2, length: 0), outdent: false), "240 pt format limit")
-        deep = box([("☐ Aufgabe", 0)])
-        XCTAssertEqual(try XCTUnwrap(deep.nestingList(selection: .init(location: 3, length: 0), outdent: false)).box.text, "☐ Aufgabe")
+        // The older indent is only reduced, by ⇧Tab.
+        let old = try XCTUnwrap(box([("◦ x", 1)]).nestingList(selection: .init(location: 2, length: 0), outdent: true)).box
+        XCTAssertEqual(old.text, "• x"); XCTAssertEqual(old.style(at: 0).indent, 0)
+        let task = try XCTUnwrap(box([("☐ Aufgabe", 0)]).nestingList(selection: .init(location: 2, length: 0), outdent: false)).box
+        XCTAssertEqual(task.text, "\t☐ Aufgabe")
     }
     func testNestedNumberingRestartsPerLevelAndParentCountsOn() throws {
         let start = box([("1. a", 0), ("2. b", 0), ("3. c", 0), ("4. d", 0)])
         let b = try XCTUnwrap(start.nestingList(selection: .init(location: 5, length: 0), outdent: false)).box
-        XCTAssertEqual(b.text, "1. a\n1. b\n2. c\n3. d")
-        let c = try XCTUnwrap(b.nestingList(selection: .init(location: 10, length: 0), outdent: false)).box
-        XCTAssertEqual(c.text, "1. a\n1. b\n2. c\n2. d"); XCTAssertEqual(levels(c), [0, 1, 1, 0])
+        XCTAssertEqual(b.text, "1. a\n\t1. b\n2. c\n3. d")
+        let c = try XCTUnwrap(b.nestingList(selection: .init(location: 11, length: 0), outdent: false)).box
+        XCTAssertEqual(c.text, "1. a\n\t1. b\n\t2. c\n2. d"); XCTAssertEqual(tabLevels(c), [0, 1, 1, 0])
         // Outdenting the first child: it rejoins the parent list, the other child restarts.
         let back = try XCTUnwrap(c.nestingList(selection: .init(location: 5, length: 0), outdent: true)).box
-        XCTAssertEqual(back.text, "1. a\n2. b\n1. c\n3. d"); XCTAssertEqual(levels(back), [0, 0, 1, 0])
+        XCTAssertEqual(back.text, "1. a\n2. b\n\t1. c\n3. d"); XCTAssertEqual(tabLevels(back), [0, 0, 1, 0])
         // Selection over several items moves them together.
         let both = try XCTUnwrap(start.nestingList(selection: .init(location: 5, length: 7), outdent: false)).box
-        XCTAssertEqual(both.text, "1. a\n1. b\n2. c\n2. d")
+        XCTAssertEqual(both.text, "1. a\n\t1. b\n\t2. c\n2. d")
     }
-    func testNestingKeepsWordFormattingAndOnlyChangesIndent() throws {
+    func testNestingKeepsWordFormattingAndTheParagraphIndent() throws {
         var source = box([("• fett", 0), ("• b", 0)])
         var bold = TextBoxStyle(); bold.bold = true; bold.indent = 0
         source.runs = [TextRun(location: 0, length: 2, style: source.runs![0].style), TextRun(location: 2, length: 5, style: bold),
                        TextRun(location: 7, length: 3, style: source.runs![1].style)]
-        let nested = try XCTUnwrap(source.nestingList(selection: .init(location: 3, length: 0), outdent: false)).box
-        XCTAssertEqual(nested.text, "◦ fett\n• b")
-        XCTAssertTrue(nested.style(at: 3).bold); XCTAssertEqual(nested.style(at: 3).indent, 20)
-        XCTAssertFalse(nested.style(at: 8).bold); XCTAssertEqual(nested.style(at: 8).indent, 0)
+        let nested = try XCTUnwrap(source.nestingList(selection: .init(location: 2, length: 0), outdent: false)).box
+        XCTAssertEqual(nested.text, "\t◦ fett\n• b")
+        XCTAssertTrue(nested.style(at: 4).bold); XCTAssertEqual(nested.style(at: 0).indent, 0)
+        XCTAssertFalse(nested.style(at: 0).bold, "the tab takes the format of the paragraph's start")
+        XCTAssertFalse(nested.style(at: 9).bold)
         XCTAssertNoThrow(try nested.validate())
     }
 
@@ -217,7 +237,7 @@ final class TextListStructureTests: XCTestCase {
     }
     func testReturnInsideListShiftsFollowingNumbers() throws {
         let old = box([("1. a", 0), ("2. b", 0), ("3. c", 0)])
-        let edit = try XCTUnwrap(TextListEditing.newline(in: old.text, range: .init(location: 4, length: 0)))
+        let edit = try XCTUnwrap(TextIndentEditing.newlineEdit(in: old.text, range: .init(location: 4, length: 0)))
         let typed = apply([edit], to: old.text)
         XCTAssertEqual(typed, "1. a\n2. \n2. b\n3. c")
         let (result, caret) = edited(old, typed, caret: 8)
@@ -256,7 +276,7 @@ final class TextListStructureTests: XCTestCase {
         let numbered = TextListEditing.toggle(.numbered, in: nested.text, range: .init(location: 1, length: 0), level: nested.listLevel(at:))
         XCTAssertEqual(apply(numbered, to: nested.text), "1. a\n◦ b\n• c", "kind change stays on its level")
         XCTAssertTrue(TextListEditing.isActive(.bullet, in: "▪ x", range: .init(location: 1, length: 0)))
-        XCTAssertEqual(TextListEditing.newline(in: "◦ x", range: .init(location: 3, length: 0))?.replacement, "\n◦ ")
+        XCTAssertEqual(TextIndentEditing.newlineEdit(in: "◦ x", range: .init(location: 3, length: 0))?.replacement, "\n◦ ")
     }
     func testNumberingContinuesAcrossFlowPages() throws {
         var book = try Notebook.blank(title: "Flow", appearance: NotebookAppearance())
@@ -360,12 +380,11 @@ private extension TextBox {
         guard !edits.isEmpty else { return nil }
         return (applying(edits), TextListEditing.selection(selection, after: edits))
     }
+    /// Tab/⇧Tab in the prefix (`TextIndentEditing.tab`), as the editors apply it.
     func nestingList(selection: NSRange, outdent: Bool) -> (box: TextBox, selection: NSRange)? {
-        guard let plan = listNesting(selection: selection, outdent: outdent) else { return nil }
-        var box = self
-        for (range, indent) in zip(plan.paragraphs, plan.indents) { box = box.restyled([range]) { $0.indent = indent } }
-        box = box.applying(plan.markers).applying(plan.renumbering)
-        let caret = TextListEditing.selection(TextListEditing.selection(selection, after: plan.markers), after: plan.renumbering)
+        guard let plan = TextIndentEditing.tab(self, selection: selection, outdent: outdent) else { return nil }
+        let box = applying(plan)
+        let caret = TextListEditing.selection(TextListEditing.selection(selection, after: plan.edits), after: plan.renumbering)
         return box == self ? nil : (box, caret)
     }
 
@@ -375,9 +394,9 @@ private extension TextBox {
     }
 
     func testReturnBehindAMarkerSplitsTheItem() {
-        let edit = TextListEditing.newline(in: "1. abc", range: NSRange(location: 3, length: 0))
+        let edit = TextIndentEditing.newlineEdit(in: "1. abc", range: NSRange(location: 3, length: 0))
         XCTAssertEqual(edit, .init(range: NSRange(location: 3, length: 0), replacement: "\n2. "))
-        XCTAssertEqual(TextListEditing.newline(in: "1. ", range: NSRange(location: 3, length: 0)),
+        XCTAssertEqual(TextIndentEditing.newlineEdit(in: "1. ", range: NSRange(location: 3, length: 0)),
                        .init(range: NSRange(location: 0, length: 3), replacement: ""), "an empty item still ends the list")
     }
 }

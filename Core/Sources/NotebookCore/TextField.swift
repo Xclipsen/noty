@@ -97,6 +97,24 @@ extension TextBox {
         textHeight.isFinite && textHeight > height + Self.overflowTolerance
     }
 
+    /// The height a free field is shown with when its text (`textHeight`) needs
+    /// more than the stored height: a free field's height follows its text
+    /// (`fitted` in the editor), so a stored height from an older layout (for
+    /// example before hanging indents) is derived anew, up to the edge of
+    /// `bounds` (the page with its writing space). Never smaller than stored;
+    /// flow segments keep their region.
+    public func shownHeight(textHeight: Double, within bounds: PageRect) -> Double {
+        guard flowID == nil, textHeight.isFinite, textHeight > height + Self.overflowTolerance else { return height }
+        return max(height, min(textHeight, maximumHeight(in: bounds, minimum: height)))
+    }
+    /// This field with `shownHeight`: overflow (red frame, refused PDF) only
+    /// where the text does not fit onto the page any more.
+    public func shown(textHeight: Double, within bounds: PageRect) -> TextBox {
+        var box = self
+        box.height = shownHeight(textHeight: textHeight, within: bounds)
+        return box
+    }
+
     /// Axis-aligned bounds of the rotated visible frame (with the style's
     /// padding): page limits, selection, lasso, snapping and transfers.
     public var rotatedBounds: PageRect {

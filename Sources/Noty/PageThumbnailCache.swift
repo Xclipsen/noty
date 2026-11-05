@@ -109,14 +109,15 @@ final class PageThumbnailCache: ObservableObject {
             context.scaleBy(x: parts.scale, y: parts.scale)
             ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)
             parts.ink?.draw(in: bounds)
-            for box in page.resolvedTextBoxes {
+            for stored in page.resolvedTextBoxes {
                 let origin = layout.contentOrigin
                 func shown(_ point: PagePoint) -> CGPoint { CGPoint(x: point.x + origin.x, y: point.y + origin.y) }
+                // A free field grows with its text up to the page (`TextObjectLayout.shown`).
+                let (box, text) = TextObjectLayout.shown(stored, on: page)
                 TextFieldStyleRendering.draw(box, at: CGPoint(x: box.x + origin.x, y: box.y + origin.y), context: context)
                 // Clipped like the editor: the (possibly rotated) text frame
                 // plus the same glyph overhang, so italics and first letters
                 // keep their edges; text beyond it stays stored, marked below.
-                let text = TextObjectLayout(box, on: page)
                 let reach = Double(TextObjectLayout.glyphOverhang(box)) * page.writingCoordinateScale(for: box)
                 let outline = CGMutablePath()
                 outline.addLines(between: [PagePoint(x: -reach, y: -reach), PagePoint(x: box.width + reach, y: -reach),

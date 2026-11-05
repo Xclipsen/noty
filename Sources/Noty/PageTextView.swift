@@ -226,6 +226,7 @@ final class PageTextView: UITextView {
         if placement != nil { placement = nil; return }
         if historyOwner?.replaceFlowSelection(with: "") == true { return }
         if isFlow, selectedRange.location == 0, selectedRange.length == 0 { onFlowBackspace?() }
+        else if selectedRange == NSRange(location: 0, length: 0), historyOwner?.backspaceAtStart(self) == true { return }
         else { super.deleteBackward() }
     }
     init(id: UUID) {
@@ -301,8 +302,9 @@ final class PageTextView: UITextView {
         command.wantsPriorityOverSystemBehavior = true
         return command
     }()
-    /// Tab/⇧Tab nest list items; elsewhere Tab goes to the next stop
-    /// (`TextTabs`), over several selected lines it moves each of them.
+    /// Tab/⇧Tab by `TextIndentEditing.tab`: in the prefix of a paragraph (and
+    /// over several lines) a leading tab more or less, elsewhere Tab goes to
+    /// the next stop (`TextTabs`) like the on-screen Tab.
     private static let listCommands: [UIKeyCommand] = [UIKeyModifierFlags(), .shift].map { flags in
         let command = UIKeyCommand(input: "\t", modifierFlags: flags, action: #selector(listTab(_:)))
         command.wantsPriorityOverSystemBehavior = true

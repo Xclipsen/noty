@@ -2,6 +2,19 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Einzug und Listen neu (05.11.2026, Branch `feat/einzug2`)
+
+**Implementiert, Core-Tests, Seiten-Workflow und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Kein Formatwechsel. Regeln: [TEXT-FIELDS](TEXT-FIELDS.md), Nachtrag „Einzug und Listen neu“. Core-Tests 1282 (3 übersprungen, 0 Fehler), neu `TextIndentTests` (15); bewusst angepasst: `TextListStructureTests` (Ebenen als Tabs statt 20-pt-Einzug, „- “ bleibt), `TextTabsTests` (`TextTabs.edits` ersetzt; ⇧Tab löscht keinen Tab mitten in der Zeile mehr), `ZoomAndListTests` (leerer Eintrag auf Ebene 0 behält führende Leerzeichen), Return-Aufrufe über `TextIndentEditing`. Nicht unter Linux prüfbar: TextKit-Layout (ob `defaultTabInterval`-Tabs in Folgezeilen mit `headIndent` auf dem Raster ab Feldkante liegen), `TextBoxStyle(attributes:)` (liest den Einzug über die getestete Core-Regel `storedIndent`), Tastenzustellung und Undo am Gerät.
+
+Gerätetest (gebündelt, noty dev, Testheft auf liniertem Papier, Hardware- und Bildschirmtastatur):
+1. **Tab:** „• Bsp.:“ tippen, Tab: ein Tab hinter dem Doppelpunkt, keine Verschachtelung. Cursor vor „Bsp“ (hinter „• “), Tab: Zeile rückt ein, Zeichen wird ◦; ⇧Tab zurück zu •. Gleiches mit der Tab-Taste der Bildschirmtastatur. Drei Absätze (Liste, Text, Liste) markieren, Tab, ⇧Tab: alle drei bewegen sich; ⇧Tab mit Cursor hinter „Bsp.:\t“ entfernt keinen Tab in der Zeile.
+2. **Hängender Einzug:** fünf Tabs, Aufzählungsknopf, langen Text tippen (wie einzug-3, schmales Feld): Folgezeilen beginnen unter dem Text, nicht am Rand. „\tBsp.:\t\tA aus BI kauft ein Haus in München …“: Folgezeilen unter „A“. In einer Folgezeile einen Tab tippen: springt er auf das Raster der ersten Zeile (Stopps ab Feldkante)? Feld schmaler ziehen: Kante wandert mit, springt nie auf 0. Zentriert: kein Hängen.
+3. **Return:** in „\t• abc“, „\t-> Fazit“, „\tText“, „-> Fazit“, leerem „\t◦ “ (eine Ebene aus), leerem „• “ (Zeichen weg), Zeile nur aus Tabs; danach je einmal Rückgängig (Umbruch und Einzug zusammen).
+4. **⌫:** hinter „\t• “ (Zeichen weg, Tab bleibt), hinter Tabs, am Anfang eines alten eingerückten Absatzes (erst Einzug weg, dann Verbinden).
+5. **Pfeile:** „-> “, „=> “, „<- “, „<-> “ am Zeilenanfang und nach einem Wort mit Leerzeichen; „x->“ bleibt. Direkt danach ⌫: „-> “ zurück, erneutes Leerzeichen dort ersetzt nicht wieder. Rückgängig nimmt nur die Ersetzung. „2+3=“ rechnet weiter. Schalter in Einstellungen › Editor aus: nichts wird ersetzt. Japanische/markierte Eingabe: keine Ersetzung.
+6. **Alte Seiten:** ein bestehendes Heft mit eingerückten Listen (einzug-1/-2) öffnen: Felder dürfen höher werden, keines wird rot, Seitenleiste und PDF-Export zeigen dasselbe und lehnen nicht ab. PDF mit `pdftotext` prüfen.
+7. **Textdokument:** Tab im Präfix, ⇧Tab, Return in Listen, ⌫ hinter „• “, „-> “; kein hängender Einzug dort (bewusst).
+
 ## Stift, Bleistift, Marker: Prüfbefunde behoben (05.11.2026, Branch `feat/fix-ink`)
 
 **Implementiert, Core-Tests (`InkToolFixTests`), Seiten-Workflow und `xtool dev build` (unsigniert) bestanden. Nicht installiert, am iPad ungeprüft.** Kein Heft- oder Werkzeugformat geändert; die strenge Prüfung von Heften, Archiven und dem Python-Prüfer bleibt.

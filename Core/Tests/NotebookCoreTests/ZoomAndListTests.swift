@@ -55,11 +55,12 @@ final class ZoomAndListTests: XCTestCase {
     }
     func testIndentedListEnterContinuesAndSecondEnterExits() throws {
         let source = "  2. Hey"
-        let next = try XCTUnwrap(TextListEditing.newline(in: source, range: .init(location: (source as NSString).length, length: 0)))
+        let next = try XCTUnwrap(TextIndentEditing.newlineEdit(in: source, range: .init(location: (source as NSString).length, length: 0)))
         XCTAssertEqual(next.replacement, "\n  3. ")
         let empty = "  3. "
-        let exit = try XCTUnwrap(TextListEditing.newline(in: empty, range: .init(location: (empty as NSString).length, length: 0)))
-        XCTAssertEqual(apply([exit], to: empty), "")
+        let exit = try XCTUnwrap(TextIndentEditing.newlineEdit(in: empty, range: .init(location: (empty as NSString).length, length: 0)))
+        // Level 0 (spaces are no level): only the mark goes, the white space stays (Einzug rebuild).
+        XCTAssertEqual(apply([exit], to: empty), "  ")
     }
     func testSingleDestinationCombinesElasticScaleAndWholePageFocus() throws {
         let range = NotebookViewportGeometry.zoomRange(viewport: .init(width: 900, height: 1000), page: .a4)

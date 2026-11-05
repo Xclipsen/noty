@@ -68,7 +68,14 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
             if !isActive, isFirstResponder { _ = resignFirstResponder() }
         }
     }
-    private(set) var selection = NSRange(location: 0, length: 0)
+    private(set) var selection = NSRange(location: 0, length: 0) {
+        // ⌫ brings an arrow back only right behind it.
+        didSet { if let written = replacedArrow?.written, selection != NSRange(location: NSMaxRange(written), length: 0) { replacedArrow = nil } }
+    }
+    /// The arrow just written for „-> “ (`TextArrowReplacement`) and the place
+    /// where ⌫ brought one back (not replaced again there).
+    private var replacedArrow: TextArrowReplacement.Replacement?
+    private var keptArrow: Int?
     private(set) var marked: NSRange?
     /// What the marked text replaces, in the text before it began.
     private var markBase: (range: NSRange, selection: NSRange)?
@@ -346,9 +353,13 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         guard isActive, KeyboardRouter.shared.allowsTyping else { return }
         if hasSeveralCarets { applyEngine(KeyboardRouter.shared.engine.insertText(text)); return }
         if let marked { replaceMarked(marked, with: text); return }
-        if text == "\n", let edit = TextListEditing.newline(in: store.string, range: selection) {
-            let before = selection
-            type(edit.replacement, over: edit.range, before: before, separate: true)
+        // Tab and Return by the rules of the text fields (`TextIndentEditing`).
+        if text == "\t", indent(outdent: false) { return }
+        if text == "\n", let content = flowContent, let action = TextIndentEditing.newline(content, range: selection) {
+            switch action {
+            case .edit(let edit): type(edit.replacement, over: edit.range, before: selection, separate: true)
+            case .plan(let plan): if !applyIndentEdits(plan) { type(text, over: selection, before: selection) }
+            }
             return
         }
         if text == "\n", let edit = KeyboardRouter.shared.indentedNewline(in: store.string, range: selection) {
@@ -381,8 +392,22 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         if hasSeveralCarets { applyEngine(KeyboardRouter.shared.engine.deleteBackward()); return }
         if selection.length > 0 { type("", over: selection, before: selection); return }
         guard selection.location > 0 else { return }
+        if marked == nil, let replacement = replacedArrow,
+           let edit = TextArrowReplacement.restoring(replacement, in: store.string, caret: selection.location) {
+            // Right behind an arrow just written: what was typed comes back, it stays.
+            replacedArrow = nil; keptArrow = edit.range.location
+            type(edit.replacement, over: edit.range, before: selection, separate: true)
+            return
+        }
         if marked == nil, KeyboardRouter.shared.pairsTyping, let pair = TextTyping.pairDeletion(in: store.text, at: selection.location) {
             type("", over: pair, before: selection)
+            return
+        }
+        // Right behind a list mark: the mark goes, the leading tabs stay. The
+        // older paragraph indent is not reduced here (the buffer has no paragraph format path).
+        if marked == nil, let content = flowContent,
+           case .edit(let edit)? = TextIndentEditing.backspace(content, caret: selection.location) {
+            type("", over: edit.range, before: selection, separate: true)
             return
         }
         let start = (store.string as NSString).rangeOfComposedCharacterSequence(at: selection.location - 1).location
@@ -416,15 +441,52 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         inputDelegate?.textDidChange(self)
         if !typing { keyboardSync(); keyboardShowSelection() }
     }
-    /// "- ", "1. " … at a paragraph start become a list, a step of its own.
+    /// "* ", "1. " … at a paragraph start become a list, „-> “ and the like an
+    /// arrow (`TextArrowReplacement`); each a step of its own.
     private func finishAutomaticList() {
         let text = store.string, caret = selection.location
-        let level = (typingAttributes[.paragraphStyle] as? NSParagraphStyle).map { TextListEditing.level(forIndent: Double($0.headIndent)) } ?? 0
-        guard let edit = TextListEditing.autoList(in: text, caret: caret, level: level) else { return }
-        let before = selection, after = TextListEditing.selection(selection, after: [edit])
-        store.apply([edit], fallback: typingAttributes)
+        let level = (typingAttributes[.paragraphStyle] as? NSParagraphStyle).map { TextListEditing.level(forIndent: Double($0.firstLineHeadIndent)) } ?? 0
+        if let edit = TextListEditing.autoList(in: text, caret: caret, level: level) {
+            let before = selection, after = TextListEditing.selection(selection, after: [edit])
+            store.apply([edit], fallback: typingAttributes)
+            selection = after
+            commit([edit], style: nil, before: before, separate: true)
+            return
+        }
+        let enabled = UserDefaults.standard.object(forKey: AppSettingsKey.arrows) as? Bool ?? true
+        guard enabled, let replacement = TextArrowReplacement.replacement(in: text, caret: caret),
+              keptArrow != replacement.edit.range.location else { return }
+        keptArrow = nil
+        let before = selection, after = TextListEditing.selection(selection, after: [replacement.edit])
+        store.apply([replacement.edit], fallback: typingAttributes)
         selection = after
-        commit([edit], style: nil, before: before, separate: true)
+        commit([replacement.edit], style: nil, before: before, separate: true)
+        replacedArrow = replacement
+        refreshOverlay()
+    }
+    /// The flow as the model holds it, while the buffer shows the same text.
+    private var flowContent: TextBox? {
+        guard let content = host?.flow.content(), content.text == store.string else { return nil }
+        return content
+    }
+    /// Tab or ⇧Tab (`TextIndentEditing.tab`). False: Tab types an ordinary tab.
+    /// Only text changes here: leading tabs and list marks; the older
+    /// paragraph indent stays (no paragraph format path in this buffer).
+    func indent(outdent: Bool) -> Bool {
+        guard isActive, marked == nil, let content = flowContent,
+              let plan = TextIndentEditing.tab(content, selection: selection, outdent: outdent) else { return false }
+        return applyIndentEdits(plan) || outdent
+    }
+    /// The text edits of `plan` as one step; the model renumbers the lists.
+    private func applyIndentEdits(_ plan: TextIndentEditing.Plan) -> Bool {
+        guard !plan.edits.isEmpty else { return false }
+        let before = selection, after = TextListEditing.selection(selection, after: plan.edits)
+        store.apply(plan.edits, fallback: typingAttributes)
+        selection = after
+        verticalGoal = nil; selectionAnchor = nil
+        commit(plan.edits, style: nil, before: before, separate: true)
+        afterTyping()
+        return true
     }
     /// The buffer changed by `edits`, the selection is already the new one.
     func commit(_ edits: [TextListEditing.Edit], style: TextBoxStyle?, before: NSRange, separate: Bool) {
@@ -592,7 +654,8 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     private static let textCommands: [UIKeyCommand] = {
         let plain: [(String, UIKeyModifierFlags, Selector)] = [
             ("z", .command, #selector(undoKey)), ("z", [.command, .shift], #selector(redoKey)),
-            (UIKeyCommand.inputEscape, [], #selector(escapeKey)), ("a", .command, #selector(selectAllKey))]
+            (UIKeyCommand.inputEscape, [], #selector(escapeKey)), ("a", .command, #selector(selectAllKey)),
+            ("\t", [], #selector(tabKey(_:))), ("\t", .shift, #selector(tabKey(_:)))]
         let formats: [(String, String, UIKeyModifierFlags, String)] = [
             ("Fett", "b", .command, "bold"), ("Kursiv", "i", .command, "italic"), ("Unterstrichen", "u", .command, "underline"),
             ("Titel", "1", .command, "title"), ("Überschrift", "2", .command, "heading"), ("Unterüberschrift", "3", .command, "subheading"),
@@ -623,6 +686,16 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     @objc private func redoKey() { host?.undo(true) }
     @objc private func escapeKey() { if !KeyboardRouter.shared.handle(token: "<Esc>", text: self) { finishEditing() } }
     @objc private func selectAllKey() { selectEverything() }
+    /// Hardware Tab/⇧Tab: the keyboard mode first, then the rule of the on-screen Tab.
+    @objc private func tabKey(_ command: UIKeyCommand) {
+        let outdent = command.modifierFlags.contains(.shift)
+        if KeyboardRouter.shared.handle(token: outdent ? "<S-Tab>" : "<Tab>", text: self) { return }
+        guard isActive, KeyboardRouter.shared.allowsTyping else { return }
+        if hasSeveralCarets || marked != nil { if !outdent { insertText("\t") }; return }
+        inputDelegate?.textWillChange(self)
+        if !indent(outdent: outdent), !outdent { type("\t", over: selection, before: selection) }
+        inputDelegate?.textDidChange(self)
+    }
     @objc private func formatKey(_ command: UIKeyCommand) { (command.propertyList as? String).map(format) }
     @objc private func arrowKey(_ command: UIKeyCommand) {
         guard let input = command.input else { return }

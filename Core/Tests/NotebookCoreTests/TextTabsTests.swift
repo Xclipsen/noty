@@ -23,34 +23,6 @@ final class TextTabsTests: XCTestCase {
         box.runs = []
         XCTAssertEqual(TextTabs.interval(box), 35)
     }
-    private func apply(_ edits: [TextListEditing.Edit], to text: String) -> String {
-        let value = NSMutableString(string: text)
-        for edit in edits.reversed() { value.replaceCharacters(in: edit.range, with: edit.replacement) }
-        return value as String
-    }
-    func testSingleLineTabIsLeftToTheTextView() {
-        XCTAssertNil(TextTabs.edits(in: "abc", selection: NSRange(location: 1, length: 0), outdent: false))
-        XCTAssertNil(TextTabs.edits(in: "abc", selection: NSRange(location: 0, length: 2), outdent: false))
-    }
-    func testBackTabRemovesTheTabBeforeTheCaretThenAtTheLineStart() throws {
-        let before = try XCTUnwrap(TextTabs.edits(in: "a\tb", selection: NSRange(location: 2, length: 0), outdent: true))
-        XCTAssertEqual(apply(before, to: "a\tb"), "ab")
-        let start = try XCTUnwrap(TextTabs.edits(in: "x\n\tab", selection: NSRange(location: 4, length: 0), outdent: true))
-        XCTAssertEqual(apply(start, to: "x\n\tab"), "x\nab")
-        XCTAssertNil(TextTabs.edits(in: "ab", selection: NSRange(location: 1, length: 0), outdent: true))
-    }
-    func testSelectionOverLinesMovesEachLineAndSkipsEmptyOnes() throws {
-        let text = "eins\n\nzwei\ndrei"
-        let all = NSRange(location: 1, length: 8)
-        let moved = try XCTUnwrap(TextTabs.edits(in: text, selection: all, outdent: false))
-        XCTAssertEqual(apply(moved, to: text), "\teins\n\n\tzwei\ndrei")
-        let tabbed = "\teins\n\tzwei"
-        let back = try XCTUnwrap(TextTabs.edits(in: tabbed, selection: NSRange(location: 0, length: 11), outdent: true))
-        XCTAssertEqual(apply(back, to: tabbed), "eins\nzwei")
-    }
-    func testSelectionEndingBehindALineBreakLeavesTheNextLine() throws {
-        let text = "a\nb\nc"
-        let moved = try XCTUnwrap(TextTabs.edits(in: text, selection: NSRange(location: 0, length: 4), outdent: false))
-        XCTAssertEqual(apply(moved, to: text), "\ta\n\tb\nc")
-    }
+    // Tab/⇧Tab over lines: `TextIndentTests` (TextIndentEditing.tab), which
+    // replaced `TextTabs.edits` (⇧Tab no longer deletes a tab inside a line).
 }

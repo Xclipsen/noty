@@ -63,6 +63,9 @@ final class TextFieldContainer: UIView {
     private var unitScale: CGFloat = 1
     var content: TextBox?
     var automaticLight: Bool?
+    /// The field and text width the editor's hanging indents were set for
+    /// (`TextObjectLayer.applyHangingIndents`): unchanged, nothing is measured again.
+    var hangingSource: (box: TextBox, width: CGFloat)?
     /// This field's part of a selection over several pages (`TextFlowSelection`).
     private var flowHighlight: CAShapeLayer?
     func setFlowHighlight(_ path: CGPath?) {

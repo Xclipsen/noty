@@ -84,12 +84,12 @@ final class ShapeObjectTests: XCTestCase {
 final class TextListEditingTests: XCTestCase {
     func testBulletNumberAndUncheckedContinuation() {
         for (input, expected) in [("• Apfel", "\n• "), ("19. Apfel", "\n20. "), ("☑ Apfel", "\n☐ "), ("☐ Apfel", "\n☐ ")] {
-            XCTAssertEqual(TextListEditing.newline(in: input, range: NSRange(location: (input as NSString).length, length: 0))?.replacement, expected)
+            XCTAssertEqual(TextIndentEditing.newlineEdit(in: input, range: NSRange(location: (input as NSString).length, length: 0))?.replacement, expected)
         }
     }
     func testEmptyListItemExitsWithoutAddingBlankItem() {
-        XCTAssertEqual(TextListEditing.newline(in: "Text\n• ", range: NSRange(location: 7, length: 0)), .init(range: NSRange(location: 5, length: 2), replacement: ""))
-        XCTAssertNil(TextListEditing.newline(in: "Text", range: NSRange(location: 4, length: 0)))
+        XCTAssertEqual(TextIndentEditing.newlineEdit(in: "Text\n• ", range: NSRange(location: 7, length: 0)), .init(range: NSRange(location: 5, length: 2), replacement: ""))
+        XCTAssertNil(TextIndentEditing.newlineEdit(in: "Text", range: NSRange(location: 4, length: 0)))
     }
     func testUnicodeRangesAndCheckboxDoNotTouchOtherLines() {
         let source = "😀 davor\n☐ Prüfung\nEnde"

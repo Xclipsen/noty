@@ -137,6 +137,8 @@ Zusätzliche Hovermarkierung entfernt. `PencilHoldGesture` unterscheidet Ansatz/
 
 ## Build 28 · Gemeinsamer Zoomabschluss und begrenzte Renderflächen
 
+Einzug und Listen (05.11.2026): `TextIndent.swift` in Core hält die Regeln für Tab, ⇧Tab, Einzugsknöpfe, Return, ⌫ (`TextIndentEditing`, Pläne aus Absatzeinzug, Textänderungen und Neunummerierung), den Präfix eines Absatzes (`TextParagraphPrefix`), die Hängekante (`TextIndentLayout.hangingEdge`) und die Pfeilersetzung. Die App misst Präfixe nur in `NSMutableAttributedString.applyHangingIndents` (`TextBoxRendering.swift`); `TextBox.attributedText(width:)` und der Editor setzen damit `headIndent`, gespeichert bleibt `firstLineHeadIndent`. Flusssegmente des Textdokuments hängen nicht ([TEXT-FIELDS](TEXT-FIELDS.md)).
+
 `TextListEditing.toggle` erzeugt Präfixänderungen mit gemappten UTF-16-Auswahlgrenzen; `TextObjectLayer` wendet sie im bestehenden Attributed String an. Keine Ersetzung ganzer formatierter Zeilen. Aktiver Typ schaltet bei erneutem Antippen aus, Wechsel ersetzt die bisherige Liste. Vorhandene Text-/Flow-Undo-Absicherung bleibt erhalten.
 
 `NotebookViewportGeometry.zoomDestination` berechnet Maßstab und Offset vor der Rückkehr. `ZoomTransition` interpoliert beide mit identischem Fortschritt; `NotebookViewport` treibt die Werte über `CADisplayLink`, hält die Gestenseite fest und unterbindet parallele automatische Seitenauswahl. Native Zoom-Rückfederung aus Build 26 ist ersetzt durch temporär abgesenktes Gestenminimum und einen gemeinsamen Abschluss. Neue Geste, expliziter Seiten-/Moduswechsel und Entfernen des Fensters beenden alte Übergänge.

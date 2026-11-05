@@ -25,27 +25,6 @@ public enum TextListEditing {
         public var replacement: String
         public init(range: NSRange, replacement: String) { self.range = range; self.replacement = replacement }
     }
-    public static func newline(in text: String, range: NSRange) -> Edit? {
-        let source = text as NSString
-        guard range.location >= 0, range.length >= 0, range.location <= source.length, range.length <= source.length - range.location else { return nil }
-        let line = TextLines.lineRange(source, NSRange(location: range.location, length: 0))
-        let before = source.substring(with: NSRange(location: line.location, length: range.location - line.location))
-        let indent = String(before.prefix { $0 == " " || $0 == "\t" })
-        guard let prefix = prefix(String(before.dropFirst(indent.count))) else { return nil }
-        let content = String(before.dropFirst(indent.count + prefix.count))
-        var end = NSMaxRange(range)
-        while end < source.length, !TextLines.isBreak(source.character(at: end)) { end += 1 }
-        let rest = source.substring(with: NSRange(location: NSMaxRange(range), length: end - NSMaxRange(range)))
-        // An empty item ends the list; with text behind the caret it is a normal split.
-        if content.trimmingCharacters(in: .whitespaces).isEmpty, rest.trimmingCharacters(in: .whitespaces).isEmpty {
-            return Edit(range: NSRange(location: line.location, length: range.location + range.length - line.location), replacement: "")
-        }
-        let next: String
-        if prefix == "☑ " || prefix == "☐ " { next = "☐ " }
-        else if let number = Int(prefix.dropLast(2)), number < 999_999 { next = "\(number + 1). " }
-        else { next = prefix }
-        return Edit(range: range, replacement: "\n" + indent + next)
-    }
     public static func checkbox(in text: String, range: NSRange) -> Edit? {
         let source = text as NSString
         guard range.location >= 0, range.length >= 0, range.location <= source.length, range.length <= source.length - range.location else { return nil }
@@ -66,9 +45,17 @@ public enum TextListEditing {
             let value: String
             if check { value = "☑ " }
             else if remove { value = "" }
-            else { value = switch kind { case .bullet: bullet(forLevel: level?(lineStart(text, line.location)) ?? 0); case .checkbox: "☐ "; case .numbered: "\(index + 1). " } }
+            else { value = switch kind { case .bullet: bullet(forLevel: depth(text, line.location, level)); case .checkbox: "☐ "; case .numbered: "\(index + 1). " } }
             return Edit(range: NSRange(location: line.location, length: (line.prefix as NSString).length), replacement: value)
         }
+    }
+    /// The level of the list line whose mark is at `location`: the older
+    /// indent level (`level`) plus the tabs in front of the mark.
+    private static func depth(_ text: String, _ location: Int, _ level: ((Int) -> Int)?) -> Int {
+        let source = text as NSString, start = lineStart(text, location)
+        var tabs = 0
+        for index in start..<min(location, source.length) where source.character(at: index) == 9 { tabs += 1 }
+        return (level?(start) ?? 0) + tabs
     }
     public static func isActive(_ kind: Kind, in text: String, range: NSRange) -> Bool {
         let lines = withoutBlankLines(selectedLines(in: text, range: range), in: text)
