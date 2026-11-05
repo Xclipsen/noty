@@ -57,9 +57,12 @@ final class ZoomAndListTests: XCTestCase {
         let source = "  2. Hey"
         let next = try XCTUnwrap(TextListEditing.newline(in: source, range: .init(location: (source as NSString).length, length: 0)))
         XCTAssertEqual(next.replacement, "\n  3. ")
+        // An empty item moves out one step of its leading white space, then ends.
         let empty = "  3. "
-        let exit = try XCTUnwrap(TextListEditing.newline(in: empty, range: .init(location: (empty as NSString).length, length: 0)))
-        XCTAssertEqual(apply([exit], to: empty), "")
+        let out = try XCTUnwrap(TextListEditing.newline(in: empty, range: .init(location: (empty as NSString).length, length: 0)))
+        XCTAssertEqual(apply([out], to: empty), "3. ")
+        let exit = try XCTUnwrap(TextListEditing.newline(in: "3. ", range: .init(location: 3, length: 0)))
+        XCTAssertEqual(apply([exit], to: "3. "), "")
     }
     func testSingleDestinationCombinesElasticScaleAndWholePageFocus() throws {
         let range = NotebookViewportGeometry.zoomRange(viewport: .init(width: 900, height: 1000), page: .a4)

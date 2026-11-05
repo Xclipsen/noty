@@ -29,7 +29,7 @@ extension TextListEditing {
         let typed = source.substring(with: NSRange(location: start, length: caret - start))
         let body = String(typed.drop { $0 == " " || $0 == "\t" })
         guard let (trigger, kind) = autoTriggers.first(where: { $0.0 == body }) else { return nil }
-        let marker = switch kind { case .bullet: bullet(forLevel: level); case .checkbox: "☐ "; case .numbered: "1. " }
+        let marker = switch kind { case .bullet: bullet(forLevel: level); case .checkbox: "☐ "; case .numbered: "1. "; case .arrow: "→ " }
         guard marker != trigger else { return nil }
         let length = (trigger as NSString).length
         return Edit(range: NSRange(location: caret - length, length: length), replacement: marker)
@@ -63,7 +63,7 @@ extension TextListEditing {
         let value = source.substring(with: line)
         let space = value.prefix { $0 == " " || $0 == "\t" }
         let marker = continuation ? nil : prefix(String(value.dropFirst(space.count)))
-        let kind = marker.flatMap { value in [Kind.checkbox, .bullet, .numbered].first { matches($0, value) } }
+        let kind = marker.flatMap { value in Kind.all.first { matches($0, value) } }
         let tabs = space.filter { $0 == "\t" }.count
         let nesting = level(line.location)
         return Paragraph(start: line.location, prefixLocation: line.location + (String(space) as NSString).length,
@@ -350,7 +350,7 @@ extension TextBox {
         for line in TextListEditing.selectedLines(in: text, range: selection) {
             let range = TextLines.lineRange(source, NSRange(location: line.location, length: 0))
             guard !(continuation && range.location == 0),
-                  let kind = [TextListEditing.Kind.checkbox, .bullet, .numbered].first(where: { TextListEditing.matches($0, line.prefix) }) else { continue }
+                  let kind = TextListEditing.Kind.all.first(where: { TextListEditing.matches($0, line.prefix) }) else { continue }
             let level = listLevel(at: range.location) + (outdent ? -1 : 1)
             guard level >= 0, Double(level) * TextPlacement.indentStep <= TextPlacement.maximumIndent else { continue }
             plan.paragraphs.append(range); plan.indents.append(Double(level) * TextPlacement.indentStep)

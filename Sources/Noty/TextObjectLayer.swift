@@ -103,6 +103,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     var insertingList = false
     /// The field and range of the result just calculated, until the next input.
     private var calculatedResult: (id: UUID, range: NSRange)?
+    /// The field and symbol just written for „->“ and the like, until the next input.
+    private var replacedSymbol: (id: UUID, replacement: TextSymbolReplacement.Replacement)?
     private var darkPaper = false
     private var darkMargins = false
     private var hasPDF = false
@@ -808,6 +810,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         guard KeyboardRouter.shared.allowsTyping else { return false }
         if replaceFlowSelection(with: text) { return false }
         if replaceCalculatedResult(textView, range: range, text: text) { return false }
+        if revertSymbol(textView, range: range, text: text) { return false }
         if let handled = handleListInput(textView, range: range, text: text) { return handled }
         if let handled = handlePairInput(textView, range: range, text: text) { return handled }
         guard !insertingList, text == "\n", let edit = TextListEditing.newline(in: textView.text ?? "", range: range)
@@ -863,7 +866,42 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         finishListInput(editor)
         layoutIfNeeded(); requestCaretReveal(.typing)
         keyboardTyped(editor)
+        replaceSymbol(editor, previous: previous)
         calculate(editor, previous: previous)
+    }
+    /// „->“ becomes „→“ and the like (`TextSymbolReplacement`), as the
+    /// calculator on the next turn of the run loop and a step of its own:
+    /// undo or ⌫ right behind it bring back what was typed.
+    private func replaceSymbol(_ editor: PageTextView, previous: TextBox) {
+        let enabled = UserDefaults.standard.object(forKey: AppSettingsKey.symbolReplacement) as? Bool ?? true
+        guard enabled, editor.markedTextRange == nil, editor.selectedRange.length == 0,
+              let current = boxes.first(where: { $0.id == editor.objectID })?.text,
+              (current as NSString).length == (previous.text as NSString).length + 1,
+              let replacement = TextSymbolReplacement.replacement(in: current, caret: editor.selectedRange.location) else { return }
+        let id = editor.objectID, page = pageID, expected = generation
+        DispatchQueue.main.async { [weak self, weak editor] in
+            guard let self, let editor, self.active, self.pageID == page, self.generation == expected,
+                  let index = self.boxes.firstIndex(where: { $0.id == id }), self.boxes[index].text == current,
+                  self.fields[id]?.editor === editor, editor.markedTextRange == nil,
+                  editor.selectedRange == NSRange(location: NSMaxRange(replacement.edit.range), length: 0) else { return }
+            self.onUndoBoundary?()
+            self.applyListEdits([replacement.edit], at: index, editor: editor)
+            self.onUndoBoundary?()
+            self.replacedSymbol = (id, replacement)
+        }
+    }
+    /// ⌫ right behind a replaced symbol writes the typed characters back.
+    private func revertSymbol(_ textView: UITextView, range: NSRange, text: String) -> Bool {
+        guard let (id, replacement) = replacedSymbol else { return false }
+        replacedSymbol = nil
+        guard let editor = textView as? PageTextView, editor.objectID == id, !insertingList, editor.markedTextRange == nil,
+              text.isEmpty, editor.selectedRange.length == 0, NSMaxRange(range) == editor.selectedRange.location,
+              let edit = TextSymbolReplacement.reverting(replacement, in: editor.text ?? "", caret: editor.selectedRange.location),
+              range.location >= edit.range.location else { return false }
+        insertingList = true; defer { insertingList = false }
+        editor.selectedRange = edit.range
+        editor.insertText(edit.replacement)
+        return true
     }
     /// A typed „=“ calculates (`TextCalculator`). On the next turn of the run
     /// loop: UIKit is still finishing its own insertion here.
@@ -1117,6 +1155,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     func textViewDidChangeSelection(_ textView: UITextView) {
         // The caret left the result: coming back later is ordinary typing.
         if let result = calculatedResult?.range, textView.selectedRange != NSRange(location: NSMaxRange(result), length: 0) { calculatedResult = nil }
+        if let symbol = replacedSymbol?.replacement.symbol, textView.selectedRange != NSRange(location: NSMaxRange(symbol), length: 0) { replacedSymbol = nil }
         // The keyboard mode's own selections keep a marking over pages, a user's selection ends it.
         let own = KeyboardRouter.shared.showingSelection || KeyboardRouter.shared.handoff
         if !updating, !applyingFlow, !own { TextFlowSelection.shared.set(nil) }
