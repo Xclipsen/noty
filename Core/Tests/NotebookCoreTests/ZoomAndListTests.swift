@@ -23,7 +23,7 @@ final class ZoomAndListTests: XCTestCase {
     func testSwitchingListKindKeepsIndentUnicodeAndOnlyEditsPrefixes() {
         let text = "  • 👨‍👩‍👧‍👦\n\t9. é"
         let edits = TextListEditing.toggle(.numbered, in: text, range: .init(location: 0, length: (text as NSString).length))
-        XCTAssertEqual(apply(edits, to: text), "  1. 👨‍👩‍👧‍👦\n\t2. é")
+        XCTAssertEqual(apply(edits, to: text), "  1. 👨‍👩‍👧‍👦\n\t1. é", "the tab is a level of its own: from 1, as normalize counts afterwards")
         XCTAssertEqual(edits.map(\.range.length), [2,3])
         XCTAssertEqual(edits[0].range.location, 2)
     }

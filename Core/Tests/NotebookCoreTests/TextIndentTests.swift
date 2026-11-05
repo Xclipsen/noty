@@ -187,6 +187,62 @@ final class TextIndentTests: XCTestCase {
         XCTAssertEqual(enter("  - ")?.text, "  ", "spaces are no level, they stay")
     }
 
+    /// Review 05.11.2026, Befund 8: spaces in front of the tabs („ ⇥• “) do
+    /// not keep an item on its level.
+    func testOutdentTakesTheLastLeadingTabAlsoBehindSpaces() throws {
+        func enter(_ text: String) -> String? {
+            let source = box(text)
+            switch TextIndentEditing.newline(source, range: NSRange(location: (text as NSString).length, length: 0)) {
+            case .edit(let edit)?: return source.applying([edit]).text
+            case .plan(let plan)?: return source.applying(plan).text
+            case nil: return nil
+            }
+        }
+        XCTAssertEqual(enter(" \t◦ "), " • ", "Return on the empty item: one level out")
+        XCTAssertEqual(enter(" \t\t▪ "), " \t◦ ")
+        XCTAssertEqual(enter(" • "), " ", "level 0: the mark goes, the space stays")
+        XCTAssertEqual(tab(" \t◦ a", 5, outdent: true)?.text, " • a", "⇧Tab alike")
+        XCTAssertEqual(tab("  \tx", 4, outdent: true)?.text, "  x")
+        XCTAssertEqual(tab("\t  x", 4, outdent: true)?.text, "  x")
+        XCTAssertEqual(tab("   x", 3, outdent: true)?.text, "x", "without a tab: the spaces")
+    }
+
+    /// Review 05.11.2026, Befund 7: `>` and `<` of the keyboard mode follow
+    /// the rule of Tab and ⇧Tab in the prefix.
+    func testKeyboardModeIndentMovesMarksAndNumbers() throws {
+        var engine = TextEngine(text: "1. a\n2. b\n3. c", caret: 6)
+        engine.perform(.indent)
+        XCTAssertEqual(engine.string, "1. a\n\t1. b\n2. c")
+        engine.perform(.unindent)
+        XCTAssertEqual(engine.string, "1. a\n2. b\n3. c")
+        var bullets = TextEngine(text: "• a\n• b", caret: 5)
+        bullets.perform(.indent, count: 2)
+        XCTAssertEqual(bullets.string, "• a\n\t\t▪ b", "two levels, the glyph of the second")
+        bullets.perform(.unindent)
+        XCTAssertEqual(bullets.string, "• a\n\t◦ b")
+        // Everything selected: every non-blank line, the list does not restart behind the blank line.
+        var all = TextEngine(text: "1. a\n\n2. b\nText")
+        all.perform(.selectAll)
+        all.perform(.indent)
+        XCTAssertEqual(all.string, "\t1. a\n\n\t2. b\n\tText")
+        // The older paragraph indent counts as a level and stays.
+        func indented(_ text: String) -> TextBox {
+            var box = TextBox(text: text); var style = TextBoxStyle(); style.indent = 20
+            box.runs = [TextRun(location: 0, length: (text as NSString).length, style: style)]
+            return box
+        }
+        var formatted = TextEngine(text: "◦ a", caret: 2)
+        formatted.paragraphFormats = indented("◦ a")
+        formatted.perform(.indent)
+        XCTAssertEqual(formatted.string, "\t▪ a")
+        formatted.paragraphFormats = indented(formatted.string) // the app hands in the field as it stands
+        formatted.perform(.unindent)
+        XCTAssertEqual(formatted.string, "◦ a")
+        formatted.paragraphFormats = indented(formatted.string)
+        formatted.perform(.unindent)
+        XCTAssertEqual(formatted.string, "◦ a", "the older indent is no tab to take")
+    }
+
     // MARK: ⌫
 
     func testBackspaceRemovesTheMarkKeepsTheIndentThenReducesAnOlderIndent() throws {
@@ -293,17 +349,48 @@ final class TextIndentTests: XCTestCase {
         XCTAssertEqual(kept.height, 60); XCTAssertFalse(kept.hangs)
         var after = old; after.height = kept.height
         XCTAssertFalse(TextIndentLayout.hangs(after, heightWithHanging: 80), "still laid out without")
-        // Never into hanging here, also when its stored height was too small even without.
-        let small = TextBox(x: 40, y: 100, width: 200, height: 40, text: "\t• lang")
-        let close = TextIndentLayout.keptHeight(small, hung: 60.5, plain: { 60 }, line: 17, room: { small.maximumHeight(in: page, minimum: $0) })
-        after = small; after.height = close.height
-        XCTAssertFalse(close.hangs); XCTAssertFalse(TextIndentLayout.hangs(after, heightWithHanging: 60.5))
         // A field that hangs keeps hanging, measured with.
         let hanging = TextBox(x: 40, y: 100, width: 200, height: 80, text: "\t• lang")
         let same = TextIndentLayout.keptHeight(hanging, hung: 80, plain: { 60 }, line: 17, room: { hanging.maximumHeight(in: page, minimum: $0) })
         XCTAssertEqual(same.height, 80); XCTAssertTrue(same.hangs)
         // An edit or a new width may bring it into hanging indents.
         XCTAssertTrue(TextIndentLayout.fittedHeight(hung: 80, plain: { 60 }, line: 17, room: { old.maximumHeight(in: page, minimum: $0) }).hangs)
+    }
+
+    /// Review 05.11.2026, Befund 2: tapping, moving and snapping never flip
+    /// the mode, but they repair a height that is too small.
+    func testKeptHeightRepairsATooSmallHeightWithoutFlippingTheMode() {
+        let page = PageRect(x: 0, y: 0, width: 595, height: 842)
+        func kept(_ box: TextBox, hung: Double, plain: Double) -> (height: Double, hangs: Bool) {
+            TextIndentLayout.keptHeight(box, hung: hung, plain: { plain }, line: 17, room: { box.maximumHeight(in: page, minimum: $0) })
+        }
+        // No prefix: both layouts are the same; 40 pt stored, 60 pt needed: repaired.
+        let plainField = TextBox(x: 40, y: 100, width: 200, height: 40, text: "ein langer Absatz")
+        let repaired = kept(plainField, hung: 60, plain: 60)
+        XCTAssertEqual(repaired.height, 60)
+        var after = plainField; after.height = repaired.height
+        XCTAssertFalse(after.overflows(textHeight: 60), "no longer red")
+        // Too tall: down to the text, too.
+        XCTAssertEqual(kept(TextBox(x: 40, y: 100, width: 200, height: 120, text: "kurz"), hung: 34, plain: 34).height, 34)
+        // An older list field without hanging (stored 60, with hanging 80): unchanged, still without.
+        let old = TextBox(x: 40, y: 100, width: 200, height: 60, text: "\t• lang")
+        let tapped = kept(old, hung: 80, plain: 60)
+        XCTAssertEqual(tapped.height, 60); XCTAssertFalse(tapped.hangs)
+        // Too small even without: the height without, never into the hanging indents that need more.
+        let small = TextBox(x: 40, y: 100, width: 200, height: 40, text: "\t• lang")
+        let grown = kept(small, hung: 80, plain: 60)
+        XCTAssertEqual(grown.height, 60); XCTAssertFalse(grown.hangs)
+        after = small; after.height = grown.height
+        XCTAssertFalse(TextIndentLayout.hangs(after, heightWithHanging: 80))
+        // Within the tolerance both layouts are as high: the new height may be taken.
+        XCTAssertEqual(kept(small, hung: 60.5, plain: 60).height, 60)
+        // A hanging field stays hanging, at its height with hanging indents.
+        let hanging = TextBox(x: 40, y: 100, width: 200, height: 80, text: "\t• lang")
+        let same = kept(hanging, hung: 80, plain: 60)
+        XCTAssertEqual(same.height, 80); XCTAssertTrue(same.hangs)
+        let roomy = TextBox(x: 40, y: 100, width: 200, height: 100, text: "\t• lang")
+        let shrunk = kept(roomy, hung: 80, plain: 60)
+        XCTAssertEqual(shrunk.height, 80); XCTAssertTrue(shrunk.hangs, "measured with hanging, never down to 60 without")
     }
 
     // MARK: Arrows

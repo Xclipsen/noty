@@ -70,6 +70,9 @@ extension EditorModel {
                 "Auf einer Papierseite liegt Handschrift im Bereich, der wegfallen würde. Es wird nichts gelöscht; bitte den Platz dort größer lassen."])
         }
         try candidate.applyMargins(assignments, trimmedDrawings: trimmed)
+        // New paper or writing space: fields on other lines get their height where they would overflow.
+        candidate = candidate.refittingText(toLinesOf: notebook)
+        try candidate.validate()
         // Native canvases reload only when handwriting was actually recoloured.
         return PageMarginChange(original: notebook, updated: candidate, removedStrokes: removed, archivedPages: trimmed.count,
                                 resetsEditor: recoloured && !target.drawing.isEmpty)

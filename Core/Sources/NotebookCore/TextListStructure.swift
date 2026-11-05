@@ -51,6 +51,8 @@ extension TextListEditing {
     public struct ListContext: Equatable, Sendable {
         struct Open: Equatable, Sendable { var depth: Int; var kind: Kind; var next: Int }
         var open: [Open] = []
+        /// Blank lines behind the last list item (`walk`); nil: no item right before.
+        var blanks: Int?
         public init() {}
     }
     struct Paragraph {
@@ -120,21 +122,35 @@ extension TextListEditing {
         return min(oldLength, max(changed.location, selection - changed.length + removed))
     }
 
-    private struct Walk {
+    struct Walk {
         var open: [(item: ListContext.Open, run: Int)] = []
         var runs: [(touched: Bool, items: [(index: Int, number: Int)])] = []
+        var blanks: Int?
     }
-    /// Runs of list items: deeper items and indented paragraphs stay inside the
-    /// outer run, a normal paragraph ends runs at its depth, a blank line all.
-    private static func walk(_ list: [Paragraph], context: ListContext, touched: (Int) -> Bool,
-                             start: (Int, Paragraph) -> Int) -> Walk {
+    /// Runs of list items, the one rule of renumbering, the list button, Return,
+    /// Tab/⇧Tab and the pages of a flow: deeper items and indented paragraphs
+    /// stay inside the outer run, a normal paragraph ends the runs at its
+    /// depth. One blank line between two items keeps the list (it counts on:
+    /// „1. a / leer / 2. b“, also around a nested item); two blank lines or a
+    /// normal paragraph behind one end all runs. Another kind on the same
+    /// level is another list, as without a blank line.
+    static func walk(_ list: [Paragraph], context: ListContext, touched: (Int) -> Bool,
+                     start: (Int, Paragraph) -> Int) -> Walk {
         var state = Walk(); state.open = context.open.map { ($0, -1) }
+        state.blanks = context.blanks
         for (index, item) in list.enumerated() where !item.continuation {
             guard let kind = item.kind else {
-                let depth = item.empty ? 0 : item.depth
-                state.open.removeAll { $0.item.depth >= depth }
+                if item.empty {
+                    // The first blank line behind an item waits for what follows.
+                    if let blanks = state.blanks, blanks == 0 { state.blanks = 1 }
+                    else { state.open.removeAll(); state.blanks = nil }
+                } else {
+                    if state.blanks ?? 0 > 0 { state.open.removeAll() } else { state.open.removeAll { $0.item.depth >= item.depth } }
+                    state.blanks = nil
+                }
                 continue
             }
+            state.blanks = 0
             state.open.removeAll { $0.item.depth > item.depth }
             if let top = state.open.last, top.item.depth == item.depth, top.item.kind != kind { state.open.removeLast() }
             if state.open.last?.item.depth != item.depth {
@@ -155,6 +171,7 @@ extension TextListEditing {
         let state = walk(paragraphs(in: text, level: level, continuation: continuation), context: context,
             touched: { _ in false }, start: { $1.number ?? 1 })
         var result = ListContext(); result.open = state.open.map(\.item)
+        result.blanks = state.blanks
         return result
     }
 

@@ -41,13 +41,35 @@ public enum TextListEditing {
         let lines = withoutBlankLines(listLines(for: kind, in: text, range: range, level: level), in: text)
         let remove = !lines.isEmpty && lines.allSatisfy { matches(kind, $0.prefix) }
         let check = kind == .checkbox && remove && lines.contains { $0.prefix == "☐ " }
+        let numbers = kind == .numbered && !remove ? numbering(lines.map(\.location), in: text, level: level) : [:]
         return lines.enumerated().map { index, line in
             let value: String
             if check { value = "☑ " }
             else if remove { value = "" }
-            else { value = switch kind { case .bullet: bullet(forLevel: depth(text, line.location, level)); case .checkbox: "☐ "; case .numbered: "\(index + 1). " } }
+            else { value = switch kind {
+                case .bullet: bullet(forLevel: depth(text, line.location, level))
+                case .checkbox: "☐ "
+                case .numbered: "\(numbers[line.location] ?? index + 1). "
+            } }
             return Edit(range: NSRange(location: line.location, length: (line.prefix as NSString).length), replacement: value)
         }
+    }
+    /// The numbers of the lines that become numbered items (their marks at
+    /// `locations`) by the one list rule (`walk`, as `normalize` counts
+    /// afterwards): per level, on over one blank line between items, from 1
+    /// after two blank lines or a normal paragraph, on from a list right above.
+    private static func numbering(_ locations: [Int], in text: String, level: ((Int) -> Int)?) -> [Int: Int] {
+        let targets = Set(locations)
+        var list = paragraphs(in: text, level: level ?? { _ in 0 }, continuation: false), changed = Set<Int>()
+        for index in list.indices where targets.contains(list[index].prefixLocation) {
+            list[index].kind = .numbered; list[index].number = 1; list[index].empty = false; changed.insert(index)
+        }
+        let state = walk(list, context: ListContext(), touched: { _ in false }) { index, item in
+            changed.contains(index) ? 1 : item.number ?? 1
+        }
+        var result: [Int: Int] = [:]
+        for run in state.runs { for (index, number) in run.items where changed.contains(index) { result[list[index].prefixLocation] = number } }
+        return result
     }
     /// The level of the list line whose mark is at `location`: the older
     /// indent level (`level`) plus the tabs in front of the mark.
@@ -108,9 +130,21 @@ public enum TextListEditing {
             matches(oldKind, all[index].prefix) && indentation(all[index]) == indent
                 && level?(lineStart(text, all[index].location)) == depth
         }
+        // One blank line between two entries keeps them connected, as the numbering (`walk`).
+        func blank(_ index: Int) -> Bool {
+            all[index].prefix.isEmpty && (all[index].location >= source.length || TextLines.isBreak(source.character(at: all[index].location)))
+        }
         var first = index, last = index
-        while first > 0 && belongs(first - 1) { first -= 1 }
-        while last + 1 < all.count && belongs(last + 1) { last += 1 }
+        while true {
+            if first > 0, belongs(first - 1) { first -= 1 }
+            else if first > 1, blank(first - 1), belongs(first - 2) { first -= 2 }
+            else { break }
+        }
+        while true {
+            if last + 1 < all.count, belongs(last + 1) { last += 1 }
+            else if last + 2 < all.count, blank(last + 1), belongs(last + 2) { last += 2 }
+            else { break }
+        }
         return Array(all[first...last])
     }
     static func selectedLines(in text: String, range: NSRange) -> [(location: Int, prefix: String)] {

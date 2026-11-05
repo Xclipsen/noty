@@ -180,8 +180,13 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     var pageContext: (() -> Page?)?
     /// Laid-out text lines of a field (own unrotated page units): what a lasso must touch.
     var textLines: ((TextBox) -> [PageRect])?
-    /// The field with its height (and automatic width) from the content.
-    var fittedText: ((TextBox) -> TextBox)?
+    /// The field with its height (and automatic width) from the content
+    /// (`TextObjectLayer.fitted`): `kept` without a change of its text or
+    /// width (frame, moving: the layout the stored height shows stays),
+    /// `relayout` after a new width or size, `repaired` in place and only if
+    /// its text overflows here (a scaled group, a pasted copy).
+    enum TextFit { case kept, relayout, repaired }
+    var fittedText: ((TextBox, TextFit) -> TextBox)?
     /// „An Linien ausrichten“: the moved field's first baseline on the nearest paper line.
     var alignedText: ((TextBox) -> TextBox)?
     /// Errors of image actions (crop).
@@ -399,7 +404,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         guard isFieldSelection, let id = texts.first, let box = value.textBoxes.first(where: { $0.id == id }) else { return nil }
         return fitted(box)
     }
-    private func fitted(_ box: TextBox) -> TextBox { fittedText?(box) ?? box }
+    private func fitted(_ box: TextBox, _ fit: TextFit = .kept) -> TextBox { fittedText?(box, fit) ?? box }
     private func replacing(_ value: PageContent, with box: TextBox) -> PageContent {
         var result = value
         if let index = result.textBoxes.firstIndex(where: { $0.id == box.id }) { result.textBoxes[index] = box }
@@ -1017,7 +1022,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                     let width = max(minimum, box.width - along), moved = box.width - width
                     next.width = width; next.x += moved * cos(radians); next.y += moved * sin(radians)
                 }
-                next = fittedText?(next) ?? next
+                next = fitted(next, .relayout) // a new width wraps anew, as in the text editor
                 if next.fits(in: limits), (try? next.validate()) != nil { preview = replacing(initial, with: next) }
             }
         default:
@@ -1446,7 +1451,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         let box = fitted(content.textBoxes[index])
         guard box.fill != choice.fill || box.border != choice.border else { return }
         guard var styled = box.styled(fill: choice.fill, border: choice.border, in: limits) else { return }
-        styled = fitted(styled)
+        styled = fitted(styled, styled.width != box.width ? .relayout : .kept) // narrower at the page edge: wraps anew
         if !styled.fits(in: limits), let shifted = styled.shifted(into: limits) { styled = shifted }
         guard styled.fits(in: limits), (try? styled.validate()) != nil else { return }
         var value = content; value.textBoxes[index] = styled
@@ -1498,6 +1503,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 translation: .init(x: dx, y: dy)), box.fits(in: limits) else { return nil }
             // A single field aligned to the lines moves from line to line (a group keeps its layout).
             if isFieldSelection { box = alignedText?(box) ?? box }
+            // A new size wraps anew: a single field like a new width, a group's fields in place where they would overflow.
+            if scale != 1 { box = fitted(box, isFieldSelection ? .relayout : .repaired) }
             value.textBoxes[i] = box
         }
         for i in value.images.indices where images.contains(value.images[i].id) {
@@ -1593,7 +1600,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         let reference = previous.map { CGRect(origin: $0.origin, size: frame.size) } ?? frame
         let step = PasteOffset.offset(for: PageRect(reference), in: PageRect(bounds))
         let dx = reference.minX + step.dx - frame.minX, dy = reference.minY + step.dy - frame.minY
-        for box in copied.textBoxes { var box = box; box.id = UUID(); box.x += dx; box.y += dy; texts.insert(box.id); value.textBoxes.append(box) }
+        for box in copied.textBoxes {
+            var box = box; box.id = UUID(); box.x += dx; box.y += dy
+            box = fitted(box, .repaired) // other lines here (another paper): never overflowing because of them
+            texts.insert(box.id); value.textBoxes.append(box)
+        }
         for image in copied.images { var image = image; image.id = UUID(); image.x += dx; image.y += dy; images.insert(image.id); value.images.append(image) }
         for shape in copied.shapes { var shape = shape.translated(x: dx, y: dy); shape.id = UUID(); shapes.insert(shape.id); value.shapes.append(shape) }
         let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()

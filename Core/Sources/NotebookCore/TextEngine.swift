@@ -200,8 +200,14 @@ public struct TextEngine {
     /// The last search (`/`, `*`), a regular expression.
     public internal(set) var searchQuery: String?
     public var layout: any TextEngineLayout = LogicalLineLayout()
-    /// What `>` inserts.
+    /// What `>` inserts. A tab (the app's setting): `>` and `<` are Tab and
+    /// ⇧Tab in the prefix of every selected line (`TextIndentEditing.shift`),
+    /// list marks follow their level and the lists are counted anew.
     public var indentUnit = "\t"
+    /// The formatted text `text` comes from, for the older paragraph indents
+    /// `>` and `<` count as levels (they stay as they are); nil or another
+    /// text: none.
+    public var paragraphFormats: TextBox?
     /// The setting for automatic pairs; `.` needs it, too.
     public var autoPairs = false
     /// `x` or `X` made the selection: on a last line without line break it
@@ -961,12 +967,14 @@ public struct TextEngine {
     }
 
     private mutating func indent(_ count: Int, into outcome: inout Outcome) {
+        guard indentUnit != "\t" else { shiftParagraphs(count, outdent: false, into: &outcome); return }
         let unit = String(repeating: indentUnit, count: count)
         let edits = selectedLines.filter { firstNonBlank($0) != nil }.map { Edit(range: NSRange(location: $0, length: 0), replacement: unit) }
         commit(edits, into: &outcome)
     }
 
     private mutating func unindent(_ count: Int, into outcome: inout Outcome) {
+        guard indentUnit != "\t" else { shiftParagraphs(count, outdent: true, into: &outcome); return }
         let tabWidth = 4, wanted = count * max(1, indentUnit == "\t" ? tabWidth : (indentUnit as NSString).length)
         var edits: [Edit] = []
         for line in selectedLines {
@@ -980,6 +988,48 @@ public struct TextEngine {
             if position > line { edits.append(Edit(range: NSRange(location: line, length: position - line), replacement: "")) }
         }
         commit(edits, into: &outcome)
+    }
+
+    /// `>`/`<` with tabs, `count` levels: the rule of Tab and ⇧Tab in the
+    /// prefix (docs/TEXT-FIELDS.md), the same plan as the indent buttons.
+    /// Blank lines get no tab, as in Helix; the paragraph indents stay.
+    private mutating func shiftParagraphs(_ count: Int, outdent: Bool, into outcome: inout Outcome) {
+        let original = text
+        var box = paragraphFormats.flatMap { $0.text == string ? $0 : nil } ?? TextBox(text: string)
+        var starts = outdent ? selectedLines : selectedLines.filter { firstNonBlank($0) != nil }
+        for _ in 0..<max(1, count) {
+            guard !starts.isEmpty, let plan = TextIndentEditing.shift(box, paragraphStarts: starts, outdent: outdent, canChangeIndent: false) else { break }
+            starts = starts.map { TextListEditing.selection(TextListEditing.selection(NSRange(location: $0, length: 0), after: plan.edits),
+                                                            after: plan.renumbering).location }
+            box = box.applying(plan)
+        }
+        commit(Self.lineEdits(from: original, to: box.text as NSString), into: &outcome)
+    }
+    /// The edits from `old` to `new`, which have the same line breaks: the
+    /// smallest change of each line, ascending in the offsets of `old`.
+    static func lineEdits(from old: NSString, to new: NSString) -> [Edit] {
+        func lines(_ value: NSString) -> [NSRange] {
+            var result: [NSRange] = [], cursor = 0
+            repeat {
+                let line = TextLines.lineRange(value, NSRange(location: cursor, length: 0))
+                result.append(line)
+                guard NSMaxRange(line) > cursor else { break }
+                cursor = NSMaxRange(line)
+            } while cursor < value.length
+            return result
+        }
+        let before = lines(old), after = lines(new)
+        func change(_ from: NSRange, _ to: NSRange) -> Edit? {
+            let a = old.substring(with: from), b = new.substring(with: to)
+            guard let changed = TextListEditing.changedRange(from: a, to: b) else { return nil }
+            let removed = from.length - (to.length - changed.length)
+            return Edit(range: NSRange(location: from.location + changed.location, length: removed),
+                        replacement: (b as NSString).substring(with: changed))
+        }
+        guard before.count == after.count else {
+            return change(NSRange(location: 0, length: old.length), NSRange(location: 0, length: new.length)).map { [$0] } ?? []
+        }
+        return zip(before, after).compactMap(change)
     }
 
     private mutating func surroundAdd(_ character: String, into outcome: inout Outcome) {

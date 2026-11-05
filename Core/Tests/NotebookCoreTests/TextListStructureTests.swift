@@ -268,6 +268,58 @@ final class TextListStructureTests: XCTestCase {
         let inner = box([("1. a", 0), ("Erklärung", 1), ("5. b", 0), ("Normal", 0), ("4. c", 0)])
         XCTAssertEqual(edited(inner, "1. a\nErklärung\n5. b!\nNormal\n4. c", caret: 19).0.text, "1. a\nErklärung\n2. b!\nNormal\n4. c")
     }
+    /// Review 05.11.2026, Befund 4: one rule over a blank line for the list
+    /// button, Return, Tab, ⇧Tab and the renumbering.
+    func testOneBlankLineBetweenItemsKeepsTheListTwoEndIt() throws {
+        // The button counts over one blank line, …
+        let plain = "a\n\nb\nc"
+        let listed = apply(TextListEditing.toggle(.numbered, in: plain, range: .init(location: 0, length: (plain as NSString).length)), to: plain)
+        XCTAssertEqual(listed, "1. a\n\n2. b\n3. c")
+        // … the renumbering agrees: nothing left to change.
+        XCTAssertEqual(TextListEditing.normalize(listed, level: { _ in 0 }, changed: .init(location: 0, length: (listed as NSString).length)), [])
+        // Two blank lines end the list, for the button as for the renumbering.
+        let apart = "a\n\n\nb"
+        let two = apply(TextListEditing.toggle(.numbered, in: apart, range: .init(location: 0, length: (apart as NSString).length)), to: apart)
+        XCTAssertEqual(two, "1. a\n\n\n1. b")
+        XCTAssertEqual(TextListEditing.normalize(two, level: { _ in 0 }, changed: .init(location: 0, length: (two as NSString).length)), [])
+        // A normal paragraph behind the blank line ends it, too.
+        let text = "1. a\n\nText\n5. b"
+        XCTAssertEqual(TextListEditing.normalize(text, level: { _ in 0 }, changed: .init(location: 0, length: (text as NSString).length)), [])
+
+        // Return behind „1. a“: one „2.“ only, the items behind the blank line count on.
+        let old = box([("1. a", 0), ("", 0), ("2. b", 0), ("3. c", 0)])
+        let edit = try XCTUnwrap(TextIndentEditing.newlineEdit(in: old.text, range: .init(location: 4, length: 0)))
+        let typed = apply([edit], to: old.text)
+        XCTAssertEqual(typed, "1. a\n2. \n\n2. b\n3. c")
+        XCTAssertEqual(edited(old, typed, caret: 8).0.text, "1. a\n2. \n\n3. b\n4. c")
+        // Deleting one of two blank lines joins the lists.
+        XCTAssertEqual(edited(box([("1. a", 0), ("", 0), ("", 0), ("1. b", 0)]), "1. a\n\n1. b", caret: 5).0.text, "1. a\n\n2. b")
+
+        // Tab over everything moves the whole list, it does not restart behind the blank line.
+        let all = try XCTUnwrap(old.nestingList(selection: .init(location: 0, length: (old.text as NSString).length), outdent: false)).box
+        XCTAssertEqual(all.text, "\t1. a\n\n\t2. b\n\t3. c")
+        // Tab and ⇧Tab on b: back to 1, 2, 3.
+        let nested = try XCTUnwrap(old.nestingList(selection: .init(location: 7, length: 0), outdent: false)).box
+        XCTAssertEqual(nested.text, "1. a\n\n\t1. b\n2. c", "c counts on behind the nested b")
+        let back = try XCTUnwrap(nested.nestingList(selection: .init(location: 8, length: 0), outdent: true)).box
+        XCTAssertEqual(back.text, "1. a\n\n2. b\n3. c")
+        // Another kind on the same level stays another list.
+        XCTAssertEqual(TextListEditing.normalize("1. a\n\n• x\n5. b", level: { _ in 0 }, changed: .init(location: 0, length: 4)), [])
+    }
+    func testABlankLineAtTheEndOfAPageKeepsTheListOnTheNextPage() {
+        let context = TextListEditing.context(after: "1. a\n2. b\n\n", level: { _ in 0 })
+        let text = "7. c\n8. d"
+        XCTAssertEqual(apply(TextListEditing.normalize(text, level: { _ in 0 }, changed: .init(location: 0, length: 1), context: context), to: text),
+                       "3. c\n4. d")
+        let ended = TextListEditing.context(after: "1. a\n\n\n", level: { _ in 0 })
+        XCTAssertEqual(TextListEditing.normalize(text, level: { _ in 0 }, changed: .init(location: 0, length: 1), context: ended), [],
+                       "two blank lines: the next page counts from its own first number")
+    }
+    func testListKindChangeAtTheCaretReachesOverOneBlankLine() {
+        let text = "• a\n\n• b\n\n\n• c"
+        XCTAssertEqual(apply(TextListEditing.toggle(.checkbox, in: text, range: .init(location: 2, length: 0)), to: text),
+                       "☐ a\n\n☐ b\n\n\n• c")
+    }
     func testBulletToggleUsesLevelGlyph() {
         let source = box([("eins", 0), ("zwei", 1)])
         let edits = TextListEditing.toggle(.bullet, in: source.text, range: .init(location: 0, length: 9), level: source.listLevel(at:))

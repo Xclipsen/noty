@@ -37,6 +37,8 @@ extension DocumentTextSurface: KeyboardTextTarget {
         case .paste, .replaceWithRegister, .playMacro: router.adoptPasteboard()
         default: break
         }
+        // `>`/`<` count the older paragraph indents as levels (`TextEngine.paragraphFormats`).
+        router.engine.paragraphFormats = command == .indent || command == .unindent ? host?.flow.content() : nil
         router.engine.layout = DocumentLineLayout(store: store, lines: host?.visibleLines() ?? 40)
         finish(router.engine.perform(command, count: count))
     }

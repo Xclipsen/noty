@@ -49,6 +49,26 @@ final class TextCalculatorTests: XCTestCase {
         XCTAssertEqual(typed("x = 2+3="), "x = 2+3=5")
     }
 
+    /// Review 05.11.2026, Befunde 5 und 6: marks and labels as the indents read them.
+    func testMarksAndLabelsOfTheIndentsAreNoPartOfTheCalculation() {
+        // „-⇥“ is a mark like „- “, no minus.
+        XCTAssertEqual(typed("-\t5+3="), "-\t5+3=8")
+        XCTAssertEqual(typed("\t-\t2*3="), "\t-\t2*3=6")
+        XCTAssertNil(typed("-\t5\n-\t3\n="), "a list of „-⇥“ items is no calculation")
+        XCTAssertEqual(typed("100\n-\t30\n="), "100\n-\t30\n= 70", "below a number still a minus")
+        XCTAssertEqual(typed("-5+3="), "-5+3=-2")
+        // Labels with a full stop, behind marks too.
+        XCTAssertEqual(typed("Bsp.:\t2+3="), "Bsp.:\t2+3=5")
+        XCTAssertEqual(typed("Def.:\t\t2+3="), "Def.:\t\t2+3=5")
+        XCTAssertEqual(typed("• Bsp.:\t2+3="), "• Bsp.:\t2+3=5")
+        XCTAssertEqual(typed("-\tBsp.:\t2+3="), "-\tBsp.:\t2+3=5")
+        XCTAssertEqual(typed("1.\t2+3="), "1.\t2+3=5")
+        XCTAssertEqual(typed("→ 2+3="), "→ 2+3=5")
+        XCTAssertEqual(typed("Bsp.: 2+3="), "Bsp.: 2+3=5", "also with a space")
+        XCTAssertNil(typed("Bsp.:\t5="), "one number stays no calculation")
+        XCTAssertNil(typed("Bsp.:\tx+3="))
+    }
+
     func testAnExpressionWithUnknownsIsNoCalculation() {
         for text in ["2x + 3 + 4 =", "x^2+3=", "x² + 3 + 4 =", "a - 2 - 3 =", "a+b+2+3=", "sin(30+60)=", "sqrt(16)+2=", "f(x) + 2 + 3 =",
                      "5 m + 3 + 1 =", "10 € + 5 + 3 =", "x:2+3=", "2 (3+4)=", "2 2+3=", "3 + 5m ="] {
