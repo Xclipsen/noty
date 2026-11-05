@@ -184,7 +184,11 @@ struct WorkspaceLibraryHost: View {
                 if IncomingFiling.handles(url) { Task { await IncomingFiling.receive(url) } }
                 else { Task { await IncomingBackup.receive(url, library: library, workspaces: workspaces) } }
             }
-            .task { IncomingFiling.attach(library: library, workspaces: workspaces, defaults: toolbox.preferences.defaultAppearance) }
+            // The paper default is read when filing (it loads asynchronously and may change).
+            .task {
+                let toolbox = self.toolbox
+                IncomingFiling.attach(library: library, workspaces: workspaces, defaults: { toolbox.preferences.defaultAppearance })
+            }
     }
 }
 

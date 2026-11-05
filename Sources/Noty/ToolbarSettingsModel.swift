@@ -26,13 +26,16 @@ extension InkColor {
 @MainActor
 final class ToolbarSettingsModel: ObservableObject {
     @Published var preferences = ToolbarPreferences()
-    @Published var writable = false
+    @Published var writable = false { didSet { usable = writable || loadFailed } }
     @Published var status = "Werkzeugeinstellungen werden geladen …"
     private let store: ToolbarPreferenceStore
     private var revision = 0
     /// Nothing can be written then, and nothing waits to be: no reason to
     /// refuse closing or a backup.
-    private var loadFailed = false
+    private var loadFailed = false { didSet { usable = writable || loadFailed } }
+    /// The tools can be used: loaded, or unreadable (defaults in memory, the
+    /// file stays untouched) — a broken settings file never locks the editor.
+    @Published private(set) var usable = false
     private var pending: Task<Void, Never>?
     private var debounce: Task<Void, Never>?
     nonisolated(unsafe) private var observers: [NSObjectProtocol] = []

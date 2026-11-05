@@ -90,6 +90,9 @@ struct ContentView: View {
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var imageTarget: UUID?
     @State private var contentSearch = false
+    /// The editor's first appearance only: closing a cover above it (a restored
+    /// copy) appears it again, which must not reset the page or search jump.
+    @State private var appeared = false
     @State private var searchHighlight: PageRect?
     @State private var searchHighlightPageID: UUID?
     @State private var searchHighlightToken = 0
@@ -299,6 +302,8 @@ struct ContentView: View {
             .onChange(of: tool, initial: true) { _, value in onToolChange?(value) }
             .onChange(of: model.notebook.id) { _, _ in selectedPageID = model.page.id; searchHighlightPageID = model.page.id }
             .onAppear {
+                guard !appeared else { return }
+                appeared = true
                 selectedPageID = model.page.id; searchHighlight = initialSearchBounds; searchHighlightPageID = model.page.id
                 EditorOpenTrace.begin()
                 if model.documentLoaded { markNotebookShown() }
@@ -651,7 +656,7 @@ struct ContentView: View {
                 editorHeader(layout: layout)
                     .frame(height: 60)
                 ToolbarPaletteHost(layout: layout, preferences: $toolbox.preferences, more: $toolbarMore,
-                    secondView: onSecondView != nil, enabled: canEdit && toolbox.writable,
+                    secondView: onSecondView != nil, enabled: canEdit && toolbox.usable,
                     showingOptions: toolbarOptions, optionsWidth: optionsWidths[tool] ?? EditorToolOptions.preferredWidth(for: tool)) { axis in
                     palette(axis: axis)
                 } options: {

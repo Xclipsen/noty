@@ -601,7 +601,11 @@ final class EditorModel: ObservableObject {
     @discardableResult
     func replaceContents(_ changes: [PageContentReplacement]) -> Bool {
         HangProbe.hit("Model.replaceContents")
-        guard writable, !mutationsPaused, !busy else { return false }
+        guard writable else { return false }
+        if mutationsPaused || busy {
+            error = "Gerade läuft ein anderer Vorgang (etwa eine Sicherung). Die Änderung wurde nicht übernommen; bitte gleich noch einmal versuchen."
+            return false
+        }
         do {
             try adoptImageAssets(changes.flatMap(\.replacement.images))
             var candidate = notebook; try candidate.replaceContents(changes)

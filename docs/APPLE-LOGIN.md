@@ -1,6 +1,6 @@
 # Mit Apple anmelden
 
-Status: in Arbeit auf `exp/ki` (App) und im Konto-Backend `gesetzessammlung-noty` (Server, Website). Vom Nutzer am 03.11.2026 beauftragt: App und Web, bestehendes Konto „Leon“ verknüpfen, Live-Backend mit Sicherung ausrollen. Ersetzt die frühere Grenze „kein Apple-Login im kostenlosen Signierungssetup“ (seit 29.10.2026 bezahltes Developer-Konto).
+Status: in der App seit Release-Kandidat 1 (`main`/`dev`), Server und Website im Konto-Backend `gesetzessammlung-noty`. Vom Nutzer am 03.11.2026 beauftragt: App und Web, bestehendes Konto „Leon“ verknüpfen, Live-Backend mit Sicherung ausrollen. Ersetzt die frühere Grenze „kein Apple-Login im kostenlosen Signierungssetup“ (seit 29.10.2026 bezahltes Developer-Konto).
 
 ## Grundsätze
 

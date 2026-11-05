@@ -10,6 +10,8 @@ enum AppSettingsKey {
     static let typewriter = "noty.editor.typewriter"
     static let sidebarVisible = "noty.sidebar.visible"
     static let hangProbe = "noty.diagnostics.hangProbe"
+    /// Input diagnosis (`InputProbe`): on by default in noty dev only.
+    static let inputProbe = "noty.diagnostics.inputProbe"
     /// „Textwerkzeug fixieren“ (lock in the text tool's options).
     static let textToolLocked = "noty.text.toolLocked"
     /// Weiches Einrasten beim Verschieben (default on).
@@ -686,17 +688,19 @@ private struct AboutSettingsPage: View {
 /// Own page: a freeze of „Über noty“ must not take the tools to find it with it.
 private struct DiagnosticsSettingsPage: View {
     @AppStorage(AppSettingsKey.hangProbe) private var hangProbe = false
+    @AppStorage(AppSettingsKey.inputProbe) private var inputProbe = InputProbe.defaultEnabled
     @AppStorage(AppSettingsKey.tapDiagnostics) private var tapDiagnostics = false
     @AppStorage(AppSettingsKey.textEditor2) private var textEditor2 = false
     var body: some View {
         Form {
             Section {
                 keyToggle("Hänger-Diagnose", isOn: $hangProbe)
+                keyToggle("Eingabe-Diagnose", isOn: $inputProbe)
                 keyToggle("Tipp-Diagnose", isOn: $tapDiagnostics)
                     .onChange(of: tapDiagnostics) { _, _ in TapDiagnostics.shared.refresh() }
                 keyToggle("Neuer Texteditor (Test)", isOn: $textEditor2)
             } footer: {
-                Text("Tipp-Diagnose: zeigt nach jedem Tipp, was er getroffen hat und welche Felder dort liegen, nur Größen, keine Inhalte. Hänger-Diagnose: schreibt bei längeren Hängern nur Codeadressen und Zähler ins Systemprotokoll und nach Dateien › Auf meinem iPad › noty › Diagnose › haenger.txt, keine Inhalte. Wirkt nach einem Neustart der App. Neuer Texteditor: ein Text über alle Seiten eines Textdokuments, im Blättermodus aus; noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.")
+                Text("Tipp-Diagnose: zeigt nach jedem Tipp, was er getroffen hat und welche Felder dort liegen, nur Größen, keine Inhalte. Hänger-Diagnose: schreibt bei längeren Hängern nur Codeadressen und Zähler ins Systemprotokoll und nach Dateien › Auf meinem iPad › noty › Diagnose › haenger.txt, keine Inhalte. Eingabe-Diagnose: meldet Berührungen ohne Wirkung und lange Eingabesperren nach Dateien › Auf meinem iPad › noty › Diagnose › eingabe.txt, nur Klassennamen und Zustände, keine Inhalte. Beide wirken nach einem Neustart der App. Neuer Texteditor: ein Text über alle Seiten eines Textdokuments, im Blättermodus aus; noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.")
             }
         }
         .navigationTitle("Diagnose")

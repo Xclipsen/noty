@@ -425,7 +425,15 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             guard let self else { return }
             if self.eraseSession != nil { if cancelled { self.cancelErase() } else { self.finishErase() } }
             if self.shapeErase != nil { if cancelled { self.cancelShapeErase() } else { self.finishShapeErase() } }
-            if cancelled { self.clearHeldPreview(); return }
+            if cancelled {
+                // A recognized held stroke PencilKit already reported stays
+                // only on the canvas: publish it like a settled one.
+                if self.heldShape != nil {
+                    self.holdSerial += 1; self.clearHeldPreview()
+                    if self.inkActive { self.publishInkAtToolEnd = true } else { self.publishUnreportedInk() }
+                } else { self.clearHeldPreview() }
+                return
+            }
             self.holdCompletion.lift()
             let serial = self.holdSerial
             self.finishHeldStroke(serial: serial)
@@ -877,8 +885,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         canvas.isUserInteractionEnabled = (editable && [.pen, .pencil, .marker, .strokeEraser, .precisionEraser].contains(tool)) || pencilWakes
         // "Ganz": PencilKit's vector eraser deletes instantly without preview;
         // the app-owned sweep (hold observer) dims first and removes on lift.
-        let nativeDrawing = tool != .strokeEraser
-        if canvas.drawingGestureRecognizer.isEnabled != nativeDrawing { canvas.drawingGestureRecognizer.isEnabled = nativeDrawing }
+        // A stroke still being drawn keeps it until its tool end: switching
+        // off the recognizer mid-stroke would cancel (and may drop) it.
+        updateNativeDrawing()
         updateRulerGestures()
         if eraseSession != nil || shapeErase != nil { dimErasedShapes() }
         pdfView?.isUserInteractionEnabled = tool == .read
@@ -1233,6 +1242,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         onDrawing?(lastDrawing)
         removeScribbledShapes(scribbled)
         noteRulerHandoff()
+        // A previous stroke published late, while the next one is already
+        // drawn: a later held result must build on it, never drop it.
+        if heldShape == nil, holdBase != nil { holdBase = pageContent }
     }
     /// Native strokes on the canvas the model has not received (a held
     /// stroke ended by a tool/view change, lock or closing before PencilKit's
@@ -1296,9 +1308,16 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if heldVisualsPending != nil { hideHeldVisuals() }
         if rulerPreviewPending != nil { hideRulerPreview() }
     }
+    /// "Ganz": PencilKit's vector eraser deletes instantly without preview;
+    /// the app-owned sweep (hold observer) dims first and removes on lift.
+    func updateNativeDrawing() {
+        let nativeDrawing = tool != .strokeEraser || inkActive
+        if canvas.drawingGestureRecognizer.isEnabled != nativeDrawing { canvas.drawingGestureRecognizer.isEnabled = nativeDrawing }
+    }
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
         // A stroke handed over to the ruler way is still being drawn.
         inkActive = rulerLine != nil
+        updateNativeDrawing()
         holdCompletion.endNative()
         scheduleHeldCommitWithoutFinalDrawing()
         if publishInkAtToolEnd {

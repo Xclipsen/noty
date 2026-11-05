@@ -1259,7 +1259,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     /// `point` in this layer's coordinates (same as the sheet's).
     func touchSelectionContains(_ point: CGPoint) -> Bool {
-        guard hasTouchSelection, lift == nil, let frame = selectionBounds(content).map(display) else { return false }
+        // A locked image never moves, not by finger either.
+        guard hasTouchSelection, !selectionLocked, lift == nil, let frame = selectionBounds(content).map(display) else { return false }
         let margin = 8 / displayScale
         // A selected field moves when dragged anywhere inside its (rotated) frame.
         if let box = selectedField(content) { return box.contains(PagePoint(x: canonical(point).x, y: canonical(point).y), tolerance: margin) }
@@ -1267,7 +1268,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     }
     /// A finger drag that began on the finger selection moves it (also across pages).
     func dragTouchSelection(_ gesture: UIPanGestureRecognizer) {
-        guard touchSelection else { return }
+        guard touchSelection, !selectionLocked else { return }
         self.gesture(gesture, requestedMode: 1)
     }
     func endTouchSelection() {
@@ -1702,7 +1703,7 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             box = fitted(box, .repaired) // other lines here (another paper): never overflowing because of them
             texts.insert(box.id); value.textBoxes.append(box)
         }
-        for image in copied.images { var image = image; image.id = UUID(); image.x += dx; image.y += dy; images.insert(image.id); value.images.append(image) }
+        for image in copied.images { var image = image; image.id = UUID(); image.locked = false; image.x += dx; image.y += dy; images.insert(image.id); value.images.append(image) }
         for shape in copied.shapes { var shape = shape.translated(x: dx, y: dy); shape.id = UUID(); shapes.insert(shape.id); value.shapes.append(shape) }
         if !pasted.strokes.isEmpty {
             // Without pasted strokes the page drawing stays as it is (no re-encoding).

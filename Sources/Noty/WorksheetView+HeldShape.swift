@@ -167,7 +167,10 @@ extension WorksheetView {
     /// sees it — undo then takes back this newest step, not the one before.
     static func settleHeldStrokes() {
         for sheet in heldSheets.allObjects { sheet.settleHeldStroke() }
+        for sheet in rulerSheets.allObjects { sheet.settlePendingRulerLine() }
     }
+    /// Sheets whose handed-over ruler stroke waits for PencilKit's part.
+    static let rulerSheets = NSHashTable<WorksheetView>.weakObjects()
     /// Ends a held stroke at once: its result (shape or replacement stroke)
     /// goes to the model, or, when that is not possible, the freehand stroke
     /// as drawn. It never stays only on screen.
