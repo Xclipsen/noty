@@ -89,6 +89,84 @@ public enum ScribbleErase {
         }
         return coveredStrokes(scribble: scribble, strokes: outlines, padding: padding, minimumShare: minimumShare).map { shapes[$0].id }
     }
+    /// What a recognised scribble erases (`isScribble`): strokes (indices
+    /// into `strokes`) and shapes (ids) that lie mostly inside its hull
+    /// (`coveredStrokes`/`coveredShapes`) **and** that it actually reaches.
+    ///
+    /// Audit 7f8bfe7 (Fund 1): shading inside a frame looks like a scribble,
+    /// so it removed the frame, its label and itself. Now
+    /// - a stroke goes only when the scribble's line touches it (`reach` plus
+    ///   the stroke's half width, `strokeWidths`), a shape only when at least
+    ///   two separate scribble passes touch its outline – a frame the shading
+    ///   stays inside of is left alone;
+    /// - shading of an area: when the scribble lies mostly (≥ 60 %) inside a
+    ///   closed outline – a rectangle/ellipse/polygon or a closed pen stroke,
+    ///   filled or not – and covers a good part (≥ 25 %) of it, nothing is
+    ///   erased at all, neither the outline nor what it encloses. A scribble
+    ///   that runs over and beyond the outline still erases.
+    /// Erasing too little is harmless (the eraser still works); erasing the
+    /// wrong content is not.
+    public static func erasure(scribble: [PagePoint], strokes: [[PagePoint]], strokeWidths: [Double] = [],
+                               shapes: [ShapeObject], padding: Double, reach: Double) -> (strokes: [Int], shapes: [UUID]) {
+        guard scribble.count >= 2 else { return ([], []) }
+        let width = { (index: Int) -> Double in index < strokeWidths.count && strokeWidths[index].isFinite ? max(0, strokeWidths[index]) : 0 }
+        if shadesEnclosure(scribble: scribble, strokes: strokes, shapes: shapes) { return ([], []) }
+        let strokeHits = coveredStrokes(scribble: scribble, strokes: strokes, padding: padding).filter {
+            contacts(scribble, strokes[$0], reach: reach + width($0) / 2) >= 1
+        }
+        let covered = Set(coveredShapes(scribble: scribble, shapes: shapes, padding: padding))
+        let shapeHits = shapes.filter { shape in
+            guard covered.contains(shape.id) else { return false }
+            let lines = shape.outlinePolylines.map { line in line.closed && !line.points.isEmpty ? line.points + [line.points[0]] : line.points }
+            return lines.reduce(0) { $0 + contacts(scribble, $1, reach: reach + shape.lineWidth / 2) } >= 2
+        }.map(\.id)
+        return (strokeHits, shapeHits)
+    }
+
+    /// Separate runs of scribble segments that come within `reach` of `line`.
+    static func contacts(_ scribble: [PagePoint], _ line: [PagePoint], reach: Double) -> Int {
+        guard !line.isEmpty, scribble.count >= 2 else { return 0 }
+        let xs = line.map(\.x), ys = line.map(\.y)
+        let box = (minX: xs.min()! - reach, maxX: xs.max()! + reach, minY: ys.min()! - reach, maxY: ys.max()! + reach)
+        var count = 0, touching = false
+        for (a, b) in zip(scribble, scribble.dropFirst()) {
+            let near = max(a.x, b.x) >= box.minX && min(a.x, b.x) <= box.maxX && max(a.y, b.y) >= box.minY && min(a.y, b.y) <= box.maxY
+                && StrokeHitTest.hits(sweep: a, b, radius: reach, stroke: line)
+            if near && !touching { count += 1 }
+            touching = near
+        }
+        return count
+    }
+
+    /// Whether the scribble is shading inside a closed outline (see `erasure`).
+    static func shadesEnclosure(scribble: [PagePoint], strokes: [[PagePoint]], shapes: [ShapeObject]) -> Bool {
+        let hullArea = abs(area(convexHull(scribble)))
+        guard hullArea > 0 else { return false }
+        let closedShapes = shapes.filter(\.isFillable).compactMap { $0.outlinePolylines.first(where: \.closed)?.points }
+        let closedStrokes = strokes.filter(isClosedLoop)
+        for outline in closedShapes + closedStrokes where outline.count >= 3 {
+            let enclosed = abs(area(outline))
+            guard enclosed > 0, hullArea >= enclosed * 0.25 else { continue }
+            let region = LassoRegion(points: outline)
+            let inside = scribble.filter(region.contains).count
+            if Double(inside) >= Double(scribble.count) * 0.6 { return true }
+        }
+        return false
+    }
+    /// A pen stroke that ends where it began around some area (a drawn frame or circle).
+    static func isClosedLoop(_ points: [PagePoint]) -> Bool {
+        guard points.count >= 8, let first = points.first, let last = points.last else { return false }
+        let xs = points.map(\.x), ys = points.map(\.y)
+        let w = xs.max()! - xs.min()!, h = ys.max()! - ys.min()!
+        guard min(w, h) >= 8 else { return false }
+        return hypot(last.x - first.x, last.y - first.y) <= max(8, 0.15 * max(w, h))
+    }
+    /// Signed shoelace area of a polygon.
+    static func area(_ polygon: [PagePoint]) -> Double {
+        guard polygon.count >= 3 else { return 0 }
+        return zip(polygon, polygon.dropFirst() + [polygon[0]]).reduce(0) { $0 + $1.0.x * $1.1.y - $1.1.x * $1.0.y } / 2
+    }
+
     /// The polyline with extra points so no gap exceeds `spacing`.
     static func sampled(_ points: [PagePoint], spacing: Double) -> [PagePoint] {
         guard let first = points.first else { return [] }

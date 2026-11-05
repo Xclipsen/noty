@@ -376,7 +376,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             self.commitPendingHeldStroke()
             if self.shapeErase?.lifted == true { self.finishShapeErase(force: true) }
             self.cancelErase(); self.cancelShapeErase()
-            if self.editable, self.tool == .strokeEraser { self.beginErase() }
+            if self.editable, self.tool == .strokeEraser {
+                // Its drawing gesture is off, so `canvasViewDidBeginUsingTool`
+                // never ends a finger selection: erasing ends it here, like
+                // writing (Audit 7f8bfe7, Radierer Fund 3).
+                self.objectLayer.endTouchSelection(); self.claimSelectionFocus()
+                self.beginErase()
+            }
             if self.editable, self.tool == .precisionEraser { self.beginShapeErase() }
             let base = self.inkActive ? (self.holdBase ?? self.pageContent) : self.pageContent
             self.clearHeldPreview(); self.holdSerial += 1; self.holdPoints = []
