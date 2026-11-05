@@ -164,6 +164,8 @@ public struct TextEngine {
         case registerEmpty
         /// A macro ran into `TextEngine.macroLimit` or called itself.
         case macroStopped
+        /// `.` with a count ran into `TextEngine.macroLimit` or its time.
+        case repeatStopped
         /// `record`: this command changes something else than the text.
         case notInMacro
     }
@@ -429,7 +431,8 @@ public struct TextEngine {
     public mutating func perform(_ command: Command, count: Int? = nil) -> Outcome {
         var outcome = Outcome()
         guard mode != .insert || command == .escape else { return outcome }
-        let times = max(1, count ?? 1), extend = mode == .select
+        var times = max(1, count ?? 1)
+        let extend = mode == .select
         let wholeLines = wholeLineSelection, named = selectedRegister
         wholeLineSelection = false
         selectedRegister = nil
@@ -440,6 +443,10 @@ public struct TextEngine {
             case .change, .insert, .repeatInsert: selections = [primary]; primaryIndex = 0; reduced = true
             default: break
             }
+        }
+        if typesAtPrimary, times > 1, command == .insert(.lineBelow) || command == .insert(.lineAbove) {
+            // `3o` makes three carets, the app types at one: the other lines would stay empty.
+            times = 1; reduced = true
         }
         switch command {
         case .move(.up), .move(.down), .screen: break
@@ -867,7 +874,8 @@ public struct TextEngine {
                 position = nextLine(lineBounds(range).last)
                 // No line behind the last one: the new line brings the break itself.
                 if position == text.length, !textEndsWithBreak {
-                    let body = Self.endsWithBreak(value) && value.count > 1 ? String(value.dropLast()) : value
+                    // A copied empty line is the break alone: it becomes the break in front.
+                    let body = Self.endsWithBreak(value) && (value.count > 1 || text.length > 0) ? String(value.dropLast()) : value
                     inserted = text.length == 0 ? body : "\n" + body
                     skip = text.length == 0 ? 0 : 1
                 }

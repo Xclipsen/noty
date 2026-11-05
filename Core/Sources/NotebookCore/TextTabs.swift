@@ -12,7 +12,8 @@ public enum TextTabs {
     /// character have: lines of a field only line up on the same stops.
     /// The largest size in the text decides, a heading keeps usable tabs.
     public static func interval(_ box: TextBox) -> Double {
-        let sizes = (box.runs ?? []).filter { $0.length > 0 }.map(\.style.fontSize)
+        // `styleRuns`: text between the stored runs has the field's style.
+        let sizes = box.styleRuns.map(\.style.fontSize)
         return interval(fontSize: sizes.max() ?? box.style.fontSize)
     }
 
