@@ -312,11 +312,14 @@ public enum TextDocumentExport {
             else { spans.append((text, bold, italic)) }
         }
         var result = ""
+        // The same white space as `trimmingCharacters(in: .whitespaces)`, no-break space included.
+        let blank = { (character: Character) in character.unicodeScalars.allSatisfy(CharacterSet.whitespaces.contains) }
         for span in spans {
-            let core = span.text.trimmingCharacters(in: .whitespaces)
+            let head = span.text.prefix(while: blank)
+            let rest = span.text.dropFirst(head.count)
+            let tail = String(rest.reversed().prefix(while: blank).reversed())
+            let core = String(rest.dropLast(tail.count))
             guard span.bold || span.italic, !core.isEmpty else { result += escape(span.text); continue }
-            let head = span.text.prefix { $0 == " " || $0 == "\t" }
-            let tail = String(span.text.reversed().prefix { $0 == " " || $0 == "\t" })
             var text = escape(core)
             if span.italic { text = "*" + text + "*" }
             if span.bold { text = "**" + text + "**" }

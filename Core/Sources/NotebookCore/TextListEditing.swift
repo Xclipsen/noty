@@ -14,7 +14,7 @@ public enum TextListEditing {
             guard matches(.checkbox, line.prefix) else { return nil }
             let range = TextLines.lineRange(source, NSRange(location: line.location, length: 0))
             var end = NSMaxRange(range)
-            while end > line.location && [10, TextLines.pageBreak, 13].contains(source.character(at: end - 1)) { end -= 1 }
+            while end > line.location && TextLines.isBreak(source.character(at: end - 1)) { end -= 1 }
             let start = line.location + (line.prefix as NSString).length
             return TaskItem(marker: NSRange(location: line.location, length: 1),
                 body: NSRange(location: start, length: max(0, end - start)), checked: line.prefix == "☑ ")
@@ -59,7 +59,7 @@ public enum TextListEditing {
     /// Prefix-only edits keep the attributed text of the actual words intact.
     /// Tasks cycle absent → open → checked → absent; other lists toggle.
     public static func toggle(_ kind: Kind, in text: String, range: NSRange, level: ((Int) -> Int)? = nil) -> [Edit] {
-        let lines = listLines(for: kind, in: text, range: range, level: level)
+        let lines = withoutBlankLines(listLines(for: kind, in: text, range: range, level: level), in: text)
         let remove = !lines.isEmpty && lines.allSatisfy { matches(kind, $0.prefix) }
         let check = kind == .checkbox && remove && lines.contains { $0.prefix == "☐ " }
         return lines.enumerated().map { index, line in
@@ -71,8 +71,15 @@ public enum TextListEditing {
         }
     }
     public static func isActive(_ kind: Kind, in text: String, range: NSRange) -> Bool {
-        let lines = selectedLines(in: text, range: range)
+        let lines = withoutBlankLines(selectedLines(in: text, range: range), in: text)
         return !lines.isEmpty && lines.allSatisfy { matches(kind, $0.prefix) }
+    }
+    /// Empty lines of a selection stay empty and do not count, a list over
+    /// them goes on numbering; a caret on an empty line still gets a marker.
+    private static func withoutBlankLines(_ lines: [(location: Int, prefix: String)], in text: String) -> [(location: Int, prefix: String)] {
+        let source = text as NSString
+        let filled = lines.filter { !$0.prefix.isEmpty || ($0.location < source.length && !TextLines.isBreak(source.character(at: $0.location))) }
+        return filled.isEmpty ? lines : filled
     }
     public static func selection(_ selection: NSRange, after edits: [Edit]) -> NSRange {
         func mapped(_ location: Int) -> Int {
@@ -123,7 +130,8 @@ public enum TextListEditing {
         let source = text as NSString
         guard range.location >= 0, range.length >= 0, range.location <= source.length,
               range.length <= source.length - range.location else { return [] }
-        let selected = TextLines.lineRange(source, NSRange(location: range.location, length: max(0, range.length - 1)))
+        // The lines of every selected character: a selection ending right behind a break stays in front of the next line.
+        let selected = TextLines.lineRange(source, range)
         var cursor = selected.location, result: [(Int, String)] = []
         repeat {
             let line = TextLines.lineRange(source, NSRange(location: cursor, length: 0))

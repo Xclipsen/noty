@@ -360,6 +360,7 @@ final class KeyboardRouter: ObservableObject {
         case .primaryOnly: "Nur Hauptauswahl"
         case .registerEmpty: "Register leer"
         case .macroStopped: "Makro abgebrochen"
+        case .repeatStopped: "Wiederholung abgebrochen"
         case .notInMacro: "Nicht im Makro"
         }
         show(note: note)

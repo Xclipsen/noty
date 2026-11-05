@@ -5,9 +5,22 @@ import Foundation
 /// outcome: the views may stay behind the text between the commands, and undo
 /// takes it back as one step.
 extension TextEngine {
-    /// How many steps of macros one `q` may run, nested ones included.
+    /// How many steps of macros one `q` may run, nested ones included; each
+    /// round of `.` counts as one step, also outside a macro.
     static let macroLimit = 5_000
     static let macroSeconds = 2.0
+
+    /// The outermost `.` or `q` of a key opens the budget, nested ones share it.
+    private mutating func openBudget() {
+        guard nested == 0 else { return }
+        macroBudget = Self.macroLimit
+        macroDeadline = Date(timeIntervalSinceNow: Self.macroSeconds)
+    }
+    /// One more step: false once the steps or the time are used up.
+    private mutating func spendBudget() -> Bool {
+        macroBudget -= 1
+        return macroBudget >= 0 && Date() < macroDeadline
+    }
     private static let jumpCapacity = 30
 
     struct Jump: Equatable {
@@ -167,16 +180,19 @@ extension TextEngine {
     /// if nothing was written on it.
     private func indentLeftOver(_ run: InsertRun, _ typed: TypedText) -> NSRange? {
         guard selections.count == 1, typed.deleted == 0, typed.tail.isEmpty else { return nil }
-        let caret = primary.head, line = TextLines.start(text, caret)
-        guard caret > line, caret == TextLines.end(text, caret), firstNonBlank(line) == nil else { return nil }
         let blank = { (text: Substring) in text.allSatisfy { $0 == " " || $0 == "\t" } }
-        let unused = NSRange(location: line, length: caret - line)
+        // What was typed first: `.` must not read a long line for every ordinary insert.
         switch run.entry {
-        case .insert(.lineBelow): return blank(typed.text[...]) ? unused : nil
-        // On the first line the new line has no line break in front of it.
-        case .insert(.lineAbove): return blank(typed.text[...]) && TextLines.start(text, run.start) > 0 ? unused : nil
-        default: return typed.text.hasPrefix("\n") && blank(typed.text.dropFirst()) ? unused : nil
+        case .insert(.lineBelow), .insert(.lineAbove): guard blank(typed.text[...]) else { return nil }
+        default: guard typed.text.hasPrefix("\n"), blank(typed.text.dropFirst()) else { return nil }
         }
+        let caret = primary.head
+        guard caret == TextLines.end(text, caret) else { return nil }
+        let line = TextLines.start(text, caret)
+        guard caret > line, firstNonBlank(line) == nil else { return nil }
+        // On the first line the new line has no line break in front of it.
+        if run.entry == .insert(.lineAbove), TextLines.start(text, run.start) == 0 { return nil }
+        return NSRange(location: line, length: caret - line)
     }
     mutating func recordEscape() {
         if nested == 0 { recording?.steps.append(.key("<Esc>")) }
@@ -187,8 +203,10 @@ extension TextEngine {
         // Helix starts out with `normal_mode` as the last insert.
         guard let last = lastInsert else { mode = .normal; return }
         var composer = EditComposer(length: text.length)
+        openBudget()
         nested += 1
         for _ in 0..<times {
+            guard spendBudget() else { composer.notice = .repeatStopped; break }
             composer.add(perform(last.entry))
             composer.add(replay(last.typed))
             composer.add(perform(.escape))
@@ -258,18 +276,16 @@ extension TextEngine {
         guard let steps = macros[register], !steps.isEmpty else { outcome.notice = .registerEmpty; return }
         let outermost = playing.isEmpty, outer = layout
         if outermost {
-            macroBudget = Self.macroLimit
-            macroDeadline = Date(timeIntervalSinceNow: Self.macroSeconds)
             // The views do not know the text a macro is writing: it counts logical lines.
             layout = LogicalLineLayout(visibleLines: outer.visibleLines)
         }
         var composer = EditComposer(length: text.length), stopped = false
+        openBudget()
         playing.append(register); nested += 1
         for _ in 0..<count where !stopped {
             var parser = HelixParser()
             for step in steps {
-                macroBudget -= 1
-                guard macroBudget >= 0, Date() < macroDeadline else { stopped = true; break }
+                guard spendBudget() else { stopped = true; break }
                 play(step, parser: &parser, into: &composer)
             }
         }
@@ -277,7 +293,8 @@ extension TextEngine {
         if mode == .insert { composer.add(perform(.escape)) }
         playing.removeLast(); nested -= 1
         if outermost { layout = outer }
-        if stopped { composer.notice = .macroStopped }
+        // A `.` inside that ran out of steps stopped the macro, too.
+        if stopped || macroBudget < 0 || composer.notice == .repeatStopped { composer.notice = .macroStopped }
         composer.finish(in: text, into: &outcome)
     }
     private mutating func play(_ step: MacroStep, parser: inout HelixParser, into composer: inout EditComposer) {
@@ -336,16 +353,22 @@ struct EditComposer {
         var result: [Piece] = [], offset = 0
         var inserted = edit.replacement.isEmpty
         let start = edit.range.location, end = NSMaxRange(edit.range)
+        // New text next to new text becomes one piece: `9999.` keeps few pieces.
+        func push(_ piece: Piece) {
+            if case .new(let text) = piece, case .new(let before)? = result.last {
+                result[result.count - 1] = .new(before.appending(text as String) as NSString)
+            } else { result.append(piece) }
+        }
         func insert() {
             guard !inserted else { return }
             inserted = true
-            result.append(.new(edit.replacement as NSString))
+            push(.new(edit.replacement as NSString))
         }
         func part(_ piece: Piece, _ from: Int, _ to: Int) {
             guard to > from else { return }
             switch piece {
             case .old(let origin, _): result.append(.old(start: origin + from, length: to - from))
-            case .new(let text): result.append(.new(text.substring(with: NSRange(location: from, length: to - from)) as NSString))
+            case .new(let text): push(.new(text.substring(with: NSRange(location: from, length: to - from)) as NSString))
             }
         }
         for piece in pieces {
@@ -353,7 +376,7 @@ struct EditComposer {
             if next <= start { result.append(piece) }
             else if offset >= end {
                 insert()
-                result.append(piece)
+                push(piece)
             } else {
                 part(piece, 0, start - offset)
                 insert()
