@@ -284,6 +284,28 @@ final class TextIndentTests: XCTestCase {
         XCTAssertFalse(TextIndentLayout.hangs(edge, heightWithHanging: 160))
     }
 
+    func testSelectingOrMovingAnOlderFieldKeepsItsHeightAndLayout() {
+        let page = PageRect(x: 0, y: 0, width: 595, height: 842)
+        // An older list field: 60 pt without hanging (stored), 80 pt with; it does not hang.
+        let old = TextBox(x: 40, y: 100, width: 200, height: 60, text: "\t• lang")
+        XCTAssertFalse(TextIndentLayout.hangs(old, heightWithHanging: 80))
+        let kept = TextIndentLayout.keptHeight(old, hung: 80, plain: { 60 }, line: 17, room: { old.maximumHeight(in: page, minimum: $0) })
+        XCTAssertEqual(kept.height, 60); XCTAssertFalse(kept.hangs)
+        var after = old; after.height = kept.height
+        XCTAssertFalse(TextIndentLayout.hangs(after, heightWithHanging: 80), "still laid out without")
+        // Never into hanging here, also when its stored height was too small even without.
+        let small = TextBox(x: 40, y: 100, width: 200, height: 40, text: "\t• lang")
+        let close = TextIndentLayout.keptHeight(small, hung: 60.5, plain: { 60 }, line: 17, room: { small.maximumHeight(in: page, minimum: $0) })
+        after = small; after.height = close.height
+        XCTAssertFalse(close.hangs); XCTAssertFalse(TextIndentLayout.hangs(after, heightWithHanging: 60.5))
+        // A field that hangs keeps hanging, measured with.
+        let hanging = TextBox(x: 40, y: 100, width: 200, height: 80, text: "\t• lang")
+        let same = TextIndentLayout.keptHeight(hanging, hung: 80, plain: { 60 }, line: 17, room: { hanging.maximumHeight(in: page, minimum: $0) })
+        XCTAssertEqual(same.height, 80); XCTAssertTrue(same.hangs)
+        // An edit or a new width may bring it into hanging indents.
+        XCTAssertTrue(TextIndentLayout.fittedHeight(hung: 80, plain: { 60 }, line: 17, room: { old.maximumHeight(in: page, minimum: $0) }).hangs)
+    }
+
     // MARK: Arrows
 
     func testArrowsAreReplacedWithTheirSpaceAndComeBackWithBackspace() throws {

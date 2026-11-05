@@ -573,7 +573,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     /// Height always from the content, width from the text while automatic.
     func grow(_ index: Int) {
         guard boxes[index].flowID == nil else { return }
-        boxes[index] = fitted(boxes[index], keepOnPage: true)
+        boxes[index] = fitted(boxes[index], keepOnPage: true, relayout: true)
     }
     func minimumWidth(_ box: TextBox) -> Double { max(16, box.style.fontSize) * Double(coordinateScale(for: box)) }
     /// The shared layout of `box` on this page, ruled like its text view
@@ -613,7 +613,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     /// if that fits the page; otherwise measured without them, clamped and
     /// overflowing as before. The stored height then decides the layout
     /// (`TextIndentLayout.hangs`), so it always comes from the shown layout.
-    func fitted(_ original: TextBox, keepOnPage: Bool = false) -> TextBox {
+    /// `relayout`: the text or the width changed (typing, formats, lists,
+    /// Tab, a new field, the width handles): `TextIndentLayout.fittedHeight`
+    /// may bring the field into hanging indents. Otherwise (selection frame,
+    /// snapping, moving) the layout the stored height shows stays
+    /// (`TextIndentLayout.keptHeight`).
+    func fitted(_ original: TextBox, keepOnPage: Bool = false, relayout: Bool = false) -> TextBox {
         guard original.flowID == nil else { return original }
         var box = original
         let limits = PageRect(canonicalBounds)
@@ -634,8 +639,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         box = snappedToLines(box)
         let line = ceil(box.style.fontSize * TextStylePreset.lineHeightFactor * scale)
         let probe = box
-        box.height = TextIndentLayout.fittedHeight(hung: textHeight(probe, hanging: true), plain: { self.textHeight(probe, hanging: false) },
-                                                   line: line, room: { probe.maximumHeight(in: limits, minimum: $0) }).height
+        let hung = textHeight(probe, hanging: true), plain = { self.textHeight(probe, hanging: false) }
+        let room = { (minimum: Double) in probe.maximumHeight(in: limits, minimum: minimum) }
+        box.height = relayout ? TextIndentLayout.fittedHeight(hung: hung, plain: plain, line: line, room: room).height
+            : TextIndentLayout.keptHeight(probe, hung: hung, plain: plain, line: line, room: room).height
         if keepOnPage, !box.fits(in: limits), let shifted = box.shifted(into: limits) { box = shifted }
         // Again after a shift onto the page (on creating, moving, a new size,
         // typing into the first line); idempotent, the height stays.
@@ -761,7 +768,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         boxes.append(box)
         if focus { selectedID = box.id }
         synchronize() // creates the native view the height is measured with
-        if let index = boxes.firstIndex(where: { $0.id == box.id }) { boxes[index] = fitted(boxes[index], keepOnPage: true) }
+        if let index = boxes.firstIndex(where: { $0.id == box.id }) { boxes[index] = fitted(boxes[index], keepOnPage: true, relayout: true) }
         if tracing { inputLog.info("[noty.text-input] Text field inserted count=\(self.boxes.count) x=\(Double(box.x)) y=\(Double(box.y))") }
         synchronize(); publish()
         if focus, let editor = fields[box.id]?.editor {
@@ -1109,7 +1116,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                     let width = max(minimum, start.box.width - along), moved = start.box.width - width
                     box.width = width; box.x += moved * cos(radians); box.y += moved * sin(radians)
                 }
-                box = fitted(box)
+                box = fitted(box, relayout: true)
                 guard box.fits(in: limits) else { return } // keep the last frame that fits
             }
             // Live feedback stays local; the model gets one change at the end

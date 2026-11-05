@@ -178,8 +178,24 @@ public enum TextIndentLayout {
         box.flowID == nil && !box.overflows(textHeight: heightWithHanging)
     }
 
-    /// The height a free field stores (`fitted` in the editor; every height
-    /// comes from here): `hung`, the text height with hanging indents, if it
+    /// The height of a field fitted without a change of its text or width
+    /// (selection frame, snapping, moving): the layout the stored height shows
+    /// (`hangs`), measured in that mode and clamped as before. A field that
+    /// does not hang keeps that; it never moves into hanging indents here.
+    public static func keptHeight(_ box: TextBox, hung: Double, plain: () -> Double, line: Double,
+                                  room: (Double) -> Double) -> (height: Double, hangs: Bool) {
+        let hangs = hangs(box, heightWithHanging: hung)
+        let needed = max(line, hangs ? hung : plain())
+        var height = max(1, min(needed, room(min(needed, line))))
+        if !hangs {
+            var probe = box; probe.height = height
+            if self.hangs(probe, heightWithHanging: hung) { height = box.height }
+        }
+        return (height, hangs)
+    }
+
+    /// The height a free field stores after a change of its text or width
+    /// (`fitted(relayout:)` in the editor): `hung`, the text height with hanging indents, if it
     /// fits the room up to the page edge (`room(minimum)`, as
     /// `TextBox.maximumHeight`); otherwise the height without (`plain`),
     /// clamped as before. `line`: at least one line. `hangs(_:heightWithHanging:)`
