@@ -39,6 +39,17 @@ enum ObjectClipboard {
     static var isNewest: Bool { content != nil && changeCount == UIPasteboard.general.changeCount }
     /// Page and frame of the last paste of this copy (the next one goes beside it).
     static var lastPaste: (pageID: UUID?, frame: CGRect)?
+    /// Written with every noty copy to the system pasteboard: whether its
+    /// picture or its text is meant („image“/„text“).
+    static let markerType = "de.la.noty.selection"
+    /// A noty copy on the system pasteboard (also after a restart): true for
+    /// its picture, false for its text, nil for anything from elsewhere.
+    static var pasteboardPrefersImage: Bool? {
+        let board = UIPasteboard.general
+        guard board.contains(pasteboardTypes: [markerType]),
+              let data = board.data(forPasteboardType: markerType) else { return nil }
+        return String(decoding: data, as: UTF8.self) == "image"
+    }
 }
 
 /// The one look of every selection (Build 64): system blue, one line width
@@ -116,6 +127,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private var draft: ShapeObject?
     /// Selection dragged off its page (continuous notebook only).
     private var lift: SelectionLift?
+    /// The last „Duplizieren“ on this page (selection frame before → copy):
+    /// duplicating that copy again goes on in the same direction.
+    private var lastDuplicate: (pageID: UUID?, from: CGRect, to: CGRect)?
     /// Members selected by a cross-page transfer onto this page. Re-applied if a
     /// configure resets the layer while the notebook still publishes exactly
     /// that content, so the moved selection stays visible and can be dragged on.
@@ -935,15 +949,23 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 lasso = [a, CGPoint(x: b.x, y: a.y), b, CGPoint(x: a.x, y: b.y), a]
             } else { lasso.append(gesture.location(in: self)) }
         case 1:
-            // Over another page the selection lifts off and follows the touch
-            // above all pages. On its own sheet, in the gap or beside the
-            // pages it keeps the clamped in-page move (IMAGES.md); once lifted
-            // it stays lifted until it is back over its own sheet.
+            // Over another page, or in the autoscroll band at the top/bottom
+            // of the viewport (so a page out of sight can be reached), the
+            // selection lifts off and follows the touch above all pages. On
+            // its own sheet and in the gap or beside it it keeps the clamped
+            // in-page move (IMAGES.md); once lifted it stays lifted until it
+            // is back over its own sheet outside the autoscroll band.
             var lifted = false
-            if let host = transferHost, !CGRect(origin: .zero, size: layout.canvas.cgSize).contains(gesture.location(in: self)),
-               lift != nil || host.transferTarget(for: gesture).map({ $0 != pageID }) == true {
-                if lift == nil { lift = makeLift(initial) }
-                if let lift { lifted = true; preview = lift.remainder; inkTransform = nil; host.floatSelection(lift, gesture: gesture); snapping.hide() }
+            if let host = transferHost, let pageID {
+                let onSheet = CGRect(origin: .zero, size: layout.canvas.cgSize).contains(gesture.location(in: self))
+                // Where the drag began, in the window (it moves with an autoscroll).
+                let start = convert(CGPoint(x: initialPoint.x + layout.contentOrigin.x, y: initialPoint.y + layout.contentOrigin.y), to: nil)
+                let wanted = host.liftsForAutoScroll(gesture, from: pageID, start: start)
+                    || (!onSheet && (lift != nil || host.transferTarget(for: gesture).map({ $0 != pageID }) == true))
+                if wanted {
+                    if lift == nil { lift = makeLift(initial) }
+                    if let lift { lifted = true; preview = lift.remainder; inkTransform = nil; host.floatSelection(lift, gesture: gesture); snapping.hide() }
+                }
             }
             if !lifted {
                 if lift != nil { endLift(); preview = initial; inkTransform = nil; groupTransform = nil }
@@ -1046,9 +1068,15 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
                 lift = nil
                 host.hideFloatingSelection()
                 _ = host.dropSelection(lifted, gesture: gesture)
+            } else if dragMode == 1, lift != nil, let pageID, transferHost?.transferTarget(for: gesture) != pageID {
+                // Lifted, but dropped in a gap or beside the pages: it snaps back
+                // without any change. Its own sheet may have scrolled far out of
+                // sight; clamping there would change a page nobody sees (Review).
+                // Clamping in the gap stays for a selection that never lifted.
+                endLift(); preview = nil; inkTransform = nil; groupTransform = nil
             } else if dragMode == 1, lift != nil {
-                // Lifted, but dropped in a gap or beside the pages: the clamped
-                // in-page move is kept, as without lifting.
+                // Lifted and dropped over its own sheet (in the autoscroll band):
+                // the clamped in-page move, as without lifting.
                 endLift(); inkTransform = nil; groupTransform = nil
                 if let value = clampedMove(initial, to: point, gesture: gesture) {
                     var value = value
@@ -1244,7 +1272,23 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         touchSelection = false; onTouchSelectionEnded?()
     }
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hit = super.hitTest(point, with: event)
+        var hit = super.hitTest(point, with: event)
+        // Shape points of a polygon lie above the scale corners, and a point on
+        // a corner of the frame covered the corner: of the overlapping corner
+        // and point handles the one whose dot is nearest wins, a corner within
+        // a few screen points (`SelectionHandlePriority`).
+        if let current = hit as? SelectionHandle, !anchorHandles.isEmpty,
+           corners.contains(where: { $0 === current }) || anchorHandles.contains(where: { $0 === current }) {
+            let scale = displayScale
+            let overlapping = (corners + anchorHandles).filter {
+                !$0.isHidden && $0.alpha > 0.01 && $0.isUserInteractionEnabled && $0.frame.contains(point)
+            }
+            let distances = overlapping.map { hypot($0.center.x - point.x, $0.center.y - point.y) * scale }
+            let isCorner = overlapping.map { handle in corners.contains { $0 === handle } }
+            if let index = SelectionHandlePriority.preferred(distances: distances.map(Double.init), isCorner: isCorner) {
+                hit = overlapping[index]
+            }
+        }
         // Finger selection: the layer's own surface passes everything through.
         return touchSelection && hit === self ? nil : hit
     }
@@ -1535,7 +1579,13 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private func duplicateSelection() {
         guard !selectionLocked, let members = selectedMembers() else { return }
         let field = isFieldSelection
-        paste(members.content, from: members.bounds)
+        // Duplicating the copy just made again goes on in the same direction.
+        let series = lastDuplicate.flatMap { last -> CGPoint? in
+            guard last.pageID == pageID, abs(last.to.minX - members.bounds.minX) < 0.5, abs(last.to.minY - members.bounds.minY) < 0.5 else { return nil }
+            return CGPoint(x: last.to.minX - last.from.minX, y: last.to.minY - last.from.minY)
+        }
+        let placed = paste(members.content, from: members.bounds, direction: series)
+        lastDuplicate = placed.map { (pageID, members.bounds, $0) }
         if field, texts.count == 1, ink.isEmpty, images.isEmpty, shapes.isEmpty { fieldMode = true; refresh() }
     }
     private func copySelection() {
@@ -1553,8 +1603,20 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         if !text.isEmpty { item[UTType.utf8PlainText.identifier] = text.joined(separator: "\n\n") }
         let strokes = (try? PKDrawing(data: value.drawing))?.strokes ?? []
         let objects = MovedObjects(textBoxes: value.textBoxes, images: value.images, shapes: value.shapes)
-        if let png = SelectionTransfer.snapshot(objects: objects, ink: strokes, frame: frame, pixelScale: 2, page: pageContext?())?.pngData() {
+        // Rendered on the main thread: at most about 2 megapixels, and never
+        // with a grey placeholder for an image whose rendition is not decoded
+        // (then the picture would be wrong; text and the in-app copy remain).
+        if let png = SelectionTransfer.snapshot(objects: objects, ink: strokes, frame: frame, pixelScale: 2, page: pageContext?(),
+                                                maximumPixels: 2_000_000, placeholders: false)?.pngData() {
             item[UTType.png.identifier] = png
+        }
+        // A dictionary has no order, so the pasteboard's first type is random:
+        // a marker says what this copy means after a restart, when the in-app
+        // copy is gone (`ObjectClipboard.pasteboardPrefersImage`): text alone
+        // for fields only, otherwise the picture.
+        if !item.isEmpty {
+            let textOnly = strokes.isEmpty && value.images.isEmpty && value.shapes.isEmpty && !text.isEmpty
+            item[ObjectClipboard.markerType] = Data((textOnly || item[UTType.png.identifier] == nil ? "text" : "image").utf8)
         }
         UIPasteboard.general.setItems(item.isEmpty ? [] : [item])
         ObjectClipboard.changeCount = UIPasteboard.general.changeCount
@@ -1576,30 +1638,59 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         // Pasting again on the same page goes beside the last copy instead of
         // onto it (Audit 7f8bfe7, Lasso Fund 7).
         let previous = ObjectClipboard.lastPaste.flatMap { $0.pageID == pageID ? $0.frame : nil }
-        if let placed = paste(copied, from: frame, beside: previous) { ObjectClipboard.lastPaste = (pageID, placed) }
+        // Further pastes keep the direction of the series (original → last copy).
+        let direction = previous.map { CGPoint(x: $0.minX - frame.minX, y: $0.minY - frame.minY) }
+        if let placed = paste(copied, from: frame, beside: previous, direction: direction) { ObjectClipboard.lastPaste = (pageID, placed) }
     }
     /// New copies (new IDs) of `copied` (whose members span `frame`), 24 pt
     /// beside `frame` – or beside `previous`, an earlier copy – and on the
-    /// page (`PasteOffset`: left/up when there is no room); selected.
+    /// page (`PasteOffset`: left/up when there is no room, `direction`: the
+    /// way a series of copies went so far); never exactly onto the original
+    /// or an earlier copy while the page has another place. Selected.
     /// Returns where the copy went.
     @discardableResult
-    private func paste(_ copied: PageContent, from frame: CGRect, beside previous: CGRect? = nil) -> CGRect? {
+    private func paste(_ copied: PageContent, from frame: CGRect, beside previous: CGRect? = nil, direction: CGPoint? = nil) -> CGRect? {
         let bounds = limits.cgRect
         guard frame.width <= bounds.width, frame.height <= bounds.height else {
             onError?("Die kopierte Auswahl ist zu groß für diese Seite und wurde nicht eingefügt."); return nil
         }
+        let pasted = copied.drawing.isEmpty ? PKDrawing() : ((try? PKDrawing(data: copied.drawing)) ?? PKDrawing())
+        // An unreadable page drawing is never replaced by the pasted strokes
+        // (like the eraser, `beginErase`): nothing is pasted.
+        guard let drawing = content.drawing.isEmpty ? PKDrawing() : try? PKDrawing(data: content.drawing) else {
+            onError?("Die Handschrift dieser Seite konnte nicht gelesen werden; es wurde nichts eingefügt."); return nil
+        }
         clearSelection()
         var value = content
         let reference = previous.map { CGRect(origin: $0.origin, size: frame.size) } ?? frame
-        let step = PasteOffset.offset(for: PageRect(reference), in: PageRect(bounds))
+        // One member stands for the copy: lying exactly on an object of its
+        // kind means lying on the original or an earlier copy.
+        let probe: (frame: CGRect, existing: [CGRect])? = {
+            func rect(_ image: ImageObject) -> CGRect { CGRect(x: image.x, y: image.y, width: image.width, height: image.height) }
+            func rect(_ box: TextBox) -> CGRect { CGRect(x: box.x, y: box.y, width: box.width, height: box.height) }
+            if let image = copied.images.first { return (rect(image), content.images.map(rect)) }
+            if let shape = copied.shapes.first { return (shape.bounds.cgRect, content.shapes.map(\.bounds.cgRect)) }
+            if let box = copied.textBoxes.first { return (rect(box), content.textBoxes.map(rect)) }
+            if let stroke = pasted.strokes.first { return (stroke.renderBounds, drawing.strokes.map(\.renderBounds)) }
+            return nil
+        }()
+        let step = PasteOffset.offset(for: PageRect(reference), in: PageRect(bounds),
+                                      direction: (Double(direction?.x ?? 1), Double(direction?.y ?? 1))) { sx, sy in
+            guard let probe else { return false }
+            let moved = probe.frame.offsetBy(dx: reference.minX + sx - frame.minX, dy: reference.minY + sy - frame.minY)
+            return probe.existing.contains { abs($0.minX - moved.minX) < 0.5 && abs($0.minY - moved.minY) < 0.5
+                && abs($0.width - moved.width) < 0.5 && abs($0.height - moved.height) < 0.5 }
+        }
         let dx = reference.minX + step.dx - frame.minX, dy = reference.minY + step.dy - frame.minY
         for box in copied.textBoxes { var box = box; box.id = UUID(); box.x += dx; box.y += dy; texts.insert(box.id); value.textBoxes.append(box) }
         for image in copied.images { var image = image; image.id = UUID(); image.x += dx; image.y += dy; images.insert(image.id); value.images.append(image) }
         for shape in copied.shapes { var shape = shape.translated(x: dx, y: dy); shape.id = UUID(); shapes.insert(shape.id); value.shapes.append(shape) }
-        let drawing = (try? PKDrawing(data: content.drawing)) ?? PKDrawing()
-        let pasted = ((try? PKDrawing(data: copied.drawing)) ?? PKDrawing()).transformed(using: .init(translationX: dx, y: dy))
-        ink = Set(drawing.strokes.count..<(drawing.strokes.count + pasted.strokes.count))
-        value.drawing = PKDrawing(strokes: drawing.strokes + pasted.strokes).dataRepresentation()
+        if !pasted.strokes.isEmpty {
+            // Without pasted strokes the page drawing stays as it is (no re-encoding).
+            let moved = pasted.transformed(using: .init(translationX: dx, y: dy))
+            ink = Set(drawing.strokes.count..<(drawing.strokes.count + moved.strokes.count))
+            value.drawing = PKDrawing(strokes: drawing.strokes + moved.strokes).dataRepresentation()
+        }
         let placed = commit(value, previous: content)
         if !placed { clearSelection() }; refresh()
         return placed ? frame.offsetBy(dx: dx, dy: dy) : nil

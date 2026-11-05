@@ -107,15 +107,11 @@ public enum PageObjectHitTest {
             && point.y >= rect.y - tolerance && point.y <= rect.y + rect.height + tolerance
     }
 
-    /// Even-odd point-in-polygon test.
+    /// Nonzero winding, like the drawn fill (`UIBezierPath` default) and the
+    /// lasso (`LassoRegion.contains`): a self-crossing polygon is hit on every
+    /// area it visibly fills.
     private static func inside(_ point: PagePoint, polygon v: [PagePoint]) -> Bool {
-        var result = false, j = v.count - 1
-        for i in v.indices {
-            if (v[i].y > point.y) != (v[j].y > point.y),
-               point.x < (v[j].x - v[i].x) * (point.y - v[i].y) / (v[j].y - v[i].y) + v[i].x { result.toggle() }
-            j = i
-        }
-        return result
+        LassoRegion(points: v).contains(point)
     }
 
     private static func distance(_ point: PagePoint, _ a: PagePoint, _ b: PagePoint) -> Double {

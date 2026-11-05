@@ -409,7 +409,10 @@ final class EditorModel: ObservableObject {
             return outcome
         } catch {
             history.removeAll()
-            self.error = "Rückgängig nicht möglich: \(error.localizedDescription)"
+            // A broken image limit by name, not as a „damaged file“.
+            let reason = notebook.imageLimitProblem(installing: outcome.notebook).map { ImageImportError($0).localizedDescription }
+                ?? error.localizedDescription
+            self.error = "\(redo ? "Wiederholen" : "Rückgängig") nicht möglich: \(reason)"
             return nil
         }
     }
@@ -616,7 +619,12 @@ final class EditorModel: ObservableObject {
             scheduleSave(); return true
         } catch CrossPageTransferError.conflict {
             error = "Die Seiten wurden inzwischen geändert. Bitte die Auswahl erneut setzen."; return false
-        } catch { self.error = "Verschieben nicht übernommen: \(error.localizedDescription)"; return false }
+        } catch {
+            let problem = notebook.imageLimitProblem(replacing: Dictionary(changes.map { ($0.pageID, $0.replacement.images) },
+                                                                           uniquingKeysWith: { _, last in last }))
+            self.error = "Verschieben nicht übernommen: \(problem.map { ImageImportError($0).localizedDescription } ?? error.localizedDescription)"
+            return false
+        }
     }
 
     private func scheduleSave() { save(delayed: true) }

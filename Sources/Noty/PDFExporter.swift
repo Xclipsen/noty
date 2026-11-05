@@ -43,7 +43,8 @@ enum PDFExporter {
 
     /// Decoded off the main actor, drawn on it.
     private struct PageAssets: Sendable {
-        let images: [UIImage]
+        /// Each image's rendition and whether `exportCrop` already cut it.
+        let images: [(image: UIImage, precropped: Bool)]
         let ink: UIImage?
     }
 
@@ -161,7 +162,7 @@ enum PDFExporter {
             // 300 dpi from the third image on.
             let limit = ImageRendering.outputLimit(object, imagesOnPage: objects.count, maximum: 4096, pixelsPerPoint: 300.0 / 72)
             // Only the cropped pixels go into the PDF, never the cut-away parts.
-            return try ImageRendering.exportCrop(ImageRendering.decoded(object, limit: limit, assets: provider), for: object)
+            return ImageRendering.exportCrop(try ImageRendering.decoded(object, limit: limit, assets: provider), for: object)
         }
         guard !page.drawing.isEmpty else { return PageAssets(images: images, ink: nil) }
         let drawing = try PKDrawing(data: page.drawing)
@@ -195,7 +196,7 @@ enum PDFExporter {
                 drawPaper(style: .legacyTest, bounds: bounds)
             case .images:
                 for (object, image) in zip(page.images ?? [], assets.images) {
-                    ImageRendering.draw(object, image: image, context: context, origin: layout.contentOrigin, precropped: true)
+                    ImageRendering.draw(object, image: image.image, context: context, origin: layout.contentOrigin, precropped: image.precropped)
                 }
             case .shapes:
                 ShapeRendering.draw(page.shapes ?? [], origin: layout.contentOrigin, context: context)
