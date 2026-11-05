@@ -357,15 +357,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             }
             field.content = box; field.automaticLight = light
             // A size change or typed text may have left a paragraph on another grid.
-            if editor.markedTextRange == nil {
-                let grid = CGFloat(TextTabs.interval(box))
-                editor.textStorage.applyTabGrid(grid)
-                if let typing = editor.typingAttributes[.paragraphStyle] as? NSParagraphStyle, typing.defaultTabInterval != grid,
-                   let next = typing.mutableCopy() as? NSMutableParagraphStyle {
-                    next.tabStops = []; next.defaultTabInterval = grid
-                    editor.typingAttributes[.paragraphStyle] = next
-                }
-            }
+            if editor.markedTextRange == nil { applyTabGrid(of: box, to: editor) }
             field.applyFieldStyle(box.resolvingAutomaticColor(light: light), unitScale: pointScale)
             editor.isFlow = box.flowID != nil
             // Flow segments and the fields migrated from page text keep the ruling of their region
@@ -487,12 +479,16 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         let editor = field.editor
         guard box.flowID == nil, editor.markedTextRange == nil, editor.attributedText.string == box.text else { return false }
         let width = CGFloat(box.width) / coordinateScale(for: box), grid = linePaper.grid(for: box)
-        if let state = field.hanging, state.matches(box, width: width, grid: grid) { return true }
+        // The tab grid first (a larger size widens it): the edges and both
+        // heights are measured on the grid preview and PDF use.
+        let tabs = CGFloat(TextTabs.interval(box))
+        let regridded = applyTabGrid(of: box, to: editor)
+        if !regridded, let state = field.hanging, state.matches(box, width: width, tabs: tabs, grid: grid) { return true }
         let active = field.hanging?.active ?? false // the text is loaded without them
         let storage = editor.textStorage
         if active {
             var range: NSRange?
-            if storage.length > 20_000, let state = field.hanging, state.width == width, state.text != box.text,
+            if storage.length > 20_000, !regridded, let state = field.hanging, state.width == width, state.tabs == tabs, state.text != box.text,
                let changed = TextListEditing.changedRange(from: state.text, to: box.text) {
                 let start = max(0, changed.location - 1)
                 range = NSRange(location: start, length: min(storage.length - start, changed.length + 2))
@@ -501,15 +497,30 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         } else {
             storage.removeHangingIndents()
         }
-        field.hanging = .init(text: box.text, runs: box.runs, style: box.style, width: width, grid: grid, active: active)
+        field.hanging = .init(text: box.text, runs: box.runs, style: box.style, width: width, tabs: tabs, grid: grid, active: active)
         return true
+    }
+    /// Every paragraph of the editor and its typing format on the field's tab
+    /// grid (`TextTabs.interval`, as `TextBox.attributedText`). True if the text changed.
+    @discardableResult
+    func applyTabGrid(of box: TextBox, to editor: UITextView) -> Bool {
+        let grid = CGFloat(TextTabs.interval(box))
+        let changed = editor.textStorage.applyTabGrid(grid)
+        if let typing = editor.typingAttributes[.paragraphStyle] as? NSParagraphStyle, typing.defaultTabInterval != grid,
+           let next = typing.mutableCopy() as? NSMutableParagraphStyle {
+            next.tabStops = []; next.defaultTabInterval = grid
+            editor.typingAttributes[.paragraphStyle] = next
+        }
+        return changed
     }
     /// Height of `box`'s text in page units with or without hanging indents,
     /// rounded like `TextObjectLayout.usedHeight`: the field's own editor when it
     /// shows `box` in that state on the same lines, otherwise the shared layout.
     func textHeight(_ box: TextBox, hanging: Bool) -> Double {
         let scale = coordinateScale(for: box)
-        guard let field = fields[box.id], field.editor.lineGrid == linePaper.grid(for: box), refreshHanging(field, for: box),
+        // The editor measures only the formats it shows (a scaled lasso copy has others).
+        guard let field = fields[box.id], let shown = field.content, shown.text == box.text, shown.runs == box.runs, shown.style == box.style,
+              field.editor.lineGrid == linePaper.grid(for: box), refreshHanging(field, for: box),
               let state = field.hanging else {
             return Double(TextObjectLayout(box, paper: linePaper, hanging: hanging ? .always : .never).usedHeight)
         }
@@ -647,6 +658,14 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         // Again after a shift onto the page (on creating, moving, a new size,
         // typing into the first line); idempotent, the height stays.
         return snappedToLines(box)
+    }
+    /// The object selection's fitting (`ObjectEditingLayer.TextFit`).
+    func fitted(_ box: TextBox, _ fit: ObjectEditingLayer.TextFit) -> TextBox {
+        switch fit {
+        case .kept: fitted(box)
+        case .relayout: fitted(box, relayout: true)
+        case .repaired: box.refitted(paper: linePaper, limits: PageRect(canonicalBounds))
+        }
     }
     /// Used rects of the laid-out text lines of `box` in its own unrotated
     /// page units (origin: text top-left); what a lasso has to touch.

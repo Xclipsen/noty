@@ -180,18 +180,31 @@ public enum TextIndentLayout {
 
     /// The height of a field fitted without a change of its text or width
     /// (selection frame, snapping, moving): the layout the stored height shows
-    /// (`hangs`), measured in that mode and clamped as before. A field that
-    /// does not hang keeps that; it never moves into hanging indents here.
+    /// (`hangs`), measured in that mode and clamped as before. The mode never
+    /// flips here, but a wrong height is repaired:
+    /// - a hanging field takes its height with hanging indents;
+    /// - a field without takes its height without, if it then still does not
+    ///   hang, or if both layouts are as high (within the overflow tolerance:
+    ///   a field without prefix, whose layouts are the same), or if its text
+    ///   overflowed the stored height (an overflow is never kept);
+    /// - otherwise (its hanging indents would need more room than it has, an
+    ///   older list field) it keeps its stored height.
     public static func keptHeight(_ box: TextBox, hung: Double, plain: () -> Double, line: Double,
                                   room: (Double) -> Double) -> (height: Double, hangs: Bool) {
-        let hangs = hangs(box, heightWithHanging: hung)
-        let needed = max(line, hangs ? hung : plain())
-        var height = max(1, min(needed, room(min(needed, line))))
-        if !hangs {
-            var probe = box; probe.height = height
-            if self.hangs(probe, heightWithHanging: hung) { height = box.height }
+        func clamped(_ value: Double) -> Double {
+            let needed = max(line, value)
+            return max(1, min(needed, room(min(needed, line))))
         }
-        return (height, hangs)
+        func hanging(at height: Double) -> Bool { var probe = box; probe.height = height; return self.hangs(probe, heightWithHanging: hung) }
+        if self.hangs(box, heightWithHanging: hung) {
+            let height = clamped(hung)
+            return (height, hanging(at: height))
+        }
+        let measured = plain(), height = clamped(measured)
+        if !hanging(at: height) || abs(hung - measured) <= TextBox.overflowTolerance || height > box.height {
+            return (height, hanging(at: height))
+        }
+        return (box.height, false)
     }
 
     /// The height a free field stores after a change of its text or width
@@ -272,6 +285,16 @@ public enum TextIndentEditing {
                     context: context, continuation: continuation)
     }
 
+    /// Tab or ⇧Tab in the prefix of the paragraphs starting at `starts` (the
+    /// indent buttons; `>` and `<` of the keyboard mode, `TextEngine`), the
+    /// same plan as `tab(_:selection:outdent:wholeParagraphs:)`.
+    public static func shift(_ box: TextBox, paragraphStarts starts: [Int], outdent: Bool, canChangeIndent: Bool = true) -> Plan? {
+        let source = box.text as NSString
+        let starts = Array(Set(starts.filter { $0 >= 0 && $0 <= source.length }.map { TextLines.start(source, $0) })).sorted()
+        guard !starts.isEmpty else { return nil }
+        return plan(box, starts: starts, outdent: outdent, canChangeIndent: canChangeIndent, extra: [], context: .init(), continuation: false)
+    }
+
     /// The plan for `starts`; nil when no paragraph moves. `extra`: further
     /// edits of the same step (a selection Return replaces).
     private static func plan(_ box: TextBox, starts: [Int], outdent: Bool, canChangeIndent: Bool, extra: [TextListEditing.Edit],
@@ -287,8 +310,11 @@ public enum TextIndentEditing {
             var newLevel = level
             let paragraph = TextLines.paragraphRange(source, NSRange(location: start, length: 0))
             if outdent {
-                if prefix.leading > 0, source.character(at: start) == 9 {
-                    edits.append(.init(range: NSRange(location: start, length: 1), replacement: ""))
+                if prefix.tabs > 0 {
+                    // The last leading tab, also behind spaces („ ⇥• “): the level goes down.
+                    var tab = start + prefix.leading - 1
+                    while source.character(at: tab) != 9 { tab -= 1 }
+                    edits.append(.init(range: NSRange(location: tab, length: 1), replacement: ""))
                     newLevel -= 1
                 } else if prefix.leading > 0 {
                     var count = 0

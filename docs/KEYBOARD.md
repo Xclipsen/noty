@@ -4,6 +4,8 @@ Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur 
 
 **Seit Build 71 experimentell und nur in Textdokumenten.** Die Helix-Bedienung ist standardmäßig aus und gilt, wenn eingeschaltet, nur solange ein Textdokument im aktiven Bereich offen ist, einschließlich der daraus geöffneten Bedienfelder (auch des Gesetzesfensters). Bibliothek, Hefte und deren Seiten kennen sie nicht mehr; die Abschnitte „Bibliothek“, „Seite“ und „Seitenleiste“ unten beschreiben den Stand bis Build 70. Der frühere Schalter `noty.keyboard.mode` wird nicht mehr gelesen.
 
+**`>`/`<` im Tastaturmodus (feat/fix2-text, 05.11.2026):** dieselbe Core-Regel wie Tab/⇧Tab im Präfix für jede gewählte, nicht leere Zeile; Zeichen und Nummern folgen der Ebene („1. a / 2. b / 3. c“, `>` auf b: „1. a / ⇥1. b / 2. c“). **Implementiert, Core-Tests und SDK-Build bestanden, am iPad ungeprüft.**
+
 **Tab, ⇧Tab, Return und ⌫ im Text (feat/einzug2, 05.11.2026):** nach den Regeln „Einzug und Listen“ in [TEXT-FIELDS](TEXT-FIELDS.md); Hardware- und Bildschirmtastatur gleich, im Textdokument ⇧Tab neu als Tastenbefehl. **Implementiert, Core-Tests und SDK-Build bestanden, am iPad ungeprüft.**
 
 **Korrekturen aus der Prüfung des Textwerkzeugs (feat/fix-text, 05.11.2026):** Große Zähler frieren nicht mehr ein: `9999.` läuft höchstens 5000 Runden bzw. etwa 2 Sekunden (`Wiederholung abgebrochen`), `.` in einem Makro zählt auf dessen Budget, `9999n` sucht die Treffer einmal, `mim`/`mam`/`mdm`/`mrm` lesen den Text einmal. `3o`/`3O` öffnen im bisherigen Textweg nur eine Zeile (`Nur Hauptauswahl`), `f`/`t`/`F`/`T` mit Enter finden auch CRLF, `*` auf einer Auswahl über einen Seitenumbruch findet sich selbst, `p` mit einer kopierten Leerzeile hinter der letzten Zeile setzt genau eine. **Implementiert, Core-Tests bestanden, am iPad ungeprüft.**
@@ -33,7 +35,7 @@ Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur 
 | ⌘K, ⇧⌘H | Link, Markieren | Text |
 | ⌘↩ | Seitenumbruch (in NOR und SEL vor die Auswahl) | Textdokument |
 | Tab | Cursor vor dem ersten Textzeichen (im Präfix): ein Tab an den Absatzanfang, Listen eine Ebene tiefer; sonst ein Tab an der Cursorstelle (nächster Tabstopp, auch in Listen); über mehrere Absätze bekommt jeder nicht leere einen Tab. Bildschirmtastatur gleich | Text |
-| ⇧Tab | Je berührtem Absatz einen führenden Tab weg, sonst bis zu vier führende Leerzeichen, sonst 20 pt alten Einzug; ein Tab mitten in der Zeile bleibt | Text |
+| ⇧Tab | Je berührtem Absatz den letzten führenden Tab weg (auch hinter Leerzeichen), sonst bis zu vier führende Leerzeichen, sonst 20 pt alten Einzug; ein Tab mitten in der Zeile bleibt | Text |
 | ⇧⌘P, ⌘/ | Befehlspalette, Tastenübersicht (ohne Tastaturmodus enthält die Palette keine Textbefehle und keine Eingabezeile, beides braucht die Engine) | überall |
 
 **⌘A:** Im Text das ganze Feld; im Textdokument der ganze Text über alle Seiten (blau markiert; ⌘C/⌘X/⌘V, ⌫ und Formatierung wirken auf alles, beim Schreiben auch Tippen, ⌘Z als ein Schritt). Ohne Cursor im Textdokument dasselbe, dann in NOR, damit kein Buchstabe versehentlich alles ersetzt. Außerhalb von INS wirkt ⌘A wie `%`. Im Heft alles Auswählbare der Seite, mit jedem Werkzeug. Das Bearbeitungsmenü „Alles auswählen“ bleibt die native Auswahl dieser Seite.
@@ -333,6 +335,7 @@ Die Engine ist in Core gegen das echte Helix geprüft, die App bildet sie ab.
 | Einzug bei `o`, `O`, Enter, `xc` | rundet auf die erkannte Einzugbreite und schreibt sie im erkannten Stil (6 Leerzeichen bei Breite 4 werden 4, bei Tabs 1 Tab) | übernimmt den Leerraum der Zeile genau | proportionale Schrift, Notizen haben keinen Einzugsstil |
 | Enter hinter Leerzeichen auf einer Zeile ohne Einzug | entfernt sie | bleiben stehen, natives Tippen | Enter nach einem Wort mit Leerzeichen ist alltäglich, kein Eingriff in Autokorrektur; auf eingerückten Zeilen wie Helix |
 | ⌫ im Einzug | löscht bis zum Tabstopp | löscht ein Zeichen | natives Löschen |
+| `>`, `<` | ein Tab vor jede Zeile bzw. Leerraum bis zur Einzugbreite weg | wie Tab/⇧Tab im Präfix (`TextIndentEditing.shift`, feat/fix2-text): letzter führender Tab weg, sonst bis zu vier Leerzeichen; Listenzeichen und Nummer folgen der Ebene, die Listen werden neu gezählt; alter Absatzeinzug zählt als Ebene und bleibt | Listen in Notizen: dieselbe Ebene wie mit Tab |
 | Paare für `` ` `` | schließt | nicht | Auftrag: nur `( [ {` und Anführungszeichen |
 | Auswahl nach `i(`, Esc mit automatischem Paar | nur die schließende Hälfte | an einem Cursor bleibt auch die alte Auswahl dahinter gewählt; mehrere Cursor wie Helix | natives Tippen meldet nur Text und Cursor |
 | `.` nach wirkungslosen Tasten (⌫ am Textanfang), nach Pfeilen in INS | spielt die Tasten | wiederholt das Ergebnis | natives Tippen liefert keine Tasten, dafür gehen Autokorrektur und Diktat |
@@ -357,7 +360,7 @@ Die Engine ist in Core gegen das echte Helix geprüft, die App bildet sie ab.
 | Mehrere Auswahlen | alle sichtbar, Tippen an allen | nur die Hauptauswahl sichtbar, die Modusanzeige nennt „n Auswahlen“; `C`, `s`, `d` wirken auf alle, `c`, `i`, `a`, `o` usw. nur noch auf die Hauptauswahl (`performAtPrimary`) | eine Seite tippt an einem Cursor; Texteditor 2 verhält sich wie Helix |
 | Esc nach einem Antippen | gibt es nicht | Cursor aufs zuletzt getippte Zeichen, ohne Tippen dorthin, wo der Tipp ihn setzte; hinter `i`, `a` usw. wie Helix (getippter Text gehört zur Auswahl) | ein Tipp hat keine Auswahl, die mitwachsen könnte |
 
-Bewusst wie Helix, obwohl es überrascht: `w` wählt auch die Leerzeichen dahinter, `ge` geht an den Anfang der letzten Zeile, `G` ohne Zähler tut nichts, `5G` in SEL zieht die Auswahl zusammen, `r` ersetzt auch Zeilenumbrüche, `n` geht auch nach `?` vorwärts, `p` in SEL lässt die Auswahl stehen, `>` fügt einen Tab ein (`TextEngine.indentUnit`).
+Bewusst wie Helix, obwohl es überrascht: `w` wählt auch die Leerzeichen dahinter, `ge` geht an den Anfang der letzten Zeile, `G` ohne Zähler tut nichts, `5G` in SEL zieht die Auswahl zusammen, `r` ersetzt auch Zeilenumbrüche, `n` geht auch nach `?` vorwärts, `p` in SEL lässt die Auswahl stehen, `>` fügt einen Tab ein (`TextEngine.indentUnit`; mit Tab wie Tab im Präfix, siehe Tabelle).
 
 Bewusst anders als bisher: `Space m` zeigt jetzt die Lesezeichen (setzen: `Space M`, in der Leiste `b`), `Space s` gibt der Leiste die Tasten statt sie umzuschalten (einklappen: `Space s` in der Leiste).
 

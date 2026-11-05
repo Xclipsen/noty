@@ -34,14 +34,20 @@ public enum TextCalculator {
         return inline(line, lineStart: start, caret: caret)
     }
 
-    /// „- “ at the start of a line is a list marker of the app, no minus.
+    /// „-“ followed by a space or a tab at the start of a line is a list or
+    /// hanging mark of the app (`TextParagraphPrefix`, the rule of the
+    /// indents), no minus.
     private static func isDashItem(_ line: String) -> Bool {
-        line.drop { $0 == " " || $0 == "\t" }.hasPrefix("- ")
+        let source = line as NSString, prefix = TextParagraphPrefix(in: source, at: 0)
+        return prefix.marker.map { source.substring(with: $0) == "-" } ?? false
     }
 
     private static func inline(_ line: String, lineStart: Int, caret: Int) -> Calculation? {
         var body = line
-        if isDashItem(line) { body = String(line.drop { $0 == " " || $0 == "\t" }.dropFirst(2)) }
+        // A mark („- “, „-⇥“, „• “, „1.⇥“, „->“) and a label („Bsp.:⇥“, „• Def.:⇥⇥“) in
+        // front are no part of the calculation, as for the indents.
+        let prefix = TextParagraphPrefix(in: line as NSString, at: 0)
+        if prefix.mark != nil || prefix.label != nil { body = (line as NSString).substring(from: prefix.body) }
         guard let expression = expressionTail(of: body), let value = evaluate(expression), let result = format(value) else { return nil }
         let length = (line.replacingOccurrences(of: #"\s+$"#, with: "", options: .regularExpression) as NSString).length
         let location = lineStart + length
@@ -66,10 +72,10 @@ public enum TextCalculator {
         if scalars.count < line.count {
             let before = line[line.index(line.endIndex, offsetBy: -(scalars.count + 1))]
             if before.isLetter || before.isNumber, scalars.first?.isNumber == true { return nil }
-            if !"=≈".contains(before), tail.range(of: #"^([:.,)]\s+[0-9(]|[0-9])"#, options: .regularExpression) == nil { return nil }
+            if !"=≈".contains(before), tail.range(of: #"^([:.,)]+\s+[0-9(]|[0-9])"#, options: .regularExpression) == nil { return nil }
         }
-        // „Summe: 2+3“, „a) 2+3“, then numbered labels like „3: 2+3“, „1. 2+3“, „(2) 2+3“.
-        if let mark = tail.range(of: #"^[:.,)]\s+"#, options: .regularExpression) { tail.removeSubrange(mark) }
+        // „Summe: 2+3“, „Bsp.: 2+3“, „a) 2+3“, then numbered labels like „3: 2+3“, „1. 2+3“, „(2) 2+3“.
+        if let mark = tail.range(of: #"^[:.,)]+\s+"#, options: .regularExpression) { tail.removeSubrange(mark) }
         while let label = tail.range(of: #"^\(?[0-9]+[:.)]\s+"#, options: .regularExpression) { tail.removeSubrange(label) }
         guard isCalculation(tail), evaluate(tail) != nil else { return nil }
         return tail

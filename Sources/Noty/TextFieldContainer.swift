@@ -64,14 +64,17 @@ final class TextFieldContainer: UIView {
     var content: TextBox?
     var automaticLight: Bool?
     /// The editor's hanging indents (`TextObjectLayer.refreshHanging`,
-    /// `decideHanging`): for which text, width and lines, whether they are on,
-    /// the heights measured for both layouts and the stored height decided for.
+    /// `decideHanging`): for which text, width, tab grid and lines, whether
+    /// they are on, the heights measured for both layouts and the stored
+    /// height decided for.
     var hanging: HangingState?
     struct HangingState {
         var text: String
         var runs: [TextRun]?
         var style: TextBoxStyle
         var width: CGFloat
+        /// The field's tab grid (`TextTabs.interval`): the edges stand on it.
+        var tabs: CGFloat
         var grid: TextLineGrid?
         /// The storage holds the hanging indents (false: laid out without).
         var active: Bool
@@ -79,8 +82,8 @@ final class TextFieldContainer: UIView {
         var heights: [Bool: Double] = [:]
         /// The stored height the decision was made for; nil: not decided yet.
         var decidedFor: Double?
-        func matches(_ box: TextBox, width: CGFloat, grid: TextLineGrid?) -> Bool {
-            self.width == width && self.grid == grid && text == box.text && runs == box.runs && style == box.style
+        func matches(_ box: TextBox, width: CGFloat, tabs: CGFloat, grid: TextLineGrid?) -> Bool {
+            self.width == width && self.tabs == tabs && self.grid == grid && text == box.text && runs == box.runs && style == box.style
         }
     }
     /// This field's part of a selection over several pages (`TextFlowSelection`).

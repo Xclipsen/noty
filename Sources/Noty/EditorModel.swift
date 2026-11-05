@@ -703,8 +703,12 @@ final class EditorModel: ObservableObject {
         let drawingStep: Notebook.InkRecolor? = scope == .wholeNotebook ? inkRecolorStep : nil
         var changed = 0
         let action: (inout Notebook) throws -> UUID? = { document in
+            let before = document
             changed = try document.setPageDefaults(paper: paper, color: color, scope: scope,
                                                    emptyPageIDs: empty, recolorDrawing: drawingStep)
+            // Fields aligned to the lines get the height of their new lines where they would overflow.
+            document = document.refittingText(toLinesOf: before)
+            try document.validate()
             return nil
         }
         let converted = editPages(resetEditor: scope == .wholeNotebook, action)
@@ -723,7 +727,10 @@ final class EditorModel: ObservableObject {
     func setDocumentPaper(paper: PaperStyle, color: PaperColor, trailingDraft: Page?) -> Bool {
         let step = inkRecolorStep, layout = flowLayout(trailingDraft)
         guard editPages(resetEditor: true, { document in
+            let before = document
             document = try document.changingTextDocumentPaper(paper, color: color, layout: layout, recolorDrawing: step)
+                .refittingText(toLinesOf: before)
+            try document.validate()
             return nil
         }) else { return false }
         fileStatus = "Papier geändert"

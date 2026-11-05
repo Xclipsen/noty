@@ -371,6 +371,24 @@ extension TextBox {
               mutable.applyHangingIndents(width: width) else { return nil }
         return mutable
     }
+    /// A field whose lines changed under it (another paper or writing space,
+    /// a copy pasted onto another page, a scaled lasso group): if its text
+    /// overflows its stored height there, the height comes from the text
+    /// again by the rule of an edit (`TextIndentLayout.fittedHeight`, with
+    /// hanging indents where they fit up to the page edge); otherwise it stays
+    /// as it is. Place and width stay; flow segments belong to their flow.
+    @MainActor func refitted(paper: TextLinePaper, limits: PageRect) -> TextBox {
+        guard flowID == nil else { return self }
+        let hung = Double(TextObjectLayout(self, paper: paper, hanging: .always).usedHeight)
+        if TextIndentLayout.hangs(self, heightWithHanging: hung) { return self }
+        let plain = Double(TextObjectLayout(self, paper: paper, hanging: .never).usedHeight)
+        guard overflows(textHeight: plain) else { return self }
+        let line = ceil(style.fontSize * TextStylePreset.lineHeightFactor * paper.coordinateScale(for: self))
+        var result = self
+        result.height = TextIndentLayout.fittedHeight(hung: hung, plain: { plain }, line: line,
+                                                      room: { maximumHeight(in: limits, minimum: $0) }).height
+        return result
+    }
     @MainActor mutating func capture(_ value: NSAttributedString) {
         text = value.string
         var collected: [TextRun] = []
@@ -636,5 +654,29 @@ enum TextFieldStyleRendering {
             context.addPath(CGPath(roundedRect: frame, cornerWidth: radius, cornerHeight: radius, transform: nil))
             context.setStrokeColor(stroke.cgColor); context.setLineWidth(CGFloat(TextBox.fieldBorderWidth)); context.strokePath()
         }
+    }
+}
+
+extension Notebook {
+    /// After a change of paper or writing space: the free fields whose lines
+    /// changed (an aligned field from blank onto lined paper) get their
+    /// height from the text where it would overflow now (`TextBox.refitted`);
+    /// every other field and page stays exactly as it was.
+    @MainActor func refittingText(toLinesOf previous: Notebook) -> Notebook {
+        let before = Dictionary(previous.pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var result = self
+        for index in result.pages.indices {
+            let page = result.pages[index]
+            guard let old = before[page.id], var boxes = page.textBoxes, !boxes.isEmpty else { continue }
+            let paper = page.linePaper, oldPaper = old.linePaper
+            guard paper != oldPaper else { continue }
+            var changed = false
+            for box in boxes.indices where boxes[box].flowID == nil && paper.grid(for: boxes[box]) != oldPaper.grid(for: boxes[box]) {
+                let fitted = boxes[box].refitted(paper: paper, limits: page.textBounds)
+                if fitted != boxes[box] { boxes[box] = fitted; changed = true }
+            }
+            if changed { result.pages[index].textBoxes = boxes }
+        }
+        return result
     }
 }
