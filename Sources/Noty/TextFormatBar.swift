@@ -378,7 +378,8 @@ extension TextObjectLayer {
     }
     func updateAccessory() {
         guard let selectedID, let box = boxes.first(where: { $0.id == selectedID }), let field = fields[selectedID] else { return }
-        field.editor.accessibilityHint = neededHeight(field.editor, width: box.width) > box.height + 1
+        let scale = coordinateScale(for: box)
+        field.editor.accessibilityHint = editorHeight(field.editor, width: box.width / scale, scale: scale) > box.height + 1
             ? "Textfeld am Seitenende · Text bleibt vollständig gespeichert." : nil
         let style = selectionStyle ?? box.style
         var shown = style

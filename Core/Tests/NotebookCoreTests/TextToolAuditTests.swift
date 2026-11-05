@@ -89,7 +89,8 @@ final class TextToolAuditTests: XCTestCase {
         // Button state, ⌘⇧7/8/9 and Tab use the same lines.
         XCTAssertFalse(TextListEditing.isActive(.bullet, in: "• a\n• b\nc", range: NSRange(location: 0, length: 9)))
         XCTAssertTrue(TextListEditing.isActive(.bullet, in: "• a\n• b\nc", range: NSRange(location: 0, length: 7)))
-        XCTAssertEqual(TextBox(text: "• a\n• b").listNesting(selection: NSRange(location: 0, length: 5), outdent: false)?.paragraphs.count, 2)
+        XCTAssertEqual(TextIndentEditing.tab(TextBox(text: "• a\n• b"), selection: NSRange(location: 0, length: 5), outdent: false)?
+            .edits.filter { $0.replacement == "\t" }.count, 2)
     }
 
     func testEmptyLinesOfASelectionStayEmpty() {

@@ -246,6 +246,8 @@ extension TextBoxStyle {
         case .right: .right
         case .justified: .justified
         }
+        // The stored indent is the first line's; `headIndent` gets the hanging
+        // edge where the text is laid out (`applyHangingIndents`).
         paragraph.headIndent = indent ?? 0; paragraph.firstLineHeadIndent = indent ?? 0
         // The system's twelve stops end after 336 pt, a tab behind them wrapped
         // the line. One endless grid instead (`TextTabs`).
@@ -309,7 +311,9 @@ extension TextBoxStyle {
         }
         if let paragraph = attributes[.paragraphStyle] as? NSParagraphStyle {
             alignment = switch paragraph.alignment { case .center: .center; case .right: .right; case .justified: .justified; default: .left }
-            indent = min(240, max(0, paragraph.headIndent))
+            // Never `headIndent`: it holds the derived hanging edge.
+            indent = TextIndentLayout.storedIndent(firstLineHeadIndent: Double(paragraph.firstLineHeadIndent),
+                                                   headIndent: Double(paragraph.headIndent))
         }
         link = (attributes[.link] as? URL)?.absoluteString ?? attributes[.link] as? String
         if let value = link, value.utf8.count > 2048 || !["https", "http", "mailto"].contains(URL(string: value)?.scheme?.lowercased() ?? "") { link = nil }
@@ -346,6 +350,9 @@ extension HighlightColor {
 }
 
 extension TextBox {
+    /// The stored text and formats, without hanging indents: the text
+    /// document's buffer, the editor's start and every layout without them
+    /// (flows hang nowhere, see `hangingText(width:)`).
     @MainActor var attributedText: NSAttributedString {
         let value = NSMutableAttributedString(string: text, attributes: style.attributes)
         for run in runs ?? [] where run.location >= 0 && run.length > 0 && run.location <= value.length && run.length <= value.length-run.location {
@@ -353,6 +360,16 @@ extension TextBox {
         }
         value.applyTabGrid(CGFloat(TextTabs.interval(self)))
         return value
+    }
+    /// The text with its hanging indents at `width` (the field's text width in
+    /// its own units); nil when no paragraph hangs, or for flow segments of a
+    /// text document: their page breaks come from the document's own buffer,
+    /// which knows no hanging indent (docs/TEXT-FIELDS.md). Whether a field is
+    /// laid out with them decides `TextObjectLayout` (`TextIndentLayout.hangs`).
+    @MainActor func hangingText(width: CGFloat) -> NSAttributedString? {
+        guard flowID == nil, let mutable = attributedText.mutableCopy() as? NSMutableAttributedString,
+              mutable.applyHangingIndents(width: width) else { return nil }
+        return mutable
     }
     @MainActor mutating func capture(_ value: NSAttributedString) {
         text = value.string
@@ -365,6 +382,59 @@ extension TextBox {
 }
 
 extension NSMutableAttributedString {
+    /// Hanging indents (`TextIndentLayout.hangingEdge`) of the paragraphs
+    /// touching `range` (nil: all) at text width `width`: `headIndent` becomes
+    /// the edge, `firstLineHeadIndent` (the stored indent) stays. The one place
+    /// that measures a prefix for every layout path. True if anything changed.
+    @MainActor @discardableResult
+    func applyHangingIndents(width: CGFloat, in range: NSRange? = nil) -> Bool {
+        let text = string as NSString
+        guard text.length > 0, width > 0, width.isFinite else { return false }
+        let area = range.map { TextLines.paragraphRange(text, NSRange(location: min($0.location, text.length),
+                                                                       length: min($0.length, text.length - min($0.location, text.length)))) }
+            ?? NSRange(location: 0, length: text.length)
+        var changed = false, cursor = area.location
+        beginEditing()
+        while cursor < NSMaxRange(area), cursor < text.length {
+            let paragraph = TextLines.paragraphRange(text, NSRange(location: cursor, length: 0))
+            guard paragraph.length > 0 else { break }
+            cursor = NSMaxRange(paragraph)
+            let style = attribute(.paragraphStyle, at: paragraph.location, effectiveRange: nil) as? NSParagraphStyle ?? .default
+            let prefix = TextParagraphPrefix(in: text, at: paragraph.location)
+            let fontAt = min(prefix.body < prefix.end ? prefix.body : paragraph.location, text.length - 1)
+            let em = (attribute(.font, at: fontAt, effectiveRange: nil) as? UIFont)?.pointSize ?? 14
+            let alignment: NotebookCore.TextAlignment? = switch style.alignment { case .center: .center; case .right: .right; default: nil }
+            let edge = CGFloat(TextIndentLayout.hangingEdge(in: text, at: paragraph.location, indent: Double(style.firstLineHeadIndent),
+                tabInterval: Double(style.defaultTabInterval > 0 ? style.defaultTabInterval : 35), width: Double(width), em: Double(em),
+                alignment: alignment) { part in Double(self.attributedSubstring(from: part).size().width) })
+            enumerateAttribute(.paragraphStyle, in: paragraph) { value, part, _ in
+                let current = value as? NSParagraphStyle ?? .default
+                guard abs(current.headIndent - edge) > 0.01 else { return }
+                let next = (current.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
+                next.headIndent = edge
+                addAttribute(.paragraphStyle, value: next, range: part)
+                changed = true
+            }
+        }
+        endEditing()
+        return changed
+    }
+    /// Back to the layout without hanging indents: `headIndent` = `firstLineHeadIndent`
+    /// (also removes edges pasted from elsewhere). True if anything changed.
+    @discardableResult
+    func removeHangingIndents() -> Bool {
+        var changed = false
+        beginEditing()
+        enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: length)) { value, part, _ in
+            guard let current = value as? NSParagraphStyle, abs(current.headIndent - current.firstLineHeadIndent) > 0.01,
+                  let next = current.mutableCopy() as? NSMutableParagraphStyle else { return }
+            next.headIndent = next.firstLineHeadIndent
+            addAttribute(.paragraphStyle, value: next, range: part)
+            changed = true
+        }
+        endEditing()
+        return changed
+    }
     /// Every paragraph on the same endless grid (`TextTabs`). True if anything changed.
     @discardableResult
     func applyTabGrid(_ interval: CGFloat) -> Bool {
@@ -396,18 +466,27 @@ struct TextObjectLayout {
     let rotation: CGFloat
     /// `limitedTo`: only as many lines as this height (page units) holds, for
     /// measuring a page of a long flow; the rest stays without layout.
+    /// Hanging indents (`TextIndentLayout.hangs`): `ifFits` for everything
+    /// that shows a field, `always` to measure the height an edit stores
+    /// (`TextObjectLayer.fitted`), `never` where only the width counts.
+    enum Hanging { case ifFits, always, never }
+    /// The text is laid out with its hanging indents.
+    private(set) var hangs = false
+
     init(_ box: TextBox, on page: Page, limitedTo limit: Double? = nil) {
         self.init(box, paper: page.linePaper, limitedTo: limit)
     }
     /// The line layout of `paper` (`TextLinePaper.grid(for:)`): flow segments,
     /// migrated fields and fields aligned to the paper lines stand on them.
-    init(_ box: TextBox, paper: TextLinePaper, limitedTo limit: Double? = nil) {
-        self.init(box, grid: paper.grid(for: box), coordinateScale: CGFloat(paper.coordinateScale(for: box)), limitedTo: limit)
+    init(_ box: TextBox, paper: TextLinePaper, limitedTo limit: Double? = nil, hanging: Hanging = .ifFits) {
+        self.init(box, grid: paper.grid(for: box), coordinateScale: CGFloat(paper.coordinateScale(for: box)), limitedTo: limit, hanging: hanging)
     }
-    init(_ box: TextBox, grid: TextLineGrid? = nil, coordinateScale: CGFloat = 1, limitedTo limit: Double? = nil) {
+    init(_ box: TextBox, grid: TextLineGrid? = nil, coordinateScale: CGFloat = 1, limitedTo limit: Double? = nil, hanging: Hanging = .ifFits) {
         self.coordinateScale = coordinateScale
         rotation = CGFloat(box.angle * .pi / 180)
-        storage = NSTextStorage(attributedString: box.attributedText)
+        let plain = box.attributedText
+        let hung = hanging == .never || limit != nil ? nil : box.hangingText(width: CGFloat(box.width) / coordinateScale)
+        storage = NSTextStorage(attributedString: hung ?? plain)
         manager = TaskLayoutManager()
         ruling = RuledTextLayout(); ruling.grid = grid; manager.delegate = ruling
         // A line of the largest size more than the page, so the last one is never cut off by the container.
@@ -416,6 +495,14 @@ struct TextObjectLayout {
         container.lineFragmentPadding = 0
         storage.addLayoutManager(manager); manager.addTextContainer(container)
         manager.ensureLayout(for: container)
+        guard hung != nil else { return }
+        hangs = true
+        // Only where the text then fits the stored height; otherwise exactly as before.
+        if hanging == .ifFits, !TextIndentLayout.hangs(box, heightWithHanging: Double(contentHeight(box))) {
+            storage.setAttributedString(plain)
+            manager.ensureLayout(for: container)
+            hangs = false
+        }
     }
     var usedHeight: CGFloat { ceil(manager.usedRect(for: container).height * coordinateScale) }
     /// `usedHeight` without the empty line behind a final line break: in a

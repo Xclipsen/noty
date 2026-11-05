@@ -15,6 +15,8 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Einzug und Listen neu (`feat/einzug2`, 05.11.2026):** Ebenen sind führende Tabs; Tab im Präfix rückt den Absatz ein, sonst tippt er einen Tab (beide Tastaturen gleich), ⇧Tab löscht nie einen Tab mitten in der Zeile; Return und ⌫ nach festen Regeln, „- “ bleibt „- “; hängender Einzug für Listen, Pfeile, Etiketten („Bsp.:\t\t…“) und Tab-Absätze in Textfeldern; `->` wird beim Tippen `→` (abschaltbar). Kein Formatwechsel. Implementiert und gebaut, nicht installiert, am iPad ungeprüft ([Regeln](docs/TEXT-FIELDS.md), [Gerätetest](docs/TESTING.md)).
+
 **Build 69 (`extras/build69`):** Helix-Erweiterungen (Register, `.`, Makros, Sprungliste, Teilen, Absätze, Klammerpaare, Einzug), [Tastatur](docs/KEYBOARD.md) in Seitenleiste, Suche, Gesetzen, eigenen Dialogen und Farbauswahl, im Textdokument manueller Seitenumbruch, Papierwechsel, Word- und RTF-Export, Suche über Seitenwechsel und Zurückrücken beim Kürzen. Kein Formatwechsel. Implementiert und gebaut, am iPad ungeprüft.
 
 **Build 68 (`phase1/fixes`):** Korrekturen aus dem Review des Tastaturmodus für beide Textwege: `c`, `i`, `o` nur noch an sichtbaren Stellen, `~`, `` ` ``, `r` erhalten Formate, Modus bleibt bei programmatischem Fokus, ein Esc oder Tab wirkt genau einmal; Texteditor 2 verliert bei fehlendem Platz keine Eingabe. Implementiert, gebaut und installiert (alle 28 Dokumente unverändert), am iPad ungeprüft ([Gerätetest](docs/KEYBOARD.md#gerätetest-gebündelt-alles-ungeprüft)).

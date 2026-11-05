@@ -97,6 +97,7 @@ extension TextBox {
         textHeight.isFinite && textHeight > height + Self.overflowTolerance
     }
 
+
     /// Axis-aligned bounds of the rotated visible frame (with the style's
     /// padding): page limits, selection, lasso, snapping and transfers.
     public var rotatedBounds: PageRect {

@@ -245,7 +245,8 @@ public enum TextDocumentExport {
             let rest = String(line.dropFirst(leading.count))
             let leadingLength = (String(leading) as NSString).length
             if let marker = TextListEditing.prefix(rest) {
-                let level = box.listLevel(at: range.location)
+                // The level: older indent plus the tabs in front of the mark.
+                let level = box.listLevel(at: range.location) + leading.filter { $0 == "\t" }.count
                 let indentation = String(repeating: "    ", count: level)
                 let content = NSRange(location: range.location + leadingLength + (marker as NSString).length,
                                       length: range.length - leadingLength - (marker as NSString).length)

@@ -54,7 +54,7 @@ extension TextDocumentExport {
             }
             let end = NSMaxRange(range)
             return Block(preset: TextStylePreset.matching(first), style: first, marker: marker,
-                         level: marker == nil ? 0 : box.listLevel(at: range.location), spans: spans,
+                         level: marker == nil ? 0 : box.listLevel(at: range.location) + leading.filter { $0 == "\t" }.count, spans: spans,
                          pageBreak: end < source.length && source.character(at: end) == TextLines.pageBreak)
         }
     }
