@@ -172,7 +172,9 @@ extension WorksheetView {
     /// goes to the model, or, when that is not possible, the freehand stroke
     /// as drawn. It never stays only on screen.
     func settleHeldStroke() {
-        guard heldShape != nil else { return }
+        // Never from inside this sheet's own update (no model change there);
+        // its tool-change branch keeps the stroke instead.
+        guard heldShape != nil, !updating else { return }
         commitPendingHeldStroke()
         guard heldShape != nil else { return }
         holdSerial += 1; clearHeldPreview()
