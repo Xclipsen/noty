@@ -22,6 +22,23 @@ final class EditorWorkspace: ObservableObject {
             restoreDirectory: root.appendingPathComponent("Restores", isDirectory: true),
             preferredPageID: document.preferredPageID, libraryTitle: document.title)
         models = [document.id: primary]
+        InputProbe.register("Arbeitsbereich", state: { [weak self] in self?.probeState })
+        // Paused input blocks writing and moving; long busy is reported later
+        // (a big notebook may load slowly).
+        InputProbe.lock("Pause", after: 15) { [weak self] in
+            guard let self else { return nil }
+            return (models.values.contains { $0.mutationsPaused }, probeState)
+        }
+        InputProbe.lock("Beschäftigt", after: 90) { [weak self] in
+            guard let self else { return nil }
+            return (models.values.contains { $0.busy }, probeState)
+        }
+    }
+    /// Stage of a running backup commit, for input reports (`InputProbe`).
+    private var commitStage = ""
+    private var probeState: String {
+        "ansicht=\(activePane) zweite=\(secondary != nil) schließt=\(closing) backup-commit=\(commitStage.isEmpty ? "-" : commitStage) | "
+            + models.values.map(\.probeState).joined(separator: " | ")
     }
     /// The single writer of an open notebook (either view), for filing a
     /// shared file into it (`IncomingFiling`).
@@ -79,11 +96,14 @@ final class EditorWorkspace: ObservableObject {
         for model in models.values { model.pauseMutations() }
         defer {
             for model in models.values { model.resumeMutations() }
-            closing = false
+            closing = false; commitStage = ""
         }
+        commitStage = "Werkzeugeinstellungen"
         guard await toolbox.flush() else { return .failed }
         guard models.values.allSatisfy({ !$0.busy && !$0.inputInProgress }) else { return .busy }
+        commitStage = "Speichern"
         for model in models.values { model.save() }
+        commitStage = "Warten auf Speichern"
         for model in models.values { if !(await model.waitForSave()) { return .failed } }
         return .committed
     }

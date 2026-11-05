@@ -1089,9 +1089,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         }
     }
 
-    @objc private func moveField(_ gesture: UIPanGestureRecognizer) { drag(gesture, kind: .move) }
-    @objc private func widenLeft(_ gesture: UIPanGestureRecognizer) { drag(gesture, kind: .left) }
-    @objc private func widenRight(_ gesture: UIPanGestureRecognizer) { drag(gesture, kind: .right) }
+    @objc private func moveField(_ gesture: UIPanGestureRecognizer) { noteProbe(gesture); drag(gesture, kind: .move) }
+    @objc private func widenLeft(_ gesture: UIPanGestureRecognizer) { noteProbe(gesture); drag(gesture, kind: .left) }
+    @objc private func widenRight(_ gesture: UIPanGestureRecognizer) { noteProbe(gesture); drag(gesture, kind: .right) }
+    private func noteProbe(_ gesture: UIGestureRecognizer) { if gesture.state == .began { InputProbe.noteEffect() } }
     /// While editing: the frame zone moves the field (through the one move
     /// path, `ObjectMovement`), the width points set a fixed width. The field
     /// keeps its caret; the model gets one change when the drag ends.

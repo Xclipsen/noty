@@ -250,6 +250,15 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private var textEditing = false
     /// A held result waiting for PencilKit also keeps the sheet loaded.
     var hasLiveInput: Bool { touching || textEditing || heldShape != nil }
+    /// For input reports (`InputProbe`): states only, no content.
+    var probeDescription: String {
+        let drawing = canvas.drawingGestureRecognizer
+        return "werkzeug=\(tool) bearbeitbar=\(editable) fokus=\(worksheetFocused) berührt=\(touching) textbearbeitung=\(textEditing)"
+            + " tinte=\(inkActive) form=\(heldShape != nil) radieren=\(eraseSession != nil || shapeErase != nil)"
+            + " auswahltinte=\(selectionInkSource != nil) lineal=\(rulerLine != nil)/\(rulerWatching != nil)/\(rulerStroke.isEnabled)"
+            + " aktualisiert=\(updating) canvas[ui=\(canvas.isUserInteractionEnabled) zeichnen=\(drawing.isEnabled):\(drawing.state.rawValue)"
+            + " policy=\(canvas.drawingPolicy.rawValue) responder=\(canvas.isFirstResponder)] objekte[\(objectLayer.probeState)]"
+    }
     var editingCaret: CGRect? { textLayer.editingCaret.map { textLayer.convert($0, to: self) } }
     /// Why the caret last moved (typing, typewriter, navigation); read once per reveal.
     func takeCaretReveal() -> CaretReveal? { textLayer.takeCaretReveal() }
@@ -399,9 +408,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
                 // never ends a finger selection: erasing ends it here, like
                 // writing (Audit 7f8bfe7, Radierer Fund 3).
                 self.objectLayer.endTouchSelection(); self.claimSelectionFocus()
-                self.beginErase()
+                self.beginErase(); InputProbe.noteEffect()
             }
-            if self.editable, self.tool == .precisionEraser { self.beginShapeErase() }
+            if self.editable, self.tool == .precisionEraser { self.beginShapeErase(); InputProbe.noteEffect() }
             let base = self.inkActive ? (self.holdBase ?? self.pageContent) : self.pageContent
             self.clearHeldPreview(); self.holdSerial += 1; self.holdPoints = []
             self.holdBase = base
@@ -1269,6 +1278,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         canvasSource = nil; updating = wasUpdating
     }
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+        InputProbe.noteEffect()
         inkActive = true; strokeTool = tool
         // First stroke in the inactive view: it draws and activates the view
         // (its tool, undo and saving follow), no extra tap needed.
@@ -1416,3 +1426,5 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         return drawing.transformed(using: translation.inverted()).dataRepresentation()
     }
 }
+
+extension WorksheetView: InputProbeDescribing {}
