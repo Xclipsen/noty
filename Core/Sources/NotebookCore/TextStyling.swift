@@ -89,7 +89,7 @@ public struct TextStatistics: Equatable, Sendable {
     }
     static func strippingListMarker(_ line: Substring) -> Substring {
         let body = line.drop { $0 == " " || $0 == "\t" }
-        for marker in ["• ", "◦ ", "▪ ", "- ", "☐ ", "☑ "] where body.hasPrefix(marker) { return body.dropFirst(marker.count) }
+        for marker in ["• ", "◦ ", "▪ ", "- ", "☐ ", "☑ "] + TextListEditing.arrowMarkers where body.hasPrefix(marker) { return body.dropFirst(marker.count) }
         let digits = body.prefix { $0.isASCII && $0.isNumber }
         if !digits.isEmpty, digits.count <= 6, body.dropFirst(digits.count).hasPrefix(". ") { return body.dropFirst(digits.count + 2) }
         return line

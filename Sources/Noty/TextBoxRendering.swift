@@ -1,4 +1,5 @@
 import UIKit
+import CoreText
 import NotebookCore
 
 /// Draw task markers as vectors without changing stored text or typing attributes.
@@ -21,6 +22,8 @@ final class TaskLayoutManager: NSLayoutManager {
     }
     override func processEditing(for textStorage: NSTextStorage, edited editMask: NSTextStorage.EditActions, range newCharRange: NSRange,
                                  changeInLength delta: Int, invalidatedRange invalidatedCharRange: NSRange) {
+        // Before the layout of the edit: a prefix may have changed (`HangingTextContainer`).
+        for case let container as HangingTextContainer in textContainers { container.resetHangingIndents() }
         super.processEditing(for: textStorage, edited: editMask, range: newCharRange, changeInLength: delta, invalidatedRange: invalidatedCharRange)
         displayChanged()
     }
@@ -189,6 +192,58 @@ final class TaskLayoutManager: NSLayoutManager {
             line.move(to: CGPoint(x: origin.x + rect.minX, y: y))
             line.addLine(to: CGPoint(x: origin.x + rect.maxX, y: y)); line.stroke()
         }
+    }
+}
+
+/// The text container of every text layout (editor, previews, PDF, flow
+/// capacity, text editor 2): the wrapped lines of a paragraph with a prefix
+/// („•“, „->“, „a)“, leading tabs) start where its text starts on the first
+/// line (`TextHangingIndent`). Computed while laying out, from the text and
+/// its format alone: nothing is stored and no attribute changes, so all
+/// layouts wrap alike. The paragraph's own indent stays the stored one.
+class HangingTextContainer: NSTextContainer {
+    /// The paragraph measured last: layout runs through a paragraph line by
+    /// line, a long one is not searched again for each of them.
+    nonisolated(unsafe) private var measured: (start: Int, end: Int, width: CGFloat, extra: CGFloat)?
+    /// The text changed (`TaskLayoutManager.processEditing`).
+    nonisolated func resetHangingIndents() { measured = nil }
+    override var isSimpleRectangularTextContainer: Bool { false }
+    override func lineFragmentRect(forProposedRect proposedRect: CGRect, at characterIndex: Int, writingDirection baseWritingDirection: NSWritingDirection,
+                                   remaining remainingRect: UnsafeMutablePointer<CGRect>?) -> CGRect {
+        var rect = super.lineFragmentRect(forProposedRect: proposedRect, at: characterIndex, writingDirection: baseWritingDirection, remaining: remainingRect)
+        guard !rect.isEmpty, baseWritingDirection != .rightToLeft else { return rect }
+        let extra = hangingExtra(at: characterIndex)
+        guard extra > 0, extra < rect.width else { return rect }
+        // The paragraph's head indent applies inside this rect on top of the shift.
+        rect.origin.x += extra; rect.size.width -= extra
+        return rect
+    }
+    /// How far a line starting at `index` (inside a paragraph, not its first
+    /// line) stands right of the paragraph's head indent.
+    nonisolated private func hangingExtra(at index: Int) -> CGFloat {
+        guard let storage = layoutManager?.textStorage, index > 0, index < storage.length else { return 0 }
+        let width = size.width
+        if let measured, index > measured.start, index <= measured.end, measured.width == width { return measured.extra }
+        // `mutableString`: `string` would copy the whole text for every line.
+        let text: NSString = storage.mutableString
+        let start = TextLines.start(text, index)
+        guard start < index else { return 0 }
+        let extra = Self.hangingExtra(storage, paragraphStart: start, width: width)
+        measured = (start, TextLines.end(text, index), width, extra)
+        return extra
+    }
+    nonisolated static func hangingExtra(_ storage: NSTextStorage, paragraphStart start: Int, width: CGFloat) -> CGFloat {
+        let paragraph = storage.attribute(.paragraphStyle, at: start, effectiveRange: nil) as? NSParagraphStyle ?? .default
+        // Centred or right-aligned text has no edge to hang from.
+        guard [.left, .natural, .justified].contains(paragraph.alignment), paragraph.baseWritingDirection != .rightToLeft else { return 0 }
+        let interval = paragraph.defaultTabInterval > 0 ? paragraph.defaultTabInterval : CGFloat(TextTabs.interval(fontSize: 14))
+        let body = TextHangingIndent.bodyStart(in: storage.mutableString, paragraphStart: start,
+            firstLineIndent: Double(paragraph.firstLineHeadIndent), tabInterval: Double(interval), width: Double(width)) { range in
+            // Typographic width with trailing white space, in the text's own format.
+            let line = CTLineCreateWithAttributedString(storage.attributedSubstring(from: range) as CFAttributedString)
+            return CTLineGetTypographicBounds(line, nil, nil, nil)
+        }
+        return body.map { max(0, CGFloat($0) - paragraph.headIndent) } ?? 0
     }
 }
 
@@ -412,7 +467,7 @@ struct TextObjectLayout {
         ruling = RuledTextLayout(); ruling.grid = grid; manager.delegate = ruling
         // A line of the largest size more than the page, so the last one is never cut off by the container.
         let height = limit.map { CGFloat($0) / coordinateScale + Self.glyphOverhang(box) * 4 } ?? .greatestFiniteMagnitude
-        container = NSTextContainer(size: CGSize(width: box.width / coordinateScale, height: height))
+        container = HangingTextContainer(size: CGSize(width: box.width / coordinateScale, height: height))
         container.lineFragmentPadding = 0
         storage.addLayoutManager(manager); manager.addTextContainer(container)
         manager.ensureLayout(for: container)

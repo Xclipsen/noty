@@ -231,7 +231,7 @@ final class PageTextView: UITextView {
     init(id: UUID) {
         objectID = id
         let storage = NSTextStorage(), manager = TaskLayoutManager()
-        let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        let container = HangingTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         container.widthTracksTextView = true; container.heightTracksTextView = false
         storage.addLayoutManager(manager); manager.addTextContainer(container)
         super.init(frame: .zero, textContainer: container)

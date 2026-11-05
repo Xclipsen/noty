@@ -7,12 +7,11 @@ import OSLog
 /// `DocumentPageRule` therefore asks with the moved bottom, the height of the
 /// container itself never decides. On a line of mixed fonts the ascent is an
 /// estimate from the proposed height: a bigger font proposes again.
-final class DocumentPageContainer: NSTextContainer {
+final class DocumentPageContainer: HangingTextContainer {
     nonisolated(unsafe) var index = 0
     nonisolated(unsafe) var rule = DocumentPageRule(height: 0)
     /// Room for a line that the rule refuses, not the container (largest font).
     static let spare: CGFloat = 240
-    override var isSimpleRectangularTextContainer: Bool { false }
     override func lineFragmentRect(forProposedRect proposedRect: CGRect, at characterIndex: Int, writingDirection baseWritingDirection: NSWritingDirection,
                                    remaining remainingRect: UnsafeMutablePointer<CGRect>?) -> CGRect {
         let rect = super.lineFragmentRect(forProposedRect: proposedRect, at: characterIndex, writingDirection: baseWritingDirection, remaining: remainingRect)
