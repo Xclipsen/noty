@@ -254,6 +254,28 @@ public enum WebUntis {
     }
 
     private struct Element: Decodable { let type: String; let id: Int; let orgId: Int? }
+    /// `homeWorks` entry of a period (community documented, unverified). A
+    /// malformed entry is skipped: homework is optional and never rejects
+    /// the timetable it came with.
+    private struct HomeWork: Decodable {
+        let id: String?; let lessonId: String?; let startDate: String?; let endDate: String?
+        let text: String?; let remark: String?; let completed: Bool; let attachments: Int
+        enum CodingKeys: String, CodingKey { case id, lessonId, startDate, endDate, text, remark, completed, attachments }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            func identifier(_ key: CodingKeys) -> String? {
+                if let number = try? c.decodeIfPresent(Int.self, forKey: key) { return String(number) }
+                return (try? c.decodeIfPresent(String.self, forKey: key))?.nilIfBlank
+            }
+            id = identifier(.id); lessonId = identifier(.lessonId)
+            startDate = try? c.decodeIfPresent(String.self, forKey: .startDate)
+            endDate = try? c.decodeIfPresent(String.self, forKey: .endDate)
+            text = try? c.decodeIfPresent(String.self, forKey: .text)
+            remark = try? c.decodeIfPresent(String.self, forKey: .remark)
+            completed = (try? c.decodeIfPresent(Bool.self, forKey: .completed)) == true
+            attachments = (try? c.decodeIfPresent([Ignored].self, forKey: .attachments))?.count ?? 0
+        }
+    }
     private struct Texts: Decodable { let lesson: String?; let substitution: String?; let info: String? }
     private struct Period: Decodable {
         let id: Int
@@ -264,7 +286,8 @@ public enum WebUntis {
         let states: [String]
         let texts: Texts?
         let hasExam: Bool
-        enum CodingKeys: String, CodingKey { case id, lessonId, startDateTime, endDateTime, elements, `is`, text, exam }
+        let homeWorks: [HomeWork]
+        enum CodingKeys: String, CodingKey { case id, lessonId, startDateTime, endDateTime, elements, `is`, text, exam, homeWorks }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = try c.decode(Int.self, forKey: .id)
@@ -278,6 +301,7 @@ public enum WebUntis {
             else { states = [] }
             texts = try? c.decodeIfPresent(Texts.self, forKey: .text)
             hasExam = c.contains(.exam) && (try? c.decodeNil(forKey: .exam)) == false
+            homeWorks = (try? c.decodeIfPresent([HomeWork].self, forKey: .homeWorks)) ?? []
         }
     }
     private struct Timetable: Decodable { let periods: [Period] }
@@ -288,7 +312,17 @@ public enum WebUntis {
     /// stored days. Lessons starting outside the range are dropped.
     public static func parseTimetable(_ data: Data, user: WebUntisUser, connection: UUID, timeZone: TimeZone,
                                       start: CivilDate, end: CivilDate) throws -> [CalendarLesson] {
+        try parseTimetableWithHomework(data, user: user, connection: connection, timeZone: timeZone, start: start, end: end).lessons
+    }
+
+    /// Lessons as `parseTimetable`, plus the homework delivered with the
+    /// periods in range (deduplicated by id, the first period wins; at most
+    /// `maximumHomework`). Homework never rejects the answer.
+    public static func parseTimetableWithHomework(_ data: Data, user: WebUntisUser, connection: UUID, timeZone: TimeZone,
+                                                  start: CivilDate, end: CivilDate) throws -> (lessons: [CalendarLesson], homework: [CalendarHomework]) {
         let result = try decode(TimetableResult.self, data)
+        var homework: [CalendarHomework] = []
+        var homeworkIDs = Set<String>()
         guard result.timetable.periods.count <= maximumPeriods else { throw WebUntisError.tooLarge }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
@@ -340,9 +374,24 @@ public enum WebUntis {
             lesson.text = [period.texts?.lesson, period.texts?.substitution, period.texts?.info]
                 .compactMap { $0?.nilIfBlank }.joined(separator: " · ").nilIfBlank
             lessons.append(lesson)
+            for item in period.homeWorks {
+                guard homework.count < maximumHomework, let id = item.id, id.count <= 100, let due = homeworkDate(item.endDate),
+                      homeworkIDs.insert(id).inserted else { continue }
+                var assigned = homeworkDate(item.startDate)
+                if let given = assigned, given > due { assigned = nil }
+                let entry = CalendarHomework(id: id, lessonID: (item.lessonId ?? period.lessonId.map(String.init)).map { String($0.prefix(100)) },
+                                             periodID: String(period.id), periodDate: from.date, assigned: assigned, due: due,
+                                             subject: lesson.subjectLong ?? lesson.subject, subjectID: lesson.subjectID,
+                                             text: String((item.text ?? "").prefix(20_000)),
+                                             remark: item.remark?.nilIfBlank.map { String($0.prefix(20_000)) },
+                                             completedInSource: item.completed, attachmentCount: min(item.attachments, 10_000))
+                if entry.isValid { homework.append(entry) }
+            }
         }
-        return lessons.sorted { ($0.start, $0.id) < ($1.start, $1.id) }
+        return (lessons.sorted { ($0.start, $0.id) < ($1.start, $1.id) }, homework.sorted { ($0.due, $0.id) < ($1.due, $1.id) })
     }
+
+    public static let maximumHomework = 5_000
 
     /// Best-effort mapping (only „REGULAR“ verified); unknown states are kept.
     static func status(_ raw: String) -> CalendarLessonStatus? {

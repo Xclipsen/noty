@@ -129,15 +129,19 @@ public enum CalendarArchive {
         return bytes
     }
 
-    /// The archive always carries the current calendar format exactly.
+    /// The archive carries the calendar format of the build that wrote it:
+    /// the current one, or an older one (format 3 archives of B3 builds),
+    /// read with the defaults of the newer fields like the package itself
+    /// (`CalendarStore.decodeStored`). A newer format is refused.
     static func decodeState(_ bytes: Data) throws -> CalendarState {
         struct Header: Decodable { var formatVersion: Int }
         guard let version = try? JSONDecoder().decode(Header.self, from: bytes).formatVersion else { throw CalendarArchiveError.invalid }
         guard version <= CalendarState.currentFormat else { throw CalendarArchiveError.unsupported(version) }
-        guard version == CalendarState.currentFormat else { throw CalendarArchiveError.invalid }
+        guard version >= 3 else { throw CalendarArchiveError.invalid }
         // No key beyond the known ones, also inside the connection record.
         guard let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-              Set(object.keys).isSubset(of: ["formatVersion", "events", "settings", "connection", "noteLinks", "lessonMappings", "deletedEvents"]) else {
+              Set(object.keys).isSubset(of: ["formatVersion", "events", "settings", "connection", "noteLinks", "lessonMappings",
+                                             "deletedEvents", "homeworkDone"]) else {
             throw CalendarArchiveError.invalid
         }
         if let connection = object["connection"] {
@@ -145,11 +149,8 @@ public enum CalendarArchive {
                 throw CalendarArchiveError.invalid
             }
         }
-        do {
-            let state = try JSONDecoder().decode(CalendarState.self, from: bytes)
-            try state.validate()
-            return state
-        } catch { throw CalendarArchiveError.invalid }
+        do { return try CalendarStore.decodeStored(bytes).state }
+        catch { throw CalendarArchiveError.invalid }
     }
 
     static func decodeSource(_ bytes: Data) throws -> CalendarSourceSnapshot {
@@ -184,6 +185,8 @@ public enum CalendarArchive {
             guard let mapped = folders[folder] else { throw CalendarArchiveError.danglingReference }
             state.settings.notesFolderID = mapped
         }
+        // System calendars are a source too: off until the user connects them on this device.
+        state.settings.systemCalendars?.enabled = false
         var source = content.source
         if let old = state.connection {
             let record = CalendarConnectionRecord(id: connection, kind: old.kind, label: old.label, timeZone: old.timeZone,

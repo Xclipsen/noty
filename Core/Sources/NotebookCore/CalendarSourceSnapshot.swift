@@ -117,8 +117,12 @@ public struct CalendarTimetableFetch: Sendable, Equatable {
     /// When the request started (an older answer never replaces a newer day).
     public let fetchedAt: Date
     public let lessons: [CalendarLesson]
-    public init(connection: UUID, start: CivilDate, end: CivilDate, fetchedAt: Date, lessons: [CalendarLesson]) {
+    /// Homework delivered with the periods of this range (may be empty).
+    public let homework: [CalendarHomework]
+    public init(connection: UUID, start: CivilDate, end: CivilDate, fetchedAt: Date, lessons: [CalendarLesson],
+                homework: [CalendarHomework] = []) {
         self.connection = connection; self.start = start; self.end = end; self.fetchedAt = fetchedAt; self.lessons = lessons
+        self.homework = homework
     }
 }
 
@@ -144,6 +148,11 @@ public struct CalendarSourceSnapshot: Equatable, Sendable, Codable {
     public var days: [String: Double] = [:]
     public var holidays: [CalendarHoliday] = []
     public var holidaysFetchedAt: Date?
+    /// Homework (06.11.2026), replaced by the days of the period it came
+    /// with. An optional key of cache format 1: older builds ignore it and
+    /// drop it on their next write (the cache is replaceable; the next
+    /// refresh brings it back). Marks „erledigt“ are not here (state).
+    public var homework: [CalendarHomework] = []
 
     public init(connection: UUID) { self.connection = connection }
 
@@ -186,6 +195,12 @@ public struct CalendarSourceSnapshot: Equatable, Sendable, Codable {
         guard !taken.isEmpty else { return 0 }
         lessons.removeAll { taken.contains($0.date) }
         lessons += fetch.lessons.filter { taken.contains($0.date) && $0.key.connection == connection }
+        let incoming = fetch.homework.filter { taken.contains($0.periodDate) && $0.isValid }
+        let incomingIDs = Set(incoming.map(\.id))
+        homework.removeAll { taken.contains($0.periodDate) || incomingIDs.contains($0.id) }
+        homework += incoming
+        homework.sort { ($0.due, $0.id) < ($1.due, $1.id) }
+        if homework.count > WebUntis.maximumHomework * 2 { homework.removeFirst(homework.count - WebUntis.maximumHomework * 2) }
         for day in taken { days[day.description] = time }
         lessons.sort { ($0.start, $0.id) < ($1.start, $1.id) }
         prune(keepingAround: fetch.start)
@@ -207,6 +222,7 @@ public struct CalendarSourceSnapshot: Equatable, Sendable, Codable {
             let day = ordered[index]
             days[day.description] = nil
             lessons.removeAll { $0.date == day }
+            homework.removeAll { $0.periodDate == day }
             index += 1
         }
     }
@@ -217,10 +233,12 @@ public struct CalendarSourceSnapshot: Equatable, Sendable, Codable {
               days.keys.allSatisfy({ CivilDate($0) != nil }), days.values.allSatisfy({ $0.isFinite }),
               Set(lessons.map(\.id)).count == lessons.count,
               lessons.allSatisfy({ $0.end >= $0.start && $0.key.connection == connection && days[$0.date.description] != nil }),
-              holidays.allSatisfy({ $0.end > $0.start }) else { throw CalendarStoreError.invalidState }
+              holidays.allSatisfy({ $0.end > $0.start }),
+              homework.count <= WebUntis.maximumHomework * 2, Set(homework.map(\.id)).count == homework.count,
+              homework.allSatisfy({ $0.isValid && days[$0.periodDate.description] != nil }) else { throw CalendarStoreError.invalidState }
     }
 
-    private enum CodingKeys: String, CodingKey { case formatVersion, connection, lessons, days, holidays, holidaysFetchedAt }
+    private enum CodingKeys: String, CodingKey { case formatVersion, connection, lessons, days, holidays, holidaysFetchedAt, homework }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         formatVersion = try c.decode(Int.self, forKey: .formatVersion)
@@ -231,12 +249,14 @@ public struct CalendarSourceSnapshot: Equatable, Sendable, Codable {
         days = try c.decode([String: Double].self, forKey: .days)
         holidays = try c.decode([CalendarHoliday].self, forKey: .holidays)
         holidaysFetchedAt = try c.decodeIfPresent(Double.self, forKey: .holidaysFetchedAt).map { Date(timeIntervalSinceReferenceDate: $0) }
+        homework = try c.decodeIfPresent([CalendarHomework].self, forKey: .homework) ?? []
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(formatVersion, forKey: .formatVersion); try c.encode(connection, forKey: .connection)
         try c.encode(lessons, forKey: .lessons); try c.encode(days, forKey: .days); try c.encode(holidays, forKey: .holidays)
         try c.encodeIfPresent(holidaysFetchedAt?.timeIntervalSinceReferenceDate, forKey: .holidaysFetchedAt)
+        if !homework.isEmpty { try c.encode(homework, forKey: .homework) }
     }
 }
 

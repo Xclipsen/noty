@@ -42,7 +42,15 @@ extension PageWorkflowCheck {
         state.noteLinks = [CalendarNoteLink(target: .lesson(anchor), documentID: note.id, pageID: note.pages[0].id, createdAt: created,
                                             contextTitle: "Mathematik", contextStart: at(10, 8), contextEnd: at(10, 8, 45)),
                            CalendarNoteLink(target: .local(event: gone.id, date: nil), documentID: note.id, createdAt: created,
-                                            contextTitle: "Zahnarzt", contextStart: at(12, 10), contextEnd: at(12, 11))]
+                                            contextTitle: "Zahnarzt", contextStart: at(12, 10), contextEnd: at(12, 11)),
+                           // Format 4: note of a system calendar occurrence (fictitious identifiers).
+                           CalendarNoteLink(target: .system(CalendarSystemAnchor(externalID: "ERFUNDEN-EXT-1", itemID: "erfunden-item-1",
+                                                                                 calendarID: "erfunden-kalender", occurrence: at(13, 9))),
+                                            documentID: note.id, createdAt: created, contextTitle: "Teamtermin",
+                                            contextStart: at(13, 9), contextEnd: at(13, 10))]
+        state.settings.systemCalendars = CalendarSystemSettings(enabled: true, hiddenCalendars: ["erfunden-geburtstage"],
+                                                                defaultTarget: "erfunden-kalender")
+        state.homeworkDone = [CalendarHomeworkMark(source: WebUntis.sourceIdentity(setup), homeworkID: "9001", doneAt: created)]
         state.lessonMappings = [CalendarLessonMapping(source: anchor.source, fromPeriodID: "4711", fromDate: CivilDate("2026-11-10")!,
                                                       toPeriodID: "4800", toDate: CivilDate("2026-11-11")!, confirmedAt: created)]
         state.settings.subjectColors = ["webuntis:12": "indigo"]; state.settings.notesFolderID = folder
@@ -54,8 +62,11 @@ extension PageWorkflowCheck {
                                                                originalStart: "2026-11-11T08:00"),
                                     date: CivilDate("2026-11-11")!, start: at(11, 8), end: at(11, 8, 45))
         lesson.subjectLong = "Mathematik"; lesson.rooms = ["R 101"]
+        let homework = CalendarHomework(id: "9001", lessonID: "88", periodID: "4800", periodDate: CivilDate("2026-11-11")!,
+                                        assigned: CivilDate("2026-11-11")!, due: CivilDate("2026-11-13")!, subject: "Mathematik",
+                                        text: "Aufgabe 1 (erfunden)")
         let snapshot = try await repository.merge(CalendarTimetableFetch(connection: connection, start: CivilDate("2026-11-09")!,
-            end: CivilDate("2026-11-14")!, fetchedAt: Date(timeIntervalSince1970: 1_794_000_000), lessons: [lesson]))
+            end: CivilDate("2026-11-14")!, fetchedAt: Date(timeIntervalSince1970: 1_794_000_000), lessons: [lesson], homework: [homework]))
         await repository.close()
 
         let archive = root.appendingPathComponent("kalender.notylibrary")
@@ -80,7 +91,11 @@ extension PageWorkflowCheck {
         await restoredRepository.close()
         let documents = Set(try await LibraryStore(root: data).committedSnapshot().items.filter { !$0.isFolder }.map(\.id))
         var comparable = restored; comparable.connection = state.connection
-        let identical = comparable == state && restoredSnapshot?.days == snapshot.days
+        // A restore never activates a source: system calendars come back switched off.
+        let systemDetached = restored.settings.systemCalendars?.enabled == false
+        comparable.settings.systemCalendars?.enabled = true
+        let identical = comparable == state && systemDetached && restoredSnapshot?.days == snapshot.days
+            && restoredSnapshot?.homework == snapshot.homework
             && restoredSnapshot?.lessons.map(\.key.sourceID) == snapshot.lessons.map(\.key.sourceID)
         let detached = restored.connection?.id != connection && restored.connection?.source == state.connection?.source
             && restoredSnapshot?.connection == restored.connection?.id

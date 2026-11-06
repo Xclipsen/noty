@@ -49,7 +49,8 @@ final class CalendarModel: ObservableObject {
     @Published private(set) var recoveredNotice: String?
     /// A short notice (rejected drag, failed change), dismissible.
     @Published var notice: String?
-    private(set) var state = CalendarState()
+    /// Confirmed state (set only by `commit`/`transition`/`load`).
+    var state = CalendarState()
     private var revision = 0
     /// Every change of `state` (events, links, settings, connection) runs in
     /// turn on the newest state, after the previous one finished writing.
@@ -67,6 +68,31 @@ final class CalendarModel: ObservableObject {
     /// Bumped by connect/disconnect: late answers of an older session are dropped.
     private var generation = 0
     static let automaticInterval: TimeInterval = 15 * 60
+
+    // MARK: System calendars (Stufe C; logic in CalendarModel+System.swift)
+    /// Calendar access as last seen (asked only on „Systemkalender verbinden“).
+    @Published var systemAccess: SystemCalendarService.Access = .notDetermined
+    /// Every calendar of the system store (also hidden ones).
+    @Published var systemCalendars: [CalendarSystemCalendar] = []
+    @Published var systemReading = false
+    /// Last read failed or a write was refused (shown, dismissible).
+    @Published var systemError: String?
+    /// „Systemkalender zuletzt eingelesen …“.
+    @Published var systemLastRead: Date?
+    /// Occurrences of all calendars in `systemRead` (also hidden calendars:
+    /// notes of their events are matched, not shown).
+    var systemEvents: [CalendarSystemEvent] = []
+    var systemRead: (start: Date, end: Date)?
+    var systemRequested: (start: Date, end: Date)?
+    var systemGeneration = 0
+    var systemByEntry: [String: CalendarSystemEvent] = [:]
+    /// „Ungeklärt“ notes of system events → events the user may choose.
+    var systemCandidates: [UUID: [CalendarEntry]] = [:]
+    /// EventKit details of entries opened in the form (rule, alarm, last change).
+    var systemEditing: [String: SystemCalendarService.Extra] = [:]
+    /// Homework of the offline timetable by period id and by „course|due date“ (built per rebuild).
+    var homeworkByPeriod: [String: [CalendarHomework]] = [:]
+    var homeworkByDue: [String: [CalendarHomework]] = [:]
 
     // MARK: Undo of the last change (session; banner)
     struct UndoStep {
@@ -117,7 +143,7 @@ final class CalendarModel: ObservableObject {
     private var all: [CalendarEntry] = []
     private var byID: [String: CalendarEntry] = [:]
     private var byDay: [Date: [CalendarEntry]] = [:]
-    private var linkByEntry: [String: CalendarNoteLink] = [:]
+    var linkByEntry: [String: CalendarNoteLink] = [:]
     private(set) var candidates: [UUID: [CalendarLesson]] = [:]
     @Published private(set) var truncatedSeries: [String] = []
     private var sampleYear: Int?
@@ -160,7 +186,7 @@ final class CalendarModel: ObservableObject {
     var connection: CalendarConnectionRecord? { state.connection }
     var canWrite: Bool { loaded && storageError == nil }
     var localEventCount: Int { state.events.count }
-    var hasRealData: Bool { !state.events.isEmpty || state.connection != nil }
+    var hasRealData: Bool { !state.events.isEmpty || state.connection != nil || systemEnabled }
     var subjectColors: [String: String] { state.settings.subjectColors }
 
     // MARK: Loading and committing
@@ -192,6 +218,7 @@ final class CalendarModel: ObservableObject {
             storageError = error.localizedDescription
         }
         loaded = true
+        attachSystemService()
         rebuild()
         rescheduleReminders()
         if visible { refreshIfDue() }
@@ -200,7 +227,7 @@ final class CalendarModel: ObservableObject {
     /// Applies `change` in memory and commits it. On failure the change stays
     /// shown but unsaved (with a retry); the committed state on disk is kept.
     @discardableResult
-    private func commit(_ change: (inout CalendarState) -> Void) async -> Bool {
+    func commit(_ change: (inout CalendarState) -> Void) async -> Bool {
         await mutations.acquire()
         defer { mutations.release() }
         guard canWrite else {
@@ -257,8 +284,11 @@ final class CalendarModel: ObservableObject {
     /// a series, „Nur dieser Termin“ or „Alle Termine der Serie“. Nil:
     /// applied (committed, or unsaved with the retry banner); otherwise the
     /// reason it was rejected and not applied.
-    func save(_ draft: CalendarDraft, scope: SeriesScope = .all) async -> String? {
+    func save(_ draft: CalendarDraft, scope: SeriesScope = .all, target: CalendarWriteTarget? = nil) async -> String? {
         guard !showsSamples else { return "Im Beispielmodus werden keine Termine gespeichert." }
+        // Apple Kalender/Outlook (Stufe C): written through EventKit, never
+        // into the local state; moves between sources only for single events.
+        if let routed = await saveRouted(draft, scope: scope, target: target) { return routed.problem }
         guard let title = CalendarState.validTitle(draft.title) else { return "Bitte einen Titel mit höchstens 200 Zeichen eingeben." }
         let (timing, problem) = draft.timing(calendar: calendar)
         guard let timing else { return problem }
@@ -346,6 +376,7 @@ final class CalendarModel: ObservableObject {
     /// can be restored there with its identity; notes stay in the library and
     /// their links stay, so a restored event has its notes again.
     func remove(_ entry: CalendarEntry, scope: SeriesScope = .all) async {
+        if isSystem(entry) { await removeSystem(entry, scope: scope); return }
         guard let id = entry.localID, state.events.contains(where: { $0.id == id }) else { return }
         if selection == entry.id { selection = nil }
         var undo: CalendarUndoSnapshot?
@@ -654,6 +685,7 @@ final class CalendarModel: ObservableObject {
     /// Calendar shown or app active again: refresh when the last automatic
     /// attempt is at least 15 minutes old.
     func refreshIfDue() {
+        if visible, loaded { refreshSystemIfDue() }
         guard visible, loaded, state.connection != nil, !syncing, !credentialsMissing else { return }
         if let last = lastAutomatic, Date().timeIntervalSince(last) < Self.automaticInterval { return }
         Task { await refresh(manual: false) }
@@ -740,10 +772,11 @@ final class CalendarModel: ObservableObject {
         rebuild()
     }
 
-    private func rebuild() {
+    func rebuild() {
         var entries: [CalendarEntry] = []
         linkByEntry = [:]
         candidates = [:]
+        systemCandidates = [:]
         var truncated: [String] = []
         if showsSamples {
             let year = calendar.component(.year, from: anchor)
@@ -756,11 +789,20 @@ final class CalendarModel: ObservableObject {
             let byEvent = Dictionary(state.events.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             entries = expansion.occurrences.compactMap { occurrence in byEvent[occurrence.eventID].map { entry(occurrence, of: $0) } }
             truncated = expansion.truncated.compactMap { byEvent[$0]?.title }
+            var webUntisHolidays: [CalendarHoliday] = []
+            buildHomeworkIndex()
             if let snapshot, snapshot.connection == state.connection?.id {
                 entries += snapshot.lessons.map(entry)
-                entries += snapshot.holidays.map { entry($0, connection: snapshot.connection) }
+                webUntisHolidays = snapshot.holidays
+            }
+            entries += holidayEntries(from: range.start, to: range.end, webUntis: webUntisHolidays)
+            systemByEntry = [:]
+            for event in CalendarSystemMatching.visible(systemEvents, settings: state.settings.systemCalendars) {
+                systemByEntry[event.id] = event
+                entries.append(systemEntry(event))
             }
             entries += indexLinks(entries)
+            scheduleSystemReadIfNeeded()
         }
         truncatedSeries = truncated
         all = entries
@@ -793,8 +835,11 @@ final class CalendarModel: ObservableObject {
                 if byKey[link.target.key] != nil, linkByEntry[link.target.key] == nil { linkByEntry[link.target.key] = link }
             case .lesson(let anchor):
                 if anchor.source == state.connection?.source { lessonLinks.append(link) }
+            case .system:
+                break
             }
         }
+        ghosts += indexSystemLinks()
         var taken = Set<String>()
         var open: [(CalendarNoteLink, CalendarLessonAnchor)] = []
         for link in lessonLinks {
@@ -887,7 +932,7 @@ final class CalendarModel: ObservableObject {
                                   room: lesson.rooms.isEmpty ? nil : lesson.rooms.joined(separator: ", "),
                                   teacher: lesson.teachers.isEmpty ? nil : lesson.teachers.joined(separator: ", "),
                                   status: main, details: lesson.text)
-        entry.statusNotes = notes
+        entry.statusNotes = notes + homeworkNotes(for: lesson)
         let key = CalendarSubjectColor.key(subjectID: lesson.subjectID, name: subject)
         entry.subjectKey = key
         entry.colorName = CalendarSubjectColor.name(for: key, chosen: state.settings.subjectColors)
@@ -896,10 +941,25 @@ final class CalendarModel: ObservableObject {
         return entry
     }
 
-    private func entry(_ holiday: CalendarHoliday, connection: UUID) -> CalendarEntry {
-        CalendarEntry(id: "holiday/\(connection.uuidString)/\(holiday.id)/\(holiday.start)", title: holiday.name, source: .holidays,
-                      start: holiday.start.start(in: calendar), end: holiday.end.start(in: calendar), allDay: true,
-                      details: "Ferien laut WebUntis.")
+    /// WebUntis holidays, the NRW table where WebUntis has none, and the
+    /// statutory public holidays of NRW (`CalendarHolidaysNRW`).
+    private func holidayEntries(from start: CivilDate, to end: CivilDate, webUntis: [CalendarHoliday]) -> [CalendarEntry] {
+        let connection = snapshot?.connection.uuidString ?? "none"
+        return CalendarHolidaysNRW.holidays(from: start, to: end, webUntis: webUntis).map { day in
+            let holiday = day.holiday
+            let id: String, details: String
+            switch day.origin {
+            case .webUntis:
+                id = "holiday/\(connection)/\(holiday.id)/\(holiday.start)"; details = "Ferien laut WebUntis."
+            case .schoolTable:
+                id = "holiday/nrw/\(holiday.id)"
+                details = "Schulferien NRW aus der in noty eingebauten Tabelle (ohne WebUntis-Ferien; ohne Gewähr, bewegliche Ferientage der Schule fehlen)."
+            case .publicHoliday:
+                id = "holiday/feiertag/\(holiday.start)"; details = "Gesetzlicher Feiertag in Nordrhein-Westfalen."
+            }
+            return CalendarEntry(id: id, title: holiday.name, source: .holidays, start: holiday.start.start(in: calendar),
+                                 end: holiday.end.start(in: calendar), allDay: true, details: details)
+        }
     }
 
     private func visible(_ entry: CalendarEntry) -> Bool { !hiddenSources.contains(entry.source) }
@@ -984,7 +1044,8 @@ final class CalendarModel: ObservableObject {
     }
 
     func editDraft(for entry: CalendarEntry) -> CalendarDraft {
-        CalendarDraft(editing: entry, rule: recurrence(of: entry), base: baseEvent(of: entry), calendar: calendar)
+        if isSystem(entry) { return systemDraft(for: entry) }
+        return CalendarDraft(editing: entry, rule: recurrence(of: entry), base: baseEvent(of: entry), calendar: calendar)
     }
 
     // MARK: Notes beside the event

@@ -7,7 +7,10 @@ import NotebookCore
 /// occurrence of a series asks „Nur dieser Termin“ / „Alle Termine der
 /// Serie“. „Hinzufügen“/„Fertig“ closes only after the commit; a rejected
 /// change keeps the form open with its input. Optional reminder (B3, off by
-/// default): switching it on asks iPadOS for permission once.
+/// default): switching it on asks iPadOS for permission once. Stufe C: the
+/// target is chosen consciously – noty („Persönlich“) or a writable system
+/// calendar (Apple Kalender, Outlook/Exchange); system events keep their
+/// calendar unless another one is chosen (single events only).
 struct CalendarEventForm: View {
     @State var draft: CalendarDraft
     @ObservedObject var model: CalendarModel
@@ -16,6 +19,12 @@ struct CalendarEventForm: View {
     @State private var failure: String?
     @State private var askingScope = false
     @State private var newException = Date()
+    /// Where the event is written; set on appear from the entry or the default.
+    @State private var target: CalendarWriteTarget = .local
+    @State private var targetSet = false
+    private var systemTarget: Bool { target != .local }
+    private var editingSystem: Bool { model.isSystemSeries(draft.editing) || (draft.editing.map { model.isSystem($0) } ?? false) }
+    private var asksScope: Bool { draft.isSeriesOccurrence || model.isSystemSeries(draft.editing) }
     private var calendar: Calendar { model.calendar }
 
     private var invalidRange: Bool {
@@ -39,15 +48,21 @@ struct CalendarEventForm: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                repeatSection
+                if model.hasComplexSystemRule(draft.editing) {
+                    Section {
+                        LabeledContent("Wiederholen", value: "im Kalender festgelegt")
+                    } footer: {
+                        Text("Diese Wiederholung kann noty nicht darstellen; sie bleibt unverändert. Ändern bitte in Apple Kalender bzw. Outlook.")
+                    }
+                } else {
+                    repeatSection
+                }
                 reminderSection
                 Section {
-                    LabeledContent("Kalender") {
-                        Label { Text("Persönlich") } icon: { Circle().fill(CalendarPalette.personal).frame(width: 8, height: 8) }
-                    }
+                    targetPicker
                     TextField("Beschreibung", text: $draft.details, axis: .vertical).lineLimit(2...8)
                 } footer: {
-                    Text("Wird nur auf diesem iPad in diesem Bereich gespeichert. Unterricht aus WebUntis bleibt schreibgeschützt.")
+                    Text(targetFooter)
                 }
                 if let failure {
                     Section {
@@ -62,13 +77,13 @@ struct CalendarEventForm: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.disabled(saving) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(draft.editing == nil ? "Hinzufügen" : "Fertig") {
-                        if draft.isSeriesOccurrence { askingScope = true } else { save(.all) }
+                        if asksScope { askingScope = true } else { save(.all) }
                     }
                     .disabled(saving || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || invalidRange)
                 }
             }
             .confirmationDialog("Änderung übernehmen für", isPresented: $askingScope, titleVisibility: .visible) {
-                if !draft.changesSeries(calendar: calendar) {
+                if !draft.changesSeries(calendar: calendar) || (model.isSystemSeries(draft.editing) && !draft.isSeriesOccurrence) {
                     Button("Nur dieser Termin") { save(.single) }
                 }
                 Button("Alle Termine der Serie") { save(.all) }
@@ -83,6 +98,11 @@ struct CalendarEventForm: View {
         .environment(\.calendar, calendar)
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(saving)
+        .onAppear {
+            guard !targetSet else { return }
+            targetSet = true
+            target = draft.editing.flatMap { model.writeTarget(of: $0) } ?? (draft.editing == nil ? model.systemDefaultTarget : .local)
+        }
         .onChange(of: draft.start) { old, new in
             // Moving the start keeps the duration.
             if let moved = calendar.date(byAdding: .second, value: Int(draft.end.timeIntervalSince(old)), to: new) { draft.end = moved }
@@ -95,7 +115,8 @@ struct CalendarEventForm: View {
         Section {
             Toggle("Erinnerung", isOn: $draft.reminder)
                 .onChange(of: draft.reminder) { _, on in
-                    if on { Task { await model.requestReminderPermission() } }
+                    // System calendars remind themselves (no noty notification).
+                    if on, !systemTarget { Task { await model.requestReminderPermission() } }
                 }
             if draft.reminder {
                 Picker("Wann", selection: $draft.reminderMinutes) {
@@ -103,7 +124,9 @@ struct CalendarEventForm: View {
                 }
             }
         } footer: {
-            if draft.reminder {
+            if draft.reminder && systemTarget {
+                Text("Die Erinnerung trägt der Systemkalender ein und meldet sie selbst.")
+            } else if draft.reminder {
                 switch model.reminderPermission {
                 case .denied:
                     Label("Mitteilungen für noty sind ausgeschaltet. Bitte in den iPad-Einstellungen › Mitteilungen › noty erlauben; bis dahin erscheint keine Erinnerung.",
@@ -132,6 +155,7 @@ struct CalendarEventForm: View {
                 case .onDate: DatePicker("Letzter Termin", selection: $draft.repeatUntil, in: draft.start..., displayedComponents: [.date])
                 case .afterCount: Stepper("Nach \(draft.repeatCount) Terminen", value: $draft.repeatCount, in: 1...CalendarRecurrence.maximumCount)
                 }
+                if !systemTarget {
                 DisclosureGroup(draft.exceptionDates.isEmpty ? "Ausnahmen" : "Ausnahmen (\(draft.exceptionDates.count))") {
                     ForEach(draft.exceptionDates, id: \.self) { date in
                         Text(CalendarText.longDate(date.start(in: calendar), calendar: calendar))
@@ -147,6 +171,7 @@ struct CalendarEventForm: View {
                         }
                         .buttonStyle(.borderless)
                     }
+                }
                 }
             }
         } footer: {
@@ -175,11 +200,58 @@ struct CalendarEventForm: View {
         return text
     }
 
+    /// „Kalender“: noty or one of the shown writable system calendars.
+    @ViewBuilder private var targetPicker: some View {
+        let calendars = model.writableSystemCalendars
+        if calendars.isEmpty && target == .local {
+            LabeledContent("Kalender") {
+                Label { Text("Persönlich") } icon: { Circle().fill(CalendarPalette.personal).frame(width: 8, height: 8) }
+            }
+        } else {
+            Picker("Kalender", selection: $target) {
+                Label { Text("Persönlich (noty)") } icon: { Circle().fill(CalendarPalette.personal).frame(width: 8, height: 8) }
+                    .tag(CalendarWriteTarget.local)
+                ForEach(calendars) { item in
+                    Label { Text(item.displayName) } icon: { Circle().fill(dot(item.colorHex)).frame(width: 8, height: 8) }
+                        .tag(CalendarWriteTarget.system(calendarID: item.id))
+                }
+                // The entry's own calendar, also when it is hidden meanwhile.
+                if case .system(let id) = target, !calendars.contains(where: { $0.id == id }) {
+                    Text(model.systemCalendars.first { $0.id == id }?.displayName ?? "Bisheriger Kalender").tag(target)
+                }
+            }
+        }
+    }
+
+    private func dot(_ hex: String) -> Color {
+        guard let c = CalendarColorHex.components(hex) else { return .gray }
+        return Color(red: c.red, green: c.green, blue: c.blue)
+    }
+
+    private var targetFooter: String {
+        let original = draft.editing.flatMap { model.writeTarget(of: $0) }
+        var text: String
+        switch target {
+        case .local:
+            text = "Wird nur auf diesem iPad in diesem Bereich gespeichert. Unterricht aus WebUntis bleibt schreibgeschützt."
+        case .system(let id):
+            let name = model.systemCalendars.first { $0.id == id }?.displayName ?? "den Systemkalender"
+            text = "Wird über iPadOS in „\(name)“ eingetragen; Apple Kalender bzw. Outlook übernehmen den Termin, sobald das Konto ihn abgleicht. Notizen bleiben in noty und werden nicht hochgeladen."
+        }
+        if let original, original != target {
+            text += draft.repeatRule != .never || editingSystem && model.isSystemSeries(draft.editing)
+                ? " Serien lassen sich nicht in einen anderen Kalender verschieben."
+                : " Der Termin wird in den gewählten Kalender verschoben; Notizen gehen mit."
+        }
+        return text
+    }
+
     private func save(_ scope: CalendarModel.SeriesScope) {
         saving = true
         failure = nil
+        let target = target
         Task {
-            let problem = await model.save(draft, scope: scope)
+            let problem = await model.save(draft, scope: scope, target: target)
             saving = false
             if let problem { failure = problem } else { dismiss() }
         }

@@ -34,9 +34,10 @@ struct CalendarConnectionSheet: View {
                 } else {
                     entrySections
                 }
+                CalendarSystemSection(model: model)
             }
             .disabled(working)
-            .navigationTitle("WebUntis")
+            .navigationTitle("Kalender verbinden")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } }
