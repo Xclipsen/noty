@@ -361,6 +361,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private var selectionInkSource: Data?
     private var selectionInkIndices = Set<Int>()
     private var selectionInkFrame = CGRect.zero
+    /// Law citations on this page: underlines, hover card, tap (WorksheetView+LawCitations.swift).
+    let lawCitations = LawCitationPageLinks()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -473,6 +475,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         addGestureRecognizer(interactionObserver)
         textLayer.onEditingActive = { [weak self] active in
             guard let self else { return }; self.textEditing = active; self.onInteraction?(self.textInteractionID, active)
+            self.lawCitations.editingChanged(active)
             if active { self.claimSelectionFocus() }
             // A field that stopped editing leaves no first responder; ⌘Z keeps working.
             if !active { DispatchQueue.main.async { [weak self] in self?.claimUndoResponder() } }
@@ -526,6 +529,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         eraseTrail.strokeColor = UIColor(white: 0.55, alpha: 0.35).cgColor; eraseTrail.isHidden = true
         hitHighlight.isUserInteractionEnabled = false; hitHighlight.backgroundColor = UIColor.systemYellow.withAlphaComponent(0.22)
         hitHighlight.layer.borderColor = UIColor.systemOrange.cgColor; hitHighlight.layer.borderWidth = 2
+        lawCitations.install(on: self)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -588,6 +592,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// (magnified) unless the visible area is no longer covered at all.
     func updateRendering(visible: CGRect, scale: CGFloat, live: Bool = false) {
         if bounds.intersects(visible) { lastVisible = visible.intersection(bounds) }
+        lawCitations.displayScaleChanged(scale)
         guard !inkActive, bounds.intersects(visible), bounds.width > 0, bounds.height > 0 else { return }
         // Text keeps its own zoom-resolution viewport (not capped like ink).
         textLayer.updateDisplay(visible: visible, scale: scale, screenScale: window?.screen.scale ?? 2, live: live)
@@ -699,6 +704,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.adoptCallback(editor.onTextBoxes)
         imageLayer.adoptCallbacks(onChange: editor.onImages, onError: editor.onError)
         objectLayer.adoptCommit(editor.onContent)
+        lawCitations.contentChanged()
     }
 
     func configure(_ editor: PageEditor) {
@@ -893,6 +899,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         pdfView?.isUserInteractionEnabled = tool == .read
         if modeChanged || focusChanged || first { updateInputMode(); fingerObjects.linkNativeDoubleTaps(in: canvas) }
         if pendingTextField != nil { openPendingTextField() }
+        lawCitations.contentChanged()
         setNeedsLayout()
     }
 

@@ -24,6 +24,8 @@ struct NotyApp: App {
                 .environmentObject(laws)
                 .environmentObject(laws.panel)
                 .task {
+                    // Law citations on pages follow the catalog and the settings.
+                    LawCitationPreviewModel.shared.connect(laws)
                     await laws.start()
                     while !Task.isCancelled {
                         do { try await Task.sleep(for: .seconds(45)) } catch { return }

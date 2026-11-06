@@ -130,6 +130,7 @@ struct LawSettingsPage: View {
     @AppStorage(LawLibraryModel.enabledKey) private var enabled = false
     @AppStorage(LawLibraryModel.syncKey) private var sync = true
     @AppStorage(LawLibraryModel.updatesKey) private var updates = true
+    @AppStorage(LawLibraryModel.citationLinksKey) private var citationLinks = true
     @State private var exported: URL?
     @State private var restoring = false
     var body: some View {
@@ -140,6 +141,13 @@ struct LawSettingsPage: View {
                 symbolToggle("Neue Gesetzesfassungen automatisch laden", systemImage: "arrow.down.circle", isOn: $updates)
             } footer: {
                 Text("Der Abgleich mit dem Konto und neue Gesetzesfassungen sind unabhängig voneinander. Ohne Konto bleiben Markierungen auf diesem iPad. Nach dem ersten vollständigen Laden sind die Texte offline da; PDFs lassen sich einzeln laden.")
+            }
+            if enabled {
+                Section {
+                    symbolToggle("Gesetzesverweise im Heft verlinken", systemImage: "link", isOn: $citationLinks)
+                } footer: {
+                    Text("Verweise wie „§ 35a EStG“ auf Heftseiten werden dezent unterstrichen. Mit Apple Pencil oder Trackpad darüber halten oder mit dem Finger antippen zeigt eine Vorschau; Tippen auf die Vorschau öffnet die Vorschrift in der Gesetzessammlung. Im Heft wird dabei nichts gespeichert.")
+                }
             }
             if let error = laws.error {
                 Section {

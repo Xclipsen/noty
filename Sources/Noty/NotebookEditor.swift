@@ -590,6 +590,7 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { surface }
     func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
         InputProbe.noteEffect()
+        LawCitationPageLinks.viewportMoved()
         guard pinchGestureRecognizer?.state == .began || pinchGestureRecognizer?.state == .changed else { return }
         stopZoomTransition(); stopElastic()
         // Zooming away from the caret is like scrolling away: keyboard and
@@ -1035,6 +1036,7 @@ extension NotebookViewport {
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         InputProbe.noteEffect()
+        LawCitationPageLinks.viewportMoved()
         scrolledFromCaret = true
         stopElastic()
         guard !isZooming, !widthSnapInProgress, !focusScrolling, let allowed = allowedHorizontalRange() else { return }

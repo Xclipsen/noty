@@ -91,6 +91,7 @@ struct LawReaderView: View {
         VStack(spacing: 0) {
             controls
             notices
+            citationBack
             if let section, let doc = document {
                 sectionHeader(section)
                 ZStack(alignment: .bottom) {
@@ -115,7 +116,11 @@ struct LawReaderView: View {
         // Hover names of the reader's cells, drawn inside the reader only.
         .notyTooltipHost()
         .transformPreference(NotyTooltipKey.self) { $0 = nil }
-        .task { await laws.start(); await openInitial() }
+        // A citation that opened the window comes first (B14: the reader of a
+        // closed window is created only by that opening).
+        .task { await laws.start(); if !(await takeCitationJump()) { await openInitial() } }
+        .onChange(of: laws.citationJump?.id) { _, id in if id != nil { Task { await takeCitationJump() } } }
+        .onChange(of: "\(selectedID)|\(sectionID)") { _, _ in citationNavigated() }
         .onChange(of: laws.entries.count) { _, _ in Task { await openInitial() } }
         .onChange(of: "\(selectedID)|\(sectionID)|\(document?.version ?? "")|\(viewPDF)|\(pdfPage)") { _, _ in rememberReading() }
         // Titles of the menu bar entries „Lesezeichen setzen/entfernen“, „PDF/Lesetext zeigen“.

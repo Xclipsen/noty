@@ -20,8 +20,9 @@ extension LawReaderView {
     /// Continues `entry` where it was read (B10): the remembered version if
     /// the catalogue still has it (otherwise the current one), the section,
     /// and text or PDF with its page. The scroll offset is not restored yet.
-    func resume(_ entry: LawEntry) async {
-        let spot = laws.readingSpot(law: entry.id)
+    /// `spot`: another remembered place of `entry` (the way back after a citation).
+    func resume(_ entry: LawEntry, at place: LawReadingSpot? = nil) async {
+        let spot = place ?? laws.readingSpot(law: entry.id)
         let version = spot?.versionId.flatMap { id in entry.versions.contains { $0.id == id } ? id : nil }
         await open(entry, version: version, target: spot?.sectionId, resume: true)
         // Only a PDF already on this iPad: reopening never starts a large download.

@@ -278,6 +278,11 @@ struct EditorWorkspaceView: View {
             .overlay(alignment: .top) {
                 if lawDockHint != nil && hidesSecond { lawDockHintView(in: notebookArea).transition(.opacity) }
             }
+            // Preview of a law citation on a page, above the law window too.
+            // Only the card takes touches; everything beside it reaches the page.
+            .overlay {
+                if lawsEnabled { LawCitationCardLayer() }
+            }
             // Panes clip themselves already; this keeps a stashed law window
             // from drawing beyond the workspace edge.
             .clipped()
@@ -287,6 +292,8 @@ struct EditorWorkspaceView: View {
             }
             .onChange(of: lawPhase, initial: true) { _, phase in
                 if phase == .visible { lawReaderLoaded = true } else if phase == .closed { lawReaderLoaded = false }
+                // Closed by any way: „Zurück zur Notiz“ has nothing left to restore.
+                if phase == .closed, laws.citationJump == nil { laws.citationReturn = nil }
             }
             .onChange(of: hidesSecond) { _, hides in
                 withAnimation(NotyMotion.highlight(reduceMotion)) { lawDockHint = hides ? UUID() : nil }

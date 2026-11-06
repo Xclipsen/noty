@@ -56,6 +56,10 @@ final class LawLibraryModel: ObservableObject {
     static let enabledKey = "noty.laws.enabled"
     static let syncKey = "noty.laws.personalSync"
     static let updatesKey = "noty.laws.automaticUpdates"
+    /// „Gesetzesverweise im Heft verlinken“ (default on): citations on pages
+    /// get a quiet underline, hover shows a preview, a tap opens the window.
+    /// Display only, nothing of it is stored in a notebook.
+    static let citationLinksKey = "noty.laws.citationLinks"
     static let root = URL.documentsDirectory.appendingPathComponent("NotyLaws", isDirectory: true)
     private let offline = LawOfflineStore(root: root)
     private let personal = LawPersonalStore(root: root)
@@ -113,6 +117,13 @@ final class LawLibraryModel: ObservableObject {
     var enabled: Bool { UserDefaults.standard.bool(forKey: Self.enabledKey) }
     var syncEnabled: Bool { UserDefaults.standard.object(forKey: Self.syncKey) as? Bool ?? true }
     var automaticUpdates: Bool { UserDefaults.standard.object(forKey: Self.updatesKey) as? Bool ?? true }
+    var citationLinks: Bool { UserDefaults.standard.object(forKey: Self.citationLinksKey) as? Bool ?? true }
+    /// A section to show in the law window, asked for by a citation in a
+    /// notebook (`openCitation`). The window's reader takes it (also when it
+    /// is created only by this opening) and sets it back to nil.
+    @Published var citationJump: LawCitationJump?
+    /// Where „Zurück zur Notiz“ leads after a citation jump; nil hides the button.
+    @Published var citationReturn: LawCitationReturn?
     var entries: [LawEntry] { catalog?.entries ?? [] }
     /// The signed-in account's entries waiting to be sent (0 for the guest).
     var pendingCount: Int { user == nil ? 0 : ownPending }
@@ -234,6 +245,28 @@ final class LawLibraryModel: ObservableObject {
         let data = try await fetch(v.dataUrl); try await verify(data, sha: v.sha256["json"])
         try await offline.putDocument(data, entry: entry, version: v)
         return try await offline.document(entry, version: v)
+    }
+    /// The current version only if it is already on this iPad: never starts
+    /// a download (for the citation preview, which runs on mere hovering).
+    func offlineDocument(_ entry: LawEntry) async -> LawDocument? {
+        guard let v = entry.versions.first(where: { $0.id == entry.currentVersion }) else { return nil }
+        return try? await offline.document(entry, version: v)
+    }
+    /// Opens the law window at a citation of a notebook page (current version),
+    /// remembering how the window was for „Zurück zur Notiz“. A further citation
+    /// opened before going back keeps the first way back.
+    func openCitation(lawID: String, key: String, paragraph: String?) {
+        guard enabled, entries.contains(where: { $0.id == lawID }) else { return }
+        let jump = LawCitationJump(lawID: lawID, key: key, paragraph: paragraph)
+        if var back = citationReturn {
+            back.id = jump.id; back.lawID = lawID; back.sectionID = nil
+            citationReturn = back
+        } else {
+            citationReturn = LawCitationReturn(id: jump.id, phase: panel.phase, spot: lastReadingSpot,
+                                               citedLawSpot: readingSpot(law: lawID), lawID: lawID)
+        }
+        citationJump = jump
+        panel.open()
     }
     func pdf(_ entry: LawEntry, version: String) async throws -> URL {
         let url = try await offline.pdfURL(entry.id, version: version)
@@ -611,4 +644,30 @@ final class LawLibraryModel: ObservableObject {
         }
         catch { self.error = error.localizedDescription }
     }
+}
+
+/// A citation's section for the law window's reader (`LawLibraryModel.citationJump`).
+struct LawCitationJump: Equatable, Identifiable {
+    var id = UUID()
+    var lawID: String
+    /// Section key (`LawSection.keys`) and optional Absatz.
+    var key: String
+    var paragraph: String?
+}
+
+/// The way back after a citation jump („Zurück zur Notiz“).
+struct LawCitationReturn: Equatable {
+    /// The jump this belongs to (`LawCitationJump.id`).
+    var id: UUID
+    /// The window before the first jump: closed, parked or visible.
+    var phase: LawPanelState.Phase
+    /// The reading spot before the jump (the law read last).
+    var spot: LawReadingSpot?
+    /// The cited law's own remembered spot before the jump, restored too, so
+    /// a quick look does not move where that law continues next time.
+    var citedLawSpot: LawReadingSpot?
+    var lawID: String
+    /// The section the jump showed, set by the reader; navigating to another
+    /// section hides the button.
+    var sectionID: String?
 }
