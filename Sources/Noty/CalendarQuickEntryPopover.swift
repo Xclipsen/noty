@@ -9,6 +9,8 @@ struct CalendarQuickEntryPopover: View {
     let close: () -> Void
     @State private var text = ""
     @FocusState private var focused: Bool
+    /// What to do once the popover is gone (a sheet cannot open while it is still on screen).
+    @State private var pending: (@MainActor () -> Void)?
 
     var body: some View {
         let draft = model.quickDraft(text)
@@ -24,8 +26,8 @@ struct CalendarQuickEntryPopover: View {
             preview(draft)
             HStack {
                 Button("Leeres Formular") {
+                    pending = { [model] in model.requestNewEvent() }
                     close()
-                    later { model.requestNewEvent() }
                 }
                 .buttonStyle(.bordered)
                 Spacer()
@@ -41,7 +43,20 @@ struct CalendarQuickEntryPopover: View {
         .frame(width: 360)
         .presentationCompactAdaptation(.popover)
         .preferredColorScheme(.dark)
-        .onAppear { focused = true }
+        .defaultFocus($focused, true)
+        .onAppear {
+            // Popovers often ignore an immediate focus request.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(150))
+                focused = true
+            }
+        }
+        // Runs after the popover left the screen: then the form sheet can open.
+        .onDisappear {
+            let action = pending
+            pending = nil
+            action?()
+        }
     }
 
     @ViewBuilder private func preview(_ draft: CalendarDraft?) -> some View {
@@ -73,15 +88,7 @@ struct CalendarQuickEntryPopover: View {
     private func open(_ draft: CalendarDraft?) {
         guard draft != nil else { return }
         let line = text
+        pending = { [model] in model.requestQuickEvent(line) }
         close()
-        later { model.requestQuickEvent(line) }
-    }
-
-    /// The form sheet follows once the popover is gone.
-    private func later(_ action: @escaping @MainActor () -> Void) {
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(350))
-            action()
-        }
     }
 }

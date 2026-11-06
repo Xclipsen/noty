@@ -190,8 +190,9 @@ struct CalendarEventPanel: View {
             }
             let homework = model.homework(for: event)
             if !homework.isEmpty { homeworkSection(homework) }
-            // Homework lines of the lesson are shown above with their check box.
-            ForEach(event.statusNotes.filter { homework.isEmpty || !$0.hasPrefix("Hausaufgabe") }, id: \.self) { note in
+            // Only the homework lines whose task is in the list above are
+            // left out; others (e.g. due in a second lesson that day) stay.
+            ForEach(event.statusNotes.filter { !Self.listed($0, in: homework) }, id: \.self) { note in
                 Text(note).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if event.ghostLinkID != nil { assignment }
@@ -202,6 +203,16 @@ struct CalendarEventPanel: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Whether a status line is the text form of a listed homework
+    /// („Hausaufgabe fällig: …“ / „Hausaufgabe bis 12.11.: …“, see `homeworkNotes`).
+    static func listed(_ note: String, in items: [CalendarHomeworkItem]) -> Bool {
+        guard note.hasPrefix("Hausaufgabe") else { return false }
+        return items.contains { item in
+            let text = item.homework.text.isEmpty ? "ohne Text" : String(item.homework.text.prefix(200))
+            return note.hasSuffix(": " + text) || note.hasSuffix(": " + text + " (erledigt)")
+        }
     }
 
     /// Homework given in or due in this lesson, with the local „erledigt“.

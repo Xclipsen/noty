@@ -126,7 +126,9 @@ struct CalendarTimeGrid: View {
     private func y(_ minutes: Int) -> CGFloat { topInset + CGFloat(minutes) / 60 * hourHeight }
 
     private func hours(_ column: CGFloat) -> some View {
-        ScrollViewReader { proxy in
+        // Once per grid render: derived from the whole offline timetable.
+        let homework = model.homeworkDueEntryIDs
+        return ScrollViewReader { proxy in
             ScrollView(.vertical) {
                 ZStack(alignment: .topLeading) {
                     // Laid-out scroll targets (offsets below do not move layout frames).
@@ -137,7 +139,7 @@ struct CalendarTimeGrid: View {
                     .allowsHitTesting(false).accessibilityHidden(true)
                     hourLines(column)
                     ForEach(Array(days.enumerated()), id: \.element) { index, day in
-                        dayColumn(day, column: column)
+                        dayColumn(day, column: column, homework: homework)
                             .frame(width: column, height: y(24 * 60) + topInset, alignment: .topLeading)
                             .offset(x: gutter + CGFloat(index) * column)
                     }
@@ -201,9 +203,8 @@ struct CalendarTimeGrid: View {
         return events.indices.map { TimedItem(event: events[$0], start: slots[$0].start, end: slots[$0].end, placement: placements[$0]) }
     }
 
-    private func dayColumn(_ day: Date, column: CGFloat) -> some View {
-        let homework = model.homeworkDueEntryIDs
-        return ZStack(alignment: .topLeading) {
+    private func dayColumn(_ day: Date, column: CGFloat, homework: Set<String>) -> some View {
+        ZStack(alignment: .topLeading) {
             ForEach(timedItems(day)) { item in
                 let inner = column - 8
                 let width = inner / CGFloat(item.placement.columns)

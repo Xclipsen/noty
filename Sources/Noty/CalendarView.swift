@@ -26,6 +26,8 @@ struct CalendarView: View {
     var keysActive = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
+    /// Command palette (⇧⌘P) and key overview (⌘/) also take Esc.
+    @ObservedObject private var router = KeyboardRouter.shared
     /// The sidebar is wanted (shown only when the width allows it).
     @AppStorage("noty.calendar.sidebar") private var sidebarWanted = true
     @State private var sidebarFits = false
@@ -36,8 +38,11 @@ struct CalendarView: View {
     @State private var editingReminders = false
     @State private var showingDeleted = false
     @State private var showingStatus = false
+    @State private var connectAfterStatus = false
     /// „Schnell anlegen“ popover of „+“.
     @State private var quickEntry = false
+    /// Complete homework list (from the sidebar).
+    @State private var showingHomework = false
     /// The storage lock banner was put away: the sync symbol keeps the badge.
     @State private var hiddenStorageError: String?
     private var calendar: Calendar { model.calendar }
@@ -45,8 +50,8 @@ struct CalendarView: View {
     /// Calendar keys only while nothing is presented over it.
     private var keys: Bool {
         keysActive && model.enlargedDraft == nil && dayList == nil && !searching && !connecting && !choosingColors
-            && !editingReminders && !showingDeleted && !showingStatus && !quickEntry && model.draft == nil
-            && model.pendingSeriesChange == nil
+            && !editingReminders && !showingDeleted && !showingStatus && !quickEntry && !showingHomework && model.draft == nil
+            && model.pendingSeriesChange == nil && !router.paletteVisible && !router.helpVisible
     }
     /// Navigation keys (⌘← ⌘→ ⌘T ⌘1–⌘4) also rest while the event window is
     /// open: its note may be typing text, where ⌘← / ⌘→ move the caret.
@@ -61,20 +66,25 @@ struct CalendarView: View {
             let contentWidth = geo.size.width - (sidebar ? CalendarSidebar.width : 0)
             HStack(spacing: 0) {
                 if sidebar {
-                    CalendarSidebar(model: model)
+                    CalendarSidebar(model: model) { showingHomework = true }
                         .frame(width: CalendarSidebar.width)
                         .transition(.move(edge: .leading).combined(with: .opacity))
                     Rectangle().fill(CalendarPalette.hairline).frame(width: 0.5)
                 }
                 VStack(spacing: 0) {
                     header(wide: contentWidth >= 660)
-                    problemBanners
+                    if model.selectedEvent == nil { problemBanners }
                     content
-                        .overlay(alignment: .bottom) { toasts }
                 }
                 .frame(maxWidth: .infinity)
             }
             .overlay { eventWindow(geo.size) }
+            // Problems and toasts stay usable above the event window (a
+            // failed delete, „Erneut speichern“ while a note is open).
+            .overlay(alignment: .top) {
+                if model.selectedEvent != nil { problemBanners.frame(maxWidth: 640).padding(.top, CalendarSpace.s) }
+            }
+            .overlay(alignment: .bottom) { toasts }
             .animation(NotyMotion.panel(reduceMotion), value: sidebar)
             .onChange(of: geo.size.width >= CalendarSidebar.minimumTotalWidth, initial: true) { _, fits in sidebarFits = fits }
         }
@@ -100,6 +110,7 @@ struct CalendarView: View {
         .sheet(isPresented: $choosingColors) { CalendarColorsSheet(model: model) }
         .sheet(isPresented: $editingReminders) { CalendarReminderSettingsSheet(model: model) }
         .sheet(isPresented: $showingDeleted) { CalendarDeletedEventsSheet(model: model) }
+        .sheet(isPresented: $showingHomework) { CalendarHomeworkList(model: model) }
         .fullScreenCover(item: $model.enlargedDraft) { session in CalendarEnlargedDraft(session: session, model: model) }
         .confirmationDialog(model.pendingSeriesChange?.text ?? "", isPresented: Binding(
             get: { model.pendingSeriesChange != nil }, set: { if !$0 { model.pendingSeriesChange = nil } }), titleVisibility: .visible) {
@@ -410,6 +421,7 @@ struct CalendarView: View {
                     Label(sidebarWanted ? "Kalenderleiste ausblenden" : "Kalenderleiste einblenden", systemImage: "sidebar.squares.left")
                 }
                 .help("Kalenderleiste (⌃⌘S)")
+                .disabled(model.selectedEvent != nil)
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -419,13 +431,13 @@ struct CalendarView: View {
                 }
                 .popover(isPresented: $showingStatus, arrowEdge: .top) {
                     CalendarStatusPopover(model: model, connect: {
+                        // The sheet follows once the popover is gone (`onDisappear`).
+                        connectAfterStatus = true
                         showingStatus = false
-                        // The sheet follows once the popover is gone.
-                        Task { @MainActor in
-                            try? await Task.sleep(for: .milliseconds(350))
-                            connecting = true
-                        }
                     }, close: { showingStatus = false })
+                    .onDisappear {
+                        if connectAfterStatus { connectAfterStatus = false; connecting = true }
+                    }
                 }
             }
         }
@@ -433,11 +445,13 @@ struct CalendarView: View {
             Menu { optionsMenu } label: {
                 Label("Weitere Optionen", systemImage: "ellipsis.circle")
             }
+            // The event window is modal: no calendar changes behind it.
+            .disabled(model.selectedEvent != nil)
         }
         ToolbarItem(placement: .topBarTrailing) {
             Button { quickEntry = true } label: { Label("Neuer Termin", systemImage: "plus") }
                 .help("Schnell anlegen (⌥⌘N) · Formular (⌘N)")
-                .disabled(!model.canWrite || model.showsSamples)
+                .disabled(!model.canWrite || model.showsSamples || model.selectedEvent != nil)
                 .popover(isPresented: $quickEntry, arrowEdge: .top) {
                     CalendarQuickEntryPopover(model: model) { quickEntry = false }
                 }
@@ -511,7 +525,7 @@ struct CalendarView: View {
             Button("Monat") { model.mode = .month }.keyboardShortcut(key("3"))
             Button("Jahr") { model.mode = .year }.keyboardShortcut(key("4"))
             Button("Schnell anlegen") { quickEntry = true }
-                .keyboardShortcut(keys && model.canWrite && !model.showsSamples ? KeyboardShortcut("n", modifiers: [.command, .option]) : nil)
+                .keyboardShortcut(navigationKeys && model.canWrite && !model.showsSamples ? KeyboardShortcut("n", modifiers: [.command, .option]) : nil)
             Button("Kalenderleiste") { sidebarWanted.toggle() }
                 .keyboardShortcut(navigationKeys && sidebarFits ? KeyboardShortcut("s", modifiers: [.command, .control]) : nil)
         }

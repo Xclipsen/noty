@@ -121,12 +121,17 @@ struct CalendarMonthView: View {
     @ViewBuilder private func dots(_ events: [CalendarEntry], day: Date) -> some View {
         if !events.isEmpty {
             let shown = events.prefix(8)
+            let cancelled = events.filter { $0.status == .cancelled }.count
             Button { showAll(day) } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(7), spacing: 3), count: 4), alignment: .leading, spacing: 3) {
                         ForEach(shown) { event in
-                            Circle().fill(model.entryColor(event).opacity(event.status == .cancelled ? 0.35 : 1))
-                                .frame(width: 7, height: 7)
+                            // Cancelled: a hollow ring, not only a fainter dot.
+                            if event.status == .cancelled {
+                                Circle().strokeBorder(model.entryColor(event), lineWidth: 1.5).frame(width: 7, height: 7)
+                            } else {
+                                Circle().fill(model.entryColor(event)).frame(width: 7, height: 7)
+                            }
                         }
                     }
                     if events.count > shown.count {
@@ -138,7 +143,9 @@ struct CalendarMonthView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(NotyText.count(events.count, "Termin", "Termine") + " am \(CalendarText.shortDate(day, calendar: calendar))")
+            .accessibilityLabel(NotyText.count(events.count, "Termin", "Termine")
+                                + (cancelled > 0 ? ", davon \(NotyText.count(cancelled, "Ausfall", "Ausfälle"))" : "")
+                                + " am \(CalendarText.shortDate(day, calendar: calendar))")
             .accessibilityHint("Zeigt die vollständige Tagesliste")
         }
     }

@@ -27,7 +27,7 @@ final class CalendarModel: ObservableObject {
     @Published var anchor = Date() { didSet { anchorMoved() } }
     @Published var selection: String? { didSet { if selection != oldValue { selectionChanged() } } }
     @Published var draft: CalendarDraft?
-    @Published var hiddenSources: Set<CalendarSource> = []
+    @Published var hiddenSources: Set<CalendarSource> = [] { didSet { releaseVanishedSelection() } }
     /// Demo mode: only fictitious entries, nothing editable or stored. Off by default.
     @Published var showsSamples = false { didSet { if showsSamples != oldValue { selection = nil; sampleYear = nil; rebuild() } } }
     @Published private(set) var today = Date()
@@ -821,6 +821,25 @@ final class CalendarModel: ObservableObject {
         }
         byDay = index
         objectWillChange.send()
+        releaseVanishedSelection()
+    }
+
+    /// The selected entry is gone (source hidden, refresh, a system event
+    /// with a new identifier): end the selection through the normal path,
+    /// so the note is committed and released instead of lingering hidden.
+    private func releaseVanishedSelection() {
+        if selection != nil, selectedEvent == nil { selection = nil }
+    }
+
+    /// Days the index holds entries for (series expansion, samples); outside,
+    /// `events(on:)` knows nothing – which is not „keine Termine“.
+    var indexedRange: (start: Date, end: Date)? {
+        if showsSamples {
+            let year = CalendarDates.startOfYear(anchor, calendar: calendar)
+            return (CalendarDates.day(-14, after: year, calendar: calendar), CalendarDates.day(380, after: year, calendar: calendar))
+        }
+        guard let window else { return nil }
+        return (window.start.start(in: calendar), window.end.start(in: calendar))
     }
 
     /// Links → shown entries; lesson notes whose lesson is gone or not

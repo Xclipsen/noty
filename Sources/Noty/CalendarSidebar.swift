@@ -43,32 +43,32 @@ struct CalendarSidebar: View {
     /// Below this total width the sidebar stays hidden (the grid keeps ≥ 600 pt).
     static let minimumTotalWidth: CGFloat = 864
     @ObservedObject var model: CalendarModel
-
-    @State private var showingHomework = false
+    /// „Alle“: the complete list (a sheet of the calendar view, so its keys rest).
+    let showAllHomework: () -> Void
 
     var body: some View {
+        // Homework once per render (it is derived from the whole snapshot).
+        let homework = model.homework
         ScrollView {
             VStack(alignment: .leading, spacing: CalendarSpace.xl) {
                 CalendarMiniMonth(model: model)
                 CalendarUpNext(model: model)
-                if !model.homework.isEmpty { homework }
+                if !homework.isEmpty { homeworkSection(homework.filter { !$0.done }) }
                 calendars
             }
             .padding(.horizontal, CalendarSpace.l).padding(.vertical, CalendarSpace.m)
         }
         .background(Color.white.opacity(0.025))
-        .sheet(isPresented: $showingHomework) { CalendarHomeworkList(model: model) }
     }
 
     /// Open homework, the next due first; ticking marks it done (only in noty).
-    private var homework: some View {
-        let open = model.openHomework
+    private func homeworkSection(_ open: [CalendarHomeworkItem]) -> some View {
         let limit = 5
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Hausaufgaben").font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)
-                Button(open.count > limit ? "Alle (\(open.count))" : "Alle") { showingHomework = true }
+                Button(open.count > limit ? "Alle (\(open.count))" : "Alle") { showAllHomework() }
                     .font(.footnote.weight(.semibold)).buttonStyle(.borderless)
                     .frame(minHeight: 44)
             }
@@ -215,7 +215,9 @@ struct CalendarMiniMonth: View {
     }
 
     private func cell(_ day: Date, inMonth: Bool, inRange: Bool) -> some View {
-        let events = model.events(on: day)
+        // Outside the computed range nothing is known: no dot, no „keine Termine“.
+        let known = model.indexedRange.map { day >= $0.start && day < $0.end } ?? false
+        let events = known ? model.events(on: day) : []
         let holiday = events.contains { $0.source == .holidays }
         let count = events.filter { $0.source != .holidays }.count
         let isToday = calendar.isDate(day, inSameDayAs: model.today)
@@ -244,7 +246,7 @@ struct CalendarMiniMonth: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel([CalendarText.longDate(day, calendar: calendar), isToday ? "heute" : nil,
-                             count > 0 ? NotyText.count(count, "Termin", "Termine") : nil,
+                             !known ? "Termine erst beim Anzeigen berechnet" : count > 0 ? NotyText.count(count, "Termin", "Termine") : nil,
                              holiday ? "Ferien" : nil].compactMap { $0 }.joined(separator: ", "))
         .accessibilityHint("Zeigt den Tag")
         .accessibilityAddTraits(inRange ? .isSelected : [])
@@ -259,15 +261,28 @@ struct CalendarUpNext: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             let now = context.date
-            let items = model.upcoming(after: now, limit: 4)
+            // The index follows the shown year; far away from today it does
+            // not hold the coming days – then say so instead of „keine Termine“.
+            let covered = model.indexedRange.map { range in
+                range.start <= model.calendar.startOfDay(for: now)
+                    && CalendarDates.day(14, after: model.calendar.startOfDay(for: now), calendar: model.calendar) <= range.end
+            } ?? false
+            let items = covered ? model.upcoming(after: now, limit: 4) : []
             VStack(alignment: .leading, spacing: CalendarSpace.s) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Als Nächstes").font(.headline).accessibilityAddTraits(.isHeader)
-                    if let summary = model.lessonSummary(on: now) {
+                    if covered, let summary = model.lessonSummary(on: now) {
                         Text("Heute: \(summary)").font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                if items.isEmpty {
+                if !covered && model.loaded {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Gerade wird ein Zeitraum weit weg von heute gezeigt.")
+                            .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        Button("Heute") { model.goToToday() }.font(.footnote.weight(.semibold)).buttonStyle(.borderless)
+                            .frame(minHeight: 44)
+                    }
+                } else if items.isEmpty {
                     Text(model.loaded ? "In den nächsten zwei Wochen keine Termine mit Uhrzeit." : "Wird geladen …")
                         .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
