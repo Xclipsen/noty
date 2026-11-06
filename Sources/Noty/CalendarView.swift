@@ -48,7 +48,7 @@ struct CalendarView: View {
     }
     /// Navigation keys (⌘← ⌘→ ⌘T ⌘1–⌘4) also rest while the event window is
     /// open: its note may be typing text, where ⌘← / ⌘→ move the caret.
-    private var navigationKeys: Bool { keys && model.selection == nil }
+    private var navigationKeys: Bool { keys && model.selectedEvent == nil }
     private func key(_ key: KeyEquivalent) -> KeyboardShortcut? {
         navigationKeys ? KeyboardShortcut(key, modifiers: .command) : nil
     }
