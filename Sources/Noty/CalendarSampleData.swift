@@ -6,15 +6,28 @@ import NotebookCore
 // Lehrkräfte, Räume, Termine, Ferien), shown only with „Beispieldaten
 // anzeigen“, never stored and never mixed with real entries.
 
-/// Calendars shown. Only own entries of „Persönlich“ are writable.
+/// Calendars shown. Only own entries of „Persönlich“ are writable here;
+/// `system` (Apple Kalender/Outlook über EventKit, Stufe C, IDs „system/…“)
+/// is read-only by default – whether a single system calendar may be
+/// written is decided by the model (`canEdit`, after the data merge).
 enum CalendarSource: String, CaseIterable, Identifiable, Hashable {
-    case timetable, personal, holidays
+    case timetable, personal, holidays, system
     var id: String { rawValue }
     var title: String {
         switch self {
         case .timetable: "Stundenplan"
         case .personal: "Persönlich"
         case .holidays: "Ferien"
+        case .system: "Kalender"
+        }
+    }
+    /// Symbol of the source in lists and chips.
+    var symbol: String {
+        switch self {
+        case .timetable: "graduationcap"
+        case .personal: "person.crop.circle"
+        case .holidays: "sun.max"
+        case .system: "calendar"
         }
     }
     var readOnly: Bool { self != .personal }
@@ -103,6 +116,8 @@ enum CalendarPalette {
     /// for own entries.
     static let personal = Color.green
     static let holidays = Color.gray
+    /// Fallback of system calendars (EventKit) until their own colour is known.
+    static let system = Color(red: 0.55, green: 0.6, blue: 0.95)
     static let selection = Color(uiColor: .systemBlue)
     static let today = Color(uiColor: .systemRed)
     /// Hairlines of grids and cells: quieter than the system separator.
@@ -119,6 +134,7 @@ enum CalendarPalette {
         switch event.source {
         case .personal: return personal
         case .holidays: return holidays
+        case .system: return system
         case .timetable:
             let key = CalendarSubjectColor.key(subjectID: nil, name: event.subject ?? event.title)
             return color(named: CalendarSubjectColor.name(for: key, chosen: [:]))
@@ -433,6 +449,7 @@ extension CalendarEntry {
         case .timetable: return "WebUntis, inoffiziell über Untis-Mobile-Freigabe"
         case .holidays: return "WebUntis-Ferien"
         case .personal: return "noty, nur auf diesem iPad"
+        case .system: return "Kalender des iPads"
         }
     }
 

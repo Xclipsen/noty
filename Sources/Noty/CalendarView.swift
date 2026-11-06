@@ -10,61 +10,71 @@ enum CalendarSpace {
     static let xl: CGFloat = 24
 }
 
-/// Calendar in the library's detail column (docs/CALENDAR-PLAN.md, Stufe B1):
-/// Jahr · Monat · Woche · Tag from own stored events, WebUntis lessons and
-/// holidays of the offline cache, or – explicitly – fictitious samples.
-/// Deliberately lean: period title, ‹ Heute ›, view switcher, „+“; the rest
-/// (week length, calendars, WebUntis, sample data, search) lives in one „…“ menu.
+/// Calendar in the library's detail column (docs/CALENDAR-PLAN.md, B1 and
+/// „UI-Überarbeitung 06.11.2026“): Jahr · Monat · Woche · Tag from own
+/// stored events, WebUntis lessons and holidays of the offline cache, or –
+/// explicitly – fictitious samples.
+/// Calm by default: a large period title with view switcher and ‹ Heute ›,
+/// an optional sidebar (mini month, „Als Nächstes“, calendars), no status
+/// line. WebUntis state lives behind the sync symbol of the toolbar; only
+/// problems that need the user (storage, unsaved change, recovered state,
+/// notices) appear as slim banners. Details and the note open as one large
+/// floating window.
 struct CalendarView: View {
     @ObservedObject var model: CalendarModel
     /// False while a notebook is open above the library: its keys must not reach the calendar behind it.
     var keysActive = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.scenePhase) private var scenePhase
+    /// The sidebar is wanted (shown only when the width allows it).
+    @AppStorage("noty.calendar.sidebar") private var sidebarWanted = true
+    @State private var sidebarFits = false
     @State private var dayList: CalendarDayListRequest?
     @State private var searching = false
     @State private var connecting = false
     @State private var choosingColors = false
     @State private var editingReminders = false
     @State private var showingDeleted = false
+    @State private var showingStatus = false
+    /// The storage lock banner was put away: the sync symbol keeps the badge.
+    @State private var hiddenStorageError: String?
     private var calendar: Calendar { model.calendar }
     private var shownWeekDays: Int { model.weekDays == 7 ? 7 : 5 }
     /// Calendar keys only while nothing is presented over it.
     private var keys: Bool {
         keysActive && model.enlargedDraft == nil && dayList == nil && !searching && !connecting && !choosingColors
-            && !editingReminders && !showingDeleted && model.draft == nil
+            && !editingReminders && !showingDeleted && !showingStatus && model.draft == nil
             && model.pendingSeriesChange == nil
     }
-    private func key(_ key: KeyEquivalent) -> KeyboardShortcut? { keys ? KeyboardShortcut(key, modifiers: .command) : nil }
+    /// Navigation keys (⌘← ⌘→ ⌘T ⌘1–⌘4) also rest while the event window is
+    /// open: its note may be typing text, where ⌘← / ⌘→ move the caret.
+    private var navigationKeys: Bool { keys && model.selection == nil }
+    private func key(_ key: KeyEquivalent) -> KeyboardShortcut? {
+        navigationKeys ? KeyboardShortcut(key, modifiers: .command) : nil
+    }
 
     var body: some View {
         GeometryReader { geo in
-            let layout = CalendarScreenLayout(width: geo.size.width)
+            let sidebar = sidebarWanted && geo.size.width >= CalendarSidebar.minimumTotalWidth
+            let contentWidth = geo.size.width - (sidebar ? CalendarSidebar.width : 0)
             HStack(spacing: 0) {
+                if sidebar {
+                    CalendarSidebar(model: model)
+                        .frame(width: CalendarSidebar.width)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
+                    Rectangle().fill(CalendarPalette.hairline).frame(width: 0.5)
+                }
                 VStack(spacing: 0) {
-                    header
-                    statusLine
+                    header(wide: contentWidth >= 660)
+                    problemBanners
                     content
-                        .overlay(alignment: .bottom) { undoBanner }
+                        .overlay(alignment: .bottom) { toasts }
                 }
                 .frame(maxWidth: .infinity)
-                if layout.inlineDetail, let event = model.selectedEvent {
-                    Rectangle().fill(CalendarPalette.hairline).frame(width: 0.5)
-                    CalendarEventPanel(event: event, model: model, escapes: keys)
-                        .frame(width: layout.detailWidth)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
-                }
             }
-            .overlay {
-                // Narrow window/portrait: the note large over the calendar, clear way back.
-                if !layout.inlineDetail, let event = model.selectedEvent {
-                    CalendarEventPanel(event: event, model: model, overlay: true, escapes: keys)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            .animation(NotyMotion.panel(reduceMotion), value: layout)
-            .animation(NotyMotion.panel(reduceMotion), value: model.selection)
+            .overlay { eventWindow(geo.size) }
+            .animation(NotyMotion.panel(reduceMotion), value: sidebar)
+            .onChange(of: geo.size.width >= CalendarSidebar.minimumTotalWidth, initial: true) { _, fits in sidebarFits = fits }
         }
         .background(Color(uiColor: .systemBackground))
         .navigationTitle("Kalender")
@@ -97,40 +107,135 @@ struct CalendarView: View {
         } message: {
             Text("Dieser Termin gehört zu einer Serie.")
         }
+        .onChange(of: model.storageError) { _, error in if error == nil { hiddenStorageError = nil } }
         .background { shortcuts }
     }
 
-    // MARK: Header (period, ‹ Heute ›)
+    // MARK: Event window
 
-    private var header: some View {
-        HStack(spacing: 0) {
-            Text(CalendarText.headline(model.mode, anchor: model.anchor, weekDays: shownWeekDays, calendar: calendar))
-                .font(.title2.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.7)
-                .accessibilityLabel(CalendarText.title(model.mode, anchor: model.anchor, weekDays: shownWeekDays, calendar: calendar))
-                .accessibilityAddTraits(.isHeader)
+    /// Dimmed calendar plus the floating window; tapping beside it, Esc,
+    /// pulling the head down or „Schließen“ end the selection.
+    private func eventWindow(_ size: CGSize) -> some View {
+        ZStack {
+            if model.selectedEvent != nil {
+                Color.black.opacity(0.45)
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.selection = nil }
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
+            }
+            if let event = model.selectedEvent {
+                CalendarEventPanel(event: event, model: model, escapes: keys, available: size)
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.92).combined(with: .opacity))
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .animation(NotyMotion.palette(reduceMotion) ?? .easeOut(duration: 0.15), value: model.selection)
+    }
+
+    // MARK: Header (period, view switcher, ‹ Heute ›)
+
+    private func header(wide: Bool) -> some View {
+        HStack(alignment: .center, spacing: CalendarSpace.m) {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(alignment: .firstTextBaseline, spacing: CalendarSpace.s) {
+                    Text(CalendarText.headline(model.mode, anchor: model.anchor, weekDays: shownWeekDays, calendar: calendar))
+                        .font(.title.weight(.bold)).lineLimit(1).minimumScaleFactor(0.6)
+                        .accessibilityLabel(CalendarText.title(model.mode, anchor: model.anchor, weekDays: shownWeekDays, calendar: calendar))
+                        .accessibilityAddTraits(.isHeader)
+                    if model.showsSamples { sampleTag }
+                }
+                if let subline {
+                    Text(subline).font(.subheadline).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                        .accessibilityHidden(true)
+                }
+            }
+            .layoutPriority(1)
             Spacer(minLength: CalendarSpace.s)
+            if wide {
+                Picker("Ansicht", selection: $model.mode) { modes }
+                    .pickerStyle(.segmented)
+                    .frame(width: 252)
+                    .accessibilityLabel("Ansicht")
+            } else {
+                Menu {
+                    Picker("Ansicht", selection: $model.mode) { modes }
+                } label: {
+                    HStack(spacing: CalendarSpace.xs) {
+                        Text(model.mode.title).font(.subheadline.weight(.semibold))
+                        Image(systemName: "chevron.up.chevron.down").font(.caption2.weight(.semibold))
+                    }
+                    .padding(.horizontal, CalendarSpace.m)
+                    .frame(minHeight: 44)
+                    .background(Capsule().fill(Color.white.opacity(0.08)).padding(.vertical, 6))
+                    .contentShape(Rectangle())
+                }
+                .foregroundStyle(.primary)
+                .accessibilityLabel("Ansicht: \(model.mode.title)")
+            }
+            navigation
+        }
+        .padding(.leading, CalendarSpace.xl).padding(.trailing, CalendarSpace.l)
+        .padding(.top, CalendarSpace.s).padding(.bottom, CalendarSpace.s)
+    }
+
+    /// Week: „KW 45 · 2.–6. November 2026“; day: the weekday and the KW.
+    private var subline: String? {
+        switch model.mode {
+        case .week:
+            return CalendarText.title(.week, anchor: model.anchor, weekDays: shownWeekDays, calendar: calendar)
+        case .day:
+            let weekday = CalendarText.weekdays[CalendarDates.weekdayIndex(model.anchor, calendar: calendar)]
+            let isToday = calendar.isDate(model.anchor, inSameDayAs: model.today)
+            return "\(isToday ? "Heute, " : "")\(weekday) · KW \(CalendarDates.isoWeek(model.anchor, calendar: calendar).week)"
+        case .month, .year:
+            return nil
+        }
+    }
+
+    /// Demo mode is said once, quietly, beside the title; tapping ends it.
+    private var sampleTag: some View {
+        Button { model.showsSamples = false } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "theatermasks").font(.caption2)
+                Text("Beispieldaten").font(.caption.weight(.semibold))
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(Color.white.opacity(0.1)))
+            .padding(.vertical, 8).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .accessibilityLabel("Beispieldaten, frei erfunden, nichts wird gespeichert")
+        .accessibilityHint("Blendet die Beispieldaten aus")
+    }
+
+    /// ‹ Heute › as one quiet capsule.
+    private var navigation: some View {
+        HStack(spacing: 0) {
             Button { model.step(-1) } label: {
-                Image(systemName: "chevron.left").font(.body.weight(.medium)).frame(width: 44, height: 44).contentShape(Rectangle())
+                Image(systemName: "chevron.left").font(.body.weight(.semibold)).frame(width: 40, height: 44).contentShape(Rectangle())
             }
             .accessibilityLabel("Zurück")
             .help("Zurück (⌘←)")
             .keyboardShortcut(key(.leftArrow))
             Button { model.goToToday() } label: {
-                Text("Heute").font(.body.weight(.medium)).padding(.horizontal, CalendarSpace.xs)
+                Text("Heute").font(.subheadline.weight(.semibold)).padding(.horizontal, CalendarSpace.xs)
                     .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
             }
             .keyboardShortcut(key("t"))
             .help("Heute (⌘T)")
             Button { model.step(1) } label: {
-                Image(systemName: "chevron.right").font(.body.weight(.medium)).frame(width: 44, height: 44).contentShape(Rectangle())
+                Image(systemName: "chevron.right").font(.body.weight(.semibold)).frame(width: 40, height: 44).contentShape(Rectangle())
             }
             .accessibilityLabel("Vor")
             .help("Vor (⌘→)")
             .keyboardShortcut(key(.rightArrow))
         }
         .buttonStyle(.borderless)
-        .padding(.leading, CalendarSpace.xl).padding(.trailing, CalendarSpace.m)
-        .padding(.top, CalendarSpace.xs).padding(.bottom, CalendarSpace.xs)
+        .foregroundStyle(.primary)
+        .background(Capsule().fill(Color.white.opacity(0.08)).padding(.vertical, 6))
     }
 
     @ViewBuilder private var content: some View {
@@ -153,38 +258,47 @@ struct CalendarView: View {
         CalendarDates.range(model.mode, anchor: model.anchor, weekDays: shownWeekDays, calendar: calendar)
     }
 
-    /// Empty range: a quiet hint, the grid stays usable. Never claims „keine
+    /// Empty range: a quiet card, the grid stays usable. Never claims „keine
     /// Termine“ for a range whose timetable was not loaded.
     @ViewBuilder private var emptyHint: some View {
         let range = shownRange
         let coverage = model.coverage(range.start, range.end)
         let empty = !stride(from: 0, to: CalendarDates.days(from: range.start, to: range.end, calendar: calendar), by: 1)
             .contains { !model.events(on: CalendarDates.day($0, after: range.start, calendar: calendar)).isEmpty }
+        let top: CGFloat = model.mode == .week || model.mode == .day ? 120 : 72
         if model.loaded, model.mode != .year, coverage == .notLoaded {
-            VStack(spacing: CalendarSpace.s) {
-                Text("Zeitraum noch nicht geladen").font(.subheadline.weight(.semibold))
-                Text("Der Stundenplan liegt für diesen Zeitraum nicht offline vor. Eigene Termine werden angezeigt.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if model.mode != .year {
-                    Button("Laden") { model.loadShownRange() }.font(.subheadline.weight(.semibold)).disabled(model.syncing)
+            HStack(alignment: .center, spacing: CalendarSpace.m) {
+                Image(systemName: "icloud.slash").font(.title3).foregroundStyle(.secondary).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Zeitraum noch nicht geladen").font(.subheadline.weight(.semibold))
+                    Text("Der Stundenplan liegt hierfür nicht offline vor. Eigene Termine werden angezeigt.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
+                .accessibilityElement(children: .combine)
+                Button("Laden") { model.loadShownRange() }
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .disabled(model.syncing || model.credentialsMissing)
             }
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, CalendarSpace.l).padding(.vertical, CalendarSpace.m)
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
-            .padding(.top, model.mode == .week || model.mode == .day ? 140 : 80)
-            .frame(maxWidth: 420)
+            .padding(.leading, CalendarSpace.l).padding(.trailing, CalendarSpace.m).padding(.vertical, CalendarSpace.m)
+            .notyGlass()
+            .frame(maxWidth: 460)
+            .padding(.horizontal, CalendarSpace.l)
+            .padding(.top, top)
         } else if model.loaded, empty {
             VStack(spacing: CalendarSpace.xs) {
+                Image(systemName: "calendar").font(.title2).foregroundStyle(.tertiary).padding(.bottom, 2)
                 Text(emptyText).font(.subheadline.weight(.semibold))
                 Text(emptyDetail).font(.caption).foregroundStyle(.secondary)
             }
             .multilineTextAlignment(.center)
-            .padding(.horizontal, CalendarSpace.l).padding(.vertical, CalendarSpace.m)
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
-            .padding(.top, model.mode == .week || model.mode == .day ? 140 : 80)
+            .padding(.horizontal, CalendarSpace.xl).padding(.vertical, CalendarSpace.l)
+            .notyGlass()
             .frame(maxWidth: 420)
+            .padding(.horizontal, CalendarSpace.l)
+            .padding(.top, top)
             .allowsHitTesting(false)
+            .accessibilityElement(children: .combine)
         }
     }
 
@@ -198,7 +312,7 @@ struct CalendarView: View {
     }
 
     private var emptyDetail: String {
-        if model.hiddenSources.count == CalendarSource.allCases.count { return "Alle Kalender sind ausgeblendet (Menü „…“)." }
+        if model.hiddenSources.count == CalendarSource.allCases.count { return "Alle Kalender sind ausgeblendet." }
         if model.showsSamples { return "Beispieldaten: frei erfunden, nichts wird gespeichert." }
         if model.connection == nil {
             return model.mode == .year
@@ -209,148 +323,104 @@ struct CalendarView: View {
         return "Laut WebUntis kein Unterricht; keine eigenen Termine."
     }
 
-    /// One quiet line under the title: WebUntis „Stand“, refresh, errors,
-    /// storage problems and the demo hint. Hidden when there is nothing to say.
-    @ViewBuilder private var statusLine: some View {
-        let items = statusItems
-        if !items.isEmpty {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(items.indices, id: \.self) { index in
-                    let item = items[index]
-                    HStack(spacing: CalendarSpace.s) {
-                        if let symbol = item.symbol {
-                            Image(systemName: symbol).font(.caption).foregroundStyle(item.warning ? Color.orange : Color.secondary)
-                        }
-                        Text(item.text).font(.caption).foregroundStyle(item.warning ? Color.primary : Color.secondary)
-                            .lineLimit(2)
-                        if let action = item.action {
-                            Button(action.title) { perform(action) }.font(.caption.weight(.semibold)).buttonStyle(.borderless)
-                        }
-                        Spacer(minLength: 0)
+    // MARK: Problems and toasts
+
+    /// Only what needs the user: a locked or failed store, an unsaved
+    /// change, a recovered older state. Everything else is behind the sync
+    /// symbol. An unsaved change cannot be put away – only saved again.
+    @ViewBuilder private var problemBanners: some View {
+        let storage = model.storageError.flatMap { $0 == hiddenStorageError ? nil : $0 }
+        if storage != nil || model.saveError != nil || model.recoveredNotice != nil {
+            VStack(spacing: CalendarSpace.s) {
+                if let storage {
+                    CalendarProblemBanner(symbol: "lock.trianglebadge.exclamationmark", text: storage,
+                                          closeLabel: "Ausblenden (bleibt im Statussymbol)") { hiddenStorageError = storage }
+                }
+                if let error = model.saveError {
+                    if model.unsaved {
+                        CalendarProblemBanner(symbol: "exclamationmark.triangle", text: error,
+                                              actionTitle: "Erneut speichern") { Task { await model.retrySave() } }
+                    } else {
+                        CalendarProblemBanner(symbol: "exclamationmark.triangle", text: error) { model.dismissNotices() }
                     }
-                    .accessibilityElement(children: .combine)
+                }
+                if let notice = model.recoveredNotice {
+                    CalendarProblemBanner(symbol: "clock.arrow.circlepath", text: notice) { model.dismissNotices() }
                 }
             }
-            .padding(.leading, CalendarSpace.xl).padding(.trailing, CalendarSpace.l).padding(.bottom, CalendarSpace.xs)
+            .padding(.horizontal, CalendarSpace.l).padding(.bottom, CalendarSpace.s)
+            .transition(.opacity)
         }
     }
 
-    private enum StatusAction {
-        case retrySave, dismiss, hideSamples, connect, refresh
-        var title: String {
-            switch self {
-            case .retrySave: "Erneut speichern"
-            case .dismiss: "OK"
-            case .hideSamples: "Ausblenden"
-            case .connect: "Verbinden …"
-            case .refresh: "Erneut"
+    /// Bottom: a short notice (rejected drag, a note still being saved) and
+    /// „Rückgängig“ for the last change.
+    private var toasts: some View {
+        VStack(spacing: CalendarSpace.s) {
+            if let notice = model.notice {
+                HStack(spacing: CalendarSpace.m) {
+                    Image(systemName: "info.circle").foregroundStyle(.orange).accessibilityHidden(true)
+                    Text(notice).font(.subheadline).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    Button { model.notice = nil } label: { Image(systemName: "xmark").font(.caption.weight(.semibold)).frame(width: 36, height: 36) }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Hinweis schließen")
+                }
+                .padding(.leading, CalendarSpace.l).padding(.trailing, 6).padding(.vertical, 4)
+                .frame(maxWidth: 520)
+                .notyGlass()
+                .accessibilityElement(children: .contain)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            if let step = model.lastUndo {
+                HStack(spacing: CalendarSpace.m) {
+                    Text(step.text).font(.subheadline).lineLimit(1)
+                    Button("Rückgängig") { Task { await model.undoLast() } }.font(.subheadline.weight(.semibold))
+                    Button { model.dismissUndo() } label: { Image(systemName: "xmark").frame(width: 32, height: 32) }
+                        .accessibilityLabel("Hinweis schließen")
+                }
+                .padding(.leading, CalendarSpace.l).padding(.trailing, 6).padding(.vertical, 6)
+                .notyGlass()
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-    }
-
-    private struct StatusItem {
-        var symbol: String?
-        var text: String
-        var warning = false
-        var action: StatusAction?
-    }
-
-    private func perform(_ action: StatusAction) {
-        switch action {
-        case .retrySave: Task { await model.retrySave() }
-        case .dismiss: model.dismissNotices()
-        case .hideSamples: model.showsSamples = false
-        case .connect: connecting = true
-        case .refresh: model.refreshNow()
-        }
-    }
-
-    private var statusItems: [StatusItem] {
-        var items: [StatusItem] = []
-        if let error = model.storageError { items.append(StatusItem(symbol: "lock.trianglebadge.exclamationmark", text: error, warning: true)) }
-        if let error = model.saveError {
-            items.append(StatusItem(symbol: "exclamationmark.triangle", text: error, warning: true,
-                                    action: model.unsaved ? .retrySave : .dismiss))
-        }
-        if let notice = model.recoveredNotice {
-            items.append(StatusItem(symbol: "clock.arrow.circlepath", text: notice, warning: true, action: .dismiss))
-        }
-        if let notice = model.notice {
-            items.append(StatusItem(symbol: "info.circle", text: notice, warning: true, action: .dismiss))
-        }
-        if !model.truncatedSeries.isEmpty {
-            items.append(StatusItem(symbol: "repeat", text: "Nicht alle Wiederholungen angezeigt (höchstens \(CalendarSeries.maximumPerSeries) je Serie im angezeigten Jahr): "
-                                    + model.truncatedSeries.prefix(3).map { "„\($0)“" }.joined(separator: ", ")))
-        }
-        if model.showsSamples {
-            items.append(StatusItem(symbol: "theatermasks", text: "Beispieldaten – frei erfunden, nichts wird gespeichert",
-                                    action: .hideSamples))
-        } else if model.connection != nil, !model.hiddenSources.contains(.timetable) {
-            items.append(sourceItem)
-        }
-        return items
-    }
-
-    private var sourceItem: StatusItem {
-        if model.credentialsMissing {
-            var text = "WebUntis: Zugang auf diesem Gerät neu verbinden"
-            if case .loaded(let oldest)? = model.coverage(shownRange.start, shownRange.end) { text += " · " + model.standText(oldest) + " (veraltet)" }
-            else if case .partial(let oldest)? = model.coverage(shownRange.start, shownRange.end) { text += " · " + model.standText(oldest) + " (veraltet)" }
-            return StatusItem(symbol: "key", text: text, warning: true, action: .connect)
-        }
-        let range = shownRange
-        var stand: String?
-        switch model.coverage(range.start, range.end) {
-        case .loaded(let oldest)?: stand = model.standText(oldest)
-        case .partial(let oldest)?: stand = model.standText(oldest) + " · teilweise geladen"
-        default: stand = nil
-        }
-        if model.syncing {
-            return StatusItem(symbol: "arrow.triangle.2.circlepath", text: "Stundenplan wird aktualisiert …" + (stand.map { " · \($0)" } ?? ""))
-        }
-        if let error = model.syncError {
-            return StatusItem(symbol: "exclamationmark.icloud", text: "Aktualisierung fehlgeschlagen: \(error)" + (stand.map { " · \($0)" } ?? ""),
-                              warning: true, action: .refresh)
-        }
-        return StatusItem(symbol: "lock", text: "Stundenplan aus WebUntis · " + (stand ?? "noch nicht geladen"))
-    }
-
-    @ViewBuilder private var undoBanner: some View {
-        if let step = model.lastUndo {
-            HStack(spacing: CalendarSpace.m) {
-                Text(step.text).font(.subheadline).lineLimit(1)
-                Button("Rückgängig") { Task { await model.undoLast() } }.font(.subheadline.weight(.semibold))
-                Button { model.dismissUndo() } label: { Image(systemName: "xmark").frame(width: 32, height: 32) }
-                    .accessibilityLabel("Hinweis schließen")
-            }
-            .padding(.leading, CalendarSpace.l).padding(.trailing, 6).padding(.vertical, 6)
-            .notyGlass()
-            .padding(.bottom, CalendarSpace.l)
-        }
+        .padding(.horizontal, CalendarSpace.l)
+        .padding(.bottom, CalendarSpace.l)
+        .animation(NotyMotion.panel(reduceMotion), value: model.notice)
+        .animation(NotyMotion.panel(reduceMotion), value: model.lastUndo?.text)
     }
 
     // MARK: Toolbar
 
+    /// Something worth the status symbol: WebUntis, a storage lock, a
+    /// truncated series.
+    private var showsStatus: Bool {
+        model.storageError != nil || !model.truncatedSeries.isEmpty || (model.connection != nil && !model.showsSamples)
+    }
+
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            if sizeClass == .compact {
-                // Narrow window: one compact menu instead of four segments.
-                Menu {
-                    Picker("Ansicht", selection: $model.mode) { modes }
-                } label: {
-                    HStack(spacing: CalendarSpace.xs) {
-                        Text(model.mode.title).font(.headline)
-                        Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
-                    }
-                    .foregroundStyle(.primary)
-                    .frame(minHeight: 44)
+        ToolbarItem(placement: .topBarLeading) {
+            if sidebarFits {
+                Button { sidebarWanted.toggle() } label: {
+                    Label(sidebarWanted ? "Kalenderleiste ausblenden" : "Kalenderleiste einblenden", systemImage: "sidebar.squares.left")
                 }
-                .accessibilityLabel("Ansicht: \(model.mode.title)")
-            } else {
-                Picker("Ansicht", selection: $model.mode) { modes }
-                    .pickerStyle(.segmented)
-                    .frame(width: 280)
-                    .accessibilityLabel("Ansicht")
+                .help("Kalenderleiste (⌃⌘S)")
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            if showsStatus {
+                Button { showingStatus = true } label: {
+                    CalendarSyncSymbol(model: model, problem: statusProblem)
+                }
+                .popover(isPresented: $showingStatus, arrowEdge: .top) {
+                    CalendarStatusPopover(model: model, connect: {
+                        showingStatus = false
+                        // The sheet follows once the popover is gone.
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(350))
+                            connecting = true
+                        }
+                    }, close: { showingStatus = false })
+                }
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -363,6 +433,11 @@ struct CalendarView: View {
                 .help("Neuer Termin (⌘N)")
                 .disabled(!model.canWrite || model.showsSamples)
         }
+    }
+
+    /// The badge of the sync symbol: storage locked, refresh failed, access missing.
+    private var statusProblem: Bool {
+        model.storageError != nil || (model.connection != nil && !model.showsSamples && (model.syncError != nil || model.credentialsMissing))
     }
 
     /// Tag · Woche · Monat · Jahr, in the order of ⌘1–⌘4.
@@ -415,28 +490,17 @@ struct CalendarView: View {
         }
     }
 
-    /// ⌘1–⌘4 like Apple Kalender: Tag, Woche, Monat, Jahr.
+    /// ⌘1–⌘4 like Apple Kalender: Tag, Woche, Monat, Jahr; ⌃⌘S the sidebar.
     private var shortcuts: some View {
         Group {
             Button("Tag") { model.mode = .day }.keyboardShortcut(key("1"))
             Button("Woche") { model.mode = .week }.keyboardShortcut(key("2"))
             Button("Monat") { model.mode = .month }.keyboardShortcut(key("3"))
             Button("Jahr") { model.mode = .year }.keyboardShortcut(key("4"))
+            Button("Kalenderleiste") { sidebarWanted.toggle() }
+                .keyboardShortcut(navigationKeys && sidebarFits ? KeyboardShortcut("s", modifiers: [.command, .control]) : nil)
         }
         .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
-    }
-}
-
-/// Whether the details fit beside the calendar: no forced columns on small space.
-struct CalendarScreenLayout: Equatable {
-    /// The calendar itself keeps at least this width beside the details.
-    static let minimumCalendar: CGFloat = 500
-    let inlineDetail: Bool
-    let detailWidth: CGFloat
-
-    init(width: CGFloat) {
-        detailWidth = min(440, max(360, width * 0.36))
-        inlineDetail = width - detailWidth >= Self.minimumCalendar
     }
 }
 
