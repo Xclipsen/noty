@@ -6,15 +6,28 @@ import NotebookCore
 // Lehrkräfte, Räume, Termine, Ferien), shown only with „Beispieldaten
 // anzeigen“, never stored and never mixed with real entries.
 
-/// Calendars shown. Only own entries of „Persönlich“ are writable.
+/// Calendars shown. Only own entries of „Persönlich“ are writable here;
+/// `system` (Apple Kalender/Outlook über EventKit, Stufe C, IDs „system/…“)
+/// is read-only by default – whether a single system calendar may be
+/// written is decided by the model (`canEdit`, after the data merge).
 enum CalendarSource: String, CaseIterable, Identifiable, Hashable {
-    case timetable, personal, holidays
+    case timetable, personal, holidays, system
     var id: String { rawValue }
     var title: String {
         switch self {
         case .timetable: "Stundenplan"
         case .personal: "Persönlich"
         case .holidays: "Ferien"
+        case .system: "Kalender"
+        }
+    }
+    /// Symbol of the source in lists and chips.
+    var symbol: String {
+        switch self {
+        case .timetable: "graduationcap"
+        case .personal: "person.crop.circle"
+        case .holidays: "sun.max"
+        case .system: "calendar"
         }
     }
     var readOnly: Bool { self != .personal }
@@ -103,6 +116,8 @@ enum CalendarPalette {
     /// for own entries.
     static let personal = Color.green
     static let holidays = Color.gray
+    /// Fallback of system calendars (EventKit) until their own colour is known.
+    static let system = Color(red: 0.55, green: 0.6, blue: 0.95)
     static let selection = Color(uiColor: .systemBlue)
     static let today = Color(uiColor: .systemRed)
     /// Hairlines of grids and cells: quieter than the system separator.
@@ -111,7 +126,7 @@ enum CalendarPalette {
     static let quiet = Color(uiColor: .tertiaryLabel)
     /// Event background: a faint tint of the subject colour, stronger when selected.
     static func tint(_ color: Color, selected: Bool = false, cancelled: Bool = false) -> Color {
-        color.opacity(selected ? 0.30 : cancelled ? 0.06 : 0.15)
+        color.opacity(selected ? 0.32 : cancelled ? 0.07 : 0.18)
     }
 
     static func color(_ event: CalendarEntry) -> Color {
@@ -119,6 +134,7 @@ enum CalendarPalette {
         switch event.source {
         case .personal: return personal
         case .holidays: return holidays
+        case .system: return system
         case .timetable:
             let key = CalendarSubjectColor.key(subjectID: nil, name: event.subject ?? event.title)
             return color(named: CalendarSubjectColor.name(for: key, chosen: [:]))
@@ -250,6 +266,9 @@ enum CalendarSamples {
                 "Rechnungswesen – Buchungssätze\n\n• Bank an Kasse 500 €\n• Wareneingang an Verbindlichkeiten 1.200 €\n\nMerke: Soll an Haben.",
                 "Hausaufgabe\n\nAufgaben 4–6 bis Freitag. Eigene Beispiele frei erfunden.",
             ]
+        case (0, 0, 1):
+            event.status = .roomChanged("R 301 statt R 204")
+            event.room = "R 301"
         case (0, 2, 1):
             event.status = .cancelled
             event.details = "Unterricht entfällt (Beispiel)."
@@ -264,6 +283,9 @@ enum CalendarSamples {
         case (1, 1, 1):
             event.status = .exam
             event.title = "Englisch-Test"
+        case (1, 0, 2):
+            event.status = .cancelled
+            event.details = "Unterricht entfällt (Beispiel)."
         case (-1, 1, 0):
             event.samplePages = ["Rechnungswesen – Bilanz\n\nAktiva = Passiva (Beispielnotiz der Vorwoche)."]
         default: break
@@ -433,6 +455,7 @@ extension CalendarEntry {
         case .timetable: return "WebUntis, inoffiziell über Untis-Mobile-Freigabe"
         case .holidays: return "WebUntis-Ferien"
         case .personal: return "noty, nur auf diesem iPad"
+        case .system: return "Kalender des iPads"
         }
     }
 

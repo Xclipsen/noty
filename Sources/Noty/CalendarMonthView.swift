@@ -13,6 +13,8 @@ struct CalendarMonthView: View {
     @ScaledMetric(relativeTo: .body) private var dateRow: CGFloat = 32
     /// Calm cells: never more than three lines, the rest behind „+ n weitere“.
     private let maximumLines = 3
+    /// Below this column width the lines become coloured dots.
+    static let dotColumn: CGFloat = 76
     private var calendar: Calendar { model.calendar }
 
     var body: some View {
@@ -26,7 +28,8 @@ struct CalendarMonthView: View {
                 HStack(spacing: 0) {
                     Color.clear.frame(width: weekColumn)
                     ForEach(0..<7, id: \.self) { index in
-                        Text(CalendarText.shortWeekdays[index]).font(.caption).foregroundStyle(.secondary)
+                        Text(CalendarText.shortWeekdays[index].uppercased()).font(.caption2.weight(.semibold)).tracking(0.6)
+                            .foregroundStyle(index >= 5 ? CalendarPalette.quiet : Color.secondary)
                             .padding(.leading, CalendarSpace.s)
                             .frame(width: column, alignment: .leading)
                             .accessibilityLabel(CalendarText.weekdays[index])
@@ -61,11 +64,13 @@ struct CalendarMonthView: View {
         let capacity = min(maximumLines, Int((height - dateRow - 6) / line))
         let split = CalendarOverflow.split(total: events.count, capacity: capacity)
         let isToday = calendar.isDate(day, inSameDayAs: model.today)
+        let weekend = CalendarDates.weekdayIndex(day, calendar: calendar) >= 5
+        let holiday = events.contains { $0.source == .holidays }
         return VStack(alignment: .leading, spacing: 1) {
             Button { model.open(day, in: .day) } label: {
                 Text("\(calendar.component(.day, from: day))")
-                    .font(.subheadline.weight(isToday ? .semibold : .regular)).monospacedDigit()
-                    .foregroundStyle(isToday ? Color.white : inMonth ? Color.primary : CalendarPalette.quiet)
+                    .font(.subheadline.weight(isToday ? .bold : .regular)).monospacedDigit()
+                    .foregroundStyle(isToday ? Color.white : !inMonth ? CalendarPalette.quiet : weekend ? Color.secondary : Color.primary)
                     .frame(minWidth: 26, minHeight: 26)
                     .background { if isToday { Circle().fill(CalendarPalette.today) } }
                     .padding(.leading, 3)
@@ -76,25 +81,66 @@ struct CalendarMonthView: View {
             .accessibilityLabel(CalendarText.longDate(day, calendar: calendar) + (isToday ? ", heute" : "")
                                 + ", " + NotyText.count(events.count, "Termin", "Termine"))
             .accessibilityHint("Öffnet den Tag")
-            ForEach(events.prefix(split.shown)) { event in
-                CalendarMonthRow(event: event, model: model).frame(height: line)
-            }
-            if split.hidden > 0 {
-                Button { showAll(day) } label: {
-                    Text(CalendarText.more(split.hidden)).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, minHeight: line, alignment: .leading).padding(.horizontal, 6)
-                        .contentShape(Rectangle())
+            if width < Self.dotColumn {
+                dots(events, day: day)
+            } else {
+                ForEach(events.prefix(split.shown)) { event in
+                    CalendarMonthRow(event: event, model: model).frame(height: line)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(split.hidden) weitere Termine am \(CalendarText.shortDate(day, calendar: calendar))")
-                .accessibilityHint("Zeigt die vollständige Tagesliste")
+                if split.hidden > 0 {
+                    Button { showAll(day) } label: {
+                        Text(CalendarText.more(split.hidden)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.white.opacity(0.08)))
+                            .frame(maxWidth: .infinity, minHeight: line, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(split.hidden) weitere Termine am \(CalendarText.shortDate(day, calendar: calendar))")
+                    .accessibilityHint("Zeigt die vollständige Tagesliste")
+                }
             }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 3)
         .frame(width: width, height: height, alignment: .topLeading)
+        .background {
+            // Weekends and holidays slightly set apart, today faintly marked.
+            if isToday {
+                CalendarPalette.today.opacity(0.07)
+            } else if inMonth && (weekend || holiday) {
+                Color.white.opacity(holiday ? 0.045 : 0.025)
+            }
+        }
         .overlay(alignment: .leading) { Rectangle().fill(CalendarPalette.hairline.opacity(0.6)).frame(width: 0.5) }
         .opacity(inMonth ? 1 : 0.6)
+    }
+
+    /// Narrow columns: one coloured dot per entry (at most eight) and
+    /// „+ n“; the whole area opens the complete day list – nothing is dropped.
+    @ViewBuilder private func dots(_ events: [CalendarEntry], day: Date) -> some View {
+        if !events.isEmpty {
+            let shown = events.prefix(8)
+            Button { showAll(day) } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(7), spacing: 3), count: 4), alignment: .leading, spacing: 3) {
+                        ForEach(shown) { event in
+                            Circle().fill(CalendarPalette.color(event).opacity(event.status == .cancelled ? 0.35 : 1))
+                                .frame(width: 7, height: 7)
+                        }
+                    }
+                    if events.count > shown.count {
+                        Text("+ \(events.count - shown.count)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.leading, 6).padding(.top, 2)
+                .frame(maxWidth: .infinity, minHeight: 28, alignment: .topLeading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(NotyText.count(events.count, "Termin", "Termine") + " am \(CalendarText.shortDate(day, calendar: calendar))")
+            .accessibilityHint("Zeigt die vollständige Tagesliste")
+        }
     }
 }
 
@@ -116,7 +162,9 @@ struct CalendarMonthRow: View {
                 } else {
                     Circle().fill(color).frame(width: 6, height: 6)
                 }
-                if let symbol = event.status.symbol { Image(systemName: symbol).font(.caption2).foregroundStyle(.secondary) }
+                if let symbol = event.status.symbol {
+                    Image(systemName: symbol).font(.caption2.weight(.semibold)).foregroundStyle(cancelled ? Color.orange : .secondary)
+                }
                 Text(event.title).font(.caption).strikethrough(cancelled).lineLimit(1).layoutPriority(1)
                 Spacer(minLength: 2)
                 if notes { Image(systemName: "note.text").font(.caption2).foregroundStyle(.secondary) }

@@ -1,47 +1,68 @@
 import SwiftUI
 import NotebookCore
 
-/// Termindetails: a minimal head (Titel, Datum/Uhrzeit, Kalender, Ort),
-/// only the rows that have content, then „Notizen“: the event's note as a
-/// real noty page (the normal editor, `ContentView` embedded) as the main
-/// element. `overlay`: large view over the calendar in narrow windows, with
-/// a clear way back.
+/// Termindetails as one large floating window over the calendar (UI-
+/// Überarbeitung 06.11.2026): a compact head (colour, Titel, Datum/Uhrzeit,
+/// chips for state, Raum, Lehrkraft, Kalender), then the event's note – the
+/// normal noty editor (`ContentView` embedded) – as the main element.
+/// Closing always goes through `model.selection = nil`, the same path as
+/// before: the model commits and releases the note (`releaseNote`).
 struct CalendarEventPanel: View {
     let event: CalendarEntry
     @ObservedObject var model: CalendarModel
-    var overlay = false
-    /// Esc closes the panel only while nothing is presented over the calendar.
+    /// Esc closes the window only while nothing is presented over the calendar.
     var escapes = true
+    /// Size the window may use (the calendar's area).
+    var available: CGSize = CGSize(width: 900, height: 700)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmingRemoval = false
-    @State private var detailsHeight: CGFloat = 160
+    @State private var infoHeight: CGFloat = 120
+    /// Pull-down of the head: past the threshold the window closes.
+    @State private var pull: CGFloat = 0
     private var calendar: Calendar { model.calendar }
 
+    /// Narrow windows: nearly the full area; otherwise about 90 %.
+    private var size: CGSize {
+        let compact = available.width < 700
+        let width = compact ? available.width - 2 * CalendarSpace.s : min(1180, available.width * 0.9)
+        let height = compact ? available.height - 2 * CalendarSpace.s : available.height * 0.9
+        return CGSize(width: max(300, width), height: max(320, height))
+    }
+    /// Wide window: details as a column beside the page instead of above it.
+    private var wide: Bool { size.width >= 900 }
+
     var body: some View {
+        let layout = wide ? AnyLayout(HStackLayout(alignment: .top, spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
         VStack(spacing: 0) {
-            bar
-            GeometryReader { geo in
-                // Wide overlay: details beside the page; otherwise stacked.
-                if overlay && geo.size.width >= 760 {
-                    HStack(alignment: .top, spacing: 0) {
-                        ScrollView { details.padding(CalendarSpace.xl) }.frame(width: 320)
-                        Rectangle().fill(CalendarPalette.hairline).frame(width: 0.5)
-                        CalendarNoteArea(event: event, model: model).padding(CalendarSpace.s)
-                    }
-                } else {
-                    VStack(spacing: 0) {
-                        // As tall as the details, at most a quarter: the page keeps the room.
-                        ScrollView {
-                            details.padding(.horizontal, CalendarSpace.l).padding(.bottom, CalendarSpace.m)
-                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailsHeight = $0 }
-                        }
-                        .frame(height: min(detailsHeight, max(110, geo.size.height * 0.26)))
-                        Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
-                        CalendarNoteArea(event: event, model: model).padding(.horizontal, CalendarSpace.xs).padding(.top, CalendarSpace.xs)
-                    }
+            head
+            Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
+            // One layout type that only changes axis: the note view (and its
+            // editor) keeps its identity when the window changes width.
+            layout {
+                ScrollView {
+                    info
+                        .padding(.horizontal, CalendarSpace.l).padding(.vertical, CalendarSpace.m)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { infoHeight = $0 }
                 }
+                .frame(width: wide ? 300 : nil)
+                .frame(maxHeight: wide ? .infinity : min(infoHeight, max(84, size.height * 0.24)))
+                if wide {
+                    Rectangle().fill(CalendarPalette.hairline).frame(width: 0.5)
+                } else {
+                    Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
+                }
+                CalendarNoteArea(event: event, model: model)
+                    .padding(.horizontal, CalendarSpace.s).padding(.top, CalendarSpace.xs).padding(.bottom, CalendarSpace.s)
             }
         }
-        .background(Color(uiColor: .systemBackground))
+        .frame(width: size.width, height: size.height)
+        .background(Color(uiColor: .secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5) }
+        .shadow(color: .black.opacity(0.55), radius: 40, y: 18)
+        .offset(y: pull)
+        .accessibilityAddTraits(.isModal)
+        .accessibilityAction(.escape) { close() }
         .confirmationDialog("Termin löschen?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
             if event.originalDate != nil {
                 Button("Nur diesen Termin löschen", role: .destructive) { Task { await model.remove(event, scope: .single) } }
@@ -56,77 +77,104 @@ struct CalendarEventPanel: View {
         }
     }
 
-    /// Back/close and one menu with Bearbeiten/Löschen (own entries) or the
-    /// subject colour (lessons).
-    private var bar: some View {
-        HStack(spacing: 0) {
-            if overlay {
-                Button { model.selection = nil } label: {
-                    Label("Kalender", systemImage: "chevron.backward").font(.body.weight(.medium))
-                        .padding(.horizontal, CalendarSpace.xs)
-                        .frame(minHeight: 44).contentShape(Rectangle())
+    /// The same way as before: the model commits and releases the note.
+    private func close() { model.selection = nil }
+
+    // MARK: Head
+
+    /// Grabber, colour, title, date · time, the menu and „Schließen“. The
+    /// head (not the page) can be pulled down to close.
+    private var head: some View {
+        VStack(spacing: 0) {
+            Capsule().fill(Color.white.opacity(0.22)).frame(width: 40, height: 5)
+                .padding(.top, 7).padding(.bottom, 3)
+                .accessibilityHidden(true)
+            HStack(alignment: .top, spacing: CalendarSpace.m) {
+                RoundedRectangle(cornerRadius: 2.5).fill(CalendarPalette.color(event)).frame(width: 5, height: 44)
+                    .padding(.top, 2)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(event.title).font(.title2.weight(.bold)).strikethrough(event.status == .cancelled)
+                        .lineLimit(2).minimumScaleFactor(0.8)
+                        .accessibilityAddTraits(.isHeader)
+                    Text(CalendarText.longDate(event.start, calendar: calendar) + " · " + event.timeText(calendar))
+                        .font(.subheadline).foregroundStyle(.secondary).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
                 }
-                .accessibilityLabel("Zurück zum Kalender")
-                .keyboardShortcut(escapes ? .cancelAction : nil)
-            }
-            Spacer()
-            if event.writable {
-                Menu {
-                    Button { model.draft = model.editDraft(for: event) } label: {
-                        Label("Bearbeiten", systemImage: "pencil")
-                    }
-                    Button(role: .destructive) { confirmingRemoval = true } label: {
-                        Label("Löschen", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle").font(.body).frame(width: 44, height: 44).contentShape(Rectangle())
-                }
-                .accessibilityLabel("Termin bearbeiten oder löschen")
-            } else if let key = event.subjectKey, !event.isSample, model.canWrite {
-                Menu {
-                    CalendarColorPicker(key: key, model: model)
-                } label: {
-                    Image(systemName: "paintpalette").font(.body).frame(width: 44, height: 44).contentShape(Rectangle())
-                }
-                .accessibilityLabel("Fachfarbe von \(event.subject ?? event.title)")
-            }
-            if !overlay {
-                Button { model.selection = nil } label: {
-                    Image(systemName: "xmark").font(.body.weight(.medium)).foregroundStyle(.secondary)
+                Spacer(minLength: CalendarSpace.s)
+                actions
+                Button { close() } label: {
+                    Image(systemName: "xmark").font(.body.weight(.semibold)).foregroundStyle(.secondary)
+                        .frame(width: 34, height: 34)
+                        .background(Circle().fill(Color.white.opacity(0.1)))
                         .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
-                .accessibilityLabel("Details schließen")
+                .buttonStyle(.plain)
+                .accessibilityLabel("Termin schließen")
+                .help("Schließen (Esc)")
                 .keyboardShortcut(escapes ? .cancelAction : nil)
             }
+            .padding(.leading, CalendarSpace.l).padding(.trailing, CalendarSpace.s).padding(.bottom, CalendarSpace.s)
         }
-        .buttonStyle(.borderless)
-        .padding(.horizontal, CalendarSpace.xs)
+        .contentShape(Rectangle())
+        .gesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
+            .onChanged { value in pull = max(0, value.translation.height) }
+            .onEnded { value in
+                if value.translation.height > 120 || value.predictedEndTranslation.height > 320 {
+                    close()
+                } else {
+                    withAnimation(NotyMotion.panel(reduceMotion)) { pull = 0 }
+                }
+            })
+    }
+
+    /// Bearbeiten/Löschen (own entries) or the subject colour (lessons).
+    @ViewBuilder private var actions: some View {
+        if event.writable {
+            Menu {
+                Button { model.draft = model.editDraft(for: event) } label: {
+                    Label("Bearbeiten", systemImage: "pencil")
+                }
+                Button(role: .destructive) { confirmingRemoval = true } label: {
+                    Label("Löschen", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis").font(.body.weight(.semibold))
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(Color.white.opacity(0.1)))
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .accessibilityLabel("Termin bearbeiten oder löschen")
+        } else if let key = event.subjectKey, !event.isSample, model.canWrite {
+            Menu {
+                CalendarColorPicker(key: key, model: model)
+            } label: {
+                Image(systemName: "paintpalette").font(.body)
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(Color.white.opacity(0.1)))
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .accessibilityLabel("Fachfarbe von \(event.subject ?? event.title)")
+        }
     }
 
     // MARK: Details
 
-    private var details: some View {
-        VStack(alignment: .leading, spacing: CalendarSpace.s) {
-            Text(event.title).font(.title3.weight(.semibold)).strikethrough(event.status == .cancelled)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityAddTraits(.isHeader)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(CalendarText.longDate(event.start, calendar: calendar) + " · " + event.timeText(calendar)).monospacedDigit()
-                if let place = [event.room, event.teacher].compactMap({ $0 }).joined(separator: " · ").nilIfEmpty {
-                    Text(place)
+    /// Chips for the short facts, then only the rows that have content.
+    private var info: some View {
+        VStack(alignment: .leading, spacing: CalendarSpace.m) {
+            CalendarFlowLayout(spacing: 6) {
+                if let label = event.status.label, let symbol = event.status.symbol {
+                    CalendarChip(text: label, symbol: symbol, tint: event.status == .cancelled ? .orange : .primary, prominent: true)
                 }
-                HStack(spacing: 6) {
-                    Circle().fill(CalendarPalette.color(event)).frame(width: 7, height: 7)
-                    Text("\(event.source.title) · \(event.originText)")
-                    if event.source.readOnly { Image(systemName: "lock").font(.caption2).accessibilityLabel("schreibgeschützt") }
-                }
-                .accessibilityElement(children: .combine)
+                if let room = event.room { CalendarChip(text: room, symbol: "mappin.and.ellipse").accessibilityLabel("Raum \(room)") }
+                if let teacher = event.teacher { CalendarChip(text: teacher, symbol: "person").accessibilityLabel("Lehrkraft \(teacher)") }
+                CalendarChip(text: event.source.title, dot: CalendarPalette.color(event), trailingSymbol: event.source.readOnly ? "lock.fill" : nil)
+                    .accessibilityLabel(event.source.readOnly ? "\(event.source.title), schreibgeschützt" : event.source.title)
+                if let text = event.repeatText { CalendarChip(text: text, symbol: "repeat") }
+                if let text = event.reminder { CalendarChip(text: text, symbol: "bell") }
             }
-            .font(.subheadline).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            if let label = event.status.label, let symbol = event.status.symbol {
-                Label(statusText(label), systemImage: symbol)
-                    .font(.subheadline.weight(.medium))
+            if let note = event.status.note, let label = event.status.label {
+                Text("\(label): \(note)").font(.subheadline.weight(.medium))
                     .foregroundStyle(event.status == .cancelled ? Color.orange : .primary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -134,17 +182,11 @@ struct CalendarEventPanel: View {
                 Text(note).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if event.ghostLinkID != nil { assignment }
-            // Only rows with content; „keine Erinnerung“ is not shown.
-            if event.repeatText != nil || event.reminder != nil {
-                VStack(alignment: .leading, spacing: 3) {
-                    if let text = event.repeatText { Label(text, systemImage: "repeat") }
-                    if let text = event.reminder { Label(text, systemImage: "bell") }
-                }
-                .font(.footnote).foregroundStyle(.secondary).labelStyle(CalendarCompactLabelStyle())
-            }
             if let text = event.details {
-                Text(text).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(text).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            Text(event.originText).font(.caption).foregroundStyle(CalendarPalette.quiet)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -169,15 +211,76 @@ struct CalendarEventPanel: View {
             }
         }
     }
+}
 
-    private func statusText(_ label: String) -> String {
-        if let note = event.status.note { return "\(label): \(note)" }
-        return label
+/// Small rounded fact („Ausfall“, „R 204“, „Stundenplan 🔒“): symbol plus
+/// text, never colour alone.
+struct CalendarChip: View {
+    let text: String
+    var symbol: String?
+    var dot: Color?
+    var trailingSymbol: String?
+    var tint: Color = .secondary
+    /// Status: stronger fill and the tint on the text too.
+    var prominent = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let dot { Circle().fill(dot).frame(width: 8, height: 8) }
+            if let symbol { Image(systemName: symbol).font(.caption.weight(.semibold)).foregroundStyle(prominent ? tint : .secondary) }
+            Text(text).font(.footnote.weight(prominent ? .semibold : .regular)).foregroundStyle(prominent ? tint : .primary)
+                .lineLimit(2)
+            if let trailingSymbol { Image(systemName: trailingSymbol).font(.system(size: 9)).foregroundStyle(.tertiary) }
+        }
+        .padding(.horizontal, 9).padding(.vertical, 5)
+        .background(Capsule().fill(prominent ? tint.opacity(0.16) : Color.white.opacity(0.07)))
+        .accessibilityElement(children: .combine)
     }
 }
 
-private extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
+/// Left-aligned rows that wrap (chips of the event head).
+struct CalendarFlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(width: proposal.width ?? .infinity, subviews: subviews)
+        let width = rows.map(\.width).max() ?? 0
+        let height = rows.map(\.height).reduce(0, +) + CGFloat(max(0, rows.count - 1)) * spacing
+        return CGSize(width: proposal.width.map { min($0, width) } ?? width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in arrange(width: bounds.width, subviews: subviews) {
+            var x = bounds.minX
+            for index in row.items {
+                let size = subviews[index].sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+                subviews[index].place(at: CGPoint(x: x, y: y + (row.height - size.height) / 2), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private struct Row { var items: [Int] = []; var width: CGFloat = 0; var height: CGFloat = 0 }
+
+    private func arrange(width: CGFloat, subviews: Subviews) -> [Row] {
+        var rows: [Row] = []
+        var row = Row()
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(ProposedViewSize(width: width, height: nil))
+            let needed = row.items.isEmpty ? size.width : row.width + spacing + size.width
+            if needed > width, !row.items.isEmpty {
+                rows.append(row)
+                row = Row()
+            }
+            row.width = row.items.isEmpty ? size.width : row.width + spacing + size.width
+            row.height = max(row.height, size.height)
+            row.items.append(index)
+        }
+        if !row.items.isEmpty { rows.append(row) }
+        return rows
+    }
 }
 
 /// Small icon + text with tight spacing for metadata rows.
