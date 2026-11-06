@@ -90,6 +90,9 @@ final class CalendarModel: ObservableObject {
     var systemCandidates: [UUID: [CalendarEntry]] = [:]
     /// EventKit details of entries opened in the form (rule, alarm, last change).
     var systemEditing: [String: SystemCalendarService.Extra] = [:]
+    /// Local event id → system event already created for a move noty → system
+    /// whose commit was refused (reused by the next „Fertig“, never a second one).
+    var pendingSystemMoves: [UUID: CalendarSystemEvent] = [:]
     /// Homework of the offline timetable by period id and by „course|due date“ (built per rebuild).
     var homeworkByPeriod: [String: [CalendarHomework]] = [:]
     var homeworkByDue: [String: [CalendarHomework]] = [:]

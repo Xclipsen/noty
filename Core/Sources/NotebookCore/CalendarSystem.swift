@@ -49,26 +49,50 @@ public struct CalendarSystemEvent: Identifiable, Equatable, Hashable, Sendable {
     /// Original start of this occurrence (`occurrenceDate`) when the event
     /// belongs to a series – also for a moved („detached“) occurrence.
     public var occurrence: Date?
+    /// The same original occurrence as local civil time, for all-day
+    /// („2026-11-09“) and floating events („2026-11-09T10:00“): their
+    /// occurrence is a wall-clock value, not an instant, and must survive a
+    /// change of the device time zone. Set by the app (`localKey`).
+    public var occurrenceLocal: String?
     public var recurring: Bool
     public var detached: Bool
     public var cancelled: Bool
 
     public init(itemID: String, externalID: String?, calendarID: String, title: String, location: String = "", notes: String = "",
                 start: Date, end: Date, allDay: Bool = false, timeZone: String? = nil, occurrence: Date? = nil,
-                recurring: Bool = false, detached: Bool = false, cancelled: Bool = false) {
+                recurring: Bool = false, detached: Bool = false, cancelled: Bool = false, occurrenceLocal: String? = nil) {
         self.itemID = itemID; self.externalID = externalID?.nilIfBlank; self.calendarID = calendarID
         self.title = title; self.location = location; self.notes = notes; self.start = start; self.end = end
         self.allDay = allDay; self.timeZone = timeZone; self.occurrence = occurrence
         self.recurring = recurring; self.detached = detached; self.cancelled = cancelled
+        self.occurrenceLocal = occurrenceLocal
     }
+
+    /// Local form of an occurrence: civil date (all-day) or wall clock
+    /// (floating) as seen by `calendar`.
+    public static func localKey(_ date: Date, allDay: Bool, calendar: Calendar) -> String {
+        let day = CivilDate(date, calendar: calendar).description
+        guard !allDay else { return day }
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        return day + String(format: "T%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
+    }
+
+    /// All-day and floating events anchor in local time, zoned events in absolute time.
+    public var anchorsLocally: Bool { allDay || timeZone == nil }
 
     /// Entry id shown in the calendar (unique per occurrence and calendar).
     public var id: String { "system/" + anchor.key + "/" + calendarID }
 
     /// The note anchor of this occurrence.
     public var anchor: CalendarSystemAnchor {
-        CalendarSystemAnchor(externalID: externalID, itemID: itemID, calendarID: calendarID,
-                             occurrence: recurring || detached ? (occurrence ?? start) : nil)
+        guard recurring || detached else {
+            return CalendarSystemAnchor(externalID: externalID, itemID: itemID, calendarID: calendarID, occurrence: nil)
+        }
+        if anchorsLocally, let occurrenceLocal {
+            return CalendarSystemAnchor(externalID: externalID, itemID: itemID, calendarID: calendarID, occurrence: nil,
+                                        occurrenceLocal: occurrenceLocal)
+        }
+        return CalendarSystemAnchor(externalID: externalID, itemID: itemID, calendarID: calendarID, occurrence: occurrence ?? start)
     }
 }
 
@@ -82,39 +106,54 @@ public struct CalendarSystemAnchor: Hashable, Sendable, Codable {
     public var itemID: String
     /// Calendar when the note was written (disambiguation only).
     public var calendarID: String
-    /// Original occurrence start of a series occurrence; nil for a single event.
+    /// Original occurrence start of a zoned series occurrence.
     public var occurrence: Date?
+    /// Original occurrence of an all-day („YYYY-MM-DD“) or floating
+    /// („YYYY-MM-DDTHH:MM“) series occurrence, in local civil time.
+    public var occurrenceLocal: String?
 
-    public init(externalID: String?, itemID: String, calendarID: String, occurrence: Date?) {
+    public init(externalID: String?, itemID: String, calendarID: String, occurrence: Date?, occurrenceLocal: String? = nil) {
         self.externalID = externalID?.nilIfBlank; self.itemID = itemID; self.calendarID = calendarID
+        self.occurrenceLocal = occurrenceLocal?.nilIfBlank
         // Whole seconds: EventKit dates of the same occurrence differ in sub-second noise at most.
         self.occurrence = occurrence.map { Date(timeIntervalSinceReferenceDate: $0.timeIntervalSinceReferenceDate.rounded()) }
     }
 
     public var identity: String { externalID.map { "x:" + $0 } ?? "i:" + itemID }
 
-    /// Stable key („system/x:<external>/<seconds>“ or „…/-“).
-    public var key: String {
-        identity + "/" + (occurrence.map { String(Int64($0.timeIntervalSinceReferenceDate.rounded())) } ?? "-")
+    /// Nil for a single event; otherwise which occurrence (local form or seconds).
+    public var occurrenceKey: String? {
+        if let occurrenceLocal { return "l" + occurrenceLocal }
+        return occurrence.map { String(Int64($0.timeIntervalSinceReferenceDate.rounded())) }
     }
 
-    private enum CodingKeys: String, CodingKey { case externalID, itemID, calendarID, occurrence }
+    /// A single event (no occurrence of a series).
+    public var isSingle: Bool { occurrence == nil && occurrenceLocal == nil }
+
+    /// Stable key („x:<external>/<seconds>“, „…/l2026-11-09“ or „…/-“).
+    public var key: String { identity + "/" + (occurrenceKey ?? "-") }
+
+    private enum CodingKeys: String, CodingKey { case externalID, itemID, calendarID, occurrence, occurrenceLocal }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(externalID: try c.decodeIfPresent(String.self, forKey: .externalID), itemID: try c.decode(String.self, forKey: .itemID),
                   calendarID: try c.decode(String.self, forKey: .calendarID),
-                  occurrence: try c.decodeIfPresent(Double.self, forKey: .occurrence).map { Date(timeIntervalSinceReferenceDate: $0) })
+                  occurrence: try c.decodeIfPresent(Double.self, forKey: .occurrence).map { Date(timeIntervalSinceReferenceDate: $0) },
+                  occurrenceLocal: try c.decodeIfPresent(String.self, forKey: .occurrenceLocal))
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(externalID, forKey: .externalID); try c.encode(itemID, forKey: .itemID)
         try c.encode(calendarID, forKey: .calendarID)
         try c.encodeIfPresent(occurrence?.timeIntervalSinceReferenceDate, forKey: .occurrence)
+        try c.encodeIfPresent(occurrenceLocal, forKey: .occurrenceLocal)
     }
 
     var isValid: Bool {
         (externalID?.count ?? 1) <= 500 && (1...500).contains(itemID.count) && (1...500).contains(calendarID.count)
             && (occurrence.map(CalendarState.validInstant) ?? true)
+            && !(occurrence != nil && occurrenceLocal != nil)
+            && (occurrenceLocal.map(CalendarSystemNotes.validLocal) ?? true)
     }
 }
 
@@ -179,7 +218,7 @@ public enum CalendarSystemMatching {
             if let external = anchor.externalID, let other = event.externalID, external == other { return true }
             return event.itemID == anchor.itemID
         }
-        matches = matches.filter { $0.anchor.occurrence == anchor.occurrence }
+        matches = matches.filter { $0.anchor.occurrenceKey == anchor.occurrenceKey }
         if matches.count > 1 {
             // The same server event in two calendars (e.g. an invitation): the original calendar decides.
             let same = matches.filter { $0.calendarID == anchor.calendarID }
@@ -241,7 +280,7 @@ public enum CalendarSourceMove {
     /// Links of a system single event now belong to the local event `id`.
     public static func retargetSystem(_ links: inout [CalendarNoteLink], from anchor: CalendarSystemAnchor, to id: UUID) {
         for index in links.indices {
-            if case .system(let old) = links[index].target, old.identity == anchor.identity, old.occurrence == nil {
+            if case .system(let old) = links[index].target, old.identity == anchor.identity, old.isSingle {
                 links[index].target = .local(event: id, date: nil)
             }
         }
@@ -254,6 +293,7 @@ public enum CalendarSourceMove {
             if case .system(let anchor) = links[index].target, anchor.identity == old.identity {
                 var moved = new
                 moved.occurrence = anchor.occurrence
+                moved.occurrenceLocal = anchor.occurrenceLocal
                 links[index].target = .system(moved)
             }
         }
@@ -261,15 +301,56 @@ public enum CalendarSourceMove {
 }
 
 public enum CalendarSystemNotes {
-    /// „Alle Termine der Serie“ moved by `seconds`: the notes of its
-    /// occurrences follow (their original starts move the same way).
-    public static func shift(_ links: inout [CalendarNoteLink], identity: String, by seconds: TimeInterval) {
-        guard seconds != 0 else { return }
+    /// „Alle Termine der Serie“ moved by whole civil `days` and a wall-clock
+    /// change of `minutes` (not absolute seconds: over a daylight-saving
+    /// change a series at 10:00 stays at 10:00). The notes of its
+    /// occurrences follow the same way: zoned anchors in `timeZone`, all-day
+    /// anchors by days only, floating anchors on their local wall clock.
+    public static func shift(_ links: inout [CalendarNoteLink], identity: String, days: Int, minutes: Int, timeZone: TimeZone) {
+        guard days != 0 || minutes != 0 else { return }
         for index in links.indices {
-            guard case .system(var anchor) = links[index].target, anchor.identity == identity, let occurrence = anchor.occurrence else { continue }
-            anchor.occurrence = Date(timeIntervalSinceReferenceDate: (occurrence.timeIntervalSinceReferenceDate + seconds).rounded())
+            guard case .system(var anchor) = links[index].target, anchor.identity == identity, !anchor.isSingle else { continue }
+            if let occurrence = anchor.occurrence {
+                anchor.occurrence = wallClockShift(occurrence, days: days, minutes: minutes, timeZone: timeZone)
+            } else if let local = anchor.occurrenceLocal, let moved = shiftLocal(local, days: days, minutes: minutes) {
+                anchor.occurrenceLocal = moved
+            }
             links[index].target = .system(anchor)
         }
+    }
+
+    /// `date` moved by `days` civil days and `minutes` on the wall clock of
+    /// `timeZone`; a wall-clock time that does not exist (spring forward)
+    /// becomes the next valid one.
+    public static func wallClockShift(_ date: Date, days: Int, minutes: Int, timeZone: TimeZone) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        let total = (parts.hour ?? 0) * 60 + (parts.minute ?? 0) + minutes
+        let carry = Int((Double(total) / 1440).rounded(.down))
+        let clock = total - carry * 1440
+        let day = CivilDate(date, calendar: calendar).adding(days: days + carry)
+        var target = DateComponents(year: day.year, month: day.month, day: day.day, hour: clock / 60, minute: clock % 60, second: parts.second ?? 0)
+        target.timeZone = timeZone
+        return calendar.date(from: target) ?? date
+    }
+
+    /// „YYYY-MM-DD“ by days, „YYYY-MM-DDTHH:MM“ by days and minutes.
+    static func shiftLocal(_ local: String, days: Int, minutes: Int) -> String? {
+        if let day = CivilDate(local) { return day.adding(days: days).description }
+        guard validLocal(local), let day = CivilDate(String(local.prefix(10))),
+              let hour = Int(local.dropFirst(11).prefix(2)), let minute = Int(local.suffix(2)) else { return nil }
+        let total = hour * 60 + minute + minutes
+        let carry = Int((Double(total) / 1440).rounded(.down))
+        let clock = total - carry * 1440
+        return day.adding(days: days + carry).description + String(format: "T%02d:%02d", clock / 60, clock % 60)
+    }
+
+    static func validLocal(_ text: String) -> Bool {
+        if CivilDate(text) != nil { return true }
+        guard text.count == 16, CivilDate(String(text.prefix(10))) != nil, text.dropFirst(10).first == "T",
+              text.dropFirst(13).first == ":", let hour = Int(text.dropFirst(11).prefix(2)), let minute = Int(text.suffix(2)) else { return false }
+        return (0...23).contains(hour) && (0...59).contains(minute)
     }
 }
 

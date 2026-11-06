@@ -235,18 +235,19 @@ extension CalendarModel {
         Task { @MainActor [weak self] in self?.reloadSystemCalendars() }
     }
 
-    /// A note written while the event had no server identity yet (new
-    /// Exchange events get it after their first upload) takes it over once
-    /// the store reports it, so the note follows to other devices' reads.
+    /// A note written while the event had no (or only a provisional)
+    /// server identity – new Exchange events get their final one after the
+    /// upload – takes over the identity the store reports now, when the
+    /// event is the unique match of the note's device-local item id.
     private func upgradeSystemAnchors() async {
         var updates: [UUID: CalendarSystemAnchor] = [:]
         for link in state.noteLinks {
-            guard case .system(let anchor) = link.target, anchor.externalID == nil,
+            guard case .system(let anchor) = link.target,
                   case .found(let event) = CalendarSystemMatching.resolve(anchor, events: systemEvents, read: systemRead,
                                                                          contextStart: link.contextStart),
-                  let external = event.externalID else { continue }
+                  event.itemID == anchor.itemID, let external = event.externalID, external != anchor.externalID else { continue }
             updates[link.id] = CalendarSystemAnchor(externalID: external, itemID: anchor.itemID, calendarID: anchor.calendarID,
-                                                    occurrence: anchor.occurrence)
+                                                    occurrence: anchor.occurrence, occurrenceLocal: anchor.occurrenceLocal)
         }
         guard !updates.isEmpty, canWrite else { return }
         await commit { state in
@@ -268,6 +269,7 @@ extension CalendarModel {
         entry.noteTarget = .system(event.anchor)
         entry.seriesID = event.itemID
         if let occurrence = event.anchor.occurrence { entry.originalDate = CivilDate(occurrence, calendar: calendar) }
+        else if let local = event.anchor.occurrenceLocal { entry.originalDate = CivilDate(String(local.prefix(10))) }
         entry.repeatText = event.recurring || event.detached ? "Serie im Systemkalender" + (event.detached ? " · dieser Termin geändert" : "") : nil
         entry.colorName = info.map { CalendarColorHex.nearestName($0.colorHex) }
         let name = info.map { $0.account.isEmpty ? $0.title : "\($0.title) (\($0.account))" } ?? "Systemkalender"
@@ -368,7 +370,7 @@ extension CalendarModel {
                 reloadSystemCalendars()
                 return RoutedSave(problem: nil)
             case (let value?, .system(let id)) where id == value.calendarID:
-                try updateSystem(draft, value: value, scope: scope)
+                try await updateSystem(draft, value: value, scope: scope)
                 reloadSystemCalendars()
                 return RoutedSave(problem: nil)
             case (let value?, .system(let id)):
@@ -435,9 +437,13 @@ extension CalendarModel {
 
     /// Changes an existing system event. „Nur dieser Termin“ changes the
     /// occurrence (`EKSpan.thisEvent`); „Alle“ moves the series by the change
-    /// of this occurrence and saves it with `.futureEvents` from its first
-    /// occurrence. A change made meanwhile in the calendar is not overwritten.
-    private func updateSystem(_ draft: CalendarDraft, value: CalendarSystemEvent, scope: SeriesScope) throws {
+    /// of this occurrence – whole civil days plus the wall-clock change, so
+    /// it stays at its time over daylight saving – and saves it with
+    /// `.futureEvents` from its first occurrence; the notes of its
+    /// occurrences move the same way. A change made meanwhile in the
+    /// calendar is not overwritten. Single ↔ series and all-day ↔ timed of a
+    /// whole series are refused: note anchors would lose their occurrences.
+    private func updateSystem(_ draft: CalendarDraft, value: CalendarSystemEvent, scope: SeriesScope) async throws {
         let service = SystemCalendarService.shared
         _ = try service.writableCalendar(value.calendarID)
         guard let occurrence = service.find(value) else { throw SystemCalendarError.eventMissing }
@@ -451,68 +457,80 @@ extension CalendarModel {
         let notes = draft.details.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlankText
         let newAlarm = draft.reminder ? draft.reminderMinutes : nil
         let alarmChanged = newAlarm != known?.alarmMinutes
+        if !series, checked.rule != nil {
+            throw SystemCalendarError.unsupported("Aus einem einzelnen Termin im Systemkalender wird hier keine Serie. Bitte die Wiederholung in Apple Kalender bzw. Outlook einstellen.")
+        }
         if !series || scope == .single {
             occurrence.title = checked.title; occurrence.location = location; occurrence.notes = notes
             apply(checked.timing, to: occurrence)
             if alarmChanged { occurrence.alarms = alarms(draft) }
-            if !series, checked.rule != nil {
-                if checked.rule?.exceptions.isEmpty == false {
-                    throw SystemCalendarError.unsupported("Ausnahmen lassen sich für Termine in Apple Kalender/Outlook hier nicht eintragen.")
-                }
-                occurrence.recurrenceRules = checked.rule.map { [SystemCalendarService.ekRule($0, calendar: calendar)] }
-            }
             try service.save(occurrence, span: .thisEvent)
             return
         }
         // „Alle Termine der Serie“.
         guard let master = service.series(value), let masterStart = master.startDate, let masterEnd = master.endDate,
               let shown = draft.editing else { throw SystemCalendarError.eventMissing }
-        let delta = draft.allDay
-            ? Double(CivilDate(shown.start, calendar: calendar).days(to: CivilDate(draft.start, calendar: calendar))) * 86_400
-            : draft.start.timeIntervalSince(shown.start)
-        master.title = checked.title; master.location = location; master.notes = notes
-        if draft.allDay != master.isAllDay || !draft.allDay {
-            let length = draft.allDay ? 0 : draft.end.timeIntervalSince(draft.start)
-            let start = draft.allDay ? calendar.startOfDay(for: masterStart) : masterStart.addingTimeInterval(delta)
-            master.isAllDay = draft.allDay
-            master.startDate = start
-            master.endDate = draft.allDay ? max(start, calendar.startOfDay(for: masterEnd)) : start.addingTimeInterval(length)
-            if !draft.allDay, case .timed(_, _, let zone) = checked.timing { master.timeZone = TimeZone(identifier: zone) }
-        } else if delta != 0 {
-            let days = Int((delta / 86_400).rounded())
-            master.startDate = calendar.date(byAdding: .day, value: days, to: masterStart)
-            master.endDate = calendar.date(byAdding: .day, value: days, to: masterEnd)
+        guard let known else {
+            throw SystemCalendarError.unsupported("Die Serie konnte nicht vollständig gelesen werden. Damit ihre Wiederholung nicht verloren geht, wurde nichts geändert. Bitte den Termin erneut öffnen.")
         }
+        let complex = hasComplexSystemRule(shown)
+        guard checked.rule != nil || complex || known.rule == nil else {
+            throw SystemCalendarError.unsupported("Aus einer Serie im Systemkalender wird hier kein einzelner Termin (Notizen hängen an den einzelnen Terminen). Bitte die Wiederholung in Apple Kalender bzw. Outlook ändern.")
+        }
+        guard draft.allDay == master.isAllDay else {
+            throw SystemCalendarError.unsupported("Ganztägig oder mit Uhrzeit lässt sich für eine ganze Serie im Systemkalender hier nicht umstellen.")
+        }
+        let days = CivilDate(shown.start, calendar: calendar).days(to: CivilDate(draft.start, calendar: calendar))
+        func minuteOfDay(_ date: Date) -> Int {
+            let parts = calendar.dateComponents([.hour, .minute], from: date)
+            return (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+        }
+        let minutes = draft.allDay ? 0 : minuteOfDay(draft.start) - minuteOfDay(shown.start)
+        let zone = master.timeZone ?? calendar.timeZone
+        master.title = checked.title; master.location = location; master.notes = notes
+        let start = CalendarSystemNotes.wallClockShift(masterStart, days: days, minutes: minutes, timeZone: zone)
+        master.startDate = start
+        master.endDate = draft.allDay ? CalendarSystemNotes.wallClockShift(masterEnd, days: days, minutes: 0, timeZone: zone)
+                                      : start.addingTimeInterval(max(0, draft.end.timeIntervalSince(draft.start)))
         if alarmChanged { master.alarms = alarms(draft) }
-        if !hasComplexSystemRule(shown) {
-            if let rule = checked.rule {
-                if rule.exceptions != (known?.rule?.exceptions ?? []) && !rule.exceptions.isEmpty {
-                    throw SystemCalendarError.unsupported("Ausnahmen lassen sich für Termine in Apple Kalender/Outlook hier nicht eintragen.")
-                }
-                if rule.frequency != known?.rule?.frequency || rule.end != known?.rule?.end || rule.interval != known?.rule?.interval {
-                    master.recurrenceRules = [SystemCalendarService.ekRule(rule, calendar: calendar)]
-                }
-            } else {
-                master.recurrenceRules = nil
+        // The rule is only touched when it was read completely and changed.
+        if !complex, let old = known.rule, let rule = checked.rule {
+            if !rule.exceptions.isEmpty {
+                throw SystemCalendarError.unsupported("Ausnahmen lassen sich für Termine in Apple Kalender/Outlook hier nicht eintragen.")
+            }
+            if rule.frequency != old.frequency || rule.end != old.end || rule.interval != old.interval {
+                master.recurrenceRules = [SystemCalendarService.ekRule(rule, calendar: calendar)]
             }
         }
         try service.save(master, span: .futureEvents)
-        // The occurrences' original starts moved: their notes follow.
+        // The occurrences' original starts moved: their notes follow (same mapping).
         let identity = value.anchor.identity
-        if delta != 0, state.noteLinks.contains(where: { if case .system(let a) = $0.target { a.identity == identity } else { false } }) {
-            Task { await commit { CalendarSystemNotes.shift(&$0.noteLinks, identity: identity, by: delta) } }
+        guard days != 0 || minutes != 0,
+              state.noteLinks.contains(where: { if case .system(let a) = $0.target { a.identity == identity } else { false } }) else { return }
+        let ok = await commit { CalendarSystemNotes.shift(&$0.noteLinks, identity: identity, days: days, minutes: minutes, timeZone: zone) }
+        if !ok {
+            notice = "Die Serie wurde im Kalender geändert, die Notizen ihrer Termine sind aber noch nicht umgehängt"
+                + (unsaved ? " („Erneut speichern“)." : ": \(saveError ?? "unbekannter Fehler"). Sie erscheinen bis dahin als „ungeklärt“.")
         }
     }
 
     /// A local single event goes to a system calendar: written there first,
     /// then (one commit) moved to „Gelöschte Termine“ with its notes now
-    /// belonging to the new event. A failure before leaves everything as it was.
+    /// belonging to the new event. A failure before leaves everything as it
+    /// was; a refused commit keeps the created system event for the next
+    /// „Fertig“ (never a second one).
     private func moveLocal(_ draft: CalendarDraft, event id: UUID, to calendarID: String) async throws -> String? {
         guard let local = state.events.first(where: { $0.id == id }) else { return "Der Termin ist nicht mehr vorhanden." }
         guard local.recurrence == nil, draft.repeatRule == .never else {
             return "Serien lassen sich nicht zwischen noty und einem Systemkalender verschieben. Bitte die Serie im Zielkalender neu anlegen."
         }
-        let created = try writeNewSystem(draft, calendarID: calendarID)
+        let created: CalendarSystemEvent
+        if let pending = pendingSystemMoves[id], pending.calendarID == calendarID, SystemCalendarService.shared.find(pending) != nil {
+            created = pending
+        } else {
+            created = try writeNewSystem(draft, calendarID: calendarID)
+            pendingSystemMoves[id] = created
+        }
         let anchor = created.anchor
         let ok = await commit { state in
             guard let index = state.events.firstIndex(where: { $0.id == id }) else { return }
@@ -526,13 +544,22 @@ extension CalendarModel {
             CalendarSourceMove.retargetLocal(&state.noteLinks, event: id, to: anchor)
         }
         reloadSystemCalendars()
-        notice = "„\(created.title)“ steht jetzt im Systemkalender; der noty-Termin liegt in „Gelöschte Termine“."
-        return ok || unsaved ? nil : saveError
+        if ok {
+            pendingSystemMoves[id] = nil
+            notice = "„\(created.title)“ steht jetzt im Systemkalender; der noty-Termin liegt in „Gelöschte Termine“."
+            return nil
+        }
+        if unsaved {
+            notice = "„\(created.title)“ steht jetzt im Systemkalender; das Entfernen aus noty ist noch nicht gespeichert („Erneut speichern“)."
+            return nil
+        }
+        return (saveError ?? "Nicht gespeichert.") + " Der Termin steht bereits im Systemkalender; erneutes „Fertig“ legt ihn nicht noch einmal an."
     }
 
     /// A system single event becomes a local one: the local event and its
-    /// notes are committed first, then the system event is removed. If the
-    /// removal fails, both exist (said so) – never none.
+    /// notes are committed first, the system event is removed only after
+    /// that commit is confirmed. Otherwise (or if the removal fails) both
+    /// exist, said so – never none.
     private func moveSystemToLocal(_ draft: CalendarDraft, value: CalendarSystemEvent) async throws -> String? {
         guard !(value.recurring || value.detached), draft.repeatRule == .never else {
             return "Serien lassen sich nicht zwischen einem Systemkalender und noty verschieben."
@@ -549,7 +576,14 @@ extension CalendarModel {
             state.events.append(event)
             CalendarSourceMove.retargetSystem(&state.noteLinks, from: anchor, to: event.id)
         }
-        guard ok || unsaved else { return saveError }
+        guard ok else {
+            reloadSystemCalendars()
+            if unsaved {
+                notice = "„\(event.title)“ ist in noty noch nicht gespeichert; der Termin bleibt deshalb auch im Systemkalender. Beide bestehen, bis „Erneut speichern“ gelingt; danach bitte den Systemtermin löschen."
+                return nil
+            }
+            return (saveError ?? "Nicht gespeichert.") + " Der Termin bleibt im Systemkalender."
+        }
         do { try service.remove(original, span: .thisEvent) }
         catch {
             notice = "„\(event.title)“ steht jetzt in noty, ist aber noch im Systemkalender vorhanden (\((error as? LocalizedError)?.errorDescription ?? "")). Bitte dort löschen."
@@ -567,7 +601,7 @@ extension CalendarModel {
         let service = SystemCalendarService.shared
         _ = try service.writableCalendar(value.calendarID)
         let destination = try service.writableCalendar(id)
-        try updateSystem(draft, value: value, scope: .single)
+        try await updateSystem(draft, value: value, scope: .single)
         guard let event = service.store.calendarItem(withIdentifier: value.itemID) as? EKEvent else { throw SystemCalendarError.eventMissing }
         event.calendar = destination
         try service.save(event, span: .thisEvent)

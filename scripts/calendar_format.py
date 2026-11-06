@@ -21,7 +21,8 @@ STATE_KEYS = {"formatVersion", "events", "settings", "connection", "noteLinks", 
 EVENT_KEYS = {"id", "title", "location", "details", "timing", "recurrence", "reminderMinutes", "createdAt", "modifiedAt"}
 SETTINGS_KEYS = {"weekDays", "mode", "subjectColors", "notesFolderID", "lessonReminderMinutes", "systemCalendars"}
 SYSTEM_KEYS = {"enabled", "hiddenCalendars", "defaultTarget"}
-ANCHOR_KEYS = {"externalID", "itemID", "calendarID", "occurrence"}
+ANCHOR_KEYS = {"externalID", "itemID", "calendarID", "occurrence", "occurrenceLocal"}
+LOCAL_OCCURRENCE = re.compile(r"\d{4}-\d\d-\d\d(T([01]\d|2[0-3]):[0-5]\d)?")
 MARK_KEYS = {"source", "homeworkID", "doneAt"}
 HOMEWORK_KEYS = {"id", "lessonID", "periodID", "periodDate", "assigned", "due", "subject", "subjectID", "text", "remark",
                  "completedInSource", "attachmentCount"}
@@ -166,10 +167,16 @@ def link(value, version):
         keys(anchor, ANCHOR_KEYS, "Invalid system event anchor")
         text(anchor["itemID"], 1, 500, "Invalid system event id")
         text(anchor["calendarID"], 1, 500, "Invalid system calendar id")
+        # Like Swift: an empty or blank external id counts as none.
         if anchor.get("externalID") is not None:
-            text(anchor["externalID"], 1, 500, "Invalid external event id")
+            text(anchor["externalID"], 0, 500, "Invalid external event id")
+        check(anchor.get("occurrence") is None or anchor.get("occurrenceLocal") is None, "System anchor with two occurrences")
         if anchor.get("occurrence") is not None:
             foundation_date(anchor["occurrence"])
+        if anchor.get("occurrenceLocal") is not None:
+            local = anchor["occurrenceLocal"]
+            check(isinstance(local, str) and LOCAL_OCCURRENCE.fullmatch(local) is not None, "Invalid local occurrence")
+            civil(local[:10])
     elif target["kind"] == "local":
         keys(target, {"kind", "event", "date"}, "Invalid note target")
         uuid_string(target["event"])
@@ -293,7 +300,12 @@ def validate_source(source, connection_id):
         if item.get("assigned") is not None:
             check(civil(item["assigned"]) <= item["due"], "Homework given after it is due")
         text(item["text"], 0, 20_000, "Invalid homework text")
-        check(type(item["completedInSource"]) is bool and type(item["attachmentCount"]) is int, "Invalid homework flags")
+        # Same limits as CalendarHomework.isValid.
+        for key, limit in (("lessonID", 100), ("subject", 300), ("subjectID", 100), ("remark", 20_000)):
+            if item.get(key) is not None:
+                text(item[key], 0, limit, "Invalid homework " + key)
+        check(type(item["completedInSource"]) is bool and type(item["attachmentCount"]) is int
+              and 0 <= item["attachmentCount"] <= 10_000, "Invalid homework flags")
     check(len({item["id"] for item in homework}) == len(homework), "Duplicate homework")
     stamps = list(days.values())
     return {"lessons": len(lessons), "loadedDays": len(days), "holidays": len(holidays), "homework": len(homework),

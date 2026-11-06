@@ -9,8 +9,10 @@ import Foundation
 // SOURCE of the table: Ferienordnung des Ministeriums für Schule und Bildung
 // NRW (schulministerium.nrw, „Ferientermine“) as published for 2025/26 to
 // 2027/28 (KMK-Übersicht der Länder). Entered from the developer model's
-// knowledge on 06.11.2026, NOT downloaded: UNCERTAIN, especially 2027/28 –
-// to be compared once with schulministerium.nrw. School-specific movable
+// knowledge on 06.11.2026, NOT downloaded. Checked by an independent review
+// against BASS 19-1 and Kalenderpedia: confirmed, except that there are no
+// Pfingstferien 2028 (removed) and Sommerferien 2028 (10.07.–22.08.) were
+// found only on a calendar page – PROVISIONAL until the ministry lists them. School-specific movable
 // days („bewegliche Ferientage“) are not included (only WebUntis knows them).
 // End dates in the table are the last holiday (inclusive), as published.
 
@@ -45,8 +47,7 @@ public enum CalendarHolidaysNRW {
         ("Herbstferien", "2027-10-23", "2027-11-06"),
         ("Weihnachtsferien", "2027-12-24", "2028-01-08"),
         ("Osterferien", "2028-04-10", "2028-04-22"),
-        ("Pfingstferien", "2028-06-06", "2028-06-06"),
-        ("Sommerferien", "2028-07-10", "2028-08-22"),
+        ("Sommerferien", "2028-07-10", "2028-08-22"), // vorläufig, siehe oben
     ]
 
     /// The table as holidays (`end` exclusive).

@@ -83,7 +83,8 @@ struct CalendarEventForm: View {
                 }
             }
             .confirmationDialog("Änderung übernehmen für", isPresented: $askingScope, titleVisibility: .visible) {
-                if !draft.changesSeries(calendar: calendar) || (model.isSystemSeries(draft.editing) && !draft.isSeriesOccurrence) {
+                // A changed rule (also of a system series) concerns the whole series: only „Alle“.
+                if !draft.changesSeries(calendar: calendar) {
                     Button("Nur dieser Termin") { save(.single) }
                 }
                 Button("Alle Termine der Serie") { save(.all) }
