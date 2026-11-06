@@ -204,6 +204,30 @@ final class CalendarStageCTests: XCTestCase {
         let parts = try XCTUnwrap(CalendarColorHex.components("#0078D4"))
         XCTAssertEqual(parts.blue, 212.0 / 255, accuracy: 0.0001)
         XCTAssertNil(CalendarColorHex.components("blau"))
+        XCTAssertEqual(CalendarColorHex.nearestName("#34C759"), "green")
+        XCTAssertEqual(CalendarColorHex.nearestName("#FF9F0A"), "orange")
+        XCTAssertEqual(CalendarColorHex.nearestName("kaputt"), "gray")
+    }
+
+    func testSeriesMovedForAllShiftsItsOccurrenceNotes() {
+        let first = at(2026, 11, 9, 10)
+        let anchor = CalendarSystemAnchor(externalID: "EXT-1", itemID: "i1", calendarID: "c", occurrence: first)
+        let other = CalendarSystemAnchor(externalID: "EXT-2", itemID: "i2", calendarID: "c", occurrence: first)
+        var links = [anchor, other].map {
+            CalendarNoteLink(target: .system($0), documentID: UUID(), createdAt: created, contextTitle: "X", contextStart: first, contextEnd: first)
+        }
+        CalendarSystemNotes.shift(&links, identity: anchor.identity, by: 3600)
+        XCTAssertEqual(links[0].target, .system(CalendarSystemAnchor(externalID: "EXT-1", itemID: "i1", calendarID: "c",
+                                                                     occurrence: first.addingTimeInterval(3600))))
+        XCTAssertEqual(links[1].target, .system(other), "andere Serie unberührt")
+        // An event created by noty before its first upload: matched by item id, external id comes later.
+        let read = (start: at(2026, 11, 1, 0), end: at(2026, 12, 1, 0))
+        let early = CalendarSystemAnchor(externalID: nil, itemID: "i9", calendarID: "c", occurrence: nil)
+        let uploaded = event("i9", external: "SERVER-9", calendar: "c", start: first)
+        XCTAssertEqual(CalendarSystemMatching.resolve(early, events: [uploaded], read: read, contextStart: first), .found(uploaded))
+        let changedExternal = CalendarSystemAnchor(externalID: "OLD", itemID: "i9", calendarID: "c", occurrence: nil)
+        XCTAssertEqual(CalendarSystemMatching.resolve(changedExternal, events: [uploaded], read: read, contextStart: first), .found(uploaded),
+                       "geänderte externe Kennung: die lokale Kennung trägt")
     }
 
     // MARK: Holidays NRW
@@ -344,5 +368,43 @@ final class CalendarStageCTests: XCTestCase {
         XCTAssertEqual(items[0].dueLessonID, "502", "Stunde des Kurses am Fälligkeitstag")
         XCTAssertNil(items[1].dueLessonID, "Fälligkeitstag nicht im Offline-Stundenplan")
         XCTAssertEqual(CalendarHomeworkItem.items(snapshot: nil, marks: marks, source: "webuntis:a"), [])
+    }
+}
+
+/// „Schnell anlegen“: one German line pre-fills the form (nothing is saved).
+final class CalendarQuickEntryTests: XCTestCase {
+    private var berlin: Calendar { CalendarDates.german(timeZone: TimeZone(identifier: "Europe/Berlin")!) }
+    // Friday, 6 Nov 2026, 14:00.
+    private var now: Date { berlin.date(from: DateComponents(year: 2026, month: 11, day: 6, hour: 14))! }
+    private func at(_ m: Int, _ d: Int, _ h: Int, _ min: Int = 0, year: Int = 2026) -> Date {
+        berlin.date(from: DateComponents(year: year, month: m, day: d, hour: h, minute: min))!
+    }
+    private func parse(_ text: String) -> CalendarQuickEntry { CalendarQuickEntry.parse(text, now: now, calendar: berlin)! }
+
+    func testWeekdayAndTime() {
+        let entry = parse("Mathe Klausur Fr 10 Uhr")
+        XCTAssertEqual(entry.title, "Mathe Klausur")
+        XCTAssertEqual(entry.start, at(11, 6, 10), "heute ist Freitag: dieser Freitag")
+        XCTAssertEqual(entry.end, at(11, 6, 11))
+        XCTAssertFalse(entry.allDay)
+        XCTAssertEqual(parse("Sport nächsten Freitag um 9").start, at(11, 13, 9))
+        XCTAssertEqual(parse("Lernen Montag 16:30-18 Uhr").start, at(11, 9, 16, 30))
+        XCTAssertEqual(parse("Lernen Montag 16:30-18 Uhr").end, at(11, 9, 18))
+        XCTAssertEqual(parse("Lernen Mo. 16:30 bis 17:15").end, at(11, 9, 17, 15))
+    }
+
+    func testDatesRelativeDaysAndAllDay() {
+        let trip = parse("Klassenfahrt 12.11.")
+        XCTAssertTrue(trip.allDay); XCTAssertEqual(trip.title, "Klassenfahrt")
+        XCTAssertEqual(trip.start, berlin.startOfDay(for: at(11, 12, 12)))
+        XCTAssertEqual(trip.end, berlin.startOfDay(for: at(11, 13, 12)))
+        XCTAssertEqual(parse("Abgabe 3.2.").start, berlin.startOfDay(for: at(2, 3, 12, year: 2027)), "vergangenes Datum ohne Jahr: nächstes Jahr")
+        XCTAssertEqual(parse("Prüfung 15.01.2027 8.30 Uhr").start, at(1, 15, 8, 30, year: 2027))
+        XCTAssertEqual(parse("Zahnarzt morgen 9.15 Uhr").start, at(11, 7, 9, 15))
+        XCTAssertEqual(parse("Anruf 10 Uhr").start, at(11, 7, 10), "nur Uhrzeit, heute schon vorbei: morgen")
+        XCTAssertEqual(parse("Anruf 16 Uhr").start, at(11, 6, 16))
+        XCTAssertEqual(parse("Tisch für 4 heute").title, "Tisch für 4", "Zahl ohne Uhr bleibt im Titel")
+        XCTAssertEqual(parse("morgen").title, "Neuer Termin")
+        XCTAssertNil(CalendarQuickEntry.parse("   ", now: now, calendar: berlin))
     }
 }

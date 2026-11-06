@@ -174,7 +174,9 @@ public enum CalendarSystemMatching {
                                contextStart: Date) -> CalendarSystemResolution {
         guard let read else { return .notLoaded }
         var matches = events.filter { event in
-            if let external = anchor.externalID, let other = event.externalID { return external == other }
+            // Server identity first; the device-local item id also counts (an
+            // event created by noty before its first upload has no external id yet).
+            if let external = anchor.externalID, let other = event.externalID, external == other { return true }
             return event.itemID == anchor.itemID
         }
         matches = matches.filter { $0.anchor.occurrence == anchor.occurrence }
@@ -258,11 +260,43 @@ public enum CalendarSourceMove {
     }
 }
 
+public enum CalendarSystemNotes {
+    /// „Alle Termine der Serie“ moved by `seconds`: the notes of its
+    /// occurrences follow (their original starts move the same way).
+    public static func shift(_ links: inout [CalendarNoteLink], identity: String, by seconds: TimeInterval) {
+        guard seconds != 0 else { return }
+        for index in links.indices {
+            guard case .system(var anchor) = links[index].target, anchor.identity == identity, let occurrence = anchor.occurrence else { continue }
+            anchor.occurrence = Date(timeIntervalSinceReferenceDate: (occurrence.timeIntervalSinceReferenceDate + seconds).rounded())
+            links[index].target = .system(anchor)
+        }
+    }
+}
+
 /// „#RRGGBB“ from components 0…1 (app: CGColor of the calendar).
 public enum CalendarColorHex {
     public static func hex(red: Double, green: Double, blue: Double) -> String {
         func part(_ v: Double) -> String { String(format: "%02X", Int((min(1, max(0, v.isFinite ? v : 0)) * 255).rounded())) }
         return "#" + part(red) + part(green) + part(blue)
+    }
+
+    /// Approximate colours of the named calendar colours (system palette).
+    static let named: [(String, String)] = [
+        ("orange", "#FF9500"), ("purple", "#AF52DE"), ("teal", "#30B0C7"), ("pink", "#FF2D55"), ("yellow", "#FFCC00"),
+        ("brown", "#A2845E"), ("cyan", "#32ADE6"), ("olive", "#9EAD33"), ("indigo", "#5856D6"), ("mint", "#00C7BE"),
+        ("gray", "#8E8E93"), ("green", "#34C759"),
+    ]
+
+    /// The named colour closest to `hex` (for views that know only names).
+    public static func nearestName(_ hex: String) -> String {
+        guard let c = components(hex) else { return "gray" }
+        return named.min { a, b in
+            func distance(_ entry: (String, String)) -> Double {
+                guard let n = components(entry.1) else { return .infinity }
+                return pow(n.red - c.red, 2) + pow(n.green - c.green, 2) + pow(n.blue - c.blue, 2)
+            }
+            return distance(a) < distance(b)
+        }?.0 ?? "gray"
     }
 
     public static func components(_ hex: String) -> (red: Double, green: Double, blue: Double)? {

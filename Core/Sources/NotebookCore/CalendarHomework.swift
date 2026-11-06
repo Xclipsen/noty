@@ -85,12 +85,17 @@ public struct CalendarHomeworkItem: Identifiable, Equatable, Sendable {
 
     public static func items(snapshot: CalendarSourceSnapshot?, marks: [CalendarHomeworkMark], source: String?) -> [CalendarHomeworkItem] {
         guard let snapshot else { return [] }
+        guard !snapshot.homework.isEmpty else { return [] }
         let done = Set(marks.filter { $0.source == source }.map(\.homeworkID))
+        var firstLesson: [String: String] = [:]
+        for lesson in snapshot.lessons where !lesson.isCancelled {
+            guard let course = lesson.key.seriesID else { continue }
+            let key = course + "|" + lesson.date.description
+            if firstLesson[key] == nil { firstLesson[key] = lesson.key.sourceID }
+        }
         return snapshot.homework.map { homework in
-            let lesson = homework.lessonID.flatMap { course in
-                snapshot.lessons.first { $0.key.seriesID == course && $0.date == homework.due && !$0.isCancelled }
-            }
-            return CalendarHomeworkItem(homework: homework, done: done.contains(homework.id), dueLessonID: lesson?.key.sourceID)
+            let lesson = homework.lessonID.flatMap { firstLesson[$0 + "|" + homework.due.description] }
+            return CalendarHomeworkItem(homework: homework, done: done.contains(homework.id), dueLessonID: lesson)
         }.sorted { ($0.homework.due, $0.homework.subject ?? "", $0.homework.id) < ($1.homework.due, $1.homework.subject ?? "", $1.homework.id) }
     }
 }
