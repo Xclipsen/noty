@@ -98,6 +98,12 @@ public struct LawCitationScanner: Sendable {
 
     /// All citations in reading order, non-overlapping. Ambiguous or unknown
     /// laws yield no citation (never guess).
+    /// Same as `citations(in:)` but with a per-call default law (notebook's
+    /// „Standardgesetz“, or the law a reader shows) instead of the init one.
+    public func citations(in text: String, defaultLawID: String?) -> [LawCitation] {
+        citations(in: text) // TODO(Core-Agent P2): honour defaultLawID
+    }
+
     public func citations(in text: String) -> [LawCitation] {
         Scan(scanner: self, u: Array(text.utf16)).run(text as NSString)
     }

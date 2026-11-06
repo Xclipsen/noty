@@ -98,6 +98,8 @@ struct PageEditor {
     /// Law citations become links (underline, card); off in restored copies,
     /// which have no card or law window.
     var lawCitations = true
+    /// Default law and tax year of this notebook for citation links (NotebookLawPreferences).
+    var lawContext = NotebookLawContext()
 }
 
 extension PageEditor {
