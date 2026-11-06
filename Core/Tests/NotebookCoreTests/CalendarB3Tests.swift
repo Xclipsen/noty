@@ -53,7 +53,7 @@ final class CalendarB3Tests: XCTestCase {
         try JSONEncoder().encode(manifest).write(to: package.appendingPathComponent("manifest.json"))
         let repository = CalendarRepository(areaRoot: root)
         let loaded = try await repository.load()
-        XCTAssertEqual(loaded.state.formatVersion, 3)
+        XCTAssertEqual(loaded.state.formatVersion, CalendarState.currentFormat)
         XCTAssertEqual(loaded.state.settings.subjectColors, ["name:mathematik": "mint"])
         var next = loaded.state
         next.events[0].reminderMinutes = 15
@@ -65,8 +65,8 @@ final class CalendarB3Tests: XCTestCase {
         // Format 2 with B3 fields is not format 2; format 4 locks.
         let mixed = Data(#"{"events":[],"formatVersion":2,"deletedEvents":[],"settings":{"mode":"week","weekDays":5,"lessonReminderMinutes":10}}"#.utf8)
         XCTAssertThrowsError(try CalendarStore.decode(mixed))
-        XCTAssertThrowsError(try CalendarStore.decode(Data(#"{"events":[],"formatVersion":4}"#.utf8))) {
-            XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(4))
+        XCTAssertThrowsError(try CalendarStore.decode(Data(#"{"events":[],"formatVersion":5}"#.utf8))) {
+            XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(5))
         }
     }
 
@@ -401,8 +401,8 @@ final class CalendarB3Tests: XCTestCase {
             ("Bibliotheksformat 4", try rebuild(valid, header: ["libraryBackupVersion": 4]) { _ in },
              { XCTAssertEqual($0 as? LibraryArchiveError, .unsupported(4)) }),
             ("beschädigter Kalenderteil", flipped, { guard case BackupError.checksumMismatch = $0 else { return XCTFail("\($0)") } }),
-            ("Kalenderformat 4", try rebuild(valid) { calendarRecord(&$0) { $0["formatVersion"] = 4 } },
-             { XCTAssertEqual($0 as? CalendarArchiveError, .unsupported(4)) }),
+            ("Kalenderformat 5", try rebuild(valid) { calendarRecord(&$0) { $0["formatVersion"] = 5 } },
+             { XCTAssertEqual($0 as? CalendarArchiveError, .unsupported(5)) }),
             ("Link auf fremdes Heft", try rebuild(valid) { records in calendarRecord(&records) { state in
                 var links = state["noteLinks"] as! [[String: Any]]
                 links[0]["documentID"] = UUID().uuidString

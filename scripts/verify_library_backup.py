@@ -23,7 +23,7 @@ from pathlib import Path
 from uuid import UUID
 from notebook_format import appearance, uuid_string, validate_notebook
 from record_archive import ASSET_LIMIT, MAXIMUM_HEADER as RECORD_HEADER, RecordReader, check_date, check_references
-from calendar_format import CURRENT_FORMAT as CALENDAR_FORMAT, validate_source, validate_state
+from calendar_format import ARCHIVE_FORMATS as CALENDAR_FORMATS, validate_source, validate_state
 
 MAXIMUM_BYTES = 4_000_000_000
 MAXIMUM_NOTEBOOK = 200_000_000
@@ -134,8 +134,8 @@ def verify_calendar(reader, items, expected):
     record = reader.descriptor()
     require(record["kind"] == "calendar", "Format 3 requires the calendar record after the toolbar")
     state = json.loads(reader.payload(record, MAXIMUM_CALENDAR))
-    require(isinstance(state, dict) and state.get("formatVersion") == CALENDAR_FORMAT, "Unsupported calendar format in archive")
-    summary, documents, folder, connection = validate_state(state, formats=(CALENDAR_FORMAT,))
+    require(isinstance(state, dict) and state.get("formatVersion") in CALENDAR_FORMATS, "Unsupported calendar format in archive")
+    summary, documents, folder, connection = validate_state(state, formats=CALENDAR_FORMATS)
     require(documents <= set(expected), "A note link names a notebook that is not in the archive")
     folders = {uuid_string(i["id"]) for i in items if i.get("source") is None}
     require(folder is None or folder in folders, "Notes folder is not a folder of the archive")

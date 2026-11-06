@@ -57,7 +57,9 @@ def main(results):
     raw = (results / "kalender.notylibrary").read_bytes()
     archive = verify_library_backup.verify(results / "kalender.notylibrary")
     calendar = archive["calendar"]
-    check(archive["formatVersion"] == 3 and calendar["events"] == 1 and calendar["series"] == 1 and calendar["noteLinks"] == 2
+    check(archive["formatVersion"] == 3 and calendar["events"] == 1 and calendar["series"] == 1 and calendar["noteLinks"] == 3
+          and calendar["formatVersion"] == 4 and calendar["systemNotes"] == 1 and calendar["systemCalendars"]
+          and calendar["homeworkDone"] == 1 and calendar["timetable"]["homework"] == 1
           and calendar["deletedEvents"] == 2 and calendar["lessonMappings"] == 1 and calendar["reminders"] == 1
           and calendar["lessonReminder"] and calendar["connection"] and calendar["timetable"]["lessons"] == 1,
           "Kalenderteil des Archivs unvollständig")
@@ -68,7 +70,7 @@ def main(results):
     for store in (source, restored):
         part = store["calendar"]
         check(part["committed"] and part["links_without_notebook"] == 0 and part["notes_folder_present"]
-              and part["timetable"]["lessons"] == 1 and part["noteLinks"] == 2, "Kalenderpaket unvollständig")
+              and part["timetable"]["lessons"] == 1 and part["noteLinks"] == 3 and part["formatVersion"] == 4, "Kalenderpaket unvollständig")
 
     def mutated(name, change_state=None, change_items=None, header_change=None):
         header, items = records(raw)
@@ -95,7 +97,14 @@ def main(results):
         state["connection"]["key"] = "JBSWY3DPEHPK3PXP"
 
     def newer(state):
-        state["formatVersion"] = 4
+        state["formatVersion"] = 5
+
+    def downgraded(state):
+        # Format-4 fields (system note, homework marks) under format 3.
+        state["formatVersion"] = 3
+
+    def secret_in_system_settings(state):
+        state["settings"]["systemCalendars"]["password"] = "erfunden"
 
     def folder_elsewhere(state):
         state["settings"]["notesFolderID"] = "00000000-0000-4000-8000-0000000000BB"
@@ -115,7 +124,9 @@ def main(results):
 
     cases = {"Link auf Heft außerhalb des Archivs": mutated("kalender-link.notylibrary", link_elsewhere),
              "Geheimnisfeld in der Verbindung": mutated("kalender-geheim.notylibrary", secret_field),
-             "Kalenderformat 4": mutated("kalender-format4.notylibrary", newer),
+             "Kalenderformat 5": mutated("kalender-format5.notylibrary", newer),
+             "Format-4-Felder unter Format 3": mutated("kalender-format3-mit-4.notylibrary", downgraded),
+             "Fremdfeld in den Systemkalendern": mutated("kalender-system-feld.notylibrary", secret_in_system_settings),
              "Notizordner außerhalb des Archivs": mutated("kalender-ordner.notylibrary", folder_elsewhere),
              "Format 3 ohne Kalender": mutated("kalender-fehlt.notylibrary", change_items=no_calendar),
              "Stundenplan vor dem Kalender": mutated("kalender-reihenfolge.notylibrary", change_items=swapped),

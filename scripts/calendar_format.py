@@ -5,18 +5,27 @@ checks raising ValueError (also under python -O). Never prints contents.
 
 CalendarState formats: 1 (B1: events, settings, connection), 2 (B2: series,
 note links, lesson mappings, subject colours, notes folder, source
-identity), 3 (B3: reminders, lesson reminder setting, deleted events). The
-connection record never contains access data: its keys are exactly the known
-non-secret ones. A library archive carries exactly the current format 3.
+identity), 3 (B3: reminders, lesson reminder setting, deleted events), 4
+(Stufe C: system calendar settings, notes of system events, homework marks).
+The connection record never contains access data: its keys are exactly the
+known non-secret ones. A library archive carries format 3 (B3 builds) or the
+current format 4. The offline timetable (cache format 1) may carry homework.
 """
 import re
 
 from notebook_format import check, foundation_date, number, strict, uuid_string
 
-CURRENT_FORMAT = 3
-STATE_KEYS = {"formatVersion", "events", "settings", "connection", "noteLinks", "lessonMappings", "deletedEvents"}
+CURRENT_FORMAT = 4
+ARCHIVE_FORMATS = (3, 4)
+STATE_KEYS = {"formatVersion", "events", "settings", "connection", "noteLinks", "lessonMappings", "deletedEvents", "homeworkDone"}
 EVENT_KEYS = {"id", "title", "location", "details", "timing", "recurrence", "reminderMinutes", "createdAt", "modifiedAt"}
-SETTINGS_KEYS = {"weekDays", "mode", "subjectColors", "notesFolderID", "lessonReminderMinutes"}
+SETTINGS_KEYS = {"weekDays", "mode", "subjectColors", "notesFolderID", "lessonReminderMinutes", "systemCalendars"}
+SYSTEM_KEYS = {"enabled", "hiddenCalendars", "defaultTarget"}
+ANCHOR_KEYS = {"externalID", "itemID", "calendarID", "occurrence"}
+MARK_KEYS = {"source", "homeworkID", "doneAt"}
+HOMEWORK_KEYS = {"id", "lessonID", "periodID", "periodDate", "assigned", "due", "subject", "subjectID", "text", "remark",
+                 "completedInSource", "attachmentCount"}
+MAXIMUM_MARKS = 20_000
 CONNECTION_KEYS = {"id", "kind", "label", "timeZone", "connectedAt", "sourceIdentity"}
 LINK_KEYS = {"id", "target", "documentID", "pageID", "createdAt", "hasContent", "contextTitle", "contextStart", "contextEnd"}
 MAPPING_KEYS = {"id", "source", "fromPeriodID", "fromDate", "toPeriodID", "toDate", "confirmedAt"}
@@ -118,6 +127,17 @@ def settings(value, version):
         folder = uuid_string(folder)
     minutes = value.get("lessonReminderMinutes")
     check(minutes is None or (version >= 3 and type(minutes) is int and minutes in LESSON_REMINDER_PRESETS), "Invalid lesson reminder")
+    system = value.get("systemCalendars")
+    if system is not None:
+        check(version >= 4, "System calendars before calendar format 4")
+        keys(system, SYSTEM_KEYS, "Unexpected system calendar settings")
+        check(type(system["enabled"]) is bool, "Invalid system calendar switch")
+        hidden = system.get("hiddenCalendars", [])
+        check(isinstance(hidden, list) and len(hidden) <= 500 and len(set(hidden)) == len(hidden), "Invalid hidden calendars")
+        for item in hidden:
+            text(item, 1, 500, "Invalid hidden calendar")
+        if system.get("defaultTarget") is not None:
+            text(system["defaultTarget"], 1, 500, "Invalid default calendar")
     return folder
 
 
@@ -134,12 +154,23 @@ def connection(value, version):
     return value["id"].upper()
 
 
-def link(value):
+def link(value, version):
     keys(value, LINK_KEYS, "Unexpected note link fields")
     uuid_string(value["id"])
     target = value["target"]
-    check(isinstance(target, dict) and target.get("kind") in ("local", "lesson"), "Invalid note target")
-    if target["kind"] == "local":
+    check(isinstance(target, dict) and target.get("kind") in ("local", "lesson", "system"), "Invalid note target")
+    if target["kind"] == "system":
+        check(version >= 4, "System event note before calendar format 4")
+        keys(target, {"kind", "system"}, "Invalid note target")
+        anchor = target["system"]
+        keys(anchor, ANCHOR_KEYS, "Invalid system event anchor")
+        text(anchor["itemID"], 1, 500, "Invalid system event id")
+        text(anchor["calendarID"], 1, 500, "Invalid system calendar id")
+        if anchor.get("externalID") is not None:
+            text(anchor["externalID"], 1, 500, "Invalid external event id")
+        if anchor.get("occurrence") is not None:
+            foundation_date(anchor["occurrence"])
+    elif target["kind"] == "local":
         keys(target, {"kind", "event", "date"}, "Invalid note target")
         uuid_string(target["event"])
         if target.get("date") is not None:
@@ -173,7 +204,7 @@ def mapping(value):
 
 
 @strict
-def validate_state(state, formats=(1, 2, 3)):
+def validate_state(state, formats=(1, 2, 3, 4)):
     """Returns (summary counts, document ids of all links, notes folder, connection id)."""
     keys(state, STATE_KEYS, "Unexpected calendar state fields")
     version = state["formatVersion"]
@@ -186,7 +217,7 @@ def validate_state(state, formats=(1, 2, 3)):
     connection_id = connection(state["connection"], version) if state.get("connection") is not None else None
     links = state.get("noteLinks", [])
     check(isinstance(links, list) and len(links) <= MAXIMUM_LINKS and (version >= 2 or not links), "Invalid note links")
-    documents = [link(item) for item in links]
+    documents = [link(item, version) for item in links]
     check(len({item["id"] for item in links}) == len(links), "Duplicate note link")
     mappings = state.get("lessonMappings", [])
     check(isinstance(mappings, list) and len(mappings) <= MAXIMUM_MAPPINGS and (version >= 2 or not mappings), "Invalid mappings")
@@ -206,17 +237,27 @@ def validate_state(state, formats=(1, 2, 3)):
             civil(item["occurrence"])
             check(item["event"].get("recurrence") is not None, "Deleted occurrence without series")
     check(len({item["id"] for item in deleted}) == len(deleted), "Duplicate deleted event")
+    marks = state.get("homeworkDone", [])
+    check(isinstance(marks, list) and len(marks) <= MAXIMUM_MARKS and (version >= 4 or not marks), "Invalid homework marks")
+    for item in marks:
+        keys(item, MARK_KEYS, "Unexpected homework mark fields")
+        text(item["source"], 1, 300, "Invalid homework source")
+        text(item["homeworkID"], 1, 100, "Invalid homework id")
+        foundation_date(item["doneAt"])
+    check(len({(item["source"], item["homeworkID"]) for item in marks}) == len(marks), "Duplicate homework mark")
     summary = {"formatVersion": version, "events": len(events), "series": sum(e.get("recurrence") is not None for e in events),
                "reminders": sum(e.get("reminderMinutes") is not None for e in events), "noteLinks": len(links),
                "lessonMappings": len(mappings), "deletedEvents": len(deleted), "connection": connection_id is not None,
-               "lessonReminder": state.get("settings", {}).get("lessonReminderMinutes") is not None}
+               "lessonReminder": state.get("settings", {}).get("lessonReminderMinutes") is not None,
+               "homeworkDone": len(marks), "systemCalendars": state.get("settings", {}).get("systemCalendars") is not None,
+               "systemNotes": sum(item["target"]["kind"] == "system" for item in links)}
     return summary, set(documents), folder, connection_id
 
 
 @strict
 def validate_source(source, connection_id):
     """The WebUntis offline timetable of `connection_id` (cache format 1)."""
-    keys(source, {"formatVersion", "connection", "lessons", "days", "holidays", "holidaysFetchedAt"}, "Unexpected timetable fields")
+    keys(source, {"formatVersion", "connection", "lessons", "days", "holidays", "holidaysFetchedAt", "homework"}, "Unexpected timetable fields")
     check(source["formatVersion"] == SOURCE_FORMAT, "Unsupported timetable format")
     check(connection_id is not None and uuid_string(source["connection"]) == connection_id, "Timetable of another connection")
     days = source["days"]
@@ -241,6 +282,19 @@ def validate_source(source, connection_id):
         check(civil(holiday["end"]) > civil(holiday["start"]), "Invalid holiday")
     if source.get("holidaysFetchedAt") is not None:
         foundation_date(source["holidaysFetchedAt"])
+    homework = source.get("homework", [])
+    check(isinstance(homework, list) and len(homework) <= 10_000, "Invalid homework")
+    for item in homework:
+        keys(item, HOMEWORK_KEYS, "Unexpected homework fields")
+        text(item["id"], 1, 100, "Invalid homework id")
+        text(item["periodID"], 1, 100, "Invalid homework period")
+        check(civil(item["periodDate"]) in days, "Homework on a day that was never loaded")
+        civil(item["due"])
+        if item.get("assigned") is not None:
+            check(civil(item["assigned"]) <= item["due"], "Homework given after it is due")
+        text(item["text"], 0, 20_000, "Invalid homework text")
+        check(type(item["completedInSource"]) is bool and type(item["attachmentCount"]) is int, "Invalid homework flags")
+    check(len({item["id"] for item in homework}) == len(homework), "Duplicate homework")
     stamps = list(days.values())
-    return {"lessons": len(lessons), "loadedDays": len(days), "holidays": len(holidays),
+    return {"lessons": len(lessons), "loadedDays": len(days), "holidays": len(holidays), "homework": len(homework),
             "oldestFetch": min(stamps) if stamps else None, "newestFetch": max(stamps) if stamps else None}

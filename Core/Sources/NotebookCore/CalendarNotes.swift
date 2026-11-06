@@ -14,13 +14,16 @@ public enum CalendarNoteTarget: Hashable, Sendable, Codable {
     case local(event: UUID, date: CivilDate?)
     /// One WebUntis lesson (see `CalendarLessonAnchor`).
     case lesson(CalendarLessonAnchor)
+    /// One event (occurrence) of a system calendar (Apple/Outlook, format 4).
+    case system(CalendarSystemAnchor)
 
-    private enum CodingKeys: String, CodingKey { case kind, event, date, lesson }
+    private enum CodingKeys: String, CodingKey { case kind, event, date, lesson, system }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         switch try c.decode(String.self, forKey: .kind) {
         case "local": self = .local(event: try c.decode(UUID.self, forKey: .event), date: try c.decodeIfPresent(CivilDate.self, forKey: .date))
         case "lesson": self = .lesson(try c.decode(CalendarLessonAnchor.self, forKey: .lesson))
+        case "system": self = .system(try c.decode(CalendarSystemAnchor.self, forKey: .system))
         default: throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unbekanntes Notizziel")
         }
     }
@@ -31,14 +34,19 @@ public enum CalendarNoteTarget: Hashable, Sendable, Codable {
             try c.encode("local", forKey: .kind); try c.encode(event, forKey: .event); try c.encodeIfPresent(date, forKey: .date)
         case .lesson(let anchor):
             try c.encode("lesson", forKey: .kind); try c.encode(anchor, forKey: .lesson)
+        case .system(let anchor):
+            try c.encode("system", forKey: .kind); try c.encode(anchor, forKey: .system)
         }
     }
+
+    public var isSystem: Bool { if case .system = self { true } else { false } }
 
     /// Stable text form (dictionary keys, pending creations).
     public var key: String {
         switch self {
         case .local(let event, let date): "local/\(event.uuidString)" + (date.map { "/\($0)" } ?? "")
         case .lesson(let anchor): "lesson/\(anchor.source)/\(anchor.periodID)"
+        case .system(let anchor): "system/" + anchor.key
         }
     }
 }
@@ -118,6 +126,7 @@ public struct CalendarNoteLink: Identifiable, Equatable, Sendable, Codable {
             return (1...300).contains(anchor.source.count) && (1...100).contains(anchor.periodID.count)
                 && (anchor.lessonID?.count ?? 0) <= 100 && anchor.originalStart.count <= 40
         }
+        if case .system(let anchor) = target { return anchor.isValid }
         return true
     }
 }
