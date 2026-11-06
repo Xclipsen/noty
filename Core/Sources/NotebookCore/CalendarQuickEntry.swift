@@ -14,78 +14,118 @@ public struct CalendarQuickEntry: Equatable, Sendable {
     public var end: Date
     public var allDay: Bool
 
-    /// `now` decides „heute“ and the next weekday (today counts when the
-    /// time has not passed yet). Nil only for an empty line.
+    /// `now` decides „heute“ and the next weekday (today counts only when
+    /// the time has not passed yet). Nil only for an empty line.
     public static func parse(_ text: String, now: Date, calendar: Calendar) -> CalendarQuickEntry? {
-        var tokens = text.replacingOccurrences(of: "–", with: "-").replacingOccurrences(of: "—", with: "-")
+        let tokens = text.replacingOccurrences(of: "–", with: "-").replacingOccurrences(of: "—", with: "-")
             .split(whereSeparator: { $0.isWhitespace }).map(String.init)
         guard !tokens.isEmpty else { return nil }
         let today = calendar.startOfDay(for: now)
-        var day: Date?
-        var weekdayGiven = false
-        var startTime: (Int, Int)?
-        var endTime: (Int, Int)?
-        var used = Set<Int>()
 
+        enum Kind { case text, day(Date, weekday: Bool), dayRange(Date, Date), time(Int, Int), timeRange((Int, Int), (Int, Int)), uhr, filler }
         func clean(_ token: String) -> String { token.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ",;!?")) }
-
+        let words = tokens.map(clean)
         let weekdays: [(names: [String], index: Int)] = [
             (["mo", "mo.", "montag"], 2), (["di", "di.", "dienstag"], 3), (["mi", "mi.", "mittwoch"], 4),
-            (["do", "do.", "donnerstag"], 5), (["fr", "fr.", "freitag"], 6), (["sa", "sa.", "samstag"], 7), (["so", "so.", "sonntag"], 1),
+            (["do", "do.", "donnerstag"], 5), (["fr", "fr.", "freitag"], 6), (["sa", "sa.", "samstag"], 7), (["sonntag"], 1),
         ]
+        func weekdayDate(_ index: Int, next: Bool) -> Date {
+            let current = calendar.component(.weekday, from: today)
+            var ahead = (index - current + 7) % 7
+            if next, ahead == 0 { ahead = 7 }
+            return calendar.date(byAdding: .day, value: ahead, to: today) ?? today
+        }
+        func date(_ word: String) -> Date? { parseDate(word, today: today, calendar: calendar) }
+        let fillers: Set<String> = ["am", "um", "ab", "bis", "von", "nächsten", "nächster", "nächste", "kommenden"]
+        var kinds = [Kind](repeating: .text, count: tokens.count)
 
-        for (index, raw) in tokens.enumerated() {
-            let token = clean(raw)
-            if ["heute"].contains(token) { day = today; used.insert(index); continue }
-            if token == "morgen" { day = calendar.date(byAdding: .day, value: 1, to: today); used.insert(index); continue }
-            if token == "übermorgen" { day = calendar.date(byAdding: .day, value: 2, to: today); used.insert(index); continue }
-            if ["nächsten", "nächster", "nächste", "am", "um", "ab", "bis"].contains(token) { used.insert(index); continue }
-            if token == "uhr" { used.insert(index); continue }
-            if let weekday = weekdays.first(where: { $0.names.contains(token) }) {
-                weekdayGiven = true
-                let current = calendar.component(.weekday, from: today)
-                var ahead = (weekday.index - current + 7) % 7
-                if index > 0, clean(tokens[index - 1]).hasPrefix("nächst"), ahead == 0 { ahead = 7 }
-                day = calendar.date(byAdding: .day, value: ahead, to: today)
-                used.insert(index); continue
+        // Pass 1: what is unambiguous on its own.
+        for (i, word) in words.enumerated() {
+            let followedByUhr = i + 1 < words.count && words[i + 1] == "uhr"
+            let isNext = i > 0 && (words[i - 1].hasPrefix("nächst") || words[i - 1] == "kommenden")
+            if word == "uhr" { kinds[i] = .uhr; continue }
+            if word == "heute" { kinds[i] = .day(today, weekday: false); continue }
+            if word == "morgen" { kinds[i] = .day(calendar.date(byAdding: .day, value: 1, to: today) ?? today, weekday: false); continue }
+            if word == "übermorgen" { kinds[i] = .day(calendar.date(byAdding: .day, value: 2, to: today) ?? today, weekday: false); continue }
+            if let weekday = weekdays.first(where: { $0.names.contains(word) }) {
+                kinds[i] = .day(weekdayDate(weekday.index, next: isNext), weekday: true); continue
             }
-            let followedByUhr = index + 1 < tokens.count && clean(tokens[index + 1]) == "uhr"
-            if !followedByUhr, !token.hasSuffix("uhr"), let date = parseDate(token, today: today, calendar: calendar) {
-                day = date; used.insert(index); continue
+            // „So“ only capitalised as a weekday („so“ is an ordinary word).
+            if tokens[i] == "So" || tokens[i] == "So." { kinds[i] = .day(weekdayDate(1, next: isNext), weekday: true); continue }
+            if fillers.contains(word) { continue }
+            let parts = word.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+            if parts.count == 2, let a = date(parts[0]), let b = date(parts[1]), b >= a { kinds[i] = .dayRange(a, b); continue }
+            if !followedByUhr, !word.hasSuffix("uhr"), let day = date(word) { kinds[i] = .day(day, weekday: false); continue }
+            let bare = word.hasSuffix("uhr") ? String(word.dropLast(3)) : word
+            if parts.count == 2, let a = parseTime(parts[0], loose: true),
+               let b = parseTime(parts[1].replacingOccurrences(of: "uhr", with: ""), loose: true),
+               word.contains(":") || followedByUhr || word.hasSuffix("uhr") {
+                kinds[i] = .timeRange(a, b); continue
             }
-            // Times: a range first, then a single time („10“ only next to „Uhr“ or after „um“).
-            let parts = token.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
-            if parts.count == 2, let a = parseTime(parts[0], loose: true), let b = parseTime(parts[1].replacingOccurrences(of: "uhr", with: ""), loose: true) {
-                startTime = a; endTime = b; used.insert(index); continue
+            if bare.contains(":"), let t = parseTime(bare, loose: true) { kinds[i] = .time(t.0, t.1); continue }
+            if followedByUhr || word.hasSuffix("uhr"), let t = parseTime(bare, loose: true) { kinds[i] = .time(t.0, t.1); continue }
+        }
+        // Pass 2: „um 9“, „bis 11“, „so um 10“ (lower-case „so“ before a time).
+        for (i, word) in words.enumerated() {
+            guard case .text = kinds[i] else { continue }
+            if i > 0, ["um", "ab", "bis", "von"].contains(words[i - 1]), let t = parseTime(word, loose: true) { kinds[i] = .time(t.0, t.1); continue }
+            // „20 bis 24 Uhr“: the start of a range whose end is a time.
+            if i + 2 < words.count, words[i + 1] == "bis", case .time = kinds[i + 2], let t = parseTime(word, loose: true) {
+                kinds[i] = .time(t.0, t.1); continue
             }
-            let nextIsUhr = index + 1 < tokens.count && clean(tokens[index + 1]) == "uhr"
-            let afterUm = index > 0 && ["um", "ab"].contains(clean(tokens[index - 1]))
-            let afterBis = index > 0 && clean(tokens[index - 1]) == "bis"
-            let bare = token.hasSuffix("uhr") ? String(token.dropLast(3)) : token
-            if let time = parseTime(bare, loose: nextIsUhr || afterUm || afterBis || token.hasSuffix("uhr")) {
-                if afterBis, startTime != nil { endTime = time } else if startTime == nil { startTime = time } else { endTime = time }
-                used.insert(index); continue
+            if word == "so", i + 1 < words.count {
+                switch kinds[i + 1] { case .time, .timeRange: kinds[i] = .day(weekdayDate(1, next: false), weekday: true)
+                default: if words[i + 1] == "um" { kinds[i] = .day(weekdayDate(1, next: false), weekday: true) } }
             }
         }
-        tokens = tokens.enumerated().filter { !used.contains($0.offset) }.map(\.element)
-        var title = tokens.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Pass 3: filler words count only next to a date or time.
+        for (i, word) in words.enumerated() where fillers.contains(word) {
+            guard i + 1 < words.count else { continue }
+            switch kinds[i + 1] { case .day, .dayRange, .time, .timeRange: kinds[i] = .filler; default: break }
+        }
+
+        var day: Date?, endDay: Date?, weekdayGiven = false
+        var startTime: (Int, Int)?, endTime: (Int, Int)?
+        var titleWords: [String] = []
+        for (i, kind) in kinds.enumerated() {
+            switch kind {
+            case .text: titleWords.append(tokens[i])
+            case .uhr, .filler: break
+            case .day(let date, let weekday):
+                if day == nil { day = date; weekdayGiven = weekday }
+                else if date > day! { endDay = date }
+            case .dayRange(let a, let b): day = a; endDay = b
+            case .time(let h, let m): if startTime == nil { startTime = (h, m) } else { endTime = (h, m) }
+            case .timeRange(let a, let b): startTime = a; endTime = b
+            }
+        }
+        var title = titleWords.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
         if title.isEmpty { title = "Neuer Termin" }
         title = String(title.prefix(200))
 
+        func at(_ t: (Int, Int), on date: Date) -> Date {
+            // „24 Uhr“ is 0:00 of the next day.
+            if t.0 == 24 { return calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date)) ?? date }
+            return calendar.date(bySettingHour: t.0, minute: t.1, second: 0, of: date) ?? date
+        }
         if let startTime {
             var base = day ?? today
-            func at(_ t: (Int, Int), on date: Date) -> Date {
-                calendar.date(bySettingHour: t.0, minute: t.1, second: 0, of: date) ?? date
-            }
             var start = at(startTime, on: base)
-            // Only a time, already passed today: tomorrow.
-            if day == nil, !weekdayGiven, start <= now { base = calendar.date(byAdding: .day, value: 1, to: base) ?? base; start = at(startTime, on: base) }
-            var end = endTime.map { at($0, on: base) } ?? (calendar.date(byAdding: .hour, value: 1, to: start) ?? start)
+            if start <= now, base == today {
+                // Passed already: a bare time means tomorrow, today's weekday the next week.
+                if day == nil { base = calendar.date(byAdding: .day, value: 1, to: base) ?? base }
+                else if weekdayGiven { base = calendar.date(byAdding: .day, value: 7, to: base) ?? base }
+                start = at(startTime, on: base)
+            }
+            var end = endTime.map { at($0, on: endDay ?? base) } ?? (calendar.date(byAdding: .hour, value: 1, to: start) ?? start)
+            // „22–1 Uhr“ ends the next day.
+            if end < start, endTime != nil, endDay == nil { end = calendar.date(byAdding: .day, value: 1, to: end) ?? end }
             if end <= start { end = calendar.date(byAdding: .hour, value: 1, to: start) ?? start }
             return CalendarQuickEntry(title: title, start: start, end: end, allDay: false)
         }
         let start = day ?? today
-        return CalendarQuickEntry(title: title, start: start, end: calendar.date(byAdding: .day, value: 1, to: start) ?? start, allDay: true)
+        let last = max(start, endDay ?? start)
+        return CalendarQuickEntry(title: title, start: start, end: calendar.date(byAdding: .day, value: 1, to: last) ?? last, allDay: true)
     }
 
     /// „10“, „10:30“, „10.30“, „9“ (hour only when `loose`).
@@ -94,11 +134,11 @@ public struct CalendarQuickEntry: Equatable, Sendable {
         guard !token.isEmpty, token.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ":" || $0 == ".") }) else { return nil }
         let parts = token.split(separator: token.contains(":") ? ":" : ".", omittingEmptySubsequences: false)
         if parts.count == 1 {
-            guard loose, let hour = Int(parts[0]), (0...23).contains(hour), parts[0].count <= 2 else { return nil }
+            guard loose, let hour = Int(parts[0]), (0...24).contains(hour), parts[0].count <= 2 else { return nil }
             return (hour, 0)
         }
         guard parts.count == 2, parts[1].count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
-              (0...23).contains(hour), (0...59).contains(minute) else { return nil }
+              (0...24).contains(hour), (0...59).contains(minute), hour < 24 || minute == 0 else { return nil }
         // „12.11“ without „Uhr“ is a date, not 12:11.
         if token.contains("."), !loose { return nil }
         return (hour, minute)

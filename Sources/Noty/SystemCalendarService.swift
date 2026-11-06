@@ -121,12 +121,18 @@ final class SystemCalendarService {
             to = calendar.date(byAdding: .day, value: 1, to: last) ?? from.addingTimeInterval(86_400)
         }
         let recurring = event.hasRecurrenceRules
+        let original = recurring || event.isDetached ? event.occurrenceDate : nil
+        // All-day and floating occurrences are local civil values (a time zone change must not orphan their notes).
+        let local = original.flatMap { date in
+            event.isAllDay || event.timeZone == nil ? CalendarSystemEvent.localKey(date, allDay: event.isAllDay, calendar: calendar) : nil
+        }
         var value = CalendarSystemEvent(itemID: event.calendarItemIdentifier, externalID: event.calendarItemExternalIdentifier,
                                         calendarID: owner.calendarIdentifier, title: (event.title?.isEmpty == false ? event.title! : "Ohne Titel"),
                                         location: event.location ?? "", notes: event.notes ?? "", start: from, end: max(from, to),
                                         allDay: event.isAllDay, timeZone: event.timeZone?.identifier,
-                                        occurrence: recurring || event.isDetached ? event.occurrenceDate : nil,
-                                        recurring: recurring, detached: event.isDetached, cancelled: event.status == .canceled)
+                                        occurrence: original,
+                                        recurring: recurring, detached: event.isDetached, cancelled: event.status == .canceled,
+                                        occurrenceLocal: local)
         value.title = String(value.title.prefix(300))
         return value
     }
@@ -144,7 +150,7 @@ final class SystemCalendarService {
         guard let event = find(value) else { return nil }
         var extra = Extra(rule: nil, complexRule: false, alarmMinutes: nil, modified: event.lastModifiedDate)
         if let rule = event.recurrenceRules?.first {
-            extra.rule = Self.rule(rule)
+            extra.rule = Self.rule(rule, start: event.startDate, calendar: Calendar.current)
             extra.complexRule = extra.rule == nil || (event.recurrenceRules?.count ?? 0) > 1
         }
         if let offset = event.alarms?.first(where: { $0.absoluteDate == nil })?.relativeOffset, offset <= 0 {
@@ -155,8 +161,11 @@ final class SystemCalendarService {
     }
 
     /// A simple EventKit rule as noty's rule; nil when it has more than
-    /// frequency, interval and end (weekdays, set positions, yearly …).
-    static func rule(_ rule: EKRecurrenceRule) -> CalendarRecurrence? {
+    /// frequency, interval and end (weekdays, set positions, yearly …):
+    /// „jeden 1. Montag im Monat“ (monthly with weekdays) or weekly on
+    /// another weekday than the first occurrence's are complex, so noty
+    /// keeps them unchanged instead of overwriting them with a plain rule.
+    static func rule(_ rule: EKRecurrenceRule, start: Date?, calendar: Calendar) -> CalendarRecurrence? {
         let frequency: CalendarRecurrence.Frequency
         switch rule.frequency {
         case .daily: frequency = .daily
@@ -164,7 +173,13 @@ final class SystemCalendarService {
         case .monthly: frequency = .monthly
         default: return nil
         }
-        if (rule.daysOfTheWeek?.count ?? 0) > 1 || rule.daysOfTheMonth?.isEmpty == false || rule.setPositions?.isEmpty == false
+        let weekdays = rule.daysOfTheWeek ?? []
+        if frequency == .monthly, !weekdays.isEmpty { return nil }
+        if frequency == .daily, !weekdays.isEmpty { return nil }
+        if frequency == .weekly, let day = weekdays.first {
+            guard let start, day.weekNumber == 0, day.dayOfTheWeek.rawValue == calendar.component(.weekday, from: start) else { return nil }
+        }
+        if weekdays.count > 1 || rule.daysOfTheMonth?.isEmpty == false || rule.setPositions?.isEmpty == false
             || rule.monthsOfTheYear?.isEmpty == false || rule.weeksOfTheYear?.isEmpty == false || rule.daysOfTheYear?.isEmpty == false {
             return nil
         }

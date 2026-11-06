@@ -193,6 +193,66 @@ final class CalendarStageCTests: XCTestCase {
         XCTAssertEqual(moved[0].target, .system(CalendarSystemAnchor(externalID: "EXT-8", itemID: "i8", calendarID: "cal-b", occurrence: start)))
     }
 
+    func testSeriesShiftKeepsWallClockOverDaylightSavingAndLocalAnchors() {
+        // A weekly 10:00 series moved by +1 day for „Alle“: occurrences before
+        // and after the end of summer time stay at 10:00 local time.
+        let before = at(2026, 10, 19, 10), after = at(2026, 10, 26, 10)
+        XCTAssertEqual(CalendarSystemNotes.wallClockShift(before, days: 1, minutes: 0, timeZone: berlin.timeZone), at(2026, 10, 20, 10))
+        XCTAssertEqual(CalendarSystemNotes.wallClockShift(after, days: -7, minutes: 30, timeZone: berlin.timeZone), at(2026, 10, 19, 10, 30))
+        XCTAssertEqual(CalendarSystemNotes.wallClockShift(at(2026, 3, 28, 23), days: 0, minutes: 120, timeZone: berlin.timeZone),
+                       at(2026, 3, 29, 1), "über Mitternacht")
+        // Spring forward: 02:30 does not exist and becomes the next valid time.
+        let gap = CalendarSystemNotes.wallClockShift(at(2026, 3, 28, 2, 30), days: 1, minutes: 0, timeZone: berlin.timeZone)
+        XCTAssertEqual(berlin.component(.day, from: gap), 29)
+        XCTAssertGreaterThanOrEqual(berlin.component(.hour, from: gap), 3)
+
+        let zoned = CalendarSystemAnchor(externalID: "E", itemID: "i", calendarID: "c", occurrence: before)
+        let allDay = CalendarSystemAnchor(externalID: "E", itemID: "i", calendarID: "c", occurrence: nil, occurrenceLocal: "2026-10-25")
+        let floating = CalendarSystemAnchor(externalID: "E", itemID: "i", calendarID: "c", occurrence: nil, occurrenceLocal: "2026-10-25T23:30")
+        var links = [zoned, allDay, floating].map {
+            CalendarNoteLink(target: .system($0), documentID: UUID(), createdAt: created, contextTitle: "X", contextStart: before, contextEnd: before)
+        }
+        CalendarSystemNotes.shift(&links, identity: zoned.identity, days: 7, minutes: 60, timeZone: berlin.timeZone)
+        XCTAssertEqual(links[0].target, .system(CalendarSystemAnchor(externalID: "E", itemID: "i", calendarID: "c", occurrence: at(2026, 10, 26, 11))),
+                       "eine Woche später über die Zeitumstellung: 11:00 Ortszeit, nicht 10:00")
+        XCTAssertEqual(links[1].target, .system(CalendarSystemAnchor(externalID: "E", itemID: "i", calendarID: "c", occurrence: nil,
+                                                                     occurrenceLocal: "2026-11-01")))
+        XCTAssertEqual(links[2].target, .system(CalendarSystemAnchor(externalID: "E", itemID: "i", calendarID: "c", occurrence: nil,
+                                                                     occurrenceLocal: "2026-11-02T00:30")), "Wanduhr mit Tagesübertrag")
+        XCTAssertNil(CalendarSystemNotes.shiftLocal("kaputt", days: 1, minutes: 0))
+    }
+
+    func testAllDayAndFloatingOccurrencesSurviveATimeZoneChange() {
+        // The same all-day series occurrence read once in Berlin and once in New York.
+        var newYork = Calendar(identifier: .gregorian); newYork.timeZone = TimeZone(identifier: "America/New_York")!
+        let berlinMidnight = berlin.startOfDay(for: at(2026, 11, 9, 12))
+        let nyMidnight = newYork.startOfDay(for: newYork.date(from: DateComponents(year: 2026, month: 11, day: 9, hour: 12))!)
+        func occurrence(_ date: Date, _ cal: Calendar, allDay: Bool, zone: String?) -> CalendarSystemEvent {
+            CalendarSystemEvent(itemID: "i", externalID: "E", calendarID: "c", title: "Feiertag", start: date, end: date.addingTimeInterval(86_400),
+                                allDay: allDay, timeZone: zone, occurrence: date, recurring: true,
+                                occurrenceLocal: CalendarSystemEvent.localKey(date, allDay: allDay, calendar: cal))
+        }
+        let written = occurrence(berlinMidnight, berlin, allDay: true, zone: nil).anchor
+        XCTAssertEqual(written.occurrenceLocal, "2026-11-09"); XCTAssertNil(written.occurrence)
+        let travelled = occurrence(nyMidnight, newYork, allDay: true, zone: nil)
+        let read = (start: nyMidnight.addingTimeInterval(-86_400 * 10), end: nyMidnight.addingTimeInterval(86_400 * 10))
+        XCTAssertEqual(CalendarSystemMatching.resolve(written, events: [travelled], read: read, contextStart: berlinMidnight), .found(travelled))
+        // Floating 09:00 stays 09:00 wall clock; a zoned event keeps its instant.
+        let floatingHere = occurrence(at(2026, 11, 9, 9), berlin, allDay: false, zone: nil)
+        XCTAssertEqual(floatingHere.anchor.occurrenceLocal, "2026-11-09T09:00")
+        let zonedHere = occurrence(at(2026, 11, 9, 9), berlin, allDay: false, zone: "Europe/Berlin")
+        XCTAssertNil(zonedHere.anchor.occurrenceLocal); XCTAssertNotNil(zonedHere.anchor.occurrence)
+        XCTAssertNotEqual(written.key, zonedHere.anchor.key)
+        // Coding round trip and validation of the local form.
+        let link = CalendarNoteLink(target: .system(written), documentID: UUID(), createdAt: created, contextTitle: "X",
+                                    contextStart: created, contextEnd: created)
+        XCTAssertEqual(try JSONDecoder().decode(CalendarNoteLink.self, from: JSONEncoder().encode(link)), link)
+        var state = CalendarState(); state.noteLinks = [link]
+        XCTAssertNoThrow(try state.validate())
+        state.noteLinks[0].target = .system(CalendarSystemAnchor(externalID: "E", itemID: "i", calendarID: "c", occurrence: nil, occurrenceLocal: "9.11.2026"))
+        XCTAssertThrowsError(try state.validate())
+    }
+
     func testAnchorCodingAndColourHex() throws {
         let anchor = CalendarSystemAnchor(externalID: "E", itemID: "i", calendarID: "c", occurrence: Date(timeIntervalSinceReferenceDate: 815_000_000.4))
         XCTAssertEqual(anchor.occurrence?.timeIntervalSinceReferenceDate, 815_000_000, "ganze Sekunden")
@@ -216,9 +276,9 @@ final class CalendarStageCTests: XCTestCase {
         var links = [anchor, other].map {
             CalendarNoteLink(target: .system($0), documentID: UUID(), createdAt: created, contextTitle: "X", contextStart: first, contextEnd: first)
         }
-        CalendarSystemNotes.shift(&links, identity: anchor.identity, by: 3600)
+        CalendarSystemNotes.shift(&links, identity: anchor.identity, days: 0, minutes: 60, timeZone: berlin.timeZone)
         XCTAssertEqual(links[0].target, .system(CalendarSystemAnchor(externalID: "EXT-1", itemID: "i1", calendarID: "c",
-                                                                     occurrence: first.addingTimeInterval(3600))))
+                                                                     occurrence: at(2026, 11, 9, 11))))
         XCTAssertEqual(links[1].target, .system(other), "andere Serie unberührt")
         // An event created by noty before its first upload: matched by item id, external id comes later.
         let read = (start: at(2026, 11, 1, 0), end: at(2026, 12, 1, 0))
@@ -257,6 +317,7 @@ final class CalendarStageCTests: XCTestCase {
         let summer = table.first { $0.name == "Sommerferien" && $0.start.year == 2026 }
         XCTAssertEqual(summer?.end, day("2026-09-02"), "letzter Ferientag einschließlich, gespeichert exklusiv")
         XCTAssertEqual(table.first { $0.name == "Pfingstferien" }?.start.days(to: table.first { $0.name == "Pfingstferien" }!.end), 1)
+        XCTAssertFalse(table.contains { $0.name == "Pfingstferien" && $0.start.year == 2028 }, "keine Pfingstferien 2028 (BASS 19-1)")
     }
 
     func testFallbackOnlyWhereWebUntisDeliversNothing() {
@@ -303,7 +364,7 @@ final class CalendarStageCTests: XCTestCase {
         let data = timetable([
             period(501, "2026-11-02T08:00", "2026-11-02T09:30", homework: """
             [{"id":9001,"lessonId":88,"startDate":"2026-11-02","endDate":"2026-11-04","text":"Aufgabe 3 und 4 (erfunden)","remark":"","completed":false,"attachments":[{"id":1}]},
-             {"id":9002,"startDate":"20261102","endDate":"20261109","text":"Kapitel lesen","completed":true},
+             {"id":9002,"startDate":20261102,"endDate":20261109,"text":"Kapitel lesen","completed":true},
              {"id":9003,"text":"ohne Fälligkeit"},
              {"lessonId":88,"endDate":"2026-11-05","text":"ohne Kennung"},
              {"id":9004,"startDate":"2026-11-10","endDate":"2026-11-06","text":"Beginn nach Ende"}]
@@ -384,8 +445,9 @@ final class CalendarQuickEntryTests: XCTestCase {
     func testWeekdayAndTime() {
         let entry = parse("Mathe Klausur Fr 10 Uhr")
         XCTAssertEqual(entry.title, "Mathe Klausur")
-        XCTAssertEqual(entry.start, at(11, 6, 10), "heute ist Freitag: dieser Freitag")
-        XCTAssertEqual(entry.end, at(11, 6, 11))
+        XCTAssertEqual(entry.start, at(11, 13, 10), "heute Freitag, 10 Uhr ist vorbei: nächster Freitag")
+        XCTAssertEqual(entry.end, at(11, 13, 11))
+        XCTAssertEqual(parse("Mathe Klausur Fr 16 Uhr").start, at(11, 6, 16), "noch nicht vorbei: heute")
         XCTAssertFalse(entry.allDay)
         XCTAssertEqual(parse("Sport nächsten Freitag um 9").start, at(11, 13, 9))
         XCTAssertEqual(parse("Lernen Montag 16:30-18 Uhr").start, at(11, 9, 16, 30))
@@ -406,5 +468,24 @@ final class CalendarQuickEntryTests: XCTestCase {
         XCTAssertEqual(parse("Tisch für 4 heute").title, "Tisch für 4", "Zahl ohne Uhr bleibt im Titel")
         XCTAssertEqual(parse("morgen").title, "Neuer Termin")
         XCTAssertNil(CalendarQuickEntry.parse("   ", now: now, calendar: berlin))
+    }
+
+    func testRangesMidnightAndFillerWords() {
+        let trip = parse("Klassenfahrt 12.11. bis 14.11.")
+        XCTAssertTrue(trip.allDay); XCTAssertEqual(trip.title, "Klassenfahrt")
+        XCTAssertEqual(trip.start, berlin.startOfDay(for: at(11, 12, 12)))
+        XCTAssertEqual(trip.end, berlin.startOfDay(for: at(11, 15, 12)), "letzter Tag einschließlich")
+        XCTAssertEqual(parse("Messe 12.11.-14.11.").end, berlin.startOfDay(for: at(11, 15, 12)))
+        let party = parse("Feier Sa 22-1 Uhr")
+        XCTAssertEqual(party.start, at(11, 7, 22)); XCTAssertEqual(party.end, at(11, 8, 1), "endet am Folgetag")
+        XCTAssertEqual(parse("Wache Sa 20 bis 24 Uhr").end, at(11, 8, 0), "24 Uhr = 0:00 des Folgetags")
+        XCTAssertEqual(parse("Treffen am Montag um 9").title, "Treffen")
+        XCTAssertEqual(parse("Treffen am Montag um 9").start, at(11, 9, 9))
+        XCTAssertEqual(parse("Ab in den Urlaub morgen").title, "Ab in den Urlaub", "Füllwort ohne Datum/Zeit bleibt")
+        XCTAssertEqual(parse("Bis bald sagen heute").title, "Bis bald sagen")
+        let so = parse("so ein Tag morgen")
+        XCTAssertEqual(so.title, "so ein Tag"); XCTAssertEqual(so.start, berlin.startOfDay(for: at(11, 7, 12)), "„so“ ist kein Sonntag")
+        XCTAssertEqual(parse("Brunch So 11 Uhr").start, at(11, 8, 11))
+        XCTAssertEqual(parse("Brunch so um 11").start, at(11, 8, 11))
     }
 }

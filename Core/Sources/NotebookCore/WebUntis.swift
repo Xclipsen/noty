@@ -268,8 +268,9 @@ public enum WebUntis {
                 return (try? c.decodeIfPresent(String.self, forKey: key))?.nilIfBlank
             }
             id = identifier(.id); lessonId = identifier(.lessonId)
-            startDate = try? c.decodeIfPresent(String.self, forKey: .startDate)
-            endDate = try? c.decodeIfPresent(String.self, forKey: .endDate)
+            // Dates as „2026-11-13“ or as a number 20261113 (both seen in community clients).
+            startDate = identifier(.startDate)
+            endDate = identifier(.endDate)
             text = try? c.decodeIfPresent(String.self, forKey: .text)
             remark = try? c.decodeIfPresent(String.self, forKey: .remark)
             completed = (try? c.decodeIfPresent(Bool.self, forKey: .completed)) == true
