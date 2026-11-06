@@ -72,10 +72,10 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
         // Shape, lasso and image tools select through their own plane's tap (same hit test).
         guard !sheet.objectLayer.handlesTapsItself else { return }
         let point = gesture.location(in: sheet)
-        // The underline of a law citation owns this tap (its card or law window), not the field.
-        if sheet.lawCitations.ownsTap(at: point) { return }
         sheet.rememberTap(point)
         sheet.claimSelectionFocus()
+        // The underline of a law citation owns this tap (its card or law window): no selection.
+        if sheet.lawCitations.ownsTap(at: point) { return }
         sheet.syncObjectPlane()
         let hits = sheet.objectHits(at: point)
         // Second tap on the selected field: caret there, or the next field below.
@@ -105,7 +105,8 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
         dismissForeignMenus(in: sheet.canvas)
         sheet.syncObjectPlane()
         // On an object the first tap already selected it; no menu there.
-        guard sheet.objectHits(at: point).isEmpty else { menuTarget = nil; return }
+        // Nor on a law citation: its second tap opens the law.
+        guard sheet.objectHits(at: point).isEmpty, !sheet.lawCitations.ownsTap(at: point) else { menuTarget = nil; return }
         let origin = sheet.pageLayout.contentOrigin
         menuTarget = (pageID, PagePoint(x: point.x - origin.x, y: point.y - origin.y))
         // A menu PencilKit still presents in this turn is closed before ours.

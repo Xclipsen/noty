@@ -37,9 +37,12 @@ struct LawCitationCardLayer: View {
                 if let presentation = model.presentation {
                     let anchor = presentation.anchor.offsetBy(dx: -global.minX, dy: -global.minY)
                     let place = Self.placement(anchor: anchor, size: CGSize(width: width, height: height), in: bounds)
+                    // At most the reserved room: with large type the text gives
+                    // up lines (header and hint stay), the card never grows over
+                    // the citation.
                     LawCitationCard(model: model, presentation: presentation)
                         .frame(width: width)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxHeight: height)
                         // Towards the citation: above it the card sits at the
                         // bottom of its room, below it at the top.
                         .frame(width: width, height: height, alignment: place.above ? .bottom : .top)
@@ -100,6 +103,8 @@ struct LawCitationCard: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // Whatever does not fit the room stays inside the card.
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .notyGlass()
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
@@ -157,15 +162,16 @@ struct LawCitationCard: View {
                 .foregroundStyle(.white.opacity(0.88))
                 .lineLimit(6)
                 .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(-1)
         }
     }
 
     private func note(_ text: String, symbol: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: symbol).foregroundStyle(.orange).accessibilityHidden(true)
-            Text(text).fixedSize(horizontal: false, vertical: true)
+            Text(text).lineLimit(5)
         }
+        .layoutPriority(-1)
         .font(.footnote).foregroundStyle(.white.opacity(0.8))
     }
 

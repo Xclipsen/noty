@@ -495,11 +495,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             self.syncObjectPlane(); self.objectLayer.selectByTouch(object)
         }
         objectLayer.textLines = { [weak self] box in self?.textLayer.lineRects(box) ?? [] }
-        // A tap on a law citation's underline belongs to the citation (card), not to the field.
-        objectLayer.objectHits = { [weak self] point in
-            guard let self, !self.lawCitations.ownsTap(at: point) else { return [] }
-            return self.objectHits(at: point)
-        }
+        objectLayer.objectHits = { [weak self] point in self?.objectHits(at: point) ?? [] }
         objectLayer.hitsCheckbox = { [weak self] point in self?.fingerTapHitsCheckbox(point) ?? false }
         objectLayer.pageContext = { [weak self] in self?.configuration?.page }
         objectLayer.fittedText = { [weak self] box, fit in self?.textLayer.fitted(box, fit) ?? box }

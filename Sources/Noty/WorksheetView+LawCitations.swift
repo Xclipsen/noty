@@ -94,6 +94,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// compares citations, this tells equal ones apart.
     private var presentedKey: LawCitationPlacement.Key?
     private var feedback: UIFeedbackGenerator?
+    /// The placement the last touch-down's tap belongs to (`ownsTap`).
+    private var downTarget: LawCitationPlacement.Key?
 
     private static let debounce: TimeInterval = 0.3
     private static let pencilDwell: TimeInterval = 0.5
@@ -241,7 +243,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
             if pdfPage !== source { pdfPage = source; pdfString = nil; pdfLoaded = false; pdfCache = nil }
             // PDFKit text extraction: one sheet per run-loop turn (`LawCitationPDFText`).
             if !pdfLoaded { requestPDFText(source); return }
-        } else { pdfPage = nil; pdfString = nil; pdfLoaded = false; pdfCache = nil }
+        } else { pdfPage = nil; pdfRequested = nil; pdfString = nil; pdfLoaded = false; pdfCache = nil }
         var texts = Set(editor.textBoxes.filter { scans($0) }.map(\.text))
         if let pdfString { texts.insert(pdfString) }
         texts.remove("")
@@ -267,7 +269,12 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         guard pdfRequested !== page else { return }
         pdfRequested = page
         LawCitationPDFText.enqueue { [weak self, weak page] in
-            guard let self, let page, self.pdfPage === page, !self.pdfLoaded else { return }
+            guard let self else { return }
+            guard let page, self.pdfPage === page, !self.pdfLoaded else {
+                // Given up (another page meanwhile): a later scan may ask again.
+                if self.pdfRequested === page || page == nil { self.pdfRequested = nil }
+                return
+            }
             self.pdfString = page.string; self.pdfLoaded = true; self.pdfRequested = nil
             self.schedule(after: 0)
         }
@@ -556,7 +563,18 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
 
     /// Pencil or finger on the page: a shown card goes at once, except under
     /// a finger on exactly the presented citation (its second tap opens it).
+    /// Whether a tap of this touch belongs to a citation is decided here,
+    /// before any tap action runs (their order is not defined).
     private func touchBegan(_ touch: UITouch) {
+        downTarget = nil
+        if let sheet {
+            let point = touch.location(in: sheet)
+            switch touch.type {
+            case .direct: downTarget = fingerTarget(at: point)?.key
+            case .indirectPointer: downTarget = clickTarget(at: point)?.key
+            default: break
+            }
+        }
         guard touch.type == .pencil || touch.type == .direct else { return }
         cancelDwell()
         shown = nil
@@ -565,47 +583,51 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         model.pageInteractionBegan()
     }
 
-    /// The citation at `point` takes a tap of the touch that just began
-    /// there: its card or law window, not the field or object below.
-    /// False for the Pencil, the text tool, a selection standing at
-    /// touch-down and the edited field (its underlines are hidden).
-    func ownsTap(at point: CGPoint) -> Bool {
-        guard installed, model.scanner != nil, let type = touches.lastType else { return false }
-        switch type {
-        case .direct: return fingerTarget(at: point) != nil
-        case .indirectPointer: return clickTarget(at: point) != nil
-        default: return false
-        }
-    }
+    /// The citation at `point` takes the tap of the touch that began last:
+    /// its card or law window instead of a selection (`downTarget`). Kept
+    /// conservative, Pencil hover is the main way to a card.
+    func ownsTap(at point: CGPoint) -> Bool { target(at: point) != nil }
 
-    private func clickTarget(at point: CGPoint) -> LawCitationPlacement? {
-        guard let sheet, !touches.selectionAtDown else { return nil }
-        // The text tool's click sets the caret or opens a field.
-        guard sheet.tool != .text, !sheet.tool.isEraser, sheet.tool != .laser else { return nil }
-        return placement(at: point, slop: 2 / screenScale)
-    }
-    /// A finger tap cannot draw here and is no text or selection tap.
-    private func fingerTarget(at point: CGPoint) -> LawCitationPlacement? {
-        guard let sheet, let editor = sheet.configuration, !touches.selectionAtDown else { return nil }
-        let tool = sheet.tool
-        // The text tool's taps set the caret or open fields.
-        if tool == .text || tool.isEraser || tool == .laser { return nil }
-        // With finger drawing the finger writes (as `acceptsFingerObjectTaps`).
-        if editor.fingerDrawing, editor.enabled, tool != .image, tool != .read { return nil }
-        guard let hit = placement(at: point, slop: 6 / screenScale) else { return nil }
-        // Text document: a finger tap on the flow puts the caret there.
-        if editor.flowDocument, let id = hit.boxID, editor.textBoxes.contains(where: { $0.id == id && $0.flowID != nil }) { return nil }
+    /// The placement decided at touch-down, if the tap still lands on it.
+    private func target(at point: CGPoint) -> LawCitationPlacement? {
+        guard installed, model.scanner != nil, let key = downTarget, let hit = placement(key),
+              hit.contains(point, slop: 6 / screenScale) else { return nil }
         return hit
     }
 
+    /// A click opens only a citation whose hover card is shown (the user saw
+    /// it after the dwell); a quick click selects as before.
+    private func clickTarget(at point: CGPoint) -> LawCitationPlacement? {
+        guard let sheet, sheet.tool != .text, !sheet.tool.isEraser, sheet.tool != .laser,
+              let hit = placement(at: point, slop: 2 / screenScale), presents(hit),
+              model.presentation?.input != .touch else { return nil }
+        return hit
+    }
+    /// A finger tap takes a citation only where nothing else can mean it:
+    /// PDF text with no object above it, or a field's text with the read
+    /// tool. Never a checkbox, a drawing finger, the text tool, the plane
+    /// tools (shape, lasso, image: their own taps and selections) or while
+    /// a finger selection stands.
+    private func fingerTarget(at point: CGPoint) -> LawCitationPlacement? {
+        guard let sheet, let editor = sheet.configuration, !touches.selectionAtDown,
+              !sheet.objectLayer.handlesTapsItself, !sheet.fingerTapHitsCheckbox(point) else { return nil }
+        let tool = sheet.tool
+        if tool == .text || tool.isEraser || tool == .laser { return nil }
+        // With finger drawing the finger writes (as `acceptsFingerObjectTaps`).
+        if editor.fingerDrawing, editor.enabled, tool != .read { return nil }
+        guard let hit = placement(at: point, slop: 6 / screenScale) else { return nil }
+        if hit.boxID != nil { return tool == .read ? hit : nil }
+        return sheet.objectHits(at: point).isEmpty ? hit : nil
+    }
+
     @objc private func clicked(_ gesture: UITapGestureRecognizer) {
-        guard gesture.state == .ended, let sheet, let hit = clickTarget(at: gesture.location(in: sheet)) else { return }
+        guard gesture.state == .ended, let sheet, let hit = target(at: gesture.location(in: sheet)) else { return }
         cancelDwell(); shown = nil
         presentedKey = nil
         model.open(hit.citation)
     }
     @objc private func tapped(_ gesture: UITapGestureRecognizer) {
-        guard gesture.state == .ended, let sheet, let hit = fingerTarget(at: gesture.location(in: sheet)) else { return }
+        guard gesture.state == .ended, let sheet, let hit = target(at: gesture.location(in: sheet)) else { return }
         cancelDwell(); shown = nil
         prepareToPresent(hit)
         model.tap(hit.citation, anchor: anchor(hit), pageID: pageID)
@@ -614,8 +636,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === click || gestureRecognizer === fingerTap else { return true }
         guard let sheet, model.scanner != nil else { return false }
-        let point = gestureRecognizer.location(in: sheet)
-        return gestureRecognizer === click ? clickTarget(at: point) != nil : fingerTarget(at: point) != nil
+        let wanted: UITouch.TouchType = gestureRecognizer === click ? .indirectPointer : .direct
+        return touches.lastType == wanted && target(at: gestureRecognizer.location(in: sheet)) != nil
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }

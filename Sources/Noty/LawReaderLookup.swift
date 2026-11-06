@@ -36,9 +36,9 @@ extension LawReaderView {
     func resume(_ entry: LawEntry, at place: LawReadingSpot? = nil) async {
         let spot = place ?? laws.readingSpot(law: entry.id)
         let version = spot?.versionId.flatMap { id in entry.versions.contains { $0.id == id } ? id : nil }
-        await open(entry, version: version, target: spot?.sectionId, resume: true)
-        // Only a PDF already on this iPad: reopening never starts a large download.
         // A request after this one (e.g. a citation jump) keeps its own place.
+        guard await open(entry, version: version, target: spot?.sectionId, resume: true) == .opened else { return }
+        // Only a PDF already on this iPad: reopening never starts a large download.
         let request = requestID
         guard spot?.view == .pdf, selectedID == entry.id, !viewPDF, let doc = document,
               await laws.pdfIsOffline(entry, version: doc.version), selectedID == entry.id, requestID == request else { return }
