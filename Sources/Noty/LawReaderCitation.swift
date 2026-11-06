@@ -8,37 +8,80 @@ import NotebookCore
 extension LawReaderView {
     /// Opens the section a notebook citation asked for, once. Only the
     /// reader of the law window takes it; `false` when nothing was waiting.
+    /// A newer jump arriving meanwhile wins: after every wait this one only
+    /// goes on while it is still the current one.
     @discardableResult
     func takeCitationJump() async -> Bool {
         guard inPanel, let jump = laws.citationJump else { return false }
+        guard let entry = laws.entries.first(where: { $0.id == jump.lawID }) else {
+            // Catalogue not there yet: the jump waits for it (`entries.count`).
+            if laws.entries.isEmpty { return true }
+            laws.citationJump = nil
+            if laws.citationReturn?.id == jump.id { settleReturn(jump, moved: false) }
+            return false
+        }
         laws.citationJump = nil
-        guard let entry = laws.entries.first(where: { $0.id == jump.lawID }) else { return false }
-        await open(entry, target: jump.key, paragraph: jump.paragraph)
-        if selectedID.isEmpty {
-            // A fresh reader and a section this version does not have: the
-            // law opens at its beginning with the note, never an empty window.
-            await open(entry, resume: true)
-            loadError = "\(LawCitationText.reference(jump.key, paragraph: jump.paragraph, abbr: entry.abbr)) ist in der aktuellen Fassung nicht enthalten."
+        citationJumpID = jump.id
+        defer { if citationJumpID == jump.id { citationJumpID = nil } }
+        let before = "\(selectedID)|\(sectionID)"
+        let missing = "\(LawCitationText.reference(jump.key, paragraph: jump.paragraph, abbr: entry.abbr)) ist in der aktuellen Fassung nicht enthalten."
+        let outcome = await open(entry, target: jump.key, paragraph: jump.paragraph)
+        guard citationJumpID == jump.id else { return true }
+        switch outcome {
+        case .opened, .superseded:
+            break
+        case .missingSection:
+            if selectedID.isEmpty {
+                // A fresh reader: the law opens at its beginning with the note,
+                // never an empty window.
+                let fallback = await open(entry, resume: true)
+                guard citationJumpID == jump.id else { return true }
+                if fallback == .opened || loadError.isEmpty { loadError = missing }
+            } else {
+                loadError = missing
+            }
+        case .failed:
+            // E.g. offline and not downloaded: the error stays; a fresh reader
+            // still shows where it was read last.
+            if selectedID.isEmpty {
+                let error = loadError
+                citationJumpID = nil
+                await openInitial()
+                guard citationJumpID == nil, laws.citationJump == nil else { return true }
+                if loadError.isEmpty { loadError = error }
+            }
         }
-        if laws.citationReturn?.id == jump.id {
-            laws.citationReturn?.lawID = selectedID
-            laws.citationReturn?.sectionID = sectionID.isEmpty ? nil : sectionID
-        }
+        if laws.citationReturn?.id == jump.id { settleReturn(jump, moved: "\(selectedID)|\(sectionID)" != before) }
         return true
+    }
+
+    /// After a jump: the way back follows what is shown now. Nothing moved in
+    /// a window that was already visible: there is nothing to go back to.
+    private func settleReturn(_ jump: LawCitationJump, moved: Bool) {
+        guard var back = laws.citationReturn, back.id == jump.id else { return }
+        if !moved && !back.chained && back.phase == .visible {
+            laws.restoreReading(back.citedLawSpots)
+            laws.citationReturn = nil
+            return
+        }
+        back.lawID = selectedID
+        back.sectionID = sectionID.isEmpty ? nil : sectionID
+        laws.citationReturn = back
     }
 
     /// Another section or law than the cited one: the way back is no longer offered.
     func citationNavigated() {
-        guard inPanel, let back = laws.citationReturn, let target = back.sectionID else { return }
+        guard inPanel, citationJumpID == nil, let back = laws.citationReturn, let target = back.sectionID else { return }
         if selectedID != back.lawID || sectionID != target { laws.citationReturn = nil }
     }
 
     /// „Zurück zur Notiz“: the window as it was before the citation opened it
-    /// (closed, at the edge, or visible at the earlier reading spot).
+    /// (closed, at the edge, or visible at the earlier reading spot). Every
+    /// cited law gets its own reading spot back (or none, if never read).
     func returnFromCitation() async {
         guard let back = laws.citationReturn else { return }
         laws.citationReturn = nil
-        if let cited = back.citedLawSpot { laws.rememberReading(cited) }
+        laws.restoreReading(back.citedLawSpots)
         switch back.phase {
         case .closed:
             panel.close()

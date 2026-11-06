@@ -4,10 +4,22 @@ import NotebookCore
 /// Which input started a lookup; that field keeps what was typed there.
 enum LawLookupField { case query, number }
 
+/// How `LawReaderView.open` ended.
+enum LawOpenOutcome {
+    case opened
+    /// The document loaded, but this version has no such section (nothing changed).
+    case missingSection
+    /// The document could not be loaded (`loadError` says why; nothing changed).
+    case failed
+    /// A newer request replaced this one.
+    case superseded
+}
+
 extension LawReaderView {
     /// Opens the law and section the reader showed last (or the first law).
     func openInitial() async {
-        guard selectedID.isEmpty, !loading,
+        // A citation waiting for this reader wins over the last reading spot.
+        guard selectedID.isEmpty, !loading, laws.citationJump == nil, citationJumpID == nil,
               let entry = laws.entries.first(where: { $0.id == laws.lastReadingSpot?.lawId }) ?? laws.entries.first else { return }
         await resume(entry)
     }
@@ -26,8 +38,10 @@ extension LawReaderView {
         let version = spot?.versionId.flatMap { id in entry.versions.contains { $0.id == id } ? id : nil }
         await open(entry, version: version, target: spot?.sectionId, resume: true)
         // Only a PDF already on this iPad: reopening never starts a large download.
+        // A request after this one (e.g. a citation jump) keeps its own place.
+        let request = requestID
         guard spot?.view == .pdf, selectedID == entry.id, !viewPDF, let doc = document,
-              await laws.pdfIsOffline(entry, version: doc.version), selectedID == entry.id else { return }
+              await laws.pdfIsOffline(entry, version: doc.version), selectedID == entry.id, requestID == request else { return }
         pdfTarget = spot?.pdfPage
         await togglePDF()
         // No PDF (offline, missing): the text stays without an error line.
@@ -43,22 +57,28 @@ extension LawReaderView {
     }
     /// `resume`: a remembered target that no longer exists opens the beginning
     /// silently instead of reporting a missing citation.
-    func open(_ entry: LawEntry, version: String? = nil, target: String? = nil, paragraph: String? = nil, resume: Bool = false, from field: LawLookupField? = nil) async {
+    @discardableResult
+    func open(_ entry: LawEntry, version: String? = nil, target: String? = nil, paragraph: String? = nil, resume: Bool = false, from field: LawLookupField? = nil) async -> LawOpenOutcome {
         let request = UUID(); requestID = request
         loading = true; loadError = ""
         defer { if requestID == request { loading = false } }
         do {
             let doc = try await laws.document(entry, version: version)
-            guard !Task.isCancelled, requestID == request else { return }
+            guard !Task.isCancelled, requestID == request else { return .superseded }
             let found = target.flatMap { key in doc.sections.first { $0.id == key || $0.keys.contains(key) } }
-            if target != nil && found == nil && !resume { loadError = "Diese Fundstelle ist in dieser Fassung nicht vorhanden."; return }
+            if target != nil && found == nil && !resume { loadError = "Diese Fundstelle ist in dieser Fassung nicht vorhanden."; return .missingSection }
             textSelection.clear()
             selectedID = entry.id; versionID = doc.version; document = doc
             let shown = found ?? doc.sections.first
             sectionID = shown?.id ?? ""; jumpParagraph = paragraph
             pdfURL = nil; viewPDF = false; pdfTarget = nil
             follow(shown, from: field)
-        } catch { if requestID == request { loadError = error.localizedDescription } }
+            return .opened
+        } catch {
+            guard requestID == request else { return .superseded }
+            loadError = error.localizedDescription
+            return .failed
+        }
     }
     func search(_ value: String, allowFullText: Bool = false, bareReference: Bool = true, from field: LawLookupField) async {
         if let target = LawQuickTarget.parse(value, entries: laws.entries), let entry = laws.entries.first(where: { $0.id == target.lawID }) {

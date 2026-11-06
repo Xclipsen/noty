@@ -122,8 +122,11 @@ final class LawCitationTests: XCTestCase {
         XCTAssertEqual(found("§§ 4 und 5 EStG"), [Found("§§ 4", "estg", "4"), Found("5 EStG", "estg", "5")])
         XCTAssertEqual(found("§§ 4–7 EStG"), [Found("§§ 4", "estg", "4"), Found("7 EStG", "estg", "7")])
         XCTAssertEqual(found("§§ 4 bis 7 EStG"), [Found("§§ 4", "estg", "4"), Found("7 EStG", "estg", "7")])
-        XCTAssertEqual(found("§§ 4 Abs. 1, 5 Abs. 2 und 7g EStG"),
+        XCTAssertEqual(found("§§ 4 Abs. 1, 5 Abs. 2, 7g EStG"),
                        [Found("§§ 4 Abs. 1", "estg", "4", "1"), Found("5 Abs. 2", "estg", "5", "2"), Found("7g EStG", "estg", "7g")])
+        // „und“ nach einer Absatzangabe bleibt Absatz (lieber 7g nicht verlinkt als falsch).
+        XCTAssertEqual(found("§§ 4 Abs. 1, 5 Abs. 2 und 7g EStG"),
+                       [Found("§§ 4 Abs. 1", "estg", "4", "1"), Found("5 Abs. 2 und 7g EStG", "estg", "5", "2")])
         XCTAssertEqual(found("§§ 4 ff. EStG"), [Found("§§ 4 ff. EStG", "estg", "4")])
         XCTAssertEqual(found("EStG §§ 4, 5"), [Found("EStG §§ 4", "estg", "4"), Found("5", "estg", "5")])
     }
@@ -209,7 +212,8 @@ final class LawCitationTests: XCTestCase {
         XCTAssertEqual(found("§ 4 EStG und § 5"), [Found("§ 4 EStG", "estg", "4"), Found("§ 5", "estg", "5", inferred: true)])
         // Kleingeschriebene Wörter nach der Nummer sind kein Gesetz.
         XCTAssertEqual(found("Laut § 35a Abs. 2 kann", defaultLaw: "estg"), [Found("§ 35a Abs. 2", "estg", "35a", "2", inferred: true)])
-        XCTAssertEqual(found("§ 35a Die Steuer", defaultLaw: "estg"), [Found("§ 35a", "estg", "35a", inferred: true)])
+        // Ein großgeschriebenes Wort direkt nach der Nummer gilt als (unbekanntes) Gesetz.
+        XCTAssertEqual(found("§ 35a Die Steuer", defaultLaw: "estg"), [])
         // Law-first resets nothing before it.
         XCTAssertEqual(found("§ 3 i.V.m. AO § 5", defaultLaw: "estg"),
                        [Found("§ 3", "estg", "3", inferred: true), Found("AO § 5", "ao", "5")])
@@ -312,5 +316,157 @@ final class LawCitationTests: XCTestCase {
             let key = citation.reference.key
             XCTAssertNotNil(doc.sections.first { $0.id == key || $0.keys.contains(key) }, citation.text)
         }
+    }
+
+    // MARK: Befunde der Prüfung (Regressionen)
+
+    /// 1: Lesen hinter dem Textende stürzte ab.
+    func testTextEndNeverCrashes() {
+        for text in ["AEAO zu ", "AEAO zu", "Nr. 2 AEAO zu \n", "Nr. 2 AEAO zu", "AEAO Nr. 2 zu ", "AEAO Nr. 2", "§", "§§", "§ 4 Abs.",
+                     "§ 4 (1", "§ 4 (", "R 9.", "R 9.1.", "§ 35 a", "§ 4 i.", "§ 4 i.V", "§ 4 i.V.m.", "EStG §", "Art.", "§ 4 und",
+                     "§ 4 des", "§ 4 der ", "§ 4 EStG-", "§ 4 Abs. 1 bis Abs.", "LStR 1.", "Abschnitt", "A", "R", "Nr.", "§ 4 in Verbindung"] {
+            _ = scan(text, defaultLaw: "estg")
+        }
+    }
+
+    /// 1: Zufallstexte aus den Bausteinen der Erkennung: kein Absturz, Bereiche
+    /// im Text, geordnet, ohne Überlappung.
+    func testFuzzedFragments() {
+        let parts = ["§", "§§", " ", "\n", "\u{A0}", "1", "4", "35", "a", " a", "9.1", ".", ",", "Abs.", "Abs", "I", "II", "Satz", "S.", "Nr.",
+                     "zu", "AEAO", "AO", "EStG", "LStR", "R", "A", "Art.", "GG", "und", "bis", "i.V.m.", "iVm", "des", "der", "Vertrag",
+                     "XYZG", "(", ")", "-", "–", "ff.", "f.", "Buchst.", "lit.", "ö", "\u{308}", "🧾", "Abschnitt", "in", "Verbindung", "mit"]
+        var generator = SystemRandomNumberGenerator()
+        let scanner = LawCitationScanner(entries: entries, defaultLawID: "estg")
+        for _ in 0..<20_000 {
+            let count = Int.random(in: 1...12, using: &generator)
+            let text = (0..<count).map { _ in parts.randomElement(using: &generator)! }.joined()
+            let length = (text as NSString).length
+            var last = 0
+            for c in scanner.citations(in: text) {
+                XCTAssertGreaterThanOrEqual(c.range.location, last, text)
+                XCTAssertLessThanOrEqual(c.range.location + c.range.length, length, text)
+                XCTAssertGreaterThan(c.range.length, 0, text)
+                last = c.range.location + c.range.length
+            }
+        }
+    }
+
+    /// 2: Ein nachgestelltes Gesetz gilt nur für Verweise derselben Art.
+    func testTrailingLawOnlyForSameKind() {
+        XCTAssertEqual(found("§ 2 i.V.m. R 2 EStR"), [Found("R 2 EStR", "estr", "2")])
+        XCTAssertEqual(found("§ 2 i.V.m. R 2 EStR", defaultLaw: "estg"), [Found("§ 2", "estg", "2", inferred: true), Found("R 2 EStR", "estr", "2")])
+        XCTAssertEqual(found("§ 19 und R 19.3 LStR"), [Found("R 19.3 LStR", "lstr", "19.3")])
+        XCTAssertEqual(found("§ 4 und Art. 3 GG"), [Found("Art. 3 GG", "gg", "3")])
+        XCTAssertEqual(found("Art. 3 und § 4 EStG"), [Found("§ 4 EStG", "estg", "4")])
+        // § und Art. nur aus Gesetzen, R nur aus Verwaltungsvorschriften.
+        XCTAssertEqual(found("§ 4 LStR"), [])
+        XCTAssertEqual(found("AEAO § 122"), [])
+        XCTAssertEqual(found("Art. 3 LStR"), [])
+    }
+
+    /// 3: Wiederholte Angaben halten den Verweis zusammen.
+    func testRepeatedQualifierKeepsLaw() {
+        XCTAssertEqual(found("§ 1 AO. Siehe § 4 Abs. 1 Satz 1 und Satz 2 EStG"),
+                       [Found("§ 1 AO", "ao", "1"), Found("§ 4 Abs. 1 Satz 1 und Satz 2 EStG", "estg", "4", "1")])
+        XCTAssertEqual(found("§ 1 AO. § 9 Abs. 1 Satz 3 Nr. 4 und Nr. 5 EStG").last, Found("§ 9 Abs. 1 Satz 3 Nr. 4 und Nr. 5 EStG", "estg", "9", "1"))
+        XCTAssertEqual(found("§ 1 AO. § 4 Abs. 1 bis Abs. 3 EStG").last, Found("§ 4 Abs. 1 bis Abs. 3 EStG", "estg", "4", "1"))
+        XCTAssertEqual(found("§ 4 Abs. I bis III EStG"), [Found("§ 4 Abs. I bis III EStG", "estg", "4", "1")])
+        XCTAssertEqual(found("§ 15 I und II EStG"), [Found("§ 15 I und II EStG", "estg", "15", "1")])
+    }
+
+    /// 4: Weitere Nummern nach einem einzelnen § nehmen das Gesetz mit.
+    func testSingleSectionWithFurtherNumbers() {
+        XCTAssertEqual(found("§ 1 AO. § 4 und 5 EStG"), [Found("§ 1 AO", "ao", "1"), Found("§ 4", "estg", "4"), Found("5 EStG", "estg", "5")])
+        XCTAssertEqual(found("§ 1 AO. § 4, 5 EStG").map(\.law), ["ao", "estg", "estg"])
+        XCTAssertEqual(found("§ 1 AO. § 4 bis § 7 EStG"),
+                       [Found("§ 1 AO", "ao", "1"), Found("§ 4", "estg", "4"), Found("§ 7 EStG", "estg", "7")])
+        // Ohne geschriebenes Gesetz nur die erste Nummer („5 Personen“ ist keine).
+        XCTAssertEqual(found("nach § 4, 5 personen", defaultLaw: "estg"), [Found("§ 4", "estg", "4", inferred: true)])
+    }
+
+    /// 5: „des Gesellschaftsvertrags“, „der Satzung“, ausgeschriebene Namen.
+    func testOtherDocumentsAreNotInherited() {
+        for text in ["§ 4 EStG. § 5 des Gesellschaftsvertrags", "§ 4 EStG. § 7 der Satzung", "§ 4 EStG. § 15 Handelsgesetzbuch",
+                     "§ 4 EStG. § 5 Abs. 2 der neuen Satzung"] {
+            XCTAssertEqual(found(text).map(\.text), ["§ 4 EStG"], text)
+        }
+        XCTAssertEqual(found("§ 4 EStG; Abs. 2 des Vertrags"), [Found("§ 4 EStG", "estg", "4")])
+        XCTAssertEqual(found("§ 5 des Gesellschaftsvertrags", defaultLaw: "estg"), [])
+    }
+
+    /// 6: Nach einem unbekannten Gesetz wird bis zum nächsten bekannten nichts erschlossen.
+    func testUnknownLawBlocksInference() {
+        XCTAssertEqual(found("§ 1 EStG. Nach § 3 SolZG gilt. § 4 regelt"), [Found("§ 1 EStG", "estg", "1")])
+        XCTAssertEqual(found("§ 3 SolZG. § 4 regelt", defaultLaw: "estg"), [])
+        XCTAssertEqual(found("§ 3 SolZG. § 4 AO. § 5"),
+                       [Found("§ 4 AO", "ao", "4"), Found("§ 5", "ao", "5", inferred: true)])
+        let twins = [entry("a1", "AStG", aliases: ["Doppel"]), entry("a2", "BStG", aliases: ["Doppel"])]
+        XCTAssertEqual(found("§ 1 EStG. § 2 Doppel. § 3", extra: twins).map(\.text), ["§ 1 EStG"])
+    }
+
+    /// 7: „§ 35 a EStG“ mit abgesetztem Buchstaben.
+    func testSpacedLetter() {
+        XCTAssertEqual(found("§ 1 AO. § 35 a EStG").last, Found("§ 35 a EStG", "estg", "35a"))
+        XCTAssertEqual(found("§ 35 a Abs. 2 EStG"), [Found("§ 35 a Abs. 2 EStG", "estg", "35a", "2")])
+        XCTAssertEqual(found("§ 35 a", defaultLaw: "estg"), [Found("§ 35 a", "estg", "35a", inferred: true)])
+        XCTAssertEqual(found("§ 35 a und § 36 EStG").map(\.key), ["35a", "36"])
+        // Unsicher: nichts.
+        XCTAssertEqual(found("§ 35 a b EStG"), [])
+        XCTAssertEqual(found("§ 35 a wird", defaultLaw: "estg"), [])
+        // „f.“, „a.F.“ und „i.V.m.“ sind keine Buchstaben der Nummer.
+        XCTAssertEqual(found("§ 4 f. EStG").first?.key, "4")
+        XCTAssertEqual(found("§ 4 a.F. EStG", defaultLaw: "estg").first?.key, "4")
+        XCTAssertEqual(found("§ 4 i.V.m. § 5 EStG").map(\.key), ["4", "5"])
+    }
+
+    /// 8: In „§§“ ist „und 2“ nach einer Absatzangabe ein Absatz, kein Paragraph.
+    func testPluralAbsatzList() {
+        XCTAssertEqual(found("§§ 4 Abs. 1 und 2, 5 EStG"),
+                       [Found("§§ 4 Abs. 1 und 2", "estg", "4", "1"), Found("5 EStG", "estg", "5")])
+    }
+
+    /// 9: „AEAO zu §“ spricht von der AO.
+    func testAEAOSetsContextToAO() {
+        XCTAssertEqual(found("§ 4 EStG. Nr. 2 AEAO zu § 122 und § 124").last, Found("§ 124", "ao", "124", inferred: true))
+        XCTAssertEqual(found("§ 4 EStG. AEAO zu § 122. § 124").last, Found("§ 124", "ao", "124", inferred: true))
+        // Ohne AO im Katalog: gesperrt statt EStG.
+        let withoutAO = entries.filter { $0.id != "ao" }
+        XCTAssertEqual(LawCitationScanner(entries: withoutAO).citations(in: "§ 4 EStG. AEAO zu § 122. § 124").map(\.lawID), ["estg", "aeao"])
+    }
+
+    /// 10: Bindestrich mit Buchstaben gehört zum Wort.
+    func testHyphenatedWordsAreNotTheLaw() {
+        XCTAssertEqual(found("§ 4 EStG-E"), [])
+        XCTAssertEqual(found("§ 4 AO-Kommentar"), [])
+        XCTAssertEqual(found("§ 4 EStG-E", defaultLaw: "estg"), [])
+        XCTAssertEqual(found("§ 4 EStG - neu"), [Found("§ 4 EStG", "estg", "4")])
+    }
+
+    /// 11: Datumsartige Schlüssel. Echte Schlüssel: LStR/EStR „9.1“, „39b.1“;
+    /// UStAE auch „4.12.10“, „4.11b.1“ (höchstens zwei Punkte, Gruppen ≤ 2 Ziffern).
+    func testDateLikeKeysAreRejected() {
+        XCTAssertEqual(found("LStR 1.1.2025"), [])
+        XCTAssertEqual(found("LStR 1.1.25"), [])
+        XCTAssertEqual(found("R 1.1.2025 LStR"), [])
+        XCTAssertEqual(found("Abschnitt 1.1.2025 UStAE"), [])
+        XCTAssertEqual(found("EStR 2025.1"), [])
+        XCTAssertEqual(found("Abschnitt 4.12.10 UStAE"), [Found("Abschnitt 4.12.10 UStAE", "ustae", "4.12.10")])
+        XCTAssertEqual(found("A 4.11b.1 UStAE"), [Found("A 4.11b.1 UStAE", "ustae", "4.11b.1")])
+        XCTAssertEqual(found("LStR 39b.1"), [Found("LStR 39b.1", "lstr", "39b.1")])
+    }
+
+    /// 12: Zerlegte Umlaute gehören zum Wort.
+    func testCombiningMarksAreWordCharacters() {
+        XCTAssertEqual(found("§ 5 AO\u{308}G"), [])
+        XCTAssertEqual(found("§ 5 AO\u{308}G", defaultLaw: "estg"), [])
+        XCTAssertEqual(found("Gru\u{308}nde § 5 AO").map(\.law), ["ao"])
+    }
+
+    /// 13: Eine Fortsetzung „Abs. 2“ behält das Gesetz ihres Paragraphen.
+    func testContinuationKeepsItsLaw() {
+        XCTAssertEqual(found("§ 4 EStG i.V.m. Abs. 2 GG"), [Found("§ 4 EStG", "estg", "4")])
+        XCTAssertEqual(found("§ 4 EStG i.V.m. Abs. 2 EStG"), [Found("§ 4 EStG", "estg", "4"), Found("Abs. 2 EStG", "estg", "4", "2")])
+        XCTAssertEqual(found("§ 4 EStG i.V.m. Abs. 2"), [Found("§ 4 EStG", "estg", "4"), Found("Abs. 2", "estg", "4", "2", inferred: true)])
+        XCTAssertEqual(found("R 9.1 LStR und Abs. 2"), [Found("R 9.1 LStR", "lstr", "9.1"), Found("Abs. 2", "lstr", "9.1", "2", inferred: true)])
     }
 }

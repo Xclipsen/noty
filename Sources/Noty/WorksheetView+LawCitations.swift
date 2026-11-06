@@ -2,8 +2,9 @@
 // Text der Quell-PDF werden nach „§ 35a EStG“ & Co. durchsucht, Treffer dezent
 // gepunktet unterstrichen. Stift-Hover (ruhend) oder Zeiger-Hover zeigt die
 // Vorschaukarte, ein Zeigerklick öffnet das Gesetz, ein Fingertipp auf die
-// Unterstreichung zeigt die Karte. Der Stift auf dem Papier schreibt weiter
-// und öffnet nie etwas. Alles abgeleitet: nichts davon kommt ins Heft.
+// Unterstreichung zeigt die Karte (ein zweiter öffnet). Der Stift auf dem
+// Papier schreibt weiter und öffnet nie etwas. Alles abgeleitet: nichts davon
+// kommt ins Heft. Wiederhergestellte Kopien haben keine Verweise.
 import UIKit
 import UIKit.UIGestureRecognizerSubclass
 import PDFKit
@@ -21,6 +22,8 @@ struct LawCitationPlacement {
         var start: CGPoint
         var end: CGPoint
     }
+    /// Identity on the page: two equal citations in different fields (or
+    /// places) are different placements.
     struct Key: Hashable { var boxID: UUID?; var location: Int; var length: Int }
     var citation: LawCitation
     /// The text field it stands in; nil: the page's PDF text.
@@ -38,11 +41,13 @@ struct LawCitationPlacement {
 
 /// Citation links of one `WorksheetView`: scanning (debounced, off the stroke
 /// path, scanner work off the main actor), the underline plane and the hover,
-/// click and tap gestures. Every gesture only observes: it never cancels,
-/// delays or prevents ink, text editing, selection or scrolling.
+/// click and tap gestures. The gestures never cancel, delay or prevent ink,
+/// scrolling or text editing; a tap on an underline is owned by the citation
+/// (`ownsTap`): the field below is then neither selected nor edited.
 @MainActor
 final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     private weak var sheet: WorksheetView?
+    private var installed = false
     private let underline = LawCitationUnderlineView()
     private let hover = UIHoverGestureRecognizer()
     private let click = UITapGestureRecognizer()
@@ -56,13 +61,17 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     private(set) var placements: [LawCitationPlacement] = []
     /// Field being edited: its underlines are hidden until editing ends.
     private var editingBox: UUID?
-    /// Scanner results per scanned string, for `scannedGeneration`.
+    /// Fields an object preview (drag, resize, lift) shows elsewhere than the page.
+    private var previewBoxes = Set<UUID>()
+    /// Scanner results for the current page's texts, for `scannedGeneration`.
     private var scanned: [String: [LawCitation]] = [:]
     private var scannedGeneration = -1
     /// Laid-out citations per field, valid while field, line paper, origin and citations are unchanged.
     private var boxCache: [UUID: (box: TextBox, paper: TextLinePaper, origin: PagePoint, found: [LawCitation], placements: [LawCitationPlacement])] = [:]
-    /// `PDFPage.string`, read once per source page.
+    /// `PDFPage.string`, read once per source page (`LawCitationPDFText`).
     private weak var pdfPage: PDFPage?
+    private weak var pdfRequested: PDFPage?
+    private var pdfLoaded = false
     private var pdfString: String?
     private var pdfCache: (page: ObjectIdentifier, layout: PageLayout, found: [LawCitation], placements: [LawCitationPlacement])?
     /// Inputs of the last requested scan; equal inputs schedule nothing.
@@ -79,11 +88,12 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     private var dwellKey: LawCitationPlacement.Key?
     private var dwellAnchor = CGPoint.zero
     private var dwell: DispatchWorkItem?
-    /// The card this sheet's hover asked for.
+    /// The card this sheet's hover asked for (leaving it ends the hover).
     private var shown: LawCitationPlacement.Key?
+    /// The placement this sheet last presented (hover or tap): the model
+    /// compares citations, this tells equal ones apart.
+    private var presentedKey: LawCitationPlacement.Key?
     private var feedback: UIFeedbackGenerator?
-    /// Finger selection when the tap began: then the tap belongs to the selection.
-    private var selectionAtTouchDown = false
 
     private static let debounce: TimeInterval = 0.3
     private static let pencilDwell: TimeInterval = 0.5
@@ -102,11 +112,19 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         var generation: Int
     }
 
-    func install(on sheet: WorksheetView) {
-        self.sheet = sheet
+    /// Only remembers the sheet: views and gestures follow with the first
+    /// configuration that allows links (never in a restored copy).
+    func install(on sheet: WorksheetView) { self.sheet = sheet }
+
+    private func activate() {
+        guard !installed, let sheet else { return }
+        installed = true
         underline.frame = sheet.bounds
         underline.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        underline.onWindowChange = { [weak self] attached in if !attached { self?.detached() } }
+        underline.onWindowChange = { [weak self] attached in
+            guard let self else { return }
+            if attached { self.requested = nil; self.contentChanged() } else { self.detached() }
+        }
         sheet.insertSubview(underline, aboveSubview: sheet.textLayer)
 
         hover.addTarget(self, action: #selector(hovered(_:)))
@@ -117,7 +135,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         for gesture in [click, fingerTap] {
             gesture.cancelsTouchesInView = false; gesture.delaysTouchesBegan = false; gesture.delaysTouchesEnded = false
         }
-        touches.onTouchDown = { [weak self] in self?.interactionBegan() }
+        touches.onTouchDown = { [weak self] touch in self?.touchBegan(touch) }
         for gesture in [hover, click, fingerTap, touches] as [UIGestureRecognizer] {
             gesture.delegate = self
             sheet.addGestureRecognizer(gesture)
@@ -127,18 +145,49 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
             .store(in: &subscriptions)
     }
 
+    // MARK: Viewport
+
+    private static var viewports: [ObjectIdentifier: (offset: CGPoint, zoom: CGFloat)] = [:]
     /// Scroll or zoom of the notebook began: a shown card goes at once.
     static func viewportMoved() {
         let model = LawCitationPreviewModel.shared
-        if model.presentation != nil { model.pageInteractionBegan() }
+        if model.presentation != nil { DispatchQueue.main.async { model.pageInteractionBegan() } }
     }
+    /// Every scroll/zoom callback, also programmatic ones (jumps, caret
+    /// reveal): a card goes once offset or zoom really changed.
+    static func viewportChanged(_ viewport: UIScrollView) {
+        let id = ObjectIdentifier(viewport), now = (offset: viewport.contentOffset, zoom: viewport.zoomScale)
+        let last = viewports[id]
+        viewports[id] = now
+        guard let last, LawCitationPreviewModel.shared.presentation != nil else { return }
+        if hypot(now.offset.x - last.offset.x, now.offset.y - last.offset.y) > 0.5 || abs(now.zoom / max(last.zoom, 0.0001) - 1) > 0.001 {
+            viewportMoved()
+        }
+    }
+
+    /// Model changes never run inside a SwiftUI update (configure).
+    private enum Deferred { case dismiss, pageInteraction }
+    private func later(_ action: Deferred) {
+        DispatchQueue.main.async {
+            switch action {
+            case .dismiss: LawCitationPreviewModel.shared.dismiss()
+            case .pageInteraction: LawCitationPreviewModel.shared.pageInteractionBegan()
+            }
+        }
+    }
+    /// The model shows a card for this page.
+    private var presentsHere: Bool { pageID != nil && model.presentation?.pageID == pageID }
 
     // MARK: Scanning
 
-    /// After every configuration (also the callback-only one): rescans
-    /// debounced when what the page shows changed.
-    func contentChanged() {
+    /// After every configuration (`full`) and every callback-only one:
+    /// rescans debounced when what the page shows changed, at once when all
+    /// its texts are already scanned.
+    func contentChanged(full: Bool = false) {
         guard let sheet, let editor = sheet.configuration else { return }
+        guard editor.lawCitations else { clear(); return }
+        activate()
+        if full, !previewBoxes.isEmpty { previewBoxes = []; redraw() }
         if let previous = pageID, previous != editor.pageID { pageLeft(previous) }
         pageID = editor.pageID
         guard model.scanner != nil else { clear(); return }
@@ -149,7 +198,17 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         // Another page or geometry: old positions are never shown on it.
         if requested?.pageID != key.pageID || requested?.layout != key.layout { placements = []; redraw() }
         requested = key
-        schedule()
+        schedule(after: allScanned(editor) ? 0 : Self.debounce)
+    }
+
+    /// Every text the page shows has its scanner result (moved or restyled fields).
+    private func allScanned(_ editor: PageEditor) -> Bool {
+        guard scannedGeneration == model.scannerGeneration else { return false }
+        if let source = editor.sourcePage {
+            guard pdfPage === source, pdfLoaded else { return false }
+            if let pdfString, !pdfString.isEmpty, scanned[pdfString] == nil { return false }
+        }
+        return editor.textBoxes.allSatisfy { !scans($0) || $0.text.isEmpty || scanned[$0.text] != nil }
     }
 
     private func scannerChanged() {
@@ -170,20 +229,25 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
 
     private func scan() {
         pending = nil
-        guard let sheet, let editor = sheet.configuration, sheet.window != nil else { return }
+        guard let sheet, let editor = sheet.configuration, editor.lawCitations, sheet.window != nil else { return }
         guard let scanner = model.scanner else { clear(); return }
         // Never while a stroke is drawn: try again once the Pencil rests.
         if sheet.inkActive || touches.pencilDown { schedule(); return }
         let generation = model.scannerGeneration
-        if generation != scannedGeneration || scanned.count > 400 {
+        if generation != scannedGeneration {
             scanned = [:]; boxCache = [:]; pdfCache = nil; scannedGeneration = generation
         }
         if let source = editor.sourcePage {
-            if pdfPage !== source { pdfPage = source; pdfString = source.string; pdfCache = nil }
-        } else { pdfPage = nil; pdfString = nil; pdfCache = nil }
-        var texts = Set(editor.textBoxes.filter { includes($0) }.map(\.text))
+            if pdfPage !== source { pdfPage = source; pdfString = nil; pdfLoaded = false; pdfCache = nil }
+            // PDFKit text extraction: one sheet per run-loop turn (`LawCitationPDFText`).
+            if !pdfLoaded { requestPDFText(source); return }
+        } else { pdfPage = nil; pdfString = nil; pdfLoaded = false; pdfCache = nil }
+        var texts = Set(editor.textBoxes.filter { scans($0) }.map(\.text))
         if let pdfString { texts.insert(pdfString) }
-        let missing = texts.filter { !$0.isEmpty && scanned[$0] == nil }
+        texts.remove("")
+        // Only this page's texts stay cached.
+        scanned = scanned.filter { texts.contains($0.key) }
+        let missing = texts.filter { scanned[$0] == nil }
         guard !missing.isEmpty else { build(); return }
         scanToken += 1
         let token = scanToken, page = editor.pageID
@@ -199,7 +263,19 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         }
     }
 
-    private func includes(_ box: TextBox) -> Bool { !(documentEditor && box.flowID != nil) }
+    private func requestPDFText(_ page: PDFPage) {
+        guard pdfRequested !== page else { return }
+        pdfRequested = page
+        LawCitationPDFText.enqueue { [weak self, weak page] in
+            guard let self, let page, self.pdfPage === page, !self.pdfLoaded else { return }
+            self.pdfString = page.string; self.pdfLoaded = true; self.pdfRequested = nil
+            self.schedule(after: 0)
+        }
+    }
+
+    /// Fields whose text is scanned: not the edited one (it changes with every
+    /// key), not Text editor 2's flow (drawn by its own store).
+    private func scans(_ box: TextBox) -> Bool { !(documentEditor && box.flowID != nil) && box.id != editingBox }
 
     /// Geometry for the found citations (main actor: TextKit and PDFKit).
     private func build() {
@@ -210,7 +286,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         var result: [LawCitationPlacement] = []
         var cache: [UUID: (box: TextBox, paper: TextLinePaper, origin: PagePoint, found: [LawCitation], placements: [LawCitationPlacement])] = [:]
         // The edited field stays hidden; it is laid out again once editing ends.
-        for box in editor.textBoxes where includes(box) && box.id != editingBox {
+        for box in editor.textBoxes where scans(box) {
             guard let found = scanned[box.text], !found.isEmpty else { continue }
             if let cached = boxCache[box.id], cached.box == box, cached.paper == paper, cached.origin == origin, cached.found == found {
                 cache[box.id] = cached; result += cached.placements; continue
@@ -220,7 +296,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
             result += placed
         }
         boxCache = cache
-        if let source = editor.sourcePage, let text = pdfString, let found = scanned[text], !found.isEmpty {
+        if let source = editor.sourcePage, pdfPage === source, let text = pdfString, let found = scanned[text], !found.isEmpty {
             let id = ObjectIdentifier(source)
             if let cached = pdfCache, cached.page == id, cached.layout == sheet.pageLayout, cached.found == found {
                 result += cached.placements
@@ -232,8 +308,14 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         }
         placements = result
         redraw()
-        // A shown card whose citation is gone (text edited) disappears.
-        if let shown, !result.contains(where: { $0.key == shown }) { self.shown = nil; model.endHover() }
+        if let shown, !result.contains(where: { $0.key == shown }) { self.shown = nil }
+        // A card (any input) whose citation is gone from this page (text
+        // edited, field deleted, page replaced) disappears.
+        if presentsHere, let citation = model.presentation?.citation,
+           !result.contains(where: { $0.key == presentedKey && $0.citation == citation }) {
+            presentedKey = nil
+            later(.dismiss)
+        }
     }
 
     /// Lines of each citation in a field, by the layout the editor, PDF and previews share.
@@ -265,27 +347,39 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     }
 
     /// Lines of each citation in the PDF text, mapped like the content search
-    /// (`ContentSearchView.pdfLines`): PDF page space → sheet through `pdfToCanvas`.
-    /// `PDFPage.string` and `selection(for:)` share their character indices.
+    /// (`ContentSearchView.pdfLines`): PDF page space → sheet through
+    /// `pdfToCanvas`. A selection whose text is not the citation's (PDFs whose
+    /// `string` indices differ from `selection(for:)`) is skipped, never guessed.
     private static func placements(_ found: [LawCitation], on page: PDFPage, text: String, layout: PageLayout) -> [LawCitationPlacement] {
         let length = (text as NSString).length
         let transform = layout.pdfToCanvas.cgTransform
         return found.compactMap { citation in
             let range = citation.range
             guard range.length > 0, range.location >= 0, NSMaxRange(range) <= length,
-                  let selection = page.selection(for: range) else { return nil }
+                  let selection = page.selection(for: range),
+                  comparable(selection.string ?? "") == comparable(citation.text) else { return nil }
             let lines = selection.selectionsByLine().compactMap { line -> LawCitationPlacement.Line? in
                 let bounds = line.bounds(for: page)
-                guard !bounds.isEmpty, bounds.minX.isFinite, bounds.width > 0.2 else { return nil }
-                // PDF space has y up: the line's bottom (just above the descenders)
-                // turns with a rotated page through the same transform.
-                let y = bounds.minY + bounds.height * 0.12
-                return .init(area: bounds.applying(transform),
-                             start: CGPoint(x: bounds.minX, y: y).applying(transform),
-                             end: CGPoint(x: bounds.maxX, y: y).applying(transform))
+                guard !bounds.isEmpty, bounds.minX.isFinite else { return nil }
+                // Displayed first (rotated pages turn the line), then underlined
+                // along its longer side at the bottom edge.
+                let area = bounds.applying(transform)
+                guard max(area.width, area.height) > 0.2 else { return nil }
+                if area.width >= area.height {
+                    let y = area.maxY - area.height * 0.12
+                    return .init(area: area, start: CGPoint(x: area.minX, y: y), end: CGPoint(x: area.maxX, y: y))
+                }
+                // Vertical text on the displayed page.
+                let x = area.maxX - area.width * 0.12
+                return .init(area: area, start: CGPoint(x: x, y: area.minY), end: CGPoint(x: x, y: area.maxY))
             }
             return placement(citation, boxID: nil, lines: lines, onDark: false)
         }
+    }
+    /// Whitespace collapsed, soft hyphens removed.
+    private static func comparable(_ text: String) -> String {
+        text.replacingOccurrences(of: "\u{00AD}", with: "")
+            .split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
     private static func placement(_ citation: LawCitation, boxID: UUID?, lines: [LawCitationPlacement.Line], onDark: Bool) -> LawCitationPlacement? {
@@ -297,8 +391,9 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     private func clear() {
         pending?.cancel(); pending = nil; scanToken += 1; requested = nil
         cancelDwell()
-        if shown != nil { shown = nil; model.endHover() }
-        guard !placements.isEmpty || !boxCache.isEmpty else { return }
+        shown = nil
+        if presentsHere { presentedKey = nil; later(.dismiss) }
+        guard !placements.isEmpty || !boxCache.isEmpty || !scanned.isEmpty else { return }
         placements = []; boxCache = [:]; pdfCache = nil; scanned = [:]
         redraw()
     }
@@ -306,36 +401,56 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     // MARK: Display
 
     private var visiblePlacements: [LawCitationPlacement] {
-        guard let editingBox else { return placements }
-        return placements.filter { $0.boxID != editingBox }
+        guard editingBox != nil || !previewBoxes.isEmpty else { return placements }
+        return placements.filter { $0.boxID.map { $0 != editingBox && !previewBoxes.contains($0) } ?? true }
     }
-    private func redraw() { underline.show(visiblePlacements, scale: displayScale) }
+    private func redraw() { if installed { underline.show(visiblePlacements) } }
 
     /// The sheet's zoom (page point → screen point): dots stay the same size on screen.
     func displayScaleChanged(_ scale: CGFloat) {
-        guard scale.isFinite, scale > 0, abs(scale - displayScale) / displayScale > 0.15 else { return }
+        guard installed, scale.isFinite, scale > 0, abs(scale - displayScale) / displayScale > 0.15 else { return }
         displayScale = scale
         underline.restyle(scale: scale)
     }
 
+    /// An object preview (drag, resize, lift of a selection) shows `boxes`:
+    /// fields that differ from the page are hidden until the next configuration.
+    func objectPreview(_ boxes: [TextBox]) {
+        guard installed, let current = sheet?.configuration?.textBoxes else { return }
+        let committed = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var moved = Set(boxes.filter { committed[$0.id] != $0 }.map(\.id))
+        // Fields lifted off the page (moved to another one) are gone from the preview.
+        let shown = Set(boxes.map(\.id))
+        moved.formUnion(current.map(\.id).filter { !shown.contains($0) })
+        guard moved != previewBoxes else { return }
+        previewBoxes = moved
+        redraw()
+        if presentsHere, let key = presentedKey, let id = key.boxID, moved.contains(id) {
+            presentedKey = nil; later(.dismiss)
+        }
+    }
+
     /// A field started or ended editing: its underlines hide while it is edited.
     func editingChanged(_ active: Bool) {
+        guard installed else { return }
         let id = active ? sheet?.textLayer.fields.first(where: { $0.value.editor.isFirstResponder })?.key : nil
-        if active, let pageID, model.presentation?.pageID == pageID { model.pageInteractionBegan() }
+        if active, presentsHere { later(.pageInteraction) }
         guard id != editingBox else { return }
+        let previous = editingBox
         editingBox = id
         redraw()
-        if !active { requested = nil; contentChanged() }
+        // A field left (also straight into another one) is laid out again.
+        if previous != nil { requested = nil; contentChanged() }
     }
 
     private func pageLeft(_ previous: UUID) {
-        cancelDwell(); shown = nil
-        if model.presentation?.pageID == previous { model.pageInteractionBegan() }
+        cancelDwell(); shown = nil; presentedKey = nil
+        if model.presentation?.pageID == previous { later(.pageInteraction) }
     }
     private func detached() {
         pending?.cancel(); pending = nil; requested = nil
-        cancelDwell()
-        if shown != nil { shown = nil; model.endHover() }
+        cancelDwell(); shown = nil
+        if presentsHere { presentedKey = nil; later(.dismiss) }
     }
 
     private func placement(at point: CGPoint, slop: CGFloat) -> LawCitationPlacement? {
@@ -347,6 +462,16 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     private var screenScale: CGFloat { sheet?.screenScale ?? 1 }
     private func anchor(_ placement: LawCitationPlacement) -> CGRect {
         sheet?.convert(placement.bounds, to: nil) ?? placement.bounds
+    }
+    /// The model's card shows exactly this placement.
+    private func presents(_ hit: LawCitationPlacement) -> Bool {
+        presentsHere && presentedKey == hit.key && model.presentation?.citation == hit.citation
+    }
+    /// The model tells citations apart by their value: an equal one at
+    /// another place (another field) first closes the shown card.
+    private func prepareToPresent(_ hit: LawCitationPlacement) {
+        if presentsHere, model.presentation?.citation == hit.citation, presentedKey != hit.key { model.dismiss() }
+        presentedKey = hit.key
     }
 
     // MARK: Hover
@@ -379,7 +504,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
             if previous != nil, previous != kind { cancelDwell() }
             let point = recognizer.location(in: sheet), window = recognizer.location(in: nil)
             hoverPoint = point
-            if kind == .pencil, recognizer.state == .began, #available(iOS 17.5, *) {
+            if kind == .pencil, recognizer.state == .began, !placements.isEmpty, #available(iOS 17.5, *) {
                 if feedback == nil { feedback = UICanvasFeedbackGenerator(view: sheet) }
                 feedback?.prepare()
             }
@@ -420,6 +545,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
             if since < Self.writingPause { startDwell(kind, after: Self.writingPause - since); return }
         }
         shown = key
+        prepareToPresent(hit)
         model.hover(hit.citation, anchor: anchor(hit), input: kind == .pencil ? .pencilHover : .pointerHover, pageID: pageID)
         if kind == .pencil, #available(iOS 17.5, *), let generator = feedback as? UICanvasFeedbackGenerator {
             generator.alignmentOccurred(at: point)
@@ -428,54 +554,93 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
 
     // MARK: Click, tap and touches
 
-    /// Pencil or finger on the page: a shown card goes at once.
-    private func interactionBegan() {
+    /// Pencil or finger on the page: a shown card goes at once, except under
+    /// a finger on exactly the presented citation (its second tap opens it).
+    private func touchBegan(_ touch: UITouch) {
+        guard touch.type == .pencil || touch.type == .direct else { return }
         cancelDwell()
         shown = nil
-        if model.presentation != nil { model.pageInteractionBegan() }
+        guard model.presentation != nil else { return }
+        if touch.type == .direct, let sheet, let hit = placement(at: touch.location(in: sheet), slop: 6 / screenScale), presents(hit) { return }
+        model.pageInteractionBegan()
     }
 
+    /// The citation at `point` takes a tap of the touch that just began
+    /// there: its card or law window, not the field or object below.
+    /// False for the Pencil, the text tool, a selection standing at
+    /// touch-down and the edited field (its underlines are hidden).
+    func ownsTap(at point: CGPoint) -> Bool {
+        guard installed, model.scanner != nil, let type = touches.lastType else { return false }
+        switch type {
+        case .direct: return fingerTarget(at: point) != nil
+        case .indirectPointer: return clickTarget(at: point) != nil
+        default: return false
+        }
+    }
+
+    private func clickTarget(at point: CGPoint) -> LawCitationPlacement? {
+        guard let sheet, !touches.selectionAtDown else { return nil }
+        // The text tool's click sets the caret or opens a field.
+        guard sheet.tool != .text, !sheet.tool.isEraser, sheet.tool != .laser else { return nil }
+        return placement(at: point, slop: 2 / screenScale)
+    }
     /// A finger tap cannot draw here and is no text or selection tap.
-    private func fingerTapAllowed(_ hit: LawCitationPlacement) -> Bool {
-        guard let sheet, let editor = sheet.configuration else { return false }
+    private func fingerTarget(at point: CGPoint) -> LawCitationPlacement? {
+        guard let sheet, let editor = sheet.configuration, !touches.selectionAtDown else { return nil }
         let tool = sheet.tool
         // The text tool's taps set the caret or open fields.
-        if tool == .text || selectionAtTouchDown || sheet.tool.isEraser || tool == .laser { return false }
+        if tool == .text || tool.isEraser || tool == .laser { return nil }
         // With finger drawing the finger writes (as `acceptsFingerObjectTaps`).
-        if editor.fingerDrawing, editor.enabled, tool != .image, tool != .read { return false }
+        if editor.fingerDrawing, editor.enabled, tool != .image, tool != .read { return nil }
+        guard let hit = placement(at: point, slop: 6 / screenScale) else { return nil }
         // Text document: a finger tap on the flow puts the caret there.
-        if editor.flowDocument, let id = hit.boxID, editor.textBoxes.contains(where: { $0.id == id && $0.flowID != nil }) { return false }
-        return true
+        if editor.flowDocument, let id = hit.boxID, editor.textBoxes.contains(where: { $0.id == id && $0.flowID != nil }) { return nil }
+        return hit
     }
 
     @objc private func clicked(_ gesture: UITapGestureRecognizer) {
-        guard gesture.state == .ended, let sheet, let hit = placement(at: gesture.location(in: sheet), slop: 2 / screenScale) else { return }
+        guard gesture.state == .ended, let sheet, let hit = clickTarget(at: gesture.location(in: sheet)) else { return }
         cancelDwell(); shown = nil
+        presentedKey = nil
         model.open(hit.citation)
     }
     @objc private func tapped(_ gesture: UITapGestureRecognizer) {
-        guard gesture.state == .ended, let sheet, let hit = placement(at: gesture.location(in: sheet), slop: 6 / screenScale) else { return }
+        guard gesture.state == .ended, let sheet, let hit = fingerTarget(at: gesture.location(in: sheet)) else { return }
         cancelDwell(); shown = nil
+        prepareToPresent(hit)
         model.tap(hit.citation, anchor: anchor(hit), pageID: pageID)
     }
 
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        if gestureRecognizer === fingerTap { selectionAtTouchDown = sheet?.objectLayer.hasTouchSelection ?? false }
-        return true
-    }
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard gestureRecognizer === click || gestureRecognizer === fingerTap else { return true }
         guard let sheet, model.scanner != nil else { return false }
         let point = gestureRecognizer.location(in: sheet)
-        if gestureRecognizer === click {
-            // The text tool's click sets the caret or opens a field.
-            guard sheet.tool != .text, !sheet.tool.isEraser else { return false }
-            return placement(at: point, slop: 2 / screenScale) != nil
-        }
-        guard let hit = placement(at: point, slop: 6 / screenScale) else { return false }
-        return fingerTapAllowed(hit)
+        return gestureRecognizer === click ? clickTarget(at: point) != nil : fingerTarget(at: point) != nil
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+}
+
+/// `PDFPage.string` for the sheets, one page per run-loop turn with a short
+/// pause between them: a dense PDF scrolled into view does not read all its
+/// loaded pages in one frame.
+@MainActor
+enum LawCitationPDFText {
+    private static var queue: [@MainActor () -> Void] = []
+    private static var running = false
+    static func enqueue(_ work: @escaping @MainActor () -> Void) {
+        queue.append(work)
+        guard !running else { return }
+        running = true
+        next()
+    }
+    private static func next() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { step() }
+    }
+    private static func step() {
+        guard !queue.isEmpty else { running = false; return }
+        queue.removeFirst()()
+        next()
+    }
 }
 
 /// Dotted underlines of the sheet's citations. Display only, takes no touches.
@@ -503,7 +668,7 @@ final class LawCitationUnderlineView: UIView {
         onWindowChange?(window != nil)
     }
 
-    func show(_ placements: [LawCitationPlacement], scale: CGFloat) {
+    func show(_ placements: [LawCitationPlacement]) {
         let lightPath = CGMutablePath(), darkPath = CGMutablePath()
         for placement in placements {
             let path = placement.onDark ? darkPath : lightPath
@@ -528,14 +693,18 @@ final class LawCitationUnderlineView: UIView {
     }
 }
 
-/// Pencil and finger touches on the sheet: touch-down hides a card; Pencil
-/// lifts tell the hover when writing paused. Never recognises, cancels or delays.
+/// Touches on the sheet: touch-down hides a card and records what a tap
+/// then means (input type, a finger selection standing); Pencil lifts tell
+/// the hover when writing paused. Never recognises, cancels or delays.
 @MainActor
 final class LawCitationTouchObserver: UIGestureRecognizer {
-    var onTouchDown: (() -> Void)?
+    var onTouchDown: ((UITouch) -> Void)?
     private var active = Set<UITouch>()
     private var pencils = Set<UITouch>()
     private(set) var lastPencilLift: CFTimeInterval = 0
+    /// Type of the most recent touch-down and whether a finger selection stood then.
+    private(set) var lastType: UITouch.TouchType?
+    private(set) var selectionAtDown = false
     var pencilDown: Bool { !pencils.isEmpty }
 
     override init(target: Any?, action: Selector?) {
@@ -546,7 +715,10 @@ final class LawCitationTouchObserver: UIGestureRecognizer {
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         active.formUnion(touches)
         pencils.formUnion(touches.filter { $0.type == .pencil })
-        if touches.contains(where: { $0.type == .pencil || $0.type == .direct }) { onTouchDown?() }
+        guard let touch = touches.first else { return }
+        lastType = touch.type
+        selectionAtDown = (view as? WorksheetView)?.objectLayer.hasTouchSelection ?? false
+        onTouchDown?(touch)
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) { }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { lift(touches) }

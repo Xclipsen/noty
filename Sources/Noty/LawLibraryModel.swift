@@ -259,11 +259,13 @@ final class LawLibraryModel: ObservableObject {
         guard enabled, entries.contains(where: { $0.id == lawID }) else { return }
         let jump = LawCitationJump(lawID: lawID, key: key, paragraph: paragraph)
         if var back = citationReturn {
-            back.id = jump.id; back.lawID = lawID; back.sectionID = nil
+            back.id = jump.id; back.lawID = lawID; back.sectionID = nil; back.chained = true
+            // Every law a jump touched gets its own spot back, the first one kept.
+            if back.citedLawSpots.index(forKey: lawID) == nil { back.citedLawSpots[lawID] = .some(readingSpot(law: lawID)) }
             citationReturn = back
         } else {
             citationReturn = LawCitationReturn(id: jump.id, phase: panel.phase, spot: lastReadingSpot,
-                                               citedLawSpot: readingSpot(law: lawID), lawID: lawID)
+                                               citedLawSpots: [lawID: readingSpot(law: lawID)], lawID: lawID)
         }
         citationJump = jump
         panel.open()
@@ -627,6 +629,32 @@ final class LawLibraryModel: ObservableObject {
         }
         defaults.set(spot.lawId, forKey: "noty.laws.lastLaw")
     }
+    /// Puts the reading spots of the laws a citation jump touched back as
+    /// they were: the remembered spot, or none for a law never read before.
+    func restoreReading(_ spots: [String: LawReadingSpot?]) {
+        for (law, spot) in spots {
+            if let spot { rememberReading(spot) } else { forgetReading(law: law) }
+        }
+    }
+    /// Removes the remembered spot of `law` (also from the older section-only keys).
+    func forgetReading(law: String) {
+        guard readingSpots.spot(law: law) != nil else { return }
+        // `LawReadingSpots` only adds; its JSON without the entry decodes to the rest.
+        guard let data = try? JSONEncoder().encode(readingSpots),
+              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        var spots = object["spots"] as? [String: Any] ?? [:]
+        spots[law] = nil
+        object["spots"] = spots
+        if object["lastLawId"] as? String == law { object["lastLawId"] = nil }
+        guard let stripped = try? JSONSerialization.data(withJSONObject: object) else { return }
+        readingSpots = LawReadingSpots.decode(stripped)
+        let defaults = UserDefaults.standard
+        if let encoded = try? JSONEncoder().encode(readingSpots) { defaults.set(encoded, forKey: Self.readingSpotsKey) }
+        if var sections = defaults.dictionary(forKey: "noty.laws.readingSections") as? [String: String], sections[law] != nil {
+            sections[law] = nil; defaults.set(sections, forKey: "noty.laws.readingSections")
+        }
+        if defaults.string(forKey: "noty.laws.lastLaw") == law { defaults.removeObject(forKey: "noty.laws.lastLaw") }
+    }
     func exportPersonal() async throws -> URL {
         let bytes = try await personal.exportData()
         let url = URL.temporaryDirectory.appendingPathComponent("Noty-Gesetzesmarkierungen-\(UUID().uuidString).json")
@@ -663,11 +691,14 @@ struct LawCitationReturn: Equatable {
     var phase: LawPanelState.Phase
     /// The reading spot before the jump (the law read last).
     var spot: LawReadingSpot?
-    /// The cited law's own remembered spot before the jump, restored too, so
-    /// a quick look does not move where that law continues next time.
-    var citedLawSpot: LawReadingSpot?
+    /// Each cited law's own remembered spot before its first jump (nil: never
+    /// read), restored too, so a quick look does not move where that law
+    /// continues next time.
+    var citedLawSpots: [String: LawReadingSpot?]
     var lawID: String
     /// The section the jump showed, set by the reader; navigating to another
     /// section hides the button.
     var sectionID: String?
+    /// A further citation was opened before going back.
+    var chained = false
 }

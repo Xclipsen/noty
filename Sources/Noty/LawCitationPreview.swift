@@ -9,7 +9,9 @@
 //   (auf Karte oder Verweis) öffnet.
 // - Zeigerklick: `open` öffnet direkt.
 // - Stift aufs Papier, Scrollen, Zoomen, Seitenwechsel: `pageInteractionBegan`
-//   blendet sofort aus. Esc schließt die Karte.
+//   blendet sofort aus; ebenso jede Änderung der Arbeitsfläche (Drehen,
+//   Teilung, Gesetzesfenster, Tastatur) und das Schließen des Hefts. Kein
+//   eigenes Esc: es würde Esc der Tastaturmodi abfangen; Tippen daneben schließt.
 //
 // Nur abgeleitete Anzeige: nichts davon wird im Heft gespeichert. Die Karte
 // liest nur Gesetzestexte, die schon offline auf dem iPad liegen; bloßes
@@ -48,6 +50,8 @@ final class LawCitationPreviewModel: ObservableObject {
 
     @Published private(set) var presentation: Presentation?
     @Published private(set) var content: Content = .loading
+    /// Counts new cards (another citation or place); the card view's identity.
+    @Published private(set) var cardID = 0
 
     /// Built from the law catalog; nil while the collection is off, has no
     /// catalog, or the user turned links off. Pages scan with this.
@@ -57,8 +61,8 @@ final class LawCitationPreviewModel: ObservableObject {
 
     /// Grace period after the hover left the citation (to reach the card).
     static let hoverGrace: Duration = .milliseconds(350)
-    /// Recently read documents (current versions), newest last.
-    private static let cacheLimit = 3
+    /// Card contents per (law, version, section, Absatz), newest last.
+    private static let excerptLimit = 64
 
     private weak var laws: LawLibraryModel?
     private var watching: [AnyCancellable] = []
@@ -66,7 +70,14 @@ final class LawCitationPreviewModel: ObservableObject {
     private var catalogKey = ""
     private var scannerKey: String?
     private var entries: [LawEntry] = []
-    private var cache: [(key: String, document: LawDocument)] = []
+    /// Small card contents; the documents themselves are not kept, except
+    /// the one decoded last (`document`). Both go on a memory warning.
+    private var excerpts: [String: Content] = [:]
+    private var excerptOrder: [String] = []
+    private var document: (key: String, value: LawDocument)?
+    /// One decoding per (law, version) at a time, shared by every card that
+    /// asks; its result is always kept, also when the card asking has gone.
+    private var decoding: [String: Task<LawDocument?, Never>] = [:]
     private var hideTask: Task<Void, Never>?
     private var loadTask: Task<Void, Never>?
     /// Stift or pointer rests on the card itself.
@@ -87,14 +98,24 @@ final class LawCitationPreviewModel: ObservableObject {
             NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshScanner() } },
+            NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in MainActor.assumeIsolated { self?.purge() } },
         ]
     }
 
     private func catalogChanged(_ next: [LawEntry]) {
-        entries = next
-        catalogKey = next.map { "\($0.id)|\($0.abbr)|\(($0.aliases ?? []).joined(separator: ","))|\($0.currentVersion)" }.joined(separator: ";")
-        cache.removeAll()
+        let key = next.map { "\($0.id)|\($0.abbr)|\(($0.aliases ?? []).joined(separator: ","))|\($0.currentVersion)" }.joined(separator: ";")
+        // A publish that changed nothing the cards depend on keeps the caches.
+        guard key != catalogKey else { entries = next; return }
+        entries = next; catalogKey = key
+        purge()
+        if let presentation, entry(presentation.citation.lawID) == nil { dismiss() }
         refreshScanner()
+    }
+
+    private func purge() {
+        excerpts.removeAll(); excerptOrder.removeAll(); document = nil
     }
 
     private func refreshScanner() {
@@ -131,7 +152,7 @@ final class LawCitationPreviewModel: ObservableObject {
     /// Finger tap on an underline: shows the card (second tap on the card opens).
     func tap(_ citation: LawCitation, anchor: CGRect, pageID: UUID?) {
         hideTask?.cancel(); hideTask = nil
-        if let presentation, presentation.citation == citation, presentation.pageID == pageID {
+        if let presentation, Self.sameCard(presentation, citation: citation, anchor: anchor, pageID: pageID) {
             open(citation)
         } else {
             show(Presentation(citation: citation, anchor: anchor, input: .touch, pageID: pageID))
@@ -196,15 +217,24 @@ final class LawCitationPreviewModel: ObservableObject {
         }
     }
 
+    /// The same citation in the same place: equal text elsewhere (another
+    /// field, another page) is another card.
+    static func sameCard(_ presentation: Presentation, citation: LawCitation, anchor: CGRect, pageID: UUID?) -> Bool {
+        let a = presentation.anchor
+        return presentation.citation == citation && presentation.pageID == pageID
+            && abs(a.minX - anchor.minX) < 2 && abs(a.minY - anchor.minY) < 2 && abs(a.width - anchor.width) < 2 && abs(a.height - anchor.height) < 2
+    }
+
     private func show(_ next: Presentation) {
         guard scanner != nil else { return }
-        if let presentation, presentation.citation == next.citation, presentation.pageID == next.pageID {
+        if let presentation, Self.sameCard(presentation, citation: next.citation, anchor: next.anchor, pageID: next.pageID) {
             // Same citation: follow the anchor (a pointer may replace the
             // pencil), without reloading or animating the card again.
             if presentation != next { self.presentation = next }
             return
         }
         cardHovered = false
+        cardID &+= 1
         presentation = next
         load(next.citation)
     }
@@ -212,22 +242,44 @@ final class LawCitationPreviewModel: ObservableObject {
     private func load(_ citation: LawCitation) {
         loadTask?.cancel(); loadTask = nil
         guard let laws, let entry = entry(citation.lawID) else { content = .unavailable; return }
-        let key = "\(entry.id)|\(entry.currentVersion)"
-        if let index = cache.firstIndex(where: { $0.key == key }) {
-            let hit = cache.remove(at: index); cache.append(hit)
-            content = Self.content(hit.document, citation: citation)
+        let documentKey = "\(entry.id)|\(entry.currentVersion)"
+        let excerptKey = documentKey + "|\(citation.reference.key)|\(citation.reference.paragraph ?? "")"
+        if let hit = excerpts[excerptKey] { content = hit; return }
+        if let document, document.key == documentKey {
+            content = remember(excerptKey, Self.content(document.value, citation: citation))
             return
         }
         content = .loading
+        let decoding = documentTask(entry, key: documentKey, laws: laws)
         loadTask = Task { [weak self] in
-            let document = await laws.offlineDocument(entry)
+            let value = await decoding.value
             guard let self, !Task.isCancelled, self.presentation?.citation == citation else { return }
-            guard let document else { self.content = .notOffline; return }
-            self.cache.removeAll { $0.key == key }
-            self.cache.append((key, document))
-            if self.cache.count > Self.cacheLimit { self.cache.removeFirst(self.cache.count - Self.cacheLimit) }
-            self.content = Self.content(document, citation: citation)
+            guard let value else { self.content = .notOffline; return }
+            self.content = self.remember(excerptKey, Self.content(value, citation: citation))
         }
+    }
+
+    private func documentTask(_ entry: LawEntry, key: String, laws: LawLibraryModel) -> Task<LawDocument?, Never> {
+        if let running = decoding[key] { return running }
+        let task = Task { [weak self] () -> LawDocument? in
+            let value = await laws.offlineDocument(entry)
+            if let self {
+                self.decoding[key] = nil
+                if let value { self.document = (key, value) }
+            }
+            return value
+        }
+        decoding[key] = task
+        return task
+    }
+
+    private func remember(_ key: String, _ content: Content) -> Content {
+        if excerpts.updateValue(content, forKey: key) == nil { excerptOrder.append(key) }
+        if excerptOrder.count > Self.excerptLimit {
+            for old in excerptOrder.prefix(excerptOrder.count - Self.excerptLimit) { excerpts[old] = nil }
+            excerptOrder.removeFirst(excerptOrder.count - Self.excerptLimit)
+        }
+        return content
     }
 
     /// Same lookup as the reader (`LawReaderView.open`): section id or one of its keys.

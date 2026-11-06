@@ -72,6 +72,8 @@ final class FingerObjectGestures: NSObject, UIGestureRecognizerDelegate, @MainAc
         // Shape, lasso and image tools select through their own plane's tap (same hit test).
         guard !sheet.objectLayer.handlesTapsItself else { return }
         let point = gesture.location(in: sheet)
+        // The underline of a law citation owns this tap (its card or law window), not the field.
+        if sheet.lawCitations.ownsTap(at: point) { return }
         sheet.rememberTap(point)
         sheet.claimSelectionFocus()
         sheet.syncObjectPlane()

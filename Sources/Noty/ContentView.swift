@@ -1232,7 +1232,8 @@ struct ContentView: View {
                 // Leaving a field returns to the tool before the text tool (Textneubau).
                 guard isPaneActive(), tool == .text, !textToolLocked else { return }
                 tool = toolBeforeText.flatMap { $0 == .text ? nil : $0 } ?? lastInkTool
-            })
+            },
+            lawCitations: !isRestoredCopy)
     }
 
 }

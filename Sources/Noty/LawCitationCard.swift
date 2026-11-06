@@ -9,51 +9,52 @@ import NotebookCore
 /// `LawCitationPreviewModel.shared` in its own coordinate space (anchors
 /// arrive in window coordinates; the app has a single scene).
 struct LawCitationCardLayer: View {
+    /// Height of the software keyboard over the bottom of the layer.
+    var keyboard: CGFloat = 0
     @ObservedObject private var model = LawCitationPreviewModel.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var cardHeight: CGFloat = 0
+    /// Room kept for the card whatever it will show (loading, note, text), so
+    /// it never changes sides once its text arrives; it grows away from the
+    /// citation inside this room.
+    @ScaledMetric(relativeTo: .footnote) private var reservedHeight: CGFloat = 250
 
     static let width: CGFloat = 320
     /// Distance between the citation and the card.
     private static let gap: CGFloat = 8
     private static let margin: CGFloat = 8
-    /// Until the card has measured itself.
-    private static let estimatedHeight: CGFloat = 180
 
     var body: some View {
         GeometryReader { geometry in
             let global = geometry.frame(in: .global)
             let insets = geometry.safeAreaInsets
+            let bottom = max(insets.bottom, keyboard)
             let bounds = CGRect(x: insets.leading, y: insets.top,
                                 width: max(0, geometry.size.width - insets.leading - insets.trailing),
-                                height: max(0, geometry.size.height - insets.top - insets.bottom))
+                                height: max(0, geometry.size.height - insets.top - bottom))
+            let width = max(0, min(Self.width, bounds.width - 2 * Self.margin))
+            let height = min(reservedHeight, max(0, bounds.height - 2 * Self.margin))
             ZStack(alignment: .topLeading) {
                 if let presentation = model.presentation {
                     let anchor = presentation.anchor.offsetBy(dx: -global.minX, dy: -global.minY)
-                    let place = Self.placement(anchor: anchor, size: CGSize(width: min(Self.width, bounds.width - 2 * Self.margin),
-                                                                             height: cardHeight > 0 ? cardHeight : Self.estimatedHeight), in: bounds)
+                    let place = Self.placement(anchor: anchor, size: CGSize(width: width, height: height), in: bounds)
                     LawCitationCard(model: model, presentation: presentation)
-                        .frame(width: max(0, min(Self.width, bounds.width - 2 * Self.margin)))
+                        .frame(width: width)
                         .fixedSize(horizontal: false, vertical: true)
-                        .background(GeometryReader { card in Color.clear.preference(key: LawCitationCardHeight.self, value: card.size.height) })
+                        // Towards the citation: above it the card sits at the
+                        // bottom of its room, below it at the top.
+                        .frame(width: width, height: height, alignment: place.above ? .bottom : .top)
                         .offset(x: place.origin.x, y: place.origin.y)
                         .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96, anchor: place.above ? .bottom : .top)))
-                        .id(Self.identity(presentation))
-                    // Esc closes the card (the hidden button only exists while it is shown).
-                    Button("") { model.dismiss() }
-                        .keyboardShortcut(.cancelAction)
-                        .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+                        .id(model.cardID)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-            .animation(NotyMotion.highlight(reduceMotion), value: model.presentation.map(Self.identity))
-            .onPreferenceChange(LawCitationCardHeight.self) { cardHeight = $0 }
+            .animation(NotyMotion.highlight(reduceMotion), value: model.presentation == nil ? -1 : model.cardID)
+            // Rotation, split, law window, keyboard: the anchor is no longer where it was.
+            .onChange(of: "\(geometry.size.width)|\(geometry.size.height)|\(global.minX)|\(global.minY)|\(keyboard)") { _, _ in
+                model.dismiss()
+            }
         }
-    }
-
-    private static func identity(_ presentation: LawCitationPreviewModel.Presentation) -> String {
-        let c = presentation.citation
-        return "\(presentation.pageID?.uuidString ?? "")|\(c.lawID)|\(c.reference.key)|\(c.reference.paragraph ?? "")|\(c.range.location)|\(c.range.length)"
     }
 
     /// Above the citation if there is room, else below, else beside it; never
@@ -75,11 +76,6 @@ struct LawCitationCardLayer: View {
         let roomAbove = anchor.minY - bounds.minY, roomBelow = bounds.maxY - anchor.maxY
         return roomAbove > roomBelow ? (CGPoint(x: x, y: max(minY, aboveY)), true) : (CGPoint(x: x, y: min(maxY, belowY)), false)
     }
-}
-
-private struct LawCitationCardHeight: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 /// The card itself: heading, title, the first lines of the section, a hint.

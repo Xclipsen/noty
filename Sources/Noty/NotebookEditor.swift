@@ -822,11 +822,13 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
     }
     func scrollViewDidZoom(_ scrollView: UIScrollView) {
         HangProbe.hit("Viewport.didZoom")
+        LawCitationPageLinks.viewportChanged(self)
         laser.refresh(); ruler.follow()
         if !changing { updateInsets(); queueRefresh() }
     }
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         HangProbe.hit("Viewport.didScroll")
+        LawCitationPageLinks.viewportChanged(self)
         laser.refresh(); ruler.follow()
         guard !changing, !pendingJump, let state else { return }
         if focusScrolling && (isDragging || isZooming) { focusScrolling = false }

@@ -41,6 +41,8 @@ struct LawReaderView: View {
     /// launches; starts at the body size of Dynamic Type.
     @AppStorage("noty.laws.fontSize") var fontSize = LawReadingStyle.defaultFontSize
     @State var jumpParagraph: String?
+    /// The citation jump being opened now (`takeCitationJump`); a newer one replaces it.
+    @State var citationJumpID: UUID?
     @State var requestID = UUID()
     @FocusState var queryFocused: Bool
     /// Which input the shared search/paragraph surface shows; nil hides it
@@ -121,7 +123,7 @@ struct LawReaderView: View {
         .task { await laws.start(); if !(await takeCitationJump()) { await openInitial() } }
         .onChange(of: laws.citationJump?.id) { _, id in if id != nil { Task { await takeCitationJump() } } }
         .onChange(of: "\(selectedID)|\(sectionID)") { _, _ in citationNavigated() }
-        .onChange(of: laws.entries.count) { _, _ in Task { await openInitial() } }
+        .onChange(of: laws.entries.count) { _, _ in Task { if !(await takeCitationJump()) { await openInitial() } } }
         .onChange(of: "\(selectedID)|\(sectionID)|\(document?.version ?? "")|\(viewPDF)|\(pdfPage)") { _, _ in rememberReading() }
         // Titles of the menu bar entries „Lesezeichen setzen/entfernen“, „PDF/Lesetext zeigen“.
         .onChange(of: [bookmarkItem != nil, viewPDF, !hidden], initial: true) { _, _ in

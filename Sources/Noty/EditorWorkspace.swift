@@ -281,7 +281,7 @@ struct EditorWorkspaceView: View {
             // Preview of a law citation on a page, above the law window too.
             // Only the card takes touches; everything beside it reaches the page.
             .overlay {
-                if lawsEnabled { LawCitationCardLayer() }
+                if lawsEnabled { LawCitationCardLayer(keyboard: keyboard) }
             }
             // Panes clip themselves already; this keeps a stashed law window
             // from drawing beyond the workspace edge.
@@ -295,6 +295,12 @@ struct EditorWorkspaceView: View {
                 // Closed by any way: „Zurück zur Notiz“ has nothing left to restore.
                 if phase == .closed, laws.citationJump == nil { laws.citationReturn = nil }
             }
+            // Docking, split and keyboard move the notebooks: a card would point at
+            // where the citation was (the layer itself sees only its own size).
+            .onChange(of: "\(notebookArea.x)|\(notebookArea.y)|\(notebookArea.width)|\(notebookArea.height)|\(split)|\(keyboard)") { _, _ in
+                LawCitationPreviewModel.shared.dismiss()
+            }
+            .onChange(of: current) { _, _ in LawCitationPreviewModel.shared.dismiss() }
             .onChange(of: hidesSecond) { _, hides in
                 withAnimation(NotyMotion.highlight(reduceMotion)) { lawDockHint = hides ? UUID() : nil }
                 if hides { AccessibilityNotification.Announcement(Self.lawDockHintText).post() }
@@ -350,7 +356,12 @@ struct EditorWorkspaceView: View {
             Button("OK") { workspace.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspace.error ?? "") }
         .onAppear { library.editorCommit = { await workspace.commitForBackup(toolbox: toolbox) }; library.workspace = workspace }
-        .onDisappear { library.editorCommit = nil; if library.workspace === workspace { library.workspace = nil } }
+        .onDisappear {
+            library.editorCommit = nil; if library.workspace === workspace { library.workspace = nil }
+            // Nothing of this notebook's citations may show up in the next one.
+            LawCitationPreviewModel.shared.dismiss()
+            laws.citationJump = nil; laws.citationReturn = nil
+        }
         .interactiveDismissDisabled()
     }
 

@@ -95,6 +95,9 @@ struct PageEditor {
     /// A stroke was committed on this page while another one was selected
     /// (ruler strokes on a visible neighbour): select this page.
     var onSelectPage: () -> Void = {}
+    /// Law citations become links (underline, card); off in restored copies,
+    /// which have no card or law window.
+    var lawCitations = true
 }
 
 extension PageEditor {
@@ -492,7 +495,11 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
             self.syncObjectPlane(); self.objectLayer.selectByTouch(object)
         }
         objectLayer.textLines = { [weak self] box in self?.textLayer.lineRects(box) ?? [] }
-        objectLayer.objectHits = { [weak self] point in self?.objectHits(at: point) ?? [] }
+        // A tap on a law citation's underline belongs to the citation (card), not to the field.
+        objectLayer.objectHits = { [weak self] point in
+            guard let self, !self.lawCitations.ownsTap(at: point) else { return [] }
+            return self.objectHits(at: point)
+        }
         objectLayer.hitsCheckbox = { [weak self] point in self?.fingerTapHitsCheckbox(point) ?? false }
         objectLayer.pageContext = { [weak self] in self?.configuration?.page }
         objectLayer.fittedText = { [weak self] box, fit in self?.textLayer.fitted(box, fit) ?? box }
@@ -899,7 +906,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         pdfView?.isUserInteractionEnabled = tool == .read
         if modeChanged || focusChanged || first { updateInputMode(); fingerObjects.linkNativeDoubleTaps(in: canvas) }
         if pendingTextField != nil { openPendingTextField() }
-        lawCitations.contentChanged()
+        lawCitations.contentChanged(full: true)
         setNeedsLayout()
     }
 
@@ -1120,6 +1127,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         guard !updating, let editor = configuration, objectLayer.handlesTapsItself || objectLayer.hasTouchSelection,
               lastObjectPreview != content else { return }
         lastObjectPreview = content
+        lawCitations.objectPreview(content.textBoxes)
         shapeLayer.configure(content.shapes, origin: pageLayout.contentOrigin)
         updating = true
         defer { updating = false }
