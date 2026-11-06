@@ -38,6 +38,8 @@ final class LawCitationPreviewModel: ObservableObject {
         var context = NotebookLawContext()
         /// Citation rect in canonical page coordinates (for „Als Zitat einfügen“).
         var pageRect: PageRect? = nil
+        /// Found by handwriting OCR (P3): the card asks „Erkannt: … – stimmt das?“.
+        var fromHandwriting = false
     }
 
     /// What the card shows below its heading.
@@ -55,6 +57,8 @@ final class LawCitationPreviewModel: ObservableObject {
     @Published private(set) var presentation: Presentation?
     /// Set by the card's „Als Zitat einfügen“; the editor of that page consumes and clears it.
     @Published var quoteRequest: LawQuoteRequest?
+    /// Setting „Handschrift einbeziehen“ (P3); pages only OCR ink while true.
+    @Published private(set) var handwritingEnabled = false // TODO(Reader-Agent): setting
     @Published private(set) var content: Content = .loading
     /// Counts new cards (another citation or place); the card view's identity.
     @Published private(set) var cardID = 0
@@ -147,9 +151,9 @@ final class LawCitationPreviewModel: ObservableObject {
     // MARK: Called by the page (WorksheetView). All coordinates in window space.
 
     func hover(_ citation: LawCitation, anchor: CGRect, input: LawCitationInput, pageID: UUID?,
-               context: NotebookLawContext = NotebookLawContext(), pageRect: PageRect? = nil) {
+               context: NotebookLawContext = NotebookLawContext(), pageRect: PageRect? = nil, fromHandwriting: Bool = false) {
         hideTask?.cancel(); hideTask = nil
-        show(Presentation(citation: citation, anchor: anchor, input: input, pageID: pageID, context: context, pageRect: pageRect))
+        show(Presentation(citation: citation, anchor: anchor, input: input, pageID: pageID, context: context, pageRect: pageRect, fromHandwriting: fromHandwriting))
     }
     func endHover() {
         // A card a finger opened stays until the page is touched again.
@@ -158,12 +162,12 @@ final class LawCitationPreviewModel: ObservableObject {
     }
     /// Finger tap on an underline: shows the card (second tap on the card opens).
     func tap(_ citation: LawCitation, anchor: CGRect, pageID: UUID?,
-             context: NotebookLawContext = NotebookLawContext(), pageRect: PageRect? = nil) {
+             context: NotebookLawContext = NotebookLawContext(), pageRect: PageRect? = nil, fromHandwriting: Bool = false) {
         hideTask?.cancel(); hideTask = nil
         if let presentation, Self.sameCard(presentation, citation: citation, anchor: anchor, pageID: pageID) {
             open(citation)
         } else {
-            show(Presentation(citation: citation, anchor: anchor, input: .touch, pageID: pageID, context: context, pageRect: pageRect))
+            show(Presentation(citation: citation, anchor: anchor, input: .touch, pageID: pageID, context: context, pageRect: pageRect, fromHandwriting: fromHandwriting))
         }
     }
     /// Pointer click: opens the law window at the citation directly.
