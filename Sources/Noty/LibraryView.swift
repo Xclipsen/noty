@@ -44,7 +44,6 @@ struct LibraryView: View {
     @State private var switchingArea = false
     @State private var settingsRequest: SettingsRequest?
     /// Hint or verified result of the toolbar backup; its failures arrive in `externalBackup.error`.
-    @State private var backupNotice: String?
     /// Current drag & drop preview (insertion line or highlighted folder).
     @State private var dropMark: DropMark?
     /// Entry dragged from this library (for hiding invalid targets while hovering).
@@ -77,7 +76,7 @@ struct LibraryView: View {
     private var errorShown: Binding<Bool> {
         Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })
     }
-    private var backupMessage: String? { externalBackup.error ?? backupNotice }
+    private var backupMessage: String? { externalBackup.error }
     /// New items land in the open folder or „Alle Unterlagen“; „Zuletzt
     /// verwendet“ or a running search would hide them.
     private func showNewItem() {
@@ -235,8 +234,8 @@ struct LibraryView: View {
             Button("OK") { workspaces.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspaces.error ?? "") }
         // Settings shows backup errors itself, also over the editor; this one reports the toolbar backup.
-        .alert("Backup", isPresented: Binding(get: { backupMessage != nil && !presenting && model.opened == nil }, set: { if !$0 { externalBackup.error = nil; backupNotice = nil } })) {
-            Button("OK") { externalBackup.error = nil; backupNotice = nil }.keyboardShortcut(.defaultAction)
+        .alert("Backup", isPresented: Binding(get: { backupMessage != nil && !presenting && model.opened == nil }, set: { if !$0 { externalBackup.error = nil } })) {
+            Button("OK") { externalBackup.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(backupMessage ?? "") }
         .onChange(of: location) { _, value in
             search = ""; libraryEditMode = .inactive
@@ -741,39 +740,8 @@ struct LibraryView: View {
             .disabled(!editable)
             .accessibilityLabel("Neu oder importieren")
         }
-        if Self.isDevelopmentBuild {
-            // Pinned like the gear: a plain trailing item is the first to be moved away.
-            ToolbarItem(placement: Self.settingsPlacement) {
-                Button { saveBackupNow() } label: {
-                    if externalBackup.busy { ProgressView() } else { Label("Backup jetzt speichern", systemImage: "square.and.arrow.down") }
-                }
-                .disabled(externalBackup.busy || !model.ready)
-                .accessibilityLabel("Backup jetzt speichern")
-            }
-        }
         ToolbarItem(placement: Self.settingsPlacement) {
             Button { settingsRequest = SettingsRequest() } label: { Label("Einstellungen", systemImage: "gearshape") }
-        }
-    }
-
-    /// All current builds are the prototype bundle; the installed ID is prefixed (`XTL-….de.la.noty.prototype`).
-    static var isDevelopmentBuild: Bool {
-        let id = Bundle.main.bundleIdentifier ?? ""
-        return id.contains(".prototype") || id.contains(".dev") || id.contains(".calendar")
-    }
-
-    /// The same manual run as Settings › Backup. Failures and postponements arrive
-    /// in `externalBackup.error`; only a success moves `lastSuccess`. A run that
-    /// never started (an automatic one was faster) reports nothing.
-    private func saveBackupNow() {
-        guard externalBackup.policy.target != .disabled else {
-            backupNotice = "Noch kein Backup-Ziel gewählt. Bitte unter Einstellungen › Backup & Daten ein Ziel wählen."
-            return
-        }
-        let previous = externalBackup.policy.lastSuccess
-        Task {
-            await externalBackup.attempt(library: model, toolbox: toolbox, manual: true)
-            if externalBackup.policy.lastSuccess != previous { backupNotice = externalBackup.status }
         }
     }
 
