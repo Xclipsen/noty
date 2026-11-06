@@ -15,13 +15,14 @@ struct CalendarSyncSymbol: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var webUntis: Bool { model.connection != nil && !model.showsSamples }
+    private var system: Bool { model.systemEnabled && !model.showsSamples }
     private var symbol: String {
-        if webUntis { return "arrow.triangle.2.circlepath" }
+        if webUntis || system { return "arrow.triangle.2.circlepath" }
         return model.storageError != nil ? "exclamationmark.triangle" : "info.circle"
     }
 
     var body: some View {
-        let turning = webUntis && model.syncing && !reduceMotion
+        let turning = ((webUntis && model.syncing) || (system && model.systemReading)) && !reduceMotion
         ZStack(alignment: .topTrailing) {
             TimelineView(.animation(minimumInterval: nil, paused: !turning)) { context in
                 Image(systemName: symbol)
@@ -34,14 +35,16 @@ struct CalendarSyncSymbol: View {
             }
         }
         .accessibilityElement()
-        .accessibilityLabel(webUntis ? "Stundenplan-Status" : "Kalenderstatus")
+        .accessibilityLabel(webUntis ? "Stundenplan-Status" : system ? "Kalender-Status" : "Kalenderstatus")
         .accessibilityValue(value)
         .accessibilityHint("Zeigt Stand und Aktualisieren")
-        .help(webUntis ? "Stundenplan: Stand und Aktualisieren" : "Kalenderstatus")
+        .help(webUntis || system ? "Stand und Aktualisieren" : "Kalenderstatus")
     }
 
     private var value: String {
         if model.storageError != nil { return "Speichern gesperrt" }
+        if system, model.systemAccess.problem != nil || model.systemError != nil { return "Systemkalender: Problem" }
+        if system && model.systemReading { return "Systemkalender werden eingelesen" }
         guard webUntis else { return model.truncatedSeries.isEmpty ? "" : "Nicht alle Wiederholungen angezeigt" }
         if model.syncing { return "Wird aktualisiert" }
         if model.credentialsMissing { return "Zugang neu verbinden" }
@@ -56,6 +59,7 @@ struct CalendarStatusPopover: View {
     @ObservedObject var model: CalendarModel
     let connect: () -> Void
     let close: () -> Void
+    @Environment(\.openURL) private var openURL
 
     private var range: (start: Date, end: Date) {
         CalendarDates.range(model.mode, anchor: model.anchor, weekDays: model.weekDays == 7 ? 7 : 5, calendar: model.calendar)
@@ -68,6 +72,10 @@ struct CalendarStatusPopover: View {
                     row(symbol: "lock.trianglebadge.exclamationmark", tint: .orange, title: "Speichern gesperrt", text: error)
                 }
                 if model.connection != nil && !model.showsSamples { webUntis }
+                if model.systemEnabled && !model.showsSamples { systemCalendars }
+                if !model.showsSamples {
+                    row(symbol: "sun.max", tint: .secondary, title: "Ferien und Feiertage", text: model.holidaySourceText)
+                }
                 if !model.truncatedSeries.isEmpty {
                     row(symbol: "repeat", tint: .secondary, title: "Nicht alle Wiederholungen angezeigt",
                         text: "Höchstens \(CalendarSeries.maximumPerSeries) je Serie im angezeigten Jahr: "
@@ -119,6 +127,46 @@ struct CalendarStatusPopover: View {
             }
             .font(.subheadline.weight(.semibold))
             Text("Inoffiziell über die Untis-Mobile-Freigabe. Aktualisiert sich beim Öffnen und höchstens alle 15 Minuten, solange der Kalender sichtbar ist.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Apple Kalender/Outlook: last read, access problems, read anew.
+    @ViewBuilder private var systemCalendars: some View {
+        VStack(alignment: .leading, spacing: CalendarSpace.m) {
+            HStack(alignment: .top, spacing: CalendarSpace.m) {
+                Image(systemName: "calendar").font(.title3).foregroundStyle(.secondary).frame(width: 28)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Apple Kalender und Outlook").font(.headline)
+                    if model.systemAccess.problem == nil, model.systemError == nil, let status = model.systemStatusText {
+                        Text(status).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .accessibilityElement(children: .combine)
+            if let problem = model.systemAccess.problem {
+                Label(problem, systemImage: "lock").font(.footnote).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            } else if let error = model.systemError {
+                Label(error, systemImage: "exclamationmark.triangle").font(.footnote).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: CalendarSpace.s) {
+                if model.systemAccess.problem != nil {
+                    Button { if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) } } label: {
+                        Label("iPad-Einstellungen", systemImage: "gear")
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button { model.reloadSystemCalendars() } label: {
+                        Label(model.systemReading ? "Wird eingelesen …" : "Neu einlesen", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.systemReading)
+                }
+                Button("Verwalten …") { connect() }.buttonStyle(.bordered)
+            }
+            .font(.subheadline.weight(.semibold))
+            Text("noty liest die Kalender dieses iPads. Den Abgleich mit iCloud oder Microsoft 365 übernimmt iPadOS; „eingelesen“ heißt nicht „mit dem Konto abgeglichen“.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }

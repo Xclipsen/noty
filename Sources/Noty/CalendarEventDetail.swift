@@ -64,17 +64,26 @@ struct CalendarEventPanel: View {
         .accessibilityAddTraits(.isModal)
         .accessibilityAction(.escape) { close() }
         .confirmationDialog("Termin löschen?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
-            if event.originalDate != nil {
+            if event.originalDate != nil || model.isSystemSeries(event) {
                 Button("Nur diesen Termin löschen", role: .destructive) { Task { await model.remove(event, scope: .single) } }
                 Button("Alle Termine der Serie löschen", role: .destructive) { Task { await model.remove(event, scope: .all) } }
             } else {
                 Button("Termin löschen", role: .destructive) { Task { await model.remove(event) } }
             }
         } message: {
-            Text(event.originalDate != nil
-                 ? "„\(event.title)“ wiederholt sich. Gelöschtes lässt sich unter „…“ › „Gelöschte Termine“ wiederherstellen; Notizen bleiben in „Kalendernotizen“ erhalten."
-                 : "„\(event.title)“ kommt in „Gelöschte Termine“ (Menü „…“) und lässt sich dort wiederherstellen. Notizen bleiben in „Kalendernotizen“ erhalten.")
+            Text(removalMessage)
         }
+    }
+
+    /// System calendar entries are deleted in Apple Kalender/Outlook (no
+    /// „Gelöschte Termine“ there); own entries go to „Gelöschte Termine“.
+    private var removalMessage: String {
+        if model.isSystem(event) {
+            return "„\(event.title)“ wird im Kalender „\(model.sourceTitle(event))“ des iPads gelöscht; iPadOS überträgt das an das Konto. noty kann das nicht rückgängig machen. Notizen bleiben in „Kalendernotizen“ erhalten."
+        }
+        return event.originalDate != nil
+            ? "„\(event.title)“ wiederholt sich. Gelöschtes lässt sich unter „…“ › „Gelöschte Termine“ wiederherstellen; Notizen bleiben in „Kalendernotizen“ erhalten."
+            : "„\(event.title)“ kommt in „Gelöschte Termine“ (Menü „…“) und lässt sich dort wiederherstellen. Notizen bleiben in „Kalendernotizen“ erhalten."
     }
 
     /// The same way as before: the model commits and releases the note.
@@ -90,7 +99,7 @@ struct CalendarEventPanel: View {
                 .padding(.top, 7).padding(.bottom, 3)
                 .accessibilityHidden(true)
             HStack(alignment: .top, spacing: CalendarSpace.m) {
-                RoundedRectangle(cornerRadius: 2.5).fill(CalendarPalette.color(event)).frame(width: 5, height: 44)
+                RoundedRectangle(cornerRadius: 2.5).fill(model.entryColor(event)).frame(width: 5, height: 44)
                     .padding(.top, 2)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
@@ -129,7 +138,7 @@ struct CalendarEventPanel: View {
 
     /// Bearbeiten/Löschen (own entries) or the subject colour (lessons).
     @ViewBuilder private var actions: some View {
-        if event.writable {
+        if model.canEdit(event) {
             Menu {
                 Button { model.draft = model.editDraft(for: event) } label: {
                     Label("Bearbeiten", systemImage: "pencil")
@@ -168,8 +177,9 @@ struct CalendarEventPanel: View {
                 }
                 if let room = event.room { CalendarChip(text: room, symbol: "mappin.and.ellipse").accessibilityLabel("Raum \(room)") }
                 if let teacher = event.teacher { CalendarChip(text: teacher, symbol: "person").accessibilityLabel("Lehrkraft \(teacher)") }
-                CalendarChip(text: event.source.title, dot: CalendarPalette.color(event), trailingSymbol: event.source.readOnly ? "lock.fill" : nil)
-                    .accessibilityLabel(event.source.readOnly ? "\(event.source.title), schreibgeschützt" : event.source.title)
+                let source = [model.sourceTitle(event), model.sourceAccount(event)].compactMap { $0 }.joined(separator: " · ")
+                CalendarChip(text: source, dot: model.entryColor(event), trailingSymbol: model.isReadOnly(event) ? "lock.fill" : nil)
+                    .accessibilityLabel(model.isReadOnly(event) ? "\(source), schreibgeschützt" : source)
                 if let text = event.repeatText { CalendarChip(text: text, symbol: "repeat") }
                 if let text = event.reminder { CalendarChip(text: text, symbol: "bell") }
             }
@@ -178,22 +188,54 @@ struct CalendarEventPanel: View {
                     .foregroundStyle(event.status == .cancelled ? Color.orange : .primary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            ForEach(event.statusNotes, id: \.self) { note in
+            let homework = model.homework(for: event)
+            if !homework.isEmpty { homeworkSection(homework) }
+            // Homework lines of the lesson are shown above with their check box.
+            ForEach(event.statusNotes.filter { homework.isEmpty || !$0.hasPrefix("Hausaufgabe") }, id: \.self) { note in
                 Text(note).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if event.ghostLinkID != nil { assignment }
             if let text = event.details {
                 Text(text).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            Text(event.originText).font(.caption).foregroundStyle(CalendarPalette.quiet)
+            Text(model.originText(for: event)).font(.caption).foregroundStyle(CalendarPalette.quiet)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// „Ungeklärt“: the user may give the note to a lesson of the same course.
+    /// Homework given in or due in this lesson, with the local „erledigt“.
+    private func homeworkSection(_ items: [CalendarHomeworkItem]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Hausaufgaben").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(items) { item in
+                CalendarHomeworkRow(item: item, model: model, showsSubject: false)
+            }
+        }
+    }
+
+    /// „Ungeklärt“: the user may give the note to a lesson of the same course
+    /// or – for a system calendar note – to a system event.
     @ViewBuilder private var assignment: some View {
         let options = event.ghostLinkID.flatMap { model.candidates[$0] } ?? []
+        let systemOptions = event.ghostLinkID.flatMap { model.systemCandidates[$0] } ?? []
+        if !systemOptions.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Gehört die Notiz zu einem dieser Termine im Systemkalender?").font(.footnote.weight(.semibold))
+                ForEach(systemOptions.prefix(6)) { candidate in
+                    Button {
+                        Task { await model.assign(event, toSystem: candidate) }
+                    } label: {
+                        Text("\(CalendarText.shortDate(candidate.start, calendar: calendar)) · \(candidate.timeText(calendar)) · \(candidate.title)")
+                            .font(.footnote).monospacedDigit().frame(minHeight: 32, alignment: .leading)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                Text("noty ordnet nie selbst anhand gleicher Titel zu; ohne Auswahl bleibt die Notiz hier erreichbar.")
+                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
         if !options.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Gehört die Notiz zu einer dieser Stunden desselben Kurses?").font(.footnote.weight(.semibold))

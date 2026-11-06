@@ -36,6 +36,8 @@ struct CalendarView: View {
     @State private var editingReminders = false
     @State private var showingDeleted = false
     @State private var showingStatus = false
+    /// „Schnell anlegen“ popover of „+“.
+    @State private var quickEntry = false
     /// The storage lock banner was put away: the sync symbol keeps the badge.
     @State private var hiddenStorageError: String?
     private var calendar: Calendar { model.calendar }
@@ -43,7 +45,7 @@ struct CalendarView: View {
     /// Calendar keys only while nothing is presented over it.
     private var keys: Bool {
         keysActive && model.enlargedDraft == nil && dayList == nil && !searching && !connecting && !choosingColors
-            && !editingReminders && !showingDeleted && !showingStatus && model.draft == nil
+            && !editingReminders && !showingDeleted && !showingStatus && !quickEntry && model.draft == nil
             && model.pendingSeriesChange == nil
     }
     /// Navigation keys (⌘← ⌘→ ⌘T ⌘1–⌘4) also rest while the event window is
@@ -113,14 +115,17 @@ struct CalendarView: View {
 
     // MARK: Event window
 
-    /// Dimmed calendar plus the floating window; tapping beside it, Esc,
-    /// pulling the head down or „Schließen“ end the selection.
+    /// Dimmed calendar plus the floating window. Esc, pulling the head down,
+    /// „Schließen“ and the VoiceOver escape end the selection. Tapping
+    /// beside the window deliberately does nothing (it only blocks the
+    /// calendar behind): a resting palm while writing with the Pencil
+    /// arrives as an ordinary touch and must not close the note.
     private func eventWindow(_ size: CGSize) -> some View {
         ZStack {
             if model.selectedEvent != nil {
                 Color.black.opacity(0.45)
                     .contentShape(Rectangle())
-                    .onTapGesture { model.selection = nil }
+                    .onTapGesture {}
                     .accessibilityHidden(true)
                     .transition(.opacity)
             }
@@ -312,7 +317,7 @@ struct CalendarView: View {
     }
 
     private var emptyDetail: String {
-        if model.hiddenSources.count == CalendarSource.allCases.count { return "Alle Kalender sind ausgeblendet." }
+        if model.listedSources.allSatisfy({ model.hiddenSources.contains($0) }) { return "Alle Kalender sind ausgeblendet." }
         if model.showsSamples { return "Beispieldaten: frei erfunden, nichts wird gespeichert." }
         if model.connection == nil {
             return model.mode == .year
@@ -391,10 +396,11 @@ struct CalendarView: View {
 
     // MARK: Toolbar
 
-    /// Something worth the status symbol: WebUntis, a storage lock, a
-    /// truncated series.
+    /// Something worth the status symbol: WebUntis, system calendars, a
+    /// storage lock, a truncated series.
     private var showsStatus: Bool {
-        model.storageError != nil || !model.truncatedSeries.isEmpty || (model.connection != nil && !model.showsSamples)
+        model.storageError != nil || !model.truncatedSeries.isEmpty
+            || (!model.showsSamples && (model.connection != nil || model.systemEnabled))
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
@@ -429,15 +435,22 @@ struct CalendarView: View {
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            Button { model.requestNewEvent() } label: { Label("Neuer Termin", systemImage: "plus") }
-                .help("Neuer Termin (⌘N)")
+            Button { quickEntry = true } label: { Label("Neuer Termin", systemImage: "plus") }
+                .help("Schnell anlegen (⌥⌘N) · Formular (⌘N)")
                 .disabled(!model.canWrite || model.showsSamples)
+                .popover(isPresented: $quickEntry, arrowEdge: .top) {
+                    CalendarQuickEntryPopover(model: model) { quickEntry = false }
+                }
         }
     }
 
-    /// The badge of the sync symbol: storage locked, refresh failed, access missing.
+    /// The badge of the sync symbol: storage locked, refresh failed, access
+    /// missing, system calendars not readable.
     private var statusProblem: Bool {
-        model.storageError != nil || (model.connection != nil && !model.showsSamples && (model.syncError != nil || model.credentialsMissing))
+        if model.storageError != nil { return true }
+        guard !model.showsSamples else { return false }
+        if model.connection != nil && (model.syncError != nil || model.credentialsMissing) { return true }
+        return model.systemEnabled && (model.systemAccess.problem != nil || model.systemError != nil)
     }
 
     /// Tag · Woche · Monat · Jahr, in the order of ⌘1–⌘4.
@@ -465,7 +478,7 @@ struct CalendarView: View {
             .disabled(model.showsSamples)
         }
         Section("Kalender") {
-            ForEach(CalendarSource.allCases) { source in
+            ForEach(model.listedSources) { source in
                 Toggle(isOn: Binding(
                     get: { !model.hiddenSources.contains(source) },
                     set: { shown in if shown { model.hiddenSources.remove(source) } else { model.hiddenSources.insert(source) } }
@@ -497,6 +510,8 @@ struct CalendarView: View {
             Button("Woche") { model.mode = .week }.keyboardShortcut(key("2"))
             Button("Monat") { model.mode = .month }.keyboardShortcut(key("3"))
             Button("Jahr") { model.mode = .year }.keyboardShortcut(key("4"))
+            Button("Schnell anlegen") { quickEntry = true }
+                .keyboardShortcut(keys && model.canWrite && !model.showsSamples ? KeyboardShortcut("n", modifiers: [.command, .option]) : nil)
             Button("Kalenderleiste") { sidebarWanted.toggle() }
                 .keyboardShortcut(navigationKeys && sidebarFits ? KeyboardShortcut("s", modifiers: [.command, .control]) : nil)
         }
@@ -564,7 +579,7 @@ struct CalendarSearchSheet: View {
                         dismiss()
                     } label: { CalendarListRow(event: event, model: model, showsDate: true) }
                     .accessibilityLabel(CalendarText.longDate(event.start, calendar: model.calendar) + ", "
-                                        + event.accessibilityText(model.calendar, notes: model.hasNotes(event)))
+                                        + model.accessibilityText(event, notes: model.hasNotes(event)))
                 }
                 if results.count > Self.shownLimit {
                     Text("\(results.count - Self.shownLimit) weitere Treffer – Suche genauer eingeben.")

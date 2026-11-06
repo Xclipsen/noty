@@ -44,45 +44,107 @@ struct CalendarSidebar: View {
     static let minimumTotalWidth: CGFloat = 864
     @ObservedObject var model: CalendarModel
 
+    @State private var showingHomework = false
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: CalendarSpace.xl) {
                 CalendarMiniMonth(model: model)
                 CalendarUpNext(model: model)
+                if !model.homework.isEmpty { homework }
                 calendars
             }
             .padding(.horizontal, CalendarSpace.l).padding(.vertical, CalendarSpace.m)
         }
         .background(Color.white.opacity(0.025))
+        .sheet(isPresented: $showingHomework) { CalendarHomeworkList(model: model) }
     }
 
-    /// The calendars with their colour; tapping shows or hides one.
+    /// Open homework, the next due first; ticking marks it done (only in noty).
+    private var homework: some View {
+        let open = model.openHomework
+        let limit = 5
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Hausaufgaben").font(.headline).accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 0)
+                Button(open.count > limit ? "Alle (\(open.count))" : "Alle") { showingHomework = true }
+                    .font(.footnote.weight(.semibold)).buttonStyle(.borderless)
+                    .frame(minHeight: 44)
+            }
+            if open.isEmpty {
+                Text("Alles erledigt.").font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach(open.prefix(limit)) { item in
+                CalendarHomeworkRow(item: item, model: model, compact: true)
+            }
+            if open.count > limit {
+                Text("\(open.count - limit) weitere unter „Alle“").font(.caption).foregroundStyle(.secondary).padding(.leading, 40)
+            }
+        }
+    }
+
+    /// The calendars with their colour; tapping shows or hides one. System
+    /// calendars (Apple Kalender/Outlook) each on their own row.
     private var calendars: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Kalender").font(.headline).accessibilityAddTraits(.isHeader).padding(.bottom, CalendarSpace.xs)
-            ForEach(CalendarSource.allCases) { source in
+            ForEach(model.listedSources) { source in
                 let shown = !model.hiddenSources.contains(source)
-                Button {
+                toggleRow(title: source.title, shown: shown, style: sourceStyle(source), readOnly: source.readOnly && source != .system) {
                     if shown { model.hiddenSources.insert(source) } else { model.hiddenSources.remove(source) }
-                } label: {
-                    HStack(spacing: CalendarSpace.s) {
-                        Image(systemName: shown ? "checkmark.circle.fill" : "circle")
-                            .font(.body)
-                            .foregroundStyle(shown ? sourceStyle(source) : AnyShapeStyle(Color.secondary))
-                        Text(source.title).font(.subheadline).foregroundStyle(shown ? .primary : .secondary)
-                        Spacer(minLength: 0)
-                        if source.readOnly {
-                            Image(systemName: "lock.fill").font(.system(size: 9)).foregroundStyle(.tertiary)
-                        }
-                    }
-                    .frame(minHeight: 40).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(source.readOnly ? "\(source.title), schreibgeschützt" : source.title)
-                .accessibilityValue(shown ? "eingeblendet" : "ausgeblendet")
-                .accessibilityAddTraits(.isToggle)
+                if source == .system && shown { systemCalendars }
             }
         }
+    }
+
+    /// The single system calendars, grouped by account; the choice is stored.
+    @ViewBuilder private var systemCalendars: some View {
+        if let problem = model.systemAccess.problem {
+            Label(problem, systemImage: "lock").font(.caption).foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true).padding(.leading, 28).padding(.bottom, CalendarSpace.xs)
+        } else {
+            let groups = Dictionary(grouping: model.systemCalendars, by: \.account).sorted { $0.key < $1.key }
+            ForEach(groups, id: \.key) { account, calendars in
+                Text(account.isEmpty ? "Weitere" : account).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    .textCase(.uppercase).padding(.leading, 28).padding(.top, CalendarSpace.xs)
+                ForEach(calendars) { item in
+                    let shown = !model.hiddenSystemCalendars.contains(item.id)
+                    toggleRow(title: item.title, shown: shown, style: AnyShapeStyle(hexColor(item.colorHex)), readOnly: !item.writable, indent: 20) {
+                        Task { await model.setSystemCalendar(item.id, shown: !shown) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func toggleRow(title: String, shown: Bool, style: AnyShapeStyle, readOnly: Bool, indent: CGFloat = 0,
+                           toggle: @escaping () -> Void) -> some View {
+        Button(action: toggle) {
+            HStack(spacing: CalendarSpace.s) {
+                Image(systemName: shown ? "checkmark.circle.fill" : "circle")
+                    .font(indent > 0 ? .subheadline : .body)
+                    .foregroundStyle(shown ? style : AnyShapeStyle(Color.secondary))
+                Text(title).font(.subheadline).foregroundStyle(shown ? .primary : .secondary).lineLimit(1)
+                Spacer(minLength: 0)
+                if readOnly {
+                    Image(systemName: "lock.fill").font(.system(size: 9)).foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.leading, indent)
+            .frame(minHeight: indent > 0 ? 36 : 40).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(indent > 0 && !model.canWrite)
+        .accessibilityLabel(readOnly ? "\(title), schreibgeschützt" : title)
+        .accessibilityValue(shown ? "eingeblendet" : "ausgeblendet")
+        .accessibilityAddTraits(.isToggle)
+    }
+
+    private func hexColor(_ hex: String) -> Color {
+        guard let c = CalendarColorHex.components(hex) else { return .gray }
+        return Color(red: c.red, green: c.green, blue: c.blue)
     }
 
     /// Lessons have one colour per subject: a small colour wheel stands for them.
@@ -217,7 +279,7 @@ struct CalendarUpNext: View {
     }
 
     private func row(_ event: CalendarEntry, now: Date, first: Bool) -> some View {
-        let color = CalendarPalette.color(event)
+        let color = model.entryColor(event)
         let running = event.start <= now
         let cancelled = event.status == .cancelled
         let when = Self.when(event, now: now, calendar: model.calendar)
@@ -249,7 +311,7 @@ struct CalendarUpNext: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(when + ", " + event.accessibilityText(model.calendar, notes: model.hasNotes(event)))
+        .accessibilityLabel(when + ", " + model.accessibilityText(event, notes: model.hasNotes(event)))
         .accessibilityHint("Zeigt Details und Notizseite")
     }
 

@@ -10,9 +10,9 @@ import NotebookCore
 // package and never reported as „synchronisiert“.
 
 extension CalendarEntry {
-    /// Source of system calendar entries. Until `CalendarSource` has its own
-    /// case (UI branch), they use „Persönlich“; after the merge: `.system`.
-    static let systemSource: CalendarSource = .personal
+    /// Source of system calendar entries („Kalender“, read-only unless the
+    /// single system calendar is writable – see `CalendarModel.canEdit`).
+    static let systemSource: CalendarSource = .system
     static let systemPrefix = "system/"
 }
 

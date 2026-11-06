@@ -651,7 +651,8 @@ final class CalendarModel: ObservableObject {
         var problems: [String] = []
         do { try await repository.removeSourceCache(connection: record.id) } catch { problems.append("Offline-Stundenplan: \(error.localizedDescription)") }
         do { try WebUntisKeychain.delete(record.id) } catch { problems.append("Zugangsdaten: \(error.localizedDescription)") }
-        if let entry = selectedEvent, entry.source != .personal { selection = nil }
+        // Only WebUntis entries go away (own and system calendar entries stay).
+        if let entry = selectedEvent, entry.source == .timetable || entry.source == .holidays { selection = nil }
         rebuild()
         return problems.isEmpty ? nil : "Getrennt, aber nicht alles entfernt: " + problems.joined(separator: "; ")
     }
@@ -996,7 +997,11 @@ final class CalendarModel: ObservableObject {
         }.sorted { $0.start < $1.start }
     }
 
-    var hasVisibleEntries: Bool { !all.isEmpty && hiddenSources.count < CalendarSource.allCases.count }
+    var hasVisibleEntries: Bool { !all.isEmpty && !listedSources.allSatisfy { hiddenSources.contains($0) } }
+
+    /// The calendars that can have entries now: „Kalender“ (system) only
+    /// while Apple Kalender/Outlook is connected in this area.
+    var listedSources: [CalendarSource] { CalendarSource.allCases.filter { $0 != .system || systemEnabled } }
 
     /// How far the shown range is loaded from WebUntis (nil: no connection or demo).
     func coverage(_ start: Date, _ end: Date) -> CalendarCoverage? {

@@ -202,13 +202,17 @@ struct CalendarTimeGrid: View {
     }
 
     private func dayColumn(_ day: Date, column: CGFloat) -> some View {
-        ZStack(alignment: .topLeading) {
+        let homework = model.homeworkDueEntryIDs
+        return ZStack(alignment: .topLeading) {
             ForEach(timedItems(day)) { item in
                 let inner = column - 8
                 let width = inner / CGFloat(item.placement.columns)
                 let height = max(22, (CGFloat(item.end - item.start) / 60) * hourHeight - 3)
                 CalendarEventCard(event: item.event, model: model, height: height, detailed: detailed && item.placement.columns == 1,
+                                  // Only own events: dragging a system calendar entry would write
+                                  // into Apple Kalender/Outlook without a „Rückgängig“ (see plan).
                                   movable: item.event.writable && !model.showsSamples && model.canWrite,
+                                  homework: homework.contains(item.event.id),
                                   hourHeight: hourHeight, column: days.count > 1 ? column : nil,
                                   onDragState: { dragging = $0 })
                     .frame(width: max(20, width - 2), height: height)
@@ -255,6 +259,8 @@ struct CalendarEventCard: View {
     /// Own event: long press + drag moves it (across days in the week), the
     /// handle at the bottom edge changes its duration.
     var movable = false
+    /// Open homework is due in this lesson (small book symbol, VoiceOver).
+    var homework = false
     var hourHeight: CGFloat = 60
     /// Width of one day column (week); nil: day view, no change of day.
     var column: CGFloat?
@@ -271,7 +277,7 @@ struct CalendarEventCard: View {
     }
 
     var body: some View {
-        let color = CalendarPalette.color(event)
+        let color = model.entryColor(event)
         let selected = model.selection == event.id
         let cancelled = event.status == .cancelled
         let notes = model.hasNotes(event)
@@ -294,13 +300,16 @@ struct CalendarEventCard: View {
                         Text(event.title).font(.caption.weight(.semibold))
                             .strikethrough(cancelled).lineLimit(height < 44 ? 1 : 2)
                         Spacer(minLength: 0)
+                        if homework {
+                            Image(systemName: "book.closed.fill").font(.caption2).foregroundStyle(.secondary).accessibilityHidden(true)
+                        }
                         if notes {
                             Image(systemName: "note.text").font(.caption2).foregroundStyle(.secondary).accessibilityHidden(true)
                         }
                         if event.originalDate != nil {
                             Image(systemName: "repeat").font(.system(size: 8)).foregroundStyle(.tertiary).accessibilityHidden(true)
                         }
-                        if event.source.readOnly {
+                        if model.isReadOnly(event) {
                             Image(systemName: "lock.fill").font(.system(size: 8)).foregroundStyle(.tertiary).accessibilityHidden(true)
                         }
                     }
@@ -362,7 +371,7 @@ struct CalendarEventCard: View {
             }, including: movable ? .all : .subviews)
         .onChange(of: move != nil || stretch != nil) { _, active in onDragState(active) }
         .sensoryFeedback(.selection, trigger: move.map { minutes($0.height) + 10_000 * days($0.width) })
-        .accessibilityLabel(event.accessibilityText(model.calendar, notes: notes))
+        .accessibilityLabel(model.accessibilityText(event, notes: notes, homework: homework))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityHint(movable ? "Zeigt Details und Notizseite. Lange drücken und ziehen verschiebt den Termin." : "Zeigt Details und Notizseite")
         .accessibilityActions {
@@ -425,7 +434,7 @@ struct CalendarAllDayChip: View {
     @ObservedObject var model: CalendarModel
 
     var body: some View {
-        let color = CalendarPalette.color(event)
+        let color = model.entryColor(event)
         let selected = model.selection == event.id
         let notes = model.hasNotes(event)
         Button { model.selection = event.id } label: {
@@ -445,7 +454,7 @@ struct CalendarAllDayChip: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(event.accessibilityText(model.calendar, notes: notes))
+        .accessibilityLabel(model.accessibilityText(event, notes: notes))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

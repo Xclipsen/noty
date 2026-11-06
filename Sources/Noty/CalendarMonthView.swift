@@ -125,7 +125,7 @@ struct CalendarMonthView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(7), spacing: 3), count: 4), alignment: .leading, spacing: 3) {
                         ForEach(shown) { event in
-                            Circle().fill(CalendarPalette.color(event).opacity(event.status == .cancelled ? 0.35 : 1))
+                            Circle().fill(model.entryColor(event).opacity(event.status == .cancelled ? 0.35 : 1))
                                 .frame(width: 7, height: 7)
                         }
                     }
@@ -151,7 +151,7 @@ struct CalendarMonthRow: View {
     @ObservedObject var model: CalendarModel
 
     var body: some View {
-        let color = CalendarPalette.color(event)
+        let color = model.entryColor(event)
         let selected = model.selection == event.id
         let notes = model.hasNotes(event)
         let cancelled = event.status == .cancelled
@@ -191,7 +191,7 @@ struct CalendarMonthRow: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
-        .accessibilityLabel(event.accessibilityText(model.calendar, notes: notes))
+        .accessibilityLabel(model.accessibilityText(event, notes: notes))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -212,7 +212,7 @@ struct CalendarDayListSheet: View {
                             model.selection = event.id
                             dismiss()
                         } label: { CalendarListRow(event: event, model: model) }
-                        .accessibilityLabel(event.accessibilityText(model.calendar, notes: model.hasNotes(event)))
+                        .accessibilityLabel(model.accessibilityText(event, notes: model.hasNotes(event)))
                     }
                 } footer: {
                     Text(NotyText.count(events.count, "Termin", "Termine") + (model.showsSamples ? " · Beispieldaten" : ""))
@@ -240,7 +240,7 @@ struct CalendarListRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            RoundedRectangle(cornerRadius: 2).fill(CalendarPalette.color(event)).frame(width: 4, height: 36)
+            RoundedRectangle(cornerRadius: 2).fill(model.entryColor(event)).frame(width: 4, height: 36)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     if let symbol = event.status.symbol { Image(systemName: symbol).font(.caption) }
@@ -252,7 +252,7 @@ struct CalendarListRow: View {
                     .font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
             Spacer()
-            if event.source.readOnly { Image(systemName: "lock").font(.caption).foregroundStyle(.secondary) }
+            if model.isReadOnly(event) { Image(systemName: "lock").font(.caption).foregroundStyle(.secondary) }
         }
         .foregroundStyle(.primary)
         .frame(minHeight: 44)
