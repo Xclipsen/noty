@@ -60,6 +60,9 @@ final class LawLibraryModel: ObservableObject {
     /// get a quiet underline, hover shows a preview, a tap opens the window.
     /// Display only, nothing of it is stored in a notebook.
     static let citationLinksKey = "noty.laws.citationLinks"
+    /// „Handschrift einbeziehen“ (default on, only with links on): recognised
+    /// handwriting gets links too, marked weaker on the page.
+    static let citationHandwritingKey = "noty.laws.citationHandwriting"
     static let root = URL.documentsDirectory.appendingPathComponent("NotyLaws", isDirectory: true)
     private let offline = LawOfflineStore(root: root)
     private let personal = LawPersonalStore(root: root)
@@ -248,16 +251,19 @@ final class LawLibraryModel: ObservableObject {
     }
     /// The current version only if it is already on this iPad: never starts
     /// a download (for the citation preview, which runs on mere hovering).
-    func offlineDocument(_ entry: LawEntry) async -> LawDocument? {
-        guard let v = entry.versions.first(where: { $0.id == entry.currentVersion }) else { return nil }
+    /// `version`: another version than the current one (tax year), also only if offline.
+    func offlineDocument(_ entry: LawEntry, version: String? = nil) async -> LawDocument? {
+        guard let v = entry.versions.first(where: { $0.id == (version ?? entry.currentVersion) }) else { return nil }
         return try? await offline.document(entry, version: v)
     }
     /// Opens the law window at a citation of a notebook page (current version),
     /// remembering how the window was for „Zurück zur Notiz“. A further citation
     /// opened before going back keeps the first way back.
-    func openCitation(lawID: String, key: String, paragraph: String?) {
-        guard enabled, entries.contains(where: { $0.id == lawID }) else { return }
-        let jump = LawCitationJump(lawID: lawID, key: key, paragraph: paragraph)
+    /// `version`: the version of the notebook's tax year (nil: the current one).
+    func openCitation(lawID: String, key: String, paragraph: String?, version: String? = nil) {
+        guard enabled, let entry = entries.first(where: { $0.id == lawID }) else { return }
+        let jump = LawCitationJump(lawID: lawID, key: key, paragraph: paragraph,
+                                   version: version.flatMap { id in entry.versions.contains { $0.id == id } ? id : nil })
         if var back = citationReturn {
             back.id = jump.id; back.lawID = lawID; back.sectionID = nil; back.chained = true
             // Every law a jump touched gets its own spot back, the first one kept.
@@ -681,6 +687,8 @@ struct LawCitationJump: Equatable, Identifiable {
     /// Section key (`LawSection.keys`) and optional Absatz.
     var key: String
     var paragraph: String?
+    /// Another version than the current one (the notebook's tax year).
+    var version: String? = nil
 }
 
 /// The way back after a citation jump („Zurück zur Notiz“).
@@ -701,4 +709,8 @@ struct LawCitationReturn: Equatable {
     var sectionID: String?
     /// A further citation was opened before going back.
     var chained = false
+    /// Scroll offset of the text before the first jump and the place it
+    /// belongs to („law|section“); in memory only.
+    var textOffset: CGFloat? = nil
+    var offsetPlace: String? = nil
 }

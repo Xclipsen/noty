@@ -1432,6 +1432,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// region's colour. Hit-testing (also for Pencil hover) precedes delivery.
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let hit = super.hitTest(point, with: event)
+        // A touch starting on or just beside chrome over the page (bars,
+        // header, page buttons, law window) never reaches ink, eraser, lasso
+        // or shapes: it falls to the viewport (finger still scrolls). The
+        // selection bar's own buttons and the selection handles stay usable.
+        if let hit, event?.type == .touches, !(hit is SelectionHandle), !PencilGuard.shared.isChrome(hit),
+           PencilGuard.shared.covers(point, in: self) { return nil }
         if let hit, !inkActive, hit === canvas || hit.isDescendant(of: canvas), event?.type == .touches || event?.type == .hover {
             if event?.type == .touches { commitPendingHeldStroke() }
             automaticInkPoint = point; updateInkTool(at: point)

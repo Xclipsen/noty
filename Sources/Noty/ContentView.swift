@@ -100,6 +100,9 @@ struct ContentView: View {
     @State private var pageEntryText = ""
     @State private var recentNote: String?
     @State private var recentNoteToken = 0
+    /// „Gesetzesbezug …“ (Standardgesetz, Veranlagungsjahr) of this notebook.
+    @State private var editingLawContext = false
+    @ObservedObject private var lawPreferences = NotebookLawPreferences.shared
     private var ruler: Bool {
         get { toolbox.preferences.ruler ?? false }
         nonmutating set { toolbox.preferences.ruler = newValue }
@@ -317,6 +320,12 @@ struct ContentView: View {
         .preference(key: EditorCommandsPreference.self, value: editorCommands)
         // Shortcuts of the law window: model, key responder, Esc in its fields.
         .background { if !isRestoredCopy { LawKeyAnchor(active: isPaneActive()) } }
+        .sheet(isPresented: $editingLawContext) {
+            NotebookLawContextView(documentID: model.notebook.id, title: model.notebook.title)
+        }
+        .onReceive(LawCitationPreviewModel.shared.$quoteRequest) { request in
+            if let request { receiveLawQuote(request) }
+        }
     }
 
     /// The whole document now has this paper colour: a neutral pen, marker or
@@ -728,8 +737,9 @@ struct ContentView: View {
         .padding(.horizontal, 12).padding(.vertical, 7).background(.ultraThinMaterial, in: Capsule())
         .accessibilityIdentifier("saveStatus")
         if model.saveFailed && model.writable {
-            Button { model.save() } label: { label }.buttonStyle(NotyPressStyle())
+            Button { model.save() } label: { label }.buttonStyle(NotyPressStyle()).pencilGuard(margin: 6)
         } else {
+            // Display only: writing beneath the routine note stays possible.
             label.allowsHitTesting(false)
         }
     }
@@ -774,7 +784,7 @@ struct ContentView: View {
                     }
                 }.contentShape(Rectangle())
             }.accessibilityLabel("Zur Bibliothek").accessibilityValue(notebookLoaded ? model.notebook.title : "")
-                .padding(.horizontal, 4).frame(height: 44).notyGlass()
+                .padding(.horizontal, 4).frame(height: 44).notyGlass().pencilGuard()
                 .frame(maxWidth: max(52, layout.headerLeadingFrame.width), alignment: .leading)
                 .frame(width: max(52, layout.headerLeadingFrame.width), height: 44, alignment: .leading)
                 .offset(x: layout.headerLeadingFrame.x, y: layout.headerLeadingFrame.y)
@@ -812,7 +822,7 @@ struct ContentView: View {
                     Image(systemName: "sidebar.right").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Seitenübersicht rechts")
             }.padding(.horizontal, 4).frame(width: layout.headerActionsFrame.width, height: 44)
-                .notyGlass().disabled(!canEdit)
+                .notyGlass().pencilGuard().disabled(!canEdit)
                 .offset(x: layout.headerActionsFrame.x, y: layout.headerActionsFrame.y)
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .buttonStyle(NotyToolStyle())
@@ -836,7 +846,7 @@ struct ContentView: View {
                 .disabled(currentPage.id == writingDraft.id || currentPageIndex >= model.notebook.pages.count - 1)
                 .foregroundStyle(currentPage.id == writingDraft.id || currentPageIndex >= model.notebook.pages.count - 1 ? Color.gray.opacity(0.5) : .white)
                 .accessibilityLabel("Nächste Seite")
-        }.padding(4).notyGlass().buttonStyle(NotyToolStyle()).disabled(!canEdit)
+        }.padding(4).notyGlass().pencilGuard(margin: 12).buttonStyle(NotyToolStyle()).disabled(!canEdit)
     }
     /// Chevrons and ⌘↑/⌘↓: from the trailing draft page "up" returns to the last real page.
     private func stepPage(_ delta: Int) {
@@ -930,6 +940,9 @@ struct ContentView: View {
             }
             Section {
                 if let onLaws { LawPanelMenuToggle(action: onLaws) }
+                if onLaws != nil, !isRestoredCopy {
+                    Button("Gesetzesbezug …", systemImage: "character.book.closed") { editingLawContext = true }
+                }
                 Menu("Ansicht", systemImage: "eye") {
                     Toggle("Schreibscrollen bis zur Bildschirmmitte", systemImage: "arrow.left.and.right.square", isOn: $writingScroll)
                     Toggle("Blättern statt Scrollen", systemImage: "book.pages", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
@@ -1233,7 +1246,26 @@ struct ContentView: View {
                 guard isPaneActive(), tool == .text, !textToolLocked else { return }
                 tool = toolBeforeText.flatMap { $0 == .text ? nil : $0 } ?? lastInkTool
             },
-            lawCitations: !isRestoredCopy)
+            lawCitations: !isRestoredCopy,
+            lawContext: isRestoredCopy ? NotebookLawContext() : lawPreferences.context(for: model.notebook.id))
+    }
+
+    /// „Als Zitat einfügen“ from the card: the view showing that page inserts
+    /// it (the active view first, another one showing it a moment later);
+    /// one nobody shows is dropped, so it never lands in a notebook opened later.
+    private func receiveLawQuote(_ request: LawQuoteRequest) {
+        let shared = LawCitationPreviewModel.shared
+        let owns = !isRestoredCopy && model.notebook.pages.contains { $0.id == request.pageID }
+        let delay = owns ? (isPaneActive() ? 0 : 0.15) : 1.0
+        func consume() {
+            guard shared.quoteRequest?.id == request.id else { return }
+            shared.quoteRequest = nil
+            guard owns else { return }
+            if let problem = model.insertLawQuote(request) { model.error = problem }
+            else { showRecentNote("Zitat eingefügt") }
+        }
+        // Never inside the publisher's own delivery: the other views still receive it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { consume() }
     }
 
 }

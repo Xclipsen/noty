@@ -323,6 +323,7 @@ struct PDFExportProgressBadge: View {
                 Button("Abbrechen") { job.cancel() }.font(.caption.weight(.semibold))
             }
             .padding(.horizontal, 14).padding(.vertical, 8).notyGlass()
+            .pencilGuard(margin: 8)
             .transition(.opacity)
         }
     }

@@ -10,8 +10,10 @@
 // - Zeigerklick: `open` öffnet direkt.
 // - Stift aufs Papier, Scrollen, Zoomen, Seitenwechsel: `pageInteractionBegan`
 //   blendet sofort aus; ebenso jede Änderung der Arbeitsfläche (Drehen,
-//   Teilung, Gesetzesfenster, Tastatur) und das Schließen des Hefts. Kein
-//   eigenes Esc: es würde Esc der Tastaturmodi abfangen; Tippen daneben schließt.
+//   Teilung, Gesetzesfenster, Tastatur) und das Schließen des Hefts.
+// - Esc schließt die Karte (`consumeEscape`, von KeyboardRouter und den Tasten
+//   des Gesetzesfensters gefragt), aber nur solange eine Karte zu sehen ist;
+//   sonst bleibt Esc bei Helix, Feldern und dem Gesetzesfenster.
 //
 // Nur abgeleitete Anzeige: nichts davon wird im Heft gespeichert. Die Karte
 // liest nur Gesetzestexte, die schon offline auf dem iPad liegen; bloßes
@@ -40,6 +42,15 @@ final class LawCitationPreviewModel: ObservableObject {
         var pageRect: PageRect? = nil
         /// Found by handwriting OCR (P3): the card asks „Erkannt: … – stimmt das?“.
         var fromHandwriting = false
+        /// A notebook page or a cross-reference in the law reader's text.
+        var origin: Origin = .page
+    }
+    enum Origin: Equatable {
+        case page
+        /// Hovered in the reader showing `versionID` of `lawID`; the card
+        /// follows the link inside the reader, never via „Zurück zur Notiz“.
+        case reader(lawID: String, versionID: String)
+        var isReader: Bool { if case .reader = self { true } else { false } }
     }
 
     /// What the card shows below its heading.
@@ -51,15 +62,30 @@ final class LawCitationPreviewModel: ObservableObject {
         case missing
         /// The catalog no longer knows the law.
         case unavailable
-        case section(label: String, title: String, excerpt: String)
+        /// `quote`: the whole cited Absatz (or the section's start) for „Als Zitat einfügen“.
+        case section(label: String, title: String, excerpt: String, quote: String)
+    }
+
+    /// Which version the card shows, under its heading.
+    struct VersionNote: Equatable {
+        /// „Fassung für 2023“ or „Stand 29.6.2026“ (plus „– für 2023 ggf. abweichend“).
+        var text: String
+        /// The text may differ from what applied in the notebook's tax year.
+        var caution: Bool
+        /// The version opened by a tap; nil: the current one.
+        var versionID: String?
+        /// „Stand …“ of the version the excerpt comes from, for the quote's source.
+        var stand: String?
     }
 
     @Published private(set) var presentation: Presentation?
     /// Set by the card's „Als Zitat einfügen“; the editor of that page consumes and clears it.
     @Published var quoteRequest: LawQuoteRequest?
-    /// Setting „Handschrift einbeziehen“ (P3); pages only OCR ink while true.
-    @Published private(set) var handwritingEnabled = false // TODO(Reader-Agent): setting
+    /// Setting „Handschrift einbeziehen“ (`LawLibraryModel.citationHandwritingKey`,
+    /// default on, only with links on); pages only OCR ink while true.
+    @Published private(set) var handwritingEnabled = false
     @Published private(set) var content: Content = .loading
+    @Published private(set) var versionNote: VersionNote?
     /// Counts new cards (another citation or place); the card view's identity.
     @Published private(set) var cardID = 0
 
@@ -68,6 +94,10 @@ final class LawCitationPreviewModel: ObservableObject {
     @Published private(set) var scanner: LawCitationScanner?
     /// Bumps whenever `scanner` changes, so pages rescan.
     @Published private(set) var scannerGeneration = 0
+    /// The same scanner for cross-references in the law reader: there
+    /// whenever the collection has a catalog, also with links in notebooks off.
+    @Published private(set) var readerScanner: LawCitationScanner?
+    @Published private(set) var readerScannerGeneration = 0
 
     /// Grace period after the hover left the citation (to reach the card).
     static let hoverGrace: Duration = .milliseconds(350)
@@ -78,7 +108,15 @@ final class LawCitationPreviewModel: ObservableObject {
     private var watching: [AnyCancellable] = []
     /// Identity of the catalog the scanner was built for; nil without scanner.
     private var catalogKey = ""
-    private var scannerKey: String?
+    /// Catalog the scanner `built` belongs to (nil: none wanted).
+    private var builtKey: String?
+    private var built: (id: Int, scanner: LawCitationScanner)?
+    private var buildCount = 0
+    private var linksOn = false
+    private var publishedPage: Int?
+    private var publishedReader: Int?
+    /// Uptime of the last Esc that closed a card (`consumeEscape`).
+    private var escapeTime: TimeInterval = -1
     private var entries: [LawEntry] = []
     /// Small card contents; the documents themselves are not kept, except
     /// the one decoded last (`document`). Both go on a memory warning.
@@ -89,6 +127,8 @@ final class LawCitationPreviewModel: ObservableObject {
     /// asks; its result is always kept, also when the card asking has gone.
     private var decoding: [String: Task<LawDocument?, Never>] = [:]
     private var hideTask: Task<Void, Never>?
+    /// The reader's navigation for a card of its own (`hoverInReader`).
+    private var readerFollow: ((LawCitation) -> Void)?
     private var loadTask: Task<Void, Never>?
     /// Stift or pointer rests on the card itself.
     private(set) var cardHovered = false
@@ -128,23 +168,39 @@ final class LawCitationPreviewModel: ObservableObject {
         excerpts.removeAll(); excerptOrder.removeAll(); document = nil
     }
 
+    /// One scanner per catalog, for pages (only with links on) and the reader.
     private func refreshScanner() {
         guard let laws else { return }
-        let active = laws.enabled && laws.citationLinks && !entries.isEmpty
-        let key = active ? catalogKey : nil
-        guard key != scannerKey else { return }
-        scannerKey = key
-        guard let key else {
-            dismiss()
-            scanner = nil; scannerGeneration += 1
-            return
+        let key = laws.enabled && !entries.isEmpty ? catalogKey : nil
+        linksOn = laws.citationLinks
+        let handwriting = linksOn && (UserDefaults.standard.object(forKey: LawLibraryModel.citationHandwritingKey) as? Bool ?? true)
+        if handwriting != handwritingEnabled { handwritingEnabled = handwriting }
+        if key != builtKey {
+            builtKey = key; built = nil
+            if let key {
+                let entries = entries
+                Task {
+                    // Precompiling the patterns of a few hundred laws stays off the main thread.
+                    let scanner = await Task.detached(priority: .userInitiated) { LawCitationScanner(entries: entries) }.value
+                    guard builtKey == key else { return }
+                    buildCount += 1
+                    built = (buildCount, scanner)
+                    publishScanners()
+                }
+            }
         }
-        let entries = entries
-        Task {
-            // Precompiling the patterns of a few hundred laws stays off the main thread.
-            let built = await Task.detached(priority: .userInitiated) { LawCitationScanner(entries: entries) }.value
-            guard scannerKey == key else { return }
-            scanner = built; scannerGeneration += 1
+        publishScanners()
+    }
+    private func publishScanners() {
+        let page = linksOn ? built?.id : nil
+        if page != publishedPage {
+            publishedPage = page
+            if page == nil { dismiss() }
+            scanner = linksOn ? built?.scanner : nil; scannerGeneration += 1
+        }
+        if built?.id != publishedReader {
+            publishedReader = built?.id
+            readerScanner = built?.scanner; readerScannerGeneration += 1
         }
     }
 
@@ -170,16 +226,57 @@ final class LawCitationPreviewModel: ObservableObject {
             show(Presentation(citation: citation, anchor: anchor, input: .touch, pageID: pageID, context: context, pageRect: pageRect, fromHandwriting: fromHandwriting))
         }
     }
-    /// Pointer click: opens the law window at the citation directly.
-    func open(_ citation: LawCitation) {
+    /// Pointer click: opens the law window at the citation directly, in the
+    /// version of the notebook's tax year when the catalog can tell it.
+    /// Without `context` the shown card's context is used when it is this
+    /// citation (the page's click on its card).
+    func open(_ citation: LawCitation, context: NotebookLawContext? = nil) {
+        let presented = presentation?.citation == citation ? presentation : nil
+        if let presented, presented.origin.isReader {
+            let follow = readerFollow
+            dismiss()
+            follow?(citation)
+            return
+        }
+        let version = presented != nil ? versionNote?.versionID
+            : yearVersion(citation.lawID, context: context ?? NotebookLawContext())?.id
         dismiss()
-        laws?.openCitation(lawID: citation.lawID, key: citation.reference.key, paragraph: citation.reference.paragraph)
+        laws?.openCitation(lawID: citation.lawID, key: citation.reference.key, paragraph: citation.reference.paragraph, version: version)
+    }
+
+    // MARK: Called by the law reader (cross-references in its text)
+
+    /// Hover over a cross-reference in the reader: the same card; tapping it
+    /// calls `follow` (the reader's own navigation with its back history).
+    func hoverInReader(_ citation: LawCitation, anchor: CGRect, input: LawCitationInput, lawID: String, versionID: String,
+                       follow: @escaping (LawCitation) -> Void) {
+        hideTask?.cancel(); hideTask = nil
+        readerFollow = follow
+        show(Presentation(citation: citation, anchor: anchor, input: input, pageID: nil, origin: .reader(lawID: lawID, versionID: versionID)))
+    }
+    /// Reader scrolled, changed section or law, was touched, parked or closed.
+    func dismissReaderCard() {
+        guard presentation?.origin.isReader == true else { return }
+        dismiss()
+    }
+    /// Esc while a card is shown closes it and is used up; otherwise it stays
+    /// with whoever has it (Helix, fields, the law window). The second way of
+    /// the same press (key command after `pressesBegan`) is used up too.
+    func consumeEscape() -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        if presentation != nil {
+            dismiss()
+            escapeTime = now
+            return true
+        }
+        return escapeTime >= 0 && now - escapeTime < 0.25
     }
     func dismiss() {
         hideTask?.cancel(); hideTask = nil
         loadTask?.cancel(); loadTask = nil
         cardHovered = false
         if presentation != nil { presentation = nil }
+        readerFollow = nil
     }
     /// Pencil touched the paper, page scrolled/zoomed or page changed: hide at once.
     func pageInteractionBegan() {
@@ -192,7 +289,25 @@ final class LawCitationPreviewModel: ObservableObject {
     /// The card was tapped or clicked.
     func openPresented() {
         guard let presentation else { return }
-        open(presentation.citation)
+        open(presentation.citation, context: presentation.context)
+    }
+    /// „Als Zitat einfügen“ is offered: a page place to put it and the text there
+    /// (never for a card of the reader).
+    var canQuote: Bool {
+        guard let presentation, !presentation.origin.isReader, presentation.pageID != nil, presentation.pageRect != nil,
+              case let .section(_, _, _, quote) = content else { return false }
+        return !quote.isEmpty
+    }
+    /// „Als Zitat einfügen“: the editor of that page inserts a text field
+    /// below the citation (`quoteRequest`), the card goes.
+    func quotePresented() {
+        guard canQuote, let presentation, let pageID = presentation.pageID, let rect = presentation.pageRect,
+              case let .section(label, _, _, quote) = content else { return }
+        let citation = presentation.citation
+        var source = LawCitationText.reference(citation.reference.key, paragraph: citation.reference.paragraph, abbr: lawAbbreviation, label: label)
+        if let stand = versionNote?.stand { source += " (Stand \(stand))" }
+        quoteRequest = LawQuoteRequest(pageID: pageID, below: rect, text: quote, source: source)
+        dismiss()
     }
     /// Hover over the card keeps it; leaving it hides after the grace period.
     func cardHover(_ inside: Bool) {
@@ -208,7 +323,7 @@ final class LawCitationPreviewModel: ObservableObject {
     var heading: String {
         guard let citation = presentation?.citation else { return "" }
         let abbr = entry(citation.lawID)?.abbr ?? citation.lawID.uppercased()
-        if case let .section(label, _, _) = content {
+        if case let .section(label, _, _, _) = content {
             return LawCitationText.reference(citation.reference.key, paragraph: citation.reference.paragraph, abbr: abbr, label: label)
         }
         return LawCitationText.reference(citation.reference.key, paragraph: citation.reference.paragraph, abbr: abbr)
@@ -219,6 +334,26 @@ final class LawCitationPreviewModel: ObservableObject {
     }
 
     private func entry(_ id: String) -> LawEntry? { entries.first { $0.id == id } }
+
+    /// The version for the notebook's tax year when it is not the current one.
+    private func yearVersion(_ lawID: String, context: NotebookLawContext) -> LawVersion? {
+        guard let year = context.taxYear, let entry = entry(lawID),
+              let version = LawVersionChoice.version(for: year, in: entry), version.id != entry.currentVersion else { return nil }
+        return version
+    }
+    /// „Fassung für 2023“ or „Stand …“ with a caution when that is after the tax year.
+    private func versionNote(_ entry: LawEntry, context: NotebookLawContext) -> VersionNote? {
+        if let year = context.taxYear, let version = yearVersion(entry.id, context: context) {
+            return VersionNote(text: "Fassung für \(year)", caution: false, versionID: version.id, stand: LawVersionChoice.lastChange(version)?.text)
+        }
+        guard let current = entry.versions.first(where: { $0.id == entry.currentVersion }) else { return nil }
+        let stand = LawVersionChoice.lastChange(current)
+        guard let stand else { return nil }
+        if let year = context.taxYear, stand.year > year {
+            return VersionNote(text: "Stand \(stand.text) – für \(year) ggf. abweichend", caution: true, versionID: nil, stand: stand.text)
+        }
+        return VersionNote(text: "Stand \(stand.text)", caution: false, versionID: nil, stand: stand.text)
+    }
 
     private func scheduleHide() {
         hideTask?.cancel()
@@ -231,15 +366,19 @@ final class LawCitationPreviewModel: ObservableObject {
 
     /// The same citation in the same place: equal text elsewhere (another
     /// field, another page) is another card.
+    private static func sameAnchor(_ a: CGRect, _ b: CGRect) -> Bool {
+        abs(a.minX - b.minX) < 2 && abs(a.minY - b.minY) < 2 && abs(a.width - b.width) < 2 && abs(a.height - b.height) < 2
+    }
     static func sameCard(_ presentation: Presentation, citation: LawCitation, anchor: CGRect, pageID: UUID?) -> Bool {
         let a = presentation.anchor
-        return presentation.citation == citation && presentation.pageID == pageID
+        return presentation.citation == citation && presentation.pageID == pageID && !presentation.origin.isReader
             && abs(a.minX - anchor.minX) < 2 && abs(a.minY - anchor.minY) < 2 && abs(a.width - anchor.width) < 2 && abs(a.height - anchor.height) < 2
     }
 
     private func show(_ next: Presentation) {
-        guard scanner != nil else { return }
-        if let presentation, Self.sameCard(presentation, citation: next.citation, anchor: next.anchor, pageID: next.pageID) {
+        guard (next.origin.isReader ? readerScanner : scanner) != nil else { return }
+        if let presentation, presentation.origin == next.origin, presentation.citation == next.citation, presentation.pageID == next.pageID,
+           Self.sameAnchor(presentation.anchor, next.anchor) {
             // Same citation: follow the anchor (a pointer may replace the
             // pencil), without reloading or animating the card again.
             if presentation != next { self.presentation = next }
@@ -248,33 +387,59 @@ final class LawCitationPreviewModel: ObservableObject {
         cardHovered = false
         cardID &+= 1
         presentation = next
-        load(next.citation)
+        load(next.citation, context: next.context, origin: next.origin)
     }
 
-    private func load(_ citation: LawCitation) {
+    private func load(_ citation: LawCitation, context: NotebookLawContext, origin: Origin = .page) {
         loadTask?.cancel(); loadTask = nil
-        guard let laws, let entry = entry(citation.lawID) else { content = .unavailable; return }
-        let documentKey = "\(entry.id)|\(entry.currentVersion)"
-        let excerptKey = documentKey + "|\(citation.reference.key)|\(citation.reference.paragraph ?? "")"
-        if let hit = excerpts[excerptKey] { content = hit; return }
+        guard let laws, let entry = entry(citation.lawID) else { content = .unavailable; versionNote = nil; return }
+        var note = versionNote(entry, context: context)
+        // In the reader a reference into the same law stays in the version read there.
+        if case let .reader(law, version) = origin, law == entry.id, version != entry.currentVersion,
+           let shown = entry.versions.first(where: { $0.id == version }) {
+            let stand = LawVersionChoice.lastChange(shown)?.text
+            note = VersionNote(text: stand.map { "Fassung wie im Leser – Stand \($0)" } ?? "Fassung wie im Leser", caution: false, versionID: version, stand: stand)
+        }
+        versionNote = note
+        let yearVersion = note?.versionID
+        let currentKey = "\(entry.id)|\(entry.currentVersion)"
+        let documentKey = yearVersion.map { "\(entry.id)|\($0)" } ?? currentKey
+        let reference = "|\(citation.reference.key)|\(citation.reference.paragraph ?? "")"
+        if let hit = excerpts[documentKey + reference] { content = hit; return }
         if let document, document.key == documentKey {
-            content = remember(excerptKey, Self.content(document.value, citation: citation))
+            content = remember(documentKey + reference, Self.content(document.value, citation: citation))
             return
         }
         content = .loading
-        let decoding = documentTask(entry, key: documentKey, laws: laws)
+        let decoding = documentTask(entry, version: yearVersion, key: documentKey, laws: laws)
         loadTask = Task { [weak self] in
-            let value = await decoding.value
+            var value = await decoding.value
             guard let self, !Task.isCancelled, self.presentation?.citation == citation else { return }
+            var key = documentKey
+            if value == nil, yearVersion != nil {
+                // The year's version is not on this iPad (only current versions
+                // are kept offline): preview the current text, say so, and
+                // still open the year's version (which loads it then).
+                value = await self.documentTask(entry, version: nil, key: currentKey, laws: laws).value
+                guard !Task.isCancelled, self.presentation?.citation == citation else { return }
+                key = currentKey
+                if value != nil, let current = entry.versions.first(where: { $0.id == entry.currentVersion }) {
+                    let stand = LawVersionChoice.lastChange(current)?.text
+                    let wanted = context.taxYear.map { "Fassung für \($0)" } ?? "Diese Fassung"
+                    self.versionNote?.text = "\(wanted) wird beim Öffnen geladen – Vorschau: " + (stand.map { "Stand \($0)" } ?? "aktuelle Fassung")
+                    self.versionNote?.caution = true
+                    self.versionNote?.stand = stand
+                }
+            }
             guard let value else { self.content = .notOffline; return }
-            self.content = self.remember(excerptKey, Self.content(value, citation: citation))
+            self.content = self.remember(key + reference, Self.content(value, citation: citation))
         }
     }
 
-    private func documentTask(_ entry: LawEntry, key: String, laws: LawLibraryModel) -> Task<LawDocument?, Never> {
+    private func documentTask(_ entry: LawEntry, version: String?, key: String, laws: LawLibraryModel) -> Task<LawDocument?, Never> {
         if let running = decoding[key] { return running }
         let task = Task { [weak self] () -> LawDocument? in
-            let value = await laws.offlineDocument(entry)
+            let value = await laws.offlineDocument(entry, version: version)
             if let self {
                 self.decoding[key] = nil
                 if let value { self.document = (key, value) }
@@ -298,7 +463,30 @@ final class LawCitationPreviewModel: ObservableObject {
     private static func content(_ document: LawDocument, citation: LawCitation) -> Content {
         let key = citation.reference.key
         guard let section = document.sections.first(where: { $0.id == key || $0.keys.contains(key) }) else { return .missing }
-        return .section(label: section.label, title: section.title, excerpt: excerpt(section.text, paragraph: citation.reference.paragraph))
+        return .section(label: section.label, title: section.title, excerpt: excerpt(section.text, paragraph: citation.reference.paragraph),
+                        quote: quote(section.text, paragraph: citation.reference.paragraph))
+    }
+
+    /// The whole cited Absatz, or the section's beginning without one; at
+    /// most about 1500 characters, then cut after a sentence with „…“.
+    static func quote(_ text: String, paragraph: String?, limit: Int = 1500) -> String {
+        let source = text as NSString
+        var body = text
+        if let paragraph, let range = LawAbsatz.range(paragraph, in: text) { body = source.substring(with: range) }
+        // Lines kept, runs of blanks folded.
+        body = body.components(separatedBy: .newlines)
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        guard body.count > limit else { return body }
+        let head = String(body.prefix(limit))
+        // The last sentence end in the second half, else the last word.
+        let ends = [". ", ".\n", "; ", ";\n", ": "].compactMap { head.range(of: $0, options: .backwards)?.lowerBound }
+        if let end = ends.max(), head.distance(from: head.startIndex, to: end) > limit / 2 {
+            return String(head[...end]) + " …"
+        }
+        if let space = head.lastIndex(where: \.isWhitespace) { return String(head[..<space]) + " …" }
+        return head + " …"
     }
 
     /// The beginning of the section text, from the cited Absatz on when it is

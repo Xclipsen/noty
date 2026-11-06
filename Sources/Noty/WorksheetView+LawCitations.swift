@@ -5,6 +5,10 @@
 // Unterstreichung zeigt die Karte (ein zweiter öffnet). Der Stift auf dem
 // Papier schreibt weiter und öffnet nie etwas. Alles abgeleitet: nichts davon
 // kommt ins Heft. Wiederhergestellte Kopien haben keine Verweise.
+// Text editor 2: der Fließtext steht im gemeinsamen `DocumentTextStore`; jede
+// Seite unterstreicht ihren Teil davon (Hover mit Textwerkzeug kommt über die
+// Fläche, `DocumentTextSurface+LawCitations.swift`). Handschrift (P3,
+// `LawCitationInk.swift`): gestrichelter Rahmen, nur Hover und Zeigerklick.
 import UIKit
 import UIKit.UIGestureRecognizerSubclass
 import PDFKit
@@ -15,6 +19,9 @@ import NotebookCore
 /// (`WorksheetView` bounds: canonical page point + content origin), so zoom
 /// and scroll of the notebook move it with the page.
 struct LawCitationPlacement {
+    /// Where the citation stands: a free field, the page's PDF text, Text
+    /// editor 2's flow (`DocumentTextStore`) or recognised ink.
+    enum Kind: Hashable { case field, pdf, flow, ink }
     struct Line {
         /// Hit area of this line's part of the citation.
         var area: CGRect
@@ -24,15 +31,17 @@ struct LawCitationPlacement {
     }
     /// Identity on the page: two equal citations in different fields (or
     /// places) are different placements.
-    struct Key: Hashable { var boxID: UUID?; var location: Int; var length: Int }
+    struct Key: Hashable { var kind: Kind; var boxID: UUID?; var location: Int; var length: Int }
     var citation: LawCitation
-    /// The text field it stands in; nil: the page's PDF text.
+    var kind: Kind
+    /// The text field it stands in (the flow's segment on this page for
+    /// `.flow`); nil: the page's PDF text or ink.
     var boxID: UUID?
     var lines: [Line]
     var bounds: CGRect
     /// Drawn in the colour for dark paper.
     var onDark: Bool
-    var key: Key { Key(boxID: boxID, location: citation.range.location, length: citation.range.length) }
+    var key: Key { Key(kind: kind, boxID: boxID, location: citation.range.location, length: citation.range.length) }
 
     func contains(_ point: CGPoint, slop: CGFloat) -> Bool {
         lines.contains { $0.area.insetBy(dx: -slop, dy: -slop).contains(point) }
@@ -55,10 +64,22 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     private let touches = LawCitationTouchObserver(target: nil, action: nil)
     private var model: LawCitationPreviewModel { .shared }
     private var subscriptions: Set<AnyCancellable> = []
-    /// Text editor 2 draws flow text through its own store (read once, like the viewport).
-    private let documentEditor = UserDefaults.standard.bool(forKey: AppSettingsKey.textEditor2)
-
+    /// Text fields, PDF text and flow (`build`), and ink (`inkReader`).
+    private var textPlacements: [LawCitationPlacement] = []
+    private var inkPlacements: [LawCitationPlacement] = []
     private(set) var placements: [LawCitationPlacement] = []
+    /// Handwriting citations (P3), recognised while the ink rests.
+    private let inkReader = LawCitationInkReader()
+    /// Text editor 2 on this sheet: the store's text read for the last scan.
+    private var flowText: (store: ObjectIdentifier, version: Int, text: String)?
+    private var flowCache: (key: FlowKey, found: [LawCitation], placements: [LawCitationPlacement])?
+    /// Counts edits of the attached store's text (`NSTextStorage` notifications).
+    private var flowVersion = 0
+    private weak var observedStorage: NSTextStorage?
+    private var flowObserver: NSObjectProtocol?
+    /// The flow's citations hide from an edit of its text until it is scanned again.
+    private var flowStale = false
+    private var lastFlowKey: FlowKey?
     /// Field being edited: its underlines are hidden until editing ends.
     private var editingBox: UUID?
     /// Fields an object preview (drag, resize, lift) shows elsewhere than the page.
@@ -66,6 +87,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// Scanner results for the current page's texts, for `scannedGeneration`.
     private var scanned: [String: [LawCitation]] = [:]
     private var scannedGeneration = -1
+    /// Default law the scanned results were found with (notebook context).
+    private var scannedLawID: String?
     /// Laid-out citations per field, valid while field, line paper, origin and citations are unchanged.
     private var boxCache: [UUID: (box: TextBox, paper: TextLinePaper, origin: PagePoint, found: [LawCitation], placements: [LawCitationPlacement])] = [:]
     /// `PDFPage.string`, read once per source page (`LawCitationPDFText`).
@@ -93,6 +116,9 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// The placement this sheet last presented (hover or tap): the model
     /// compares citations, this tells equal ones apart.
     private var presentedKey: LawCitationPlacement.Key?
+    /// The recogniser whose hover is running: the sheet's own or the text
+    /// surface's (Text editor 2 with the text tool lies above the sheets).
+    private weak var hoverSource: UIHoverGestureRecognizer?
     private var feedback: UIFeedbackGenerator?
     /// The placement the last touch-down's tap belongs to (`ownsTap`).
     private var downTarget: LawCitationPlacement.Key?
@@ -112,6 +138,15 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         var boxes: [TextBox]
         var source: ObjectIdentifier?
         var generation: Int
+        var context: NotebookLawContext
+        var flow: FlowKey?
+    }
+    /// Text editor 2's page on this sheet: store, container, origin and text version.
+    private struct FlowKey: Equatable {
+        var store: ObjectIdentifier
+        var page: Int?
+        var origin: CGPoint
+        var version: Int
     }
 
     /// Only remembers the sheet: views and gestures follow with the first
@@ -145,6 +180,11 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         model.$scannerGeneration.removeDuplicates().dropFirst()
             .sink { [weak self] _ in self?.scannerChanged() }
             .store(in: &subscriptions)
+        model.$handwritingEnabled.removeDuplicates().dropFirst()
+            .sink { [weak self] _ in self?.scannerChanged() }
+            .store(in: &subscriptions)
+        inkReader.onChange = { [weak self] in self?.inkChanged() }
+        inkReader.isIdle = { [weak self] in self?.inkIdle ?? false }
     }
 
     // MARK: Viewport
@@ -193,19 +233,66 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         if let previous = pageID, previous != editor.pageID { pageLeft(previous) }
         pageID = editor.pageID
         guard model.scanner != nil else { clear(); return }
+        let flow = currentFlowKey()
+        lastFlowKey = flow
+        inkReader.update(pageID: editor.pageID, drawing: editor.drawing, layout: editor.layout, scanner: model.scanner,
+                         generation: model.scannerGeneration, lawID: editor.lawContext.defaultLawID,
+                         enabled: model.handwritingEnabled && sheet.window != nil)
         let key = ContentKey(pageID: editor.pageID, layout: editor.layout, paper: sheet.textLayer.linePaper,
                              boxes: editor.textBoxes, source: editor.sourcePage.map { ObjectIdentifier($0) },
-                             generation: model.scannerGeneration)
+                             generation: model.scannerGeneration, context: editor.lawContext, flow: flow)
         guard key != requested else { return }
         // Another page or geometry: old positions are never shown on it.
-        if requested?.pageID != key.pageID || requested?.layout != key.layout { placements = []; redraw() }
+        if requested?.pageID != key.pageID || requested?.layout != key.layout { textPlacements = []; placementsChanged() }
         requested = key
         schedule(after: allScanned(editor) ? 0 : Self.debounce)
     }
 
+    // MARK: Text editor 2
+
+    /// The shared layout's page this sheet draws (`TextObjectLayer.showDocumentPage`).
+    private var flowRaster: DocumentPageRaster? {
+        guard let layer = sheet?.textLayer else { return nil }
+        return layer.subviews.lazy.compactMap { $0 as? DocumentPageRaster }.first { $0.store != nil }
+    }
+    private func currentFlowKey() -> FlowKey? {
+        guard let sheet, let raster = flowRaster, let store = raster.store else { observe(nil); return nil }
+        observe(store.storage)
+        return FlowKey(store: ObjectIdentifier(store), page: raster.page,
+                       origin: sheet.textLayer.convert(raster.textOrigin, to: sheet), version: flowVersion)
+    }
+    /// Edits of the flow's text: its underlines hide and it is scanned again.
+    private func observe(_ storage: NSTextStorage?) {
+        guard storage !== observedStorage else { return }
+        if let flowObserver { NotificationCenter.default.removeObserver(flowObserver) }
+        flowObserver = nil; observedStorage = storage
+        guard let storage else { return }
+        flowObserver = NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification, object: storage, queue: nil) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.flowVersion &+= 1
+                if !self.flowStale { self.flowStale = true; self.redraw() }
+                // Never inside the edit itself.
+                DispatchQueue.main.async { [weak self] in self?.contentChanged() }
+            }
+        }
+    }
+    /// Every rendering pass (`WorksheetView.updateRendering`): the viewport
+    /// attaches the flow's page without configuring the sheet again.
+    private func flowMoved() {
+        guard installed, sheet?.configuration?.lawCitations == true, model.scanner != nil else { return }
+        let key = currentFlowKey()
+        guard key != lastFlowKey else { return }
+        lastFlowKey = key
+        contentChanged()
+    }
+
     /// Every text the page shows has its scanner result (moved or restyled fields).
     private func allScanned(_ editor: PageEditor) -> Bool {
-        guard scannedGeneration == model.scannerGeneration else { return false }
+        guard scannedGeneration == model.scannerGeneration, scannedLawID == editor.lawContext.defaultLawID else { return false }
+        if let flow = lastFlowKey, flow.page != nil {
+            guard let read = flowText, read.store == flow.store, read.version == flow.version, scanned[read.text] != nil else { return false }
+        }
         if let source = editor.sourcePage {
             guard pdfPage === source, pdfLoaded else { return false }
             if let pdfString, !pdfString.isEmpty, scanned[pdfString] == nil { return false }
@@ -235,9 +322,10 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         guard let scanner = model.scanner else { clear(); return }
         // Never while a stroke is drawn: try again once the Pencil rests.
         if sheet.inkActive || touches.pencilDown { schedule(); return }
-        let generation = model.scannerGeneration
-        if generation != scannedGeneration {
-            scanned = [:]; boxCache = [:]; pdfCache = nil; scannedGeneration = generation
+        let generation = model.scannerGeneration, lawID = editor.lawContext.defaultLawID
+        if generation != scannedGeneration || lawID != scannedLawID {
+            scanned = [:]; boxCache = [:]; pdfCache = nil; flowCache = nil
+            scannedGeneration = generation; scannedLawID = lawID
         }
         if let source = editor.sourcePage {
             if pdfPage !== source { pdfPage = source; pdfString = nil; pdfLoaded = false; pdfCache = nil }
@@ -246,18 +334,30 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         } else { pdfPage = nil; pdfRequested = nil; pdfString = nil; pdfLoaded = false; pdfCache = nil }
         var texts = Set(editor.textBoxes.filter { scans($0) }.map(\.text))
         if let pdfString { texts.insert(pdfString) }
+        // Text editor 2: the whole flow (a bare „§“ takes the law named before it, also on earlier pages).
+        if let raster = flowRaster, let store = raster.store, raster.page != nil {
+            let id = ObjectIdentifier(store)
+            if flowText?.store != id || flowText?.version != flowVersion { flowText = (id, flowVersion, store.string) }
+            if let text = flowText?.text { texts.insert(text) }
+        } else { flowText = nil }
         texts.remove("")
         // Only this page's texts stay cached.
         scanned = scanned.filter { texts.contains($0.key) }
+        for text in texts where scanned[text] == nil {
+            if let shared = LawCitationFlowScans.result(text, generation: generation, lawID: lawID) { scanned[text] = shared }
+        }
         let missing = texts.filter { scanned[$0] == nil }
         guard !missing.isEmpty else { build(); return }
         scanToken += 1
-        let token = scanToken, page = editor.pageID
+        let token = scanToken, page = editor.pageID, flowString = flowText?.text
         Task { [weak self] in
             let found = await Task.detached(priority: .utility) {
-                missing.map { ($0, scanner.citations(in: $0)) }
+                missing.map { ($0, scanner.citations(in: $0, defaultLawID: lawID)) }
             }.value
-            guard let self, self.scanToken == token, self.scannedGeneration == generation,
+            if let flowString, let result = found.first(where: { $0.0 == flowString }) {
+                LawCitationFlowScans.remember(flowString, generation: generation, lawID: lawID, result.1)
+            }
+            guard let self, self.scanToken == token, self.scannedGeneration == generation, self.scannedLawID == lawID,
                   self.model.scannerGeneration == generation, self.sheet?.configuration?.pageID == page else { return }
             for (text, citations) in found { self.scanned[text] = citations }
             // Content changed meanwhile: its own scan follows.
@@ -281,8 +381,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     }
 
     /// Fields whose text is scanned: not the edited one (it changes with every
-    /// key), not Text editor 2's flow (drawn by its own store).
-    private func scans(_ box: TextBox) -> Bool { !(documentEditor && box.flowID != nil) && box.id != editingBox }
+    /// key), not Text editor 2's flow (drawn and scanned through its store).
+    private func scans(_ box: TextBox) -> Bool { !(box.flowID != nil && lastFlowKey != nil) && box.id != editingBox }
 
     /// Geometry for the found citations (main actor: TextKit and PDFKit).
     private func build() {
@@ -313,6 +413,44 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
                 result += placed
             }
         }
+        // Text editor 2: this page's part of the flow, if the text read is still the store's.
+        let flow = currentFlowKey()
+        lastFlowKey = flow
+        if let flow, let page = flow.page, let read = flowText, read.store == flow.store, read.version == flow.version,
+           let store = flowRaster?.store, let found = scanned[read.text] {
+            if let cached = flowCache, cached.key == flow, cached.found == found {
+                result += cached.placements
+            } else {
+                let segment = editor.textBoxes.first { $0.flowID != nil }?.id
+                let placed = Self.placements(found, flow: store, page: page, origin: flow.origin, boxID: segment, onDark: dark)
+                flowCache = (flow, found, placed)
+                result += placed
+            }
+            flowStale = false
+        } else if flow == nil || flow?.page == nil {
+            flowStale = false
+        }
+        textPlacements = result
+        placementsChanged()
+    }
+
+    /// Ink results arrived (or went): they join the text's placements.
+    private func inkChanged() {
+        guard installed, let sheet else { return }
+        let origin = sheet.pageLayout.contentOrigin
+        let dark = (sheet.configuration.map { ($0.margins?.color ?? $0.paperColor) == .dark }) ?? false
+        inkPlacements = inkReader.matches.compactMap { match in
+            let lines = match.rects.map { rect -> LawCitationPlacement.Line in
+                let area = rect.cgRect.offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: -2, dy: -2)
+                return .init(area: area, start: CGPoint(x: area.minX, y: area.maxY), end: CGPoint(x: area.maxX, y: area.maxY))
+            }
+            return Self.placement(match.citation, kind: .ink, boxID: nil, lines: lines, onDark: dark)
+        }
+        placementsChanged()
+    }
+
+    private func placementsChanged() {
+        let result = textPlacements + inkPlacements
         placements = result
         redraw()
         if let shown, !result.contains(where: { $0.key == shown }) { self.shown = nil }
@@ -322,6 +460,45 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
            !result.contains(where: { $0.key == presentedKey && $0.citation == citation }) {
             presentedKey = nil
             later(.dismiss)
+        }
+    }
+
+    /// No stroke, eraser, lasso, drag or held shape on the sheet: ink may be read.
+    private var inkIdle: Bool {
+        guard let sheet, sheet.window != nil else { return false }
+        return !sheet.inkActive && !touches.touching && sheet.eraseSession == nil && sheet.shapeErase == nil
+            && sheet.heldShape == nil && !sheet.objectLayer.showsTransientPreview
+    }
+
+    /// Lines of each citation of the flow on container `page` of the shared
+    /// layout; `origin`: the container's origin on the sheet.
+    private static func placements(_ found: [LawCitation], flow store: DocumentTextStore, page: Int, origin: CGPoint,
+                                   boxID: UUID?, onDark: Bool) -> [LawCitationPlacement] {
+        guard store.containers.indices.contains(page) else { return [] }
+        let storage = store.storage, manager = store.manager, container = store.containers[page]
+        let pageGlyphs = manager.glyphRange(for: container)
+        guard pageGlyphs.length > 0 else { return [] }
+        let pageCharacters = manager.characterRange(forGlyphRange: pageGlyphs, actualGlyphRange: nil)
+        return found.compactMap { citation in
+            let range = citation.range
+            guard range.length > 0, range.location >= 0, NSMaxRange(range) <= storage.length,
+                  NSIntersectionRange(range, pageCharacters).length > 0 else { return nil }
+            let size = (storage.attribute(.font, at: range.location, effectiveRange: nil) as? UIFont)?.pointSize ?? 14
+            let glyphs = NSIntersectionRange(manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil), pageGlyphs)
+            guard glyphs.length > 0 else { return nil }
+            var lines: [LawCitationPlacement.Line] = []
+            manager.enumerateLineFragments(forGlyphRange: glyphs) { fragment, _, _, lineGlyphs, _ in
+                let part = NSIntersectionRange(lineGlyphs, glyphs)
+                guard part.length > 0 else { return }
+                let rect = manager.boundingRect(forGlyphRange: part, in: container)
+                guard !rect.isEmpty, rect.minX.isFinite, rect.width > 0.5 else { return }
+                let baseline = fragment.minY + manager.location(forGlyphAt: part.location).y
+                let y = min(rect.maxY, baseline + max(1, size * 0.14))
+                lines.append(.init(area: rect.offsetBy(dx: origin.x, dy: origin.y),
+                                   start: CGPoint(x: rect.minX + origin.x, y: y + origin.y),
+                                   end: CGPoint(x: rect.maxX + origin.x, y: y + origin.y)))
+            }
+            return placement(citation, kind: .flow, boxID: boxID, lines: lines, onDark: onDark)
         }
     }
 
@@ -349,7 +526,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
                                    start: CGPoint(x: rect.minX, y: y).applying(transform),
                                    end: CGPoint(x: rect.maxX, y: y).applying(transform)))
             }
-            return placement(citation, boxID: box.id, lines: lines, onDark: onDark)
+            return placement(citation, kind: .field, boxID: box.id, lines: lines, onDark: onDark)
         }
     }
 
@@ -380,7 +557,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
                 let x = area.maxX - area.width * 0.12
                 return .init(area: area, start: CGPoint(x: x, y: area.minY), end: CGPoint(x: x, y: area.maxY))
             }
-            return placement(citation, boxID: nil, lines: lines, onDark: false)
+            return placement(citation, kind: .pdf, boxID: nil, lines: lines, onDark: false)
         }
     }
     /// Whitespace collapsed, soft hyphens removed.
@@ -389,10 +566,11 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
             .split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
-    private static func placement(_ citation: LawCitation, boxID: UUID?, lines: [LawCitationPlacement.Line], onDark: Bool) -> LawCitationPlacement? {
+    private static func placement(_ citation: LawCitation, kind: LawCitationPlacement.Kind, boxID: UUID?,
+                                  lines: [LawCitationPlacement.Line], onDark: Bool) -> LawCitationPlacement? {
         guard let first = lines.first else { return nil }
         let bounds = lines.dropFirst().reduce(first.area) { $0.union($1.area) }
-        return LawCitationPlacement(citation: citation, boxID: boxID, lines: lines, bounds: bounds, onDark: onDark)
+        return LawCitationPlacement(citation: citation, kind: kind, boxID: boxID, lines: lines, bounds: bounds, onDark: onDark)
     }
 
     private func clear() {
@@ -400,21 +578,27 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         cancelDwell()
         shown = nil
         if presentsHere { presentedKey = nil; later(.dismiss) }
+        inkReader.clear(); inkPlacements = []
+        observe(nil); flowText = nil; flowCache = nil; lastFlowKey = nil; flowStale = false
         guard !placements.isEmpty || !boxCache.isEmpty || !scanned.isEmpty else { return }
-        placements = []; boxCache = [:]; pdfCache = nil; scanned = [:]
+        placements = []; textPlacements = []; boxCache = [:]; pdfCache = nil; scanned = [:]
         redraw()
     }
 
     // MARK: Display
 
     private var visiblePlacements: [LawCitationPlacement] {
-        guard editingBox != nil || !previewBoxes.isEmpty else { return placements }
-        return placements.filter { $0.boxID.map { $0 != editingBox && !previewBoxes.contains($0) } ?? true }
+        guard editingBox != nil || !previewBoxes.isEmpty || flowStale else { return placements }
+        return placements.filter { placement in
+            if placement.kind == .flow { return !flowStale }
+            return placement.boxID.map { $0 != editingBox && !previewBoxes.contains($0) } ?? true
+        }
     }
     private func redraw() { if installed { underline.show(visiblePlacements) } }
 
     /// The sheet's zoom (page point → screen point): dots stay the same size on screen.
     func displayScaleChanged(_ scale: CGFloat) {
+        flowMoved()
         guard installed, scale.isFinite, scale > 0, abs(scale - displayScale) / displayScale > 0.15 else { return }
         displayScale = scale
         underline.restyle(scale: scale)
@@ -456,6 +640,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     }
     private func detached() {
         pending?.cancel(); pending = nil; requested = nil
+        inkReader.suspend()
         cancelDwell(); shown = nil
         if presentsHere { presentedKey = nil; later(.dismiss) }
     }
@@ -467,6 +652,13 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         visiblePlacements.first { $0.key == key }
     }
     private var screenScale: CGFloat { sheet?.screenScale ?? 1 }
+    private var context: NotebookLawContext { sheet?.configuration?.lawContext ?? NotebookLawContext() }
+    /// The citation in canonical page coordinates (union of its lines).
+    private func pageRect(_ placement: LawCitationPlacement) -> PageRect? {
+        guard let sheet else { return nil }
+        let origin = sheet.pageLayout.contentOrigin
+        return PageRect(placement.bounds.offsetBy(dx: -origin.x, dy: -origin.y))
+    }
     private func anchor(_ placement: LawCitationPlacement) -> CGRect {
         sheet?.convert(placement.bounds, to: nil) ?? placement.bounds
     }
@@ -502,16 +694,35 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         return true
     }
 
-    @objc private func hovered(_ recognizer: UIHoverGestureRecognizer) {
+    @objc private func hovered(_ recognizer: UIHoverGestureRecognizer) { handleHover(recognizer, ended: false) }
+
+    /// Text editor 2 with the text tool: the document surface lies above the
+    /// sheets and forwards its hover over this sheet here (`ended`: it left it).
+    func forwardedHover(_ recognizer: UIHoverGestureRecognizer, ended: Bool) {
+        guard installed else { return }
+        handleHover(recognizer, ended: ended)
+    }
+    /// A touch on the document surface above this sheet: hides a card as on the sheet.
+    func forwardedTouchDown(_ touch: UITouch) {
+        guard installed else { return }
+        touchBegan(touch)
+    }
+
+    private func handleHover(_ recognizer: UIHoverGestureRecognizer, ended: Bool) {
         guard let sheet else { return }
-        switch recognizer.state {
+        // Another recogniser takes over (sheet ↔ surface): its own sequence.
+        if hoverSource !== recognizer, !ended { cancelDwell(); hoverKind = nil }
+        let state: UIGestureRecognizer.State = ended ? .ended : recognizer.state
+        if state == .began || state == .changed { hoverSource = recognizer }
+        else if hoverSource !== recognizer { return }
+        switch state {
         case .began, .changed:
             let previous = hoverKind
             let kind = classify(recognizer)
             if previous != nil, previous != kind { cancelDwell() }
             let point = recognizer.location(in: sheet), window = recognizer.location(in: nil)
             hoverPoint = point
-            if kind == .pencil, recognizer.state == .began, !placements.isEmpty, #available(iOS 17.5, *) {
+            if kind == .pencil, state == .began, !placements.isEmpty, #available(iOS 17.5, *) {
                 if feedback == nil { feedback = UICanvasFeedbackGenerator(view: sheet) }
                 feedback?.prepare()
             }
@@ -528,7 +739,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
                 startDwell(kind, after: kind == .pencil ? Self.pencilDwell : Self.pointerDwell)
             }
         default:
-            cancelDwell(); hoverKind = nil; hoverPoint = nil
+            cancelDwell(); hoverKind = nil; hoverPoint = nil; hoverSource = nil
             if shown != nil { shown = nil; model.endHover() }
         }
     }
@@ -543,8 +754,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
 
     private func dwellEnded(_ kind: HoverKind) {
         dwell = nil
-        guard sheet != nil, let key = dwellKey, let point = hoverPoint, hoverKind == kind,
-              hover.state == .began || hover.state == .changed, allowsHover(kind),
+        guard sheet != nil, let key = dwellKey, let point = hoverPoint, hoverKind == kind, let source = hoverSource,
+              source.state == .began || source.state == .changed, allowsHover(kind),
               let hit = placement(key), hit.contains(point, slop: 3 / screenScale) else { dwellKey = nil; return }
         if kind == .pencil {
             // Writing: the Pencil hovers between letters all the time.
@@ -553,7 +764,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         }
         shown = key
         prepareToPresent(hit)
-        model.hover(hit.citation, anchor: anchor(hit), input: kind == .pencil ? .pencilHover : .pointerHover, pageID: pageID)
+        model.hover(hit.citation, anchor: anchor(hit), input: kind == .pencil ? .pencilHover : .pointerHover, pageID: pageID,
+                    context: context, pageRect: pageRect(hit), fromHandwriting: hit.kind == .ink)
         if kind == .pencil, #available(iOS 17.5, *), let generator = feedback as? UICanvasFeedbackGenerator {
             generator.alignmentOccurred(at: point)
         }
@@ -615,7 +827,9 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         if tool == .text || tool.isEraser || tool == .laser { return nil }
         // With finger drawing the finger writes (as `acceptsFingerObjectTaps`).
         if editor.fingerDrawing, editor.enabled, tool != .read { return nil }
-        guard let hit = placement(at: point, slop: 6 / screenScale) else { return nil }
+        // Ink citations never take a finger: it selects and moves ink there.
+        let slop = 6 / screenScale
+        guard let hit = visiblePlacements.first(where: { $0.kind != .ink && $0.contains(point, slop: slop) }) else { return nil }
         if hit.boxID != nil { return tool == .read ? hit : nil }
         return sheet.objectHits(at: point).isEmpty ? hit : nil
     }
@@ -630,7 +844,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         guard gesture.state == .ended, let sheet, let hit = target(at: gesture.location(in: sheet)) else { return }
         cancelDwell(); shown = nil
         prepareToPresent(hit)
-        model.tap(hit.citation, anchor: anchor(hit), pageID: pageID)
+        model.tap(hit.citation, anchor: anchor(hit), pageID: pageID,
+                  context: context, pageRect: pageRect(hit), fromHandwriting: hit.kind == .ink)
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
@@ -640,6 +855,21 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         return touches.lastType == wanted && target(at: gestureRecognizer.location(in: sheet)) != nil
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+}
+
+/// Scanner results of Text editor 2's flow, shared by the sheets showing it:
+/// one document text is scanned once, not by every visible page.
+@MainActor
+enum LawCitationFlowScans {
+    private static var last: (text: String, generation: Int, lawID: String?, found: [LawCitation])?
+    static func result(_ text: String, generation: Int, lawID: String?) -> [LawCitation]? {
+        guard let last, last.generation == generation, last.lawID == lawID, last.text.utf16.count == text.utf16.count,
+              last.text == text else { return nil }
+        return last.found
+    }
+    static func remember(_ text: String, generation: Int, lawID: String?, _ found: [LawCitation]) {
+        last = (text, generation, lawID, found)
+    }
 }
 
 /// `PDFPage.string` for the sheets, one page per run-loop turn with a short
@@ -665,10 +895,13 @@ enum LawCitationPDFText {
     }
 }
 
-/// Dotted underlines of the sheet's citations. Display only, takes no touches.
+/// Dotted underlines of the sheet's citations; handwriting ones get a faint
+/// dashed rounded outline instead (recognised, not certain). Display only,
+/// takes no touches.
 @MainActor
 final class LawCitationUnderlineView: UIView {
     private let light = CAShapeLayer(), dark = CAShapeLayer()
+    private let inkLight = CAShapeLayer(), inkDark = CAShapeLayer()
     var onWindowChange: ((Bool) -> Void)?
 
     override init(frame: CGRect) {
@@ -679,6 +912,12 @@ final class LawCitationUnderlineView: UIView {
         dark.strokeColor = UIColor(red: 0.55, green: 0.75, blue: 1, alpha: 0.7).cgColor
         for layer in [light, dark] {
             layer.fillColor = UIColor.clear.cgColor; layer.lineCap = .round
+            self.layer.addSublayer(layer)
+        }
+        inkLight.strokeColor = UIColor(red: 0.16, green: 0.42, blue: 0.86, alpha: 0.38).cgColor
+        inkDark.strokeColor = UIColor(red: 0.55, green: 0.75, blue: 1, alpha: 0.45).cgColor
+        for layer in [inkLight, inkDark] {
+            layer.fillColor = UIColor.clear.cgColor; layer.lineCap = .butt
             self.layer.addSublayer(layer)
         }
         restyle(scale: 1)
@@ -692,13 +931,24 @@ final class LawCitationUnderlineView: UIView {
 
     func show(_ placements: [LawCitationPlacement]) {
         let lightPath = CGMutablePath(), darkPath = CGMutablePath()
+        let inkLightPath = CGMutablePath(), inkDarkPath = CGMutablePath()
         for placement in placements {
+            if placement.kind == .ink {
+                let path = placement.onDark ? inkDarkPath : inkLightPath
+                for line in placement.lines {
+                    let radius = min(4, line.area.height / 3, line.area.width / 3)
+                    path.addRoundedRect(in: line.area, cornerWidth: radius, cornerHeight: radius)
+                }
+                continue
+            }
             let path = placement.onDark ? darkPath : lightPath
             for line in placement.lines { path.move(to: line.start); path.addLine(to: line.end) }
         }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         light.path = lightPath.isEmpty ? nil : lightPath
         dark.path = darkPath.isEmpty ? nil : darkPath
+        inkLight.path = inkLightPath.isEmpty ? nil : inkLightPath
+        inkDark.path = inkDarkPath.isEmpty ? nil : inkDarkPath
         isHidden = placements.isEmpty
         CATransaction.commit()
     }
@@ -710,6 +960,12 @@ final class LawCitationUnderlineView: UIView {
         for layer in [light, dark] {
             layer.lineWidth = width
             layer.lineDashPattern = [NSNumber(value: 0.01), NSNumber(value: Double(width * 2.7))]
+        }
+        // About 1 screen point wide, dashes of 4 and gaps of 3 screen points.
+        let thin = min(1.5, max(0.25, 1 / scale))
+        for layer in [inkLight, inkDark] {
+            layer.lineWidth = thin
+            layer.lineDashPattern = [NSNumber(value: Double(4 / scale)), NSNumber(value: Double(3 / scale))]
         }
         CATransaction.commit()
     }
@@ -728,6 +984,8 @@ final class LawCitationTouchObserver: UIGestureRecognizer {
     private(set) var lastType: UITouch.TouchType?
     private(set) var selectionAtDown = false
     var pencilDown: Bool { !pencils.isEmpty }
+    /// Any touch (finger, Pencil, pointer) is down on the sheet.
+    var touching: Bool { !active.isEmpty }
 
     override init(target: Any?, action: Selector?) {
         super.init(target: target, action: action)

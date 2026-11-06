@@ -70,7 +70,7 @@ extension LawReaderView {
             textSelection.clear()
             selectedID = entry.id; versionID = doc.version; document = doc
             let shown = found ?? doc.sections.first
-            sectionID = shown?.id ?? ""; jumpParagraph = paragraph
+            sectionID = shown?.id ?? ""; jump(to: paragraph)
             pdfURL = nil; viewPDF = false; pdfTarget = nil
             follow(shown, from: field)
             return .opened
@@ -80,13 +80,23 @@ extension LawReaderView {
             return .failed
         }
     }
+    /// Scrolls the text to an Absatz of the shown section (again, if it is the
+    /// same) and highlights it; nil just ends a pending target.
+    func jump(to paragraph: String?) {
+        jumpParagraph = paragraph; restoreOffset = nil
+        if paragraph != nil { jumpSerial += 1 }
+    }
+    /// Puts the text back at an earlier offset (way back), once the section shows.
+    func restore(offset: CGFloat) {
+        jumpParagraph = nil; restoreOffset = offset; jumpSerial += 1
+    }
     func search(_ value: String, allowFullText: Bool = false, bareReference: Bool = true, from field: LawLookupField) async {
         if let target = LawQuickTarget.parse(value, entries: laws.entries), let entry = laws.entries.first(where: { $0.id == target.lawID }) {
             await open(entry, target: target.reference.key, paragraph: target.reference.paragraph, from: field)
         } else if bareReference, let ref = LawReference.parse(value), let entry {
             if let doc = document, let s = doc.sections.first(where: { $0.keys.contains(ref.key) }) {
                 showSection(s, from: field)
-                jumpParagraph = ref.paragraph
+                jump(to: ref.paragraph)
             } else { await open(entry, version: document?.version, target: ref.key, paragraph: ref.paragraph, from: field) }
         } else if allowFullText, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard let doc = document else { loadError = "Bitte zuerst ein Gesetz wählen."; return }

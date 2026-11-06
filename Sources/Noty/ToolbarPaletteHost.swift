@@ -38,6 +38,7 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
             }
             .frame(width: frame.width, height: frame.height)
             .notyGlass()
+            .pencilGuard()
             .offset(x: frame.x, y: frame.y)
             .animation(drag == nil ? NotyMotion.palette(reduceMotion) : nil, value: frame)
             .disabled(!enabled)
@@ -45,6 +46,7 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
                 let attached = layout.optionsFrame(preferredWidth: optionsWidth)
                 options().frame(width: attached.width, height: attached.height)
                     .notyGlass()
+                    .pencilGuard()
                     .offset(x: attached.x, y: attached.y)
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: -6)))
                     .animation(NotyMotion.palette(reduceMotion), value: attached)

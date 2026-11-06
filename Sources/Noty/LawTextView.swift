@@ -10,9 +10,20 @@ struct NativeLawText: UIViewRepresentable {
     var sectionID: String
     var fontSize: Double
     var marks: [LawTextMark]
-    var paragraph: String?
+    /// Where to scroll: an Absatz (kept in view and briefly highlighted) or a
+    /// restored offset; a new `id` repeats the same target.
+    var jump: LawTextJump? = nil
     var selection: LawTextSelection
     var pen: LawPenMode
+    /// The law shown: a bare „§ 10“ in its text means this law.
+    var lawID = ""
+    /// Its version shown (the hover card of a reference into the same law reads it).
+    var versionID = ""
+    /// A tap on a cross-reference in the text (not while marking with Pencil).
+    var onCitation: ((LawCitation) -> Void)? = nil
+    /// Whether the shown law has this section key: references into the same
+    /// law that point nowhere get no link (a misattributed list, Core note).
+    var hasSection: (@Sendable (String) -> Bool)? = nil
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> LawTextContainer {
         let container = LawTextContainer()
@@ -29,7 +40,25 @@ struct NativeLawText: UIViewRepresentable {
         tap.delegate = context.coordinator
         v.addGestureRecognizer(tap)
         context.coordinator.tap = tap
+        // Cross-references: a plain tap only, after a double tap (word
+        // selection) has failed (`shouldRequireFailureOf`).
+        let linkTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.linkTapped(_:)))
+        linkTap.delegate = context.coordinator
+        v.addGestureRecognizer(linkTap)
+        context.coordinator.linkTap = linkTap
+        // Hover over a cross-reference (Pencil, pointer) shows the citation card.
+        let hover = UIHoverGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.hovered(_:)))
+        hover.delegate = context.coordinator
+        v.addGestureRecognizer(hover)
+        // Sees every touch without taking it: touch-down hides a card of the
+        // reader, a lifted Pencil delays the next Pencil card (writing pause).
+        let watch = LawTouchWatch()
+        watch.delegate = context.coordinator
+        watch.onBegan = { [weak coordinator = context.coordinator] touch in coordinator?.touchBegan(touch) }
+        watch.onEnded = { [weak coordinator = context.coordinator] touch in coordinator?.touchEnded(touch) }
+        v.addGestureRecognizer(watch)
         context.coordinator.container = container
+        container.onLayout = { [weak coordinator = context.coordinator] in coordinator?.applyTarget() }
         container.overlay.anchor = { [weak coordinator = context.coordinator] in coordinator?.barAnchor() }
         return container
     }
@@ -40,6 +69,8 @@ struct NativeLawText: UIViewRepresentable {
         let v = container.textView
         c.parent = self
         selection.view = v
+        // Arrow keys and the space bar scroll on purpose: no target holds the text then.
+        selection.willScroll = { [weak c] in c?.dropTarget(); LawCitationPreviewModel.shared.dismissReaderCard() }
         // Building the bar's hosting controllers inside SwiftUI's update pass
         // re-entered the graph (watchdog hang in Build 97): attach afterwards.
         if container.overlay.needsAttach(controller: selection.controller, selection: selection) {
@@ -54,6 +85,9 @@ struct NativeLawText: UIViewRepresentable {
             c.stroke?.isEnabled = penActive
             v.panGestureRecognizer.allowedTouchTypes = penActive ? lawTouchTypesWithoutPencil : lawAllTouchTypes
             c.tap?.allowedTouchTypes = penActive ? lawTouchTypesWithoutPencil : lawAllTouchTypes
+            // Markieren/Radieren: links are inactive (Pencil marks, fingers select).
+            c.linkTap?.isEnabled = !penActive
+            c.applyHighlights()
         }
         let bodyKey = "\(sectionID):\(fontSize):\(text.hashValue):\(html.hashValue):\(notes.hashValue)"
         if c.bodyKey != bodyKey {
@@ -93,7 +127,10 @@ struct NativeLawText: UIViewRepresentable {
             selection.text = rendered
             c.updating = true
             v.attributedText = body
-            if changedSection { v.setContentOffset(.zero, animated: false) } else {
+            if changedSection { v.setContentOffset(.zero, animated: false) } else if c.target != nil {
+                // A jump in progress: `applyTarget` below places it in the new text.
+                v.layoutIfNeeded()
+            } else {
                 v.layoutIfNeeded()
                 var y = offset.y
                 if let topCharacter, let start = v.position(from: v.beginningOfDocument, offset: topCharacter),
@@ -105,6 +142,12 @@ struct NativeLawText: UIViewRepresentable {
             }
             c.updating = false
             c.bodyKey = bodyKey; c.sectionID = sectionID; c.fontSize = fontSize; c.marksKey = nil
+            if changedSection { c.endFlash(redraw: false); c.dropTarget(); c.endHoverCard() }
+            c.refreshFlashRange()
+            // The rich text replacing the plain one (or a new size) moves the
+            // Absatz: the jump holds on and is placed again.
+            if c.target != nil { c.hold(); c.applyTarget() }
+            c.refreshLinks()
         }
         // Marks are drawn by the layout manager: no new text, no scroll jump.
         let fixed = Set(marks.compactMap { mark in selection.controller?.laws?.liveItem(mark.id).flatMap { $0.payload["kind"]?.string == "text" ? nil : mark.id } })
@@ -118,12 +161,16 @@ struct NativeLawText: UIViewRepresentable {
         }
         let outlineKey = "\(selection.tapped):\(selection.marks):\(selection.controller?.adjusting ?? "")"
         if c.outlineKey != outlineKey { c.outlineKey = outlineKey; c.applyHighlights() }
-        let jump = "\(sectionID):\(paragraph ?? "")"
-        if c.jump != jump {
-            c.jump = jump
-            if let paragraph {
-                let r = (c.renderedText as NSString).range(of: "(\(paragraph))")
-                if r.location != NSNotFound { v.scrollRangeToVisible(r) }
+        let jumpKey = "\(sectionID):\(jump?.id ?? -1)"
+        if c.jump != jumpKey {
+            c.jump = jumpKey
+            if let paragraph = jump?.paragraph {
+                c.setTarget(.paragraph(paragraph))
+                c.startFlash(paragraph)
+            } else if let offset = jump?.offset {
+                c.setTarget(.offset(offset))
+            } else {
+                c.dropTarget()
             }
         }
     }
@@ -146,12 +193,294 @@ struct NativeLawText: UIViewRepresentable {
         var markRanges: [MarkRange] = []
         weak var stroke: LawPencilStroke?
         weak var tap: UITapGestureRecognizer?
+        weak var linkTap: UITapGestureRecognizer?
         var penActive: Bool?
+        /// Where the text has to stay after a jump (`hold`): UIKit may move the
+        /// offset once more after new text, a selection reset or a resize (it
+        /// used to fall back to the top after the jump to an Absatz). Until
+        /// the hold ends or the user scrolls, every such move is undone.
+        enum Target: Equatable { case paragraph(String), offset(CGFloat) }
+        private(set) var target: Target?
+        private var holdUntil = Date.distantPast
+        private var placing = false
+        /// The Absatz highlighted after a jump, fading out (`startFlash`).
+        private var flashParagraph: String?
+        private var flashRange: NSRange?
+        private var flashAlpha: CGFloat = 0
+        private var flashTimer: Timer?
+        /// Cross-references of the shown section (`refreshLinks`), scanned off the main thread.
+        private(set) var links: [LawCitation] = []
+        private var linkKey = ""
+        /// The tap began while text or a mark was selected: it only ends that.
+        private var tapHadSelection = false
+        private var scannerWatch: AnyCancellable?
+        // Hover cards (same rules as on a page, WorksheetView+LawCitations).
+        private enum HoverKind { case pencil, pointer }
+        private var hoverKind: HoverKind?
+        private var hoverPoint: CGPoint?
+        private weak var hoverSource: UIHoverGestureRecognizer?
+        private var dwell: DispatchWorkItem?
+        private var dwellLink: NSRange?
+        private var dwellAnchor = CGPoint.zero
+        /// The link whose card this view's hover asked for.
+        private var shownLink: NSRange?
+        private var pencilDown = false
+        private var lastPencilLift: CFTimeInterval = 0
+        private var feedback: UIFeedbackGenerator?
+        private static let pencilDwell: TimeInterval = 0.5
+        private static let pointerDwell: TimeInterval = 0.4
+        private static let writingPause: CFTimeInterval = 1.0
+        private static let restTolerance: CGFloat = 6
         private var strokeStart: Int?
         private var strokePreview: NSRange?
         /// The line a Pencil stroke is bound to (text view coordinates).
         private var boundLine: (mid: CGFloat, height: CGFloat)?
-        init(_ parent: NativeLawText) { self.parent = parent }
+        init(_ parent: NativeLawText) {
+            self.parent = parent
+            super.init()
+            scannerWatch = LawCitationPreviewModel.shared.$readerScannerGeneration.dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in MainActor.assumeIsolated { self?.linkKey = ""; self?.refreshLinks() } }
+        }
+
+        // MARK: Jump target and Absatz highlight
+
+        func setTarget(_ next: Target) {
+            target = next
+            hold()
+            applyTarget()
+        }
+        /// Keeps the target for a moment after the latest change of the text.
+        func hold() { holdUntil = Date().addingTimeInterval(1.5) }
+        func dropTarget() { target = nil }
+        /// Puts the target at the top of the view (an Absatz a little below the
+        /// edge). Called after every change of text, size or offset while held.
+        func applyTarget() {
+            guard let target, !placing, let v = view, let container else { return }
+            guard Date() < holdUntil else { self.target = nil; return }
+            // Not laid out yet (the window opening): the next layout pass places it.
+            guard v.bounds.height > 1, v.bounds.width > 1 else { return }
+            let layout = container.layout, inset = v.textContainerInset
+            layout.ensureLayout(for: v.textContainer)
+            var y: CGFloat
+            switch target {
+            case .paragraph(let paragraph):
+                guard let range = LawAbsatz.range(paragraph, in: renderedText), range.location < bodyLength else { self.target = nil; return }
+                let glyphs = layout.glyphRange(forCharacterRange: NSRange(location: range.location, length: 1), actualCharacterRange: nil)
+                let rect = layout.boundingRect(forGlyphRange: glyphs, in: v.textContainer)
+                guard rect.minY.isFinite else { return }
+                y = rect.minY + inset.top - 10
+            case .offset(let offset):
+                y = offset
+            }
+            let used = layout.usedRect(for: v.textContainer)
+            let height = max(v.contentSize.height, used.maxY + inset.top + inset.bottom)
+            let top = -v.adjustedContentInset.top
+            let limit = max(top, height + v.adjustedContentInset.bottom - v.bounds.height)
+            y = min(max(top, y), limit)
+            guard abs(v.contentOffset.y - y) > 0.5 else { return }
+            placing = true
+            v.setContentOffset(CGPoint(x: v.contentOffset.x, y: y), animated: false)
+            placing = false
+        }
+        /// A soft accent behind the Absatz, fading out after about 2 s (with
+        /// Reduce Motion it disappears without fading).
+        func startFlash(_ paragraph: String) {
+            flashTimer?.invalidate(); flashTimer = nil
+            flashParagraph = paragraph
+            refreshFlashRange()
+            guard flashRange != nil else { flashParagraph = nil; return }
+            flashAlpha = 1
+            applyHighlights()
+            let start = Date()
+            if UIAccessibility.isReduceMotionEnabled {
+                flashTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.endFlash(redraw: true) }
+                }
+                return
+            }
+            flashTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
+                // The view went away: the timer ends itself.
+                let gone = MainActor.assumeIsolated { () -> Bool in
+                    guard let self else { return true }
+                    let elapsed = Date().timeIntervalSince(start)
+                    guard elapsed > 1.3 else { return false }
+                    let alpha = 1 - CGFloat(elapsed - 1.3) / 0.8
+                    if alpha <= 0 { self.endFlash(redraw: true) } else { self.flashAlpha = alpha; self.applyHighlights() }
+                    return false
+                }
+                if gone { timer.invalidate() }
+            }
+        }
+        func endFlash(redraw: Bool) {
+            flashTimer?.invalidate(); flashTimer = nil
+            let had = flashRange != nil
+            flashParagraph = nil; flashRange = nil; flashAlpha = 0
+            if had, redraw { applyHighlights() }
+        }
+        /// The highlighted Absatz in the text shown now (plain or rich).
+        func refreshFlashRange() {
+            guard let flashParagraph else { flashRange = nil; return }
+            flashRange = LawAbsatz.range(flashParagraph, in: renderedText).flatMap { NSMaxRange($0) <= bodyLength ? $0 : nil }
+        }
+
+        // MARK: Cross-references
+
+        /// Scans the shown section once per text (cached), away from the main thread.
+        func refreshLinks() {
+            let law = parent.lawID, text = renderedText
+            let preview = LawCitationPreviewModel.shared
+            guard let scanner = preview.readerScanner, !law.isEmpty, !text.isEmpty else {
+                linkKey = ""
+                if !links.isEmpty { links = []; applyHighlights() }
+                return
+            }
+            let key = "\(law)|\(preview.readerScannerGeneration)|\((text as NSString).length)|\(text.hashValue)"
+            guard key != linkKey else { return }
+            linkKey = key
+            if let hit = Self.linkCache[key] { links = hit; applyHighlights(); return }
+            if !links.isEmpty { links = []; applyHighlights() }
+            Task { [weak self] in
+                let has = self?.parent.hasSection
+                let found = await Task.detached(priority: .utility) {
+                    scanner.citations(in: text, defaultLawID: law, lawText: true)
+                        .filter { $0.lawID != law || has?($0.reference.key) ?? true }
+                }.value
+                guard let self, self.linkKey == key else { return }
+                Self.linkCache[key] = found; Self.linkOrder.append(key)
+                if Self.linkOrder.count > 32 { Self.linkCache[Self.linkOrder.removeFirst()] = nil }
+                self.links = found
+                self.applyHighlights()
+            }
+        }
+        @MainActor private static var linkCache: [String: [LawCitation]] = [:]
+        @MainActor private static var linkOrder: [String] = []
+        private var linksActive: Bool { parent.pen.kind == .none && parent.onCitation != nil }
+        /// A plain tap on a cross-reference opens it in the reader. Not while
+        /// marking, not on a mark, not when the tap only ends a selection.
+        @objc func linkTapped(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended, linksActive, !tapHadSelection, let v = view,
+                  let citation = link(at: gesture.location(in: v)) else { return }
+            endHoverCard()
+            LawCitationPreviewModel.shared.dismissReaderCard()
+            UISelectionFeedbackGenerator().selectionChanged()
+            parent.onCitation?(citation)
+        }
+        /// The cross-reference under `point` (text view coordinates), not on a mark.
+        private func link(at point: CGPoint) -> LawCitation? {
+            guard let index = character(at: point), !markRanges.contains(where: { NSLocationInRange(index, $0.range) }) else { return nil }
+            return links.first { NSLocationInRange(index, $0.range) && NSMaxRange($0.range) <= bodyLength }
+        }
+        /// Lines of a link in text view coordinates.
+        private func linkRect(_ range: NSRange) -> CGRect? {
+            guard let v = view, let container, NSMaxRange(range) <= container.storage.length else { return nil }
+            let glyphs = container.layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let union = container.layout.lineRects(glyphs, text: container.storage.string as NSString, storage: container.storage, container: v.textContainer)
+                .reduce(CGRect.null) { $0.union($1) }
+            guard !union.isNull else { return nil }
+            return union.offsetBy(dx: v.textContainerInset.left, dy: v.textContainerInset.top)
+        }
+
+        // MARK: Hover card over cross-references
+
+        /// Pointer hover reports no height and no tilt; a hovering Pencil does.
+        private func classify(_ recognizer: UIHoverGestureRecognizer) -> HoverKind {
+            let pencil = recognizer.zOffset > 0.0001 || recognizer.altitudeAngle < .pi / 2 - 0.02
+            if recognizer.state == .began || hoverKind == nil { hoverKind = pencil ? .pencil : .pointer }
+            else if pencil { hoverKind = .pencil }
+            return hoverKind ?? .pointer
+        }
+        /// Markieren/Radieren: no links and no cards; never with the Pencil down.
+        private func allowsHover(_ kind: HoverKind) -> Bool {
+            guard linksActive, !links.isEmpty, view?.window != nil else { return false }
+            if kind == .pencil, pencilDown { return false }
+            return true
+        }
+        @objc func hovered(_ recognizer: UIHoverGestureRecognizer) {
+            guard let v = view else { return }
+            switch recognizer.state {
+            case .began, .changed:
+                hoverSource = recognizer
+                let previous = hoverKind
+                let kind = classify(recognizer)
+                if previous != nil, previous != kind { cancelDwell() }
+                let point = recognizer.location(in: v), window = recognizer.location(in: nil)
+                hoverPoint = point
+                if kind == .pencil, recognizer.state == .began, !links.isEmpty, #available(iOS 17.5, *) {
+                    if feedback == nil { feedback = UICanvasFeedbackGenerator(view: v) }
+                    feedback?.prepare()
+                }
+                // Leaving needs a few points more than entering.
+                if let shownLink {
+                    if let rect = linkRect(shownLink), rect.insetBy(dx: -8, dy: -8).contains(point) { return }
+                    self.shownLink = nil
+                    LawCitationPreviewModel.shared.endHover()
+                }
+                guard allowsHover(kind), let hit = link(at: point) else { cancelDwell(); return }
+                let moved = hypot(window.x - dwellAnchor.x, window.y - dwellAnchor.y)
+                if hit.range != dwellLink || dwell == nil || (kind == .pencil && moved > Self.restTolerance) {
+                    dwellLink = hit.range; dwellAnchor = window
+                    startDwell(kind, after: kind == .pencil ? Self.pencilDwell : Self.pointerDwell)
+                }
+            default:
+                cancelDwell(); hoverKind = nil; hoverPoint = nil; hoverSource = nil
+                endHoverCard()
+            }
+        }
+        private func startDwell(_ kind: HoverKind, after delay: TimeInterval) {
+            dwell?.cancel()
+            let work = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.dwellEnded(kind) } }
+            dwell = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+        private func cancelDwell() { dwell?.cancel(); dwell = nil; dwellLink = nil }
+        private func dwellEnded(_ kind: HoverKind) {
+            dwell = nil
+            guard let v = view, let range = dwellLink, let point = hoverPoint, hoverKind == kind, let source = hoverSource,
+                  source.state == .began || source.state == .changed, allowsHover(kind),
+                  let hit = link(at: point), hit.range == range, let rect = linkRect(range) else { dwellLink = nil; return }
+            if kind == .pencil {
+                // Writing or marking just happened: the Pencil hovers between strokes.
+                let since = CACurrentMediaTime() - lastPencilLift
+                if since < Self.writingPause { startDwell(kind, after: Self.writingPause - since); return }
+            }
+            shownLink = range
+            let follow: (LawCitation) -> Void = { [weak self] citation in self?.parent.onCitation?(citation) }
+            LawCitationPreviewModel.shared.hoverInReader(hit, anchor: v.convert(rect, to: nil), input: kind == .pencil ? .pencilHover : .pointerHover,
+                                                         lawID: parent.lawID, versionID: parent.versionID, follow: follow)
+            if kind == .pencil, #available(iOS 17.5, *), let generator = feedback as? UICanvasFeedbackGenerator {
+                generator.alignmentOccurred(at: point)
+            }
+        }
+        /// This view's hover card ends (section change, link followed).
+        func endHoverCard() {
+            cancelDwell()
+            guard shownLink != nil else { return }
+            shownLink = nil
+            LawCitationPreviewModel.shared.dismissReaderCard()
+        }
+        /// Finger or Pencil on the text: a card of the reader goes at once.
+        func touchBegan(_ touch: UITouch) {
+            if touch.type == .pencil { pencilDown = true }
+            guard touch.type == .pencil || touch.type == .direct else { return }
+            cancelDwell(); shownLink = nil
+            LawCitationPreviewModel.shared.dismissReaderCard()
+        }
+        func touchEnded(_ touch: UITouch) {
+            guard touch.type == .pencil else { return }
+            pencilDown = false
+            lastPencilLift = CACurrentMediaTime()
+        }
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            if gestureRecognizer === linkTap {
+                tapHadSelection = (view?.selectedRange.length ?? 0) > 0 || parent.selection.active
+            }
+            return true
+        }
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRequireFailureOf other: UIGestureRecognizer) -> Bool {
+            guard gestureRecognizer === linkTap, let tap = other as? UITapGestureRecognizer, tap !== self.tap else { return false }
+            return tap.numberOfTapsRequired > 1
+        }
 
         /// Rich native HTML supports tables/lists. Only use it if its exact
         /// canonical text matches the shared anchor contract; otherwise plain
@@ -205,7 +534,12 @@ struct NativeLawText: UIViewRepresentable {
                 let color = parent.pen.kind == .eraser ? UIColor.systemGray.withAlphaComponent(0.45) : lawMarkColor(parent.pen.hex).withAlphaComponent(0.6)
                 fills.append(.init(range: preview, color: color, outline: nil))
             }
+            // Behind everything: the Absatz a jump went to.
+            if let flashRange, flashAlpha > 0, NSMaxRange(flashRange) <= bodyLength {
+                fills.insert(.init(range: flashRange, color: UIColor(Color.notyAccent).withAlphaComponent(0.2 * flashAlpha), outline: nil, block: true), at: 0)
+            }
             container.layout.fills = fills
+            container.layout.links = linksActive ? links.map(\.range).filter { NSMaxRange($0) <= bodyLength } : []
             container.layout.invalidateDisplay(forCharacterRange: NSRange(location: 0, length: container.storage.length))
         }
         private func marks(in range: NSRange) -> [String] {
@@ -258,9 +592,19 @@ struct NativeLawText: UIViewRepresentable {
         }
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             container?.overlay.reposition(animated: false)
+            // UIKit moved the text after a jump (new text, selection reset):
+            // put it back once that pass is over. The user's own scrolling ends the hold.
+            if target != nil, !placing, !scrollView.isTracking, !scrollView.isDragging, !scrollView.isDecelerating {
+                DispatchQueue.main.async { [weak self] in self?.applyTarget() }
+            }
+        }
+        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            dropTarget()
+            endHoverCard(); LawCitationPreviewModel.shared.dismissReaderCard()
         }
         func textViewDidChangeSelection(_ textView: UITextView) {
             guard !updating else { return }
+            if textView.selectedRange.length > 0 { dropTarget() }
             let range = NSIntersectionRange(textView.selectedRange, NSRange(location: 0, length: bodyLength)), id = parent.sectionID
             let hit = range.length > 0 ? marks(in: range) : nil
             // Published state must not change during the SwiftUI update pass.
@@ -313,6 +657,7 @@ struct NativeLawText: UIViewRepresentable {
             guard let v = view else { return }
             switch gesture.state {
             case .began:
+                dropTarget()
                 let start = gesture.startLocation ?? gesture.location(in: v)
                 strokeStart = caret(at: start)
                 boundLine = line(at: start)
@@ -368,6 +713,69 @@ struct NativeLawText: UIViewRepresentable {
     }
 }
 
+/// Watches the touches of the law text without ever recognising: it never
+/// delays, cancels or blocks another gesture.
+final class LawTouchWatch: UIGestureRecognizer {
+    var onBegan: ((UITouch) -> Void)?
+    var onEnded: ((UITouch) -> Void)?
+    private var active = 0
+    init() {
+        super.init(target: nil, action: nil)
+        cancelsTouchesInView = false; delaysTouchesBegan = false; delaysTouchesEnded = false
+    }
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        active += touches.count
+        touches.forEach { onBegan?($0) }
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { finish(touches) }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { finish(touches) }
+    private func finish(_ touches: Set<UITouch>) {
+        touches.forEach { onEnded?($0) }
+        active = max(0, active - touches.count)
+        if active == 0 { state = .failed }
+    }
+    override func reset() { super.reset(); active = 0 }
+}
+
+/// A scroll target of `NativeLawText`.
+struct LawTextJump: Equatable {
+    /// Counts requests: the same Absatz again is a new jump.
+    var id: Int
+    var paragraph: String?
+    /// A content offset to restore (the way back), when no Absatz is named.
+    var offset: CGFloat?
+}
+
+/// Absätze in the plain section text, shared by the reader (jump, highlight)
+/// and the citation card (excerpt, quote).
+enum LawAbsatz {
+    private static let anyStart = try? NSRegularExpression(pattern: "(?m)^[ \\t\\u00A0]*\\(\\d+[a-z]?\\)")
+    /// From „(6)“ at the start of a line (else the first „(6)“ anywhere) up to
+    /// the next Absatz at the start of a line, else to the end; trailing
+    /// white space trimmed. Nil when the text has no such marker.
+    static func range(_ paragraph: String, in text: String) -> NSRange? {
+        let source = text as NSString
+        let all = NSRange(location: 0, length: source.length)
+        let marker = "(\(paragraph))"
+        var start: Int?
+        if let re = try? NSRegularExpression(pattern: "(?m)^[ \\t\\u00A0]*(" + NSRegularExpression.escapedPattern(for: marker) + ")"),
+           let match = re.firstMatch(in: text, range: all) {
+            start = match.range(at: 1).location
+        } else {
+            let found = source.range(of: marker)
+            if found.location != NSNotFound { start = found.location }
+        }
+        guard let start else { return nil }
+        let from = start + (marker as NSString).length
+        var end = source.length
+        if from < source.length, let next = anyStart?.firstMatch(in: text, range: NSRange(location: from, length: source.length - from)) {
+            end = next.range.location
+        }
+        while end > start, let scalar = UnicodeScalar(source.character(at: end - 1)), CharacterSet.whitespacesAndNewlines.contains(scalar) { end -= 1 }
+        return end > start ? NSRange(location: start, length: end - start) : nil
+    }
+}
+
 /// The law text view with its own TextKit 1 stack (marks drawn by
 /// `LawMarkLayoutManager`) and the mark overlay above it.
 final class LawTextContainer: UIView {
@@ -375,6 +783,8 @@ final class LawTextContainer: UIView {
     let layout = LawMarkLayoutManager()
     let textView: UITextView
     let overlay = LawMarkOverlay()
+    /// After every layout pass (window opening, rotation): a jump target is placed again.
+    var onLayout: (() -> Void)?
     init() {
         storage.addLayoutManager(layout)
         let textContainer = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
@@ -392,6 +802,7 @@ final class LawTextContainer: UIView {
         super.layoutSubviews()
         textView.frame = bounds
         overlay.frame = bounds
+        onLayout?()
     }
 }
 
@@ -405,17 +816,29 @@ final class LawMarkLayoutManager: NSLayoutManager {
         var range: NSRange
         var color: UIColor
         var outline: UIColor?
+        /// One block over all lines (the highlighted Absatz), not per line.
+        var block = false
     }
     var fills: [Fill] = []
+    /// Cross-references: a quiet dotted line under the text.
+    var links: [NSRange] = []
 
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
-        guard !fills.isEmpty, let storage = textStorage, let container = textContainers.first else { return }
+        guard !fills.isEmpty || !links.isEmpty, let storage = textStorage, let container = textContainers.first else { return }
         let text = storage.string as NSString
         for fill in fills where fill.range.length > 0 && NSMaxRange(fill.range) <= storage.length {
             let glyphs = glyphRange(forCharacterRange: fill.range, actualCharacterRange: nil)
             guard NSIntersectionRange(glyphs, glyphsToShow).length > 0 else { continue }
             let rects = lineRects(glyphs, text: text, storage: storage, container: container).map { $0.offsetBy(dx: origin.x, dy: origin.y) }
+            if fill.block {
+                let union = rects.reduce(CGRect.null) { $0.union($1) }
+                guard !union.isNull else { continue }
+                let block = CGRect(x: origin.x + 1, y: union.minY - 4, width: max(0, container.size.width - 2), height: union.height + 8)
+                fill.color.setFill()
+                UIBezierPath(roundedRect: block, cornerRadius: 8).fill()
+                continue
+            }
             fill.color.setFill()
             for rect in rects { UIBezierPath(roundedRect: rect, cornerRadius: min(4, rect.height / 4)).fill() }
             if let outline = fill.outline {
@@ -424,6 +847,22 @@ final class LawMarkLayoutManager: NSLayoutManager {
                     let path = UIBezierPath(roundedRect: rect.insetBy(dx: -1, dy: -1), cornerRadius: min(5, rect.height / 4 + 1))
                     path.lineWidth = 1.5; path.stroke()
                 }
+            }
+        }
+        guard !links.isEmpty else { return }
+        UIColor(Color.notyAccent).withAlphaComponent(0.75).setStroke()
+        for link in links where link.length > 0 && NSMaxRange(link) <= storage.length {
+            let glyphs = glyphRange(forCharacterRange: link, actualCharacterRange: nil)
+            guard NSIntersectionRange(glyphs, glyphsToShow).length > 0 else { continue }
+            for rect in lineRects(glyphs, text: text, storage: storage, container: container) {
+                let y = rect.maxY - 1.5 + origin.y
+                let path = UIBezierPath()
+                path.move(to: CGPoint(x: rect.minX + 1.5 + origin.x, y: y))
+                path.addLine(to: CGPoint(x: rect.maxX - 1.5 + origin.x, y: y))
+                path.lineWidth = 1.2
+                path.lineCapStyle = .round
+                path.setLineDash([0.1, 3], count: 2, phase: 0)
+                path.stroke()
             }
         }
     }

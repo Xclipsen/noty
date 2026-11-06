@@ -219,6 +219,8 @@ final class LawKeyboard: ObservableObject {
     // MARK: Actions
 
     func perform(_ action: LawShortcuts.Action) {
+        // Esc closes a law citation card first, only while one is shown.
+        if case .escape = action, LawCitationPreviewModel.shared.consumeEscape() { return }
         guard available, panel != nil else { return }
         switch action {
         case .toggleWindow:

@@ -131,6 +131,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))
         pointerBeam = TextPointerBeam(on: self) { [weak self] point in self?.pointerTextHeight(at: point) }
         addGestureRecognizer(touchWatcher)
+        installLawCitationLinks() // hover over flow citations reaches the sheet below
         touchWatcher.onEnded = { [weak self] touch in
             guard let self, self.lastTouchEndedAsTap else { return }
             let point = touch.location(in: self), count = touch.tapCount

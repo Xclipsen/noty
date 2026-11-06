@@ -41,6 +41,12 @@ struct LawReaderView: View {
     /// launches; starts at the body size of Dynamic Type.
     @AppStorage("noty.laws.fontSize") var fontSize = LawReadingStyle.defaultFontSize
     @State var jumpParagraph: String?
+    /// Counts jumps (`jump(to:)`, `restore(offset:)`): the same Absatz again scrolls again.
+    @State var jumpSerial = 0
+    /// A text offset to go back to (cross-reference or citation way back).
+    @State var restoreOffset: CGFloat?
+    /// Cross-references followed in the text, newest last („Zurück zu § 10 EStG“).
+    @State var crossBack: [LawCrossBack] = []
     /// The citation jump being opened now (`takeCitationJump`); a newer one replaces it.
     @State var citationJumpID: UUID?
     @State var requestID = UUID()
@@ -122,9 +128,16 @@ struct LawReaderView: View {
         // closed window is created only by that opening).
         .task { await laws.start(); if !(await takeCitationJump()) { await openInitial() } }
         .onChange(of: laws.citationJump?.id) { _, id in if id != nil { Task { await takeCitationJump() } } }
-        .onChange(of: "\(selectedID)|\(sectionID)") { _, _ in citationNavigated() }
+        .onChange(of: "\(selectedID)|\(sectionID)") { _, _ in
+            citationNavigated()
+            // A card of a cross-reference points into text that is gone now.
+            LawCitationPreviewModel.shared.dismissReaderCard()
+        }
         .onChange(of: laws.entries.count) { _, _ in Task { if !(await takeCitationJump()) { await openInitial() } } }
-        .onChange(of: "\(selectedID)|\(sectionID)|\(document?.version ?? "")|\(viewPDF)|\(pdfPage)") { _, _ in rememberReading() }
+        .onChange(of: "\(selectedID)|\(sectionID)|\(document?.version ?? "")|\(viewPDF)|\(pdfPage)") { _, _ in
+            rememberReading()
+            if viewPDF { LawCitationPreviewModel.shared.dismissReaderCard() }
+        }
         // Titles of the menu bar entries „Lesezeichen setzen/entfernen“, „PDF/Lesetext zeigen“.
         .onChange(of: [bookmarkItem != nil, viewPDF, !hidden], initial: true) { _, _ in
             if inPanel, !hidden { LawReaderMenuState.shared.update(bookmarked: bookmarkItem != nil, showsPDF: viewPDF) }
@@ -149,7 +162,7 @@ struct LawReaderView: View {
             await search(number, from: .number)
         }
         .onChange(of: hidden) { _, hidden in
-            if hidden { queryFocused = false; textSelection.clear(); leaveKeys() }
+            if hidden { queryFocused = false; textSelection.clear(); leaveKeys(); LawCitationPreviewModel.shared.dismissReaderCard() }
             showErrors(!hidden)
         }
         .onChange(of: laws.keyFocus) { _, _ in if inPanel { startKeys() } }
@@ -159,7 +172,7 @@ struct LawReaderView: View {
             // a focus set by ⌘L/⇧⌘L/`Space l` before that is picked up here.
             if inPanel, !hidden, LawKeyboard.shared.focused { startKeys() }
         }
-        .onDisappear { showErrors(false); leaveKeys() }
+        .onDisappear { showErrors(false); leaveKeys(); LawCitationPreviewModel.shared.dismissReaderCard() }
         .onAppear { connectMarkController() }
         .onChange(of: pen) { _, _ in connectMarkController() }
         .onDisappear { markController.disconnect() }
@@ -178,7 +191,10 @@ struct LawReaderView: View {
                 .id(pdfURL)
         } else {
             NativeLawText(text: section.text, html: section.html, notes: section.notes, sectionID: section.id, fontSize: fontSize,
-                marks: textMarks, paragraph: jumpParagraph, selection: textSelection, pen: pen)
+                marks: textMarks, jump: LawTextJump(id: jumpSerial, paragraph: jumpParagraph, offset: restoreOffset),
+                selection: textSelection, pen: pen, lawID: selectedID, versionID: doc.version,
+                onCitation: { citation in followCrossReference(citation) },
+                hasSection: { [doc] key in doc.sections.contains { $0.id == key || $0.keys.contains(key) } })
         }
     }
 

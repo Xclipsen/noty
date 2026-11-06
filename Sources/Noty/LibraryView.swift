@@ -242,7 +242,7 @@ struct LibraryView: View {
         // No sheet changes with these alerts: the keys have to come back by themselves.
         .onChange(of: model.error == nil && workspaces.error == nil && backupMessage == nil) { _, _ in KeyboardRouter.shared.reclaim() }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
-        .focusedSceneValue(\.libraryCommands, model.opened == nil && !presenting ? LibraryCommandActions(
+        .publishesLibraryCommands(model.opened == nil && !presenting ? LibraryCommandActions(
             newNotebook: editable ? { creatingNotebook = true } : nil,
             search: editable ? { searchAllNotebooks() } : nil,
             newTextDocument: editable ? { creatingTextDocument = true } : nil) : nil)

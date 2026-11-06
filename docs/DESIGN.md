@@ -1,5 +1,14 @@
 # Designentscheidungen für noty
 
+## Kein Strich unter Bedienelementen – 06.11.2026
+
+Nutzer: Ein Pencil-Zug knapp unter dem Griff des Gesetzesfensters, zwischen zwei Knöpfen einer Leiste oder knapp neben der Seitennavigation zeichnete auf der Seite darunter. Ursache: SwiftUI gibt eine Berührung an die Heftansicht (UIKit) weiter, wo keine SwiftUI-Ansicht den Punkt beansprucht (Lücken und Innenabstand der Glasleisten, Deko mit `allowsHitTesting(false)`, runde Ecken, alles knapp daneben).
+
+- **Sperrzonen statt Trefferflächen-Flickwerk** (`PencilGuard.swift`): Jede Fläche über den Seiten meldet ein leeres UIView in ihrem Rahmen (`.pencilGuard(margin:)`, UIKit-Leisten sich selbst). `WorksheetView.hitTest` lehnt Berührungen ab, die in einer Fläche oder ihrem Rand beginnen; geprüft einmal beim Aufsetzen gegen die wenigen Flächen, nie pro Punkt. Ein auf der Seite begonnener Zug läuft unter eine Leiste weiter.
+- **Ränder:** Werkzeugleiste und Optionszeile, Kopfknöpfe 10 pt; Seitennavigation 12 pt; Gesetzesfenster 12 pt schwebend, 8 pt angedockt (nur sichtbar, nicht geparkt); Lasche 10 pt; Ansichtsleiste 8 pt, Teiler 4 pt; Auswahlleiste 8 pt; Formatleiste über der Tastatur 10 pt; Speicherfehler-Knopf 6 pt; PDF-Fortschritt 8 pt. Ausgeblendete zweite Ansicht meldet nichts. Der reine Statushinweis unten links bleibt durchlässig.
+- **Was dort bleibt:** Die Berührung landet auf der Heftansicht: Finger scrollt und zoomt wie bisher, Pencil tut nichts (außer mit dem Textwerkzeug, wo er ohnehin scrollt). Hover (Pencil, Laser, Fundstellen) unverändert; der Laser startet dort ebenfalls nicht. Knöpfe der Auswahlleiste und Auswahlgriffe bleiben bedienbar. Leser und Markieren im Gesetzesfenster sind nicht betroffen.
+- Implementiert und gebaut, am iPad ungeprüft.
+
 ## Objektbedienung vereinheitlicht – Build 64, 22.10.2026
 
 Nach einem Code-Audit (Nutzerentscheidung): jedes Objekt wird überall gleich bedient. Verbindlich ab Build 64, Details, Abweichungen und Gerätetestpunkte in [TEXT-REBUILD-62](TEXT-REBUILD-62.md#build-64--verhalten-und-objektbedienung-vereinheitlicht-22102026); ältere Abschnitte unten sind, wo sie widersprechen, überholt.

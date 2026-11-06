@@ -97,6 +97,8 @@ final class SelectionActionBar: UIScrollView {
         layer.cornerRadius = Self.height / 2; layer.cornerCurve = .continuous
         layer.borderWidth = 0.5; layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
         showsHorizontalScrollIndicator = false
+        // Beside the bar a touch is swallowed instead of starting a lasso or ink (`PencilGuard`).
+        PencilGuard.shared.register(self, margin: 8)
         stack.axis = .horizontal; stack.spacing = 4; stack.alignment = .center
         stack.accessibilityContainerType = .semanticGroup; stack.accessibilityLabel = "Aktionen der Auswahl"
         addSubview(stack)

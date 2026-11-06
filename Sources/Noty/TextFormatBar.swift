@@ -100,6 +100,8 @@ extension TextObjectLayer {
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor)
         ])
         root.addSubview(scroll); root.autoresizingMask = [.flexibleWidth]
+        // A touch just above the bar does not start ink on the page (`PencilGuard`).
+        PencilGuard.shared.register(root, margin: 10)
         return root
     }
     static let formatColors: [(String, InkColor)] = [

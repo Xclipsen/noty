@@ -1,7 +1,8 @@
 // Vorschaukarte eines Gesetzesverweises im Heft (docs/PARAGRAPH-LINKS.md):
 // neben dem Verweis, nie darüber, im sicheren Bereich des Arbeitsbereichs.
-// Die ganze Karte ist ein Knopf und öffnet das Gesetzesfenster; Tipps
-// daneben gehen weiter an die Seite (die Ebene selbst nimmt keine Berührung an).
+// Die ganze Karte ist ein Knopf und öffnet das Gesetzesfenster; darüber liegt
+// getrennt „Als Zitat einfügen“. Tipps daneben gehen weiter an die Seite (die
+// Ebene selbst nimmt keine Berührung an). Esc schließt die Karte.
 import SwiftUI
 import NotebookCore
 
@@ -34,6 +35,12 @@ struct LawCitationCardLayer: View {
             let width = max(0, min(Self.width, bounds.width - 2 * Self.margin))
             let height = min(reservedHeight, max(0, bounds.height - 2 * Self.margin))
             ZStack(alignment: .topLeading) {
+                if model.presentation != nil {
+                    // Esc where no responder of the page takes it (the other ways
+                    // go through `consumeEscape` in KeyboardRouter and LawKeyboard).
+                    Button("") { _ = model.consumeEscape() }
+                        .keyboardShortcut(.cancelAction).frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+                }
                 if let presentation = model.presentation {
                     let anchor = presentation.anchor.offsetBy(dx: -global.minX, dy: -global.minY)
                     let place = Self.placement(anchor: anchor, size: CGSize(width: width, height: height), in: bounds)
@@ -88,6 +95,9 @@ struct LawCitationCard: View {
 
     private var openHint: String { presentation.input == .pointerHover ? "Klicken zum Öffnen" : "Tippen zum Öffnen" }
 
+    /// Height of the quote button; the hint row keeps this room for it.
+    private static let quoteHeight: CGFloat = 44
+
     var body: some View {
         Button { model.openPresented() } label: {
             VStack(alignment: .leading, spacing: 6) {
@@ -100,6 +110,8 @@ struct LawCitationCard: View {
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.white.opacity(0.55))
                 .padding(.top, 2)
+                // Room beside the hint for the separate quote button above it.
+                .frame(minHeight: model.canQuote ? Self.quoteHeight - 10 : nil, alignment: .leading)
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -111,6 +123,16 @@ struct LawCitationCard: View {
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(NotyPressStyle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText)
+        .accessibilityHint("Öffnet die Vorschrift in der Gesetzessammlung")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(.escape) { model.dismiss() }
+        // A sibling above the card, not inside its button: hit by finger,
+        // Pencil and pointer on its own.
+        .overlay(alignment: .bottomTrailing) {
+            if model.canQuote { quoteButton.padding(.trailing, 6).padding(.bottom, 6) }
+        }
         .environment(\.colorScheme, .dark)
         // Stift oder Zeiger auf der Karte halten sie offen.
         .onContinuousHover { phase in
@@ -120,11 +142,21 @@ struct LawCitationCard: View {
             }
         }
         .onDisappear { model.cardHover(false) }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityText)
-        .accessibilityHint("Öffnet die Vorschrift in der Gesetzessammlung")
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction(.escape) { model.dismiss() }
+    }
+
+    private var quoteButton: some View {
+        Button { model.quotePresented() } label: {
+            Label("Als Zitat einfügen", systemImage: "text.quote")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Color.notyAccent)
+                .padding(.horizontal, 10).frame(minHeight: 30)
+                .background(Color.white.opacity(0.1), in: Capsule(style: .continuous))
+                .frame(minHeight: Self.quoteHeight).padding(.horizontal, 4)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(NotyPressStyle())
+        .hoverEffect(.highlight)
+        .accessibilityHint("Fügt den Gesetzestext mit Fundstelle unter dem Verweis als Textfeld ein")
     }
 
     private var header: some View {
@@ -133,13 +165,37 @@ struct LawCitationCard: View {
                 Image(systemName: "book.closed").font(.subheadline).foregroundStyle(Color.notyAccent).accessibilityHidden(true)
                 Text(model.heading).font(.headline).foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.8)
             }
-            if case let .section(_, title, _) = model.content, !title.isEmpty {
+            if case let .section(_, title, _, _) = model.content, !title.isEmpty {
                 Text(title).font(.subheadline).foregroundStyle(.white.opacity(0.7)).lineLimit(2)
             }
-            if presentation.citation.inferredLaw {
-                Text("Gesetz aus dem Zusammenhang erkannt").font(.caption2).foregroundStyle(.white.opacity(0.55))
+            if let note = model.versionNote {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Image(systemName: note.caution ? "clock.badge.exclamationmark" : "clock").accessibilityHidden(true)
+                    Text(note.text)
+                }
+                .font(.caption2)
+                .foregroundStyle(note.caution ? Color.orange.opacity(0.9) : .white.opacity(0.55))
+                .lineLimit(2)
+            }
+            if presentation.fromHandwriting {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Image(systemName: "pencil.and.scribble").accessibilityHidden(true)
+                    Text(handwritingText)
+                }
+                .font(.caption2).foregroundStyle(Color.orange.opacity(0.9)).lineLimit(2)
+            }
+            if let inferred = inferredText {
+                Text(inferred).font(.caption2).foregroundStyle(.white.opacity(0.55))
             }
         }
+    }
+
+    private var handwritingText: String { "Aus Handschrift erkannt: \(model.heading) – stimmt das?" }
+    /// A bare „§ 35a“: the notebook's default law or the law named before it.
+    private var inferredText: String? {
+        guard presentation.citation.inferredLaw else { return nil }
+        if let law = presentation.context.defaultLawID, law == presentation.citation.lawID { return "Standardgesetz des Hefts" }
+        return "Gesetz aus dem Zusammenhang erkannt"
     }
 
     @ViewBuilder private var bodyText: some View {
@@ -156,7 +212,7 @@ struct LawCitationCard: View {
             note("\(model.heading) ist in der aktuellen Fassung nicht enthalten.", symbol: "exclamationmark.triangle")
         case .unavailable:
             note("Dieses Gesetz ist nicht mehr in der Gesetzessammlung.", symbol: "exclamationmark.triangle")
-        case let .section(_, _, excerpt):
+        case let .section(_, _, excerpt, _):
             Text(excerpt.isEmpty ? "(ohne Text)" : excerpt)
                 .font(.footnote)
                 .foregroundStyle(.white.opacity(0.88))
@@ -178,7 +234,7 @@ struct LawCitationCard: View {
     private var accessibilityText: String {
         var parts = ["Gesetzesverweis \(model.heading)"]
         switch model.content {
-        case let .section(_, title, excerpt):
+        case let .section(_, title, excerpt, _):
             if !title.isEmpty { parts.append(title) }
             if !excerpt.isEmpty { parts.append(String(excerpt.prefix(300))) }
         case .loading: parts.append("Wird geladen")
@@ -186,7 +242,9 @@ struct LawCitationCard: View {
         case .missing: parts.append("In der aktuellen Fassung nicht enthalten")
         case .unavailable: parts.append("Nicht mehr in der Gesetzessammlung")
         }
-        if presentation.citation.inferredLaw { parts.append("Gesetz aus dem Zusammenhang erkannt") }
+        if let note = model.versionNote { parts.append(note.text) }
+        if presentation.fromHandwriting { parts.append(handwritingText) }
+        if let inferred = inferredText { parts.append(inferred) }
         return parts.joined(separator: ", ")
     }
 }

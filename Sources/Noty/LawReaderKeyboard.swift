@@ -163,7 +163,7 @@ extension LawReaderView {
             return
         }
         textSelection.clear()
-        pdfTarget = nil; sectionID = found.id; jumpParagraph = nil; loadError = ""
+        pdfTarget = nil; sectionID = found.id; jumpParagraph = nil; restoreOffset = nil; loadError = ""
         follow(found, from: .query)
         if forward ? foundIndex <= index : foundIndex >= index { KeyboardRouter.shared.show(note: "Suche von vorn") }
     }

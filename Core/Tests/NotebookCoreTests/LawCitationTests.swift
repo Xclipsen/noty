@@ -6,18 +6,28 @@ import XCTest
 /// (`gesetzessammlung-noty`): Gesetze mit Schlüsseln „35a“, Richtlinien
 /// „9.1“/„39b.1“, AEAO „122“ (Abschnitt „AEAO zu § 122“), UStAE „1.1“.
 final class LawCitationTests: XCTestCase {
-    private func entry(_ id: String, _ abbr: String, kind: String = "law", aliases: [String]? = nil) -> LawEntry {
-        LawEntry(id: id, abbr: abbr, name: abbr, category: "Test", kind: kind, aliases: aliases, currentVersion: "v1",
+    private func entry(_ id: String, _ abbr: String, kind: String = "law", aliases: [String]? = nil, name: String? = nil) -> LawEntry {
+        LawEntry(id: id, abbr: abbr, name: name ?? abbr, category: "Test", kind: kind, aliases: aliases, currentVersion: "v1",
                  versions: [LawVersion(id: "v1", status: [], dataUrl: "/data/laws/\(id)/v1/law.json", pdfUrl: nil, pages: 1, sectionCount: 1, sha256: [:])])
     }
+    /// Names as in the real catalog (`catalog.json`).
     private lazy var entries: [LawEntry] = [
-        entry("ao", "AO"), entry("fgo", "FGO"), entry("estg", "EStG"), entry("estdv", "EStDV"), entry("ustg", "UStG"),
-        entry("kstg", "KStG"), entry("gewstg", "GewStG"), entry("hgb", "HGB", aliases: ["HBG"]), entry("bgb", "BGB"),
-        entry("gmbhg", "GmbHG", aliases: ["GmbH-Gesetz"]), entry("inso", "InsO"),
-        entry("sgb4", "SGB IV", aliases: ["SGB 4"]), entry("sgb5", "SGB V", aliases: ["SGB 5"]), entry("sgb6", "SGB VI", aliases: ["SGB 6"]),
+        entry("ao", "AO", name: "Abgabenordnung"), entry("fgo", "FGO", name: "Finanzgerichtsordnung"),
+        entry("estg", "EStG", name: "Einkommensteuergesetz"), entry("estdv", "EStDV", name: "Einkommensteuer-Durchführungsverordnung"),
+        entry("ustg", "UStG", name: "Umsatzsteuergesetz"), entry("kstg", "KStG", name: "Körperschaftsteuergesetz"),
+        entry("gewstg", "GewStG", name: "Gewerbesteuergesetz"), entry("hgb", "HGB", aliases: ["HBG"], name: "Handelsgesetzbuch"),
+        entry("bgb", "BGB", name: "Bürgerliches Gesetzbuch"),
+        entry("gmbhg", "GmbHG", aliases: ["GmbH-Gesetz"], name: "Gesetz betreffend die Gesellschaften mit beschränkter Haftung"),
+        entry("inso", "InsO", name: "Insolvenzordnung"), entry("erbstg", "ErbStG", name: "Erbschaftsteuer- und Schenkungsteuergesetz"),
+        entry("stbvv", "StBVV", name: "Steuerberatervergütungsverordnung"),
+        entry("sgb4", "SGB IV", aliases: ["SGB 4"], name: "Sozialgesetzbuch – Viertes Buch"),
+        entry("sgb5", "SGB V", aliases: ["SGB 5"], name: "Sozialgesetzbuch – Fünftes Buch"),
+        entry("sgb6", "SGB VI", aliases: ["SGB 6"], name: "Sozialgesetzbuch – Sechstes Buch"),
         entry("gg", "GG"),
-        entry("ustae", "UStAE", kind: "administration"), entry("estr", "EStR", kind: "administration"),
-        entry("lstr", "LStR", kind: "administration"), entry("aeao", "AEAO", kind: "administration"),
+        entry("ustae", "UStAE", kind: "administration", name: "Umsatzsteuer-Anwendungserlass"),
+        entry("estr", "EStR", kind: "administration", name: "Einkommensteuer-Richtlinien"),
+        entry("lstr", "LStR", kind: "administration", name: "Lohnsteuer-Richtlinien"),
+        entry("aeao", "AEAO", kind: "administration", name: "Anwendungserlass zur Abgabenordnung"),
     ]
     private func scan(_ text: String, defaultLaw: String? = nil, extra: [LawEntry] = []) -> [LawCitation] {
         LawCitationScanner(entries: entries + extra, defaultLawID: defaultLaw).citations(in: text)
@@ -31,7 +41,13 @@ final class LawCitationTests: XCTestCase {
         var description: String { "\"\(text)\" \(law) \(key) \(paragraph ?? "-")\(inferred ? " (inferred)" : "")" }
     }
     private func found(_ text: String, defaultLaw: String? = nil, extra: [LawEntry] = []) -> [Found] {
-        let result = scan(text, defaultLaw: defaultLaw, extra: extra)
+        compact(scan(text, defaultLaw: defaultLaw, extra: extra), text)
+    }
+    /// A law's own text in the reader (`lawText`), with `law` as the default.
+    private func inLaw(_ law: String, _ text: String) -> [Found] {
+        compact(LawCitationScanner(entries: entries).citations(in: text, defaultLawID: law, lawText: true), text)
+    }
+    private func compact(_ result: [LawCitation], _ text: String) -> [Found] {
         for c in result {
             // Range and text agree in UTF-16 terms.
             XCTAssertEqual((text as NSString).substring(with: c.range), c.text)
@@ -292,6 +308,14 @@ final class LawCitationTests: XCTestCase {
         let copies = text.components(separatedBy: "\n").count - 1
         XCTAssertEqual(result.count, copies * 5)
         print("LawCitationScanner: \((text as NSString).length) UTF-16-Einheiten in \(Int(elapsed * 1000)) ms")
+        // Gesetzestext im Leser (mit Namen, Sätzen über fremde Vorschriften).
+        let lawParagraph = "(1) 1Nach § 10 Absatz 1 Nummer 2 in Verbindung mit § 233a der Abgabenordnung gelten die Vorschriften des Handelsgesetzbuchs. 2Die §§ 4 bis 7 bleiben unberührt; § 15 Abs. 1 Satz 1 Nr. 2 gilt.\n"
+        let lawText = String(repeating: lawParagraph, count: 50_000 / lawParagraph.count + 1)
+        let lawStarted = Date()
+        let lawResult = scanner.citations(in: lawText, defaultLawID: "estg", lawText: true)
+        let lawElapsed = Date().timeIntervalSince(lawStarted)
+        XCTAssertEqual(lawResult.count, (lawText.components(separatedBy: "\n").count - 1) * 5)
+        print("LawCitationScanner (Gesetzestext): \((lawText as NSString).length) UTF-16-Einheiten in \(Int(lawElapsed * 1000)) ms")
     }
 
     /// Opt-in wie `LawRealCatalogTests` (scripts/check_law_workflow.sh): jeder
@@ -334,15 +358,20 @@ final class LawCitationTests: XCTestCase {
     func testFuzzedFragments() {
         let parts = ["§", "§§", " ", "\n", "\u{A0}", "1", "4", "35", "a", " a", "9.1", ".", ",", "Abs.", "Abs", "I", "II", "Satz", "S.", "Nr.",
                      "zu", "AEAO", "AO", "EStG", "LStR", "R", "A", "Art.", "GG", "und", "bis", "i.V.m.", "iVm", "des", "der", "Vertrag",
-                     "XYZG", "(", ")", "-", "–", "ff.", "f.", "Buchst.", "lit.", "ö", "\u{308}", "🧾", "Abschnitt", "in", "Verbindung", "mit"]
+                     "XYZG", "(", ")", "-", "–", "ff.", "f.", "Buchst.", "lit.", "ö", "\u{308}", "🧾", "Abschnitt", "in", "Verbindung", "mit",
+                     // P2: Namen, Fassungen, Artikel-Paragraphen, Aktenzeichen, Listen.
+                     "Abgabenordnung", "des Einkommensteuergesetzes", "Sechsten Buches Sozialgesetzbuch", "(EStG)", "dieses Gesetzes",
+                     "Vorschriften", "Teil", "in der", "Fassung", "a.F.", "1987", "vor", "Artikel", "ff", "1.", "Halbsatz", "erste",
+                     "V", "/", "und/oder", "bzw.", "auch", "nach", "\u{2010}", "Zu", "dieses", "Muster-", "2Die", ";"]
         var generator = SystemRandomNumberGenerator()
         let scanner = LawCitationScanner(entries: entries, defaultLawID: "estg")
-        for _ in 0..<20_000 {
+        for round in 0..<30_000 {
             let count = Int.random(in: 1...12, using: &generator)
-            let text = (0..<count).map { _ in parts.randomElement(using: &generator)! }.joined()
+            let text = (0..<count).map { _ in parts.randomElement(using: &generator)! }.joined(separator: round % 3 == 0 ? " " : "")
             let length = (text as NSString).length
             var last = 0
-            for c in scanner.citations(in: text) {
+            let lawText = round % 2 == 0
+            for c in lawText ? scanner.citations(in: text, defaultLawID: round % 4 == 0 ? "aeao" : "estg", lawText: true) : scanner.citations(in: text) {
                 XCTAssertGreaterThanOrEqual(c.range.location, last, text)
                 XCTAssertLessThanOrEqual(c.range.location + c.range.length, length, text)
                 XCTAssertGreaterThan(c.range.length, 0, text)
@@ -386,7 +415,7 @@ final class LawCitationTests: XCTestCase {
 
     /// 5: „des Gesellschaftsvertrags“, „der Satzung“, ausgeschriebene Namen.
     func testOtherDocumentsAreNotInherited() {
-        for text in ["§ 4 EStG. § 5 des Gesellschaftsvertrags", "§ 4 EStG. § 7 der Satzung", "§ 4 EStG. § 15 Handelsgesetzbuch",
+        for text in ["§ 4 EStG. § 5 des Gesellschaftsvertrags", "§ 4 EStG. § 7 der Satzung", "§ 4 EStG. § 15 Investmentsteuergesetz",
                      "§ 4 EStG. § 5 Abs. 2 der neuen Satzung"] {
             XCTAssertEqual(found(text).map(\.text), ["§ 4 EStG"], text)
         }
@@ -415,7 +444,8 @@ final class LawCitationTests: XCTestCase {
         XCTAssertEqual(found("§ 35 a wird", defaultLaw: "estg"), [])
         // „f.“, „a.F.“ und „i.V.m.“ sind keine Buchstaben der Nummer.
         XCTAssertEqual(found("§ 4 f. EStG").first?.key, "4")
-        XCTAssertEqual(found("§ 4 a.F. EStG", defaultLaw: "estg").first?.key, "4")
+        // „a.F.“ (alte Fassung) ist nicht der Text, den der Leser zeigt: kein Link.
+        XCTAssertEqual(found("§ 4 a.F. EStG", defaultLaw: "estg"), [])
         XCTAssertEqual(found("§ 4 i.V.m. § 5 EStG").map(\.key), ["4", "5"])
     }
 
@@ -427,7 +457,8 @@ final class LawCitationTests: XCTestCase {
 
     /// 9: „AEAO zu §“ spricht von der AO.
     func testAEAOSetsContextToAO() {
-        XCTAssertEqual(found("§ 4 EStG. Nr. 2 AEAO zu § 122 und § 124").last, Found("§ 124", "ao", "124", inferred: true))
+        // „AEAO zu § 122 und § 124“: das zweite ist eher AEAO zu § 124 – unsicher, kein Link.
+        XCTAssertEqual(found("§ 4 EStG. Nr. 2 AEAO zu § 122 und § 124").map(\.key), ["4", "122"])
         XCTAssertEqual(found("§ 4 EStG. AEAO zu § 122. § 124").last, Found("§ 124", "ao", "124", inferred: true))
         // Ohne AO im Katalog: gesperrt statt EStG.
         let withoutAO = entries.filter { $0.id != "ao" }
@@ -468,5 +499,278 @@ final class LawCitationTests: XCTestCase {
         XCTAssertEqual(found("§ 4 EStG i.V.m. Abs. 2 EStG"), [Found("§ 4 EStG", "estg", "4"), Found("Abs. 2 EStG", "estg", "4", "2")])
         XCTAssertEqual(found("§ 4 EStG i.V.m. Abs. 2"), [Found("§ 4 EStG", "estg", "4"), Found("Abs. 2", "estg", "4", "2", inferred: true)])
         XCTAssertEqual(found("R 9.1 LStR und Abs. 2"), [Found("R 9.1 LStR", "lstr", "9.1"), Found("Abs. 2", "lstr", "9.1", "2", inferred: true)])
+    }
+
+    // MARK: P2: Standardgesetz, Querverweise im Gesetzestext, Gesetzesnamen
+
+    /// Standardgesetz je Aufruf (Heft) statt aus dem init; nil nimmt das des init.
+    func testPerCallDefaultLaw() {
+        let plain = LawCitationScanner(entries: entries)
+        let withDefault = LawCitationScanner(entries: entries, defaultLawID: "estg")
+        XCTAssertEqual(plain.citations(in: "§ 35a", defaultLawID: "estg").map(\.lawID), ["estg"])
+        XCTAssertEqual(plain.citations(in: "§ 35a", defaultLawID: nil), [])
+        XCTAssertEqual(plain.citations(in: "§ 35a", defaultLawID: "unbekannt"), [])
+        XCTAssertEqual(withDefault.citations(in: "§ 35a", defaultLawID: nil).map(\.lawID), ["estg"])
+        XCTAssertEqual(withDefault.citations(in: "§ 35a", defaultLawID: "ao").map(\.lawID), ["ao"])
+        XCTAssertEqual(withDefault.citations(in: "§ 35a", defaultLawID: "unbekannt").map(\.lawID), ["estg"])
+        XCTAssertEqual(withDefault.citations(in: "§ 35a"), withDefault.citations(in: "§ 35a", defaultLawID: nil))
+        // Im Heft gilt weiter der Zusammenhang vor dem Standardgesetz.
+        XCTAssertEqual(plain.citations(in: "§ 4 AO. Dann § 5", defaultLawID: "estg").map(\.lawID), ["ao", "ao"])
+        // Ein R ohne Gesetz nur mit einer Verwaltungsvorschrift als Standard.
+        XCTAssertEqual(plain.citations(in: "R 9.1", defaultLawID: "lstr").map(\.lawID), ["lstr"])
+        XCTAssertEqual(plain.citations(in: "R 9.1", defaultLawID: "estg"), [])
+    }
+
+    /// Querverweise im Text eines Gesetzes (echte Sätze aus EStG, AO, KStG, StBVV).
+    func testCrossReferencesInLawText() {
+        XCTAssertEqual(inLaw("estg", "nach § 10 Absatz 1 Nummer 2 abziehbar"),
+                       [Found("§ 10 Absatz 1 Nummer 2", "estg", "10", "1", inferred: true)])
+        XCTAssertEqual(inLaw("estg", "Grundfreibetrag nach § 32a Absatz 1 Satz 2 Nummer 1 nicht übersteigen"),
+                       [Found("§ 32a Absatz 1 Satz 2 Nummer 1", "estg", "32a", "1", inferred: true)])
+        XCTAssertEqual(inLaw("estg", "§ 33 der Abgabenordnung"), [Found("§ 33 der Abgabenordnung", "ao", "33")])
+        XCTAssertEqual(inLaw("estg", "Gewinn im Sinne des § 15 Abs. 1 Satz 1 Nr. 2"),
+                       [Found("§ 15 Abs. 1 Satz 1 Nr. 2", "estg", "15", "1", inferred: true)])
+        XCTAssertEqual(inLaw("estg", "bestimmt sich nach den §§ 13 bis 24."), [Found("§§ 13", "estg", "13", inferred: true), Found("24", "estg", "24", inferred: true)])
+        XCTAssertEqual(inLaw("estg", "2§ 22a Absatz 2 gilt entsprechend."), [Found("§ 22a Absatz 2", "estg", "22a", "2", inferred: true)])
+        XCTAssertEqual(inLaw("estg", "§ 6b mit Ausnahme des § 6b Absatz 4 Nummer 1 ist entsprechend anzuwenden").map(\.key), ["6b", "6b"])
+        XCTAssertEqual(inLaw("estg", "die zentrale Stelle (§ 81) zu übermitteln").map(\.key), ["81"])
+        // Ein anderes Gesetz davor ändert nichts: ein bloßes § ist das eigene Gesetz.
+        let text = "Steuern nach § 235 der Abgabenordnung und Zinsen nach § 233a der Abgabenordnung sowie Verluste nach § 10d"
+        XCTAssertEqual(inLaw("estg", text).map(\.law), ["ao", "ao", "estg"])
+        XCTAssertEqual(found(text).map(\.law), ["ao", "ao", "ao"]) // im Heft: Zusammenhang
+        // Ketten nehmen das nachgestellte Gesetz.
+        XCTAssertEqual(inLaw("estg", "Körperschaft im Sinne des § 14 oder § 17 des Körperschaftsteuergesetzes").map(\.law), ["kstg", "kstg"])
+        XCTAssertEqual(inLaw("stbvv", "nach § 4 Absatz 1, auch in Verbindung mit § 5 Absatz 1, des Einkommensteuergesetzes aus der Summe").map(\.law),
+                       ["estg", "estg"])
+        XCTAssertEqual(inLaw("estg", "Rentenversicherung nach § 107 des Sechsten Buches Sozialgesetzbuch"),
+                       [Found("§ 107 des Sechsten Buches Sozialgesetzbuch", "sgb6", "107")])
+        XCTAssertEqual(inLaw("estg", "die Vorschriften des § 5 Absatz 2 Nummer 2 zweiter Halbsatz des Körperschaftsteuergesetzes").map(\.law), ["kstg"])
+        // „und Satz 2“ gehört zum Verweis, das Gesetz danach auch (SGB X ist nicht im Katalog).
+        XCTAssertEqual(inLaw("sgb5", "§ 80 Absatz 1 Satz 1 Nummer 1 bis 3 und Satz 2 des Zehnten Buches Sozialgesetzbuch"), [])
+        // Ein Gesetz nach einer Klammer gilt für die Verweise davor und darin.
+        XCTAssertEqual(inLaw("estg", "Person im Sinne des § 1 Absatz 2 (gegebenenfalls in Verbindung mit § 1 Absatz 1 Satz 2) des Außensteuergesetzes nahesteht"), [])
+        XCTAssertEqual(inLaw("estg", "im Sinne des § 1 Absatz 2 (siehe auch § 4) des Körperschaftsteuergesetzes").map(\.law), ["kstg", "kstg"])
+        XCTAssertEqual(inLaw("estg", "nach § 21 des Beamtenversorgungsgesetzes"), [])
+        XCTAssertEqual(inLaw("estg", "nach § 5 dieses Gesetzes"), [Found("§ 5 dieses Gesetzes", "estg", "5")])
+        XCTAssertEqual(found("nach § 5 dieses Gesetzes", defaultLaw: "estg"), [])
+        XCTAssertEqual(inLaw("ustae", "Nach § 1 dieses Vertragsmusters"), [])
+    }
+
+    /// Paragraphen eines Artikels (Mantel- und Einführungsgesetze) sind nie das eigene Gesetz.
+    func testArticleSectionsInLawText() {
+        XCTAssertEqual(inLaw("ao", "Artikel 97 § 1 des Einführungsgesetzes zur Abgabenordnung"), [])
+        XCTAssertEqual(inLaw("estg", "Artikel 1 § 3 Satz 1 Nr. 2, § 5 Abs. 1 Satz 1 Nr. 1"), [])
+        XCTAssertEqual(inLaw("bgb", "Artikel 229 § 6 Abs. 4 des Einführungsgesetzes zum Bürgerlichen Gesetzbuche"), [])
+        XCTAssertEqual(found("Art. 97 § 1 EStG. Dann § 4", defaultLaw: "estg"), [])
+    }
+
+    /// Bestimmte frühere Fassungen zeigt der Leser nicht: kein Link.
+    func testOldVersionsAreNotLinked() {
+        XCTAssertEqual(inLaw("estg", "§ 52 Absatz 4 Satz 1 in der am 31. Dezember 2008 geltenden Fassung"), [])
+        XCTAssertEqual(inLaw("estg", "§ 7 Absatz 5 in der bis zum 31. Dezember 2005 geltenden Fassung ist weiter anzuwenden"), [])
+        XCTAssertEqual(inLaw("estg", "§ 13 Absatz 2 Nummer 2 des Einkommensteuergesetzes in der Fassung der Bekanntmachung vom 19. Oktober 2002"), [])
+        XCTAssertEqual(inLaw("estg", "§ 51 Absatz 1 Nummer 2 Buchstabe x des Einkommensteuergesetzes 1987"), [])
+        XCTAssertEqual(found("§ 4 EStG a.F."), [])
+        XCTAssertEqual(found("§ 4 EStG 2002"), [])
+        XCTAssertEqual(found("§ 4 EStG a. F. und § 5 AO").map(\.text), ["§ 5 AO"])
+        // Dynamische Verweisung: die jeweils geltende Fassung ist die aktuelle.
+        XCTAssertEqual(inLaw("estg", "§ 3 Nummer 40 in der jeweils geltenden Fassung").map(\.key), ["3"])
+        XCTAssertEqual(inLaw("estg", "§ 3 Nummer 40 in der Regel").map(\.key), ["3"])
+    }
+
+    /// Verwaltungsvorschriften im Leser: Aktenzeichen, AEAO-Abschnitte, Aufzählungen.
+    func testAdministrativeTextsInReader() {
+        // BFH-Aktenzeichen sind keine Richtlinien.
+        XCTAssertEqual(inLaw("ustae", "BFH-Urteil vom 17.05.2001 – V R 38/00, BStBl II 2003 S. 434"), [])
+        XCTAssertEqual(inLaw("aeao", "BFH-Urteile vom 22.9.1992, VII R 73-74/91, BFH/NV 1993 S. 215"), [])
+        XCTAssertEqual(inLaw("aeao", "BFH vom 6.7.1999, VIII R 17/97 und GrS 1/98"), [])
+        XCTAssertEqual(inLaw("aeao", "StRK FGO § 69 R 171"), [Found("FGO § 69", "fgo", "69")])
+        XCTAssertEqual(inLaw("lstr", "(>R 3.12 und 3.26)").map(\.key), ["3.12"])
+        // Im AEAO ist ein bloßes § die AO, „zu §“/„vor §§“ aber ein AEAO-Abschnitt.
+        XCTAssertEqual(inLaw("aeao", "Hierauf sind Zinsen nach § 233a anzurechnen"), [Found("§ 233a", "ao", "233a", inferred: true)])
+        XCTAssertEqual(inLaw("aeao", "vgl. AEAO zu § 140 und § 146, Nr. 1.1"), [Found("AEAO zu § 140", "aeao", "140")])
+        XCTAssertEqual(inLaw("aeao", "(vgl. AEAO vor §§ 169 bis 171, Nr. 6)"), [])
+        XCTAssertEqual(inLaw("aeao", "Zu § 58 Nr. 9:"), [])
+        XCTAssertEqual(inLaw("aeao", "muss (Mustersatzung, § 5). Als Empfänger"), [])
+        XCTAssertEqual(inLaw("aeao", "(§ 66 Abs. 1 i. V. m. mit § 64 Abs. 1 FGO)").map(\.law), ["fgo", "fgo"])
+        XCTAssertEqual(inLaw("aeao", "(vgl. § 208 Abs. 1 Satz 1 Nr. 2 und Nr. 3 i. V. m. Satz 3 AO)"),
+                       [Found("§ 208 Abs. 1 Satz 1 Nr. 2 und Nr. 3", "ao", "208", "1"), Found("Satz 3 AO", "ao", "208", "1")])
+        XCTAssertEqual(inLaw("aeao", "nach §§ 129 \u{2010} 147 InsO").map(\.law), ["inso", "inso"])
+        XCTAssertEqual(inLaw("aeao", "(§ 233a Abs. 5 Satz 1 1. Halbsatz AO)"), [Found("§ 233a Abs. 5 Satz 1 1. Halbsatz AO", "ao", "233a", "5")])
+        XCTAssertEqual(inLaw("aeao", "§ 215 erste Alternative BGB wird"), [Found("§ 215 erste Alternative BGB", "bgb", "215")])
+        // Numerierte Gesetzesnamen („5. VermBG“) sind unbekannte Gesetze.
+        XCTAssertEqual(inLaw("aeao", "Arbeitnehmer-Sparzulage (§ 14 Abs. 3 Satz 1 5. VermBG)"), [])
+        // Gesperrte PDF-Überschriften („§ 2 5 b A b s . 3 U S t G“).
+        XCTAssertEqual(inLaw("ustae", "d e s § 2 5 b A b s . 3 U S t G (7) 1"), [])
+        XCTAssertEqual(found("n a c h § 1 1 5 S G B V", defaultLaw: "estg"), [])
+        // In Richtlinien folgt ein bloßes § weiter dem Zusammenhang.
+        XCTAssertEqual(inLaw("lstr", "(§ 1882 BGB); ggf. ist § 3 Nr. 26a bzw. 26b EStG anzuwenden").map(\.law), ["bgb", "estg"])
+        XCTAssertEqual(inLaw("lstr", "§ 1 BGB. Die Voraussetzungen des § 8 Abs. 3 und des § 40 Abs. 1 EStG").map(\.law), ["bgb", "estg", "estg"])
+        XCTAssertEqual(inLaw("ustae", "§ 1 UStDV. Leistung nach § 11 Abs. 1 und 2 und/oder 3 Nr. 3 und 4 UStG").map(\.law), ["ustg"])
+    }
+
+    /// Aufzählungen in Gesetzen: Listennummern und Absätze nach „§§ … Abs.“.
+    func testListsInLawText() {
+        XCTAssertEqual(inLaw("ao", "3. Firma (§§ 17ff. des Handelsgesetzbuchs) oder Name"), [Found("§§ 17ff. des Handelsgesetzbuchs", "hgb", "17")])
+        XCTAssertEqual(found("§ 4ff. EStG"), [Found("§ 4ff. EStG", "estg", "4")])
+        XCTAssertEqual(found("§ 4f EStG"), [Found("§ 4f EStG", "estg", "4f")]) // § 4f gibt es
+        XCTAssertEqual(inLaw("estg", "die Strafvorschriften des § 370 Absatz 1 bis 4, der §§ 371, 375 Absatz 1 und des § 376 sowie die Bußgeldvorschriften der §§ 378, 379 Absatz 1 und 4 und der §§ 383 und 384 der Abgabenordnung entsprechend").map(\.law),
+                       Array(repeating: "ao", count: 8))
+        XCTAssertEqual(inLaw("estg", "Beiträge nach § 168 Absatz 1 Nummer 1b oder 1c (geringfügig versicherungspflichtig Beschäftigte) oder nach § 172 Absatz 3 oder 3a (versicherungsfrei) des Sechsten Buches Sozialgesetzbuch").map(\.law),
+                       ["sgb6", "sgb6"])
+        XCTAssertEqual(inLaw("estg", "entsprechend: 1. die §§ 41, 41a, 42e, 42f und 42g, 2. die für Steuervergütungen").map(\.key),
+                       ["41", "41a", "42e", "42f", "42g"])
+        XCTAssertEqual(found("(§§ 37a, 37b, 40, 40a Abs. 1, 2a und 3, § 40b EStG)"),
+                       [Found("§§ 37a", "estg", "37a"), Found("37b", "estg", "37b"), Found("40", "estg", "40"),
+                        Found("40a Abs. 1, 2a und 3", "estg", "40a", "1"), Found("§ 40b EStG", "estg", "40b")])
+        XCTAssertEqual(found("§§ 10 Abs. 1, 10a EStG").map(\.key), ["10", "10a"])
+        XCTAssertEqual(found("§§ 37a, 37b und des 40a EStG").map(\.key), ["37a", "37b", "40a"])
+    }
+
+    /// Sätze über Vorschriften eines anderen Gesetzes: bloße § darin sind unsicher.
+    func testForeignProvisionSentences() {
+        XCTAssertEqual(inLaw("ustg", "(6) Auf das Verfahren sind die §§ 30, 80 und 87a und der Zweite Abschnitt des Dritten Teils und der Siebente Teil der Abgabenordnung sowie die Finanzgerichtsordnung anzuwenden. (7) § 18 Absatz 4f ist anzuwenden.").map(\.key),
+                       ["18"])
+        XCTAssertEqual(inLaw("ao", "(8) Nicht anzuwenden auf 1. Datenübermittlungspflichten nach § 51a Absatz 2c oder Abschnitt XI des Einkommensteuergesetzes, 2. Datenübermittlungen"), [])
+        let text = "3Die für den Steuerabzug von Kapitalerträgen im Sinne des § 43 Abs. 1 Satz 1 Nummer 1 und 1a geltenden Vorschriften des Einkommensteuergesetzes mit Ausnahme des § 44 Absatz 2 sind entsprechend anzuwenden. 4Der Steuersatz nach § 5 gilt."
+        XCTAssertEqual(inLaw("kstg", text), [Found("§ 5", "kstg", "5", inferred: true)])
+        XCTAssertEqual(inLaw("estg", "2. die Vorschriften der Abgabenordnung mit Ausnahme des § 163 der Abgabenordnung und die Strafvorschriften des § 370 Absatz 1 bis 4").map(\.key),
+                       ["163"])
+        // Die eigenen Vorschriften sperren nichts.
+        XCTAssertEqual(inLaw("ao", "die Vorschriften der Abgabenordnung, insbesondere § 30").map(\.key), ["30"])
+    }
+
+    /// Regel 5 (großgeschriebenes Wort sperrt) trifft typische Gesetzesformen nicht.
+    func testCapitalisedWordRuleInLawText() {
+        XCTAssertEqual(inLaw("estg", "nach § 4 Absatz 1 oder nach § 5 zu ermitteln").map(\.key), ["4", "5"])
+        XCTAssertEqual(inLaw("estg", "§ 16 Absatz 3b entsprechend").map(\.paragraph), ["3b"])
+        XCTAssertEqual(inLaw("estg", "§ 10 Absatz 1 Nummer 2 Buchstabe b Doppelbuchstabe aa").map(\.key), ["10"])
+        XCTAssertEqual(inLaw("estg", "§ 15 Abs. 1 Satz 1 Nr. 2 Satz 2 Halbsatz 1 und Absatz 3").map(\.key), ["15", "15"])
+        // Überschrift „§ 35a Steuerermäßigung …“: kein (falscher) Link.
+        XCTAssertEqual(inLaw("estg", "§ 35a Steuerermäßigung bei Aufwendungen"), [])
+    }
+
+    /// Ein ganzer Abschnittstext: jeder Treffer stimmt (Auszug EStG § 10d, § 4h).
+    func testWholeSectionText() {
+        let text = """
+        (1) 1Negative Einkünfte, die bei der Ermittlung des Gesamtbetrags der Einkünfte nicht ausgeglichen werden, sind bis zu einem Betrag von 10 000 000 Euro vom Gesamtbetrag der Einkünfte des unmittelbar vorangegangenen Veranlagungszeitraums vorrangig vor Sonderausgaben, außergewöhnlichen Belastungen und sonstigen Abzugsbeträgen abzuziehen (Verlustrücktrag). 2Soweit ein Ausgleich der negativen Einkünfte nach Satz 1 nicht möglich ist, sind diese vom Gesamtbetrag der Einkünfte des zweiten dem Veranlagungszeitraum vorangegangenen Veranlagungszeitraums abzuziehen. 3Dabei wird der Gesamtbetrag der Einkünfte des unmittelbar vorangegangenen Veranlagungszeitraums und des zweiten dem Veranlagungszeitraum vorangegangenen Veranlagungszeitraums um die Begünstigungsbeträge nach § 34a Absatz 3 Satz 1 gemindert. 4Ist für den unmittelbar vorangegangenen Veranlagungszeitraum oder den zweiten dem Veranlagungszeitraum vorangegangenen Veranlagungszeitraum bereits ein Steuerbescheid erlassen worden, so ist er insoweit zu ändern, als der Verlustrücktrag zu gewähren oder zu berichtigen ist. 5Das gilt auch dann, wenn der Steuerbescheid unanfechtbar geworden ist; die Festsetzungsfrist endet insoweit nicht, bevor die Festsetzungsfrist für den Veranlagungszeitraum abgelaufen ist, in dem die negativen Einkünfte nicht ausgeglichen werden.
+        (4) 1Der am Schluss eines Veranlagungszeitraums verbleibende Verlustvortrag ist gesondert festzustellen. 4Bei der Feststellung des verbleibenden Verlustvortrags sind die Besteuerungsgrundlagen so zu berücksichtigen, wie sie den Steuerfestsetzungen zugrunde gelegt worden sind; § 171 Absatz 10, § 175 Absatz 1 Satz 1 Nummer 1 und § 351 Absatz 2 der Abgabenordnung sowie § 42 der Finanzgerichtsordnung gelten entsprechend. 6Die Besteuerungsgrundlagen dürfen bei der Feststellung nur insoweit berücksichtigt werden, als die Aufhebung, Änderung oder Berichtigung der Steuerbescheide ausschließlich mangels Auswirkung auf die Höhe der festzusetzenden Steuer unterbleibt; § 181 Absatz 5 der Abgabenordnung ist nur anzuwenden, wenn die zuständige Finanzbehörde die Feststellung des Verlustvortrags pflichtwidrig unterlassen hat.
+        """
+        XCTAssertEqual(inLaw("estg", text).map { "\($0.law) \($0.key)" },
+                       ["estg 34a", "ao 171", "ao 175", "ao 351", "fgo 42", "ao 181"])
+    }
+
+    // MARK: Gesetzesnamen
+
+    func testFullLawNames() {
+        XCTAssertEqual(found("§ 35a des Einkommensteuergesetzes"), [Found("§ 35a des Einkommensteuergesetzes", "estg", "35a")])
+        XCTAssertEqual(found("§ 35a Einkommensteuergesetz"), [Found("§ 35a Einkommensteuergesetz", "estg", "35a")])
+        XCTAssertEqual(found("§ 33 der Abgabenordnung"), [Found("§ 33 der Abgabenordnung", "ao", "33")])
+        XCTAssertEqual(found("§ 3 Abs. 6 Umsatzsteuergesetz"), [Found("§ 3 Abs. 6 Umsatzsteuergesetz", "ustg", "3", "6")])
+        XCTAssertEqual(found("§ 238 des Handelsgesetzbuchs").map(\.law), ["hgb"])
+        XCTAssertEqual(found("§ 238 des Handelsgesetzbuches").map(\.law), ["hgb"])
+        XCTAssertEqual(found("§ 433 des Bürgerlichen Gesetzbuchs").map(\.law), ["bgb"])
+        XCTAssertEqual(found("§ 433 Bürgerliches Gesetzbuch").map(\.law), ["bgb"])
+        XCTAssertEqual(found("§ 433 des Bu\u{308}rgerlichen Gesetzbuchs").map(\.law), ["bgb"]) // zerlegt wie in PDF-Text
+        XCTAssertEqual(found("§ 8b des Körperschaftsteuergesetzes").map(\.law), ["kstg"])
+        XCTAssertEqual(found("§ 13a des Erbschaftsteuer- und Schenkungsteuergesetzes").map(\.law), ["erbstg"])
+        XCTAssertEqual(found("§ 5 des Gesetzes betreffend die Gesellschaften mit beschränkter Haftung").map(\.law), ["gmbhg"])
+        XCTAssertEqual(found("§ 7 des Vierten Buches Sozialgesetzbuch").map(\.law), ["sgb4"])
+        XCTAssertEqual(found("§ 5 Sozialgesetzbuch – Fünftes Buch").map(\.law), ["sgb5"])
+        XCTAssertEqual(found("§ 5 Fünftes Buch Sozialgesetzbuch").map(\.law), ["sgb5"])
+        XCTAssertEqual(found("R 9.1 der Lohnsteuer-Richtlinien"), [Found("R 9.1 der Lohnsteuer-Richtlinien", "lstr", "9.1")])
+        XCTAssertEqual(found("Abschnitt 1.1 des Umsatzsteuer-Anwendungserlasses").map(\.law), ["ustae"])
+        XCTAssertEqual(found("Anwendungserlass zur Abgabenordnung zu § 122").map(\.law), ["aeao"])
+        // Mit Abkürzung in Klammern: dieselbe ist Teil des Verweises, eine andere sperrt.
+        XCTAssertEqual(found("§ 15 Abs. 1 Einkommensteuergesetz (EStG) gilt"),
+                       [Found("§ 15 Abs. 1 Einkommensteuergesetz (EStG)", "estg", "15", "1")])
+        XCTAssertEqual(found("§ 15 Einkommensteuergesetz (AO)"), [])
+        XCTAssertEqual(found("§ 15 EStG (Einkommensteuergesetz)").map(\.text), ["§ 15 EStG (Einkommensteuergesetz)"])
+        XCTAssertEqual(found("§ 4 EStG (1)").map(\.text), ["§ 4 EStG"])
+        // Vorangestellt.
+        XCTAssertEqual(found("Abgabenordnung § 122"), [Found("Abgabenordnung § 122", "ao", "122")])
+        XCTAssertEqual(found("Einkommensteuergesetz (EStG) § 35a"), [Found("Einkommensteuergesetz (EStG) § 35a", "estg", "35a")])
+        // Name setzt den Zusammenhang.
+        XCTAssertEqual(found("§ 4 der Abgabenordnung. Dann § 5").last, Found("§ 5", "ao", "5", inferred: true))
+    }
+
+    /// Nur ganze Namen, nie Teile; unbekannte Namen sperren weiter.
+    func testLawNamesNeverPartial() {
+        XCTAssertEqual(found("§ 5 Muster-Abgabenordnung"), [])
+        XCTAssertEqual(found("§ 5 Muster-AO"), [])
+        XCTAssertEqual(found("§ 5 Abgabenordnungen"), [])
+        XCTAssertEqual(found("§ 5 Einkommensteuergesetzbuch"), [])
+        XCTAssertEqual(found("§ 5 einkommensteuergesetz"), [])
+        XCTAssertEqual(found("§ 5 Abgabenordnung-Kommentar"), [])
+        XCTAssertEqual(found("§ 4 EStG. § 15 Investmentsteuergesetz. § 16").map(\.text), ["§ 4 EStG"])
+        XCTAssertEqual(found("Einführungsgesetz zur Abgabenordnung § 5"), [])
+        XCTAssertEqual(found("Einführungsgesetz zum Handelsgesetzbuch Art. 3"), [])
+        XCTAssertEqual(found("Art. 97 § 1 des Einführungsgesetzes zur Abgabenordnung"), [])
+        XCTAssertEqual(found("§ 4 Sozialgesetzbuch"), []) // welches Buch?
+        // Gleicher Name bei zwei Einträgen: mehrdeutig.
+        let twins = [entry("x1", "XAG", name: "Doppelgesetz"), entry("x2", "XBG", name: "Doppelgesetz")]
+        XCTAssertEqual(found("§ 5 Doppelgesetz", extra: twins), [])
+        XCTAssertEqual(found("§ 5 des Doppelgesetzes", defaultLaw: "estg", extra: twins), [])
+    }
+
+    func testNameForms() {
+        XCTAssertEqual(LawCitationScanner.nameForms("Einkommensteuergesetz"), ["Einkommensteuergesetz", "Einkommensteuergesetzes"])
+        XCTAssertEqual(LawCitationScanner.nameForms("Abgabenordnung"), ["Abgabenordnung"])
+        XCTAssertEqual(LawCitationScanner.nameForms("Lohnsteuer-Richtlinien"), ["Lohnsteuer-Richtlinien"])
+        XCTAssertTrue(LawCitationScanner.nameForms("Bürgerliches Gesetzbuch").contains("Bürgerlichen Gesetzbuchs"))
+        XCTAssertTrue(LawCitationScanner.nameForms("Sozialgesetzbuch – Sechstes Buch").contains("Sechsten Buches Sozialgesetzbuch"))
+        XCTAssertTrue(LawCitationScanner.nameForms("Anwendungserlass zur Abgabenordnung").contains("Anwendungserlasses zur Abgabenordnung"))
+        XCTAssertEqual(LawCitationScanner.nameForms("AO"), [])
+        XCTAssertEqual(LawCitationScanner.nameForms("Gesetz (alt)"), [])
+        XCTAssertEqual(LawCitationScanner.nameForms("einkommensteuergesetz"), [])
+    }
+
+    /// Beispiel des Nutzers: „§ 3 (6) UStG“.
+    func testUserExampleParagraphInBrackets() {
+        for text in ["§ 3 (6) UStG", "§ 3 Abs. 6 UStG", "§ 3 VI UStG", "§ 3 Absatz 6 UStG", "§ 3 (6) des Umsatzsteuergesetzes"] {
+            let result = found(text)
+            XCTAssertEqual(result.map(\.law), ["ustg"], text)
+            XCTAssertEqual(result.first?.key, "3", text)
+            XCTAssertEqual(result.first?.paragraph, "6", text)
+            XCTAssertEqual(result.first?.text, text, text)
+        }
+        XCTAssertEqual(found("§ 3 (6) Satz 1 UStG").first?.paragraph, "6")
+    }
+
+    /// Ganze echte Gesetzestexte im Lesemodus: jeder Treffer öffnet im Ziel-
+    /// gesetz einen Abschnitt (opt-in über NOTY_LAW_FIXTURE_ROOT).
+    func testLawTextLinksExistInRealCatalog() throws {
+        guard let path = ProcessInfo.processInfo.environment["NOTY_LAW_FIXTURE_ROOT"] else { throw XCTSkip("Realen Gesetzesbestand über scripts/check_law_workflow.sh prüfen.") }
+        let source = URL(fileURLWithPath: path), parent = source.deletingLastPathComponent()
+        let catalog = try JSONDecoder().decode(LawCatalog.self, from: Data(contentsOf: source.appendingPathComponent("catalog.json"))).validated()
+        let scanner = LawCitationScanner(entries: catalog.entries)
+        var documents: [String: LawDocument] = [:]
+        func document(_ id: String) throws -> LawDocument {
+            if let doc = documents[id] { return doc }
+            let entry = try XCTUnwrap(catalog.entries.first { $0.id == id })
+            let v = try XCTUnwrap(entry.versions.first { $0.id == entry.currentVersion })
+            let doc = try JSONDecoder().decode(LawDocument.self, from: Data(contentsOf: parent.appendingPathComponent(String(v.dataUrl.dropFirst()))))
+            documents[id] = doc
+            return doc
+        }
+        var total = 0, missing: [String] = []
+        for id in ["estg", "ao", "ustg", "kstg"] {
+            for section in try document(id).sections {
+                for c in scanner.citations(in: section.text, defaultLawID: id, lawText: true) where c.lawID == id || ["estg", "ao", "ustg", "kstg", "hgb"].contains(c.lawID) {
+                    total += 1
+                    let key = c.reference.key
+                    if try !document(c.lawID).sections.contains(where: { $0.id == key || $0.keys.contains(key) }) { missing.append("\(id) \(section.label): \(c.text) → \(c.lawID) \(key)") }
+                }
+            }
+        }
+        print("LawCitationScanner (Gesetzestexte): \(total) Verweise, \(missing.count) ohne Abschnitt")
+        XCTAssertGreaterThan(total, 4000)
+        // Bekannt: im Bestand fehlende, aufgehobene §§ 2b, 24c EStG; zwei Sätze, deren
+        // Bezug nur der Inhalt klärt (EStG § 96 „gelten die §§ 385 bis 408, für das
+        // Bußgeldverfahren … der Abgabenordnung“, AO § 146 „§ 146b …, § 147 … und
+        // § 27b … des Umsatzsteuergesetzes“). Alles andere ist eine Regression.
+        let known = ["→ estg 2b", "→ estg 24c", "estg § 96: ", "ao § 146: "]
+        let unexpected = missing.filter { line in !known.contains { line.contains($0) } }
+        XCTAssertEqual(unexpected, [], unexpected.prefix(60).joined(separator: "\n"))
     }
 }

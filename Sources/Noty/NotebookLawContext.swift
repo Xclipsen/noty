@@ -7,18 +7,72 @@ import NotebookCore
 struct NotebookLawContext: Equatable, Sendable {
     var defaultLawID: String? = nil
     var taxYear: Int? = nil
+    var isEmpty: Bool { defaultLawID == nil && taxYear == nil }
 }
 
+/// The law context of every notebook on this iPad, by the notebook's document
+/// id (`Notebook.id`; a restored copy has its own id and starts without one).
+/// Stored as one JSON object under `key`:
+/// `{"<UUID>": {"law": "estg", "year": 2024, "at": <seconds since 2001>}}`,
+/// at most `limit` notebooks (the least recently changed go first). Never
+/// written into a notebook, a backup or the app sync.
 @MainActor
 final class NotebookLawPreferences: ObservableObject {
     static let shared = NotebookLawPreferences()
+    static let key = "noty.laws.notebookContext"
+    static let limit = 400
+    /// Years the picker offers (and stored values are accepted from).
+    static let firstYear = 2015
+    static var lastYear: Int { Calendar(identifier: .gregorian).component(.year, from: Date()) + 1 }
+
     /// Bumps on every change, so pages rescan.
     @Published private(set) var generation = 0
-    func context(for documentID: UUID?) -> NotebookLawContext {
-        NotebookLawContext() // TODO(Editor-Agent)
+
+    private struct Stored: Codable, Equatable {
+        var law: String?
+        var year: Int?
+        var at: Double
     }
+    private var stored: [String: Stored]
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let decoded = defaults.data(forKey: Self.key).flatMap { try? JSONDecoder().decode([String: Stored].self, from: $0) } ?? [:]
+        // Anything malformed is dropped on read, never trusted.
+        stored = decoded.filter { UUID(uuidString: $0.key) != nil && Self.valid($0.value) }
+    }
+
+    private static func valid(_ value: Stored) -> Bool {
+        (value.law == nil || LawEntry.safeID(value.law!)) && (value.year == nil || (1990...2100).contains(value.year!))
+            && value.at.isFinite && (value.law != nil || value.year != nil)
+    }
+
+    func context(for documentID: UUID?) -> NotebookLawContext {
+        guard let documentID, let value = stored[documentID.uuidString] else { return NotebookLawContext() }
+        return NotebookLawContext(defaultLawID: value.law, taxYear: value.year)
+    }
+
     func set(_ context: NotebookLawContext, for documentID: UUID) {
-        // TODO(Editor-Agent)
+        let id = documentID.uuidString
+        var next = stored
+        if context.isEmpty {
+            next[id] = nil
+        } else {
+            let value = Stored(law: context.defaultLawID.flatMap { LawEntry.safeID($0) ? $0 : nil },
+                               year: context.taxYear.flatMap { (1990...2100).contains($0) ? $0 : nil },
+                               at: Date().timeIntervalSinceReferenceDate)
+            guard Self.valid(value) else { return }
+            next[id] = value
+        }
+        if next.count > Self.limit {
+            let oldest = next.sorted { $0.value.at < $1.value.at }.prefix(next.count - Self.limit).map(\.key)
+            for key in oldest where key != id { next[key] = nil }
+        }
+        guard next != stored else { return }
+        stored = next
+        if let data = try? JSONEncoder().encode(next) { defaults.set(data, forKey: Self.key) }
+        generation += 1
     }
 }
 
