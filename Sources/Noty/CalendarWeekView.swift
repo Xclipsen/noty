@@ -12,7 +12,7 @@ struct CalendarTimeGrid: View {
     @ScaledMetric(relativeTo: .body) private var hourHeight: CGFloat = 60
     @ScaledMetric(relativeTo: .caption) private var gutter: CGFloat = 52
     @ScaledMetric(relativeTo: .caption) private var laneHeight: CGFloat = 24
-    @ScaledMetric(relativeTo: .headline) private var headerHeight: CGFloat = 44
+    @ScaledMetric(relativeTo: .headline) private var headerHeight: CGFloat = 58
     private let topInset: CGFloat = 10
     /// An own event is being moved or stretched: the grid does not scroll meanwhile.
     @State private var dragging = false
@@ -42,24 +42,28 @@ struct CalendarTimeGrid: View {
 
     // MARK: Header
 
-    /// Compact heads „Mo 3“; today's number in the accent circle.
+    /// Heads like Apple Kalender: the weekday small above the date, today's
+    /// date in the red circle, weekends and holidays quieter (holidays also
+    /// named in the all-day row, never by tint alone).
     private func header(_ column: CGFloat) -> some View {
         HStack(spacing: 0) {
             Text("KW \(CalendarDates.isoWeek(days[0], calendar: calendar).week)")
-                .font(.caption2).foregroundStyle(CalendarPalette.quiet)
+                .font(.caption2.weight(.medium)).foregroundStyle(CalendarPalette.quiet)
                 .frame(width: gutter)
                 .accessibilityLabel("Kalenderwoche \(CalendarDates.isoWeek(days[0], calendar: calendar).week)")
             ForEach(days, id: \.self) { day in
                 let isToday = calendar.isDate(day, inSameDayAs: model.today)
                 let weekday = CalendarDates.weekdayIndex(day, calendar: calendar)
+                let quiet = weekday >= 5 || isHoliday(day)
                 Button { if days.count > 1 { model.open(day, in: .day) } } label: {
-                    HStack(spacing: 5) {
-                        Text(detailed ? CalendarText.weekdays[weekday] : CalendarText.shortWeekdays[weekday])
-                            .font(.subheadline).foregroundStyle(isToday ? CalendarPalette.today : .secondary)
+                    VStack(spacing: 1) {
+                        Text((detailed ? CalendarText.weekdays[weekday] : CalendarText.shortWeekdays[weekday]).uppercased())
+                            .font(.caption2.weight(.semibold)).tracking(0.6)
+                            .foregroundStyle(isToday ? CalendarPalette.today : quiet ? CalendarPalette.quiet : Color.secondary)
                         Text("\(calendar.component(.day, from: day))")
-                            .font(.subheadline.weight(.semibold)).monospacedDigit()
-                            .foregroundStyle(isToday ? Color.white : .primary)
-                            .frame(minWidth: 26, minHeight: 26)
+                            .font(.title3.weight(isToday ? .bold : .medium)).monospacedDigit()
+                            .foregroundStyle(isToday ? Color.white : quiet ? Color.secondary : .primary)
+                            .frame(minWidth: 32, minHeight: 32)
                             .background { if isToday { Circle().fill(CalendarPalette.today) } }
                     }
                     .frame(width: column, height: headerHeight)
@@ -67,12 +71,14 @@ struct CalendarTimeGrid: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(days.count == 1)
-                .accessibilityLabel(CalendarText.longDate(day, calendar: calendar) + (isToday ? ", heute" : ""))
+                .accessibilityLabel(CalendarText.longDate(day, calendar: calendar) + (isToday ? ", heute" : "") + (isHoliday(day) ? ", Ferien" : ""))
                 .accessibilityHint(days.count > 1 ? "Öffnet den Tag" : "")
             }
         }
         .frame(height: headerHeight)
     }
+
+    private func isHoliday(_ day: Date) -> Bool { model.events(on: day).contains { $0.source == .holidays } }
 
     // MARK: All-day row
 
@@ -154,8 +160,9 @@ struct CalendarTimeGrid: View {
             // Tapping empty space ends the selection.
             Color.clear.contentShape(Rectangle()).onTapGesture { model.selection = nil }
             ForEach(days.indices, id: \.self) { index in
-                if CalendarDates.weekdayIndex(days[index], calendar: calendar) >= 5 {
-                    Rectangle().fill(Color.white.opacity(0.02))
+                // Weekends and holidays slightly set apart (the holiday is named in the all-day row).
+                if CalendarDates.weekdayIndex(days[index], calendar: calendar) >= 5 || isHoliday(days[index]) {
+                    Rectangle().fill(Color.white.opacity(isHoliday(days[index]) ? 0.045 : 0.025))
                         .frame(width: column, height: y(24 * 60) + topInset).offset(x: gutter + CGFloat(index) * column)
                         .allowsHitTesting(false)
                 }
@@ -221,10 +228,13 @@ struct CalendarTimeGrid: View {
                         .frame(width: gutter - 10, alignment: .trailing)
                         .background(Color(uiColor: .systemBackground))
                         .offset(y: y(minutes) - 8)
-                    Circle().fill(CalendarPalette.today).frame(width: 7, height: 7)
-                        .offset(x: gutter + CGFloat(index) * column - 3.5, y: y(minutes) - 3.5)
-                    Rectangle().fill(CalendarPalette.today.opacity(0.85)).frame(width: column, height: 1)
-                        .offset(x: gutter + CGFloat(index) * column, y: y(minutes) - 0.5)
+                    // Faint across the whole week, strong in today's column.
+                    Rectangle().fill(CalendarPalette.today.opacity(0.3)).frame(width: column * CGFloat(days.count), height: 1)
+                        .offset(x: gutter, y: y(minutes) - 0.5)
+                    Rectangle().fill(CalendarPalette.today).frame(width: column, height: 1.5)
+                        .offset(x: gutter + CGFloat(index) * column, y: y(minutes) - 0.75)
+                    Circle().fill(CalendarPalette.today).frame(width: 9, height: 9)
+                        .offset(x: gutter + CGFloat(index) * column - 4.5, y: y(minutes) - 4.5)
                 }
                 .allowsHitTesting(false)
                 .accessibilityElement()
@@ -270,13 +280,16 @@ struct CalendarEventCard: View {
         // Day view: room and teacher; week: state or room, whichever exists.
         let extra: String? = detailed ? [event.status.label, event.room, event.teacher].compactMap { $0 }.joined(separator: " · ")
                              : event.status.label ?? event.room
+        // Tall cards: time, room (and teacher) on own lines, the state as a badge.
+        let tall = height >= 64
         Button { model.selection = event.id } label: {
             HStack(spacing: 0) {
                 Rectangle().fill(color).frame(width: 3)
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 3) {
                         if let symbol = event.status.symbol {
-                            Image(systemName: symbol).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                            Image(systemName: symbol).font(.caption2.weight(.bold))
+                                .foregroundStyle(cancelled ? Color.orange : .secondary)
                         }
                         Text(event.title).font(.caption.weight(.semibold))
                             .strikethrough(cancelled).lineLimit(height < 44 ? 1 : 2)
@@ -291,7 +304,24 @@ struct CalendarEventCard: View {
                             Image(systemName: "lock.fill").font(.system(size: 8)).foregroundStyle(.tertiary).accessibilityHidden(true)
                         }
                     }
-                    if height >= 36 {
+                    if tall {
+                        // Below the badge height the state goes beside the time (if it fits).
+                        ViewThatFits(in: .horizontal) {
+                            if height < 84, let label = event.status.label { Text(time + " · " + label) }
+                            Text(time)
+                        }
+                        .font(.caption2).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
+                        if let place = (detailed ? [event.room, event.teacher].compactMap { $0 }.joined(separator: " · ") : event.room), !place.isEmpty {
+                            Label(place, systemImage: "mappin.and.ellipse").labelStyle(CalendarCompactLabelStyle())
+                                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        if let label = event.status.label, height >= 84 {
+                            Text(label).font(.caption2.weight(.semibold))
+                                .foregroundStyle(cancelled ? Color.orange : .primary)
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Capsule().fill((cancelled ? Color.orange : Color.white).opacity(0.16)))
+                        }
+                    } else if height >= 36 {
                         // The extra text appears only if it fits beside the time.
                         ViewThatFits(in: .horizontal) {
                             if let extra, !extra.isEmpty { Text(time + " · " + extra) }
@@ -305,14 +335,14 @@ struct CalendarEventCard: View {
             }
             .foregroundStyle(.primary)
             .opacity(cancelled ? 0.55 : 1)
-            .background(RoundedRectangle(cornerRadius: 5).fill(CalendarPalette.tint(color, selected: selected || move != nil, cancelled: cancelled)))
-            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(CalendarPalette.tint(color, selected: selected || move != nil, cancelled: cancelled)))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay {
                 if selected || move != nil || stretch != nil {
-                    RoundedRectangle(cornerRadius: 5).strokeBorder(CalendarPalette.selection, lineWidth: 1.5)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(CalendarPalette.selection, lineWidth: 1.5)
                 }
             }
-            .contentShape(RoundedRectangle(cornerRadius: 5))
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .buttonStyle(.plain)
         .frame(height: max(20, height + stretched), alignment: .top)

@@ -126,7 +126,7 @@ enum CalendarPalette {
     static let quiet = Color(uiColor: .tertiaryLabel)
     /// Event background: a faint tint of the subject colour, stronger when selected.
     static func tint(_ color: Color, selected: Bool = false, cancelled: Bool = false) -> Color {
-        color.opacity(selected ? 0.30 : cancelled ? 0.06 : 0.15)
+        color.opacity(selected ? 0.32 : cancelled ? 0.07 : 0.18)
     }
 
     static func color(_ event: CalendarEntry) -> Color {
@@ -266,6 +266,9 @@ enum CalendarSamples {
                 "Rechnungswesen – Buchungssätze\n\n• Bank an Kasse 500 €\n• Wareneingang an Verbindlichkeiten 1.200 €\n\nMerke: Soll an Haben.",
                 "Hausaufgabe\n\nAufgaben 4–6 bis Freitag. Eigene Beispiele frei erfunden.",
             ]
+        case (0, 0, 1):
+            event.status = .roomChanged("R 301 statt R 204")
+            event.room = "R 301"
         case (0, 2, 1):
             event.status = .cancelled
             event.details = "Unterricht entfällt (Beispiel)."
@@ -280,6 +283,9 @@ enum CalendarSamples {
         case (1, 1, 1):
             event.status = .exam
             event.title = "Englisch-Test"
+        case (1, 0, 2):
+            event.status = .cancelled
+            event.details = "Unterricht entfällt (Beispiel)."
         case (-1, 1, 0):
             event.samplePages = ["Rechnungswesen – Bilanz\n\nAktiva = Passiva (Beispielnotiz der Vorwoche)."]
         default: break
