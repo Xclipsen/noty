@@ -58,8 +58,12 @@ final class LawPanelModel: ObservableObject {
         let defaults = UserDefaults.standard
         let edge = defaults.string(forKey: Self.edgeKey).flatMap(LawPanelEdge.init(rawValue:))
             ?? (defaults.bool(forKey: Self.leftKey) ? .left : .right)
-        state = LawPanelState(isOpen: defaults.bool(forKey: Self.openKey), isStashed: defaults.bool(forKey: Self.stashedKey),
+        // After an interrupted launch the window starts closed (and stays so
+        // for the next launch); edge, docking and size are kept (LaunchGuard).
+        let restore = !LaunchGuard.shared.skipsRestore
+        state = LawPanelState(isOpen: restore && defaults.bool(forKey: Self.openKey), isStashed: restore && defaults.bool(forKey: Self.stashedKey),
                               isDocked: defaults.bool(forKey: Self.dockedKey), edge: edge)
+        if !restore { store(state) }
     }
 
     var phase: LawPanelState.Phase { state.phase }

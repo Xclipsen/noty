@@ -473,9 +473,13 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         addGestureRecognizer(checkboxTap)
         canvas.drawingGestureRecognizer.require(toFail: checkboxTap)
         // No ink starts on or beside chrome over the page (`PencilGuard`).
-        inkGate.blocks = { [weak self] touch in self?.inkGuarded(touch) ?? false }
-        addGestureRecognizer(inkGate)
-        canvas.drawingGestureRecognizer.require(toFail: inkGate)
+        // Only with the guard on (off in the safe mode after interrupted
+        // launches); the gate itself takes no touch when in doubt, so ink works.
+        if PencilGuard.enabled {
+            inkGate.blocks = { [weak self] touch in self?.inkGuarded(touch) ?? false }
+            addGestureRecognizer(inkGate)
+            canvas.drawingGestureRecognizer.require(toFail: inkGate)
+        }
         holdGesture.refuses = { [weak self] touch in self?.inkGuarded(touch) ?? false }
         objectLayer.refusesStart = { [weak self] touch in self?.inkGuarded(touch) ?? false }
         configureRulerStroke()

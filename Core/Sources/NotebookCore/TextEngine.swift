@@ -38,12 +38,15 @@ public struct LogicalLineLayout: TextEngineLayout {
 
 extension NSString {
     /// Grapheme boundaries; `\r\n` by hand, Foundation on Linux splits it.
+    /// Out-of-range indices (a stale position) are clamped, never trapped on.
     func nextBoundary(_ index: Int) -> Int {
+        let index = max(0, index)
         guard index < length else { return length }
         if index + 1 < length, character(at: index) == 13, character(at: index + 1) == 10 { return index + 2 }
         return NSMaxRange(rangeOfComposedCharacterSequence(at: index))
     }
     func previousBoundary(_ index: Int) -> Int {
+        let index = min(index, length)
         guard index > 0 else { return 0 }
         if index > 1, character(at: index - 1) == 10, character(at: index - 2) == 13 { return index - 2 }
         return rangeOfComposedCharacterSequence(at: index - 1).location

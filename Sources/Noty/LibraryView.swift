@@ -648,6 +648,10 @@ struct LibraryView: View {
     private var detail: some View {
         collection
             .safeAreaInset(edge: .top, spacing: 0) {
+                // After an interrupted launch (LaunchGuard).
+                LaunchNoticeBanner()
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
                 if let warning = model.warning {
                     Label(warning, systemImage: "exclamationmark.triangle")
                         .font(.caption).padding().frame(maxWidth: .infinity, alignment: .leading)

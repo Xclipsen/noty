@@ -1067,7 +1067,7 @@ final class EditorModel: ObservableObject {
     }
 
     private func openPreparedRestore(_ prepared: PreparedRestore, message: String) async throws {
-        try validate(prepared.document, assets: prepared.assets)
+        try await EditorModelValidation.validateDetached(prepared.document, assets: prepared.assets)
         var restored = try await store.commitRestoreCopy(prepared, libraryRoot: libraryRoot)
         restored.preferredPageID = page.id
         backupStatus = message
@@ -1096,6 +1096,34 @@ enum EditorModelValidation {
     static func validate(_ document: Notebook, assets: ImageAssetProviding? = nil) throws {
         _ = try NotebookPDFCatalog(document)
         try validateContent(document, assets: assets)
+    }
+
+    /// The checks of `validate` off the UI actor (import of a `.noty`, a
+    /// local revision opened as a copy): the CoreGraphics PDF, geometry,
+    /// PencilKit and image checks of `BackupValidation`, plus the PDFKit
+    /// acceptance of the catalogue (parse, not locked, page count) on
+    /// private `PDFDocument`s that no view or other thread ever sees. The
+    /// catalogue itself is built when the notebook is opened.
+    nonisolated static func validateDetached(_ document: Notebook, assets: ImageAssetProviding? = nil) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            if let assets { try BackupValidation.validate(document, assets) } else { try BackupValidation.validate(document) }
+            try validatePDFKitAcceptance(document)
+        }.value
+    }
+
+    /// The parts of `NotebookPDFCatalog.init` that PDFKit may judge
+    /// differently from CoreGraphics, without creating any `PDFPage`.
+    nonisolated static func validatePDFKitAcceptance(_ document: Notebook) throws {
+        for source in document.pdfSources ?? [] {
+            guard let pdf = PDFDocument(data: source.data), !pdf.isLocked, pdf.pageCount == source.pageCount else {
+                throw StorageError.invalidDocument
+            }
+        }
+        if let data = document.pdf {
+            guard let pdf = PDFDocument(data: data), !pdf.isLocked, pdf.pageCount == document.pages.count else {
+                throw StorageError.invalidDocument
+            }
+        }
     }
     /// PencilKit drawings and images of active and trashed pages. No UI or
     /// PDFKit objects: safe off the UI actor (the PDF part is the catalogue).
