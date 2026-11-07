@@ -1,6 +1,6 @@
 # Gesetzesverweise im Heft und im Gesetzesleser (P1–P3)
 
-Stand: 06.11.2026, Branch `feat/paragraphen`. P1 als noty dev Build 125/126 veröffentlicht, P2/P3 für Build 127 vorgesehen. Zugehöriger Gesamtplan: [MERKER-PLAN](MERKER-PLAN.md).
+Stand: 06.11.2026, Branch `feat/paragraphen`. P1 als noty dev Build 125/126 veröffentlicht, P2/P3 als noty dev Build 128 veröffentlicht. Zugehöriger Gesamtplan: [MERKER-PLAN](MERKER-PLAN.md).
 
 **Status:** implementiert und für das iPad-SDK **erfolgreich gebaut**. Core-Tests und Host-Roundtrip sind bestanden. **Auf dem iPad ungeprüft**, und zwar Hover-Gefühl, Erkennung von Pencil gegenüber Zeiger, Haptik, Kartenplatzierung und Gestenkonflikte.
 
