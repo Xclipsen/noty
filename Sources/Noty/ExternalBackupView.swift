@@ -39,7 +39,7 @@ struct ExternalBackupForm: View {
                 // Long values (a 300-character reason, a long folder name) get their own lines:
                 // as a LabeledContent value they squeezed the label until it wrapped letter by letter.
                 LabeledContent {
-                    Text(targetTitle).lineLimit(2).truncationMode(.middle).help(targetTitle)
+                    Text(targetTitle).lineLimit(2).truncationMode(.middle).pointerHelp(targetTitle)
                 } label: { Text("Ziel").fixedSize() }
                 Text(model.status).font(.subheadline).foregroundStyle(model.folderUnreachable ? Color.orange : Color.secondary)
                 LabeledContent("Letztes Backup", value: model.policy.lastSuccess.map(NotyText.statusDate) ?? NotyText.never)

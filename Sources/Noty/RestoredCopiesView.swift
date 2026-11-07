@@ -35,7 +35,7 @@ struct RestoredCopiesView: View {
                         }
                     } header: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(copy.title).lineLimit(2).truncationMode(.middle).textCase(nil).help(copy.title)
+                            Text(copy.title).lineLimit(2).truncationMode(.middle).textCase(nil).pointerHelp(copy.title)
                             if let date = copy.modifiedAt {
                                 Text(date, format: .dateTime.day().month().year().hour().minute().second()).monospacedDigit()
                             }

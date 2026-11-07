@@ -128,7 +128,7 @@ struct LawPanelView: View {
         .buttonStyle(NotyToolStyle())
         .foregroundStyle(.white)
         .accessibilityLabel(label).accessibilityHint(hint)
-        .notyTooltip(tooltip)
+        .notyTooltip(tooltip, hint: false)
     }
 
     /// Three dots like the pane strips' handle; brighter while dragging.

@@ -106,6 +106,17 @@ private struct NotyTooltip: ViewModifier {
 }
 
 extension View {
+    /// System pointer tooltip (help tag) for a view that reads as plain `text`.
+    /// `.help` also sets the accessibility hint ("configures the view's
+    /// accessibility hint and its help tag", SwiftUI docs), so a title shown
+    /// as help would be read twice, or clash with an explicit hint. Here the
+    /// view's accessibility is replaced by a plain `Text(text)` without hint,
+    /// so VoiceOver hears it exactly once; use it on the title text itself,
+    /// not on a button with its own label and hint.
+    func pointerHelp(_ text: String) -> some View {
+        help(text).accessibilityRepresentation { Text(text) }
+    }
+
     /// Tooltip with a name or very short description (German), see `NotyTooltip`.
     /// `hint: false` where the text only repeats the accessibility label.
     func notyTooltip(_ text: String, hint: Bool = true) -> some View { modifier(NotyTooltip(text: text, hint: hint)) }

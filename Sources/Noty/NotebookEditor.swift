@@ -1185,6 +1185,13 @@ extension NotebookViewport {
         guard let sheet else { return }
         sheet.isUserInteractionEnabled = false
         sheet.finishTextEditing()
+        // Behind every remaining sheet: the following pages slide up over it,
+        // the fading ghost never draws on top of a neighbour.
+        if let surface = sheet.superview,
+           let lowest = surface.subviews.firstIndex(where: { $0 !== sheet && $0 is WorksheetView }),
+           let own = surface.subviews.firstIndex(of: sheet), own > lowest {
+            surface.insertSubview(sheet, at: lowest)
+        }
         let base = sheet.transform
         UIView.animate(withDuration: 0.2, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
             sheet.alpha = 0

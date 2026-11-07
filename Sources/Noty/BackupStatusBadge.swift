@@ -86,13 +86,14 @@ struct BackupStatusBadge: View {
                     NotyWidthCap(maximum: 240) { Text(text).lineLimit(1).truncationMode(.tail) }
                 }
             }
+            // Pointer tooltip only; the button's own label and hint stay the one reading.
+            .pointerHelp(full)
             .font(.caption.weight(.medium))
             .padding(.horizontal, 10).padding(.vertical, 5)
             .foregroundStyle(Color.orange)
             .background(Capsule().fill(Color.orange.opacity(0.14)))
         }
         .buttonStyle(.plain)
-        .help(full)
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .accessibilityLabel("Backup-Status: \(full)")
         .accessibilityHint("Öffnet die Backup-Einstellungen")

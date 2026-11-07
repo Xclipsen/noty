@@ -13,13 +13,11 @@ enum NotyMotion {
     static func highlight(_ reduced: Bool) -> Animation { .easeOut(duration: reduced ? 0.1 : 0.16) }
     /// Exits are faster than entrances.
     static let exit: Animation = .easeOut(duration: 0.12)
-    /// Reduce Motion substitute for insertions/removals: opacity only, no movement.
+    /// Reduce Motion substitute for insertions/removals: opacity only, no
+    /// movement. Attach it to the inserted view's transition
+    /// (`.opacity.animation(NotyMotion.fade)`), never to layout values, which
+    /// stay instant (`palette`/`panel` are nil when reduced).
     static let fade: Animation = .easeOut(duration: 0.15)
-    /// For insert/remove sites: spring normally, short fade with Reduce Motion
-    /// (reduced motion means gentler, not no feedback at all).
-    static func appear(_ reduced: Bool, base: Animation? = nil) -> Animation {
-        reduced ? fade : (base ?? .spring(duration: 0.32, bounce: 0.04))
-    }
     /// Keyboard-initiated changes: no implicit or explicit animation applies.
     static func instant(_ body: () -> Void) {
         var transaction = Transaction()

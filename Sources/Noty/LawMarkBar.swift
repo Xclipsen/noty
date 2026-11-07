@@ -109,7 +109,7 @@ struct LawMarkToastView: View {
                 .background(Color(white: 0.13).opacity(0.98), in: Capsule(style: .continuous))
                 .overlay(Capsule(style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
                 .foregroundStyle(.white).environment(\.colorScheme, .dark)
-                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .move(edge: .bottom).combined(with: .opacity))
                 .id(toast.id)
                 .accessibilityAddTraits(.isStaticText)
                 .onAppear {
@@ -118,7 +118,7 @@ struct LawMarkToastView: View {
                 }
             }
         }
-        .animation(NotyMotion.appear(reduceMotion, base: NotyMotion.palette(false)), value: controller.toast?.id)
+        .animation(NotyMotion.palette(reduceMotion), value: controller.toast?.id)
     }
 }
 

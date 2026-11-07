@@ -67,6 +67,36 @@ final class LawLibraryTests: XCTestCase, @unchecked Sendable {
         let fallback = await store.hasDocument(wrong, version: wrong.versions[0])
         XCTAssertTrue(fallback)
     }
+    /// A hash-identical file still has to meet the current catalogue rules:
+    /// otherwise it would be published, fail every read and never be fetched again.
+    func testHashMatchStillChecksTheCatalogueRules() async throws {
+        let store = LawOfflineStore(root: try root())
+        let plain = entry(), data = try bytes(plain)
+        var hashed = plain; hashed.versions[0].sha256 = ["json": SHA256.hexDigest(data)]
+        try await store.putDocument(data, entry: hashed, version: hashed.versions[0])
+        // Same bytes, but the server now counts two sections.
+        var recounted = hashed; recounted.versions[0].sectionCount = 2
+        let recountedOK = await store.hasDocument(recounted, version: recounted.versions[0])
+        XCTAssertFalse(recountedOK)
+        do { try await store.publish(LawCatalog(laws: [recounted], generatedAt: "count")); XCTFail("Mismatching file published") } catch {}
+        // A format newer than this build, stored with its correct hash.
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any]); object["schemaVersion"] = 99
+        let newer = try JSONSerialization.data(withJSONObject: object)
+        let url = try await store.documentURL(plain.id, version: "v1")
+        try newer.write(to: url)
+        var newerEntry = plain; newerEntry.versions[0].sha256 = ["json": SHA256.hexDigest(newer)]
+        let newerOK = await store.hasDocument(newerEntry, version: newerEntry.versions[0])
+        XCTAssertFalse(newerOK)
+        // Wrong identity under the right hash.
+        let other = try bytes(entry("bgb"))
+        try other.write(to: url)
+        var otherEntry = plain; otherEntry.versions[0].sha256 = ["json": SHA256.hexDigest(other)]
+        let otherOK = await store.hasDocument(otherEntry, version: otherEntry.versions[0])
+        XCTAssertFalse(otherOK)
+        try data.write(to: url)
+        let restored = await store.hasDocument(hashed, version: hashed.versions[0])
+        XCTAssertTrue(restored)
+    }
     func testDamagedStoredVersionIsReplacedByCheckedDownload() async throws {
         let store = LawOfflineStore(root: try root())
         let law = entry(), version = law.versions[0]

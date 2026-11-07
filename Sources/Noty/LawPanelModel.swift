@@ -89,9 +89,10 @@ final class LawPanelModel: ObservableObject {
     @discardableResult private func change(animated: Bool = true, _ transition: (inout LawPanelState) -> Bool) -> Bool {
         var next = state
         guard transition(&next) else { return false }
-        if animated {
-            // Reduce Motion: a short fade instead of no feedback at all.
-            withAnimation(NotyMotion.appear(UIAccessibility.isReduceMotionEnabled)) { state = next }
+        // Reduce Motion: no animation for the layout; the window and its tab
+        // fade through their own transitions (EditorWorkspace).
+        if animated, let animation = NotyMotion.panel(UIAccessibility.isReduceMotionEnabled) {
+            withAnimation(animation) { state = next }
         } else {
             state = next
         }

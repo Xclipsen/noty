@@ -100,6 +100,8 @@ struct ContentView: View {
     @State private var pageEntryText = ""
     @State private var recentNote: String?
     @State private var recentNoteToken = 0
+    /// VoiceOver heard the current save failure series already.
+    @State private var saveFailureAnnounced = false
     /// „Gesetzesbezug …“ (Standardgesetz, Veranlagungsjahr) of this notebook.
     @State private var editingLawContext = false
     @ObservedObject private var lawPreferences = NotebookLawPreferences.shared
@@ -275,8 +277,15 @@ struct ContentView: View {
             }
             .onChange(of: toolbox.preferences) { _, _ in toolbox.save() }
             .onChange(of: model.fileStatus) { _, note in showRecentNote(note) }
+            // Once per failure series and only in the active pane: automatic retries
+            // and later saves flip `saveFailed` again; a successful save ends the series.
             .onChange(of: model.saveFailed) { _, failed in
-                if failed { AccessibilityNotification.Announcement("Speichern fehlgeschlagen").post() }
+                guard failed, !saveFailureAnnounced, isPaneActive() else { return }
+                saveFailureAnnounced = true
+                AccessibilityNotification.Announcement("Speichern fehlgeschlagen").post()
+            }
+            .onChange(of: model.status) { _, status in
+                if status == "Lokal gespeichert" { saveFailureAnnounced = false }
             }
             .onChange(of: model.backupStatus) { _, note in showRecentNote(note) }
             .onChange(of: model.pageIndex) { _, index in
@@ -587,7 +596,7 @@ struct ContentView: View {
                     Color.black.opacity(0.35).contentShape(Rectangle())
                         .paneWakeShield()
                         .onTapGesture { showingPages = false }
-                        .transition(.opacity)
+                        .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .opacity)
                         .accessibilityLabel("Seitenleiste schließen")
                         .accessibilityAddTraits(.isButton)
                 }
@@ -605,10 +614,11 @@ struct ContentView: View {
                     }
                     .frame(width: width)
                     .paneWakeShield()
-                    .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+                    // Reduce Motion: only the sidebar fades; the layout (editor padding) stays instant.
+                    .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .move(edge: .trailing).combined(with: .opacity))
                 }
             }
-            .animation(NotyMotion.appear(reduceMotion), value: showingPages)
+            .animation(NotyMotion.panel(reduceMotion), value: showingPages)
         }
     }
 
@@ -708,13 +718,15 @@ struct ContentView: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                // Narrow panes: keep clear of the page navigator (trailing) and,
-                // while it shows, sit above the status pill (leading).
+                // Narrow panes: keep clear of the page navigator (trailing). While
+                // the status pill shows (any width, it may grow almost to the pane
+                // width), sit above its measured height: „Abbrechen“ and
+                // „Erneut versuchen“ both stay reachable.
                 let narrow = geometry.size.width - layout.leftInset - layout.rightInset < 560
                 PDFExportProgressBadge(job: pdfExport)
                     .padding(.leading, narrow ? layout.leftInset + 12 : 0)
                     .padding(.trailing, narrow ? layout.rightInset + Self.navigatorClearance : 0)
-                    .padding(.bottom, layout.bottomInset + 12 + (narrow && statusNote != nil ? 56 : 0))
+                    .padding(.bottom, layout.bottomInset + 12 + (statusNote != nil && statusPillHeight > 0 ? statusPillHeight + 8 : 0))
                     .animation(NotyMotion.highlight(reduceMotion), value: pdfExport.progress == nil)
             }
             .overlay(alignment: .bottomLeading) {
@@ -723,6 +735,7 @@ struct ContentView: View {
                     if notebookLoaded || !model.busy, let note = statusNote {
                         // Never under the page navigator: its retry target stays reachable.
                         statusPill(note, maxWidth: max(160, geometry.size.width - layout.leftInset - layout.rightInset - 12 - Self.navigatorClearance))
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { statusPillHeight = $0 }
                             .padding(.leading, layout.leftInset + 12).padding(.bottom, layout.bottomInset + 12)
                             .transition(.opacity)
                     }
@@ -741,6 +754,8 @@ struct ContentView: View {
     /// Room the bottom-trailing page navigator takes (56 wide, 14 from the
     /// edge) plus a gap: bottom overlays on narrow panes stay clear of it.
     private static let navigatorClearance: CGFloat = 14 + 56 + 10
+    /// Measured height of the status pill: the PDF badge sits above it.
+    @State private var statusPillHeight: CGFloat = 0
     @ViewBuilder private func statusPill(_ note: String, maxWidth: CGFloat) -> some View {
         let label = NotyWidthCap(maximum: maxWidth) {
             HStack(spacing: 6) {

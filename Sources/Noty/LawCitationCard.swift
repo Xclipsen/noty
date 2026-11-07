@@ -54,14 +54,19 @@ struct LawCitationCardLayer: View {
                         // bottom of its room, below it at the top.
                         .frame(width: width, height: height, alignment: place.above ? .bottom : .top)
                         .offset(x: place.origin.x, y: place.origin.y)
-                        .transition(reduceMotion ? .opacity : .asymmetric(
-                            insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: unit)),
-                            removal: .opacity.animation(NotyMotion.exit)))
+                        // Insertion carries its own animation; removal follows the
+                        // implicit exit below, so `NotyMotion.instant` (Pencil on
+                        // the paper) really removes the card in the same frame.
+                        .transition(.asymmetric(
+                            insertion: (reduceMotion ? AnyTransition.opacity : .opacity.combined(with: .scale(scale: 0.96, anchor: unit)))
+                                .animation(NotyMotion.highlight(reduceMotion)),
+                            removal: .opacity))
                         .id(model.cardID)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-            .animation(NotyMotion.highlight(reduceMotion), value: model.presentation == nil ? -1 : model.cardID)
+            // Exits are faster than entrances (also when switching citations).
+            .animation(NotyMotion.exit, value: model.presentation == nil ? -1 : model.cardID)
             // Rotation, split, law window, keyboard: the anchor is no longer where it was.
             .onChange(of: "\(geometry.size.width)|\(geometry.size.height)|\(global.minX)|\(global.minY)|\(keyboard)") { _, _ in
                 model.dismiss()

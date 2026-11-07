@@ -400,6 +400,8 @@ private struct BackupSettingsPage: View {
     @State private var showingForm = false
     @State private var showingAreas = false
     @State private var restoredArea = false
+    /// Status of the automatic backup when its last busy phase began (announcements).
+    @State private var statusBeforeBackupWork: String?
     /// The pushed form shows backup errors itself; avoid a second alert.
     @State private var formVisible = false
     @State private var file: LibraryArchiveFile?
@@ -480,8 +482,13 @@ private struct BackupSettingsPage: View {
         .onChange(of: library.backupStatus) { _, note in
             if !note.hasSuffix("…") { AccessibilityNotification.Announcement(note).post() }
         }
-        .onChange(of: externalBackup.busy) { was, busy in
-            if was && !busy { AccessibilityNotification.Announcement(externalBackup.status).post() }
+        // Only a new result: retrieving an archive leaves the status as it was,
+        // so an unchanged (or still running „…“) status stays silent.
+        .onChange(of: externalBackup.busy) { _, busy in
+            if busy { statusBeforeBackupWork = externalBackup.status; return }
+            let status = externalBackup.status
+            if status != statusBeforeBackupWork, !status.hasSuffix("…") { AccessibilityNotification.Announcement(status).post() }
+            statusBeforeBackupWork = nil
         }
         .onAppear { externalBackup.checkFolder() }
         .fileImporter(isPresented: $importing,

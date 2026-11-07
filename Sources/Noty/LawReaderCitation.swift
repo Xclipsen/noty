@@ -212,7 +212,7 @@ extension LawReaderView {
         }
         .buttonStyle(NotyPressStyle())
         .accessibilityHint(hint)
-        .notyTooltip(title)
+        .notyTooltip(title, hint: false)
     }
 }
 

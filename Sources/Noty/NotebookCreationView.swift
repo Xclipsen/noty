@@ -114,7 +114,9 @@ private struct DocumentCreationForm: View {
                             .keyOption(.text($title))
                         // Near the limit the length shows, so a disabled „Erstellen“ has a visible reason.
                         let length = title.trimmingCharacters(in: .whitespacesAndNewlines).count
-                        if length > 100 {
+                        if let problem = NotyText.titleProblem(title), length <= 120 {
+                            Text(problem).font(.caption).foregroundStyle(.orange)
+                        } else if length > 100 {
                             Text(length > 120 ? "\(length)/120 Zeichen – bitte kürzen" : "\(length)/120 Zeichen")
                                 .font(.caption).monospacedDigit()
                                 .foregroundStyle(length > 120 ? Color.orange : Color.secondary)

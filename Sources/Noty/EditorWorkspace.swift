@@ -475,7 +475,7 @@ struct EditorWorkspaceView: View {
                     .position(x: frame.x + frame.width / 2, y: frame.y + frame.height / 2)
                     // Opening and closing slide along the same way as parking;
                     // with Reduce Motion they only fade.
-                    .transition(reduceMotion ? .opacity : .offset(out))
+                    .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .offset(out))
             }
             if stashed {
                 lawEdgeTab(l)
@@ -484,7 +484,7 @@ struct EditorWorkspaceView: View {
                     .padding(.bottom, l.keyboard)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: lawTabAlignment(l.edge))
                     // The tab slides in from the edge the window disappears into.
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(x: l.outward.x * 14, y: l.outward.y * 14)))
+                    .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .opacity.combined(with: .offset(x: l.outward.x * 14, y: l.outward.y * 14)))
             }
         }
         .notyTooltipHost()
@@ -968,7 +968,8 @@ private struct SecondViewPicker: View {
                     }
                 } icon: { Image(systemName: document.isRestored ? "clock.arrow.circlepath" : "book.closed") }
                     .foregroundStyle(.primary)
-                    .help(document.path.map { "\(document.title) – \($0)" } ?? document.title)
+                    // Label of the row for VoiceOver and the pointer alike, read once.
+                    .pointerHelp(document.path.map { "\(document.title) – \($0)" } ?? document.title)
                 Spacer()
                 if document.id == primaryID { Text("gleiches Heft").font(.caption).foregroundStyle(.secondary) }
                 if document.id == currentID { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }

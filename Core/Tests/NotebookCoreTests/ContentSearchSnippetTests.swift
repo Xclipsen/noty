@@ -87,4 +87,45 @@ final class ContentSearchSnippetTests: XCTestCase {
         XCTAssertEqual(snippet.parts.match, "Informatik")
         XCTAssertTrue(snippet.text.dropFirst().dropLast().split(separator: " ").allSatisfy { $0 == "👩🏽‍💻" || $0 == "🇩🇪" || $0 == "Informatik" })
     }
+
+    /// Decomposed accents: a diacritic-insensitive „cafe“ may end before the
+    /// combining U+0301 of „cafe\u{301}“. The highlight must fall on whole
+    /// characters of the final text, and joining must not merge clusters.
+    func testDecomposedAccentKeepsTheHighlightOnCharacterBoundaries() {
+        let decomposed = "cafe\u{301}"
+        let texts = ["Ein \(decomposed) am Markt", "\(decomposed)\u{301}x", "Wort\n\u{301}\(decomposed) Ende",
+                     String(repeating: "Füllwort ", count: 30) + "\(decomposed)\u{301}\u{302} " + String(repeating: "Rest ", count: 30)]
+        for text in texts {
+            for query in ["cafe", "CAFÉ", "e"] {
+                let snippet = hit(text).snippet(for: query, radius: 20)
+                guard let match = snippet.match else { XCTFail("\(query) in \(text)"); continue }
+                // Both bounds are Character boundaries of the final string.
+                XCTAssertNotNil(match.lowerBound.samePosition(in: snippet.text), text)
+                XCTAssertNotNil(match.upperBound.samePosition(in: snippet.text), text)
+                XCTAssertFalse(snippet.text[match].isEmpty)
+                XCTAssertEqual(snippet.parts.before + snippet.parts.match + snippet.parts.after, snippet.text[...])
+                XCTAssertEqual(String(snippet.parts.before).count + String(snippet.parts.match).count + String(snippet.parts.after).count,
+                               snippet.text.count, "no cluster merged at the joins: \(text.debugDescription)")
+            }
+        }
+        let snippet = hit("Ein \(decomposed) am Markt").snippet(for: "cafe")
+        XCTAssertEqual(snippet.parts.match.unicodeScalars.count, 5)
+        XCTAssertEqual(String(snippet.parts.match), decomposed)
+    }
+
+    /// The rounding itself, independent of what Foundation's search returns
+    /// on this platform: a range ending before U+0301 grows over it.
+    func testRangeEndingBeforeACombiningMarkIsWidened() {
+        let text = "Ein cafe\u{301} hier"
+        let scalars = text.unicodeScalars
+        let lower = scalars.index(scalars.startIndex, offsetBy: 4)
+        let beforeMark = scalars.index(lower, offsetBy: 4)
+        XCTAssertNil(beforeMark.samePosition(in: text))
+        let rounded = ContentSearchHit.roundedOut(lower..<beforeMark, in: text)
+        XCTAssertEqual(String(text[rounded]), "cafe\u{301}")
+        XCTAssertNotNil(rounded.upperBound.samePosition(in: text))
+        let afterMark = scalars.index(after: beforeMark)
+        let inner = ContentSearchHit.roundedOut(scalars.index(after: lower)..<afterMark, in: text)
+        XCTAssertEqual(inner.lowerBound, scalars.index(after: lower))
+    }
 }

@@ -553,8 +553,16 @@ struct NativeLawText: UIViewRepresentable {
         /// Fade step of the jump highlight: same fills, but only the Absatz is redrawn.
         private func applyFlashOnly() {
             guard let container, let flashRange, NSMaxRange(flashRange) <= container.storage.length else { applyHighlights(); return }
-            container.layout.fills = highlightFills()
-            container.layout.invalidateDisplay(forCharacterRange: flashRange)
+            let layout = container.layout
+            layout.fills = highlightFills()
+            // The block is painted 4 pt beyond the Absatz lines: include one
+            // line fragment on each side, or the fade leaves stripes there.
+            let glyphs = layout.glyphRange(forCharacterRange: flashRange, actualCharacterRange: nil)
+            var lower = glyphs.location, upper = NSMaxRange(glyphs)
+            var line = NSRange()
+            if lower > 0 { layout.lineFragmentRect(forGlyphAt: lower - 1, effectiveRange: &line); lower = line.location }
+            if upper < layout.numberOfGlyphs { layout.lineFragmentRect(forGlyphAt: upper, effectiveRange: &line); upper = NSMaxRange(line) }
+            layout.invalidateDisplay(forGlyphRange: NSRange(location: lower, length: max(0, upper - lower)))
         }
         private func highlightFills() -> [LawMarkLayoutManager.Fill] {
             let selection = parent.selection

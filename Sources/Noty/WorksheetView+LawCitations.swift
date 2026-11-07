@@ -897,9 +897,6 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }
 
-/// Scanner results of Text editor 2's flow, shared by the sheets showing it:
-/// per document text store one finished result and at most one scan in
-/// flight, which every page asking for the same text and context awaits.
 /// A block observer that unregisters when released (`deinit` of a
 /// `@MainActor` class cannot reach its isolated properties).
 final class NotificationObserverToken: @unchecked Sendable {
@@ -908,6 +905,9 @@ final class NotificationObserverToken: @unchecked Sendable {
     deinit { NotificationCenter.default.removeObserver(token) }
 }
 
+/// Scanner results of Text editor 2's flow, shared by the sheets showing it:
+/// per document text store one finished result and at most one scan in
+/// flight, which every page asking for the same text and context awaits.
 @MainActor
 enum LawCitationFlowScans {
     private struct Key: Equatable {

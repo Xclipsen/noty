@@ -156,7 +156,7 @@ final class ContentSearchModel: ObservableObject {
             ? await Task.detached(priority: .utility) { NotebookRevisionStamp.read(directory: directory) }.value : nil
         if let stamp, cached?.revisionStamp == stamp { return }
         guard generation == expected else { throw CancellationError() }
-        status = "\(document.title) · wird gelesen …"
+        status = "\(NotyText.isolated(document.title)) · wird gelesen …"
         let notebook: Notebook
         // Image originals of a closed notebook come from its package (read-only);
         // the open notebook's from the registry.
@@ -407,7 +407,7 @@ struct ContentSearchView: View {
                 // One line, counter first: the hit list below must not jump while pages are counted.
                 Text(openTasks ? model.taskStatus : model.status).font(.caption).monospacedDigit()
                     .lineLimit(1).truncationMode(.middle).padding(.horizontal)
-                    .help(openTasks ? model.taskStatus : model.status)
+                    .pointerHelp(openTasks ? model.taskStatus : model.status)
                 if openTasks ? model.collectingTasks : model.running { ProgressView().padding(.horizontal) }
                 if !openTasks {
                     Text("Handschrift und Scan-/Bild-OCR sind lokal. Erkanntes bleibt als abgeleiteter Suchindex auf diesem iPad gespeichert und wird nur für geänderte Seiten neu erfasst. Die Erkennungsqualität muss mit den eigenen Unterlagen geprüft werden.")
@@ -421,6 +421,7 @@ struct ContentSearchView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 HStack(alignment: .firstTextBaseline) {
                                     Text(hit.title).font(.headline).lineLimit(1).truncationMode(.middle)
+                                        .pointerHelp(hit.title)
                                     Spacer(minLength: 8)
                                     Text("S. \(hit.pageNumber)").font(.subheadline).foregroundStyle(.secondary)
                                         .monospacedDigit().fixedSize()
@@ -432,7 +433,6 @@ struct ContentSearchView: View {
                                 Text(excerpt(hit)).lineLimit(3)
                                 Text(label(hit.kind)).font(.caption).foregroundStyle(.secondary)
                             }
-                            .help(hit.title)
                         }
                         .listRowBackground(hit.id == keyHit ? Color.accentColor.opacity(0.28) : nil)
                     }

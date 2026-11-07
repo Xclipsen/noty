@@ -52,7 +52,7 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
                     .notyGlass()
                     .pencilGuard()
                     .offset(x: attached.x, y: attached.y)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(x: dx, y: dy)))
+                    .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .opacity.combined(with: .offset(x: dx, y: dy)))
                     .animation(NotyMotion.palette(reduceMotion), value: attached)
                     .disabled(!enabled)
             }
@@ -64,7 +64,8 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
         .environment(\.colorScheme, .dark)
         .sensoryFeedback(.selection, trigger: candidate)
         .animation(NotyMotion.highlight(reduceMotion), value: drag != nil)
-        .animation(NotyMotion.appear(reduceMotion), value: showingOptions)
+        // Reduce Motion: the options fade (their transition), nothing moves.
+        .animation(NotyMotion.panel(reduceMotion), value: showingOptions)
         .onChange(of: gripHeld) { _, held in
             guard !held else { return }
             // After `onEnded`, which finishes a normal drop and needs `drag`.

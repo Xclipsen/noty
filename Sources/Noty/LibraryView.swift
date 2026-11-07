@@ -194,6 +194,9 @@ struct LibraryView: View {
             // Same rule as the store (1…120 characters): a pasted overlong name must not be lost after saving.
             Button("Speichern") { submitName() }.disabled((try? LibraryStore.validTitle(name)) == nil)
                 .keyboardShortcut(.defaultAction)
+        } message: {
+            // The reason a greyed-out „Speichern“ has (ZWJ emoji, soft hyphen, length).
+            if let problem = NotyText.titleProblem(name) { Text(problem) }
         }
         .confirmationDialog("In den Papierkorb verschieben?", isPresented: Binding(
             get: { trashing != nil }, set: { if !$0 { trashing = nil } }), titleVisibility: .visible) {
@@ -388,6 +391,8 @@ struct LibraryView: View {
                     .font(.title3).foregroundStyle(Color.accentColor)
                 Text(item.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
                     .lineLimit(2).truncationMode(.middle).multilineTextAlignment(.leading)
+                    // Full title for the pointer; VoiceOver keeps label + hint of the tile.
+                    .pointerHelp(item.title)
             }
             .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
             .padding(10)
@@ -396,7 +401,6 @@ struct LibraryView: View {
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(NotyPressStyle())
-        .help(item.title)
         .overlay { if dropMark == DropMark(zone: .pinned, target: .into(item.id)) { dropHighlight } }
         .accessibilityLabel(accessibilityName(item))
         .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
@@ -449,6 +453,7 @@ struct LibraryView: View {
                 Label {
                     // Middle truncation: near-duplicates („Scan … 14-32-11“, „… Kopie“) differ at the end.
                     Text(item.title).lineLimit(1).truncationMode(.middle).foregroundStyle(.primary)
+                        .pointerHelp(item.title)
                 } icon: {
                     Image(systemName: item.librarySymbol(filled: false))
                         .foregroundStyle(item.isFolder ? Color.accentColor : Color.secondary)
@@ -457,7 +462,6 @@ struct LibraryView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(item.title)
             .accessibilityLabel(accessibilityName(item))
             .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
             .accessibilityAddTraits(selected ? .isSelected : [])
@@ -920,7 +924,8 @@ struct LibraryView: View {
         var parts: [String] = []
         if item.source == .restored { parts.append("Wiederhergestellte Kopie") }
         if item.source == .legacyMain { parts.append("Ursprüngliches Heft") }
-        if let detail = subtitle(item) { parts.append(detail) }
+        // While searching, `subtitle` is the path: its own line in the row.
+        if search.isEmpty, let detail = subtitle(item) { parts.append(detail) }
         return parts.joined(separator: " · ")
     }
 
@@ -985,7 +990,11 @@ struct LibraryView: View {
                     let details = rowDetails(item)
                     if !details.isEmpty {
                         Text(details).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                            .truncationMode(search.isEmpty ? .tail : .head)
+                    }
+                    // Search: the path on its own line, cut at the head (the nearest
+                    // folder matters most) without cutting „Wiederhergestellte Kopie“.
+                    if !search.isEmpty {
+                        Text(path(of: item)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                     }
                 }
                 Spacer()

@@ -89,7 +89,9 @@ extension ContentSearchHit {
                     .min { $0.lowerBound < $1.lowerBound }
             }
         }
-        let anchor = found ?? (text.startIndex..<text.startIndex)
+        // A diacritic-insensitive match may end inside a cluster (before a
+        // combining accent): widen it to whole characters first.
+        let anchor = found.map { roundedOut($0, in: text) } ?? (text.startIndex..<text.startIndex)
         let reach = found == nil ? radius * 2 : radius
         var start = text.index(anchor.lowerBound, offsetBy: -reach, limitedBy: text.startIndex) ?? text.startIndex
         var end = text.index(anchor.upperBound, offsetBy: reach, limitedBy: text.endIndex) ?? text.endIndex
@@ -111,8 +113,19 @@ extension ContentSearchHit {
         guard found != nil else { return ContentSearchSnippet(text: before + after, match: nil) }
         let middle = flat(text[anchor])
         let joined = before + middle + after
+        // Offsets on the final string, widened to its own Character
+        // boundaries: a join (e.g. „…“ or a space before a combining mark)
+        // can merge clusters that were separate in the parts.
         let lower = joined.utf8.index(joined.startIndex, offsetBy: before.utf8.count)
         let upper = joined.utf8.index(lower, offsetBy: middle.utf8.count)
-        return ContentSearchSnippet(text: joined, match: lower..<upper)
+        return ContentSearchSnippet(text: joined, match: roundedOut(lower..<upper, in: joined))
+    }
+
+    /// `range` widened to the nearest Character boundaries of `text`.
+    static func roundedOut(_ range: Range<String.Index>, in text: String) -> Range<String.Index> {
+        var lower = range.lowerBound, upper = range.upperBound
+        while lower > text.startIndex, lower.samePosition(in: text) == nil { lower = text.unicodeScalars.index(before: lower) }
+        while upper < text.endIndex, upper.samePosition(in: text) == nil { upper = text.unicodeScalars.index(after: upper) }
+        return lower..<upper
     }
 }

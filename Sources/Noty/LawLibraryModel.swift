@@ -111,9 +111,10 @@ final class LawLibraryModel: ObservableObject {
     }
     static let lastCheckKey = "noty.laws.lastCatalogCheck"
     /// Stored PDFs that matched their catalogue hash this session, with the
-    /// file's size and date then (`pdf`): reopening needs no new read.
+    /// file's size and date then and the hash they matched (`pdf`): reopening
+    /// needs no new read; a catalogue with another hash checks again.
     private var verifiedPDFs: [String: PDFStamp] = [:]
-    private struct PDFStamp: Equatable, Sendable { var size: Int; var modified: Date }
+    private struct PDFStamp: Equatable, Sendable { var size: Int; var modified: Date; var sha: String? }
     private var lastAttempt = Date.distantPast
     private var lastSync = Date.distantPast
     /// Every stored entry of every owner.
@@ -292,31 +293,32 @@ final class LawLibraryModel: ObservableObject {
         let url = try await offline.pdfURL(entry.id, version: version)
         guard let v = entry.versions.first(where: { $0.id == version }), let path = v.pdfUrl else { throw LawError.invalid("Für dieses Dokument ist kein Original-PDF vorhanden.") }
         let key = "\(entry.id)|\(version)", sha = v.sha256["pdf"]
-        if let stamp = Self.pdfStamp(url) {
+        if let stamp = Self.pdfStamp(url, sha: sha) {
             if verifiedPDFs[key] == stamp { return url }
             // S13: mapped read, hash and parse off the main thread (up to 150 MB).
             if await Task.detached(priority: .userInitiated, operation: { Self.storedPDFIsIntact(url, sha: sha) }).value,
-               Self.pdfStamp(url) == stamp {
+               Self.pdfStamp(url, sha: sha) == stamp {
                 verifiedPDFs[key] = stamp; return url
             }
         }
         verifiedPDFs[key] = nil
         let data = try await fetch(path, limit: 150_000_000); try await verify(data, sha: sha)
         let result = try await offline.putPDF(data, id: entry.id, version: version, replacingDamaged: true)
-        if let stamp = Self.pdfStamp(result) { verifiedPDFs[key] = stamp }
+        if let stamp = Self.pdfStamp(result, sha: sha) { verifiedPDFs[key] = stamp }
         byteCount = await offline.byteCount()
         return result
     }
-    private nonisolated static func pdfStamp(_ url: URL) -> PDFStamp? {
+    /// `sha`: the catalogue hash the file is (to be) checked against.
+    private nonisolated static func pdfStamp(_ url: URL, sha: String?) -> PDFStamp? {
         guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]),
               values.isRegularFile == true, let size = values.fileSize, let modified = values.contentModificationDate else { return nil }
-        return PDFStamp(size: size, modified: modified)
+        return PDFStamp(size: size, modified: modified, sha: sha)
     }
     /// The stored PDF is the checked download: at most 150 MB, SHA-256 as in
     /// the catalogue, and CoreGraphics can open it (thread-safe, unlike
     /// building a `PDFDocument` just to throw it away).
     private nonisolated static func storedPDFIsIntact(_ url: URL, sha: String?) -> Bool {
-        guard let sha, sha.count == 64, let stamp = pdfStamp(url), stamp.size <= 150_000_000,
+        guard let sha, sha.count == 64, let stamp = pdfStamp(url, sha: sha), stamp.size <= 150_000_000,
               let data = try? Data(contentsOf: url, options: .alwaysMapped),
               SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == sha else { return false }
         return CGPDFDocument(url as CFURL) != nil

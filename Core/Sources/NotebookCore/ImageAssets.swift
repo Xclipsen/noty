@@ -511,9 +511,12 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
     /// - `<sha>.partial-<UUID>` older than `partialFileAge`.
     /// References are `keeping`, the pending area and every quoted 64-hex
     /// string in any regular file below `roots` (`referencedHashes`). Foreign
-    /// names, directories and symlinks stay. Any read error in the roots or the
-    /// listing aborts the run before anything is deleted; single deletions are
-    /// best effort. Age is measured from the newest file time available.
+    /// names, directories and symlinks stay. The roots are searched only when
+    /// some file is a deletion candidate (without one the run ends with an
+    /// empty report and reads no revision); then any read error in the roots,
+    /// like one in the listing, aborts the run before anything is deleted.
+    /// Single deletions are best effort. Age is measured from the newest file
+    /// time available.
     /// `isBlocked` is asked before and again right before the first deletion
     /// (a backup may have started during the search): then nothing is deleted
     /// and the report says `skipped`.
