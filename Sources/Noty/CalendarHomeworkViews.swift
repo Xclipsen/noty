@@ -25,6 +25,8 @@ struct CalendarHomeworkRow: View {
     var body: some View {
         let work = item.homework
         let done = ticking ?? item.done
+        // Ticking needs a writable calendar and the WebUntis connection the mark belongs to.
+        let canTick = model.canWrite && model.connection != nil && !model.showsSamples
         HStack(alignment: .top, spacing: CalendarSpace.s) {
             Button {
                 let target = !item.done
@@ -45,9 +47,10 @@ struct CalendarHomeworkRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(!model.canWrite || ticking != nil)
-            .sensoryFeedback(trigger: done) { _, new in new ? .success : .selection }
-            .accessibilityLabel(item.done ? "Als offen markieren" : "Als erledigt markieren")
+            .disabled(!canTick || ticking != nil)
+            // Haptic only for a stored change (not for the optimistic tick).
+            .sensoryFeedback(trigger: item.done) { _, new in new ? .success : .selection }
+            .accessibilityLabel(done ? "Als offen markieren" : "Als erledigt markieren")
             VStack(alignment: .leading, spacing: 2) {
                 if showsSubject {
                     HStack(spacing: 5) {
@@ -75,7 +78,7 @@ struct CalendarHomeworkRow: View {
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityValue(item.done ? "erledigt" : "offen")
+        .accessibilityValue(done ? "erledigt" : "offen")
     }
 
     private var overdue: Bool {

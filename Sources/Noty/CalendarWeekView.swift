@@ -288,6 +288,8 @@ struct CalendarEventCard: View {
         var offset: CGSize = .zero
         var stretch: CGFloat = 0
         let start: Date, end: Date
+        /// Each drop is its own: a later, equal drop is never reset by an older wait.
+        let token = UUID()
     }
 
     /// 15-minute steps in the week, 5 in the wider day view.
@@ -396,8 +398,9 @@ struct CalendarEventCard: View {
             }
             .onEnded { value in
                 guard case .second(true, let drag?) = value else { return }
-                settle(Settling(offset: snapped(drag.translation), start: event.start, end: event.end))
-                model.drag(event, days: days(drag.translation.width), minutes: minutes(drag.translation.height), resize: false)
+                drop(Settling(offset: snapped(drag.translation), start: event.start, end: event.end)) {
+                    model.drag(event, days: days(drag.translation.width), minutes: minutes(drag.translation.height), resize: false)
+                }
             }, including: movable ? .all : .subviews)
         .onChange(of: move != nil || stretch != nil) { _, active in onDragState(active) }
         .onChange(of: event.start) { _, _ in settling = nil }
@@ -425,20 +428,37 @@ struct CalendarEventCard: View {
         CGSize(width: CGFloat(days(translation.width)) * (column ?? 0), height: CGFloat(minutes(translation.height)) / 60 * hourHeight)
     }
 
-    /// Keeps the dropped position until the event moved; a rejected change
-    /// (too short, invalid, series dialog cancelled) springs back.
-    private func settle(_ value: Settling) {
+    /// Keeps the dropped position until the model moved the event (its new
+    /// start/end clear `settling`, see `onChange`). A change rejected at once
+    /// (too short, invalid) springs back immediately; a cancelled series
+    /// question shortly after; a commit that never arrives after 10 s.
+    private func drop(_ value: Settling, _ change: () -> Void) {
+        guard value.offset != .zero || value.stretch != 0 else { change(); return }
         settling = value
-        Task { @MainActor in
-            var waited = 0
-            repeat {
-                try? await Task.sleep(for: .milliseconds(300))
-                waited += 300
-            } while settling == value && model.pendingSeriesChange?.entry.id == event.id && waited < 120_000
-            try? await Task.sleep(for: .milliseconds(900))
-            guard settling == value else { return }
-            withAnimation(CalendarMotion.bouncy(reduceMotion)) { settling = nil }
+        let notice = model.notice
+        change()
+        if model.notice != notice && model.pendingSeriesChange?.entry.id != event.id {
+            springBack(value.token)
+            return
         }
+        Task { @MainActor in
+            var waited = 0, askedSeries = false
+            while settling?.token == value.token && waited < 10_000 {
+                try? await Task.sleep(for: .milliseconds(150))
+                if model.pendingSeriesChange?.entry.id == event.id {
+                    askedSeries = true
+                } else {
+                    // After „Abbrechen“ of the series question there is nothing to wait for long.
+                    waited += askedSeries ? 600 : 150
+                }
+            }
+            springBack(value.token)
+        }
+    }
+
+    private func springBack(_ token: UUID) {
+        guard settling?.token == token else { return }
+        withAnimation(CalendarMotion.bouncy(reduceMotion)) { settling = nil }
     }
 
     /// New times while dragging („09:15–10:45“, „+1 Tag“).
@@ -477,8 +497,9 @@ struct CalendarEventCard: View {
             .gesture(DragGesture(minimumDistance: 1)
                 .updating($stretch) { value, state, _ in state = value.translation.height }
                 .onEnded { value in
-                    settle(Settling(stretch: CGFloat(minutes(value.translation.height)) / 60 * hourHeight, start: event.start, end: event.end))
-                    model.drag(event, days: 0, minutes: minutes(value.translation.height), resize: true)
+                    drop(Settling(stretch: CGFloat(minutes(value.translation.height)) / 60 * hourHeight, start: event.start, end: event.end)) {
+                        model.drag(event, days: 0, minutes: minutes(value.translation.height), resize: true)
+                    }
                 })
             .accessibilityHidden(true)
     }

@@ -4,8 +4,17 @@ import NotebookCore
 /// Month: seven clean columns, quiet ISO week numbers, at most three
 /// compact lines per day. What does not fit is counted in „+ n weitere“,
 /// never dropped.
+/// Remembers a sideways swipe in progress: the cells' buttons ignore the
+/// touch that was a swipe (a simultaneous gesture would let them fire too).
+final class CalendarSwipeGuard {
+    private var at = Date.distantPast
+    func mark() { at = Date() }
+    var recent: Bool { Date().timeIntervalSince(at) < 0.45 }
+}
+
 struct CalendarMonthView: View {
     @ObservedObject var model: CalendarModel
+    @State private var swipe = CalendarSwipeGuard()
     let showAll: (Date) -> Void
     @ScaledMetric(relativeTo: .caption) private var line: CGFloat = 20
     @ScaledMetric(relativeTo: .caption) private var weekColumn: CGFloat = 28
@@ -60,6 +69,9 @@ struct CalendarMonthView: View {
         // Swipe sideways to the previous/next month (only clearly horizontal
         // swipes; taps, the cells' buttons and vertical scrolling stay as they are).
         .simultaneousGesture(DragGesture(minimumDistance: 30)
+            .onChanged { value in
+                if abs(value.translation.width) > 24, abs(value.translation.width) > abs(value.translation.height) { swipe.mark() }
+            }
             .onEnded { value in
                 let dx = value.translation.width, dy = value.translation.height
                 guard abs(dx) > 80, abs(dx) > 2 * abs(dy) else { return }
@@ -77,7 +89,7 @@ struct CalendarMonthView: View {
         let weekend = CalendarDates.weekdayIndex(day, calendar: calendar) >= 5
         let holiday = events.contains { $0.source == .holidays }
         return VStack(alignment: .leading, spacing: 1) {
-            Button { model.open(day, in: .day) } label: {
+            Button { if !swipe.recent { model.open(day, in: .day) } } label: {
                 Text("\(calendar.component(.day, from: day))")
                     .font(.subheadline.weight(isToday ? .bold : .regular)).monospacedDigit()
                     .foregroundStyle(isToday ? Color.white : !inMonth ? CalendarPalette.quiet : weekend ? Color.secondary : Color.primary)
@@ -96,10 +108,10 @@ struct CalendarMonthView: View {
                 dots(events, day: day)
             } else {
                 ForEach(events.prefix(split.shown)) { event in
-                    CalendarMonthRow(event: event, model: model).frame(height: line)
+                    CalendarMonthRow(event: event, model: model, swipe: swipe).frame(height: line)
                 }
                 if split.hidden > 0 {
-                    Button { showAll(day) } label: {
+                    Button { if !swipe.recent { showAll(day) } } label: {
                         Text(CalendarText.more(split.hidden)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                             .padding(.horizontal, 6).padding(.vertical, 1)
                             .background(Capsule().fill(Color.white.opacity(0.08)))
@@ -133,7 +145,7 @@ struct CalendarMonthView: View {
         if !events.isEmpty {
             let shown = events.prefix(8)
             let cancelled = events.filter { $0.status == .cancelled }.count
-            Button { showAll(day) } label: {
+            Button { if !swipe.recent { showAll(day) } } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(7), spacing: 3), count: 4), alignment: .leading, spacing: 3) {
                         ForEach(shown) { event in
@@ -168,13 +180,19 @@ struct CalendarMonthRow: View {
     let event: CalendarEntry
     @ObservedObject var model: CalendarModel
     @Environment(\.calendarOrigin) private var origins
+    /// Month grid: a swipe across the row does not open it.
+    var swipe: CalendarSwipeGuard?
 
     var body: some View {
         let color = model.entryColor(event)
         let selected = model.selection == event.id
         let notes = model.hasNotes(event)
         let cancelled = event.status == .cancelled
-        Button { origins?.tap(event.id, key: "month/" + event.id); model.selection = event.id } label: {
+        Button {
+            guard swipe?.recent != true else { return }
+            origins?.tap(event.id, key: "month/" + event.id)
+            model.selection = event.id
+        } label: {
             HStack(spacing: CalendarSpace.xs) {
                 if event.allDay {
                     Rectangle().fill(color).frame(width: 3)

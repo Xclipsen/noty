@@ -31,6 +31,9 @@ struct CalendarEventPanel: View {
     /// enough speed it closes, otherwise it springs back.
     @ObservedObject var pullState: CalendarWindowPull
     private var pull: CGFloat { pullState.value }
+    @GestureState private var pulling = false
+    /// The pull closed the window: it shrinks away from where it was let go.
+    @State private var closing = false
     private var calendar: Calendar { model.calendar }
 
     /// Narrow windows: nearly the full area; otherwise about 90 %.
@@ -140,14 +143,22 @@ struct CalendarEventPanel: View {
         }
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
+            .updating($pulling) { _, state, _ in state = true }
             .onChanged { value in pullState.value = value.translation.height }
             .onEnded { value in
                 if value.translation.height > 120 || value.predictedEndTranslation.height > 320 {
+                    closing = true
                     close()
                 } else {
                     withAnimation(CalendarMotion.bouncy(reduceMotion)) { pullState.value = 0 }
                 }
             })
+        // A cancelled pull (no `onEnded`, e.g. a system gesture took over) springs back too.
+        .onChange(of: pulling) { _, active in
+            if !active && !closing && pullState.value != 0 {
+                withAnimation(CalendarMotion.bouncy(reduceMotion)) { pullState.value = 0 }
+            }
+        }
     }
 
     /// Bearbeiten/Löschen (own entries) or the subject colour (lessons).

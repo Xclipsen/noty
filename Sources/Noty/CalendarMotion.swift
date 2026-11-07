@@ -33,17 +33,19 @@ enum CalendarMotion {
 /// plain reference (not observed): writing a frame never re-renders a view.
 @MainActor final class CalendarOriginTracker {
     nonisolated static let space = "noty.calendar.root"
-    private var frames: [String: CGRect] = [:]
+    /// Frame plus the reporting view instance: one entry can be on screen
+    /// twice (moved card, spanning rows); a vanishing view only removes its own.
+    private var frames: [String: (frame: CGRect, owner: UUID)] = [:]
     private var tapped: (id: String, key: String)?
 
-    func report(_ key: String, _ frame: CGRect) { frames[key] = frame }
-    func forget(_ key: String) { frames[key] = nil }
+    func report(_ key: String, _ frame: CGRect, owner: UUID) { frames[key] = (frame, owner) }
+    func forget(_ key: String, owner: UUID) { if frames[key]?.owner == owner { frames[key] = nil } }
     func tap(_ id: String, key: String) { tapped = (id, key) }
 
     /// The frame of the view the entry `id` was opened from, if it is known.
     func origin(for id: String?) -> CGRect? {
         guard let id, let tapped, tapped.id == id else { return nil }
-        return frames[tapped.key]
+        return frames[tapped.key]?.frame
     }
 }
 
@@ -65,8 +67,14 @@ struct CalendarWindowBackdrop: View {
 private struct CalendarOriginKey: EnvironmentKey {
     static var defaultValue: CalendarOriginTracker? { nil }
 }
+/// „Heute“ was chosen (`count`) at `at`.
+struct CalendarPulse: Equatable {
+    var count = 0
+    var at = Date.distantPast
+}
+
 private struct CalendarTodayPulseKey: EnvironmentKey {
-    static let defaultValue = 0
+    static let defaultValue = CalendarPulse()
 }
 
 extension EnvironmentValues {
@@ -75,7 +83,7 @@ extension EnvironmentValues {
         set { self[CalendarOriginKey.self] = newValue }
     }
     /// Bumped by „Heute“: today's marker pulses once.
-    var calendarTodayPulse: Int {
+    var calendarTodayPulse: CalendarPulse {
         get { self[CalendarTodayPulseKey.self] }
         set { self[CalendarTodayPulseKey.self] = newValue }
     }
@@ -91,12 +99,13 @@ extension View {
 private struct CalendarOriginReporter: ViewModifier {
     let key: String
     @Environment(\.calendarOrigin) private var tracker
+    @State private var owner = UUID()
 
     func body(content: Content) -> some View {
         if let tracker {
             content
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(CalendarOriginTracker.space)) } action: { tracker.report(key, $0) }
-                .onDisappear { tracker.forget(key) }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(CalendarOriginTracker.space)) } action: { tracker.report(key, $0, owner: owner) }
+                .onDisappear { tracker.forget(key, owner: owner) }
         } else {
             content
         }
@@ -107,13 +116,24 @@ private struct CalendarTodayPulseEffect: ViewModifier {
     let active: Bool
     @Environment(\.calendarTodayPulse) private var pulse
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Local trigger: also pulses when „Heute“ jumped to another period and
+    /// this marker just appeared (a phase animator does not run on appear).
+    @State private var tick = 0
 
     func body(content: Content) -> some View {
         if active && !reduceMotion {
-            content.phaseAnimator([1.0, 1.28, 1.0], trigger: pulse) { view, scale in
+            content.phaseAnimator([1.0, 1.28, 1.0], trigger: tick) { view, scale in
                 view.scaleEffect(scale)
             } animation: { scale in
                 scale > 1 ? .spring(response: 0.22, dampingFraction: 0.6) : .spring(response: 0.34, dampingFraction: 0.7)
+            }
+            .onChange(of: pulse.count) { _, _ in tick += 1 }
+            .onAppear {
+                guard pulse.count > 0, Date().timeIntervalSince(pulse.at) < 0.8 else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(160))
+                    tick += 1
+                }
             }
         } else {
             content

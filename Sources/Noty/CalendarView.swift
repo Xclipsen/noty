@@ -48,10 +48,11 @@ struct CalendarView: View {
     /// The entry the window showed last: it shrinks back into that card.
     @State private var lastWindowID: String?
     /// Pull-down of the window head (dims the backdrop less while pulling).
-    @StateObject private var windowPull = CalendarWindowPull()
+    /// Held, not observed: a pull frame must not re-render the calendar (and its grid).
+    @State private var windowPull = CalendarWindowPull()
     /// The period/view shown before the last change (direction of the slide/zoom).
     @State private var previousNav: CalendarNavKey?
-    @State private var todayPulse = 0
+    @State private var todayPulse = CalendarPulse()
     /// The storage lock banner was put away: the sync symbol keeps the badge.
     @State private var hiddenStorageError: String?
     private var calendar: Calendar { model.calendar }
@@ -287,7 +288,7 @@ struct CalendarView: View {
     /// „Heute“: jump, then today's marker pulses once.
     private func goToToday() {
         model.goToToday()
-        todayPulse += 1
+        todayPulse = CalendarPulse(count: todayPulse.count + 1, at: Date())
     }
 
     /// Period and view: a change slides (earlier/later) or zooms (finer/coarser).
