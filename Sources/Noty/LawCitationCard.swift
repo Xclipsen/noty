@@ -35,12 +35,8 @@ struct LawCitationCardLayer: View {
             let width = max(0, min(Self.width, bounds.width - 2 * Self.margin))
             let height = min(reservedHeight, max(0, bounds.height - 2 * Self.margin))
             ZStack(alignment: .topLeading) {
-                if model.presentation != nil {
-                    // Esc where no responder of the page takes it (the other ways
-                    // go through `consumeEscape` in KeyboardRouter and LawKeyboard).
-                    Button("") { _ = model.consumeEscape() }
-                        .keyboardShortcut(.cancelAction).frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
-                }
+                // Esc: `consumeEscape` from KeyboardRouter and LawKeyboard, no
+                // hidden `.cancelAction` here (it bound ⌘. too and could beat a sheet's own).
                 if let presentation = model.presentation {
                     let anchor = presentation.anchor.offsetBy(dx: -global.minX, dy: -global.minY)
                     let place = Self.placement(anchor: anchor, size: CGSize(width: width, height: height), in: bounds)
@@ -165,7 +161,7 @@ struct LawCitationCard: View {
                 Image(systemName: "book.closed").font(.subheadline).foregroundStyle(Color.notyAccent).accessibilityHidden(true)
                 Text(model.heading).font(.headline).foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.8)
             }
-            if case let .section(_, title, _, _) = model.content, !title.isEmpty {
+            if case let .section(_, title, _, _, _) = model.content, !title.isEmpty {
                 Text(title).font(.subheadline).foregroundStyle(.white.opacity(0.7)).lineLimit(2)
             }
             if let note = model.versionNote {
@@ -194,6 +190,8 @@ struct LawCitationCard: View {
     /// A bare „§ 35a“: the notebook's default law or the law named before it.
     private var inferredText: String? {
         guard presentation.citation.inferredLaw else { return nil }
+        // A bare „§ 10“ in a law's own text means that law: nothing to say.
+        if case let .reader(law, _) = presentation.origin, law == presentation.citation.lawID { return nil }
         if let law = presentation.context.defaultLawID, law == presentation.citation.lawID { return "Standardgesetz des Hefts" }
         return "Gesetz aus dem Zusammenhang erkannt"
     }
@@ -209,10 +207,14 @@ struct LawCitationCard: View {
         case .notOffline:
             note("\(model.lawAbbreviation) ist noch nicht offline auf diesem iPad. Beim Öffnen wird der Text geladen.", symbol: "icloud.and.arrow.down")
         case .missing:
-            note("\(model.heading) ist in der aktuellen Fassung nicht enthalten.", symbol: "exclamationmark.triangle")
+            note("\(model.heading) ist in \(model.shownVersion) nicht enthalten.", symbol: "exclamationmark.triangle")
         case .unavailable:
             note("Dieses Gesetz ist nicht mehr in der Gesetzessammlung.", symbol: "exclamationmark.triangle")
-        case let .section(_, _, excerpt, _):
+        case let .section(_, _, excerpt, _, found):
+            if !found, let paragraph = presentation.citation.reference.paragraph {
+                Text("Abs. \(paragraph) nicht gefunden – Anfang der Vorschrift")
+                    .font(.caption2).foregroundStyle(Color.orange.opacity(0.9)).lineLimit(1)
+            }
             Text(excerpt.isEmpty ? "(ohne Text)" : excerpt)
                 .font(.footnote)
                 .foregroundStyle(.white.opacity(0.88))
@@ -234,12 +236,12 @@ struct LawCitationCard: View {
     private var accessibilityText: String {
         var parts = ["Gesetzesverweis \(model.heading)"]
         switch model.content {
-        case let .section(_, title, excerpt, _):
+        case let .section(_, title, excerpt, _, _):
             if !title.isEmpty { parts.append(title) }
             if !excerpt.isEmpty { parts.append(String(excerpt.prefix(300))) }
         case .loading: parts.append("Wird geladen")
         case .notOffline: parts.append("Noch nicht offline verfügbar")
-        case .missing: parts.append("In der aktuellen Fassung nicht enthalten")
+        case .missing: parts.append("In \(model.shownVersion) nicht enthalten")
         case .unavailable: parts.append("Nicht mehr in der Gesetzessammlung")
         }
         if let note = model.versionNote { parts.append(note.text) }

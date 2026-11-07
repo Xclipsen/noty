@@ -97,8 +97,6 @@ final class SelectionActionBar: UIScrollView {
         layer.cornerRadius = Self.height / 2; layer.cornerCurve = .continuous
         layer.borderWidth = 0.5; layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
         showsHorizontalScrollIndicator = false
-        // Beside the bar a touch is swallowed instead of starting a lasso or ink (`PencilGuard`).
-        PencilGuard.shared.register(self, margin: 8)
         stack.axis = .horizontal; stack.spacing = 4; stack.alignment = .center
         stack.accessibilityContainerType = .semanticGroup; stack.accessibilityLabel = "Aktionen der Auswahl"
         addSubview(stack)
@@ -126,6 +124,13 @@ final class SelectionActionBar: UIScrollView {
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// Beside the bar no ink, lasso or shape starts on its own notebook's
+    /// pages (`PencilGuard`); taps and object drags there still work.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { PencilGuard.shared.register(self, margin: 8, local: true) } else { PencilGuard.shared.unregister(self) }
+    }
 
     func setMenu(_ menu: UIMenu, for action: SelectionAction) { buttons[action]?.menu = menu }
 

@@ -17,6 +17,8 @@ public struct KeyPressGate: Sendable {
         times[key] = time; swallowed.remove(key)
         return true
     }
+    /// Whether `began` would call this a new key-down, without recording it.
+    public func isFresh(key: Int, time: Double) -> Bool { times[key] != time }
     /// This press was used: its key-up stays away from the system too.
     public mutating func swallow(key: Int) { swallowed.insert(key) }
     /// True when the key-up belongs to a swallowed press.

@@ -10,6 +10,8 @@ extension EditorModel {
     /// Inserts the quote on its page; nil when done, otherwise a message for the user.
     func insertLawQuote(_ request: LawQuoteRequest) -> String? {
         guard writable, !busy, !mutationsPaused else { return "Das Heft kann gerade nicht bearbeitet werden. Das Zitat wurde nicht eingefügt." }
+        // A free field in a text document would lie over the flow and could not be edited there.
+        guard !notebook.isTextDocument else { return "In Textdokumenten lässt sich noch kein Zitat einfügen. Den Text bitte im Gesetzesfenster kopieren." }
         guard let index = notebook.pages.firstIndex(where: { $0.id == request.pageID }) else { return "Die Seite gibt es nicht mehr. Das Zitat wurde nicht eingefügt." }
         let page = notebook.pages[index]
         let existing = page.effectiveTextBoxes

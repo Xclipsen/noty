@@ -16,6 +16,8 @@ extension DocumentTextSurface {
             sheet.lawCitations.forwardedTouchDown(touch)
         }
         addGestureRecognizer(touches)
+        // The page's Pencil hover waits for Pencil taps here too (caret placing).
+        LawCitationTouchObserver.surfaces.add(touches)
     }
 }
 

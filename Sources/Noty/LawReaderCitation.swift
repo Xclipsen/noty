@@ -34,9 +34,20 @@ extension LawReaderView {
             laws.citationReturn = back
         }
         let before = "\(selectedID)|\(sectionID)|\(viewPDF)"
-        let missing = "\(LawCitationText.reference(jump.key, paragraph: jump.paragraph, abbr: entry.abbr)) ist in \(jump.version == nil ? "der aktuellen Fassung" : "dieser Fassung") nicht enthalten."
-        let outcome = await open(entry, version: jump.version, target: jump.key, paragraph: jump.paragraph)
+        var missing = "\(LawCitationText.reference(jump.key, paragraph: jump.paragraph, abbr: entry.abbr)) ist in \(jump.version == nil ? "der aktuellen Fassung" : jump.year.map { "der Fassung für \($0)" } ?? "dieser Fassung") nicht enthalten."
+        var outcome = await open(entry, version: jump.version, target: jump.key, paragraph: jump.paragraph)
         guard citationJumpID == jump.id else { return true }
+        var notice: String?
+        if outcome == .failed, jump.version != nil {
+            // The tax year's version could not be loaded (offline, not on this
+            // iPad): the current one instead, saying so.
+            outcome = await open(entry, target: jump.key, paragraph: jump.paragraph)
+            guard citationJumpID == jump.id else { return true }
+            missing = "\(LawCitationText.reference(jump.key, paragraph: jump.paragraph, abbr: entry.abbr)) ist in der aktuellen Fassung nicht enthalten."
+            if outcome == .opened {
+                notice = (jump.year.map { "Fassung für \($0)" } ?? "Diese Fassung") + " nicht verfügbar – aktuelle Fassung gezeigt"
+            }
+        }
         switch outcome {
         case .opened, .superseded:
             break
@@ -61,6 +72,7 @@ extension LawReaderView {
                 if loadError.isEmpty { loadError = error }
             }
         }
+        if let notice { loadError = notice }
         // Moved: another section, PDF → text, or the text scrolled to an Absatz.
         let moved = "\(selectedID)|\(sectionID)|\(viewPDF)" != before || (outcome == .opened && jump.paragraph != nil)
         if laws.citationReturn?.id == jump.id { settleReturn(jump, moved: moved) }
@@ -130,12 +142,15 @@ extension LawReaderView {
         if crossBack.count > 30 { crossBack.removeFirst(crossBack.count - 30) }
         let key = citation.reference.key, paragraph = citation.reference.paragraph
         if citation.lawID == selectedID, let shown = doc.sections.first(where: { $0.id == key || $0.keys.contains(key) }) {
+            crossNavigating = true; defer { crossNavigating = false }
             showSection(shown)
             jump(to: paragraph)
             return
         }
         Task {
+            crossNavigating = true
             let outcome = await open(target, version: citation.lawID == selectedID ? doc.version : nil, target: key, paragraph: paragraph)
+            crossNavigating = false
             guard outcome == .missingSection || outcome == .failed else { return }
             // Nothing moved: no step back to offer.
             crossBack.removeAll { $0.id == step.id }
@@ -149,6 +164,7 @@ extension LawReaderView {
     func crossReferenceBack() async {
         guard let step = crossBack.popLast(), let target = laws.entries.first(where: { $0.id == step.lawID }) else { return }
         textSelection.clear()
+        crossNavigating = true; defer { crossNavigating = false }
         if step.lawID == selectedID, step.versionID == document?.version, let shown = document?.sections.first(where: { $0.id == step.sectionID }) {
             if viewPDF { viewPDF = false }
             showSection(shown)

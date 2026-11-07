@@ -7,6 +7,13 @@ import NotebookCore
 struct NotebookLawContext: Equatable, Sendable {
     var defaultLawID: String? = nil
     var taxYear: Int? = nil
+    /// Document id of the notebook the page belongs to (set per page by the
+    /// editor; never stored). Copies keep page ids, so a quote needs both.
+    var notebookID: UUID? = nil
+    /// „Als Zitat einfügen“ is possible on this page: a writable notebook (no
+    /// restored copy, no text document), an existing page (not the draft).
+    var canQuote = false
+    /// Nothing stored for the notebook (only the stored fields count).
     var isEmpty: Bool { defaultLawID == nil && taxYear == nil }
 }
 
@@ -84,4 +91,7 @@ struct LawQuoteRequest: Equatable, Identifiable {
     var below: PageRect
     var text: String
     var source: String
+    /// `NotebookLawContext.notebookID` of the page; a request without it is
+    /// refused (a duplicated notebook or a restored copy has the same page ids).
+    var notebookID: UUID? = nil
 }

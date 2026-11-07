@@ -192,6 +192,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     private static var viewports: [ObjectIdentifier: (offset: CGPoint, zoom: CGFloat)] = [:]
     /// Scroll or zoom of the notebook began: a shown card goes at once.
     static func viewportMoved() {
+        lastViewportMove = CACurrentMediaTime()
         let model = LawCitationPreviewModel.shared
         if model.presentation != nil { DispatchQueue.main.async { model.pageInteractionBegan() } }
     }
@@ -201,11 +202,15 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         let id = ObjectIdentifier(viewport), now = (offset: viewport.contentOffset, zoom: viewport.zoomScale)
         let last = viewports[id]
         viewports[id] = now
-        guard let last, LawCitationPreviewModel.shared.presentation != nil else { return }
+        guard let last else { return }
         if hypot(now.offset.x - last.offset.x, now.offset.y - last.offset.y) > 0.5 || abs(now.zoom / max(last.zoom, 0.0001) - 1) > 0.001 {
-            viewportMoved()
+            lastViewportMove = CACurrentMediaTime()
+            if LawCitationPreviewModel.shared.presentation != nil { viewportMoved() }
         }
     }
+    /// Last real scroll or zoom of any notebook viewport: handwriting is only
+    /// read once the pages have settled (`inkIdle`).
+    private(set) static var lastViewportMove: CFTimeInterval = 0
 
     /// Model changes never run inside a SwiftUI update (configure).
     private enum Deferred { case dismiss, pageInteraction }
@@ -235,7 +240,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         guard model.scanner != nil else { clear(); return }
         let flow = currentFlowKey()
         lastFlowKey = flow
-        inkReader.update(pageID: editor.pageID, drawing: editor.drawing, layout: editor.layout, scanner: model.scanner,
+        inkReader.update(pageID: editor.pageID, page: editor.page, drawing: editor.drawing, layout: editor.layout,
+                         index: editor.lawSearchIndex, scanner: model.scanner,
                          generation: model.scannerGeneration, lawID: editor.lawContext.defaultLawID,
                          enabled: model.handwritingEnabled && sheet.window != nil)
         let key = ContentKey(pageID: editor.pageID, layout: editor.layout, paper: sheet.textLayer.linePaper,
@@ -321,7 +327,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         guard let sheet, let editor = sheet.configuration, editor.lawCitations, sheet.window != nil else { return }
         guard let scanner = model.scanner else { clear(); return }
         // Never while a stroke is drawn: try again once the Pencil rests.
-        if sheet.inkActive || touches.pencilDown { schedule(); return }
+        if sheet.inkActive || pencilDown { schedule(); return }
         let generation = model.scannerGeneration, lawID = editor.lawContext.defaultLawID
         if generation != scannedGeneration || lawID != scannedLawID {
             scanned = [:]; boxCache = [:]; pdfCache = nil; flowCache = nil
@@ -343,20 +349,25 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         texts.remove("")
         // Only this page's texts stay cached.
         scanned = scanned.filter { texts.contains($0.key) }
-        for text in texts where scanned[text] == nil {
-            if let shared = LawCitationFlowScans.result(text, generation: generation, lawID: lawID) { scanned[text] = shared }
+        // The flow is scanned once per document text for all its pages (`LawCitationFlowScans`).
+        var flowScan: Task<[LawCitation], Never>?
+        let flowString = flowText.flatMap { $0.text.isEmpty ? nil : $0.text }
+        if let flowString, let store = flowText?.store, scanned[flowString] == nil {
+            if let shared = LawCitationFlowScans.result(flowString, store: store, generation: generation, lawID: lawID) {
+                scanned[flowString] = shared
+            } else {
+                flowScan = LawCitationFlowScans.scan(flowString, store: store, generation: generation, lawID: lawID, scanner: scanner)
+            }
         }
-        let missing = texts.filter { scanned[$0] == nil }
-        guard !missing.isEmpty else { build(); return }
+        let missing = texts.filter { scanned[$0] == nil && $0 != flowString }
+        guard !missing.isEmpty || flowScan != nil else { build(); return }
         scanToken += 1
-        let token = scanToken, page = editor.pageID, flowString = flowText?.text
+        let token = scanToken, page = editor.pageID
         Task { [weak self] in
-            let found = await Task.detached(priority: .utility) {
+            var found = missing.isEmpty ? [] : await Task.detached(priority: .utility) {
                 missing.map { ($0, scanner.citations(in: $0, defaultLawID: lawID)) }
             }.value
-            if let flowString, let result = found.first(where: { $0.0 == flowString }) {
-                LawCitationFlowScans.remember(flowString, generation: generation, lawID: lawID, result.1)
-            }
+            if let flowScan, let flowString { found.append((flowString, await flowScan.value)) }
             guard let self, self.scanToken == token, self.scannedGeneration == generation, self.scannedLawID == lawID,
                   self.model.scannerGeneration == generation, self.sheet?.configuration?.pageID == page else { return }
             for (text, citations) in found { self.scanned[text] = citations }
@@ -382,12 +393,20 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
 
     /// Fields whose text is scanned: not the edited one (it changes with every
     /// key), not Text editor 2's flow (drawn and scanned through its store).
-    private func scans(_ box: TextBox) -> Bool { !(box.flowID != nil && lastFlowKey != nil) && box.id != editingBox }
+    /// In a Text editor 2 document the flow's segments are never fields, also
+    /// while its page view is detached for a moment (they would jump).
+    private func scans(_ box: TextBox) -> Bool {
+        !(box.flowID != nil && (lastFlowKey != nil || documentFlow)) && box.id != editingBox
+    }
+    /// Text editor 2 is on and this sheet belongs to a text document.
+    private var documentFlow: Bool {
+        sheet?.configuration?.flowDocument == true && UserDefaults.standard.bool(forKey: AppSettingsKey.textEditor2)
+    }
 
     /// Geometry for the found citations (main actor: TextKit and PDFKit).
     private func build() {
         guard let sheet, let editor = sheet.configuration else { return }
-        if sheet.inkActive || touches.pencilDown { schedule(); return }
+        if sheet.inkActive || pencilDown { schedule(); return }
         let origin = sheet.pageLayout.contentOrigin, paper = sheet.textLayer.linePaper
         let dark = (editor.margins?.color ?? editor.paperColor) == .dark
         var result: [LawCitationPlacement] = []
@@ -464,9 +483,18 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     }
 
     /// No stroke, eraser, lasso, drag or held shape on the sheet: ink may be read.
+    /// Only a page actually on screen, after the viewport rested about a second.
     private var inkIdle: Bool {
-        guard let sheet, sheet.window != nil else { return false }
-        return !sheet.inkActive && !touches.touching && sheet.eraseSession == nil && sheet.shapeErase == nil
+        guard let sheet, let window = sheet.window, !sheet.isHidden else { return false }
+        guard CACurrentMediaTime() - Self.lastViewportMove > 1.0 else { return false }
+        // Visible in its viewport (the nearest scroll view), not just loaded beside it.
+        var clip = window.bounds, view = sheet.superview
+        while let current = view {
+            if current is UIScrollView { clip = clip.intersection(current.convert(current.bounds, to: nil)); break }
+            view = current.superview
+        }
+        guard !clip.isNull, sheet.convert(sheet.bounds, to: nil).intersects(clip) else { return false }
+        return !sheet.inkActive && !touches.touching && !pencilDown && sheet.eraseSession == nil && sheet.shapeErase == nil
             && sheet.heldShape == nil && !sheet.objectLayer.showsTransientPreview
     }
 
@@ -652,6 +680,9 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         visiblePlacements.first { $0.key == key }
     }
     private var screenScale: CGFloat { sheet?.screenScale ?? 1 }
+    /// Pencil on this sheet or on Text editor 2's surface above it (caret taps).
+    private var pencilDown: Bool { touches.pencilDown || LawCitationTouchObserver.surfacePencilDown }
+    private var lastPencilLift: CFTimeInterval { max(touches.lastPencilLift, LawCitationTouchObserver.surfaceLastPencilLift) }
     private var context: NotebookLawContext { sheet?.configuration?.lawContext ?? NotebookLawContext() }
     /// The citation in canonical page coordinates (union of its lines).
     private func pageRect(_ placement: LawCitationPlacement) -> PageRect? {
@@ -690,7 +721,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     private func allowsHover(_ kind: HoverKind) -> Bool {
         guard let sheet, sheet.window != nil, model.scanner != nil, !placements.isEmpty else { return false }
         if sheet.tool.isEraser || sheet.tool == .laser { return false }
-        if kind == .pencil, sheet.inkActive || touches.pencilDown { return false }
+        if kind == .pencil, sheet.inkActive || pencilDown { return false }
         return true
     }
 
@@ -759,7 +790,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
               let hit = placement(key), hit.contains(point, slop: 3 / screenScale) else { dwellKey = nil; return }
         if kind == .pencil {
             // Writing: the Pencil hovers between letters all the time.
-            let since = CACurrentMediaTime() - touches.lastPencilLift
+            let since = CACurrentMediaTime() - lastPencilLift
             if since < Self.writingPause { startDwell(kind, after: Self.writingPause - since); return }
         }
         shown = key
@@ -858,17 +889,41 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
 }
 
 /// Scanner results of Text editor 2's flow, shared by the sheets showing it:
-/// one document text is scanned once, not by every visible page.
+/// per document text store one finished result and at most one scan in
+/// flight, which every page asking for the same text and context awaits.
 @MainActor
 enum LawCitationFlowScans {
-    private static var last: (text: String, generation: Int, lawID: String?, found: [LawCitation])?
-    static func result(_ text: String, generation: Int, lawID: String?) -> [LawCitation]? {
-        guard let last, last.generation == generation, last.lawID == lawID, last.text.utf16.count == text.utf16.count,
-              last.text == text else { return nil }
-        return last.found
+    private struct Key: Equatable {
+        var hash: Int, length: Int, generation: Int, lawID: String?
+        init(_ text: String, generation: Int, lawID: String?) {
+            hash = text.hashValue; length = text.utf16.count; self.generation = generation; self.lawID = lawID
+        }
     }
-    static func remember(_ text: String, generation: Int, lawID: String?, _ found: [LawCitation]) {
-        last = (text, generation, lawID, found)
+    private static var done: [ObjectIdentifier: (key: Key, text: String, found: [LawCitation])] = [:]
+    private static var running: [ObjectIdentifier: (key: Key, text: String, task: Task<[LawCitation], Never>)] = [:]
+    /// Stores remembered (a closed document's entry goes with the next ones).
+    private static let limit = 4
+
+    static func result(_ text: String, store: ObjectIdentifier, generation: Int, lawID: String?) -> [LawCitation]? {
+        guard let entry = done[store], entry.key == Key(text, generation: generation, lawID: lawID), entry.text == text else { return nil }
+        return entry.found
+    }
+    /// The running scan of exactly this text and context, or a new one
+    /// (replacing an older one of the store, whose result is then unused).
+    static func scan(_ text: String, store: ObjectIdentifier, generation: Int, lawID: String?,
+                     scanner: LawCitationScanner) -> Task<[LawCitation], Never> {
+        let key = Key(text, generation: generation, lawID: lawID)
+        if let current = running[store], current.key == key, current.text == text { return current.task }
+        let task = Task.detached(priority: .utility) { scanner.citations(in: text, defaultLawID: lawID) }
+        running[store] = (key, text, task)
+        Task {
+            let found = await task.value
+            guard running[store]?.key == key else { return }
+            running[store] = nil
+            if done[store] == nil, done.count >= limit, let old = done.keys.first { done[old] = nil }
+            done[store] = (key, text, found)
+        }
+        return task
     }
 }
 
@@ -984,6 +1039,10 @@ final class LawCitationTouchObserver: UIGestureRecognizer {
     private(set) var lastType: UITouch.TouchType?
     private(set) var selectionAtDown = false
     var pencilDown: Bool { !pencils.isEmpty }
+    /// Observers on Text editor 2's surfaces (`DocumentTextSurface+LawCitations`).
+    static let surfaces = NSHashTable<LawCitationTouchObserver>.weakObjects()
+    static var surfacePencilDown: Bool { surfaces.allObjects.contains { $0.pencilDown } }
+    static var surfaceLastPencilLift: CFTimeInterval { surfaces.allObjects.map(\.lastPencilLift).max() ?? 0 }
     /// Any touch (finger, Pencil, pointer) is down on the sheet.
     var touching: Bool { !active.isEmpty }
 

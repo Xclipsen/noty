@@ -27,6 +27,7 @@ extension LawReaderView {
     /// at its last read spot instead of jumping to the beginning.
     func choose(_ entry: LawEntry) async {
         guard entry.id != selectedID else { return }
+        endCrossTrail()
         await resume(entry)
     }
     /// Continues `entry` where it was read (B10): the remembered version if
@@ -60,6 +61,7 @@ extension LawReaderView {
     @discardableResult
     func open(_ entry: LawEntry, version: String? = nil, target: String? = nil, paragraph: String? = nil, resume: Bool = false, from field: LawLookupField? = nil) async -> LawOpenOutcome {
         let request = UUID(); requestID = request
+        endCrossTrail()
         loading = true; loadError = ""
         defer { if requestID == request { loading = false } }
         do {
@@ -79,6 +81,11 @@ extension LawReaderView {
             loadError = error.localizedDescription
             return .failed
         }
+    }
+    /// Another place chosen by hand: „Zurück zu § …“ is no longer offered,
+    /// and „Zurück zur Notiz“ follows its own rule again (`citationNavigated`).
+    func endCrossTrail() {
+        if !crossNavigating, !crossBack.isEmpty { crossBack = [] }
     }
     /// Scrolls the text to an Absatz of the shown section (again, if it is the
     /// same) and highlights it; nil just ends a pending target.
@@ -118,6 +125,7 @@ extension LawReaderView {
     /// outside the hits the nearest one in that direction.
     func stepHit(_ delta: Int) {
         guard !hits.isEmpty, let sections = document?.sections else { return }
+        endCrossTrail()
         let next: Int
         if let i = hits.firstIndex(of: sectionID) {
             next = (i + delta % hits.count + hits.count) % hits.count
@@ -132,6 +140,9 @@ extension LawReaderView {
     }
     func togglePDF() async {
         guard let entry, let doc = document else { return }
+        // A jump target belongs to the text view it was meant for: the text
+        // view made anew after the PDF must not replay it.
+        jumpParagraph = nil; restoreOffset = nil
         if viewPDF { viewPDF = false; pdfTarget = pdfPage; return }
         guard section?.pdf != nil || pdfTarget != nil else { loadError = LawReaderView.noPDFPosition; return }
         let id = requestID

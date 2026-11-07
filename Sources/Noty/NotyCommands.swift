@@ -64,10 +64,13 @@ final class AppCommandCenter: ObservableObject {
     @Published private(set) var editor: EditorCommandActions?
     @Published private(set) var library: LibraryCommandActions?
     private var editorOwner: UUID?
+    private var libraryOwner: UUID?
     private var latch = KeyDeliveryLatch()
     private init() {}
 
     func setEditor(_ actions: EditorCommandActions?, owner: UUID) {
+        // A late nil of a cover that went must not clear the new one.
+        if actions == nil, let editorOwner, editorOwner != owner { return }
         editorOwner = actions == nil ? nil : owner
         if editor != actions { editor = actions }
     }
@@ -77,18 +80,43 @@ final class AppCommandCenter: ObservableObject {
         editorOwner = nil
         if editor != nil { editor = nil }
     }
-    func setLibrary(_ actions: LibraryCommandActions?) { library = actions }
+    /// Like the editor: a library replaced on an area switch (`.id(root.path)`)
+    /// leaves late, its `onDisappear` must not clear the new one's actions.
+    func setLibrary(_ actions: LibraryCommandActions?, owner: UUID) {
+        if actions == nil, let libraryOwner, libraryOwner != owner { return }
+        libraryOwner = actions == nil ? nil : owner
+        library = actions
+    }
+    func clearLibrary(owner: UUID) {
+        guard libraryOwner == owner else { return }
+        libraryOwner = nil
+        library = nil
+    }
 
-    /// The law collection is on and a notebook is open.
-    var lawsOn: Bool { LawKeyboard.shared.available && editor != nil }
+    /// The law collection is on, a notebook is open and free: no sheet,
+    /// popover or alert of the editor over it.
+    var lawsOn: Bool {
+        let keyboard = LawKeyboard.shared
+        return keyboard.available && editor?.canEdit == true && !keyboard.covered
+    }
     /// The law window has the keys (`LawShortcuts.displaces`).
     var lawFocus: Bool { lawsOn && LawKeyboard.shared.focused }
+    /// The palette, an input line or a key panel (question, input, colour,
+    /// dialog) has the keys: ⌘F and ⌘L would open something behind it. The
+    /// Helix panels of the law window and the sidebar are no such layer.
+    private var keyPanelOpen: Bool {
+        let router = KeyboardRouter.shared
+        if router.paletteVisible || router.textPrompt != nil { return true }
+        guard let panel = router.activePanel else { return false }
+        return panel.context != .law && panel.context != .sidebar
+    }
 
     /// Same rules as the menu's enabled state.
     func isAvailable(_ command: Command) -> Bool {
+        guard !keyPanelOpen else { return false }
         switch command {
-        case .search: lawFocus || (editor.map(\.canEdit) ?? (library?.search != nil))
-        case .lawLookup: lawsOn
+        case .search: return lawFocus || (editor.map(\.canEdit) ?? (library?.search != nil))
+        case .lawLookup: return lawsOn
         }
     }
     /// Runs the command once per key press, whichever way it came (menu:
@@ -128,10 +156,11 @@ private struct EditorCommandPublisher: ViewModifier {
 
 private struct LibraryCommandPublisher: ViewModifier {
     let actions: LibraryCommandActions?
+    @State private var owner = UUID()
     func body(content: Content) -> some View {
         content
-            .onChange(of: actions?.availability, initial: true) { _, _ in AppCommandCenter.shared.setLibrary(actions) }
-            .onDisappear { AppCommandCenter.shared.setLibrary(nil) }
+            .onChange(of: actions?.availability, initial: true) { _, _ in AppCommandCenter.shared.setLibrary(actions, owner: owner) }
+            .onDisappear { AppCommandCenter.shared.clearLibrary(owner: owner) }
     }
 }
 

@@ -477,6 +477,7 @@ extension LawReaderView {
     }
     /// Shows another section of the open version (arrows, contents, hits).
     func showSection(_ shown: LawSection, from field: LawLookupField? = nil) {
+        if shown.id != sectionID { endCrossTrail() }
         textSelection.clear()
         pdfTarget = nil; sectionID = shown.id; jumpParagraph = nil; restoreOffset = nil; loadError = ""
         follow(shown, from: field)

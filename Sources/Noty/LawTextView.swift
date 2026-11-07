@@ -19,6 +19,8 @@ struct NativeLawText: UIViewRepresentable {
     var lawID = ""
     /// Its version shown (the hover card of a reference into the same law reads it).
     var versionID = ""
+    /// Hover cards over cross-references: only in the law window (the card layer is there).
+    var hoverCards = false
     /// A tap on a cross-reference in the text (not while marking with Pencil).
     var onCitation: ((LawCitation) -> Void)? = nil
     /// Whether the shown law has this section key: references into the same
@@ -56,6 +58,7 @@ struct NativeLawText: UIViewRepresentable {
         watch.delegate = context.coordinator
         watch.onBegan = { [weak coordinator = context.coordinator] touch in coordinator?.touchBegan(touch) }
         watch.onEnded = { [weak coordinator = context.coordinator] touch in coordinator?.touchEnded(touch) }
+        watch.onReset = { [weak coordinator = context.coordinator] in coordinator?.touchesReset() }
         v.addGestureRecognizer(watch)
         context.coordinator.container = container
         container.onLayout = { [weak coordinator = context.coordinator] in coordinator?.applyTarget() }
@@ -294,12 +297,15 @@ struct NativeLawText: UIViewRepresentable {
             applyHighlights()
             let start = Date()
             if UIAccessibility.isReduceMotionEnabled {
-                flashTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
+                let timer = Timer(timeInterval: 2, repeats: false) { [weak self] _ in
                     MainActor.assumeIsolated { self?.endFlash(redraw: true) }
                 }
+                // `.common`: it also runs while the text is being scrolled.
+                RunLoop.main.add(timer, forMode: .common)
+                flashTimer = timer
                 return
             }
-            flashTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
+            let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
                 // The view went away: the timer ends itself.
                 let gone = MainActor.assumeIsolated { () -> Bool in
                     guard let self else { return true }
@@ -311,6 +317,8 @@ struct NativeLawText: UIViewRepresentable {
                 }
                 if gone { timer.invalidate() }
             }
+            RunLoop.main.add(timer, forMode: .common)
+            flashTimer = timer
         }
         func endFlash(redraw: Bool) {
             flashTimer?.invalidate(); flashTimer = nil
@@ -335,7 +343,7 @@ struct NativeLawText: UIViewRepresentable {
                 if !links.isEmpty { links = []; applyHighlights() }
                 return
             }
-            let key = "\(law)|\(preview.readerScannerGeneration)|\((text as NSString).length)|\(text.hashValue)"
+            let key = "\(law)|\(parent.versionID)|\(preview.readerScannerGeneration)|\((text as NSString).length)|\(text.hashValue)"
             guard key != linkKey else { return }
             linkKey = key
             if let hit = Self.linkCache[key] { links = hit; applyHighlights(); return }
@@ -359,7 +367,9 @@ struct NativeLawText: UIViewRepresentable {
         /// A plain tap on a cross-reference opens it in the reader. Not while
         /// marking, not on a mark, not when the tap only ends a selection.
         @objc func linkTapped(_ gesture: UITapGestureRecognizer) {
-            guard gesture.state == .ended, linksActive, !tapHadSelection, let v = view,
+            // A tap that stopped a scroll, ended a selection or follows a
+            // long-press selection only does that.
+            guard gesture.state == .ended, linksActive, !tapHadSelection, let v = view, v.selectedRange.length == 0,
                   let citation = link(at: gesture.location(in: v)) else { return }
             endHoverCard()
             LawCitationPreviewModel.shared.dismissReaderCard()
@@ -392,7 +402,8 @@ struct NativeLawText: UIViewRepresentable {
         }
         /// Markieren/Radieren: no links and no cards; never with the Pencil down.
         private func allowsHover(_ kind: HoverKind) -> Bool {
-            guard linksActive, !links.isEmpty, view?.window != nil else { return false }
+            // Only in the law window: a reader elsewhere (Settings) has no card layer.
+            guard parent.hoverCards, linksActive, !links.isEmpty, view?.window != nil else { return false }
             if kind == .pencil, pencilDown { return false }
             return true
         }
@@ -400,6 +411,8 @@ struct NativeLawText: UIViewRepresentable {
             guard let v = view else { return }
             switch recognizer.state {
             case .began, .changed:
+                // Hovering: the Pencil is not on the glass (a lost touch end never sticks).
+                if recognizer.state == .began { pencilDown = false }
                 hoverSource = recognizer
                 let previous = hoverKind
                 let kind = classify(recognizer)
@@ -424,7 +437,8 @@ struct NativeLawText: UIViewRepresentable {
                 }
             default:
                 cancelDwell(); hoverKind = nil; hoverPoint = nil; hoverSource = nil
-                endHoverCard()
+                // Like on a page: a grace period to reach the card.
+                if shownLink != nil { shownLink = nil; LawCitationPreviewModel.shared.endHover() }
             }
         }
         private func startDwell(_ kind: HoverKind, after delay: TimeInterval) {
@@ -471,9 +485,14 @@ struct NativeLawText: UIViewRepresentable {
             pencilDown = false
             lastPencilLift = CACurrentMediaTime()
         }
+        /// The watch's sequence ended (also cancelled by the system): no touch is down.
+        func touchesReset() {
+            if pencilDown { pencilDown = false; lastPencilLift = CACurrentMediaTime() }
+        }
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             if gestureRecognizer === linkTap {
-                tapHadSelection = (view?.selectedRange.length ?? 0) > 0 || parent.selection.active
+                let scrolling = view.map { $0.isDecelerating || $0.isDragging } ?? false
+                tapHadSelection = (view?.selectedRange.length ?? 0) > 0 || parent.selection.active || scrolling
             }
             return true
         }
@@ -718,6 +737,7 @@ struct NativeLawText: UIViewRepresentable {
 final class LawTouchWatch: UIGestureRecognizer {
     var onBegan: ((UITouch) -> Void)?
     var onEnded: ((UITouch) -> Void)?
+    var onReset: (() -> Void)?
     private var active = 0
     init() {
         super.init(target: nil, action: nil)
@@ -734,7 +754,7 @@ final class LawTouchWatch: UIGestureRecognizer {
         active = max(0, active - touches.count)
         if active == 0 { state = .failed }
     }
-    override func reset() { super.reset(); active = 0 }
+    override func reset() { super.reset(); active = 0; onReset?() }
 }
 
 /// A scroll target of `NativeLawText`.

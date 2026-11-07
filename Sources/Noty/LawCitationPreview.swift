@@ -63,7 +63,9 @@ final class LawCitationPreviewModel: ObservableObject {
         /// The catalog no longer knows the law.
         case unavailable
         /// `quote`: the whole cited Absatz (or the section's start) for „Als Zitat einfügen“.
-        case section(label: String, title: String, excerpt: String, quote: String)
+        /// `absatzFound`: false when a cited Absatz is not in the text (the
+        /// excerpt then starts at the beginning and nothing can be quoted).
+        case section(label: String, title: String, excerpt: String, quote: String, absatzFound: Bool)
     }
 
     /// Which version the card shows, under its heading.
@@ -86,6 +88,9 @@ final class LawCitationPreviewModel: ObservableObject {
     @Published private(set) var handwritingEnabled = false
     @Published private(set) var content: Content = .loading
     @Published private(set) var versionNote: VersionNote?
+    /// The version the card's text comes from, for „… ist in der Fassung für
+    /// 2023 nicht enthalten“: „der aktuellen Fassung“, „der Fassung für 2023“, „dieser Fassung“.
+    @Published private(set) var shownVersion = "der aktuellen Fassung"
     /// Counts new cards (another citation or place); the card view's identity.
     @Published private(set) var cardID = 0
 
@@ -115,12 +120,15 @@ final class LawCitationPreviewModel: ObservableObject {
     private var linksOn = false
     private var publishedPage: Int?
     private var publishedReader: Int?
-    /// Uptime of the last Esc that closed a card (`consumeEscape`).
-    private var escapeTime: TimeInterval = -1
+    /// The way the last card-closing Esc came (`consumeEscape`).
+    private var escapeLatch = KeyDeliveryLatch()
     private var entries: [LawEntry] = []
     /// Small card contents; the documents themselves are not kept, except
     /// the one decoded last (`document`). Both go on a memory warning.
     private var excerpts: [String: Content] = [:]
+    /// Documents (law|version) found not to be on this iPad: the card does
+    /// not try them again on every hover (cleared when a law is opened, which may load it).
+    private var notOffline: Set<String> = []
     private var excerptOrder: [String] = []
     private var document: (key: String, value: LawDocument)?
     /// One decoding per (law, version) at a time, shared by every card that
@@ -165,7 +173,7 @@ final class LawCitationPreviewModel: ObservableObject {
     }
 
     private func purge() {
-        excerpts.removeAll(); excerptOrder.removeAll(); document = nil
+        excerpts.removeAll(); excerptOrder.removeAll(); document = nil; notOffline.removeAll()
     }
 
     /// One scanner per catalog, for pages (only with links on) and the reader.
@@ -238,10 +246,13 @@ final class LawCitationPreviewModel: ObservableObject {
             follow?(citation)
             return
         }
-        let version = presented != nil ? versionNote?.versionID
-            : yearVersion(citation.lawID, context: context ?? NotebookLawContext())?.id
+        let used = context ?? presented?.context ?? NotebookLawContext()
+        let version = presented != nil ? versionNote?.versionID : yearVersion(citation.lawID, context: used)?.id
         dismiss()
-        laws?.openCitation(lawID: citation.lawID, key: citation.reference.key, paragraph: citation.reference.paragraph, version: version)
+        // Opening may download that version: try it again next time.
+        notOffline.removeAll()
+        laws?.openCitation(lawID: citation.lawID, key: citation.reference.key, paragraph: citation.reference.paragraph,
+                           version: version, year: version == nil ? nil : used.taxYear)
     }
 
     // MARK: Called by the law reader (cross-references in its text)
@@ -260,16 +271,19 @@ final class LawCitationPreviewModel: ObservableObject {
         dismiss()
     }
     /// Esc while a card is shown closes it and is used up; otherwise it stays
-    /// with whoever has it (Helix, fields, the law window). The second way of
-    /// the same press (key command after `pressesBegan`) is used up too.
-    func consumeEscape() -> Bool {
+    /// with whoever has it (Helix, fields, the law window). Only the other way
+    /// of the same press (key command after `pressesBegan` or the reverse,
+    /// within `KeyDeliveryLatch.window`) is used up too, once: a quick second
+    /// Esc goes on as usual. `.press`: `KeyboardRouter.handle(presses)`;
+    /// `.keyCommand`: `handle(token:)` and the law window's key commands.
+    func consumeEscape(by route: KeyDeliveryLatch.Route) -> Bool {
         let now = ProcessInfo.processInfo.systemUptime
         if presentation != nil {
             dismiss()
-            escapeTime = now
+            escapeLatch.used("esc", by: route, now: now)
             return true
         }
-        return escapeTime >= 0 && now - escapeTime < 0.25
+        return !escapeLatch.allows("esc", by: route, now: now)
     }
     func dismiss() {
         hideTask?.cancel(); hideTask = nil
@@ -295,18 +309,19 @@ final class LawCitationPreviewModel: ObservableObject {
     /// (never for a card of the reader).
     var canQuote: Bool {
         guard let presentation, !presentation.origin.isReader, presentation.pageID != nil, presentation.pageRect != nil,
-              case let .section(_, _, _, quote) = content else { return false }
-        return !quote.isEmpty
+              presentation.context.canQuote,
+              case let .section(_, _, _, quote, found) = content else { return false }
+        return found && !quote.isEmpty
     }
     /// „Als Zitat einfügen“: the editor of that page inserts a text field
     /// below the citation (`quoteRequest`), the card goes.
     func quotePresented() {
         guard canQuote, let presentation, let pageID = presentation.pageID, let rect = presentation.pageRect,
-              case let .section(label, _, _, quote) = content else { return }
+              case let .section(label, _, _, quote, _) = content else { return }
         let citation = presentation.citation
         var source = LawCitationText.reference(citation.reference.key, paragraph: citation.reference.paragraph, abbr: lawAbbreviation, label: label)
         if let stand = versionNote?.stand { source += " (Stand \(stand))" }
-        quoteRequest = LawQuoteRequest(pageID: pageID, below: rect, text: quote, source: source)
+        quoteRequest = LawQuoteRequest(pageID: pageID, below: rect, text: quote, source: source, notebookID: presentation.context.notebookID)
         dismiss()
     }
     /// Hover over the card keeps it; leaving it hides after the grace period.
@@ -319,12 +334,13 @@ final class LawCitationPreviewModel: ObservableObject {
 
     // MARK: Content
 
-    /// „§ 35a Abs. 2 EStG“: the section's own label once it is loaded.
+    /// „§ 35a Abs. 2 EStG“: the section's own label once it is loaded;
+    /// without „Abs. 2“ when that Absatz is not in the text shown.
     var heading: String {
         guard let citation = presentation?.citation else { return "" }
         let abbr = entry(citation.lawID)?.abbr ?? citation.lawID.uppercased()
-        if case let .section(label, _, _, _) = content {
-            return LawCitationText.reference(citation.reference.key, paragraph: citation.reference.paragraph, abbr: abbr, label: label)
+        if case let .section(label, _, _, _, found) = content {
+            return LawCitationText.reference(citation.reference.key, paragraph: found ? citation.reference.paragraph : nil, abbr: abbr, label: label)
         }
         return LawCitationText.reference(citation.reference.key, paragraph: citation.reference.paragraph, abbr: abbr)
     }
@@ -401,10 +417,16 @@ final class LawCitationPreviewModel: ObservableObject {
             note = VersionNote(text: stand.map { "Fassung wie im Leser – Stand \($0)" } ?? "Fassung wie im Leser", caution: false, versionID: version, stand: stand)
         }
         versionNote = note
-        let yearVersion = note?.versionID
         let currentKey = "\(entry.id)|\(entry.currentVersion)"
-        let documentKey = yearVersion.map { "\(entry.id)|\($0)" } ?? currentKey
         let reference = "|\(citation.reference.key)|\(citation.reference.paragraph ?? "")"
+        var yearVersion = note?.versionID
+        if let wanted = yearVersion, notOffline.contains("\(entry.id)|\(wanted)") {
+            // Known not to be here: straight to the current text's caches.
+            previewCurrent(entry, context: context)
+            yearVersion = nil
+        }
+        shownVersion = yearVersion == nil ? "der aktuellen Fassung" : origin.isReader ? "dieser Fassung" : context.taxYear.map { "der Fassung für \($0)" } ?? "dieser Fassung"
+        let documentKey = yearVersion.map { "\(entry.id)|\($0)" } ?? currentKey
         if let hit = excerpts[documentKey + reference] { content = hit; return }
         if let document, document.key == documentKey {
             content = remember(documentKey + reference, Self.content(document.value, citation: citation))
@@ -420,20 +442,30 @@ final class LawCitationPreviewModel: ObservableObject {
                 // The year's version is not on this iPad (only current versions
                 // are kept offline): preview the current text, say so, and
                 // still open the year's version (which loads it then).
+                self.notOffline.insert(documentKey)
+                self.previewCurrent(entry, context: context)
+                self.shownVersion = "der aktuellen Fassung"
+                key = currentKey
+                if let hit = self.excerpts[currentKey + reference] { self.content = hit; return }
+                if let document = self.document, document.key == currentKey {
+                    self.content = self.remember(currentKey + reference, Self.content(document.value, citation: citation))
+                    return
+                }
                 value = await self.documentTask(entry, version: nil, key: currentKey, laws: laws).value
                 guard !Task.isCancelled, self.presentation?.citation == citation else { return }
-                key = currentKey
-                if value != nil, let current = entry.versions.first(where: { $0.id == entry.currentVersion }) {
-                    let stand = LawVersionChoice.lastChange(current)?.text
-                    let wanted = context.taxYear.map { "Fassung für \($0)" } ?? "Diese Fassung"
-                    self.versionNote?.text = "\(wanted) wird beim Öffnen geladen – Vorschau: " + (stand.map { "Stand \($0)" } ?? "aktuelle Fassung")
-                    self.versionNote?.caution = true
-                    self.versionNote?.stand = stand
-                }
             }
             guard let value else { self.content = .notOffline; return }
             self.content = self.remember(key + reference, Self.content(value, citation: citation))
         }
+    }
+
+    /// The wanted version is not on this iPad: the card previews the current text and says so.
+    private func previewCurrent(_ entry: LawEntry, context: NotebookLawContext) {
+        let stand = entry.versions.first(where: { $0.id == entry.currentVersion }).flatMap { LawVersionChoice.lastChange($0)?.text }
+        let wanted = context.taxYear.map { "Fassung für \($0)" } ?? "Diese Fassung"
+        versionNote?.text = "\(wanted) wird beim Öffnen geladen – Vorschau: " + (stand.map { "Stand \($0)" } ?? "aktuelle Fassung")
+        versionNote?.caution = true
+        versionNote?.stand = stand
     }
 
     private func documentTask(_ entry: LawEntry, version: String?, key: String, laws: LawLibraryModel) -> Task<LawDocument?, Never> {
@@ -463,8 +495,10 @@ final class LawCitationPreviewModel: ObservableObject {
     private static func content(_ document: LawDocument, citation: LawCitation) -> Content {
         let key = citation.reference.key
         guard let section = document.sections.first(where: { $0.id == key || $0.keys.contains(key) }) else { return .missing }
-        return .section(label: section.label, title: section.title, excerpt: excerpt(section.text, paragraph: citation.reference.paragraph),
-                        quote: quote(section.text, paragraph: citation.reference.paragraph))
+        let paragraph = citation.reference.paragraph
+        let found = paragraph.map { LawAbsatz.range($0, in: section.text) != nil } ?? true
+        return .section(label: section.label, title: section.title, excerpt: excerpt(section.text, paragraph: found ? paragraph : nil),
+                        quote: found ? quote(section.text, paragraph: paragraph) : "", absatzFound: found)
     }
 
     /// The whole cited Absatz, or the section's beginning without one; at
@@ -494,17 +528,8 @@ final class LawCitationPreviewModel: ObservableObject {
     /// `jumpParagraph`). Short enough for a few lines of the card.
     static func excerpt(_ text: String, paragraph: String?) -> String {
         let source = text as NSString
-        var start = 0
-        if let paragraph {
-            let marker = NSRegularExpression.escapedPattern(for: "(\(paragraph))")
-            if let re = try? NSRegularExpression(pattern: "(?m)^\\s*" + marker),
-               let match = re.firstMatch(in: text, range: NSRange(location: 0, length: source.length)) {
-                start = match.range.location
-            } else {
-                let found = source.range(of: "(\(paragraph))")
-                if found.location != NSNotFound { start = found.location }
-            }
-        }
+        // The same Absatz as the reader's jump and the quote.
+        let start = paragraph.flatMap { LawAbsatz.range($0, in: text)?.location } ?? 0
         let rest = source.substring(from: start)
         // Lines kept (Absätze), blank runs folded; about six card lines.
         let lines = rest.components(separatedBy: .newlines)

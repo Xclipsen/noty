@@ -47,6 +47,9 @@ struct LawReaderView: View {
     @State var restoreOffset: CGFloat?
     /// Cross-references followed in the text, newest last („Zurück zu § 10 EStG“).
     @State var crossBack: [LawCrossBack] = []
+    /// Set while `followCrossReference`/`crossReferenceBack` navigate: every
+    /// other way to another place ends the cross-reference trail (`endCrossTrail`).
+    @State var crossNavigating = false
     /// The citation jump being opened now (`takeCitationJump`); a newer one replaces it.
     @State var citationJumpID: UUID?
     @State var requestID = UUID()
@@ -192,7 +195,7 @@ struct LawReaderView: View {
         } else {
             NativeLawText(text: section.text, html: section.html, notes: section.notes, sectionID: section.id, fontSize: fontSize,
                 marks: textMarks, jump: LawTextJump(id: jumpSerial, paragraph: jumpParagraph, offset: restoreOffset),
-                selection: textSelection, pen: pen, lawID: selectedID, versionID: doc.version,
+                selection: textSelection, pen: pen, lawID: selectedID, versionID: doc.version, hoverCards: inPanel,
                 onCitation: { citation in followCrossReference(citation) },
                 hasSection: { [doc] key in doc.sections.contains { $0.id == key || $0.keys.contains(key) } })
         }

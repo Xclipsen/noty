@@ -220,7 +220,7 @@ final class LawKeyboard: ObservableObject {
 
     func perform(_ action: LawShortcuts.Action) {
         // Esc closes a law citation card first, only while one is shown.
-        if case .escape = action, LawCitationPreviewModel.shared.consumeEscape() { return }
+        if case .escape = action, LawCitationPreviewModel.shared.consumeEscape(by: .keyCommand) { return }
         guard available, panel != nil else { return }
         switch action {
         case .toggleWindow:
@@ -236,6 +236,8 @@ final class LawKeyboard: ObservableObject {
             panel?.togglePark()
             if !wasShown { focus(claiming: true) }
         case .lookup:
+            // Under a sheet the window would open behind it.
+            guard !covered else { return }
             openWindow()
             pendingSearch = true
             focus(claiming: false)

@@ -77,6 +77,16 @@ final class ContentSearchIndexTests: XCTestCase {
         XCTAssertFalse(paper.hasPDF)
     }
 
+    func testHandwritingFingerprintMatchesIndex() {
+        var notebook = pdfNotebook()
+        notebook.pages[0].drawing = Data([1, 2, 3]); notebook.pages[0].margins = PageMargins(left: 40)
+        let prepared = ContentSearchPlanner.prepare(notebook)
+        for (page, entry) in zip(notebook.pages, prepared) {
+            XCTAssertEqual(ContentSearchPlanner.handwritingFingerprint(page), entry.fingerprints.handwriting)
+        }
+        XCTAssertNil(ContentSearchPlanner.handwritingFingerprint(notebook.pages[1]))
+    }
+
     func testReconcileKeepsValidLayersAndFollowsCurrentPages() {
         var notebook = pdfNotebook(pages: 3)
         notebook.pages[1].drawing = Data([9])

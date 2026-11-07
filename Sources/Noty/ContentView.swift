@@ -348,7 +348,7 @@ struct ContentView: View {
         let onDraft = currentPage.id == writingDraft.id
         // A second presentation over an open sheet would never appear.
         let presenting = contentSearch || showingSettings || editingDefaults || addingPage || customizingTools || showingHistory || model.openedRestore != nil
-            || marginsPage != nil || exporting || importingImage || choosingPhoto || pageEntry || model.error != nil
+            || marginsPage != nil || exporting || importingImage || choosingPhoto || pageEntry || editingLawContext || model.error != nil
         return EditorCommandActions(owner: ObjectIdentifier(model), pane: paneID, canEdit: canEdit && !presenting,
             canExportPage: model.writable && !onDraft, exporting: pdfExport.running,
             hasPrevious: onDraft || currentPageIndex > 0, hasNext: !onDraft && currentPageIndex < model.notebook.pages.count - 1, isTextDocument: isTextDocument,
@@ -1247,7 +1247,21 @@ struct ContentView: View {
                 tool = toolBeforeText.flatMap { $0 == .text ? nil : $0 } ?? lastInkTool
             },
             lawCitations: !isRestoredCopy,
-            lawContext: isRestoredCopy ? NotebookLawContext() : lawPreferences.context(for: model.notebook.id))
+            lawContext: lawContext(for: page),
+            lawSearchIndex: isRestoredCopy ? nil : LawCitationIndexSource(area: searchIndexArea ?? StableDefaults.scope(model.storageRoot), documentID: model.notebook.id))
+    }
+
+    /// The notebook's stored context plus what this page allows. Quotes need a
+    /// writable notebook page: no restored copy, no draft page, and no text
+    /// document (a free field there would lie over the flow, see
+    /// `EditorModel.insertLawQuote`).
+    private func lawContext(for page: Page) -> NotebookLawContext {
+        guard !isRestoredCopy else { return NotebookLawContext() }
+        var context = lawPreferences.context(for: model.notebook.id)
+        context.notebookID = model.notebook.id
+        context.canQuote = model.writable && !isTextDocument && page.id != writingDraft.id
+            && model.notebook.pages.contains { $0.id == page.id }
+        return context
     }
 
     /// „Als Zitat einfügen“ from the card: the view showing that page inserts
@@ -1255,17 +1269,33 @@ struct ContentView: View {
     /// one nobody shows is dropped, so it never lands in a notebook opened later.
     private func receiveLawQuote(_ request: LawQuoteRequest) {
         let shared = LawCitationPreviewModel.shared
-        let owns = !isRestoredCopy && model.notebook.pages.contains { $0.id == request.pageID }
+        // Duplicates and restored copies keep page ids: the notebook must match, too.
+        let owns = !isRestoredCopy && request.notebookID == model.notebook.id && model.notebook.pages.contains { $0.id == request.pageID }
         let delay = owns ? (isPaneActive() ? 0 : 0.15) : 1.0
         func consume() {
             guard shared.quoteRequest?.id == request.id else { return }
             shared.quoteRequest = nil
             guard owns else { return }
-            if let problem = model.insertLawQuote(request) { model.error = problem }
-            else { showRecentNote("Zitat eingefügt") }
+            insertLawQuote(request, attempt: 0)
         }
         // Never inside the publisher's own delivery: the other views still receive it.
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { consume() }
+    }
+    /// Marked text (IME, dictation) in a field keeps that field's own boxes
+    /// until it is committed; a quote added meanwhile would be overwritten by
+    /// the next keystroke. Wait for the commit (up to ~4 s), then refuse.
+    private func insertLawQuote(_ request: LawQuoteRequest, attempt: Int) {
+        if let input = UIResponder.currentFirstResponder as? UITextInput, input.markedTextRange != nil {
+            guard attempt < 16 else {
+                model.error = "Die Eingabe im Textfeld ist noch nicht abgeschlossen. Das Zitat wurde nicht eingefügt; bitte danach erneut einfügen."
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { insertLawQuote(request, attempt: attempt + 1) }
+            return
+        }
+        guard request.notebookID == model.notebook.id else { return }
+        if let problem = model.insertLawQuote(request) { model.error = problem }
+        else { showRecentNote("Zitat eingefügt") }
     }
 
 }

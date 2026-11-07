@@ -103,6 +103,8 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private var generation = -1
     private var enabled = false
     private var allowsFingerDrawing = false
+    /// A touch that would start a lasso or a new shape here is refused (`WorksheetView.inkGuarded`).
+    var refusesStart: ((UITouch) -> Bool)?
     private var tool = EditorTool.pen
     private var options = ShapeToolOptions()
     private var filter = SelectionFilter()
@@ -777,6 +779,13 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         guard active, touch.view === self else { return false }
         if gestureRecognizer === pan { fingerPan = touch.type != .pencil }
+        // On or beside chrome no lasso or new shape starts; moving the
+        // selection (or, image tool, picking up an image) still does (`PencilGuard`).
+        if gestureRecognizer === pan, refusesStart?(touch) == true {
+            let location = touch.location(in: self)
+            let grabs = (!selectionLocked && selectionGrabArea(contains: location)) || (tool == .image && imageHit(at: canonical(location)) != nil)
+            if !grabs { return false }
+        }
         if gestureRecognizer === pan, tool == .image || (touch.type != .pencil && !allowsFingerDrawing) {
             // A finger (any touch in the image tool) grabs the selection or an
             // object below it; elsewhere it scrolls.

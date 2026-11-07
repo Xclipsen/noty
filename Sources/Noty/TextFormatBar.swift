@@ -5,7 +5,9 @@ import NotebookCore
 /// Format bar above the keyboard (style, size, colour, lists, counter).
 extension TextObjectLayer {
     func makeAccessory() -> UIView {
-        let root = UIView(frame: CGRect(x: 0, y: 0, width: 1024, height: 54))
+        // Guards only while in the keyboard window and 2 pt beyond it, so the
+        // caret line just above stays writable (`PencilGuard`).
+        let root = PencilGuardedView(frame: CGRect(x: 0, y: 0, width: 1024, height: 54))
         root.overrideUserInterfaceStyle = .dark; root.backgroundColor = UIColor(white: 0.045, alpha: 0.98)
         root.layer.borderColor = UIColor.white.withAlphaComponent(0.16).cgColor; root.layer.borderWidth = 0.5
         let scroll = UIScrollView(frame: root.bounds)
@@ -100,8 +102,6 @@ extension TextObjectLayer {
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor)
         ])
         root.addSubview(scroll); root.autoresizingMask = [.flexibleWidth]
-        // A touch just above the bar does not start ink on the page (`PencilGuard`).
-        PencilGuard.shared.register(root, margin: 10)
         return root
     }
     static let formatColors: [(String, InkColor)] = [

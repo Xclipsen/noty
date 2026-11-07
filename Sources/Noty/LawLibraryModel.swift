@@ -260,10 +260,11 @@ final class LawLibraryModel: ObservableObject {
     /// remembering how the window was for „Zurück zur Notiz“. A further citation
     /// opened before going back keeps the first way back.
     /// `version`: the version of the notebook's tax year (nil: the current one).
-    func openCitation(lawID: String, key: String, paragraph: String?, version: String? = nil) {
+    /// `year`: the tax year that version was chosen for (for the fallback notice).
+    func openCitation(lawID: String, key: String, paragraph: String?, version: String? = nil, year: Int? = nil) {
         guard enabled, let entry = entries.first(where: { $0.id == lawID }) else { return }
         let jump = LawCitationJump(lawID: lawID, key: key, paragraph: paragraph,
-                                   version: version.flatMap { id in entry.versions.contains { $0.id == id } ? id : nil })
+                                   version: version.flatMap { id in entry.versions.contains { $0.id == id } ? id : nil }, year: year)
         if var back = citationReturn {
             back.id = jump.id; back.lawID = lawID; back.sectionID = nil; back.chained = true
             // Every law a jump touched gets its own spot back, the first one kept.
@@ -689,6 +690,7 @@ struct LawCitationJump: Equatable, Identifiable {
     var paragraph: String?
     /// Another version than the current one (the notebook's tax year).
     var version: String? = nil
+    var year: Int? = nil
 }
 
 /// The way back after a citation jump („Zurück zur Notiz“).

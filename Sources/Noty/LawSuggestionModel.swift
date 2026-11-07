@@ -70,11 +70,19 @@ final class LawSuggestionModel: ObservableObject {
     private var watching: [AnyCancellable] = []
     /// Section key → title per „law|version“ of offline laws; small (no texts).
     private var titles: [String: [String: String]] = [:]
-    /// „law|version“ whose document is not on this iPad (checked once per catalog).
+    /// „law|version“ that could not be indexed (file damaged or too large).
     private var missing: Set<String> = []
+    /// Laws whose current version lies on this iPad; nil until checked (once per catalog).
+    private var offline: Set<String>?
+    private var checkingOffline = false
+    private var offlineCheckedAt = Date.distantPast
+    /// Laws waiting for their index, the ones asked for first.
+    private var queue: [String] = []
     private var indexing: Task<Void, Never>?
-    /// At most this many laws are indexed per catalog (each needs one decode).
-    private static let indexLimit = 40
+    /// New laws queued per suggestion beyond the default and previous law.
+    private static let batch = 2
+    /// Pause between two laws, so readers and cards get the CPU in between.
+    private static let pause: Duration = .milliseconds(400)
 
     func connect(_ laws: LawLibraryModel) {
         guard self.laws !== laws else { return }
@@ -96,12 +104,15 @@ final class LawSuggestionModel: ObservableObject {
         let current = Set(next.map { "\($0.id)|\($0.currentVersion)" })
         titles = titles.filter { current.contains($0.key) }
         missing = []
-        if next.contains(where: { old[$0.id] != $0.currentVersion }) { indexing?.cancel(); indexing = nil }
+        if next.contains(where: { old[$0.id] != $0.currentVersion }) || next.count != old.count {
+            indexing?.cancel(); indexing = nil; queue = []; offline = nil; offlineCheckedAt = .distantPast
+        }
     }
 
+    /// Memory warning: only the work in progress stops. The finished maps are
+    /// small (keys and titles) and stay, so nothing is decoded again.
     private func purge() {
-        indexing?.cancel(); indexing = nil
-        titles.removeAll(); missing.removeAll()
+        indexing?.cancel(); indexing = nil; queue = []
     }
 
     func entry(_ id: String) -> LawEntry? { entries.first { $0.id == id } }
@@ -128,7 +139,7 @@ final class LawSuggestionModel: ObservableObject {
         for entry in statuteEntries where ids.count < 3 {
             if titles["\(entry.id)|\(entry.currentVersion)"]?[key] != nil { add(entry.id) }
         }
-        ensureIndex()
+        requestIndex(first: [defaultLawID, previousLawID].compactMap { $0 })
         return ids.prefix(3).compactMap { id in
             guard let entry = entry(id) else { return nil }
             let title = title(lawID: id, key: key)
@@ -143,46 +154,83 @@ final class LawSuggestionModel: ObservableObject {
         return "\(abbr) – \(short)"
     }
 
-    /// Indexes the offline laws once, one after another, in the background:
-    /// existence checks off the main thread, decoding on the law store's actor.
-    private func ensureIndex() {
-        guard indexing == nil, let laws else { return }
-        let pending = statuteEntries.filter {
-            let key = "\($0.id)|\($0.currentVersion)"
+    /// Lazy index: only laws whose text is already on this iPad, the asked
+    /// ones (default, previous law) first, then a few more per suggestion.
+    /// One law at a time at background priority, decoded from its file off
+    /// the shared law store (cards and reader never wait for it), with a
+    /// pause between laws.
+    private func requestIndex(first: [String]) {
+        // A law downloaded meanwhile is found on the next check (at most every two minutes).
+        if Date().timeIntervalSince(offlineCheckedAt) > 120 { checkOffline() }
+        guard let offline else { return }
+        func wanted(_ id: String) -> Bool {
+            guard offline.contains(id), let entry = entry(id), entry.kind != "administration" else { return false }
+            let key = "\(entry.id)|\(entry.currentVersion)"
             return titles[key] == nil && !missing.contains(key)
-        }.prefix(Self.indexLimit)
-        guard !pending.isEmpty else { return }
+        }
+        for id in first.reversed() where wanted(id) { queue.removeAll { $0 == id }; queue.insert(id, at: 0) }
+        var added = 0
+        for entry in statuteEntries where added < Self.batch && wanted(entry.id) && !queue.contains(entry.id) {
+            queue.append(entry.id); added += 1
+        }
+        runQueue()
+    }
+
+    private func checkOffline() {
+        guard !checkingOffline else { return }
+        checkingOffline = true; offlineCheckedAt = Date()
         let root = LawLibraryModel.root
-        let list = Array(pending)
-        indexing = Task { [weak self] in
-            let present = await Task.detached(priority: .utility) { () -> Set<String> in
+        let list = statuteEntries.map { ($0.id, $0.currentVersion) }
+        let catalog = entries.count
+        Task { [weak self] in
+            let present = await Task.detached(priority: .background) { () -> Set<String> in
                 var found = Set<String>()
-                for entry in list {
-                    let url = root.appendingPathComponent("laws/\(entry.id)/\(entry.currentVersion)/law.json")
-                    if LawEntry.safeID(entry.id), LawEntry.safeID(entry.currentVersion),
-                       FileManager.default.fileExists(atPath: url.path) { found.insert(entry.id) }
+                for (id, version) in list where LawEntry.safeID(id) && LawEntry.safeID(version) {
+                    if FileManager.default.fileExists(atPath: root.appendingPathComponent("laws/\(id)/\(version)/law.json").path) { found.insert(id) }
                 }
                 return found
             }.value
-            for entry in list {
-                guard !Task.isCancelled, let self else { return }
+            guard let self else { return }
+            self.checkingOffline = false
+            guard self.entries.count == catalog else { self.offlineCheckedAt = .distantPast; return }
+            self.offline = present
+            self.indexGeneration &+= 1 // a waiting suggestion asks again and queues its laws
+        }
+    }
+
+    private func runQueue() {
+        guard indexing == nil, !queue.isEmpty else { return }
+        let root = LawLibraryModel.root
+        indexing = Task { [weak self] in
+            while let self, !Task.isCancelled, !self.queue.isEmpty {
+                let id = self.queue.removeFirst()
+                guard let entry = self.entry(id), let version = entry.versions.first(where: { $0.id == entry.currentVersion }) else { continue }
                 let key = "\(entry.id)|\(entry.currentVersion)"
-                guard present.contains(entry.id) else { self.missing.insert(key); continue }
-                guard let document = await laws.offlineDocument(entry), !Task.isCancelled else { self.missing.insert(key); continue }
-                // Building the small map of a large law stays off the main thread, too.
-                let map = await Task.detached(priority: .utility) { () -> [String: String] in
-                    var result: [String: String] = [:]
-                    for section in document.sections {
-                        let title = section.title.isEmpty ? section.label : section.title
-                        for k in [section.id.lowercased()] + section.keys where result[k] == nil { result[k] = title }
-                    }
-                    return result
+                guard self.titles[key] == nil else { continue }
+                let map = await Task.detached(priority: .background) { () -> [String: String]? in
+                    Self.sectionTitles(root: root, entry: entry, version: version)
                 }.value
                 guard !Task.isCancelled else { return }
-                self.titles[key] = map
-                self.indexGeneration &+= 1
+                if let map { self.titles[key] = map; self.indexGeneration &+= 1 } else { self.missing.insert(key) }
+                try? await Task.sleep(for: Self.pause)
             }
             self?.indexing = nil
         }
+    }
+
+    /// Key → title of every section of an offline law file; nil if missing,
+    /// too large or not the catalog's version. Read-only, never on the main thread.
+    nonisolated private static func sectionTitles(root: URL, entry: LawEntry, version: LawVersion) -> [String: String]? {
+        guard LawEntry.safeID(entry.id), LawEntry.safeID(version.id) else { return nil }
+        let url = root.appendingPathComponent("laws/\(entry.id)/\(version.id)/law.json")
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 64_000_000,
+              let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+              let document = try? JSONDecoder().decode(LawDocument.self, from: data).validated(for: entry, version: version) else { return nil }
+        var result: [String: String] = [:]
+        for section in document.sections {
+            let title = section.title.isEmpty ? section.label : section.title
+            for k in [section.id.lowercased()] + section.keys where result[k] == nil { result[k] = title }
+        }
+        return result
     }
 }

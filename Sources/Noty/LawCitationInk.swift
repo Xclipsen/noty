@@ -51,13 +51,12 @@ enum LawCitationInk {
         }
     }
 
-    /// Identity of an ink state: hash of the stroke bytes and the page geometry.
-    nonisolated static func key(_ data: Data, layout: PageLayout) -> Int {
-        var hasher = Hasher()
-        hasher.combine(data.count)
-        data.withUnsafeBytes { hasher.combine(bytes: $0) }
-        for value in [layout.canvas.width, layout.canvas.height, layout.contentOrigin.x, layout.contentOrigin.y] { hasher.combine(value) }
-        return hasher.finalize()
+    /// Identity of an ink state: the search index's handwriting fingerprint
+    /// (layout and stroke bytes, `ContentSearchPlanner.handwritingFingerprint`)
+    /// plus the canvas the canonical coordinates refer to.
+    nonisolated static func key(_ page: Page, layout: PageLayout) -> String? {
+        guard let fingerprint = ContentSearchPlanner.handwritingFingerprint(page) else { return nil }
+        return "\(fingerprint)|\(layout.canvas.width)x\(layout.canvas.height)|\(layout.contentOrigin.x),\(layout.contentOrigin.y)"
     }
 
     // MARK: Scanning
@@ -152,21 +151,73 @@ actor LawCitationInkQueue {
     }
 }
 
-/// Handwriting citations of one sheet: debounced, idle-only recognition with a
-/// shared cache by ink state; results in canonical page coordinates.
+/// Where a notebook's content search index lies (`ContentSearchIndexLocation`).
+struct LawCitationIndexSource: Hashable {
+    var area: String
+    var documentID: UUID
+}
+
+/// Handwriting lines the content search already recognised: the same raster,
+/// Vision request and canonical transform (`PageTextRecognition`), so a page
+/// whose stored fingerprint equals the current ink costs no OCR. The index has
+/// no word boxes; citations there use the proportional slice of the line.
+@MainActor
+enum LawCitationIndexLines {
+    private struct Loaded { var time: CFTimeInterval; var pages: [UUID: SearchLayerRecord] }
+    private static var loaded: [LawCitationIndexSource: Loaded] = [:]
+    private static var loading: [LawCitationIndexSource: Task<Loaded, Never>] = [:]
+    private static let documents = 3
+    /// A miss reads the index again at most this often (the search may have run).
+    private static let refresh: CFTimeInterval = 20
+
+    static func lines(_ source: LawCitationIndexSource, pageID: UUID, fingerprint: String) async -> [LawCitationInkLine]? {
+        func match(_ entry: Loaded?) -> [LawCitationInkLine]? {
+            guard let record = entry?.pages[pageID], record.fingerprint == fingerprint else { return nil }
+            return record.lines.filter { $0.kind == .handwriting }.map { LawCitationInkLine(text: $0.text, bounds: $0.bounds, words: []) }
+        }
+        if let hit = match(loaded[source]) { return hit }
+        if let entry = loaded[source], CACurrentMediaTime() - entry.time < refresh, loading[source] == nil { return nil }
+        let task = loading[source] ?? {
+            let store = ContentSearchIndexLocation.store(area: source.area)
+            let id = source.documentID
+            let task = Task { () -> Loaded in
+                let index = await store.load(id)
+                var pages: [UUID: SearchLayerRecord] = [:]
+                for page in index?.pages ?? [] { if let record = page.handwriting { pages[page.pageID] = record } }
+                return Loaded(time: CACurrentMediaTime(), pages: pages)
+            }
+            loading[source] = task
+            return task
+        }()
+        let entry = await task.value
+        if loading[source] == task {
+            loading[source] = nil
+            if loaded[source] == nil, loaded.count >= documents, let old = loaded.keys.first { loaded[old] = nil }
+            loaded[source] = entry
+        }
+        return match(entry)
+    }
+}
+
+/// Handwriting citations of one sheet: debounced recognition only while the
+/// page is on screen and settled, reusing the search index and a shared cache
+/// by ink state; results in canonical page coordinates.
 @MainActor
 final class LawCitationInkReader {
     /// After the last stroke ended.
     static let debounce: TimeInterval = 2.5
+    /// A page that just appeared.
+    private static let appear: TimeInterval = 1.2
     private static let retry: TimeInterval = 1.0
     /// Recognised lines per ink state (`LawCitationInk.key`), newest last.
-    private static var cache: [Int: [LawCitationInkLine]] = [:]
-    private static var cacheOrder: [Int] = []
-    private static let cacheLimit = 24
+    /// Lines are small: a few hundred pages stay in memory.
+    private static var cache: [String: [LawCitationInkLine]] = [:]
+    private static var cacheOrder: [String] = []
+    private static let cacheLimit = 400
 
     /// Results changed (new matches or cleared).
     var onChange: (() -> Void)?
-    /// No stroke, erase, lasso or drag is active on the sheet.
+    /// The page is on screen, settled, and no stroke, erase, lasso or drag is active.
     var isIdle: () -> Bool = { true }
     private(set) var matches: [LawCitationInkMatch] = []
 
@@ -176,11 +227,13 @@ final class LawCitationInkReader {
         var layout: PageLayout
         var generation: Int
         var lawID: String?
+        var index: LawCitationIndexSource?
     }
     private var inputs: Inputs?
+    private var page = Page()
     /// Ink state and scan inputs `matches` belong to.
-    private var resultKey: (ink: Int, generation: Int, lawID: String?)?
-    private var currentInk: Int?
+    private var resultKey: (ink: String, generation: Int, lawID: String?)?
+    private var currentInk: String?
     private var timer: DispatchWorkItem?
     private var job: Task<Void, Never>?
     private var cancelFlag: LawCitationInkCancel?
@@ -188,22 +241,26 @@ final class LawCitationInkReader {
     private var scanner: LawCitationScanner?
 
     /// Every page configuration: schedules a recognition once the ink rests.
-    func update(pageID: UUID, drawing: Data, layout: PageLayout, scanner: LawCitationScanner?, generation: Int, lawID: String?, enabled: Bool) {
+    /// `page`: the configured page (geometry, margins) for the ink fingerprint.
+    func update(pageID: UUID, page: Page, drawing: Data, layout: PageLayout, index: LawCitationIndexSource?,
+                scanner: LawCitationScanner?, generation: Int, lawID: String?, enabled: Bool) {
         guard enabled, let scanner, !drawing.isEmpty else { clear(); return }
-        let next = Inputs(pageID: pageID, drawing: drawing, layout: layout, generation: generation, lawID: lawID)
+        let next = Inputs(pageID: pageID, drawing: drawing, layout: layout, generation: generation, lawID: lawID, index: index)
         guard next != inputs else { return }
         let previous = inputs
         inputs = next; self.scanner = scanner
+        var current = page; current.drawing = drawing; self.page = current
         if previous?.pageID != pageID || previous?.layout != layout {
             // Another page or geometry: old boxes never stand on it.
             stop(); currentInk = nil; resultKey = nil
             if !matches.isEmpty { matches = []; onChange?() }
         }
         if previous?.drawing != drawing || currentInk == nil {
+            // New ink: a running recognition of the old one is abandoned.
             currentInk = nil
-            schedule(after: previous == nil || previous?.pageID != pageID ? 0.6 : Self.debounce)
+            schedule(after: previous == nil || previous?.pageID != pageID ? Self.appear : Self.debounce)
         } else {
-            // Only scanner or default law changed: scan the known lines again.
+            // Only scanner, default law or index changed: scan the known lines again.
             schedule(after: 0)
         }
     }
@@ -217,6 +274,8 @@ final class LawCitationInkReader {
     /// Pauses work (detached sheet); `update` resumes it.
     func suspend() { stop(); inputs = nil }
 
+    /// Discards any running work: its result is never applied, a queued
+    /// recognition does not start (Vision itself cannot be stopped midway).
     private func stop() {
         timer?.cancel(); timer = nil
         job?.cancel(); job = nil
@@ -225,8 +284,7 @@ final class LawCitationInkReader {
     }
 
     private func schedule(after delay: TimeInterval) {
-        timer?.cancel()
-        job?.cancel(); job = nil; cancelFlag?.cancel(); cancelFlag = nil; token += 1
+        stop()
         let work = DispatchWorkItem { [weak self] in self?.run() }
         timer = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -240,24 +298,38 @@ final class LawCitationInkReader {
         let token = token, cancel = LawCitationInkCancel()
         cancelFlag = cancel
         let data = inputs.drawing, layout = inputs.layout, generation = inputs.generation, lawID = inputs.lawID
+        let index = inputs.index, pageID = inputs.pageID, page = page
         job = Task { [weak self] in
-            let ink: Int
+            let ink: String
             if let known = self?.currentInk { ink = known }
-            else { ink = await Task.detached(priority: .utility) { LawCitationInk.key(data, layout: layout) }.value }
+            else {
+                guard let key = await Task.detached(priority: .utility, operation: { LawCitationInk.key(page, layout: layout) }).value else { return }
+                ink = key
+            }
             guard let self, self.token == token, !Task.isCancelled else { return }
             self.currentInk = ink
             if let key = self.resultKey, key.ink == ink, key.generation == generation, key.lawID == lawID { return }
-            let lines: [LawCitationInkLine]
-            if let cached = Self.cache[ink] { lines = cached }
-            else {
+            var lines = Self.cache[ink]
+            // Already indexed by the content search: no OCR at all.
+            if lines == nil, let index, let fingerprint = ink.split(separator: "|").first.map(String.init) {
+                lines = await LawCitationIndexLines.lines(index, pageID: pageID, fingerprint: fingerprint)
+                guard self.token == token, !Task.isCancelled else { return }
+                if let lines { Self.remember(ink, lines) }
+            }
+            if lines == nil {
+                // Still on screen and resting right before the expensive part.
+                guard self.isIdle() else { self.schedule(after: Self.retry); return }
                 guard let read = await Task.detached(priority: .utility, operation: {
                     await LawCitationInkQueue.shared.recognize(data, layout: layout, cancel: cancel)
-                }).value, self.token == token, !Task.isCancelled else { return }
+                }).value else { return }
+                // Kept for this ink even when the page moved on meanwhile.
                 Self.remember(ink, read)
+                guard self.token == token, !Task.isCancelled else { return }
                 lines = read
             }
+            let known = lines ?? []
             let found = await Task.detached(priority: .utility) {
-                LawCitationInk.citations(lines, scanner: scanner, defaultLawID: lawID)
+                LawCitationInk.citations(known, scanner: scanner, defaultLawID: lawID)
             }.value
             guard self.token == token, !Task.isCancelled else { return }
             self.job = nil; self.cancelFlag = nil
@@ -266,7 +338,7 @@ final class LawCitationInkReader {
         }
     }
 
-    private static func remember(_ key: Int, _ lines: [LawCitationInkLine]) {
+    private static func remember(_ key: String, _ lines: [LawCitationInkLine]) {
         if cache.updateValue(lines, forKey: key) == nil { cacheOrder.append(key) }
         else { cacheOrder.removeAll { $0 == key }; cacheOrder.append(key) }
         while cacheOrder.count > cacheLimit { cache[cacheOrder.removeFirst()] = nil }

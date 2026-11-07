@@ -100,6 +100,8 @@ struct PageEditor {
     var lawCitations = true
     /// Default law and tax year of this notebook for citation links (NotebookLawPreferences).
     var lawContext = NotebookLawContext()
+    /// Search index of this notebook: handwriting citations reuse its recognised lines.
+    var lawSearchIndex: LawCitationIndexSource? = nil
 }
 
 extension PageEditor {
@@ -338,6 +340,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var holdFeedback: UIFeedbackGenerator?
     private let holdGesture = PencilHoldGesture()
     private let checkboxTap = CheckboxTapGesture()
+    private let inkGate = PencilGuardGate()
     private let interactionObserver = PageInteractionObserver()
     /// Finger taps select objects while an ink tool stays active; double tap
     /// offers „Textfeld hinzufügen“ (WorksheetView+FingerObjects.swift).
@@ -469,6 +472,12 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         addGestureRecognizer(checkboxTap)
         canvas.drawingGestureRecognizer.require(toFail: checkboxTap)
+        // No ink starts on or beside chrome over the page (`PencilGuard`).
+        inkGate.blocks = { [weak self] touch in self?.inkGuarded(touch) ?? false }
+        addGestureRecognizer(inkGate)
+        canvas.drawingGestureRecognizer.require(toFail: inkGate)
+        holdGesture.refuses = { [weak self] touch in self?.inkGuarded(touch) ?? false }
+        objectLayer.refusesStart = { [weak self] touch in self?.inkGuarded(touch) ?? false }
         configureRulerStroke()
         // A Pencil tap on a checkbox toggles it, also at the ruler (as for the canvas).
         rulerStroke.require(toFail: checkboxTap)
@@ -1432,17 +1441,23 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// region's colour. Hit-testing (also for Pencil hover) precedes delivery.
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let hit = super.hitTest(point, with: event)
-        // A touch starting on or just beside chrome over the page (bars,
-        // header, page buttons, law window) never reaches ink, eraser, lasso
-        // or shapes: it falls to the viewport (finger still scrolls). The
-        // selection bar's own buttons and the selection handles stay usable.
-        if let hit, event?.type == .touches, !(hit is SelectionHandle), !PencilGuard.shared.isChrome(hit),
-           PencilGuard.shared.covers(point, in: self) { return nil }
+        // Pencil hover on or beside chrome over the page: the canvas does not
+        // see it, so no ink preview shows where no stroke can start
+        // (`PencilGuard`). The sheet keeps the hover (citations).
+        if let hit, event?.type == .hover, hit === canvas || hit.isDescendant(of: canvas),
+           PencilGuard.shared.covers(point, in: self) { return self }
         if let hit, !inkActive, hit === canvas || hit.isDescendant(of: canvas), event?.type == .touches || event?.type == .hover {
             if event?.type == .touches { commitPendingHeldStroke() }
             automaticInkPoint = point; updateInkTool(at: point)
         }
         return hit
+    }
+    /// A touch that would start ink, eraser, lasso or a shape here begins on
+    /// or just beside chrome over the page: Pencil always, a finger only
+    /// while it draws (`PencilGuard`). Asked once per touch-down.
+    func inkGuarded(_ touch: UITouch) -> Bool {
+        guard touch.type == .pencil || (touch.type == .direct && holdGesture.allowFinger) else { return false }
+        return PencilGuard.shared.covers(touch.location(in: self), in: self)
     }
     private func updateInkTool(at point: CGPoint) {
         guard automaticPen, tool == .pen || tool == .pencil, !inkActive else { return }

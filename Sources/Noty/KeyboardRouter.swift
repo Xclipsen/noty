@@ -517,8 +517,7 @@ final class KeyboardRouter: ObservableObject {
         // A key press is the user's input, also when the keyboard mode is off.
         UserInputClock.note()
         if appCommand(presses) { return true }
-        // A law citation card goes first with Esc, only while one is shown.
-        if presses.contains(where: { $0.key?.keyCode == .keyboardEscape }), LawCitationPreviewModel.shared.consumeEscape() { return true }
+        if citationCardEscape(presses) { return true }
         guard isEnabled || helpVisible else { return false }
         var used = false
         for press in presses.sorted(by: { $0.timestamp < $1.timestamp }) {
@@ -526,6 +525,20 @@ final class KeyboardRouter: ObservableObject {
             if handle(key, time: press.timestamp, text: text) { used = true }
         }
         return used
+    }
+    /// A law citation card goes first with Esc (no modifiers), only while one
+    /// is shown, or for the other way of the press that closed it. Through
+    /// the gate: a second delivery of an unused press is no new Esc, and the
+    /// key-up of a used one stays away from the system too.
+    private func citationCardEscape(_ presses: Set<UIPress>) -> Bool {
+        guard let press = presses.first(where: { $0.key?.keyCode == .keyboardEscape }), let key = press.key,
+              key.modifierFlags.intersection([.command, .shift, .alternate, .control]).isEmpty else { return false }
+        let code = key.keyCode.rawValue
+        guard gate.isFresh(key: code, time: press.timestamp),
+              LawCitationPreviewModel.shared.consumeEscape(by: .press) else { return false }
+        _ = gate.began(key: code, time: press.timestamp)
+        gate.swallow(key: code)
+        return true
     }
     /// ⌘F and ⌘L that reached a responder of the app: the menu did not take
     /// them (a disabled or conflicting entry, e.g. the system's Edit › Find).
@@ -600,7 +613,8 @@ final class KeyboardRouter: ObservableObject {
     @discardableResult
     func handle(token: String, text: (any KeyboardTextTarget)? = nil) -> Bool {
         UserInputClock.note()
-        if token == "<Esc>", LawCitationPreviewModel.shared.consumeEscape() { return true }
+        // A law citation card goes first with Esc, only while one is shown.
+        if token == "<Esc>", LawCitationPreviewModel.shared.consumeEscape(by: .keyCommand) { return true }
         guard isEnabled || helpVisible else { return false }
         if !keyboardSeen { keyboardSeen = true }
         cancelRepeat()

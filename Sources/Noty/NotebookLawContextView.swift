@@ -31,7 +31,7 @@ struct NotebookLawContextView: View {
                 Section {
                     Picker("Veranlagungsjahr", selection: Binding(get: { context.taxYear ?? 0 }, set: { year in change { $0.taxYear = year == 0 ? nil : year } })) {
                         Text("Keins").tag(0)
-                        ForEach(Array((NotebookLawPreferences.firstYear...NotebookLawPreferences.lastYear).reversed()), id: \.self) { year in
+                        ForEach(years, id: \.self) { year in
                             Text(String(year)).tag(year)
                         }
                     }
@@ -52,6 +52,16 @@ struct NotebookLawContextView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } }
             }
         }
+    }
+
+    /// 2015 … next year, newest first; a stored year outside that range
+    /// (accepted from 1990 to 2100) stays visible as its own entry.
+    private var years: [Int] {
+        var list = Array((NotebookLawPreferences.firstYear...NotebookLawPreferences.lastYear).reversed())
+        if let stored = context.taxYear, !list.contains(stored) {
+            list.append(stored); list.sort(by: >)
+        }
+        return list
     }
 
     private func lawName(_ id: String?) -> String {
