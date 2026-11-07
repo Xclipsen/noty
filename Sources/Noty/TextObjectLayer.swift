@@ -192,6 +192,8 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             compositionBase = nil
             hideLawSuggestions()
             generation += 1; dragStart = nil; notice.isHidden = true
+            // A pending flow settle belongs to the left page/state (Swift-Audit S16).
+            settleWork?.cancel(); settleWork = nil; pendingSettle = nil
             // The delegate goes first: `textViewDidEndEditing` will not report this.
             if isEditingField { KeyboardRouter.shared.textEnded() }
             for field in fields.values {
@@ -1045,7 +1047,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     private func scheduleFlowSettle() {
         guard pendingSettle != nil else { return }
         settleWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.settleFlow() }
+        let page = pageID, expected = generation
+        let work = DispatchWorkItem { [weak self] in
+            // A page/restore switch in the meantime leaves the new state alone.
+            guard let self, self.pageID == page, self.generation == expected else { return }
+            self.settleFlow()
+        }
         settleWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
     }

@@ -27,6 +27,15 @@ enum NotyText {
         return listDate(date)
     }
 
+    /// A user string (title, folder, area) inside a German sentence: wrapped
+    /// in a bidi isolate (FSI … PDI), so an Arabic or Hebrew title does not
+    /// reorder the quotes, „· Seite 3“ or digits around it. Display only,
+    /// never stored.
+    static func isolated(_ text: String) -> String { "\u{2068}\(text)\u{2069}" }
+
+    /// `isolated` in German quotes: „Mathe“.
+    static func quoted(_ text: String) -> String { "„\(isolated(text))“" }
+
     /// Empty value of a „last …“ date.
     static let never = "Noch nie"
 

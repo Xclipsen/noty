@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Combine
+import os
 import NotebookCore
 
 struct NativeLawText: UIViewRepresentable {
@@ -305,14 +306,16 @@ struct NativeLawText: UIViewRepresentable {
                 flashTimer = timer
                 return
             }
-            let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
+            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
                 // The view went away: the timer ends itself.
                 let gone = MainActor.assumeIsolated { () -> Bool in
                     guard let self else { return true }
                     let elapsed = Date().timeIntervalSince(start)
                     guard elapsed > 1.3 else { return false }
-                    let alpha = 1 - CGFloat(elapsed - 1.3) / 0.8
-                    if alpha <= 0 { self.endFlash(redraw: true) } else { self.flashAlpha = alpha; self.applyHighlights() }
+                    // Ease-out over 0.6 s; only the Absatz is redrawn per frame.
+                    let t = min(1, CGFloat(elapsed - 1.3) / 0.6)
+                    let alpha = (1 - t) * (1 - t)
+                    if alpha <= 0 { self.endFlash(redraw: true) } else { self.flashAlpha = alpha; self.applyFlashOnly() }
                     return false
                 }
                 if gone { timer.invalidate() }
@@ -543,6 +546,17 @@ struct NativeLawText: UIViewRepresentable {
         /// the layout manager and redraws (no attribute changes).
         func applyHighlights() {
             guard let container else { return }
+            container.layout.fills = highlightFills()
+            container.layout.links = linksActive ? links.map(\.range).filter { NSMaxRange($0) <= bodyLength } : []
+            container.layout.invalidateDisplay(forCharacterRange: NSRange(location: 0, length: container.storage.length))
+        }
+        /// Fade step of the jump highlight: same fills, but only the Absatz is redrawn.
+        private func applyFlashOnly() {
+            guard let container, let flashRange, NSMaxRange(flashRange) <= container.storage.length else { applyHighlights(); return }
+            container.layout.fills = highlightFills()
+            container.layout.invalidateDisplay(forCharacterRange: flashRange)
+        }
+        private func highlightFills() -> [LawMarkLayoutManager.Fill] {
             let selection = parent.selection
             var outlined = Set(selection.tapped ? selection.marks : [])
             if let adjusting = selection.controller?.adjusting { outlined.insert(adjusting) }
@@ -557,9 +571,7 @@ struct NativeLawText: UIViewRepresentable {
             if let flashRange, flashAlpha > 0, NSMaxRange(flashRange) <= bodyLength {
                 fills.insert(.init(range: flashRange, color: UIColor(Color.notyAccent).withAlphaComponent(0.2 * flashAlpha), outline: nil, block: true), at: 0)
             }
-            container.layout.fills = fills
-            container.layout.links = linksActive ? links.map(\.range).filter { NSMaxRange($0) <= bodyLength } : []
-            container.layout.invalidateDisplay(forCharacterRange: NSRange(location: 0, length: container.storage.length))
+            return fills
         }
         private func marks(in range: NSRange) -> [String] {
             markRanges.filter { NSIntersectionRange($0.range, range).length > 0 }.map(\.id)
@@ -770,6 +782,18 @@ struct LawTextJump: Equatable {
 /// and the citation card (excerpt, quote).
 enum LawAbsatz {
     private static let anyStart = try? NSRegularExpression(pattern: "(?m)^[ \\t\\u00A0]*\\(\\d+[a-z]?\\)")
+    /// Compiled once per marker: `range` runs on every layout and scroll
+    /// callback during a jump.
+    private static let markerPatterns = OSAllocatedUnfairLock<[String: NSRegularExpression]>(initialState: [:])
+    private static func markerPattern(_ marker: String) -> NSRegularExpression? {
+        if let cached = markerPatterns.withLock({ $0[marker] }) { return cached }
+        guard let re = try? NSRegularExpression(pattern: "(?m)^[ \\t\\u00A0]*(" + NSRegularExpression.escapedPattern(for: marker) + ")") else { return nil }
+        markerPatterns.withLock { patterns in
+            if patterns.count >= 64 { patterns.removeAll() }
+            patterns[marker] = re
+        }
+        return re
+    }
     /// From „(6)“ at the start of a line (else the first „(6)“ anywhere) up to
     /// the next Absatz at the start of a line, else to the end; trailing
     /// white space trimmed. Nil when the text has no such marker.
@@ -778,8 +802,7 @@ enum LawAbsatz {
         let all = NSRange(location: 0, length: source.length)
         let marker = "(\(paragraph))"
         var start: Int?
-        if let re = try? NSRegularExpression(pattern: "(?m)^[ \\t\\u00A0]*(" + NSRegularExpression.escapedPattern(for: marker) + ")"),
-           let match = re.firstMatch(in: text, range: all) {
+        if let re = markerPattern(marker), let match = re.firstMatch(in: text, range: all) {
             start = match.range(at: 1).location
         } else {
             let found = source.range(of: marker)

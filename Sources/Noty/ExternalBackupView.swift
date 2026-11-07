@@ -35,8 +35,12 @@ struct ExternalBackupForm: View {
     @State private var confirmingDisable = false
     var body: some View {
         Form {
-            Section("Aktives Ziel · Bereich „\(workspaces.title)“") {
-                LabeledContent("Ziel", value: targetTitle)
+            Section {
+                // Long values (a 300-character reason, a long folder name) get their own lines:
+                // as a LabeledContent value they squeezed the label until it wrapped letter by letter.
+                LabeledContent {
+                    Text(targetTitle).lineLimit(2).truncationMode(.middle).help(targetTitle)
+                } label: { Text("Ziel").fixedSize() }
                 Text(model.status).font(.subheadline).foregroundStyle(model.folderUnreachable ? Color.orange : Color.secondary)
                 LabeledContent("Letztes Backup", value: model.policy.lastSuccess.map(NotyText.statusDate) ?? NotyText.never)
                 if let warning = model.policy.lastWarning, model.policy.lastOutcome == .succeeded {
@@ -45,6 +49,10 @@ struct ExternalBackupForm: View {
                 }
                 if let attempt = model.policy.lastAttempt, model.policy.lastOutcome != .succeeded {
                     LabeledContent("Letzter Versuch", value: "\(NotyText.statusDate(attempt)) · \(outcomeTitle)")
+                    if let reason = model.policy.lastFailureReason, !reason.isEmpty,
+                       model.policy.lastOutcome == .failed || model.policy.lastOutcome == .unreachable {
+                        Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
                     if let next = model.policy.nextAttempt, next > Date() {
                         LabeledContent("Nächster automatischer Versuch", value: NotyText.statusDate(next))
                     }
@@ -54,6 +62,8 @@ struct ExternalBackupForm: View {
                     .disabled(model.policy.target == .disabled || !library.ready)
                 Button("Automatisches Backup ausschalten …") { confirmingDisable = true }
                     .disabled(model.policy.target == .disabled)
+            } header: {
+                Text("Aktives Ziel · Bereich \(NotyText.quoted(workspaces.title))").lineLimit(2).truncationMode(.middle)
             }
             Section("Backup-Ordner (Dateien, iCloud Drive)") {
                 Button(model.policy.target == .folder ? "Anderen Backup-Ordner wählen …" : "Backup-Ordner wählen …") { folderPicker = true }
@@ -99,7 +109,7 @@ struct ExternalBackupForm: View {
             if showsSigning { SigningRenewalSection() }
         }
         .disabled(model.busy || workspaces.busy)
-        .overlay { if model.busy { ProgressView("Backup wird geprüft …").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+        .overlay { if model.busy { ProgressView(model.status.hasSuffix("…") ? model.status : "Backup wird geladen und geprüft …").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
         .navigationTitle("Automatisches Backup")
         .onAppear { endpoint = model.policy.endpoint; username = model.username; model.checkFolder() }
         .fileImporter(isPresented: $folderPicker, allowedContentTypes: [.folder]) { result in
@@ -126,14 +136,14 @@ struct ExternalBackupForm: View {
     private var targetTitle: String {
         switch model.policy.target {
         case .disabled: "Ausgeschaltet"
-        case .folder: model.policy.folderName.map { "Dateien-Ordner „\($0)“" } ?? "Dateien-Ordner / iCloud Drive"
+        case .folder: model.policy.folderName.map { "Dateien-Ordner \(NotyText.quoted($0))" } ?? "Dateien-Ordner / iCloud Drive"
         case .webDAV: "WebDAV"
         }
     }
     private var outcomeTitle: String {
         switch model.policy.lastOutcome {
-        case .unreachable?: "nicht erreichbar: \(model.policy.lastFailureReason ?? "")"
-        case .failed?: "fehlgeschlagen: \(model.policy.lastFailureReason ?? "")"
+        case .unreachable?: "nicht erreichbar"
+        case .failed?: "fehlgeschlagen"
         case .succeeded?, nil: "ohne Ergebnis"
         }
     }

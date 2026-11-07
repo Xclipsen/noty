@@ -104,11 +104,13 @@ enum LawCitationInk {
     /// with a known law written directly behind the number (no inferred
     /// law, nothing in between), and never after a number or „Abs.“/„Nr.“/
     /// „S.“/„Satz“ (there „S 1“ means Satz 1). Same length: ranges stay valid.
+    /// Fixed patterns of `normalized`, compiled once (it runs per recognised line).
+    private static let normalizeCandidates = try? NSRegularExpression(pattern: "(?<![\\p{L}\\p{N}§$])[S$](?=[ \\t]?\\d)")
+    private static let normalizeShape = try? NSRegularExpression(pattern: "^§[ \\t]?\\d{1,4}[ \\t]?[a-z]?[ \\t]+\\p{L}[\\p{L}\\d]*$")
+    private static let normalizeBlocked = try? NSRegularExpression(pattern: "^(\\d+[a-z]?|[IVX]+|Abs\\.?|Absatz|Nr\\.?|S\\.?|Satz|§+)$")
     nonisolated static func normalized(_ text: String, scanner: LawCitationScanner, defaultLawID: String?) -> String {
         let ns = text as NSString
-        guard let candidates = try? NSRegularExpression(pattern: "(?<![\\p{L}\\p{N}§$])[S$](?=[ \\t]?\\d)"),
-              let shape = try? NSRegularExpression(pattern: "^§[ \\t]?\\d{1,4}[ \\t]?[a-z]?[ \\t]+\\p{L}[\\p{L}\\d]*$"),
-              let blocked = try? NSRegularExpression(pattern: "^(\\d+[a-z]?|[IVX]+|Abs\\.?|Absatz|Nr\\.?|S\\.?|Satz|§+)$") else { return text }
+        guard let candidates = normalizeCandidates, let shape = normalizeShape, let blocked = normalizeBlocked else { return text }
         let found = candidates.matches(in: text, range: NSRange(location: 0, length: ns.length)).prefix(20)
         guard !found.isEmpty else { return text }
         var accepted: [NSRange] = []

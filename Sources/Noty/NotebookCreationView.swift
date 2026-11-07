@@ -112,6 +112,13 @@ private struct DocumentCreationForm: View {
                         TextField("Titel", text: $title).font(.title3).textFieldStyle(.roundedBorder)
                             .accessibilityLabel("Titel \(kind == "Heft" ? "des Hefts" : "des Textdokuments")")
                             .keyOption(.text($title))
+                        // Near the limit the length shows, so a disabled „Erstellen“ has a visible reason.
+                        let length = title.trimmingCharacters(in: .whitespacesAndNewlines).count
+                        if length > 100 {
+                            Text(length > 120 ? "\(length)/120 Zeichen – bitte kürzen" : "\(length)/120 Zeichen")
+                                .font(.caption).monospacedDigit()
+                                .foregroundStyle(length > 120 ? Color.orange : Color.secondary)
+                        }
                         if textDocument {
                             Text("Seiten entstehen beim Schreiben; am Ende steht immer eine leere Seite für Handschrift bereit. Handschrift bleibt fest auf ihrer Seite.")
                                 .font(.caption).foregroundStyle(.secondary)

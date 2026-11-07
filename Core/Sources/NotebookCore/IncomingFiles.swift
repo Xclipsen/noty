@@ -294,12 +294,14 @@ extension Notebook {
         var next = self
         let index = try placement.insertionIndex(in: next.pages.map(\.id))
         let ids = try next.insertPDF(data, geometries: geometries, at: index)
-        if let writingArea {
-            for id in ids {
-                guard let page = next.pages.first(where: { $0.id == id }) else { throw PageOperationError.missingPage }
-                let margins = try writingArea.scaled(from: .init(width: 1, height: 1), to: page.geometry?.displaySize ?? .a4)
-                try next.setMargins(margins, pageIDs: [id])
+        if let writingArea, !ids.isEmpty {
+            let inserted = Set(ids)
+            var assignments: [UUID: PageMargins] = [:]
+            for page in next.pages where inserted.contains(page.id) {
+                assignments[page.id] = try writingArea.scaled(from: .init(width: 1, height: 1), to: page.geometry?.displaySize ?? .a4)
             }
+            guard assignments.count == ids.count else { throw PageOperationError.missingPage }
+            try next.setMargins(assignments)
         }
         try next.validate()
         self = next
@@ -594,15 +596,13 @@ extension LibraryStore {
         // Committed. From here on only the confirmation can fail.
         let verified: Bool
         do {
-            try Self.incomingReadBackFault()
+            try incomingReadBackFault()
             let reopened = RevisionStore(directory: url, readOnly: true)
             verified = try reopened.load() == document && !reopened.recovered
         } catch { verified = false }
         return IncomingAppendResult(pageIDs: ids, title: item.title, verified: verified)
     }
 
-    /// Test hook: fails the read-back after a successful append commit.
-    nonisolated(unsafe) static var incomingReadBackFault: () throws -> Void = {}
 }
 
 public struct IncomingAppendResult: Sendable, Equatable {

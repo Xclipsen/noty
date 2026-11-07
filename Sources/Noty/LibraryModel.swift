@@ -11,6 +11,9 @@ struct OpenNotebook: Identifiable {
     var searchBounds: PageRect?
     /// A search hit over a page change, in flow offsets.
     var searchFlowRange: NSRange?
+    /// Folder path in the library („Alle Unterlagen / Klasse 10“): tells
+    /// notebooks with the same title apart in pickers and search hits.
+    var path: String? = nil
 }
 
 @MainActor
@@ -162,10 +165,19 @@ final class LibraryModel: ObservableObject {
         for item in snapshot.items where !item.isFolder && !snapshot.isTrashed(item.id) {
             if let directory = try? await store.documentURL(id: item.id) {
                 choices.append(OpenNotebook(id: item.id, directory: directory, title: item.title,
-                    isRestored: item.source == .restored))
+                    isRestored: item.source == .restored, path: folderPath(of: item)))
             }
         }
-        return choices
+        return choices.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    /// „Alle Unterlagen / Klasse 10 / Mathe“: the folders above `item`.
+    func folderPath(of item: NotebookCore.LibraryItem) -> String {
+        var components: [String] = [], parent = item.parentID, visited = Set<UUID>()
+        while let id = parent, visited.insert(id).inserted, let folder = snapshot.items.first(where: { $0.id == id }) {
+            components.insert(folder.title, at: 0); parent = folder.parentID
+        }
+        return (["Alle Unterlagen"] + components).joined(separator: " / ")
     }
 
     /// `quiet`: background reload (e.g. after closing a notebook) that keeps
@@ -562,11 +574,12 @@ final class LibraryModel: ObservableObject {
         document.title = title
         document.pdf = data
         document.pages = geometries.map { geometry in var page = Page(); page.geometry = geometry; return page }
-        if let writingArea {
+        if let writingArea, !document.pages.isEmpty {
+            var assignments: [UUID: PageMargins] = [:]
             for page in document.pages {
-                let margins = try writingArea.scaled(from: .init(width: 1, height: 1), to: page.geometry?.displaySize ?? .a4)
-                try document.setMargins(margins, pageIDs: [page.id])
+                assignments[page.id] = try writingArea.scaled(from: .init(width: 1, height: 1), to: page.geometry?.displaySize ?? .a4)
             }
+            try document.setMargins(assignments)
         }
         // Originals above 20 MB get schema 10 at once, so Build 46 refuses the
         // whole notebook instead of failing later edits.

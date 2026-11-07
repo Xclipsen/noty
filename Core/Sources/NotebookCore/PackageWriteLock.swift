@@ -62,13 +62,15 @@ public final class PackageWriteLock: @unchecked Sendable {
     }
 
     /// Waits (bounded) for a running writer, e.g. an append that is just
-    /// committing, instead of failing at once.
+    /// committing, instead of failing at once. A cancelled waiter gives up
+    /// with nil at once (a cancelled `Task.sleep` returns immediately, the
+    /// loop would otherwise spin until the deadline).
     public func claim(_ directory: URL, waitingUpTo seconds: Double) async -> Claim? {
         let deadline = Date().addingTimeInterval(seconds)
         while true {
             if let claim = claim(directory) { return claim }
-            guard Date() < deadline else { return nil }
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard Date() < deadline, !Task.isCancelled else { return nil }
+            do { try await Task.sleep(nanoseconds: 50_000_000) } catch { return nil }
         }
     }
 

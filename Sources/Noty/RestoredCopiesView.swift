@@ -35,12 +35,20 @@ struct RestoredCopiesView: View {
                         }
                     } header: {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(copy.title)
+                            Text(copy.title).lineLimit(2).truncationMode(.middle).textCase(nil).help(copy.title)
                             if let date = copy.modifiedAt {
-                                Text(date, format: .dateTime.day().month().year().hour().minute().second())
+                                Text(date, format: .dateTime.day().month().year().hour().minute().second()).monospacedDigit()
                             }
                         }
                     }
+                }
+            }
+            .overlay {
+                if filtered.isEmpty {
+                    if search.isEmpty {
+                        ContentUnavailableView("Keine wiederhergestellten Kopien", systemImage: "clock.arrow.circlepath",
+                            description: Text("Aus einem Backup wiederhergestellte Hefte erscheinen hier."))
+                    } else { ContentUnavailableView.search(text: search) }
                 }
             }
             .searchable(text: $search, prompt: "Name oder Vorschautext")

@@ -74,7 +74,7 @@ extension LawReaderView {
         if let field = UIResponder.currentFirstResponder as? UITextField {
             field.resignFirstResponder(); LawKeyboard.shared.claimSoon(); return
         }
-        if lookupShown != nil { closeLookup(); LawKeyboard.shared.claimSoon(); return }
+        if lookupShown != nil { NotyMotion.instant { closeLookup() }; LawKeyboard.shared.claimSoon(); return }
         LawKeyboard.shared.closeWindow()
     }
     /// ⌘L and ⌘F: the shared search surface opens in its search mode and
@@ -82,7 +82,8 @@ extension LawReaderView {
     private func focusQuickSearch(clearing: Bool) {
         if clearing { query = "" }
         textSelection.clear()
-        openLookup(.query)
+        // Keyboard-opened: no slide (tap paths in LawReaderControls stay animated).
+        NotyMotion.instant { openLookup(.query) }
     }
     /// 1–5, ⇧⌘H, `m1`…`mm`: marks the text or PDF selection, recolours the
     /// chosen mark or finishes „Bereich anpassen“ (`LawMarkController.mark`,
@@ -134,7 +135,7 @@ extension LawReaderView {
         // Esc: a selection first, then the open search surface, then the
         // window closes (`Space l` closes at once).
         case .cancelPanel:
-            if textSelection.active { textSelection.clear() } else if lookupShown != nil { closeLookup() } else { LawKeyboard.shared.closeWindow() }
+            if textSelection.active { textSelection.clear() } else if lookupShown != nil { NotyMotion.instant { closeLookup() } } else { LawKeyboard.shared.closeWindow() }
         case .laws: LawKeyboard.shared.closeWindow()
         case .lawPark: LawKeyboard.shared.parkWindow()
         case .lawChoose: showLaws = true

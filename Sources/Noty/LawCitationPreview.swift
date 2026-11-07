@@ -295,7 +295,7 @@ final class LawCitationPreviewModel: ObservableObject {
     /// Pencil touched the paper, page scrolled/zoomed or page changed: hide at once.
     func pageInteractionBegan() {
         guard presentation != nil else { return }
-        dismiss()
+        NotyMotion.instant { dismiss() }
     }
 
     // MARK: Called by the card

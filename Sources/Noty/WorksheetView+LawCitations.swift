@@ -76,7 +76,9 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// Counts edits of the attached store's text (`NSTextStorage` notifications).
     private var flowVersion = 0
     private weak var observedStorage: NSTextStorage?
-    private var flowObserver: NSObjectProtocol?
+    /// Removes itself on release, also when the links object goes without
+    /// `observe(nil)` (Swift-Audit S17).
+    private var flowObserver: NotificationObserverToken?
     /// The flow's citations hide from an edit of its text until it is scanned again.
     private var flowStale = false
     private var lastFlowKey: FlowKey?
@@ -189,7 +191,14 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
 
     // MARK: Viewport
 
-    private static var viewports: [ObjectIdentifier: (offset: CGPoint, zoom: CGFloat)] = [:]
+    /// Last offset/zoom per viewport. Weak keys: a released scroll view's entry
+    /// goes with it, and a new one at a reused address starts fresh instead of
+    /// counting as a move (Swift-Audit S20).
+    private final class ViewportState {
+        let offset: CGPoint, zoom: CGFloat
+        init(offset: CGPoint, zoom: CGFloat) { self.offset = offset; self.zoom = zoom }
+    }
+    private static let viewports = NSMapTable<UIScrollView, ViewportState>.weakToStrongObjects()
     /// Scroll or zoom of the notebook began: a shown card goes at once.
     static func viewportMoved() {
         lastViewportMove = CACurrentMediaTime()
@@ -199,9 +208,9 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// Every scroll/zoom callback, also programmatic ones (jumps, caret
     /// reveal): a card goes once offset or zoom really changed.
     static func viewportChanged(_ viewport: UIScrollView) {
-        let id = ObjectIdentifier(viewport), now = (offset: viewport.contentOffset, zoom: viewport.zoomScale)
-        let last = viewports[id]
-        viewports[id] = now
+        let now = ViewportState(offset: viewport.contentOffset, zoom: viewport.zoomScale)
+        let last = viewports.object(forKey: viewport)
+        viewports.setObject(now, forKey: viewport)
         guard let last else { return }
         if hypot(now.offset.x - last.offset.x, now.offset.y - last.offset.y) > 0.5 || abs(now.zoom / max(last.zoom, 0.0001) - 1) > 0.001 {
             lastViewportMove = CACurrentMediaTime()
@@ -270,10 +279,9 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// Edits of the flow's text: its underlines hide and it is scanned again.
     private func observe(_ storage: NSTextStorage?) {
         guard storage !== observedStorage else { return }
-        if let flowObserver { NotificationCenter.default.removeObserver(flowObserver) }
         flowObserver = nil; observedStorage = storage
         guard let storage else { return }
-        flowObserver = NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification, object: storage, queue: nil) { [weak self] note in
+        flowObserver = NotificationObserverToken(NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification, object: storage, queue: nil) { [weak self] note in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.flowVersion &+= 1
@@ -281,7 +289,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
                 // Never inside the edit itself.
                 DispatchQueue.main.async { [weak self] in self?.contentChanged() }
             }
-        }
+        })
     }
     /// Every rendering pass (`WorksheetView.updateRendering`): the viewport
     /// attaches the flow's page without configuring the sheet again.
@@ -350,7 +358,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         // Only this page's texts stay cached.
         scanned = scanned.filter { texts.contains($0.key) }
         // The flow is scanned once per document text for all its pages (`LawCitationFlowScans`).
-        var flowScan: Task<[LawCitation], Never>?
+        var flowScan: Task<[LawCitation]?, Never>?
         let flowString = flowText.flatMap { $0.text.isEmpty ? nil : $0.text }
         if let flowString, let store = flowText?.store, scanned[flowString] == nil {
             if let shared = LawCitationFlowScans.result(flowString, store: store, generation: generation, lawID: lawID) {
@@ -367,7 +375,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
             var found = missing.isEmpty ? [] : await Task.detached(priority: .utility) {
                 missing.map { ($0, scanner.citations(in: $0, defaultLawID: lawID)) }
             }.value
-            if let flowScan, let flowString { found.append((flowString, await flowScan.value)) }
+            // A superseded flow scan yields nil: the newer text's scan follows.
+            if let flowScan, let flowString, let citations = await flowScan.value { found.append((flowString, citations)) }
             guard let self, self.scanToken == token, self.scannedGeneration == generation, self.scannedLawID == lawID,
                   self.model.scannerGeneration == generation, self.sheet?.configuration?.pageID == page else { return }
             for (text, citations) in found { self.scanned[text] = citations }
@@ -891,6 +900,14 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
 /// Scanner results of Text editor 2's flow, shared by the sheets showing it:
 /// per document text store one finished result and at most one scan in
 /// flight, which every page asking for the same text and context awaits.
+/// A block observer that unregisters when released (`deinit` of a
+/// `@MainActor` class cannot reach its isolated properties).
+final class NotificationObserverToken: @unchecked Sendable {
+    private let token: NSObjectProtocol
+    init(_ token: NSObjectProtocol) { self.token = token }
+    deinit { NotificationCenter.default.removeObserver(token) }
+}
+
 @MainActor
 enum LawCitationFlowScans {
     private struct Key: Equatable {
@@ -900,7 +917,7 @@ enum LawCitationFlowScans {
         }
     }
     private static var done: [ObjectIdentifier: (key: Key, text: String, found: [LawCitation])] = [:]
-    private static var running: [ObjectIdentifier: (key: Key, text: String, task: Task<[LawCitation], Never>)] = [:]
+    private static var running: [ObjectIdentifier: (key: Key, text: String, task: Task<[LawCitation]?, Never>)] = [:]
     /// Stores remembered (a closed document's entry goes with the next ones).
     private static let limit = 4
 
@@ -910,15 +927,23 @@ enum LawCitationFlowScans {
     }
     /// The running scan of exactly this text and context, or a new one
     /// (replacing an older one of the store, whose result is then unused).
+    /// At most one whole-text scan per store runs (Swift-Audit S20): a new
+    /// one waits for the running one, and a replaced one that has not begun
+    /// yet skips its scan and yields nil.
     static func scan(_ text: String, store: ObjectIdentifier, generation: Int, lawID: String?,
-                     scanner: LawCitationScanner) -> Task<[LawCitation], Never> {
+                     scanner: LawCitationScanner) -> Task<[LawCitation]?, Never> {
         let key = Key(text, generation: generation, lawID: lawID)
         if let current = running[store], current.key == key, current.text == text { return current.task }
-        let task = Task.detached(priority: .utility) { scanner.citations(in: text, defaultLawID: lawID) }
+        let previous = running[store]?.task
+        previous?.cancel()
+        let task = Task.detached(priority: .utility) { () -> [LawCitation]? in
+            _ = await previous?.value
+            guard !Task.isCancelled else { return nil }
+            return scanner.citations(in: text, defaultLawID: lawID)
+        }
         running[store] = (key, text, task)
         Task {
-            let found = await task.value
-            guard running[store]?.key == key else { return }
+            guard let found = await task.value, running[store]?.key == key else { return }
             running[store] = nil
             if done[store] == nil, done.count >= limit, let old = done.keys.first { done[old] = nil }
             done[store] = (key, text, found)

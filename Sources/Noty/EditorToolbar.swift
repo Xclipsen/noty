@@ -69,6 +69,8 @@ struct EditorToolbar: View {
     var axis: ToolbarAxis
     /// Last pen/pencil/marker: non-ink tools show its colour when selected.
     var activeInk: WritingTool = .pen
+    /// One name for search everywhere (menu, palette, tooltip): „Im Heft suchen“ / „Im Dokument suchen“.
+    var searchTitle = "Im Heft suchen"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var vertical: Bool { axis == .vertical }
     /// First level: drawing/writing tools; the laser pointer and „PDF lesen“
@@ -93,7 +95,7 @@ struct EditorToolbar: View {
                     // The active tool lives on the other level (e.g. laser pointer).
                     .overlay(alignment: vertical ? .bottom : .trailing) {
                         if activeOnOtherLevel {
-                            Circle().fill(Color(red: 0.45, green: 0.7, blue: 1)).frame(width: 5, height: 5)
+                            Circle().fill(Color.notyAccent).frame(width: 5, height: 5)
                                 .padding(vertical ? .bottom : .trailing, 7).allowsHitTesting(false)
                         }
                     }
@@ -104,7 +106,7 @@ struct EditorToolbar: View {
         .environment(\.notyTooltipAxis, axis)
         .padding(ToolbarLayout.padding)
         .animation(NotyMotion.palette(reduceMotion), value: more)
-        .animation(NotyMotion.highlight(reduceMotion), value: tool)
+        // Tool switches (100+/day, also via keys, double tap, squeeze) are instant.
     }
     private var activeOnOtherLevel: Bool {
         let onSecond = secondaryTools.contains(tool)
@@ -121,8 +123,8 @@ struct EditorToolbar: View {
                 .overlay(alignment: vertical ? .top : .leading) { if !secondaryTools.isEmpty { separator } }
             utility("Seitenbreite einpassen", symbol: "arrow.up.left.and.arrow.down.right",
                     detail: "Seitenbreite einpassen – ganze Breite zeigen", action: onFit)
-            utility("Inhalte suchen", symbol: "magnifyingglass", detail: "Suchen – Text im Notizbuch finden", action: onSearch)
-            if let onSecondView { utility("Zweite Ansicht", symbol: "rectangle.split.2x1", detail: "Zweite Ansicht – weiteres Notizbuch daneben", action: onSecondView) }
+            utility(searchTitle, symbol: "magnifyingglass", detail: "\(searchTitle) – Text und Seiten finden", action: onSearch)
+            if let onSecondView { utility("Zweite Ansicht", symbol: "rectangle.split.2x1", detail: "Zweite Ansicht – weiteres Heft daneben", action: onSecondView) }
             utility("Werkzeugleiste anpassen", symbol: "slider.horizontal.3",
                     detail: "Anpassen – Reihenfolge, Position, Lieblingsstifte", action: onCustomize)
                 .overlay(alignment: vertical ? .top : .leading) { separator }
@@ -193,8 +195,8 @@ struct EditorToolbar: View {
     }
 
     private var separator: some View {
-        Rectangle().fill(.white.opacity(0.14))
-            .frame(width: vertical ? 18 : 0.5, height: vertical ? 0.5 : 18)
+        Rectangle().fill(.white.opacity(NotyDivider.opacity))
+            .frame(width: vertical ? NotyDivider.length : NotyDivider.thickness, height: vertical ? NotyDivider.thickness : NotyDivider.length)
             .offset(x: vertical ? 0 : -2, y: vertical ? -2 : 0).allowsHitTesting(false)
     }
 

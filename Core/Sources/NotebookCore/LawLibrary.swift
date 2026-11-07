@@ -83,9 +83,12 @@ public struct LawSection: Codable, Sendable, Identifiable {
 public struct LawReference: Equatable, Sendable {
     public var key: String
     public var paragraph: String?
+    /// Compiled once: quick search parses every alias split of each query.
+    private static let pattern = try? NSRegularExpression(
+        pattern: "^(?:§\\s*|Abschnitt\\s*|R\\s*|Zu\\s*§\\s*)?(\\d+[a-z]*(?:\\.\\d+[a-z]*)*)\\.?(?:\\s*(?:Abs(?:atz)?\\.?|\\()\\s*(\\d+[a-z]*)\\)?)?$",
+        options: .caseInsensitive)
     public static func parse(_ input: String) -> Self? {
-        let pattern = "^(?:§\\s*|Abschnitt\\s*|R\\s*|Zu\\s*§\\s*)?(\\d+[a-z]*(?:\\.\\d+[a-z]*)*)\\.?(?:\\s*(?:Abs(?:atz)?\\.?|\\()\\s*(\\d+[a-z]*)\\)?)?$"
-        guard let re = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+        guard let re = pattern,
               let m = re.firstMatch(in: input.trimmingCharacters(in: .whitespacesAndNewlines), range: NSRange(input.trimmingCharacters(in: .whitespacesAndNewlines).startIndex..., in: input.trimmingCharacters(in: .whitespacesAndNewlines))) else { return nil }
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines) as NSString
         return Self(key: value.substring(with: m.range(at: 1)).lowercased(), paragraph: m.range(at: 2).location == NSNotFound ? nil : value.substring(with: m.range(at: 2)).lowercased())
@@ -300,6 +303,20 @@ public actor LawOfflineStore {
         guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 64_000_000 else { throw LawError.invalid("Gesetzesdatei zu groß.") }
         return try JSONDecoder().decode(LawDocument.self, from: Data(contentsOf: url)).validated(for: entry, version: version)
     }
+    /// Whether this version is usable offline, without decoding it when
+    /// possible: a stored file whose SHA-256 equals the catalogue's `json`
+    /// hash is byte for byte the download `putDocument` checked and wrote
+    /// unchanged (mapped read + hash instead of decoding up to 64 MB per law
+    /// on every start). Without a hash, or on any mismatch, the full
+    /// validation decides; reading (`document`) always validates.
+    public func hasDocument(_ entry: LawEntry, version: LawVersion) -> Bool {
+        guard let url = try? documentURL(entry.id, version: version.id),
+              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 64_000_000 else { return false }
+        if let sha = version.sha256["json"], sha.count == 64,
+           let data = try? Data(contentsOf: url, options: .alwaysMapped),
+           SHA256.hexDigest(data) == sha { return true }
+        return (try? document(entry, version: version)) != nil
+    }
     public func documentURL(_ id: String, version: String) throws -> URL {
         guard LawEntry.safeID(id), LawEntry.safeID(version) else { throw LawError.invalid("Ungültige Gesetzeskennung.") }
         return root.appendingPathComponent("laws/\(id)/\(version)/law.json")
@@ -325,7 +342,8 @@ public actor LawOfflineStore {
         _ = try catalog.validated()
         for entry in catalog.entries {
             guard let v = entry.versions.first(where: { $0.id == entry.currentVersion }) else { throw LawError.invalid("Fassung fehlt.") }
-            _ = try document(entry, version: v)
+            // Hash-identical stored files were validated when written; others decode.
+            if !hasDocument(entry, version: v) { _ = try document(entry, version: v) }
         }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try JSONEncoder().encode(catalog).write(to: catalogURL, options: .atomic)

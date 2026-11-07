@@ -832,7 +832,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         tool = editor.tool
         editable = editor.enabled
         // Paper pages: automatic ink follows the current paper colour. It was
-        // only read on a page change, so after "Ganzes Notizbuch umstellen"
+        // only read on a page change, so after "Ganzes Heft umstellen"
         // (same page, new colour) the pen kept writing invisible ink.
         if editor.sourcePage == nil, sourceDark != (editor.paperColor == .dark) { sourceDark = editor.paperColor == .dark }
         if editor.autoPen, tool == .pen || tool == .pencil || tool == .shape, !sourceDarkCalculated {

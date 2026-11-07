@@ -11,7 +11,7 @@ extension EditorModel {
     func insertLawQuote(_ request: LawQuoteRequest) -> String? {
         guard writable, !busy, !mutationsPaused else { return "Das Heft kann gerade nicht bearbeitet werden. Das Zitat wurde nicht eingefügt." }
         // A free field in a text document would lie over the flow and could not be edited there.
-        guard !notebook.isTextDocument else { return "In Textdokumenten lässt sich noch kein Zitat einfügen. Den Text bitte im Gesetzesfenster kopieren." }
+        guard !notebook.isTextDocument else { return "In Textdokumenten lässt sich noch kein Zitat einfügen. Den Text bitte in der Gesetzessammlung kopieren." }
         guard let index = notebook.pages.firstIndex(where: { $0.id == request.pageID }) else { return "Die Seite gibt es nicht mehr. Das Zitat wurde nicht eingefügt." }
         let page = notebook.pages[index]
         let existing = page.effectiveTextBoxes
@@ -19,7 +19,7 @@ extension EditorModel {
         let source = sourcePage(for: page)
         let layout = (try? PageLayout(page: page, source: source?.pageRef)) ?? pageLayout
         guard let box = LawQuotePlacement.box(request, page: page, layout: layout, hasPDF: source != nil) else {
-            return "Das Zitat ist zu lang für diese Seite und wurde nicht eingefügt. Ein kürzerer Ausschnitt lässt sich im Gesetzesfenster kopieren."
+            return "Das Zitat ist zu lang für diese Seite und wurde nicht eingefügt. Ein kürzerer Ausschnitt lässt sich in der Gesetzessammlung kopieren."
         }
         // A step of its own: undo takes the quote, not text typed just before.
         separateUndoStep()

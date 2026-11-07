@@ -31,6 +31,7 @@ struct BackupStatusBadge: View {
     @ObservedObject var externalBackup: ExternalBackupModel
     @ObservedObject var library: LibraryModel
     let action: () -> Void
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     /// Background runs never toggle the badge, so the toolbar stays calm.
     @MainActor static func needsAttention(_ backup: ExternalBackupModel) -> Bool {
@@ -42,7 +43,20 @@ struct BackupStatusBadge: View {
         externalBackup.policy.lastSuccess.map { " · zuletzt \(NotyText.statusDate($0))" } ?? ""
     }
 
-    private var state: (String, String) {
+    /// (symbol, toolbar text, full text). The toolbar shows only the
+    /// category: a 300-character failure reason would push the other items
+    /// out of the bar. The reason stays in Settings › Backup, VoiceOver and
+    /// the pointer tooltip.
+    private var state: (String, String, String) {
+        let (symbol, text) = fullState
+        switch BackupHealth(externalBackup) {
+        case .failed: return (symbol, "Backup fehlgeschlagen", text)
+        case .warning: return (symbol, "Backup mit Hinweis", text)
+        default: return (symbol, text, text)
+        }
+    }
+
+    private var fullState: (String, String) {
         switch BackupHealth(externalBackup) {
         case .folderUnreachable: return ("folder.badge.questionmark", "Backup-Ordner neu wählen")
         case .unreachable: return ("wifi.exclamationmark", "Backup-Ziel nicht erreichbar" + last)
@@ -63,11 +77,14 @@ struct BackupStatusBadge: View {
     }
 
     var body: some View {
-        let (symbol, text) = state
+        let (symbol, text, full) = state
         Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemName: symbol)
-                Text(text).lineLimit(1)
+                // Narrow windows: symbol only, the text stays in the accessibility label.
+                if sizeClass != .compact {
+                    NotyWidthCap(maximum: 240) { Text(text).lineLimit(1).truncationMode(.tail) }
+                }
             }
             .font(.caption.weight(.medium))
             .padding(.horizontal, 10).padding(.vertical, 5)
@@ -75,7 +92,26 @@ struct BackupStatusBadge: View {
             .background(Capsule().fill(Color.orange.opacity(0.14)))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Backup-Status: \(text)")
+        .help(full)
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .accessibilityLabel("Backup-Status: \(full)")
         .accessibilityHint("Öffnet die Backup-Einstellungen")
+    }
+}
+
+/// Hugs its content like an unframed view but never grows wider than
+/// `maximum` (a `.frame(maxWidth:)` would stretch short content to the
+/// proposed width).
+struct NotyWidthCap: Layout {
+    var maximum: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let width = min(proposal.width ?? maximum, maximum)
+        return child.sizeThatFits(ProposedViewSize(width: width, height: proposal.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }

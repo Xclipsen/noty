@@ -24,17 +24,12 @@ extension TextObjectLayer {
             button.titleLabel?.font = .systemFont(ofSize: 15, weight: .medium)
             button.widthAnchor.constraint(equalToConstant: width).isActive = true
             button.heightAnchor.constraint(equalToConstant: 44).isActive = true
-            button.layer.cornerRadius = 9; button.accessibilityLabel = key
+            button.layer.cornerRadius = NotyChrome.plateRadius; button.accessibilityLabel = key
             if let action { button.addTarget(self, action: action, for: .touchUpInside) }
             stack.addArrangedSubview(button); buttons[key] = button
             return button
         }
-        func separator() {
-            let view = UIView(); view.backgroundColor = UIColor.white.withAlphaComponent(0.14)
-            view.widthAnchor.constraint(equalToConstant: 1).isActive = true
-            view.heightAnchor.constraint(equalToConstant: 26).isActive = true
-            stack.addArrangedSubview(view)
-        }
+        func separator() { stack.addArrangedSubview(NotyDivider.makeView()) }
         let preset = button("Textstil", title: "Text", width: 150)
         preset.backgroundColor = UIColor.white.withAlphaComponent(0.055); preset.showsMenuAsPrimaryAction = true
         preset.menu = UIMenu(title: "Absatzstil", children: TextStylePreset.allCases.map { item in
@@ -74,6 +69,8 @@ extension TextObjectLayer {
         _ = button("Ausrichten", symbol: "text.alignleft", action: #selector(showAlignment))
         let lines = button("An Linien ausrichten")
         lines.configuration?.image = linesIcon()
+        // The format bar has no noty hover bubble: the system tooltip is the
+        // only name here, so it stays (polish audit F1).
         lines.toolTip = "An Linien ausrichten"
         lines.accessibilityHint = "Die Zeilen des Textfelds stehen auf den Linien des Papiers"
         lines.addAction(UIAction { [weak self] _ in self?.toggleLineAlignment() }, for: .touchUpInside)
@@ -188,8 +185,8 @@ extension TextObjectLayer {
             let button = UIButton(type: .system)
             button.frame = CGRect(x: 8 + index * 44, y: 8, width: 44, height: 44)
             button.setImage(formatIcon(choice.symbol), for: .normal)
-            button.tintColor = .white; button.layer.cornerRadius = 9
-            button.backgroundColor = choice.selected ? UIColor.systemBlue.withAlphaComponent(0.4) : .clear
+            button.tintColor = .white; button.layer.cornerRadius = NotyChrome.plateRadius
+            button.backgroundColor = choice.selected ? NotyChrome.plate : .clear
             button.isSelected = choice.selected; button.accessibilityLabel = choice.label
             button.addAction(UIAction { [weak self, weak popover, weak editor] _ in
                 defer { popover?.dismiss(animated: true) }
@@ -238,9 +235,9 @@ extension TextObjectLayer {
         }
         let automatic = UIButton(type: .system); automatic.setTitle(" Automatisch", for: .normal)
         automatic.setImage(automaticSwatch().withRenderingMode(.alwaysOriginal), for: .normal)
-        automatic.frame = CGRect(x: 8, y: 104, width: 168, height: 44); automatic.layer.cornerRadius = 9
+        automatic.frame = CGRect(x: 8, y: 104, width: 168, height: 44); automatic.layer.cornerRadius = NotyChrome.plateRadius
         automatic.accessibilityHint = "Schwarz oder Weiß passend zum Papier, auch nach späterem Umstellen"
-        if selectionStyle?.automaticColor == true { automatic.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.3) }
+        if selectionStyle?.automaticColor == true { automatic.backgroundColor = NotyChrome.plate }
         automatic.addAction(UIAction { [weak self, weak popover] _ in
             guard let self, self.restoreFormatSelection() else { return }
             let light = self.selectedLight
@@ -402,11 +399,11 @@ extension TextObjectLayer {
             buttons["Farbe"]?.setImage(swatch, for: .normal)
         }
         // Monochrome like its neighbours; the chosen colour is only a small
-        // stroke under the symbol, the active state the common blue tint.
-        buttons["Markieren"]?.backgroundColor = style.highlighted == true ? UIColor.systemBlue.withAlphaComponent(0.15) : .clear
+        // stroke under the symbol, the active state the common plate (`NotyChrome`).
+        buttons["Markieren"]?.backgroundColor = style.highlighted == true ? NotyChrome.plate : .clear
         buttons["Markieren"]?.configuration?.image = highlightIcon(lastHighlight.uiColor)
         buttons["Markieren"]?.accessibilityValue = lastHighlight.title
-        // „An Linien ausrichten“: blue while on; dimmed where it has no effect
+        // „An Linien ausrichten“: plate while on; dimmed where it has no effect
         // (no lines at the field, turned field), the tooltip says why.
         if let lines = buttons["An Linien ausrichten"] {
             let paper = linePaper, on = box.alignsToLines == true
@@ -414,17 +411,17 @@ extension TextObjectLayer {
             let effective = on ? state == .aligned : box.angle == 0 && paper.lines(at: PagePoint(x: box.x, y: box.y)) != nil
             lines.isHidden = box.flowID != nil
             lines.isSelected = on
-            lines.backgroundColor = on ? UIColor.systemBlue.withAlphaComponent(effective ? 0.2 : 0.08) : .clear
+            lines.backgroundColor = on ? UIColor.white.withAlphaComponent(effective ? NotyChrome.plateOpacity : 0.08) : .clear
             lines.alpha = effective ? 1 : 0.5
             lines.accessibilityValue = on ? (effective ? "Ein" : "Ein, hier ohne Wirkung") : "Aus"
             let note = Self.lineAlignmentNote(on ? state : (box.angle != 0 ? .rotated : effective ? .aligned : .noLines))
             lines.toolTip = note.map { "An Linien ausrichten – \($0)" } ?? "An Linien ausrichten"
         }
-        buttons["Schreibmaschinen-Modus"]?.backgroundColor = Self.typewriterEnabled ? UIColor.systemBlue.withAlphaComponent(0.2) : .clear
+        buttons["Schreibmaschinen-Modus"]?.backgroundColor = Self.typewriterEnabled ? NotyChrome.plate : .clear
         buttons["Schreibmaschinen-Modus"]?.accessibilityValue = Self.typewriterEnabled ? "Ein" : "Aus"
         scheduleCounter()
         let extraActive = style.strikethrough == true || (style.baseline ?? 0) != 0
-        buttons["Weitere Textformate"]?.backgroundColor = extraActive ? UIColor.systemBlue.withAlphaComponent(0.2) : .clear
+        buttons["Weitere Textformate"]?.backgroundColor = extraActive ? NotyChrome.plate : .clear
         let alignmentSymbol = switch style.alignment ?? .left {
         case .left: "text.alignleft"; case .center: "text.aligncenter"; case .right: "text.alignright"; case .justified: "text.justify"
         }
@@ -432,11 +429,11 @@ extension TextObjectLayer {
         for (key, kind) in [("Checkbox", TextListEditing.Kind.checkbox), ("Aufzählung", .bullet), ("Nummerierung", .numbered)] {
             let enabled = TextListEditing.isActive(kind, in: field.editor.text ?? "", range: field.editor.selectedRange)
             buttons[key]?.isSelected = enabled
-            buttons[key]?.backgroundColor = enabled ? UIColor.systemBlue.withAlphaComponent(0.2) : .clear
+            buttons[key]?.backgroundColor = enabled ? NotyChrome.plate : .clear
         }
         for (title, enabled) in [("Fett", style.bold), ("Kursiv", style.italic), ("Unterstrichen", style.underline)] {
             buttons[title]?.isSelected = enabled
-            buttons[title]?.backgroundColor = enabled ? UIColor.systemBlue.withAlphaComponent(0.15) : .clear
+            buttons[title]?.backgroundColor = enabled ? NotyChrome.plate : .clear
         }
     }
 }

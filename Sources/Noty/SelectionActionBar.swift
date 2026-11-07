@@ -67,8 +67,9 @@ enum SelectionAction: CaseIterable {
 /// The dark action bar above a selection: one construction for fields,
 /// images, shapes, handwriting and mixed selections. 44 × 44-pt symbol
 /// buttons in groups with fine dividers, delete red and always last, names
-/// with a short description after hovering (Pencil hover or pointer) and as
-/// system tooltip; scrolls sideways when the window is narrower than the bar.
+/// with a short description after hovering (Pencil hover or pointer; no
+/// system tooltip on top, polish audit F1), warmed up like every noty name
+/// (`NotyTooltipClock`); scrolls sideways when the window is narrower than the bar.
 @MainActor
 final class SelectionActionBar: UIScrollView {
     static let height: CGFloat = 52
@@ -81,6 +82,9 @@ final class SelectionActionBar: UIScrollView {
     /// Hover over a button lingered (button, text) or ended (nil).
     var onHover: ((UIButton?, String?) -> Void)?
     private var pendingHover: DispatchWorkItem?
+    /// Name and description per action for the hover bubble.
+    private var hoverTexts: [SelectionAction: String] = [:]
+    private var hoverShown = false
     /// Full width of the shown buttons and dividers.
     private(set) var contentWidth: CGFloat = 0
     private struct State: Equatable {
@@ -109,10 +113,10 @@ final class SelectionActionBar: UIScrollView {
             button.configuration = config
             button.configurationUpdateHandler = { [weak self] button in
                 let on = self?.switchedOn.contains(action) == true
-                let base: UIColor = action == .delete ? .systemRed : on ? .systemBlue : .white
-                button.configuration?.baseForegroundColor = button.isEnabled ? base : UIColor.white.withAlphaComponent(0.28)
+                let base: UIColor = action == .delete ? .systemRed : on ? .notyAccent : .white
+                button.configuration?.baseForegroundColor = button.isEnabled ? base : UIColor.white.withAlphaComponent(NotyChrome.disabledOpacity)
             }
-            button.accessibilityLabel = action.title; button.toolTip = "\(action.title) – \(action.detail)"
+            button.accessibilityLabel = action.title; hoverTexts[action] = "\(action.title) – \(action.detail)"
             button.widthAnchor.constraint(equalToConstant: 44).isActive = true
             button.heightAnchor.constraint(equalToConstant: 44).isActive = true
             if action != .more && action != .mirror {
@@ -130,6 +134,11 @@ final class SelectionActionBar: UIScrollView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window != nil { PencilGuard.shared.register(self, margin: 8, local: true) } else { PencilGuard.shared.unregister(self) }
+        // A bar taken away mid-hover must not leave the shared clock warm.
+        if window == nil {
+            pendingHover?.cancel(); pendingHover = nil
+            if hoverShown { hoverShown = false; NotyTooltipClock.didHide() }
+        }
     }
 
     func setMenu(_ menu: UIMenu, for action: SelectionAction) { buttons[action]?.menu = menu }
@@ -151,13 +160,13 @@ final class SelectionActionBar: UIScrollView {
                 for action in group { if let button = buttons[action] { stack.addArrangedSubview(button) } }
             }
             let items = groups.reduce(0) { $0 + $1.count }
-            contentWidth = CGFloat(items) * 44 + CGFloat(max(0, groups.count - 1)) + CGFloat(max(0, items + groups.count - 2)) * stack.spacing + 8
+            contentWidth = CGFloat(items) * 44 + CGFloat(max(0, groups.count - 1)) * NotyDivider.thickness + CGFloat(max(0, items + groups.count - 2)) * stack.spacing + 8
         }
         switchedOn = on
         for (action, button) in buttons {
             button.isEnabled = !disabled.contains(action)
             let title = titles[action] ?? action.title
-            if button.accessibilityLabel != title { button.accessibilityLabel = title; button.toolTip = "\(title) – \(action.detail)" }
+            if button.accessibilityLabel != title { button.accessibilityLabel = title; hoverTexts[action] = "\(title) – \(action.detail)" }
             button.configuration?.image = UIImage(systemName: symbols[action] ?? action.symbol)
             button.setNeedsUpdateConfiguration()
         }
@@ -166,28 +175,26 @@ final class SelectionActionBar: UIScrollView {
     }
     var isEmpty: Bool { shown.isEmpty }
 
-    private func divider() -> UIView {
-        let line = UIView(); line.backgroundColor = UIColor.white.withAlphaComponent(0.14)
-        line.isUserInteractionEnabled = false; line.isAccessibilityElement = false
-        line.widthAnchor.constraint(equalToConstant: 1).isActive = true
-        line.heightAnchor.constraint(equalToConstant: 26).isActive = true
-        return line
-    }
+    private func divider() -> UIView { NotyDivider.makeView() }
 
     @objc private func hovered(_ gesture: UIHoverGestureRecognizer) {
         guard let button = gesture.view as? UIButton else { return }
         switch gesture.state {
         case .began:
             pendingHover?.cancel()
-            let text = button.toolTip ?? button.accessibilityLabel ?? ""
+            let action = buttons.first { $0.value === button }?.key
+            let text = action.flatMap { hoverTexts[$0] } ?? button.accessibilityLabel ?? ""
             let work = DispatchWorkItem { [weak self, weak button] in
                 guard let self, let button, button.window != nil else { return }
+                if !self.hoverShown { self.hoverShown = true; NotyTooltipClock.didShow() }
                 self.onHover?(button, text)
             }
             pendingHover = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.65, execute: work)
+            if NotyTooltipClock.isWarm { pendingHover = nil; work.perform() }
+            else { DispatchQueue.main.asyncAfter(deadline: .now() + NotyTooltipClock.delay, execute: work) }
         case .ended, .cancelled, .failed:
             pendingHover?.cancel(); pendingHover = nil
+            if hoverShown { hoverShown = false; NotyTooltipClock.didHide() }
             onHover?(nil, nil)
         default: break
         }

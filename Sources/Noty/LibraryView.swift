@@ -117,7 +117,6 @@ struct LibraryView: View {
             detail
         }
         .animation(NotyMotion.panel(reduceMotion), value: libraryEditMode)
-        .animation(NotyMotion.highlight(reduceMotion), value: location)
         .environment(\.editMode, $libraryEditMode)
         .background(KeyboardHost().frame(width: 0, height: 0).accessibilityHidden(true))
         .overlay { KeyboardOverlay(scope: .library) }
@@ -192,18 +191,22 @@ struct LibraryView: View {
         .alert(nameTitle, isPresented: $showingName) {
             TextField("Name", text: $name)
             Button("Abbrechen", role: .cancel) { }
-            Button("Speichern") { submitName() }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            // Same rule as the store (1…120 characters): a pasted overlong name must not be lost after saving.
+            Button("Speichern") { submitName() }.disabled((try? LibraryStore.validTitle(name)) == nil)
                 .keyboardShortcut(.defaultAction)
         }
         .confirmationDialog("In den Papierkorb verschieben?", isPresented: Binding(
             get: { trashing != nil }, set: { if !$0 { trashing = nil } }), titleVisibility: .visible) {
             if let item = trashing {
-                Button("„\(item.title)“ in den Papierkorb", role: .destructive) {
+                // Fixed verb: a long title in the button label would truncate the action away.
+                Button("In den Papierkorb", role: .destructive) {
                     Task { await model.trash(item.id) }
                     trashing = nil
                 }
             }
-        } message: { Text(Self.trashNote) }
+        } message: {
+            Text(trashing.map { "\(NotyText.quoted($0.title)) wird in den Papierkorb verschoben. " } ?? "") + Text(Self.trashNote)
+        }
         .sheet(isPresented: $importingPDF) {
             PDFImportSheet(defaults: toolbox.preferences.defaultAppearance, onImport: { url, margins in
                 let access = url.startAccessingSecurityScopedResource()
@@ -275,7 +278,7 @@ struct LibraryView: View {
         case .openItem: activate(item)
         case .renameItem: askName(.rename(item.id), title: "Umbenennen", value: item.title)
         case .trashItem:
-            KeyboardRouter.shared.ask("„\(item.title)“ in den Papierkorb?", message: Self.trashNote, confirm: "In den Papierkorb") {
+            KeyboardRouter.shared.ask("\(NotyText.quoted(item.title)) in den Papierkorb?", message: Self.trashNote, confirm: "In den Papierkorb") {
                 Task { await model.trash(item.id) }
             }
         case .pinItem: Task { await model.favorite(item) }
@@ -384,7 +387,7 @@ struct LibraryView: View {
                 Image(systemName: item.librarySymbol(filled: true))
                     .font(.title3).foregroundStyle(Color.accentColor)
                 Text(item.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
-                    .lineLimit(2).multilineTextAlignment(.leading)
+                    .lineLimit(2).truncationMode(.middle).multilineTextAlignment(.leading)
             }
             .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
             .padding(10)
@@ -393,6 +396,7 @@ struct LibraryView: View {
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(NotyPressStyle())
+        .help(item.title)
         .overlay { if dropMark == DropMark(zone: .pinned, target: .into(item.id)) { dropHighlight } }
         .accessibilityLabel(accessibilityName(item))
         .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
@@ -443,7 +447,8 @@ struct LibraryView: View {
             }
             Button { activate(item) } label: {
                 Label {
-                    Text(item.title).lineLimit(1).foregroundStyle(.primary)
+                    // Middle truncation: near-duplicates („Scan … 14-32-11“, „… Kopie“) differ at the end.
+                    Text(item.title).lineLimit(1).truncationMode(.middle).foregroundStyle(.primary)
                 } icon: {
                     Image(systemName: item.librarySymbol(filled: false))
                         .foregroundStyle(item.isFolder ? Color.accentColor : Color.secondary)
@@ -452,11 +457,13 @@ struct LibraryView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help(item.title)
             .accessibilityLabel(accessibilityName(item))
             .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
             .accessibilityAddTraits(selected ? .isSelected : [])
         }
-        .padding(.leading, CGFloat(entry.depth) * LibrarySpace.indent)
+        // Capped like the text outline: deep folder chains must leave room for the title.
+        .padding(.leading, CGFloat(min(entry.depth, LibrarySpace.maxIndentDepth)) * LibrarySpace.indent)
         .padding(.horizontal, LibrarySpace.rowInset).padding(.vertical, 2)
         .background { sidebarBackground(selected: selected, dropInto: dropMark == DropMark(zone: .tree, target: .into(item.id))) }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(LibrarySpace.sidebar)) } action: { frames.tree[item.id] = $0 }
@@ -647,13 +654,17 @@ struct LibraryView: View {
                 PDFExportProgressBadge(job: pdfExport).padding(12)
             }
             .fileExporter(isPresented: $exportingPDF, document: exportedPDF, contentType: .pdf, defaultFilename: exportedPDFName) { result in
-                if case .failure(let error) = result { model.error = error.localizedDescription }
+                switch result {
+                case .success: AccessibilityNotification.Announcement("PDF gesichert").post()
+                case .failure(let error): model.error = error.localizedDescription
+                }
                 exportedPDF = nil
             }
             .overlay(alignment: .bottom) {
                 // Only user-started operations show progress; background work stays invisible.
                 if model.ready && model.busy && !model.backgroundBusy {
-                    ProgressView().padding(10).background(.regularMaterial, in: Capsule()).padding(12)
+                    ProgressView("Bibliothek wird bearbeitet …").font(.footnote)
+                        .padding(.horizontal, 14).padding(.vertical, 10).background(.regularMaterial, in: Capsule()).padding(12)
                 }
             }
             .navigationTitle(title)
@@ -841,7 +852,7 @@ struct LibraryView: View {
                                                                        resolve: { detailDrop(at: $0) }, perform: { performDrop($0, id: $1) }))
                 }
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { detailSize = $0 }
-                .onChange(of: keyboardFocus) { _, id in if let id { withAnimation(NotyMotion.highlight(reduceMotion)) { proxy.scrollTo(id) } } }
+                .onChange(of: keyboardFocus) { _, id in if let id { proxy.scrollTo(id) } }
                 }
             }
         }
@@ -862,7 +873,9 @@ struct LibraryView: View {
             .onDrag { dragProvider(item.id) }
     }
 
-    private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: 140, maximum: 200), spacing: 32)] }
+    /// Top alignment plus fixed-height captions: covers of one row line up
+    /// whether a title has one or two lines and whether a subtitle exists.
+    private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: 140, maximum: 200), spacing: 32, alignment: .top)] }
 
     @ViewBuilder private var emptyState: some View {
         if !search.isEmpty {
@@ -903,6 +916,14 @@ struct LibraryView: View {
         else { Task { await model.open(item) } }
     }
 
+    private func rowDetails(_ item: NotebookCore.LibraryItem) -> String {
+        var parts: [String] = []
+        if item.source == .restored { parts.append("Wiederhergestellte Kopie") }
+        if item.source == .legacyMain { parts.append("Ursprüngliches Heft") }
+        if let detail = subtitle(item) { parts.append(detail) }
+        return parts.joined(separator: " · ")
+    }
+
     private func subtitle(_ item: NotebookCore.LibraryItem) -> String? {
         if !search.isEmpty { return path(of: item) }
         if item.isFolder {
@@ -932,11 +953,15 @@ struct LibraryView: View {
             VStack(spacing: 2) {
                 HStack(spacing: 4) {
                     if item.favorite { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary) }
-                    Text(item.title).font(.subheadline.weight(.medium)).lineLimit(2).multilineTextAlignment(.center)
+                    Text(item.title).font(.subheadline.weight(.medium)).lineLimit(2, reservesSpace: true)
+                        .truncationMode(.middle).multilineTextAlignment(.center)
                 }
-                if let detail = subtitle(item) { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                // Always present (blank when empty), the search path cut at the head: the nearest folder matters most.
+                Text(subtitle(item) ?? " ").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .truncationMode(search.isEmpty ? .tail : .head)
             }
             .frame(maxWidth: .infinity)
+            .help(item.title)
             .accessibilityHidden(true)
         }
         .background {
@@ -955,12 +980,13 @@ struct LibraryView: View {
                 Image(systemName: item.isFolder ? "folder.fill" : item.librarySymbol(filled: false))
                     .font(.title2).foregroundStyle(item.isFolder ? Color.accentColor : .secondary).frame(width: 32)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(item.title).foregroundStyle(.primary)
-                    HStack {
-                        if item.source == .restored { Text("Wiederhergestellte Kopie") }
-                        if item.source == .legacyMain { Text("Ursprüngliches Heft") }
-                        if let detail = subtitle(item) { Text(detail) }
-                    }.font(.caption).foregroundStyle(.secondary)
+                    Text(item.title).foregroundStyle(.primary).lineLimit(2).truncationMode(.middle)
+                    // One string: separate texts in an HStack each wrapped into ragged mini-columns.
+                    let details = rowDetails(item)
+                    if !details.isEmpty {
+                        Text(details).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            .truncationMode(search.isEmpty ? .tail : .head)
+                    }
                 }
                 Spacer()
                 if item.favorite { Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary) }
@@ -985,12 +1011,17 @@ struct LibraryView: View {
             Button("Verschieben …", systemImage: "folder") { moving = item }
             if !item.isFolder {
                 Button("Duplizieren", systemImage: "plus.square.on.square") { Task { await model.duplicate(item) } }
-                Button("Als PDF exportieren …", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
-                Button("Als .noty teilen …", systemImage: "square.and.arrow.up") { shareNoty(item) }
-                Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(item, as: .markdown) }
-                Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(item, as: .plainText) }
-                Button("Als Word teilen (.docx) …", systemImage: "doc.text") { shareText(item, as: .word) }
-                Button("Als RTF teilen (.rtf) …", systemImage: "doc.richtext") { shareText(item, as: .rtf) }
+                // Rare export variants in one submenu, as in the editor (polish audit F15).
+                Menu("Teilen und exportieren", systemImage: "square.and.arrow.up") {
+                    Button("Als PDF exportieren …", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
+                    Button("Als .noty teilen …", systemImage: "shippingbox") { shareNoty(item) }
+                    Section("Nur Text") {
+                        Button("Als Markdown teilen (.md) …") { shareText(item, as: .markdown) }
+                        Button("Als Text teilen (.txt) …") { shareText(item, as: .plainText) }
+                        Button("Als Word teilen (.docx) …") { shareText(item, as: .word) }
+                        Button("Als RTF teilen (.rtf) …") { shareText(item, as: .rtf) }
+                    }
+                }
             }
             if showsEnclosing {
                 Button("Im Ordner zeigen", systemImage: "arrow.up.forward.square") {
@@ -1067,6 +1098,8 @@ private enum LibrarySpace {
     static let detail = "libraryDetail"
     /// Tree geometry shared by rows and insertion lines.
     static let indent: CGFloat = 16
+    /// Deeper levels keep this indentation (a 220-pt sidebar at depth 10 left no room for the title).
+    static let maxIndentDepth = 6
     static let chevron: CGFloat = 22
     static let rowInset: CGFloat = 6
 }
@@ -1179,17 +1212,23 @@ private struct MoveDestinationView: View {
     var body: some View {
         NavigationStack {
             List {
-                Button("Alle Unterlagen") { onSelect(nil) }.disabled(item.parentID == nil).keyOption(.action { onSelect(nil) })
-                ForEach(folders) { folder in
-                    Button { onSelect(folder.id) } label: {
-                        VStack(alignment: .leading) {
-                            Label(folder.title, systemImage: "folder")
-                            Text(libraryPath(folder, in: snapshot)).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }.disabled(folder.id == item.parentID).keyOption(.action { onSelect(folder.id) })
+                // The name wraps here; in the title a long name cut off „verschieben“.
+                Section {
+                    Button("Alle Unterlagen") { onSelect(nil) }.disabled(item.parentID == nil).keyOption(.action { onSelect(nil) })
+                    ForEach(folders) { folder in
+                        Button { onSelect(folder.id) } label: {
+                            VStack(alignment: .leading) {
+                                Label(folder.title, systemImage: "folder").lineLimit(2).truncationMode(.middle)
+                                Text(libraryPath(folder, in: snapshot)).font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(1).truncationMode(.head)
+                            }
+                        }.disabled(folder.id == item.parentID).keyOption(.action { onSelect(folder.id) })
+                    }
+                } header: {
+                    Text("\(NotyText.quoted(item.title)) verschieben nach …").lineLimit(3).textCase(nil)
                 }
             }
-            .navigationTitle("\(item.title) verschieben")
+            .navigationTitle("Verschieben")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
         }
         .keyboardSheet()

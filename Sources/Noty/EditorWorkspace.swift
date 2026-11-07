@@ -473,8 +473,9 @@ struct EditorWorkspaceView: View {
                     }
                     .offset(offset)
                     .position(x: frame.x + frame.width / 2, y: frame.y + frame.height / 2)
-                    // Opening and closing slide along the same way as parking.
-                    .transition(.offset(out))
+                    // Opening and closing slide along the same way as parking;
+                    // with Reduce Motion they only fade.
+                    .transition(reduceMotion ? .opacity : .offset(out))
             }
             if stashed {
                 lawEdgeTab(l)
@@ -482,7 +483,8 @@ struct EditorWorkspaceView: View {
                     .padding(lawTabEdges(l.edge), lawTabClearsToolbar(l.edge) ? 24 : 0)
                     .padding(.bottom, l.keyboard)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: lawTabAlignment(l.edge))
-                    .transition(.opacity)
+                    // The tab slides in from the edge the window disappears into.
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(x: l.outward.x * 14, y: l.outward.y * 14)))
             }
         }
         .notyTooltipHost()
@@ -899,6 +901,7 @@ private struct SecondViewPicker: View {
     let onPick: (OpenNotebook, SplitSlot, Bool) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var documents: [OpenNotebook]?
+    @State private var filter = ""
 
     var body: some View {
         NavigationStack {
@@ -914,13 +917,15 @@ private struct SecondViewPicker: View {
                     }.pickerStyle(.segmented).keyOption(.choice($slot, SplitSlot.allCases))
                 } header: { Text("Zweite Ansicht") }
                 if let documents {
-                    let recent = recentDocuments(documents)
+                    let shown = filtered(documents)
+                    let recent = filter.isEmpty ? recentDocuments(documents) : []
                     if !recent.isEmpty {
                         Section("Zuletzt geöffnet") { ForEach(recent) { row($0) } }
                     }
                     Section(recent.isEmpty ? "Hefte" : "Alle Hefte") {
-                        ForEach(documents) { row($0) }
+                        ForEach(shown) { row($0) }
                         if documents.isEmpty { Text("Keine Hefte verfügbar.").foregroundStyle(.secondary) }
+                        else if shown.isEmpty { Text("Kein Heft passt zu „\(NotyText.isolated(filter))“.").foregroundStyle(.secondary) }
                     }
                 } else {
                     Section {
@@ -930,10 +935,17 @@ private struct SecondViewPicker: View {
                 }
             }
             .navigationTitle("Heft für zweite Ansicht")
+            .searchable(text: $filter, prompt: "Hefte filtern")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
             .task { if documents == nil { documents = await library.editorChoices() } }
         }
         .keyboardSheet()
+    }
+
+    private func filtered(_ documents: [OpenNotebook]) -> [OpenNotebook] {
+        let term = filter.trimmingCharacters(in: .whitespaces)
+        guard !term.isEmpty else { return documents }
+        return documents.filter { $0.title.localizedStandardContains(term) || ($0.path?.localizedStandardContains(term) ?? false) }
     }
 
     private func recentDocuments(_ documents: [OpenNotebook]) -> [OpenNotebook] {
@@ -947,8 +959,16 @@ private struct SecondViewPicker: View {
     private func row(_ document: OpenNotebook) -> some View {
         Button { onPick(document, slot, vertical) } label: {
             HStack {
-                Label(document.title, systemImage: document.isRestored ? "clock.arrow.circlepath" : "book.closed")
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(document.title).lineLimit(2).truncationMode(.middle)
+                        if let path = document.path {
+                            Text(path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                        }
+                    }
+                } icon: { Image(systemName: document.isRestored ? "clock.arrow.circlepath" : "book.closed") }
                     .foregroundStyle(.primary)
+                    .help(document.path.map { "\(document.title) – \($0)" } ?? document.title)
                 Spacer()
                 if document.id == primaryID { Text("gleiches Heft").font(.caption).foregroundStyle(.secondary) }
                 if document.id == currentID { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }

@@ -5,11 +5,15 @@ import NotebookCore
 /// Apple Pencil hover or a trackpad/mouse pointer (feedback 22.10.2026).
 /// Display only: the bubble never takes touches, appears after a short delay
 /// and disappears as soon as the hover ends, so writing is never blocked.
-/// `.help` carries the same text for the system pointer tooltip and VoiceOver.
+/// No `.help`: with a pointer it would add the system tooltip as a second
+/// bubble (polish audit F1); VoiceOver gets the text as accessibility hint.
+/// After a name was shown, neighbours show theirs at once (`NotyTooltipClock`).
 struct NotyTooltipValue {
     let text: String
     let anchor: Anchor<CGRect>
     let axis: ToolbarAxis
+    /// Shown while warm: switches without fading.
+    var instant = false
 }
 
 struct NotyTooltipKey: PreferenceKey {
@@ -32,45 +36,79 @@ extension EnvironmentValues {
     }
 }
 
+/// Shared warm-up of all hover names, SwiftUI and UIKit bars alike: the
+/// first name waits `delay`; while one is shown, or within `warmWindow`
+/// after it went away, the next appears at once without fading (audits F2/A1).
+@MainActor
+enum NotyTooltipClock {
+    static let delay: TimeInterval = 0.65
+    static let warmWindow: TimeInterval = 0.6
+    private static var lastHidden: TimeInterval = -.infinity
+    private static var visible = 0
+
+    /// True when a name should appear without waiting.
+    static var isWarm: Bool {
+        visible > 0 || ProcessInfo.processInfo.systemUptime - lastHidden < warmWindow
+    }
+    static func didShow() { visible += 1 }
+    static func didHide() {
+        visible = max(0, visible - 1)
+        lastHidden = ProcessInfo.processInfo.systemUptime
+    }
+}
+
 private struct NotyTooltip: ViewModifier {
     let text: String
+    let hint: Bool
     @Environment(\.notyTooltipAxis) private var axis
     @Environment(\.isEnabled) private var enabled
     @State private var shown = false
+    @State private var instant = false
     @State private var pending: Task<Void, Never>?
-    static let delay = Duration.milliseconds(650)
 
     func body(content: Content) -> some View {
-        content
-            .help(text)
+        hinted(content)
             .onContinuousHover { phase in
                 switch phase {
                 case .active:
                     guard pending == nil, !shown else { return }
+                    if NotyTooltipClock.isWarm {
+                        withTransaction(Transaction(animation: nil)) { show(instant: true) }
+                        return
+                    }
                     pending = Task { @MainActor in
-                        try? await Task.sleep(for: Self.delay)
+                        try? await Task.sleep(for: .seconds(NotyTooltipClock.delay))
                         guard !Task.isCancelled else { return }
-                        pending = nil; shown = true
+                        pending = nil; show(instant: false)
                     }
                 case .ended:
                     hide()
                 }
             }
             .anchorPreference(key: NotyTooltipKey.self, value: .bounds) { anchor in
-                shown && enabled ? NotyTooltipValue(text: text, anchor: anchor, axis: axis) : nil
+                shown && enabled ? NotyTooltipValue(text: text, anchor: anchor, axis: axis, instant: instant) : nil
             }
             .onDisappear { hide() }
     }
 
+    @ViewBuilder private func hinted(_ content: Content) -> some View {
+        if hint { content.accessibilityHint(text) } else { content }
+    }
+
+    private func show(instant: Bool) {
+        self.instant = instant; shown = true; NotyTooltipClock.didShow()
+    }
+
     private func hide() {
         pending?.cancel(); pending = nil
-        if shown { shown = false }
+        if shown { shown = false; NotyTooltipClock.didHide() }
     }
 }
 
 extension View {
     /// Tooltip with a name or very short description (German), see `NotyTooltip`.
-    func notyTooltip(_ text: String) -> some View { modifier(NotyTooltip(text: text)) }
+    /// `hint: false` where the text only repeats the accessibility label.
+    func notyTooltip(_ text: String, hint: Bool = true) -> some View { modifier(NotyTooltip(text: text, hint: hint)) }
 
     /// Draws the tooltip of any item inside this view, above everything else.
     func notyTooltipHost() -> some View {
@@ -123,6 +161,6 @@ private struct NotyTooltipBubble: View {
                     .id(value.text)
             }
             .position(point)
-            .animation(.easeOut(duration: reduceMotion ? 0.08 : 0.14), value: value.text)
+            .animation(value.instant ? nil : .easeOut(duration: reduceMotion ? 0.08 : 0.14), value: value.text)
     }
 }

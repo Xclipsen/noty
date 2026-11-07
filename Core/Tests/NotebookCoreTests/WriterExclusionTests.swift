@@ -152,8 +152,7 @@ final class WriterExclusionTests: XCTestCase {
         let book = Notebook.blank(title: "Erdkunde")
         _ = try await library.createDocument(book, parentID: nil)
         let url = try await library.documentURL(id: book.id)
-        LibraryStore.incomingReadBackFault = { throw RevisionError.noCompleteRevision }
-        defer { LibraryStore.incomingReadBackFault = {} }
+        await library.setIncomingReadBackFault { throw RevisionError.noCompleteRevision }
         let result = try await library.appendIncomingPDF(to: book.id, data: Data("%PDF-x".utf8), geometries: [geometry], placement: .end, writingArea: nil)
         XCTAssertFalse(result.verified)
         let stored = try RevisionStore(directory: url, readOnly: true).load()

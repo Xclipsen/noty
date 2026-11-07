@@ -24,10 +24,11 @@ extension LawReaderView {
         .font(.system(size: 13, weight: .medium))
         .buttonStyle(NotyToolStyle())
         .foregroundStyle(.white)
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .environment(\.notyTooltipAxis, .horizontal)
         .background(Color(white: 0.1))
         .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.14)).frame(height: 0.5).accessibilityHidden(true) }
-        .animation(NotyMotion.panel(reduceMotion), value: lookupShown)
+        .animation(NotyMotion.appear(reduceMotion), value: lookupShown)
     }
 
     /// One row when everything fits, otherwise reading tools and the Apple
@@ -468,6 +469,8 @@ extension LawReaderView {
         }
         .padding(4).notyGlass()
         .buttonStyle(NotyToolStyle())
+        // Fixed 44-pt cells and a fixed reserve below the text: capped like system bars.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .environment(\.notyTooltipAxis, .horizontal)
         .padding(.horizontal, 10).padding(.bottom, 10)
     }

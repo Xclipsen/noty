@@ -1179,16 +1179,16 @@ extension NotebookViewport {
         return PageDeletion(id: oldSelection, frame: frame, index: index, shift: shift)
     }
 
-    /// The deleted sheet (no longer managed) shrinks towards its top edge and fades out.
+    /// The deleted sheet (no longer managed) fades out with a slight shrink:
+    /// ease-out, so the change shows at once (no ease-in, no squash to a line).
     func collapse(_ sheet: WorksheetView?, frame: CGRect) {
         guard let sheet else { return }
         sheet.isUserInteractionEnabled = false
         sheet.finishTextEditing()
         let base = sheet.transform
-        UIView.animate(withDuration: Self.deletionDuration * 0.8, delay: 0, options: [.curveEaseIn, .beginFromCurrentState]) {
+        UIView.animate(withDuration: 0.2, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
             sheet.alpha = 0
-            sheet.transform = base.scaledBy(x: 0.94, y: 0.06)
-            sheet.center = CGPoint(x: frame.midX, y: frame.minY + frame.height * 0.03)
+            sheet.transform = base.scaledBy(x: 0.96, y: 0.96)
         } completion: { _ in sheet.removeFromSuperview() }
     }
 

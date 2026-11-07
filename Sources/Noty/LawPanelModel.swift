@@ -89,8 +89,9 @@ final class LawPanelModel: ObservableObject {
     @discardableResult private func change(animated: Bool = true, _ transition: (inout LawPanelState) -> Bool) -> Bool {
         var next = state
         guard transition(&next) else { return false }
-        if animated, let animation = NotyMotion.panel(UIAccessibility.isReduceMotionEnabled) {
-            withAnimation(animation) { state = next }
+        if animated {
+            // Reduce Motion: a short fade instead of no feedback at all.
+            withAnimation(NotyMotion.appear(UIAccessibility.isReduceMotionEnabled)) { state = next }
         } else {
             state = next
         }
