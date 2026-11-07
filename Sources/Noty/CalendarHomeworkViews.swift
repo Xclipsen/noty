@@ -12,6 +12,10 @@ struct CalendarHomeworkRow: View {
     @ObservedObject var model: CalendarModel
     var showsSubject = true
     var compact = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Shown at once when ticked; the mark is stored a moment later so the
+    /// tick is seen before the row leaves the open list.
+    @State private var ticking: Bool?
 
     private var color: Color {
         let key = CalendarSubjectColor.key(subjectID: item.homework.subjectID, name: item.homework.subject ?? "Hausaufgabe")
@@ -20,19 +24,29 @@ struct CalendarHomeworkRow: View {
 
     var body: some View {
         let work = item.homework
+        let done = ticking ?? item.done
         HStack(alignment: .top, spacing: CalendarSpace.s) {
             Button {
-                Task { await model.setHomeworkDone(item.id, done: !item.done) }
+                let target = !item.done
+                withAnimation(CalendarMotion.snappy(reduceMotion)) { ticking = target }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(reduceMotion ? 120 : 420))
+                    await model.setHomeworkDone(item.id, done: target)
+                    ticking = nil
+                }
             } label: {
-                Image(systemName: item.done ? "checkmark.circle.fill" : "circle")
+                Image(systemName: done ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
-                    .foregroundStyle(item.done ? Color.green : Color.secondary)
+                    .foregroundStyle(done ? Color.green : Color.secondary)
+                    .contentTransition(.symbolEffect(.replace))
+                    .symbolEffect(.bounce, value: reduceMotion ? false : done)
                     .frame(width: 32, height: 44, alignment: .top)
                     .padding(.top, 2)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(!model.canWrite)
+            .disabled(!model.canWrite || ticking != nil)
+            .sensoryFeedback(trigger: done) { _, new in new ? .success : .selection }
             .accessibilityLabel(item.done ? "Als offen markieren" : "Als erledigt markieren")
             VStack(alignment: .leading, spacing: 2) {
                 if showsSubject {
@@ -42,7 +56,7 @@ struct CalendarHomeworkRow: View {
                     }
                 }
                 Text(work.text.isEmpty ? "ohne Text" : work.text)
-                    .font(.subheadline).strikethrough(item.done).foregroundStyle(item.done ? .secondary : .primary)
+                    .font(.subheadline).strikethrough(done).foregroundStyle(done ? .secondary : .primary)
                     .lineLimit(compact ? 3 : nil).fixedSize(horizontal: false, vertical: true)
                 if let remark = work.remark, !compact {
                     Text(remark).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

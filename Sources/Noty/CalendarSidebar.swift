@@ -43,6 +43,7 @@ struct CalendarSidebar: View {
     /// Below this total width the sidebar stays hidden (the grid keeps ≥ 600 pt).
     static let minimumTotalWidth: CGFloat = 864
     @ObservedObject var model: CalendarModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// „Alle“: the complete list (a sheet of the calendar view, so its keys rest).
     let showAllHomework: () -> Void
 
@@ -77,11 +78,15 @@ struct CalendarSidebar: View {
             }
             ForEach(open.prefix(limit)) { item in
                 CalendarHomeworkRow(item: item, model: model, compact: true)
+                    .transition(reduceMotion ? .opacity : .asymmetric(insertion: .opacity,
+                                                                      removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .leading))))
             }
             if open.count > limit {
                 Text("\(open.count - limit) weitere unter „Alle“").font(.caption).foregroundStyle(.secondary).padding(.leading, 40)
             }
         }
+        // A ticked row leaves softly; others move up.
+        .animation(CalendarMotion.smooth(reduceMotion), value: open.map(\.id))
     }
 
     /// The calendars with their colour; tapping shows or hides one. System
@@ -232,6 +237,7 @@ struct CalendarMiniMonth: View {
                     .foregroundStyle(isToday ? Color.white : !inMonth ? CalendarPalette.quiet : weekend ? Color.secondary : Color.primary)
                     .frame(width: 26, height: 26)
                     .background { if isToday { Circle().fill(CalendarPalette.today) } }
+                    .calendarTodayPulse(isToday)
                 Circle().fill(count > 0 && inMonth ? Color.secondary : .clear).frame(width: 4, height: 4)
             }
             .frame(maxWidth: .infinity).frame(height: 36)
@@ -257,6 +263,8 @@ struct CalendarMiniMonth: View {
 /// tapping opens the event window. Updates every 30 seconds.
 struct CalendarUpNext: View {
     @ObservedObject var model: CalendarModel
+    @Environment(\.calendarOrigin) private var origins
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
@@ -298,12 +306,15 @@ struct CalendarUpNext: View {
         let running = event.start <= now
         let cancelled = event.status == .cancelled
         let when = Self.when(event, now: now, calendar: model.calendar)
-        return Button { model.show(event) } label: {
+        return Button { origins?.tap(event.id, key: "next/" + event.id); model.show(event) } label: {
             HStack(alignment: .top, spacing: CalendarSpace.s) {
                 RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 4).frame(minHeight: 34)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(when).font(.caption.weight(.semibold)).monospacedDigit()
                         .foregroundStyle(running ? CalendarPalette.today : first ? Color.primary : Color.secondary)
+                        // The countdown rolls instead of jumping.
+                        .contentTransition(reduceMotion ? .opacity : .numericText(countsDown: true))
+                        .animation(CalendarMotion.smooth(reduceMotion), value: when)
                     HStack(spacing: 4) {
                         if let symbol = event.status.symbol {
                             Image(systemName: symbol).font(.caption2.weight(.bold)).foregroundStyle(cancelled ? Color.orange : .secondary)
@@ -325,6 +336,7 @@ struct CalendarUpNext: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .calendarOrigin("next/" + event.id)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(when + ", " + model.accessibilityText(event, notes: model.hasNotes(event)))
         .accessibilityHint("Zeigt Details und Notizseite")

@@ -16,6 +16,7 @@ struct CalendarTimeGrid: View {
     private let topInset: CGFloat = 10
     /// An own event is being moved or stretched: the grid does not scroll meanwhile.
     @State private var dragging = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var calendar: Calendar { model.calendar }
     private var minimumColumn: CGFloat { days.count == 1 ? 260 : 96 }
 
@@ -65,6 +66,7 @@ struct CalendarTimeGrid: View {
                             .foregroundStyle(isToday ? Color.white : quiet ? Color.secondary : .primary)
                             .frame(minWidth: 32, minHeight: 32)
                             .background { if isToday { Circle().fill(CalendarPalette.today) } }
+                            .calendarTodayPulse(isToday)
                     }
                     .frame(width: column, height: headerHeight)
                     .contentShape(Rectangle())
@@ -204,8 +206,9 @@ struct CalendarTimeGrid: View {
     }
 
     private func dayColumn(_ day: Date, column: CGFloat, homework: Set<String>) -> some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(timedItems(day)) { item in
+        let items = timedItems(day)
+        return ZStack(alignment: .topLeading) {
+            ForEach(items) { item in
                 let inner = column - 8
                 let width = inner / CGFloat(item.placement.columns)
                 let height = max(22, (CGFloat(item.end - item.start) / 60) * hourHeight - 3)
@@ -218,8 +221,12 @@ struct CalendarTimeGrid: View {
                                   onDragState: { dragging = $0 })
                     .frame(width: max(20, width - 2), height: height)
                     .offset(x: 4 + CGFloat(item.placement.column) * width, y: y(item.start) + 1.5)
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.85).combined(with: .opacity))
             }
         }
+        // New and removed entries (and the overlap re-flow) animate – only when
+        // the set of entries of this day changes, not on every model update.
+        .animation(CalendarMotion.smooth(reduceMotion), value: items.map(\.id))
     }
 
     /// Current time: a thin line across today only, the time in the gutter.
@@ -242,6 +249,8 @@ struct CalendarTimeGrid: View {
                         .offset(x: gutter + CGFloat(index) * column - 4.5, y: y(minutes) - 4.5)
                 }
                 .allowsHitTesting(false)
+                // Glides to the next half minute instead of jumping.
+                .animation(reduceMotion ? nil : .linear(duration: 1), value: minutes)
                 .accessibilityElement()
                 .accessibilityLabel("Aktuelle Uhrzeit \(CalendarText.clock(context.date, calendar: calendar))")
             }
@@ -268,6 +277,18 @@ struct CalendarEventCard: View {
     var onDragState: (Bool) -> Void = { _ in }
     @GestureState private var move: CGSize?
     @GestureState private var stretch: CGFloat?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.calendarOrigin) private var origins
+    /// After letting go: the card stays where it was dropped until the model
+    /// moved the event (or springs back if the change was rejected). Bound
+    /// to the times it was dropped from, so the new position never doubles up.
+    @State private var settling: Settling?
+
+    private struct Settling: Equatable {
+        var offset: CGSize = .zero
+        var stretch: CGFloat = 0
+        let start: Date, end: Date
+    }
 
     /// 15-minute steps in the week, 5 in the wider day view.
     private var snap: Int { column == nil ? 5 : 15 }
@@ -283,13 +304,15 @@ struct CalendarEventCard: View {
         let cancelled = event.status == .cancelled
         let notes = model.hasNotes(event)
         let time = event.timeText(model.calendar)
-        let stretched = stretch.map { CGFloat(minutes($0)) / 60 * hourHeight } ?? 0
+        let settled = settling.flatMap { $0.start == event.start && $0.end == event.end ? $0 : nil }
+        let stretched = stretch.map { CGFloat(minutes($0)) / 60 * hourHeight } ?? settled?.stretch ?? 0
+        let lifted = move != nil
         // Day view: room and teacher; week: state or room, whichever exists.
         let extra: String? = detailed ? [event.status.label, event.room, event.teacher].compactMap { $0 }.joined(separator: " · ")
                              : event.status.label ?? event.room
         // Tall cards: time, room (and teacher) on own lines, the state as a badge.
         let tall = height >= 64
-        Button { model.selection = event.id } label: {
+        Button { origins?.tap(event.id, key: "card/" + event.id); model.selection = event.id } label: {
             HStack(spacing: 0) {
                 Rectangle().fill(color).frame(width: 3)
                 VStack(alignment: .leading, spacing: 2) {
@@ -359,18 +382,26 @@ struct CalendarEventCard: View {
         .frame(height: height, alignment: .top)
         .overlay(alignment: .top) { if let preview = previewText { dragLabel(preview) } }
         .overlay(alignment: .bottom) { if movable && selected && move == nil { resizeHandle.offset(y: stretched) } }
-        .offset(x: move.map { CGFloat(days($0.width)) * (column ?? 0) } ?? 0,
-                y: move.map { CGFloat(minutes($0.height)) / 60 * hourHeight } ?? 0)
-        .zIndex(move != nil || stretch != nil ? 1 : 0)
+        .calendarOrigin("card/" + event.id)
+        // Picked up: lifted with a shadow; every grid step snaps with a spring.
+        .scaleEffect(lifted && !reduceMotion ? 1.04 : 1)
+        .shadow(color: .black.opacity(lifted ? 0.45 : 0), radius: lifted ? 12 : 0, y: lifted ? 6 : 0)
+        .offset(move.map { snapped($0) } ?? settled?.offset ?? .zero)
+        .animation(reduceMotion ? nil : CalendarMotion.snappy(false), value: move.map { snapped($0) })
+        .animation(reduceMotion ? nil : CalendarMotion.snappy(false), value: lifted)
+        .zIndex(move != nil || stretch != nil || settled != nil ? 1 : 0)
         .gesture(LongPressGesture(minimumDuration: 0.35).sequenced(before: DragGesture(minimumDistance: 0))
             .updating($move) { value, state, _ in
                 if case .second(true, let drag) = value { state = drag?.translation ?? .zero }
             }
             .onEnded { value in
                 guard case .second(true, let drag?) = value else { return }
+                settle(Settling(offset: snapped(drag.translation), start: event.start, end: event.end))
                 model.drag(event, days: days(drag.translation.width), minutes: minutes(drag.translation.height), resize: false)
             }, including: movable ? .all : .subviews)
         .onChange(of: move != nil || stretch != nil) { _, active in onDragState(active) }
+        .onChange(of: event.start) { _, _ in settling = nil }
+        .onChange(of: event.end) { _, _ in settling = nil }
         .sensoryFeedback(.selection, trigger: move.map { minutes($0.height) + 10_000 * days($0.width) })
         .accessibilityLabel(model.accessibilityText(event, notes: notes, homework: homework))
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -386,6 +417,27 @@ struct CalendarEventCard: View {
                 Button("\(snap) Minuten länger") { model.drag(event, days: 0, minutes: snap, resize: true) }
                 Button("\(snap) Minuten kürzer") { model.drag(event, days: 0, minutes: -snap, resize: true) }
             }
+        }
+    }
+
+    /// The drag translation on the grid (whole days, whole `snap` minutes).
+    private func snapped(_ translation: CGSize) -> CGSize {
+        CGSize(width: CGFloat(days(translation.width)) * (column ?? 0), height: CGFloat(minutes(translation.height)) / 60 * hourHeight)
+    }
+
+    /// Keeps the dropped position until the event moved; a rejected change
+    /// (too short, invalid, series dialog cancelled) springs back.
+    private func settle(_ value: Settling) {
+        settling = value
+        Task { @MainActor in
+            var waited = 0
+            repeat {
+                try? await Task.sleep(for: .milliseconds(300))
+                waited += 300
+            } while settling == value && model.pendingSeriesChange?.entry.id == event.id && waited < 120_000
+            try? await Task.sleep(for: .milliseconds(900))
+            guard settling == value else { return }
+            withAnimation(CalendarMotion.bouncy(reduceMotion)) { settling = nil }
         }
     }
 
@@ -424,7 +476,10 @@ struct CalendarEventCard: View {
             .offset(y: 11)
             .gesture(DragGesture(minimumDistance: 1)
                 .updating($stretch) { value, state, _ in state = value.translation.height }
-                .onEnded { value in model.drag(event, days: 0, minutes: minutes(value.translation.height), resize: true) })
+                .onEnded { value in
+                    settle(Settling(stretch: CGFloat(minutes(value.translation.height)) / 60 * hourHeight, start: event.start, end: event.end))
+                    model.drag(event, days: 0, minutes: minutes(value.translation.height), resize: true)
+                })
             .accessibilityHidden(true)
     }
 }
@@ -433,12 +488,13 @@ struct CalendarEventCard: View {
 struct CalendarAllDayChip: View {
     let event: CalendarEntry
     @ObservedObject var model: CalendarModel
+    @Environment(\.calendarOrigin) private var origins
 
     var body: some View {
         let color = model.entryColor(event)
         let selected = model.selection == event.id
         let notes = model.hasNotes(event)
-        Button { model.selection = event.id } label: {
+        Button { origins?.tap(event.id, key: "allday/" + event.id); model.selection = event.id } label: {
             HStack(spacing: CalendarSpace.xs) {
                 Rectangle().fill(color).frame(width: 3)
                 Text(event.title).font(.caption.weight(.medium)).lineLimit(1)
@@ -455,6 +511,7 @@ struct CalendarAllDayChip: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .calendarOrigin("allday/" + event.id)
         .accessibilityLabel(model.accessibilityText(event, notes: notes))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }

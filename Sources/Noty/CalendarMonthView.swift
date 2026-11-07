@@ -57,6 +57,16 @@ struct CalendarMonthView: View {
                 .scrollDisabled(row * CGFloat(grid.weeks.count) <= available + 1)
             }
         }
+        // Swipe sideways to the previous/next month (only clearly horizontal
+        // swipes; taps, the cells' buttons and vertical scrolling stay as they are).
+        .simultaneousGesture(DragGesture(minimumDistance: 30)
+            .onEnded { value in
+                let dx = value.translation.width, dy = value.translation.height
+                guard abs(dx) > 80, abs(dx) > 2 * abs(dy) else { return }
+                model.step(dx < 0 ? 1 : -1)
+            })
+        .accessibilityAction(named: "Nächster Monat") { model.step(1) }
+        .accessibilityAction(named: "Vorheriger Monat") { model.step(-1) }
     }
 
     private func cell(_ day: Date, inMonth: Bool, width: CGFloat, height: CGFloat) -> some View {
@@ -73,6 +83,7 @@ struct CalendarMonthView: View {
                     .foregroundStyle(isToday ? Color.white : !inMonth ? CalendarPalette.quiet : weekend ? Color.secondary : Color.primary)
                     .frame(minWidth: 26, minHeight: 26)
                     .background { if isToday { Circle().fill(CalendarPalette.today) } }
+                    .calendarTodayPulse(isToday)
                     .padding(.leading, 3)
                     .frame(minWidth: 44, minHeight: dateRow, alignment: .leading)
                     .contentShape(Rectangle())
@@ -156,13 +167,14 @@ struct CalendarMonthView: View {
 struct CalendarMonthRow: View {
     let event: CalendarEntry
     @ObservedObject var model: CalendarModel
+    @Environment(\.calendarOrigin) private var origins
 
     var body: some View {
         let color = model.entryColor(event)
         let selected = model.selection == event.id
         let notes = model.hasNotes(event)
         let cancelled = event.status == .cancelled
-        Button { model.selection = event.id } label: {
+        Button { origins?.tap(event.id, key: "month/" + event.id); model.selection = event.id } label: {
             HStack(spacing: CalendarSpace.xs) {
                 if event.allDay {
                     Rectangle().fill(color).frame(width: 3)
@@ -198,6 +210,7 @@ struct CalendarMonthRow: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
+        .calendarOrigin("month/" + event.id)
         .accessibilityLabel(model.accessibilityText(event, notes: notes))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -354,6 +367,7 @@ struct CalendarYearView: View {
                     .foregroundStyle(isToday ? Color.white : .primary)
                     .frame(width: 26, height: 26)
                     .background { if isToday { Circle().fill(CalendarPalette.today) } }
+                    .calendarTodayPulse(isToday)
                 Circle().fill(count > 0 ? Color.secondary : .clear).frame(width: 4, height: 4)
             }
             .frame(width: cell, height: cell)

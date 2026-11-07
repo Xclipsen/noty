@@ -14,11 +14,23 @@ struct CalendarEventPanel: View {
     var escapes = true
     /// Size the window may use (the calendar's area).
     var available: CGSize = CGSize(width: 900, height: 700)
+
+    init(event: CalendarEntry, model: CalendarModel, escapes: Bool = true, available: CGSize = CGSize(width: 900, height: 700),
+         pull: CalendarWindowPull = CalendarWindowPull()) {
+        self.event = event
+        self.model = model
+        self.escapes = escapes
+        self.available = available
+        pullState = pull
+    }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var confirmingRemoval = false
     @State private var infoHeight: CGFloat = 120
-    /// Pull-down of the head: past the threshold the window closes.
-    @State private var pull: CGFloat = 0
+    /// Pull-down of the head (owned by the calendar, which also lightens the
+    /// backdrop): the window follows the finger; past the threshold or with
+    /// enough speed it closes, otherwise it springs back.
+    @ObservedObject var pullState: CalendarWindowPull
+    private var pull: CGFloat { pullState.value }
     private var calendar: Calendar { model.calendar }
 
     /// Narrow windows: nearly the full area; otherwise about 90 %.
@@ -60,7 +72,9 @@ struct CalendarEventPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5) }
         .shadow(color: .black.opacity(0.55), radius: 40, y: 18)
-        .offset(y: pull)
+        // Downward it follows the finger and shrinks a little; upward it only gives a bit (rubber band).
+        .scaleEffect(1 - min(0.06, max(0, pull) / 2400), anchor: .top)
+        .offset(y: pull >= 0 ? pull : -sqrt(-pull) * 3)
         .accessibilityAddTraits(.isModal)
         .accessibilityAction(.escape) { close() }
         .confirmationDialog("Termin löschen?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
@@ -126,12 +140,12 @@ struct CalendarEventPanel: View {
         }
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 12, coordinateSpace: .global)
-            .onChanged { value in pull = max(0, value.translation.height) }
+            .onChanged { value in pullState.value = value.translation.height }
             .onEnded { value in
                 if value.translation.height > 120 || value.predictedEndTranslation.height > 320 {
                     close()
                 } else {
-                    withAnimation(NotyMotion.panel(reduceMotion)) { pull = 0 }
+                    withAnimation(CalendarMotion.bouncy(reduceMotion)) { pullState.value = 0 }
                 }
             })
     }

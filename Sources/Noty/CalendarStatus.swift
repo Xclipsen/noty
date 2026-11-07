@@ -24,16 +24,24 @@ struct CalendarSyncSymbol: View {
     var body: some View {
         let turning = ((webUntis && model.syncing) || (system && model.systemReading)) && !reduceMotion
         ZStack(alignment: .topTrailing) {
-            TimelineView(.animation(minimumInterval: nil, paused: !turning)) { context in
+            if #available(iOS 18.0, *) {
+                // The system symbol effect finishes its turn when reading ends.
                 Image(systemName: symbol)
-                    .rotationEffect(.degrees(turning ? context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.2) / 1.2 * 360 : 0))
+                    .symbolEffect(.rotate, options: .repeat(.continuous), isActive: turning)
+            } else {
+                TimelineView(.animation(minimumInterval: nil, paused: !turning)) { context in
+                    Image(systemName: symbol)
+                        .rotationEffect(.degrees(turning ? context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.2) / 1.2 * 360 : 0))
+                }
             }
             if problem {
                 Circle().fill(Color.orange).frame(width: 9, height: 9)
                     .overlay { Circle().strokeBorder(Color(uiColor: .systemBackground), lineWidth: 1.5) }
                     .offset(x: 4, y: -3)
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.3).combined(with: .opacity))
             }
         }
+        .animation(CalendarMotion.bouncy(reduceMotion), value: problem)
         .accessibilityElement()
         .accessibilityLabel(webUntis ? "Stundenplan-Status" : system ? "Kalender-Status" : "Kalenderstatus")
         .accessibilityValue(value)
