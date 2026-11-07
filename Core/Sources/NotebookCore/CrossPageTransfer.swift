@@ -219,7 +219,7 @@ extension Notebook {
             guard let page = pages.first(where: { $0.id == change.pageID }) else { throw PageOperationError.missingPage }
             guard PageContent(page: page) == change.expected else { throw CrossPageTransferError.conflict }
         }
-        var next = try preparedForTextEditing()
+        var next = try editableForText()
         next.schemaVersion = max(6, next.schemaVersion)
         for change in changes {
             guard let index = next.pages.firstIndex(where: { $0.id == change.pageID }) else { throw PageOperationError.missingPage }

@@ -18,15 +18,17 @@ extension LawReaderView {
             if let mode = lookupShown {
                 lookupSurface(mode)
                     .padding(.horizontal, 8).padding(.bottom, 8)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
+                    .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .opacity.combined(with: .move(edge: .top)))
             }
         }
         .font(.system(size: 13, weight: .medium))
         .buttonStyle(NotyToolStyle())
         .foregroundStyle(.white)
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .environment(\.notyTooltipAxis, .horizontal)
         .background(Color(white: 0.1))
         .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.14)).frame(height: 0.5).accessibilityHidden(true) }
+        // Reduce Motion: the surface fades (its transition), the layout stays instant.
         .animation(NotyMotion.panel(reduceMotion), value: lookupShown)
     }
 
@@ -151,7 +153,7 @@ extension LawReaderView {
                 }
                 .accessibilityLabel("Markierfarbe")
                 .accessibilityValue(LawPenMode.presets.first { LawPenMode(color: $0.color).hex == pen.hex }?.name ?? "")
-                .notyTooltip("Markierfarbe")
+                .notyTooltip("Markierfarbe", hint: false)
             }
         }
         .accessibilityElement(children: .contain).accessibilityLabel("Apple Pencil")
@@ -195,7 +197,7 @@ extension LawReaderView {
         .accessibilityLabel("Abgleich")
         .accessibilityValue(look.title)
         .accessibilityHint("Zeigt Einzelheiten")
-        .notyTooltip(look.title)
+        .notyTooltip(look.title, hint: false)
     }
 
     /// One heading, one cause, one step per state; never a server code.
@@ -468,6 +470,8 @@ extension LawReaderView {
         }
         .padding(4).notyGlass()
         .buttonStyle(NotyToolStyle())
+        // Fixed 44-pt cells and a fixed reserve below the text: capped like system bars.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .environment(\.notyTooltipAxis, .horizontal)
         .padding(.horizontal, 10).padding(.bottom, 10)
     }
@@ -606,7 +610,7 @@ private struct LawCompactSwatch: View {
             Circle().fill(color).frame(width: 20, height: 20)
                 .overlay(Circle().strokeBorder(.white.opacity(selected ? 0.95 : 0.3), lineWidth: selected ? 2.5 : 1))
                 .frame(width: 28, height: 44).contentShape(Rectangle())
-        }.accessibilityLabel(title).accessibilityAddTraits(selected ? .isSelected : []).notyTooltip(title)
+        }.accessibilityLabel(title).accessibilityAddTraits(selected ? .isSelected : []).notyTooltip(title, hint: false)
     }
 }
 

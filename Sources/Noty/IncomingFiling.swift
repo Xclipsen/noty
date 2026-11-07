@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import Combine
 import ImageIO
+import OSLog
 import NotebookCore
 
 /// PDFs and pictures shared to noty („Teilen“ → noty dev/noty, „In noty
@@ -336,7 +337,8 @@ final class IncomingFilingModel: ObservableObject {
             let resolved = current.resolved(committedPageIDs: committed.pages.map(\.id))
             if resolved.status == .filed {
                 record = resolved
-                _ = try? await Task.detached(priority: .utility) { try IncomingFiling.inbox.record(item.id, filing: resolved) }.value
+                do { _ = try await Task.detached(priority: .utility) { try IncomingFiling.inbox.record(item.id, filing: resolved) }.value }
+                catch { Self.log.error("Ablagevermerk in item.json fehlgeschlagen: \(error.localizedDescription, privacy: .public)") }
             }
         }
         if let record, record.status == .filed {
@@ -366,8 +368,14 @@ final class IncomingFilingModel: ObservableObject {
         let record = IncomingFilingRecord(status: status, notebookID: notebook, notebookTitle: title, pageIDs: pageIDs,
                                           filedAt: Date(), verified: verified)
         let id = item.id
-        _ = try? await Task.detached(priority: .userInitiated) { try IncomingFiling.inbox.record(id, filing: record) }.value
+        do { _ = try await Task.detached(priority: .userInitiated) { try IncomingFiling.inbox.record(id, filing: record) }.value }
+        catch {
+            // The filing itself is committed and stays; only the crash guard is
+            // missing (a crash before the copy goes would offer it again).
+            Self.log.error("Ablagevermerk in item.json fehlgeschlagen: \(error.localizedDescription, privacy: .public)")
+        }
     }
+    private static let log = Logger(subsystem: "de.la.noty", category: "incoming-filing")
 
     /// One answer per offer (a second tap during the dismissal is no second one).
     private var answered = false

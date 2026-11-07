@@ -45,7 +45,7 @@ final class DocumentRuledLayout: NSObject, @preconcurrency NSLayoutManagerDelega
     func layoutManager(_ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction,
                        forControlCharacterAt charIndex: Int) -> NSLayoutManager.ControlCharacterAction {
         guard let storage = layoutManager.textStorage, charIndex < storage.length,
-              (storage.string as NSString).character(at: charIndex) == TextLines.pageBreak else { return action }
+              storage.mutableString.character(at: charIndex) == TextLines.pageBreak else { return action }
         return .containerBreak
     }
 }
@@ -163,7 +163,7 @@ final class DocumentTextStore: @preconcurrency DocumentTextMetrics {
         for edit in edits.reversed() {
             // The neighbour `TextBox.applying` takes the format from (at a
             // paragraph start the paragraph's own first character).
-            let text = storage.string as NSString
+            let text: NSString = storage.mutableString
             let opensParagraph = edit.range.location > 0 && edit.range.location < text.length
                 && TextLines.isBreak(text.character(at: edit.range.location - 1))
             let anchor = edit.range.length > 0 || edit.range.location == 0 || opensParagraph ? edit.range.location : edit.range.location - 1
@@ -175,7 +175,7 @@ final class DocumentTextStore: @preconcurrency DocumentTextMetrics {
     }
     /// The format typing continues in at a caret.
     func attributes(at offset: Int) -> [NSAttributedString.Key: Any]? {
-        let text = storage.string as NSString
+        let text: NSString = storage.mutableString
         if offset > 0, offset <= text.length, !TextLines.isBreak(text.character(at: offset - 1)) {
             return storage.attributes(at: offset - 1, effectiveRange: nil)
         }
@@ -236,7 +236,7 @@ final class DocumentTextStore: @preconcurrency DocumentTextMetrics {
     /// The page a final page break opens, if the layout has it.
     private var pageAfterFinalBreak: Int? {
         let length = storage.length
-        guard length > 0, (storage.string as NSString).character(at: length - 1) == TextLines.pageBreak else { return nil }
+        guard length > 0, storage.mutableString.character(at: length - 1) == TextLines.pageBreak else { return nil }
         let glyph = manager.glyphIndexForCharacter(at: length - 1)
         guard let page = (manager.textContainer(forGlyphAt: glyph, effectiveRange: nil) as? DocumentPageContainer)?.index,
               page + 1 < containers.count else { return nil }
@@ -292,7 +292,7 @@ final class DocumentTextStore: @preconcurrency DocumentTextMetrics {
         let start = slots.firstIndex { $0.pageID == page.id }.flatMap { containers.indices.contains($0) ? pageRange($0).location : nil }
             ?? NSMaxRange(pageRange(containers.count - 1))
         guard start < length, measured <= length - start,
-              (storage.string as NSString).substring(with: NSRange(location: start, length: measured)) == box.text else { return nil }
+              storage.mutableString.substring(with: NSRange(location: start, length: measured)) == box.text else { return nil }
         let glyph = manager.glyphIndexForCharacter(at: start)
         var container = manager.textContainer(forGlyphAt: glyph, effectiveRange: nil) as? DocumentPageContainer
         if container == nil {

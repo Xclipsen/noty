@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // Building blocks of the attached tool option rows (`EditorToolOptions`),
 // usable by other compact bars such as the law reader's. One grammar
@@ -20,8 +21,8 @@ struct NotyGlyphOption<Glyph: View>: View {
         Button(action: action) {
             glyph
                 .frame(width: 44, height: 44).contentShape(Rectangle())
-                .background(selected ? .white.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 10))
-        }.accessibilityLabel(title).accessibilityAddTraits(selected ? .isSelected : []).notyTooltip(help ?? title)
+                .background(selected ? .white.opacity(NotyChrome.plateOpacity) : .clear, in: RoundedRectangle(cornerRadius: NotyChrome.plateRadius))
+        }.accessibilityLabel(title).accessibilityAddTraits(selected ? .isSelected : []).notyTooltip(help ?? title, hint: help != nil)
     }
 }
 
@@ -58,7 +59,7 @@ struct NotyLabeledOption: View {
                 Text(title).lineLimit(1)
             }
             .padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
-        }.accessibilityLabel(help).notyTooltip(help)
+        }.accessibilityLabel(help).notyTooltip(help, hint: false)
     }
 }
 
@@ -76,7 +77,7 @@ struct NotySwatch: View {
             Circle().fill(color).frame(width: 22, height: 22)
                 .overlay(Circle().strokeBorder(.white.opacity(selected ? 0.95 : 0.3), lineWidth: selected ? 2.5 : 1))
                 .frame(width: 34, height: 44).contentShape(Rectangle())
-        }.accessibilityLabel(title).accessibilityAddTraits(selected ? .isSelected : []).notyTooltip(title)
+        }.accessibilityLabel(title).accessibilityAddTraits(selected ? .isSelected : []).notyTooltip(title, hint: false)
     }
 }
 
@@ -94,14 +95,49 @@ struct NotyWidthSlider: View {
             Slider(value: $value, in: range, step: step) { Text(title) }.frame(width: 90, height: 44)
             Text(value.formatted()).monospacedDigit().frame(minWidth: 25, alignment: .leading)
                 .accessibilityHidden(true)
-        }.notyTooltip(title)
+        }.notyTooltip(title, hint: false)
+    }
+}
+
+/// One group divider for every dark bar, SwiftUI and UIKit alike
+/// (polish audit F13): a hairline of fixed length, centred in the row.
+enum NotyDivider {
+    static let thickness: CGFloat = 0.5
+    static let length: CGFloat = 20
+    static let opacity: CGFloat = 0.18
+    static var uiColor: UIColor { UIColor.white.withAlphaComponent(opacity) }
+
+    /// UIKit divider for stack-based bars (selection bar, format bar).
+    @MainActor static func makeView(vertical: Bool = false) -> UIView {
+        let line = UIView(); line.backgroundColor = uiColor
+        line.isUserInteractionEnabled = false; line.isAccessibilityElement = false
+        line.widthAnchor.constraint(equalToConstant: vertical ? length : thickness).isActive = true
+        line.heightAnchor.constraint(equalToConstant: vertical ? thickness : length).isActive = true
+        return line
     }
 }
 
 /// Thin group divider like in the toolbar and the selection bars.
 struct NotyGroupDivider: View {
     var body: some View {
-        Rectangle().fill(.white.opacity(0.14)).frame(width: 0.5, height: 18).padding(.horizontal, 2)
+        Rectangle().fill(.white.opacity(NotyDivider.opacity)).frame(width: NotyDivider.thickness, height: NotyDivider.length)
+            .padding(.horizontal, 2)
             .allowsHitTesting(false).accessibilityHidden(true)
     }
+}
+
+/// Shared look of the dark chrome (polish audit F4/F20): the noty accent
+/// marks "on/selected" and focus there; selected cells get the same white
+/// plate; disabled items one dimming. Light lists keep the system accent
+/// (#7DD3FC on white would be about 1.6:1).
+enum NotyChrome {
+    static let plateOpacity: CGFloat = 0.18
+    static let plateRadius: CGFloat = 10
+    static let disabledOpacity: CGFloat = 0.35
+    static var plate: UIColor { UIColor.white.withAlphaComponent(plateOpacity) }
+}
+
+extension UIColor {
+    /// `Color.notyAccent` for UIKit chrome.
+    static let notyAccent = UIColor(red: 125 / 255, green: 211 / 255, blue: 252 / 255, alpha: 1)
 }

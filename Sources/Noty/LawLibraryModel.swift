@@ -97,7 +97,17 @@ final class LawLibraryModel: ObservableObject {
     var sceneActive = true
     private var started = false
     private var epoch = 0
-    private var lastCheck = Date.distantPast
+    /// Last successful catalogue check, kept over launches: a start within
+    /// six hours of it checks nothing (S6). A future date (clock change) counts as due.
+    private var lastCheck = UserDefaults.standard.object(forKey: LawLibraryModel.lastCheckKey) as? Date ?? .distantPast {
+        didSet { UserDefaults.standard.set(lastCheck, forKey: Self.lastCheckKey) }
+    }
+    static let lastCheckKey = "noty.laws.lastCatalogCheck"
+    /// Stored PDFs that matched their catalogue hash this session, with the
+    /// file's size and date then and the hash they matched (`pdf`): reopening
+    /// needs no new read; a catalogue with another hash checks again.
+    private var verifiedPDFs: [String: PDFStamp] = [:]
+    private struct PDFStamp: Equatable, Sendable { var size: Int; var modified: Date; var sha: String? }
     private var lastAttempt = Date.distantPast
     private var lastSync = Date.distantPast
     /// Every stored entry of every owner.
@@ -151,7 +161,8 @@ final class LawLibraryModel: ObservableObject {
     }
     func tick() async {
         guard enabled else { return }
-        let needsUpdate = catalog == nil || (automaticUpdates && Date().timeIntervalSince(lastCheck) > 6 * 3600)
+        let sinceCheck = Date().timeIntervalSince(lastCheck)
+        let needsUpdate = catalog == nil || (automaticUpdates && (sinceCheck > 6 * 3600 || sinceCheck < 0))
         if needsUpdate && Date().timeIntervalSince(lastAttempt) > (catalog == nil ? 60 : 900) { await updateLaws(manual: false) }
         if Date().timeIntervalSince(lastSync) > 30 { await synchronize() }
     }
@@ -201,7 +212,8 @@ final class LawLibraryModel: ObservableObject {
                 guard enabled else { throw CancellationError() }
                 guard let version = entry.versions.first(where: { $0.id == entry.currentVersion }) else { throw LawError.invalid("Gesetzesfassung fehlt.") }
                 progress = "\(index + 1)/\(next.entries.count) · \(entry.abbr)"
-                if (try? await offline.document(entry, version: version)) == nil {
+                // Hash of the stored file instead of decoding every law (S6).
+                if !(await offline.hasDocument(entry, version: version)) {
                     let bytes = try await fetch(version.dataUrl)
                     try await verify(bytes, sha: version.sha256["json"])
                     try await offline.putDocument(bytes, entry: entry, version: version)
@@ -238,14 +250,36 @@ final class LawLibraryModel: ObservableObject {
     func pdf(_ entry: LawEntry, version: String) async throws -> URL {
         let url = try await offline.pdfURL(entry.id, version: version)
         guard let v = entry.versions.first(where: { $0.id == version }), let path = v.pdfUrl else { throw LawError.invalid("Für dieses Dokument ist kein Original-PDF vorhanden.") }
-        if FileManager.default.fileExists(atPath: url.path) {
-            if let bytes = try? await offline.pdfData(entry.id, version: version),
-               (try? await verify(bytes, sha: v.sha256["pdf"])) != nil, PDFDocument(url: url) != nil { return url }
+        let key = "\(entry.id)|\(version)", sha = v.sha256["pdf"]
+        if let stamp = Self.pdfStamp(url, sha: sha) {
+            if verifiedPDFs[key] == stamp { return url }
+            // S13: mapped read, hash and parse off the main thread (up to 150 MB).
+            if await Task.detached(priority: .userInitiated, operation: { Self.storedPDFIsIntact(url, sha: sha) }).value,
+               Self.pdfStamp(url, sha: sha) == stamp {
+                verifiedPDFs[key] = stamp; return url
+            }
         }
-        let data = try await fetch(path, limit: 150_000_000); try await verify(data, sha: v.sha256["pdf"])
+        verifiedPDFs[key] = nil
+        let data = try await fetch(path, limit: 150_000_000); try await verify(data, sha: sha)
         let result = try await offline.putPDF(data, id: entry.id, version: version, replacingDamaged: true)
+        if let stamp = Self.pdfStamp(result, sha: sha) { verifiedPDFs[key] = stamp }
         byteCount = await offline.byteCount()
         return result
+    }
+    /// `sha`: the catalogue hash the file is (to be) checked against.
+    private nonisolated static func pdfStamp(_ url: URL, sha: String?) -> PDFStamp? {
+        guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]),
+              values.isRegularFile == true, let size = values.fileSize, let modified = values.contentModificationDate else { return nil }
+        return PDFStamp(size: size, modified: modified, sha: sha)
+    }
+    /// The stored PDF is the checked download: at most 150 MB, SHA-256 as in
+    /// the catalogue, and CoreGraphics can open it (thread-safe, unlike
+    /// building a `PDFDocument` just to throw it away).
+    private nonisolated static func storedPDFIsIntact(_ url: URL, sha: String?) -> Bool {
+        guard let sha, sha.count == 64, let stamp = pdfStamp(url, sha: sha), stamp.size <= 150_000_000,
+              let data = try? Data(contentsOf: url, options: .alwaysMapped),
+              SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == sha else { return false }
+        return CGPDFDocument(url as CFURL) != nil
     }
     /// The PDF of this version is already on this iPad (no download needed).
     func pdfIsOffline(_ entry: LawEntry, version: String) async -> Bool {

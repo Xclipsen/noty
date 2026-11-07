@@ -168,11 +168,11 @@ struct PageSidebarView: View {
                     .onChange(of: count, initial: true) { _, value in keyColumns = value }
                     .onChange(of: keyCursor) { _, _ in
                         guard let id = keyScrollTarget else { return }
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { proxy.scrollTo(id, anchor: .center) }
+                        proxy.scrollTo(id, anchor: .center)
                     }
                     .onChange(of: currentPage.id) { _, id in
                         guard selectedTab == .pages, filter == .all, !editMode.isEditing else { return }
-                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) }
+                        proxy.scrollTo(id, anchor: .center)
                     }
                     .onChange(of: scrollRequest) { _, _ in
                         withAnimation(NotyMotion.panel(reduceMotion)) { proxy.scrollTo(currentPage.id, anchor: .center) }
@@ -192,8 +192,7 @@ struct PageSidebarView: View {
                 }
             }.padding(.horizontal, 16)
         }
-        .animation(NotyMotion.panel(reduceMotion), value: selectedTab)
-        .animation(NotyMotion.panel(reduceMotion), value: filter)
+        // Tab/filter switches and keyboard/page-follow scrolling are instant.
         // Live while typing, but debounced: one extraction after the text rests.
         .onReceive(model.$notebook) { notebook in refreshTextOutline(notebook, after: .milliseconds(400)) }
         .onAppear { refreshTextOutline(model.notebook) }
@@ -261,7 +260,7 @@ struct PageSidebarView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(entry.text)
                             .font(entry.preset == .title ? .headline : entry.preset == .heading ? .subheadline.weight(.semibold) : .subheadline)
-                            .foregroundStyle(entry.pageID == currentPage.id ? Color.accentColor : .primary)
+                            .foregroundStyle(entry.pageID == currentPage.id ? Color.notyAccent : .primary)
                             .lineLimit(2).multilineTextAlignment(.leading)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Text("\(entry.pageIndex + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -271,7 +270,7 @@ struct PageSidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(entry.preset.title): \(entry.text), Seite \(entry.pageIndex + 1)")
-                .listRowBackground(keyEntry == entry.id ? Color.accentColor.opacity(0.28) : Color.clear)
+                .listRowBackground(keyEntry == entry.id ? Color.notyAccent.opacity(0.28) : Color.clear)
             }.listStyle(.plain).scrollContentBackground(.hidden)
         }
     }
@@ -347,8 +346,8 @@ struct PageSidebarView: View {
             addingPage = AddRequest(anchor: currentPage.id, position: .end)
         } label: {
             RoundedRectangle(cornerRadius: 7)
-                .stroke(Color.accentColor.opacity(0.8), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-                .overlay(Image(systemName: "plus").font(.title2).foregroundStyle(Color.accentColor))
+                .stroke(Color.notyAccent.opacity(0.8), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                .overlay(Image(systemName: "plus").font(.title2).foregroundStyle(Color.notyAccent))
                 .frame(height: height)
                 .padding(3)
         }
@@ -385,7 +384,7 @@ struct PageSidebarView: View {
                 } label: {
                     Image(systemName: page.bookmarked == true ? "bookmark.fill" : "bookmark")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(page.bookmarked == true ? Color.accentColor : Color.white)
+                        .foregroundStyle(page.bookmarked == true ? Color.notyAccent : Color.white)
                         .frame(width: 28, height: 28).notyGlass()
                         .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
@@ -394,10 +393,13 @@ struct PageSidebarView: View {
             }
             HStack {
                 Text("\(index + 1)")
-                    .font(.caption.weight(selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                    // Constant weight and digit width: selection is colour only (polish audit F14).
+                    .font(.caption.weight(.medium).monospacedDigit())
+                    .foregroundStyle(selected ? Color.notyAccent : Color.primary)
+                    // The thumbnail already says „Seite n“ to VoiceOver.
+                    .accessibilityHidden(true)
                 if model.cutPageID == page.id {
-                    Image(systemName: "scissors").font(.caption).foregroundStyle(Color.accentColor)
+                    Image(systemName: "scissors").font(.caption).foregroundStyle(Color.notyAccent)
                         .accessibilityLabel("Zum Verschieben vorgemerkt")
                 }
                 Spacer()
@@ -410,9 +412,9 @@ struct PageSidebarView: View {
                 .disabled(!canEdit)
             }.padding(.horizontal, 3)
         }
-        .background(dropTarget == page.id ? Color.accentColor.opacity(0.15) : .clear,
+        .background(dropTarget == page.id ? Color.notyAccent.opacity(0.15) : .clear,
                     in: RoundedRectangle(cornerRadius: 8))
-        .overlay { if keyPage == page.id { RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 2).allowsHitTesting(false) } }
+        .overlay { if keyPage == page.id { RoundedRectangle(cornerRadius: 8).strokeBorder(Color.notyAccent, lineWidth: 2).allowsHitTesting(false) } }
         .contextMenu { pageActions(page, index: index).disabled(!canEdit) }
     }
 
@@ -627,9 +629,9 @@ private struct NotebookOutlineRow: View {
         if let pageID = item.pageID {
             Button { onSelect(pageID) } label: {
                 Text(item.title).font(.subheadline).multilineTextAlignment(.leading)
-                    .foregroundStyle(pageID == selectedPage ? Color.accentColor : .primary)
+                    .foregroundStyle(pageID == selectedPage ? Color.notyAccent : .primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(keyItem == item.id ? Color.accentColor.opacity(0.28) : .clear)
+                    .background(keyItem == item.id ? Color.notyAccent.opacity(0.28) : .clear)
             }.buttonStyle(.plain)
         } else {
             Text(item.title).font(.subheadline).foregroundStyle(.secondary)

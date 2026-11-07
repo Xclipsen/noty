@@ -168,14 +168,14 @@ extension Notebook {
         if shapes.contains(where: \.usesVertexFormat) { schemaVersion = max(ShapeObject.vertexSchemaVersion, schemaVersion) }
     }
     public mutating func replaceShapes(_ shapes: [ShapeObject], pageID: UUID) throws {
-        var next = try preparedForPageEditing()
+        var next = try editableForPages()
         guard let index = next.pages.firstIndex(where: { $0.id == pageID }) else { throw PageOperationError.missingPage }
         next.schemaVersion = max(6, next.schemaVersion); next.pages[index].shapes = shapes
         next.raiseSchemaForShapes(shapes)
         try next.validate(); self = next
     }
     public mutating func replaceContent(_ content: PageContent, pageID: UUID) throws {
-        var next = try preparedForTextEditing()
+        var next = try editableForText()
         guard let index = next.pages.firstIndex(where: { $0.id == pageID }) else { throw PageOperationError.missingPage }
         next.schemaVersion = max(6, next.schemaVersion)
         if content.textBoxes.contains(where: \.usesTextFlowFormat) { next.schemaVersion = max(8, next.schemaVersion) }

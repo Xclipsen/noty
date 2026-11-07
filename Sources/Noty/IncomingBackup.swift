@@ -55,7 +55,7 @@ enum IncomingBackup {
         try? await Task.sleep(for: .milliseconds(800))
         // Before any question: a notebook file cannot go in while one is open.
         guard kind == "notylibrary" || library.opened == nil else {
-            TopAlert.show("Notizbuch geöffnet", "Bitte zuerst das Notizbuch schließen und die Datei danach erneut aus der Dateien-App öffnen.")
+            TopAlert.show("Heft geöffnet", "Bitte zuerst das Heft schließen und die Datei danach erneut aus der Dateien-App öffnen.")
             return
         }
         let progress = TopAlert.progress("Datei wird geprüft …")

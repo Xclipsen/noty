@@ -11,6 +11,9 @@ struct OpenNotebook: Identifiable {
     var searchBounds: PageRect?
     /// A search hit over a page change, in flow offsets.
     var searchFlowRange: NSRange?
+    /// Folder path in the library („Alle Unterlagen / Klasse 10“): tells
+    /// notebooks with the same title apart in pickers and search hits.
+    var path: String? = nil
 }
 
 @MainActor
@@ -158,14 +161,18 @@ final class LibraryModel: ObservableObject {
     }
 
     func editorChoices() async -> [OpenNotebook] {
+        // One snapshot and one folder map for the whole list: paths are looked
+        // up in O(depth) and shared per folder, not searched per notebook.
+        let value = snapshot
+        var paths = FolderPaths(value)
         var choices: [OpenNotebook] = []
-        for item in snapshot.items where !item.isFolder && !snapshot.isTrashed(item.id) {
+        for item in value.items where !item.isFolder && !value.isTrashed(item.id) {
             if let directory = try? await store.documentURL(id: item.id) {
                 choices.append(OpenNotebook(id: item.id, directory: directory, title: item.title,
-                    isRestored: item.source == .restored))
+                    isRestored: item.source == .restored, path: paths.path(of: item)))
             }
         }
-        return choices
+        return choices.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
     /// `quiet`: background reload (e.g. after closing a notebook) that keeps
@@ -562,11 +569,12 @@ final class LibraryModel: ObservableObject {
         document.title = title
         document.pdf = data
         document.pages = geometries.map { geometry in var page = Page(); page.geometry = geometry; return page }
-        if let writingArea {
+        if let writingArea, !document.pages.isEmpty {
+            var assignments: [UUID: PageMargins] = [:]
             for page in document.pages {
-                let margins = try writingArea.scaled(from: .init(width: 1, height: 1), to: page.geometry?.displaySize ?? .a4)
-                try document.setMargins(margins, pageIDs: [page.id])
+                assignments[page.id] = try writingArea.scaled(from: .init(width: 1, height: 1), to: page.geometry?.displaySize ?? .a4)
             }
+            try document.setMargins(assignments)
         }
         // Originals above 20 MB get schema 10 at once, so Build 46 refuses the
         // whole notebook instead of failing later edits.
@@ -678,4 +686,32 @@ private actor PreviewGate {
     func leave() {
         if waiting.isEmpty { running -= 1 } else { waiting.removeFirst().resume() }
     }
+}
+
+/// „Alle Unterlagen / Klasse 10 / Mathe“ for many items of one snapshot:
+/// folders indexed once by ID, each folder's path built once.
+struct FolderPaths {
+    private let folders: [UUID: NotebookCore.LibraryItem]
+    private var cache: [UUID: String] = [:]
+
+    init(_ snapshot: LibrarySnapshot) {
+        folders = Dictionary(snapshot.items.filter(\.isFolder).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The folders above `item`.
+    mutating func path(of item: NotebookCore.LibraryItem) -> String {
+        guard let parent = item.parentID else { return Self.root }
+        return path(ofFolder: parent, visiting: [])
+    }
+
+    private mutating func path(ofFolder id: UUID, visiting: Set<UUID>) -> String {
+        if let known = cache[id] { return known }
+        guard let folder = folders[id], !visiting.contains(id) else { return Self.root }
+        let above = folder.parentID.map { path(ofFolder: $0, visiting: visiting.union([id])) } ?? Self.root
+        let result = above + " / " + folder.title
+        cache[id] = result
+        return result
+    }
+
+    private static let root = "Alle Unterlagen"
 }

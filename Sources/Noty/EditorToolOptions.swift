@@ -42,7 +42,7 @@ struct EditorToolOptions: View {
             }.scrollBounceBehavior(.basedOnSize)
             Button { showing = false } label: {
                 Image(systemName: "xmark").font(.system(size: 13, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
-            }.accessibilityLabel("Werkzeugoptionen schließen").notyTooltip("Optionen schließen")
+            }.accessibilityLabel("Werkzeugoptionen schließen").notyTooltip("Optionen schließen", hint: false)
         }.font(.system(size: 13, weight: .medium)).padding(.horizontal, 8).padding(.vertical, 4)
             .buttonStyle(NotyToolStyle()).foregroundStyle(.white)
             .environment(\.notyTooltipAxis, .horizontal)
@@ -212,7 +212,7 @@ struct EditorToolOptions: View {
     private var colorWell: some View {
         ColorPicker("Farbe", selection: Binding(get: { preferences.inkColor(for: tool).color }, set: {
             preferences.setInkColor(InkColor($0), for: tool)
-        })).labelsHidden().frame(width: 44, height: 44).notyTooltip("Farbe")
+        })).labelsHidden().frame(width: 44, height: 44).notyTooltip("Farbe", hint: false)
     }
     /// Width of the current pen/shape: slider plus its value.
     private var widthControl: some View {
