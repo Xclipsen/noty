@@ -81,9 +81,25 @@ enum PDFExporter {
         let documents = selected.map { sourcePage?($0.element)?.document ?? catalogue?.sourcePage(for: $0.element)?.document }
 
         // Validate every selected page before writing anything; overflow is never cut.
+        // Images first, each distinct original (hash, size, pixel size) once and
+        // off the main actor: reading and decoding them blocked the UI (S10).
+        var seen = Set<String>(), images: [ImageObject] = []
+        for (_, page) in selected {
+            for image in page.images ?? [] where seen.insert(
+                "\(image.asset.sha256)|\(image.asset.byteCount)|\(image.pixelWidth)|\(image.pixelHeight)").inserted {
+                images.append(image)
+            }
+        }
+        if !images.isEmpty {
+            let distinct = images
+            let validation = Task.detached(priority: .userInitiated) {
+                for image in distinct { try Task.checkCancellation(); try ImageRendering.validate(image, assets: provider) }
+            }
+            try await withTaskCancellationHandler { try await validation.value } onCancel: { validation.cancel() }
+            try Task.checkCancellation()
+        }
         var layouts: [PageLayout] = [], overflow: [Int] = []
         for (position, (index, page)) in selected.enumerated() {
-            for image in page.images ?? [] { try ImageRendering.validate(image, assets: provider) }
             let layout = try PageLayout(page: page, source: sources[position])
             let bounds = PageRect(layout.canonicalInkBounds)
             if page.resolvedTextBoxes.contains(where: { box in
@@ -316,14 +332,30 @@ struct PDFExportProgressBadge: View {
     @ObservedObject var job: PDFExportJob
     var body: some View {
         if let progress = job.progress {
-            HStack(spacing: 12) {
-                ProgressView(value: Double(progress.done), total: Double(max(1, progress.total))).frame(width: 110)
-                Text("PDF wird erstellt · \(min(progress.done + 1, progress.total)) von \(progress.total)")
-                    .font(.caption).monospacedDigit()
-                Button("Abbrechen") { job.cancel() }.font(.caption.weight(.semibold))
+            let page = min(progress.done + 1, progress.total)
+            // Narrow panes (1/3 split, Slide Over): a compact form without the
+            // 110-pt bar instead of running under the page navigator.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    ProgressView(value: Double(progress.done), total: Double(max(1, progress.total))).frame(width: 110)
+                        .accessibilityHidden(true)
+                    Text("PDF wird erstellt · \(page) von \(progress.total)")
+                        .font(.caption).monospacedDigit().lineLimit(1).fixedSize()
+                    cancelButton
+                }
+                HStack(spacing: 10) {
+                    Text("PDF · \(page)/\(progress.total)").font(.caption).monospacedDigit().lineLimit(1).fixedSize()
+                        .accessibilityLabel("PDF wird erstellt, Seite \(page) von \(progress.total)")
+                    cancelButton
+                }
             }
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             .padding(.horizontal, 14).padding(.vertical, 8).notyGlass()
             .transition(.opacity)
         }
+    }
+
+    private var cancelButton: some View {
+        Button("Abbrechen") { job.cancel() }.font(.caption.weight(.semibold)).lineLimit(1).fixedSize()
     }
 }

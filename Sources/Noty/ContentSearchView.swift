@@ -159,7 +159,7 @@ final class ContentSearchModel: ObservableObject {
             ? await Task.detached(priority: .utility) { NotebookRevisionStamp.read(directory: directory) }.value : nil
         if let stamp, cached?.revisionStamp == stamp { return }
         guard generation == expected else { throw CancellationError() }
-        status = "\(document.title) · wird gelesen …"
+        status = "\(NotyText.isolated(document.title)) · wird gelesen …"
         let notebook: Notebook
         // Image originals of a closed notebook come from its package (read-only);
         // the open notebook's from the registry.
@@ -196,7 +196,7 @@ final class ContentSearchModel: ObservableObject {
                 guard !pending.isEmpty else { continue }
                 try Task.checkCancellation()
                 guard generation == expected else { throw CancellationError() }
-                status = "\(document.title) · Seite \(offset + 1)/\(prepared.count)"
+                status = "Seite \(offset + 1)/\(prepared.count) · \(NotyText.isolated(document.title))"
                 let page = notebook.pages[offset]
                 var record = index.pages[offset]
                 do {
@@ -429,7 +429,10 @@ struct ContentSearchView: View {
                 Picker("Bereich", selection: $openTasks) {
                     Text("Alle Inhalte").tag(false); Text("Offene Aufgaben").tag(true)
                 }.pickerStyle(.segmented).padding(.horizontal)
-                Text(openTasks ? model.taskStatus : model.status).font(.caption).padding(.horizontal)
+                // One line, counter first: the hit list below must not jump while pages are counted.
+                Text(openTasks ? model.taskStatus : model.status).font(.caption).monospacedDigit()
+                    .lineLimit(1).truncationMode(.middle).padding(.horizontal)
+                    .pointerHelp(openTasks ? model.taskStatus : model.status)
                 if openTasks ? model.collectingTasks : model.running { ProgressView().padding(.horizontal) }
                 if !openTasks {
                     Text("Handschrift und Scan-/Bild-OCR sind lokal. Erkanntes bleibt als abgeleiteter Suchindex auf diesem iPad gespeichert und wird nur für geänderte Seiten neu erfasst. Die Erkennungsqualität muss mit den eigenen Unterlagen geprüft werden.")
@@ -437,11 +440,22 @@ struct ContentSearchView: View {
                 }
                 if let error = model.error { Text(error).foregroundStyle(.red).font(.caption).padding(.horizontal) }
                 ScrollViewReader { proxy in
+                    let paths = ambiguousPaths
                     List(hits) { hit in
                         Button { select(hit) } label: {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("\(hit.title) · Seite \(hit.pageNumber)").font(.headline)
-                                Text(hit.text).lineLimit(3)
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(hit.title).font(.headline).lineLimit(1).truncationMode(.middle)
+                                        .pointerHelp(hit.title)
+                                    Spacer(minLength: 8)
+                                    Text("S. \(hit.pageNumber)").font(.subheadline).foregroundStyle(.secondary)
+                                        .monospacedDigit().fixedSize()
+                                        .accessibilityLabel("Seite \(hit.pageNumber)")
+                                }
+                                if let path = paths[hit.documentID] {
+                                    Text(path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                                }
+                                Text(excerpt(hit)).lineLimit(3)
                                 Text(label(hit.kind)).font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -454,6 +468,13 @@ struct ContentSearchView: View {
                         ContentUnavailableView("Keine offenen Aufgaben", systemImage: "checkmark.circle",
                             description: Text("Nicht abgehakte Checkboxen aus dem Text erscheinen hier."))
                     } else if !(openTasks ? model.collectingTasks : model.running) && !query.isEmpty && hits.isEmpty { ContentUnavailableView.search(text: query) }
+                    else if !openTasks, query.trimmingCharacters(in: .whitespaces).isEmpty, hits.isEmpty {
+                        ContentUnavailableView("Inhalt suchen", systemImage: "magnifyingglass",
+                            description: Text(documents.count == 1 && current?.isTextDocument == true
+                                ? "Text, PDF, Handschrift und Bilder dieses Dokuments."
+                                : documents.count == 1 ? "Text, PDF, Handschrift und Bilder dieses Hefts."
+                                : "Text, PDF, Handschrift und Bilder aller Hefte."))
+                    }
                 }
             }.searchable(text: $query, isPresented: $searching, prompt: openTasks ? "Aufgaben filtern" : "Inhalt suchen")
                 .onChange(of: openTasks) { _, tasks in
@@ -482,6 +503,26 @@ struct ContentSearchView: View {
     private func start(rebuild: Bool) {
         model.start(documents: documents, current: current, currentSources: currentSources, area: area, retain: retain, rebuild: rebuild)
     }
+    /// Library paths of notebooks whose title occurs more than once: two
+    /// „Mathe“ hits from different folders need the folder to tell them apart.
+    private var ambiguousPaths: [UUID: String] {
+        let counts = Dictionary(documents.map { ($0.title, 1) }, uniquingKeysWith: +)
+        return Dictionary(documents.compactMap { document in
+            (counts[document.title] ?? 0) > 1 ? document.path.map { (document.id, $0) } : nil
+        }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The hit's text around the match, the match in bold: a long paragraph
+    /// would otherwise show its first lines without the searched term.
+    private func excerpt(_ hit: ContentSearchHit) -> AttributedString {
+        let snippet = hit.snippet(for: query)
+        let parts = snippet.parts
+        var match = AttributedString(String(parts.match))
+        match.inlinePresentationIntent = .stronglyEmphasized
+        match.foregroundColor = .accentColor
+        return AttributedString(String(parts.before)) + match + AttributedString(String(parts.after))
+    }
+
     private func label(_ kind: SearchContentKind) -> String {
         switch kind { case .text: "Textfeld"; case .pdf: "PDF-Text"; case .image: "Scan/Bild · OCR"; case .handwriting: "Handschrift · OCR"; case .task: "Offene Aufgabe" }
     }

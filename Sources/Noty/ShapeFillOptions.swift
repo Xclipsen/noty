@@ -54,7 +54,7 @@ struct ShapeFillStyleSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle("Füllung", isOn: Binding(get: { choice.filled }, set: { choice.filled = $0; apply(choice) }))
-                .font(.system(size: 17, weight: .semibold)).tint(.blue).notyTooltip("Füllung an oder aus")
+                .font(.system(size: 17, weight: .semibold)).tint(Color.notyAccent).notyTooltip("Füllung an oder aus")
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(34), spacing: 6), count: 7), alignment: .leading, spacing: 6) {
                 swatch(nil, name: "Wie Strich")
                 ForEach(Self.palette, id: \.1) { swatch($0.0, name: $0.1) }

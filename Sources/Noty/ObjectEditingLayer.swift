@@ -363,9 +363,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         value.shapes = order(content.shapes, shapes)
         var movedInk = ink
         if !ink.isEmpty, let drawing = drawing(content.drawing) {
-            let picked = drawing.strokes.indices.filter { ink.contains($0) }, rest = drawing.strokes.indices.filter { !ink.contains($0) }
+            // `strokes` bridges a fresh array on every access (Swift-Audit S2).
+            let strokes = drawing.strokes
+            let picked = strokes.indices.filter { ink.contains($0) }, rest = strokes.indices.filter { !ink.contains($0) }
             let indices = toFront ? rest + picked : picked + rest
-            value.drawing = PKDrawing(strokes: indices.map { drawing.strokes[$0] }).dataRepresentation()
+            value.drawing = PKDrawing(strokes: indices.map { strokes[$0] }).dataRepresentation()
             movedInk = Set(toFront ? (rest.count..<indices.count) : (0..<picked.count))
         }
         guard value != content else { return }
@@ -884,8 +886,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
     private func strokeHit(at point: CGPoint) -> Int? {
         guard let drawing = drawing(content.drawing) else { return nil }
         let tolerance = 10 / displayScale, target = PagePoint(x: point.x, y: point.y)
-        for index in drawing.strokes.indices.reversed() {
-            let stroke = drawing.strokes[index]
+        let strokes = drawing.strokes
+        for index in strokes.indices.reversed() {
+            let stroke = strokes[index]
             guard stroke.renderBounds.insetBy(dx: -tolerance, dy: -tolerance).contains(point) else { continue }
             var points = stroke.path.interpolatedPoints(by: .distance(3)).map { sample -> PagePoint in
                 let location = sample.location.applying(stroke.transform); return PagePoint(x: location.x, y: location.y)
@@ -1195,9 +1198,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         var strokes: [PKStroke] = []
         var remainder = CrossPageTransfer.removing(texts: texts, images: images, shapes: shapes, from: initial)
         if !ink.isEmpty {
-            guard let drawing = drawing(initial.drawing), ink.allSatisfy({ drawing.strokes.indices.contains($0) }) else { return nil }
-            strokes = drawing.strokes.enumerated().filter { ink.contains($0.offset) }.map(\.element)
-            remainder.drawing = PKDrawing(strokes: drawing.strokes.enumerated().filter { !ink.contains($0.offset) }.map(\.element)).dataRepresentation()
+            guard let drawing = drawing(initial.drawing) else { return nil }
+            let all = drawing.strokes
+            guard ink.allSatisfy({ all.indices.contains($0) }) else { return nil }
+            strokes = all.enumerated().filter { ink.contains($0.offset) }.map(\.element)
+            remainder.drawing = PKDrawing(strokes: all.enumerated().filter { !ink.contains($0.offset) }.map(\.element)).dataRepresentation()
         }
         let objects = MovedObjects(textBoxes: initial.textBoxes.filter { texts.contains($0.id) && $0.allowsObjectSelection },
             images: initial.images.filter { images.contains($0.id) && !$0.locked }, shapes: initial.shapes.filter { shapes.contains($0.id) })
@@ -1341,8 +1346,9 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             }.map(\.id))
         }
         if filter.ink, let drawing = try? PKDrawing(data: content.drawing) {
-            ink = Set(drawing.strokes.indices.filter { index in
-                let stroke = drawing.strokes[index]
+            let strokes = drawing.strokes
+            ink = Set(strokes.indices.filter { index in
+                let stroke = strokes[index]
                 guard rect.insetBy(dx: -0.001, dy: -0.001).intersects(stroke.renderBounds) else { return false }
                 var points = stroke.path.interpolatedPoints(by: .distance(3)).map { sample -> PagePoint in
                     let point = sample.location.applying(stroke.transform)
@@ -1414,10 +1420,11 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
         guard (!inkOnly || (texts.isEmpty && images.isEmpty && shapes.isEmpty)), !ink.isEmpty,
               var drawing = drawing(initial.drawing) else { return nil }
         let allowed = limits.cgRect.union(selectionBounds(initial) ?? .zero).insetBy(dx: -0.02, dy: -0.02)
-        drawing.strokes = drawing.strokes.enumerated().map { index, stroke in
+        let strokes = drawing.strokes.enumerated().map { index, stroke in
             ink.contains(index) ? PKDrawing(strokes: [stroke]).transformed(using: transform).strokes[0] : stroke
         }
-        guard ink.allSatisfy({ drawing.strokes.indices.contains($0) && allowed.contains(drawing.strokes[$0].renderBounds) }) else { return nil }
+        drawing.strokes = strokes
+        guard ink.allSatisfy({ strokes.indices.contains($0) && allowed.contains(strokes[$0].renderBounds) }) else { return nil }
         var result = initial; result.drawing = drawing.dataRepresentation(); return result
     }
     private func mirrorInk(horizontal: Bool) {

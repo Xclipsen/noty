@@ -216,14 +216,43 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
     /// The `Assets` directory itself.
     public let directory: URL
     public let readOnly: Bool
+    /// Test hooks, held under their own lock (never taken inside `lock`'s
+    /// sections), so a test may replace them while the instance is shared.
+    private struct Hooks {
+        var pendingLimit = NotebookAssets.maximumPendingBytes
+        var blockSize = BoundedFile.block
+        var clock: () -> Date = { Date() }
+        var fault: (PersistStage) throws -> Void = { _ in }
+        var rootSearches = 0
+    }
+    private let hookLock = NSLock()
+    private var hooks = Hooks()
+    private func hook<T>(_ body: (inout Hooks) -> T) -> T {
+        hookLock.lock(); defer { hookLock.unlock() }
+        return body(&hooks)
+    }
     /// Lowered by tests only.
-    var pendingLimit = NotebookAssets.maximumPendingBytes
-    var blockSize = BoundedFile.block
+    var pendingLimit: Int {
+        get { hook { $0.pendingLimit } }
+        set { hook { $0.pendingLimit = newValue } }
+    }
+    var blockSize: Int {
+        get { hook { $0.blockSize } }
+        set { hook { $0.blockSize = newValue } }
+    }
     /// GC reference time; replaceable in tests.
-    var clock: () -> Date = { Date() }
+    var clock: () -> Date {
+        get { hook { $0.clock } }
+        set { hook { $0.clock = newValue } }
+    }
     /// Test hook between the write steps (see `PersistStage`).
-    var fault: (PersistStage) throws -> Void = { _ in }
+    var fault: (PersistStage) throws -> Void {
+        get { hook { $0.fault } }
+        set { hook { $0.fault = newValue } }
+    }
     enum PersistStage { case partialWritten, partialVerified }
+    /// How often `collectGarbage` searched its roots (tests).
+    var rootSearchCount: Int { hook { $0.rootSearches } }
 
     private let lock = NSLock()
     private var pending: [String: Data] = [:]
@@ -482,9 +511,12 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
     /// - `<sha>.partial-<UUID>` older than `partialFileAge`.
     /// References are `keeping`, the pending area and every quoted 64-hex
     /// string in any regular file below `roots` (`referencedHashes`). Foreign
-    /// names, directories and symlinks stay. Any read error in the roots or the
-    /// listing aborts the run before anything is deleted; single deletions are
-    /// best effort. Age is measured from the newest file time available.
+    /// names, directories and symlinks stay. The roots are searched only when
+    /// some file is a deletion candidate (without one the run ends with an
+    /// empty report and reads no revision); then any read error in the roots,
+    /// like one in the listing, aborts the run before anything is deleted.
+    /// Single deletions are best effort. Age is measured from the newest file
+    /// time available.
     /// `isBlocked` is asked before and again right before the first deletion
     /// (a backup may have started during the search): then nothing is deleted
     /// and the report says `skipped`.
@@ -498,24 +530,36 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
         case .invalid: throw ImageAssetError.invalidDirectory
         case .directory: break
         }
-        var referenced: Set<String>
         let names: [String]
-        do {
-            referenced = try Self.referencedHashes(in: roots, blockSize: blockSize)
-            names = try fm.contentsOfDirectory(atPath: directory.path)
-        } catch { throw ImageAssetError.garbageCollectionAborted }
-        referenced.formUnion(keeping)
+        do { names = try fm.contentsOfDirectory(atPath: directory.path) } catch { throw ImageAssetError.garbageCollectionAborted }
+        let now = clock()
+        func deletable(_ name: String, isAsset: Bool) -> Bool {
+            let url = directory.appendingPathComponent(name, isDirectory: false)
+            guard case .regular = item(url), let changed = newestFileTime(url) else { return false }
+            return now.timeIntervalSince(changed) >= (isAsset ? Self.unreferencedAssetAge : Self.partialFileAge)
+        }
+        // Candidates first: the root search reads every revision (whole PDFs),
+        // so it only runs when something could be deleted at all. It only adds
+        // references, so skipping it when there is no candidate changes nothing.
+        var referenced = keeping.union(locked { pending.keys })
+        let candidates = names.sorted().filter { name in
+            let isAsset = ImageAssetReference.isValidHash(name)
+            guard isAsset ? !referenced.contains(name) : Self.isPartialName(name) else { return false }
+            return deletable(name, isAsset: isAsset)
+        }
+        guard !candidates.isEmpty else { return ImageAssetGarbageReport() }
+        hook { $0.rootSearches += 1 }
+        do { referenced.formUnion(try Self.referencedHashes(in: roots, blockSize: blockSize)) } catch {
+            throw ImageAssetError.garbageCollectionAborted
+        }
         referenced.formUnion(locked { pending.keys })
         guard !isBlocked() else { return ImageAssetGarbageReport(skipped: true) }
-        let now = clock()
         var report = ImageAssetGarbageReport()
-        for name in names.sorted() {
+        for name in candidates {
             let isAsset = ImageAssetReference.isValidHash(name)
-            guard isAsset ? !referenced.contains(name) : Self.isPartialName(name) else { continue }
+            guard !isAsset || !referenced.contains(name) else { continue }
             let url = directory.appendingPathComponent(name, isDirectory: false)
-            guard case .regular = item(url), let changed = newestFileTime(url),
-                  now.timeIntervalSince(changed) >= (isAsset ? Self.unreferencedAssetAge : Self.partialFileAge),
-                  (try? fm.removeItem(at: url)) != nil else { continue }
+            guard deletable(name, isAsset: isAsset), (try? fm.removeItem(at: url)) != nil else { continue }
             if isAsset {
                 report.removedAssets.append(name)
                 locked { verified.remove(name); damaged.remove(name) }

@@ -16,7 +16,6 @@ struct LawPanelView: View {
     static var barHeight: CGFloat { 52.5 }
     @EnvironmentObject private var panel: LawPanelModel
     @ObservedObject private var keyboard = LawKeyboard.shared
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Moves the window live; the workspace decides side, dock and stash on release.
     var move: LawMoveActions
     /// Named coordinate space the move is measured in (the workspace).
@@ -79,13 +78,13 @@ struct LawPanelView: View {
             controls
         }
         // Keyboard focus: an accent line along the bar's lower edge (the
-        // layout keeps its 0.5-pt hairline, the reader does not move).
+        // layout keeps its 0.5-pt hairline, the reader does not move). Instant:
+        // focus moves by key.
         .overlay(alignment: .bottom) {
             Rectangle().fill(Color.notyAccent).frame(height: 2)
                 .opacity(focused ? 1 : 0)
                 .allowsHitTesting(false).accessibilityHidden(true)
         }
-        .animation(NotyMotion.highlight(reduceMotion), value: focused)
         .lawGlass(Rectangle())
         .environment(\.notyTooltipAxis, .horizontal)
     }
@@ -101,6 +100,8 @@ struct LawPanelView: View {
                       hint: "Wieder öffnen: Heft-Menü › Gesetzessammlung oder ⇧⌘L.") { panel.close() }
         }
         .padding(.horizontal, 4).padding(.top, 8)
+        // A 52-pt bar with a headline: capped so „Gesetze“ stays inside it.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .frame(height: 52)
         .overlay(alignment: .top) { grip.padding(.top, 6) }
         // The whole row is the grip, not only the dots.
@@ -124,7 +125,7 @@ struct LawPanelView: View {
         .buttonStyle(NotyToolStyle())
         .foregroundStyle(.white)
         .accessibilityLabel(label).accessibilityHint(hint)
-        .notyTooltip(tooltip)
+        .notyTooltip(tooltip, hint: false)
     }
 
     /// Three dots like the pane strips' handle; brighter while dragging.
@@ -205,22 +206,7 @@ func lawPanelPaletteTitle(_ phase: LawPanelState.Phase) -> String {
     }
 }
 
-private struct LawGlass<S: Shape>: ViewModifier {
-    let shape: S
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @ViewBuilder func body(content: Content) -> some View {
-        // Same surfaces as `notyGlass`, in any shape (window bar, edge tab).
-        if reduceTransparency {
-            content.background(Color(white: 0.13), in: shape)
-        } else if #available(iOS 26.0, *) {
-            content.glassEffect(.regular.tint(.black.opacity(0.3)), in: shape)
-        } else {
-            content.background(.ultraThinMaterial, in: shape)
-        }
-    }
-}
-
 extension View {
     /// `notyGlass` for the law window's bar and edge tab.
-    func lawGlass<S: Shape>(_ shape: S) -> some View { modifier(LawGlass(shape: shape)) }
+    func lawGlass<S: Shape>(_ shape: S) -> some View { notyGlass(in: shape) }
 }

@@ -29,6 +29,11 @@ struct LawReaderView: View {
     @State var pdfPage = 1
     @State var pdfTarget: Int?
     @State var loadError = ""
+    /// The notice shown in full (tap); others stay at three lines so a long
+    /// error with a URL or path cannot push the text out of a small window.
+    @State var expandedNotice: String?
+    /// The open section's title in full (tap); reset with the section.
+    @State var titleExpanded = false
     @State var loading = false
     @State var showContents = false
     @State var showBookmarks = false
@@ -117,7 +122,10 @@ struct LawReaderView: View {
         .transformPreference(NotyTooltipKey.self) { $0 = nil }
         .task { await laws.start(); await openInitial() }
         .onChange(of: laws.entries.count) { _, _ in Task { await openInitial() } }
-        .onChange(of: "\(selectedID)|\(sectionID)|\(document?.version ?? "")|\(viewPDF)|\(pdfPage)") { _, _ in rememberReading() }
+        .onChange(of: "\(selectedID)|\(sectionID)|\(document?.version ?? "")|\(viewPDF)|\(pdfPage)") { _, _ in
+            titleExpanded = false
+            rememberReading()
+        }
         // Titles of the menu bar entries „Lesezeichen setzen/entfernen“, „PDF/Lesetext zeigen“.
         .onChange(of: [bookmarkItem != nil, viewPDF, !hidden], initial: true) { _, _ in
             if inPanel, !hidden { LawReaderMenuState.shared.update(bookmarked: bookmarkItem != nil, showsPDF: viewPDF) }
@@ -184,10 +192,15 @@ struct LawReaderView: View {
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(Color(uiColor: LawReadingStyle.text))
                 if !section.title.isEmpty {
+                    // The only place with the full title: three lines, the rest on tap.
                     Text(section.title)
                         .font(.subheadline)
                         .foregroundStyle(Color(uiColor: LawReadingStyle.secondaryText))
-                        .lineLimit(3)
+                        .lineLimit(titleExpanded ? nil : 3)
+                        .fixedSize(horizontal: false, vertical: titleExpanded)
+                        .contentShape(Rectangle())
+                        .onTapGesture { titleExpanded.toggle() }
+                        .help(section.title)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -240,8 +253,15 @@ struct LawReaderView: View {
     func notice(_ text: String, symbol: String, tint: Color, closeLabel: String, close: @escaping () -> Void) -> some View {
         HStack(spacing: 8) {
             Image(systemName: symbol).font(.caption).foregroundStyle(tint).accessibilityHidden(true)
-            Text(text).font(.caption).foregroundStyle(.white.opacity(0.85)).frame(maxWidth: .infinity, alignment: .leading)
+            let expanded = expandedNotice == text
+            Text(text).font(.caption).foregroundStyle(.white.opacity(0.85))
+                .lineLimit(expanded ? nil : 3).truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .contentShape(Rectangle())
+                .onTapGesture { expandedNotice = expanded ? nil : text }
+                .accessibilityAction(named: expanded ? "Gekürzt zeigen" : "Ganz zeigen") { expandedNotice = expanded ? nil : text }
             Button(action: close) {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
             }.buttonStyle(NotyPressStyle()).foregroundStyle(.white.opacity(0.7)).accessibilityLabel(closeLabel)

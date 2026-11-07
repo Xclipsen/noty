@@ -1,5 +1,20 @@
 # Designentscheidungen für noty
 
+## Bewegung: Regeln nach Häufigkeit – 07.11.2026
+
+Motion-Durchsicht (Tokens in `NotyMotion.swift`). Grundregel unverändert: nur vom Nutzer ausgelöstes Chrome animieren, nie Heft-, Tinten- oder Autosave-Werte. Ohne Paragraphen-Funktion auf dev portiert (07.11.2026).
+
+- **Häufiges und Tastatur sind sofort.** Werkzeugwechsel (Tippen, Doppeltipp, Squeeze, Tasten), Tab-/Filterwechsel und Folge-Scroll der Seitenleiste, Ordnerwechsel und Tastaturfokus der Bibliothek, Fokuslinie des Gesetzesfensters, Ziffern in „Gehe zu Seite“. Per Taste geöffnete Seitenleiste (Seiten/Gliederung/Lesezeichen) und die Gesetzsuche (⌘F, Esc) erscheinen ohne Gleiten (`NotyMotion.instant`); Knopf-/Tippwege gleiten weiter. Ausnahme bis zur Nutzerentscheidung: das Gesetzesfenster per Taste animiert weiter.
+- **Keine Feder ohne Geste.** `palette` (Leistenebene, Andocken, Toast) ist kritisch gedämpft (0,3 s, kein Überschwingen); `panel` unverändert im Gefühl. Austritte sind schneller als Eintritte (`NotyMotion.exit`, 0,12 s).
+- **Markierungsleiste im Gesetz:** 0,2 s ease-out, Scale 0,97, wächst von der Seite, die zur Auswahl zeigt; Austritt 0,12 s.
+- **Werkzeugoptionen** gleiten aus der Leiste heraus (oben, unten, seitlich). **Lasche** des geparkten Gesetzesfensters schiebt sich 14 pt aus der Kante, in die das Fenster verschwindet.
+- **Seite löschen:** 0,2 s ease-out ausblenden mit Scale 0,96 (statt Zusammenquetschen mit ease-in), hinter allen übrigen Seiten, die darüber nachrücken. Ladeanzeige blendet ease-out ein.
+- **Drücken:** Scale 0,96 für `NotyPressStyle`, `NotyToolStyle` und die Squeeze-Palette (vorher 0,91/0,94).
+- **Bewegung reduzieren** heißt überblenden, nicht nichts: Seitenleiste, Werkzeugoptionen, Toast, Gesetzsuche und Gesetzesfenster (öffnen/parken/schließen) blenden 0,15 s (`NotyMotion.fade` an der Einblendung selbst) ohne Verschiebung; das Layout (Heftbreite, Andocken) wechselt sofort.
+- **Haptik:** Begradigen nach Halten im Gesetz-PDF tickt am Pencil Pro wie im Heft (`UICanvasFeedbackGenerator.pathCompleted`).
+- Bewusst beibehalten: Hover-Lift der Werkzeugsymbole, Ausweichen der Seite vor den Optionen, elastisches Zurückfedern, laufende Auswahlkontur, Ebenenpfeil, sofortige Seitensprünge, Schreibmaschinen-Gleiten, Squeeze-Fächer.
+- Implementiert und mit `xtool dev build` gebaut, nicht installiert, am iPad ungeprüft.
+
 ## Objektbedienung vereinheitlicht – Build 64, 22.10.2026
 
 Nach einem Code-Audit (Nutzerentscheidung): jedes Objekt wird überall gleich bedient. Verbindlich ab Build 64, Details, Abweichungen und Gerätetestpunkte in [TEXT-REBUILD-62](TEXT-REBUILD-62.md#build-64--verhalten-und-objektbedienung-vereinheitlicht-22102026); ältere Abschnitte unten sind, wo sie widersprechen, überholt.
@@ -205,7 +220,7 @@ Der erste Vorschlag „nur nach unten verlängern“ ist damit ersetzt. [Details
 
 ## UI-Feinschliff: Menüs und Icons – 19.10.2026
 
-Nutzer: Das „…“-Menü im Editor erschlägt; einfaches Konzept, andere Menüs dürfen angepasst werden, Wirkung einer fertigen App. Eigene Entwürfe für App-Icon und Werkzeug-Icons, Anpassungen erlaubt. Umgesetzt: Optionenmenü mit Statusüberschrift und gruppierten Untermenüs (Teilen und exportieren, Ansicht), Kopf-Duplikate nur bei Platzmangel im Menü, Statushinweis nur bei Handlungsbedarf/kurz nach Exporten, gruppierte Seiten-/Seitenleistenmenüs mit bestätigter Reihenfolge, Bibliothek mit einem „Neu“-Menü, Einstellungen gruppiert, einheitlich „Notizbuch“. Neue Werkzeugglyphen und App-Icon nach Nutzerentwurf; Bleistift/Laser im selben Stil ergänzt. [Konzept, Details und Nachweise](UI-POLISH.md).
+Nutzer: Das „…“-Menü im Editor erschlägt; einfaches Konzept, andere Menüs dürfen angepasst werden, Wirkung einer fertigen App. Eigene Entwürfe für App-Icon und Werkzeug-Icons, Anpassungen erlaubt. Umgesetzt: Optionenmenü mit Statusüberschrift und gruppierten Untermenüs (Teilen und exportieren, Ansicht), Kopf-Duplikate nur bei Platzmangel im Menü, Statushinweis nur bei Handlungsbedarf/kurz nach Exporten, gruppierte Seiten-/Seitenleistenmenüs mit bestätigter Reihenfolge, Bibliothek mit einem „Neu“-Menü, Einstellungen gruppiert, einheitlich „Notizbuch“ (überholt: seit der Wortlaut-Runde 4493006 einheitlich „Heft“). Neue Werkzeugglyphen und App-Icon nach Nutzerentwurf; Bleistift/Laser im selben Stil ergänzt. [Konzept, Details und Nachweise](UI-POLISH.md).
 
 ## Bleistift, Laserpointer, Pencil-Haptik – 19.10.2026
 

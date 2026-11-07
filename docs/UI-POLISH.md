@@ -7,7 +7,8 @@ Nutzerauftrag: „Wenn man in einer Seite drin ist und auf … geht, wird man fa
 - **Ein Ort pro Aufgabe.** Was in der Kopfzeile sichtbar ist (Rückgängig, Wiederholen, Seite hinzufügen), steht nicht zusätzlich im Menü. Fehlt es dort aus Platzgründen, erscheint es im Menü (Build-26-Regel bleibt erfüllt).
 - **Häufiges oben, Seltenes in Untermenüs, Zerstörerisches unten.** Gruppen statt langer Listen.
 - **Status ist kein Menüeintrag.** Routinezustände („Lokal gespeichert“) stehen nur noch als Überschrift im Optionenmenü. Unten links erscheint nur, was Aufmerksamkeit braucht oder gerade passiert ist.
-- **Einheitliche Sprache und Symbole:** „Notizbuch“ statt „Heft“, „…“ hinter Einträgen, die einen Dialog öffnen, ein Symbol pro Bedeutung, „ellipsis“ für Überlaufmenüs, „Fertig“ für informative Sheets.
+- **Bewegung nach Häufigkeit:** Häufiges und Tastaturwege sofort, keine Feder ohne Geste, Austritt schneller als Eintritt, „Bewegung reduzieren“ blendet statt zu springen (Regeln: [DESIGN](DESIGN.md#bewegung-regeln-nach-häufigkeit--07112026), Tokens `NotyMotion.swift`).
+- **Einheitliche Sprache und Symbole:** „Heft“ (seit der Wortlaut-Runde, 4493006; bis dahin „Notizbuch“), eine Bezeichnung für die Suche („Im Heft suchen“ bzw. „Im Dokument suchen“), „…“ hinter Einträgen, die einen Dialog öffnen, ein Symbol pro Bedeutung, „ellipsis“ für Überlaufmenüs, „Fertig“ für informative Sheets.
 
 ## Editor: Optionenmenü („…“)
 
@@ -45,6 +46,27 @@ Entfallen: „Jetzt speichern“ (Autosave und Sichern beim Verlassen bleiben un
 - **Werkzeug-Icons** nach Nutzerentwurf als native SwiftUI-Pfade (`ToolbarGlyph.swift`): Stift, Marker (Keil- und Rundspitze), Radierer, Präzisionsradierer, Lasso, Gemischtes Lasso („Auswahl“), Text, Formen, Bild, PDF lesen. Bleistift und Laserpointer fehlten im Entwurf und sind im selben Stil ergänzt. Rückgängig/Wiederholen in der Kopfzeile nutzen die Entwurfsglyphen. Ausgewähltes Werkzeug mit dezentem Akzent (#7DD3FC) statt grauem Feld.
 
 ![Werkzeug-Icons nach Entwurf](assets/ui-polish/werkzeug-icons.png)
+
+## Feinschliff Interaktion und Optik – 07.11.2026
+
+Branch `feat/feinschliff`, nach dem Audit „Interaction & visual polish“ (Befundnummern F…). Kein Core-, Format- oder Speicherumfang. Ohne Paragraphen-Funktion auf dev portiert (07.11.2026, Branch `feat/feinschliff-dev`).
+
+- **F1 Ein Tooltip:** `notyTooltip` setzt kein `.help` mehr (mit Zeiger kam sonst die System-Blase zur noty-Blase); der Text geht als Bedienhilfe-Hinweis an VoiceOver, wo er nicht nur das Label wiederholt (`hint: false`). Die Auswahlleiste setzt kein `toolTip` mehr. Ausnahme: „An Linien ausrichten“ in der Formatleiste behält `toolTip`, dort gibt es keine noty-Blase.
+- **F2/A1 Aufwärmen:** `NotyTooltipClock` ist die gemeinsame Uhr aller Namen (SwiftUI-Leisten und Auswahlleiste): der erste wartet 0,65 s, solange einer steht oder bis 0,6 s danach erscheint der nächste sofort und ohne Überblenden.
+- **F4 Ein Akzent:** auf dunklem Chrome `notyAccent` (#7DD3FC) für Ein/Ausgewählt/Fokus: Auswahlleiste, Andock-Hinweise, Autostift, Ebenenpunkt, Füllungsschalter, Seitenleiste. Ausgewählte Zellen der UIKit-Leisten (Formatleiste und ihre Popover) bekommen die Platte von `NotyGlyphOption` (Weiß 0,18, Radius 10) statt vier Blautönen. Helle Listen (Bibliothek, Einstellungen) behalten den Systemakzent (#7DD3FC auf Weiß ≈ 1,6 : 1); Fanghilfen und Auswahlkontur auf dem Papier bleiben systemblau.
+- **F6 Namen in Kopf und Seitennavigator:** Zur Bibliothek (⌘W), Rückgängig (⌘Z), Wiederholen (⇧⌘Z), Schreibscrollen, Optionen, Seite hinzufügen, Seitenleiste, Vorherige/Nächste Seite (⌘↑/⌘↓), Gehe zu Seite (⌘G); Navigator-Namen öffnen nach links.
+- **F8 (nur Beschriftung):** Wartekreise sagen, was läuft (Einstellungen › Backup, automatisches Backup mit dessen Schrittmeldung, Bibliothek, Papierkorb). Fortschritt und Abbrechen sind offen.
+- **F9 Statushinweis:** gleiches Glas wie das übrige Editor-Chrome, Text Weiß 0,88 statt Grau auf `ultraThinMaterial`.
+- **F10 VoiceOver:** Statushinweise des Editors, „Speichern fehlgeschlagen“, Ergebnisse von Bibliotheks- und automatischem Backup und „PDF gesichert“ aus der Bibliothek werden angesagt.
+- **F11 Glas:** eine `notyGlass(in:tint:…)` für Editor, Gesetzesfenster (`lawGlass`) und Squeeze-Palette (dunklere Tönung 0,45). Haarlinien-Ränder über Glas (`notyGlassRim`) nur ohne iOS-26-Glas oder bei „Transparenz reduzieren“, damit der Rand nicht doppelt ist.
+- **F13 Trenner:** ein Maß `NotyDivider` (0,5 × 20 pt, Weiß 0,18) für Werkzeugleiste, Optionszeilen, Auswahl-, Format- und Markierleiste.
+- **F14** Seitenzahlen im Navigator und in der Seitenleiste mit gleich breiten Ziffern; in der Seitenleiste markiert nur die Farbe die aktuelle Seite.
+- **F15 Kontextmenü der Bibliothek:** Export-Varianten unter „Teilen und exportieren ▸“ (PDF, .noty, Abschnitt „Nur Text“ ohne Symbole); `.noty` mit eigenem Symbol, auch im Editor.
+- **F17 Wortlaut:** „Im Heft suchen“/„Im Dokument suchen“ auch in der Werkzeugleiste, „weiteres Heft daneben“, „Heft geöffnet“, „Gesetzessammlung“ statt „Gesetzesfenster“ in Hinweisen.
+- **F19** Farbfelder der Squeeze-Palette nennen ihre Farbe und den Zustand „ausgewählt“.
+- **F20 Deaktiviert:** ein Aussehen, Weiß 0,35 (`NotyChrome.disabledOpacity`): Kopf, Navigatorpfeile, Auswahlleiste, Palette.
+- **Offen (Gerät/Modell):** F3 Haptik, F5 Überlauf-Kante, F7 Hover in der Squeeze-Palette, F8 Fortschritt/Abbrechen, F12 Hover-Sprache, F16 Kontextmenü-Vorschau/Ziehen in der Seitenleiste, F18 Trefferflächen.
+- **Stand:** implementiert; auf dev portiert mit `xtool dev build` gebaut, nicht installiert, am iPad ungeprüft (Zeiger-/Stift-Hover, Glasränder unter iOS 26, Kontrast des Statushinweises, VoiceOver-Ansagen).
 
 ## Stand und Nachweise
 

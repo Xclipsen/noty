@@ -153,7 +153,7 @@ struct SettingsView: View {
                 Section {
                     Label {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Bereich „\(workspaces.title)“")
+                            Text("Bereich \(NotyText.quoted(workspaces.title))")
                             Text(workspaces.kind == nil ? "Standardbereich" : workspaces.kind == .mirror ? "Spiegel einer anderen noty-App, wird beim nächsten Abgleich ersetzt" : "Getrennter Test-/Restore-Bereich").font(.caption).foregroundStyle(.secondary)
                         }
                     } icon: { Image(systemName: workspaces.kind.symbol) }
@@ -219,7 +219,7 @@ struct SettingsView: View {
 }
 
 private func areaFooter(_ area: String) -> some View {
-    Text("Gilt für Bereich „\(area)“ und wird mit dessen Werkzeugeinstellungen gespeichert.")
+    Text("Gilt für Bereich \(NotyText.quoted(area)) und wird mit dessen Werkzeugeinstellungen gespeichert.")
 }
 
 private struct GeneralSettingsPage: View {
@@ -283,7 +283,7 @@ private struct EditorSettingsPage: View {
                 keyToggle("PDFs einheitlich anzeigen", isOn: Binding(get: { toolbox.preferences.normalizePageWidths ?? false }, set: { toolbox.preferences.normalizePageWidths = $0 }))
                     .accessibilityHint("Gleiche Arbeitsblattbreite mit Schreibraum daneben. Ändert nur die Anzeige.")
                 keyToggle("Auch mit dem Finger zeichnen", isOn: $toolbox.preferences.fingerDrawing)
-            } header: { Text("Bereich „\(area)“") } footer: {
+            } header: { Text("Bereich \(NotyText.quoted(area))") } footer: {
                 Text("„PDFs einheitlich anzeigen“ ändert nur die Anzeige; PDF-Originale und Export bleiben unverändert. Beim Fingerzeichnen mit zwei Fingern navigieren.")
             }
             .disabled(!toolbox.writable)
@@ -400,6 +400,8 @@ private struct BackupSettingsPage: View {
     @State private var showingForm = false
     @State private var showingAreas = false
     @State private var restoredArea = false
+    /// Status of the automatic backup when its last busy phase began (announcements).
+    @State private var statusBeforeBackupWork: String?
     /// The pushed form shows backup errors itself; avoid a second alert.
     @State private var formVisible = false
     @State private var file: LibraryArchiveFile?
@@ -475,7 +477,19 @@ private struct BackupSettingsPage: View {
                 .popover(isPresented: $showingInfo) { info }
             }
         }
-        .overlay { if library.busy || workspaces.busy || externalBackup.busy { ProgressView().padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+        .overlay { if library.busy || workspaces.busy || externalBackup.busy { ProgressView(activityTitle).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+        // Results of backup work for VoiceOver (polish audit F10); steps ending in „…“ stay silent.
+        .onChange(of: library.backupStatus) { _, note in
+            if !note.hasSuffix("…") { AccessibilityNotification.Announcement(note).post() }
+        }
+        // Only a new result: retrieving an archive leaves the status as it was,
+        // so an unchanged (or still running „…“) status stays silent.
+        .onChange(of: externalBackup.busy) { _, busy in
+            if busy { statusBeforeBackupWork = externalBackup.status; return }
+            let status = externalBackup.status
+            if status != statusBeforeBackupWork, !status.hasSuffix("…") { AccessibilityNotification.Announcement(status).post() }
+            statusBeforeBackupWork = nil
+        }
         .onAppear { externalBackup.checkFolder() }
         .fileImporter(isPresented: $importing,
                       allowedContentTypes: importPurpose == .backupFolder ? [.folder] : [.notyLibrary, .data]) { result in
@@ -511,6 +525,15 @@ private struct BackupSettingsPage: View {
     }
 
     private func pick(_ purpose: ImportPurpose) { importPurpose = purpose; importing = true }
+    /// Words for the spinner: what is running (polish audit F8, labels only).
+    private var activityTitle: String {
+        if externalBackup.busy {
+            // The external backup reports its steps; retrieving keeps the last note.
+            return externalBackup.status.hasSuffix("…") ? externalBackup.status : "Backup wird geladen und geprüft …"
+        }
+        if workspaces.busy { return "Bereich wird übernommen …" }
+        return "Bibliotheksbackup wird erstellt …"
+    }
     private func exportLibrary() {
         Task {
             guard await toolbox.flush() else { library.error = toolbox.status; return }
@@ -576,14 +599,15 @@ private struct TrashSettingsPage: View {
             if items.isEmpty {
                 ContentUnavailableView("Papierkorb ist leer", systemImage: "trash",
                                        description: Text("Gelöschte Hefte, Textdokumente und Ordner erscheinen hier, bis sie wiederhergestellt oder endgültig gelöscht werden."))
-            } else if library.busy { ProgressView() }
+            } else if library.busy { ProgressView("Papierkorb wird bearbeitet …") }
         }
-        .navigationTitle("Papierkorb · \(area)")
+        .navigationTitle("Papierkorb · \(NotyText.isolated(area))")
         .navigationBarTitleDisplayMode(.inline)
         .keyboardSheet()
         .confirmationDialog("Endgültig löschen?", isPresented: Binding(get: { purging != nil }, set: { if !$0 { purging = nil } }),
                             titleVisibility: .visible, presenting: purging) { item in
-            Button("„\(item.title)“ endgültig löschen", role: .destructive) {
+            // Fixed verb: a long title in the button would truncate the action away; the name is in the message.
+            Button("Endgültig löschen", role: .destructive) {
                 purging = nil
                 Task { await library.purge([item.id]) }
             }
@@ -606,7 +630,7 @@ private struct TrashSettingsPage: View {
         var options = [KeyQuestion.Option(title: "Wiederherstellen") { Task { await library.restore(item.id) } }]
         if item.source != .legacyMain {
             options.append(KeyQuestion.Option(title: "Endgültig löschen …", destructive: true) {
-                KeyboardRouter.shared.ask("Endgültig löschen?", message: purgeMessage(item), confirm: "„\(item.title)“ endgültig löschen", safe: true) {
+                KeyboardRouter.shared.ask("Endgültig löschen?", message: purgeMessage(item), confirm: "Endgültig löschen", safe: true) {
                     Task { await library.purge([item.id]) }
                 }
             })
@@ -619,13 +643,9 @@ private struct TrashSettingsPage: View {
             Image(systemName: item.librarySymbol(filled: false)).font(.title3).foregroundStyle(.secondary).frame(width: 28)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.title)
-                HStack(spacing: 6) {
-                    if let date = item.deletedAt { Text("Gelöscht \(NotyText.listDate(date))") }
-                    let count = library.purgeCount(item) - 1
-                    if item.isFolder { Text("· \(NotyText.count(count, "enthaltener Eintrag", "enthaltene Einträge"))") }
-                    if item.source == .legacyMain { Text("· Ursprüngliches Heft") }
-                }.font(.caption).foregroundStyle(.secondary)
+                Text(item.title).lineLimit(2).truncationMode(.middle)
+                // One string: separate texts each wrapped into ragged mini-columns.
+                Text(details(item)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer()
             Menu {
@@ -652,10 +672,20 @@ private struct TrashSettingsPage: View {
         }
     }
 
+    private func details(_ item: NotebookCore.LibraryItem) -> String {
+        var parts: [String] = []
+        if let date = item.deletedAt { parts.append("Gelöscht \(NotyText.listDate(date))") }
+        let count = library.purgeCount(item) - 1
+        if item.isFolder, count > 0 { parts.append(NotyText.count(count, "enthaltener Eintrag", "enthaltene Einträge")) }
+        if item.source == .legacyMain { parts.append("Ursprüngliches Heft") }
+        return parts.joined(separator: " · ")
+    }
+
     private func purgeMessage(_ item: NotebookCore.LibraryItem) -> String {
         let contained = library.purgeCount(item) - 1
-        let content = item.isFolder && contained > 0 ? " einschließlich \(contained) enthaltener Einträge" : ""
-        return "„\(item.title)“\(content) wird vom iPad entfernt. Das kann nicht rückgängig gemacht werden. Ältere Backups enthalten den Eintrag weiterhin."
+        let content = !item.isFolder || contained <= 0 ? ""
+            : contained == 1 ? " einschließlich 1 enthaltenen Eintrags" : " einschließlich \(contained) enthaltener Einträge"
+        return "\(NotyText.quoted(item.title))\(content) wird vom iPad entfernt. Das kann nicht rückgängig gemacht werden. Ältere Backups enthalten den Eintrag weiterhin."
     }
 }
 

@@ -18,7 +18,7 @@ public struct ContentSearchHit: Identifiable, Sendable {
         id = UUID(); self.documentID = documentID; self.pageID = pageID; self.pageNumber = pageNumber
         self.title = title; self.text = String(text.prefix(2_000)); self.kind = kind; self.bounds = bounds; self.seam = seam
     }
-    private static let locale = Locale(identifier: "de_DE")
+    static let locale = Locale(identifier: "de_DE")
     public func matches(_ query: String) -> Bool {
         if seam != nil { return crossingRange(query) != nil }
         let terms = query.split(whereSeparator: \.isWhitespace)
@@ -50,5 +50,82 @@ public struct ContentSearchHit: Identifiable, Sendable {
             from = found.location + 1
         }
         return nil
+    }
+}
+
+/// A short excerpt of a hit around its match, for the result row: a long
+/// paragraph or PDF line (up to 2 000 characters) would otherwise show its
+/// first lines without the searched term.
+public struct ContentSearchSnippet: Sendable, Equatable {
+    public let text: String
+    /// The match inside `text`, when the query was found.
+    public let match: Range<String.Index>?
+    /// Text before the match, the match and the text after it, so a row can
+    /// emphasise the middle part without index arithmetic.
+    public var parts: (before: Substring, match: Substring, after: Substring) {
+        guard let match else { return (text[...], "", "") }
+        return (text[..<match.lowerBound], text[match], text[match.upperBound...])
+    }
+}
+
+extension ContentSearchHit {
+    /// The excerpt around the first match of `query` (case and diacritic
+    /// insensitive like `matches`): the whole phrase when it occurs, else
+    /// the earliest single term. Cut on word boundaries with „…“; line
+    /// breaks become spaces. Without a match: the start of the text.
+    public func snippet(for query: String, radius: Int = 80) -> ContentSearchSnippet {
+        ContentSearchHit.snippet(of: text, query: query, radius: radius)
+    }
+
+    static func snippet(of text: String, query: String, radius: Int) -> ContentSearchSnippet {
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
+        let radius = max(radius, 1)
+        var found: Range<String.Index>?
+        if !terms.isEmpty {
+            found = text.range(of: terms.joined(separator: " "), options: options, locale: locale)
+            if found == nil {
+                found = terms.compactMap { text.range(of: $0, options: options, locale: locale) }
+                    .min { $0.lowerBound < $1.lowerBound }
+            }
+        }
+        // A diacritic-insensitive match may end inside a cluster (before a
+        // combining accent): widen it to whole characters first.
+        let anchor = found.map { roundedOut($0, in: text) } ?? (text.startIndex..<text.startIndex)
+        let reach = found == nil ? radius * 2 : radius
+        var start = text.index(anchor.lowerBound, offsetBy: -reach, limitedBy: text.startIndex) ?? text.startIndex
+        var end = text.index(anchor.upperBound, offsetBy: reach, limitedBy: text.endIndex) ?? text.endIndex
+        // Word boundaries: never start or end inside a word that was cut.
+        if start > text.startIndex, let space = text[start..<anchor.lowerBound].firstIndex(where: \.isWhitespace) {
+            start = text.index(after: space)
+        }
+        if end < text.endIndex, let space = text[anchor.upperBound..<end].lastIndex(where: \.isWhitespace) {
+            end = space
+        }
+        func flat(_ part: Substring) -> String {
+            String(part.map { $0.isNewline ? " " : $0 })
+        }
+        var before = flat(text[start..<anchor.lowerBound]), after = flat(text[anchor.upperBound..<end])
+        if start > text.startIndex { before = "…" + before.drop(while: \.isWhitespace) }
+        if end < text.endIndex {
+            after = String(after.reversed().drop(while: \.isWhitespace).reversed()) + "…"
+        }
+        guard found != nil else { return ContentSearchSnippet(text: before + after, match: nil) }
+        let middle = flat(text[anchor])
+        let joined = before + middle + after
+        // Offsets on the final string, widened to its own Character
+        // boundaries: a join (e.g. „…“ or a space before a combining mark)
+        // can merge clusters that were separate in the parts.
+        let lower = joined.utf8.index(joined.startIndex, offsetBy: before.utf8.count)
+        let upper = joined.utf8.index(lower, offsetBy: middle.utf8.count)
+        return ContentSearchSnippet(text: joined, match: roundedOut(lower..<upper, in: joined))
+    }
+
+    /// `range` widened to the nearest Character boundaries of `text`.
+    static func roundedOut(_ range: Range<String.Index>, in text: String) -> Range<String.Index> {
+        var lower = range.lowerBound, upper = range.upperBound
+        while lower > text.startIndex, lower.samePosition(in: text) == nil { lower = text.unicodeScalars.index(before: lower) }
+        while upper < text.endIndex, upper.samePosition(in: text) == nil { upper = text.unicodeScalars.index(after: upper) }
+        return lower..<upper
     }
 }

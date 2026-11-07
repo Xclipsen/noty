@@ -189,6 +189,10 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
             onEditingActive?(false)
             compositionBase = nil
             generation += 1; dragStart = nil; notice.isHidden = true
+            // A pending flow settle works on the document by box ID and survives
+            // a page/layout switch; a restore or undo (new content generation)
+            // ends it (Swift-Audit S16).
+            if self.contentGeneration != contentGeneration { settleWork?.cancel(); settleWork = nil; pendingSettle = nil }
             // The delegate goes first: `textViewDidEndEditing` will not report this.
             if isEditingField { KeyboardRouter.shared.textEnded() }
             for field in fields.values {
@@ -1040,7 +1044,12 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     private func scheduleFlowSettle() {
         guard pendingSettle != nil else { return }
         settleWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.settleFlow() }
+        let expected = contentGeneration
+        let work = DispatchWorkItem { [weak self] in
+            // A restore/undo in the meantime leaves the new state alone.
+            guard let self, self.contentGeneration == expected else { return }
+            self.settleFlow()
+        }
         settleWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
     }

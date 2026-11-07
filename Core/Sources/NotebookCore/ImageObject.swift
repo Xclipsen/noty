@@ -155,7 +155,7 @@ extension Notebook {
     }
 
     public mutating func replaceImages(_ images: [ImageObject], pageID: UUID) throws {
-        var next = try preparedForPageEditing()
+        var next = try editableForPages()
         guard let index = next.pages.firstIndex(where: { $0.id == pageID }) else { throw PageOperationError.missingPage }
         next.schemaVersion = max(5, next.schemaVersion)
         next.pages[index].images = images

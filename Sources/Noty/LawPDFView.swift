@@ -85,6 +85,8 @@ struct NativeLawPDF: UIViewRepresentable {
         private var straightened = false
         private var lastMove = CGPoint.zero
         private var holdToken = 0
+        /// Pencil Pro tick when „nach Halten begradigen“ snaps (as in the notebook).
+        private var holdFeedback: UIFeedbackGenerator?
         init(_ parent: NativeLawPDF) { self.parent = parent }
 
         private var sections: [LawSection] { parent.selection.controller?.document?.sections ?? [] }
@@ -410,6 +412,7 @@ struct NativeLawPDF: UIViewRepresentable {
             switch gesture.state {
             case .began:
                 straightened = false
+                if #available(iOS 17.5, *), holdFeedback == nil { holdFeedback = UICanvasFeedbackGenerator(view: v) }
                 ink.begin(at: gesture.startLocation ?? point, color: parent.pen.kind == .eraser ? .systemGray : lawMarkColor(parent.pen.hex))
                 ink.extend(to: point); lastMove = point; scheduleHold()
             case .changed:
@@ -473,7 +476,10 @@ struct NativeLawPDF: UIViewRepresentable {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard let self, self.holdToken == token, !self.straightened, let ink = self.ink, ink.isDrawing, ink.straighten() else { return }
                 self.straightened = true
-                UISelectionFeedbackGenerator().selectionChanged()
+                // `lastMove` is the resting Pencil point in the view's coordinates.
+                if #available(iOS 17.5, *), let feedback = self.holdFeedback as? UICanvasFeedbackGenerator {
+                    feedback.pathCompleted(at: self.lastMove)
+                }
             }
         }
         /// Marks on the stroke's page that the stroke touches (page units, y down).
