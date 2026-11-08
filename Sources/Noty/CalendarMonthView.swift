@@ -1,45 +1,86 @@
 import SwiftUI
 import NotebookCore
 
-/// Month: seven clean columns, quiet ISO week numbers, at most three
-/// compact lines per day. What does not fit is counted in „+ n weitere“,
-/// never dropped.
-/// Remembers a sideways swipe in progress: the cells' buttons ignore the
-/// touch that was a swipe (a simultaneous gesture would let them fire too).
+/// Remembers a gesture that just ended over the month (holding and
+/// dragging to create): the cells' buttons ignore the touch that was part of
+/// it (their tap may still arrive on release).
 final class CalendarSwipeGuard {
     private var at = Date.distantPast
     func mark() { at = Date() }
     var recent: Bool { Date().timeIntervalSince(at) < 0.45 }
 }
 
+/// Month: seven clean columns, quiet ISO week numbers, at most three
+/// compact lines per day. What does not fit is counted in „+ n weitere“,
+/// never dropped.
+/// „Monat senkrecht blättern (08.11.2026)“: the months lie one below the
+/// other and turn page by page with a vertical scroll (finger, trackpad,
+/// mouse wheel) – each page is one month filling the height. Does a month
+/// of six weeks not fit (large text, small window), the months scroll
+/// freely instead, each with a small title. The page in the middle is the
+/// shown month: it moves the anchor (title, zoom, „Heute“), and every
+/// other change of the anchor (‹ ›, keys, trackpad swipe, mini month) turns
+/// to its page without scrolling motion. Only visible months are rendered.
+/// Holding a day and dragging over days and weeks creates an all-day event.
 struct CalendarMonthView: View {
     @ObservedObject var model: CalendarModel
-    @State private var swipe = CalendarSwipeGuard()
-    /// Pinch between the views: its fingers are no swipe and no tap.
-    @Environment(\.calendarZoom) private var zoom
-    /// The content follows the swipe with a rubber band (`CalendarSwipeShift`).
-    @Environment(\.calendarSwipe) private var shift
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// A sideways drag is running; reset by SwiftUI also when it is cancelled
-    /// (no `onEnded`), so the shifted month springs back then too.
-    @GestureState private var swiping = false
     let showAll: (Date) -> Void
+    /// The user scrolled to another month (its first day): the calendar
+    /// moves the anchor there without the period motion.
+    let scrolled: (Date) -> Void
+    @State private var tapGuard = CalendarSwipeGuard()
+    /// Pinch between the views: its fingers are no tap.
+    @Environment(\.calendarZoom) private var zoom
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The page in the middle (first day of its month); written by scrolling.
+    @State private var visibleMonth: Date?
+    /// The months shown: `reach` either side of a centre month (computed
+    /// once per recentring, not per render).
+    @State private var months: [Date]
+    /// The scroll came to rest (iPadOS 18+; before: always): only then does
+    /// the scrolled month become the anchor, so a page dragged and let go
+    /// back does not flicker the title.
+    @State private var scrollIdle = true
+    /// Programmatic turns (anchor changed, size changed, recentred): the
+    /// position the scroll view reports meanwhile is not the user's.
+    @State private var settling = CalendarSwipeGuard()
+    @State private var creation = CalendarCreateState()
+    @State private var creating = false
     @ScaledMetric(relativeTo: .caption) private var line: CGFloat = 20
     @ScaledMetric(relativeTo: .caption) private var weekColumn: CGFloat = 28
     @ScaledMetric(relativeTo: .body) private var minimumRow: CGFloat = 100
     @ScaledMetric(relativeTo: .body) private var dateRow: CGFloat = 32
+    @ScaledMetric(relativeTo: .headline) private var titleRow: CGFloat = 36
     /// Calm cells: never more than three lines, the rest behind „+ n weitere“.
     private let maximumLines = 3
     /// Below this column width the lines become coloured dots.
     static let dotColumn: CGFloat = 76
+    /// Months rendered lazily either side of `center` (five years); it is
+    /// recentred long before the user reaches an end.
+    static let reach = 60
     private var calendar: Calendar { model.calendar }
+    private var creatable: Bool { model.canWrite && !model.showsSamples && model.selectedEvent == nil && model.draft == nil }
+
+    init(model: CalendarModel, showAll: @escaping (Date) -> Void, scrolled: @escaping (Date) -> Void) {
+        _model = ObservedObject(wrappedValue: model)
+        self.showAll = showAll
+        self.scrolled = scrolled
+        let month = CalendarDates.startOfMonth(model.anchor, calendar: model.calendar)
+        _visibleMonth = State(initialValue: month)
+        _months = State(initialValue: Self.window(around: month, calendar: model.calendar))
+    }
+
+    private static func window(around month: Date, calendar: Calendar) -> [Date] {
+        (-reach...reach).map { CalendarDates.shift(month, mode: .month, by: $0, calendar: calendar) }
+    }
+    private var center: Date { months[Self.reach] }
+    private var anchorMonth: Date { CalendarDates.startOfMonth(model.anchor, calendar: calendar) }
+    private func distance(_ from: Date, _ to: Date) -> Int {
+        calendar.dateComponents([.month], from: from, to: to).month ?? 0
+    }
 
     var body: some View {
-        let grid = CalendarMonthGrid(month: model.anchor, calendar: calendar)
         GeometryReader { geo in
-            let header: CGFloat = 28
-            let available = geo.size.height - header
-            let row = max(minimumRow, available / CGFloat(grid.weeks.count))
             let column = (geo.size.width - weekColumn) / 7
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
@@ -52,62 +93,158 @@ struct CalendarMonthView: View {
                             .accessibilityLabel(CalendarText.weekdays[index])
                     }
                 }
-                .frame(height: header)
+                .frame(height: 28)
                 Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
-                // Large text or a short window: the rows keep their minimum height and scroll.
-                ScrollView(.vertical) {
-                    VStack(spacing: 0) {
-                        ForEach(grid.weeks, id: \.days.first) { week in
-                            HStack(spacing: 0) {
-                                Text("\(week.number)").font(.caption2).monospacedDigit().foregroundStyle(CalendarPalette.quiet)
-                                    .frame(width: weekColumn, height: row, alignment: .top).padding(.top, 9)
-                                    .accessibilityLabel("Kalenderwoche \(week.number)")
-                                ForEach(week.days, id: \.self) { day in
-                                    cell(day, inMonth: grid.contains(day, calendar: calendar), width: column, height: row)
-                                }
-                            }
-                            .frame(height: row)
-                            // Pinch on the row opens this week; lights up after zooming out of it.
-                            .calendarZoomTarget(.week, start: week.days[0], cornerRadius: 6)
-                            Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
-                        }
-                    }
-                }
-                .scrollDisabled(row * CGFloat(grid.weeks.count) <= available + 1)
-            }
-        }
-        // Swipe sideways to the previous/next month (only clearly horizontal
-        // swipes; taps, the cells' buttons and vertical scrolling stay as they
-        // are). The month follows the finger with a rubber band; let go
-        // below the threshold it springs back with the finger's speed.
-        .simultaneousGesture(DragGesture(minimumDistance: 30)
-            .updating($swiping) { _, active, _ in active = true }
-            .onChanged { value in
-                let dx = value.translation.width, dy = value.translation.height
-                guard zoom?.recentPinch != true else {
-                    shift?.settle(translation: dx, velocity: 0, reduced: reduceMotion)
-                    return
-                }
-                if abs(dx) > 24, abs(dx) > abs(dy) {
-                    swipe.mark()
-                    shift?.follow(dx, reduced: reduceMotion)
+                GeometryReader { inner in
+                    pages(column: column, height: inner.size.height)
                 }
             }
-            .onEnded { value in
-                let dx = value.translation.width, dy = value.translation.height
-                if abs(dx) > 80, abs(dx) > 2 * abs(dy), zoom?.recentPinch != true {
-                    shift?.handOff()
-                    model.step(dx < 0 ? 1 : -1)
-                } else {
-                    shift?.settle(translation: dx, velocity: value.velocity.width, reduced: reduceMotion)
-                }
-            })
-        // Cancelled drag (another gesture took over): back to rest. After `onEnded` the offset is 0 already.
-        .onChange(of: swiping) { _, active in
-            if !active { shift?.settle(translation: 0, velocity: 0, reduced: reduceMotion) }
         }
+        // The form the placeholder opened closed (saved or cancelled): it goes.
+        .onChange(of: model.draft?.id) { _, id in creation.formChanged(to: id) }
         .accessibilityAction(named: "Nächster Monat") { model.step(1) }
         .accessibilityAction(named: "Vorheriger Monat") { model.step(-1) }
+    }
+
+    private func pages(column: CGFloat, height: CGFloat) -> some View {
+        // Paging only when every month (up to six weeks) fits its page.
+        let paging = 6 * (minimumRow + 0.5) <= height
+        return ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                LazyVStack(spacing: 0) {
+                    ForEach(months, id: \.self) { month in
+                        page(month, column: column, height: paging ? height : nil)
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(CalendarMonthPaging(paging: paging))
+            .scrollPosition(id: $visibleMonth, anchor: .center)
+            .modifier(CalendarMonthScrollStart(centered: paging, idle: $scrollIdle))
+            .scrollIndicators(.hidden)
+            .scrollDisabled(creating)
+            .onAppear { turn(to: anchorMonth, proxy) }
+            // Rotation, Split View, Dynamic Type: back to the anchor's page.
+            .onChange(of: height) { _, _ in turn(to: anchorMonth, proxy) }
+            .onChange(of: paging) { _, _ in turn(to: anchorMonth, proxy) }
+            .onChange(of: anchorMonth) { _, month in
+                if month != visibleMonth { turn(to: month, proxy) }
+            }
+            .onChange(of: visibleMonth) { _, _ in commitScroll(proxy) }
+            .onChange(of: scrollIdle) { _, _ in commitScroll(proxy) }
+        }
+    }
+
+    /// Shows `month`'s page without scrolling motion (taps get the period
+    /// motion of the calendar, keys none). Recentres the months first when
+    /// it lies near or beyond their ends.
+    private func turn(to month: Date, _ proxy: ScrollViewProxy) {
+        settling.mark()
+        if abs(distance(center, month)) > Self.reach - 12 {
+            NotyMotion.instant { months = Self.window(around: month, calendar: calendar) }
+        }
+        NotyMotion.instant {
+            visibleMonth = month
+            proxy.scrollTo(month, anchor: .center)
+        }
+        // After the layout of new pages (first appearance, recentred months).
+        Task { @MainActor in
+            NotyMotion.instant { proxy.scrollTo(month, anchor: .center) }
+        }
+    }
+
+    /// The user's scroll rests on another month: it becomes the anchor.
+    private func commitScroll(_ proxy: ScrollViewProxy) {
+        guard scrollIdle, let month = visibleMonth else { return }
+        if settling.recent {
+            // A programmatic turn is still landing: keep the anchor's page.
+            if month != anchorMonth { NotyMotion.instant { visibleMonth = anchorMonth } }
+            return
+        }
+        guard month != anchorMonth else { return }
+        scrolled(month)
+        if abs(distance(center, month)) > Self.reach - 12 { turn(to: month, proxy) }
+    }
+
+    /// One month: its weeks (paging: filling `height`; free: rows of the
+    /// minimum height below a small title). Pinch targets and creating
+    /// only on the shown page (a week can be on two pages).
+    private func page(_ month: Date, column: CGFloat, height: CGFloat?) -> some View {
+        let grid = CalendarMonthGrid(month: month, calendar: calendar)
+        let count = CGFloat(grid.weeks.count)
+        let row = height.map { max(minimumRow, ($0 - 0.5 * count) / count) } ?? minimumRow
+        let pitch = row + 0.5
+        let shown = month == visibleMonth
+        let days = grid.weeks.flatMap(\.days)
+        return VStack(spacing: 0) {
+            if height == nil {
+                let index = calendar.component(.month, from: month) - 1
+                Text("\(CalendarText.months[index]) \(calendar.component(.year, from: month))")
+                    .font(.headline)
+                    .padding(.leading, weekColumn + CalendarSpace.s)
+                    .frame(maxWidth: .infinity, minHeight: titleRow, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
+            }
+            VStack(spacing: 0) {
+                ForEach(grid.weeks, id: \.days.first) { week in
+                    HStack(spacing: 0) {
+                        Text("\(week.number)").font(.caption2).monospacedDigit().foregroundStyle(CalendarPalette.quiet)
+                            .frame(width: weekColumn, height: row, alignment: .top).padding(.top, 9)
+                            .accessibilityLabel("Kalenderwoche \(week.number)")
+                        ForEach(week.days, id: \.self) { day in
+                            cell(day, inMonth: grid.contains(day, calendar: calendar), width: column, height: row)
+                        }
+                    }
+                    .frame(height: row)
+                    // Pinch on the row opens this week; lights up after zooming out of it.
+                    .calendarZoomTarget(.week, start: week.days[0], cornerRadius: 6, enabled: shown)
+                    Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                CalendarCreateMonthPlaceholder(state: creation, page: month, left: weekColumn, column: column, row: pitch, rows: grid.weeks.count)
+            }
+            // Hold a day and drag over days and weeks: a new all-day event.
+            .background {
+                CalendarHoldDrag(enabled: creatable && shown,
+                                 canBegin: { $0.x >= weekColumn },
+                                 interrupted: { zoom?.recentPinch == true }) { phase, point in
+                    monthCreate(phase, point, month: month, days: days, column: column, pitch: pitch, rows: grid.weeks.count)
+                }
+                .accessibilityHidden(true)
+            }
+        }
+        .frame(height: height)
+    }
+
+    /// Press: the day under the finger; drag: every day from there to the
+    /// day under the finger (row by row); let go: the form, all-day.
+    private func monthCreate(_ phase: CalendarHoldDrag.Phase, _ point: CGPoint, month: Date, days: [Date],
+                             column: CGFloat, pitch: CGFloat, rows: Int) {
+        let state = creation
+        let index = CalendarCreation.gridIndex(x: Double(point.x - weekColumn), y: Double(point.y), cellWidth: Double(column),
+                                               cellHeight: Double(pitch), columns: 7, rows: rows)
+        tapGuard.mark()
+        switch phase {
+        case .began:
+            state.clear(animated: false)
+            state.page = month
+            state.anchorIndex = index
+            state.show(range: index...index, reduced: reduceMotion)
+            creating = true
+        case .changed:
+            guard state.page == month, let anchor = state.anchorIndex else { return }
+            state.show(range: CalendarCreation.days(from: anchor, to: index, count: days.count), reduced: reduceMotion)
+        case .ended:
+            creating = false
+            guard state.page == month, let range = state.range, days.indices.contains(range.lowerBound),
+                  days.indices.contains(range.upperBound) else { state.clear(animated: true); return }
+            model.requestNewEvent(start: days[range.lowerBound], end: days[range.upperBound], allDay: true)
+            if let id = model.draft?.id { state.draftID = id } else { state.clear(animated: true) }
+        case .cancelled:
+            creating = false
+            state.clear(animated: true)
+        }
     }
 
     private func cell(_ day: Date, inMonth: Bool, width: CGFloat, height: CGFloat) -> some View {
@@ -118,7 +255,7 @@ struct CalendarMonthView: View {
         let weekend = CalendarDates.weekdayIndex(day, calendar: calendar) >= 5
         let holiday = events.contains { $0.source == .holidays }
         return VStack(alignment: .leading, spacing: 1) {
-            Button { if !swipe.recent && zoom?.recentPinch != true { model.open(day, in: .day) } } label: {
+            Button { if !tapGuard.recent && zoom?.recentPinch != true { model.open(day, in: .day) } } label: {
                 Text("\(calendar.component(.day, from: day))")
                     .font(.subheadline.weight(isToday ? .bold : .regular)).monospacedDigit()
                     .foregroundStyle(isToday ? Color.white : !inMonth ? CalendarPalette.quiet : weekend ? Color.secondary : Color.primary)
@@ -137,10 +274,10 @@ struct CalendarMonthView: View {
                 dots(events, day: day)
             } else {
                 ForEach(events.prefix(split.shown)) { event in
-                    CalendarMonthRow(event: event, model: model, swipe: swipe).frame(height: line)
+                    CalendarMonthRow(event: event, model: model, swipe: tapGuard).frame(height: line)
                 }
                 if split.hidden > 0 {
-                    Button { if !swipe.recent && zoom?.recentPinch != true { showAll(day) } } label: {
+                    Button { if !tapGuard.recent && zoom?.recentPinch != true { showAll(day) } } label: {
                         Text(CalendarText.more(split.hidden)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                             .padding(.horizontal, 6).padding(.vertical, 1)
                             .background(Capsule().fill(Color.white.opacity(0.08)))
@@ -174,7 +311,7 @@ struct CalendarMonthView: View {
         if !events.isEmpty {
             let shown = events.prefix(8)
             let cancelled = events.filter { $0.status == .cancelled }.count
-            Button { if !swipe.recent && zoom?.recentPinch != true { showAll(day) } } label: {
+            Button { if !tapGuard.recent && zoom?.recentPinch != true { showAll(day) } } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(7), spacing: 3), count: 4), alignment: .leading, spacing: 3) {
                         ForEach(shown) { event in
@@ -210,7 +347,7 @@ struct CalendarMonthRow: View {
     @ObservedObject var model: CalendarModel
     @Environment(\.calendarOrigin) private var origins
     @Environment(\.calendarZoom) private var zoom
-    /// Month grid: a swipe across the row does not open it.
+    /// Month grid: a hold-and-drag that ends on the row does not open it.
     var swipe: CalendarSwipeGuard?
 
     var body: some View {
@@ -332,28 +469,70 @@ struct CalendarListRow: View {
 /// Year: twelve light months; a quiet dot marks event days, a faint band
 /// the holidays (WebUntis, else the built-in NRW table; samples: fictitious).
 /// Tapping a day opens it, the month name the month.
+/// „Jahr öffnet beim aktuellen Monat (08.11.2026)“: the anchor's month
+/// stands in the middle – on opening (without a first frame at January),
+/// after zooming out of a month (that month lights up there), after ‹ ›,
+/// „Heute“ and a change of the anchor. In the running year without
+/// navigation the anchor is today, so it is the current month.
 struct CalendarYearView: View {
     @ObservedObject var model: CalendarModel
     @Environment(\.calendarZoom) private var zoom
+    @Environment(\.calendarTodayPulse) private var todayPulse
     @ScaledMetric(relativeTo: .body) private var cell: CGFloat = 44
+    /// Month (1–12) at the scroll position; starts at the anchor's month.
+    @State private var focusMonth: Int?
     private var calendar: Calendar { model.calendar }
+
+    init(model: CalendarModel) {
+        _model = ObservedObject(wrappedValue: model)
+        _focusMonth = State(initialValue: model.calendar.component(.month, from: model.anchor))
+    }
 
     var body: some View {
         GeometryReader { geo in
             let tile = cell * 7
             let columns = max(1, Int((geo.size.width - 2 * CalendarSpace.xl + 32) / (tile + 32)))
-            ScrollView {
-                VStack(alignment: .leading, spacing: CalendarSpace.l) {
-                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(tile), spacing: 32, alignment: .top), count: columns),
-                              alignment: .leading, spacing: CalendarSpace.xl) {
-                        ForEach(CalendarDates.yearMonths(model.anchor, calendar: calendar), id: \.self) { month($0) }
+            let first = CalendarDates.startOfYear(model.anchor, calendar: calendar)
+            // Rows of month numbers; every tile is a scroll target (`focusMonth`).
+            let rows = stride(from: 1, through: 12, by: columns).map { Array($0...min(12, $0 + columns - 1)) }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: CalendarSpace.l) {
+                        VStack(alignment: .leading, spacing: CalendarSpace.xl) {
+                            ForEach(rows, id: \.self) { numbers in
+                                HStack(alignment: .top, spacing: 32) {
+                                    ForEach(numbers, id: \.self) { number in
+                                        month(CalendarDates.shift(first, mode: .month, by: number - 1, calendar: calendar))
+                                            .frame(width: tile, alignment: .leading)
+                                    }
+                                }
+                                .scrollTargetLayout()
+                            }
+                        }
+                        legend
                     }
-                    legend
+                    .padding(.horizontal, CalendarSpace.xl).padding(.vertical, CalendarSpace.l)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.horizontal, CalendarSpace.xl).padding(.vertical, CalendarSpace.l)
-                .frame(maxWidth: .infinity)
+                .scrollPosition(id: $focusMonth, anchor: .center)
+                .onAppear { center(proxy) }
+                .onChange(of: model.anchor) { _, _ in center(proxy) }
+                .onChange(of: columns) { _, _ in center(proxy) }
+                // „Heute“ tapped while the anchor already was today.
+                .onChange(of: todayPulse.count) { _, _ in center(proxy) }
             }
         }
+    }
+
+    /// The anchor's month into the middle, without scrolling motion (the
+    /// period change has its own); again after the first layout pass.
+    private func center(_ proxy: ScrollViewProxy) {
+        let month = calendar.component(.month, from: model.anchor)
+        NotyMotion.instant {
+            focusMonth = month
+            proxy.scrollTo(month, anchor: .center)
+        }
+        Task { @MainActor in NotyMotion.instant { proxy.scrollTo(month, anchor: .center) } }
     }
 
     /// The same source as in the status popover (`holidaySourceText`):
@@ -434,5 +613,37 @@ struct CalendarYearView: View {
         .accessibilityLabel([CalendarText.longDate(day, calendar: calendar), isToday ? "heute" : nil,
                              count > 0 ? NotyText.count(count, "Termin", "Termine") : nil, holiday?.title].compactMap { $0 }.joined(separator: ", "))
         .accessibilityHint("Öffnet den Tag")
+    }
+}
+
+/// Month pages: one page per scroll when every month fits its page,
+/// otherwise free scrolling (large text, small window).
+struct CalendarMonthPaging: ScrollTargetBehavior {
+    let paging: Bool
+
+    func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
+        if paging { PagingScrollTargetBehavior.paging.updateTarget(&target, context: context) }
+    }
+}
+
+/// iPadOS 18+: the months open on the middle page (the anchor's month)
+/// without a first frame elsewhere, and report when a scroll comes to rest.
+/// iPadOS 17: `ScrollViewReader` turns to the page on appear; every scroll
+/// position counts at once.
+private struct CalendarMonthScrollStart: ViewModifier {
+    let centered: Bool
+    @Binding var idle: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content
+                .defaultScrollAnchor(centered ? .center : nil, for: .initialOffset)
+                .onScrollPhaseChange { _, phase in
+                    let rest = phase == .idle
+                    if idle != rest { idle = rest }
+                }
+        } else {
+            content
+        }
     }
 }

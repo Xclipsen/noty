@@ -25,9 +25,6 @@ struct CalendarView: View {
     @Environment(\.scenePhase) private var scenePhase
     /// Command palette (⇧⌘P) and key overview (⌘/) also take Esc.
     @ObservedObject private var router = KeyboardRouter.shared
-    /// The sidebar is wanted (shown only when the width allows it).
-    @AppStorage("noty.calendar.sidebar") private var sidebarWanted = true
-    @State private var sidebarFits = false
     @State private var dayList: CalendarDayListRequest?
     @State private var searching = false
     @State private var connecting = false
@@ -56,7 +53,7 @@ struct CalendarView: View {
     @State private var previousNav: CalendarNavKey?
     /// Keyboard changes and quick follow-ups do not move (read by the keyframes).
     @State private var navMotion = CalendarNavMotion()
-    /// Sideways swipe (trackpad, month finger swipe). Held, not observed.
+    /// Sideways swipe (trackpad). Held, not observed.
     @State private var swipeShift = CalendarSwipeShift()
     @State private var todayPulse = CalendarPulse()
     // Zoom between the views (docs/CALENDAR-PLAN.md, „Zoom zwischen Ansichten“)
@@ -97,7 +94,9 @@ struct CalendarView: View {
 
     private var main: some View {
         GeometryReader { geo in
-            let sidebar = sidebarWanted && geo.size.width >= CalendarSidebar.minimumTotalWidth
+            // Wanted (`model.sidebarWanted`, button left of „Hefte | Kalender“ in
+            // the library's toolbar, ⌃⌘S) and only when the width allows it.
+            let sidebar = model.sidebarWanted && geo.size.width >= CalendarSidebar.minimumTotalWidth
             let contentWidth = geo.size.width - (sidebar ? CalendarSidebar.width : 0)
             HStack(spacing: 0) {
                 if sidebar {
@@ -123,7 +122,9 @@ struct CalendarView: View {
                 if model.selectedEvent != nil { problemBanners.frame(maxWidth: 640).padding(.top, CalendarSpace.s) }
             }
             .overlay(alignment: .bottom) { toasts }
-            .onChange(of: geo.size.width >= CalendarSidebar.minimumTotalWidth, initial: true) { _, fits in sidebarFits = fits }
+            .onChange(of: geo.size.width >= CalendarSidebar.minimumTotalWidth, initial: true) { _, fits in
+                if model.sidebarFits != fits { model.sidebarFits = fits }
+            }
         }
         .environment(\.calendarOrigin, origins)
         .environment(\.calendarTodayPulse, todayPulse)
@@ -373,6 +374,16 @@ struct CalendarView: View {
         if navKey != before { navMotion.instantKey = navKey }
     }
 
+    /// The month pages were scrolled to `month` (its first day): the anchor
+    /// follows (day of the month kept, like ‹ ›) – without the period motion,
+    /// the scroll itself was the motion.
+    private func scrolledToMonth(_ month: Date) {
+        let current = CalendarDates.startOfMonth(model.anchor, calendar: calendar)
+        let steps = calendar.dateComponents([.month], from: current, to: month).month ?? 0
+        guard steps != 0 else { return }
+        byKey { model.anchor = CalendarDates.shift(model.anchor, mode: .month, by: steps, calendar: calendar) }
+    }
+
     /// The trackpad swipe (`CalendarTrackpadSwipe`) turned a period.
     private func swiped(_ steps: Int) {
         swipeShift.handOff()
@@ -396,7 +407,10 @@ struct CalendarView: View {
         }
             .keyframeAnimator(initialValue: CalendarNavFrame(), trigger: key) { view, frame in
                 let frame = frame.sanitized
-                view.offset(x: frame.offset).scaleEffect(frame.scale, anchor: zoom?.anchor ?? .center).opacity(frame.opacity)
+                // The month pages scroll vertically: its period change slides vertically too.
+                let vertical = key.mode == .month
+                view.offset(x: vertical ? 0 : frame.offset, y: vertical ? frame.offset : 0)
+                    .scaleEffect(frame.scale, anchor: zoom?.anchor ?? .center).opacity(frame.opacity)
             } keyframes: { _ in
                 let pinched = zoom?.from == previous ? zoom : nil
                 let move = CalendarNavFrame.start(from: previous, to: key, reduced: reduceMotion, moves: moves, zoom: pinched)
@@ -425,7 +439,7 @@ struct CalendarView: View {
                     .accessibilityHidden(true)
             }
             // Two fingers only: taps, scrolling, the long press on cards and the
-            // month swipe keep working; the event window (and its note) is above.
+            // month pages keep working; the event window (and its note) is above.
             .simultaneousGesture(zoomGesture, including: zoomable ? .all : .subviews)
     }
 
@@ -544,7 +558,8 @@ struct CalendarView: View {
             case .day:
                 CalendarTimeGrid(days: [calendar.startOfDay(for: model.anchor)], model: model, detailed: true)
             case .month:
-                CalendarMonthView(model: model) { dayList = CalendarDayListRequest(day: $0) }
+                CalendarMonthView(model: model, showAll: { dayList = CalendarDayListRequest(day: $0) },
+                                  scrolled: { scrolledToMonth($0) })
             case .year:
                 CalendarYearView(model: model)
             }
@@ -734,25 +749,10 @@ struct CalendarView: View {
             || (!model.showsSamples && (model.connection != nil || model.systemEnabled))
     }
 
-    /// Button: the sidebar slides (panel); ⌃⌘S: at once.
-    private func toggleSidebar(animated: Bool) {
-        if animated {
-            withAnimation(NotyMotion.panel(reduceMotion)) { sidebarWanted.toggle() }
-        } else {
-            NotyMotion.instant { sidebarWanted.toggle() }
-        }
-    }
-
+    /// The sidebar button sits left of „Hefte | Kalender“ in the library's
+    /// toolbar (`LibraryView.leadingToolbar`, slides with `NotyMotion.panel`);
+    /// ⌃⌘S here changes it at once.
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            if sidebarFits {
-                Button { toggleSidebar(animated: true) } label: {
-                    Label(sidebarWanted ? "Kalenderleiste ausblenden" : "Kalenderleiste einblenden", systemImage: "sidebar.squares.left")
-                }
-                .help("Kalenderleiste (⌃⌘S)")
-                .disabled(model.selectedEvent != nil)
-            }
-        }
         ToolbarItem(placement: .topBarTrailing) {
             if !model.showsSamples {
                 Button { showingNotifications = true } label: {
@@ -851,7 +851,7 @@ struct CalendarView: View {
                 }
             }
         }
-        Section("WebUntis (inoffiziell)") {
+        Section("WebUntis") {
             if model.connection != nil {
                 Button { model.refreshNow() } label: { Label("Aktualisieren", systemImage: "arrow.clockwise") }
                     .disabled(model.syncing || model.credentialsMissing || model.showsSamples)
@@ -884,8 +884,8 @@ struct CalendarView: View {
             Button("Herauszoomen") { byKey { zoom(.zoomOut, at: nil) } }.keyboardShortcut(zoomPossible(.zoomOut) ? key("-") : nil)
             Button("Schnell anlegen") { quickEntry = true }
                 .keyboardShortcut(navigationKeys && model.canWrite && !model.showsSamples ? KeyboardShortcut("n", modifiers: [.command, .option]) : nil)
-            Button("Kalenderleiste") { toggleSidebar(animated: false) }
-                .keyboardShortcut(navigationKeys && sidebarFits ? KeyboardShortcut("s", modifiers: [.command, .control]) : nil)
+            Button("Kalenderleiste") { NotyMotion.instant { model.sidebarWanted.toggle() } }
+                .keyboardShortcut(navigationKeys && model.sidebarFits ? KeyboardShortcut("s", modifiers: [.command, .control]) : nil)
         }
         .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
     }

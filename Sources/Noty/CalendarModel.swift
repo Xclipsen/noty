@@ -27,6 +27,17 @@ final class CalendarModel: ObservableObject {
     @Published var anchor = Date() { didSet { anchorMoved() } }
     @Published var selection: String? { didSet { if selection != oldValue { selectionChanged() } } }
     @Published var draft: CalendarDraft?
+    /// The calendar sidebar is wanted (device preference `noty.calendar.sidebar`,
+    /// as before with `@AppStorage`). Held here so the library's toolbar
+    /// button (left of „Hefte | Kalender“) and ⌃⌘S in the calendar change
+    /// it in one transaction – the button with the panel animation, the key at once.
+    @Published var sidebarWanted = UserDefaults.standard.object(forKey: CalendarModel.sidebarKey) as? Bool ?? true {
+        didSet { if sidebarWanted != oldValue { UserDefaults.standard.set(sidebarWanted, forKey: Self.sidebarKey) } }
+    }
+    /// The calendar is wide enough for its sidebar (set by `CalendarView`):
+    /// only then is the sidebar button shown and ⌃⌘S active.
+    @Published var sidebarFits = false
+    nonisolated static let sidebarKey = "noty.calendar.sidebar"
     @Published var hiddenSources: Set<CalendarSource> = [] { didSet { releaseVanishedSelection() } }
     /// Demo mode: only fictitious entries, nothing editable or stored. Off by default.
     @Published var showsSamples = false { didSet { if showsSamples != oldValue { selection = nil; sampleYear = nil; rebuild() } } }
@@ -670,6 +681,19 @@ final class CalendarModel: ObservableObject {
         let day = calendar.startOfDay(for: mode == .day || mode == .week ? anchor : today)
         let start = calendar.date(bySettingHour: min(22, hour + 1), minute: 0, second: 0, of: day) ?? day
         draft = CalendarDraft(start: start, calendar: calendar)
+    }
+
+    /// New entry from holding and dragging over the grid (docs/CALENDAR-PLAN.md,
+    /// „Termin per Halten und Ziehen anlegen“): the form pre-filled with the
+    /// span. Timed: `start`/`end` as instants (also over several days);
+    /// all-day: the first and the last covered day (the form shows the last
+    /// day, the end is stored exclusively). Nothing is saved before the form.
+    func requestNewEvent(start: Date, end: Date, allDay: Bool) {
+        guard draft == nil, canWrite, !showsSamples else { return }
+        var prepared = CalendarDraft(start: start, calendar: calendar)
+        prepared.allDay = allDay
+        prepared.end = allDay ? max(calendar.startOfDay(for: start), calendar.startOfDay(for: end)) : max(end, start)
+        draft = prepared
     }
 
     func editDraft(for entry: CalendarEntry) -> CalendarDraft {

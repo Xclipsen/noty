@@ -339,6 +339,19 @@ struct LibraryView: View {
             .disabled(!canSwitchMode || model.opened != nil)
     }
 
+    /// Calendar sidebar on/off: the button slides it (`NotyMotion.panel`;
+    /// Reduce Motion: it fades, the layout changes at once); ⌃⌘S in the
+    /// calendar changes it without motion. Off while the event window is open.
+    private var calendarSidebarButton: some View {
+        Button {
+            withAnimation(NotyMotion.panel(reduceMotion)) { calendar.sidebarWanted.toggle() }
+        } label: {
+            Label(calendar.sidebarWanted ? "Kalenderleiste ausblenden" : "Kalenderleiste einblenden", systemImage: "sidebar.squares.left")
+        }
+        .help("Kalenderleiste (⌃⌘S)")
+        .disabled(calendar.selectedEvent != nil || model.opened != nil)
+    }
+
     // MARK: Keyboard mode (docs/KEYBOARD.md)
     /// Items per row of the grid (`gridColumns`); the lists have one.
     private var keyboardColumns: Int {
@@ -796,10 +809,17 @@ struct LibraryView: View {
             }
     }
 
-    /// Leading items of both sides, in this order: the switch, then (Hefte,
-    /// inside a folder) the way up. One declaration for both sides keeps the
-    /// switch the same item while the content changes beneath it.
+    /// Leading items of both sides, in this order: (Kalender, wide enough)
+    /// the calendar sidebar button, the switch, then (Hefte, inside a folder)
+    /// the way up. One declaration for both sides keeps the switch the same
+    /// item while the content changes beneath it.
     @ToolbarContentBuilder private var leadingToolbar: some ToolbarContent {
+        // Left of the switch (user request 08.11.2026; before, the calendar's
+        // own toolbar put it right of it). Only where the sidebar has room
+        // (`sidebarFits`, from 864 pt calendar width: landscape, not portrait).
+        if showsCalendar && calendar.sidebarFits {
+            ToolbarItem(placement: .topBarLeading) { calendarSidebarButton }
+        }
         ToolbarItem(placement: .topBarLeading) { modeSwitch }
         if !showsCalendar, case .folder(let id) = location, search.isEmpty {
             ToolbarItem(placement: .topBarLeading) {

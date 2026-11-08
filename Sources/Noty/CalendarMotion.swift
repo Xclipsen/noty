@@ -98,8 +98,8 @@ struct CalendarCardRemoval: Transition {
     }
 }
 
-/// Sideways swipe in progress (two fingers on the trackpad, a finger in the
-/// month): the content follows with a rubber band and hands over to the
+/// Sideways swipe in progress (two fingers on the trackpad; the finger swipe
+/// of the month gave way to its vertical pages): the content follows with a rubber band and hands over to the
 /// period change once it triggers. Held, not observed, by the calendar:
 /// a swipe frame re-renders only `CalendarSwipeShifted`.
 @MainActor final class CalendarSwipeShift: ObservableObject {
@@ -199,7 +199,7 @@ extension EnvironmentValues {
         get { self[CalendarLocalChangeKey.self] }
         set { self[CalendarLocalChangeKey.self] = newValue }
     }
-    /// The sideways shift of the content (month swipe with the finger).
+    /// The sideways shift of the content (trackpad swipe).
     var calendarSwipe: CalendarSwipeShift? {
         get { self[CalendarSwipeKey.self] }
         set { self[CalendarSwipeKey.self] = newValue }

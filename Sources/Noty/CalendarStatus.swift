@@ -140,7 +140,7 @@ struct CalendarStatusPopover: View {
                 }
             }
             .font(.subheadline.weight(.semibold))
-            Text("Inoffiziell über die Untis-Mobile-Freigabe. Aktualisiert sich beim Öffnen und höchstens alle 15 Minuten, solange der Kalender sichtbar ist.")
+            Text("Über die Untis-Mobile-Freigabe. Aktualisiert sich beim Öffnen und höchstens alle 15 Minuten, solange der Kalender sichtbar ist.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }

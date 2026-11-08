@@ -11,7 +11,7 @@ import UIKit
 // continuous scrolling (`allowedScrollTypesMask = .continuous`; a mouse
 // wheel is discrete and stays out) sits on the hosting view of the calendar
 // – an ancestor of the grid's scroll views, so it sees the events they see.
-// Fingers, the Pencil, the long press on cards, the month swipe and the
+// Fingers, the Pencil, the long press on cards, holding to create and the
 // pinch never reach it; vertical trackpad scrolling of the hour grid starts
 // vertical and is declined at once.
 

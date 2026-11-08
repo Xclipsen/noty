@@ -23,6 +23,9 @@ struct CalendarEventForm: View {
     /// Where the event is written; set on appear from the entry or the default.
     @State private var target: CalendarWriteTarget = .local
     @State private var targetSet = false
+    /// A new, empty form starts in the title („+“ › „Leeres Formular“, ⌘N,
+    /// holding and dragging over the grid).
+    @FocusState private var titleFocused: Bool
     private var systemTarget: Bool { target != .local }
     private var editingSystem: Bool { model.isSystemSeries(draft.editing) || (draft.editing.map { model.isSystem($0) } ?? false) }
     private var asksScope: Bool { draft.isSeriesOccurrence || model.isSystemSeries(draft.editing) }
@@ -37,6 +40,7 @@ struct CalendarEventForm: View {
             Form {
                 Section {
                     TextField("Titel", text: $draft.title)
+                        .focused($titleFocused)
                     TextField("Ort", text: $draft.location)
                 }
                 Section {
@@ -109,6 +113,13 @@ struct CalendarEventForm: View {
             guard !targetSet else { return }
             targetSet = true
             target = draft.editing.flatMap { model.writeTarget(of: $0) } ?? (draft.editing == nil ? model.systemDefaultTarget : .local)
+            if draft.editing == nil && draft.title.isEmpty {
+                // After the sheet has arrived; focusing during its entrance is ignored.
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    titleFocused = true
+                }
+            }
         }
         .onChange(of: draft.start) { old, new in
             // Moving the start keeps the duration.

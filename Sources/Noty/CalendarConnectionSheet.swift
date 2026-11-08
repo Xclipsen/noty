@@ -66,7 +66,7 @@ struct CalendarConnectionSheet: View {
     }
 
     private var notice: some View {
-        Text("Inoffizieller Zugang über die Untis-Mobile-Freigabe (WebUntis → Profil → Freigaben). noty liest damit nur Stundenplan und Ferien; Benutzer und Schlüssel bleiben ausschließlich im Schlüsselbund dieses iPads und gelangen in keine Datei und kein Backup.")
+        Text("Anmeldung über die Untis-Mobile-Freigabe (WebUntis → Profil → Freigaben). noty liest damit nur Stundenplan und Ferien; Benutzer und Schlüssel bleiben ausschließlich im Schlüsselbund dieses iPads und gelangen in keine Datei und kein Backup.")
     }
 
     @ViewBuilder private func connectedSection(_ connection: CalendarConnectionRecord) -> some View {

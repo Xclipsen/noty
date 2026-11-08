@@ -42,7 +42,7 @@ import NotebookCore
         return CalendarZoom.target(atX: point.x, y: point.y, in: list, horizontalOnly: kind == .day)
     }
 
-    /// A pinch is running or just ended: taps and the month swipe that
+    /// A pinch is running or just ended: taps and holding to create that
     /// were part of it do nothing.
     func markPinch() { pinchAt = Date() }
     var recentPinch: Bool { Date().timeIntervalSince(pinchAt) < 0.45 }

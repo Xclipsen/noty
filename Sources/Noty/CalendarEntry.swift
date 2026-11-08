@@ -245,7 +245,7 @@ extension CalendarEntry {
     var originText: String {
         if isSample { return source == .holidays ? "Beispiel, keine echte Ferienquelle" : "Beispieldaten" }
         switch source {
-        case .timetable: return "WebUntis, inoffiziell über Untis-Mobile-Freigabe"
+        case .timetable: return "WebUntis (Untis-Mobile-Freigabe)"
         case .holidays: return "WebUntis-Ferien"
         case .personal: return "noty, nur auf diesem iPad"
         case .system: return "Kalender des iPads"

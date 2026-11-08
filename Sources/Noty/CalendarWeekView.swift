@@ -16,11 +16,22 @@ struct CalendarTimeGrid: View {
     private let topInset: CGFloat = 10
     /// An own event is being moved or stretched: the grid does not scroll meanwhile.
     @State private var dragging = false
+    /// Holding and dragging creates a new event (docs/CALENDAR-PLAN.md, „Termin
+    /// per Halten und Ziehen anlegen“). The placeholder lives in its own
+    /// object: a finger step re-renders only the placeholder; `creating`
+    /// (once per creation) stops the scrolling.
+    @State private var creation = CalendarCreateState()
+    @State private var allDayCreation = CalendarCreateState()
+    @State private var creating = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.calendarZoom) private var zoom
     @Environment(\.calendarLocalChange) private var localChange
     private var calendar: Calendar { model.calendar }
     private var minimumColumn: CGFloat { days.count == 1 ? 260 : 96 }
+    /// New events can be created here at all (the all-day row then stays visible).
+    private var canCreate: Bool { model.canWrite && !model.showsSamples }
+    /// … and right now: nothing presented above the grid.
+    private var creatable: Bool { canCreate && model.selectedEvent == nil && model.draft == nil }
 
     var body: some View {
         GeometryReader { geo in
@@ -28,19 +39,34 @@ struct CalendarTimeGrid: View {
             let column = max(natural, minimumColumn)
             let content = VStack(spacing: 0) {
                 header(column)
-                // Only when there is something all-day in the shown days.
-                if !allDayItems.isEmpty { allDayRow(column) }
+                // When there is something all-day in the shown days – and always
+                // while new events can be created (holding there creates all-day ones).
+                if canCreate || !allDayItems.isEmpty { allDayRow(column) }
                 Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
                 hours(column)
             }
             .frame(width: gutter + column * CGFloat(days.count), height: geo.size.height)
             if natural < minimumColumn {
                 ScrollView(.horizontal) { content }
+                    .scrollDisabled(dragging || creating)
                     .accessibilityHint("Waagerecht scrollbar, um alle Tage zu sehen")
             } else {
                 content
             }
         }
+        // Another period: a placeholder of the old days goes at once.
+        .onChange(of: days) { _, _ in endCreations() }
+        // The form the placeholder opened closed (saved or cancelled): it goes.
+        .onChange(of: model.draft?.id) { _, id in
+            creation.formChanged(to: id)
+            allDayCreation.formChanged(to: id)
+        }
+    }
+
+    private func endCreations() {
+        creation.clear(animated: false)
+        allDayCreation.clear(animated: false)
+        if creating { creating = false }
     }
 
     // MARK: Header
@@ -110,7 +136,9 @@ struct CalendarTimeGrid: View {
 
     private func allDayRow(_ column: CGFloat) -> some View {
         let items = allDayItems
-        let lanes = (items.map(\.lane).max() ?? -1) + 1
+        // At least one lane: the empty row is where all-day events are created.
+        let lanes = max(1, (items.map(\.lane).max() ?? -1) + 1)
+        let height = CGFloat(lanes) * laneHeight + 6
         return ZStack(alignment: .topLeading) {
             Text("ganztägig").font(.caption2).foregroundStyle(CalendarPalette.quiet)
                 .lineLimit(1).minimumScaleFactor(0.8)
@@ -122,9 +150,59 @@ struct CalendarTimeGrid: View {
                     .frame(width: width, height: laneHeight - 3)
                     .offset(x: gutter + CGFloat(item.first) * column + 2, y: 3 + CGFloat(item.lane) * laneHeight)
             }
+            CalendarCreateAllDayPlaceholder(state: allDayCreation, gutter: gutter, column: column, days: days.count, height: height)
         }
         // Every lane stays visible; nothing is cut off.
-        .frame(width: gutter + column * CGFloat(days.count), height: CGFloat(lanes) * laneHeight + 6, alignment: .topLeading)
+        .frame(width: gutter + column * CGFloat(days.count), height: height, alignment: .topLeading)
+        // Hold on free space and drag sideways: a new all-day event over the covered days.
+        .background {
+            CalendarHoldDrag(enabled: creatable,
+                             canBegin: { allDayFree($0, column: column, items: items) },
+                             interrupted: { zoom?.recentPinch == true }) { phase, point in
+                allDayCreate(phase, point, column: column)
+            }
+            .accessibilityHidden(true)
+        }
+    }
+
+    /// Free space of the all-day row: inside the day columns, not on a chip.
+    private func allDayFree(_ point: CGPoint, column: CGFloat, items: [AllDayItem]) -> Bool {
+        let x = point.x - gutter
+        guard x >= 0, x < column * CGFloat(days.count) else { return false }
+        return !items.contains { item in
+            CGRect(x: gutter + CGFloat(item.first) * column + 2, y: 3 + CGFloat(item.lane) * laneHeight,
+                   width: CGFloat(item.last - item.first + 1) * column - 4, height: laneHeight - 3)
+                .insetBy(dx: -2, dy: -2).contains(point)
+        }
+    }
+
+    private func allDayCreate(_ phase: CalendarHoldDrag.Phase, _ point: CGPoint, column: CGFloat) {
+        let state = allDayCreation
+        let x = Double(point.x - gutter)
+        switch phase {
+        case .began:
+            let day = CalendarCreation.column(x: x, width: Double(column), count: days.count, current: nil, hysteresis: 8)
+            state.clear(animated: false)
+            state.anchorIndex = day
+            state.column = day
+            state.show(range: day...day, reduced: reduceMotion)
+            creating = true
+        case .changed:
+            guard let anchor = state.anchorIndex else { return }
+            let day = CalendarCreation.column(x: x, width: Double(column), count: days.count, current: state.column, hysteresis: 8)
+            state.column = day
+            state.show(range: CalendarCreation.days(from: anchor, to: day, count: days.count), reduced: reduceMotion)
+        case .ended:
+            creating = false
+            guard let range = state.range, days.indices.contains(range.lowerBound), days.indices.contains(range.upperBound) else {
+                state.clear(animated: true); return
+            }
+            model.requestNewEvent(start: days[range.lowerBound], end: days[range.upperBound], allDay: true)
+            if let id = model.draft?.id { state.draftID = id } else { state.clear(animated: true) }
+        case .cancelled:
+            creating = false
+            state.clear(animated: true)
+        }
     }
 
     // MARK: Hours
@@ -150,10 +228,23 @@ struct CalendarTimeGrid: View {
                             .offset(x: gutter + CGFloat(index) * column)
                     }
                     nowLine(column)
+                    CalendarCreateTimedPlaceholder(state: creation, days: days, calendar: calendar, gutter: gutter,
+                                                   column: column, hourHeight: hourHeight, topInset: topInset)
                 }
                 .frame(width: gutter + column * CGFloat(days.count), height: y(24 * 60) + topInset, alignment: .topLeading)
+                // Hold on free space and drag: a new event over the covered quarter hours
+                // (and days); near the top/bottom edge the grid scrolls by itself.
+                .background {
+                    CalendarHoldDrag(enabled: creatable,
+                                     canBegin: { gridFree($0, column: column) },
+                                     autoScroll: true,
+                                     interrupted: { zoom?.recentPinch == true }) { phase, point in
+                        timedCreate(phase, point, column: column)
+                    }
+                    .accessibilityHidden(true)
+                }
             }
-            .scrollDisabled(dragging)
+            .scrollDisabled(dragging || creating)
             .onAppear {
                 let hour = days.contains { calendar.isDate($0, inSameDayAs: model.today) }
                     ? max(0, calendar.component(.hour, from: Date()) - 1) : 7
@@ -189,6 +280,59 @@ struct CalendarTimeGrid: View {
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
             }
+        }
+    }
+
+    /// Free space of the hour grid: inside the day columns and the 24 hours,
+    /// not on a card (same layout as `dayColumn`) nor on the duration handle
+    /// of the selected card. Evaluated once per press.
+    private func gridFree(_ point: CGPoint, column: CGFloat) -> Bool {
+        let x = point.x - gutter
+        guard x >= 0, x < column * CGFloat(days.count), point.y >= topInset, point.y <= y(24 * 60) else { return false }
+        let index = min(days.count - 1, Int(x / column))
+        let inner = column - 8
+        return !timedItems(days[index]).contains { item in
+            let width = inner / CGFloat(item.placement.columns)
+            let height = max(22, CGFloat(item.end - item.start) / 60 * hourHeight - 3)
+            var rect = CGRect(x: gutter + CGFloat(index) * column + 4 + CGFloat(item.placement.column) * width,
+                              y: y(item.start) + 1.5, width: max(20, width - 2), height: height)
+            if model.selection == item.event.id { rect.size.height += 14 }
+            return rect.insetBy(dx: -2, dy: -2).contains(point)
+        }
+    }
+
+    /// Press: the quarter hour under the finger; drag: from there to the
+    /// quarter hour (and day) under the finger, both included; let go: the
+    /// form, pre-filled. Steps snap without animation.
+    private func timedCreate(_ phase: CalendarHoldDrag.Phase, _ point: CGPoint, column: CGFloat) {
+        let state = creation
+        let x = Double(point.x - gutter)
+        let minutes = Double((point.y - topInset) / hourHeight * 60)
+        switch phase {
+        case .began:
+            let day = CalendarCreation.column(x: x, width: Double(column), count: days.count, current: nil)
+            let cell = CalendarCreation.cell(day: day, minutes: minutes, dayCount: days.count)
+            state.clear(animated: false)
+            state.anchorCell = cell
+            state.column = day
+            state.show(span: CalendarCreation.span(from: cell, to: cell), reduced: reduceMotion)
+            creating = true
+        case .changed:
+            guard let anchor = state.anchorCell else { return }
+            let day = CalendarCreation.column(x: x, width: Double(column), count: days.count, current: state.column)
+            state.column = day
+            let cell = CalendarCreation.cell(day: day, minutes: minutes, dayCount: days.count)
+            state.show(span: CalendarCreation.span(from: anchor, to: cell), reduced: reduceMotion)
+        case .ended:
+            creating = false
+            guard let span = state.span, let dates = CalendarCreation.dates(span, days: days, calendar: calendar) else {
+                state.clear(animated: true); return
+            }
+            model.requestNewEvent(start: dates.start, end: dates.end, allDay: false)
+            if let id = model.draft?.id { state.draftID = id } else { state.clear(animated: true) }
+        case .cancelled:
+            creating = false
+            state.clear(animated: true)
         }
     }
 
