@@ -71,6 +71,11 @@ Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist
 - Wöchentliche Erneuerung am Omarchy-PC mit derselben Signierungsidentität und installierten App-ID ist akzeptiert. Ablauf dokumentieren und eine Erinnerung vorsehen. App-Daten **müssen** bei Updates/Erneuerung erhalten bleiben; die App nicht vorher löschen.
 - Die kostenlose Signierung und ihre Gültigkeit bleiben eine Betriebsanforderung. Offline-Schreiben erfordert nach der Installation keine Netzwerkverbindung; Erneuerung/externes Backup benötigen die jeweils nötige Verbindung.
 
+## Vermerk vom 08.11.2026: Bereiche und Backup/Sync in der finalen Version
+
+- **Bereiche** („Meine Bibliothek“ plus weitere Bereiche, inkl. gespiegelter Abgleichbereiche) sind für die jetzige Entwicklungs- und Testphase in Ordnung. In der finalen Version braucht der Nutzer sie voraussichtlich **nicht mehr**: dann eine einzige Bibliothek ohne Bereichsauswahl. Vor dem Entfernen klären, was mit vorhandenen Bereichsdaten passiert (zusammenführen oder per Bibliotheksbackup sichern) und wie APP-SYNC ohne Bereiche abläuft. Noch keine Umsetzung.
+- **Backup und Sync:** Nutzeridee, das Backup-System auf einen Sync zu reduzieren. Vergleich mit anderen Apps (Goodnotes, Notability, Noteshelf, Apple Notes, OneNote): die großen iPad-Notiz-Apps bieten beides getrennt – iCloud-Sync zwischen Geräten und zusätzlich ein einseitiges Auto-Backup (Drive/Dropbox/OneDrive/WebDAV) –, weil ein Sync Löschungen und beschädigte Stände ebenfalls verteilt. Offene Entscheidung; bis dahin gilt der Abschnitt „Backups“ oben und Live-Synchronisierung bleibt außerhalb der ersten vollständigen Version.
+
 ## Bewusst außerhalb der ersten vollständigen Version
 
 Audioaufnahme, eigener Kamerascanner, automatische Umwandlung von Handschrift in bearbeitbaren Tastaturtext, Fließtext mit automatischem Umbruch über Seiten, Tabelleneditor, KI-Funktionen, Live-Synchronisierung von Notizbüchern zwischen Geräten und Zusammenarbeit. Der bestätigte Gesetzes-/Markierungsabgleich ist davon ausgenommen. Gestrichelte freie Handschrift ist ebenfalls ausgeschlossen. Scans können über die Dateien-App als PDF importiert werden; lokale OCR dient der Suche.
