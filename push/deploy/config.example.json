@@ -18,8 +18,9 @@
   "curlPath": "/usr/bin/curl",
   "registrationsPerHourPerIP": 5,
   "registrationsPerDay": 20,
+  "registrationAttemptsPerHour": 60,
   "requestsPerMinutePerIP": 60,
   "inactiveRetentionDays": 30,
-  "noContactRetentionDays": 45,
+  "noContactRetentionDays": 120,
   "allowedUntisHostSuffixes": ["webuntis.com"]
 }

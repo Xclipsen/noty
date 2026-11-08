@@ -83,15 +83,16 @@ enum CalendarPushKeychain {
 
     private static let service = "noty.calendar.push"
     private static let account = "device"
+    /// The random id of a registration whose answer has not arrived (yet).
+    private static let registrationAccount = "registration"
 
-    private static var query: [String: Any] {
+    private static func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
 
-    static func save(_ credentials: Credentials) throws {
-        let data = try JSONEncoder().encode(credentials)
-        SecItemDelete(query as CFDictionary)
-        var item = query
+    private static func store(_ data: Data, account: String) throws {
+        SecItemDelete(query(account) as CFDictionary)
+        var item = query(account)
         item[kSecValueData as String] = data
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(item as CFDictionary, nil)
@@ -99,21 +100,46 @@ enum CalendarPushKeychain {
     }
 
     /// `locked`: not readable yet (device not unlocked since its start).
-    static func read() -> (credentials: Credentials?, locked: Bool) {
-        var request = query
+    private static func load(account: String) -> (data: Data?, locked: Bool) {
+        var request = query(account)
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
         let status = SecItemCopyMatching(request as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data,
-              let value = try? JSONDecoder().decode(Credentials.self, from: data) else { return (nil, status == errSecInteractionNotAllowed) }
-        return (value, false)
+        guard status == errSecSuccess, let data = result as? Data else { return (nil, status == errSecInteractionNotAllowed) }
+        return (data, false)
     }
 
-    static func delete() throws {
-        let status = SecItemDelete(query as CFDictionary)
+    private static func remove(account: String) throws {
+        let status = SecItemDelete(query(account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw WebUntisKeychain.Failure.status(status) }
     }
+
+    static func save(_ credentials: Credentials) throws {
+        try store(try JSONEncoder().encode(credentials), account: account)
+    }
+
+    /// `locked`: not readable yet (device not unlocked since its start).
+    static func read() -> (credentials: Credentials?, locked: Bool) {
+        let stored = load(account: account)
+        return (stored.data.flatMap { try? JSONDecoder().decode(Credentials.self, from: $0) }, stored.locked)
+    }
+
+    static func delete() throws { try remove(account: account) }
+
+    /// Registration id (a UUID) chosen before `POST /v1/register` and kept
+    /// until its answer arrived or the server confirmed its deletion: a
+    /// registration whose answer got lost (timeout, app closed) is found
+    /// again by it – never a device on the server the app knows nothing of.
+    static func savePendingRegistration(_ id: String) throws { try store(Data(id.utf8), account: registrationAccount) }
+
+    static func readPendingRegistration() -> (id: String?, locked: Bool) {
+        let stored = load(account: registrationAccount)
+        let id = stored.data.map { String(decoding: $0, as: UTF8.self) }.flatMap { UUID(uuidString: $0) != nil ? $0 : nil }
+        return (id, stored.locked)
+    }
+
+    static func deletePendingRegistration() throws { try remove(account: registrationAccount) }
 }
 
 /// What the app remembers about its registration besides the secret: a
@@ -211,6 +237,9 @@ struct CalendarPushAPI: Sendable {
         /// 401 (e.g. from a proxy) proves nothing.
         var deviceUnknown: Bool { status == 401 && code == "unauthorized" }
         var rateLimited: Bool { status == 429 }
+        /// The server may have done the work although no success came back:
+        /// no answer, a gateway timeout, or the same registration still running.
+        var outcomeUnknown: Bool { status == 0 || status == 409 || status == 504 || (status >= 500 && code == nil) }
     }
 
     struct Status: Decodable, Sendable {
@@ -247,6 +276,9 @@ struct CalendarPushAPI: Sendable {
         let connectionTimeZone: String
         let setup: Setup
         let settings: CalendarNotificationSettings
+        /// Random id of this registration (`CalendarPushKeychain.savePendingRegistration`):
+        /// sent again after a lost answer, the server answers with the same device.
+        let registrationID: String
     }
     struct Update: Encodable, Sendable {
         var deviceToken: String?, apnsEnvironment: String?, bundleID: String?, connectionID: String?, timeZone: String?, consent: String?
@@ -257,13 +289,21 @@ struct CalendarPushAPI: Sendable {
             deviceToken == nil && apnsEnvironment == nil && bundleID == nil && connectionID == nil && timeZone == nil && setup == nil
                 && settings == nil && connectionTimeZone == nil
         }
+        /// A new Freigabe, connection or lesson zone: the server fetches from WebUntis first.
+        var waitsForWebUntis: Bool { setup != nil || connectionID != nil || connectionTimeZone != nil }
     }
+
+    /// A registration or a new Freigabe waits for the server's test fetch
+    /// from WebUntis (2 × up to 40 s, the server gives up after 150 s, nginx
+    /// after 120 s); everything else answers at once (a background refresh
+    /// must not spend its time on a server that does not answer).
+    static let slowTimeout: TimeInterval = 130
+    static let quickTimeout: TimeInterval = 20
 
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
-        // A registration waits for the server's test fetch from WebUntis.
-        configuration.timeoutIntervalForRequest = 60
-        configuration.timeoutIntervalForResource = 90
+        configuration.timeoutIntervalForRequest = quickTimeout
+        configuration.timeoutIntervalForResource = slowTimeout + 10
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.httpShouldSetCookies = false
@@ -272,22 +312,39 @@ struct CalendarPushAPI: Sendable {
     }()
 
     func register(_ body: Register) async throws -> Registered {
-        try decode(Registered.self, try await send("POST", "v1/register", body: try JSONEncoder().encode(body), credentials: nil, expect: 201))
+        try decode(Registered.self, try await send("POST", "v1/register", body: try JSONEncoder().encode(body), authorization: nil, expect: 201,
+                                                   timeout: Self.slowTimeout))
     }
 
     func update(_ body: Update, credentials: CalendarPushKeychain.Credentials) async throws -> Status {
-        try decode(StatusBody.self, try await send("PUT", "v1/device", body: try JSONEncoder().encode(body), credentials: credentials, expect: 200))
-            .status
+        try decode(StatusBody.self, try await send("PUT", "v1/device", body: try JSONEncoder().encode(body), authorization: Self.bearer(credentials),
+                                                   expect: 200, timeout: body.waitsForWebUntis ? Self.slowTimeout : Self.quickTimeout)).status
     }
 
     func delete(credentials: CalendarPushKeychain.Credentials) async throws {
-        _ = try await send("DELETE", "v1/device", body: nil, credentials: credentials, expect: 204)
+        _ = try await send("DELETE", "v1/device", body: nil, authorization: Self.bearer(credentials), expect: 204)
+    }
+
+    /// Deletes what a registration with this id created (or withdraws it
+    /// while it still runs); 204 also when the server knows nothing of it.
+    func deleteRegistration(_ registrationID: String) async throws {
+        _ = try await send("DELETE", "v1/device", body: nil, authorization: "Registration " + registrationID, expect: 204)
+    }
+
+    /// `GET /v1/device`: the light contact that keeps the device on the server.
+    func status(credentials: CalendarPushKeychain.Credentials) async throws -> Status {
+        try decode(StatusBody.self, try await send("GET", "v1/device", body: nil, authorization: Self.bearer(credentials), expect: 200)).status
+    }
+
+    private static func bearer(_ credentials: CalendarPushKeychain.Credentials) -> String {
+        "Bearer \(credentials.deviceID).\(credentials.secret)"
     }
 
     func changes(since: Int?, credentials: CalendarPushKeychain.Credentials) async throws -> Changes {
         // Whole seconds only: the nginx path check allows [A-Za-z0-9=&_-] in the query.
         let query = since.map { "since=\(max(0, $0))" }
-        return try decode(Changes.self, try await send("GET", "v1/changes", query: query, body: nil, credentials: credentials, expect: 200))
+        return try decode(Changes.self, try await send("GET", "v1/changes", query: query, body: nil, authorization: Self.bearer(credentials),
+                                                       expect: 200))
     }
 
     private func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
@@ -295,8 +352,8 @@ struct CalendarPushAPI: Sendable {
         catch { throw Failure(status: 200, code: nil, message: "Der Mitteilungsdienst hat unlesbar geantwortet.") }
     }
 
-    private func send(_ method: String, _ path: String, query: String? = nil, body: Data?, credentials: CalendarPushKeychain.Credentials?,
-                      expect: Int) async throws -> Data {
+    private func send(_ method: String, _ path: String, query: String? = nil, body: Data?, authorization: String?,
+                      expect: Int, timeout: TimeInterval = CalendarPushAPI.quickTimeout) async throws -> Data {
         var url = base.appendingPathComponent(path)
         if let query, var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
             components.percentEncodedQuery = query
@@ -304,15 +361,13 @@ struct CalendarPushAPI: Sendable {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        // Only a registration or a new Freigabe waits for the server's WebUntis test; the rest answers at once
-        // (a background refresh must not spend its time on a server that does not answer).
-        if method == "GET" || method == "DELETE" { request.timeoutInterval = 20 }
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        if let credentials { request.setValue("Bearer \(credentials.deviceID).\(credentials.secret)", forHTTPHeaderField: "Authorization") }
+        if let authorization { request.setValue(authorization, forHTTPHeaderField: "Authorization") }
         let data: Data, response: URLResponse
         do { (data, response) = try await Self.session.data(for: request) }
         catch { throw Failure(status: 0, code: "network", message: Self.networkMessage(error)) }
@@ -344,6 +399,8 @@ struct CalendarPushAPI: Sendable {
             return Failure(status: status, code: "unauthorized", message: "Der Mitteilungsdienst kennt dieses Gerät nicht mehr.")
         case (401, _):
             return Failure(status: status, code: nil, message: "Der Mitteilungsdienst hat die Anfrage nicht angenommen (HTTP 401).")
+        case (409, "registration_in_progress"):
+            return Failure(status: status, code: body?.error, message: "Die Anmeldung läuft auf dem Server noch. noty fragt in ein paar Minuten erneut.")
         case (429, _):
             return Failure(status: status, code: "rate_limited",
                            message: body?.message ?? "Der Mitteilungsdienst ist gerade ausgelastet. noty versucht es später erneut.")
@@ -387,7 +444,18 @@ final class CalendarPushClient: ObservableObject {
     /// when the server itself last fetched the timetable successfully.
     private var serverLastSuccess: Date?
     /// The server asked to wait (429 with `Retry-After`): no request before.
-    private var blockedUntil: Date?
+    /// Shown in the sheet („bittet um eine Pause bis …“); the server keeps
+    /// polling and notifying meanwhile.
+    @Published private(set) var blockedUntil: Date?
+    /// The server did not answer (network, 5xx) or not within the short
+    /// limit before local change notifications: those do not wait for it
+    /// again before this moment (`refreshBeforeLocalChanges`, `keepAlive`).
+    private var quietUntil: Date?
+    /// The last registration's outcome is unknown (no answer): the same
+    /// registration id goes again after a few minutes, not after 30.
+    private var retryRegistrationSoon = false
+    /// Last daily contact attempt (`keepAlive`), this launch.
+    private var lastKeepAlive: Date?
     /// A registration whose secret the keychain refused and whose deletion
     /// failed: deleted again at the next sync of this launch.
     private var orphan: CalendarPushKeychain.Credentials?
@@ -464,6 +532,7 @@ final class CalendarPushClient: ObservableObject {
         guard isAvailable else { return }
         if state.wanted == true { UIApplication.shared.registerForRemoteNotifications() }
         if state.pendingDelete { Task { await self.sync(nil) } }
+        Task { await self.keepAlive() }
     }
 
     func received(token data: Data) {
@@ -498,19 +567,86 @@ final class CalendarPushClient: ObservableObject {
     }
 
     private var isBlocked: Bool { blockedUntil.map { $0 > Date() } ?? false }
+    private var isQuiet: Bool { quietUntil.map { $0 > Date() } ?? false }
 
     /// Before `recordChanges` decides about local notifications: a contact
-    /// older than 30 minutes (or none in this launch) is renewed with one
-    /// `GET /v1/changes` – the server's history then is in the bell (the
-    /// same changes are not announced twice) and `isActive` reflects the
-    /// server now. Only for the connection push is meant for.
-    func refreshBeforeLocalChanges(_ model: CalendarModel) async {
+    /// older than 30 minutes (or none in this launch, or a failure since) is
+    /// renewed with one `GET /v1/changes` – the server's history then is in
+    /// the bell (the same changes are not announced twice) and `isActive`
+    /// reflects the server now. Only for the connection push is meant for.
+    /// Waits at most `limit` seconds (also for a registration still in the
+    /// queue): the answer may still arrive later, then only into the bell.
+    /// No answer in time, or a network/server error: the next local changes
+    /// do not wait for this server again for 10 minutes.
+    func refreshBeforeLocalChanges(_ model: CalendarModel, limit: TimeInterval = 5) async {
         guard isAvailable, let base = CalendarPush.baseURL, state.wanted == true, state.registered, !state.pendingDelete,
-              let target = state.connectionID, model.connection?.id == target, UIApplication.shared.isProtectedDataAvailable else { return }
-        if let contact = state.lastContact, Date().timeIntervalSince(contact) < 30 * 60, serverLastSuccess != nil { return }
-        await serial {
-            guard !self.isBlocked, self.state.registered, let credentials = CalendarPushKeychain.read().credentials else { return }
-            await self.fetchChanges(api: CalendarPushAPI(base: base), credentials: credentials, model: model, target: target)
+              let target = state.connectionID, model.connection?.id == target, UIApplication.shared.isProtectedDataAvailable,
+              !isBlocked, !isQuiet else { return }
+        let failedSince = state.lastFailure.map { failure in state.lastContact.map { failure >= $0 } ?? true } ?? false
+        if let contact = state.lastContact, Date().timeIntervalSince(contact) < 30 * 60, serverLastSuccess != nil, !failedSince { return }
+        let work = Task { @MainActor in
+            await self.serial {
+                guard !self.isBlocked, self.state.registered, let credentials = CalendarPushKeychain.read().credentials else { return }
+                await self.fetchChanges(api: CalendarPushAPI(base: base), credentials: credentials, model: model, target: target)
+            }
+        }
+        if !(await Self.finishes(work, within: limit)) { quietUntil = Date().addingTimeInterval(10 * 60) }
+    }
+
+    /// Waits for `work` at most `seconds`; true when it finished in time.
+    /// The work itself goes on either way.
+    private static func finishes(_ work: Task<Void, Never>, within seconds: TimeInterval) async -> Bool {
+        let gate = FirstResult()
+        Task { @MainActor in await work.value; gate.finish(true) }
+        Task { @MainActor in try? await Task.sleep(for: .seconds(seconds)); gate.finish(false) }
+        return await gate.value()
+    }
+
+    /// The first of several answers (`finishes`).
+    @MainActor private final class FirstResult {
+        private var result: Bool?
+        private var continuation: CheckedContinuation<Bool, Never>?
+        func value() async -> Bool {
+            if let result { return result }
+            return await withCheckedContinuation { continuation = $0 }
+        }
+        func finish(_ value: Bool) {
+            guard result == nil else { return }
+            result = value
+            continuation?.resume(returning: value)
+            continuation = nil
+        }
+    }
+
+    /// At most once a day a light authenticated contact (`GET /v1/device`)
+    /// at launch and in a background refresh, whichever area is shown: the
+    /// server deletes devices without any contact after 120 days, and an
+    /// app used rarely (holidays) must not lose its registration for that.
+    func keepAlive() async {
+        // A busy queue talks to the server already (and renews the contact when it gets an answer).
+        guard isAvailable, CalendarPush.baseURL != nil, state.wanted == true, state.registered, !state.pendingDelete, !working,
+              UIApplication.shared.isProtectedDataAvailable, !isBlocked, !isQuiet else { return }
+        if let contact = state.lastContact, Date().timeIntervalSince(contact) < 24 * 3600 { return }
+        if let attempt = lastKeepAlive, Date().timeIntervalSince(attempt) < 3600 { return }
+        await serial { await self.contactIfDue() }
+    }
+
+    /// `keepAlive` inside the queue (also from `reconcile`).
+    private func contactIfDue() async {
+        guard let base = CalendarPush.baseURL, state.wanted == true, state.registered, !state.pendingDelete, !isBlocked, !isQuiet,
+              state.lastContact.map({ Date().timeIntervalSince($0) >= 24 * 3600 }) ?? true,
+              lastKeepAlive.map({ Date().timeIntervalSince($0) >= 3600 }) ?? true,
+              let credentials = CalendarPushKeychain.read().credentials else { return }
+        lastKeepAlive = Date()
+        do {
+            let status = try await CalendarPushAPI(base: base).status(credentials: credentials)
+            apply(status)
+            change { $0.lastContact = Date(); $0.lastError = nil; $0.lastFailure = nil }
+        } catch let failure as CalendarPushAPI.Failure where failure.deviceUnknown {
+            try? CalendarPushKeychain.delete()
+            change { $0.clearServer() }
+        } catch {
+            fail(error)
         }
     }
 
@@ -556,8 +692,21 @@ final class CalendarPushClient: ObservableObject {
         await serial { await self.signOff() }
     }
 
-    /// „Erneut versuchen“.
-    func retry(_ model: CalendarModel) async { await sync(model, force: true) }
+    /// „Erneut versuchen“. While the server asked for a pause (429) nothing
+    /// is sent; the sheet says until when.
+    func retry(_ model: CalendarModel) async {
+        quietUntil = nil
+        if let until = blockedUntil, until > Date() {
+            if !state.registered { change { $0.lastError = Self.pauseText(until); $0.lastFailure = Date() } }
+            return
+        }
+        await sync(model, force: true)
+    }
+
+    /// „Der Mitteilungsdienst bittet um eine Pause bis 14:05.“
+    static func pauseText(_ until: Date) -> String {
+        "Der Mitteilungsdienst bittet um eine Pause bis \(until.formatted(date: .omitted, time: .shortened))."
+    }
 
     /// A connection of `model` was replaced (`old` → `new`) or removed (`new` nil).
     func connectionChanged(_ model: CalendarModel, from old: UUID?, to new: UUID?) async {
@@ -601,17 +750,18 @@ final class CalendarPushClient: ObservableObject {
         let keychain = CalendarPushKeychain.read()
         guard !keychain.locked else { return }
         guard let model, model.loaded, model.connection?.id == target else {
-            // Another area is shown: only a new token is passed on.
+            // Another area is shown: only a new token is passed on, and the daily contact.
             if let credentials = keychain.credentials, state.registered, let token, token != state.sentToken {
                 var body = CalendarPushAPI.Update()
                 body.deviceToken = token; body.apnsEnvironment = environment
                 _ = await put(body, api: api, credentials: credentials, model: nil)
             }
+            await contactIfDue()
             return
         }
         // Change notifications off: nothing for the server to do; its data goes.
         guard model.notificationSettings.changes else {
-            if state.registered || keychain.credentials != nil { await signOff() }
+            if state.registered || keychain.credentials != nil || CalendarPushKeychain.readPendingRegistration().id != nil { await signOff() }
             return
         }
         guard let token else { UIApplication.shared.registerForRemoteNotifications(); return }
@@ -660,23 +810,39 @@ final class CalendarPushClient: ObservableObject {
         // Needs permission (otherwise nothing could be shown) and the Freigabe of this iPad.
         guard model.reminderPermission == .allowed, let setup = WebUntisKeychain.load(target),
               let bundleID = Bundle.main.bundleIdentifier else { return }
-        // After a failure automatic attempts wait 30 minutes (the server limits registrations per hour).
-        if !force, let last = state.lastRegisterAttempt, Date().timeIntervalSince(last) < 30 * 60 { return }
+        let pending = CalendarPushKeychain.readPendingRegistration()
+        guard !pending.locked else { return }
+        // After a failure automatic attempts wait 30 minutes (the server limits registrations per hour);
+        // a registration whose answer got lost goes again after 3 minutes, with the same id.
+        let pause: TimeInterval = pending.id != nil && retryRegistrationSoon ? 3 * 60 : 30 * 60
+        if !force, let last = state.lastRegisterAttempt, Date().timeIntervalSince(last) < pause { return }
+        // The id is stored before the request: whatever becomes of the answer, the
+        // server's device is found again by it (same device, new secret) or deleted.
+        let registrationID = pending.id ?? UUID().uuidString.lowercased()
+        if pending.id == nil {
+            do { try CalendarPushKeychain.savePendingRegistration(registrationID) } catch {
+                change { $0.lastError = "Der Schlüsselbund hat die Anmeldung nicht angenommen."; $0.lastFailure = Date() }
+                return
+            }
+        }
         change { $0.lastRegisterAttempt = Date() }
         let body = CalendarPushAPI.Register(deviceToken: token, apnsEnvironment: environment, bundleID: bundleID,
                                             connectionID: target.uuidString, timeZone: zone, consent: CalendarPush.consentVersion,
                                             connectionTimeZone: CalendarPush.connectionZone(model.connection),
-                                            setup: CalendarPushAPI.Setup(setup), settings: model.notificationSettings)
+                                            setup: CalendarPushAPI.Setup(setup), settings: model.notificationSettings,
+                                            registrationID: registrationID)
         do {
             let result = try await api.register(body)
+            retryRegistrationSoon = false
             let credentials = CalendarPushKeychain.Credentials(deviceID: result.deviceID, secret: result.deviceSecret)
             do { try CalendarPushKeychain.save(credentials) } catch {
                 // Without the secret the device could never be signed off: delete it right away
-                // (or, if that fails, at the next sync of this launch).
-                if !(await deleteOnServer(credentials, api: api)) { orphan = credentials }
+                // (or, if that fails, at the next sync of this launch, or by its registration id).
+                if await deleteOnServer(credentials, api: api) { try? CalendarPushKeychain.deletePendingRegistration() } else { orphan = credentials }
                 change { $0.lastError = "Der Schlüsselbund hat die Anmeldung nicht angenommen; nichts bleibt auf dem Server."; $0.lastFailure = Date() }
                 return
             }
+            try? CalendarPushKeychain.deletePendingRegistration()
             let settings = model.notificationSettings
             change {
                 $0.clearServer()
@@ -690,6 +856,8 @@ final class CalendarPushClient: ObservableObject {
             apply(result.status)
             await fetchChanges(api: api, credentials: credentials, model: model, target: target)
         } catch {
+            // No answer (timeout, gateway, still running): the server may have the device; the same id again soon.
+            retryRegistrationSoon = (error as? CalendarPushAPI.Failure)?.outcomeUnknown ?? true
             fail(error)
         }
     }
@@ -750,10 +918,22 @@ final class CalendarPushClient: ObservableObject {
         }
     }
 
-    /// Records a failed request; a 429 also blocks requests for `Retry-After`.
+    /// Records a failed request. A 429 blocks requests for `Retry-After`
+    /// and is no failure of the service: a registered device stays in the
+    /// server's charge (`isActive` unchanged), the sheet shows the pause.
+    /// No answer or a server error: local change notifications do not wait
+    /// for the server for 10 minutes (`refreshBeforeLocalChanges`).
     private func fail(_ error: Error) {
-        if let failure = error as? CalendarPushAPI.Failure, failure.rateLimited {
-            blockedUntil = Date().addingTimeInterval(failure.retryAfter ?? 60)
+        if let failure = error as? CalendarPushAPI.Failure {
+            if failure.rateLimited {
+                let until = Date().addingTimeInterval(failure.retryAfter ?? 60)
+                blockedUntil = until
+                if !state.registered { change { $0.lastError = Self.pauseText(until); $0.lastFailure = Date() } }
+                return
+            }
+            if failure.status == 0 || failure.status >= 500 { quietUntil = Date().addingTimeInterval(10 * 60) }
+        } else {
+            quietUntil = Date().addingTimeInterval(10 * 60)
         }
         change { $0.lastError = Self.text(error); $0.lastFailure = Date() }
     }
@@ -776,21 +956,40 @@ final class CalendarPushClient: ObservableObject {
         }
     }
 
+    /// `DELETE /v1/device` by registration id: true only after 204 (the
+    /// server deleted or withdrew it, or never had it). Anything else leaves
+    /// the id for the next attempt.
+    private func deleteRegistrationOnServer(_ registrationID: String, api: CalendarPushAPI) async -> Bool {
+        do {
+            try await api.deleteRegistration(registrationID)
+            return true
+        } catch {
+            if let failure = error as? CalendarPushAPI.Failure, failure.rateLimited {
+                blockedUntil = Date().addingTimeInterval(failure.retryAfter ?? 60)
+            }
+            lastDeleteError = error
+            return false
+        }
+    }
+
     /// `DELETE /v1/device`; the secret goes only after 204 (or a confirmed
-    /// 401: already gone). Offline, rate-limited or any other answer:
-    /// remembered and repeated at the next start/sync. True when nothing is
-    /// left on the server.
+    /// 401: already gone), a registration whose answer never came only
+    /// after 204 to its registration id. Offline, rate-limited or any other
+    /// answer: remembered and repeated at the next start/sync. True when
+    /// nothing is left on the server.
     @discardableResult
     private func signOff() async -> Bool {
         let keychain = CalendarPushKeychain.read()
-        guard !keychain.locked else { change { $0.pendingDelete = true }; return false }
-        guard let credentials = keychain.credentials else {
+        let pending = CalendarPushKeychain.readPendingRegistration()
+        guard !keychain.locked, !pending.locked else { change { $0.pendingDelete = true }; return false }
+        guard keychain.credentials != nil || pending.id != nil else {
             change { $0.pendingDelete = false; $0.clearServer() }
             return true
         }
         change { $0.pendingDelete = true }
         guard let base = CalendarPush.baseURL, !isBlocked else { return false }
-        guard await deleteOnServer(credentials, api: CalendarPushAPI(base: base)) else {
+        let api = CalendarPushAPI(base: base)
+        func notYet() -> Bool {
             let reason = lastDeleteError.map(Self.text) ?? "keine Antwort"
             change {
                 $0.lastError = "Abmeldung beim Mitteilungsdienst noch nicht möglich (\(reason)). noty wiederholt sie beim nächsten Start."
@@ -798,7 +997,15 @@ final class CalendarPushClient: ObservableObject {
             }
             return false
         }
-        try? CalendarPushKeychain.delete()
+        if let credentials = keychain.credentials {
+            guard await deleteOnServer(credentials, api: api) else { return notYet() }
+            try? CalendarPushKeychain.delete()
+        }
+        if let registrationID = pending.id {
+            guard await deleteRegistrationOnServer(registrationID, api: api) else { return notYet() }
+            try? CalendarPushKeychain.deletePendingRegistration()
+            retryRegistrationSoon = false
+        }
         change {
             $0.pendingDelete = false
             $0.clearServer()

@@ -70,6 +70,9 @@ struct CalendarView: View {
     @State private var zoomFocus = CalendarZoomFocus()
     /// The storage lock banner was put away: the sync symbol keeps the badge.
     @State private var hiddenStorageError: String?
+    /// This view's claim on `model.presentingOverlays`: a late `onDisappear`
+    /// of an older calendar view must not clear what a newer one set.
+    @State private var overlayOwner = UUID()
     private var calendar: Calendar { model.calendar }
     private var shownWeekDays: Int { model.weekDays == 7 ? 7 : 5 }
     /// Sheets, popovers and dialogs of the calendar itself (reported to the
@@ -135,6 +138,8 @@ struct CalendarView: View {
             navMotion.changedAt = Date()
             navMotion.instantKey = nil
             if zoomMotion?.key != new { zoomMotion = nil }
+            // A swipe that never ended (cancelled) must not leave the new period shifted.
+            swipeShift.handOff()
         }
         // A pinch that ends without `onEnded` (cancelled, window opened): spring back.
         .onChange(of: pinching) { _, now in
@@ -155,12 +160,14 @@ struct CalendarView: View {
         // `model.visible` follows the library's Hefte/Kalender switch (LibraryView).
         .onAppear { model.refreshToday() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { model.refreshToday(); model.refreshIfDue() } }
-        // While shown: at most every 15 minutes (the model enforces the interval).
-        .task {
+        // While shown: at most every 15 minutes (the model enforces the interval). Restarted
+        // whenever the scene or the cover changes: a long-running closure keeps the
+        // values of its start. Not while a notebook covers the calendar.
+        .task(id: scenePhase == .active && !covered) {
+            guard scenePhase == .active && !covered else { return }
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) } catch { break }
-                // Not while a notebook covers the calendar.
-                if scenePhase == .active && !covered { model.refreshIfDue() }
+                model.refreshIfDue()
             }
         }
         .sheet(item: $model.draft) { CalendarEventForm(draft: $0, model: model) }
@@ -183,19 +190,35 @@ struct CalendarView: View {
         .onChange(of: model.storageError) { _, error in if error == nil { hiddenStorageError = nil } }
         // „Untis-Zugang prüfen“ (push, notification settings) opens the
         // WebUntis sheet – also when the request came before the calendar was shown.
-        .onChange(of: model.connectionSheetRequested, initial: true) { _, requested in
-            guard requested else { return }
-            model.connectionSheetRequested = false
-            if !model.showsSamples { connecting = true }
-        }
+        .onChange(of: model.connectionSheetRequested, initial: true) { _, _ in openRequestedConnectionSheet() }
         // The library keeps Hefte/Kalender still while one of these is open.
         .onChange(of: overlaysOpen, initial: true) { _, open in
-            if model.presentingOverlays != open { model.presentingOverlays = open }
+            model.setPresentingOverlays(open, owner: overlayOwner)
+            // A wish for the WebUntis sheet waited for this overlay.
+            if !open { openRequestedConnectionSheet(afterOverlay: true) }
         }
-        .onDisappear { if model.presentingOverlays { model.presentingOverlays = false } }
+        .onDisappear { model.setPresentingOverlays(false, owner: overlayOwner) }
         .background { shortcuts }
         // Outermost: the sheets (form, deleted events) mark their changes too.
         .environment(\.calendarLocalChange, localChange)
+    }
+
+    /// The wish for the WebUntis sheet (`model.connectionSheetRequested`):
+    /// only while nothing else is presented over the calendar – otherwise it
+    /// stays until that is closed (and has finished its way out). A wish
+    /// older than 15 minutes is dropped.
+    private func openRequestedConnectionSheet(afterOverlay: Bool = false) {
+        guard model.connectionSheetRequested, !overlaysOpen else { return }
+        if afterOverlay {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(650))
+                openRequestedConnectionSheet()
+            }
+            return
+        }
+        model.connectionSheetRequested = false
+        guard model.connectionSheetSince.map({ Date().timeIntervalSince($0) < 15 * 60 }) ?? true else { return }
+        if !model.showsSamples { connecting = true }
     }
 
     // MARK: Event window

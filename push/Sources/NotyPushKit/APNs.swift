@@ -101,10 +101,14 @@ public enum PushResult: Equatable, Sendable {
     /// 429, 5xx, network: try again later.
     case retryLater(String)
     /// APNs refused the service itself (403 InvalidProviderToken/
-    /// ExpiredProviderToken/…, wrong topic, unreadable key): a configuration
-    /// error of the server, not of the change. Retried with a growing pause
-    /// after the operator fixed it; nothing is marked as failed or sent.
+    /// ExpiredProviderToken/…, unreadable key): a configuration error of the
+    /// server, not of the change. Every device pauses (growing pause) until
+    /// the operator fixed it; nothing is marked as failed or sent.
     case providerError(String)
+    /// APNs refused what belongs to this one device (its topic: BadTopic,
+    /// TopicDisallowed, MissingTopic; or its environment for the key):
+    /// only this device pauses, the same way; nothing is marked as failed.
+    case deviceConfigurationError(String)
     /// Anything else (payload too large, malformed request): logged, not retried.
     case rejected(String)
 }
@@ -179,9 +183,12 @@ public enum APNs {
 
     struct Reason: Decodable { let reason: String? }
 
-    /// Reasons of a 400 that mean the server's configuration (topic), not the message.
-    static let configurationReasons: Set<String> = ["BadTopic", "TopicDisallowed", "MissingTopic", "BadCertificate",
-                                                     "BadCertificateEnvironment"]
+    /// Reasons that mean the configuration of one device (its topic, or its
+    /// environment for the key/certificate), not the service and not the message.
+    static let deviceConfigurationReasons: Set<String> = ["BadTopic", "TopicDisallowed", "MissingTopic", "BadCertificateEnvironment",
+                                                          "BadEnvironmentKeyInToken"]
+    /// Reasons of a 400 that mean the service's configuration.
+    static let configurationReasons: Set<String> = ["BadCertificate"]
 
     public static func classify(status: Int, body: Data) -> PushResult {
         let reason = (try? JSONDecoder().decode(Reason.self, from: body))?.reason ?? ""
@@ -189,6 +196,8 @@ public enum APNs {
         case 200: return .delivered
         case 410: return .invalidToken(reason.isEmpty ? "Unregistered" : reason)
         case 400 where ["BadDeviceToken", "DeviceTokenNotForTopic"].contains(reason): return .invalidToken(reason)
+        case 400 where deviceConfigurationReasons.contains(reason), 403 where deviceConfigurationReasons.contains(reason):
+            return .deviceConfigurationError("\(status) \(reason)")
         // 403: InvalidProviderToken, ExpiredProviderToken, MissingProviderToken, Forbidden, BadCertificate…
         case 403: return .providerError("\(status) \(reason)")
         case 400 where configurationReasons.contains(reason): return .providerError("\(status) \(reason)")

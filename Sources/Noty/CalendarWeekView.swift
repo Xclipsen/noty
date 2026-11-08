@@ -212,10 +212,18 @@ struct CalendarTimeGrid: View {
     /// Cards come and go with motion only after the user's own change
     /// (`CalendarLocalChange`): new ones grow from 0.95, removed ones fade
     /// out faster. A sync or another device changes them without motion.
+    /// A removed card keeps the transition of its last render, which may
+    /// predate the user's change (before: `.identity`, no fade): so the
+    /// removal is always `CalendarCardRemoval`, which reads the mark when
+    /// the card goes. An insertion is rendered fresh; it moves only with the
+    /// day column's animation of that render. Reduce Motion: opacity only.
     private func cardTransition(_ animated: Bool) -> AnyTransition {
-        guard animated else { return .identity }
-        if reduceMotion { return .opacity.animation(NotyMotion.fade) }
-        return .asymmetric(insertion: .scale(scale: 0.95).combined(with: .opacity), removal: .opacity.animation(NotyMotion.exit))
+        // The removal always carries its timing; `CalendarCardRemoval` drops it (the card
+        // is gone at once) unless the user's own change is recent.
+        let removal = AnyTransition(CalendarCardRemoval(change: localChange, reduced: reduceMotion))
+            .animation(reduceMotion ? NotyMotion.fade : NotyMotion.exit)
+        if reduceMotion { return .asymmetric(insertion: animated ? .opacity.animation(NotyMotion.fade) : .identity, removal: removal) }
+        return .asymmetric(insertion: .scale(scale: 0.95).combined(with: .opacity), removal: removal)
     }
 
     private func dayColumn(_ day: Date, column: CGFloat, homework: Set<String>) -> some View {
@@ -239,7 +247,9 @@ struct CalendarTimeGrid: View {
             }
         }
         // New and removed entries (and the overlap re-flow) animate – only when
-        // the set of entries of this day changed by the user's own action.
+        // the set of entries of this day changed by the user's own action
+        // (decided in the render of that change). Reduce Motion: the layout
+        // stays instant, the transitions fade by themselves.
         .animation(animated ? NotyMotion.panel(reduceMotion) : nil, value: items.map(\.id))
     }
 

@@ -20,6 +20,9 @@ struct CalendarMonthView: View {
     /// The content follows the swipe with a rubber band (`CalendarSwipeShift`).
     @Environment(\.calendarSwipe) private var shift
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// A sideways drag is running; reset by SwiftUI also when it is cancelled
+    /// (no `onEnded`), so the shifted month springs back then too.
+    @GestureState private var swiping = false
     let showAll: (Date) -> Void
     @ScaledMetric(relativeTo: .caption) private var line: CGFloat = 20
     @ScaledMetric(relativeTo: .caption) private var weekColumn: CGFloat = 28
@@ -78,6 +81,7 @@ struct CalendarMonthView: View {
         // are). The month follows the finger with a rubber band; let go
         // below the threshold it springs back with the finger's speed.
         .simultaneousGesture(DragGesture(minimumDistance: 30)
+            .updating($swiping) { _, active, _ in active = true }
             .onChanged { value in
                 let dx = value.translation.width, dy = value.translation.height
                 guard zoom?.recentPinch != true else {
@@ -98,6 +102,10 @@ struct CalendarMonthView: View {
                     shift?.settle(translation: dx, velocity: value.velocity.width, reduced: reduceMotion)
                 }
             })
+        // Cancelled drag (another gesture took over): back to rest. After `onEnded` the offset is 0 already.
+        .onChange(of: swiping) { _, active in
+            if !active { shift?.settle(translation: 0, velocity: 0, reduced: reduceMotion) }
+        }
         .accessibilityAction(named: "Nächster Monat") { model.step(1) }
         .accessibilityAction(named: "Vorheriger Monat") { model.step(-1) }
     }

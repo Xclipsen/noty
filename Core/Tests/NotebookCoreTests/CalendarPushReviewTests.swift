@@ -210,4 +210,87 @@ final class CalendarPushReviewTests: XCTestCase {
         XCTAssertEqual("  a ".nilIfBlank, "a")
         XCTAssertNil(" \n".nilIfBlank)
     }
+
+    // MARK: Gegen-Review 08.11.2026
+
+    func testARoomWithTildeAndDigitsIsNoRepeatGeneration() throws {
+        let change = CalendarLessonChange(kinds: [.roomChanged], lesson: lesson("5", "2026-11-12", 8, rooms: ["R~2"]),
+                                          previous: lesson("5", "2026-11-12", 8))
+        XCTAssertTrue(change.id.hasSuffix(".R%7E2"), change.id)
+        let parsed = try XCTUnwrap(CalendarChangeID(change.id))
+        XCTAssertEqual(parsed.generation, 1)
+        XCTAssertEqual(parsed.rooms, "R%7E2")
+        XCTAssertEqual(parsed.base, change.id)
+        // The repeat of it carries the generation behind the escaped room.
+        let first = CalendarChangeRepeats.resolve(change.id, earlier: [])
+        XCTAssertEqual(first.id, change.id)
+        let other = CalendarLessonChange(kinds: [.cancelled], lesson: lesson("5", "2026-11-12", 8, statuses: [.cancelled]), previous: nil).id
+        let again = CalendarChangeRepeats.resolve(change.id, earlier: [change.id, other])
+        XCTAssertTrue(again.isNew)
+        XCTAssertEqual(again.id, change.id + "~2")
+        XCTAssertEqual(CalendarChangeID(again.id)?.generation, 2)
+        XCTAssertEqual(CalendarChangeID(again.id)?.rooms, "R%7E2")
+        // Rooms without „~“ keep their ids.
+        let plain = CalendarLessonChange(kinds: [.roomChanged], lesson: lesson("5", "2026-11-12", 8, rooms: ["R 1.12"]), previous: nil)
+        XCTAssertTrue(plain.id.hasSuffix(".R 1.12"))
+    }
+
+    func testADayWhoseLessonsAllMovedIsComparedAndReportedAsMoved() throws {
+        let start = day("2026-11-09"), end = day("2026-11-14")
+        var base = CalendarSourceSnapshot(connection: connection)
+        try base.merge(CalendarTimetableFetch(connection: connection, start: start, end: end, fetchedAt: Date(timeIntervalSinceReferenceDate: 100),
+                                              lessons: [lesson("1", "2026-11-10", 8), lesson("2", "2026-11-10", 9), lesson("3", "2026-11-11", 8)]))
+        // Tuesday's two periods moved to Thursday (same period ids), Tuesday comes back empty.
+        let moved = CalendarTimetableFetch(connection: connection, start: start, end: end, fetchedAt: Date(timeIntervalSinceReferenceDate: 200),
+                                           lessons: [lesson("3", "2026-11-11", 8), lesson("1", "2026-11-12", 8), lesson("2", "2026-11-12", 9)])
+        XCTAssertEqual(base.emptiedDays(by: moved), [], "verlegt, keine leere Antwort")
+        var server = base
+        XCTAssertEqual(try server.mergeKeepingEmptiedDays(moved), 5)
+        XCTAssertEqual(server.lessons(on: day("2026-11-10"))?.count, 0)
+        XCTAssertTrue(CalendarChangeDetector.comparedDays(old: base, new: server).contains(day("2026-11-10")))
+        let changes = CalendarChangeDetector.changes(old: base, new: server, now: now, calendar: berlin)
+        XCTAssertEqual(changes.map(\.kinds), [[.moved], [.moved]])
+        XCTAssertEqual(changes.map(\.lesson.key.sourceID), ["1", "2"])
+        // The app (plain merge) finds the same.
+        var shown = base
+        try shown.merge(moved)
+        XCTAssertEqual(CalendarChangeDetector.changes(old: base, new: shown, now: now, calendar: berlin).count, 2)
+        // A day that only comes back empty (nothing of it elsewhere) stays an empty answer.
+        let empty = CalendarTimetableFetch(connection: connection, start: start, end: end, fetchedAt: Date(timeIntervalSinceReferenceDate: 200),
+                                           lessons: [lesson("3", "2026-11-11", 8)])
+        XCTAssertEqual(base.emptiedDays(by: empty), [day("2026-11-10")])
+        var kept = base
+        try kept.merge(empty)
+        XCTAssertFalse(CalendarChangeDetector.comparedDays(old: base, new: kept).contains(day("2026-11-10")))
+    }
+
+    func testTheAppAnnouncesARepeatAfterTheServerRecordedSomethingElse() {
+        let old = lesson("77", "2026-11-12", 8)
+        let cancelled = CalendarLessonChange(kinds: [.cancelled], lesson: lesson("77", "2026-11-12", 8, statuses: [.cancelled]), previous: old)
+        let back = CalendarLessonChange(kinds: [.reinstated], lesson: old, previous: cancelled.lesson)
+        func local(_ change: CalendarLessonChange, _ minutes: Double) -> CalendarNotificationRecord {
+            CalendarNotificationRecord(change: change, date: now.addingTimeInterval(minutes * 60), calendar: berlin, namespace: namespace)
+        }
+        func push(_ raw: String, _ minutes: Double) -> CalendarNotificationRecord {
+            CalendarNotificationRecord(id: CalendarNotificationLog.pushChangeID(namespace: namespace, changeID: raw), kind: .change,
+                                       title: CalendarLessonChange.notificationTitle, body: "", date: now.addingTimeInterval(minutes * 60),
+                                       day: day("2026-11-12"), entryID: old.id)
+        }
+        // App: Ausfall. Server (only): findet wieder statt. Then the app sees Ausfall again (push not in charge).
+        var log = CalendarNotificationLog()
+        log.addChanges(log.identifyingRepeats([local(cancelled, 0)]), now: now)
+        log.addChanges([push(back.id, 60)], now: now)
+        let again = log.identifyingRepeats([local(cancelled, 120)])
+        XCTAssertEqual(again.map(\.id), [local(cancelled, 0).id + "~2"], "eine weitere Änderung, nicht die alte")
+        XCTAssertEqual(log.addChanges(again, now: now).count, 1)
+        // Detected once more: the same as the newest entry, left out.
+        XCTAssertEqual(log.addChanges(log.identifyingRepeats([local(cancelled, 180)]), now: now).count, 0)
+
+        // The server said the same since (its own Ausfall): still only once.
+        var same = CalendarNotificationLog()
+        same.addChanges(same.identifyingRepeats([local(cancelled, 0)]), now: now)
+        same.addChanges([push(cancelled.id, 5)], now: now)
+        XCTAssertEqual(same.identifyingRepeats([local(cancelled, 120)]).map(\.id), [local(cancelled, 0).id])
+        XCTAssertEqual(same.addChanges(same.identifyingRepeats([local(cancelled, 120)]), now: now).count, 0)
+    }
 }

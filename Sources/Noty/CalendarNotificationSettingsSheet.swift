@@ -59,11 +59,12 @@ struct CalendarNotificationSettingsSheet: View {
                          : "Ausfall, Vertretung, Raumwechsel und verlegte Stunden, sobald noty sie beim Abrufen erkennt – auch im Hintergrund, wenn iPadOS es zulässt. Verglichen werden nur Tage, die vorher und jetzt vollständig geladen wurden. Welche Änderungen WebUntis über den inoffiziellen Zugang wirklich meldet, ist für deine Schule noch nicht bestätigt.")
                 }
                 CalendarPushSection(model: model) {
-                    // The WebUntis sheet follows once this one is gone.
+                    // The WebUntis sheet follows once this one is gone (the calendar
+                    // view opens it when nothing else is presented; the wish is dated).
                     dismiss()
                     Task {
                         try? await Task.sleep(for: .milliseconds(700))
-                        model.connectionSheetRequested = true
+                        model.requestConnectionSheet()
                     }
                 }
                 CalendarSchoolDaySection(model: model)

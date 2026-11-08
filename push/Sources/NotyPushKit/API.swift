@@ -56,40 +56,139 @@ public struct APIResponse: Sendable, Equatable {
     }
 }
 
-/// Sliding-window counters (in memory; a restart resets them).
+/// Sliding-window counters of one category (in memory; a restart resets
+/// them). Every category has its own limiter and so its own window: tidying
+/// the per-minute counters never drops hourly or daily ones. At most
+/// `maximumKeys` keys: expired keys go from time to time (amortized), and if
+/// there are still too many, the keys whose newest event is oldest – their
+/// limits start again, never all of them. A key keeps at most `limit` events.
 final class RateLimiter: @unchecked Sendable {
+    let window: TimeInterval
+    let maximumKeys: Int
+    /// Every this many recorded events expired keys are dropped.
+    static let tidyInterval = 512
     private let lock = NSLock()
     private var events: [String: [Date]] = [:]
+    private var writes = 0
 
-    /// Records an event for `key` and tells whether it stays within `limit` per `window`.
-    func allow(_ key: String, limit: Int, window: TimeInterval, now: Date) -> Bool {
+    init(window: TimeInterval, maximumKeys: Int = 10_000) {
+        self.window = window
+        self.maximumKeys = max(10, maximumKeys)
+    }
+
+    /// Keys held now (tests).
+    var keyCount: Int { lock.withLock { events.count } }
+
+    /// Records an event for `key` and tells whether it stays within `limit` per window.
+    func allow(_ key: String, limit: Int, now: Date) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        let since = now.addingTimeInterval(-window)
-        var list = (events[key] ?? []).filter { $0 > since }
+        let list = current(key, now: now)
         guard list.count < limit else { events[key] = list; return false }
-        list.append(now)
-        events[key] = list
-        if events.count > 10_000 { events = events.filter { $0.value.contains { $0 > since } } }
+        store(key, list + [now], limit: limit, now: now)
         return true
     }
 
-    /// Nil while `key` stays below `limit` events per `window` (nothing is
-    /// recorded), else the seconds until the oldest event leaves the window.
-    func wait(_ key: String, limit: Int, window: TimeInterval, now: Date) -> TimeInterval? {
+    /// Nil while `key` stays below `limit` events per window (nothing is
+    /// recorded), else the seconds until it is below the limit again.
+    func wait(_ key: String, limit: Int, now: Date) -> TimeInterval? {
         lock.lock(); defer { lock.unlock() }
-        let since = now.addingTimeInterval(-window)
-        let list = (events[key] ?? []).filter { $0 > since }
+        let list = current(key, now: now)
         events[key] = list.isEmpty ? nil : list
-        guard list.count >= limit, let oldest = list.min() else { return nil }
-        return max(1, oldest.addingTimeInterval(window).timeIntervalSince(now))
+        guard list.count >= max(1, limit) else { return nil }
+        let leaving = list[list.count - max(1, limit)]
+        return max(1, leaving.addingTimeInterval(window).timeIntervalSince(now))
     }
 
-    /// Records an event for `key` (counted by `wait`).
-    func record(_ key: String, window: TimeInterval, now: Date) {
+    /// Records an event for `key` (counted by `wait` with the same `limit`).
+    func record(_ key: String, limit: Int, now: Date) {
         lock.lock(); defer { lock.unlock() }
+        store(key, current(key, now: now) + [now], limit: limit, now: now)
+    }
+
+    /// Events of `key` within the window, oldest first.
+    private func current(_ key: String, now: Date) -> [Date] {
         let since = now.addingTimeInterval(-window)
-        events[key] = (events[key] ?? []).filter { $0 > since } + [now]
-        if events.count > 10_000 { events = events.filter { $0.value.contains { $0 > since } } }
+        return (events[key] ?? []).filter { $0 > since }.sorted()
+    }
+
+    private func store(_ key: String, _ list: [Date], limit: Int, now: Date) {
+        events[key] = Array(list.sorted().suffix(max(1, limit)))
+        writes &+= 1
+        if events.count > maximumKeys || writes % Self.tidyInterval == 0 { tidy(now: now) }
+    }
+
+    private func tidy(now: Date) {
+        let since = now.addingTimeInterval(-window)
+        events = events.filter { $0.value.contains { $0 > since } }
+        guard events.count > maximumKeys else { return }
+        // Still too many active keys: the least recently active go, down to 90 %
+        // (so the next eviction is again some insertions away).
+        let keep = maximumKeys * 9 / 10
+        let newest = events.sorted { ($0.value.last ?? .distantPast, $0.key) > ($1.value.last ?? .distantPast, $1.key) }
+        events = Dictionary(uniqueKeysWithValues: newest.prefix(keep).map { ($0.key, $0.value) })
+    }
+}
+
+/// What a client address is limited by: IPv4 as it is, IPv6 by its /64
+/// network (one connection usually holds a whole /64, single addresses cost
+/// nothing), an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) as that IPv4
+/// address. Anything unparsable is used as it is (at most 64 characters).
+enum ClientAddress {
+    static func key(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        if text.hasPrefix("["), let end = text.firstIndex(of: "]") { text = String(text[text.index(after: text.startIndex)..<end]) }
+        if let zone = text.firstIndex(of: "%") { text = String(text[..<zone]) }
+        guard text.contains(":"), let groups = ipv6Groups(text) else { return String(text.prefix(64)) }
+        if groups[0..<5].allSatisfy({ $0 == 0 }) && groups[5] == 0xffff {
+            return "\(groups[6] >> 8).\(groups[6] & 0xff).\(groups[7] >> 8).\(groups[7] & 0xff)"
+        }
+        return groups[0..<4].map { String($0, radix: 16) }.joined(separator: ":") + "::/64"
+    }
+
+    /// The eight 16-bit groups of an IPv6 address („::“ and a final dotted
+    /// IPv4 part allowed), nil when it is none.
+    static func ipv6Groups(_ text: String) -> [UInt16]? {
+        func parse(_ part: String, allowIPv4: Bool) -> [UInt16]? {
+            if part.isEmpty { return [] }
+            var result: [UInt16] = []
+            let pieces = part.split(separator: ":", omittingEmptySubsequences: false)
+            for (index, piece) in pieces.enumerated() {
+                if piece.contains(".") {
+                    guard allowIPv4, index == pieces.count - 1, let value = ipv4(piece) else { return nil }
+                    result += [UInt16(value >> 16), UInt16(value & 0xffff)]
+                } else {
+                    guard (1...4).contains(piece.count), piece.allSatisfy({ $0.isASCII && $0.isHexDigit }),
+                          let value = UInt16(piece, radix: 16) else { return nil }
+                    result.append(value)
+                }
+            }
+            return result
+        }
+        let halves = text.components(separatedBy: "::")
+        switch halves.count {
+        case 1:
+            guard let all = parse(text, allowIPv4: true), all.count == 8 else { return nil }
+            return all
+        case 2:
+            guard let head = parse(halves[0], allowIPv4: false), let tail = parse(halves[1], allowIPv4: true),
+                  head.count + tail.count <= 7 else { return nil }
+            return head + Array(repeating: 0, count: 8 - head.count - tail.count) + tail
+        default:
+            return nil
+        }
+    }
+
+    static func ipv4(_ text: Substring) -> UInt32? {
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        var value: UInt32 = 0
+        for part in parts {
+            guard (1...3).contains(part.count), part.allSatisfy({ $0.isASCII && $0.isNumber }), let byte = UInt32(part), byte <= 255 else {
+                return nil
+            }
+            value = value << 8 | byte
+        }
+        return value
     }
 }
 
@@ -98,8 +197,12 @@ final class RateLimiter: @unchecked Sendable {
 ///   POST   /v1/register            → 201 {deviceID, deviceSecret, status}
 ///   PUT    /v1/device   (Bearer)   → 200 {status}
 ///   DELETE /v1/device   (Bearer)   → 204
+///   DELETE /v1/device   (Registration) → 204: a registration whose answer the app never got
+///   GET    /v1/device   (Bearer)   → 200 {status}
 ///   GET    /v1/changes?since=UNIX  (Bearer) → 200 {changes, status}
-/// Authorization: `Bearer <deviceID>.<deviceSecret>`.
+/// Authorization: `Bearer <deviceID>.<deviceSecret>`, or for the deletion of
+/// an unanswered registration `Registration <registrationID>` (the random
+/// id the app sent with `POST /v1/register`).
 public final class APIRouter: Sendable {
     public static let maximumBodyBytes = 16 * 1024
     /// Failed authentications per device id and hour; then 429 (never 401,
@@ -108,7 +211,12 @@ public final class APIRouter: Sendable {
 
     let service: PushService
     let config: PushConfig
-    let limiter = RateLimiter()
+    /// One limiter per category, each with its own window.
+    let requests = RateLimiter(window: 60)
+    let registrationsPerAddress = RateLimiter(window: 3600)
+    let registrationAttempts = RateLimiter(window: 3600, maximumKeys: 10)
+    let registrationsPerDay = RateLimiter(window: 86_400, maximumKeys: 10)
+    let authFailures = RateLimiter(window: 3600)
     let now: @Sendable () -> Date
 
     public init(service: PushService, config: PushConfig, now: @escaping @Sendable () -> Date = { Date() }) {
@@ -118,25 +226,37 @@ public final class APIRouter: Sendable {
     public func handle(_ request: APIRequest) async -> APIResponse {
         let time = now()
         guard request.body.count <= Self.maximumBodyBytes else { return .error(413, "too_large", "Anfrage zu groß.") }
-        guard limiter.allow("ip:" + request.clientIP, limit: config.requestsPerMinutePerIP, window: 60, now: time) else {
+        let address = ClientAddress.key(request.clientIP)
+        guard requests.allow(address, limit: config.requestsPerMinutePerIP, now: time) else {
             return .rateLimited("Zu viele Anfragen. Bitte später erneut versuchen.", retryAfter: 60)
         }
         switch (request.method, request.path) {
         case ("GET", "/v1/health"):
             return .json(200, ["ok": true])
         case ("POST", "/v1/register"):
-            // Per address every attempt counts (before any work); the daily
-            // limit of the whole service only counts registrations that
-            // succeeded, so invalid requests cannot use it up.
-            guard limiter.allow("register-ip:" + request.clientIP, limit: config.registrationsPerHourPerIP, window: 3600, now: time) else {
+            // Per address and for the whole service every attempt counts
+            // (before any work); the daily limit only counts registrations
+            // that succeeded, so invalid requests cannot use it up.
+            guard registrationsPerAddress.allow(address, limit: config.registrationsPerHourPerIP, now: time) else {
                 return .rateLimited("Zu viele Anmeldungen. Bitte später erneut versuchen.", retryAfter: 3600)
             }
-            if let wait = limiter.wait("register", limit: config.registrationsPerDay, window: 86_400, now: time) {
+            guard registrationAttempts.allow("all", limit: config.registrationAttemptsPerHour, now: time) else {
+                let wait = registrationAttempts.wait("all", limit: config.registrationAttemptsPerHour, now: time) ?? 60
+                return .rateLimited("Zu viele Anmeldungen. Bitte später erneut versuchen.", retryAfter: wait)
+            }
+            if let wait = registrationsPerDay.wait("all", limit: config.registrationsPerDay, now: time) {
                 return .rateLimited("Zu viele Anmeldungen. Bitte später erneut versuchen.", retryAfter: wait)
             }
             let response = await register(request)
-            if response.status == 201 { limiter.record("register", window: 86_400, now: now()) }
+            if response.status == 201 { registrationsPerDay.record("all", limit: config.registrationsPerDay, now: now()) }
             return response
+        case ("DELETE", "/v1/device") where request.headers["authorization"]?.hasPrefix(Self.registrationScheme) == true:
+            // A registration the app gave up waiting for: only who knows its random id can delete it.
+            guard let hash = Self.registrationHash(fromHeader: request.headers["authorization"]) else {
+                return .error(400, "invalid_registrationID", "Ungültiger Wert: registrationID.")
+            }
+            do { try await service.deleteRegistration(hash: hash); return APIResponse(status: 204, body: Data()) }
+            catch { return response(for: error) }
         case ("PUT", "/v1/device"), ("DELETE", "/v1/device"), ("GET", "/v1/changes"), ("GET", "/v1/device"):
             let id: String
             switch await authenticate(request) {
@@ -164,6 +284,21 @@ public final class APIRouter: Sendable {
         }
     }
 
+    /// `Authorization: Registration <registrationID>`.
+    static let registrationScheme = "Registration "
+
+    /// SHA-256 (hex) of a registration id: a UUID, compared in lower case.
+    /// The server keeps only this hash.
+    public static func registrationHash(_ raw: String) -> String? {
+        guard raw.count == 36, let id = UUID(uuidString: raw) else { return nil }
+        return Secrets.hash("registration/" + id.uuidString.lowercased())
+    }
+
+    static func registrationHash(fromHeader header: String?) -> String? {
+        guard let header, header.count <= 100, header.hasPrefix(registrationScheme) else { return nil }
+        return registrationHash(String(header.dropFirst(registrationScheme.count)))
+    }
+
     // MARK: Auth
 
     enum Authentication: Equatable { case device(String), unauthorized, rateLimited(TimeInterval) }
@@ -176,10 +311,9 @@ public final class APIRouter: Sendable {
         guard let dot = value.firstIndex(of: ".") else { return .unauthorized }
         let id = String(value[..<dot]), secret = String(value[value.index(after: dot)...])
         guard DeviceStore.isValidID(id), (20...100).contains(secret.count) else { return .unauthorized }
-        let key = "auth-failed:" + id
-        if let wait = limiter.wait(key, limit: Self.authFailuresPerHour, window: 3600, now: now()) { return .rateLimited(wait) }
+        if let wait = authFailures.wait(id, limit: Self.authFailuresPerHour, now: now()) { return .rateLimited(wait) }
         guard await service.authenticate(id: id, secret: secret) else {
-            limiter.record(key, window: 3600, now: now())
+            authFailures.record(id, limit: Self.authFailuresPerHour, now: now())
             return .unauthorized
         }
         return .device(id)
@@ -200,6 +334,10 @@ public final class APIRouter: Sendable {
         let consent: String
         let setup: SetupBody
         let settings: DeviceSettings?
+        /// Random UUID of the app for this registration (optional, since
+        /// 11.2026): sent again after a timeout, the same device answers
+        /// with a new secret instead of a second device being created.
+        let registrationID: String?
     }
     struct UpdateBody: Decodable {
         let deviceToken: String?
@@ -267,13 +405,17 @@ public final class APIRouter: Sendable {
         guard body.consent == config.consentVersion else {
             return .error(400, "consent_required", "Die Einwilligung zur Speicherung der Freigabe auf dem Server fehlt oder ist veraltet.")
         }
-        let input: RegistrationInput
+        var input: RegistrationInput
         do {
             input = RegistrationInput(deviceToken: try Self.token(body.deviceToken), environment: try Self.environment(body.apnsEnvironment),
                                       bundleID: try bundle(body.bundleID), connectionID: try Self.connection(body.connectionID),
                                       timeZone: try Self.zone(body.timeZone), settings: Self.settings(body.settings),
                                       setup: try Self.setup(body.setup),
                                       connectionTimeZone: try Self.zone(body.connectionTimeZone, field: "connectionTimeZone"))
+            if let raw = body.registrationID {
+                guard let hash = Self.registrationHash(raw) else { throw Invalid.field("registrationID") }
+                input.registrationHash = hash
+            }
         } catch { return validationError(error) }
         do {
             let result = try await service.register(input)
@@ -325,6 +467,13 @@ public final class APIRouter: Sendable {
             return .error(403, "limit_reached", "Der Mitteilungsdienst nimmt keine weiteren Geräte an.")
         case ServiceError.notFound:
             return .error(404, "not_found", "Gerät unbekannt.")
+        case ServiceError.registrationInProgress:
+            var response = APIResponse.error(409, "registration_in_progress",
+                                             "Diese Anmeldung wird gerade noch bearbeitet. Bitte in einer Minute erneut versuchen.")
+            response.retryAfter = 60
+            return response
+        case ServiceError.registrationCancelled:
+            return .error(410, "registration_cancelled", "Diese Anmeldung wurde inzwischen zurückgezogen.")
         case ServiceError.serverNotAllowed:
             let hosts = config.allowedUntisHostSuffixes.map { "<schule>." + $0 }.joined(separator: ", ")
             return .error(400, "invalid_server", "Der Mitteilungsdienst ruft nur WebUntis-Server der Form \(hosts) ab; diese Freigabe nennt einen anderen Server.")

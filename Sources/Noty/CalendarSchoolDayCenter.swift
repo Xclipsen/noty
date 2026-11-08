@@ -20,8 +20,9 @@ import NotyCalendarShared
 ///  - Timetable changes of the tile's day (`announce`, from `recordChanges`):
 ///    when the app itself would post the change notification (push service
 ///    not in charge, outside the quiet hours, changes switched on), the tile
-///    update carries the alert instead (wakes the screen) and the app posts
-///    no second notification for those changes. While the push service
+///    update carries the alert (wakes the screen); the notification still
+///    goes into the Mitteilungszentrale, silently (`passive`, no sound), so
+///    the change stays there after the tile. While the push service
 ///    notifies, the tile updates silently.
 ///  - The derived widget file (today and tomorrow) is written into the App
 ///    Group and the widget timeline reloaded when its lessons changed.
@@ -218,8 +219,9 @@ final class CalendarSchoolDayCenter: ObservableObject {
     /// Announces timetable changes through the running tile of their day:
     /// one update with the new state and an alert (title/text as the change
     /// notification would have them, `CalendarLessonChange` from Core). Only
-    /// for a tile that runs now for the shown connection; returns the ids of
-    /// the changes it announced – the caller posts no notification for them.
+    /// for a tile that runs now (`.active`) for the shown connection; returns
+    /// the ids of the changes it announced – the caller posts their
+    /// notification silently.
     /// The caller decides whether an alert is due at all (changes on, outside
     /// the quiet hours, push service not in charge: `recordChanges`).
     func announce(_ changes: [CalendarLessonChange], model: CalendarModel) async -> Set<String> {

@@ -80,6 +80,24 @@ enum CalendarMotion {
     var recent: Bool { Date().timeIntervalSince(at) < 2 }
 }
 
+/// Removal of a calendar card: it fades – with the faster exit timing only
+/// after the user's own change, read when the card goes (not at its last
+/// render, which may predate the mark); a sync or another device removes it
+/// at once. The animation of the change itself comes from the day column.
+struct CalendarCardRemoval: Transition {
+    let change: CalendarLocalChange?
+    let reduced: Bool
+
+    func body(content: Content, phase: TransitionPhase) -> some View {
+        let animation: Animation? = change?.recent == true ? (reduced ? NotyMotion.fade : NotyMotion.exit) : nil
+        content
+            .opacity(phase == .didDisappear ? 0 : 1)
+            .transaction { transaction in
+                if phase == .didDisappear { transaction.animation = animation }
+            }
+    }
+}
+
 /// Sideways swipe in progress (two fingers on the trackpad, a finger in the
 /// month): the content follows with a rubber band and hands over to the
 /// period change once it triggers. Held, not observed, by the calendar:

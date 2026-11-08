@@ -186,15 +186,22 @@ public struct CalendarSourceSnapshot: Equatable, Sendable, Codable {
     /// Requested days that have lessons here and none in `fetch`: an empty
     /// answer of WebUntis for a school day (seen with the mobile API) or a
     /// day whose lessons were really removed – the two cannot be told apart.
+    /// Not among them: a day whose periods `fetch` has on another day (the
+    /// same period id moved, e.g. a whole school day swapped) – that answer
+    /// is evidently complete for it.
     public func emptiedDays(by fetch: CalendarTimetableFetch) -> Set<CivilDate> {
         guard fetch.connection == connection else { return [] }
         let incoming = Set(fetch.lessons.map(\.date))
+        let periods = Set(fetch.lessons.map(\.key.sourceID))
         var result = Set<CivilDate>()
+        var moved = Set<CivilDate>()
         for lesson in lessons where lesson.date >= fetch.start && lesson.date < fetch.end && !incoming.contains(lesson.date)
             && days[lesson.date.description] != nil {
             result.insert(lesson.date)
+            // The day has no lesson in `fetch`: the same period there is on another day.
+            if periods.contains(lesson.key.sourceID) { moved.insert(lesson.date) }
         }
-        return result
+        return result.subtracting(moved)
     }
 
     /// As `merge`, but the `emptiedDays` keep their lessons and fetch time

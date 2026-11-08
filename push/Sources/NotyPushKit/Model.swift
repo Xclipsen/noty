@@ -95,6 +95,10 @@ public struct DeviceRecord: Codable, Sendable {
     /// records before 11.2026: `updated` stands in. After
     /// `noContactRetentionDays` without contact the device is deleted.
     public var lastContact: Date?
+    /// SHA-256 of the app's random registration id (since 11.2026, nil
+    /// before and for apps without one): the same registration sent again
+    /// finds this device; `DELETE` with the id removes it.
+    public var registrationHash: String?
 
     public enum AuthNotice: String, Codable, Sendable { case none, pending, sent }
 

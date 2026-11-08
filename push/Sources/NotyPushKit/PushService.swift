@@ -12,10 +12,15 @@ public struct RegistrationInput: Sendable {
     public var setup: WebUntisSetup
     /// Time zone of the connection: lesson times, days, change texts.
     public var connectionTimeZone: String
+    /// SHA-256 of the app's random registration id (`APIRouter.registrationHash`),
+    /// nil for apps that do not send one.
+    public var registrationHash: String?
     public init(deviceToken: String, environment: APNsEnvironment, bundleID: String, connectionID: UUID, timeZone: String,
-                settings: DeviceSettings, setup: WebUntisSetup, connectionTimeZone: String = CalendarDefaults.timeZoneIdentifier) {
+                settings: DeviceSettings, setup: WebUntisSetup, connectionTimeZone: String = CalendarDefaults.timeZoneIdentifier,
+                registrationHash: String? = nil) {
         self.deviceToken = deviceToken; self.environment = environment; self.bundleID = bundleID; self.connectionID = connectionID
         self.timeZone = timeZone; self.settings = settings; self.setup = setup; self.connectionTimeZone = connectionTimeZone
+        self.registrationHash = registrationHash
     }
 }
 
@@ -43,6 +48,12 @@ public enum ServiceError: Error, Equatable {
     /// The Freigabe names a server outside `allowedUntisHostSuffixes`.
     case serverNotAllowed
     case storage(String)
+    /// The same registration id is being registered right now (an earlier
+    /// attempt still waits for WebUntis): the app asks again later.
+    case registrationInProgress
+    /// The app withdrew this registration (`DELETE` by registration id)
+    /// while it was still running: nothing was stored.
+    case registrationCancelled
 }
 
 /// What the app may see about its registration (no secrets).
@@ -80,10 +91,17 @@ public actor PushService {
     private var lastMaintenance: Date?
     /// After an APNs „try later“, the device waits before the next attempt.
     private var retryAfter: [String: Date] = [:]
-    /// APNs refused the service itself (key, team, topic): nothing is sent
+    /// APNs refused the service itself (key, team, JWT): nothing is sent
     /// to any device before this time; the pause doubles (10 min … 3 h).
     private var providerRetryAt: Date?
     private var providerFailures = 0
+    /// APNs refused the configuration of one device (its topic or
+    /// environment): only that device pauses, doubling like the provider pause.
+    private var deviceConfigurationPause: [String: (until: Date, failures: Int)] = [:]
+    /// Registrations with an id that are waiting for their test fetch, and
+    /// those of them the app withdrew meanwhile (hashes of the registration ids).
+    private var registering = Set<String>()
+    private var withdrawn = Set<String>()
 
     public init(config: PushConfig, store: DeviceStore, source: TimetableSource, sender: PushSender,
                 detector: TimetableChangeDetecting = CoreChangeDetector(), now: @escaping @Sendable () -> Date = { Date() }) {
@@ -118,31 +136,68 @@ public actor PushService {
         do { try persist(record) } catch { Log.error("Kontakt nicht gespeichert \(Log.device(id)): \(error)") }
     }
 
+    /// Creates a device after a complete test fetch with the Freigabe. With a
+    /// registration id (`registrationHash`) the request is idempotent: the
+    /// same id again – the app gave up waiting for the first answer – keeps
+    /// the device it created and answers with a new secret (the old one
+    /// stops working), never a second device. While the first attempt still
+    /// runs, the second gets `registrationInProgress`.
     public func register(_ input: RegistrationInput) async throws -> (deviceID: String, secret: String, status: DeviceStatus) {
         guard config.allowsUntisServer(input.setup.server) else { throw ServiceError.serverNotAllowed }
-        func others() -> Int { records.values.filter { !($0.deviceToken == input.deviceToken && $0.bundleID == input.bundleID) }.count }
+        let hash = input.registrationHash
+        func replaced(_ record: DeviceRecord) -> Bool {
+            (record.deviceToken == input.deviceToken && record.bundleID == input.bundleID)
+                || (hash != nil && record.registrationHash == hash && record.bundleID == input.bundleID)
+        }
+        func others() -> Int { records.values.filter { !replaced($0) }.count }
         guard others() < config.maxDevices else { throw ServiceError.limitReached }
+        if let hash {
+            guard registering.insert(hash).inserted else { throw ServiceError.registrationInProgress }
+        }
+        defer { if let hash { registering.remove(hash); withdrawn.remove(hash) } }
         let started = now()
         let snapshot = try await baseline(setup: input.setup, connection: input.connectionID, connectionTimeZone: input.connectionTimeZone,
                                           at: started)
+        if let hash, withdrawn.contains(hash) {
+            Log.info("Anmeldung zurückgezogen, nichts gespeichert")
+            throw ServiceError.registrationCancelled
+        }
         guard others() < config.maxDevices else { throw ServiceError.limitReached }  // re-check after the await
-        let id = UUID().uuidString.lowercased()
+        // The same registration again: the device it created stays (its history too).
+        let existing = hash.flatMap { hash in records.values.first { $0.registrationHash == hash && $0.bundleID == input.bundleID } }
+        let id = existing?.id ?? UUID().uuidString.lowercased()
         let secret = Secrets.deviceSecret()
         let time = now()
-        var record = DeviceRecord(id: id, secretHash: Secrets.hash(secret), created: time, updated: time, deviceToken: input.deviceToken,
-                                  environment: input.environment, bundleID: input.bundleID, connectionID: input.connectionID,
-                                  timeZone: input.timeZone, settings: input.settings, setup: input.setup, snapshot: snapshot,
-                                  baselineAt: started, lastPoll: started, lastSuccess: started, nextPoll: time)
+        var record = DeviceRecord(id: id, secretHash: Secrets.hash(secret), created: existing?.created ?? time, updated: time,
+                                  deviceToken: input.deviceToken, environment: input.environment, bundleID: input.bundleID,
+                                  connectionID: input.connectionID, timeZone: input.timeZone, settings: input.settings, setup: input.setup,
+                                  snapshot: snapshot, baselineAt: started, lastPoll: started, lastSuccess: started, nextPoll: time)
         record.connectionTimeZone = input.connectionTimeZone
         record.lastContact = time
+        record.registrationHash = hash
+        if let existing {
+            record.history = existing.history
+            record.generation = existing.generation + 1
+        }
         record.nextPoll = nextPoll(record, after: time)
         try persist(record)
         // A device that registers again (lost its secret) replaces its old entry: no double pushes.
-        for old in records.values where old.id != id && old.deviceToken == input.deviceToken && old.bundleID == input.bundleID {
+        for old in records.values where old.id != id && replaced(old) {
             try? remove(old.id)
         }
-        Log.info("registriert \(Log.device(id)) (\(input.environment.rawValue)), \(records.count) Gerät(e)")
+        Log.info("\(existing == nil ? "registriert" : "erneut registriert (neues Secret)") \(Log.device(id)) (\(input.environment.rawValue)), \(records.count) Gerät(e)")
         return (id, secret, status(record))
+    }
+
+    /// `DELETE` by registration id (the app never got the answer of its
+    /// registration): deletes the device it created; one still waiting for
+    /// its test fetch is withdrawn and never stored. Nothing known: nothing to do.
+    public func deleteRegistration(hash: String) throws {
+        if registering.contains(hash) { withdrawn.insert(hash) }
+        for record in records.values where record.registrationHash == hash {
+            try remove(record.id)
+            Log.info("unbeantwortete Anmeldung gelöscht \(Log.device(record.id))")
+        }
     }
 
     public func update(id: String, _ input: UpdateInput) async throws -> DeviceStatus {
@@ -360,6 +415,7 @@ public actor PushService {
         if record.settings.isQuiet(time, calendar: calendar) { return }
         if let wait = retryAfter[id], wait > time { return }
         if let wait = providerRetryAt, wait > time { return }
+        if let pause = deviceConfigurationPause[id], pause.until > time { return }
         var changed = false
         for index in record.history.indices where record.history[index].delivery == .pending {
             if !record.settings.changes { record.history[index].delivery = .disabled; changed = true }
@@ -394,12 +450,22 @@ public actor PushService {
         } else { retryAfter[id] = nil }
         if let reason = results.lazy.compactMap({ if case .providerError(let reason) = $0 { return reason }; return nil }).first {
             providerFailures += 1
-            let pause = min(10 * 60 * pow(2, Double(min(providerFailures, 8) - 1)), 3 * 3600)
+            let pause = Self.configurationPause(providerFailures)
             providerRetryAt = time.addingTimeInterval(pause)
-            Log.error("APNs lehnt den Dienst ab (\(reason)): apnsKeyID, teamID, apns.p8 und allowedBundleIDs prüfen. "
+            Log.error("APNs lehnt den Dienst ab (\(reason)): apnsKeyID, teamID und apns.p8 prüfen. "
                       + "Nichts verworfen; nächster Versuch in \(Int(pause / 60)) min (\(providerFailures)×).")
         } else if results.contains(.delivered) {
             providerFailures = 0; providerRetryAt = nil
+        }
+        // A refused topic or environment concerns this device only: it alone pauses.
+        if let reason = results.lazy.compactMap({ if case .deviceConfigurationError(let reason) = $0 { return reason }; return nil }).first {
+            let failures = (deviceConfigurationPause[id]?.failures ?? 0) + 1
+            let pause = Self.configurationPause(failures)
+            deviceConfigurationPause[id] = (time.addingTimeInterval(pause), failures)
+            Log.error("APNs lehnt Topic/Umgebung dieses Geräts ab \(Log.device(id)) (\(reason)): allowedBundleIDs und die gemeldete "
+                      + "Bundle-ID/Umgebung prüfen. Nichts verworfen; nächster Versuch in \(Int(pause / 60)) min (\(failures)×).")
+        } else if results.contains(.delivered) {
+            deviceConfigurationPause[id] = nil
         }
 
         // The device may have changed meanwhile (PUT: new token, settings,
@@ -414,7 +480,7 @@ public actor PushService {
                 switch outcome.result {
                 case .delivered: current.history[index].delivery = outcome.summary ? .summarized : .sent
                 case .retryLater: current.history[index].delivery = current.history[index].detected < time.addingTimeInterval(-3 * 3600) ? .failed : .pending
-                case .providerError: break  // stays pending (expires when the lesson begins)
+                case .providerError, .deviceConfigurationError: break  // stays pending (expires when the lesson begins)
                 case .invalidToken: if sameTarget { current.history[index].delivery = .failed }  // else: tried again with the new token
                 case .rejected: current.history[index].delivery = .failed
                 }
@@ -427,7 +493,7 @@ public actor PushService {
                 switch authResult {
                 case .delivered, .rejected: current.authNotice = .sent
                 // Not shown: sent again after a new token, after the pause.
-                case .invalidToken, .retryLater, .providerError: break
+                case .invalidToken, .retryLater, .providerError, .deviceConfigurationError: break
                 }
             }
         }
@@ -443,8 +509,13 @@ public actor PushService {
     static func mayContinue(_ result: PushResult) -> Bool {
         switch result {
         case .delivered, .rejected, .retryLater: true
-        case .invalidToken, .providerError: false
+        case .invalidToken, .providerError, .deviceConfigurationError: false
         }
+    }
+
+    /// 10 min, doubled per failure in a row, at most 3 h.
+    static func configurationPause(_ failures: Int) -> TimeInterval {
+        min(10 * 60 * pow(2, Double(min(max(failures, 1), 8) - 1)), 3 * 3600)
     }
 
     private func log(_ result: PushResult, id: String, count: Int) {
@@ -453,6 +524,7 @@ public actor PushService {
         case .invalidToken(let reason): Log.warn("APNs: Token ungültig \(Log.device(id)): \(reason)")
         case .retryLater(let reason): Log.warn("APNs später erneut \(Log.device(id)): \(reason)")
         case .providerError(let reason): Log.error("APNs lehnt den Dienst ab \(Log.device(id)): \(reason)")
+        case .deviceConfigurationError(let reason): Log.error("APNs lehnt Topic/Umgebung ab \(Log.device(id)): \(reason)")
         case .rejected(let reason): Log.error("APNs abgelehnt \(Log.device(id)): \(reason)")
         }
     }
@@ -506,6 +578,8 @@ public actor PushService {
     private func remove(_ id: String) throws {
         do { try store.delete(id) } catch { throw ServiceError.storage("\(error)") }
         records[id] = nil
+        retryAfter[id] = nil
+        deviceConfigurationPause[id] = nil
     }
 
     /// Deletes devices that stayed inactive (token invalid, Untis access

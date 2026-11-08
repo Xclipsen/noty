@@ -381,23 +381,53 @@ extension CalendarNotificationLog {
     /// same change again after a different one of that lesson gets
     /// `…~2` (`~3` …), so the bell and the notification keep it; a change
     /// that the newest entry of the same lesson (same origin) already says
-    /// gets that entry's id, so `addChanges` leaves it out. Call before
+    /// gets that entry's id, so `addChanges` leaves it out – unless the other
+    /// origin (push service ↔ app) recorded something different for that
+    /// lesson since: then it is a further change (e.g. „Ausfall“ by the app,
+    /// „findet wieder statt“ only by the server, „Ausfall“ again while the
+    /// server is not in charge – that must still be announced). Call before
     /// `addChanges`; delivered notifications collected again go to
     /// `addChanges` directly (their ids are final).
     public func identifyingRepeats(_ new: [CalendarNotificationRecord]) -> [CalendarNotificationRecord] {
         // Oldest first: the history is kept newest first.
         var earlier: [String: [String]] = [:]
+        // Newest entry of each lesson per origin (head): its position and what it says.
+        var newest: [String: (order: Int, meaning: String)] = [:]
+        var order = 0
+        func note(_ head: String, _ raw: String) {
+            earlier[head, default: []].append(raw)
+            if let change = CalendarChangeID(raw) { newest[head + "|" + change.lessonKey] = (order, Self.meaning(change)) }
+            order += 1
+        }
         for record in records.reversed() where record.kind == .change {
-            if let parts = Self.split(record.id) { earlier[parts.head, default: []].append(parts.raw) }
+            if let parts = Self.split(record.id) { note(parts.head, parts.raw) }
         }
         return new.map { record in
             guard record.kind == .change, let parts = Self.split(record.id) else { return record }
-            let resolved = CalendarChangeRepeats.resolve(parts.raw, earlier: earlier[parts.head] ?? [])
+            let own = earlier[parts.head] ?? []
+            var resolved = CalendarChangeRepeats.resolve(parts.raw, earlier: own)
+            if !resolved.isNew, let change = CalendarChangeID(parts.raw),
+               let mine = newest[parts.head + "|" + change.lessonKey],
+               let other = newest[Self.otherHead(parts.head) + "|" + change.lessonKey],
+               other.order > mine.order, other.meaning != Self.meaning(change) {
+                resolved = (CalendarChangeRepeats.next(parts.raw, earlier: own), true)
+            }
             var copy = record
             copy.id = parts.head + resolved.id
-            if resolved.isNew { earlier[parts.head, default: []].append(resolved.id) }
+            if resolved.isNew { note(parts.head, resolved.id) }
             return copy
         }
+    }
+
+    /// What a change says about its lesson, independent of the comparison
+    /// pair and the generation: Ausfall/findet statt/sonstige, start, rooms.
+    static func meaning(_ change: CalendarChangeID) -> String {
+        [change.category, String(change.start), change.rooms].joined(separator: "|")
+    }
+
+    /// The head of the other origin of the same area: app ↔ push service.
+    static func otherHead(_ head: String) -> String {
+        head.hasSuffix("." + pushMarker) ? String(head.dropLast(pushMarker.count)) : head + pushMarker
     }
 
     /// As `add`, and a change entry is also left out when an entry of the

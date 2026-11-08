@@ -205,13 +205,15 @@ final class CalendarNotificationHub: NSObject, UNUserNotificationCenterDelegate 
         defer { hub.scheduleBackgroundRefresh() }
         // Files and keychain may be unreadable before the first unlock.
         guard UIApplication.shared.isProtectedDataAvailable else { return }
+        // Beside the refresh: the push registration's daily contact, whichever area is shown (docs/PUSH.md).
+        let contact = Task { await CalendarPushClient.shared.keepAlive() }
         // A model that is still loading gets a moment; none at all: nothing.
         for _ in 0..<10 {
             if hub.model?.loaded == true { break }
             try? await Task.sleep(for: .milliseconds(500))
         }
-        guard let model = hub.model, model.loaded else { return }
-        await model.backgroundRefresh()
+        if let model = hub.model, model.loaded { await model.backgroundRefresh() }
+        await contact.value
     }
 }
 

@@ -21,6 +21,9 @@ import Foundation
 //    a base day with lessons: after an empty day, the lessons coming back
 //    are no „zusätzlich“ (the push service also keeps such a day in its
 //    comparison base: `CalendarSourceSnapshot.mergeKeepingEmptiedDays`).
+//    Exception: a day whose periods turn up on another day fetched again
+//    (same period id: the whole day was moved) is no empty answer; it is
+//    compared, and its lessons are reported as „verlegt“.
 //  - Only lessons that still start after `now` are reported.
 //  - Only the explicit status is used. Which `is` values WebUntis really
 //    delivers besides REGULAR is unverified (plan §7), so a school whose
@@ -50,12 +53,20 @@ public struct CalendarLessonChange: Identifiable, Equatable, Sendable {
     /// „findet statt“ → „Ausfall“) is recorded as `id~2`, `id~3`, …
     /// (`CalendarChangeRepeats`); this id itself never carries the suffix.
     public var id: String {
-        let rooms = lesson.rooms.sorted().joined(separator: "+")
+        let rooms = lesson.rooms.sorted().map(Self.idRoom).joined(separator: "+")
         let start = Int(lesson.start.timeIntervalSinceReferenceDate)
         return "change.\(lesson.key.sourceID).\(lesson.date).\(kinds.map(\.rawValue).joined(separator: "-")).\(start).\(rooms)"
     }
 
     public var primary: Kind { kinds.first ?? .substitution }
+
+    /// A room as written in the id: „~“ belongs to the repeat generation at
+    /// the end (`CalendarChangeRepeats.separator`) and is written „%7E“, so
+    /// a room such as „R~2“ is never read as generation 2. Every other room
+    /// keeps the id it always had.
+    static func idRoom(_ room: String) -> String {
+        room.replacingOccurrences(of: CalendarChangeRepeats.separator, with: "%7E")
+    }
 
     /// „Do 12.11., 08:00 Deutsch fällt aus“, „Fr 13.11., 09:45 Mathematik jetzt in R 112 (statt R 101)“.
     /// Subject, time and room only (lock screen).
@@ -107,15 +118,28 @@ public enum CalendarChangeDetector {
 
     /// Days that both snapshots cover and that `new` fetched again later.
     /// A day that had lessons in `old` and has none in `new` counts as not
-    /// fetched again (an empty answer is no list of vanished lessons).
+    /// fetched again (an empty answer is no list of vanished lessons) –
+    /// unless one of its periods is in `new` on another day fetched again:
+    /// then the day was moved, not emptied.
     public static func comparedDays(old: CalendarSourceSnapshot, new: CalendarSourceSnapshot) -> Set<CivilDate> {
         guard old.connection == new.connection else { return [] }
+        func refetched(_ text: String) -> Bool {
+            guard let oldTime = old.days[text], let newTime = new.days[text] else { return false }
+            return newTime > oldTime
+        }
         let oldBusy = Set(old.lessons.map(\.date))
         let newBusy = Set(new.lessons.map(\.date))
+        var newDays: [String: Set<CivilDate>] = [:]
+        for lesson in new.lessons { newDays[lesson.key.sourceID, default: []].insert(lesson.date) }
         var days = Set<CivilDate>()
-        for (text, newTime) in new.days {
-            guard let oldTime = old.days[text], newTime > oldTime, let day = CivilDate(text) else { continue }
-            if oldBusy.contains(day) && !newBusy.contains(day) { continue }
+        for text in new.days.keys {
+            guard refetched(text), let day = CivilDate(text) else { continue }
+            if oldBusy.contains(day) && !newBusy.contains(day) {
+                let movedAway = old.lessons.contains { lesson in
+                    lesson.date == day && (newDays[lesson.key.sourceID]?.contains { $0 != day && refetched($0.description) } ?? false)
+                }
+                guard movedAway else { continue }
+            }
             days.insert(day)
         }
         return days
@@ -196,7 +220,9 @@ public enum CalendarChangeDetector {
 /// The parts of a raw change id `change.<periode>.<YYYY-MM-DD>.<arten>.<beginn>.<räume>[~n]`
 /// (`CalendarLessonChange.id`, optionally with the repeat generation). The
 /// period and the rooms may contain dots; the rooms never decide where the
-/// date is (the first part after the period that is a date).
+/// date is (the first part after the period that is a date). The generation
+/// is only a final „~n“: a „~“ inside a room is written „%7E“ in ids
+/// (`CalendarLessonChange.idRoom`, since 11.2026); older ids are read as before.
 public struct CalendarChangeID: Equatable, Sendable {
     /// WebUntis period id (`CalendarLesson.key.sourceID`).
     public var period: String
@@ -269,16 +295,22 @@ public enum CalendarChangeRepeats {
         guard let change = CalendarChangeID(id) else { return (id, !earlier.contains(id)) }
         let base = change.base
         var newest: (id: String, base: String)?
-        var generation = 0
         for other in earlier {
-            guard let parsed = CalendarChangeID(other) else { continue }
-            if parsed.lessonKey == change.lessonKey { newest = (other, parsed.base) }
-            if parsed.base == base { generation = max(generation, parsed.generation) }
+            guard let parsed = CalendarChangeID(other), parsed.lessonKey == change.lessonKey else { continue }
+            newest = (other, parsed.base)
         }
         if let newest, newest.base == base { return (newest.id, false) }
-        guard generation > 0 else { return (base, true) }
-        var next = change
-        next.generation = generation + 1
-        return (next.id, true)
+        return (next(id, earlier: earlier), true)
+    }
+
+    /// `id` recorded as a further occurrence after `earlier` (same origin):
+    /// the plain id the first time, else `…~n` with the next generation.
+    public static func next(_ id: String, earlier: [String]) -> String {
+        guard var change = CalendarChangeID(id) else { return id }
+        let base = change.base
+        let generation = earlier.compactMap(CalendarChangeID.init).filter { $0.base == base }.map(\.generation).max() ?? 0
+        guard generation > 0 else { return base }
+        change.generation = generation + 1
+        return change.id
     }
 }

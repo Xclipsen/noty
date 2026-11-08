@@ -152,19 +152,24 @@ final class ReviewFixTests: XCTestCase {
     func testDevicesWithoutContactAreDeletedAfterTheConfiguredDays() async throws {
         let service = try service()
         let router = APIRouter(service: service, config: testConfig(), now: { [clock] in clock!.now })
+        XCTAssertEqual(PushConfig().noContactRetentionDays, 120, "länger als die Sommerferien")
         let silent = try await service.register(registration()).deviceID
         let used = try await service.register(registration(token: String(repeating: "cd", count: 32)))
-        clock.set(clock.now.addingTimeInterval(40 * 86_400))
+        clock.set(clock.now.addingTimeInterval(46 * 86_400))
+        await service.maintenance(now: clock.now)
+        let afterHolidays = await service.record(silent)
+        XCTAssertNotNil(afterHolidays, "46 Tage ohne Kontakt (Sommerferien): bleibt")
+        clock.set(clock.now.addingTimeInterval(54 * 86_400))
         let response = await router.handle(APIRequest(method: "GET", path: "/v1/changes",
                                                       headers: ["authorization": "Bearer \(used.deviceID).\(used.secret)"]))
         XCTAssertEqual(response.status, 200)
         let contact = await service.record(used.deviceID)?.lastContact
         XCTAssertEqual(contact, clock.now, "authentifizierter Kontakt wird gespeichert")
-        clock.set(clock.now.addingTimeInterval(6 * 86_400))
+        clock.set(clock.now.addingTimeInterval(21 * 86_400))
         await service.maintenance(now: clock.now)
         let gone = await service.record(silent)
         let kept = await service.record(used.deviceID)
-        XCTAssertNil(gone, "46 Tage ohne Kontakt: gelöscht, auch wenn aktiv")
+        XCTAssertNil(gone, "121 Tage ohne Kontakt: gelöscht, auch wenn aktiv")
         XCTAssertNotNil(kept)
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir + "/devices/\(silent).sealed"))
         // Records written before lastContact existed fall back to `updated`.
@@ -322,7 +327,8 @@ final class ReviewFixTests: XCTestCase {
     func testProviderErrorsAreRetriedWithBackoffNotMarkedFailedOrSent() async throws {
         XCTAssertEqual(APNs.classify(status: 403, body: Data(#"{"reason":"InvalidProviderToken"}"#.utf8)), .providerError("403 InvalidProviderToken"))
         XCTAssertEqual(APNs.classify(status: 403, body: Data(#"{"reason":"ExpiredProviderToken"}"#.utf8)), .providerError("403 ExpiredProviderToken"))
-        XCTAssertEqual(APNs.classify(status: 400, body: Data(#"{"reason":"TopicDisallowed"}"#.utf8)), .providerError("400 TopicDisallowed"))
+        XCTAssertEqual(APNs.classify(status: 400, body: Data(#"{"reason":"TopicDisallowed"}"#.utf8)),
+                       .deviceConfigurationError("400 TopicDisallowed"), "Topic: nur dieses Gerät (Gegen-Review)")
         XCTAssertEqual(APNs.classify(status: 400, body: Data(#"{"reason":"PayloadTooLarge"}"#.utf8)), .rejected("400 PayloadTooLarge"))
 
         let service = try service()

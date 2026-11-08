@@ -136,12 +136,19 @@ final class CalendarModel: ObservableObject {
     /// still bump it work; it only sets `connectionSheetRequested`.
     @Published var connectionRequest = 0 { didSet { connectionSheetRequested = true } }
     /// Wish to open the WebUntis connection sheet („Untis-Zugang prüfen“):
-    /// the calendar view opens it (`onChange(initial: true)`) and sets it
-    /// back. Set only while no notebook is open (`requestConnectionSheet`).
-    @Published var connectionSheetRequested = false
+    /// the calendar view opens it once nothing else is presented over it
+    /// and sets it back. Set only while no notebook is open (`requestConnectionSheet`).
+    @Published var connectionSheetRequested = false {
+        didSet { if connectionSheetRequested { connectionSheetSince = Date() } }
+    }
+    /// When the wish was made: one older than 15 minutes is dropped.
+    var connectionSheetSince: Date?
     /// The calendar view shows sheets or popovers of its own (set by
-    /// CalendarView; the library keeps its mode switch and keys off then).
-    @Published var presentingOverlays = false
+    /// CalendarView through `setPresentingOverlays`; the library keeps its
+    /// mode switch and keys off then).
+    @Published private(set) var presentingOverlays = false
+    /// The calendar view instance that set `presentingOverlays`.
+    private var overlayOwner: UUID?
     /// Notification taps that wait until the calendar is on screen (`showPending`).
     var pendingOpen: CalendarPendingOpen?
     var pendingConnectionSheet: Date?
@@ -323,6 +330,19 @@ final class CalendarModel: ObservableObject {
     }
 
     func dismissNotices() { recoveredNotice = nil; notice = nil; if !unsaved { saveError = nil } }
+
+    /// A calendar view opened or closed its overlays. Only the view that
+    /// set them may clear them: a late `onDisappear` of an older view (area
+    /// switch, re-creation) leaves a newer view's state alone.
+    func setPresentingOverlays(_ open: Bool, owner: UUID) {
+        if open {
+            overlayOwner = owner
+        } else {
+            guard overlayOwner == nil || overlayOwner == owner else { return }
+            overlayOwner = nil
+        }
+        if presentingOverlays != open { presentingOverlays = open }
+    }
 
     // MARK: Subject colours
 

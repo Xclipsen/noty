@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import UserNotifications
 import NotebookCore
 
@@ -77,10 +78,17 @@ final class CalendarReminderCenter {
 
     /// Delivers one notification now (a timetable change). Its identifier
     /// is outside `CalendarReminder.prefix`, so a plan replacement never
-    /// removes it. Nothing without permission.
-    func post(id: String, title: String, body: String, namespace: String, day: CivilDate?, entryID: String?) async {
+    /// removes it. Nothing without permission. `passive`: the tile
+    /// „Schultag“ already woke the screen with the same change – into the
+    /// Mitteilungszentrale without sound or lighting up; with noty in the
+    /// foreground the usual banner (`willPresent`) applies.
+    func post(id: String, title: String, body: String, namespace: String, day: CivilDate?, entryID: String?, passive: Bool = false) async {
         guard await permission() == .allowed else { return }
         let content = Self.content(title: title, body: body, kind: .change, namespace: namespace, day: day, entryID: entryID)
+        if passive && UIApplication.shared.applicationState != .active {
+            content.interruptionLevel = .passive
+            content.sound = nil
+        }
         try? await center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
 

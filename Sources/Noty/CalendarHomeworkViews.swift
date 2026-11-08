@@ -18,6 +18,8 @@ struct CalendarHomeworkRow: View {
     /// meanwhile takes the tick back (`pending` is cancelled, nothing stored).
     @State private var ticking: Bool?
     @State private var pending: Task<Void, Never>?
+    /// The mark is being stored: the box takes no tap until it is.
+    @State private var saving = false
 
     private var color: Color {
         let key = CalendarSubjectColor.key(subjectID: item.homework.subjectID, name: item.homework.subject ?? "Hausaufgabe")
@@ -40,7 +42,7 @@ struct CalendarHomeworkRow: View {
                     .contentShape(NotyHitShape())
             }
             .buttonStyle(NotyPressStyle())
-            .disabled(!canTick)
+            .disabled(!canTick || saving)
             // Haptic only for a stored change (not for the optimistic tick).
             .sensoryFeedback(trigger: item.done) { _, new in new ? .success : .selection }
             .accessibilityLabel(done ? "Als offen markieren" : "Als erledigt markieren")
@@ -75,8 +77,10 @@ struct CalendarHomeworkRow: View {
     }
 
     /// First tap: tick (or untick) at once, store after a moment. A second
-    /// tap before that cancels: the row stays as it was.
+    /// tap before that cancels: the row stays as it was. Once storing has
+    /// begun it can no longer be taken back (the box is locked meanwhile).
     private func tick() {
+        guard !saving else { return }
         if let running = pending {
             running.cancel()
             pending = nil
@@ -88,9 +92,12 @@ struct CalendarHomeworkRow: View {
         pending = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(reduceMotion ? 120 : 420))
             guard !Task.isCancelled else { return }
-            await model.setHomeworkDone(item.id, done: target)
-            ticking = nil
+            // From here on a tap cannot cancel what is being written.
             pending = nil
+            saving = true
+            await model.setHomeworkDone(item.id, done: target)
+            saving = false
+            ticking = nil
         }
     }
 

@@ -63,10 +63,13 @@ struct CalendarPushSection: View {
 
     @ViewBuilder private var status: some View {
         let state = push.state
+        // The server asked for a pause (429 with Retry-After) that has not passed yet.
+        let pause = push.blockedUntil.flatMap { $0 > Date() ? $0 : nil }
         if push.working {
             Label("Mitteilungsdienst wird abgeglichen …", systemImage: "arrow.triangle.2.circlepath")
         } else if state.pendingDelete {
-            line("Abmeldung steht noch aus: Die Daten auf dem Server sind noch nicht gelöscht. noty wiederholt das beim nächsten Start.",
+            line("Abmeldung steht noch aus: Die Daten auf dem Server sind noch nicht gelöscht. noty wiederholt das beim nächsten Start."
+                 + (pause.map { " " + CalendarPushClient.pauseText($0) } ?? ""),
                  "exclamationmark.triangle", .orange)
             retryButton("Jetzt erneut versuchen")
         } else if state.wanted == true, let target = state.connectionID, target != model.connection?.id {
@@ -100,7 +103,10 @@ struct CalendarPushSection: View {
                      "exclamationmark.triangle", .orange)
                 retryButton("Jetzt erneut versuchen")
             default:
-                if let error = state.lastError {
+                if let pause {
+                    // 429: only a pause for the app's requests; the server keeps polling and notifying.
+                    line("Aktiv · " + CalendarPushClient.pauseText(pause) + " Mitteilungen kommen trotzdem weiter.", "hourglass", .secondary)
+                } else if let error = state.lastError {
                     line("Server nicht erreichbar: \(error) Bis dahin meldet noty Änderungen selbst.", "exclamationmark.triangle", .orange)
                     retryButton("Erneut versuchen")
                 } else {

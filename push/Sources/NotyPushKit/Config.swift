@@ -49,17 +49,25 @@ public struct PushConfig: Codable, Equatable, Sendable {
     public var windowDays = 14
     public var schedule = PollScheduleConfig()
     public var curlPath = "/usr/bin/curl"
+    /// Registration attempts per hour and address (IPv6: per /64 network).
     public var registrationsPerHourPerIP = 5
+    /// Successful registrations per day, whole service.
     public var registrationsPerDay = 20
+    /// Registration attempts per hour, whole service (also invalid ones):
+    /// many addresses together cannot keep the WebUntis test fetch busy.
+    public var registrationAttemptsPerHour = 60
     public var requestsPerMinutePerIP = 60
     /// Devices whose token became invalid or whose Untis access failed are
     /// deleted after this many days without a successful update.
     public var inactiveRetentionDays = 30
     /// Any device (also an active one) is deleted after this many days
     /// without an authenticated API request (the app asks `GET /v1/changes`
-    /// whenever the calendar opens): no Freigabe stays on the server for an
-    /// app that is gone. The app registers again after its next 401.
-    public var noContactRetentionDays = 45
+    /// whenever the calendar opens, and at most once a day `GET /v1/device`
+    /// at launch or in a background refresh, whichever area is shown): no
+    /// Freigabe stays on the server for an app that is gone. 120 days outlast
+    /// the summer holidays of an app that is not opened meanwhile. The app
+    /// registers again after its next 401.
+    public var noContactRetentionDays = 120
     /// WebUntis hosts the server may contact: a Freigabe whose server is not
     /// a subdomain of one of these (`<schule>.webuntis.com`) is refused
     /// before any request (no requests on behalf of others to arbitrary hosts).
@@ -70,7 +78,7 @@ public struct PushConfig: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case listenHost, port, dataDirectory, dataKeyFile, apnsKeyFile, apnsKeyID, teamID, allowedBundleIDs, maxDevices,
              consentVersion, windowDays, schedule, curlPath, registrationsPerHourPerIP, registrationsPerDay,
-             requestsPerMinutePerIP, inactiveRetentionDays, noContactRetentionDays, allowedUntisHostSuffixes
+             registrationAttemptsPerHour, requestsPerMinutePerIP, inactiveRetentionDays, noContactRetentionDays, allowedUntisHostSuffixes
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -84,6 +92,7 @@ public struct PushConfig: Codable, Equatable, Sendable {
         schedule = try v(.schedule, d.schedule); curlPath = try v(.curlPath, d.curlPath)
         registrationsPerHourPerIP = try v(.registrationsPerHourPerIP, d.registrationsPerHourPerIP)
         registrationsPerDay = try v(.registrationsPerDay, d.registrationsPerDay)
+        registrationAttemptsPerHour = try v(.registrationAttemptsPerHour, d.registrationAttemptsPerHour)
         requestsPerMinutePerIP = try v(.requestsPerMinutePerIP, d.requestsPerMinutePerIP)
         inactiveRetentionDays = try v(.inactiveRetentionDays, d.inactiveRetentionDays)
         noContactRetentionDays = try v(.noContactRetentionDays, d.noContactRetentionDays)
@@ -104,7 +113,9 @@ public struct PushConfig: Codable, Equatable, Sendable {
         if !schedule.isValid { result.append("schedule ungültig (Stunden 0–23, spreadMinutes 1–59).") }
         if !curlPath.hasPrefix("/") { result.append("curlPath muss absolut sein.") }
         if consentVersion.isEmpty || consentVersion.count > 64 { result.append("consentVersion leer oder zu lang.") }
-        if registrationsPerHourPerIP < 1 || registrationsPerDay < 1 || requestsPerMinutePerIP < 1 { result.append("Ratenlimits müssen ≥ 1 sein.") }
+        if registrationsPerHourPerIP < 1 || registrationsPerDay < 1 || registrationAttemptsPerHour < 1 || requestsPerMinutePerIP < 1 {
+            result.append("Ratenlimits müssen ≥ 1 sein.")
+        }
         if !(1...365).contains(inactiveRetentionDays) { result.append("inactiveRetentionDays außerhalb 1–365.") }
         if !(7...365).contains(noContactRetentionDays) { result.append("noContactRetentionDays außerhalb 7–365.") }
         if allowedUntisHostSuffixes.isEmpty || !allowedUntisHostSuffixes.allSatisfy(Self.isHostSuffix) {

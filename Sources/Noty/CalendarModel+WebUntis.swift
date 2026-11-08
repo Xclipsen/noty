@@ -194,9 +194,11 @@ extension CalendarModel {
             let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
             if !(background && cancelled) { syncError = WebUntisClient.message(error) }
         }
-        // Days merged before a later range failed are complete days as well.
-        if session == generation, state.connection?.id == connection.id { await recordChanges(since: before) }
+        // The new timetable is shown first; announcing its changes (which may ask the
+        // push service, at most 5 s) follows. Days merged before a later range failed
+        // are complete days as well.
         rebuild()
+        if session == generation, state.connection?.id == connection.id { await recordChanges(since: before) }
         await rescheduleRemindersNow()
     }
 }

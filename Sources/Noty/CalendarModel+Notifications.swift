@@ -107,39 +107,47 @@ extension CalendarModel {
     /// While the push service is in charge of this connection (docs/PUSH.md)
     /// the changes go into the bell only: the server notifies. Changes of the
     /// day the tile „Schultag“ runs for are announced by the tile itself
-    /// (alert, `CalendarSchoolDayCenter.announce`), without a second notification.
+    /// (alert, `CalendarSchoolDayCenter.announce`); the notification then
+    /// still goes into the Mitteilungszentrale, silently.
+    /// Called after the new timetable is shown (`refresh`): nothing here
+    /// holds up the display; asking the push service waits at most 5 s.
     func recordChanges(since before: CalendarSourceSnapshot?) async {
         guard notificationSettings.changes, let before, let after = snapshot, before != after else { return }
-        // First what the server already announced: push notifications still in the
-        // Mitteilungszentrale, and its history when the last contact is old. The bell
-        // then knows those changes (`addChanges`) and they are not announced again.
+        let session = generation, connection = state.connection?.id
+        // The comparison first: no change, nothing to ask anyone.
+        let changes = CalendarChangeDetector.changes(old: before, new: after, now: Date(), calendar: calendar)
+        guard !changes.isEmpty else { return }
+        // Then what the server already announced: push notifications still in the Mitteilungszentrale, and its
+        // history when the last contact is old (at most 5 s). The bell then knows those changes (`addChanges`)
+        // and they are not announced again.
         await collectDelivered()
         await CalendarPushClient.shared.refreshBeforeLocalChanges(self)
+        // Meanwhile the connection may have been replaced or removed, or the changes switched off.
+        guard session == generation, state.connection?.id == connection, notificationSettings.changes else { return }
         let now = Date()
-        let changes = CalendarChangeDetector.changes(old: before, new: after, now: now, calendar: calendar)
-        guard !changes.isEmpty else { return }
         // A change that repeats after a different one of the same lesson keeps its own entry (`identifyingRepeats`).
         let records = notificationLog.identifyingRepeats(changes.map {
             CalendarNotificationRecord(change: $0, date: now, calendar: calendar, namespace: notificationNamespace)
         })
         let added = Set(addRecords(records).map(\.id))
-        var fresh = zip(changes, records).filter { added.contains($0.1.id) }
+        let fresh = zip(changes, records).filter { added.contains($0.1.id) }
         guard !fresh.isEmpty, !notificationSettings.isQuiet(now, calendar: calendar),
               !CalendarPushClient.shared.isActive(for: state.connection?.id) else { return }
+        // The running tile of their day wakes the screen with an alert of its own; when it covers
+        // every change, the notification goes into the Mitteilungszentrale without sound and banner.
         let announced = await CalendarSchoolDayCenter.shared.announce(fresh.map(\.0), model: self)
-        fresh.removeAll { announced.contains($0.0.id) }
-        guard !fresh.isEmpty else { return }
+        let passive = fresh.allSatisfy { announced.contains($0.0.id) }
         if fresh.count == 1, let pair = fresh.first {
             let (change, record) = pair
             await CalendarReminderCenter.shared.post(id: record.id, title: record.title, body: record.body, namespace: notificationNamespace,
-                                                     day: change.lesson.date, entryID: change.lesson.id)
+                                                     day: change.lesson.date, entryID: change.lesson.id, passive: passive)
         } else {
             let summary = CalendarLessonChange.summary(fresh.map(\.0), calendar: calendar)
             let first = fresh[0].0
             // The summary is no history entry of its own (each change is one).
             let id = CalendarNotificationLog.changePrefix + notificationNamespace + ".summary.\(Int(now.timeIntervalSinceReferenceDate))"
             await CalendarReminderCenter.shared.post(id: id, title: summary.title, body: summary.body, namespace: notificationNamespace,
-                                                     day: first.lesson.date, entryID: nil)
+                                                     day: first.lesson.date, entryID: nil, passive: passive)
         }
     }
 

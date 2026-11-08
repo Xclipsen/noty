@@ -93,16 +93,29 @@ struct CalendarTrackpadSwipe: UIViewRepresentable {
         }
 
         func detach() {
-            cancel()
+            // A swipe in progress: the content springs back (later, not during a SwiftUI update).
+            if (pan.state == .began || pan.state == .changed) && !fired { settleLater(translation: 0, velocity: 0) }
             host?.removeGestureRecognizer(pan)
             host = nil
+            fired = false
         }
 
-        /// Ends a running swipe (disabled while the window opened, removed).
+        /// Ends a running swipe (disabled while the window opened). Called
+        /// from `updateUIView`: disabling sends `.cancelled` at once, whose
+        /// settle changes published state – so it happens after the update.
         func cancel() {
             guard pan.state == .began || pan.state == .changed else { return }
-            pan.isEnabled = false
-            pan.isEnabled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.pan.state == .began || self.pan.state == .changed else { return }
+                self.pan.isEnabled = false
+                self.pan.isEnabled = true
+            }
+        }
+
+        /// The content back to rest after the current run loop turn.
+        private func settleLater(translation: CGFloat, velocity: CGFloat) {
+            let shift = shift, reduced = reduced
+            DispatchQueue.main.async { shift?.settle(translation: translation, velocity: velocity, reduced: reduced) }
         }
 
         // MARK: Gesture
@@ -123,10 +136,14 @@ struct CalendarTrackpadSwipe: UIViewRepresentable {
                 } else {
                     shift?.follow(translation.x, reduced: reduced)
                 }
-            case .ended, .cancelled, .failed:
+            case .ended:
                 if !fired {
                     shift?.settle(translation: translation.x, velocity: pan.velocity(in: host).x, reduced: reduced)
                 }
+                fired = false
+            case .cancelled, .failed:
+                // May arrive synchronously from `isEnabled = false` or the removal: settle afterwards.
+                if !fired { settleLater(translation: translation.x, velocity: 0) }
                 fired = false
             default:
                 break
