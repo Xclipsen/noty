@@ -118,7 +118,7 @@ struct BackupContentsView: View {
     private func row(_ entry: BackupNotebookEntry) -> some View {
         HStack(spacing: 12) {
             Image(systemName: selection.contains(entry.id) ? "checkmark.circle.fill" : "circle")
-                .font(.title3).foregroundStyle(selection.contains(entry.id) ? Color.accentColor : Color.secondary)
+                .font(.title3).foregroundStyle(selection.contains(entry.id) ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
             Image(systemName: entry.isTextDocument ? "doc.text" : "book.closed").foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.title).lineLimit(2).truncationMode(.middle)

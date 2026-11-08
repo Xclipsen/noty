@@ -248,8 +248,8 @@ struct PageMarginsView: View {
             for added in [CGRect(x: base.width * k, y: 0, width: margins.right * k, height: size.height),
                           CGRect(x: 0, y: base.height * k, width: base.width * k, height: margins.bottom * k)]
             where added.width > 0.5 && added.height > 0.5 {
-                context.fill(Path(roundedRect: added, cornerRadius: 2), with: .color(Color.accentColor.opacity(0.12)))
-                context.stroke(Path(roundedRect: added.insetBy(dx: 0.6, dy: 0.6), cornerRadius: 2), with: .color(Color.accentColor.opacity(0.9)), style: dash)
+                context.fill(Path(roundedRect: added, cornerRadius: 2), with: .color(AccentChoice.current.color.opacity(0.12)))
+                context.stroke(Path(roundedRect: added.insetBy(dx: 0.6, dy: 0.6), cornerRadius: 2), with: .color(AccentChoice.current.color.opacity(0.9)), style: dash)
             }
         }
             .aspectRatio(canvas.width / canvas.height, contentMode: .fit)
@@ -316,7 +316,7 @@ struct PageMarginsView: View {
                     let chosen = on && abs(value.wrappedValue - target) < 0.5
                     Button(label) { value.wrappedValue = max(minimum, target) }
                         .font(.subheadline.weight(chosen ? .semibold : .regular))
-                        .buttonStyle(.bordered).tint(chosen ? Color.accentColor : Color.gray)
+                        .buttonStyle(.bordered).tint(chosen ? nil : Color.gray)
                         .disabled(!on || !editable || target < minimum - 0.5)
                         .accessibilityLabel("\(title) \(label)")
                         .keyOption(.action { value.wrappedValue = max(minimum, target) })

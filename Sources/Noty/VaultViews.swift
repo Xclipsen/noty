@@ -38,7 +38,7 @@ struct NotebookVaultSection: View {
             } header: {
                 Text("iCloud-Ablage")
             } footer: {
-                Text("Jedes geänderte Heft kommt als eigene Datei in den iCloud-Ordner dieser App: höchstens alle 10 Minuten und beim Verlassen der App. Es bleiben die drei neuesten Stände sowie je einer der letzten 7 Tage, 4 Wochen und 6 Monate. Belegt deinen iCloud-Speicher. Das tägliche Komplettbackup unten bleibt davon unabhängig.")
+                Text("Jedes geänderte Heft kommt als eigene Datei in den iCloud-Ordner dieser App: höchstens alle 10 Minuten und beim Verlassen der App. Es bleiben die drei neuesten Stände sowie je einer der letzten 7 Tage, 4 Wochen und 6 Monate. Belegt deinen iCloud-Speicher. Das tägliche automatische Backup bleibt davon unabhängig.")
             }
         }
     }

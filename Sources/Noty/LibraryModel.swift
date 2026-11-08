@@ -440,6 +440,8 @@ final class LibraryModel: ObservableObject {
     /// the editor then restores its remembered page itself.
     private func reopenLastNotebook() async {
         guard let raw = UserDefaults.standard.string(forKey: lastOpenedKey) else { return }
+        // Settings › Allgemein › „Zuletzt geöffnetes Heft wieder öffnen“ (default on).
+        guard UserDefaults.standard.object(forKey: AppSettingsKey.reopenLastNotebook) as? Bool ?? true else { return }
         guard ready, opened == nil, !busy else { return }
         guard let id = UUID(uuidString: raw), let item = snapshot.items.first(where: { $0.id == id }),
               !item.isFolder, !snapshot.isTrashed(id) else { notebookClosedByUser(); return }

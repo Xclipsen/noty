@@ -117,7 +117,7 @@ private struct KeyboardChoicesView: View {
             if number < 10, item.color != nil { Text("\(number)").font(.system(size: 9, weight: .bold).monospaced()).foregroundStyle(.secondary).offset(x: 3, y: 3) }
         }
         .padding(4)
-        .background(RoundedRectangle(cornerRadius: 7).strokeBorder(chosen ? Color.accentColor : .clear, lineWidth: 2))
+        .background(RoundedRectangle(cornerRadius: 7).strokeBorder(chosen ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.clear), lineWidth: 2))
     }
 }
 
@@ -140,7 +140,7 @@ private struct KeyboardQuestionView: View {
                         Button { KeyboardRouter.shared.handleQuestionTap(option.id) } label: {
                             Text(option.title).frame(maxWidth: .infinity, minHeight: 34)
                                 .foregroundStyle(option.destructive ? Color.red : .primary)
-                                .background(option.id == question.chosen ? Color.accentColor.opacity(0.28) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                                .background(option.id == question.chosen ? AnyShapeStyle(.tint.opacity(0.28)) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: 8))
                                 .contentShape(Rectangle())
                         }.buttonStyle(.plain)
                     }
@@ -276,7 +276,7 @@ private struct KeyboardPaletteView: View {
                                         if let keys = command.keys { Text(keys).font(.caption.monospaced()).foregroundStyle(.secondary) }
                                     }
                                     .padding(.horizontal, 14).padding(.vertical, 8).contentShape(Rectangle())
-                                    .background(position == index ? Color.accentColor.opacity(0.28) : .clear)
+                                    .background(position == index ? AnyShapeStyle(.tint.opacity(0.28)) : AnyShapeStyle(Color.clear))
                                 }.buttonStyle(.plain).id(position)
                             }
                         }

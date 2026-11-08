@@ -459,7 +459,7 @@ struct ContentSearchView: View {
                                 Text(label(hit.kind)).font(.caption).foregroundStyle(.secondary)
                             }
                         }
-                        .listRowBackground(hit.id == keyHit ? Color.accentColor.opacity(0.28) : nil)
+                        .listRowBackground(hit.id == keyHit ? Rectangle().fill(.tint.opacity(0.28)) : nil)
                     }
                     .onChange(of: keyIndex) { _, _ in if let keyHit { proxy.scrollTo(keyHit) } }
                     .onChange(of: hits.count) { _, count in keyIndex = KeyList.clamped(keyIndex, count: count) }
@@ -519,7 +519,7 @@ struct ContentSearchView: View {
         let parts = snippet.parts
         var match = AttributedString(String(parts.match))
         match.inlinePresentationIntent = .stronglyEmphasized
-        match.foregroundColor = .accentColor
+        match.foregroundColor = AccentChoice.current.color
         return AttributedString(String(parts.before)) + match + AttributedString(String(parts.after))
     }
 

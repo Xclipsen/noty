@@ -242,7 +242,7 @@ struct WorkspacePickerList: View {
                             }
                             Spacer()
                             if model.areaID == area.id {
-                                Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Aktueller Bereich")
+                                Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityLabel("Aktueller Bereich")
                             }
                         }
                     }
@@ -307,7 +307,7 @@ struct WorkspacePickerList: View {
             HStack {
                 Label(title, systemImage: icon)
                 Spacer()
-                if current { Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Aktueller Bereich") }
+                if current { Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityLabel("Aktueller Bereich") }
             }
         }.disabled(onSelect == nil)
     }
