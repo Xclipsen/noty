@@ -15,6 +15,8 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Fehler- und Ruckler-Diagnose (`feat/diagnose`, 08.11.2026):** Abstürze, Hänger, langsame Vorgänge und Fehler aus noty dev, noty AI und noty calendar gehen automatisch als einheitlicher Bericht an den eigenen Server, ohne Heftinhalte; die normale noty sendet nur auf Wunsch. Auswertung mit `scripts/diag_report.py`. Core- und Servertests sowie iPad-SDK-Build bestanden, Server installiert; nicht installiert, am iPad ungeprüft ([DIAGNOSE](docs/DIAGNOSE.md)).
+
 **noty 1.0, Build 121 (05.11.2026):** Release-Kandidat 2 (Build 120) als normale noty, vom Nutzer freigegeben. Dazu kommt der Abgleich jetzt auch mit der vierten App „noty calendar“ ([APP-SYNC](docs/APP-SYNC.md)). Veröffentlicht für noty, noty dev, noty AI und noty calendar. Am iPad ungeprüft.
 
 **Release-Kandidat 2, Build 120 (`feat/rc2` → `dev`, 05.11.2026):** Stand von Build 118 (inkl. Abgleich zwischen den noty-Apps) plus Korrekturen aus einer vollständigen Code-Prüfung in acht Bereichen: Stifte, Lasso/Objekte, Text, Speichern, Backup/PDF, Oberfläche, Gesetzessammlung, Release. Kein Formatwechsel gegenüber Build 110–117. Korrigiert:

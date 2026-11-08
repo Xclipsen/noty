@@ -32,9 +32,24 @@ xtool-Build/Signierung in PTY/Terminal ausführen: dokumentierter Non-TTY-/Swift
 | Bibliothek, Bereiche, Backup/Restore, App-Abgleich | [LIBRARY](docs/LIBRARY.md), [BACKUPS](docs/BACKUPS.md), [LIBRARY-BACKUP](docs/LIBRARY-BACKUP.md), [APP-SYNC](docs/APP-SYNC.md) | Core-Tests und Host-Roundtrip; echte Archive unabhängig prüfen |
 | Editor, Gesten, Fokus, Undo, Werkzeugleiste, Tastatur | DESIGN, ARCHITECTURE, [KEYBOARD](docs/KEYBOARD.md); je nach Inhalt [TEXT-FIELDS](docs/TEXT-FIELDS.md) / [IMAGES](docs/IMAGES.md) | iPad-Build; betroffene Eingabe-/Fokus-/Neustartfälle gebündelt am Gerät |
 | PDF, Koordinaten, Ränder, Rendering | `PageGeometry.swift`, `PagePresentation.swift`, gemeinsame Text-/Bildrenderer | Geometrie-/Seiten-/Objekttests, iPad-Build; tatsächliches Geräte-PDF mit `pdfinfo`, `pdftoppm`, `pdftotext` prüfen |
+| Fehlerberichte, Messpunkte, Diagnose-Server | [DIAGNOSE](docs/DIAGNOSE.md); Format in Swift, `diagnostics/server.py` und `scripts/diag_report.py` gemeinsam ändern | Core `DiagnosticTests`, `python3 -B -m unittest diagnostics/test_server.py scripts/test_diag_report.py`, iPad-Build; Gerätetest nach TESTING |
 | Nur Dokumentation/Agent-Anweisungen | Aussagen gegen betroffene Quellen, Befehls-Hilfe und Links prüfen | Kein App-Build allein wegen Textänderungen |
 
 Archivprüfer: `python3 -B scripts/verify_backup.py ARCHIV --compare REVISION.json`, `python3 -B scripts/verify_library_backup.py ARCHIV`. Für Geräteabzüge: `python3 -B scripts/verify_device_store.py BEREICHSROOT --compare VORHER_ROOT`. Letzterer erwartet `Documents/Noty` bzw. jeden `NotyWorkspaces/Areas/*/Data`-Root separat; bloßes `Documents` kann sonst irreführend null Hefte melden.
+
+## Fehlerberichte auslesen
+
+Meldet der Nutzer, dass etwas hängt, ruckelt, langsam ist oder abgestürzt ist, zuerst die Berichte vom eigenen Server lesen ([DIAGNOSE](docs/DIAGNOSE.md)):
+
+```bash
+sudo python3 -B scripts/diag_report.py                 # Gruppen der letzten 14 Tage
+sudo python3 -B scripts/diag_report.py --since 24h --channel dev --kind appHang
+sudo python3 -B scripts/diag_report.py --show ID       # ein Bericht vollständig; --json maschinenlesbar
+```
+
+- Als root, weitere Filter `--build`, `--kind`, `--all` (mit Tageswerten und Tests). Gruppen, Muster, letzte Schritte und symbolisierte Frames lesen, dann im passenden Branch beheben.
+- Funktionsnamen gibt es nur für Builds, die mit dem aktuellen `publish_ota.sh` veröffentlicht wurden (Binärdatei unter `.tools/diag-binaries`); keine Datei-/Zeilennummern.
+- Berichte enthalten keine Heftinhalte. Ablage (`/var/lib/noty-diagnostics`), Schlüssel und `.tools/ota.env` nie committen oder in Doku zitieren.
 
 ## Daten und Architekturgrenzen
 
