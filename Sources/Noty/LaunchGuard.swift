@@ -45,6 +45,9 @@ final class LaunchGuard: ObservableObject {
         self.state = state
         notice = LaunchGuardState.notice(for: launch)
         Self.persist(state)
+        // docs/DIAGNOSE.md: the guard's verdict in the run's history.
+        Diagnostics.note("launchGuard", ["interrupted": launch.interrupted, "restoreSkipped": launch.mode != .normal ? 1 : 0,
+                                         "safeMode": launch.mode == .safe ? 1 : 0])
         Self.log.notice("[launch] begin mode=\(String(describing: self.launch.mode), privacy: .public) interrupted=\(self.launch.interrupted, privacy: .public) lastPhase=\(self.launch.phase?.rawValue ?? "-", privacy: .public)")
     }
 

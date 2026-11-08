@@ -14,10 +14,11 @@ struct NotyApp: App {
     init() {
         // First: decides whether this launch restores the last notebook and
         // the law window, and whether it runs in the safe mode (LaunchGuard).
+        // The run's history, the hang watchdog and MetricKit (docs/DIAGNOSE.md);
+        // before the guard, whose verdict is the first note of the run.
+        Diagnostics.start()
         LaunchGuard.start()
         LaunchGuard.log.notice("[launch] app init")
-        // Then the run's history, the hang watchdog and MetricKit (docs/DIAGNOSE.md).
-        Diagnostics.start()
         // Inline image originals are hashed once per session (content addresses);
         // CryptoKit instead of the portable Swift SHA-256, checked against test vectors first.
         NotebookCore.SHA256.installAccelerated { data in Array(CryptoKit.SHA256.hash(data: data)) }
