@@ -63,20 +63,47 @@ if [ -n "$LAST" ] && [ "$NEXT" -le "$LAST" ] && [ "${NOTY_SAME_BUILD:-}" != 1 ];
   echo "Build $NEXT ist nicht größer als der zuletzt veröffentlichte Build $LAST; CFBundleVersion erhöhen." >&2; exit 1
 fi
 INSTALLED_ID="XTL-BAFXLQ964V.XTL-BAFXLQ964V.$BASE_ID"
-ORIGINAL="$(mktemp)"; ORIGINAL_INFO="$(mktemp)"
-cp xtool.yml "$ORIGINAL"; cp Info.plist "$ORIGINAL_INFO"
-restore() { cp "$ORIGINAL" xtool.yml; cp "$ORIGINAL_INFO" Info.plist; rm -f "$ORIGINAL" "$ORIGINAL_INFO"; }
+# iCloud-Ablage (docs/ICLOUD.md): nur Kanäle aus scripts/icloud-channels bekommen
+# ihren eigenen Container (nie einen gemeinsamen: Testdaten dürfen die echten
+# Hefte nicht erreichen). Der Container muss im Apple-Entwicklerportal der
+# App-ID zugeordnet sein; sonst lehnt ota_check.py den Build ab.
+ICLOUD_CONTAINER=""
+if grep -qx "${NOTY_CHANNEL:-dev}" scripts/icloud-channels 2>/dev/null; then
+  if [ "${NOTY_CHANNEL:-dev}" = stable ]; then ICLOUD_CONTAINER=iCloud.de.la.noty; else ICLOUD_CONTAINER="iCloud.de.la.noty.${NOTY_CHANNEL:-dev}"; fi
+fi
+XTOOL=xtool
+if [ -n "$ICLOUD_CONTAINER" ]; then
+  # Nur das gepatchte xtool schaltet iCloud an der App-ID ein (~/workspace/xtool-noty/NOTY.md).
+  XTOOL=xtool-noty
+  "$XTOOL" --version 2>/dev/null | grep -q -- '-noty\.' || { echo "xtool-noty fehlt; iCloud-Kanal nicht baubar." >&2; exit 1; }
+fi
+ORIGINAL="$(mktemp)"; ORIGINAL_INFO="$(mktemp)"; ORIGINAL_ENTITLEMENTS="$(mktemp)"
+cp xtool.yml "$ORIGINAL"; cp Info.plist "$ORIGINAL_INFO"; cp Noty.entitlements "$ORIGINAL_ENTITLEMENTS"
+restore() { cp "$ORIGINAL" xtool.yml; cp "$ORIGINAL_INFO" Info.plist; cp "$ORIGINAL_ENTITLEMENTS" Noty.entitlements; rm -f "$ORIGINAL" "$ORIGINAL_INFO" "$ORIGINAL_ENTITLEMENTS"; }
 trap restore EXIT
 sed -i "s/^bundleID: .*/bundleID: XTL-BAFXLQ964V.$BASE_ID/" xtool.yml
 CHANNEL="${NOTY_CHANNEL:-dev}"
 sed -i "s#<key>NotyChannel</key><string>[a-z]*</string>#<key>NotyChannel</key><string>$CHANNEL</string>#" Info.plist
 grep -q "<key>NotyChannel</key><string>$CHANNEL</string>" Info.plist || { echo "NotyChannel nicht gesetzt" >&2; exit 1; }
+if [ -n "$ICLOUD_CONTAINER" ]; then
+  python3 -I - "$ICLOUD_CONTAINER" <<'PY'
+import plistlib, sys
+container = sys.argv[1]
+with open("Noty.entitlements", "rb") as f: entitlements = plistlib.load(f)
+entitlements["com.apple.developer.icloud-services"] = ["CloudDocuments"]
+entitlements["com.apple.developer.icloud-container-identifiers"] = [container]
+entitlements["com.apple.developer.ubiquity-container-identifiers"] = [container]
+with open("Noty.entitlements", "wb") as f: plistlib.dump(entitlements, f)
+PY
+  sed -i "s#\(<key>NotyChannel</key><string>[a-z]*</string>\)#\1<key>NotyICloudContainer</key><string>$ICLOUD_CONTAINER</string>#" Info.plist
+  grep -q "<key>NotyICloudContainer</key><string>$ICLOUD_CONTAINER</string>" Info.plist || { echo "NotyICloudContainer nicht gesetzt" >&2; exit 1; }
+fi
 if [ "$CHANNEL" != stable ]; then
   sed -i "s#^iconPath: .*#iconPath: Resources/AppIcon-$CHANNEL.png#" xtool.yml
   sed -i "s#<key>CFBundleDisplayName</key><string>noty</string>#<key>CFBundleDisplayName</key><string>$APP_NAME</string>#" Info.plist
 fi
 LOG="$(mktemp)"
-script -qec "xtool dev build --sign --ipa" "$LOG" >/dev/null
+script -qec "$XTOOL dev build --sign --ipa" "$LOG" >/dev/null
 grep -q 'COMMAND_EXIT_CODE="0"' "$LOG" || { tail -20 "$LOG"; exit 1; }
 restore; trap - EXIT
 
@@ -90,7 +117,12 @@ cat .tools/ota-check.json
 PROBLEMS="$(python3 -I -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["problems"]))' .tools/ota-check.json 2>/dev/null || echo unlesbar)"
 if [ "$CHECK_STATUS" -ne 0 ] || [ "$PROBLEMS" != 0 ]; then
   echo "OTA-Prüfung meldet Probleme (siehe problems); nichts veröffentlicht." >&2
+  [ -z "$ICLOUD_CONTAINER" ] || echo "iCloud-Kanal: Ist $ICLOUD_CONTAINER im Apple-Entwicklerportal angelegt und der App-ID zugeordnet?" >&2
   exit 1
+fi
+if [ -n "$ICLOUD_CONTAINER" ]; then
+  python3 -I -c 'import json,sys;s=set(json.load(open(".tools/ota-check.json"))["signed_entitlements"]);sys.exit(0 if {"com.apple.developer.icloud-services","com.apple.developer.ubiquity-container-identifiers"}<=s else 1)' \
+    || { echo "Signatur ohne iCloud-Einträge; nichts veröffentlicht." >&2; exit 1; }
 fi
 BUILD="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["build"])')"
 SHORT="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["version"])')"

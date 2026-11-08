@@ -157,6 +157,7 @@ struct WorkspaceLibraryHost: View {
                 // first value; the model holds the current phase instead.
                 while !Task.isCancelled {
                     if externalBackup.sceneActive { await externalBackup.attempt(library: library, toolbox: toolbox) }
+                    if externalBackup.sceneActive { await NotebookVaultModel.shared.attempt(library: library, workspaces: workspaces) }
                     do { try await Task.sleep(for: .seconds(60)) } catch { break }
                 }
             }
@@ -167,6 +168,8 @@ struct WorkspaceLibraryHost: View {
                 // Beim Wechsel in eine andere noty-App den Abzug ablegen.
                 if phase == .background {
                     Task { await AppSyncModel.shared.publish(library: library, toolbox: toolbox, workspaces: workspaces) }
+                    // iCloud-Ablage: every changed notebook now; iOS grants a short time for it.
+                    Task { await NotebookVaultModel.shared.attemptWhileLeaving(library: library, workspaces: workspaces) }
                 }
             }
             .task {

@@ -486,7 +486,7 @@ final class LibraryModel: ObservableObject {
     /// ersetzen“ moves its current state to the trash; „Beide behalten“).
     /// nil on failure (`error` set) or when declined (`importDeclined`).
     @discardableResult
-    func importBackup(_ url: URL, parent: UUID?, collision: ImportCollision? = nil) async -> ImportedNotebook? {
+    func importBackup(_ url: URL, parent: UUID?, collision: ImportCollision? = nil, title: String? = nil) async -> ImportedNotebook? {
         importDeclined = false
         await settle()
         guard accepting else { return nil }
@@ -517,7 +517,7 @@ final class LibraryModel: ObservableObject {
                 if choice == .replace { replacing = existing.id }
             }
             let result = try await NotebookImport.commit(prepared, repository: repository, library: store,
-                                                         parentID: parent, replacing: replacing)
+                                                         parentID: parent, replacing: replacing, title: title)
             snapshot = result.snapshot
             if let replacing, let pin = pinOrder.firstIndex(of: replacing) { pinOrder[pin] = result.id }
             return ImportedNotebook(id: result.id, title: result.title, replaced: replacing != nil)
@@ -528,6 +528,10 @@ final class LibraryModel: ObservableObject {
             return nil
         }
     }
+
+    /// Index and package locations for the iCloud-Ablage (`NotebookVault.run`),
+    /// captured on the library actor; the notebooks are read later, read-only.
+    func vaultPlan() async throws -> LibraryBackupPlan { try await store.backupPlan() }
 
     /// Today's index and the canonical size/CRC of every active notebook's
     /// committed state, read off the UI actor exactly as a backup would archive

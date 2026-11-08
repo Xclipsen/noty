@@ -65,7 +65,9 @@ Ein Ort **„Wiederherstellen“**, an dem man einen Zeitpunkt wählt, sieht, wa
   - In **noty dev, noty AI und noty calendar** bleibt der gespiegelte Bereich „noty“ für den App-Abgleich ([APP-SYNC](APP-SYNC.md)), da er dort ein Entwicklerwerkzeug ist. Die Einbahnstraße bleibt unverändert.
 - Erst umsetzen, wenn Phasen 1 und 2 am iPad bestätigt sind.
 
-### Phase 5 (offen): Sync
+### Phase 5: Sync
+
+**Stand 08.11.2026: Stufe 1 als iCloud-Ablage implementiert** (jedes Heft einzeln mit Ständen im iCloud-Container der App, Zurückholen als Kopie oder Ersetzen), Build 141 auf `feat/wiederherstellen`, nicht installiert, am iPad ungeprüft. Details: [ICLOUD](ICLOUD.md). Nutzerentscheidung: iCloud statt eigener Server; iCloud-Dokumente (Dateien) statt CloudKit, weil die Hefte schon als geprüfte Dateien vorliegen. Stufe 2 (Abgleich in beide Richtungen) folgt, wenn ein zweites Gerät da ist.
 
 Eine PDF-Kopie im Backupziel ist **nicht** gewünscht, das Backup bleibt im noty-Format.
 

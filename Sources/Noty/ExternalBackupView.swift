@@ -34,9 +34,11 @@ struct ExternalBackupForm: View {
     @State private var confirmingRemoval = false
     @State private var confirmingDisable = false
     @State private var browsing: BrowsedBackup?
+    @ObservedObject private var vault = NotebookVaultModel.shared
     struct BrowsedBackup: Identifiable { let name: String; var id: String { name } }
     var body: some View {
         Form {
+            NotebookVaultSection(vault: vault, library: library, workspaces: workspaces)
             Section {
                 // Long values (a 300-character reason, a long folder name) get their own lines:
                 // as a LabeledContent value they squeezed the label until it wrapped letter by letter.

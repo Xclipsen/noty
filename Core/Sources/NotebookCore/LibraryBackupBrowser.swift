@@ -95,10 +95,13 @@ public enum LibraryBackupBrowser {
 
     /// „Bio (Stand 07.11.2026)“: title of a copy next to a notebook that still
     /// exists. The title is shortened, never the date, to stay ≤ 120 characters.
-    public static func copyTitle(_ title: String, savedAt date: Date, timeZone: TimeZone = .current) -> String {
+    /// `withTime`: „Bio (Stand 07.11.2026, 15:40)“ for states of the same day.
+    public static func copyTitle(_ title: String, savedAt date: Date, withTime: Bool = false, timeZone: TimeZone = .current) -> String {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = timeZone
-        let parts = calendar.dateComponents([.day, .month, .year], from: date)
-        let suffix = String(format: " (Stand %02d.%02d.%04d)", parts.day ?? 1, parts.month ?? 1, parts.year ?? 1970)
+        let parts = calendar.dateComponents([.day, .month, .year, .hour, .minute], from: date)
+        var suffix = String(format: " (Stand %02d.%02d.%04d", parts.day ?? 1, parts.month ?? 1, parts.year ?? 1970)
+        if withTime { suffix += String(format: ", %02d:%02d", parts.hour ?? 0, parts.minute ?? 0) }
+        suffix += ")"
         let head = String(NotebookTitles.sanitized(title).prefix(NotebookTitles.maximumLength - suffix.count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (head.isEmpty ? "Heft" : head) + suffix
