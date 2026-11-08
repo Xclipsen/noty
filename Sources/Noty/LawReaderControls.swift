@@ -14,7 +14,7 @@ import NotebookCore
 extension LawReaderView {
     var controls: some View {
         VStack(spacing: 0) {
-            toolRows
+            AnyView(toolRows)
             if let mode = lookupShown {
                 lookupSurface(mode)
                     .padding(.horizontal, 8).padding(.bottom, 8)
@@ -36,18 +36,23 @@ extension LawReaderView {
     /// Pencil group in two rows. The first row fits about 380 pt (420 with
     /// the sync mark); the Pencil row fits 320 pt with compact dots and
     /// switches to a colour menu below that.
+    // Type-erased pieces (Build 131 crash, 08.11.2026): the composed type of
+    // this ViewThatFits with every reading/pen/status cell and their modifiers
+    // nested so deep that the Swift runtime overflowed the main thread's stack
+    // while building its metadata (⌘L → focus → body). AnyView at each piece
+    // keeps the generic nesting shallow; these rows are small and rarely change.
     @ViewBuilder private var toolRows: some View {
         if let onPenChange {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Self.cellSpacing) {
-                    readingTools
+                    readingToolsErased
                     NotyGroupDivider()
-                    penTools(onPenChange, swatches: .full)
+                    AnyView(penTools(onPenChange, swatches: .full))
                     Spacer(minLength: 0)
-                    statusTools
+                    statusToolsErased
                 }.frame(height: 44).padding(.horizontal, 6).padding(.vertical, 4)
                 VStack(spacing: 0) {
-                    HStack(spacing: 2) { LawFadingScroll { readingTools }; statusTools }
+                    HStack(spacing: 2) { LawFadingScroll { readingToolsErased }; statusToolsErased }
                     ViewThatFits(in: .horizontal) {
                         penRow(onPenChange, swatches: .full)
                         penRow(onPenChange, swatches: .compact)
@@ -56,14 +61,16 @@ extension LawReaderView {
                 }.padding(.horizontal, 6).padding(.vertical, 4)
             }
         } else {
-            HStack(spacing: 2) { LawFadingScroll { readingTools }; statusTools }
+            HStack(spacing: 2) { LawFadingScroll { readingToolsErased }; statusToolsErased }
                 .padding(.horizontal, 6).padding(.vertical, 4)
         }
     }
+    private var readingToolsErased: AnyView { AnyView(readingTools) }
+    private var statusToolsErased: AnyView { AnyView(statusTools) }
     static var cellSpacing: CGFloat { EditorToolOptions.itemSpacing }
 
-    private func penRow(_ change: @escaping (LawPenMode) -> Void, swatches: LawSwatchLayout) -> some View {
-        HStack(spacing: 0) { penTools(change, swatches: swatches); Spacer(minLength: 0) }.frame(height: 44)
+    private func penRow(_ change: @escaping (LawPenMode) -> Void, swatches: LawSwatchLayout) -> AnyView {
+        AnyView(HStack(spacing: 0) { AnyView(penTools(change, swatches: swatches)); Spacer(minLength: 0) }.frame(height: 44))
     }
 
     /// „Name (⌘D)“: hover names carry the shortcut of the law focus.
