@@ -55,7 +55,8 @@ case "${NOTY_CHANNEL:-dev}" in
     case "$BRANCH" in exp/*) ;; *) echo "noty AI wird nur von exp/* gebaut (aktuell: $BRANCH)." >&2; exit 1 ;; esac
     if [ -n "$DIRTY" ] && [ "${NOTY_ALLOW_DIRTY:-}" != 1 ]; then echo "Uncommittete Änderungen; erst committen (Ausnahme: NOTY_ALLOW_DIRTY=1)." >&2; exit 1; fi ;;
   calendar)
-    [ "$BRANCH" = feat/kalender ] || { echo "noty calendar wird nur von feat/kalender gebaut (aktuell: $BRANCH)." >&2; exit 1; }
+    # feat/kalender ist seit dem 08.11.2026 in main; die Test-App baut wie noty dev.
+    case "$BRANCH" in dev|feat/*) ;; *) echo "noty calendar wird nur von dev oder feat/* gebaut (aktuell: $BRANCH)." >&2; exit 1 ;; esac
     if [ -n "$DIRTY" ] && [ "${NOTY_ALLOW_DIRTY:-}" != 1 ]; then echo "Uncommittete Änderungen; erst committen (Ausnahme: NOTY_ALLOW_DIRTY=1)." >&2; exit 1; fi ;;
 esac
 SOURCE="$BRANCH · $COMMIT"; [ -z "$DIRTY" ] || SOURCE="$SOURCE · mit uncommitteten Änderungen"
@@ -92,12 +93,12 @@ sed -i "s/^bundleID: .*/bundleID: XTL-BAFXLQ964V.$BASE_ID/" xtool.yml
 CHANNEL="${NOTY_CHANNEL:-dev}"
 sed -i "s#<key>NotyChannel</key><string>[a-z]*</string>#<key>NotyChannel</key><string>$CHANNEL</string>#" Info.plist
 grep -q "<key>NotyChannel</key><string>$CHANNEL</string>" Info.plist || { echo "NotyChannel nicht gesetzt" >&2; exit 1; }
-# Push-Mitteilungen (docs/PUSH.md) nur für noty calendar: nur dieser Build
-# verlangt aps-environment (development, wie alle Builds hier development-
-# signiert sind). Die eingecheckte Noty.entitlements bleibt ohne, damit die
-# Profile von noty, noty dev und noty AI die Fähigkeit nicht brauchen;
-# ota_check.py verlangt sie bei noty calendar in Signatur und Profil.
-if [ "$CHANNEL" = calendar ]; then
+# Push-Mitteilungen (docs/PUSH.md) für die normale noty und noty calendar: nur
+# diese Builds verlangen aps-environment (development, wie alle Builds hier
+# development-signiert sind). Die eingecheckte Noty.entitlements bleibt ohne,
+# damit die Profile von noty dev und noty AI die Fähigkeit nicht brauchen;
+# ota_check.py verlangt sie bei beiden in Signatur und Profil.
+if [ "$CHANNEL" = calendar ] || [ "$CHANNEL" = stable ]; then
   python3 -I - Noty.entitlements <<'PY'
 import plistlib, sys
 with open(sys.argv[1], "rb") as handle: entitlements = plistlib.load(handle)
@@ -105,10 +106,10 @@ entitlements["aps-environment"] = "development"
 with open(sys.argv[1], "wb") as handle: plistlib.dump(entitlements, handle)
 PY
   grep -q '<key>aps-environment</key>' Noty.entitlements || { echo "aps-environment nicht gesetzt" >&2; exit 1; }
-  # Live Activity „Schultag“ und Widget „Heute“ (docs/LIVE-ACTIVITY-PLAN.md): nur
-  # noty calendar bettet die Widget-Extension ein (xtool.yml `extensions:`),
-  # erlaubt Live Activities und kennt das Schema notycalendar; die Extension
-  # bekommt die Versionsnummern der App. Die anderen Apps bauen unverändert.
+  # Live Activity „Schultag“ und Widget „Heute“ (docs/LIVE-ACTIVITY-PLAN.md): die
+  # normale noty und noty calendar betten die Widget-Extension ein (xtool.yml
+  # `extensions:`), erlauben Live Activities und kennen ihr eigenes Schema (noty
+  # bzw. notycalendar); die Extension bekommt die Versionsnummern der App.
   python3 -I scripts/calendar_build.py . || { echo "Kalender-Extension nicht vorbereitet" >&2; exit 1; }
 fi
 if [ -n "$ICLOUD_CONTAINER" ]; then

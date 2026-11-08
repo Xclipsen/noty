@@ -150,6 +150,10 @@ Abmelden aller Geräte/Stilllegen: `systemctl disable --now noty-push`, `rm -rf 
 - **Core:** Ein komplett verlegter Tag gilt nicht als leere Antwort, wenn seine Perioden-IDs im selben Abruf an einem anderen Tag auftauchen. Wiederholungen werden über beide Herkünfte (App und Server) erkannt. In Änderungs-IDs wird „~“ in Raumnamen als „%7E“ geschrieben; IDs ohne „~“ bleiben gleich.
 - Tests: Core 1497 (3 übersprungen), push 71, alle grün. Der Abruf um 13:14 UTC lief unter der neuen systemd-Härtung (SystemCallFilter, PrivateUsers) fehlerfrei.
 
+## Normale noty mit Push (08.11.2026, Build 147)
+
+Seit Build 147 hat auch die **normale noty** Push, nicht nur noty calendar: Die App lässt die Kanäle `stable` und `calendar` zu (`CalendarPush.channels`), `publish_ota.sh` signiert beide mit `aps-environment` und `ota_check.py` verlangt es bei beiden (`PUSH_SUFFIXES`). Topic der normalen noty: `XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.prototype` (installierte ID, wie bei noty calendar zweifach präfixiert). Am 08.11.2026 21:28 UTC in `/etc/noty-push/config.json` unter `allowedBundleIDs` ergänzt (Sicherung `config.json.bak-20261108-stable`), Dienst neu gestartet, Health-Check ok. Jede App registriert sich mit eigenem Gerätetoken; meldet dasselbe WebUntis-Konto in noty **und** noty calendar Push an, kommen Änderungen doppelt – Push dann in der Test-App ausschalten. Am iPad ungeprüft.
+
 ## Nachträge aus der Gesamtprüfung (08.11.2026, Build 145)
 
 Unabhängige Durchsicht des Servers (71 Tests grün, nicht gegen den laufenden Dienst getestet). **Deployt** mit Stand `09d63f8` am 08.11.2026 um 20:59 UTC (`install.sh`, Dienst aktiv, Health-Check ok, `MemoryHigh`/`OOMPolicy` wirksam laut `systemctl show`). Umgesetzt:

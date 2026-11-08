@@ -40,9 +40,9 @@ final class CalendarSchoolDayCenter: ObservableObject {
     private static let enabledKey = "noty.calendar.schoolDayActivity"
     private static let segmentsKey = "noty.calendar.schoolDayActivity.segments"
 
-    /// Only noty calendar embeds the widget extension and allows Live Activities.
+    /// Only noty and noty calendar embed the widget extension and allow Live Activities.
     let supported: Bool = {
-        (Bundle.main.object(forInfoDictionaryKey: "NotyChannel") as? String) == "calendar"
+        SchoolDayLink.calendarChannels.contains(SchoolDayWidgetStore.channel)
             && (Bundle.main.object(forInfoDictionaryKey: "NSSupportsLiveActivities") as? Bool) == true
     }()
 

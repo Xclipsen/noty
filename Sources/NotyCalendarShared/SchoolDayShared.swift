@@ -13,11 +13,15 @@ extension SchoolDayAttributes: @retroactive ActivityAttributes {
 }
 
 /// Deep link of the tile and the widget:
-/// `notycalendar://schultag?connection=<UUID>&day=YYYY-MM-DD&entry=<Eintrags-ID>`.
-/// The scheme is registered only in noty calendar (publish_ota.sh); iPadOS
-/// hands a widget's URL to its own app in any case.
+/// `<schema>://schultag?connection=<UUID>&day=YYYY-MM-DD&entry=<Eintrags-ID>`.
+/// One scheme per app (`noty` for the normal noty, `notycalendar` for noty
+/// calendar; registered by publish_ota.sh): two apps with the same scheme
+/// would make iPadOS pick one of them at random.
 public enum SchoolDayLink {
-    public static let scheme = "notycalendar"
+    /// Apps that embed the widget extension, allow the tile and get push.
+    public static let calendarChannels: Set<String> = ["stable", "calendar"]
+    public static func scheme(channel: String) -> String { channel == "stable" ? "noty" : "noty" + channel }
+    public static var scheme: String { scheme(channel: SchoolDayWidgetStore.channel) }
     public static let host = "schultag"
 
     public struct Target: Equatable, Sendable {

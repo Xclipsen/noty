@@ -284,7 +284,7 @@ struct CalendarDeveloperSection: View {
         switch push.availability {
         case .available(let environment): "verfügbar (\(environment))"
         case .unavailable(let reason): "nicht verfügbar: \(reason)"
-        case .otherChannel: "nur in noty calendar"
+        case .otherChannel: "nur in noty und noty calendar"
         }
     }
 
