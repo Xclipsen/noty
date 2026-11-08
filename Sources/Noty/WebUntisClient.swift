@@ -35,15 +35,24 @@ enum WebUntisKeychain {
     }
 
     /// Nil when missing or unusable (re-validated after reading).
-    static func load(_ id: UUID) -> WebUntisSetup? {
+    static func load(_ id: UUID) -> WebUntisSetup? { read(id).setup }
+
+    /// As `load`, and whether the keychain was not readable yet (device
+    /// locked since its start: `errSecInteractionNotAllowed`). The
+    /// background refresh then does nothing instead of reporting the
+    /// access data as missing. The item's protection class is unchanged
+    /// (`AfterFirstUnlockThisDeviceOnly` already allows background reads
+    /// after the first unlock).
+    static func read(_ id: UUID) -> (setup: WebUntisSetup?, locked: Bool) {
         var request = query(id)
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
-        guard SecItemCopyMatching(request as CFDictionary, &result) == errSecSuccess, let data = result as? Data,
-              let stored = try? JSONDecoder().decode(WebUntisSetup.self, from: data) else { return nil }
-        return try? WebUntisSetup(server: stored.server, school: stored.school, user: stored.user, key: stored.key,
-                                  schoolNumber: stored.schoolNumber)
+        let status = SecItemCopyMatching(request as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data,
+              let stored = try? JSONDecoder().decode(WebUntisSetup.self, from: data) else { return (nil, status == errSecInteractionNotAllowed) }
+        return (try? WebUntisSetup(server: stored.server, school: stored.school, user: stored.user, key: stored.key,
+                                   schoolNumber: stored.schoolNumber), false)
     }
 
     static func delete(_ id: UUID) throws {
@@ -83,11 +92,14 @@ final class WebUntisClient: Sendable {
         return try WebUntis.parseUserData(try await post("getUserData2017", body: body))
     }
 
-    /// Complete, validated lessons of [start, end).
-    func timetable(user: WebUntisUser, start: CivilDate, end: CivilDate, connection: UUID, timeZone: TimeZone) async throws -> [CalendarLesson] {
+    /// Complete, validated lessons of [start, end), with the homework
+    /// delivered with their periods (Stufe C; before 08.11.2026 the app
+    /// dropped it here, so no homework ever reached the offline cache).
+    func timetable(user: WebUntisUser, start: CivilDate, end: CivilDate, connection: UUID,
+                   timeZone: TimeZone) async throws -> (lessons: [CalendarLesson], homework: [CalendarHomework]) {
         let body = try WebUntis.timetableBody(setup, user: user, start: start, end: end, at: Date(), hmacSHA1: Self.hmacSHA1)
         let data = try await post("getTimetable2017", body: body)
-        return try WebUntis.parseTimetable(data, user: user, connection: connection, timeZone: timeZone, start: start, end: end)
+        return try WebUntis.parseTimetableWithHomework(data, user: user, connection: connection, timeZone: timeZone, start: start, end: end)
     }
 
     private func post(_ method: String, body: Data) async throws -> Data {

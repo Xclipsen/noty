@@ -250,6 +250,8 @@ struct LibraryView: View {
         // Search or another sort removes the „Fertig“ button with `canReorder`:
         // editing must not stay on without a way out.
         .onChange(of: canReorder) { _, reorder in if !reorder { libraryEditMode = .inactive } }
+        // A tapped calendar notification or bell entry shows the calendar (not over an open notebook).
+        .onChange(of: calendar.openRequest) { _, _ in if model.opened == nil { setCalendar(true) } }
         // No sheet changes with these alerts: the keys have to come back by themselves.
         .onChange(of: model.error == nil && workspaces.error == nil && backupMessage == nil) { _, _ in KeyboardRouter.shared.reclaim() }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }

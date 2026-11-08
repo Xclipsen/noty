@@ -17,6 +17,8 @@ struct NotyApp: App {
         NotebookCore.SHA256.installAcceleratedStreaming { CryptoKitStream() }
         // Read once at launch, off unless chosen; the settings toggle documents that it applies after a restart.
         if UserDefaults.standard.object(forKey: AppSettingsKey.hangProbe) as? Bool ?? false { HangProbe.install() }
+        // Calendar notifications: taps route to the calendar (set before launch finishes).
+        CalendarNotificationHub.shared.install()
     }
     var body: some Scene {
         WindowGroup {
@@ -36,6 +38,8 @@ struct NotyApp: App {
                 } message: { Text(laws.error ?? "") }
         }
         .commands { NotyCommands() }
+        // Benachrichtigungen: background refresh through the shown area's calendar model, or nothing.
+        .backgroundTask(.appRefresh(CalendarNotificationHub.refreshIdentifier)) { await CalendarNotificationHub.runBackgroundRefresh() }
     }
 }
 

@@ -113,6 +113,7 @@ struct CalendarEventForm: View {
     /// Off by default; presets from „Zum Beginn“ to „1 Tag vorher“. A series
     /// reminds before every occurrence.
     @ViewBuilder private var reminderSection: some View {
+        let general = model.notificationSettings.eventReminders && !draft.allDay && !systemTarget
         Section {
             Toggle("Erinnerung", isOn: $draft.reminder)
                 .onChange(of: draft.reminder) { _, on in
@@ -125,7 +126,9 @@ struct CalendarEventForm: View {
                 }
             }
         } footer: {
-            if draft.reminder && systemTarget {
+            if !draft.reminder && general {
+                Text("Ohne eigene Erinnerung gilt die allgemeine: \(CalendarReminder.text(model.notificationSettings.eventMinutes)) (Benachrichtigungen).")
+            } else if draft.reminder && systemTarget {
                 Text("Die Erinnerung trägt der Systemkalender ein und meldet sie selbst.")
             } else if draft.reminder {
                 switch model.reminderPermission {

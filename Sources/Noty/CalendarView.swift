@@ -39,6 +39,9 @@ struct CalendarView: View {
     @State private var showingDeleted = false
     @State private var showingStatus = false
     @State private var connectAfterStatus = false
+    /// Bell history popover; its gear opens the settings once it is gone.
+    @State private var showingNotifications = false
+    @State private var settingsAfterNotifications = false
     /// „Schnell anlegen“ popover of „+“.
     @State private var quickEntry = false
     /// Complete homework list (from the sidebar).
@@ -69,7 +72,7 @@ struct CalendarView: View {
     /// Calendar keys only while nothing is presented over it.
     private var keys: Bool {
         keysActive && model.enlargedDraft == nil && dayList == nil && !searching && !connecting && !choosingColors
-            && !editingReminders && !showingDeleted && !showingStatus && !quickEntry && !showingHomework && model.draft == nil
+            && !editingReminders && !showingDeleted && !showingStatus && !showingNotifications && !quickEntry && !showingHomework && model.draft == nil
             && model.pendingSeriesChange == nil && !router.paletteVisible && !router.helpVisible
     }
     /// Navigation keys (⌘← ⌘→ ⌘T ⌘1–⌘4) also rest while the event window is
@@ -540,8 +543,10 @@ struct CalendarView: View {
     /// symbol. An unsaved change cannot be put away – only saved again.
     @ViewBuilder private var problemBanners: some View {
         let storage = model.storageError.flatMap { $0 == hiddenStorageError ? nil : $0 }
-        if storage != nil || model.saveError != nil || model.recoveredNotice != nil {
+        let hint = model.showsNotificationHint
+        if storage != nil || model.saveError != nil || model.recoveredNotice != nil || hint {
             VStack(spacing: CalendarSpace.s) {
+                if hint { notificationHint }
                 if let storage {
                     CalendarProblemBanner(symbol: "lock.trianglebadge.exclamationmark", text: storage,
                                           closeLabel: "Ausblenden (bleibt im Statussymbol)") { hiddenStorageError = storage }
@@ -561,6 +566,27 @@ struct CalendarView: View {
             .padding(.horizontal, CalendarSpace.l).padding(.bottom, CalendarSpace.s)
             .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
         }
+    }
+
+    /// Once, with real data and before iPadOS was asked: the user chose
+    /// changes and overview; the system dialog appears only on „Einschalten“.
+    private var notificationHint: some View {
+        HStack(alignment: .center, spacing: CalendarSpace.m) {
+            Image(systemName: "bell.badge").font(.subheadline.weight(.semibold)).foregroundStyle(Color.accentColor)
+                .accessibilityHidden(true)
+            Text("Benachrichtigungen bei Stundenplanänderungen, morgens ein Überblick und Erinnerungen vor deinen Terminen?")
+                .font(.footnote).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Später") { withAnimation(CalendarMotion.smooth(reduceMotion)) { model.dismissNotificationHint() } }
+                .font(.footnote).buttonStyle(.borderless)
+            Button("Einschalten") { Task { await model.enableNotifications() } }
+                .font(.footnote.weight(.semibold)).buttonStyle(.borderedProminent)
+        }
+        .padding(.leading, CalendarSpace.m).padding(.trailing, CalendarSpace.s).padding(.vertical, 6)
+        .frame(minHeight: 44)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor.opacity(0.12)))
+        .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.accentColor.opacity(0.3), lineWidth: 0.5) }
+        .accessibilityElement(children: .contain)
     }
 
     /// Bottom: a short notice (rejected drag, a note still being saved) and
@@ -616,6 +642,22 @@ struct CalendarView: View {
                 }
                 .help("Kalenderleiste (⌃⌘S)")
                 .disabled(model.selectedEvent != nil)
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            if !model.showsSamples {
+                Button { showingNotifications = true } label: {
+                    CalendarBellSymbol(unread: model.unreadNotifications)
+                }
+                .popover(isPresented: $showingNotifications, arrowEdge: .top) {
+                    CalendarNotificationsPopover(model: model, openSettings: {
+                        settingsAfterNotifications = true
+                        showingNotifications = false
+                    }, close: { showingNotifications = false })
+                    .onDisappear {
+                        if settingsAfterNotifications { settingsAfterNotifications = false; editingReminders = true }
+                    }
+                }
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
@@ -678,7 +720,7 @@ struct CalendarView: View {
             Button { searching = true } label: { Label("Termine suchen", systemImage: "magnifyingglass") }
             Button { choosingColors = true } label: { Label("Fachfarben …", systemImage: "paintpalette") }
                 .disabled(model.showsSamples || !model.canWrite)
-            Button { editingReminders = true } label: { Label("Erinnerungen …", systemImage: "bell") }
+            Button { editingReminders = true } label: { Label("Benachrichtigungen …", systemImage: "bell") }
                 .disabled(model.showsSamples)
             Button { showingDeleted = true } label: {
                 Label(model.deletedEvents.isEmpty ? "Gelöschte Termine …" : "Gelöschte Termine (\(model.deletedEvents.count)) …", systemImage: "trash")

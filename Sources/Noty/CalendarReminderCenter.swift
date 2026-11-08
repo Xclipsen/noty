@@ -2,9 +2,10 @@ import Foundation
 import UserNotifications
 import NotebookCore
 
-/// Kalender B3: hands the reminder plan of the shown area
+/// Kalender B3 / Benachrichtigungen (08.11.2026): hands the plan of the shown area
 /// (`CalendarReminderPlanner`, Core) to iPadOS as one-shot local
-/// notifications. iPadOS keeps about 64 pending requests per app, so the plan
+/// notifications (reminders and Morgen-Überblicke; identifiers carry the
+/// channel/area namespace). iPadOS keeps about 64 pending requests per app, so the plan
 /// is a rolling window (≤ 50) that is replaced as a whole: requests with the
 /// calendar prefix that the plan no longer contains are removed, the others
 /// are added again under their deterministic identifier (the same identifier
@@ -44,18 +45,61 @@ final class CalendarReminderCenter {
     /// Replaces the pending calendar requests by `plan` – serially, so an
     /// older plan never lands after a newer one. Returns an error text, if any.
     @discardableResult
-    func apply(_ plan: CalendarReminderPlan, root: URL) async -> String? {
+    func apply(_ plan: CalendarReminderPlan, root: URL, namespace: String) async -> String? {
         let previous = queue
         let task = Task { @MainActor () -> String? in
             _ = await previous?.value
             guard root == self.activeRoot else { return nil }
-            return await self.replace(with: plan)
+            return await self.replace(with: plan, namespace: namespace)
         }
         queue = task
         return await task.value
     }
 
-    private func replace(with plan: CalendarReminderPlan) async -> String? {
+    /// Content shared by planned and immediate calendar notifications: the
+    /// area/channel namespace and the target in userInfo (tap routing,
+    /// history), one thread per area, no time-sensitive level.
+    static func content(title: String, body: String, kind: CalendarNotificationRecord.Kind, namespace: String,
+                        day: CivilDate?, entryID: String?) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.threadIdentifier = "noty.calendar.\(namespace)"
+        content.categoryIdentifier = "noty.calendar.\(kind.rawValue)"
+        content.interruptionLevel = .active
+        var info: [String: String] = [CalendarNotificationHub.areaKey: namespace, CalendarNotificationHub.kindKey: kind.rawValue]
+        if let day { info[CalendarNotificationHub.dayKey] = day.description }
+        if let entryID { info[CalendarNotificationHub.entryKey] = entryID }
+        content.userInfo = info
+        return content
+    }
+
+    /// Delivers one notification now (a timetable change). Its identifier
+    /// is outside `CalendarReminder.prefix`, so a plan replacement never
+    /// removes it. Nothing without permission.
+    func post(id: String, title: String, body: String, namespace: String, day: CivilDate?, entryID: String?) async {
+        guard await permission() == .allowed else { return }
+        let content = Self.content(title: title, body: body, kind: .change, namespace: namespace, day: day, entryID: entryID)
+        try? await center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+    }
+
+    /// Calendar notifications of `namespace` still in the Mitteilungszentrale
+    /// (reminders and overviews delivered while noty was not running).
+    func delivered(namespace: String) async -> [CalendarNotificationRecord] {
+        await center.deliveredNotifications().compactMap { notification in
+            guard notification.request.content.userInfo[CalendarNotificationHub.areaKey] as? String == namespace else { return nil }
+            return CalendarNotificationHub.record(notification)
+        }
+    }
+
+    /// Read in the bell: gone from the Mitteilungszentrale as well.
+    func removeDelivered(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        center.removeDeliveredNotifications(withIdentifiers: ids)
+    }
+
+    private func replace(with plan: CalendarReminderPlan, namespace: String) async -> String? {
         let pending = await center.pendingNotificationRequests()
         let wanted = Set(plan.requests.map(\.id))
         let stale = pending.map(\.identifier).filter { $0.hasPrefix(CalendarReminder.prefix) && !wanted.contains($0) }
@@ -67,11 +111,13 @@ final class CalendarReminderCenter {
         }
         var failed = 0
         for request in plan.requests {
-            let content = UNMutableNotificationContent()
-            content.title = request.title
-            content.body = request.body
-            content.sound = .default
-            content.threadIdentifier = "noty.calendar"
+            let kind: CalendarNotificationRecord.Kind = switch request.kind {
+            case .event: .event
+            case .lesson: .lesson
+            case .overview: .overview
+            }
+            let content = Self.content(title: request.title, body: request.body, kind: kind, namespace: namespace,
+                                       day: request.day, entryID: request.entryID)
             let interval = request.fireDate.timeIntervalSinceNow
             guard interval > 1 else { continue }
             // Absolute interval: fires at the planned instant also after a time-zone change.

@@ -53,14 +53,23 @@ public enum CalendarReminder {
 }
 
 public struct CalendarReminderRequest: Equatable, Sendable {
-    public enum Kind: String, Sendable { case event, lesson }
-    /// Deterministic per occurrence (`noty.calendar.event.<id>.<date>` /
-    /// `noty.calendar.lesson.<period>.<date>`); never contains a fire time.
+    public enum Kind: String, Sendable { case event, lesson, overview }
+    /// Deterministic per occurrence (`noty.calendar.[<namespace>.]event.<id>.<date>` /
+    /// `….lesson.<period>.<date>` / `….overview.<date>`); never contains a fire time.
     public let id: String
     public let kind: Kind
     public let fireDate: Date
     public let title: String
     public let body: String
+    /// What a tap on the notification opens: the day, and the entry
+    /// (`CalendarNoteTarget.key` of an own occurrence, a lesson's id) if any.
+    public var day: CivilDate?
+    public var entryID: String?
+
+    public init(id: String, kind: Kind, fireDate: Date, title: String, body: String, day: CivilDate? = nil, entryID: String? = nil) {
+        self.id = id; self.kind = kind; self.fireDate = fireDate; self.title = title; self.body = body
+        self.day = day; self.entryID = entryID
+    }
 }
 
 public struct CalendarReminderPlan: Equatable, Sendable {
@@ -84,9 +93,18 @@ public enum CalendarReminderPlanner {
     /// offline timetable when the lesson setting is on; cancelled lessons
     /// never) that fire after `now` and within the horizon. `snapshot` only
     /// counts when it belongs to the committed connection.
+    ///
+    /// Benachrichtigungen (08.11.2026): `namespace` (channel and area) goes
+    /// into every identifier after the prefix; `eventDefaultMinutes` reminds
+    /// timed own events without their own reminder (all-day events only with
+    /// their own); `eventsEnabled` false plans no own-event reminder at all;
+    /// `lessonQuiet` drops lesson reminders that would fire in the quiet hours.
     public static func plan(state: CalendarState, snapshot: CalendarSourceSnapshot?, now: Date, calendar: Calendar,
-                            limit: Int = limit, horizonDays: Int = horizonDays) -> CalendarReminderPlan {
-        let eventsOn = state.events.contains { $0.reminderMinutes != nil }
+                            limit: Int = limit, horizonDays: Int = horizonDays, namespace: String = "",
+                            eventDefaultMinutes: Int? = nil, eventsEnabled: Bool = true,
+                            lessonQuiet: (Date) -> Bool = { _ in false }) -> CalendarReminderPlan {
+        let prefix = CalendarReminder.prefix + (namespace.isEmpty ? "" : namespace + ".")
+        let eventsOn = eventsEnabled && state.events.contains { $0.reminderMinutes != nil || (eventDefaultMinutes != nil && !$0.timing.isAllDay) }
         let lessonMinutes = state.settings.lessonReminderMinutes
         guard eventsOn || lessonMinutes != nil else { return CalendarReminderPlan() }
         let horizon = calendar.date(byAdding: .day, value: horizonDays, to: now) ?? now.addingTimeInterval(Double(horizonDays) * 86_400)
@@ -94,11 +112,12 @@ public enum CalendarReminderPlanner {
         if eventsOn {
             let today = CivilDate(now, calendar: calendar)
             // Occurrences starting up to a day after the horizon may still fire inside it.
-            let expansion = CalendarSeries.expand(state.events.filter { $0.reminderMinutes != nil },
+            let expansion = CalendarSeries.expand(state.events.filter { $0.reminderMinutes != nil || eventDefaultMinutes != nil },
                                                   from: today.adding(days: -2), to: today.adding(days: horizonDays + 3))
             let minutes = Dictionary(state.events.map { ($0.id, $0.reminderMinutes) }, uniquingKeysWith: { a, _ in a })
             for occurrence in expansion.occurrences {
-                guard let offset = minutes[occurrence.eventID] ?? nil,
+                let own = minutes[occurrence.eventID] ?? nil
+                guard let offset = own ?? (occurrence.timing.isAllDay ? nil : eventDefaultMinutes),
                       let fire = CalendarReminder.fireDate(occurrence.timing, minutes: offset, calendar: calendar),
                       fire > now, fire < horizon else { continue }
                 let interval = occurrence.timing.interval(in: calendar)
@@ -106,21 +125,23 @@ public enum CalendarReminderPlanner {
                     + (occurrence.timing.isAllDay ? "ganztägig" : CalendarText.timeRange(interval.start, interval.end, calendar: calendar))
                 if !occurrence.location.isEmpty { body += " · " + occurrence.location }
                 candidates.append(CalendarReminderRequest(
-                    id: CalendarReminder.prefix + "event.\(occurrence.eventID.uuidString).\(occurrence.originalDate?.description ?? "single")",
-                    kind: .event, fireDate: fire, title: occurrence.title, body: body))
+                    id: prefix + "event.\(occurrence.eventID.uuidString).\(occurrence.originalDate?.description ?? "single")",
+                    kind: .event, fireDate: fire, title: occurrence.title, body: body,
+                    day: CivilDate(interval.start, calendar: calendar), entryID: occurrence.noteTarget.key))
             }
         }
         if let lessonMinutes, let snapshot, snapshot.connection == state.connection?.id {
             var seen = Set<String>()
             for lesson in snapshot.lessons where !lesson.isCancelled {
                 let fire = lesson.start.addingTimeInterval(-Double(lessonMinutes) * 60)
-                guard fire > now, fire < horizon else { continue }
-                let id = CalendarReminder.prefix + "lesson.\(lesson.key.sourceID).\(lesson.date)"
+                guard fire > now, fire < horizon, !lessonQuiet(fire) else { continue }
+                let id = prefix + "lesson.\(lesson.key.sourceID).\(lesson.date)"
                 guard seen.insert(id).inserted else { continue }
                 var body = "Unterricht " + CalendarText.numericDate(lesson.start, calendar: calendar) + " · "
                     + CalendarText.timeRange(lesson.start, lesson.end, calendar: calendar)
                 if !lesson.rooms.isEmpty { body += " · Raum " + lesson.rooms.joined(separator: ", ") }
-                candidates.append(CalendarReminderRequest(id: id, kind: .lesson, fireDate: fire, title: lesson.title, body: body))
+                candidates.append(CalendarReminderRequest(id: id, kind: .lesson, fireDate: fire, title: lesson.title, body: body,
+                                                          day: lesson.date, entryID: lesson.id))
             }
         }
         candidates.sort { ($0.fireDate, $0.id) < ($1.fireDate, $1.id) }

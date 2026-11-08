@@ -114,6 +114,22 @@ final class CalendarModel: ObservableObject {
     @Published private(set) var reminderError: String?
     @Published private(set) var lastUndo: UndoStep?
 
+    // MARK: Benachrichtigungen (08.11.2026; logic in CalendarModel+Notifications.swift)
+    /// Channel and area in every notification identifier and userInfo.
+    let notificationNamespace: String
+    /// The user's choices (device preference, `CalendarNotificationPreferences`).
+    @Published var notificationSettings = CalendarNotificationPreferences.load()
+    /// Bell history of this area (derived data, `CalendarNotificationLogFile`).
+    @Published var notificationLog = CalendarNotificationLog()
+    let notificationFile: CalendarNotificationLogFile
+    var notificationLogVersion = 0
+    /// Bumped when a notification or a bell entry opens something: the
+    /// library switches to the calendar.
+    @Published var openRequest = 0
+    @Published var notificationHintDone = CalendarNotificationPreferences.hintDone
+    /// `reminderPermission` was read at least once (no hint before that).
+    var permissionChecked = false
+
     /// A drag of a series occurrence waits for „Nur dieser Termin“ / „Alle“.
     struct SeriesChange: Identifiable {
         let id = UUID()
@@ -155,8 +171,11 @@ final class CalendarModel: ObservableObject {
     init(root: URL) {
         self.root = root
         repository = CalendarRepository(areaRoot: root)
+        notificationNamespace = CalendarNotificationHub.namespace(root: root)
+        notificationFile = CalendarNotificationLogFile(namespace: notificationNamespace)
         // Only the shown area plans reminders (an area switch replaces them).
         CalendarReminderCenter.shared.activate(root: root)
+        CalendarNotificationHub.shared.attach(self)
         Task { await load() }
     }
 
@@ -206,8 +225,10 @@ final class CalendarModel: ObservableObject {
                 recoveredNotice = "Der neueste Kalenderstand war nicht lesbar; ein älterer geprüfter Stand wurde geladen. Die beschädigte Datei bleibt erhalten."
             }
             if let connection = state.connection {
-                let setup = WebUntisKeychain.load(connection.id)
-                credentialsMissing = setup == nil
+                let keychain = WebUntisKeychain.read(connection.id)
+                let setup = keychain.setup
+                // Still locked (launched in the background before the first unlock): not „missing“.
+                credentialsMissing = setup == nil && !keychain.locked
                 do { snapshot = try await repository.sourceSnapshot() }
                 catch { syncError = error.localizedDescription }
                 // A B1 connection gets its account identity before any lesson note exists.
@@ -220,11 +241,13 @@ final class CalendarModel: ObservableObject {
         } catch {
             storageError = error.localizedDescription
         }
+        notificationLog = await notificationFile.read()
         loaded = true
         attachSystemService()
         rebuild()
         rescheduleReminders()
         if visible { refreshIfDue() }
+        CalendarNotificationHub.shared.modelLoaded(self)
     }
 
     /// Applies `change` in memory and commits it. On failure the change stays
@@ -471,16 +494,24 @@ final class CalendarModel: ObservableObject {
     /// load, after every commit, after a WebUntis refresh and on app activation.
     func rescheduleReminders() {
         guard loaded else { return }
-        let root = root
-        Task {
-            reminderPermission = await CalendarReminderCenter.shared.permission()
-            // A detached connection (restored area, access data missing) shows its
-            // timetable as outdated but never reminds from it.
-            let plan = CalendarReminderPlanner.plan(state: state, snapshot: credentialsMissing ? nil : snapshot, now: Date(), calendar: calendar)
-            remindersPlannedUntil = plan.plannedUntil
-            plannedReminderCount = plan.requests.count
-            reminderError = await CalendarReminderCenter.shared.apply(plan, root: root)
-        }
+        Task { await rescheduleRemindersNow() }
+    }
+
+    /// Plans reminders and Morgen-Überblicke (`CalendarNotificationPlanner`)
+    /// and takes delivered calendar notifications into the bell history.
+    func rescheduleRemindersNow() async {
+        guard loaded else { return }
+        reminderPermission = await CalendarReminderCenter.shared.permission()
+        permissionChecked = true
+        // A detached connection (restored area, access data missing) shows its
+        // timetable as outdated but never reminds from it.
+        let plan = CalendarNotificationPlanner.plan(state: state, snapshot: credentialsMissing ? nil : snapshot,
+                                                    systemEvents: systemEnabled ? systemEvents : [], settings: notificationSettings,
+                                                    namespace: notificationNamespace, now: Date(), calendar: calendar)
+        remindersPlannedUntil = plan.plannedUntil
+        plannedReminderCount = plan.requests.count
+        reminderError = await CalendarReminderCenter.shared.apply(plan, root: root, namespace: notificationNamespace)
+        await collectDelivered()
     }
 
     /// The user switched a reminder on: asks iPadOS once.
@@ -695,6 +726,23 @@ final class CalendarModel: ObservableObject {
         Task { await refresh(manual: false) }
     }
 
+    /// Background refresh (`CalendarNotificationHub`): the same refresh, the
+    /// same repository and the same 15-minute minimum as `refreshIfDue`, only
+    /// without the calendar on screen. Too early: just the plan is renewed.
+    func backgroundRefresh() async {
+        guard loaded, canWrite, state.connection != nil, !syncing, !credentialsMissing,
+              notificationSettings.changes || notificationSettings.overview else { await rescheduleRemindersNow(); return }
+        if let last = lastAutomatic, Date().timeIntervalSince(last) < Self.automaticInterval { await rescheduleRemindersNow(); return }
+        await refresh(manual: false, background: true)
+    }
+
+    /// Worth asking iPadOS for background time: a timetable whose changes
+    /// or overview the user wants.
+    var wantsBackgroundRefresh: Bool {
+        loaded && canWrite && state.connection != nil && !credentialsMissing
+            && (notificationSettings.changes || notificationSettings.overview)
+    }
+
     /// „Aktualisieren“: the default window plus the shown range (if small).
     func refreshNow() {
         if let last = lastManual, Date().timeIntervalSince(last) < 10 { return }
@@ -722,9 +770,13 @@ final class CalendarModel: ObservableObject {
         Task { await refresh(manual: true, windows: [window]) }
     }
 
-    private func refresh(manual: Bool, windows: [(CivilDate, CivilDate)]? = nil) async {
+    /// `background`: run by the background refresh – missing or still locked
+    /// access data and a cancelled request change nothing that is shown.
+    func refresh(manual: Bool, windows: [(CivilDate, CivilDate)]? = nil, background: Bool = false) async {
         guard let connection = state.connection, !syncing else { return }
-        guard let setup = WebUntisKeychain.load(connection.id) else {
+        let keychain = WebUntisKeychain.read(connection.id)
+        guard let setup = keychain.setup else {
+            if background || keychain.locked { return }
             credentialsMissing = true
             syncError = "Zugang auf diesem Gerät neu verbinden (Zugangsdaten fehlen auf diesem iPad, zum Beispiel nach einer Wiederherstellung)."
             return
@@ -733,6 +785,8 @@ final class CalendarModel: ObservableObject {
         if windows == nil, manual, let shown = shownWindow(),
            !(shown.0 >= ranges[0].0 && shown.1 <= ranges[0].1) { ranges.append(shown) }
         let session = generation
+        // Baseline of the change detection: the timetable as it was before this refresh.
+        let before = snapshot
         syncing = true
         if !manual || windows == nil { lastAutomatic = Date() }
         let client = WebUntisClient(setup: setup)
@@ -745,19 +799,24 @@ final class CalendarModel: ObservableObject {
             snapshot = try await repository.replaceHolidays(user.holidays, fetchedAt: started, connection: connection.id)
             for range in ranges {
                 let requested = Date()
-                let lessons = try await client.timetable(user: user, start: range.0, end: range.1, connection: connection.id, timeZone: zone)
+                let answer = try await client.timetable(user: user, start: range.0, end: range.1, connection: connection.id, timeZone: zone)
                 guard session == generation, state.connection?.id == connection.id else { return }
                 snapshot = try await repository.merge(CalendarTimetableFetch(connection: connection.id, start: range.0, end: range.1,
-                                                                             fetchedAt: requested, lessons: lessons))
+                                                                             fetchedAt: requested, lessons: answer.lessons,
+                                                                             homework: answer.homework))
             }
             syncError = nil
             lastSuccess = Date()
         } catch {
             guard session == generation else { return }
-            syncError = WebUntisClient.message(error)
+            // iPadOS ended the background time: no error to show.
+            let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
+            if !(background && cancelled) { syncError = WebUntisClient.message(error) }
         }
+        // Days merged before a later range failed are complete days as well.
+        if session == generation, state.connection?.id == connection.id { await recordChanges(since: before) }
         rebuild()
-        rescheduleReminders()
+        await rescheduleRemindersNow()
     }
 
     // MARK: Index of shown entries
@@ -921,6 +980,8 @@ final class CalendarModel: ObservableObject {
         entry.noteTarget = occurrence.noteTarget
         entry.repeatText = event.recurrence.map { $0.text + (occurrence.isOverride ? " · dieser Termin geändert" : "") }
         entry.reminder = event.reminderMinutes.map(CalendarReminder.text)
+            ?? (notificationSettings.eventReminders && !occurrence.timing.isAllDay
+                ? CalendarReminder.text(notificationSettings.eventMinutes) + " (allgemein)" : nil)
         entry.colorName = CalendarSubjectColor.personal
         return entry
     }
