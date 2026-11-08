@@ -11,9 +11,32 @@ enum NotyMotion {
         reduced ? nil : .spring(duration: 0.32, bounce: 0.04)
     }
     static func highlight(_ reduced: Bool) -> Animation { .easeOut(duration: reduced ? 0.1 : 0.16) }
-    /// Library ⇄ calendar: one calm glide; with Reduce Motion only a cross-fade.
+    /// Hefte ⇄ Kalender by tap (switch, sidebar entry). User request
+    /// 08.11.2026 („eine bisschen smoothere Animation“) takes precedence over
+    /// the 0.3-s rule for taps: content, library column and the switch's
+    /// marker glide in ONE critically damped transaction (no overshoot).
+    /// Reduce Motion: only a cross-fade. Keys stay instant (`instant`).
     static func modeSwitch(_ reduced: Bool) -> Animation {
-        reduced ? .easeInOut(duration: 0.2) : .spring(response: 0.46, dampingFraction: 0.9)
+        reduced ? .easeInOut(duration: modeSwitchDuration(reduced)) : .smooth(duration: modeSwitchDuration(reduced))
+    }
+    static func modeSwitchDuration(_ reduced: Bool) -> TimeInterval { reduced ? 0.2 : 0.45 }
+    /// The two sides of `modeSwitch`. Hefte sit left, the calendar right:
+    /// each side comes in from / goes out towards its own edge by 20 pt and
+    /// settles from 98 %, so the motion follows the switch. The leaving side
+    /// is gone after 70 % of the glide's way (≈ 0.18 s), the coming side
+    /// fades in along all of it: both never lie on top of each other at full
+    /// strength. All of it follows the transaction, so keys (`instant`) stay
+    /// without motion. No blur: its modifier would stay on the shown side at
+    /// rest – on the calendar above the PencilKit note of the event window.
+    /// Reduce Motion: opacity only.
+    static func modeTransition(leading: Bool, reduced: Bool) -> AnyTransition {
+        if reduced { return .opacity }
+        let edge: CGFloat = leading ? -20 : 20
+        func side(leaving: Bool) -> AnyTransition {
+            .modifier(active: NotyModeShift(amount: 1, edge: edge, leaving: leaving),
+                      identity: NotyModeShift(amount: 0, edge: edge, leaving: leaving))
+        }
+        return .asymmetric(insertion: side(leaving: false), removal: side(leaving: true))
     }
     /// Exits are faster than entrances.
     static let exit: Animation = .easeOut(duration: 0.12)
@@ -27,6 +50,25 @@ enum NotyMotion {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction, body)
+    }
+}
+
+/// One side of `NotyMotion.modeTransition`: `amount` 0 = in place, 1 = away
+/// (shifted by `edge`, 98 %, invisible). Animatable, so the leaving side's
+/// faster fade is a curve over the glide, not a second animation.
+private struct NotyModeShift: ViewModifier, Animatable {
+    var amount: Double
+    let edge: CGFloat
+    let leaving: Bool
+    nonisolated var animatableData: Double {
+        get { amount }
+        set { amount = newValue }
+    }
+    func body(content: Content) -> some View {
+        content
+            .opacity(leaving ? max(0, 1 - amount / 0.7) : 1 - amount)
+            .scaleEffect(1 - 0.02 * amount)
+            .offset(x: edge * amount)
     }
 }
 

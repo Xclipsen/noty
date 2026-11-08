@@ -14,6 +14,9 @@ private enum LibraryLocation: Hashable {
 /// folder/notebook tree, the selected folder's contents on the right.
 struct LibraryView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The window's size class (inside the split view the sidebar column may
+    /// report compact although the window is wide).
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @ObservedObject var model: LibraryModel
     @ObservedObject var workspaces: WorkspaceAppModel
     @EnvironmentObject private var externalBackup: ExternalBackupModel
@@ -46,6 +49,25 @@ struct LibraryView: View {
     @State private var showsCalendar = false
     @State private var visibilityBeforeCalendar: NavigationSplitViewVisibility?
     @Namespace private var modeSwitchSpace
+    /// Width of the whole split view; with `detailWidth` it tells whether the
+    /// library sidebar stands beside the content (`sidebarBeside`).
+    @State private var splitWidth: CGFloat = 0
+    /// Split width at which the sidebar stood beside the content when the
+    /// calendar was shown (nil: it did not).
+    @State private var besideBeforeCalendar: CGFloat?
+    /// Hefte ← Kalender with the sidebar coming back beside (same window
+    /// width as before): the switch moves into it with the switching
+    /// transaction instead of a frame later, when the width is measured.
+    /// Ends with that measurement, at the latest after 0.6 s.
+    @State private var sidebarReturning = false
+    /// Shown by tap: the calendar counts as visible (WebUntis/EventKit refresh,
+    /// waiting notification) only after the glide, so no result rebuilds it mid-way.
+    @State private var calendarRevealDelay: TimeInterval = 0
+    /// „Hefte | Kalender“ in the sidebar's bar beside the system button: the
+    /// words from 260 pt sidebar width, with symbols from 330 pt, below only
+    /// the symbols (Dynamic Type scales both with the words).
+    @ScaledMetric(relativeTo: .subheadline) private var switchTitlesWidth: CGFloat = 260
+    @ScaledMetric(relativeTo: .subheadline) private var switchFullWidth: CGFloat = 330
     @State private var showingAreas = false
     @State private var selectedArea: TestWorkspace?
     @State private var switchingArea = false
@@ -129,6 +151,7 @@ struct LibraryView: View {
         } detail: {
             detail
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { splitWidth = $0 }
         .animation(NotyMotion.panel(reduceMotion), value: libraryEditMode)
         .environment(\.editMode, $libraryEditMode)
         .background(KeyboardHost().frame(width: 0, height: 0).accessibilityHidden(true))
@@ -263,10 +286,24 @@ struct LibraryView: View {
         .onChange(of: calendar.openRequest) { _, _ in if model.opened == nil { setCalendar(true, animated: false) } }
         // The calendar asks WebUntis and keeps its note only while it is the
         // shown side: set here from the switch itself (the calendar view's own
-        // appear/disappear came late after a quick back and forth).
-        .onChange(of: showsCalendar) { _, shown in calendar.visible = shown }
+        // appear/disappear came late after a quick back and forth). Shown by
+        // tap it counts only after the glide (`calendarRevealDelay`, task below).
+        .onChange(of: showsCalendar) { _, shown in if !shown || calendarRevealDelay == 0 { calendar.visible = shown } }
+        .task(id: showsCalendar && calendarRevealDelay > 0) {
+            guard showsCalendar, calendarRevealDelay > 0 else { return }
+            try? await Task.sleep(for: .seconds(calendarRevealDelay))
+            if !Task.isCancelled && showsCalendar { calendar.visible = true }
+        }
         .onAppear { calendar.visible = showsCalendar }
         .onDisappear { calendar.visible = false }
+        // The prediction of `sidebarReturning` ends with the measured width,
+        // or – when the sidebar did not come back beside – after 0.6 s.
+        .onChange(of: detailWidth) { _, _ in if sidebarReturning { sidebarReturning = false } }
+        .task(id: sidebarReturning) {
+            guard sidebarReturning else { return }
+            try? await Task.sleep(for: .seconds(0.6))
+            if !Task.isCancelled { sidebarReturning = false }
+        }
         // No sheet changes with these alerts: the keys have to come back by themselves.
         .onChange(of: model.error == nil && workspaces.error == nil && backupMessage == nil) { _, _ in KeyboardRouter.shared.reclaim() }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
@@ -297,49 +334,75 @@ struct LibraryView: View {
             && !calendar.presentingOverlays
     }
 
-    /// Tapping (switch, sidebar): one soft transaction of at most 0.3 s – the
-    /// content cross-fades with a 12-pt shift while the library sidebar
-    /// collapses (or comes back). ⇧⌘K, the command palette and a
-    /// notification: at once. Reduce Motion: the column changes at once,
-    /// the content only cross-fades.
+    /// Tapping (switch, sidebar): ONE transaction (`NotyMotion.modeSwitch`,
+    /// 0.45 s without overshoot, user request 08.11.2026) – the content
+    /// cross-fades with a 20-pt shift (`NotyMotion.modeTransition`) while the
+    /// library sidebar collapses (or comes back), the switch changes its bar
+    /// and its marker slides. ⇧⌘K, the command palette and a notification:
+    /// at once. Reduce Motion: the column changes at once, the content only
+    /// cross-fades (0.2 s).
     private func setCalendar(_ shown: Bool, animated: Bool) {
         guard shown != showsCalendar, shown || canSwitchMode else { return }
         let layout = {
             if shown {
                 search = ""; libraryEditMode = .inactive; keyboardFocus = nil
                 visibilityBeforeCalendar = columnVisibility
+                besideBeforeCalendar = switchInSidebar ? splitWidth : nil
+                sidebarReturning = false
                 columnVisibility = .detailOnly
             } else {
                 // Never force the sidebar open (portrait would cover the
                 // content): a hidden one stays hidden, otherwise the system
                 // places it as it does by itself.
                 columnVisibility = visibilityBeforeCalendar == .detailOnly ? .detailOnly : .automatic
+                sidebarReturning = columnVisibility != .detailOnly && besideBeforeCalendar == splitWidth
                 visibilityBeforeCalendar = nil
+                besideBeforeCalendar = nil
             }
         }
+        calendarRevealDelay = animated ? NotyMotion.modeSwitchDuration(reduceMotion) : 0
         if !animated {
             NotyMotion.instant { layout(); showsCalendar = shown }
         } else if reduceMotion {
             NotyMotion.instant(layout)
-            withAnimation(NotyMotion.fade) { showsCalendar = shown }
+            withAnimation(NotyMotion.modeSwitch(true)) { showsCalendar = shown }
         } else {
-            withAnimation(NotyMotion.palette(false)) { layout(); showsCalendar = shown }
+            withAnimation(NotyMotion.modeSwitch(false)) { layout(); showsCalendar = shown }
         }
     }
 
-    /// Hefte sit left, the calendar right: each side enters and leaves
-    /// towards its own edge, only 12 pt and fading, so the motion follows the
-    /// switch without carrying the page along. Reduce Motion: only the cross-fade.
-    private func modeTransition(leading: Bool) -> AnyTransition {
-        if reduceMotion { return .opacity }
-        return .offset(x: leading ? -12 : 12).combined(with: .opacity)
+    /// The library sidebar stands beside the content: measured, the detail
+    /// column is clearly narrower than the split view. Laid over the content
+    /// (portrait, swiped in) it does not count – the detail keeps its width,
+    /// and `columnVisibility` is no reliable report of that overlay (a wrong
+    /// guess would put the only switch into a hidden sidebar).
+    private var sidebarBeside: Bool { splitWidth - detailWidth >= 200 }
+
+    /// Where „Hefte | Kalender“ is: in the sidebar's bar (right of the system
+    /// sidebar button, user request 08.11.2026) while the sidebar stands
+    /// beside the content, otherwise top left in the detail column (in the
+    /// calendar after the calendar sidebar button). Always exactly one.
+    private var switchInSidebar: Bool {
+        columnVisibility != .detailOnly && (sidebarBeside || sidebarReturning)
     }
 
-    /// Segmented „Hefte | Kalender“ at the top left of the detail column; the
-    /// same item stays in the bar for both sides, the marker slides between them.
-    private var modeSwitch: some View {
-        LibraryModeSwitch(showsCalendar: showsCalendar, namespace: modeSwitchSpace, reduceMotion: reduceMotion) { setCalendar($0, animated: true) }
-            .disabled(!canSwitchMode || model.opened != nil)
+    /// Words, symbols or both, chosen by the sidebar's width and used in both
+    /// bars, so the switch looks alike wherever it is; the detail bar never
+    /// goes below the words (it has room for them).
+    private func switchLabels(inSidebar: Bool) -> LibraryModeSwitch.Labels {
+        // Narrow window (Split View): symbols only, the bar keeps its other items.
+        if sizeClass == .compact { return .symbols }
+        if sidebarSize.width >= switchFullWidth { return .full }
+        return inSidebar && sidebarSize.width < switchTitlesWidth ? .symbols : .titles
+    }
+
+    /// Segmented „Hefte | Kalender“ (`switchInSidebar`). Moving between the
+    /// bars it cross-fades; the marker slides between the segments.
+    private func modeSwitch(_ labels: LibraryModeSwitch.Labels) -> some View {
+        LibraryModeSwitch(showsCalendar: showsCalendar, labels: labels, namespace: modeSwitchSpace, reduceMotion: reduceMotion) {
+            setCalendar($0, animated: true)
+        }
+        .disabled(!canSwitchMode || model.opened != nil)
     }
 
     /// Calendar sidebar on/off: the button slides it (`NotyMotion.panel`;
@@ -458,11 +521,20 @@ struct LibraryView: View {
         .onGeometryChange(for: CGSize.self) { $0.size } action: { sidebarSize = $0 }
         .background(Color(uiColor: .secondarySystemBackground))
         .navigationTitle("noty")
+        .toolbar { sidebarToolbar }
         // In the calendar the library sidebar is away on purpose: no system
         // toggle beside the switch (the switch brings it back).
         .toolbar(removing: showsCalendar ? .sidebarToggle : nil)
         .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 380)
         .safeAreaInset(edge: .bottom) { sidebarFooter }
+    }
+
+    /// The switch while the sidebar stands beside the content
+    /// (`switchInSidebar`); otherwise `leadingToolbar` of the detail has it.
+    @ToolbarContentBuilder private var sidebarToolbar: some ToolbarContent {
+        if switchInSidebar {
+            ToolbarItem(placement: .topBarLeading) { modeSwitch(switchLabels(inSidebar: true)) }
+        }
     }
 
     private func sidebarLink(_ title: String, systemImage: String, target: LibraryLocation, dropInto: Bool) -> some View {
@@ -771,21 +843,22 @@ struct LibraryView: View {
     // MARK: Detail
 
     /// The calendar brings its own toolbar; search, editing and drops belong
-    /// to the collection only. Export, warnings and the Hefte/Kalender switch
-    /// stay for both. Both sides are in one `ZStack` so the switch can show
-    /// the leaving and the coming side together (`modeTransition`); the
-    /// calendar's model is the host's, nothing of its state goes with the view.
+    /// to the collection only. Export, warnings and (sidebar hidden or laid
+    /// over) the Hefte/Kalender switch stay for both. Both sides are in one
+    /// `ZStack` so the switch can show the leaving and the coming side
+    /// together (`NotyMotion.modeTransition`); the calendar's model is the
+    /// host's, nothing of its state goes with the view.
     private var detail: some View {
         ZStack {
             if showsCalendar {
                 CalendarView(model: calendar, keysActive: calendarKeysActive, covered: model.opened != nil)
-                    .transition(modeTransition(leading: false))
+                    .transition(NotyMotion.modeTransition(leading: false, reduced: reduceMotion))
             } else {
                 collection
                     .navigationTitle(title)
                     .searchable(text: $search, prompt: "Name suchen")
                     .toolbar { libraryToolbar }
-                    .transition(modeTransition(leading: true))
+                    .transition(NotyMotion.modeTransition(leading: true, reduced: reduceMotion))
             }
         }
             .toolbar { leadingToolbar }
@@ -817,9 +890,10 @@ struct LibraryView: View {
     }
 
     /// Leading items of both sides, in this order: (Kalender, wide enough)
-    /// the calendar sidebar button, the switch, then (Hefte, inside a folder)
-    /// the way up. One declaration for both sides keeps the switch the same
-    /// item while the content changes beneath it.
+    /// the calendar sidebar button, the switch (unless it is in the sidebar's
+    /// bar, `switchInSidebar`), then (Hefte, inside a folder) the way up. One
+    /// declaration for both sides keeps the switch the same item while the
+    /// content changes beneath it.
     @ToolbarContentBuilder private var leadingToolbar: some ToolbarContent {
         // Left of the switch (user request 08.11.2026; before, the calendar's
         // own toolbar put it right of it). Only where the sidebar has room
@@ -829,7 +903,9 @@ struct LibraryView: View {
         if showsCalendar && detailWidth >= CalendarSidebar.minimumTotalWidth {
             ToolbarItem(placement: .topBarLeading) { calendarSidebarButton }
         }
-        ToolbarItem(placement: .topBarLeading) { modeSwitch }
+        if !switchInSidebar {
+            ToolbarItem(placement: .topBarLeading) { modeSwitch(switchLabels(inSidebar: false)) }
+        }
         if !showsCalendar, case .folder(let id) = location, search.isEmpty {
             ToolbarItem(placement: .topBarLeading) {
                 Button { goUp(from: id) } label: {
@@ -1448,15 +1524,18 @@ private struct NotebookChoiceList: Identifiable {
     let retain: Set<UUID>
 }
 
-/// „Hefte | Kalender“ at the top left: two segments with a marker that slides
-/// to the chosen side (Reduce Motion: it only cross-fades). VoiceOver and
-/// Full Keyboard Access see a segmented picker.
+/// „Hefte | Kalender“ at the top left (sidebar bar or detail bar): two
+/// segments with a marker that slides to the chosen side with the switching
+/// transaction (Reduce Motion: it only cross-fades). VoiceOver and Full
+/// Keyboard Access see a segmented picker.
 private struct LibraryModeSwitch: View {
+    /// Words with symbols, words only (sidebar of the usual 280 pt) or symbols only.
+    enum Labels { case full, titles, symbols }
     let showsCalendar: Bool
+    let labels: Labels
     let namespace: Namespace.ID
     let reduceMotion: Bool
     let select: (Bool) -> Void
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.isEnabled) private var enabled
 
     var body: some View {
@@ -1481,9 +1560,11 @@ private struct LibraryModeSwitch: View {
         let selected = showsCalendar == calendar
         return Button { select(calendar) } label: {
             Group {
-                // Narrow window (Split View): symbols only, the bar keeps its other items.
-                if sizeClass == .compact { Image(systemName: systemImage) }
-                else { Label(title, systemImage: systemImage).labelStyle(.titleAndIcon) }
+                switch labels {
+                case .symbols: Image(systemName: systemImage)
+                case .titles: Text(title)
+                case .full: Label(title, systemImage: systemImage).labelStyle(.titleAndIcon)
+                }
             }
             .font(.subheadline.weight(selected ? .semibold : .regular))
             .foregroundStyle(selected ? Color.primary : Color.secondary)
