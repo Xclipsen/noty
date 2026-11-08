@@ -1,6 +1,6 @@
 # Lernfelder, Themen und Materialien
 
-Stand: 08.11.2026, Branch `feat/lernfelder` (von `feat/kalender`). Auftrag des Nutzers vom 08.11.2026 („bau bitte ein, wie wir es im Plan beschrieben haben“) nach dem Gespräch über die Ausbildung zum Steuerfachangestellten. Nachweise je Build: [CALENDAR-LOG](CALENDAR-LOG.md); Gesamtplan: [CALENDAR-PLAN](CALENDAR-PLAN.md).
+Stand: 08.11.2026, Branch `feat/lernfelder` (von `feat/kalender`), gemergt nach `feat/kalender`, **noty calendar Build 144**. Auftrag des Nutzers vom 08.11.2026 („bau bitte ein, wie wir es im Plan beschrieben haben“) nach dem Gespräch über die Ausbildung zum Steuerfachangestellten. Nachweise je Build: [CALENDAR-LOG](CALENDAR-LOG.md); Gesamtplan: [CALENDAR-PLAN](CALENDAR-PLAN.md).
 
 ## Ziel
 
@@ -10,7 +10,7 @@ Die Berufsschule ist nach **Lernfeldern** organisiert, nicht nach Fächern: WS =
 
 | Teil | implementiert | gebaut | installiert | am iPad getestet |
 | --- | --- | --- | --- | --- |
-| Materialpaket (`.notymaterial`): Import, Prüfung, Verwaltung | ja | iPad-Build erfolgreich (xtool, 08.11.) | nein | ungeprüft |
+| Materialpaket (`.notymaterial`): Import, Prüfung, Verwaltung | ja | 144 | nein | ungeprüft |
 | Materialsuche (Thema, Lektion, Seite, Paragraf, Seitentext) mit Video-Link und Skriptansicht | ja | ja | nein | ungeprüft (unter Linux mit dem echten Paket geprüft, s. u.) |
 | Kalenderformat 5: Lernfelder, Zuordnungsregeln, Themen mit festgehaltenem Material | ja | ja | nein | ungeprüft (Core-Tests, Host-Rundlauf, Python-Prüfer bestanden) |
 | Stunde → Abschnitt mit Überschrift im Lernfeld-Heft, Block aus mehreren Stunden | ja | ja | nein | ungeprüft |

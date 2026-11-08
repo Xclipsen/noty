@@ -36,7 +36,7 @@ Lesart (AGENTS.md): **implementiert** = Code vorhanden; **gebaut** = erster noty
 | Live Activity per Push (Schritt 2) | nein | – | – | – | – |
 | Bibliotheksbackup und Restore mit Kalender | ja | 103 (127 Kalenderformat 4) | ja (139) | ungeprüft (Host-Roundtrip unter Linux bestanden) | – |
 | Kalenderpaket (ein Schreiber, Revisionen, Formate 1–4, Migration) | ja | 101 (Format 2: 102, 3: 103, 4: 127) | ja (139) | ungeprüft | – |
-| Lernfelder: Materialpaket und -suche, Kalenderformat 5 (Lernfelder, Zuordnung, Themen), Stunde → Abschnitt im Lernfeld-Heft, Themenkarte ([LERNFELDER](LERNFELDER.md)) | ja | iPad-Build erfolgreich auf `feat/lernfelder` | nein | ungeprüft | Auftrag 08.11.2026 |
+| Lernfelder: Materialpaket und -suche, Kalenderformat 5 (Lernfelder, Zuordnung, Themen), Stunde → Abschnitt im Lernfeld-Heft, Themenkarte ([LERNFELDER](LERNFELDER.md)) | ja | 144 | nein | ungeprüft | Auftrag 08.11.2026 |
 | Backend-Synchronisierung (Stufe D) | nein | – | – | – | – |
 | Durchgehendes Fachheft aus Stundennotizen | nein (bestätigt für später) | – | – | – | – |
 
