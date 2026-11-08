@@ -9,6 +9,10 @@ enum NotyMotion {
         reduced ? nil : .spring(response: 0.32, dampingFraction: 0.94)
     }
     static func highlight(_ reduced: Bool) -> Animation { .easeOut(duration: reduced ? 0.1 : 0.16) }
+    /// Library ⇄ calendar: one calm glide; with Reduce Motion only a cross-fade.
+    static func modeSwitch(_ reduced: Bool) -> Animation {
+        reduced ? .easeInOut(duration: 0.2) : .spring(response: 0.46, dampingFraction: 0.9)
+    }
 }
 
 struct NotyPressStyle: ButtonStyle {

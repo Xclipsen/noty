@@ -15,6 +15,8 @@ final class CalendarSwipeGuard {
 struct CalendarMonthView: View {
     @ObservedObject var model: CalendarModel
     @State private var swipe = CalendarSwipeGuard()
+    /// Pinch between the views: its fingers are no swipe and no tap.
+    @Environment(\.calendarZoom) private var zoom
     let showAll: (Date) -> Void
     @ScaledMetric(relativeTo: .caption) private var line: CGFloat = 20
     @ScaledMetric(relativeTo: .caption) private var weekColumn: CGFloat = 28
@@ -59,6 +61,8 @@ struct CalendarMonthView: View {
                                 }
                             }
                             .frame(height: row)
+                            // Pinch on the row opens this week; lights up after zooming out of it.
+                            .calendarZoomTarget(.week, start: week.days[0], cornerRadius: 6)
                             Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
                         }
                     }
@@ -74,7 +78,7 @@ struct CalendarMonthView: View {
             }
             .onEnded { value in
                 let dx = value.translation.width, dy = value.translation.height
-                guard abs(dx) > 80, abs(dx) > 2 * abs(dy) else { return }
+                guard abs(dx) > 80, abs(dx) > 2 * abs(dy), zoom?.recentPinch != true else { return }
                 model.step(dx < 0 ? 1 : -1)
             })
         .accessibilityAction(named: "Nächster Monat") { model.step(1) }
@@ -89,7 +93,7 @@ struct CalendarMonthView: View {
         let weekend = CalendarDates.weekdayIndex(day, calendar: calendar) >= 5
         let holiday = events.contains { $0.source == .holidays }
         return VStack(alignment: .leading, spacing: 1) {
-            Button { if !swipe.recent { model.open(day, in: .day) } } label: {
+            Button { if !swipe.recent && zoom?.recentPinch != true { model.open(day, in: .day) } } label: {
                 Text("\(calendar.component(.day, from: day))")
                     .font(.subheadline.weight(isToday ? .bold : .regular)).monospacedDigit()
                     .foregroundStyle(isToday ? Color.white : !inMonth ? CalendarPalette.quiet : weekend ? Color.secondary : Color.primary)
@@ -301,6 +305,7 @@ struct CalendarListRow: View {
 /// the sample holidays. Tapping a day opens it, the month name the month.
 struct CalendarYearView: View {
     @ObservedObject var model: CalendarModel
+    @Environment(\.calendarZoom) private var zoom
     @ScaledMetric(relativeTo: .body) private var cell: CGFloat = 44
     private var calendar: Calendar { model.calendar }
 
@@ -345,7 +350,7 @@ struct CalendarYearView: View {
         let current = calendar.isDate(month, equalTo: model.today, toGranularity: .month)
         let index = calendar.component(.month, from: month) - 1
         return VStack(alignment: .leading, spacing: 0) {
-            Button { model.open(month, in: .month) } label: {
+            Button { if zoom?.recentPinch != true { model.open(month, in: .month) } } label: {
                 Text(CalendarText.months[index]).font(.headline)
                     .foregroundStyle(current ? CalendarPalette.today : .primary)
                     .padding(.leading, 6)
@@ -371,6 +376,8 @@ struct CalendarYearView: View {
                 }
             }
         }
+        // Pinch on the tile opens this month; lights up after zooming out of it.
+        .calendarZoomTarget(.month, start: month, cornerRadius: 12)
     }
 
     private func dayCell(_ day: Date) -> some View {
@@ -378,7 +385,7 @@ struct CalendarYearView: View {
         let holiday = events.first { $0.source == .holidays }
         let count = events.filter { $0.source != .holidays }.count
         let isToday = calendar.isDate(day, inSameDayAs: model.today)
-        return Button { model.open(day, in: .day) } label: {
+        return Button { if zoom?.recentPinch != true { model.open(day, in: .day) } } label: {
             VStack(spacing: 2) {
                 Text("\(calendar.component(.day, from: day))")
                     .font(.footnote.weight(isToday ? .semibold : .regular)).monospacedDigit()

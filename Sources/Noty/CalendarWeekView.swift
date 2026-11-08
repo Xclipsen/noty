@@ -17,6 +17,7 @@ struct CalendarTimeGrid: View {
     /// An own event is being moved or stretched: the grid does not scroll meanwhile.
     @State private var dragging = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.calendarZoom) private var zoom
     private var calendar: Calendar { model.calendar }
     private var minimumColumn: CGFloat { days.count == 1 ? 260 : 96 }
 
@@ -56,7 +57,7 @@ struct CalendarTimeGrid: View {
                 let isToday = calendar.isDate(day, inSameDayAs: model.today)
                 let weekday = CalendarDates.weekdayIndex(day, calendar: calendar)
                 let quiet = weekday >= 5 || isHoliday(day)
-                Button { if days.count > 1 { model.open(day, in: .day) } } label: {
+                Button { if days.count > 1 && zoom?.recentPinch != true { model.open(day, in: .day) } } label: {
                     VStack(spacing: 1) {
                         Text((detailed ? CalendarText.weekdays[weekday] : CalendarText.shortWeekdays[weekday]).uppercased())
                             .font(.caption2.weight(.semibold)).tracking(0.6)
@@ -75,6 +76,8 @@ struct CalendarTimeGrid: View {
                 .disabled(days.count == 1)
                 .accessibilityLabel(CalendarText.longDate(day, calendar: calendar) + (isToday ? ", heute" : "") + (isHoliday(day) ? ", Ferien" : ""))
                 .accessibilityHint(days.count > 1 ? "Öffnet den Tag" : "")
+                // Week: a pinch over this column opens the day; lights up after zooming out of it.
+                .calendarZoomTarget(.day, start: day, cornerRadius: 8, enabled: days.count > 1)
             }
         }
         .frame(height: headerHeight)

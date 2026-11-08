@@ -9,6 +9,9 @@ struct LibraryCommandActions {
     var newTextDocument: (() -> Void)?
     /// Shown calendar: ⌘N creates an event instead of a notebook.
     var newEvent: (() -> Void)?
+    /// ⇧⌘K: Hefte ⇄ Kalender; nil while the switch must wait (event window, form).
+    var toggleCalendar: (() -> Void)?
+    var showsCalendar = false
 }
 
 /// Actions of the active editor pane. Equality ignores the closures: they act on
@@ -108,6 +111,12 @@ struct NotyCommands: Commands {
             Button("Neues Textdokument") { library?.newTextDocument?() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(editor != nil || library?.newTextDocument == nil)
+        }
+        CommandGroup(before: .sidebar) {
+            Button(library?.showsCalendar == true ? "Hefte zeigen" : "Kalender zeigen") { library?.toggleCalendar?() }
+                // Only with the library in front: in a notebook ⇧⌘K stays free.
+                .keyboardShortcut(editor == nil && library?.toggleCalendar != nil ? KeyboardShortcut("k", modifiers: [.command, .shift]) : nil)
+                .disabled(editor != nil || library?.toggleCalendar == nil)
         }
         CommandMenu("Heft") {
             Button(lawFocus ? "Im Gesetz suchen" : editor == nil ? "In allen Heften suchen" : editor?.isTextDocument == true ? "Im Dokument suchen" : "Im Heft suchen") {

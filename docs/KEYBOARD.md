@@ -17,6 +17,7 @@ Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur 
 | Taste | Wirkung | Wo |
 | --- | --- | --- |
 | ⌘N / ⇧⌘N | Neues Heft / neues Textdokument | Bibliothek |
+| ⇧⌘K | Hefte ⇄ Kalender (Menü „Darstellung“; ruht bei offenem Terminfenster oder Terminformular) | Bibliothek |
 | ⌘F | Suchen; bei Gesetzfokus „Im Gesetz suchen“ | überall |
 | ⌘S | Speichern | Editor |
 | ⌘E / ⇧⌘E | PDF ganz / diese Seite | Editor |

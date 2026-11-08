@@ -53,6 +53,15 @@ struct CalendarView: View {
     /// The period/view shown before the last change (direction of the slide/zoom).
     @State private var previousNav: CalendarNavKey?
     @State private var todayPulse = CalendarPulse()
+    // Zoom between the views (docs/CALENDAR-PLAN.md, „Zoom zwischen Ansichten“)
+    @State private var zoomFrames = CalendarZoomTracker()
+    /// The live pinch. Held, not observed: a pinch frame re-renders only the scaled wrapper.
+    @State private var pinch = CalendarPinchState()
+    @GestureState private var pinching = false
+    /// Where the view change of the last zoom grows from.
+    @State private var zoomMotion: CalendarZoomMotion?
+    /// After a zoom-out: the period it came from lights up once.
+    @State private var zoomFocus = CalendarZoomFocus()
     /// The storage lock banner was put away: the sync symbol keeps the badge.
     @State private var hiddenStorageError: String?
     private var calendar: Calendar { model.calendar }
@@ -103,12 +112,23 @@ struct CalendarView: View {
         }
         .environment(\.calendarOrigin, origins)
         .environment(\.calendarTodayPulse, todayPulse)
+        .environment(\.calendarZoom, zoomFrames)
+        .environment(\.calendarZoomFocus, zoomFocus)
         // One light tick when the event window closes (any way).
         .sensoryFeedback(trigger: model.selection) { old, new in old != nil && new == nil ? .impact(weight: .light) : nil }
         .onChange(of: model.selection) { _, id in
             if let id { lastWindowID = id; windowPull.value = 0 }
         }
-        .onChange(of: navKey, initial: true) { _, new in previousNav = new }
+        .onChange(of: navKey, initial: true) { _, new in
+            previousNav = new
+            if zoomMotion?.key != new { zoomMotion = nil }
+        }
+        // A pinch that ends without `onEnded` (cancelled, window opened): spring back.
+        .onChange(of: pinching) { _, now in
+            guard !now, pinch.active else { return }
+            pinch.active = false
+            if !pinch.committed { settlePinch() }
+        }
     }
 
     /// Navigation chrome, life cycle and sheets (split off the body so the
@@ -297,11 +317,16 @@ struct CalendarView: View {
     private var content: some View {
         let key = navKey
         let previous = previousNav
-        return grid
+        // A zoom grows from the period it opened (or the fingers), not from the middle.
+        let zoom = zoomMotion?.key == key ? zoomMotion : nil
+        return CalendarPinchScaled(pinch: pinch, reduced: reduceMotion) {
+            grid.coordinateSpace(name: CalendarZoomTracker.space)
+        }
             .keyframeAnimator(initialValue: CalendarNavFrame(), trigger: key) { view, frame in
-                view.offset(x: frame.offset).scaleEffect(frame.scale).opacity(frame.opacity)
+                view.offset(x: frame.offset).scaleEffect(frame.scale, anchor: zoom?.anchor ?? .center).opacity(frame.opacity)
             } keyframes: { _ in
-                let move = CalendarNavFrame.start(from: previous, to: key, reduced: reduceMotion)
+                let move = CalendarNavFrame.start(from: previous, to: key, reduced: reduceMotion,
+                                                  zoom: zoom?.from == previous ? zoom : nil)
                 KeyframeTrack(\.offset) {
                     LinearKeyframe(move.offset, duration: 0)
                     SpringKeyframe(0, duration: 0.42, spring: Spring(response: 0.42, dampingRatio: 1))
@@ -315,6 +340,111 @@ struct CalendarView: View {
                     CubicKeyframe(1, duration: reduceMotion ? 0.16 : 0.3)
                 }
             }
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { pinch.size = $0 }
+            // Two fingers only: taps, scrolling, the long press on cards and the
+            // month swipe keep working; the event window (and its note) is above.
+            .simultaneousGesture(zoomGesture, including: zoomable ? .all : .subviews)
+    }
+
+    // MARK: Zoom between the views (pinch, ⌘+ / ⌘-)
+
+    /// Not while the event window, the enlarged note or the form is open.
+    private var zoomable: Bool { model.selectedEvent == nil && model.enlargedDraft == nil && model.draft == nil }
+
+    private func zoomPossible(_ direction: CalendarZoom.Direction) -> Bool {
+        direction == .zoomIn ? model.mode.finer != nil : model.mode.coarser != nil
+    }
+
+    private var zoomGesture: some Gesture {
+        MagnifyGesture(minimumScaleDelta: 0.02)
+            .updating($pinching) { _, state, _ in state = true }
+            .onChanged { pinchChanged($0) }
+            .onEnded { pinchEnded($0) }
+    }
+
+    /// Follows the fingers softly; past `CalendarPinch.arm` a release changes
+    /// the view (tick), past `decisive` it changes at once – one step per pinch.
+    private func pinchChanged(_ value: MagnifyGesture.Value) {
+        zoomFrames.markPinch()
+        if !pinch.active {
+            pinch.active = true
+            pinch.committed = false
+            pinch.start = value.startLocation
+            pinch.anchor = unitPoint(value.startLocation)
+        }
+        guard !pinch.committed, zoomable else { return }
+        let magnification = Double(value.magnification)
+        let armed = CalendarPinch.direction(magnification).flatMap { zoomPossible($0) ? $0 : nil }
+        if pinch.armed != armed { pinch.armed = armed }
+        pinch.scale = CGFloat(CalendarPinch.feedbackScale(magnification, possible: zoomPossible(magnification >= 1 ? .zoomIn : .zoomOut)))
+        if let decisive = CalendarPinch.direction(magnification, decisive: true), zoomPossible(decisive) {
+            commitPinch(decisive)
+        }
+    }
+
+    private func pinchEnded(_ value: MagnifyGesture.Value) {
+        zoomFrames.markPinch()
+        if !pinch.committed, zoomable, let direction = CalendarPinch.direction(Double(value.magnification)), zoomPossible(direction) {
+            commitPinch(direction)
+        } else if !pinch.committed {
+            settlePinch()
+        }
+        pinch.active = false
+    }
+
+    /// Below the threshold or cancelled: the view springs back.
+    private func settlePinch() {
+        pinch.armed = nil
+        guard pinch.scale != 1 else { return }
+        withAnimation(CalendarMotion.bouncy(reduceMotion)) { pinch.scale = 1 }
+    }
+
+    private func commitPinch(_ direction: CalendarZoom.Direction) {
+        pinch.committed = true
+        pinch.armed = nil
+        // The keyframes of the new view take over; no second animation on top.
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) { pinch.scale = 1 }
+        pinch.commits += 1
+        zoom(direction, at: pinch.start)
+    }
+
+    private func unitPoint(_ point: CGPoint) -> UnitPoint {
+        guard pinch.size.width > 1, pinch.size.height > 1 else { return .center }
+        return UnitPoint(x: min(1, max(0, point.x / pinch.size.width)), y: min(1, max(0, point.y / pinch.size.height)))
+    }
+
+    /// One step Jahr ⇄ Monat ⇄ Woche ⇄ Tag. `point`: the fingers in the
+    /// content (nil: keyboard). Zooming in opens the period under the point
+    /// (keyboard: the anchor's) and grows out of its frame; zooming out
+    /// settles back and lights up the period it came from.
+    private func zoom(_ direction: CalendarZoom.Direction, at point: CGPoint?) {
+        let mode = model.mode
+        let finer = mode.finer
+        let target = direction == .zoomIn ? finer.flatMap { kind in point.flatMap { zoomFrames.target(kind, at: $0) } } : nil
+        guard let step = CalendarZoom.step(direction, from: mode, anchor: model.anchor, target: target,
+                                           today: model.today, calendar: calendar) else { return }
+        let from = navKey
+        let to = CalendarNavKey(mode: step.mode,
+                                start: CalendarDates.range(step.mode, anchor: step.anchor, weekDays: shownWeekDays, calendar: calendar).start)
+        switch direction {
+        case .zoomIn:
+            // Out of the opened period's frame; else from the fingers; keyboard
+            // without a known frame: the gentle default from the middle.
+            if let finer, let frame = zoomFrames.frame(finer, CalendarZoom.focus(finer, anchor: step.anchor, calendar: calendar)) {
+                zoomMotion = CalendarZoomMotion(from: from, key: to, anchor: unitPoint(CGPoint(x: frame.midX, y: frame.midY)), scale: 0.4)
+            } else if let point {
+                zoomMotion = CalendarZoomMotion(from: from, key: to, anchor: unitPoint(point), scale: 0.8)
+            } else {
+                zoomMotion = nil
+            }
+        case .zoomOut:
+            zoomMotion = point.map { CalendarZoomMotion(from: from, key: to, anchor: unitPoint($0), scale: 1.25) }
+            zoomFocus = CalendarZoomFocus(count: zoomFocus.count + 1, kind: mode,
+                                          start: CalendarZoom.focus(mode, anchor: model.anchor, calendar: calendar), at: Date())
+        }
+        model.open(step.anchor, in: step.mode)
     }
 
     @ViewBuilder private var grid: some View {
@@ -580,13 +710,17 @@ struct CalendarView: View {
         }
     }
 
-    /// ⌘1–⌘4 like Apple Kalender: Tag, Woche, Monat, Jahr; ⌃⌘S the sidebar.
+    /// ⌘1–⌘4 like Apple Kalender: Tag, Woche, Monat, Jahr; ⌘+ / ⌘- one view
+    /// finer/coarser (⌘= for US layouts); ⌃⌘S the sidebar.
     private var shortcuts: some View {
         Group {
             Button("Tag") { model.mode = .day }.keyboardShortcut(key("1"))
             Button("Woche") { model.mode = .week }.keyboardShortcut(key("2"))
             Button("Monat") { model.mode = .month }.keyboardShortcut(key("3"))
             Button("Jahr") { model.mode = .year }.keyboardShortcut(key("4"))
+            Button("Hineinzoomen") { zoom(.zoomIn, at: nil) }.keyboardShortcut(zoomPossible(.zoomIn) ? key("+") : nil)
+            Button("Hineinzoomen") { zoom(.zoomIn, at: nil) }.keyboardShortcut(zoomPossible(.zoomIn) ? key("=") : nil)
+            Button("Herauszoomen") { zoom(.zoomOut, at: nil) }.keyboardShortcut(zoomPossible(.zoomOut) ? key("-") : nil)
             Button("Schnell anlegen") { quickEntry = true }
                 .keyboardShortcut(navigationKeys && model.canWrite && !model.showsSamples ? KeyboardShortcut("n", modifiers: [.command, .option]) : nil)
             Button("Kalenderleiste") { sidebarWanted.toggle() }
@@ -703,9 +837,11 @@ struct CalendarNavFrame {
     var scale: CGFloat = 1
     var opacity: Double = 1
 
-    static func start(from old: CalendarNavKey?, to new: CalendarNavKey, reduced: Bool) -> CalendarNavFrame {
+    /// `zoom`: a pinch or ⌘+/⌘- – stronger, from the opened period (see `CalendarZoomMotion`).
+    static func start(from old: CalendarNavKey?, to new: CalendarNavKey, reduced: Bool, zoom: CalendarZoomMotion? = nil) -> CalendarNavFrame {
         guard let old, old != new else { return CalendarNavFrame() }
         if reduced { return CalendarNavFrame(offset: 0, scale: 1, opacity: 0.4) }
+        if let zoom, old.mode != new.mode { return CalendarNavFrame(offset: 0, scale: zoom.scale, opacity: 0.2) }
         if old.mode != new.mode {
             // Into a finer view the content grows toward you, out of it it settles back.
             return CalendarNavFrame(offset: 0, scale: new.depth < old.depth ? CalendarMotion.zoomIn : CalendarMotion.zoomOut, opacity: 0.25)
