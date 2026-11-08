@@ -529,6 +529,16 @@ final class LibraryModel: ObservableObject {
         }
     }
 
+    /// Today's index and the canonical size/CRC of every active notebook's
+    /// committed state, read off the UI actor exactly as a backup would archive
+    /// it; compared with a backup's contents (BACKUP-RESTORE-PLAN Phase 1).
+    /// Throws when a notebook of today's library is not readable.
+    func backupComparison() async throws -> (snapshot: LibrarySnapshot, fingerprints: [UUID: LibraryArchiveFileInfo]) {
+        let plan = try await store.backupPlan()
+        let fingerprints = await Task.detached(priority: .userInitiated) { plan.currentFingerprints() }.value
+        return (plan.snapshot, fingerprints)
+    }
+
     /// `<Titel>.noty` of the last committed revision for the share sheet,
     /// written and re-read off the UI actor (same archive as the editor's
     /// backup; the library title is the file's title). A notebook whose newest

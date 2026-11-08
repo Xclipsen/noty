@@ -33,6 +33,8 @@ struct ExternalBackupForm: View {
     @State private var restored = false
     @State private var confirmingRemoval = false
     @State private var confirmingDisable = false
+    @State private var browsing: BrowsedBackup?
+    struct BrowsedBackup: Identifiable { let name: String; var id: String { name } }
     var body: some View {
         Form {
             Section {
@@ -92,16 +94,20 @@ struct ExternalBackupForm: View {
                             }
                         }
                         HStack {
-                            Button("Als neuen Bereich wiederherstellen") { Task {
-                                guard let archive = await model.retrieve(name) else { return }
-                                defer { BackupScratch.remove(archive.url) }
-                                restored = await workspaces.restoreLibrary(archive.url)
-                                if !restored { model.error = workspaces.error ?? "Wiederherstellung fehlgeschlagen."; workspaces.error = nil }
-                            } }
-                            Button("Datei exportieren …") { Task {
-                                if let archive = await model.retrieve(name) { file = LibraryArchiveFile(url: archive.url); exporting = true }
-                            } }
-                        }.font(.caption)
+                            Button("Inhalt ansehen und Hefte zurückholen …") { browsing = BrowsedBackup(name: name) }
+                            Spacer()
+                            Menu("Mehr") {
+                                Button("Ganze Bibliothek als neuen Bereich …", systemImage: "square.stack") { Task {
+                                    guard let archive = await model.retrieve(name) else { return }
+                                    defer { BackupScratch.remove(archive.url) }
+                                    restored = await workspaces.restoreLibrary(archive.url)
+                                    if !restored { model.error = workspaces.error ?? "Wiederherstellung fehlgeschlagen."; workspaces.error = nil }
+                                } }
+                                Button("Datei exportieren …", systemImage: "square.and.arrow.up") { Task {
+                                    if let archive = await model.retrieve(name) { file = LibraryArchiveFile(url: archive.url); exporting = true }
+                                } }
+                            }
+                        }.font(.caption).buttonStyle(.borderless)
                     }.padding(.vertical, 4)
                 }
                 if model.history.isEmpty { Text("Noch keine Backups vom aktiven Ziel geladen.").foregroundStyle(.secondary) }
@@ -129,6 +135,9 @@ struct ExternalBackupForm: View {
         .alert("Backup", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
+        .sheet(item: $browsing) { backup in
+            BackupContentsView(name: backup.name, model: model, library: library)
+        }
         .alert("Als neuen Bereich wiederhergestellt", isPresented: $restored) {
             Button("OK", role: .cancel) { }
         } message: { Text(NotyText.restoredAreaMessage) }

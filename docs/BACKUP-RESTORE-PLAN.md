@@ -31,6 +31,8 @@ Ein Ort **„Wiederherstellen“**, an dem man einen Zeitpunkt wählt, sieht, wa
 
 ### Phase 1: Einzelne Hefte aus einem Backup zurückholen (größter Gewinn)
 
+**Stand 08.11.2026 auf `feat/wiederherstellen`: implementiert, Core-Tests, Host-Roundtrip und SDK-Build erfolgreich; nicht installiert, am iPad ungeprüft.** Details: [LIBRARY-BACKUP](LIBRARY-BACKUP.md), Ergänzung vom 08.11.2026. Abweichung vom Plan: Eine Vorschau der ersten Seite gibt es noch nicht (Ordnerpfad und Seitenzahl ja).
+
 - In „Ältere Backups“ öffnet ein Tipp auf einen Eintrag eine Detailansicht. Sie holt das Archiv, prüft es vollständig und zeigt:
   - die Hefte mit Ordnerpfad, Seitenzahl und Vorschau der ersten Seite,
   - einen Vergleich mit heute: **gelöscht seitdem**, **geändert seitdem**, **unverändert**, **nur heute vorhanden** (Vergleich über Dokument-ID und Revisions-Prüfsumme bzw. Inhalt),
