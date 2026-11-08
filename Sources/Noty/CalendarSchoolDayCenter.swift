@@ -101,7 +101,7 @@ final class CalendarSchoolDayCenter: ObservableObject {
             }
         }
         // Another day, another connection, switched off: gone at once.
-        for activity in activities where activity.attributes != attributes {
+        for activity in activities where activity.attributes != attributes && activity.attributes.connectionID != Self.demoConnection {
             await Self.end(activity.id, nil)
             forget(activity.id)
         }
@@ -170,6 +170,58 @@ final class CalendarSchoolDayCenter: ObservableObject {
         lastLessons = [attributes.day: school.visible]
         running = SchoolDayHeadlineText.text(state, calendar: calendar)
         scheduleTick(school.nextTransition(after: time))
+    }
+
+    // MARK: Test-Kachel (sample data, independent of the timetable)
+
+    /// Marks the sample tile: `apply` leaves it alone, nothing is stored.
+    nonisolated static let demoConnection = "demo"
+    @Published private(set) var demoRunning = false
+
+    /// Sample state around now: Mathematik runs (20 of 45 min), next Deutsch, Stunde 3/6.
+    private func demoState(changed: Bool) -> SchoolDayContentState {
+        let now = Int(Date().timeIntervalSince1970)
+        let start = now - 20 * 60, end = now + 25 * 60
+        let current = SchoolDayLesson(title: "Mathematik", room: changed ? "R 112" : "R 101", start: start, end: end,
+                                      note: changed ? "Raumwechsel" : nil, changed: changed)
+        let next = SchoolDayLesson(title: "Deutsch", room: "R 204", start: end + 15 * 60, end: end + 60 * 60,
+                                   note: "fällt aus", changed: true, cancelled: true)
+        return SchoolDayContentState(phase: .lesson, phaseStart: start, phaseEnd: end, current: current, next: next,
+                                     number: 3, count: 6, dayStart: now - 160 * 60, dayEnd: now + 180 * 60)
+    }
+
+    private var demoActivities: [Activity<SchoolDayAttributes>] {
+        Activity<SchoolDayAttributes>.activities.filter { $0.attributes.connectionID == Self.demoConnection }
+    }
+
+    func startDemo() {
+        Task {
+            for activity in demoActivities { await Self.end(activity.id, nil) }
+            let attributes = SchoolDayAttributes(connectionID: Self.demoConnection, day: "demo")
+            let content = ActivityContent(state: demoState(changed: false), staleDate: nil, relevanceScore: 100)
+            do {
+                _ = try Activity.request(attributes: attributes, content: content, pushType: nil)
+                demoRunning = true
+                lastError = nil
+            } catch {
+                lastError = "Test-Kachel nicht gestartet: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Like a real change during the day: the tile updates and wakes the screen.
+    func demoChange() {
+        guard let id = demoActivities.first?.id else { return }
+        let content = ActivityContent(state: demoState(changed: true), staleDate: nil, relevanceScore: 100)
+        let alert = AlertConfiguration(title: "Stundenplanänderung", body: "Mathematik jetzt in R 112 (statt R 101)", sound: .default)
+        Task { await Self.update(id, content, alert: alert) }
+    }
+
+    func endDemo() {
+        Task {
+            for activity in demoActivities { await Self.end(activity.id, nil) }
+            demoRunning = false
+        }
     }
 
     /// ActivityKit calls outside the main actor (an `Activity` is not
@@ -335,8 +387,14 @@ struct CalendarSchoolDaySection: View {
                 } else if center.enabled, let running = center.running {
                     Label("Läuft: \(running)", systemImage: "clock")
                 }
-                if center.enabled, let error = center.lastError {
+                if let error = center.lastError {
                     Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+                Button { center.startDemo() } label: { Label("Test-Kachel starten", systemImage: "play.rectangle") }
+                    .disabled(!center.systemAllowed)
+                if center.demoRunning {
+                    Button { center.demoChange() } label: { Label("Änderung simulieren", systemImage: "bell.badge") }
+                    Button(role: .destructive) { center.endDemo() } label: { Label("Test-Kachel beenden", systemImage: "stop.circle") }
                 }
             } footer: {
                 Text("An Tagen mit Unterricht zeigt eine Kachel auf dem Sperrbildschirm ab 30 Minuten vor der ersten Stunde die aktuelle Stunde mit Raum und Restzeit, Pausen und Freistunden, den Tagesfortschritt und die nächste Stunde mit Ausfall, Vertretung oder Raumwechsel. Nach der letzten Stunde verschwindet sie. Eine Änderung weckt den Bildschirm, außer in den Ruhezeiten. Vorerst aktualisiert sich die Kachel nur, wenn noty calendar läuft oder im Hintergrund abrufen darf; dazwischen läuft der Countdown weiter und die Kachel zeigt beim nächsten Stundenwechsel „Stand veraltet“. Vor iPadOS 26 startet sie erst, wenn du noty calendar an dem Morgen öffnest.")

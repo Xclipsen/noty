@@ -16,6 +16,8 @@
 # (docs/APP-SYNC.md); Info.plist `NotyChannel` sagt der App, welche sie ist.
 # Vierte App „noty calendar“ (NOTY_CHANNEL=calendar): Kalender-Feature, nur
 # von feat/kalender, eigene App-ID und Daten, spiegelt noty und noty dev.
+# NOTY_DRY_RUN=1: bauen, nachsignieren und prüfen wie sonst, dann vor dem
+# Veröffentlichen stoppen (kein Upload, kein Tag; Buildnummer nur gewarnt).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ENV_FILE="${OTA_ENV:-$HOME/workspace/noty/.tools/ota.env}"
@@ -60,7 +62,8 @@ SOURCE="$BRANCH · $COMMIT"; [ -z "$DIRTY" ] || SOURCE="$SOURCE · mit uncommitt
 NEXT="$(sed -n 's#.*<key>CFBundleVersion</key><string>\([0-9]*\)</string>.*#\1#p' Info.plist)"
 LAST="$( { if [ -d "$OTA_DIR" ]; then ls "$OTA_DIR" "$OTA_DIR-dev" "$OTA_DIR-ai" "$OTA_DIR-calendar" || true; else ssh "$OTA_HOST" "ls '$OTA_DIR' '$OTA_DIR-dev' '$OTA_DIR-ai' '$OTA_DIR-calendar' || true"; fi; } 2>/dev/null | sed -n 's/^Noty-\([0-9]*\)\.ipa$/\1/p' | sort -n | tail -1)"
 if [ -n "$LAST" ] && [ "$NEXT" -le "$LAST" ] && [ "${NOTY_SAME_BUILD:-}" != 1 ]; then
-  echo "Build $NEXT ist nicht größer als der zuletzt veröffentlichte Build $LAST; CFBundleVersion erhöhen." >&2; exit 1
+  if [ "${NOTY_DRY_RUN:-}" = 1 ]; then echo "Probelauf: Build $NEXT ist nicht größer als $LAST (würde sonst abbrechen)." >&2
+  else echo "Build $NEXT ist nicht größer als der zuletzt veröffentlichte Build $LAST; CFBundleVersion erhöhen." >&2; exit 1; fi
 fi
 INSTALLED_ID="XTL-BAFXLQ964V.XTL-BAFXLQ964V.$BASE_ID"
 ORIGINAL="$(mktemp)"; ORIGINAL_INFO="$(mktemp)"; ORIGINAL_ENTITLEMENTS="$(mktemp)"; ORIGINAL_WIDGET="$(mktemp)"
@@ -101,19 +104,21 @@ LOG="$(mktemp)"
 script -qec "xtool dev build --sign --ipa" "$LOG" >/dev/null
 grep -q 'COMMAND_EXIT_CODE="0"' "$LOG" || { tail -20 "$LOG"; exit 1; }
 restore; trap - EXIT
+# xtool 1.24 signiert Extensions mit den Entitlements der App (#131). Jede
+# PlugIns/*.appex bekommt hier eine Signatur mit eigenen, aus ihrem Profil
+# abgeleiteten Entitlements, danach wird die App neu versiegelt (rcodesign,
+# docs/LIVE-ACTIVITY-PLAN.md „Nachsignieren“). Ohne Extension tut es nichts.
+python3 -I scripts/resign_extensions.py xtool/Noty.ipa . || { echo "Nachsignieren der Extension fehlgeschlagen; nichts veröffentlicht." >&2; exit 1; }
 
 mkdir -p .tools
 # Prüft ID, Profil, Gerät, Ablauf und ob das Profil alle Entitlements der
-# App-Signatur erlaubt (sonst verweigert iOS die Installation). Jedes Problem
-# bricht ab, bevor etwas veröffentlicht wird. Bei noty calendar prüft es auch
+# App-Signatur erlaubt (sonst verweigert iOS die Installation), dazu die
+# Versiegelung (Seitenhashes, CodeResources). Jedes Problem bricht ab, bevor
+# etwas veröffentlicht wird. Bei noty calendar prüft es auch
 # PlugIns/NotyCalendarWidgets.appex (Signatur, Profil, ID-Präfix, Version,
-# Entitlements; docs/LIVE-ACTIVITY-PLAN.md). Solange xtool die Extension mit
-# den App-Entitlements signiert (#131), meldet es das als Problem; nur für den
-# bewussten Gerätetest von Schritt 0 lässt NOTY_ALLOW_APPEX_ENTITLEMENTS=1
-# genau diese Meldungen durch (alles andere bricht weiter ab).
+# Entitlements = eigenes Profil; docs/LIVE-ACTIVITY-PLAN.md).
 CHECK_STATUS=0
-APPEX_FLAG=""; [ "${NOTY_ALLOW_APPEX_ENTITLEMENTS:-}" = 1 ] && APPEX_FLAG="--allow-appex-entitlements"
-python3 -I scripts/ota_check.py xtool/Noty.ipa "$INSTALLED_ID" $APPEX_FLAG > .tools/ota-check.json || CHECK_STATUS=$?
+python3 -I scripts/ota_check.py xtool/Noty.ipa "$INSTALLED_ID" > .tools/ota-check.json || CHECK_STATUS=$?
 cat .tools/ota-check.json
 PROBLEMS="$(python3 -I -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["problems"]))' .tools/ota-check.json 2>/dev/null || echo unlesbar)"
 if [ "$CHECK_STATUS" -ne 0 ] || [ "$PROBLEMS" != 0 ]; then
@@ -122,6 +127,10 @@ if [ "$CHECK_STATUS" -ne 0 ] || [ "$PROBLEMS" != 0 ]; then
 fi
 BUILD="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["build"])')"
 SHORT="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["version"])')"
+if [ "${NOTY_DRY_RUN:-}" = 1 ]; then
+  echo "Probelauf: $APP_NAME Build $BUILD · $SOURCE gebaut und geprüft (xtool/Noty.ipa); nichts veröffentlicht."
+  exit 0
+fi
 
 STAGE="$(mktemp -d)"
 cat > "$STAGE/manifest.plist" <<PLIST
