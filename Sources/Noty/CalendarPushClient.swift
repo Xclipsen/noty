@@ -57,10 +57,19 @@ enum CalendarPush {
         return entitlements["aps-environment"] as? String
     }
 
+    /// Default zone of a WebUntis connection (`connect` creates them with it).
+    static let defaultTimeZone = CalendarDefaults.timeZoneIdentifier
+
     /// Time zone as the server accepts it (region identifiers or UTC).
     static func zone(_ zone: TimeZone) -> String {
         let id = zone.identifier
-        return id.count <= 64 && (id.contains("/") || id == "UTC") ? id : "Europe/Berlin"
+        return id.count <= 64 && (id.contains("/") || id == "UTC") ? id : defaultTimeZone
+    }
+
+    /// `connectionTimeZone`: the zone the lessons of the connection are in
+    /// (`CalendarConnectionRecord.timeZone`), Europe/Berlin when unusable.
+    static func connectionZone(_ connection: CalendarConnectionRecord?) -> String {
+        zone(connection.flatMap { TimeZone(identifier: $0.timeZone) } ?? CalendarDefaults.timeZone)
     }
 }
 
@@ -194,7 +203,14 @@ struct CalendarPushAPI: Sendable {
         let status: Int
         let code: String?
         let message: String
+        /// 429: seconds the server asks to wait (`Retry-After`).
+        var retryAfter: TimeInterval? = nil
         var errorDescription: String? { message }
+        /// The server itself says it does not know this device (401 with
+        /// `unauthorized` from noty-push): its data are gone there. Any other
+        /// 401 (e.g. from a proxy) proves nothing.
+        var deviceUnknown: Bool { status == 401 && code == "unauthorized" }
+        var rateLimited: Bool { status == 429 }
     }
 
     struct Status: Decodable, Sendable {
@@ -202,6 +218,9 @@ struct CalendarPushAPI: Sendable {
         let state: String
         let connectionID: String?
         let lastError: String?
+        /// Last (successful) WebUntis fetch of the server, Unix seconds.
+        let lastPoll: Double?
+        let lastSuccess: Double?
     }
     struct Registered: Decodable, Sendable { let deviceID: String; let deviceSecret: String; let status: Status }
     struct StatusBody: Decodable, Sendable { let status: Status }
@@ -224,16 +243,19 @@ struct CalendarPushAPI: Sendable {
     }
     struct Register: Encodable, Sendable {
         let deviceToken: String, apnsEnvironment: String, bundleID: String, connectionID: String, timeZone: String, consent: String
+        /// Zone of the connection's lessons (the server's default is Europe/Berlin).
+        let connectionTimeZone: String
         let setup: Setup
         let settings: CalendarNotificationSettings
     }
     struct Update: Encodable, Sendable {
         var deviceToken: String?, apnsEnvironment: String?, bundleID: String?, connectionID: String?, timeZone: String?, consent: String?
+        var connectionTimeZone: String?
         var setup: Setup?
         var settings: CalendarNotificationSettings?
         var isEmpty: Bool {
             deviceToken == nil && apnsEnvironment == nil && bundleID == nil && connectionID == nil && timeZone == nil && setup == nil
-                && settings == nil
+                && settings == nil && connectionTimeZone == nil
         }
     }
 
@@ -282,6 +304,9 @@ struct CalendarPushAPI: Sendable {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
+        // Only a registration or a new Freigabe waits for the server's WebUntis test; the rest answers at once
+        // (a background refresh must not spend its time on a server that does not answer).
+        if method == "GET" || method == "DELETE" { request.timeoutInterval = 20 }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             request.httpBody = body
@@ -292,8 +317,19 @@ struct CalendarPushAPI: Sendable {
         do { (data, response) = try await Self.session.data(for: request) }
         catch { throw Failure(status: 0, code: "network", message: Self.networkMessage(error)) }
         guard let http = response as? HTTPURLResponse else { throw Failure(status: 0, code: nil, message: "Keine Antwort vom Mitteilungsdienst.") }
-        guard http.statusCode == expect else { throw Self.failure(http.statusCode, data) }
+        guard http.statusCode == expect else {
+            var failure = Self.failure(http.statusCode, data)
+            if failure.rateLimited { failure.retryAfter = Self.retryAfter(http.value(forHTTPHeaderField: "Retry-After")) }
+            throw failure
+        }
         return data
+    }
+
+    /// `Retry-After` in seconds (an HTTP date is not sent by noty-push); 60 s
+    /// without a usable value, at most 6 h.
+    static func retryAfter(_ value: String?) -> TimeInterval {
+        guard let value, let seconds = Int(value.trimmingCharacters(in: .whitespaces)), seconds >= 0 else { return 60 }
+        return TimeInterval(min(seconds, 6 * 3600))
     }
 
     private struct ErrorBody: Decodable { let error: String; let message: String }
@@ -304,8 +340,13 @@ struct CalendarPushAPI: Sendable {
         switch (status, body?.error) {
         case (403, "limit_reached"):
             return Failure(status: status, code: body?.error, message: "Mitteilungsdienst voll: Der Server nimmt keine weiteren Geräte an.")
-        case (401, _):
+        case (401, "unauthorized"):
             return Failure(status: status, code: "unauthorized", message: "Der Mitteilungsdienst kennt dieses Gerät nicht mehr.")
+        case (401, _):
+            return Failure(status: status, code: nil, message: "Der Mitteilungsdienst hat die Anfrage nicht angenommen (HTTP 401).")
+        case (429, _):
+            return Failure(status: status, code: "rate_limited",
+                           message: body?.message ?? "Der Mitteilungsdienst ist gerade ausgelastet. noty versucht es später erneut.")
         case (_, .some):
             return Failure(status: status, code: body?.error, message: body?.message ?? "Fehler des Mitteilungsdienstes (HTTP \(status)).")
         default:
@@ -342,6 +383,16 @@ final class CalendarPushClient: ObservableObject {
     private(set) var token: String?
     private var queue: Task<Void, Never>?
     private var lastFetch: Date?
+    /// `status.lastSuccess` of the server's last answer (this launch only):
+    /// when the server itself last fetched the timetable successfully.
+    private var serverLastSuccess: Date?
+    /// The server asked to wait (429 with `Retry-After`): no request before.
+    private var blockedUntil: Date?
+    /// A registration whose secret the keychain refused and whose deletion
+    /// failed: deleted again at the next sync of this launch.
+    private var orphan: CalendarPushKeychain.Credentials?
+    /// Why the last `DELETE` did not go through (for the sentence in the sheet).
+    private var lastDeleteError: Error?
 
     // MARK: Live Activity „Schultag“ (docs/LIVE-ACTIVITY-PLAN.md, Schritt 2)
 
@@ -352,15 +403,19 @@ final class CalendarPushClient: ObservableObject {
     /// und sendet an Topic `<Bundle-ID>.push-type.liveactivity` mit dem
     /// content-state aus `SchoolDayContentState` (JSON-Vertrag im Plan).
     struct LiveActivityTokens: Equatable, Sendable {
+        /// The update token of one running tile.
+        struct Running: Equatable, Sendable {
+            /// „YYYY-MM-DD“ (`SchoolDayAttributes.day`).
+            var day: String
+            var token: String
+        }
         /// Push-to-start token (iPadOS 17.2+), starts a tile without noty running.
         var startToken: String?
-        /// Activity id → (day „YYYY-MM-DD“, update token) of running tiles.
-        var activities: [String: (day: String, token: String)] = [:]
-        static func == (a: Self, b: Self) -> Bool {
-            a.startToken == b.startToken && a.activities.mapValues { "\($0.day)|\($0.token)" } == b.activities.mapValues { "\($0.day)|\($0.token)" }
-        }
+        /// Activity id → its day and update token.
+        var activities: [String: Running] = [:]
     }
-    @Published private(set) var liveActivityTokens = LiveActivityTokens()
+    /// Nothing shows these (no `@Published`); Schritt 2 reads them.
+    private(set) var liveActivityTokens = LiveActivityTokens()
 
     func receivedLiveActivityStartToken(_ token: String) {
         liveActivityTokens.startToken = token
@@ -368,7 +423,7 @@ final class CalendarPushClient: ObservableObject {
     }
 
     func receivedLiveActivityToken(_ token: String, activity: String, day: String) {
-        liveActivityTokens.activities[activity] = (day, token)
+        liveActivityTokens.activities[activity] = LiveActivityTokens.Running(day: day, token: token)
         // TODO Schritt 2: an noty-push melden; ein ungültiges Token verwirft nur diese Activity.
     }
 
@@ -428,12 +483,35 @@ final class CalendarPushClient: ObservableObject {
     /// Push is in charge of the change notifications of `connection`: the
     /// app keeps its own findings in the bell only. Any problem (no answer,
     /// Untis access or token paused, other connection) → local notifications.
+    /// Before the app announces changes it renews an old contact
+    /// (`refreshBeforeLocalChanges`), so the last answer is current; the
+    /// server's own activity is its last successful WebUntis fetch
+    /// (`status.lastSuccess`): a server that has not fetched for 36 h sends
+    /// nothing either.
     func isActive(for connection: UUID?) -> Bool {
         guard isAvailable, let connection, state.wanted == true, state.registered, !state.pendingDelete,
               state.serverConnectionID == connection, state.serverState == "active", let contact = state.lastContact,
               Date().timeIntervalSince(contact) < 36 * 3600 else { return false }
         if let failure = state.lastFailure, failure >= contact { return false }
+        if let success = serverLastSuccess, Date().timeIntervalSince(success) >= 36 * 3600 { return false }
         return true
+    }
+
+    private var isBlocked: Bool { blockedUntil.map { $0 > Date() } ?? false }
+
+    /// Before `recordChanges` decides about local notifications: a contact
+    /// older than 30 minutes (or none in this launch) is renewed with one
+    /// `GET /v1/changes` – the server's history then is in the bell (the
+    /// same changes are not announced twice) and `isActive` reflects the
+    /// server now. Only for the connection push is meant for.
+    func refreshBeforeLocalChanges(_ model: CalendarModel) async {
+        guard isAvailable, let base = CalendarPush.baseURL, state.wanted == true, state.registered, !state.pendingDelete,
+              let target = state.connectionID, model.connection?.id == target, UIApplication.shared.isProtectedDataAvailable else { return }
+        if let contact = state.lastContact, Date().timeIntervalSince(contact) < 30 * 60, serverLastSuccess != nil { return }
+        await serial {
+            guard !self.isBlocked, self.state.registered, let credentials = CalendarPushKeychain.read().credentials else { return }
+            await self.fetchChanges(api: CalendarPushAPI(base: base), credentials: credentials, model: model, target: target)
+        }
     }
 
     /// Whether to offer the consent after connecting WebUntis.
@@ -495,6 +573,14 @@ final class CalendarPushClient: ObservableObject {
         }
     }
 
+    /// An area was deleted (Bereiche): when push belongs to its connection,
+    /// the server's copy of the Freigabe goes as well (like „Trennen“).
+    func areaRemoved(namespace: String) async {
+        guard isAvailable, state.namespace == namespace else { return }
+        change { $0.wanted = nil; $0.connectionID = nil; $0.namespace = nil }
+        await serial { await self.signOff() }
+    }
+
     // MARK: Reconciling
 
     /// Brings the server in line with the wish of the user (and of `model`,
@@ -507,6 +593,9 @@ final class CalendarPushClient: ObservableObject {
         guard case .available(let environment) = availability, let base = CalendarPush.baseURL,
               UIApplication.shared.isProtectedDataAvailable else { return }
         let api = CalendarPushAPI(base: base)
+        // The server asked to wait (429): nothing before that moment, also not on „Erneut versuchen“.
+        guard !isBlocked else { return }
+        if let orphan, await deleteOnServer(orphan, api: api) { self.orphan = nil }
         if state.pendingDelete { guard await signOff() else { return } }
         guard state.wanted == true, state.consent == CalendarPush.consentVersion, let target = state.connectionID else { return }
         let keychain = CalendarPushKeychain.read()
@@ -529,11 +618,9 @@ final class CalendarPushClient: ObservableObject {
         let zone = CalendarPush.zone(model.calendar.timeZone)
         guard let credentials = keychain.credentials, state.registered else {
             // A secret without known registration (e.g. app reinstalled: the keychain outlives it)
-            // is signed off first, so no stale device keeps being polled on the server.
-            if let stale = keychain.credentials {
-                try? await api.delete(credentials: stale)
-                try? CalendarPushKeychain.delete()
-            }
+            // is signed off first, so no stale device keeps being polled on the server. The
+            // secret goes only when the server confirmed; otherwise it stays (pendingDelete).
+            if keychain.credentials != nil { guard await signOff() else { return } }
             await register(api: api, model: model, target: target, token: token, environment: environment, zone: zone, force: force)
             return
         }
@@ -549,6 +636,7 @@ final class CalendarPushClient: ObservableObject {
             // New Freigabe (or the same one that works again in the app): sent with the consent.
             guard let setup = WebUntisKeychain.load(target) else { return }
             body.connectionID = target.uuidString
+            body.connectionTimeZone = CalendarPush.connectionZone(model.connection)
             body.setup = CalendarPushAPI.Setup(setup)
             body.consent = CalendarPush.consentVersion
             if retryAuth { change { $0.lastAuthRetry = Date() } }
@@ -577,13 +665,15 @@ final class CalendarPushClient: ObservableObject {
         change { $0.lastRegisterAttempt = Date() }
         let body = CalendarPushAPI.Register(deviceToken: token, apnsEnvironment: environment, bundleID: bundleID,
                                             connectionID: target.uuidString, timeZone: zone, consent: CalendarPush.consentVersion,
+                                            connectionTimeZone: CalendarPush.connectionZone(model.connection),
                                             setup: CalendarPushAPI.Setup(setup), settings: model.notificationSettings)
         do {
             let result = try await api.register(body)
             let credentials = CalendarPushKeychain.Credentials(deviceID: result.deviceID, secret: result.deviceSecret)
             do { try CalendarPushKeychain.save(credentials) } catch {
-                // Without the secret the device could never be signed off: delete it right away.
-                try? await api.delete(credentials: credentials)
+                // Without the secret the device could never be signed off: delete it right away
+                // (or, if that fails, at the next sync of this launch).
+                if !(await deleteOnServer(credentials, api: api)) { orphan = credentials }
                 change { $0.lastError = "Der Schlüsselbund hat die Anmeldung nicht angenommen; nichts bleibt auf dem Server."; $0.lastFailure = Date() }
                 return
             }
@@ -600,7 +690,7 @@ final class CalendarPushClient: ObservableObject {
             apply(result.status)
             await fetchChanges(api: api, credentials: credentials, model: model, target: target)
         } catch {
-            change { $0.lastError = Self.text(error); $0.lastFailure = Date() }
+            fail(error)
         }
     }
 
@@ -620,13 +710,13 @@ final class CalendarPushClient: ObservableObject {
             }
             apply(status)
             return .ok
-        } catch let failure as CalendarPushAPI.Failure where failure.status == 401 {
+        } catch let failure as CalendarPushAPI.Failure where failure.deviceUnknown {
             // The server deleted the device (30 days paused, or reset): register anew.
             try? CalendarPushKeychain.delete()
             change { $0.clearServer() }
             return .unknownDevice
         } catch {
-            change { $0.lastError = Self.text(error); $0.lastFailure = Date() }
+            fail(error)
             return .failed
         }
     }
@@ -643,15 +733,16 @@ final class CalendarPushClient: ObservableObject {
             // A little overlap: entries found again are known by their id.
             let next = max(0, Int(result.serverTime.rounded(.down)) - 120)
             change { $0.since = next; $0.lastContact = Date(); $0.lastError = nil; $0.lastFailure = nil }
-        } catch let failure as CalendarPushAPI.Failure where failure.status == 401 {
+        } catch let failure as CalendarPushAPI.Failure where failure.deviceUnknown {
             try? CalendarPushKeychain.delete()
             change { $0.clearServer() }
         } catch {
-            change { $0.lastError = Self.text(error); $0.lastFailure = Date() }
+            fail(error)
         }
     }
 
     private func apply(_ status: CalendarPushAPI.Status) {
+        serverLastSuccess = status.lastSuccess.flatMap { $0.isFinite ? Date(timeIntervalSince1970: $0) : nil }
         change {
             $0.serverState = status.state
             $0.serverError = status.lastError
@@ -659,9 +750,36 @@ final class CalendarPushClient: ObservableObject {
         }
     }
 
-    /// `DELETE /v1/device`; the secret goes only after 204 (or 401: already
-    /// gone). Offline: remembered and repeated at the next start. True when
-    /// nothing is left on the server.
+    /// Records a failed request; a 429 also blocks requests for `Retry-After`.
+    private func fail(_ error: Error) {
+        if let failure = error as? CalendarPushAPI.Failure, failure.rateLimited {
+            blockedUntil = Date().addingTimeInterval(failure.retryAfter ?? 60)
+        }
+        change { $0.lastError = Self.text(error); $0.lastFailure = Date() }
+    }
+
+    /// `DELETE /v1/device`: true when nothing is left on the server (204, or
+    /// a 401 by which the server confirms it does not know the device). A
+    /// 429, another 401 or a network error leave it there.
+    private func deleteOnServer(_ credentials: CalendarPushKeychain.Credentials, api: CalendarPushAPI) async -> Bool {
+        do {
+            try await api.delete(credentials: credentials)
+            return true
+        } catch let failure as CalendarPushAPI.Failure where failure.deviceUnknown {
+            return true
+        } catch {
+            if let failure = error as? CalendarPushAPI.Failure, failure.rateLimited {
+                blockedUntil = Date().addingTimeInterval(failure.retryAfter ?? 60)
+            }
+            lastDeleteError = error
+            return false
+        }
+    }
+
+    /// `DELETE /v1/device`; the secret goes only after 204 (or a confirmed
+    /// 401: already gone). Offline, rate-limited or any other answer:
+    /// remembered and repeated at the next start/sync. True when nothing is
+    /// left on the server.
     @discardableResult
     private func signOff() async -> Bool {
         let keychain = CalendarPushKeychain.read()
@@ -671,14 +789,11 @@ final class CalendarPushClient: ObservableObject {
             return true
         }
         change { $0.pendingDelete = true }
-        guard let base = CalendarPush.baseURL else { return false }
-        do {
-            try await CalendarPushAPI(base: base).delete(credentials: credentials)
-        } catch let failure as CalendarPushAPI.Failure where failure.status == 401 {
-            // Unknown to the server: nothing left there.
-        } catch {
+        guard let base = CalendarPush.baseURL, !isBlocked else { return false }
+        guard await deleteOnServer(credentials, api: CalendarPushAPI(base: base)) else {
+            let reason = lastDeleteError.map(Self.text) ?? "keine Antwort"
             change {
-                $0.lastError = "Abmeldung beim Mitteilungsdienst noch nicht möglich (\(Self.text(error))). noty wiederholt sie beim nächsten Start."
+                $0.lastError = "Abmeldung beim Mitteilungsdienst noch nicht möglich (\(reason)). noty wiederholt sie beim nächsten Start."
                 $0.lastFailure = Date()
             }
             return false

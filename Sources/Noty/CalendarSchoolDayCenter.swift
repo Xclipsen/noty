@@ -13,9 +13,16 @@ import NotyCalendarShared
 ///    state of today is computed (`CalendarSchoolDay`, Core) and handed to
 ///    ActivityKit: started from 30 minutes before the first lesson that takes
 ///    place (iPadOS 26+: scheduled ahead with `request(…, start:)`; before
-///    that only while noty runs in the foreground), updated at changes, a
-///    real timetable change with an alert outside the quiet hours, restarted
-///    before the 8-h limit and ended right after the last lesson.
+///    that only while noty runs in the foreground), updated at changes,
+///    restarted before the 8-h limit (the new tile first, then the old one
+///    goes) and ended right after the last lesson. One run at a time
+///    (`serial`): overlapping updates never start a second tile.
+///  - Timetable changes of the tile's day (`announce`, from `recordChanges`):
+///    when the app itself would post the change notification (push service
+///    not in charge, outside the quiet hours, changes switched on), the tile
+///    update carries the alert instead (wakes the screen) and the app posts
+///    no second notification for those changes. While the push service
+///    notifies, the tile updates silently.
 ///  - The derived widget file (today and tomorrow) is written into the App
 ///    Group and the widget timeline reloaded when its lessons changed.
 ///  - Push tokens (push-to-start and per activity) are collected for the push
@@ -47,13 +54,16 @@ final class CalendarSchoolDayCenter: ObservableObject {
     /// What the tile shows now (sheet: „Läuft: …“), nil without activity.
     @Published private(set) var running: String?
 
-    private var lastLessons: [String: [SchoolDayLesson]] = [:]
     private var lastWidget: SchoolDayWidgetFile?
     private var tick: Task<Void, Never>?
     private var observed = Set<String>()
     private var startTokenObserved = false
+    /// ActivityKit work, one run after the other.
+    private var queue: Task<Void, Never>?
+    /// Bumped by every `update`: a queued run that a newer one follows is skipped.
+    private var requested = 0
 
-    private init() {}
+    private init() { refreshDemoRunning() }
 
     func setEnabled(_ value: Bool, model: CalendarModel) {
         enabled = value
@@ -67,6 +77,7 @@ final class CalendarSchoolDayCenter: ObservableObject {
     func update(_ model: CalendarModel) {
         guard supported, model.loaded, CalendarNotificationHub.shared.model === model else { return }
         observeStartToken()
+        refreshDemoRunning()
         let now = Date()
         let calendar = model.calendar
         let snapshot = model.credentialsMissing ? nil : model.snapshot
@@ -88,18 +99,44 @@ final class CalendarSchoolDayCenter: ObservableObject {
             target.map { SchoolDayAttributes(connectionID: id.uuidString, day: $0.day.description) }
         }
         let settings = model.notificationSettings
-        Task { await self.apply(attributes: attributes, school: target?.school, settings: settings, calendar: calendar, now: now) }
+        let school = target?.school
+        requested += 1
+        let request = requested
+        Task {
+            await self.serial {
+                // A newer update is queued behind this one: it alone runs.
+                guard request == self.requested else { return }
+                await self.apply(attributes: attributes, school: school, settings: settings, calendar: calendar)
+            }
+        }
     }
 
-    private func apply(attributes: SchoolDayAttributes?, school: CalendarSchoolDay?, settings: CalendarNotificationSettings,
-                       calendar: Calendar, now: Date) async {
-        let time = Int(now.timeIntervalSince1970)
-        let activities = Activity<SchoolDayAttributes>.activities.filter { activity in
+    /// One ActivityKit run at a time, in call order (`apply`, `announce`,
+    /// the test tile): two overlapping runs could each request a tile.
+    private func serial<T: Sendable>(_ work: @escaping @MainActor () async -> T) async -> T {
+        let previous = queue
+        let task = Task { @MainActor () -> T in
+            await previous?.value
+            return await work()
+        }
+        queue = Task { @MainActor in _ = await task.value }
+        return await task.value
+    }
+
+    /// Activities that still run (also scheduled and stale ones).
+    private static func live() -> [Activity<SchoolDayAttributes>] {
+        Activity<SchoolDayAttributes>.activities.filter { activity in
             switch activity.activityState {
             case .ended, .dismissed: false
             default: true
             }
         }
+    }
+
+    private func apply(attributes: SchoolDayAttributes?, school: CalendarSchoolDay?, settings: CalendarNotificationSettings,
+                       calendar: Calendar) async {
+        let time = Int(Date().timeIntervalSince1970)
+        let activities = Self.live()
         // Another day, another connection, switched off: gone at once.
         for activity in activities where activity.attributes != attributes && activity.attributes.connectionID != Self.demoConnection {
             await Self.end(activity.id, nil)
@@ -108,7 +145,6 @@ final class CalendarSchoolDayCenter: ObservableObject {
         guard let attributes, let school else { running = nil; scheduleTick(nil); return }
         let plan = school.plan
         let mine = activities.filter { $0.attributes == attributes }
-        let segment = plan.restarts.filter { $0 <= time }.count
 
         if time < plan.start {
             // Before the day: iPadOS 26 can start it on its own; earlier versions wait for noty.
@@ -135,47 +171,87 @@ final class CalendarSchoolDayCenter: ObservableObject {
             scheduleTick(nil)
             return
         }
-        let content = ActivityContent(state: state, staleDate: school.nextTransition(after: time).map { SchoolDayText.date($0 + 60) },
-                                      relevanceScore: 100)
-        let change = changeText(old: lastLessons[attributes.day], new: school.visible, calendar: calendar)
-        var current: Activity<SchoolDayAttributes>?
-        for activity in mine {
-            // Restart before the 8-h limit: the old one goes, a new one follows below.
-            if (segments[activity.id] ?? 0) < segment || current != nil {
-                await Self.end(activity.id, ActivityContent(state: state, staleDate: nil))
-                forget(activity.id)
-            } else {
-                current = activity
-            }
-        }
-        if let current {
-            if current.content.state != state || change != nil {
-                let alert = change.flatMap { text in
-                    settings.isQuiet(now, calendar: calendar) ? nil
-                        : AlertConfiguration(title: "Stundenplanänderung", body: LocalizedStringResource(stringLiteral: text), sound: .default)
-                }
-                await Self.update(current.id, content, alert: alert)
-            }
-        } else {
+        let content = Self.content(school, at: time)
+        // 8-h limit: from each restart moment on, the tile belongs to the next segment.
+        let segment = plan.restarts.filter { $0 <= time }.count
+        let known = segments
+        var current = mine.last { (known[$0.id] ?? 0) >= segment }
+        var started = false
+        if current == nil {
             do {
                 let activity = try Activity.request(attributes: attributes, content: content, pushType: .token)
                 remember(activity.id, segment: segment)
                 observe(activity)
+                current = activity
+                started = true
                 lastError = nil
             } catch {
                 // Typically: noty is not in the foreground (iPadOS starts activities only then) or they are switched off.
                 lastError = "Kachel nicht gestartet: \(error.localizedDescription)"
             }
         }
-        lastLessons = [attributes.day: school.visible]
-        running = SchoolDayHeadlineText.text(state, calendar: calendar)
-        scheduleTick(school.nextTransition(after: time))
+        // Only now the older tiles go: the new one is already there – or none
+        // could be started, then the newest old one stays (and is updated)
+        // until the next attempt, instead of no tile at all.
+        let kept = current ?? mine.last
+        for activity in mine where activity.id != kept?.id {
+            await Self.end(activity.id, ActivityContent(state: state, staleDate: nil))
+            forget(activity.id)
+        }
+        if let kept, !started, kept.content.state != state || kept.content.staleDate != content.staleDate {
+            await Self.update(kept.id, content, alert: nil)
+        }
+        running = kept == nil ? nil : SchoolDayText.headline(state, calendar: calendar, detailed: true)
+        // While noty runs: on time at the next phase change and at the next restart moment.
+        let restart = plan.restarts.first { $0 > time }
+        scheduleTick([school.nextTransition(after: time), restart].compactMap { $0 }.min())
+    }
+
+    /// The tile's content at `time`, outdated („Stand veraltet“) a minute after the next phase change.
+    private static func content(_ school: CalendarSchoolDay, at time: Int) -> ActivityContent<SchoolDayContentState> {
+        ActivityContent(state: school.state(at: time), staleDate: school.nextTransition(after: time).map { SchoolDayText.date($0 + 60) },
+                        relevanceScore: 100)
+    }
+
+    // MARK: Changes of the day
+
+    /// Announces timetable changes through the running tile of their day:
+    /// one update with the new state and an alert (title/text as the change
+    /// notification would have them, `CalendarLessonChange` from Core). Only
+    /// for a tile that runs now for the shown connection; returns the ids of
+    /// the changes it announced – the caller posts no notification for them.
+    /// The caller decides whether an alert is due at all (changes on, outside
+    /// the quiet hours, push service not in charge: `recordChanges`).
+    func announce(_ changes: [CalendarLessonChange], model: CalendarModel) async -> Set<String> {
+        guard supported, enabled, !changes.isEmpty, model.loaded, CalendarNotificationHub.shared.model === model,
+              let connection = model.connection?.id, !model.credentialsMissing, let snapshot = model.snapshot,
+              snapshot.connection == connection else { return [] }
+        let calendar = model.calendar
+        let ids: [String] = await serial {
+            let time = Int(Date().timeIntervalSince1970)
+            var announced: [String] = []
+            var days = Set<String>()
+            for activity in Self.live() where activity.attributes.connectionID == connection.uuidString && activity.activityState == .active {
+                guard days.insert(activity.attributes.day).inserted, let day = CivilDate(activity.attributes.day) else { continue }
+                let mine = changes.filter { $0.lesson.date == day }
+                guard !mine.isEmpty, let lessons = CalendarSchoolDay.lessons(snapshot: snapshot, day: day),
+                      let school = CalendarSchoolDay(lessons: lessons), time >= school.plan.start, time < school.plan.end else { continue }
+                let text = CalendarLessonChange.summary(mine, calendar: calendar)
+                let alert = AlertConfiguration(title: LocalizedStringResource(stringLiteral: text.title),
+                                               body: LocalizedStringResource(stringLiteral: text.body), sound: .default)
+                await Self.update(activity.id, Self.content(school, at: time), alert: alert)
+                announced += mine.map(\.id)
+            }
+            return announced
+        }
+        return Set(ids)
     }
 
     // MARK: Test-Kachel (sample data, independent of the timetable)
 
     /// Marks the sample tile: `apply` leaves it alone, nothing is stored.
     nonisolated static let demoConnection = "demo"
+    /// A test tile runs: read from ActivityKit (also after a restart of noty), not remembered.
     @Published private(set) var demoRunning = false
 
     /// Sample state around now: Mathematik runs (20 of 45 min), next Deutsch, Stunde 3/6.
@@ -191,36 +267,49 @@ final class CalendarSchoolDayCenter: ObservableObject {
     }
 
     private var demoActivities: [Activity<SchoolDayAttributes>] {
-        Activity<SchoolDayAttributes>.activities.filter { $0.attributes.connectionID == Self.demoConnection }
+        Self.live().filter { $0.attributes.connectionID == Self.demoConnection }
+    }
+
+    private func refreshDemoRunning() {
+        let value = supported && !demoActivities.isEmpty
+        if demoRunning != value { demoRunning = value }
     }
 
     func startDemo() {
         Task {
-            for activity in demoActivities { await Self.end(activity.id, nil) }
-            let attributes = SchoolDayAttributes(connectionID: Self.demoConnection, day: "demo")
-            let content = ActivityContent(state: demoState(changed: false), staleDate: nil, relevanceScore: 100)
-            do {
-                _ = try Activity.request(attributes: attributes, content: content, pushType: nil)
-                demoRunning = true
-                lastError = nil
-            } catch {
-                lastError = "Test-Kachel nicht gestartet: \(error.localizedDescription)"
+            await serial {
+                for activity in self.demoActivities { await Self.end(activity.id, nil) }
+                let attributes = SchoolDayAttributes(connectionID: Self.demoConnection, day: "demo")
+                let content = ActivityContent(state: self.demoState(changed: false), staleDate: nil, relevanceScore: 100)
+                do {
+                    _ = try Activity.request(attributes: attributes, content: content, pushType: nil)
+                    self.lastError = nil
+                } catch {
+                    self.lastError = "Test-Kachel nicht gestartet: \(error.localizedDescription)"
+                }
+                self.refreshDemoRunning()
             }
         }
     }
 
     /// Like a real change during the day: the tile updates and wakes the screen.
     func demoChange() {
-        guard let id = demoActivities.first?.id else { return }
         let content = ActivityContent(state: demoState(changed: true), staleDate: nil, relevanceScore: 100)
-        let alert = AlertConfiguration(title: "Stundenplanänderung", body: "Mathematik jetzt in R 112 (statt R 101)", sound: .default)
-        Task { await Self.update(id, content, alert: alert) }
+        Task {
+            await serial {
+                guard let id = self.demoActivities.first?.id else { self.refreshDemoRunning(); return }
+                let alert = AlertConfiguration(title: "Stundenplanänderung", body: "Mathematik jetzt in R 112 (statt R 101)", sound: .default)
+                await Self.update(id, content, alert: alert)
+            }
+        }
     }
 
     func endDemo() {
         Task {
-            for activity in demoActivities { await Self.end(activity.id, nil) }
-            demoRunning = false
+            await serial {
+                for activity in self.demoActivities { await Self.end(activity.id, nil) }
+                self.refreshDemoRunning()
+            }
         }
     }
 
@@ -260,7 +349,7 @@ final class CalendarSchoolDayCenter: ObservableObject {
         }
     }
 
-    /// While noty runs, the next phase change updates the tile on time.
+    /// While noty runs, the next phase change (or restart moment) updates the tile on time.
     private func scheduleTick(_ time: Int?) {
         tick?.cancel()
         guard let time else { return }
@@ -271,18 +360,6 @@ final class CalendarSchoolDayCenter: ObservableObject {
             guard let self, let model = CalendarNotificationHub.shared.model else { return }
             self.update(model)
         }
-    }
-
-    /// A real change of the day's lessons (not a phase change): text of the
-    /// first changed lesson, nil when nothing changed or nothing is known yet.
-    private func changeText(old: [SchoolDayLesson]?, new: [SchoolDayLesson], calendar: Calendar) -> String? {
-        guard let old else { return nil }
-        func key(_ lesson: SchoolDayLesson) -> String {
-            "\(lesson.start)|\(lesson.end)|\(lesson.title)|\(lesson.room ?? "")|\(lesson.note ?? "")|\(lesson.cancelled)"
-        }
-        let before = Set(old.map(key))
-        guard let lesson = new.first(where: { !before.contains(key($0)) }) ?? (Set(new.map(key)) == before ? nil : new.first) else { return nil }
-        return "\(SchoolDayText.clock(lesson.start, calendar: calendar)) \(SchoolDayText.line(lesson))" + (lesson.note.map { ": \($0)" } ?? "")
     }
 
     // MARK: Widget file
@@ -352,19 +429,6 @@ final class CalendarSchoolDayCenter: ObservableObject {
     }
 }
 
-/// The sheet's „Läuft: …“ line (the extension has its own copy of the headline).
-enum SchoolDayHeadlineText {
-    static func text(_ state: SchoolDayContentState, calendar: Calendar) -> String {
-        switch state.phase {
-        case .before: "Gleich: " + (state.next.map(SchoolDayText.line) ?? "Unterricht")
-        case .lesson: (state.current.map(SchoolDayText.line) ?? "Unterricht") + " · " + SchoolDayText.progress(state)
-        case .pause: "Pause bis \(SchoolDayText.clock(state.phaseEnd, calendar: calendar))"
-        case .free: "Freistunde bis \(SchoolDayText.clock(state.phaseEnd, calendar: calendar))"
-        case .done: "Schultag vorbei"
-        }
-    }
-}
-
 /// Blatt „Benachrichtigungen“: „Schultag auf dem Sperrbildschirm“ (only in noty calendar).
 struct CalendarSchoolDaySection: View {
     @ObservedObject var model: CalendarModel
@@ -397,7 +461,7 @@ struct CalendarSchoolDaySection: View {
                     Button(role: .destructive) { center.endDemo() } label: { Label("Test-Kachel beenden", systemImage: "stop.circle") }
                 }
             } footer: {
-                Text("An Tagen mit Unterricht zeigt eine Kachel auf dem Sperrbildschirm ab 30 Minuten vor der ersten Stunde die aktuelle Stunde mit Raum und Restzeit, Pausen und Freistunden, den Tagesfortschritt und die nächste Stunde mit Ausfall, Vertretung oder Raumwechsel. Nach der letzten Stunde verschwindet sie. Eine Änderung weckt den Bildschirm, außer in den Ruhezeiten. Vorerst aktualisiert sich die Kachel nur, wenn noty calendar läuft oder im Hintergrund abrufen darf; dazwischen läuft der Countdown weiter und die Kachel zeigt beim nächsten Stundenwechsel „Stand veraltet“. Vor iPadOS 26 startet sie erst, wenn du noty calendar an dem Morgen öffnest.")
+                Text("An Tagen mit Unterricht zeigt eine Kachel auf dem Sperrbildschirm ab 30 Minuten vor der ersten Stunde die aktuelle Stunde mit Raum und Restzeit, Pausen und Freistunden, den Tagesfortschritt und die nächste Stunde mit Ausfall, Vertretung oder Raumwechsel. Nach der letzten Stunde verschwindet sie. Eine Stundenplanänderung des Tages meldet die Kachel selbst und weckt den Bildschirm (dann ohne zweite Mitteilung), außer in den Ruhezeiten oder wenn „Stundenplanänderungen“ aus ist; schickt der Mitteilungsdienst die Änderungen, aktualisiert sich die Kachel still. Vorerst aktualisiert sich die Kachel nur, wenn noty calendar läuft oder im Hintergrund abrufen darf; dazwischen läuft der Countdown weiter und die Kachel zeigt beim nächsten Stundenwechsel „Stand veraltet“. Vor iPadOS 26 startet sie erst, wenn du noty calendar an dem Morgen öffnest.")
             }
         }
     }

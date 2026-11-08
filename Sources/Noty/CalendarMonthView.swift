@@ -17,6 +17,9 @@ struct CalendarMonthView: View {
     @State private var swipe = CalendarSwipeGuard()
     /// Pinch between the views: its fingers are no swipe and no tap.
     @Environment(\.calendarZoom) private var zoom
+    /// The content follows the swipe with a rubber band (`CalendarSwipeShift`).
+    @Environment(\.calendarSwipe) private var shift
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let showAll: (Date) -> Void
     @ScaledMetric(relativeTo: .caption) private var line: CGFloat = 20
     @ScaledMetric(relativeTo: .caption) private var weekColumn: CGFloat = 28
@@ -71,15 +74,29 @@ struct CalendarMonthView: View {
             }
         }
         // Swipe sideways to the previous/next month (only clearly horizontal
-        // swipes; taps, the cells' buttons and vertical scrolling stay as they are).
+        // swipes; taps, the cells' buttons and vertical scrolling stay as they
+        // are). The month follows the finger with a rubber band; let go
+        // below the threshold it springs back with the finger's speed.
         .simultaneousGesture(DragGesture(minimumDistance: 30)
             .onChanged { value in
-                if abs(value.translation.width) > 24, abs(value.translation.width) > abs(value.translation.height) { swipe.mark() }
+                let dx = value.translation.width, dy = value.translation.height
+                guard zoom?.recentPinch != true else {
+                    shift?.settle(translation: dx, velocity: 0, reduced: reduceMotion)
+                    return
+                }
+                if abs(dx) > 24, abs(dx) > abs(dy) {
+                    swipe.mark()
+                    shift?.follow(dx, reduced: reduceMotion)
+                }
             }
             .onEnded { value in
                 let dx = value.translation.width, dy = value.translation.height
-                guard abs(dx) > 80, abs(dx) > 2 * abs(dy), zoom?.recentPinch != true else { return }
-                model.step(dx < 0 ? 1 : -1)
+                if abs(dx) > 80, abs(dx) > 2 * abs(dy), zoom?.recentPinch != true {
+                    shift?.handOff()
+                    model.step(dx < 0 ? 1 : -1)
+                } else {
+                    shift?.settle(translation: dx, velocity: value.velocity.width, reduced: reduceMotion)
+                }
             })
         .accessibilityAction(named: "Nächster Monat") { model.step(1) }
         .accessibilityAction(named: "Vorheriger Monat") { model.step(-1) }
@@ -115,7 +132,7 @@ struct CalendarMonthView: View {
                     CalendarMonthRow(event: event, model: model, swipe: swipe).frame(height: line)
                 }
                 if split.hidden > 0 {
-                    Button { if !swipe.recent { showAll(day) } } label: {
+                    Button { if !swipe.recent && zoom?.recentPinch != true { showAll(day) } } label: {
                         Text(CalendarText.more(split.hidden)).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                             .padding(.horizontal, 6).padding(.vertical, 1)
                             .background(Capsule().fill(Color.white.opacity(0.08)))
@@ -123,7 +140,7 @@ struct CalendarMonthView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(split.hidden) weitere Termine am \(CalendarText.shortDate(day, calendar: calendar))")
+                    .accessibilityLabel(NotyText.count(split.hidden, "weiterer Termin", "weitere Termine") + " am \(CalendarText.shortDate(day, calendar: calendar))")
                     .accessibilityHint("Zeigt die vollständige Tagesliste")
                 }
             }
@@ -149,7 +166,7 @@ struct CalendarMonthView: View {
         if !events.isEmpty {
             let shown = events.prefix(8)
             let cancelled = events.filter { $0.status == .cancelled }.count
-            Button { if !swipe.recent { showAll(day) } } label: {
+            Button { if !swipe.recent && zoom?.recentPinch != true { showAll(day) } } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(7), spacing: 3), count: 4), alignment: .leading, spacing: 3) {
                         ForEach(shown) { event in
@@ -184,6 +201,7 @@ struct CalendarMonthRow: View {
     let event: CalendarEntry
     @ObservedObject var model: CalendarModel
     @Environment(\.calendarOrigin) private var origins
+    @Environment(\.calendarZoom) private var zoom
     /// Month grid: a swipe across the row does not open it.
     var swipe: CalendarSwipeGuard?
 
@@ -193,7 +211,7 @@ struct CalendarMonthRow: View {
         let notes = model.hasNotes(event)
         let cancelled = event.status == .cancelled
         Button {
-            guard swipe?.recent != true else { return }
+            guard swipe?.recent != true, zoom?.recentPinch != true else { return }
             origins?.tap(event.id, key: "month/" + event.id)
             model.selection = event.id
         } label: {
@@ -231,6 +249,8 @@ struct CalendarMonthRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 4))
+        .hoverEffect(.highlight)
         .foregroundStyle(.primary)
         .calendarOrigin("month/" + event.id)
         .accessibilityLabel(model.accessibilityText(event, notes: notes))
@@ -302,7 +322,8 @@ struct CalendarListRow: View {
 }
 
 /// Year: twelve light months; a quiet dot marks event days, a faint band
-/// the sample holidays. Tapping a day opens it, the month name the month.
+/// the holidays (WebUntis, else the built-in NRW table; samples: fictitious).
+/// Tapping a day opens it, the month name the month.
 struct CalendarYearView: View {
     @ObservedObject var model: CalendarModel
     @Environment(\.calendarZoom) private var zoom
@@ -327,21 +348,21 @@ struct CalendarYearView: View {
         }
     }
 
-    /// Missing holiday data is never presented as „no holidays“.
+    /// The same source as in the status popover (`holidaySourceText`):
+    /// WebUntis holidays where loaded, otherwise NRW from the built-in table.
     private var holidayLegend: String {
-        if model.showsSamples { return "Ferien (Beispiel, keine echte Ferienquelle)" }
-        if model.connection == nil { return "Ferien erst mit WebUntis-Verbindung" }
-        return model.snapshot?.holidaysFetchedAt == nil ? "Ferien noch nicht geladen" : "Ferien laut WebUntis"
+        model.showsSamples ? "Ferien (Beispiel, keine echte Ferienquelle)" : model.holidaySourceText
     }
 
     private var legend: some View {
-        HStack(spacing: CalendarSpace.l) {
+        HStack(alignment: .top, spacing: CalendarSpace.l) {
             Label { Text("Termine") } icon: { Circle().fill(Color.secondary).frame(width: 4, height: 4) }
-            Label { Text(holidayLegend) } icon: {
+            Label { Text(holidayLegend).fixedSize(horizontal: false, vertical: true) } icon: {
                 Capsule().fill(CalendarPalette.holidays.opacity(0.3)).frame(width: 16, height: 8)
             }
         }
         .font(.caption2).foregroundStyle(.secondary)
+        .frame(maxWidth: 640, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
 

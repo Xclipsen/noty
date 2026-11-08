@@ -1,4 +1,5 @@
 import Foundation
+import NotebookCore
 import NotyPushKit
 #if canImport(Glibc)
 import Glibc
@@ -9,6 +10,8 @@ import Glibc
 //   noty-push check  --config …        Konfiguration, Schlüssel, Ablage prüfen
 //   noty-push status --config …        Geräte ohne Geheimnisse auflisten
 //   noty-push test-push --config … ID  Testmitteilung an ein Gerät
+//   noty-push demo-push --config … ID  jede Mitteilungsart einmal mit Beispieltexten
+//                                      (Art „test“: Antippen öffnet nichts, nichts gespeichert)
 //   noty-push genkey                   neuen Datenschlüssel (Base64) ausgeben
 
 setvbuf(stdout, nil, _IOLBF, 0)
@@ -48,6 +51,15 @@ func loadRuntime() -> Runtime {
     } catch { fail("\(error)") }
 }
 
+/// Runs `body` to its end on the cooperative pool and waits for it (CLI only).
+func runBlocking<T>(_ body: @escaping @Sendable () async -> T) -> T {
+    let semaphore = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var result: T?
+    Task { result = await body(); semaphore.signal() }
+    semaphore.wait()
+    return result!
+}
+
 func iso(_ date: Date?) -> String {
     guard let date else { return "–" }
     return ISO8601DateFormatter().string(from: date)
@@ -80,20 +92,16 @@ case "test-push":
     let record: DeviceRecord
     do { record = try runtime.store.load(id) } catch { fail("Gerät nicht lesbar: \(error)") }
     let client = APNsClient(transport: runtime.transport, tokens: runtime.tokens)
-    let message = PushMessage(title: "noty calendar", body: "Testmitteilung des Mitteilungsdienstes.",
-                              threadID: "noty.calendar.test", expiration: Date().addingTimeInterval(3600),
-                              data: ["kind": .string("test")])
+    let message = PushService.testMessage(now: Date())
     let target = PushTarget(deviceToken: record.deviceToken, environment: record.environment, topic: record.bundleID)
-    let semaphore = DispatchSemaphore(value: 0)
-    nonisolated(unsafe) var result = PushResult.rejected("nicht gesendet")
-    Task { result = await client.send(message, to: target); semaphore.signal() }
-    semaphore.wait()
+    let result = runBlocking { await client.send(message, to: target) }
     print("Ergebnis: \(result)")
     if result != .delivered { exit(1) }
 
 case "demo-push":
     // Every kind of notification once, with sample texts in the real formats
-    // (docs/PUSH.md). Kind „test“: tapping opens nothing, nothing is stored.
+    // (docs/PUSH.md; change texts as Core writes them, „Untis-Zugang prüfen“
+    // from PushService). Kind „test“: tapping opens nothing, nothing is stored.
     guard let id = arguments.first else { fail("Geräte-ID fehlt (siehe status)") }
     let runtime = loadRuntime()
     let record: DeviceRecord
@@ -101,24 +109,20 @@ case "demo-push":
     let client = APNsClient(transport: runtime.transport, tokens: runtime.tokens)
     let target = PushTarget(deviceToken: record.deviceToken, environment: record.environment, topic: record.bundleID)
     let changes = "noty.calendar.demo.changes"
-    let samples: [(String, String, String)] = [
-        ("Stundenplanänderung", "Mo 9.11., 08:00 Deutsch fällt aus", changes),
-        ("Stundenplanänderung", "Mo 9.11., 09:45 Mathematik jetzt in R 112 (statt R 101)", changes),
-        ("Stundenplanänderung", "Di 10.11., 11:30 Englisch: Vertretung", changes),
-        ("Stundenplanänderung", "Biologie verlegt auf Do 12.11., 13:15 (statt Mi 11.11., 08:00) in R 204", changes),
-        ("Stundenplanänderung", "Fr 13.11., 08:00 Sport findet wieder statt in Halle 2", changes),
-        ("4 Stundenplanänderungen", "Mo 9.11., 08:00 Deutsch fällt aus\nMo 9.11., 09:45 Mathematik jetzt in R 112 (statt R 101)\nDi 10.11., 11:30 Englisch: Vertretung\n…", changes),
+    let changeTexts = ["Mo 9.11., 08:00 Deutsch fällt aus", "Mo 9.11., 09:45 Mathematik jetzt in R 112 (statt R 101)",
+                       "Di 10.11., 11:30 Englisch: Vertretung", "Biologie verlegt auf Do 12.11., 13:15 (statt Mi 11.11., 08:00) in R 204",
+                       "Fr 13.11., 08:00 Sport findet wieder statt in Halle 2"]
+    let summary = CalendarLessonChange.summary(bodies: Array(changeTexts.prefix(4)))
+    let samples: [(String, String, String)] = changeTexts.map { (CalendarLessonChange.notificationTitle, $0, changes) } + [
+        (summary.title, summary.body, changes),
         ("Dein Tag · Mo 9.11.", "Beginn 08:00: Rechnungswesen, R 204\nÄnderungen: 09:45 Mathematik in R 112; 11:30 Deutsch fällt aus\n2 Hausaufgaben fällig: Mathematik, Englisch\nTermin: 15:00 Zahnarzt", "noty.calendar.demo.overview"),
         ("Zahnarzt", "09.11.2026 · 15:00–15:45 · Praxis am Markt", "noty.calendar.demo.reminder"),
-        ("Untis-Zugang prüfen", "Der Stundenplan kann nicht mehr abgerufen werden. Bitte in noty calendar die WebUntis-Freigabe neu verbinden.", "noty.calendar.demo.auth"),
+        (PushService.authTitle, PushService.authBody, "noty.calendar.demo.auth"),
     ]
     for (index, sample) in samples.enumerated() {
         let message = PushMessage(title: sample.0, body: sample.1, threadID: sample.2, collapseID: "demo.\(index)",
-                                  expiration: Date().addingTimeInterval(3600), data: ["kind": .string("test")])
-        let semaphore = DispatchSemaphore(value: 0)
-        nonisolated(unsafe) var result = PushResult.rejected("nicht gesendet")
-        Task { result = await client.send(message, to: target); semaphore.signal() }
-        semaphore.wait()
+                                  expiration: Date().addingTimeInterval(3600), data: PushMessage.data(.test))
+        let result = runBlocking { await client.send(message, to: target) }
         print("\(sample.0): \(result)")
         Thread.sleep(forTimeInterval: 1.5)
     }

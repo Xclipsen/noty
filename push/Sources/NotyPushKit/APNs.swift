@@ -1,5 +1,6 @@
 import Foundation
 import Crypto
+import NotebookCore
 
 /// Provider token (JWT, ES256) for APNs token-based authentication. Apple
 /// accepts a token for one hour and asks not to renew it more often than
@@ -62,6 +63,14 @@ public struct PushMessage: Equatable, Sendable {
         self.title = title; self.body = body; self.threadID = threadID; self.collapseID = collapseID
         self.expiration = expiration; self.data = data
     }
+
+    /// App data of `kind` with the keys the app reads (`CalendarPushPayload`, Core).
+    public static func data(_ kind: CalendarPushPayload.Kind,
+                            _ values: [CalendarPushPayload.Key: PayloadValue] = [:]) -> [String: PayloadValue] {
+        var data = [CalendarPushPayload.Key.kind.rawValue: PayloadValue.string(kind.rawValue)]
+        for (key, value) in values where key != .kind { data[key.rawValue] = value }
+        return data
+    }
 }
 
 public enum PayloadValue: Equatable, Sendable, Encodable {
@@ -91,7 +100,12 @@ public enum PushResult: Equatable, Sendable {
     case invalidToken(String)
     /// 429, 5xx, network: try again later.
     case retryLater(String)
-    /// Anything else (payload, topic, provider token): logged, not retried.
+    /// APNs refused the service itself (403 InvalidProviderToken/
+    /// ExpiredProviderToken/…, wrong topic, unreadable key): a configuration
+    /// error of the server, not of the change. Retried with a growing pause
+    /// after the operator fixed it; nothing is marked as failed or sent.
+    case providerError(String)
+    /// Anything else (payload too large, malformed request): logged, not retried.
     case rejected(String)
 }
 
@@ -115,7 +129,23 @@ public enum APNs {
         let threadID: String
         enum CodingKeys: String, CodingKey { case alert, sound, threadID = "thread-id" }
     }
-    struct Payload: Encodable { let aps: APS; let noty: [String: PayloadValue] }
+    /// `{"aps": …, "noty": {…}}` (key `CalendarPushPayload.rootKey`).
+    struct Payload: Encodable {
+        let aps: APS
+        let data: [String: PayloadValue]
+        struct Key: CodingKey {
+            let stringValue: String
+            init(_ value: String) { stringValue = value }
+            init?(stringValue: String) { self.stringValue = stringValue }
+            var intValue: Int? { nil }
+            init?(intValue: Int) { nil }
+        }
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: Key.self)
+            try c.encode(aps, forKey: Key("aps"))
+            try c.encode(data, forKey: Key(CalendarPushPayload.rootKey))
+        }
+    }
 
     /// JSON payload ≤ 4096 bytes: the body is shortened until it fits.
     public static func payload(_ message: PushMessage) throws -> Data {
@@ -124,7 +154,7 @@ public enum APNs {
         var body = message.body
         while true {
             let data = try encoder.encode(Payload(aps: APS(alert: Alert(title: message.title, body: body), threadID: message.threadID),
-                                                  noty: message.data))
+                                                  data: message.data))
             if data.count <= maximumPayloadBytes { return data }
             guard body.count > 20 else { throw PushError.transport("Payload zu groß") }
             body = String(body.prefix(body.count * 3 / 4)) + "…"
@@ -149,12 +179,19 @@ public enum APNs {
 
     struct Reason: Decodable { let reason: String? }
 
+    /// Reasons of a 400 that mean the server's configuration (topic), not the message.
+    static let configurationReasons: Set<String> = ["BadTopic", "TopicDisallowed", "MissingTopic", "BadCertificate",
+                                                     "BadCertificateEnvironment"]
+
     public static func classify(status: Int, body: Data) -> PushResult {
         let reason = (try? JSONDecoder().decode(Reason.self, from: body))?.reason ?? ""
         switch status {
         case 200: return .delivered
         case 410: return .invalidToken(reason.isEmpty ? "Unregistered" : reason)
         case 400 where ["BadDeviceToken", "DeviceTokenNotForTopic"].contains(reason): return .invalidToken(reason)
+        // 403: InvalidProviderToken, ExpiredProviderToken, MissingProviderToken, Forbidden, BadCertificate…
+        case 403: return .providerError("\(status) \(reason)")
+        case 400 where configurationReasons.contains(reason): return .providerError("\(status) \(reason)")
         case 429, 500...599: return .retryLater("\(status) \(reason)")
         default: return .rejected("\(status) \(reason)")
         }
@@ -162,7 +199,8 @@ public enum APNs {
 }
 
 /// APNs over HTTP/2 via curl. A rejected provider token (403
-/// ExpiredProviderToken/InvalidProviderToken) is renewed once.
+/// ExpiredProviderToken/InvalidProviderToken) is renewed once; if APNs still
+/// refuses it, the result is `providerError` (configuration, retried later).
 public struct APNsClient: PushSender {
     let transport: HTTPTransport
     let tokens: APNsTokenProvider
@@ -174,11 +212,14 @@ public struct APNsClient: PushSender {
 
     public func send(_ message: PushMessage, to target: PushTarget) async -> PushResult {
         for attempt in 0..<2 {
+            let token: String
+            do { token = try tokens.token(now: now()) }
+            catch { return .providerError("APNs-JWT nicht erzeugbar: \(error)") }
             do {
-                let request = try APNs.request(message, to: target, token: try tokens.token(now: now()))
+                let request = try APNs.request(message, to: target, token: token)
                 let response = try await transport.send(request)
                 let result = APNs.classify(status: response.status, body: response.body)
-                if case .rejected(let reason) = result, response.status == 403, attempt == 0,
+                if case .providerError(let reason) = result, response.status == 403, attempt == 0,
                    reason.contains("ProviderToken") {
                     tokens.invalidate(); continue
                 }
@@ -189,6 +230,6 @@ public struct APNsClient: PushSender {
                 return .rejected("\(error)")
             }
         }
-        return .rejected("Providertoken abgelehnt")
+        return .providerError("Providertoken abgelehnt")
     }
 }

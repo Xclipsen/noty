@@ -3,11 +3,12 @@ import EventKit
 import NotebookCore
 
 // Kalender Stufe C (docs/CALENDAR-PLAN.md): Apple Kalender and Outlook
-// through the system calendar store (`SystemCalendarService`), plus the
-// homework of WebUntis and the shared helpers for the views (origin text,
-// colour, editability). System events are read anew on app activation, on
-// system store changes and by hand; they are never stored in the calendar
-// package and never reported as „synchronisiert“.
+// through the system calendar store (`SystemCalendarService`) and the shared
+// helpers for the views (origin text, colour, editability); homework and
+// „Schnell anlegen“ are in CalendarModel+Homework/+QuickEntry.swift.
+// System events are read anew on app activation, on system store changes
+// and by hand; they are never stored in the calendar package and never
+// reported as „synchronisiert“.
 
 extension CalendarEntry {
     /// Source of system calendar entries („Kalender“, read-only unless the
@@ -46,9 +47,6 @@ extension CalendarModel {
               let id = CalendarSystemMatching.defaultTarget(state.settings.systemCalendars, calendars: systemCalendars) else { return .local }
         return .system(calendarID: id)
     }
-    /// The range read from the system store (nil: nothing read).
-    var systemReadRange: (start: Date, end: Date)? { systemRead }
-
     /// One line for the status popover; nil when system calendars are off.
     /// Never „synchronisiert“: the store was read, nothing more is known.
     var systemStatusText: String? {
@@ -65,7 +63,14 @@ extension CalendarModel {
         let fromWebUntis = !(snapshot?.holidays.isEmpty ?? true) && snapshot?.connection == state.connection?.id
         return fromWebUntis
             ? "Ferien laut WebUntis; außerhalb des WebUntis-Zeitraums Schulferien NRW aus eingebauter Tabelle; gesetzliche Feiertage NRW."
-            : "Schulferien NRW aus eingebauter Tabelle (2025/26–2027/28, ohne Gewähr) und gesetzliche Feiertage NRW. Mit WebUntis-Ferien gelten die der Schule."
+            : "Schulferien NRW aus eingebauter Tabelle (\(Self.holidayTableSpan), ohne Gewähr) und gesetzliche Feiertage NRW. Mit WebUntis-Ferien gelten die der Schule."
+    }
+
+    /// School years of the built-in NRW table, „2025/26–2027/28“ for `tableYears` 2025...2028.
+    static var holidayTableSpan: String {
+        let years = CalendarHolidaysNRW.tableYears
+        func schoolYear(_ first: Int) -> String { "\(first)/" + String(format: "%02d", (first + 1) % 100) }
+        return schoolYear(years.lowerBound) + "–" + schoolYear(years.upperBound - 1)
     }
 
     func isSystem(_ entry: CalendarEntry) -> Bool { entry.id.hasPrefix(CalendarEntry.systemPrefix) && systemByEntry[entry.id] != nil }
@@ -425,8 +430,8 @@ extension CalendarModel {
         let event = service.newEvent()
         event.calendar = target
         event.title = checked.title
-        event.location = draft.location.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlankText
-        event.notes = draft.details.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlankText
+        event.location = draft.location.nilIfBlank
+        event.notes = draft.details.nilIfBlank
         apply(checked.timing, to: event)
         if let rule = checked.rule { event.recurrenceRules = [SystemCalendarService.ekRule(rule, calendar: calendar)] }
         event.alarms = alarms(draft)
@@ -453,8 +458,8 @@ extension CalendarModel {
         }
         let checked = try fields(draft)
         let series = value.recurring || value.detached
-        let location = draft.location.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlankText
-        let notes = draft.details.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlankText
+        let location = draft.location.nilIfBlank
+        let notes = draft.details.nilIfBlank
         let newAlarm = draft.reminder ? draft.reminderMinutes : nil
         let alarmChanged = newAlarm != known?.alarmMinutes
         if !series, checked.rule != nil {
@@ -481,11 +486,8 @@ extension CalendarModel {
             throw SystemCalendarError.unsupported("Ganztägig oder mit Uhrzeit lässt sich für eine ganze Serie im Systemkalender hier nicht umstellen.")
         }
         let days = CivilDate(shown.start, calendar: calendar).days(to: CivilDate(draft.start, calendar: calendar))
-        func minuteOfDay(_ date: Date) -> Int {
-            let parts = calendar.dateComponents([.hour, .minute], from: date)
-            return (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
-        }
-        let minutes = draft.allDay ? 0 : minuteOfDay(draft.start) - minuteOfDay(shown.start)
+        let minutes = draft.allDay ? 0
+            : CalendarText.minuteOfDay(draft.start, calendar: calendar) - CalendarText.minuteOfDay(shown.start, calendar: calendar)
         let zone = master.timeZone ?? calendar.timeZone
         master.title = checked.title; master.location = location; master.notes = notes
         let start = CalendarSystemNotes.wallClockShift(masterStart, days: days, minutes: minutes, timeZone: zone)
@@ -637,87 +639,4 @@ extension CalendarModel {
         }
         reloadSystemCalendars()
     }
-
-    // MARK: Schnell anlegen
-
-    /// „Mathe Klausur Fr 10 Uhr“ → a pre-filled form draft (nothing saved;
-    /// the user checks and confirms the form). Nil for an empty line or
-    /// when nothing can be written now.
-    func quickDraft(_ text: String) -> CalendarDraft? {
-        guard canWrite, !showsSamples, let parsed = CalendarQuickEntry.parse(text, now: Date(), calendar: calendar) else { return nil }
-        var draft = CalendarDraft(start: parsed.start, calendar: calendar)
-        draft.title = parsed.title
-        draft.allDay = parsed.allDay
-        // The form shows the last day of all-day events (end inclusive).
-        draft.end = parsed.allDay ? parsed.start : parsed.end
-        return draft
-    }
-
-    /// Opens the form with `quickDraft(text)`.
-    func requestQuickEvent(_ text: String) {
-        guard draft == nil, let prepared = quickDraft(text) else { return }
-        draft = prepared
-    }
-
-    // MARK: Homework (WebUntis)
-
-    /// Homework of the offline timetable with the local „erledigt“ marks,
-    /// sorted by due date. Empty without WebUntis.
-    var homework: [CalendarHomeworkItem] {
-        guard let snapshot, snapshot.connection == state.connection?.id else { return [] }
-        return CalendarHomeworkItem.items(snapshot: snapshot, marks: state.homeworkDone, source: state.connection?.source)
-    }
-
-    /// Open (not done) homework.
-    var openHomework: [CalendarHomeworkItem] { homework.filter { !$0.done } }
-
-    func homework(dueOn day: Date) -> [CalendarHomeworkItem] {
-        let date = CivilDate(day, calendar: calendar)
-        return homework.filter { $0.homework.due == date }
-    }
-
-    /// Homework given in or due in this lesson.
-    func homework(for entry: CalendarEntry) -> [CalendarHomeworkItem] {
-        guard let lesson = snapshot?.lessons.first(where: { $0.id == entry.id }) else { return [] }
-        return homework.filter { $0.homework.periodID == lesson.key.sourceID || $0.dueLessonID == lesson.key.sourceID }
-    }
-
-    /// „Erledigt“ is stored locally (calendar package, backup); WebUntis is not told.
-    func setHomeworkDone(_ id: String, done: Bool) async {
-        guard let source = state.connection?.source else { return }
-        await commit { state in
-            state.homeworkDone.removeAll { $0.source == source && $0.homeworkID == id }
-            if done { state.homeworkDone.append(CalendarHomeworkMark(source: source, homeworkID: id)) }
-            if state.homeworkDone.count > CalendarState.maximumHomeworkMarks {
-                state.homeworkDone.sort { $0.doneAt < $1.doneAt }
-                state.homeworkDone.removeFirst(state.homeworkDone.count - CalendarState.maximumHomeworkMarks)
-            }
-        }
-    }
-
-    func buildHomeworkIndex() {
-        homeworkByPeriod = [:]; homeworkByDue = [:]
-        guard let snapshot, snapshot.connection == state.connection?.id else { return }
-        for item in snapshot.homework {
-            homeworkByPeriod[item.periodID, default: []].append(item)
-            if let course = item.lessonID { homeworkByDue[course + "|" + item.due.description, default: []].append(item) }
-        }
-    }
-
-    /// Lines for a lesson's details: homework due in it and given in it.
-    func homeworkNotes(for lesson: CalendarLesson) -> [String] {
-        let due = lesson.key.seriesID.flatMap { homeworkByDue[$0 + "|" + lesson.date.description] } ?? []
-        let given = (homeworkByPeriod[lesson.key.sourceID] ?? []).filter { item in !due.contains { $0.id == item.id } }
-        guard !due.isEmpty || !given.isEmpty else { return [] }
-        let done = Set(state.homeworkDone.filter { $0.source == state.connection?.source }.map(\.homeworkID))
-        func line(_ item: CalendarHomework) -> String {
-            (item.text.isEmpty ? "ohne Text" : String(item.text.prefix(200))) + (done.contains(item.id) ? " (erledigt)" : "")
-        }
-        return due.map { "Hausaufgabe fällig: " + line($0) }
-            + given.map { "Hausaufgabe bis " + String(format: "%02d.%02d.", $0.due.day, $0.due.month) + ": " + line($0) }
-    }
-}
-
-private extension String {
-    var nilIfBlankText: String? { isEmpty ? nil : self }
 }

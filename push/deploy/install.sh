@@ -57,13 +57,15 @@ if [ ! -s /etc/noty-push/apns.p8 ]; then
   exit 0
 fi
 echo "== Prüfen"
-# Gleiche Umgebung wie im Dienst: Geheimnisse über einen privaten Credential-Ordner.
-CRED="$(mktemp -d)"; trap 'rm -rf "$CRED"' EXIT
-install -m 400 -o noty-push /etc/noty-push/data.key "$CRED/data.key"
-install -m 400 -o noty-push /etc/noty-push/apns.p8 "$CRED/apns.p8"
-chown noty-push "$CRED"; chmod 500 "$CRED"
+# Gleiche Umgebung wie im Dienst: als Dienstbenutzer, Geheimnisse nur über
+# systemd LoadCredential (keine Kopie der Schlüssel in /tmp oder anderswo).
+# systemd-run --wait gibt den Exitcode von `check` zurück (set -e bricht ab).
 install -d -m 700 -o noty-push -g noty-push /var/lib/noty-push
-runuser -u noty-push -- env CREDENTIALS_DIRECTORY="$CRED" /opt/noty-push/noty-push check --config /etc/noty-push/config.json
+systemd-run --quiet --collect --wait --pipe \
+  -p User=noty-push -p Group=noty-push -p WorkingDirectory=/ \
+  -p LoadCredential=data.key:/etc/noty-push/data.key -p LoadCredential=apns.p8:/etc/noty-push/apns.p8 \
+  -p ProtectHome=yes -p PrivateTmp=yes -p NoNewPrivileges=yes \
+  /opt/noty-push/noty-push check --config /etc/noty-push/config.json
 systemctl enable noty-push.service
 systemctl restart noty-push.service
 sleep 1

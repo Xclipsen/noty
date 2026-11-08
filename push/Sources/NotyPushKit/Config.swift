@@ -1,6 +1,7 @@
 import Foundation
 
-/// When the server asks WebUntis (hours of the school's local wall clock).
+/// When the server asks WebUntis (hours of the device's wall clock, the
+/// registration's `timeZone`; quiet hours use the same clock).
 /// Default: hourly 5:00–20:59 on weekdays, every two hours 8–20 on weekends,
 /// nothing from 21:00 to 4:59 (user decision 08.11.2026).
 public struct PollScheduleConfig: Codable, Equatable, Sendable {
@@ -54,13 +55,22 @@ public struct PushConfig: Codable, Equatable, Sendable {
     /// Devices whose token became invalid or whose Untis access failed are
     /// deleted after this many days without a successful update.
     public var inactiveRetentionDays = 30
+    /// Any device (also an active one) is deleted after this many days
+    /// without an authenticated API request (the app asks `GET /v1/changes`
+    /// whenever the calendar opens): no Freigabe stays on the server for an
+    /// app that is gone. The app registers again after its next 401.
+    public var noContactRetentionDays = 45
+    /// WebUntis hosts the server may contact: a Freigabe whose server is not
+    /// a subdomain of one of these (`<schule>.webuntis.com`) is refused
+    /// before any request (no requests on behalf of others to arbitrary hosts).
+    public var allowedUntisHostSuffixes = ["webuntis.com"]
 
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
         case listenHost, port, dataDirectory, dataKeyFile, apnsKeyFile, apnsKeyID, teamID, allowedBundleIDs, maxDevices,
              consentVersion, windowDays, schedule, curlPath, registrationsPerHourPerIP, registrationsPerDay,
-             requestsPerMinutePerIP, inactiveRetentionDays
+             requestsPerMinutePerIP, inactiveRetentionDays, noContactRetentionDays, allowedUntisHostSuffixes
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -76,6 +86,8 @@ public struct PushConfig: Codable, Equatable, Sendable {
         registrationsPerDay = try v(.registrationsPerDay, d.registrationsPerDay)
         requestsPerMinutePerIP = try v(.requestsPerMinutePerIP, d.requestsPerMinutePerIP)
         inactiveRetentionDays = try v(.inactiveRetentionDays, d.inactiveRetentionDays)
+        noContactRetentionDays = try v(.noContactRetentionDays, d.noContactRetentionDays)
+        allowedUntisHostSuffixes = try v(.allowedUntisHostSuffixes, d.allowedUntisHostSuffixes)
     }
 
     /// Problems that prevent starting (German, for `noty-push check`).
@@ -94,7 +106,39 @@ public struct PushConfig: Codable, Equatable, Sendable {
         if consentVersion.isEmpty || consentVersion.count > 64 { result.append("consentVersion leer oder zu lang.") }
         if registrationsPerHourPerIP < 1 || registrationsPerDay < 1 || requestsPerMinutePerIP < 1 { result.append("Ratenlimits müssen ≥ 1 sein.") }
         if !(1...365).contains(inactiveRetentionDays) { result.append("inactiveRetentionDays außerhalb 1–365.") }
+        if !(7...365).contains(noContactRetentionDays) { result.append("noContactRetentionDays außerhalb 7–365.") }
+        if allowedUntisHostSuffixes.isEmpty || !allowedUntisHostSuffixes.allSatisfy(Self.isHostSuffix) {
+            result.append("allowedUntisHostSuffixes leer oder ungültig (Domains wie „webuntis.com“, ohne Port, keine IP-Adressen).")
+        }
         return result
+    }
+
+    /// A domain such as „webuntis.com“: lower-case labels of letters, digits
+    /// and „-“, at least two labels, the last one not numeric (no IP address).
+    static func isHostSuffix(_ text: String) -> Bool {
+        let labels = text.split(separator: ".", omittingEmptySubsequences: false)
+        return text.count <= 253 && labels.count >= 2 && labels.allSatisfy(isHostLabel)
+            && labels.last.map { $0.contains { $0.isLetter } } == true
+    }
+
+    static func isHostLabel(_ label: Substring) -> Bool {
+        (1...63).contains(label.count) && !label.hasPrefix("-") && !label.hasSuffix("-")
+            && label.allSatisfy { $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-") }
+    }
+
+    /// Whether the server may contact the WebUntis host `server` (as
+    /// `WebUntisSetup.server` stores it, „host“ or „host:port“): only a
+    /// subdomain of an allowed suffix, no port, no IP address literal.
+    public func allowsUntisServer(_ server: String) -> Bool {
+        let host = server.lowercased()
+        guard !host.contains(":"), !host.contains("["), host.count <= 253 else { return false }
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 3, labels.allSatisfy(Self.isHostLabel),
+              labels.last.map({ $0.contains { $0.isLetter } }) == true else { return false }
+        return allowedUntisHostSuffixes.contains { suffix in
+            let suffix = suffix.lowercased()
+            return Self.isHostSuffix(suffix) && host.hasSuffix("." + suffix) && host.count > suffix.count + 1
+        }
     }
 
     static func isBundleID(_ text: String) -> Bool {

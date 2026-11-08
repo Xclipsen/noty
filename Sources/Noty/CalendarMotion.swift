@@ -1,31 +1,51 @@
 import SwiftUI
 
-// Kalender, „Bewegung und Animationen“ (docs/CALENDAR-PLAN.md): one small
-// motion vocabulary for the whole calendar. Every curve has a reduced form:
-// with „Bewegung reduzieren“ nothing moves or scales – it only cross-fades
-// briefly. Only user-driven chrome animates; data values (saving, the note,
-// the ink) never get an animation of their own.
+// Kalender, „Bewegung und Animationen“ (docs/CALENDAR-PLAN.md), seit dem
+// Emil-Feinschliff (08.11.2026) auf den gemeinsamen Tokens von
+// `NotyMotion` (docs/DESIGN.md, „Bewegung: Regeln nach Häufigkeit“):
+// Tastatur sofort, Taps kurz und ohne Überschwingen (`NotyMotion.palette`,
+// `.panel`), Austritte schneller, Feder mit Überschwingen nur nach einer
+// Geste mit Geschwindigkeitsübergabe (`settle`). „Bewegung reduzieren“:
+// Layout sofort, Ein-/Ausblenden nur als `.opacity.animation(NotyMotion.fade)`.
+// Only user-driven chrome animates; data values (saving, the note, the ink,
+// a sync) never get an animation of their own.
 
 enum CalendarMotion {
-    /// Taps, toggles, snapping to the grid: quick, no overshoot.
-    static func snappy(_ reduced: Bool) -> Animation {
-        reduced ? fade : .spring(response: 0.28, dampingFraction: 0.9)
-    }
-    /// Navigation, panels, lists: calm and soft.
-    static func smooth(_ reduced: Bool) -> Animation {
-        reduced ? fade : .spring(response: 0.42, dampingFraction: 1.0)
-    }
-    /// The event window and the „Heute“ pulse: a little life, small overshoot.
-    static func bouncy(_ reduced: Bool) -> Animation {
-        reduced ? fade : .spring(response: 0.4, dampingFraction: 0.8)
-    }
-    /// The only motion with „Bewegung reduzieren“.
-    static let fade = Animation.easeInOut(duration: 0.16)
+    /// Period change by tap or swipe (‹ ›, Heute, view switcher): the new
+    /// period slides in from 16 pt (`slide`) or settles from a slight scale,
+    /// critically damped in 0.24 s; its opacity starts at 0.6 and is full
+    /// after 0.15 s. Keyboard changes and a change within `repeatWindow`
+    /// of the previous one do not move at all.
+    static let slide: CGFloat = 16
+    static let zoomIn: CGFloat = 0.96
+    static let zoomOut: CGFloat = 1.04
+    static let navDuration: TimeInterval = 0.24
+    static let navSpring = Spring(duration: 0.24, bounce: 0)
+    static let navFade: TimeInterval = 0.15
+    static let navStartOpacity: Double = 0.6
+    /// A pinch commit grows out of the period's frame: a little longer.
+    static let zoomDuration: TimeInterval = 0.28
+    static let repeatWindow: TimeInterval = 0.3
 
-    /// Slide distance of the period change and the start scale of the zoom.
-    static let slide: CGFloat = 36
-    static let zoomIn: CGFloat = 0.94
-    static let zoomOut: CGFloat = 1.05
+    /// The event window opens critically damped; Reduce Motion: a fade.
+    static func windowOpen(_ reduced: Bool) -> Animation {
+        reduced ? NotyMotion.fade : .spring(duration: 0.3, bounce: 0)
+    }
+    /// Closing is faster than opening (0.12 s would be abrupt for a window
+    /// of nearly the whole calendar).
+    static func windowClose(_ reduced: Bool) -> Animation {
+        reduced ? NotyMotion.fade : .easeOut(duration: 0.18)
+    }
+
+    /// Only after a gesture (pull, pinch, swipe, drop): returns from
+    /// `current` to `target`, continuing the finger's `velocity` (points per
+    /// second) with a small overshoot. Reduce Motion: at once.
+    static func settle(_ reduced: Bool, from current: CGFloat, to target: CGFloat, velocity: CGFloat = 0) -> Animation? {
+        guard !reduced else { return nil }
+        let distance = target - current
+        let relative = abs(distance) > 0.5 && velocity.isFinite ? min(12, max(-12, velocity / distance)) : 0
+        return .interpolatingSpring(duration: 0.3, bounce: 0.15, initialVelocity: Double(relative))
+    }
 }
 
 /// Where the event window grows from: cards and rows report their frame in
@@ -49,6 +69,74 @@ enum CalendarMotion {
     }
 }
 
+/// A change of the entries the user made here (save, delete, undo, drop,
+/// restore): only then do cards animate in and out. Data from WebUntis,
+/// the system calendars or another device appears without motion. A plain
+/// reference like `CalendarOriginTracker`; nothing about it is stored.
+@MainActor final class CalendarLocalChange {
+    private var at = Date.distantPast
+    func mark() { at = Date() }
+    /// The model commits asynchronously: a short window covers the write.
+    var recent: Bool { Date().timeIntervalSince(at) < 2 }
+}
+
+/// Sideways swipe in progress (two fingers on the trackpad, a finger in the
+/// month): the content follows with a rubber band and hands over to the
+/// period change once it triggers. Held, not observed, by the calendar:
+/// a swipe frame re-renders only `CalendarSwipeShifted`.
+@MainActor final class CalendarSwipeShift: ObservableObject {
+    @Published private(set) var offset: CGFloat = 0
+    /// The content follows at most this far (and less and less on the way).
+    static let reach: CGFloat = 80
+
+    /// Apple's rubber band: the further, the less the content follows.
+    static func rubber(_ x: CGFloat) -> CGFloat {
+        let c: CGFloat = 0.55
+        return x * reach * c / (reach + c * abs(x))
+    }
+    /// Slope of `rubber` at `x` (finger speed → content speed).
+    static func slope(_ x: CGFloat) -> CGFloat {
+        let c: CGFloat = 0.55, d = reach + c * abs(x)
+        return c * reach * reach / (d * d)
+    }
+
+    /// Follows the swipe; Reduce Motion: the content stays still.
+    func follow(_ translation: CGFloat, reduced: Bool) {
+        let value = reduced ? 0 : Self.rubber(translation)
+        if abs(value - offset) > 0.25 { offset = value }
+    }
+    /// The period changes: the new content takes over from rest.
+    func handOff() {
+        guard offset != 0 else { return }
+        NotyMotion.instant { offset = 0 }
+    }
+    /// Let go below the threshold: back with the finger's velocity.
+    func settle(translation: CGFloat, velocity: CGFloat, reduced: Bool) {
+        guard offset != 0 else { return }
+        let speed = velocity * Self.slope(translation)
+        if let animation = CalendarMotion.settle(reduced, from: offset, to: 0, velocity: speed) {
+            withAnimation(animation) { offset = 0 }
+        } else {
+            NotyMotion.instant { offset = 0 }
+        }
+    }
+}
+
+/// The calendar content shifted by a sideways swipe.
+struct CalendarSwipeShifted<Content: View>: View {
+    @ObservedObject var shift: CalendarSwipeShift
+    let content: Content
+
+    init(shift: CalendarSwipeShift, @ViewBuilder content: () -> Content) {
+        self.shift = shift
+        self.content = content()
+    }
+
+    var body: some View {
+        content.offset(x: shift.offset)
+    }
+}
+
 /// Pull-down of the event window's head. Its own small object: while the
 /// finger moves only the backdrop and the window re-render, not the grid.
 final class CalendarWindowPull: ObservableObject {
@@ -67,6 +155,12 @@ struct CalendarWindowBackdrop: View {
 private struct CalendarOriginKey: EnvironmentKey {
     static var defaultValue: CalendarOriginTracker? { nil }
 }
+private struct CalendarLocalChangeKey: EnvironmentKey {
+    static var defaultValue: CalendarLocalChange? { nil }
+}
+private struct CalendarSwipeKey: EnvironmentKey {
+    static var defaultValue: CalendarSwipeShift? { nil }
+}
 /// „Heute“ was chosen (`count`) at `at`.
 struct CalendarPulse: Equatable {
     var count = 0
@@ -82,7 +176,17 @@ extension EnvironmentValues {
         get { self[CalendarOriginKey.self] }
         set { self[CalendarOriginKey.self] = newValue }
     }
-    /// Bumped by „Heute“: today's marker pulses once.
+    /// Marked by the views that change entries on the user's request.
+    var calendarLocalChange: CalendarLocalChange? {
+        get { self[CalendarLocalChangeKey.self] }
+        set { self[CalendarLocalChangeKey.self] = newValue }
+    }
+    /// The sideways shift of the content (month swipe with the finger).
+    var calendarSwipe: CalendarSwipeShift? {
+        get { self[CalendarSwipeKey.self] }
+        set { self[CalendarSwipeKey.self] = newValue }
+    }
+    /// Bumped by tapping „Heute“: today's marker pulses once.
     var calendarTodayPulse: CalendarPulse {
         get { self[CalendarTodayPulseKey.self] }
         set { self[CalendarTodayPulseKey.self] = newValue }
@@ -92,7 +196,7 @@ extension EnvironmentValues {
 extension View {
     /// Reports this view's frame as a possible origin of the event window.
     func calendarOrigin(_ key: String) -> some View { modifier(CalendarOriginReporter(key: key)) }
-    /// Today's marker: one short pulse when „Heute“ is chosen.
+    /// Today's marker: one short pulse when „Heute“ is tapped.
     func calendarTodayPulse(_ isToday: Bool) -> some View { modifier(CalendarTodayPulseEffect(active: isToday)) }
 }
 
@@ -112,6 +216,8 @@ private struct CalendarOriginReporter: ViewModifier {
     }
 }
 
+/// 1 → 1.12 → 1, ease-out 0.12 s up and 0.18 s back: answers the tap
+/// without bouncing. Only tapping „Heute“ pulses (⌘T jumps silently).
 private struct CalendarTodayPulseEffect: ViewModifier {
     let active: Bool
     @Environment(\.calendarTodayPulse) private var pulse
@@ -122,16 +228,16 @@ private struct CalendarTodayPulseEffect: ViewModifier {
 
     func body(content: Content) -> some View {
         if active && !reduceMotion {
-            content.phaseAnimator([1.0, 1.28, 1.0], trigger: tick) { view, scale in
+            content.phaseAnimator([1.0, 1.12, 1.0], trigger: tick) { view, scale in
                 view.scaleEffect(scale)
             } animation: { scale in
-                scale > 1 ? .spring(response: 0.22, dampingFraction: 0.6) : .spring(response: 0.34, dampingFraction: 0.7)
+                scale > 1 ? .easeOut(duration: 0.12) : .easeOut(duration: 0.18)
             }
             .onChange(of: pulse.count) { _, _ in tick += 1 }
             .onAppear {
-                guard pulse.count > 0, Date().timeIntervalSince(pulse.at) < 0.8 else { return }
+                guard pulse.count > 0, Date().timeIntervalSince(pulse.at) < 0.6 else { return }
                 Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(160))
+                    try? await Task.sleep(for: .milliseconds(120))
                     tick += 1
                 }
             }
@@ -155,7 +261,8 @@ struct CalendarGrowEffect: ViewModifier {
     func body(content: Content) -> some View {
         let center = CGPoint(x: container.width / 2, y: container.height / 2)
         let known = origin.map { $0.width > 1 && container.width > 1 } ?? false
-        let start: CGFloat = known ? min(1, max(0.12, (origin?.width ?? 0) / (container.width * 0.9))) : 0.92
+        // Never out of nothing: from the card at least 0.3, else from 0.95.
+        let start: CGFloat = known ? min(1, max(0.3, (origin?.width ?? 0) / (container.width * 0.9))) : 0.95
         let dx = known ? ((origin?.midX ?? center.x) - center.x) : 0
         let dy = known ? ((origin?.midY ?? center.y) - center.y) : 0
         content

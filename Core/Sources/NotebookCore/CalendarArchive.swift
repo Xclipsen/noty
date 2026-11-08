@@ -40,10 +40,6 @@ public struct CalendarArchiveContent: Equatable, Sendable {
             try source.validate()
         }
     }
-
-    /// Statistics shown before a restore.
-    public var eventCount: Int { state.events.count }
-    public var linkCount: Int { state.noteLinks.count }
 }
 
 public enum CalendarArchiveError: Error, LocalizedError, Equatable {

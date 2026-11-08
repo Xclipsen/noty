@@ -18,8 +18,6 @@ struct NotyCalendarWidgetBundle: WidgetBundle {
     }
 }
 
-private let berlin = CalendarDates.german(timeZone: TimeZone(identifier: "Europe/Berlin") ?? .current)
-
 /// A countdown range that is never reversed (ClosedRange traps otherwise).
 private func range(_ start: Int, _ end: Int) -> ClosedRange<Date> {
     let a = SchoolDayText.date(start), b = SchoolDayText.date(max(start, end))
@@ -38,7 +36,7 @@ struct SchoolDayLiveActivity: Widget {
             // Required by the API; iPad has no Dynamic Island.
             DynamicIsland {
                 DynamicIslandExpandedRegion(.center) {
-                    Text(SchoolDayHeadline.text(context.state)).font(.headline).lineLimit(1)
+                    Text(SchoolDayText.headline(context.state)).font(.headline).lineLimit(1)
                 }
             } compactLeading: {
                 Text(SchoolDayText.progress(context.state)).font(.caption2)
@@ -48,19 +46,6 @@ struct SchoolDayLiveActivity: Widget {
             } minimal: {
                 Text("\(context.state.number)").font(.caption2)
             }
-        }
-    }
-}
-
-enum SchoolDayHeadline {
-    /// The first line without the countdown.
-    static func text(_ state: SchoolDayContentState) -> String {
-        switch state.phase {
-        case .before: "Gleich: " + (state.next.map(SchoolDayText.line) ?? "Unterricht")
-        case .lesson: state.current.map(SchoolDayText.line) ?? "Unterricht"
-        case .pause: "Pause"
-        case .free: "Freistunde bis \(SchoolDayText.clock(state.phaseEnd, calendar: berlin))"
-        case .done: "Schultag vorbei"
         }
     }
 }
@@ -85,7 +70,7 @@ struct SchoolDayLockView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Circle().fill(dotColor).frame(width: 9, height: 9).accessibilityHidden(true)
-                Text(SchoolDayHeadline.text(state)).font(.headline).lineLimit(1)
+                Text(SchoolDayText.headline(state)).font(.headline).lineLimit(1)
                 if let note = state.current?.note {
                     Text(note).font(.caption.weight(.semibold)).foregroundStyle(state.current?.changed == true ? .red : .secondary)
                         .lineLimit(1)
@@ -112,7 +97,7 @@ struct SchoolDayLockView: View {
             } else if let next = state.next, state.phase != .before {
                 NextLine(lesson: next)
             } else if state.phase == .before, let next = state.next {
-                Text("Beginn \(SchoolDayText.clock(next.start, calendar: berlin)) · 1. Stunde von \(state.count)")
+                Text("Beginn \(SchoolDayText.clock(next.start)) · 1. Stunde von \(state.count)")
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             } else if state.phase != .done {
                 Text("Danach: Schluss").font(.subheadline).foregroundStyle(.secondary)
@@ -160,13 +145,13 @@ struct SchoolDayTodayProvider: TimelineProvider {
     func getSnapshot(in context: Context, completion: @escaping (SchoolDayTodayEntry) -> Void) {
         if context.isPreview { completion(placeholder(in: context)); return }
         let file = SchoolDayWidgetStore.read()
-        completion(SchoolDayTodayEntry(date: Date(), content: .at(Date(), file: file, calendar: berlin), file: file))
+        completion(SchoolDayTodayEntry(date: Date(), content: .at(Date(), file: file, calendar: SchoolDayText.calendar), file: file))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<SchoolDayTodayEntry>) -> Void) {
         let file = SchoolDayWidgetStore.read()
-        let entries = SchoolDayWidgetContent.timeline(from: Date(), file: file, calendar: berlin).map { date in
-            SchoolDayTodayEntry(date: date, content: .at(date, file: file, calendar: berlin), file: file)
+        let entries = SchoolDayWidgetContent.timeline(from: Date(), file: file, calendar: SchoolDayText.calendar).map { date in
+            SchoolDayTodayEntry(date: date, content: .at(date, file: file, calendar: SchoolDayText.calendar), file: file)
         }
         completion(Timeline(entries: entries, policy: .atEnd))
     }
@@ -191,7 +176,7 @@ struct SchoolDayTodayView: View {
     private var link: URL {
         var day: String?, entryID: String?
         if case .today(let state) = entry.content {
-            day = CivilDate(entry.date, calendar: berlin).description
+            day = CivilDate(entry.date, calendar: SchoolDayText.calendar).description
             entryID = (state.current ?? state.next)?.entryID
         }
         return SchoolDayLink.url(connectionID: entry.file?.connectionID, day: day, entryID: entryID)
@@ -203,9 +188,9 @@ struct SchoolDayTodayView: View {
             case .notLoaded:
                 message("Stundenplan nicht geladen", "noty calendar öffnen")
             case .noLessonsToday(let tomorrow):
-                message("Heute kein Unterricht", tomorrow.map { "Morgen \(SchoolDayText.clock($0.start, calendar: berlin)): \($0.title)" })
+                message("Heute kein Unterricht", tomorrow.map { "Morgen \(SchoolDayText.clock($0.start)): \($0.title)" })
             case .doneToday(let tomorrow):
-                message("Schultag vorbei", tomorrow.map { "Morgen \(SchoolDayText.clock($0.start, calendar: berlin)): \($0.title)" })
+                message("Schultag vorbei", tomorrow.map { "Morgen \(SchoolDayText.clock($0.start)): \($0.title)" })
             case .today(let state):
                 today(state)
             }
@@ -228,7 +213,7 @@ struct SchoolDayTodayView: View {
         switch family {
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 1) {
-                Text(SchoolDayHeadline.text(state)).font(.headline).lineLimit(1)
+                Text(SchoolDayText.headline(state)).font(.headline).lineLimit(1)
                 HStack(spacing: 3) {
                     Text(state.phase == .before ? "in" : "noch")
                     Text(timerInterval: range(state.phaseStart, state.phaseEnd), countsDown: true).monospacedDigit()
@@ -248,7 +233,7 @@ struct SchoolDayTodayView: View {
                     Text(timerInterval: range(state.phaseStart, state.phaseEnd), countsDown: true)
                         .font(.caption.weight(.semibold)).monospacedDigit().multilineTextAlignment(.trailing)
                 }
-                Text(SchoolDayHeadline.text(state)).font(.headline).lineLimit(family == .systemSmall ? 2 : 1)
+                Text(SchoolDayText.headline(state)).font(.headline).lineLimit(family == .systemSmall ? 2 : 1)
                 if let note = state.current?.note {
                     Text(note).font(.caption.weight(.bold)).foregroundStyle(state.current?.changed == true ? .red : .secondary)
                 }

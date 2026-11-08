@@ -78,15 +78,17 @@ struct CalendarSidebar: View {
             }
             ForEach(open.prefix(limit)) { item in
                 CalendarHomeworkRow(item: item, model: model, compact: true)
-                    .transition(reduceMotion ? .opacity : .asymmetric(insertion: .opacity,
-                                                                      removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .leading))))
+                    .transition(reduceMotion ? .opacity.animation(NotyMotion.fade)
+                                : .asymmetric(insertion: .opacity,
+                                              removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .leading)).animation(NotyMotion.exit)))
             }
             if open.count > limit {
-                Text("\(open.count - limit) weitere unter „Alle“").font(.caption).foregroundStyle(.secondary).padding(.leading, 40)
+                Text(NotyText.count(open.count - limit, "weitere Hausaufgabe", "weitere Hausaufgaben") + " unter „Alle“")
+                    .font(.caption).foregroundStyle(.secondary).padding(.leading, 40)
             }
         }
-        // A ticked row leaves softly; others move up.
-        .animation(CalendarMotion.smooth(reduceMotion), value: open.map(\.id))
+        // A ticked row leaves quickly; the others move up (Reduce Motion: at once).
+        .animation(NotyMotion.panel(reduceMotion), value: open.map(\.id))
     }
 
     /// The calendars with their colour; tapping shows or hides one. System
@@ -138,9 +140,9 @@ struct CalendarSidebar: View {
                 }
             }
             .padding(.leading, indent)
-            .frame(minHeight: indent > 0 ? 36 : 40).contentShape(Rectangle())
+            .frame(minHeight: 44).contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NotyPressStyle())
         .disabled(indent > 0 && !model.canWrite)
         .accessibilityLabel(readOnly ? "\(title), schreibgeschützt" : title)
         .accessibilityValue(shown ? "eingeblendet" : "ausgeblendet")
@@ -185,11 +187,11 @@ struct CalendarMiniMonth: View {
                     .font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)
                 Button { browse(-1, from: month) } label: {
-                    Image(systemName: "chevron.left").font(.footnote.weight(.semibold)).frame(width: 36, height: 44).contentShape(Rectangle())
+                    Image(systemName: "chevron.left").font(.footnote.weight(.semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Vorheriger Monat")
                 Button { browse(1, from: month) } label: {
-                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).frame(width: 36, height: 44).contentShape(Rectangle())
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Nächster Monat")
             }
@@ -251,6 +253,8 @@ struct CalendarMiniMonth: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 8))
+        .hoverEffect(.highlight)
         .accessibilityLabel([CalendarText.longDate(day, calendar: calendar), isToday ? "heute" : nil,
                              !known ? "Termine erst beim Anzeigen berechnet" : count > 0 ? NotyText.count(count, "Termin", "Termine") : nil,
                              holiday ? "Ferien" : nil].compactMap { $0 }.joined(separator: ", "))
@@ -264,7 +268,6 @@ struct CalendarMiniMonth: View {
 struct CalendarUpNext: View {
     @ObservedObject var model: CalendarModel
     @Environment(\.calendarOrigin) private var origins
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
@@ -310,11 +313,9 @@ struct CalendarUpNext: View {
             HStack(alignment: .top, spacing: CalendarSpace.s) {
                 RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 4).frame(minHeight: 34)
                 VStack(alignment: .leading, spacing: 2) {
+                    // The countdown is data, not a user action: it changes without motion.
                     Text(when).font(.caption.weight(.semibold)).monospacedDigit()
                         .foregroundStyle(running ? CalendarPalette.today : first ? Color.primary : Color.secondary)
-                        // The countdown rolls instead of jumping.
-                        .contentTransition(reduceMotion ? .opacity : .numericText(countsDown: true))
-                        .animation(CalendarMotion.smooth(reduceMotion), value: when)
                     HStack(spacing: 4) {
                         if let symbol = event.status.symbol {
                             Image(systemName: symbol).font(.caption2.weight(.bold)).foregroundStyle(cancelled ? Color.orange : .secondary)
@@ -335,7 +336,9 @@ struct CalendarUpNext: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NotyPressStyle())
+        .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .hoverEffect(.highlight)
         .calendarOrigin("next/" + event.id)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(when + ", " + model.accessibilityText(event, notes: model.hasNotes(event)))

@@ -22,7 +22,10 @@ let package = Package(
             .product(name: "NIOPosix", package: "swift-nio"),
             .product(name: "NIOHTTP1", package: "swift-nio"),
         ], swiftSettings: [.swiftLanguageMode(.v5)]),
-        .executableTarget(name: "noty-push", dependencies: ["NotyPushKit"], swiftSettings: [.swiftLanguageMode(.v5)]),
+        .executableTarget(name: "noty-push", dependencies: [
+            "NotyPushKit",
+            .product(name: "NotebookCore", package: "Core"),
+        ], swiftSettings: [.swiftLanguageMode(.v5)]),
         .testTarget(name: "NotyPushKitTests", dependencies: ["NotyPushKit"], swiftSettings: [.swiftLanguageMode(.v5)]),
     ]
 )

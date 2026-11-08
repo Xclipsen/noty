@@ -28,9 +28,14 @@ public struct APIRequest: Sendable {
 public struct APIResponse: Sendable, Equatable {
     public var status: Int
     public var body: Data
-    public var headers: [(String, String)] { [("Content-Type", "application/json; charset=utf-8"), ("Cache-Control", "no-store")] }
-    public init(status: Int, body: Data) { self.status = status; self.body = body }
-    public static func == (a: APIResponse, b: APIResponse) -> Bool { a.status == b.status && a.body == b.body }
+    /// Seconds for a `Retry-After` header (429).
+    public var retryAfter: Int?
+    public var headers: [(String, String)] {
+        [("Content-Type", "application/json; charset=utf-8"), ("Cache-Control", "no-store")]
+            + (retryAfter.map { [("Retry-After", String(max(1, $0)))] } ?? [])
+    }
+    public init(status: Int, body: Data, retryAfter: Int? = nil) { self.status = status; self.body = body; self.retryAfter = retryAfter }
+    public static func == (a: APIResponse, b: APIResponse) -> Bool { a.status == b.status && a.body == b.body && a.retryAfter == b.retryAfter }
 
     static func json<T: Encodable>(_ status: Int, _ value: T) -> APIResponse {
         let encoder = JSONEncoder()
@@ -42,6 +47,12 @@ public struct APIResponse: Sendable, Equatable {
     struct Failure: Encodable { let error: String; let message: String }
     static func error(_ status: Int, _ code: String, _ message: String) -> APIResponse {
         json(status, Failure(error: code, message: message))
+    }
+
+    static func rateLimited(_ message: String, retryAfter: TimeInterval) -> APIResponse {
+        var response = error(429, "rate_limited", message)
+        response.retryAfter = Int(retryAfter.rounded(.up))
+        return response
     }
 }
 
@@ -61,6 +72,25 @@ final class RateLimiter: @unchecked Sendable {
         if events.count > 10_000 { events = events.filter { $0.value.contains { $0 > since } } }
         return true
     }
+
+    /// Nil while `key` stays below `limit` events per `window` (nothing is
+    /// recorded), else the seconds until the oldest event leaves the window.
+    func wait(_ key: String, limit: Int, window: TimeInterval, now: Date) -> TimeInterval? {
+        lock.lock(); defer { lock.unlock() }
+        let since = now.addingTimeInterval(-window)
+        let list = (events[key] ?? []).filter { $0 > since }
+        events[key] = list.isEmpty ? nil : list
+        guard list.count >= limit, let oldest = list.min() else { return nil }
+        return max(1, oldest.addingTimeInterval(window).timeIntervalSince(now))
+    }
+
+    /// Records an event for `key` (counted by `wait`).
+    func record(_ key: String, window: TimeInterval, now: Date) {
+        lock.lock(); defer { lock.unlock() }
+        let since = now.addingTimeInterval(-window)
+        events[key] = (events[key] ?? []).filter { $0 > since } + [now]
+        if events.count > 10_000 { events = events.filter { $0.value.contains { $0 > since } } }
+    }
 }
 
 /// HTTP API (behind nginx, docs/PUSH.md):
@@ -72,6 +102,9 @@ final class RateLimiter: @unchecked Sendable {
 /// Authorization: `Bearer <deviceID>.<deviceSecret>`.
 public final class APIRouter: Sendable {
     public static let maximumBodyBytes = 16 * 1024
+    /// Failed authentications per device id and hour; then 429 (never 401,
+    /// the app deletes its secret on 401) until the window has passed.
+    public static let authFailuresPerHour = 120
 
     let service: PushService
     let config: PushConfig
@@ -86,26 +119,39 @@ public final class APIRouter: Sendable {
         let time = now()
         guard request.body.count <= Self.maximumBodyBytes else { return .error(413, "too_large", "Anfrage zu groß.") }
         guard limiter.allow("ip:" + request.clientIP, limit: config.requestsPerMinutePerIP, window: 60, now: time) else {
-            return .error(429, "rate_limited", "Zu viele Anfragen. Bitte später erneut versuchen.")
+            return .rateLimited("Zu viele Anfragen. Bitte später erneut versuchen.", retryAfter: 60)
         }
         switch (request.method, request.path) {
         case ("GET", "/v1/health"):
             return .json(200, ["ok": true])
         case ("POST", "/v1/register"):
-            guard limiter.allow("register-ip:" + request.clientIP, limit: config.registrationsPerHourPerIP, window: 3600, now: time),
-                  limiter.allow("register", limit: config.registrationsPerDay, window: 86_400, now: time) else {
-                return .error(429, "rate_limited", "Zu viele Anmeldungen. Bitte später erneut versuchen.")
+            // Per address every attempt counts (before any work); the daily
+            // limit of the whole service only counts registrations that
+            // succeeded, so invalid requests cannot use it up.
+            guard limiter.allow("register-ip:" + request.clientIP, limit: config.registrationsPerHourPerIP, window: 3600, now: time) else {
+                return .rateLimited("Zu viele Anmeldungen. Bitte später erneut versuchen.", retryAfter: 3600)
             }
-            return await register(request)
+            if let wait = limiter.wait("register", limit: config.registrationsPerDay, window: 86_400, now: time) {
+                return .rateLimited("Zu viele Anmeldungen. Bitte später erneut versuchen.", retryAfter: wait)
+            }
+            let response = await register(request)
+            if response.status == 201 { limiter.record("register", window: 86_400, now: now()) }
+            return response
         case ("PUT", "/v1/device"), ("DELETE", "/v1/device"), ("GET", "/v1/changes"), ("GET", "/v1/device"):
-            guard let id = await authenticatedID(request) else {
+            let id: String
+            switch await authenticate(request) {
+            case .device(let value): id = value
+            case .unauthorized:
                 return .error(401, "unauthorized", "Gerät unbekannt oder abgemeldet. Bitte Mitteilungen in der App neu einrichten.")
+            case .rateLimited(let wait):
+                return .rateLimited("Zu viele fehlgeschlagene Anmeldungen dieses Geräts. Bitte später erneut versuchen.", retryAfter: wait)
             }
+            if request.method != "DELETE" { await service.recordContact(id: id) }
             switch request.method {
             case "PUT": return await update(id, request)
             case "DELETE":
                 do { try await service.delete(id: id); return APIResponse(status: 204, body: Data()) }
-                catch { return Self.map(error) }
+                catch { return response(for: error) }
             default:
                 if request.path == "/v1/device" {
                     guard let status = await service.status(id: id) else { return .error(404, "not_found", "Gerät unbekannt.") }
@@ -120,14 +166,23 @@ public final class APIRouter: Sendable {
 
     // MARK: Auth
 
-    func authenticatedID(_ request: APIRequest) async -> String? {
-        guard let header = request.headers["authorization"], header.count <= 200, header.hasPrefix("Bearer ") else { return nil }
+    enum Authentication: Equatable { case device(String), unauthorized, rateLimited(TimeInterval) }
+
+    /// Only failed attempts count towards the limit of a device id: a correct
+    /// secret is never answered with 401 because someone else guessed.
+    func authenticate(_ request: APIRequest) async -> Authentication {
+        guard let header = request.headers["authorization"], header.count <= 200, header.hasPrefix("Bearer ") else { return .unauthorized }
         let value = header.dropFirst("Bearer ".count)
-        guard let dot = value.firstIndex(of: ".") else { return nil }
+        guard let dot = value.firstIndex(of: ".") else { return .unauthorized }
         let id = String(value[..<dot]), secret = String(value[value.index(after: dot)...])
-        guard DeviceStore.isValidID(id), (20...100).contains(secret.count) else { return nil }
-        guard limiter.allow("auth:" + id, limit: 120, window: 3600, now: now()) else { return nil }
-        return await service.authenticate(id: id, secret: secret) ? id : nil
+        guard DeviceStore.isValidID(id), (20...100).contains(secret.count) else { return .unauthorized }
+        let key = "auth-failed:" + id
+        if let wait = limiter.wait(key, limit: Self.authFailuresPerHour, window: 3600, now: now()) { return .rateLimited(wait) }
+        guard await service.authenticate(id: id, secret: secret) else {
+            limiter.record(key, window: 3600, now: now())
+            return .unauthorized
+        }
+        return .device(id)
     }
 
     // MARK: Bodies
@@ -138,7 +193,10 @@ public final class APIRouter: Sendable {
         let apnsEnvironment: String
         let bundleID: String
         let connectionID: String
+        /// Device time zone (schedule, quiet hours).
         let timeZone: String?
+        /// Time zone of the connection (`CalendarConnectionRecord.timeZone`); default Europe/Berlin.
+        let connectionTimeZone: String?
         let consent: String
         let setup: SetupBody
         let settings: DeviceSettings?
@@ -149,6 +207,7 @@ public final class APIRouter: Sendable {
         let bundleID: String?
         let connectionID: String?
         let timeZone: String?
+        let connectionTimeZone: String?
         let consent: String?
         let setup: SetupBody?
         let settings: DeviceSettings?
@@ -173,9 +232,9 @@ public final class APIRouter: Sendable {
         guard let id = UUID(uuidString: raw) else { throw Invalid.field("connectionID") }
         return id
     }
-    static func zone(_ raw: String?) throws -> String {
-        let value = raw ?? "Europe/Berlin"
-        guard value.count <= 64, TimeZone(identifier: value) != nil, value.contains("/") || value == "UTC" else { throw Invalid.field("timeZone") }
+    static func zone(_ raw: String?, field: String = "timeZone") throws -> String {
+        let value = raw ?? CalendarDefaults.timeZoneIdentifier
+        guard value.count <= 64, TimeZone(identifier: value) != nil, value.contains("/") || value == "UTC" else { throw Invalid.field(field) }
         return value
     }
     static func setup(_ body: SetupBody) throws -> WebUntisSetup {
@@ -213,12 +272,13 @@ public final class APIRouter: Sendable {
             input = RegistrationInput(deviceToken: try Self.token(body.deviceToken), environment: try Self.environment(body.apnsEnvironment),
                                       bundleID: try bundle(body.bundleID), connectionID: try Self.connection(body.connectionID),
                                       timeZone: try Self.zone(body.timeZone), settings: Self.settings(body.settings),
-                                      setup: try Self.setup(body.setup))
+                                      setup: try Self.setup(body.setup),
+                                      connectionTimeZone: try Self.zone(body.connectionTimeZone, field: "connectionTimeZone"))
         } catch { return validationError(error) }
         do {
             let result = try await service.register(input)
             return .json(201, Registered(deviceID: result.deviceID, deviceSecret: result.secret, status: result.status))
-        } catch { return Self.map(error) }
+        } catch { return response(for: error) }
     }
 
     func update(_ id: String, _ request: APIRequest) async -> APIResponse {
@@ -230,6 +290,7 @@ public final class APIRouter: Sendable {
             if let value = body.bundleID { input.bundleID = try bundle(value) }
             if let value = body.connectionID { input.connectionID = try Self.connection(value) }
             if body.timeZone != nil { input.timeZone = try Self.zone(body.timeZone) }
+            if body.connectionTimeZone != nil { input.connectionTimeZone = try Self.zone(body.connectionTimeZone, field: "connectionTimeZone") }
             if let value = body.setup {
                 guard body.consent == config.consentVersion else {
                     return .error(400, "consent_required", "Die Einwilligung zur Speicherung der Freigabe auf dem Server fehlt oder ist veraltet.")
@@ -239,7 +300,7 @@ public final class APIRouter: Sendable {
             input.settings = body.settings
         } catch { return validationError(error) }
         do { return .json(200, ["status": try await service.update(id: id, input)]) }
-        catch { return Self.map(error) }
+        catch { return response(for: error) }
     }
 
     struct ChangesBody: Encodable { let changes: [ChangeEntry]; let status: DeviceStatus; let serverTime: Date }
@@ -255,15 +316,18 @@ public final class APIRouter: Sendable {
         do {
             let result = try await service.changes(id: id, since: since)
             return .json(200, ChangesBody(changes: result.changes, status: result.status, serverTime: now()))
-        } catch { return Self.map(error) }
+        } catch { return response(for: error) }
     }
 
-    static func map(_ error: Error) -> APIResponse {
+    func response(for error: Error) -> APIResponse {
         switch error {
         case ServiceError.limitReached:
             return .error(403, "limit_reached", "Der Mitteilungsdienst nimmt keine weiteren Geräte an.")
         case ServiceError.notFound:
             return .error(404, "not_found", "Gerät unbekannt.")
+        case ServiceError.serverNotAllowed:
+            let hosts = config.allowedUntisHostSuffixes.map { "<schule>." + $0 }.joined(separator: ", ")
+            return .error(400, "invalid_server", "Der Mitteilungsdienst ruft nur WebUntis-Server der Form \(hosts) ab; diese Freigabe nennt einen anderen Server.")
         case ServiceError.untis(let failure):
             if failure == .authentication {
                 return .error(422, "untis_rejected", failure.message)

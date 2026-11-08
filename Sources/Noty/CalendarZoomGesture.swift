@@ -64,8 +64,9 @@ import NotebookCore
     var size: CGSize = .zero
 }
 
-/// The content, scaled softly along the pinch. „Bewegung reduzieren“: no
-/// scaling, only a slight dimming once a release would change the view.
+/// The content, scaled softly along the pinch. Once a release would change
+/// the view, a blue outline says so (the tick alone is felt nowhere: iPads
+/// have no haptics). „Bewegung reduzieren“: no scaling, only the outline.
 struct CalendarPinchScaled<Content: View>: View {
     @ObservedObject var pinch: CalendarPinchState
     let reduced: Bool
@@ -80,7 +81,15 @@ struct CalendarPinchScaled<Content: View>: View {
     var body: some View {
         content
             .scaleEffect(reduced ? 1 : pinch.scale, anchor: pinch.anchor)
-            .opacity(reduced && pinch.armed != nil ? 0.7 : 1)
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(CalendarPalette.selection.opacity(0.8), lineWidth: 2)
+                    .padding(4)
+                    .opacity(pinch.armed != nil ? 1 : 0)
+                    .animation(NotyMotion.fade, value: pinch.armed != nil)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
             .sensoryFeedback(trigger: pinch.armed) { _, new in new != nil ? .selection : nil }
             .sensoryFeedback(.impact(weight: .light), trigger: pinch.commits)
     }
@@ -163,12 +172,13 @@ private struct CalendarZoomTargetEffect: ViewModifier {
         }
     }
 
+    /// Lights up for half a second, then fades in 0.2 s (opacity only).
     private func flash() {
         guard focus.count > 0, focus.kind == kind, focus.start == start, Date().timeIntervalSince(focus.at) < 0.8 else { return }
-        withAnimation(CalendarMotion.fade) { lit = true }
+        withAnimation(NotyMotion.fade) { lit = true }
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(900))
-            withAnimation(.easeOut(duration: 0.6)) { lit = false }
+            try? await Task.sleep(for: .milliseconds(500))
+            withAnimation(.easeOut(duration: 0.2)) { lit = false }
         }
     }
 }

@@ -52,6 +52,8 @@ final class StubSource: TimetableSource, @unchecked Sendable {
     private var _lessons: [CalendarLesson] = []
     private var _error: Error?
     private(set) var calls = 0
+    /// Time zone of the last request (the connection's, not the device's).
+    private(set) var lastTimeZone: TimeZone?
     /// Runs during `load` (e.g. to delete the device meanwhile).
     var duringLoad: (@Sendable () async -> Void)?
 
@@ -59,7 +61,7 @@ final class StubSource: TimetableSource, @unchecked Sendable {
     var error: Error? { get { lock.lock(); defer { lock.unlock() }; return _error } set { lock.lock(); _error = newValue; lock.unlock() } }
 
     func load(setup: WebUntisSetup, connection: UUID, timeZone: TimeZone, start: CivilDate, end: CivilDate, at time: Date) async throws -> CalendarTimetableFetch {
-        lock.withLock { calls += 1 }
+        lock.withLock { calls += 1; lastTimeZone = timeZone }
         if let duringLoad { await duringLoad() }
         if let error { throw error }
         let list = lessons.filter { $0.date >= start && $0.date < end }.map { lesson -> CalendarLesson in
@@ -73,9 +75,12 @@ final class MockSender: PushSender, @unchecked Sendable {
     private let lock = NSLock()
     private var _sent: [(PushMessage, PushTarget)] = []
     var result: PushResult = .delivered
+    /// Runs during `send` (e.g. to change the device meanwhile).
+    var duringSend: (@Sendable () async -> Void)?
     var sent: [(PushMessage, PushTarget)] { lock.lock(); defer { lock.unlock() }; return _sent }
     func send(_ message: PushMessage, to target: PushTarget) async -> PushResult {
-        lock.withLock { _sent.append((message, target)); return result }
+        if let duringSend { await duringSend() }
+        return lock.withLock { _sent.append((message, target)); return result }
     }
 }
 
@@ -90,6 +95,8 @@ func testKeyring() -> DataKeyring { try! DataKeyring(keys: [Data(repeating: 7, c
 func testConfig() -> PushConfig {
     var config = PushConfig()
     config.apnsKeyID = "ABCDE12345"; config.teamID = "BAFXLQ964V"; config.allowedBundleIDs = [bundleID]
+    // The fictitious fixtures use demo.webuntis.example (the default allows only *.webuntis.com).
+    config.allowedUntisHostSuffixes = ["webuntis.example"]
     return config
 }
 

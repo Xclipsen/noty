@@ -69,7 +69,13 @@ public struct DeviceRecord: Codable, Sendable {
     public var environment: APNsEnvironment
     public var bundleID: String
     public var connectionID: UUID
+    /// Time zone of the device: poll schedule and quiet hours only.
     public var timeZone: String
+    /// Time zone of the WebUntis connection (`CalendarConnectionRecord.timeZone`):
+    /// lesson times are parsed, days counted and change texts written in it,
+    /// exactly as the app does. Nil (records before 11.2026, apps that do
+    /// not send it) = `CalendarDefaults.timeZoneIdentifier`.
+    public var connectionTimeZone: String?
     public var settings: DeviceSettings
     public var setup: WebUntisSetup
     public var state: DeviceState = .active
@@ -85,15 +91,30 @@ public struct DeviceRecord: Codable, Sendable {
     /// „Untis-Zugang prüfen“ was pushed (or is waiting for the quiet end).
     public var authNotice: AuthNotice = .none
     public var history: [ChangeEntry] = []
+    /// Last authenticated API request of the app (hour precision). Nil in
+    /// records before 11.2026: `updated` stands in. After
+    /// `noContactRetentionDays` without contact the device is deleted.
+    public var lastContact: Date?
 
     public enum AuthNotice: String, Codable, Sendable { case none, pending, sent }
 
-    public var calendar: Calendar {
+    /// The device's wall clock: poll schedule and quiet hours.
+    public var calendar: Calendar { Self.calendar(timeZone) }
+
+    /// The connection's wall clock: parsing, window days, change texts.
+    public var connectionCalendar: Calendar { Self.calendar(connectionTimeZoneIdentifier) }
+
+    public var connectionTimeZoneIdentifier: String { connectionTimeZone ?? CalendarDefaults.timeZoneIdentifier }
+
+    static func calendar(_ identifier: String) -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: timeZone) ?? TimeZone(identifier: "Europe/Berlin")!
+        calendar.timeZone = TimeZone(identifier: identifier) ?? CalendarDefaults.timeZone
         calendar.locale = Locale(identifier: "de_DE")
         return calendar
     }
+
+    /// When the app last talked to the server (older records: last change).
+    public var contact: Date { lastContact ?? updated }
 
     /// Minute after the full hour at which this device is polled.
     public func pollMinute(spread: Int) -> Int {
@@ -115,7 +136,9 @@ public struct DeviceRecord: Codable, Sendable {
         copy.setup = try WebUntisSetup(server: setup.server, school: setup.school, user: setup.user, key: setup.key,
                                        schoolNumber: setup.schoolNumber)
         try snapshot?.validate()
-        guard TimeZone(identifier: timeZone) != nil else { throw PushError.storage("Zeitzone") }
+        guard TimeZone(identifier: timeZone) != nil, connectionTimeZone.map({ TimeZone(identifier: $0) != nil }) ?? true else {
+            throw PushError.storage("Zeitzone")
+        }
         return copy
     }
 }

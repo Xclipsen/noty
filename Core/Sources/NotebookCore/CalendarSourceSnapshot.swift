@@ -180,6 +180,34 @@ public struct CalendarSourceSnapshot: Equatable, Sendable, Codable {
     /// day without coverage). Returns the number of days taken over.
     @discardableResult
     public mutating func merge(_ fetch: CalendarTimetableFetch) throws -> Int {
+        try merge(fetch, skipping: [])
+    }
+
+    /// Requested days that have lessons here and none in `fetch`: an empty
+    /// answer of WebUntis for a school day (seen with the mobile API) or a
+    /// day whose lessons were really removed – the two cannot be told apart.
+    public func emptiedDays(by fetch: CalendarTimetableFetch) -> Set<CivilDate> {
+        guard fetch.connection == connection else { return [] }
+        let incoming = Set(fetch.lessons.map(\.date))
+        var result = Set<CivilDate>()
+        for lesson in lessons where lesson.date >= fetch.start && lesson.date < fetch.end && !incoming.contains(lesson.date)
+            && days[lesson.date.description] != nil {
+            result.insert(lesson.date)
+        }
+        return result
+    }
+
+    /// As `merge`, but the `emptiedDays` keep their lessons and fetch time
+    /// (conservative comparison base of the push service: lessons of an
+    /// empty answer that come back later are compared with their state
+    /// before, never reported as „zusätzlich“). Not for what the app shows:
+    /// there a day whose lessons were really removed must become empty.
+    @discardableResult
+    public mutating func mergeKeepingEmptiedDays(_ fetch: CalendarTimetableFetch) throws -> Int {
+        try merge(fetch, skipping: emptiedDays(by: fetch))
+    }
+
+    private mutating func merge(_ fetch: CalendarTimetableFetch, skipping: Set<CivilDate>) throws -> Int {
         guard fetch.connection == connection else { throw CalendarStoreError.staleConnection }
         let span = fetch.start.days(to: fetch.end)
         guard span > 0, span <= Self.maximumRequestDays else { throw CalendarStoreError.invalidState }
@@ -188,6 +216,7 @@ public struct CalendarSourceSnapshot: Equatable, Sendable, Codable {
         var taken = Set<CivilDate>()
         var day = fetch.start
         while day < fetch.end {
+            if skipping.contains(day) { day = day.adding(days: 1); continue }
             if let stored = days[day.description], stored > time { day = day.adding(days: 1); continue }
             taken.insert(day)
             day = day.adding(days: 1)
@@ -261,7 +290,8 @@ public struct CalendarSourceSnapshot: Equatable, Sendable, Codable {
 }
 
 extension String {
-    var nilIfBlank: String? {
+    /// The text without surrounding white space, nil when nothing is left.
+    public var nilIfBlank: String? {
         let text = trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? nil : text
     }

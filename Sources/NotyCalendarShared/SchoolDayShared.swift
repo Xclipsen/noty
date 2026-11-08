@@ -99,9 +99,16 @@ public enum SchoolDayWidgetStore {
 
 /// German texts shared by tile and widget.
 public enum SchoolDayText {
-    public static func clock(_ seconds: Int, calendar: Calendar) -> String {
-        let parts = calendar.dateComponents([.hour, .minute], from: Date(timeIntervalSince1970: TimeInterval(seconds)))
-        return String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
+    /// Calendar of a school day in the extension: `SchoolDayAttributes.day`
+    /// is a civil day in the zone of the WebUntis connection, which is
+    /// created with `CalendarDefaults.timeZone` (Europe/Berlin). The widget
+    /// file names no zone of its own (its format stays as it is), so the
+    /// extension reads it in that one.
+    public static let calendar = CalendarDates.german(timeZone: CalendarDefaults.timeZone)
+
+    /// „08:05“ for Unix seconds (Core's 24-hour clock).
+    public static func clock(_ seconds: Int, calendar: Calendar = SchoolDayText.calendar) -> String {
+        CalendarText.clock(date(seconds), calendar: calendar)
     }
 
     /// „Mathematik · R 112“.
@@ -111,6 +118,20 @@ public enum SchoolDayText {
 
     /// „Stunde 3/6“.
     public static func progress(_ state: SchoolDayContentState) -> String { "Stunde \(state.number)/\(state.count)" }
+
+    /// The first line of tile and widget, without the countdown. `detailed`
+    /// (the app's line „Läuft: …“, which has no countdown) adds „Stunde 3/6“
+    /// to a lesson and the end of a pause.
+    public static func headline(_ state: SchoolDayContentState, calendar: Calendar = SchoolDayText.calendar,
+                                detailed: Bool = false) -> String {
+        switch state.phase {
+        case .before: "Gleich: " + (state.next.map(line) ?? "Unterricht")
+        case .lesson: (state.current.map(line) ?? "Unterricht") + (detailed ? " · " + progress(state) : "")
+        case .pause: detailed ? "Pause bis \(clock(state.phaseEnd, calendar: calendar))" : "Pause"
+        case .free: "Freistunde bis \(clock(state.phaseEnd, calendar: calendar))"
+        case .done: "Schultag vorbei"
+        }
+    }
 
     public static func date(_ seconds: Int) -> Date { Date(timeIntervalSince1970: TimeInterval(seconds)) }
 }

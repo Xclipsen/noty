@@ -30,6 +30,7 @@ struct CalendarEventPanel: View {
         pullState = pull
     }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.calendarLocalChange) private var localChange
     @State private var confirmingRemoval = false
     @State private var detailsHeight: CGFloat = 120
     /// Remembered per arrangement: beside the page the column starts shown,
@@ -114,10 +115,10 @@ struct CalendarEventPanel: View {
         .onChange(of: event.id) { _, _ in attentionDismissed = false }
         .confirmationDialog("Termin löschen?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
             if event.originalDate != nil || model.isSystemSeries(event) {
-                Button("Nur diesen Termin löschen", role: .destructive) { Task { await model.remove(event, scope: .single) } }
-                Button("Alle Termine der Serie löschen", role: .destructive) { Task { await model.remove(event, scope: .all) } }
+                Button("Nur diesen Termin löschen", role: .destructive) { localChange?.mark(); Task { await model.remove(event, scope: .single) } }
+                Button("Alle Termine der Serie löschen", role: .destructive) { localChange?.mark(); Task { await model.remove(event, scope: .all) } }
             } else {
-                Button("Termin löschen", role: .destructive) { Task { await model.remove(event) } }
+                Button("Termin löschen", role: .destructive) { localChange?.mark(); Task { await model.remove(event) } }
             }
         } message: {
             Text(removalMessage)
@@ -168,11 +169,16 @@ struct CalendarEventPanel: View {
                 detailsButton
                 moreMenu
                 Button { close() } label: { Self.roundIcon("xmark") }
-                    .buttonStyle(.plain)
+                    .buttonStyle(NotyPressStyle())
                     .accessibilityLabel("Termin schließen")
                     .help("Schließen (Esc)")
-                    .keyboardShortcut(escapes ? .cancelAction : nil)
             }
+        }
+        // Esc is a keyboard way: the window goes at once, without shrinking.
+        .background {
+            Button("Termin schließen") { NotyMotion.instant { close() } }
+                .keyboardShortcut(escapes ? .cancelAction : nil)
+                .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
         }
         .padding(.leading, CalendarSpace.l).padding(.trailing, CalendarSpace.s)
         .padding(.top, 14).padding(.bottom, CalendarSpace.s)
@@ -190,13 +196,16 @@ struct CalendarEventPanel: View {
                     closing = true
                     close()
                 } else {
-                    withAnimation(CalendarMotion.bouncy(reduceMotion)) { pullState.value = 0 }
+                    // Back up with the finger's speed (the one spring with a little overshoot).
+                    let pulled = pullState.value
+                    withAnimation(CalendarMotion.settle(reduceMotion, from: pulled, to: 0, velocity: value.velocity.height)) { pullState.value = 0 }
                 }
             })
         // A cancelled pull (no `onEnded`, e.g. a system gesture took over) springs back too.
         .onChange(of: pulling) { _, active in
             if !active && !closing && pullState.value != 0 {
-                withAnimation(CalendarMotion.bouncy(reduceMotion)) { pullState.value = 0 }
+                let pulled = pullState.value
+                withAnimation(CalendarMotion.settle(reduceMotion, from: pulled, to: 0)) { pullState.value = 0 }
             }
         }
     }
@@ -244,7 +253,7 @@ struct CalendarEventPanel: View {
                     }
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NotyPressStyle())
         .accessibilityLabel("Termindetails")
         .accessibilityValue((detailsShown ? "eingeblendet" : "ausgeblendet") + (homework > 0 ? ", \(homework) Hausaufgaben" : ""))
         .help(detailsShown ? "Details ausblenden" : "Details einblenden")
@@ -280,17 +289,20 @@ struct CalendarEventPanel: View {
                 if model.canEdit(event) {
                     Section {
                         Button { model.draft = model.editDraft(for: event) } label: {
-                            Label("Termin bearbeiten", systemImage: "pencil")
+                            Label("Termin bearbeiten …", systemImage: "pencil")
                         }
                         Button(role: .destructive) { confirmingRemoval = true } label: {
-                            Label("Termin löschen", systemImage: "trash")
+                            Label("Termin löschen …", systemImage: "trash")
                         }
                     }
                 }
             } label: {
                 Self.roundIcon("ellipsis")
             }
+            .menuStyle(.button)
+            .buttonStyle(NotyPressStyle())
             .accessibilityLabel("Weitere Aktionen")
+            .help("Weitere Aktionen")
         }
     }
 
@@ -432,7 +444,7 @@ struct CalendarEventPanel: View {
                     } label: {
                         Text("\(CalendarText.shortDate(candidate.start, calendar: calendar)) · \(candidate.timeText(calendar)) · \(candidate.title)")
                             .font(.footnote).monospacedDigit().multilineTextAlignment(.leading)
-                            .frame(minHeight: 32, alignment: .leading)
+                            .frame(minHeight: 44, alignment: .leading)
                     }
                     .buttonStyle(.borderless)
                 }
@@ -450,7 +462,7 @@ struct CalendarEventPanel: View {
                     } label: {
                         Text("\(CalendarText.shortDate(lesson.start, calendar: calendar)) · \(CalendarText.timeRange(lesson.start, lesson.end, calendar: calendar)) · \(lesson.title)")
                             .font(.footnote).monospacedDigit().multilineTextAlignment(.leading)
-                            .frame(minHeight: 32, alignment: .leading)
+                            .frame(minHeight: 44, alignment: .leading)
                     }
                     .buttonStyle(.borderless)
                 }
@@ -458,315 +470,5 @@ struct CalendarEventPanel: View {
                     .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-    }
-}
-
-/// Small rounded fact („Ausfall“, „R 204“, „Stundenplan 🔒“): symbol plus
-/// text, never colour alone.
-struct CalendarChip: View {
-    let text: String
-    var symbol: String?
-    var dot: Color?
-    var trailingSymbol: String?
-    var tint: Color = .secondary
-    /// Status: stronger fill and the tint on the text too.
-    var prominent = false
-
-    var body: some View {
-        HStack(spacing: 5) {
-            if let dot { Circle().fill(dot).frame(width: 8, height: 8) }
-            if let symbol { Image(systemName: symbol).font(.caption.weight(.semibold)).foregroundStyle(prominent ? tint : .secondary) }
-            Text(text).font(.footnote.weight(prominent ? .semibold : .regular)).foregroundStyle(prominent ? tint : .primary)
-                .lineLimit(2)
-            if let trailingSymbol { Image(systemName: trailingSymbol).font(.system(size: 9)).foregroundStyle(.tertiary) }
-        }
-        .padding(.horizontal, 9).padding(.vertical, 5)
-        .background(Capsule().fill(prominent ? tint.opacity(0.16) : Color.primary.opacity(0.08)))
-        .accessibilityElement(children: .combine)
-    }
-}
-
-/// Left-aligned rows that wrap (chips of the event head).
-struct CalendarFlowLayout: Layout {
-    var spacing: CGFloat = 6
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let rows = arrange(width: proposal.width ?? .infinity, subviews: subviews)
-        let width = rows.map(\.width).max() ?? 0
-        let height = rows.map(\.height).reduce(0, +) + CGFloat(max(0, rows.count - 1)) * spacing
-        return CGSize(width: proposal.width.map { min($0, width) } ?? width, height: height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var y = bounds.minY
-        for row in arrange(width: bounds.width, subviews: subviews) {
-            var x = bounds.minX
-            for index in row.items {
-                let size = subviews[index].sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
-                subviews[index].place(at: CGPoint(x: x, y: y + (row.height - size.height) / 2), proposal: ProposedViewSize(size))
-                x += size.width + spacing
-            }
-            y += row.height + spacing
-        }
-    }
-
-    private struct Row { var items: [Int] = []; var width: CGFloat = 0; var height: CGFloat = 0 }
-
-    private func arrange(width: CGFloat, subviews: Subviews) -> [Row] {
-        var rows: [Row] = []
-        var row = Row()
-        for index in subviews.indices {
-            let size = subviews[index].sizeThatFits(ProposedViewSize(width: width, height: nil))
-            let needed = row.items.isEmpty ? size.width : row.width + spacing + size.width
-            if needed > width, !row.items.isEmpty {
-                rows.append(row)
-                row = Row()
-            }
-            row.width = row.items.isEmpty ? size.width : row.width + spacing + size.width
-            row.height = max(row.height, size.height)
-            row.items.append(index)
-        }
-        if !row.items.isEmpty { rows.append(row) }
-        return rows
-    }
-}
-
-/// Small icon + text with tight spacing for metadata rows.
-struct CalendarCompactLabelStyle: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            configuration.icon.frame(width: 16)
-            configuration.title
-        }
-    }
-}
-
-/// „Automatisch“ plus the named subject colours.
-struct CalendarColorPicker: View {
-    let key: String
-    @ObservedObject var model: CalendarModel
-
-    var body: some View {
-        let chosen = model.subjectColors[key]
-        Picker("Fachfarbe", selection: Binding<String>(get: { chosen ?? "" }, set: { model.setSubjectColor(key, to: $0.isEmpty ? nil : $0) })) {
-            Label("Automatisch (\(CalendarSubjectColor.title(CalendarSubjectColor.name(for: key, chosen: [:]))))", systemImage: "wand.and.stars").tag("")
-            ForEach(CalendarSubjectColor.choosable, id: \.self) { name in
-                Label {
-                    Text(CalendarSubjectColor.title(name))
-                } icon: {
-                    Image(systemName: "circle.fill").foregroundStyle(CalendarPalette.color(named: name))
-                }
-                .tag(name)
-            }
-        }
-        .pickerStyle(.inline)
-    }
-}
-
-// MARK: Notes
-
-/// The note area of the event window: the normal noty editor on the event's
-/// notebook – or the not yet saved page of a new note, writable at once –
-/// edge to edge on the editor's own dark backdrop. Its controls (page flip,
-/// „Neue Seite“, „Vergrößern“ as the editor's leading button) are the
-/// editor's; other states show one calm message on the same backdrop.
-struct CalendarNoteArea: View {
-    let event: CalendarEntry
-    @ObservedObject var model: CalendarModel
-
-    var body: some View {
-        ZStack {
-            Color(uiColor: NotebookViewport.backdrop)
-            switch model.noteState {
-            case .session(let session) where session.entryID == event.id:
-                if model.enlargedDraft === session {
-                    message(symbol: "arrow.up.left.and.arrow.down.right", title: "Die Notiz ist groß geöffnet.")
-                } else {
-                    ContentView(model: session.model, isLibraryDocument: true,
-                                onCloseWorkspace: { model.enlarge(event) },
-                                embedded: true, closeTitle: "Vergrößern", closeSymbol: "arrow.up.left.and.arrow.down.right")
-                        // A new view per note: late callbacks never reach another event's notebook.
-                        .id(session.id)
-                }
-            case .missing(let reason, let link):
-                missing(reason, link: link)
-            case .unavailable(let text):
-                message(symbol: "note.text", title: text)
-            case .sample:
-                CalendarSampleNote(pages: event.samplePages)
-            default:
-                ProgressView().controlSize(.large)
-            }
-        }
-        .task(id: event.id) { model.showNote(for: event) }
-    }
-
-    private func message(symbol: String, title: String, text: String? = nil) -> some View {
-        message(symbol: symbol, title: title, text: text) { EmptyView() }
-    }
-
-    /// Symbol, title, explanation and the actions, centred on the backdrop.
-    private func message<Actions: View>(symbol: String, title: String, text: String?, @ViewBuilder actions: () -> Actions) -> some View {
-        VStack(spacing: CalendarSpace.s) {
-            Image(systemName: symbol).font(.system(size: 30, weight: .regular)).foregroundStyle(.secondary)
-                .padding(.bottom, CalendarSpace.xs)
-                .accessibilityHidden(true)
-            VStack(spacing: CalendarSpace.s) {
-                Text(title).font(.headline)
-                if let text {
-                    Text(text).font(.subheadline).foregroundStyle(.secondary)
-                }
-            }
-            .accessibilityElement(children: .combine)
-            VStack(spacing: CalendarSpace.s) { actions() }
-                .padding(.top, CalendarSpace.m)
-        }
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 380)
-        .padding(CalendarSpace.xl)
-    }
-
-    /// Trash or permanently deleted: explained, never a same-named notebook.
-    @ViewBuilder private func missing(_ reason: CalendarNoteState.Missing, link: CalendarNoteLink) -> some View {
-        switch reason {
-        case .trashed(let title):
-            message(symbol: "trash", title: "Die Notiz „\(title)“ liegt im Papierkorb.",
-                    text: "Wiederherstellen zeigt sie hier wieder. „Verknüpfung lösen“ lässt sie im Papierkorb und gibt die Fläche für eine neue Notiz frei.") {
-                Button("Wiederherstellen") { Task { await model.restoreNote(link) } }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                unlinkButton(link)
-            }
-        case .deleted:
-            message(symbol: "questionmark.folder", title: "Die verknüpfte Notiz wurde endgültig gelöscht.",
-                    text: "noty öffnet dafür kein anderes Heft, auch kein gleichnamiges. „Verknüpfung lösen“ gibt die Fläche für eine neue Notiz frei.") {
-                unlinkButton(link)
-            }
-        }
-    }
-
-    private func unlinkButton(_ link: CalendarNoteLink) -> some View {
-        Button("Verknüpfung lösen", role: .destructive) { Task { await model.unlink(link) } }
-            .buttonStyle(.bordered).controlSize(.large)
-    }
-}
-
-/// The note's state in the window head, in words (never „gespeichert“
-/// before the commit and the link); icon only where the head is narrow.
-struct CalendarNoteStatus: View {
-    let event: CalendarEntry
-    @ObservedObject var model: CalendarModel
-
-    var body: some View {
-        if case .session(let session) = model.noteState, session.entryID == event.id {
-            CalendarNoteStatusLabel(session: session, editor: session.model, model: model)
-        }
-    }
-}
-
-private struct CalendarNoteStatusLabel: View {
-    @ObservedObject var session: CalendarNoteSession
-    @ObservedObject var editor: EditorModel
-    @ObservedObject var model: CalendarModel
-
-    var body: some View {
-        switch session.phase {
-        case .failed(let reason):
-            // A failure always keeps its words and the retry.
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(reason).font(.caption).lineLimit(2)
-                Button("Erneut") { model.continueCreation(session) }
-                    .font(.caption.weight(.semibold)).buttonStyle(.bordered).controlSize(.small)
-            }
-            .frame(maxWidth: 280)
-            .accessibilityElement(children: .combine)
-        default:
-            let info = content
-            ViewThatFits(in: .horizontal) {
-                Label(info.text, systemImage: info.symbol).lineLimit(1)
-                Image(systemName: info.symbol).frame(width: 28, height: 28)
-            }
-            .font(.caption).foregroundStyle(info.warn ? Color.orange : .secondary)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(info.text)
-            .help(info.text)
-        }
-    }
-
-    private var content: (symbol: String, text: String, warn: Bool) {
-        switch session.phase {
-        case .draft: ("pencil.tip", "Schreiben legt die Notiz an", false)
-        case .creating: ("arrow.triangle.2.circlepath", "Wird angelegt …", false)
-        default:
-            editor.saveFailed
-                ? ("exclamationmark.triangle.fill", "Nicht gespeichert", true)
-                : ("folder", "In „Kalendernotizen“", false)
-        }
-    }
-}
-
-/// The note's entries of the head menu: Vergrößern, Seite hinzufügen and –
-/// for an empty new note – linking an existing one again.
-struct CalendarNoteMenuItems: View {
-    @ObservedObject var session: CalendarNoteSession
-    @ObservedObject var editor: EditorModel
-    @ObservedObject var model: CalendarModel
-    let event: CalendarEntry
-
-    var body: some View {
-        Section("Notiz") {
-            Button { model.enlarge(event) } label: {
-                Label("Vergrößern", systemImage: "arrow.up.left.and.arrow.down.right")
-            }
-            Button { model.addNotePage() } label: {
-                Label("Seite hinzufügen", systemImage: "plus.rectangle.portrait")
-            }
-            .disabled(!editor.writable || editor.notebook.pages.count >= 500)
-            if session.phase == .draft, !EditorModel.hasContent(editor.notebook), !model.unlinkedNotebooks.isEmpty {
-                Menu {
-                    ForEach(model.unlinkedNotebooks.prefix(30)) { item in
-                        Button(item.title) { Task { await model.relink(event, to: item) } }
-                    }
-                } label: {
-                    Label("Vorhandene Notiz verknüpfen", systemImage: "link")
-                }
-            }
-        }
-    }
-}
-
-/// Demo mode: the fictitious note, read only.
-struct CalendarSampleNote: View {
-    let pages: [String]
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: CalendarSpace.m) {
-                if pages.isEmpty {
-                    Text("Im Beispielmodus wird keine Notiz angelegt.").foregroundStyle(.secondary)
-                }
-                ForEach(pages.indices, id: \.self) { index in
-                    Text(pages[index]).font(.body).foregroundStyle(Color.black)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .padding(CalendarSpace.l)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 4))
-                }
-                Text("Beispiel · wird nicht gespeichert").font(.caption2).foregroundStyle(CalendarPalette.quiet)
-            }
-            .padding(CalendarSpace.s)
-        }
-    }
-}
-
-/// A note without a notebook yet, shown large over the calendar (the same
-/// editor model; its first input creates the notebook as beside the event).
-struct CalendarEnlargedDraft: View {
-    @ObservedObject var session: CalendarNoteSession
-    @ObservedObject var model: CalendarModel
-
-    var body: some View {
-        ContentView(model: session.model, isLibraryDocument: true, onCloseWorkspace: { model.enlargedDraft = nil },
-                    closeTitle: "Zurück zu \(session.entry.title) · \(CalendarText.shortDate(session.entry.start, calendar: model.calendar))")
-            .id(session.id)
     }
 }

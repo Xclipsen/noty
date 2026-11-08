@@ -41,6 +41,13 @@ ProtectProc=invisible
 ProcSubset=pid
 RestrictNamespaces=yes
 SystemCallArchitectures=native
+# Übliche Systemaufrufe eines Dienstes (Swift/NIO: epoll, eventfd, Threads;
+# curl als Unterprozess: clone/execve, Sockets). Nicht erlaubt (z. B. mount,
+# Module, reboot, ptrace) beendet den Prozess mit SIGSYS (Journal: status=31/SYS).
+SystemCallFilter=@system-service
+# Eigener Benutzernamensraum: nur root und noty-push sind abgebildet, der
+# Dienst hat außerhalb keinerlei Rechte (Zertifikate in /etc/ssl bleiben lesbar).
+PrivateUsers=yes
 CapabilityBoundingSet=
 # AF_UNIX: curl/glibc (Namensauflösung über nscd/systemd-resolved).
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

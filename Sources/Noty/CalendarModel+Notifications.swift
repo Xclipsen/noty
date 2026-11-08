@@ -51,6 +51,53 @@ extension CalendarModel {
         }
     }
 
+    // MARK: Reminders (B3)
+
+    /// Hands the reminders of this area to iPadOS (rolling window). Called on
+    /// load, after every commit, after a WebUntis refresh and on app activation.
+    func rescheduleReminders() {
+        guard loaded else { return }
+        Task { await rescheduleRemindersNow() }
+    }
+
+    /// Plans reminders and Morgen-Überblicke (`CalendarNotificationPlanner`)
+    /// and takes delivered calendar notifications into the bell history.
+    func rescheduleRemindersNow() async {
+        guard loaded else { return }
+        reminderPermission = await CalendarReminderCenter.shared.permission()
+        permissionChecked = true
+        // A detached connection (restored area, access data missing) shows its
+        // timetable as outdated but never reminds from it.
+        let plan = CalendarNotificationPlanner.plan(state: state, snapshot: credentialsMissing ? nil : snapshot,
+                                                    systemEvents: systemEnabled ? systemEvents : [], settings: notificationSettings,
+                                                    namespace: notificationNamespace, now: Date(), calendar: calendar)
+        remindersPlannedUntil = plan.plannedUntil
+        plannedReminderCount = plan.requests.count
+        reminderError = await CalendarReminderCenter.shared.apply(plan, root: root, namespace: notificationNamespace)
+        await collectDelivered()
+        // Live Activity „Schultag“ and widget „Heute“ follow the same moments (noty calendar only).
+        CalendarSchoolDayCenter.shared.update(self)
+    }
+
+    /// The user switched a reminder on: asks iPadOS once.
+    @discardableResult
+    func requestReminderPermission() async -> CalendarReminderCenter.Permission {
+        reminderPermission = await CalendarReminderCenter.shared.requestPermission()
+        return reminderPermission
+    }
+
+    func refreshReminderPermission() async {
+        reminderPermission = await CalendarReminderCenter.shared.permission()
+    }
+
+    var lessonReminderMinutes: Int? { state.settings.lessonReminderMinutes }
+
+    /// „Unterricht: Erinnerung X Minuten vorher“ (nil = aus).
+    func setLessonReminder(_ minutes: Int?) async {
+        if minutes != nil { await requestReminderPermission() }
+        await commit { $0.settings.lessonReminderMinutes = minutes }
+    }
+
     // MARK: Timetable changes
 
     /// Compares the timetable before a refresh with the merged one
@@ -58,17 +105,30 @@ extension CalendarModel {
     /// keeps new changes in the bell and – outside the quiet hours –
     /// announces them: one notification, or one summary for several.
     /// While the push service is in charge of this connection (docs/PUSH.md)
-    /// the changes go into the bell only: the server notifies.
+    /// the changes go into the bell only: the server notifies. Changes of the
+    /// day the tile „Schultag“ runs for are announced by the tile itself
+    /// (alert, `CalendarSchoolDayCenter.announce`), without a second notification.
     func recordChanges(since before: CalendarSourceSnapshot?) async {
         guard notificationSettings.changes, let before, let after = snapshot, before != after else { return }
+        // First what the server already announced: push notifications still in the
+        // Mitteilungszentrale, and its history when the last contact is old. The bell
+        // then knows those changes (`addChanges`) and they are not announced again.
+        await collectDelivered()
+        await CalendarPushClient.shared.refreshBeforeLocalChanges(self)
         let now = Date()
         let changes = CalendarChangeDetector.changes(old: before, new: after, now: now, calendar: calendar)
         guard !changes.isEmpty else { return }
-        let records = changes.map { CalendarNotificationRecord(change: $0, date: now, calendar: calendar, namespace: notificationNamespace) }
+        // A change that repeats after a different one of the same lesson keeps its own entry (`identifyingRepeats`).
+        let records = notificationLog.identifyingRepeats(changes.map {
+            CalendarNotificationRecord(change: $0, date: now, calendar: calendar, namespace: notificationNamespace)
+        })
         let added = Set(addRecords(records).map(\.id))
-        let fresh = zip(changes, records).filter { added.contains($0.1.id) }
+        var fresh = zip(changes, records).filter { added.contains($0.1.id) }
         guard !fresh.isEmpty, !notificationSettings.isQuiet(now, calendar: calendar),
               !CalendarPushClient.shared.isActive(for: state.connection?.id) else { return }
+        let announced = await CalendarSchoolDayCenter.shared.announce(fresh.map(\.0), model: self)
+        fresh.removeAll { announced.contains($0.0.id) }
+        guard !fresh.isEmpty else { return }
         if fresh.count == 1, let pair = fresh.first {
             let (change, record) = pair
             await CalendarReminderCenter.shared.post(id: record.id, title: record.title, body: record.body, namespace: notificationNamespace,
@@ -153,21 +213,37 @@ extension CalendarModel {
 
     // MARK: Opening
 
+    /// The calendar is on screen: shown in the library and not covered by
+    /// an open notebook (a full-screen cover over it).
+    var onScreen: Bool { visible && library?.opened == nil }
+
     /// A bell entry was tapped.
     func open(_ record: CalendarNotificationRecord) {
-        markNotificationRead(record.id)
         openNotification(id: record.id, day: record.day, entryID: record.entryID)
     }
 
     /// Opens the day/entry of a notification through the normal path
-    /// (`show`), as a tap on the calendar would. Nothing while a form, an
+    /// (`show`), as a tap on the calendar would, and marks it read (with
+    /// `readIDs`, the bell entries a push stands for). Not while a form, an
     /// enlarged note or a series question is open (they own the screen).
-    func openNotification(id: String, day: CivilDate?, entryID: String?) {
-        markNotificationRead(id)
+    /// While the calendar is not on screen (Hefte in front, a notebook open)
+    /// the wish is remembered and carried out once it is (`showPending`);
+    /// the library shows the calendar right away when no notebook is open.
+    /// True when it was opened now.
+    @discardableResult
+    func openNotification(id: String, day: CivilDate?, entryID: String?, readIDs: [String] = []) -> Bool {
+        guard onScreen else {
+            pendingOpen = CalendarPendingOpen(id: id, day: day, entryID: entryID, readIDs: readIDs, since: Date())
+            openRequest += 1
+            return false
+        }
         guard draft == nil, enlargedDraft == nil, pendingSeriesChange == nil else {
             notice = "Erst das geöffnete Fenster schließen, dann die Mitteilung erneut antippen."
-            return
+            return false
         }
+        // Read only now: nothing was opened before.
+        markNotificationRead(id)
+        markChangesRead(readIDs)
         if showsSamples { showsSamples = false }
         if let day { anchor = day.start(in: calendar) }
         if let entryID, let entry = event(entryID) {
@@ -177,5 +253,54 @@ extension CalendarModel {
             if mode == .year || mode == .month { mode = .day }
         }
         openRequest += 1
+        return true
     }
+
+    /// „Untis-Zugang prüfen“ (push): the WebUntis sheet over the calendar.
+    /// The calendar view opens it as soon as it is shown
+    /// (`connectionSheetRequested`); while a notebook is open it waits until
+    /// the calendar is on screen again (no sheet beneath the notebook).
+    func requestConnectionSheet() {
+        if library?.opened == nil {
+            connectionSheetRequested = true
+        } else {
+            pendingConnectionSheet = Date()
+        }
+        openRequest += 1
+    }
+
+    /// A notice about a notification (another area, another connection):
+    /// shown in the calendar, which the library brings forward when no
+    /// notebook is open; otherwise it stays until the calendar is shown.
+    func presentNotice(_ text: String) {
+        notice = text
+        openRequest += 1
+    }
+
+    /// What notifications asked for while the calendar was not on screen,
+    /// once it is (calendar shown, notebook closed). A wish older than 15
+    /// minutes is dropped: the calendar is then opened for something else.
+    func showPending() {
+        guard onScreen else { return }
+        let limit = Date().addingTimeInterval(-15 * 60)
+        if let since = pendingConnectionSheet {
+            pendingConnectionSheet = nil
+            if since > limit { connectionSheetRequested = true }
+        }
+        if let pending = pendingOpen {
+            pendingOpen = nil
+            if pending.since > limit {
+                openNotification(id: pending.id, day: pending.day, entryID: pending.entryID, readIDs: pending.readIDs)
+            }
+        }
+    }
+}
+
+/// A tapped notification that waits until the calendar is on screen.
+struct CalendarPendingOpen {
+    let id: String
+    let day: CivilDate?
+    let entryID: String?
+    let readIDs: [String]
+    let since: Date
 }

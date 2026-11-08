@@ -8,7 +8,6 @@ import NotebookCore
 /// alone: VoiceOver says the number).
 struct CalendarBellSymbol: View {
     let unread: Int
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Image(systemName: unread > 0 ? "bell.badge" : "bell")
@@ -23,10 +22,11 @@ struct CalendarBellSymbol: View {
                         .overlay { Capsule().strokeBorder(Color(uiColor: .systemBackground), lineWidth: 1.5) }
                         .fixedSize()
                         .offset(x: 10, y: -8)
-                        .transition(reduceMotion ? .opacity : .scale(scale: 0.3).combined(with: .opacity))
+                        // A data change, not a user action: only a short fade.
+                        .transition(.opacity)
                 }
             }
-            .animation(CalendarMotion.bouncy(reduceMotion), value: unread)
+            .animation(NotyMotion.fade, value: unread > 0)
             .accessibilityElement()
             .accessibilityLabel("Benachrichtigungen")
             .accessibilityValue(unread == 0 ? "Keine ungelesenen" : NotyText.count(unread, "ungelesene", "ungelesene"))
@@ -74,7 +74,7 @@ struct CalendarNotificationsPopover: View {
                     .font(.subheadline.weight(.semibold))
                     .disabled(model.unreadNotifications == 0)
                 Button { openSettings() } label: {
-                    Image(systemName: "gearshape").frame(width: 36, height: 36).contentShape(Rectangle())
+                    Image(systemName: "gearshape").frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .accessibilityLabel("Einstellungen für Benachrichtigungen")
             }

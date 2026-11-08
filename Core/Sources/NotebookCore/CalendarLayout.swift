@@ -354,6 +354,25 @@ public enum CalendarText {
         return String(format: "%02d:%02d", parts.hour ?? 0, parts.minute ?? 0)
     }
 
+    /// Minutes after midnight of `date` on the wall clock of `calendar` (0…1439).
+    public static func minuteOfDay(_ date: Date, calendar: Calendar) -> Int {
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        return (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+    }
+
+    /// „08:05“ from minutes after midnight (settings such as quiet hours);
+    /// always 24 hours, wraps around at midnight.
+    public static func clock(minuteOfDay minute: Int) -> String {
+        let value = ((minute % 1_440) + 1_440) % 1_440
+        return String(format: "%02d:%02d", value / 60, value % 60)
+    }
+
+    /// „Mo 9.11.“ (notification texts: change texts, „Dein Tag · Mo 9.11.“).
+    public static func shortDay(_ date: Date, calendar: Calendar) -> String {
+        let p = calendar.dateComponents([.month, .day], from: date)
+        return "\(shortWeekdays[CalendarDates.weekdayIndex(date, calendar: calendar)]) \(p.day ?? 1).\(p.month ?? 1)."
+    }
+
     /// Grid label of a full hour: „08:00“ … „23:00“.
     public static func hour(_ hour: Int) -> String { String(format: "%02d:00", hour) }
 
@@ -382,6 +401,11 @@ public enum CalendarText {
     public static func numericDate(_ date: Date, calendar: Calendar) -> String {
         let p = calendar.dateComponents([.year, .month, .day], from: date)
         return String(format: "%02d.%02d.%04d", p.day ?? 1, p.month ?? 1, p.year ?? 0)
+    }
+
+    /// „03.11.2026“ of a civil day (no time zone involved).
+    public static func numericDate(_ day: CivilDate) -> String {
+        String(format: "%02d.%02d.%04d", day.day, day.month, day.year)
     }
 
     /// „2.–6. November 2026“, „26. Okt. – 1. Nov. 2026“, „28. Dez. 2026 – 3. Jan. 2027“.
@@ -432,6 +456,6 @@ public enum CalendarText {
         }
     }
 
-    /// „+ 3 weitere“.
-    public static func more(_ count: Int) -> String { "+ \(count) weitere" }
+    /// „+ 1 weiterer“, „+ 3 weitere“ (hidden entries of a month cell: „Termin“).
+    public static func more(_ count: Int) -> String { count == 1 ? "+ 1 weiterer" : "+ \(count) weitere" }
 }

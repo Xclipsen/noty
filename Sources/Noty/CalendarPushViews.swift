@@ -114,8 +114,9 @@ struct CalendarPushSection: View {
         }
     }
 
+    /// Times like „zuletzt abgeglichen 07:12“ with equal-width digits.
     private func line(_ text: String, _ symbol: String, _ tint: Color) -> some View {
-        Label(text, systemImage: symbol).foregroundStyle(tint).fixedSize(horizontal: false, vertical: true)
+        Label(text, systemImage: symbol).monospacedDigit().foregroundStyle(tint).fixedSize(horizontal: false, vertical: true)
     }
 
     private func retryButton(_ title: String) -> some View {

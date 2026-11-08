@@ -89,7 +89,7 @@ struct LibraryView: View {
     private func showNewItem() {
         search = ""
         if location == .recent { location = .root }
-        if showsCalendar { setCalendar(false) }
+        if showsCalendar { setCalendar(false, animated: false) }
     }
     private var activeCopies: [RestoredNotebook] {
         model.restoredCopies.compactMap { copy -> RestoredNotebook? in
@@ -257,7 +257,13 @@ struct LibraryView: View {
         // editing must not stay on without a way out.
         .onChange(of: canReorder) { _, reorder in if !reorder { libraryEditMode = .inactive } }
         // A tapped calendar notification or bell entry shows the calendar (not over an open notebook).
-        .onChange(of: calendar.openRequest) { _, _ in if model.opened == nil { setCalendar(true) } }
+        .onChange(of: calendar.openRequest) { _, _ in if model.opened == nil { setCalendar(true, animated: false) } }
+        // The calendar asks WebUntis and keeps its note only while it is the
+        // shown side: set here from the switch itself (the calendar view's own
+        // appear/disappear came late after a quick back and forth).
+        .onChange(of: showsCalendar) { _, shown in calendar.visible = shown }
+        .onAppear { calendar.visible = showsCalendar }
+        .onDisappear { calendar.visible = false }
         // No sheet changes with these alerts: the keys have to come back by themselves.
         .onChange(of: model.error == nil && workspaces.error == nil && backupMessage == nil) { _, _ in KeyboardRouter.shared.reclaim() }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
@@ -266,7 +272,7 @@ struct LibraryView: View {
             search: editable ? { searchAllNotebooks() } : nil,
             newTextDocument: editable ? { creatingTextDocument = true } : nil,
             newEvent: showsCalendar ? { calendar.requestNewEvent() } : nil,
-            toggleCalendar: canSwitchMode ? { setCalendar(!showsCalendar) } : nil,
+            toggleCalendar: canSwitchMode ? { setCalendar(!showsCalendar, animated: false) } : nil,
             showsCalendar: showsCalendar) : nil)
     }
 
@@ -274,41 +280,62 @@ struct LibraryView: View {
 
     /// The event window and the event form are modal over the calendar: its
     /// note commits only when the window closes (`selection = nil`), so the
-    /// calendar does not go away beneath them.
+    /// calendar does not go away beneath them; neither under its own sheets,
+    /// popovers and dialogs (`presentingOverlays`, set by `CalendarView`).
     private var canSwitchMode: Bool {
         !showsCalendar || (calendar.selectedEvent == nil && calendar.draft == nil && calendar.enlargedDraft == nil
-                           && calendar.pendingSeriesChange == nil)
+                           && calendar.pendingSeriesChange == nil && !calendar.presentingOverlays)
     }
 
-    /// One transaction: content glides/cross-fades and the library sidebar
-    /// collapses (or comes back as it was) together.
-    private func setCalendar(_ shown: Bool) {
+    /// Calendar keys only while nothing of the library is presented above it
+    /// (a notebook, sheets, dialogs, alerts) and nothing of its own.
+    private var calendarKeysActive: Bool {
+        model.opened == nil && !presenting && model.error == nil && workspaces.error == nil && backupMessage == nil
+            && !calendar.presentingOverlays
+    }
+
+    /// Tapping (switch, sidebar): one soft transaction of at most 0.3 s – the
+    /// content cross-fades with a 12-pt shift while the library sidebar
+    /// collapses (or comes back). ⇧⌘K, the command palette and a
+    /// notification: at once. Reduce Motion: the column changes at once,
+    /// the content only cross-fades.
+    private func setCalendar(_ shown: Bool, animated: Bool) {
         guard shown != showsCalendar, shown || canSwitchMode else { return }
-        withAnimation(NotyMotion.modeSwitch(reduceMotion)) {
+        let layout = {
             if shown {
                 search = ""; libraryEditMode = .inactive; keyboardFocus = nil
                 visibilityBeforeCalendar = columnVisibility
                 columnVisibility = .detailOnly
             } else {
-                columnVisibility = visibilityBeforeCalendar ?? .all
+                // Never force the sidebar open (portrait would cover the
+                // content): a hidden one stays hidden, otherwise the system
+                // places it as it does by itself.
+                columnVisibility = visibilityBeforeCalendar == .detailOnly ? .detailOnly : .automatic
                 visibilityBeforeCalendar = nil
             }
-            showsCalendar = shown
+        }
+        if !animated {
+            NotyMotion.instant { layout(); showsCalendar = shown }
+        } else if reduceMotion {
+            NotyMotion.instant(layout)
+            withAnimation(NotyMotion.fade) { showsCalendar = shown }
+        } else {
+            withAnimation(NotyMotion.palette(false)) { layout(); showsCalendar = shown }
         }
     }
 
-    /// Hefte sit left, the calendar right: each side always enters and leaves
-    /// towards its own edge, so the motion follows the switch. Reduce Motion:
-    /// only the cross-fade.
+    /// Hefte sit left, the calendar right: each side enters and leaves
+    /// towards its own edge, only 12 pt and fading, so the motion follows the
+    /// switch without carrying the page along. Reduce Motion: only the cross-fade.
     private func modeTransition(leading: Bool) -> AnyTransition {
         if reduceMotion { return .opacity }
-        return .offset(x: leading ? -36 : 36).combined(with: .scale(scale: 0.985)).combined(with: .opacity)
+        return .offset(x: leading ? -12 : 12).combined(with: .opacity)
     }
 
     /// Segmented „Hefte | Kalender“ at the top left of the detail column; the
     /// same item stays in the bar for both sides, the marker slides between them.
     private var modeSwitch: some View {
-        LibraryModeSwitch(showsCalendar: showsCalendar, namespace: modeSwitchSpace, reduceMotion: reduceMotion) { setCalendar($0) }
+        LibraryModeSwitch(showsCalendar: showsCalendar, namespace: modeSwitchSpace, reduceMotion: reduceMotion) { setCalendar($0, animated: true) }
             .disabled(!canSwitchMode || model.opened != nil)
     }
 
@@ -365,7 +392,7 @@ struct LibraryView: View {
     }
     /// What only the menus offer; the palette adds every key binding by name.
     private var keyCommands: [PaletteCommand] {
-        [PaletteCommand(title: showsCalendar ? "Hefte zeigen" : "Kalender zeigen") { setCalendar(!showsCalendar) },
+        [PaletteCommand(title: showsCalendar ? "Hefte zeigen" : "Kalender zeigen") { setCalendar(!showsCalendar, animated: false) },
          PaletteCommand(title: "PDF oder Bild importieren") { importingPDF = true },
          PaletteCommand(title: "Backup importieren") { importingBackup = true },
          PaletteCommand(title: "Wiederhergestellte Kopien") { showingCopies = true },
@@ -387,7 +414,14 @@ struct LibraryView: View {
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(LibrarySpace.sidebar)) } action: { frames.root = $0 }
                 sidebarLink("Zuletzt verwendet", systemImage: "clock", target: .recent, dropInto: false)
                 // Second way in besides the switch (the sidebar goes away with it).
-                sidebarButton("Kalender", systemImage: "calendar", selected: showsCalendar, dropInto: false) { setCalendar(true) }
+                // Swiped in over the calendar, the entry puts the sidebar away again.
+                sidebarButton("Kalender", systemImage: "calendar", selected: showsCalendar, dropInto: false) {
+                    if showsCalendar {
+                        withAnimation(NotyMotion.panel(reduceMotion)) { columnVisibility = .detailOnly }
+                    } else {
+                        setCalendar(true, animated: true)
+                    }
+                }
                 let pins = model.pinnedItems
                 if !pins.isEmpty {
                     sidebarHeader("Angeheftet")
@@ -418,7 +452,7 @@ struct LibraryView: View {
     private func sidebarLink(_ title: String, systemImage: String, target: LibraryLocation, dropInto: Bool) -> some View {
         sidebarButton(title, systemImage: systemImage, selected: !showsCalendar && location == target, dropInto: dropInto) {
             location = target
-            setCalendar(false)
+            setCalendar(false, animated: true)
         }
     }
 
@@ -725,7 +759,7 @@ struct LibraryView: View {
     private var detail: some View {
         ZStack {
             if showsCalendar {
-                CalendarView(model: calendar, keysActive: model.opened == nil)
+                CalendarView(model: calendar, keysActive: calendarKeysActive, covered: model.opened != nil)
                     .transition(modeTransition(leading: false))
             } else {
                 collection
@@ -1021,7 +1055,7 @@ struct LibraryView: View {
     private func activate(_ item: NotebookCore.LibraryItem) {
         // A folder chosen in the (swiped-in) sidebar leaves the calendar; a
         // location change of its own (a trashed folder falling back) does not.
-        if item.isFolder { location = .folder(item.id); setCalendar(false) }
+        if item.isFolder { location = .folder(item.id); setCalendar(false, animated: true) }
         else { Task { await model.open(item) } }
     }
 
@@ -1427,7 +1461,8 @@ private struct LibraryModeSwitch: View {
             .padding(.horizontal, 12)
             .frame(minWidth: 40, minHeight: 32)
             .background { if selected { marker } }
-            .contentShape(Capsule())
+            // The capsule stays 32 pt high; it takes touches 44 pt high.
+            .contentShape(NotyHitShape())
         }
         .buttonStyle(NotyPressStyle())
         .accessibilityLabel(title)

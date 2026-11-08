@@ -33,6 +33,10 @@ public struct WebUntisCurlSource: TimetableSource {
     }
 }
 
+/// The stored Freigabe names a server outside `allowedUntisHostSuffixes`
+/// (configuration narrowed after the registration): nothing is requested.
+struct UntisServerNotAllowed: Error {}
+
 /// How a failed poll is treated.
 public enum PollFailure: Equatable, Sendable {
     /// User/key/school rejected: counts towards „Untis-Zugang prüfen“.
@@ -50,6 +54,7 @@ public enum PollFailure: Equatable, Sendable {
             }
         }
         if let error = error as? TransportError { return .transient("Netzwerk: \(error)") }
+        if error is UntisServerNotAllowed { return .transient("WebUntis-Server nicht zugelassen") }
         if error is CalendarStoreError { return .transient("Antwort nicht übernehmbar") }
         return .transient("Fehler")
     }

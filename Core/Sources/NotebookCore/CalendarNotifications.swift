@@ -32,17 +32,11 @@ public struct CalendarNotificationSettings: Codable, Equatable, Sendable {
 
     public static let eventPresets = [5, 10, 15, 30, 60]
 
-    /// Minutes of the day in `calendar` (wall clock).
-    static func minuteOfDay(_ date: Date, calendar: Calendar) -> Int {
-        let p = calendar.dateComponents([.hour, .minute], from: date)
-        return (p.hour ?? 0) * 60 + (p.minute ?? 0)
-    }
-
     /// True when `date` lies in the quiet hours (start inclusive, end exclusive;
     /// over midnight when start > end; none when start == end or switched off).
     public func isQuiet(_ date: Date, calendar: Calendar) -> Bool {
         guard quietHours, quietStart != quietEnd else { return false }
-        let minute = Self.minuteOfDay(date, calendar: calendar)
+        let minute = CalendarText.minuteOfDay(date, calendar: calendar)
         if quietStart < quietEnd { return minute >= quietStart && minute < quietEnd }
         return minute >= quietStart || minute < quietEnd
     }
@@ -149,7 +143,7 @@ public enum CalendarOverview {
             lines.append((events.count == 1 ? "Termin: " : "Termine: ") + parts.joined(separator: "; ") + (events.count > 3 ? " (+\(events.count - 3))" : ""))
         }
         guard !lessons.isEmpty || !events.isEmpty else { return nil }
-        return ("Dein Tag · " + CalendarChangeText.day(start, calendar: calendar), lines.joined(separator: "\n"))
+        return ("Dein Tag · " + CalendarText.shortDay(start, calendar: calendar), lines.joined(separator: "\n"))
     }
 }
 
@@ -216,7 +210,7 @@ public struct CalendarNotificationRecord: Codable, Identifiable, Equatable, Send
     /// The history entry of a timetable change.
     public init(change: CalendarLessonChange, date: Date, calendar: Calendar, namespace: String) {
         let prefix = CalendarNotificationLog.changePrefix + (namespace.isEmpty ? "" : namespace + ".")
-        self.init(id: prefix + change.id, kind: .change, title: "Stundenplanänderung", body: change.text(calendar: calendar),
+        self.init(id: prefix + change.id, kind: .change, title: CalendarLessonChange.notificationTitle, body: change.text(calendar: calendar),
                   date: date, day: change.lesson.date, entryID: change.lesson.id)
     }
 
@@ -361,21 +355,49 @@ extension CalendarNotificationLog {
     /// a cancellation, a reinstatement or any other change. The kinds
     /// themselves depend on that pair (the server compares hourly, the app
     /// with its own last state: „Raumwechsel“ + later „Vertretung“ there,
-    /// „Raumwechsel, Vertretung“ here) and are left out. Nil for anything
-    /// that is no change entry.
+    /// „Raumwechsel, Vertretung“ here) and are left out. A repeat
+    /// (`…~n`, `CalendarChangeRepeats`) carries its generation: the second
+    /// „Ausfall“ of a lesson is not the first one. Nil for anything that is
+    /// no change entry.
     public static func changeMatchKey(_ id: String) -> String? {
+        guard let parts = split(id), let change = CalendarChangeID(parts.raw) else { return nil }
+        var key = [change.period, change.day.description, change.category, String(change.start), change.rooms]
+        if change.generation > 1 { key.append(String(change.generation)) }
+        return key.joined(separator: "|")
+    }
+
+    /// „noty.calendar-change.<Bereich>[.push]." and the raw change id („change.…“).
+    static func split(_ id: String) -> (head: String, raw: String)? {
         guard id.hasPrefix(changePrefix) else { return nil }
         let rest = "." + id.dropFirst(changePrefix.count)
         guard let range = rest.range(of: ".change.") else { return nil }
-        let parts = rest[range.upperBound...].split(separator: ".", omittingEmptySubsequences: false).map(String.init)
-        // change.<periode>.<YYYY-MM-DD>.<arten>.<beginn>.<räume> – the period may contain dots, the rooms too.
-        guard let dateIndex = parts.indices.dropFirst().first(where: { CivilDate(parts[$0]) != nil }),
-              parts.count >= dateIndex + 3, Int(parts[dateIndex + 2]) != nil else { return nil }
-        let kinds = parts[dateIndex + 1].split(separator: "-")
-        let category = kinds.contains("cancelled") ? "cancelled" : kinds.contains("reinstated") ? "reinstated" : "changed"
-        let period = parts[..<dateIndex].joined(separator: ".")
-        let rooms = parts[(dateIndex + 3)...].joined(separator: ".")
-        return [period, parts[dateIndex], category, parts[dateIndex + 2], rooms].joined(separator: "|")
+        let head = changePrefix + rest[rest.index(after: rest.startIndex)..<rest.index(after: range.lowerBound)]
+        return (String(head), "change." + rest[range.upperBound...])
+    }
+
+    /// Freshly detected changes of the app (one comparison, records from
+    /// `CalendarNotificationRecord(change:…)`) under the ids they are to be
+    /// recorded with, same count and order (`CalendarChangeRepeats`): the
+    /// same change again after a different one of that lesson gets
+    /// `…~2` (`~3` …), so the bell and the notification keep it; a change
+    /// that the newest entry of the same lesson (same origin) already says
+    /// gets that entry's id, so `addChanges` leaves it out. Call before
+    /// `addChanges`; delivered notifications collected again go to
+    /// `addChanges` directly (their ids are final).
+    public func identifyingRepeats(_ new: [CalendarNotificationRecord]) -> [CalendarNotificationRecord] {
+        // Oldest first: the history is kept newest first.
+        var earlier: [String: [String]] = [:]
+        for record in records.reversed() where record.kind == .change {
+            if let parts = Self.split(record.id) { earlier[parts.head, default: []].append(parts.raw) }
+        }
+        return new.map { record in
+            guard record.kind == .change, let parts = Self.split(record.id) else { return record }
+            let resolved = CalendarChangeRepeats.resolve(parts.raw, earlier: earlier[parts.head] ?? [])
+            var copy = record
+            copy.id = parts.head + resolved.id
+            if resolved.isNew { earlier[parts.head, default: []].append(resolved.id) }
+            return copy
+        }
     }
 
     /// As `add`, and a change entry is also left out when an entry of the
@@ -406,8 +428,53 @@ extension CalendarNotificationLog {
 extension CalendarLessonChange {
     /// One text for several changes found at once (one notification instead of a flood).
     public static func summary(_ changes: [CalendarLessonChange], calendar: Calendar) -> (title: String, body: String) {
-        guard changes.count > 1 else { return ("Stundenplanänderung", changes.first?.text(calendar: calendar) ?? "") }
-        let lines = changes.prefix(3).map { $0.text(calendar: calendar) }
-        return ("\(changes.count) Stundenplanänderungen", lines.joined(separator: "\n") + (changes.count > 3 ? "\n…" : ""))
+        summary(bodies: changes.map { $0.text(calendar: calendar) })
+    }
+
+    /// The same from the texts alone (`text(calendar:)` of each change, in
+    /// order), e.g. changes queued as text by the push service: one change
+    /// → its text under `notificationTitle`; several → „n Stundenplanänderungen“
+    /// with the first three lines and „…“.
+    public static func summary(bodies: [String]) -> (title: String, body: String) {
+        guard bodies.count > 1 else { return (notificationTitle, bodies.first ?? "") }
+        return ("\(bodies.count) Stundenplanänderungen", bodies.prefix(3).joined(separator: "\n") + (bodies.count > 3 ? "\n…" : ""))
+    }
+}
+
+/// Keys and kinds of the app data in a push of the push service
+/// (`userInfo["noty"]`, docs/PUSH.md). The server writes them, the app reads
+/// them: one definition for both.
+public enum CalendarPushPayload {
+    /// Key of the app data in the APNs payload.
+    public static let rootKey = "noty"
+
+    public enum Key: String, CaseIterable, Sendable {
+        /// `Kind` raw value.
+        case kind
+        /// `CalendarConnectionRecord.id` (UUID string).
+        case connectionID
+        /// Raw change id (`change.…`, `CalendarChangeID`), kind `change`.
+        case changeID
+        /// Raw change ids of the push (one for `change`, up to 20 for `summary`).
+        case changeIDs
+        /// „YYYY-MM-DD“ of the (earliest) lesson.
+        case day
+        /// `CalendarLesson.id` of the (earliest) lesson.
+        case entryID
+        /// WebUntis period id.
+        case periodID
+        /// Start of the lesson, Unix seconds.
+        case lessonStart
+    }
+
+    public enum Kind: String, CaseIterable, Sendable {
+        /// One timetable change.
+        case change
+        /// Several changes in one push.
+        case summary
+        /// „Untis-Zugang prüfen“: the server can no longer fetch the timetable.
+        case auth
+        /// Test push of the operator (`noty-push test-push`/`demo-push`): opens nothing.
+        case test
     }
 }

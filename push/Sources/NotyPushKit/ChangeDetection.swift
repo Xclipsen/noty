@@ -27,15 +27,3 @@ public struct CoreChangeDetector: TimetableChangeDetecting {
         }
     }
 }
-
-public enum ChangeText {
-    public static let title = "Stundenplanänderung"
-
-    /// One text for several changes: the same shape as Core's
-    /// `CalendarLessonChange.summary` (that one needs the full change
-    /// objects; queued changes only have their stored texts).
-    public static func summary(_ bodies: [String]) -> (title: String, body: String) {
-        guard bodies.count > 1 else { return (title, bodies.first ?? "") }
-        return ("\(bodies.count) Stundenplanänderungen", bodies.prefix(3).joined(separator: "\n") + (bodies.count > 3 ? "\n…" : ""))
-    }
-}

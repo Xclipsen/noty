@@ -220,6 +220,13 @@ final class CalendarLayoutTests: XCTestCase {
         XCTAssertEqual(CalendarText.headline(.year, anchor: tuesday, weekDays: 5, calendar: berlin), "2026")
         XCTAssertEqual(CalendarText.headline(.day, anchor: tuesday, weekDays: 5, calendar: berlin), "3. November 2026")
         XCTAssertEqual(CalendarText.more(3), "+ 3 weitere")
+        XCTAssertEqual(CalendarText.more(1), "+ 1 weiterer", "ein Termin: maskulin")
+        XCTAssertEqual(CalendarText.shortDay(tuesday, calendar: berlin), "Di 3.11.")
+        XCTAssertEqual(CalendarText.minuteOfDay(tuesday, calendar: berlin), 8 * 60 + 5)
+        XCTAssertEqual(CalendarText.clock(minuteOfDay: 8 * 60 + 5), "08:05")
+        XCTAssertEqual(CalendarText.clock(minuteOfDay: 21 * 60), "21:00")
+        XCTAssertEqual(CalendarText.clock(minuteOfDay: 24 * 60 + 30), "00:30")
+        XCTAssertEqual(CalendarText.numericDate(CivilDate("2026-11-03")!), "03.11.2026")
         XCTAssertEqual(CalendarMode.allCases.map(\.title), ["Jahr", "Monat", "Woche", "Tag"])
     }
 }

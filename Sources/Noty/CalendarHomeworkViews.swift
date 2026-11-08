@@ -14,8 +14,10 @@ struct CalendarHomeworkRow: View {
     var compact = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Shown at once when ticked; the mark is stored a moment later so the
-    /// tick is seen before the row leaves the open list.
+    /// tick is seen before the row leaves the open list. Tapping again
+    /// meanwhile takes the tick back (`pending` is cancelled, nothing stored).
     @State private var ticking: Bool?
+    @State private var pending: Task<Void, Never>?
 
     private var color: Color {
         let key = CalendarSubjectColor.key(subjectID: item.homework.subjectID, name: item.homework.subject ?? "Hausaufgabe")
@@ -28,26 +30,17 @@ struct CalendarHomeworkRow: View {
         // Ticking needs a writable calendar and the WebUntis connection the mark belongs to.
         let canTick = model.canWrite && model.connection != nil && !model.showsSamples
         HStack(alignment: .top, spacing: CalendarSpace.s) {
-            Button {
-                let target = !item.done
-                withAnimation(CalendarMotion.snappy(reduceMotion)) { ticking = target }
-                Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(reduceMotion ? 120 : 420))
-                    await model.setHomeworkDone(item.id, done: target)
-                    ticking = nil
-                }
-            } label: {
+            Button { tick() } label: {
                 Image(systemName: done ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
                     .foregroundStyle(done ? Color.green : Color.secondary)
                     .contentTransition(.symbolEffect(.replace))
-                    .symbolEffect(.bounce, value: reduceMotion ? false : done)
                     .frame(width: 32, height: 44, alignment: .top)
                     .padding(.top, 2)
-                    .contentShape(Rectangle())
+                    .contentShape(NotyHitShape())
             }
-            .buttonStyle(.plain)
-            .disabled(!canTick || ticking != nil)
+            .buttonStyle(NotyPressStyle())
+            .disabled(!canTick)
             // Haptic only for a stored change (not for the optimistic tick).
             .sensoryFeedback(trigger: item.done) { _, new in new ? .success : .selection }
             .accessibilityLabel(done ? "Als offen markieren" : "Als erledigt markieren")
@@ -79,6 +72,26 @@ struct CalendarHomeworkRow: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityValue(done ? "erledigt" : "offen")
+    }
+
+    /// First tap: tick (or untick) at once, store after a moment. A second
+    /// tap before that cancels: the row stays as it was.
+    private func tick() {
+        if let running = pending {
+            running.cancel()
+            pending = nil
+            withAnimation(NotyMotion.highlight(reduceMotion)) { ticking = nil }
+            return
+        }
+        let target = !item.done
+        withAnimation(NotyMotion.highlight(reduceMotion)) { ticking = target }
+        pending = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(reduceMotion ? 120 : 420))
+            guard !Task.isCancelled else { return }
+            await model.setHomeworkDone(item.id, done: target)
+            ticking = nil
+            pending = nil
+        }
     }
 
     private var overdue: Bool {

@@ -15,6 +15,7 @@ struct CalendarEventForm: View {
     @State var draft: CalendarDraft
     @ObservedObject var model: CalendarModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.calendarLocalChange) private var localChange
     @State private var saving = false
     @State private var failure: String?
     @State private var askingScope = false
@@ -76,10 +77,15 @@ struct CalendarEventForm: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.disabled(saving) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(draft.editing == nil ? "Hinzufügen" : "Fertig") {
-                        if asksScope { askingScope = true } else { save(.all) }
+                    if saving {
+                        // Only a slow commit shows the wait, then with words.
+                        CalendarDelayedProgress(text: "Wird gesichert …")
+                    } else {
+                        Button(draft.editing == nil ? "Hinzufügen" : "Fertig") {
+                            if asksScope { askingScope = true } else { save(.all) }
+                        }
+                        .disabled(draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || invalidRange)
                     }
-                    .disabled(saving || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || invalidRange)
                 }
             }
             .confirmationDialog("Änderung übernehmen für", isPresented: $askingScope, titleVisibility: .visible) {
@@ -253,6 +259,8 @@ struct CalendarEventForm: View {
     private func save(_ scope: CalendarModel.SeriesScope) {
         saving = true
         failure = nil
+        // The user's own change: the new or moved card may animate in.
+        localChange?.mark()
         let target = target
         Task {
             let problem = await model.save(draft, scope: scope, target: target)

@@ -6,28 +6,40 @@ import NIOHTTP1
 /// Plain HTTP/1.1 on the loopback interface only; TLS, the public path and
 /// request filtering are nginx' job (push/deploy/nginx-noty-push.conf).
 public final class HTTPServer {
+    /// A connection that sends nothing for this long is closed (slow clients).
+    public static let idleTimeout: TimeAmount = .seconds(30)
+    /// How long one request may be processed: a registration fetches
+    /// WebUntis twice with up to 40 s each (nginx waits 120 s). While a
+    /// request is processed the idle timeout does not apply.
+    public static let maximumProcessing: TimeAmount = .seconds(150)
+
     let router: APIRouter
     let host: String
     let port: Int
+    let idleTimeout: TimeAmount
+    let maximumProcessing: TimeAmount
     let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
     private var channel: Channel?
 
-    public init(router: APIRouter, host: String, port: Int) {
+    public init(router: APIRouter, host: String, port: Int, idleTimeout: TimeAmount = HTTPServer.idleTimeout,
+                maximumProcessing: TimeAmount = HTTPServer.maximumProcessing) {
         self.router = router; self.host = host; self.port = port
+        self.idleTimeout = idleTimeout; self.maximumProcessing = maximumProcessing
     }
 
     public func start() throws {
         guard ["127.0.0.1", "::1"].contains(host) else { throw PushError.configuration("nur Loopback") }
         let router = self.router
+        let idleTimeout = self.idleTimeout, maximumProcessing = self.maximumProcessing
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 64)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
                 channel.eventLoop.makeCompletedFuture {
                     let pipeline = channel.pipeline.syncOperations
-                    try pipeline.addHandler(IdleStateHandler(readTimeout: .seconds(30)))
+                    try pipeline.addHandler(IdleStateHandler(readTimeout: idleTimeout))
                     try pipeline.configureHTTPServerPipeline(withErrorHandling: true)
-                    try pipeline.addHandler(RequestHandler(router: router))
+                    try pipeline.addHandler(RequestHandler(router: router, maximumProcessing: maximumProcessing))
                 }
             }
             .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 4)
@@ -46,14 +58,21 @@ final class RequestHandler: ChannelInboundHandler {
     typealias OutboundOut = HTTPServerResponsePart
 
     let router: APIRouter
+    let maximumProcessing: TimeAmount
     private var head: HTTPRequestHead?
     private var body = ByteBuffer()
     private var tooLarge = false
+    /// A request is being processed since then (the client waits, sending nothing).
+    private var processingSince: NIODeadline?
 
-    init(router: APIRouter) { self.router = router }
+    init(router: APIRouter, maximumProcessing: TimeAmount) { self.router = router; self.maximumProcessing = maximumProcessing }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-        if event is IdleStateHandler.IdleStateEvent { context.close(promise: nil) } else { context.fireUserInboundEventTriggered(event) }
+        guard event is IdleStateHandler.IdleStateEvent else { return context.fireUserInboundEventTriggered(event) }
+        // Silence of a client that waits for its answer is no idleness; only
+        // a request that takes longer than `maximumProcessing` is given up.
+        if let since = processingSince, NIODeadline.now() - since < maximumProcessing { return }
+        context.close(promise: nil)
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -82,10 +101,13 @@ final class RequestHandler: ChannelInboundHandler {
             let router = self.router
             let loop = context.eventLoop
             let bound = NIOLoopBound((self, context), eventLoop: loop)
+            processingSince = .now()
             Task {
                 let response = await router.handle(request)
                 loop.execute {
                     let (handler, context) = bound.value
+                    handler.processingSince = nil
+                    guard context.channel.isActive else { return }
                     handler.write(context: context, head: head, response: response, close: !head.isKeepAlive)
                 }
             }

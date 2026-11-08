@@ -116,15 +116,32 @@ final class WebUntisClient: Sendable {
         return data
     }
 
+    /// What went wrong on the network, shared by both texts below.
+    private enum NetworkProblem {
+        case offline, timedOut, hostUnknown, refused, insecure, other(Int)
+
+        init(_ error: URLError) {
+            switch error.code {
+            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed: self = .offline
+            case .timedOut: self = .timedOut
+            case .cannotFindHost, .dnsLookupFailed: self = .hostUnknown
+            case .cannotConnectToHost: self = .refused
+            case .serverCertificateUntrusted, .serverCertificateHasBadDate, .secureConnectionFailed, .serverCertificateHasUnknownRoot:
+                self = .insecure
+            default: self = .other(error.code.rawValue)
+            }
+        }
+    }
+
     /// Short German text for the quiet status line.
     static func message(_ error: Error) -> String {
         if let error = error as? URLError {
-            switch error.code {
-            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed: return "Keine Internetverbindung"
+            switch NetworkProblem(error) {
+            case .offline: return "Keine Internetverbindung"
             case .timedOut: return "Zeitüberschreitung"
-            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed: return "Server nicht erreichbar"
-            case .serverCertificateUntrusted, .serverCertificateHasBadDate, .secureConnectionFailed: return "Sichere Verbindung fehlgeschlagen"
-            default: return "Netzwerkfehler (\(error.code.rawValue))"
+            case .hostUnknown, .refused: return "Server nicht erreichbar"
+            case .insecure: return "Sichere Verbindung fehlgeschlagen"
+            case .other(let code): return "Netzwerkfehler (\(code))"
             }
         }
         if let error = error as? WebUntisError {
@@ -143,19 +160,13 @@ final class WebUntisClient: Sendable {
     /// unreadable (shape only). Never contains the key.
     static func testMessage(_ error: Error) -> String {
         if let error = error as? URLError {
-            switch error.code {
-            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
-                return "Keine Internetverbindung. Bitte WLAN prüfen und erneut testen."
-            case .cannotFindHost, .dnsLookupFailed:
-                return WebUntisProblem.serverUnreachable("Diese Adresse gibt es nicht.").message
-            case .cannotConnectToHost:
-                return WebUntisProblem.serverUnreachable("Der Server nimmt keine Verbindung an.").message
-            case .timedOut:
-                return WebUntisProblem.serverUnreachable("Zeitüberschreitung.").message
-            case .serverCertificateUntrusted, .serverCertificateHasBadDate, .secureConnectionFailed, .serverCertificateHasUnknownRoot:
-                return WebUntisProblem.serverUnreachable("Sichere Verbindung fehlgeschlagen.").message
-            default:
-                return "Netzwerkfehler (\(error.code.rawValue)). Bitte erneut testen."
+            switch NetworkProblem(error) {
+            case .offline: return "Keine Internetverbindung. Bitte WLAN prüfen und erneut testen."
+            case .hostUnknown: return WebUntisProblem.serverUnreachable("Diese Adresse gibt es nicht.").message
+            case .refused: return WebUntisProblem.serverUnreachable("Der Server nimmt keine Verbindung an.").message
+            case .timedOut: return WebUntisProblem.serverUnreachable("Zeitüberschreitung.").message
+            case .insecure: return WebUntisProblem.serverUnreachable("Sichere Verbindung fehlgeschlagen.").message
+            case .other(let code): return "Netzwerkfehler (\(code)). Bitte erneut testen."
             }
         }
         if let error = error as? WebUntisError { return WebUntis.problem(error).message }

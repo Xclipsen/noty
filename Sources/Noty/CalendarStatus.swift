@@ -6,8 +6,9 @@ import NotebookCore
 // behind one sync symbol in the toolbar; only problems that need the user
 // appear as slim banners (`CalendarProblemBanner`).
 
-/// Sync symbol of the toolbar: turns while the timetable refreshes, carries
-/// an orange dot when something needs attention (never colour alone: the
+/// Sync symbol of the toolbar: turns while the timetable refreshes (with
+/// „Bewegung reduzieren“ a still symbol with a ring instead), carries an
+/// orange dot when something needs attention (never colour alone: the
 /// VoiceOver value and the popover say what).
 struct CalendarSyncSymbol: View {
     @ObservedObject var model: CalendarModel
@@ -22,9 +23,13 @@ struct CalendarSyncSymbol: View {
     }
 
     var body: some View {
-        let turning = ((webUntis && model.syncing) || (system && model.systemReading)) && !reduceMotion
+        let working = (webUntis && model.syncing) || (system && model.systemReading)
+        let turning = working && !reduceMotion
         ZStack(alignment: .topTrailing) {
-            if #available(iOS 18.0, *) {
+            if working && reduceMotion {
+                // Static substitute of the turning: the same arrows inside a ring.
+                Image(systemName: "arrow.triangle.2.circlepath.circle")
+            } else if #available(iOS 18.0, *) {
                 // The system symbol effect finishes its turn when reading ends.
                 Image(systemName: symbol)
                     .symbolEffect(.rotate, options: .repeat(.continuous), isActive: turning)
@@ -38,10 +43,11 @@ struct CalendarSyncSymbol: View {
                 Circle().fill(Color.orange).frame(width: 9, height: 9)
                     .overlay { Circle().strokeBorder(Color(uiColor: .systemBackground), lineWidth: 1.5) }
                     .offset(x: 4, y: -3)
-                    .transition(reduceMotion ? .opacity : .scale(scale: 0.3).combined(with: .opacity))
+                    // A data change, not a user action: only a short fade.
+                    .transition(.opacity)
             }
         }
-        .animation(CalendarMotion.bouncy(reduceMotion), value: problem)
+        .animation(NotyMotion.fade, value: problem)
         .accessibilityElement()
         .accessibilityLabel(webUntis ? "Stundenplan-Status" : system ? "Kalender-Status" : "Kalenderstatus")
         .accessibilityValue(value)
@@ -228,11 +234,12 @@ struct CalendarProblemBanner: View {
                     .font(.footnote.weight(.semibold))
                     .buttonStyle(.bordered).tint(.orange)
             } else {
+                // Same size as before; it takes touches 44 × 44 pt.
                 Button(action: perform) {
                     Image(systemName: "xmark").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        .frame(width: 40, height: 40).contentShape(Rectangle())
+                        .frame(width: 40, height: 40).contentShape(NotyHitShape())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(NotyPressStyle())
                 .accessibilityLabel(closeLabel)
             }
         }

@@ -1,15 +1,6 @@
 import SwiftUI
 import NotebookCore
 
-/// Spacing scale of the calendar: 4 · 8 · 12 · 16 · 24.
-enum CalendarSpace {
-    static let xs: CGFloat = 4
-    static let s: CGFloat = 8
-    static let m: CGFloat = 12
-    static let l: CGFloat = 16
-    static let xl: CGFloat = 24
-}
-
 /// Calendar in the library's detail column (docs/CALENDAR-PLAN.md, B1 and
 /// „UI-Überarbeitung 06.11.2026“): Jahr · Monat · Woche · Tag from own
 /// stored events, WebUntis lessons and holidays of the offline cache, or –
@@ -20,10 +11,16 @@ enum CalendarSpace {
 /// problems that need the user (storage, unsaved change, recovered state,
 /// notices) appear as slim banners. Details and the note open as one large
 /// floating window.
+/// Motion (Emil-Feinschliff 08.11.2026, `CalendarMotion`): keyboard ways
+/// change at once, taps and swipes move briefly, gestures settle with
+/// their velocity.
 struct CalendarView: View {
     @ObservedObject var model: CalendarModel
-    /// False while a notebook is open above the library: its keys must not reach the calendar behind it.
+    /// False while a notebook or a sheet of the library is open above the
+    /// calendar: its keys must not reach the calendar behind it.
     var keysActive = true
+    /// A notebook covers the calendar: no periodic refresh meanwhile.
+    var covered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     /// Command palette (⇧⌘P) and key overview (⌘/) also take Esc.
@@ -35,7 +32,7 @@ struct CalendarView: View {
     @State private var searching = false
     @State private var connecting = false
     @State private var choosingColors = false
-    @State private var editingReminders = false
+    @State private var editingNotifications = false
     @State private var showingDeleted = false
     @State private var showingStatus = false
     @State private var connectAfterStatus = false
@@ -48,6 +45,8 @@ struct CalendarView: View {
     @State private var showingHomework = false
     // Motion (docs/CALENDAR-PLAN.md, „Bewegung und Animationen“)
     @State private var origins = CalendarOriginTracker()
+    /// Changes of the entries made here: only they animate cards.
+    @State private var localChange = CalendarLocalChange()
     /// The entry the window showed last: it shrinks back into that card.
     @State private var lastWindowID: String?
     /// Pull-down of the window head (dims the backdrop less while pulling).
@@ -55,6 +54,10 @@ struct CalendarView: View {
     @State private var windowPull = CalendarWindowPull()
     /// The period/view shown before the last change (direction of the slide/zoom).
     @State private var previousNav: CalendarNavKey?
+    /// Keyboard changes and quick follow-ups do not move (read by the keyframes).
+    @State private var navMotion = CalendarNavMotion()
+    /// Sideways swipe (trackpad, month finger swipe). Held, not observed.
+    @State private var swipeShift = CalendarSwipeShift()
     @State private var todayPulse = CalendarPulse()
     // Zoom between the views (docs/CALENDAR-PLAN.md, „Zoom zwischen Ansichten“)
     @State private var zoomFrames = CalendarZoomTracker()
@@ -69,11 +72,16 @@ struct CalendarView: View {
     @State private var hiddenStorageError: String?
     private var calendar: Calendar { model.calendar }
     private var shownWeekDays: Int { model.weekDays == 7 ? 7 : 5 }
+    /// Sheets, popovers and dialogs of the calendar itself (reported to the
+    /// model as `presentingOverlays`: the library then keeps its switch still).
+    private var overlaysOpen: Bool {
+        dayList != nil || searching || connecting || choosingColors || editingNotifications || showingDeleted || showingStatus
+            || showingNotifications || quickEntry || showingHomework || model.draft != nil || model.enlargedDraft != nil
+            || model.pendingSeriesChange != nil
+    }
     /// Calendar keys only while nothing is presented over it.
     private var keys: Bool {
-        keysActive && model.enlargedDraft == nil && dayList == nil && !searching && !connecting && !choosingColors
-            && !editingReminders && !showingDeleted && !showingStatus && !showingNotifications && !quickEntry && !showingHomework && model.draft == nil
-            && model.pendingSeriesChange == nil && !router.paletteVisible && !router.helpVisible
+        keysActive && !overlaysOpen && !router.paletteVisible && !router.helpVisible
     }
     /// Navigation keys (⌘← ⌘→ ⌘T ⌘1–⌘4) also rest while the event window is
     /// open: its note may be typing text, where ⌘← / ⌘→ move the caret.
@@ -90,9 +98,11 @@ struct CalendarView: View {
             let contentWidth = geo.size.width - (sidebar ? CalendarSidebar.width : 0)
             HStack(spacing: 0) {
                 if sidebar {
+                    // Slides only when its button asks for it (`toggleSidebar`);
+                    // ⌃⌘S, a width change and the Hefte/Kalender switch change it at once.
                     CalendarSidebar(model: model) { showingHomework = true }
                         .frame(width: CalendarSidebar.width)
-                        .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
+                        .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .move(edge: .leading).combined(with: .opacity))
                     Rectangle().fill(CalendarPalette.hairline).frame(width: 0.5)
                 }
                 VStack(spacing: 0) {
@@ -110,20 +120,20 @@ struct CalendarView: View {
                 if model.selectedEvent != nil { problemBanners.frame(maxWidth: 640).padding(.top, CalendarSpace.s) }
             }
             .overlay(alignment: .bottom) { toasts }
-            .animation(CalendarMotion.smooth(reduceMotion), value: sidebar)
             .onChange(of: geo.size.width >= CalendarSidebar.minimumTotalWidth, initial: true) { _, fits in sidebarFits = fits }
         }
         .environment(\.calendarOrigin, origins)
         .environment(\.calendarTodayPulse, todayPulse)
         .environment(\.calendarZoom, zoomFrames)
         .environment(\.calendarZoomFocus, zoomFocus)
-        // One light tick when the event window closes (any way).
-        .sensoryFeedback(trigger: model.selection) { old, new in old != nil && new == nil ? .impact(weight: .light) : nil }
+        .environment(\.calendarSwipe, swipeShift)
         .onChange(of: model.selection) { _, id in
             if let id { lastWindowID = id; windowPull.value = 0 }
         }
         .onChange(of: navKey, initial: true) { _, new in
             previousNav = new
+            navMotion.changedAt = Date()
+            navMotion.instantKey = nil
             if zoomMotion?.key != new { zoomMotion = nil }
         }
         // A pinch that ends without `onEnded` (cancelled, window opened): spring back.
@@ -142,15 +152,15 @@ struct CalendarView: View {
         .navigationTitle("Kalender")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbar }
-        .onAppear { model.refreshToday(); model.visible = true }
-        .onDisappear { model.visible = false }
+        // `model.visible` follows the library's Hefte/Kalender switch (LibraryView).
+        .onAppear { model.refreshToday() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { model.refreshToday(); model.refreshIfDue() } }
         // While shown: at most every 15 minutes (the model enforces the interval).
         .task {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) } catch { break }
                 // Not while a notebook covers the calendar.
-                if scenePhase == .active && keysActive { model.refreshIfDue() }
+                if scenePhase == .active && !covered { model.refreshIfDue() }
             }
         }
         .sheet(item: $model.draft) { CalendarEventForm(draft: $0, model: model) }
@@ -158,22 +168,34 @@ struct CalendarView: View {
         .sheet(isPresented: $searching) { CalendarSearchSheet(model: model) }
         .sheet(isPresented: $connecting) { CalendarConnectionSheet(model: model) }
         .sheet(isPresented: $choosingColors) { CalendarColorsSheet(model: model) }
-        .sheet(isPresented: $editingReminders) { CalendarReminderSettingsSheet(model: model) }
+        .sheet(isPresented: $editingNotifications) { CalendarNotificationSettingsSheet(model: model) }
         .sheet(isPresented: $showingDeleted) { CalendarDeletedEventsSheet(model: model) }
         .sheet(isPresented: $showingHomework) { CalendarHomeworkList(model: model) }
         .fullScreenCover(item: $model.enlargedDraft) { session in CalendarEnlargedDraft(session: session, model: model) }
         .confirmationDialog(model.pendingSeriesChange?.text ?? "", isPresented: Binding(
             get: { model.pendingSeriesChange != nil }, set: { if !$0 { model.pendingSeriesChange = nil } }), titleVisibility: .visible) {
-            Button("Nur dieser Termin") { model.applyPendingSeriesChange(.single) }
-            Button("Alle Termine der Serie") { model.applyPendingSeriesChange(.all) }
+            Button("Nur dieser Termin") { localChange.mark(); model.applyPendingSeriesChange(.single) }
+            Button("Alle Termine der Serie") { localChange.mark(); model.applyPendingSeriesChange(.all) }
             Button("Abbrechen", role: .cancel) { model.pendingSeriesChange = nil }
         } message: {
             Text("Dieser Termin gehört zu einer Serie.")
         }
         .onChange(of: model.storageError) { _, error in if error == nil { hiddenStorageError = nil } }
-        // „Untis-Zugang prüfen“ (push) opens the WebUntis sheet.
-        .onChange(of: model.connectionRequest) { _, _ in if !model.showsSamples { connecting = true } }
+        // „Untis-Zugang prüfen“ (push, notification settings) opens the
+        // WebUntis sheet – also when the request came before the calendar was shown.
+        .onChange(of: model.connectionSheetRequested, initial: true) { _, requested in
+            guard requested else { return }
+            model.connectionSheetRequested = false
+            if !model.showsSamples { connecting = true }
+        }
+        // The library keeps Hefte/Kalender still while one of these is open.
+        .onChange(of: overlaysOpen, initial: true) { _, open in
+            if model.presentingOverlays != open { model.presentingOverlays = open }
+        }
+        .onDisappear { if model.presentingOverlays { model.presentingOverlays = false } }
         .background { shortcuts }
+        // Outermost: the sheets (form, deleted events) mark their changes too.
+        .environment(\.calendarLocalChange, localChange)
     }
 
     // MARK: Event window
@@ -183,6 +205,8 @@ struct CalendarView: View {
     /// beside the window deliberately does nothing (it only blocks the
     /// calendar behind): a resting palm while writing with the Pencil
     /// arrives as an ordinary touch and must not close the note.
+    /// Opens in 0.3 s without overshoot, closes faster (0.18 s); Esc closes
+    /// at once (`CalendarEventPanel`).
     private func eventWindow(_ size: CGSize) -> some View {
         ZStack {
             if model.selectedEvent != nil {
@@ -202,7 +226,8 @@ struct CalendarView: View {
             }
         }
         .frame(width: size.width, height: size.height)
-        .animation(model.selection == nil ? CalendarMotion.smooth(reduceMotion) : CalendarMotion.bouncy(reduceMotion), value: model.selection)
+        .animation(model.selection == nil ? CalendarMotion.windowClose(reduceMotion) : CalendarMotion.windowOpen(reduceMotion),
+                   value: model.selection)
     }
 
     // MARK: Header (period, view switcher, ‹ Heute ›)
@@ -229,6 +254,7 @@ struct CalendarView: View {
                     .pickerStyle(.segmented)
                     .frame(width: 252)
                     .accessibilityLabel("Ansicht")
+                    .help("Ansicht: Tag, Woche, Monat, Jahr (⌘1–⌘4)")
             } else {
                 Menu {
                     Picker("Ansicht", selection: $model.mode) { modes }
@@ -244,6 +270,7 @@ struct CalendarView: View {
                 }
                 .foregroundStyle(.primary)
                 .accessibilityLabel("Ansicht: \(model.mode.title)")
+                .help("Ansicht: Tag, Woche, Monat, Jahr (⌘1–⌘4)")
             }
             navigation
         }
@@ -283,37 +310,50 @@ struct CalendarView: View {
         .accessibilityHint("Blendet die Beispieldaten aus")
     }
 
-    /// ‹ Heute › as one quiet capsule.
+    /// ‹ Heute › as one quiet capsule. Tapping moves briefly; the same ways
+    /// by keyboard (⌘← ⌘T ⌘→, in `shortcuts`) change at once.
     private var navigation: some View {
         HStack(spacing: 0) {
             Button { model.step(-1) } label: {
-                Image(systemName: "chevron.left").font(.body.weight(.semibold)).frame(width: 40, height: 44).contentShape(Rectangle())
+                Image(systemName: "chevron.left").font(.body.weight(.semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .accessibilityLabel("Zurück")
             .help("Zurück (⌘←)")
-            .keyboardShortcut(key(.leftArrow))
             Button { goToToday() } label: {
                 Text("Heute").font(.subheadline.weight(.semibold)).padding(.horizontal, CalendarSpace.xs)
                     .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
             }
-            .keyboardShortcut(key("t"))
             .help("Heute (⌘T)")
             Button { model.step(1) } label: {
-                Image(systemName: "chevron.right").font(.body.weight(.semibold)).frame(width: 40, height: 44).contentShape(Rectangle())
+                Image(systemName: "chevron.right").font(.body.weight(.semibold)).frame(width: 44, height: 44).contentShape(Rectangle())
             }
             .accessibilityLabel("Vor")
             .help("Vor (⌘→)")
-            .keyboardShortcut(key(.rightArrow))
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(NotyPressStyle())
+        .hoverEffect(.highlight)
         .foregroundStyle(.primary)
         .background(Capsule().fill(Color.white.opacity(0.08)).padding(.vertical, 6))
     }
 
-    /// „Heute“: jump, then today's marker pulses once.
+    /// Tapping „Heute“: jump, then today's marker pulses once.
     private func goToToday() {
         model.goToToday()
         todayPulse = CalendarPulse(count: todayPulse.count + 1, at: Date())
+    }
+
+    /// A keyboard way (⌘← ⌘→ ⌘T ⌘1–⌘4 ⌘+ ⌘−): no animation of any kind,
+    /// and the period it opens appears without the slide or zoom.
+    private func byKey(_ change: () -> Void) {
+        let before = navKey
+        NotyMotion.instant(change)
+        if navKey != before { navMotion.instantKey = navKey }
+    }
+
+    /// The trackpad swipe (`CalendarTrackpadSwipe`) turned a period.
+    private func swiped(_ steps: Int) {
+        swipeShift.handOff()
+        model.step(steps)
     }
 
     /// Period and view: a change slides (earlier/later) or zooms (finer/coarser).
@@ -324,33 +364,50 @@ struct CalendarView: View {
         let previous = previousNav
         // A zoom grows from the period it opened (or the fingers), not from the middle.
         let zoom = zoomMotion?.key == key ? zoomMotion : nil
-        return CalendarPinchScaled(pinch: pinch, reduced: reduceMotion) {
-            grid.coordinateSpace(name: CalendarZoomTracker.space)
+        // Keyboard and a change within 0.3 s of the previous one: no motion.
+        let moves = navMotion.moves(to: key)
+        return CalendarSwipeShifted(shift: swipeShift) {
+            CalendarPinchScaled(pinch: pinch, reduced: reduceMotion) {
+                grid.coordinateSpace(name: CalendarZoomTracker.space)
+            }
         }
             .keyframeAnimator(initialValue: CalendarNavFrame(), trigger: key) { view, frame in
                 let frame = frame.sanitized
                 view.offset(x: frame.offset).scaleEffect(frame.scale, anchor: zoom?.anchor ?? .center).opacity(frame.opacity)
             } keyframes: { _ in
-                let move = CalendarNavFrame.start(from: previous, to: key, reduced: reduceMotion,
-                                                  zoom: zoom?.from == previous ? zoom : nil)
+                let pinched = zoom?.from == previous ? zoom : nil
+                let move = CalendarNavFrame.start(from: previous, to: key, reduced: reduceMotion, moves: moves, zoom: pinched)
+                let duration = pinched == nil ? CalendarMotion.navDuration : CalendarMotion.zoomDuration
+                let spring = Spring(duration: duration, bounce: 0)
+                // MoveKeyframe first: every change starts from its own start
+                // value, never from a leftover of the previous one (Build 134).
                 KeyframeTrack(\.offset) {
                     MoveKeyframe(move.offset)
-                    SpringKeyframe(0, duration: 0.42, spring: Spring(response: 0.42, dampingRatio: 1), startVelocity: 0)
+                    SpringKeyframe(0, duration: duration, spring: spring, startVelocity: 0)
                 }
                 KeyframeTrack(\.scale) {
                     MoveKeyframe(move.scale)
-                    SpringKeyframe(1, duration: 0.42, spring: Spring(response: 0.42, dampingRatio: 1), startVelocity: 0)
+                    SpringKeyframe(1, duration: duration, spring: spring, startVelocity: 0)
                 }
                 KeyframeTrack(\.opacity) {
                     MoveKeyframe(move.opacity)
-                    CubicKeyframe(1, duration: reduceMotion ? 0.16 : 0.3, startVelocity: 0, endVelocity: 0)
+                    CubicKeyframe(1, duration: CalendarMotion.navFade, startVelocity: 0, endVelocity: 0)
                 }
             }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { pinch.size = $0 }
+            // Two fingers on the trackpad turn the period like ‹ › (scroll
+            // events only: fingers, the Pencil and the pinch never reach it).
+            .background {
+                CalendarTrackpadSwipe(enabled: swipeEnabled, reduced: reduceMotion, shift: swipeShift) { swiped($0) }
+                    .accessibilityHidden(true)
+            }
             // Two fingers only: taps, scrolling, the long press on cards and the
             // month swipe keep working; the event window (and its note) is above.
             .simultaneousGesture(zoomGesture, including: zoomable ? .all : .subviews)
     }
+
+    /// Not while the window, a sheet or the command palette covers the grid.
+    private var swipeEnabled: Bool { keys && model.selectedEvent == nil }
 
     // MARK: Zoom between the views (pinch, ⌘+ / ⌘-)
 
@@ -369,7 +426,7 @@ struct CalendarView: View {
     }
 
     /// Follows the fingers softly; past `CalendarPinch.arm` a release changes
-    /// the view (tick), past `decisive` it changes at once – one step per pinch.
+    /// the view (outline, tick), past `decisive` it changes at once – one step per pinch.
     private func pinchChanged(_ value: MagnifyGesture.Value) {
         zoomFrames.markPinch()
         if !pinch.active {
@@ -393,25 +450,28 @@ struct CalendarView: View {
         if !pinch.committed, zoomable, let direction = CalendarPinch.direction(Double(value.magnification)), zoomPossible(direction) {
             commitPinch(direction)
         } else if !pinch.committed {
-            settlePinch()
+            settlePinch(velocity: value.velocity)
         }
         pinch.active = false
     }
 
-    /// Below the threshold or cancelled: the view springs back.
-    private func settlePinch() {
+    /// Below the threshold or cancelled: the view springs back with the
+    /// fingers' speed (a small overshoot only here, after the gesture).
+    private func settlePinch(velocity: CGFloat = 0) {
         pinch.armed = nil
         guard pinch.scale != 1 else { return }
-        withAnimation(CalendarMotion.bouncy(reduceMotion)) { pinch.scale = 1 }
+        if let animation = CalendarMotion.settle(reduceMotion, from: pinch.scale, to: 1, velocity: velocity) {
+            withAnimation(animation) { pinch.scale = 1 }
+        } else {
+            NotyMotion.instant { pinch.scale = 1 }
+        }
     }
 
     private func commitPinch(_ direction: CalendarZoom.Direction) {
         pinch.committed = true
         pinch.armed = nil
         // The keyframes of the new view take over; no second animation on top.
-        var still = Transaction()
-        still.disablesAnimations = true
-        withTransaction(still) { pinch.scale = 1 }
+        NotyMotion.instant { pinch.scale = 1 }
         pinch.commits += 1
         zoom(direction, at: pinch.start)
     }
@@ -497,6 +557,8 @@ struct CalendarView: View {
             }
             .padding(.leading, CalendarSpace.l).padding(.trailing, CalendarSpace.m).padding(.vertical, CalendarSpace.m)
             .notyGlass()
+            // Only the card itself takes touches; the grid around and below it stays tappable.
+            .contentShape(RoundedRectangle(cornerRadius: 16))
             .frame(maxWidth: 460)
             .padding(.horizontal, CalendarSpace.l)
             .padding(.top, top)
@@ -543,9 +605,10 @@ struct CalendarView: View {
     /// Only what needs the user: a locked or failed store, an unsaved
     /// change, a recovered older state. Everything else is behind the sync
     /// symbol. An unsaved change cannot be put away – only saved again.
+    /// The notification question waits while the event window is open.
     @ViewBuilder private var problemBanners: some View {
         let storage = model.storageError.flatMap { $0 == hiddenStorageError ? nil : $0 }
-        let hint = model.showsNotificationHint
+        let hint = model.showsNotificationHint && model.selectedEvent == nil
         if storage != nil || model.saveError != nil || model.recoveredNotice != nil || hint {
             VStack(spacing: CalendarSpace.s) {
                 if hint { notificationHint }
@@ -579,7 +642,7 @@ struct CalendarView: View {
             Text("Benachrichtigungen bei Stundenplanänderungen, morgens ein Überblick und Erinnerungen vor deinen Terminen?")
                 .font(.footnote).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button("Später") { withAnimation(CalendarMotion.smooth(reduceMotion)) { model.dismissNotificationHint() } }
+            Button("Später") { withAnimation(NotyMotion.panel(reduceMotion)) { model.dismissNotificationHint() } }
                 .font(.footnote).buttonStyle(.borderless)
             Button("Einschalten") { Task { await model.enableNotifications() } }
                 .font(.footnote.weight(.semibold)).buttonStyle(.borderedProminent)
@@ -591,6 +654,12 @@ struct CalendarView: View {
         .accessibilityElement(children: .contain)
     }
 
+    /// Toasts enter from the bottom and leave faster, as a fade.
+    private var toastTransition: AnyTransition {
+        reduceMotion ? .opacity.animation(NotyMotion.fade)
+            : .asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity.animation(NotyMotion.exit))
+    }
+
     /// Bottom: a short notice (rejected drag, a note still being saved) and
     /// „Rückgängig“ for the last change.
     private var toasts: some View {
@@ -599,32 +668,38 @@ struct CalendarView: View {
                 HStack(spacing: CalendarSpace.m) {
                     Image(systemName: "info.circle").foregroundStyle(.orange).accessibilityHidden(true)
                     Text(notice).font(.subheadline).lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                    Button { model.notice = nil } label: { Image(systemName: "xmark").font(.caption.weight(.semibold)).frame(width: 36, height: 36) }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Hinweis schließen")
+                    // Same size as before; it takes touches 44 × 44 pt.
+                    Button { model.notice = nil } label: {
+                        Image(systemName: "xmark").font(.caption.weight(.semibold)).frame(width: 36, height: 36).contentShape(NotyHitShape())
+                    }
+                    .buttonStyle(NotyPressStyle())
+                    .accessibilityLabel("Hinweis schließen")
                 }
                 .padding(.leading, CalendarSpace.l).padding(.trailing, 6).padding(.vertical, 4)
                 .frame(maxWidth: 520)
                 .notyGlass()
                 .accessibilityElement(children: .contain)
-                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                .transition(toastTransition)
             }
             if let step = model.lastUndo {
                 HStack(spacing: CalendarSpace.m) {
                     Text(step.text).font(.subheadline).lineLimit(1)
-                    Button("Rückgängig") { Task { await model.undoLast() } }.font(.subheadline.weight(.semibold))
-                    Button { model.dismissUndo() } label: { Image(systemName: "xmark").frame(width: 32, height: 32) }
-                        .accessibilityLabel("Hinweis schließen")
+                    Button("Rückgängig") { localChange.mark(); Task { await model.undoLast() } }.font(.subheadline.weight(.semibold))
+                    Button { model.dismissUndo() } label: {
+                        Image(systemName: "xmark").frame(width: 32, height: 32).contentShape(NotyHitShape())
+                    }
+                    .buttonStyle(NotyPressStyle())
+                    .accessibilityLabel("Hinweis schließen")
                 }
                 .padding(.leading, CalendarSpace.l).padding(.trailing, 6).padding(.vertical, 6)
                 .notyGlass()
-                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                .transition(toastTransition)
             }
         }
         .padding(.horizontal, CalendarSpace.l)
         .padding(.bottom, CalendarSpace.l)
-        .animation(CalendarMotion.smooth(reduceMotion), value: model.notice)
-        .animation(CalendarMotion.smooth(reduceMotion), value: model.lastUndo?.text)
+        .animation(NotyMotion.panel(reduceMotion), value: model.notice)
+        .animation(NotyMotion.panel(reduceMotion), value: model.lastUndo?.text)
     }
 
     // MARK: Toolbar
@@ -636,10 +711,19 @@ struct CalendarView: View {
             || (!model.showsSamples && (model.connection != nil || model.systemEnabled))
     }
 
+    /// Button: the sidebar slides (panel); ⌃⌘S: at once.
+    private func toggleSidebar(animated: Bool) {
+        if animated {
+            withAnimation(NotyMotion.panel(reduceMotion)) { sidebarWanted.toggle() }
+        } else {
+            NotyMotion.instant { sidebarWanted.toggle() }
+        }
+    }
+
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             if sidebarFits {
-                Button { sidebarWanted.toggle() } label: {
+                Button { toggleSidebar(animated: true) } label: {
                     Label(sidebarWanted ? "Kalenderleiste ausblenden" : "Kalenderleiste einblenden", systemImage: "sidebar.squares.left")
                 }
                 .help("Kalenderleiste (⌃⌘S)")
@@ -651,6 +735,8 @@ struct CalendarView: View {
                 Button { showingNotifications = true } label: {
                     CalendarBellSymbol(unread: model.unreadNotifications)
                 }
+                // The event window is modal: its entries would open behind it.
+                .disabled(model.selectedEvent != nil)
                 .popover(isPresented: $showingNotifications, arrowEdge: .top) {
                     CalendarNotificationsPopover(model: model, openSettings: {
                         settingsAfterNotifications = true
@@ -659,7 +745,7 @@ struct CalendarView: View {
                     // The server's history (push) into the bell when it opens.
                     .task { await CalendarPushClient.shared.sync(model) }
                     .onDisappear {
-                        if settingsAfterNotifications { settingsAfterNotifications = false; editingReminders = true }
+                        if settingsAfterNotifications { settingsAfterNotifications = false; editingNotifications = true }
                     }
                 }
             }
@@ -683,8 +769,9 @@ struct CalendarView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu { optionsMenu } label: {
-                Label("Weitere Optionen", systemImage: "ellipsis.circle")
+                Label("Weitere Optionen", systemImage: "ellipsis")
             }
+            .help("Weitere Optionen")
             // The event window is modal: no calendar changes behind it.
             .disabled(model.selectedEvent != nil)
         }
@@ -721,10 +808,10 @@ struct CalendarView: View {
                 Label("Wochentage", systemImage: "calendar.day.timeline.left")
             }
             .pickerStyle(.menu)
-            Button { searching = true } label: { Label("Termine suchen", systemImage: "magnifyingglass") }
+            Button { searching = true } label: { Label("Termine suchen …", systemImage: "magnifyingglass") }
             Button { choosingColors = true } label: { Label("Fachfarben …", systemImage: "paintpalette") }
                 .disabled(model.showsSamples || !model.canWrite)
-            Button { editingReminders = true } label: { Label("Benachrichtigungen …", systemImage: "bell") }
+            Button { editingNotifications = true } label: { Label("Benachrichtigungen …", systemImage: "bell") }
                 .disabled(model.showsSamples)
             Button { showingDeleted = true } label: {
                 Label(model.deletedEvents.isEmpty ? "Gelöschte Termine …" : "Gelöschte Termine (\(model.deletedEvents.count)) …", systemImage: "trash")
@@ -757,20 +844,24 @@ struct CalendarView: View {
         }
     }
 
-    /// ⌘1–⌘4 like Apple Kalender: Tag, Woche, Monat, Jahr; ⌘+ / ⌘- one view
-    /// finer/coarser (⌘= for US layouts); ⌃⌘S the sidebar.
+    /// The keyboard ways, all without motion (`byKey`): ⌘← ⌘→ ⌘T, ⌘1–⌘4
+    /// like Apple Kalender (Tag, Woche, Monat, Jahr), ⌘+ / ⌘- one view
+    /// finer/coarser (⌘= for US layouts), ⌃⌘S the sidebar.
     private var shortcuts: some View {
         Group {
-            Button("Tag") { model.mode = .day }.keyboardShortcut(key("1"))
-            Button("Woche") { model.mode = .week }.keyboardShortcut(key("2"))
-            Button("Monat") { model.mode = .month }.keyboardShortcut(key("3"))
-            Button("Jahr") { model.mode = .year }.keyboardShortcut(key("4"))
-            Button("Hineinzoomen") { zoom(.zoomIn, at: nil) }.keyboardShortcut(zoomPossible(.zoomIn) ? key("+") : nil)
-            Button("Hineinzoomen") { zoom(.zoomIn, at: nil) }.keyboardShortcut(zoomPossible(.zoomIn) ? key("=") : nil)
-            Button("Herauszoomen") { zoom(.zoomOut, at: nil) }.keyboardShortcut(zoomPossible(.zoomOut) ? key("-") : nil)
+            Button("Zurück") { byKey { model.step(-1) } }.keyboardShortcut(key(.leftArrow))
+            Button("Vor") { byKey { model.step(1) } }.keyboardShortcut(key(.rightArrow))
+            Button("Heute") { byKey { model.goToToday() } }.keyboardShortcut(key("t"))
+            Button("Tag") { byKey { model.mode = .day } }.keyboardShortcut(key("1"))
+            Button("Woche") { byKey { model.mode = .week } }.keyboardShortcut(key("2"))
+            Button("Monat") { byKey { model.mode = .month } }.keyboardShortcut(key("3"))
+            Button("Jahr") { byKey { model.mode = .year } }.keyboardShortcut(key("4"))
+            Button("Hineinzoomen") { byKey { zoom(.zoomIn, at: nil) } }.keyboardShortcut(zoomPossible(.zoomIn) ? key("+") : nil)
+            Button("Hineinzoomen") { byKey { zoom(.zoomIn, at: nil) } }.keyboardShortcut(zoomPossible(.zoomIn) ? key("=") : nil)
+            Button("Herauszoomen") { byKey { zoom(.zoomOut, at: nil) } }.keyboardShortcut(zoomPossible(.zoomOut) ? key("-") : nil)
             Button("Schnell anlegen") { quickEntry = true }
                 .keyboardShortcut(navigationKeys && model.canWrite && !model.showsSamples ? KeyboardShortcut("n", modifiers: [.command, .option]) : nil)
-            Button("Kalenderleiste") { sidebarWanted.toggle() }
+            Button("Kalenderleiste") { toggleSidebar(animated: false) }
                 .keyboardShortcut(navigationKeys && sidebarFits ? KeyboardShortcut("s", modifiers: [.command, .control]) : nil)
         }
         .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
@@ -780,129 +871,4 @@ struct CalendarView: View {
 private struct CalendarDayListRequest: Identifiable {
     let day: Date
     var id: Date { day }
-}
-
-/// „Fachfarben“: one automatic, adjustable colour per subject; own events
-/// keep their own colour. State is never shown by colour alone.
-struct CalendarColorsSheet: View {
-    @ObservedObject var model: CalendarModel
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    ForEach(model.subjects, id: \.key) { subject in
-                        let name = CalendarSubjectColor.name(for: subject.key, chosen: model.subjectColors)
-                        Menu {
-                            CalendarColorPicker(key: subject.key, model: model)
-                        } label: {
-                            HStack {
-                                Circle().fill(CalendarPalette.color(named: name)).frame(width: 12, height: 12)
-                                Text(subject.name).foregroundStyle(.primary)
-                                Spacer()
-                                Text(model.subjectColors[subject.key] == nil ? "Automatisch · \(CalendarSubjectColor.title(name))" : CalendarSubjectColor.title(name))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(minHeight: 44)
-                        }
-                    }
-                } footer: {
-                    Text(model.subjects.isEmpty ? "Fächer erscheinen, sobald der Stundenplan aus WebUntis geladen ist."
-                         : "Jedes Fach bekommt automatisch eine feste Farbe. Eigene Termine bleiben grün; Ausfall, Prüfung und Änderungen stehen zusätzlich als Symbol und Text.")
-                }
-            }
-            .navigationTitle("Fachfarben")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
-        }
-        .preferredColorScheme(.dark)
-    }
-}
-
-/// Search over the sample entries; never silently limited.
-struct CalendarSearchSheet: View {
-    @ObservedObject var model: CalendarModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var query = ""
-    private static let shownLimit = 200
-
-    var body: some View {
-        NavigationStack {
-            let results = model.search(query)
-            List {
-                ForEach(results.prefix(Self.shownLimit)) { event in
-                    Button {
-                        model.show(event)
-                        dismiss()
-                    } label: { CalendarListRow(event: event, model: model, showsDate: true) }
-                    .accessibilityLabel(CalendarText.longDate(event.start, calendar: model.calendar) + ", "
-                                        + model.accessibilityText(event, notes: model.hasNotes(event)))
-                }
-                if results.count > Self.shownLimit {
-                    Text("\(results.count - Self.shownLimit) weitere Treffer – Suche genauer eingeben.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-            }
-            .overlay {
-                if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                    ContentUnavailableView("Termine suchen", systemImage: "magnifyingglass",
-                                           description: Text(model.showsSamples ? "Titel, Raum, Lehrkraft oder Beschreibung (Beispieldaten des angezeigten Jahres)."
-                                                             : "Titel, Ort, Raum oder Beschreibung: eigene Termine (Serien im angezeigten Jahr) und geladener Stundenplan."))
-                } else if results.isEmpty {
-                    ContentUnavailableView.search(text: query)
-                }
-            }
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Termine suchen")
-            .navigationTitle("Suche")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } } }
-        }
-        .preferredColorScheme(.dark)
-    }
-}
-
-/// What is shown: the view and the first day of the period.
-struct CalendarNavKey: Equatable {
-    let mode: CalendarMode
-    let start: Date
-
-    /// Day < Woche < Monat < Jahr (finer → coarser).
-    var depth: Int {
-        switch mode {
-        case .day: 0
-        case .week: 1
-        case .month: 2
-        case .year: 3
-        }
-    }
-}
-
-/// Start values of the period/view change; the keyframes run them to rest.
-struct CalendarNavFrame {
-    var offset: CGFloat = 0
-    var scale: CGFloat = 1
-    var opacity: Double = 1
-
-    /// Never invisible or off-screen, whatever the animator holds (Build 133:
-    /// after ‹ › the whole grid stayed blank – a non-finite value from the
-    /// keyframes must never reach the view).
-    var sanitized: CalendarNavFrame {
-        CalendarNavFrame(
-            offset: offset.isFinite ? min(max(offset, -CalendarMotion.slide), CalendarMotion.slide) : 0,
-            scale: scale.isFinite ? min(max(scale, 0.4), 1.25) : 1,
-            opacity: opacity.isFinite ? min(max(opacity, 0.2), 1) : 1)
-    }
-
-    /// `zoom`: a pinch or ⌘+/⌘- – stronger, from the opened period (see `CalendarZoomMotion`).
-    static func start(from old: CalendarNavKey?, to new: CalendarNavKey, reduced: Bool, zoom: CalendarZoomMotion? = nil) -> CalendarNavFrame {
-        guard let old, old != new else { return CalendarNavFrame() }
-        if reduced { return CalendarNavFrame(offset: 0, scale: 1, opacity: 0.4) }
-        if let zoom, old.mode != new.mode { return CalendarNavFrame(offset: 0, scale: zoom.scale, opacity: 0.2) }
-        if old.mode != new.mode {
-            // Into a finer view the content grows toward you, out of it it settles back.
-            return CalendarNavFrame(offset: 0, scale: new.depth < old.depth ? CalendarMotion.zoomIn : CalendarMotion.zoomOut, opacity: 0.25)
-        }
-        return CalendarNavFrame(offset: new.start > old.start ? CalendarMotion.slide : -CalendarMotion.slide, scale: 1, opacity: 0.3)
-    }
 }

@@ -64,10 +64,27 @@ final class WorkspaceAppModel: ObservableObject {
         busy = true
         defer { busy = false }
         var failure: String?
+        let namespace = await calendarNamespace(area)
         do { try await store.remove(area.id, protecting: [Self.mainRoot]) }
         catch { failure = error.localizedDescription }
         await refresh()
+        // Also after `leftoverFiles`: the area is gone from the list then.
+        if !areas.contains(where: { $0.id == area.id }) { areaRemoved(namespace) }
         if let failure { error = failure }
+    }
+
+    /// The calendar namespace of an area (`CalendarNotificationHub.namespace`), read before it is removed.
+    private func calendarNamespace(_ area: TestWorkspace) async -> String? {
+        guard let directory = try? await store.directory(for: area.id) else { return nil }
+        return CalendarNotificationHub.namespace(root: directory)
+    }
+
+    /// A removed area whose WebUntis connection the push service polls: signed
+    /// off there too (docs/PUSH.md, „Abmelden“), like „Trennen“. In the
+    /// background: the area list does not wait for the server.
+    private func areaRemoved(_ namespace: String?) {
+        guard let namespace else { return }
+        Task { await CalendarPushClient.shared.areaRemoved(namespace: namespace) }
     }
     func createTest() async {
         guard !busy else { return }
@@ -113,8 +130,10 @@ final class WorkspaceAppModel: ObservableObject {
     func removeMirror(_ area: TestWorkspace) async -> Bool {
         guard !busy, area.kind == .mirror, area.id != areaID else { return false }
         busy = true; defer { busy = false }
+        let namespace = await calendarNamespace(area)
         let removed = (try? await store.remove(area.id, protecting: [Self.mainRoot])) != nil
         await refresh()
+        if !areas.contains(where: { $0.id == area.id }) { areaRemoved(namespace) }
         return removed
     }
     func restoreLibrary(_ url: URL) async -> Bool {

@@ -106,7 +106,7 @@ final class CalendarReminderCenter {
             let delivered = await center.deliveredNotifications()
             let matching = delivered.filter { notification in
                 guard let push = notification.request.content.userInfo[CalendarNotificationHub.pushKey] as? [String: Any],
-                      let id = push["changeID"] as? String else { return false }
+                      let id = push[CalendarPushPayload.Key.changeID.rawValue] as? String else { return false }
                 return raw.contains(id)
             }.map(\.request.identifier)
             if !matching.isEmpty { center.removeDeliveredNotifications(withIdentifiers: matching) }
@@ -139,6 +139,6 @@ final class CalendarReminderCenter {
             do { try await center.add(UNNotificationRequest(identifier: request.id, content: content, trigger: trigger)) }
             catch { failed += 1 }
         }
-        return failed == 0 ? nil : "\(failed) Erinnerungen konnten nicht geplant werden."
+        return failed == 0 ? nil : "\(failed) Mitteilungen konnten nicht geplant werden."
     }
 }

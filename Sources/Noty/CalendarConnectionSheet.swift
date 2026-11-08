@@ -18,6 +18,8 @@ struct CalendarConnectionSheet: View {
     @State private var key = ""
     @State private var scanning = false
     @State private var working = false
+    /// What runs while `working` (said beside the wait indicator).
+    @State private var workingText = "Bitte warten …"
     @State private var result: String?
     @State private var failure: String?
     @State private var confirmingDisconnect = false
@@ -43,7 +45,7 @@ struct CalendarConnectionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } }
-                if working { ToolbarItem(placement: .confirmationAction) { ProgressView() } }
+                if working { ToolbarItem(placement: .confirmationAction) { CalendarDelayedProgress(text: workingText) } }
             }
             .sheet(isPresented: $scanning) {
                 CalendarQRScanner { text in
@@ -161,8 +163,13 @@ struct CalendarConnectionSheet: View {
             }
             .textInputAutocapitalization(.never).autocorrectionDisabled()
             .focused($focused, equals: field)
-            .submitLabel(.next)
-            .onSubmit { normalizeFields() }
+            .submitLabel(field == WebUntisEntryField.allCases.last ? .done : .next)
+            // Return goes on to the next field (the last one closes the keyboard).
+            .onSubmit {
+                normalizeFields()
+                let fields = WebUntisEntryField.allCases
+                if let index = fields.firstIndex(of: field) { focused = fields.index(after: index) < fields.endIndex ? fields[fields.index(after: index)] : nil }
+            }
             .onChange(of: text.wrappedValue) { old, new in
                 // A pasted link or URL (a jump of several characters) is
                 // resolved at once; normal typing only on leaving the field.
@@ -226,6 +233,7 @@ struct CalendarConnectionSheet: View {
 
     private func test() {
         guard let setup = preparedSetup() else { return }
+        workingText = "Wird getestet …"
         working = true; failure = nil; result = nil
         Task {
             let client = WebUntisClient(setup: setup)
@@ -240,6 +248,7 @@ struct CalendarConnectionSheet: View {
 
     private func connect() {
         guard let setup = preparedSetup() else { return }
+        workingText = "Wird verbunden …"
         working = true; failure = nil; result = nil
         Task {
             let client = WebUntisClient(setup: setup)
@@ -259,6 +268,7 @@ struct CalendarConnectionSheet: View {
     }
 
     private func disconnect() {
+        workingText = "Wird getrennt …"
         working = true
         Task {
             failure = await model.disconnect()

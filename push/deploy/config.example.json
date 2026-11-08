@@ -19,5 +19,7 @@
   "registrationsPerHourPerIP": 5,
   "registrationsPerDay": 20,
   "requestsPerMinutePerIP": 60,
-  "inactiveRetentionDays": 30
+  "inactiveRetentionDays": 30,
+  "noContactRetentionDays": 45,
+  "allowedUntisHostSuffixes": ["webuntis.com"]
 }

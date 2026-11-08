@@ -243,6 +243,14 @@ public struct CalendarSettings: Equatable, Sendable, Codable {
 
 /// Non-secret record of a source connection. Credentials live only in the
 /// device keychain under `id`; this record never contains them.
+/// Fixed defaults shared by the app and the push service (docs/PUSH.md).
+public enum CalendarDefaults {
+    /// Time zone of a WebUntis connection when nothing else is known (the
+    /// school's local times; app and server parse lessons in it).
+    public static let timeZoneIdentifier = "Europe/Berlin"
+    public static var timeZone: TimeZone { TimeZone(identifier: timeZoneIdentifier) ?? .current }
+}
+
 public struct CalendarConnectionRecord: Identifiable, Equatable, Sendable, Codable {
     public enum Kind: String, Codable, Sendable { case webUntis }
     public let id: UUID
@@ -258,7 +266,7 @@ public struct CalendarConnectionRecord: Identifiable, Equatable, Sendable, Codab
     /// Nil for B1 records: the connection id stands in.
     public var sourceIdentity: String?
 
-    public init(id: UUID = UUID(), kind: Kind = .webUntis, label: String, timeZone: String = "Europe/Berlin",
+    public init(id: UUID = UUID(), kind: Kind = .webUntis, label: String, timeZone: String = CalendarDefaults.timeZoneIdentifier,
                 connectedAt: Date = Date(), sourceIdentity: String? = nil) {
         self.id = id; self.kind = kind; self.label = label; self.timeZone = timeZone; self.connectedAt = connectedAt
         self.sourceIdentity = sourceIdentity

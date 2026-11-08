@@ -319,7 +319,6 @@ public actor CalendarRepository {
 
     /// Test hooks.
     func setFault(_ fault: @escaping (CalendarStore.CommitStage) throws -> Void) { store.commitFault = fault }
-    func setClock(_ clock: @escaping () -> Date) { store.clock = clock }
 
     /// One acquisition at a time: concurrent callers wait for the same one
     /// (never a second claim attempt that the first one blocks).

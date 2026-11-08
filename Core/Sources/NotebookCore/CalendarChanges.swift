@@ -16,6 +16,11 @@ import Foundation
 //    cancelled (WebUntis may represent changes differently; only an explicit
 //    status counts). A period that moved to a day that is not compared is
 //    skipped.
+//  - A day that had lessons and comes back without any (an empty answer
+//    of WebUntis) is treated as not fetched again. An `added` lesson needs
+//    a base day with lessons: after an empty day, the lessons coming back
+//    are no „zusätzlich“ (the push service also keeps such a day in its
+//    comparison base: `CalendarSourceSnapshot.mergeKeepingEmptiedDays`).
 //  - Only lessons that still start after `now` are reported.
 //  - Only the explicit status is used. Which `is` values WebUntis really
 //    delivers besides REGULAR is unverified (plan §7), so a school whose
@@ -36,8 +41,14 @@ public struct CalendarLessonChange: Identifiable, Equatable, Sendable {
     /// The lesson as the old snapshot had it (nil for `added`).
     public var previous: CalendarLesson?
 
+    /// Title of a change notification and of its bell entry.
+    public static let notificationTitle = "Stundenplanänderung"
+
     /// Deterministic: the same change detected again has the same id (the
     /// history ignores it then), a further change of the same lesson a new one.
+    /// The same change again after a different one in between („Ausfall“ →
+    /// „findet statt“ → „Ausfall“) is recorded as `id~2`, `id~3`, …
+    /// (`CalendarChangeRepeats`); this id itself never carries the suffix.
     public var id: String {
         let rooms = lesson.rooms.sorted().joined(separator: "+")
         let start = Int(lesson.start.timeIntervalSinceReferenceDate)
@@ -85,13 +96,7 @@ enum CalendarChangeText {
     static func when(_ date: Date, calendar: Calendar, sameDayAs other: Date? = nil) -> String {
         let clock = CalendarText.clock(date, calendar: calendar)
         if let other, calendar.isDate(date, inSameDayAs: other) { return clock }
-        return day(date, calendar: calendar) + ", " + clock
-    }
-
-    /// „Do 12.11.“
-    static func day(_ date: Date, calendar: Calendar) -> String {
-        let p = calendar.dateComponents([.month, .day], from: date)
-        return "\(CalendarText.shortWeekdays[CalendarDates.weekdayIndex(date, calendar: calendar)]) \(p.day ?? 1).\(p.month ?? 1)."
+        return CalendarText.shortDay(date, calendar: calendar) + ", " + clock
     }
 }
 
@@ -101,11 +106,16 @@ public enum CalendarChangeDetector {
     public static let maximumChanges = 100
 
     /// Days that both snapshots cover and that `new` fetched again later.
+    /// A day that had lessons in `old` and has none in `new` counts as not
+    /// fetched again (an empty answer is no list of vanished lessons).
     public static func comparedDays(old: CalendarSourceSnapshot, new: CalendarSourceSnapshot) -> Set<CivilDate> {
         guard old.connection == new.connection else { return [] }
+        let oldBusy = Set(old.lessons.map(\.date))
+        let newBusy = Set(new.lessons.map(\.date))
         var days = Set<CivilDate>()
         for (text, newTime) in new.days {
             guard let oldTime = old.days[text], newTime > oldTime, let day = CivilDate(text) else { continue }
+            if oldBusy.contains(day) && !newBusy.contains(day) { continue }
             days.insert(day)
         }
         return days
@@ -123,6 +133,8 @@ public enum CalendarChangeDetector {
         // that is not compared must not count as vanished or added).
         let oldAll = Dictionary(grouping: old.lessons, by: \.key.sourceID)
         let newAll = Dictionary(grouping: new.lessons, by: \.key.sourceID)
+        // Days with lessons in the base: only there a new period is „zusätzlich“.
+        let oldBusy = Set(old.lessons.map(\.date))
         var result: [CalendarLessonChange] = []
         var handled = Set<String>()
         func unique(_ group: [CalendarLesson]?) -> CalendarLesson? {
@@ -137,10 +149,13 @@ public enum CalendarChangeDetector {
                 guard let before = unique(group), days.contains(before.date) else { continue }
                 let kinds = differences(before, current)
                 if !kinds.isEmpty { result.append(CalendarLessonChange(kinds: kinds, lesson: current, previous: before)) }
-            } else if !current.isCancelled, isIrregular(current) {
+            } else if !current.isCancelled, isIrregular(current), oldBusy.contains(current.date) {
                 // A new period with an explicit irregular status (Vertretung,
-                // Zusatzstunde, verlegte Stunde with a new id). A new regular
-                // period is no change worth a notification (new timetable).
+                // Zusatzstunde, verlegte Stunde with a new id) on a day that
+                // had lessons before. A new regular period is no change worth
+                // a notification (new timetable); a base day without lessons
+                // (free day, or an empty answer of WebUntis before) is no
+                // reference: the lessons coming back are not „zusätzlich“.
                 result.append(CalendarLessonChange(kinds: [.added], lesson: current, previous: nil))
             }
         }
@@ -173,5 +188,97 @@ public enum CalendarChangeDetector {
             case .cancelled, .exam, .other: false
             }
         }
+    }
+}
+
+// MARK: Change ids and repeats
+
+/// The parts of a raw change id `change.<periode>.<YYYY-MM-DD>.<arten>.<beginn>.<räume>[~n]`
+/// (`CalendarLessonChange.id`, optionally with the repeat generation). The
+/// period and the rooms may contain dots; the rooms never decide where the
+/// date is (the first part after the period that is a date).
+public struct CalendarChangeID: Equatable, Sendable {
+    /// WebUntis period id (`CalendarLesson.key.sourceID`).
+    public var period: String
+    public var day: CivilDate
+    /// Raw values of `CalendarLessonChange.Kind`, joined by „-“ in the id.
+    public var kinds: [String]
+    /// Start in whole seconds since 2001-01-01 (as in the id).
+    public var start: Int
+    /// Rooms as in the id („R 1.01+R 2“), possibly empty.
+    public var rooms: String
+    /// 1 for the plain id, n ≥ 2 for `…~n`.
+    public var generation: Int
+
+    public init?(_ raw: String) {
+        guard raw.hasPrefix("change.") else { return nil }
+        let parts = raw.dropFirst("change.".count).split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard let dateIndex = parts.indices.dropFirst().first(where: { CivilDate(parts[$0]) != nil }),
+              parts.count >= dateIndex + 3, let day = CivilDate(parts[dateIndex]), let start = Int(parts[dateIndex + 2]) else { return nil }
+        period = parts[..<dateIndex].joined(separator: ".")
+        self.day = day
+        kinds = parts[dateIndex + 1].split(separator: "-").map(String.init)
+        self.start = start
+        var rooms = parts[(dateIndex + 3)...].joined(separator: ".")
+        generation = 1
+        if let mark = rooms.lastIndex(of: Character(CalendarChangeRepeats.separator)) {
+            let digits = rooms[rooms.index(after: mark)...]
+            if (1...4).contains(digits.count), digits.allSatisfy({ $0.isASCII && $0.isNumber }), !digits.hasPrefix("0"),
+               let value = Int(digits), value >= 2 {
+                generation = value
+                rooms = String(rooms[..<mark])
+            }
+        }
+        self.rooms = rooms
+    }
+
+    /// The id without repeat generation (`CalendarLessonChange.id`).
+    public var base: String {
+        "change.\(period).\(day).\(kinds.joined(separator: "-")).\(start).\(rooms)"
+    }
+
+    /// The full id (with `~n` from generation 2 on).
+    public var id: String { generation > 1 ? base + CalendarChangeRepeats.separator + String(generation) : base }
+
+    /// The lesson the change belongs to (period and day).
+    public var lessonKey: String { "\(period)|\(day)" }
+
+    /// Ausfall, findet wieder statt or any other change.
+    public var category: String {
+        kinds.contains("cancelled") ? "cancelled" : kinds.contains("reinstated") ? "reinstated" : "changed"
+    }
+}
+
+/// The same change of a lesson again after a different one in between
+/// („Ausfall“ → „findet wieder statt“ → „Ausfall“) gets the same
+/// `CalendarLessonChange.id` as the first time. Deduplicating by id alone
+/// swallowed it; it is recorded as `id~2` (then `~3` …) instead. A change
+/// that the newest entry of the same lesson already says is the same one
+/// detected again and is not recorded. Ids of first occurrences stay as
+/// they were. Used by the push service (its history) and the app (bell,
+/// `CalendarNotificationLog.identifyingRepeats`), each within its own origin.
+public enum CalendarChangeRepeats {
+    public static let separator = "~"
+
+    /// How a freshly detected change `id` (raw, `change.…`) is recorded,
+    /// given the raw change ids recorded before by the same origin, oldest
+    /// first. `isNew == false`: the newest earlier entry of the same lesson
+    /// says the same (`id` is then that entry's id); else `id` is the id to
+    /// record (`change.…` or `change.…~n`).
+    public static func resolve(_ id: String, earlier: [String]) -> (id: String, isNew: Bool) {
+        guard let change = CalendarChangeID(id) else { return (id, !earlier.contains(id)) }
+        let base = change.base
+        var newest: (id: String, base: String)?
+        var generation = 0
+        for other in earlier {
+            guard let parsed = CalendarChangeID(other) else { continue }
+            if parsed.lessonKey == change.lessonKey { newest = (other, parsed.base) }
+            if parsed.base == base { generation = max(generation, parsed.generation) }
+        }
+        if let newest, newest.base == base { return (newest.id, false) }
+        guard generation > 0 else { return (base, true) }
+        var next = change
+        next.generation = generation + 1
+        return (next.id, true)
     }
 }
