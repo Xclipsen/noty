@@ -8,12 +8,15 @@ import NotebookCore
 
 /// Diagnostics for main-thread stalls (Feedback 33: multi-second hangs at high
 /// zoom). Two modes:
-/// - Always on (`installWatchdog`, from `Diagnostics.start`): a run-loop
-///   observer notes every main iteration of 250 ms or more as a `hang`
+/// - Always on (`installWatchdog`, from `Diagnostics.start`): run-loop
+///   observers split main's work at every boundary (after waking, before
+///   timers, before sources, and before sleeping – the latter after all other
+///   observers, so UIKit/Core Animation layout, drawing and SwiftUI updates
+///   count as work) and note every stretch of 250 ms or more as a `hang`
 ///   breadcrumb; a background watchdog samples the main thread's frame-pointer
-///   chain once an iteration reaches 2 s and stores an `appHang` report with
+///   chain once a stretch reaches 2 s and stores an `appHang` report with
 ///   that stack (rewritten with the final duration when main recovers).
-///   Costs one lock per run-loop wake-up and a thread that wakes every 100 ms.
+///   Costs one lock per observer callback and a thread that wakes every 100 ms.
 /// - Verbose (Einstellungen › Diagnose › Hänger-Diagnose, `install`): in
 ///   addition `hit` counts named code paths per iteration, and stalls are
 ///   sampled at 0.7, 1.5, 3 and 10 s into the system log and
@@ -36,6 +39,8 @@ enum HangProbe {
         var idle = false
         /// The 2 s report of the current iteration, finished when it ends.
         var pending: PendingHang?
+        /// ID of that report until its final rewrite is stored: not sent before.
+        var unfinishedID: String?
         /// The hidden test menu's hang is running.
         var testing = false
     }
@@ -49,6 +54,9 @@ enum HangProbe {
     /// The verbose mode (Settings › Diagnose, read at launch). Also gates the
     /// editor's timing and input traces, so normal use logs nothing per touch.
     static var isInstalled: Bool { installed }
+    /// The `appHang` report of a stall still running (or not yet rewritten
+    /// with its final duration); the uploader leaves it for later.
+    static var unfinishedReportID: String? { state.withLock { $0.unfinishedID } }
 
     /// Verbose mode on top of the watchdog.
     @MainActor static func install() {
@@ -65,37 +73,50 @@ enum HangProbe {
         mainThread = mach_thread_self()
         // Allocates: must not happen on first use, while main is suspended.
         _ = frames
-        let observer = CFRunLoopObserverCreateWithHandler(nil,
-            CFRunLoopActivity.afterWaiting.rawValue | CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { _, activity in
-            let sleeping = activity == .beforeWaiting
-            let verbose = installed
-            let (elapsed, snapshot, finished) = state.withLock { state -> (Double, [String: Int], PendingHang?) in
-                let elapsed = CACurrentMediaTime() - state.iterationStart
-                let stalled = elapsed > 0.25 && !state.idle
-                let snapshot = stalled && verbose ? state.counts : [:]
-                let finished = state.pending?.iteration == state.iteration ? state.pending : nil
-                if finished != nil { state.pending = nil }
-                state.idle = sleeping
-                if verbose { state.counts.removeAll(keepingCapacity: true) }
-                state.iteration &+= 1; state.iterationStart = CACurrentMediaTime()
-                return (stalled ? elapsed : 0, snapshot, finished)
-            }
-            guard elapsed > 0 else { return }
-            let ms = Int(elapsed * 1000)
-            Diagnostics.noteHang(milliseconds: ms)
-            if let finished {
-                Diagnostics.queue.async {
-                    Diagnostics.hangReport(milliseconds: ms, stack: finished.stack, id: finished.id,
-                                           createdAt: finished.createdAt, test: finished.test)
-                    Uploader.shared.schedule(after: 5)
-                }
-            }
-            if !snapshot.isEmpty { report(elapsed: elapsed, counts: snapshot) }
-        }
-        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        // Order 0: a new stretch of work begins (also between iterations
+        // that never sleep, e.g. under dense input in poll mode).
+        let begin = CFRunLoopObserverCreateWithHandler(nil,
+            CFRunLoopActivity.afterWaiting.rawValue | CFRunLoopActivity.beforeTimers.rawValue
+                | CFRunLoopActivity.beforeSources.rawValue, true, 0) { _, _ in boundary(sleeping: false) }
+        // Last of all before sleeping: after the Core Animation commit.
+        let end = CFRunLoopObserverCreateWithHandler(nil,
+            CFRunLoopActivity.beforeWaiting.rawValue, true, CFIndex.max) { _, _ in boundary(sleeping: true) }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), begin, .commonModes)
+        CFRunLoopAddObserver(CFRunLoopGetMain(), end, .commonModes)
         let thread = Thread { watchdog() }
         thread.name = "noty.hang-probe"; thread.qualityOfService = .utility
         thread.start()
+    }
+
+    /// Main thread, at a run-loop boundary: ends the stretch since the last
+    /// one (a stall unless main slept) and starts the next. One lock.
+    private static func boundary(sleeping: Bool) {
+        let verbose = installed
+        let (elapsed, snapshot, finished) = state.withLock { state -> (Double, [String: Int], PendingHang?) in
+            let now = CACurrentMediaTime()
+            let elapsed = now - state.iterationStart
+            let stalled = elapsed > 0.25 && !state.idle
+            let snapshot = stalled && verbose ? state.counts : [:]
+            let finished = state.pending?.iteration == state.iteration ? state.pending : nil
+            if finished != nil { state.pending = nil }
+            state.idle = sleeping
+            if verbose { state.counts.removeAll(keepingCapacity: true) }
+            state.iteration &+= 1; state.iterationStart = now
+            return (stalled || finished != nil ? elapsed : 0, snapshot, finished)
+        }
+        guard elapsed > 0 else { return }
+        let ms = Int(elapsed * 1000)
+        Diagnostics.noteHang(milliseconds: ms)
+        if let finished {
+            // Same serial queue as the 2 s version: stored after it, then sent.
+            Diagnostics.queue.async {
+                Diagnostics.hangReport(milliseconds: ms, stack: finished.stack, id: finished.id,
+                                       createdAt: finished.createdAt, test: finished.test)
+                state.withLock { if $0.unfinishedID == finished.id { $0.unfinishedID = nil } }
+                Uploader.shared.schedule(after: 5)
+            }
+        }
+        if !snapshot.isEmpty { report(elapsed: elapsed, counts: snapshot) }
     }
 
     /// Main thread only. Not verbose: a single branch; else one lock and a dictionary increment.
@@ -173,12 +194,16 @@ enum HangProbe {
                                           createdAt: DiagnosticReport.milliseconds(Date()), stack: stack, test: testing)
                 let stillStalled = state.withLock { state -> Bool in
                     guard state.iteration == current else { return false }
-                    state.pending = pending; return true
+                    state.pending = pending; state.unfinishedID = pending.id; return true
                 }
-                // Written now: if the system ends the app during the stall, the report survives.
+                // Written now (the serial queue keeps it before the final
+                // rewrite): if the system ends the app during the stall, the report survives.
                 if stillStalled {
-                    Diagnostics.hangReport(milliseconds: Int(elapsed * 1000), stack: stack, id: pending.id,
-                                           createdAt: pending.createdAt, test: testing)
+                    let ms = Int(elapsed * 1000)
+                    Diagnostics.queue.async {
+                        Diagnostics.hangReport(milliseconds: ms, stack: stack, id: pending.id,
+                                               createdAt: pending.createdAt, test: testing)
+                    }
                 }
             }
         }
@@ -231,7 +256,7 @@ enum HangProbe {
             }
         }
         guard result == KERN_SUCCESS else { return 0 }
-        let mask: UInt = 0x0000_000F_FFFF_FFFF // strip pointer-authentication bits
+        let mask: UInt = 0x0000_7FFF_FFFF_FFFF // strip pointer-authentication bits (47-bit addresses)
         var n = 0
         frames[n] = UInt(state.__pc) & mask; n += 1
         frames[n] = UInt(state.__lr) & mask; n += 1

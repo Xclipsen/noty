@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fehlerberichte der noty-Apps auswerten (docs/DIAGNOSE-PLAN.md).
+"""Fehlerberichte der noty-Apps auswerten (docs/DIAGNOSE.md).
 
 Liest die Ablage von ``diagnostics/server.py``
 (``STORE/<kanal>/<build>/<zeit>-<art>-<id>.json``), fasst gleiche Ursachen

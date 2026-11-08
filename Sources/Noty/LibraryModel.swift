@@ -426,7 +426,10 @@ final class LibraryModel: ObservableObject {
         do {
             let url = try await store.documentURL(id: item.id)
             // Another writer (an append of a shared file) holds the package.
-            guard !PackageWriteLock.shared.isHeld(url) else { error = "Dieses Heft wird gerade ergänzt. Bitte gleich noch einmal öffnen."; return }
+            guard !PackageWriteLock.shared.isHeld(url) else {
+                Diagnostics.cancel(shared: "notebook.open")
+                error = "Dieses Heft wird gerade ergänzt. Bitte gleich noch einmal öffnen."; return
+            }
             snapshot = try await store.markOpened(item.id)
             opened = OpenNotebook(id: item.id, directory: url, title: item.title,
                                   isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds, searchFlowRange: flowRange)
@@ -454,13 +457,15 @@ final class LibraryModel: ObservableObject {
               !item.isFolder, !snapshot.isTrashed(id) else { notebookClosedByUser(); return }
         busy = true
         defer { busy = false }
+        // Ends when the editor has the notebook loaded (`EditorModel`).
+        Diagnostics.begin(shared: "notebook.open")
         do {
             let url = try await store.documentURL(id: id)
             snapshot = try await store.markOpened(id)
-            guard opened == nil else { return }
+            guard opened == nil else { Diagnostics.cancel(shared: "notebook.open"); return }
             opened = OpenNotebook(id: id, directory: url, title: item.title, isRestored: item.source == .restored)
             lastEditedID = id
-        } catch { notebookClosedByUser() }
+        } catch { Diagnostics.cancel(shared: "notebook.open"); notebookClosedByUser() }
     }
 
     func importPDF(_ url: URL, parent: UUID?, writingArea: PageMargins? = nil) async {

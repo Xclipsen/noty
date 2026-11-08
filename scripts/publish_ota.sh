@@ -126,7 +126,8 @@ for _ in range(ncmds):
 json.dump({"channel": channel, "build": build, "branch": branch, "commit": commit, "uuid": image_uuid}, open(folder + "/info.json", "w"), indent=1)
 PY
 # Die letzten 60 Builds je Kanal bleiben.
-ls -1d "$DIAG_BINARIES/$CHANNEL"/*/ 2>/dev/null | sort -t/ -k1,1 -V | head -n -60 | xargs -r rm -rf --
+find "$DIAG_BINARIES/$CHANNEL" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | { grep -E '^[0-9]+$' || true; } | sort -n | head -n -60 |
+    while read -r OLD_BUILD; do rm -rf -- "$DIAG_BINARIES/$CHANNEL/$OLD_BUILD"; done
 
 STAGE="$(mktemp -d)"
 cat > "$STAGE/manifest.plist" <<PLIST

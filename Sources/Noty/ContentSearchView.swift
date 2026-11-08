@@ -409,7 +409,7 @@ struct ContentSearchView: View {
         if !hits.isEmpty || !query.isEmpty { try? await Task.sleep(for: .milliseconds(120)) }
         guard !Task.isCancelled else { return }
         let tasksOnly = openTasks, term = query, source = openTasks ? model.tasks : model.records
-        let measurement = Diagnostics.begin("search")
+        let measurement = Diagnostics.begin("search", quiet: true)
         defer { Diagnostics.end(measurement, ["records": source.count, "hits": hits.count]) }
         let found = await Task.detached(priority: .userInitiated) { () -> [ContentSearchHit] in
             if tasksOnly { return source.filter { term.trimmingCharacters(in: .whitespaces).isEmpty || $0.matches(term) } }

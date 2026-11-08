@@ -39,11 +39,19 @@ public struct DiagnosticSessionLog: Codable, Equatable, Sendable {
         try JSONEncoder().encode(self).write(to: url, options: .atomic)
     }
 
-    /// Starts a new run. Returns the previous run when it ended while the
-    /// app was launching or in the foreground (a crash, a watchdog kill or an
-    /// out-of-memory end) and the launch IDs no longer kept.
+    /// Starts a new run. Returns the previous run when it ended in the
+    /// foreground or while launching past the `launch` phase (a crash, a
+    /// watchdog kill or an out-of-memory end) and the launch IDs no longer
+    /// kept. A run that never got past `launch` and was never active (a
+    /// prewarm, an install ending the app) is no abnormal exit.
     public mutating func begin(launchID: String, build: String, at time: Int64) -> (abnormal: Session?, dropped: [String]) {
-        let abnormal = sessions.last.flatMap { $0.state == .background ? nil : $0 }
+        let abnormal = sessions.last.flatMap { last -> Session? in
+            switch last.state {
+            case .active: last
+            case .launching: last.phase == "launch" ? nil : last
+            case .background: nil
+            }
+        }
         sessions.append(Session(launchID: launchID, build: build, startedAt: time, phase: "launch", state: .launching, updatedAt: time))
         var dropped: [String] = []
         while sessions.count > Self.keptSessions { dropped.append(sessions.removeFirst().launchID) }
@@ -63,12 +71,21 @@ public struct DiagnosticSessionLog: Codable, Equatable, Sendable {
     }
 
     public func session(id: String) -> Session? { sessions.first { $0.launchID == id } }
+
+    /// The run going on at `time`, never the run `excluded` (this launch):
+    /// a MetricKit diagnostic delivered now belongs to an earlier run even
+    /// when its payload ends after this launch began.
+    public func session(before time: Int64, excluding excluded: String) -> Session? {
+        sessions.last { $0.launchID != excluded && $0.startedAt <= time }
+    }
 }
 
 /// Reports waiting to be sent and the ones already sent, for „Letzte
 /// Berichte“. Files are written atomically; a report is only ever moved from
 /// `pending` to `sent` after the server confirmed it. Old files go after 90
-/// days; at most 50 pending and 30 sent stay.
+/// days; at most 50 pending (the noisy kinds go first, so crashes and
+/// abnormal exits survive where nothing is sent) and 30 sent stay. File
+/// names are `<13-digit ms>-<kind>-<id>.json`.
 public final class DiagnosticOutbox: @unchecked Sendable {
     public struct Entry: Equatable, Sendable {
         public var report: DiagnosticReport
@@ -97,15 +114,17 @@ public final class DiagnosticOutbox: @unchecked Sendable {
         guard data.count <= DiagnosticReport.maximumEncodedSize else { throw DiagnosticOutboxError.tooLarge(data.count) }
         lock.lock(); defer { lock.unlock() }
         try FileManager.default.createDirectory(at: pendingURL, withIntermediateDirectories: true)
-        let noisy: Set<DiagnosticKind> = [.slow, .hang, .appHang, .failure, .cpu, .diskWrite]
-        if noisy.contains(report.kind) {
-            let dayAgo = DiagnosticReport.milliseconds(now) - 86_400_000
-            let today = (entriesLocked(in: pendingURL, sent: false) + entriesLocked(in: sentURL, sent: true))
-                .filter { $0.report.createdAt >= dayAgo && noisy.contains($0.report.kind) }.count
-            if today >= Self.dailyLimit { return false }
-        }
         let time = String(max(report.createdAt, 0)), padded = String(repeating: "0", count: max(0, 13 - time.count)) + time
         let name = "\(padded)-\(report.kind.rawValue)-\(report.id).json"
+        if Self.noisy.contains(report.kind) {
+            // From the file names alone; a rewrite of the same report is no new one.
+            let dayAgo = DiagnosticReport.milliseconds(now) - 86_400_000
+            let today = (Self.names(in: pendingURL) + Self.names(in: sentURL)).filter { other in
+                guard other != name, let parsed = Self.parse(other) else { return false }
+                return parsed.time >= dayAgo && Self.noisy.contains(parsed.kind)
+            }.count
+            if today >= Self.dailyLimit { return false }
+        }
         try data.write(to: pendingURL.appendingPathComponent(name), options: .atomic)
         pruneLocked(now: now)
         return true
@@ -149,13 +168,35 @@ public final class DiagnosticOutbox: @unchecked Sendable {
         }
     }
 
+    /// Kinds that come in numbers (slow, hang, failure, …): limited per day
+    /// and pruned first.
+    static let noisy: Set<DiagnosticKind> = [.slow, .hang, .appHang, .failure, .cpu, .diskWrite]
+
+    private static func names(in folder: URL) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { $0.hasSuffix(".json") }.sorted()
+    }
+
+    /// Time and kind from `<13-digit ms>-<kind>-<id>.json`.
+    static func parse(_ name: String) -> (time: Int64, kind: DiagnosticKind)? {
+        let parts = name.split(separator: "-", maxSplits: 2)
+        guard parts.count == 3, let time = Int64(parts[0]), let kind = DiagnosticKind(rawValue: String(parts[1])) else { return nil }
+        return (time, kind)
+    }
+
     private func pruneLocked(now: Date) {
         let cutoff = DiagnosticReport.milliseconds(now) - Int64(Self.retentionDays) * 86_400_000
         for (folder, keep) in [(pendingURL, Self.maximumPending), (sentURL, Self.maximumSent)] {
-            let names = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { $0.hasSuffix(".json") }.sorted()
-            for (index, name) in names.enumerated() {
-                let time = Int64(name.prefix(13)) ?? 0
-                if time < cutoff || index < names.count - keep { try? FileManager.default.removeItem(at: folder.appendingPathComponent(name)) }
+            var names: [String] = []
+            for name in Self.names(in: folder) {
+                if (Self.parse(name)?.time ?? 0) < cutoff { try? FileManager.default.removeItem(at: folder.appendingPathComponent(name)) }
+                else { names.append(name) }
+            }
+            var excess = names.count - keep
+            guard excess > 0 else { continue }
+            // Oldest noisy reports first, then the oldest of the rest.
+            let isNoisy = { (name: String) in Self.parse(name).map { Self.noisy.contains($0.kind) } ?? true }
+            for name in names.filter(isNoisy) + names.filter({ !isNoisy($0) }) where excess > 0 {
+                try? FileManager.default.removeItem(at: folder.appendingPathComponent(name)); excess -= 1
             }
         }
     }

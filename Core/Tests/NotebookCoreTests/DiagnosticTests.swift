@@ -133,7 +133,9 @@ final class DiagnosticTests: XCTestCase {
 
     func testSessionLogFindsAbnormalExitsAndTheRunOfAReport() throws {
         var log = DiagnosticSessionLog()
-        XCTAssertNil(log.begin(launchID: "A", build: "140", at: 100).abnormal)
+        XCTAssertNil(log.begin(launchID: "P", build: "140", at: 50).abnormal)
+        XCTAssertNil(log.begin(launchID: "A", build: "140", at: 100).abnormal,
+                     "a run that never got past launch and was never active (prewarm, install) is no abnormal exit")
         log.update(launchID: "A", phase: "library", state: .active, at: 150)
         log.update(launchID: "A", state: .background, at: 200)
         XCTAssertNil(log.begin(launchID: "B", build: "140", at: 300).abnormal, "a run that went to the background ended normally")
@@ -143,6 +145,13 @@ final class DiagnosticTests: XCTestCase {
         XCTAssertEqual(next.abnormal?.phase, "lawWindow")
         XCTAssertEqual(log.session(at: 320)?.launchID, "B")
         XCTAssertEqual(log.session(at: 120)?.launchID, "A")
+        // MetricKit at launch C: never C itself, even for a payload ending after C began.
+        XCTAssertEqual(log.session(before: 450, excluding: "C")?.launchID, "B")
+        XCTAssertEqual(log.session(before: 320, excluding: "C")?.launchID, "B")
+        XCTAssertEqual(log.session(before: 120, excluding: "C")?.launchID, "A")
+        log.update(launchID: "C", phase: "library", at: 410)
+        XCTAssertEqual(log.begin(launchID: "D", build: "141", at: 420).abnormal?.launchID, "C",
+                       "launching past the launch phase without becoming active is abnormal")
         for index in 0..<5 { _ = log.begin(launchID: "X\(index)", build: "141", at: 500 + Int64(index)) }
         XCTAssertEqual(log.sessions.count, DiagnosticSessionLog.keptSessions)
 
@@ -175,6 +184,25 @@ final class DiagnosticTests: XCTestCase {
         let later = now.addingTimeInterval(91 * 86_400)
         _ = try outbox.add(reporter.test("test.hang", phase: nil, breadcrumbs: [], at: DiagnosticReport.milliseconds(later)), now: later)
         XCTAssertEqual(outbox.recent(limit: 200).count, 1)
+    }
+
+    /// In noty nothing is sent: many noisy reports must not push out a crash
+    /// or an abnormal exit when the 50 pending are full.
+    func testOutboxPrunesNoisyKindsBeforeCrashes() throws {
+        let outbox = DiagnosticOutbox(directory: try temporaryDirectory())
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let time = DiagnosticReport.milliseconds(start)
+        XCTAssertTrue(try outbox.add(reporter.metricKit(.init(kind: .crash), session: nil, breadcrumbs: [], at: time), now: start))
+        // Spread over days so that the daily limit does not hold them back.
+        for index in 0..<(DiagnosticOutbox.maximumPending + 30) {
+            let now = start.addingTimeInterval(Double(index) * 3_600)
+            _ = try outbox.add(reporter.slow("save", milliseconds: 1500, threshold: 1000, phase: nil, breadcrumbs: [],
+                                             at: DiagnosticReport.milliseconds(now)), now: now)
+        }
+        let pending = outbox.pending()
+        XCTAssertEqual(pending.count, DiagnosticOutbox.maximumPending)
+        XCTAssertEqual(pending.filter { $0.report.kind == .crash }.count, 1)
+        XCTAssertEqual(DiagnosticOutbox.parse(pending[0].url.lastPathComponent)?.kind, .crash)
     }
 
     func testThrottleAllowsOneReportPerOperationAndHour() {

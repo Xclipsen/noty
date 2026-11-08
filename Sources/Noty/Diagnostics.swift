@@ -73,6 +73,9 @@ enum Diagnostics {
         var sessions = DiagnosticSessionLog()
         var phase = "launch"
         var throttle = DiagnosticThrottle()
+        /// Longest duration stored per `appHang` report: a late 2 s write
+        /// never replaces the final one.
+        var hangMilliseconds: [String: Int] = [:]
     }
     private static let state = OSAllocatedUnfairLock(initialState: State())
     static var phase: String { state.withLock { $0.phase } }
@@ -80,8 +83,12 @@ enum Diagnostics {
 
     // MARK: Start
 
+    @MainActor private static var started = false
+
     /// First thing in `NotyApp.init`.
     @MainActor static func start() {
+        guard !started else { return }
+        started = true
         var uts = utsname()
         uname(&uts)
         let machine = withUnsafeBytes(of: &uts.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
@@ -89,15 +96,16 @@ enum Diagnostics {
                                           os: "iPadOS \(UIDevice.current.systemVersion)")
         reporterStorage = DiagnosticReporter(app: appInfo, device: device, launchID: launchID, appImage: appImage)
         let now = DiagnosticReport.milliseconds(Date())
-        let (abnormal, dropped) = state.withLock { state -> (DiagnosticSessionLog.Session?, [String]) in
-            state.sessions = DiagnosticSessionLog.load(sessionsURL)
-            let result = state.sessions.begin(launchID: launchID, build: build, at: now)
-            try? state.sessions.save(sessionsURL)
-            return result
-        }
-        for id in dropped { try? FileManager.default.removeItem(at: journalDirectory.appendingPathComponent("\(id).jsonl")) }
+        // File I/O outside the lock; nothing else touches the sessions yet.
+        var sessions = DiagnosticSessionLog.load(sessionsURL)
+        let (abnormal, dropped) = sessions.begin(launchID: launchID, build: build, at: now)
+        try? sessions.save(sessionsURL)
+        state.withLock { [sessions] in $0.sessions = sessions }
         journal.record("app.launch", ["build": Int(build) ?? 0])
-        if let abnormal {
+        // The old run's journal is read off the main thread.
+        queue.async {
+            for id in dropped { try? FileManager.default.removeItem(at: journalDirectory.appendingPathComponent("\(id).jsonl")) }
+            guard let abnormal else { return }
             let crumbs = DiagnosticJournal.load(journalDirectory.appendingPathComponent("\(abnormal.launchID).jsonl"))
             add(reporter.abnormalExit(abnormal, breadcrumbs: crumbs, at: now))
             log.error("Previous run \(abnormal.launchID, privacy: .public) ended abnormally in phase \(abnormal.phase, privacy: .public)")
@@ -107,11 +115,11 @@ enum Diagnostics {
         Uploader.shared.schedule(after: 15)
     }
 
-    /// The run's breadcrumbs up to `time`, for MetricKit reports of earlier runs.
+    /// The run's breadcrumbs up to `time`, for MetricKit reports of earlier
+    /// runs: never this run, even when the payload ends after this launch.
     static func breadcrumbs(ofRunAt time: Int64) -> (DiagnosticSessionLog.Session?, [DiagnosticBreadcrumb]) {
-        let session = state.withLock { $0.sessions.session(at: time) }
+        let session = state.withLock { $0.sessions.session(before: time, excluding: launchID) }
         guard let session else { return (nil, []) }
-        if session.launchID == launchID { return (session, journal.recent().filter { $0.t <= time }) }
         return (session, DiagnosticJournal.load(journalDirectory.appendingPathComponent("\(session.launchID).jsonl"), until: time))
     }
 
@@ -211,6 +219,8 @@ enum Diagnostics {
     @MainActor static func begin(shared operation: DiagnosticEvent) { open[operation.name] = begin(operation) }
     @MainActor static func end(shared operation: DiagnosticEvent, _ values: KeyValuePairs<DiagnosticKey, Int> = [:]) {
         guard let measurement = open.removeValue(forKey: operation.name) else { return }
+        // Left over from an attempt that never ended (a missed cancel): no measurement.
+        guard CACurrentMediaTime() - measurement.start <= 60 else { return }
         end(measurement, values)
     }
     @MainActor static func cancel(shared operation: DiagnosticEvent) { open.removeValue(forKey: operation.name) }
@@ -232,10 +242,16 @@ enum Diagnostics {
     /// A main run-loop iteration took `ms` ≥ 250 ms. Main thread.
     static func noteHang(milliseconds ms: Int) { journal.record("hang", ["ms": ms]) }
 
-    /// The watchdog saw main stalled for 2 s; called on the watchdog thread.
-    /// The same report is rewritten with the final duration when the stall
-    /// ends (it is not sent while main is stuck anyway).
+    /// The watchdog saw main stalled for 2 s; called on `queue`. The same
+    /// report is rewritten with the final duration when the stall ends (the
+    /// uploader skips it until then, `HangProbe.unfinishedReportID`); the
+    /// longer duration always wins.
     static func hangReport(milliseconds ms: Int, stack: [DiagnosticFrame], id: String, createdAt: Int64, test: Bool) {
+        let ms = state.withLock { state -> Int in
+            let longest = max(ms, state.hangMilliseconds[id] ?? 0)
+            state.hangMilliseconds[id] = longest
+            return longest
+        }
         var report = reporter.appHang(milliseconds: ms, stack: stack, phase: phase, breadcrumbs: journal.recent(), at: createdAt, test: test)
         report.id = id
         add(report, upload: false)
@@ -334,6 +350,8 @@ final class Uploader: @unchecked Sendable {
         defer { flags.withLock { $0.running = false } }
         var sent = 0
         for entry in Diagnostics.outbox.pending() {
+            // A stall still going on: sent with its final duration later.
+            guard entry.report.id != HangProbe.unfinishedReportID else { continue }
             guard let body = try? entry.report.encoded() else { continue }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"

@@ -136,6 +136,7 @@ final class EditorModel: ObservableObject {
             defer { busy = false }
             if self.writeClaim == nil { self.writeClaim = await PackageWriteLock.shared.claim(root, waitingUpTo: 15) }
             guard self.writeClaim != nil else {
+                Diagnostics.cancel(shared: "notebook.open")
                 status = "Heft wird an anderer Stelle bearbeitet – nicht geöffnet"
                 self.error = "Dieses Heft ist gerade in einer anderen Ansicht geöffnet oder wird ergänzt. Bitte schließen und gleich noch einmal öffnen; es wurde nichts verändert."
                 return
