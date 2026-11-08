@@ -91,6 +91,38 @@ case "test-push":
     print("Ergebnis: \(result)")
     if result != .delivered { exit(1) }
 
+case "demo-push":
+    // Every kind of notification once, with sample texts in the real formats
+    // (docs/PUSH.md). Kind „test“: tapping opens nothing, nothing is stored.
+    guard let id = arguments.first else { fail("Geräte-ID fehlt (siehe status)") }
+    let runtime = loadRuntime()
+    let record: DeviceRecord
+    do { record = try runtime.store.load(id) } catch { fail("Gerät nicht lesbar: \(error)") }
+    let client = APNsClient(transport: runtime.transport, tokens: runtime.tokens)
+    let target = PushTarget(deviceToken: record.deviceToken, environment: record.environment, topic: record.bundleID)
+    let changes = "noty.calendar.demo.changes"
+    let samples: [(String, String, String)] = [
+        ("Stundenplanänderung", "Mo 9.11., 08:00 Deutsch fällt aus", changes),
+        ("Stundenplanänderung", "Mo 9.11., 09:45 Mathematik jetzt in R 112 (statt R 101)", changes),
+        ("Stundenplanänderung", "Di 10.11., 11:30 Englisch: Vertretung", changes),
+        ("Stundenplanänderung", "Biologie verlegt auf Do 12.11., 13:15 (statt Mi 11.11., 08:00) in R 204", changes),
+        ("Stundenplanänderung", "Fr 13.11., 08:00 Sport findet wieder statt in Halle 2", changes),
+        ("4 Stundenplanänderungen", "Mo 9.11., 08:00 Deutsch fällt aus\nMo 9.11., 09:45 Mathematik jetzt in R 112 (statt R 101)\nDi 10.11., 11:30 Englisch: Vertretung\n…", changes),
+        ("Dein Tag · Mo 9.11.", "Beginn 08:00: Rechnungswesen, R 204\nÄnderungen: 09:45 Mathematik in R 112; 11:30 Deutsch fällt aus\n2 Hausaufgaben fällig: Mathematik, Englisch\nTermin: 15:00 Zahnarzt", "noty.calendar.demo.overview"),
+        ("Zahnarzt", "09.11.2026 · 15:00–15:45 · Praxis am Markt", "noty.calendar.demo.reminder"),
+        ("Untis-Zugang prüfen", "Der Stundenplan kann nicht mehr abgerufen werden. Bitte in noty calendar die WebUntis-Freigabe neu verbinden.", "noty.calendar.demo.auth"),
+    ]
+    for (index, sample) in samples.enumerated() {
+        let message = PushMessage(title: sample.0, body: sample.1, threadID: sample.2, collapseID: "demo.\(index)",
+                                  expiration: Date().addingTimeInterval(3600), data: ["kind": .string("test")])
+        let semaphore = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var result = PushResult.rejected("nicht gesendet")
+        Task { result = await client.send(message, to: target); semaphore.signal() }
+        semaphore.wait()
+        print("\(sample.0): \(result)")
+        Thread.sleep(forTimeInterval: 1.5)
+    }
+
 case "serve":
     // SIGTERM/SIGINT end the process at once. Safe: every device file is
     // replaced by rename (old or new, never half), leftovers of an
@@ -122,7 +154,7 @@ case "serve":
 
 default:
     print("""
-    noty-push serve|check|status|test-push ID [--config PFAD]   (Standard: /etc/noty-push/config.json)
+    noty-push serve|check|status|test-push ID|demo-push ID [--config PFAD]   (Standard: /etc/noty-push/config.json)
     noty-push genkey
     """)
 }
