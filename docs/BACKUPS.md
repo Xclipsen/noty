@@ -1,5 +1,9 @@
 # Heft-Backup und Wiederherstellung – Format 1
 
+## Ergänzung 04.11.2026 · Kalender (B3, `feat/kalender`)
+
+Ein Heftbackup (`.noty`/`.notybackup`) enthält nur sein Heft, auch wenn es eine Terminnotiz ist: keine Termine, keine Links, keinen Stundenplan, und es behauptet keine Kalendersicherung. Kalenderdaten sichert nur das Bibliotheksbackup ab Format 3 ([LIBRARY-BACKUP](LIBRARY-BACKUP.md)). Autosave, lokale Historie, Heftbackup, Bibliotheksbackup und PDF-Export bleiben getrennt.
+
 ## Ergänzung 22.10.2026 · Textdokumente in `.noty` und Bibliotheksbackup
 
 Kein neues Archivformat: `.noty`/`.notybackup` Format 2 und `.notylibrary` Format 2 tragen Textdokumente als Notebook-Datensatz mit `notebookSchemaVersion` 15 und `kind: "textDocument"`. Der Import legt sie als Textdokument an (Index-Hinweis aus der Datei), der Bibliotheks-Restore übernimmt die Art aus den Dokumenten, auch wenn das archivierte Index-`kind` fehlt. Ältere Builds lehnen solche Dateien als „Dokumentformat 15“ ab. `verify_backup.py` gibt zusätzlich `kind` aus, `verify_library_backup.py` zählt `textDocuments`. Host-Roundtrip und Prüfer-Negativtests bestanden; am iPad ungeprüft.

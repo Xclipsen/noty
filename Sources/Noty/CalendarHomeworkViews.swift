@@ -1,0 +1,162 @@
+import SwiftUI
+import NotebookCore
+
+// Hausaufgaben aus WebUntis (offline timetable) with the local „erledigt“
+// mark (never sent to WebUntis): rows for the sidebar, the event window and
+// the complete list.
+
+/// One homework: check box (44 pt), subject colour, text, due date, remark,
+/// attachments and the WebUntis state – in words, not by colour.
+struct CalendarHomeworkRow: View {
+    let item: CalendarHomeworkItem
+    @ObservedObject var model: CalendarModel
+    var showsSubject = true
+    var compact = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Shown at once when ticked; the mark is stored a moment later so the
+    /// tick is seen before the row leaves the open list. Tapping again
+    /// meanwhile takes the tick back (`pending` is cancelled, nothing stored).
+    @State private var ticking: Bool?
+    @State private var pending: Task<Void, Never>?
+    /// The mark is being stored: the box takes no tap until it is.
+    @State private var saving = false
+
+    private var color: Color {
+        let key = CalendarSubjectColor.key(subjectID: item.homework.subjectID, name: item.homework.subject ?? "Hausaufgabe")
+        return CalendarPalette.color(named: CalendarSubjectColor.name(for: key, chosen: model.subjectColors))
+    }
+
+    var body: some View {
+        let work = item.homework
+        let done = ticking ?? item.done
+        // Ticking needs a writable calendar and the WebUntis connection the mark belongs to.
+        let canTick = model.canWrite && model.connection != nil && !model.showsSamples
+        HStack(alignment: .top, spacing: CalendarSpace.s) {
+            Button { tick() } label: {
+                Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(done ? Color.green : Color.secondary)
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 32, height: 44, alignment: .top)
+                    .padding(.top, 2)
+                    .contentShape(NotyHitShape())
+            }
+            .buttonStyle(NotyPressStyle())
+            .disabled(!canTick || saving)
+            // Haptic only for a stored change (not for the optimistic tick).
+            .sensoryFeedback(trigger: item.done) { _, new in new ? .success : .selection }
+            .accessibilityLabel(done ? "Als offen markieren" : "Als erledigt markieren")
+            VStack(alignment: .leading, spacing: 2) {
+                if showsSubject {
+                    HStack(spacing: 5) {
+                        Circle().fill(color).frame(width: 7, height: 7)
+                        Text(work.subject ?? "Hausaufgabe").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    }
+                }
+                Text(work.text.isEmpty ? "ohne Text" : work.text)
+                    .font(.subheadline).strikethrough(done).foregroundStyle(done ? .secondary : .primary)
+                    .lineLimit(compact ? 3 : nil).fixedSize(horizontal: false, vertical: true)
+                if let remark = work.remark, !compact {
+                    Text(remark).font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 6) {
+                    Text(dueText).foregroundStyle(overdue ? Color.orange : .secondary)
+                    if work.attachmentCount > 0 {
+                        Label("\(work.attachmentCount)", systemImage: "paperclip").labelStyle(CalendarCompactLabelStyle())
+                            .accessibilityLabel(NotyText.count(work.attachmentCount, "Anhang in WebUntis", "Anhänge in WebUntis"))
+                    }
+                    if work.completedInSource { Text("· in WebUntis erledigt") }
+                }
+                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+            .padding(.top, 4)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(done ? "erledigt" : "offen")
+    }
+
+    /// First tap: tick (or untick) at once, store after a moment. A second
+    /// tap before that cancels: the row stays as it was. Once storing has
+    /// begun it can no longer be taken back (the box is locked meanwhile).
+    private func tick() {
+        guard !saving else { return }
+        if let running = pending {
+            running.cancel()
+            pending = nil
+            withAnimation(NotyMotion.highlight(reduceMotion)) { ticking = nil }
+            return
+        }
+        let target = !item.done
+        withAnimation(NotyMotion.highlight(reduceMotion)) { ticking = target }
+        pending = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(reduceMotion ? 120 : 420))
+            guard !Task.isCancelled else { return }
+            // From here on a tap cannot cancel what is being written.
+            pending = nil
+            saving = true
+            await model.setHomeworkDone(item.id, done: target)
+            saving = false
+            ticking = nil
+        }
+    }
+
+    private var overdue: Bool {
+        !item.done && item.homework.due < CivilDate(model.today, calendar: model.calendar)
+    }
+
+    /// „fällig heute“, „fällig morgen“, „fällig Mo 9.11.“, „überfällig seit …“.
+    private var dueText: String {
+        let calendar = model.calendar
+        let day = item.homework.due.start(in: calendar)
+        let today = calendar.startOfDay(for: model.today)
+        let days = CalendarDates.days(from: today, to: day, calendar: calendar)
+        let weekday = CalendarText.shortWeekdays[CalendarDates.weekdayIndex(day, calendar: calendar)]
+        let date = "\(weekday) \(item.homework.due.day).\(item.homework.due.month)."
+        switch days {
+        case 0: return "fällig heute"
+        case 1: return "fällig morgen"
+        case ..<0: return item.done ? "war fällig \(date)" : "überfällig seit \(date)"
+        default: return "fällig \(date)"
+        }
+    }
+}
+
+/// Complete list (sidebar „Alle anzeigen“): open first, done on request.
+struct CalendarHomeworkList: View {
+    @ObservedObject var model: CalendarModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var showsDone = false
+
+    var body: some View {
+        NavigationStack {
+            let all = model.homework
+            let items = all.filter { showsDone || !$0.done }
+            List {
+                ForEach(items) { item in
+                    CalendarHomeworkRow(item: item, model: model)
+                }
+            }
+            .overlay {
+                if all.isEmpty {
+                    ContentUnavailableView("Keine Hausaufgaben", systemImage: "book.closed",
+                                           description: Text(model.connection == nil ? "Hausaufgaben kommen aus WebUntis. Bitte zuerst WebUntis verbinden."
+                                                             : "Im geladenen Zeitraum liefert WebUntis keine Hausaufgaben."))
+                } else if items.isEmpty {
+                    ContentUnavailableView("Alles erledigt", systemImage: "checkmark.circle")
+                }
+            }
+            .navigationTitle("Hausaufgaben")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Toggle("Erledigte zeigen", isOn: $showsDone).toggleStyle(.button) }
+                ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } }
+            }
+            .safeAreaInset(edge: .bottom) {
+                Text("„Erledigt“ gilt nur in noty und wird nicht an WebUntis gesendet.")
+                    .font(.caption).foregroundStyle(.secondary).padding(.vertical, CalendarSpace.s)
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+}

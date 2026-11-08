@@ -1,0 +1,26 @@
+{
+  "listenHost": "127.0.0.1",
+  "port": 8795,
+  "dataDirectory": "/var/lib/noty-push",
+  "dataKeyFile": "data.key",
+  "apnsKeyFile": "apns.p8",
+  "apnsKeyID": "KEYID12345",
+  "teamID": "BAFXLQ964V",
+  "allowedBundleIDs": ["XTL-BAFXLQ964V.XTL-BAFXLQ964V.de.la.noty.calendar"],
+  "maxDevices": 5,
+  "consentVersion": "webuntis-push-1",
+  "windowDays": 14,
+  "schedule": {
+    "weekdayHours": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+    "weekendHours": [8, 10, 12, 14, 16, 18, 20],
+    "spreadMinutes": 15
+  },
+  "curlPath": "/usr/bin/curl",
+  "registrationsPerHourPerIP": 5,
+  "registrationsPerDay": 20,
+  "registrationAttemptsPerHour": 60,
+  "requestsPerMinutePerIP": 60,
+  "inactiveRetentionDays": 30,
+  "noContactRetentionDays": 120,
+  "allowedUntisHostSuffixes": ["webuntis.com"]
+}

@@ -115,6 +115,13 @@ extension Notebook {
         })
     }
 
+    /// Page-level counterpart of `editableForText`: with PDF sources present
+    /// `preparedForPageEditing` only validates and returns `self`; callers that
+    /// validate their complete result skip that leading pass.
+    func editableForPages() throws -> Notebook {
+        pdfSources != nil ? self : try preparedForPageEditing()
+    }
+
     /// Pure value migration; no existing ID, coordinates, ink or text changes.
     public func preparedForPageEditing() throws -> Notebook {
         try validate()
@@ -326,6 +333,28 @@ extension Notebook {
             let value = try next.pages[index].writingSpace(margins)
             next.pages[index].margins = value.isEmpty ? nil : value
         }
+        next.raiseSchemaForPaperWritingSpace()
+        try next.validate(); self = next
+    }
+
+    /// The same rules as `setMargins(_:pageIDs:)` page by page, but one
+    /// migration and one final validation for all pages (PDF import with a
+    /// writing space: a per-page call was quadratic). All or nothing.
+    public mutating func setMargins(_ assignments: [UUID: PageMargins]) throws {
+        guard !assignments.isEmpty else { throw PageOperationError.missingPage }
+        for margins in assignments.values { try margins.validate() }
+        var next = try editableForPages()
+        var assigned = 0
+        for index in next.pages.indices {
+            guard let margins = assignments[next.pages[index].id] else { continue }
+            guard next.pages[index].pdfReference != nil || next.pages[index].writingSpaceExtendsPaper else {
+                throw PageOperationError.missingPage
+            }
+            let value = try next.pages[index].writingSpace(margins)
+            next.pages[index].margins = value.isEmpty ? nil : value
+            assigned += 1
+        }
+        guard assigned == assignments.count else { throw PageOperationError.missingPage }
         next.raiseSchemaForPaperWritingSpace()
         try next.validate(); self = next
     }

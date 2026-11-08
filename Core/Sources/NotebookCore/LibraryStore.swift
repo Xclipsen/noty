@@ -121,6 +121,11 @@ public actor LibraryStore {
     private var lastGoodBytes: Data?
     private var recovered = false
     private let fm = FileManager.default
+    /// Test hook: fails the read-back after a successful append commit
+    /// (`appendIncomingPDF`). Per instance and actor-isolated, so parallel
+    /// tests cannot race on it.
+    var incomingReadBackFault: @Sendable () throws -> Void = {}
+    func setIncomingReadBackFault(_ fault: @escaping @Sendable () throws -> Void) { incomingReadBackFault = fault }
     private var directory: URL { root.appendingPathComponent("Library", isDirectory: true) }
     private var primary: URL { directory.appendingPathComponent("index.json") }
     private var previous: URL { directory.appendingPathComponent("index-previous.json") }
@@ -286,7 +291,11 @@ public actor LibraryStore {
     /// Quick, on the library actor: the complete index (including trash and
     /// folders), preferences and every package location. Notebook contents are
     /// read afterwards from committed revisions, off this actor (`LibraryArchive.write`).
-    public func backupPlan() throws -> LibraryBackupPlan {
+    /// `includeCalendar: false` (iCloud-Ablage, comparison with a backup): the
+    /// area's calendar is neither read nor captured, so an unreadable or newer
+    /// calendar package cannot block notebook-only work; `plan.calendar` is nil.
+    /// Never pass it for a library backup (the archive would silently lose the calendar).
+    public func backupPlan(includeCalendar: Bool = true) throws -> LibraryBackupPlan {
         let result = try load()
         guard result.unreadableDocuments == 0 else { throw LibraryArchiveError.incomplete }
         var packages: [UUID: URL] = [:]
@@ -302,14 +311,20 @@ public actor LibraryStore {
             packages[item.id] = url
         }
         let preferences = try ToolbarPreferenceStore.read(root: root)
-        return LibraryBackupPlan(snapshot: result.snapshot, toolbar: preferences.0, packages: packages)
+        var plan = LibraryBackupPlan(snapshot: result.snapshot, toolbar: preferences.0, packages: packages)
+        guard includeCalendar else { return plan }
+        // B3: the area's committed calendar goes into the same archive (read-only).
+        let calendar = try CalendarArchive.capture(areaRoot: root, library: result.snapshot)
+        if calendar.content != nil { plan.calendar = calendar }
+        return plan
     }
 
     /// Complete library in memory (tests, small libraries). Includes independently
     /// trashed children and folders; an older recovered revision aborts.
     public func backupBundle() throws -> LibraryBundle {
         let plan = try backupPlan()
-        let bundle = LibraryBundle(snapshot: plan.snapshot, documents: try plan.documents.map(plan.committedNotebook), toolbar: plan.toolbar)
+        let bundle = LibraryBundle(snapshot: plan.snapshot, documents: try plan.documents.map(plan.committedNotebook), toolbar: plan.toolbar,
+                                   calendar: plan.calendar?.content)
         try bundle.validate(); return bundle
     }
 

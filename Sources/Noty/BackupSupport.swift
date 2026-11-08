@@ -104,7 +104,12 @@ struct PreparedLibraryArchive: Sendable {
     let summary: LibraryArchiveSummary
     /// Notebooks archived in their newest readable older state (newer revision damaged).
     var olderStates: [String] = []
-    var warning: String? { ExternalBackupPolicy.olderStateWarning(olderStates) }
+    /// Kalender B3: older calendar state, links to notebooks deleted for good, missing timetable.
+    var calendarWarning: String?
+    var warning: String? {
+        let parts = [ExternalBackupPolicy.olderStateWarning(olderStates), calendarWarning].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "; ")
+    }
 }
 
 /// Temporary archive files: never inside a library or workspace tree, so an
@@ -129,6 +134,18 @@ enum BackupScratch {
     /// Removes a share file with its UUID folder; nothing outside our directory.
     nonisolated static func removeShare(_ url: URL) {
         let folder = url.deletingLastPathComponent()
+        guard UUID(uuidString: folder.lastPathComponent) != nil,
+              folder.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path else { return }
+        try? FileManager.default.removeItem(at: folder)
+    }
+    /// An empty UUID folder for intermediate files (notebooks taken out of a
+    /// library backup); removed with `removeFolder`, leftovers by `removeStale`.
+    nonisolated static func newFolder() throws -> URL {
+        let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+    nonisolated static func removeFolder(_ folder: URL) {
         guard UUID(uuidString: folder.lastPathComponent) != nil,
               folder.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path else { return }
         try? FileManager.default.removeItem(at: folder)

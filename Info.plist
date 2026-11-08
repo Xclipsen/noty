@@ -6,8 +6,11 @@
     <key>CFBundleDevelopmentRegion</key><string>de</string>
     <key>CFBundleLocalizations</key><array><string>de</string></array>
     <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>121</string>
+    <key>CFBundleVersion</key><string>145</string>
     <key>NotyChannel</key><string>stable</string>
+    <key>NotyPushURL</key><string>https://noty.xclipsen.de/push</string>
+    <key>NSCalendarsFullAccessUsageDescription</key><string>noty zeigt Termine aus Apple Kalender und Outlook (über die Kalender-Accounts dieses iPads) neben Stundenplan und Notizen an und trägt Termine, die du in noty anlegst oder änderst, in den gewählten Kalender ein. Notizen bleiben in noty.</string>
+    <key>NSCameraUsageDescription</key><string>noty liest mit der Kamera nur den QR-Code der Untis-Mobile-Freigabe, um WebUntis zu verbinden. Es werden keine Bilder gespeichert.</string>
     <key>CFBundleIcons</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon</string></array></dict></dict>
     <key>CFBundleIcons~ipad</key><dict><key>CFBundlePrimaryIcon</key><dict><key>CFBundleIconFiles</key><array><string>AppIcon</string></array></dict></dict>
     <key>UTExportedTypeDeclarations</key><array><dict>
@@ -31,6 +34,13 @@
         <key>UTTypeTagSpecification</key><dict>
             <key>public.filename-extension</key><array><string>notylibrary</string></array>
         </dict>
+    </dict><dict>
+        <key>UTTypeIdentifier</key><string>de.la.noty.material</string>
+        <key>UTTypeDescription</key><string>noty Materialpaket</string>
+        <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+        <key>UTTypeTagSpecification</key><dict>
+            <key>public.filename-extension</key><array><string>notymaterial</string></array>
+        </dict>
     </dict></array>
     <key>CFBundleDocumentTypes</key><array><dict>
         <key>CFBundleTypeName</key><string>noty-Datei</string>
@@ -43,6 +53,11 @@
         <key>LSHandlerRank</key><string>Owner</string>
         <key>LSItemContentTypes</key><array><string>de.la.noty.library</string></array>
     </dict><dict>
+        <key>CFBundleTypeName</key><string>noty Materialpaket</string>
+        <key>CFBundleTypeRole</key><string>Viewer</string>
+        <key>LSHandlerRank</key><string>Owner</string>
+        <key>LSItemContentTypes</key><array><string>de.la.noty.material</string></array>
+    </dict><dict>
         <key>CFBundleTypeName</key><string>PDF</string>
         <key>CFBundleTypeRole</key><string>Viewer</string>
         <key>LSHandlerRank</key><string>Alternate</string>
@@ -53,6 +68,8 @@
         <key>LSHandlerRank</key><string>Alternate</string>
         <key>LSItemContentTypes</key><array><string>public.image</string><string>public.jpeg</string><string>public.png</string><string>public.heic</string><string>public.heif</string></array>
     </dict></array>
+    <key>BGTaskSchedulerPermittedIdentifiers</key><array><string>de.la.noty.calendar.refresh</string></array>
+    <key>UIBackgroundModes</key><array><string>fetch</string></array>
     <key>UIApplicationSupportsIndirectInputEvents</key><true/>
     <key>UIDeviceFamily</key><array><integer>2</integer></array>
     <key>UIFileSharingEnabled</key><true/>

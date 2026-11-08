@@ -7,6 +7,14 @@ Auftrag: Master-Prompt „Schulnotizen auf dem iPad“, 16.10.2026; Name vom Nut
 
 Ein experimenteller KI-Assistent existiert separat auf dem Branch exp/ki und ist nicht Teil dieses Release-Kandidaten.
 
+## Kalender – Featurebranch `feat/kalender` (Test-App „noty calendar“)
+
+Stufe A: Kalenderdesign und Navigation ([Plan und Umsetzungsstand](docs/CALENDAR-PLAN.md#umsetzungsstand-stufe-a-03112026)): Einstieg „Kalender“ in der Bibliotheksleiste, Woche (Mo–Fr/7 Tage), Monat mit „+ n weitere“, Tag, Jahr, Termindetails mit direkt beschreibbarer Entwurfsseite, Vergrößern/Rückkehr, Terminformular. Designabnahme offen.
+
+Meilenstein B1 (Build 101, [Umsetzungsstand](docs/CALENDAR-PLAN.md#umsetzungsstand-b1-04112026)): WebUntis-Stundenplan und -Ferien über den **inoffiziellen Zugang per Untis-Mobile-Freigabe** (QR-Code oder Handeingabe, Zugangsdaten nur im Schlüsselbund), schreibgeschützt und offline mit „Stand“; eigene Einzeltermine gespeichert im Kalenderpaket des Bereichs (`Calendar/`); Beispieldaten nur noch als Schalter. Terminnotizen weiterhin nur im Speicher; keine Wiederholungen, Erinnerungen, kein Kalender im Backup. Implementiert, erfolgreich gebaut und veröffentlicht, am iPad ungeprüft.
+
+Meilenstein B2 (Build 102, [Umsetzungsstand](docs/CALENDAR-PLAN.md#umsetzungsstand-b2-04112026)): Terminnotizen als gewöhnliche Hefte in „Kalendernotizen“, Zuordnung verschobener Stunden, Wiederholungen, Ziehen/Dauer, Fachfarben. Meilenstein B3 (Build 103, [Umsetzungsstand](docs/CALENDAR-PLAN.md#umsetzungsstand-b3-04112026)): Kalender im Bibliotheksbackup (Format 3) mit Restore in einen neuen Bereich ohne Zugangsdaten, „Gelöschte Termine“ mit Wiederherstellen, Erinnerungen für eigene Termine und Unterricht. Beide implementiert, erfolgreich gebaut und veröffentlicht, am iPad ungeprüft.
+
 ## Native Gesetzessammlung
 
 Seit Build 97 Teil von `dev` (vorher Feature-Worktree `feat/native-law-library`): optionale native Gesetzessammlung als internes Slide-over oder angedockte zweite Ansicht, lokale Texte/optionale PDFs, Direktfundstellen wie `144 HGB`, Apples Tastaturen und appweites E-Mail-Konto. Drei getrennte Schalter (Aktivierung aus, persönlicher Sync an, automatische Gesetzesupdates an). Notizbücher bleiben lokal; Gesetzesmarkierungen haben eine eigene dauerhafte Warteschlange und Sicherungsdatei.

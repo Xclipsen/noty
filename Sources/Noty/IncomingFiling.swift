@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import Combine
 import ImageIO
+import OSLog
 import NotebookCore
 
 /// PDFs and pictures shared to noty („Teilen“ → noty dev/noty, „In noty
@@ -27,7 +28,7 @@ enum IncomingFiling {
     /// Everything but the noty file types goes here; the content decides.
     static func handles(_ url: URL) -> Bool {
         let kind = url.pathExtension.lowercased()
-        return url.isFileURL && kind != "notylibrary" && !NotyFile.notebookExtensions.contains(kind)
+        return url.isFileURL && kind != "notylibrary" && kind != "notymaterial" && !NotyFile.notebookExtensions.contains(kind)
     }
 
     /// The library of the current area (re-attached after an area switch).
@@ -103,7 +104,7 @@ enum IncomingFiling {
             guard let library, library.ready, let item = queue.next() else { presenting = false; return }
             let model = IncomingFilingModel(item: item, url: inbox.contentURL(item), library: library,
                                             areaTitle: workspaces?.title ?? "Meine Bibliothek", defaults: defaults())
-            let host = UIHostingController(rootView: IncomingFilingView(model: model))
+            let host = UIHostingController(rootView: IncomingFilingView(model: model).modifier(AccentTint()))
             host.modalPresentationStyle = .formSheet
             host.isModalInPresentation = true
             host.overrideUserInterfaceStyle = .dark
@@ -336,7 +337,8 @@ final class IncomingFilingModel: ObservableObject {
             let resolved = current.resolved(committedPageIDs: committed.pages.map(\.id))
             if resolved.status == .filed {
                 record = resolved
-                _ = try? await Task.detached(priority: .utility) { try IncomingFiling.inbox.record(item.id, filing: resolved) }.value
+                do { _ = try await Task.detached(priority: .utility) { try IncomingFiling.inbox.record(item.id, filing: resolved) }.value }
+                catch { Self.log.error("Ablagevermerk in item.json fehlgeschlagen: \(error.localizedDescription, privacy: .public)") }
             }
         }
         if let record, record.status == .filed {
@@ -366,8 +368,14 @@ final class IncomingFilingModel: ObservableObject {
         let record = IncomingFilingRecord(status: status, notebookID: notebook, notebookTitle: title, pageIDs: pageIDs,
                                           filedAt: Date(), verified: verified)
         let id = item.id
-        _ = try? await Task.detached(priority: .userInitiated) { try IncomingFiling.inbox.record(id, filing: record) }.value
+        do { _ = try await Task.detached(priority: .userInitiated) { try IncomingFiling.inbox.record(id, filing: record) }.value }
+        catch {
+            // The filing itself is committed and stays; only the crash guard is
+            // missing (a crash before the copy goes would offer it again).
+            Self.log.error("Ablagevermerk in item.json fehlgeschlagen: \(error.localizedDescription, privacy: .public)")
+        }
     }
+    private static let log = Logger(subsystem: "de.la.noty", category: "incoming-filing")
 
     /// One answer per offer (a second tap during the dismissal is no second one).
     private var answered = false
@@ -629,14 +637,14 @@ struct IncomingFilingView: View {
             }
             Button { model.folder = row.id } label: {
                 HStack {
-                    Image(systemName: row.id == nil ? "tray.full" : "folder").foregroundStyle(Color.accentColor)
+                    Image(systemName: row.id == nil ? "tray.full" : "folder").foregroundStyle(.tint)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(row.title).foregroundStyle(.primary)
                         if showsPath, row.id != nil { Text(row.path).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                     }
                     Spacer()
                     if model.folder == row.id {
-                        Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Gewählt")
+                        Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityLabel("Gewählt")
                     }
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain)
@@ -683,13 +691,13 @@ struct IncomingFilingView: View {
     private func notebookRow(_ item: NotebookCore.LibraryItem) -> some View {
         Button { model.notebook = item.id } label: {
             HStack {
-                Image(systemName: item.librarySymbol(filled: false)).foregroundStyle(Color.accentColor)
+                Image(systemName: item.librarySymbol(filled: false)).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.title).foregroundStyle(.primary)
                     Text(IncomingTargets.path(of: item.parentID, in: model.snapshot)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
-                if model.notebook == item.id { Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Gewählt") }
+                if model.notebook == item.id { Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityLabel("Gewählt") }
             }.contentShape(Rectangle())
         }.buttonStyle(.plain)
     }

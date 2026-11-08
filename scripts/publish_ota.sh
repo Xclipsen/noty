@@ -3,6 +3,7 @@
 # eigenen Server (docs/ENVIRONMENT.md, „Update unterwegs“). Ziel und geheimer
 # Pfad stehen in .tools/ota.env, nie im öffentlichen Repo:
 #   OTA_HOST=ssh-host  OTA_DIR=/absoluter/pfad  OTA_URL=https://host/pfad
+# NOTY_DRY_RUN=1: nur bauen, signieren und prüfen, nichts veröffentlichen.
 # Gibt es OTA_DIR hier, läuft das Skript auf dem Zielrechner selbst: ohne ssh.
 # Die Datei muss die installierte App-ID tragen, sonst entstünde eine zweite
 # App mit leerem Container. xtool stellt beim Signieren immer die Team-ID
@@ -16,6 +17,8 @@
 # (docs/APP-SYNC.md); Info.plist `NotyChannel` sagt der App, welche sie ist.
 # Vierte App „noty calendar“ (NOTY_CHANNEL=calendar): Kalender-Feature, nur
 # von feat/kalender, eigene App-ID und Daten, spiegelt noty und noty dev.
+# NOTY_DRY_RUN=1: bauen, nachsignieren und prüfen wie sonst, dann vor dem
+# Veröffentlichen stoppen (kein Upload, kein Tag; Buildnummer nur gewarnt).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ENV_FILE="${OTA_ENV:-$HOME/workspace/noty/.tools/ota.env}"
@@ -60,40 +63,109 @@ SOURCE="$BRANCH · $COMMIT"; [ -z "$DIRTY" ] || SOURCE="$SOURCE · mit uncommitt
 NEXT="$(sed -n 's#.*<key>CFBundleVersion</key><string>\([0-9]*\)</string>.*#\1#p' Info.plist)"
 LAST="$( { if [ -d "$OTA_DIR" ]; then ls "$OTA_DIR" "$OTA_DIR-dev" "$OTA_DIR-ai" "$OTA_DIR-calendar" || true; else ssh "$OTA_HOST" "ls '$OTA_DIR' '$OTA_DIR-dev' '$OTA_DIR-ai' '$OTA_DIR-calendar' || true"; fi; } 2>/dev/null | sed -n 's/^Noty-\([0-9]*\)\.ipa$/\1/p' | sort -n | tail -1)"
 if [ -n "$LAST" ] && [ "$NEXT" -le "$LAST" ] && [ "${NOTY_SAME_BUILD:-}" != 1 ]; then
-  echo "Build $NEXT ist nicht größer als der zuletzt veröffentlichte Build $LAST; CFBundleVersion erhöhen." >&2; exit 1
+  if [ "${NOTY_DRY_RUN:-}" = 1 ]; then echo "Probelauf: Build $NEXT ist nicht größer als $LAST (würde sonst abbrechen)." >&2
+  else echo "Build $NEXT ist nicht größer als der zuletzt veröffentlichte Build $LAST; CFBundleVersion erhöhen." >&2; exit 1; fi
 fi
 INSTALLED_ID="XTL-BAFXLQ964V.XTL-BAFXLQ964V.$BASE_ID"
-ORIGINAL="$(mktemp)"; ORIGINAL_INFO="$(mktemp)"
-cp xtool.yml "$ORIGINAL"; cp Info.plist "$ORIGINAL_INFO"
-restore() { cp "$ORIGINAL" xtool.yml; cp "$ORIGINAL_INFO" Info.plist; rm -f "$ORIGINAL" "$ORIGINAL_INFO"; }
+# iCloud-Ablage (docs/ICLOUD.md): nur Kanäle aus scripts/icloud-channels bekommen
+# ihren eigenen Container (nie einen gemeinsamen: Testdaten dürfen die echten
+# Hefte nicht erreichen). Der Container muss im Apple-Entwicklerportal der
+# App-ID zugeordnet sein; sonst lehnt ota_check.py den Build ab.
+ICLOUD_CONTAINER=""
+if grep -qx "${NOTY_CHANNEL:-dev}" scripts/icloud-channels 2>/dev/null; then
+  if [ "${NOTY_CHANNEL:-dev}" = stable ]; then ICLOUD_CONTAINER=iCloud.de.la.noty; else ICLOUD_CONTAINER="iCloud.de.la.noty.${NOTY_CHANNEL:-dev}"; fi
+fi
+XTOOL=xtool
+if [ -n "$ICLOUD_CONTAINER" ]; then
+  # Nur das gepatchte xtool schaltet iCloud an der App-ID ein (~/workspace/xtool-noty/NOTY.md).
+  XTOOL=xtool-noty
+  "$XTOOL" --version 2>/dev/null | grep -q -- '-noty\.' || { echo "xtool-noty fehlt; iCloud-Kanal nicht baubar." >&2; exit 1; }
+fi
+ORIGINAL="$(mktemp)"; ORIGINAL_INFO="$(mktemp)"; ORIGINAL_ENTITLEMENTS="$(mktemp)"; ORIGINAL_WIDGET="$(mktemp)"
+cp xtool.yml "$ORIGINAL"; cp Info.plist "$ORIGINAL_INFO"; cp Noty.entitlements "$ORIGINAL_ENTITLEMENTS"; cp NotyCalendarWidgets.plist "$ORIGINAL_WIDGET"
+restore() {
+  cp "$ORIGINAL" xtool.yml; cp "$ORIGINAL_INFO" Info.plist; cp "$ORIGINAL_ENTITLEMENTS" Noty.entitlements; cp "$ORIGINAL_WIDGET" NotyCalendarWidgets.plist
+  rm -f "$ORIGINAL" "$ORIGINAL_INFO" "$ORIGINAL_ENTITLEMENTS" "$ORIGINAL_WIDGET"
+}
 trap restore EXIT
 sed -i "s/^bundleID: .*/bundleID: XTL-BAFXLQ964V.$BASE_ID/" xtool.yml
 CHANNEL="${NOTY_CHANNEL:-dev}"
 sed -i "s#<key>NotyChannel</key><string>[a-z]*</string>#<key>NotyChannel</key><string>$CHANNEL</string>#" Info.plist
 grep -q "<key>NotyChannel</key><string>$CHANNEL</string>" Info.plist || { echo "NotyChannel nicht gesetzt" >&2; exit 1; }
+# Push-Mitteilungen (docs/PUSH.md) nur für noty calendar: nur dieser Build
+# verlangt aps-environment (development, wie alle Builds hier development-
+# signiert sind). Die eingecheckte Noty.entitlements bleibt ohne, damit die
+# Profile von noty, noty dev und noty AI die Fähigkeit nicht brauchen;
+# ota_check.py verlangt sie bei noty calendar in Signatur und Profil.
+if [ "$CHANNEL" = calendar ]; then
+  python3 -I - Noty.entitlements <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as handle: entitlements = plistlib.load(handle)
+entitlements["aps-environment"] = "development"
+with open(sys.argv[1], "wb") as handle: plistlib.dump(entitlements, handle)
+PY
+  grep -q '<key>aps-environment</key>' Noty.entitlements || { echo "aps-environment nicht gesetzt" >&2; exit 1; }
+  # Live Activity „Schultag“ und Widget „Heute“ (docs/LIVE-ACTIVITY-PLAN.md): nur
+  # noty calendar bettet die Widget-Extension ein (xtool.yml `extensions:`),
+  # erlaubt Live Activities und kennt das Schema notycalendar; die Extension
+  # bekommt die Versionsnummern der App. Die anderen Apps bauen unverändert.
+  python3 -I scripts/calendar_build.py . || { echo "Kalender-Extension nicht vorbereitet" >&2; exit 1; }
+fi
+if [ -n "$ICLOUD_CONTAINER" ]; then
+  python3 -I - "$ICLOUD_CONTAINER" <<'PY'
+import plistlib, sys
+container = sys.argv[1]
+with open("Noty.entitlements", "rb") as f: entitlements = plistlib.load(f)
+entitlements["com.apple.developer.icloud-services"] = ["CloudDocuments"]
+entitlements["com.apple.developer.icloud-container-identifiers"] = [container]
+entitlements["com.apple.developer.ubiquity-container-identifiers"] = [container]
+with open("Noty.entitlements", "wb") as f: plistlib.dump(entitlements, f)
+PY
+  sed -i "s#\(<key>NotyChannel</key><string>[a-z]*</string>\)#\1<key>NotyICloudContainer</key><string>$ICLOUD_CONTAINER</string>#" Info.plist
+  grep -q "<key>NotyICloudContainer</key><string>$ICLOUD_CONTAINER</string>" Info.plist || { echo "NotyICloudContainer nicht gesetzt" >&2; exit 1; }
+fi
 if [ "$CHANNEL" != stable ]; then
   sed -i "s#^iconPath: .*#iconPath: Resources/AppIcon-$CHANNEL.png#" xtool.yml
   sed -i "s#<key>CFBundleDisplayName</key><string>noty</string>#<key>CFBundleDisplayName</key><string>$APP_NAME</string>#" Info.plist
 fi
 LOG="$(mktemp)"
-script -qec "xtool dev build --sign --ipa" "$LOG" >/dev/null
+script -qec "$XTOOL dev build --sign --ipa" "$LOG" >/dev/null
 grep -q 'COMMAND_EXIT_CODE="0"' "$LOG" || { tail -20 "$LOG"; exit 1; }
 restore; trap - EXIT
+# xtool 1.24 signiert Extensions mit den Entitlements der App (#131). Jede
+# PlugIns/*.appex bekommt hier eine Signatur mit eigenen, aus ihrem Profil
+# abgeleiteten Entitlements, danach wird die App neu versiegelt (rcodesign,
+# docs/LIVE-ACTIVITY-PLAN.md „Nachsignieren“). Ohne Extension tut es nichts.
+python3 -I scripts/resign_extensions.py xtool/Noty.ipa . || { echo "Nachsignieren der Extension fehlgeschlagen; nichts veröffentlicht." >&2; exit 1; }
 
 mkdir -p .tools
 # Prüft ID, Profil, Gerät, Ablauf und ob das Profil alle Entitlements der
-# App-Signatur erlaubt (sonst verweigert iOS die Installation). Jedes Problem
-# bricht ab, bevor etwas veröffentlicht wird.
+# App-Signatur erlaubt (sonst verweigert iOS die Installation), dazu die
+# Versiegelung (Seitenhashes, CodeResources). Jedes Problem bricht ab, bevor
+# etwas veröffentlicht wird. Bei noty calendar prüft es auch
+# PlugIns/NotyCalendarWidgets.appex (Signatur, Profil, ID-Präfix, Version,
+# Entitlements = eigenes Profil; docs/LIVE-ACTIVITY-PLAN.md).
 CHECK_STATUS=0
 python3 -I scripts/ota_check.py xtool/Noty.ipa "$INSTALLED_ID" > .tools/ota-check.json || CHECK_STATUS=$?
 cat .tools/ota-check.json
 PROBLEMS="$(python3 -I -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["problems"]))' .tools/ota-check.json 2>/dev/null || echo unlesbar)"
 if [ "$CHECK_STATUS" -ne 0 ] || [ "$PROBLEMS" != 0 ]; then
   echo "OTA-Prüfung meldet Probleme (siehe problems); nichts veröffentlicht." >&2
+  [ -z "$ICLOUD_CONTAINER" ] || echo "iCloud-Kanal: Ist $ICLOUD_CONTAINER im Apple-Entwicklerportal angelegt und der App-ID zugeordnet?" >&2
   exit 1
 fi
+if [ -n "$ICLOUD_CONTAINER" ]; then
+  python3 -I -c 'import json,sys;s=set(json.load(open(".tools/ota-check.json"))["signed_entitlements"]);sys.exit(0 if {"com.apple.developer.icloud-services","com.apple.developer.ubiquity-container-identifiers"}<=s else 1)' \
+    || { echo "Signatur ohne iCloud-Einträge; nichts veröffentlicht." >&2; exit 1; }
+fi
+# Probelauf: bauen, signieren und prüfen, aber nichts veröffentlichen.
+if [ "${NOTY_DRY_RUN:-}" = 1 ]; then echo "Probelauf: geprüft, nichts veröffentlicht (xtool/Noty.ipa)."; exit 0; fi
 BUILD="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["build"])')"
 SHORT="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["version"])')"
+if [ "${NOTY_DRY_RUN:-}" = 1 ]; then
+  echo "Probelauf: $APP_NAME Build $BUILD · $SOURCE gebaut und geprüft (xtool/Noty.ipa); nichts veröffentlicht."
+  exit 0
+fi
 
 STAGE="$(mktemp -d)"
 cat > "$STAGE/manifest.plist" <<PLIST

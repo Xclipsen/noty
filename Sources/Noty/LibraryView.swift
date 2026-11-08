@@ -2,7 +2,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 import NotebookCore
 
-/// Shown location; notebooks open the editor instead.
+/// Shown location; notebooks open the editor instead. The calendar is not a
+/// location but a mode beside the whole library (`showsCalendar`): returning
+/// shows the folder that was open before (docs/CALENDAR-PLAN.md, „Umschalter
+/// Bibliothek/Kalender“).
 private enum LibraryLocation: Hashable {
     case root, folder(UUID), recent
 }
@@ -11,6 +14,9 @@ private enum LibraryLocation: Hashable {
 /// folder/notebook tree, the selected folder's contents on the right.
 struct LibraryView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The window's size class (inside the split view the sidebar column may
+    /// report compact although the window is wide).
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @ObservedObject var model: LibraryModel
     @ObservedObject var workspaces: WorkspaceAppModel
     @EnvironmentObject private var externalBackup: ExternalBackupModel
@@ -38,12 +44,35 @@ struct LibraryView: View {
     @State private var showingCopies = false
     @State private var selectedCopy: RestoredNotebook?
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// Hefte ⇄ Kalender (switch at the top left, ⇧⌘K). The calendar hides the
+    /// library sidebar; leaving it restores the visibility from before.
+    @State private var showsCalendar = false
+    @State private var visibilityBeforeCalendar: NavigationSplitViewVisibility?
+    @Namespace private var modeSwitchSpace
+    /// Width of the whole split view; with `detailWidth` it tells whether the
+    /// library sidebar stands beside the content (`sidebarBeside`).
+    @State private var splitWidth: CGFloat = 0
+    /// Split width at which the sidebar stood beside the content when the
+    /// calendar was shown (nil: it did not).
+    @State private var besideBeforeCalendar: CGFloat?
+    /// Hefte ← Kalender with the sidebar coming back beside (same window
+    /// width as before): the switch moves into it with the switching
+    /// transaction instead of a frame later, when the width is measured.
+    /// Ends with that measurement, at the latest after 0.6 s.
+    @State private var sidebarReturning = false
+    /// Shown by tap: the calendar counts as visible (WebUntis/EventKit refresh,
+    /// waiting notification) only after the glide, so no result rebuilds it mid-way.
+    @State private var calendarRevealDelay: TimeInterval = 0
+    /// „Hefte | Kalender“ in the sidebar's bar beside the system button: the
+    /// words from 260 pt sidebar width, with symbols from 330 pt, below only
+    /// the symbols (Dynamic Type scales both with the words).
+    @ScaledMetric(relativeTo: .subheadline) private var switchTitlesWidth: CGFloat = 260
+    @ScaledMetric(relativeTo: .subheadline) private var switchFullWidth: CGFloat = 330
     @State private var showingAreas = false
     @State private var selectedArea: TestWorkspace?
     @State private var switchingArea = false
     @State private var settingsRequest: SettingsRequest?
     /// Hint or verified result of the toolbar backup; its failures arrive in `externalBackup.error`.
-    @State private var backupNotice: String?
     /// Current drag & drop preview (insertion line or highlighted folder).
     @State private var dropMark: DropMark?
     /// Entry dragged from this library (for hiding invalid targets while hovering).
@@ -51,7 +80,11 @@ struct LibraryView: View {
     @State private var frames = DropFrames()
     @State private var sidebarSize = CGSize(width: 280, height: 600)
     @State private var detailSize = CGSize(width: 600, height: 600)
+    /// Width of the detail column (both sides): the calendar sidebar button.
+    @State private var detailWidth: CGFloat = 0
     @StateObject private var pdfExport = PDFExportJob()
+    /// Calendar of this area, owned by the host (per area): switching to the calendar and back keeps both.
+    @ObservedObject var calendar: CalendarModel
     @State private var exportedPDF: ExportFile?
     @State private var exportingPDF = false
     @State private var exportedPDFName = "noty-export"
@@ -74,12 +107,13 @@ struct LibraryView: View {
     private var errorShown: Binding<Bool> {
         Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })
     }
-    private var backupMessage: String? { externalBackup.error ?? backupNotice }
+    private var backupMessage: String? { externalBackup.error }
     /// New items land in the open folder or „Alle Unterlagen“; „Zuletzt
     /// verwendet“ or a running search would hide them.
     private func showNewItem() {
         search = ""
         if location == .recent { location = .root }
+        if showsCalendar { setCalendar(false, animated: false) }
     }
     private var activeCopies: [RestoredNotebook] {
         model.restoredCopies.compactMap { copy -> RestoredNotebook? in
@@ -117,8 +151,8 @@ struct LibraryView: View {
         } detail: {
             detail
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { splitWidth = $0 }
         .animation(NotyMotion.panel(reduceMotion), value: libraryEditMode)
-        .animation(NotyMotion.highlight(reduceMotion), value: location)
         .environment(\.editMode, $libraryEditMode)
         .background(KeyboardHost().frame(width: 0, height: 0).accessibilityHidden(true))
         .overlay { KeyboardOverlay(scope: .library) }
@@ -143,9 +177,9 @@ struct LibraryView: View {
                 Button("OK") { model.error = nil }
             } message: { Text(model.error ?? "") }
         }
-        .sheet(item: $settingsRequest, onDismiss: switchAreaIfRequested) { request in
+        .fullScreenCover(item: $settingsRequest, onDismiss: switchAreaIfRequested) { request in
             SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces,
-                         initialPage: request.page) { area in
+                         calendar: calendar, initialPage: request.page) { area in
                 selectedArea = area; switchingArea = true; settingsRequest = nil
             }
         }
@@ -165,8 +199,9 @@ struct LibraryView: View {
                 .environment(\.searchIndexArea, StableDefaults.scope(model.root))
                 .publishesEditorCommands()
                 .overlay { KeyboardOverlay(scope: .editor) }
-                .environment(\.editorSettings, EditorSettingsPresenter { [model, toolbox, externalBackup, workspaces] in
-                    AnyView(SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces))
+                .environment(\.editorSettings, EditorSettingsPresenter { [model, toolbox, externalBackup, workspaces, calendar] in
+                    AnyView(SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces,
+                                         calendar: calendar))
                 })
         }
         .sheet(item: $moving) { item in
@@ -193,18 +228,25 @@ struct LibraryView: View {
         .alert(nameTitle, isPresented: $showingName) {
             TextField("Name", text: $name)
             Button("Abbrechen", role: .cancel) { }
-            Button("Speichern") { submitName() }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            // Same rule as the store (1…120 characters): a pasted overlong name must not be lost after saving.
+            Button("Speichern") { submitName() }.disabled((try? LibraryStore.validTitle(name)) == nil)
                 .keyboardShortcut(.defaultAction)
+        } message: {
+            // The reason a greyed-out „Speichern“ has (ZWJ emoji, soft hyphen, length).
+            if let problem = NotyText.titleProblem(name) { Text(problem) }
         }
         .confirmationDialog("In den Papierkorb verschieben?", isPresented: Binding(
             get: { trashing != nil }, set: { if !$0 { trashing = nil } }), titleVisibility: .visible) {
             if let item = trashing {
-                Button("„\(item.title)“ in den Papierkorb", role: .destructive) {
+                // Fixed verb: a long title in the button label would truncate the action away.
+                Button("In den Papierkorb", role: .destructive) {
                     Task { await model.trash(item.id) }
                     trashing = nil
                 }
             }
-        } message: { Text(Self.trashNote) }
+        } message: {
+            Text(trashing.map { "\(NotyText.quoted($0.title)) wird in den Papierkorb verschoben. " } ?? "") + Text(Self.trashNote)
+        }
         .sheet(isPresented: $importingPDF) {
             PDFImportSheet(defaults: toolbox.preferences.defaultAppearance, onImport: { url, margins in
                 let access = url.startAccessingSecurityScopedResource()
@@ -230,8 +272,8 @@ struct LibraryView: View {
             Button("OK") { workspaces.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspaces.error ?? "") }
         // Settings shows backup errors itself, also over the editor; this one reports the toolbar backup.
-        .alert("Backup", isPresented: Binding(get: { backupMessage != nil && !presenting && model.opened == nil }, set: { if !$0 { externalBackup.error = nil; backupNotice = nil } })) {
-            Button("OK") { externalBackup.error = nil; backupNotice = nil }.keyboardShortcut(.defaultAction)
+        .alert("Backup", isPresented: Binding(get: { backupMessage != nil && !presenting && model.opened == nil }, set: { if !$0 { externalBackup.error = nil } })) {
+            Button("OK") { externalBackup.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(backupMessage ?? "") }
         .onChange(of: location) { _, value in
             search = ""; libraryEditMode = .inactive
@@ -240,13 +282,166 @@ struct LibraryView: View {
         // Search or another sort removes the „Fertig“ button with `canReorder`:
         // editing must not stay on without a way out.
         .onChange(of: canReorder) { _, reorder in if !reorder { libraryEditMode = .inactive } }
+        // A tapped calendar notification or bell entry shows the calendar (not over an open notebook).
+        .onChange(of: calendar.openRequest) { _, _ in if model.opened == nil { setCalendar(true, animated: false) } }
+        // The calendar asks WebUntis and keeps its note only while it is the
+        // shown side: set here from the switch itself (the calendar view's own
+        // appear/disappear came late after a quick back and forth). Shown by
+        // tap it counts only after the glide (`calendarRevealDelay`, task below).
+        .onChange(of: showsCalendar) { _, shown in if !shown || calendarRevealDelay == 0 { calendar.visible = shown } }
+        .task(id: showsCalendar && calendarRevealDelay > 0) {
+            guard showsCalendar, calendarRevealDelay > 0 else { return }
+            try? await Task.sleep(for: .seconds(calendarRevealDelay))
+            if !Task.isCancelled && showsCalendar { calendar.visible = true }
+        }
+        .onAppear { calendar.visible = showsCalendar }
+        .onDisappear { calendar.visible = false }
+        // The prediction of `sidebarReturning` ends with the measured width,
+        // or – when the sidebar did not come back beside – after 0.6 s.
+        .onChange(of: detailWidth) { _, _ in if sidebarReturning { sidebarReturning = false } }
+        .task(id: sidebarReturning) {
+            guard sidebarReturning else { return }
+            try? await Task.sleep(for: .seconds(0.6))
+            if !Task.isCancelled { sidebarReturning = false }
+        }
         // No sheet changes with these alerts: the keys have to come back by themselves.
         .onChange(of: model.error == nil && workspaces.error == nil && backupMessage == nil) { _, _ in KeyboardRouter.shared.reclaim() }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
         .focusedSceneValue(\.libraryCommands, model.opened == nil && !presenting ? LibraryCommandActions(
             newNotebook: editable ? { creatingNotebook = true } : nil,
             search: editable ? { searchAllNotebooks() } : nil,
-            newTextDocument: editable ? { creatingTextDocument = true } : nil) : nil)
+            newTextDocument: editable ? { creatingTextDocument = true } : nil,
+            newEvent: showsCalendar ? { calendar.requestNewEvent() } : nil,
+            toggleCalendar: canSwitchMode ? { setCalendar(!showsCalendar, animated: false) } : nil,
+            showsCalendar: showsCalendar) : nil)
+    }
+
+    // MARK: Hefte ⇄ Kalender
+
+    /// The event window and the event form are modal over the calendar: its
+    /// note commits only when the window closes (`selection = nil`), so the
+    /// calendar does not go away beneath them; neither under its own sheets,
+    /// popovers and dialogs (`presentingOverlays`, set by `CalendarView`).
+    private var canSwitchMode: Bool {
+        !showsCalendar || (calendar.selectedEvent == nil && calendar.draft == nil && calendar.enlargedDraft == nil
+                           && calendar.pendingSeriesChange == nil && !calendar.presentingOverlays)
+    }
+
+    /// Calendar keys only while nothing of the library is presented above it
+    /// (a notebook, sheets, dialogs, alerts) and nothing of its own.
+    private var calendarKeysActive: Bool {
+        model.opened == nil && !presenting && model.error == nil && workspaces.error == nil && backupMessage == nil
+            && !calendar.presentingOverlays
+    }
+
+    /// Tapping (switch, sidebar): ONE motion (`NotyMotion.modeSwitch`,
+    /// 0.45 s without overshoot, user request 08.11.2026) – the content
+    /// cross-fades with a 20-pt shift (`NotyMotion.modeTransition`) while the
+    /// library sidebar collapses (or comes back), the switch changes its bar
+    /// and its marker slides. ⇧⌘K, the command palette and a notification:
+    /// at once. Reduce Motion: the column changes at once, the content only
+    /// cross-fades (0.2 s).
+    /// When the column moves by tap, it follows one frame later
+    /// (`columnLag`): the system sidebar button must already be gone (→
+    /// Kalender) or back in the detail bar (→ Hefte) when the split view
+    /// starts its column animation. In the same update the detail bar kept
+    /// the removed button's place for the whole glide (Build 142, landscape:
+    /// calendar sidebar button and switch ≈ 55 pt too far right until the
+    /// sidebar was gone, then a jump to the edge).
+    private func setCalendar(_ shown: Bool, animated: Bool) {
+        guard shown != showsCalendar, shown || canSwitchMode else { return }
+        // Never force the sidebar open (portrait would cover the content):
+        // a hidden one stays hidden, otherwise the system places it as it
+        // does by itself.
+        let target: NavigationSplitViewVisibility = shown || visibilityBeforeCalendar == .detailOnly ? .detailOnly : .automatic
+        let returning = !shown && target != .detailOnly && besideBeforeCalendar == splitWidth
+        let prepare = {
+            if shown {
+                search = ""; libraryEditMode = .inactive; keyboardFocus = nil
+                visibilityBeforeCalendar = columnVisibility
+                besideBeforeCalendar = switchInSidebar ? splitWidth : nil
+                sidebarReturning = false
+            }
+        }
+        let column = {
+            columnVisibility = target
+            if !shown {
+                sidebarReturning = returning
+                visibilityBeforeCalendar = nil
+                besideBeforeCalendar = nil
+            }
+        }
+        calendarRevealDelay = animated ? NotyMotion.modeSwitchDuration(reduceMotion) : 0
+        if !animated {
+            NotyMotion.instant { prepare(); column(); showsCalendar = shown }
+        } else if reduceMotion {
+            NotyMotion.instant { prepare(); column() }
+            withAnimation(NotyMotion.modeSwitch(true)) { showsCalendar = shown }
+        } else if columnVisibility == target {
+            withAnimation(NotyMotion.modeSwitch(false)) { prepare(); column(); showsCalendar = shown }
+        } else {
+            // Content, switch and system button first, the column a frame later
+            // in the same motion (both transactions `modeSwitch`).
+            withAnimation(NotyMotion.modeSwitch(false)) { prepare(); showsCalendar = shown }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.columnLag) {
+                guard showsCalendar == shown else { return }
+                withAnimation(NotyMotion.modeSwitch(false)) { column() }
+            }
+        }
+    }
+
+    /// One frame at 60 Hz (two at 120 Hz): by then the bars of the first
+    /// transaction are laid out and committed.
+    private static let columnLag: TimeInterval = 1.0 / 60
+
+    /// The library sidebar stands beside the content: measured, the detail
+    /// column is clearly narrower than the split view. Laid over the content
+    /// (portrait, swiped in) it does not count – the detail keeps its width,
+    /// and `columnVisibility` is no reliable report of that overlay (a wrong
+    /// guess would put the only switch into a hidden sidebar).
+    private var sidebarBeside: Bool { splitWidth - detailWidth >= 200 }
+
+    /// Where „Hefte | Kalender“ is: in the sidebar's bar (right of the system
+    /// sidebar button, user request 08.11.2026) while the sidebar stands
+    /// beside the content, otherwise top left in the detail column (in the
+    /// calendar after the calendar sidebar button). Always exactly one.
+    /// Never in the calendar: → Kalender leaves the sidebar's bar with the
+    /// content, a frame before the column (`setCalendar`), so it does not
+    /// stay there without the system button beside it.
+    private var switchInSidebar: Bool {
+        !showsCalendar && columnVisibility != .detailOnly && (sidebarBeside || sidebarReturning)
+    }
+
+    /// Words, symbols or both, chosen by the sidebar's width and used in both
+    /// bars, so the switch looks alike wherever it is; the detail bar never
+    /// goes below the words (it has room for them).
+    private func switchLabels(inSidebar: Bool) -> LibraryModeSwitch.Labels {
+        // Narrow window (Split View): symbols only, the bar keeps its other items.
+        if sizeClass == .compact { return .symbols }
+        if sidebarSize.width >= switchFullWidth { return .full }
+        return inSidebar && sidebarSize.width < switchTitlesWidth ? .symbols : .titles
+    }
+
+    /// Segmented „Hefte | Kalender“ (`switchInSidebar`). Moving between the
+    /// bars it cross-fades; the marker slides between the segments.
+    private func modeSwitch(_ labels: LibraryModeSwitch.Labels) -> some View {
+        LibraryModeSwitch(showsCalendar: showsCalendar, labels: labels, namespace: modeSwitchSpace, reduceMotion: reduceMotion) {
+            setCalendar($0, animated: true)
+        }
+        .disabled(!canSwitchMode || model.opened != nil)
+    }
+
+    /// Calendar sidebar on/off: the button slides it (`NotyMotion.panel`;
+    /// Reduce Motion: it fades, the layout changes at once); ⌃⌘S in the
+    /// calendar changes it without motion. Off while the event window is open.
+    private var calendarSidebarButton: some View {
+        Button {
+            withAnimation(NotyMotion.panel(reduceMotion)) { calendar.sidebarWanted.toggle() }
+        } label: {
+            Label(calendar.sidebarWanted ? "Kalenderleiste ausblenden" : "Kalenderleiste einblenden", systemImage: "sidebar.squares.left")
+        }
+        .help("Kalenderleiste (⌃⌘S)")
+        .disabled(calendar.selectedEvent != nil || model.opened != nil)
     }
 
     // MARK: Keyboard mode (docs/KEYBOARD.md)
@@ -255,7 +450,8 @@ struct LibraryView: View {
         layout == .list ? 1 : max(1, Int((detailSize.width - 56 + 32) / (140 + 32)))
     }
     private func runKey(_ action: HelixAction, count: Int) {
-        let items = rows
+        // The calendar covers the collection: no item may be acted on unseen.
+        let items = showsCalendar ? [] : rows
         let index = items.firstIndex { $0.id == keyboardFocus }
         func focus(_ target: Int) { if !items.isEmpty { keyboardFocus = items[min(max(0, target), items.count - 1)].id } }
         let item = index.map { items[$0] }
@@ -264,7 +460,7 @@ struct LibraryView: View {
         case .focusItem(let dx, let dy): focus(index.map { $0 + (dx + dy * keyboardColumns) * count } ?? 0)
         case .focusFirstItem: focus(0)
         case .focusLastItem: focus(items.count - 1)
-        case .parentFolder: leaveLevel()
+        case .parentFolder: if !showsCalendar { leaveLevel() }
         case .search, .searchAll: searchAllNotebooks()
         case .newNotebook: creatingNotebook = true
         case .newTextDocument: creatingTextDocument = true
@@ -276,7 +472,7 @@ struct LibraryView: View {
         case .openItem: activate(item)
         case .renameItem: askName(.rename(item.id), title: "Umbenennen", value: item.title)
         case .trashItem:
-            KeyboardRouter.shared.ask("„\(item.title)“ in den Papierkorb?", message: Self.trashNote, confirm: "In den Papierkorb") {
+            KeyboardRouter.shared.ask("\(NotyText.quoted(item.title)) in den Papierkorb?", message: Self.trashNote, confirm: "In den Papierkorb") {
                 Task { await model.trash(item.id) }
             }
         case .pinItem: Task { await model.favorite(item) }
@@ -301,11 +497,12 @@ struct LibraryView: View {
     }
     /// What only the menus offer; the palette adds every key binding by name.
     private var keyCommands: [PaletteCommand] {
-        [PaletteCommand(title: "PDF oder Bild importieren") { importingPDF = true },
+        [PaletteCommand(title: showsCalendar ? "Hefte zeigen" : "Kalender zeigen") { setCalendar(!showsCalendar, animated: false) },
+         PaletteCommand(title: "PDF oder Bild importieren") { importingPDF = true },
          PaletteCommand(title: "Backup importieren") { importingBackup = true },
          PaletteCommand(title: "Wiederhergestellte Kopien") { showingCopies = true },
-         PaletteCommand(title: "Bereiche") { showingAreas = true },
          PaletteCommand(title: "Einstellungen") { settingsRequest = SettingsRequest() }]
+            + (DeveloperAccess.showsAreas(workspaces) ? [PaletteCommand(title: "Bereiche") { showingAreas = true }] : [])
     }
 
     // MARK: Sidebar
@@ -321,6 +518,15 @@ struct LibraryView: View {
                             dropInto: dropMark == DropMark(zone: .root, target: .into(nil)))
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(LibrarySpace.sidebar)) } action: { frames.root = $0 }
                 sidebarLink("Zuletzt verwendet", systemImage: "clock", target: .recent, dropInto: false)
+                // Second way in besides the switch (the sidebar goes away with it).
+                // Swiped in over the calendar, the entry puts the sidebar away again.
+                sidebarButton("Kalender", systemImage: "calendar", selected: showsCalendar, dropInto: false) {
+                    if showsCalendar {
+                        withAnimation(NotyMotion.panel(reduceMotion)) { columnVisibility = .detailOnly }
+                    } else {
+                        setCalendar(true, animated: true)
+                    }
+                }
                 let pins = model.pinnedItems
                 if !pins.isEmpty {
                     sidebarHeader("Angeheftet")
@@ -341,17 +547,37 @@ struct LibraryView: View {
         .onGeometryChange(for: CGSize.self) { $0.size } action: { sidebarSize = $0 }
         .background(Color(uiColor: .secondarySystemBackground))
         .navigationTitle("noty")
+        .toolbar { sidebarToolbar }
+        // In the calendar the library sidebar is away on purpose: no system
+        // toggle beside the switch (the switch brings it back). Changes with
+        // `showsCalendar`, a frame before the column (`setCalendar`).
+        .toolbar(removing: showsCalendar ? .sidebarToggle : nil)
         .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 380)
         .safeAreaInset(edge: .bottom) { sidebarFooter }
     }
 
+    /// The switch while the sidebar stands beside the content
+    /// (`switchInSidebar`); otherwise `leadingToolbar` of the detail has it.
+    @ToolbarContentBuilder private var sidebarToolbar: some ToolbarContent {
+        if switchInSidebar {
+            ToolbarItem(placement: .topBarLeading) { modeSwitch(switchLabels(inSidebar: true)) }
+        }
+    }
+
     private func sidebarLink(_ title: String, systemImage: String, target: LibraryLocation, dropInto: Bool) -> some View {
-        let selected = location == target
-        return Button { location = target } label: {
+        sidebarButton(title, systemImage: systemImage, selected: !showsCalendar && location == target, dropInto: dropInto) {
+            location = target
+            setCalendar(false, animated: true)
+        }
+    }
+
+    private func sidebarButton(_ title: String, systemImage: String, selected: Bool, dropInto: Bool,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             Label {
                 Text(title).foregroundStyle(.primary)
             } icon: {
-                Image(systemName: systemImage).foregroundStyle(Color.accentColor)
+                Image(systemName: systemImage).foregroundStyle(.tint)
             }
             .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
             .padding(.horizontal, 10).padding(.vertical, 3)
@@ -370,7 +596,7 @@ struct LibraryView: View {
 
     @ViewBuilder private func sidebarBackground(selected: Bool, dropInto: Bool) -> some View {
         if dropInto { dropHighlight }
-        else if selected { RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.18)) }
+        else if selected { RoundedRectangle(cornerRadius: 10).fill(.tint.opacity(0.18)) }
     }
 
     /// Two pinned tiles side by side whenever the sidebar is wide enough.
@@ -383,14 +609,16 @@ struct LibraryView: View {
         return Button { activate(item) } label: {
             VStack(alignment: .leading, spacing: 6) {
                 Image(systemName: item.librarySymbol(filled: true))
-                    .font(.title3).foregroundStyle(Color.accentColor)
+                    .font(.title3).foregroundStyle(.tint)
                 Text(item.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
-                    .lineLimit(2).multilineTextAlignment(.leading)
+                    .lineLimit(2).truncationMode(.middle).multilineTextAlignment(.leading)
+                    // Full title for the pointer; VoiceOver keeps label + hint of the tile.
+                    .pointerHelp(item.title)
             }
             .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 12)
-                .fill(selected ? Color.accentColor.opacity(0.18) : Color(uiColor: .tertiarySystemFill)))
+                .fill(selected ? AnyShapeStyle(.tint.opacity(0.18)) : AnyShapeStyle(Color(uiColor: .tertiarySystemFill))))
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(NotyPressStyle())
@@ -444,10 +672,12 @@ struct LibraryView: View {
             }
             Button { activate(item) } label: {
                 Label {
-                    Text(item.title).lineLimit(1).foregroundStyle(.primary)
+                    // Middle truncation: near-duplicates („Scan … 14-32-11“, „… Kopie“) differ at the end.
+                    Text(item.title).lineLimit(1).truncationMode(.middle).foregroundStyle(.primary)
+                        .pointerHelp(item.title)
                 } icon: {
                     Image(systemName: item.librarySymbol(filled: false))
-                        .foregroundStyle(item.isFolder ? Color.accentColor : Color.secondary)
+                        .foregroundStyle(item.isFolder ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                 }
                 .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                 .contentShape(Rectangle())
@@ -457,7 +687,8 @@ struct LibraryView: View {
             .accessibilityHint(item.isFolder ? "Öffnet den Ordner" : item.isTextDocument ? "Öffnet das Textdokument" : "Öffnet das Heft")
             .accessibilityAddTraits(selected ? .isSelected : [])
         }
-        .padding(.leading, CGFloat(entry.depth) * LibrarySpace.indent)
+        // Capped like the text outline: deep folder chains must leave room for the title.
+        .padding(.leading, CGFloat(min(entry.depth, LibrarySpace.maxIndentDepth)) * LibrarySpace.indent)
         .padding(.horizontal, LibrarySpace.rowInset).padding(.vertical, 2)
         .background { sidebarBackground(selected: selected, dropInto: dropMark == DropMark(zone: .tree, target: .into(item.id))) }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(LibrarySpace.sidebar)) } action: { frames.tree[item.id] = $0 }
@@ -468,8 +699,8 @@ struct LibraryView: View {
     // MARK: Drag & drop
 
     private var dropHighlight: some View {
-        RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.25))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2))
+        RoundedRectangle(cornerRadius: 10).fill(.tint.opacity(0.25))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.tint, lineWidth: 2))
             .allowsHitTesting(false)
     }
 
@@ -613,11 +844,14 @@ struct LibraryView: View {
 
     private var sidebarFooter: some View {
         HStack {
-            Button { showingAreas = true } label: {
-                Label(workspaces.title, systemImage: workspaces.kind.symbol).lineLimit(1)
+            // Bereiche are a test tool: hidden in the normal noty unless one exists.
+            if DeveloperAccess.showsAreas(workspaces) {
+                Button { showingAreas = true } label: {
+                    Label(workspaces.title, systemImage: workspaces.kind.symbol).lineLimit(1)
+                }
+                .disabled(model.busy && !model.backgroundBusy || workspaces.busy)
+                .accessibilityLabel("Bereich \(workspaces.title)").accessibilityHint("Bereich wechseln")
             }
-            .disabled(model.busy && !model.backgroundBusy || workspaces.busy)
-            .accessibilityLabel("Bereich \(workspaces.title)").accessibilityHint("Bereich wechseln")
             Spacer()
             let count = model.trashedItems.count
             if count > 0 {
@@ -635,8 +869,27 @@ struct LibraryView: View {
 
     // MARK: Detail
 
+    /// The calendar brings its own toolbar; search, editing and drops belong
+    /// to the collection only. Export, warnings and (sidebar hidden or laid
+    /// over) the Hefte/Kalender switch stay for both. Both sides are in one
+    /// `ZStack` so the switch can show the leaving and the coming side
+    /// together (`NotyMotion.modeTransition`); the calendar's model is the
+    /// host's, nothing of its state goes with the view.
     private var detail: some View {
-        collection
+        ZStack {
+            if showsCalendar {
+                CalendarView(model: calendar, keysActive: calendarKeysActive, covered: model.opened != nil)
+                    .transition(NotyMotion.modeTransition(leading: false, reduced: reduceMotion))
+            } else {
+                collection
+                    .navigationTitle(title)
+                    .searchable(text: $search, prompt: "Name suchen")
+                    .toolbar { libraryToolbar }
+                    .transition(NotyMotion.modeTransition(leading: true, reduced: reduceMotion))
+            }
+        }
+            .toolbar { leadingToolbar }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { detailWidth = $0 }
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let warning = model.warning {
                     Label(warning, systemImage: "exclamationmark.triangle")
@@ -648,30 +901,39 @@ struct LibraryView: View {
                 PDFExportProgressBadge(job: pdfExport).padding(12)
             }
             .fileExporter(isPresented: $exportingPDF, document: exportedPDF, contentType: .pdf, defaultFilename: exportedPDFName) { result in
-                if case .failure(let error) = result { model.error = error.localizedDescription }
+                switch result {
+                case .success: AccessibilityNotification.Announcement("PDF gesichert").post()
+                case .failure(let error): model.error = error.localizedDescription
+                }
                 exportedPDF = nil
             }
             .overlay(alignment: .bottom) {
                 // Only user-started operations show progress; background work stays invisible.
                 if model.ready && model.busy && !model.backgroundBusy {
-                    ProgressView().padding(10).background(.regularMaterial, in: Capsule()).padding(12)
+                    ProgressView("Bibliothek wird bearbeitet …").font(.footnote)
+                        .padding(.horizontal, 14).padding(.vertical, 10).background(.regularMaterial, in: Capsule()).padding(12)
                 }
             }
-            .navigationTitle(title)
-            .searchable(text: $search, prompt: "Name suchen")
-            .toolbar { libraryToolbar }
     }
 
-    /// Top bar of the detail column. Every control is its own item with an
-    /// explicit placement, declared in display order (leading to trailing):
-    /// backup hint (only when needed) · Inhalte suchen · Darstellung ·
-    /// Bearbeiten (only when reordering is possible) · Neu · Backup jetzt
-    /// speichern (development builds only) · Einstellungen.
-    /// Optional items are added or left out as whole items: no permanently
-    /// present item with sometimes empty content (the leading slot used to be
-    /// one), no group whose membership changes while navigating.
-    @ToolbarContentBuilder private var libraryToolbar: some ToolbarContent {
-        if case .folder(let id) = location, search.isEmpty {
+    /// Leading items of both sides, in this order: (Kalender, wide enough)
+    /// the calendar sidebar button, the switch (unless it is in the sidebar's
+    /// bar, `switchInSidebar`), then (Hefte, inside a folder) the way up. One
+    /// declaration for both sides keeps the switch the same item while the
+    /// content changes beneath it.
+    @ToolbarContentBuilder private var leadingToolbar: some ToolbarContent {
+        // Left of the switch (user request 08.11.2026; before, the calendar's
+        // own toolbar put it right of it). Only where the sidebar has room
+        // (from 864 pt calendar width: landscape, not portrait) – measured
+        // here (`detailWidth`), so the button is there with the first frame
+        // of the calendar instead of after the calendar has measured itself.
+        if showsCalendar && detailWidth >= CalendarSidebar.minimumTotalWidth {
+            ToolbarItem(placement: .topBarLeading) { calendarSidebarButton }
+        }
+        if !switchInSidebar {
+            ToolbarItem(placement: .topBarLeading) { modeSwitch(switchLabels(inSidebar: false)) }
+        }
+        if !showsCalendar, case .folder(let id) = location, search.isEmpty {
             ToolbarItem(placement: .topBarLeading) {
                 Button { goUp(from: id) } label: {
                     // A long parent name (up to 120 characters) must not crowd the trailing items out of the bar.
@@ -682,6 +944,17 @@ struct LibraryView: View {
                 .accessibilityLabel("Zurück zu \(parentTitle(of: id))")
             }
         }
+    }
+
+    /// Trailing top bar of the library (leading: `leadingToolbar`). Every control is its own item with an
+    /// explicit placement, declared in display order (leading to trailing):
+    /// backup hint (only when needed) · Inhalte suchen · Darstellung ·
+    /// Bearbeiten (only when reordering is possible) · Neu · Backup jetzt
+    /// speichern (development builds only) · Einstellungen.
+    /// Optional items are added or left out as whole items: no permanently
+    /// present item with sometimes empty content (the leading slot used to be
+    /// one), no group whose membership changes while navigating.
+    @ToolbarContentBuilder private var libraryToolbar: some ToolbarContent {
         if BackupStatusBadge.needsAttention(externalBackup) {
             ToolbarItem(placement: .topBarTrailing) {
                 BackupStatusBadge(externalBackup: externalBackup, library: model) { settingsRequest = SettingsRequest(page: .backup) }
@@ -726,39 +999,8 @@ struct LibraryView: View {
             .disabled(!editable)
             .accessibilityLabel("Neu oder importieren")
         }
-        if Self.isDevelopmentBuild {
-            // Pinned like the gear: a plain trailing item is the first to be moved away.
-            ToolbarItem(placement: Self.settingsPlacement) {
-                Button { saveBackupNow() } label: {
-                    if externalBackup.busy { ProgressView() } else { Label("Backup jetzt speichern", systemImage: "square.and.arrow.down") }
-                }
-                .disabled(externalBackup.busy || !model.ready)
-                .accessibilityLabel("Backup jetzt speichern")
-            }
-        }
         ToolbarItem(placement: Self.settingsPlacement) {
             Button { settingsRequest = SettingsRequest() } label: { Label("Einstellungen", systemImage: "gearshape") }
-        }
-    }
-
-    /// All current builds are the prototype bundle; the installed ID is prefixed (`XTL-….de.la.noty.prototype`).
-    static var isDevelopmentBuild: Bool {
-        let id = Bundle.main.bundleIdentifier ?? ""
-        return id.contains(".prototype") || id.contains(".dev")
-    }
-
-    /// The same manual run as Settings › Backup. Failures and postponements arrive
-    /// in `externalBackup.error`; only a success moves `lastSuccess`. A run that
-    /// never started (an automatic one was faster) reports nothing.
-    private func saveBackupNow() {
-        guard externalBackup.policy.target != .disabled else {
-            backupNotice = "Noch kein Backup-Ziel gewählt. Bitte unter Einstellungen › Backup & Daten ein Ziel wählen."
-            return
-        }
-        let previous = externalBackup.policy.lastSuccess
-        Task {
-            await externalBackup.attempt(library: model, toolbox: toolbox, manual: true)
-            if externalBackup.policy.lastSuccess != previous { backupNotice = externalBackup.status }
         }
     }
 
@@ -826,7 +1068,21 @@ struct LibraryView: View {
         selectedArea = nil; switchingArea = false
         Task {
             if toolbox.writable {
-                guard await toolbox.flush() else { model.error = toolbox.status; return }
+                guard await toolbox.flush() else { model.error = toolbox.status; calendar.selectionChanged(); return }
+            }
+            // The calendar's note beside an event commits and lets go first.
+            // The switch disposes this area's calendar model: a note or a
+            // calendar change that exists only in memory is never dropped
+            // silently, only after the explicit choice to discard it.
+            if let unsaved = await calendar.prepareAreaSwitch() {
+                guard await TopAlert.ask("Kalender nicht gespeichert",
+                                         unsaved + "\n\nBeim Wechseln des Bereichs gehen diese Änderungen verloren. Ohne Wechsel versucht noty es weiter.",
+                                         confirm: "Verwerfen und wechseln") else {
+                    // Staying: the note beside the selected event opens again.
+                    calendar.selectionChanged()
+                    return
+                }
+                calendar.discardUnsavedForAreaSwitch()
             }
             // The new area's store must not start beside a running import.
             await model.waitUntilIdle()
@@ -864,7 +1120,7 @@ struct LibraryView: View {
                     .background {
                         // Dropping anywhere else moves into the shown folder.
                         if let mark = dropMark, mark.zone == .detail, mark.target == .into(parentID) {
-                            Color.accentColor.opacity(0.06).allowsHitTesting(false)
+                            Rectangle().fill(.tint.opacity(0.06)).allowsHitTesting(false)
                         }
                     }
                     .overlay(alignment: .topLeading) { insertionLine(detailLine) }
@@ -873,7 +1129,7 @@ struct LibraryView: View {
                                                                        resolve: { detailDrop(at: $0) }, perform: { performDrop($0, id: $1) }))
                 }
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { detailSize = $0 }
-                .onChange(of: keyboardFocus) { _, id in if let id { withAnimation(NotyMotion.highlight(reduceMotion)) { proxy.scrollTo(id) } } }
+                .onChange(of: keyboardFocus) { _, id in if let id { proxy.scrollTo(id) } }
                 }
             }
         }
@@ -894,7 +1150,9 @@ struct LibraryView: View {
             .onDrag { dragProvider(item.id) }
     }
 
-    private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: 140, maximum: 200), spacing: 32)] }
+    /// Top alignment plus fixed-height captions: covers of one row line up
+    /// whether a title has one or two lines and whether a subtitle exists.
+    private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: 140, maximum: 200), spacing: 32, alignment: .top)] }
 
     @ViewBuilder private var emptyState: some View {
         if !search.isEmpty {
@@ -931,8 +1189,19 @@ struct LibraryView: View {
     }
 
     private func activate(_ item: NotebookCore.LibraryItem) {
-        if item.isFolder { location = .folder(item.id) }
+        // A folder chosen in the (swiped-in) sidebar leaves the calendar; a
+        // location change of its own (a trashed folder falling back) does not.
+        if item.isFolder { location = .folder(item.id); setCalendar(false, animated: true) }
         else { Task { await model.open(item) } }
+    }
+
+    private func rowDetails(_ item: NotebookCore.LibraryItem) -> String {
+        var parts: [String] = []
+        if item.source == .restored { parts.append("Wiederhergestellte Kopie") }
+        if item.source == .legacyMain { parts.append("Ursprüngliches Heft") }
+        // While searching, `subtitle` is the path: its own line in the row.
+        if search.isEmpty, let detail = subtitle(item) { parts.append(detail) }
+        return parts.joined(separator: " · ")
     }
 
     private func subtitle(_ item: NotebookCore.LibraryItem) -> String? {
@@ -946,7 +1215,7 @@ struct LibraryView: View {
     }
 
     private var keyboardFocusRing: some View {
-        RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2).allowsHitTesting(false)
+        RoundedRectangle(cornerRadius: 10).strokeBorder(.tint, lineWidth: 2).allowsHitTesting(false)
     }
 
     private func documentCard(_ item: NotebookCore.LibraryItem) -> some View {
@@ -954,7 +1223,7 @@ struct LibraryView: View {
             Button { activate(item) } label: {
                 Group {
                     if item.isFolder {
-                        Image(systemName: "folder.fill").font(.system(size: 76)).foregroundStyle(Color.accentColor)
+                        Image(systemName: "folder.fill").font(.system(size: 76)).foregroundStyle(.tint)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else { LibraryNotebookArtwork(item: item, model: model) }
                 }.aspectRatio(0.72, contentMode: .fit)
@@ -964,11 +1233,15 @@ struct LibraryView: View {
             VStack(spacing: 2) {
                 HStack(spacing: 4) {
                     if item.favorite { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary) }
-                    Text(item.title).font(.subheadline.weight(.medium)).lineLimit(2).multilineTextAlignment(.center)
+                    Text(item.title).font(.subheadline.weight(.medium)).lineLimit(2, reservesSpace: true)
+                        .truncationMode(.middle).multilineTextAlignment(.center)
                 }
-                if let detail = subtitle(item) { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                // Always present (blank when empty), the search path cut at the head: the nearest folder matters most.
+                Text(subtitle(item) ?? " ").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .truncationMode(search.isEmpty ? .tail : .head)
             }
             .frame(maxWidth: .infinity)
+            .help(item.title)
             .accessibilityHidden(true)
         }
         .background {
@@ -985,14 +1258,19 @@ struct LibraryView: View {
         Button { activate(item) } label: {
             HStack(spacing: 14) {
                 Image(systemName: item.isFolder ? "folder.fill" : item.librarySymbol(filled: false))
-                    .font(.title2).foregroundStyle(item.isFolder ? Color.accentColor : .secondary).frame(width: 32)
+                    .font(.title2).foregroundStyle(item.isFolder ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary)).frame(width: 32)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(item.title).foregroundStyle(.primary)
-                    HStack {
-                        if item.source == .restored { Text("Wiederhergestellte Kopie") }
-                        if item.source == .legacyMain { Text("Ursprüngliches Heft") }
-                        if let detail = subtitle(item) { Text(detail) }
-                    }.font(.caption).foregroundStyle(.secondary)
+                    Text(item.title).foregroundStyle(.primary).lineLimit(2).truncationMode(.middle)
+                    // One string: separate texts in an HStack each wrapped into ragged mini-columns.
+                    let details = rowDetails(item)
+                    if !details.isEmpty {
+                        Text(details).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    // Search: the path on its own line, cut at the head (the nearest
+                    // folder matters most) without cutting „Wiederhergestellte Kopie“.
+                    if !search.isEmpty {
+                        Text(path(of: item)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                    }
                 }
                 Spacer()
                 if item.favorite { Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary) }
@@ -1017,12 +1295,17 @@ struct LibraryView: View {
             Button("Verschieben …", systemImage: "folder") { moving = item }
             if !item.isFolder {
                 Button("Duplizieren", systemImage: "plus.square.on.square") { Task { await model.duplicate(item) } }
-                Button("Als PDF exportieren …", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
-                Button("Als .noty teilen …", systemImage: "square.and.arrow.up") { shareNoty(item) }
-                Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(item, as: .markdown) }
-                Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(item, as: .plainText) }
-                Button("Als Word teilen (.docx) …", systemImage: "doc.text") { shareText(item, as: .word) }
-                Button("Als RTF teilen (.rtf) …", systemImage: "doc.richtext") { shareText(item, as: .rtf) }
+                // Rare export variants in one submenu, as in the editor (polish audit F15).
+                Menu("Teilen und exportieren", systemImage: "square.and.arrow.up") {
+                    Button("Als PDF exportieren …", systemImage: "doc.richtext") { exportPDF(item) }.disabled(pdfExport.running)
+                    Button("Als .noty teilen …", systemImage: "shippingbox") { shareNoty(item) }
+                    Section("Nur Text") {
+                        Button("Als Markdown teilen (.md) …") { shareText(item, as: .markdown) }
+                        Button("Als Text teilen (.txt) …") { shareText(item, as: .plainText) }
+                        Button("Als Word teilen (.docx) …") { shareText(item, as: .word) }
+                        Button("Als RTF teilen (.rtf) …") { shareText(item, as: .rtf) }
+                    }
+                }
             }
             if showsEnclosing {
                 Button("Im Ordner zeigen", systemImage: "arrow.up.forward.square") {
@@ -1099,6 +1382,8 @@ private enum LibrarySpace {
     static let detail = "libraryDetail"
     /// Tree geometry shared by rows and insertion lines.
     static let indent: CGFloat = 16
+    /// Deeper levels keep this indentation (a 220-pt sidebar at depth 10 left no room for the title).
+    static let maxIndentDepth = 6
     static let chevron: CGFloat = 22
     static let rowInset: CGFloat = 6
 }
@@ -1139,8 +1424,8 @@ private struct InsertionLine: View {
     var body: some View {
         let stack = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
         stack {
-            Circle().stroke(Color.accentColor, lineWidth: 2).frame(width: 7, height: 7)
-            Rectangle().fill(Color.accentColor).frame(width: vertical ? 2 : nil, height: vertical ? nil : 2)
+            Circle().stroke(.tint, lineWidth: 2).frame(width: 7, height: 7)
+            Rectangle().fill(.tint).frame(width: vertical ? 2 : nil, height: vertical ? nil : 2)
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -1211,17 +1496,23 @@ private struct MoveDestinationView: View {
     var body: some View {
         NavigationStack {
             List {
-                Button("Alle Unterlagen") { onSelect(nil) }.disabled(item.parentID == nil).keyOption(.action { onSelect(nil) })
-                ForEach(folders) { folder in
-                    Button { onSelect(folder.id) } label: {
-                        VStack(alignment: .leading) {
-                            Label(folder.title, systemImage: "folder")
-                            Text(libraryPath(folder, in: snapshot)).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }.disabled(folder.id == item.parentID).keyOption(.action { onSelect(folder.id) })
+                // The name wraps here; in the title a long name cut off „verschieben“.
+                Section {
+                    Button("Alle Unterlagen") { onSelect(nil) }.disabled(item.parentID == nil).keyOption(.action { onSelect(nil) })
+                    ForEach(folders) { folder in
+                        Button { onSelect(folder.id) } label: {
+                            VStack(alignment: .leading) {
+                                Label(folder.title, systemImage: "folder").lineLimit(2).truncationMode(.middle)
+                                Text(libraryPath(folder, in: snapshot)).font(.caption).foregroundStyle(.secondary)
+                                    .lineLimit(1).truncationMode(.head)
+                            }
+                        }.disabled(folder.id == item.parentID).keyOption(.action { onSelect(folder.id) })
+                    }
+                } header: {
+                    Text("\(NotyText.quoted(item.title)) verschieben nach …").lineLimit(3).textCase(nil)
                 }
             }
-            .navigationTitle("\(item.title) verschieben")
+            .navigationTitle("Verschieben")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
         }
         .keyboardSheet()
@@ -1262,4 +1553,65 @@ private struct NotebookChoiceList: Identifiable {
     let documents: [OpenNotebook]
     /// Every notebook of the area, trashed ones included: their index survives.
     let retain: Set<UUID>
+}
+
+/// „Hefte | Kalender“ at the top left (sidebar bar or detail bar): two
+/// segments with a marker that slides to the chosen side with the switching
+/// transaction (Reduce Motion: it only cross-fades). VoiceOver and Full
+/// Keyboard Access see a segmented picker.
+private struct LibraryModeSwitch: View {
+    /// Words with symbols, words only (sidebar of the usual 280 pt) or symbols only.
+    enum Labels { case full, titles, symbols }
+    let showsCalendar: Bool
+    let labels: Labels
+    let namespace: Namespace.ID
+    let reduceMotion: Bool
+    let select: (Bool) -> Void
+    @Environment(\.isEnabled) private var enabled
+
+    var body: some View {
+        HStack(spacing: 2) {
+            segment("Hefte", systemImage: "books.vertical", calendar: false)
+            segment("Kalender", systemImage: "calendar", calendar: true)
+        }
+        .padding(3)
+        .background(Capsule().fill(Color(uiColor: .tertiarySystemFill)))
+        .opacity(enabled ? 1 : 0.5)
+        .help("Hefte oder Kalender (⇧⌘K)")
+        .accessibilityRepresentation {
+            Picker("Ansicht", selection: Binding(get: { showsCalendar }, set: { select($0) })) {
+                Text("Hefte").tag(false)
+                Text("Kalender").tag(true)
+            }
+            .pickerStyle(.segmented)
+        }
+    }
+
+    private func segment(_ title: String, systemImage: String, calendar: Bool) -> some View {
+        let selected = showsCalendar == calendar
+        return Button { select(calendar) } label: {
+            Group {
+                switch labels {
+                case .symbols: Image(systemName: systemImage)
+                case .titles: Text(title)
+                case .full: Label(title, systemImage: systemImage).labelStyle(.titleAndIcon)
+                }
+            }
+            .font(.subheadline.weight(selected ? .semibold : .regular))
+            .foregroundStyle(selected ? Color.primary : Color.secondary)
+            .padding(.horizontal, 12)
+            .frame(minWidth: 40, minHeight: 32)
+            .background { if selected { marker } }
+            // The capsule stays 32 pt high; it takes touches 44 pt high.
+            .contentShape(NotyHitShape())
+        }
+        .buttonStyle(NotyPressStyle())
+        .accessibilityLabel(title)
+    }
+
+    @ViewBuilder private var marker: some View {
+        let shape = Capsule().fill(Color(uiColor: .systemBackground)).shadow(color: .black.opacity(0.14), radius: 2, y: 1)
+        if reduceMotion { shape.transition(.opacity) }
+        else { shape.matchedGeometryEffect(id: "libraryModeMarker", in: namespace) }
+    }
 }

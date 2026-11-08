@@ -1,5 +1,6 @@
 import SwiftUI
 import NotebookCore
+import NotyCalendarShared
 
 @MainActor
 final class WorkspaceAppModel: ObservableObject {
@@ -63,10 +64,35 @@ final class WorkspaceAppModel: ObservableObject {
         busy = true
         defer { busy = false }
         var failure: String?
+        let namespace = await calendarNamespace(area), scope = await areaScope(area)
         do { try await store.remove(area.id, protecting: [Self.mainRoot]) }
         catch { failure = error.localizedDescription }
         await refresh()
+        // Also after `leftoverFiles`: the area is gone from the list then.
+        if !areas.contains(where: { $0.id == area.id }) { areaRemoved(namespace, scope: scope) }
         if let failure { error = failure }
+    }
+
+    /// The calendar namespace of an area (`CalendarNotificationHub.namespace`), read before it is removed.
+    private func calendarNamespace(_ area: TestWorkspace) async -> String? {
+        guard let directory = try? await store.directory(for: area.id) else { return nil }
+        return CalendarNotificationHub.namespace(root: directory)
+    }
+
+    /// The area's preference scope (`StableDefaults.scope`), read before it is removed.
+    private func areaScope(_ area: TestWorkspace) async -> String? {
+        guard let directory = try? await store.directory(for: area.id) else { return nil }
+        return StableDefaults.scope(directory)
+    }
+
+    /// A removed area whose WebUntis connection the push service polls: signed
+    /// off there too (docs/PUSH.md, „Abmelden“), like „Trennen“. In the
+    /// background: the area list does not wait for the server. Its calendar
+    /// choice „Sichtbare Kalender“ (a device preference) goes as well.
+    private func areaRemoved(_ namespace: String?, scope: String? = nil) {
+        if let scope { CalendarModel.forgetHiddenSources(scope: scope) }
+        guard let namespace else { return }
+        Task { await CalendarPushClient.shared.areaRemoved(namespace: namespace) }
     }
     func createTest() async {
         guard !busy else { return }
@@ -112,8 +138,10 @@ final class WorkspaceAppModel: ObservableObject {
     func removeMirror(_ area: TestWorkspace) async -> Bool {
         guard !busy, area.kind == .mirror, area.id != areaID else { return false }
         busy = true; defer { busy = false }
+        let namespace = await calendarNamespace(area), scope = await areaScope(area)
         let removed = (try? await store.remove(area.id, protecting: [Self.mainRoot])) != nil
         await refresh()
+        if !areas.contains(where: { $0.id == area.id }) { areaRemoved(namespace, scope: scope) }
         return removed
     }
     func restoreLibrary(_ url: URL) async -> Bool {
@@ -143,30 +171,45 @@ struct WorkspaceLibraryHost: View {
     @StateObject private var library: LibraryModel
     @StateObject private var toolbox: ToolbarSettingsModel
     @StateObject private var externalBackup: ExternalBackupModel
+    /// Calendar of this area (`<Bereich>/Calendar/`); a new area gets a new model.
+    @StateObject private var calendar: CalendarModel
     @Environment(\.scenePhase) private var scenePhase
     init(workspaces: WorkspaceAppModel) {
         self.workspaces = workspaces
         _library = StateObject(wrappedValue: LibraryModel(root: workspaces.root))
+        _calendar = StateObject(wrappedValue: CalendarModel(root: workspaces.root))
         _toolbox = StateObject(wrappedValue: ToolbarSettingsModel(root: workspaces.root))
         _externalBackup = StateObject(wrappedValue: ExternalBackupModel(root: workspaces.root))
     }
     var body: some View {
-        LibraryView(model: library, workspaces: workspaces).environmentObject(toolbox).environmentObject(externalBackup)
+        LibraryView(model: library, workspaces: workspaces, calendar: calendar).environmentObject(toolbox).environmentObject(externalBackup)
+            .task { await workspaces.refresh() }
             .task {
                 // `scenePhase` captured by this long-running closure would stay at its
                 // first value; the model holds the current phase instead.
                 while !Task.isCancelled {
                     if externalBackup.sceneActive { await externalBackup.attempt(library: library, toolbox: toolbox) }
+                    if externalBackup.sceneActive { await NotebookVaultModel.shared.attempt(library: library, workspaces: workspaces) }
                     do { try await Task.sleep(for: .seconds(60)) } catch { break }
                 }
             }
             .onChange(of: scenePhase, initial: true) { _, phase in
                 externalBackup.sceneActive = phase == .active
                 if phase == .active { Task { await externalBackup.attempt(library: library, toolbox: toolbox) } }
+                // Kalender B3: the rolling reminder window moves on with every activation.
+                if phase == .active { calendar.rescheduleReminders() }
+                // Push service: token/settings to the server, its history into the bell (docs/PUSH.md).
+                if phase == .active { Task { await CalendarPushClient.shared.sync(calendar) } }
+                // A new event note is created now, not only after its input pause.
+                if phase != .active { calendar.sceneLeftForeground() }
+                // Mitteilungen: ask iPadOS for a background refresh (it decides when).
+                if phase == .background { CalendarNotificationHub.shared.scheduleBackgroundRefresh() }
                 if phase == .active { Task { await AppSyncModel.shared.mirror(workspaces: workspaces) } }
                 // Beim Wechsel in eine andere noty-App den Abzug ablegen.
                 if phase == .background {
                     Task { await AppSyncModel.shared.publish(library: library, toolbox: toolbox, workspaces: workspaces) }
+                    // iCloud-Ablage: every changed notebook now; iOS grants a short time for it.
+                    Task { await NotebookVaultModel.shared.attemptWhileLeaving(library: library, workspaces: workspaces) }
                 }
             }
             .task {
@@ -181,6 +224,10 @@ struct WorkspaceLibraryHost: View {
             }
             // Shared PDFs/pictures go to the filing sheet, noty files keep their way.
             .onOpenURL { url in
+                // Tile „Schultag“ / widget „Heute“ (notycalendar://schultag…): the calendar at the lesson.
+                if let target = SchoolDayLink.target(url) { CalendarNotificationHub.shared.openSchoolDay(target); return }
+                // Learning material (docs/LERNFELDER.md): for the whole device, not the area.
+                if MaterialLibrary.isPackage(url) { Task { await MaterialLibrary.shared.receive(url) }; return }
                 if IncomingFiling.handles(url) { Task { await IncomingFiling.receive(url) } }
                 else { Task { await IncomingBackup.receive(url, library: library, workspaces: workspaces) } }
             }
@@ -189,6 +236,10 @@ struct WorkspaceLibraryHost: View {
                 let toolbox = self.toolbox
                 IncomingFiling.attach(library: library, workspaces: workspaces, defaults: { toolbox.preferences.defaultAppearance })
             }
+            // Lernfelder: pinned material shows its video and script from the start.
+            .task { MaterialLibrary.shared.load() }
+            // Event notes are notebooks of this library (Kalender B2).
+            .task { calendar.attach(library: library, defaultAppearance: { [toolbox] in toolbox.preferences.defaultAppearance ?? NotebookAppearance() }) }
     }
 }
 
@@ -239,7 +290,7 @@ struct WorkspacePickerList: View {
                             }
                             Spacer()
                             if model.areaID == area.id {
-                                Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Aktueller Bereich")
+                                Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityLabel("Aktueller Bereich")
                             }
                         }
                     }
@@ -260,8 +311,10 @@ struct WorkspacePickerList: View {
                     }
                 }
                 if model.areas.isEmpty { Text("Noch keine getrennten Bereiche.").foregroundStyle(.secondary) }
-                Button("Neuen Testbereich anlegen", systemImage: "plus") { Task { await model.createTest() } }
-                    .keyOption(.action { Task { await model.createTest() } })
+                if DeveloperAccess.visible {
+                    Button("Neuen Testbereich anlegen", systemImage: "plus") { Task { await model.createTest() } }
+                        .keyOption(.action { Task { await model.createTest() } })
+                }
                 if model.busy { ProgressView() }
             } header: { Text("Getrennte Bereiche") } footer: {
                 if onSelect != nil && !model.areas.isEmpty {
@@ -304,7 +357,7 @@ struct WorkspacePickerList: View {
             HStack {
                 Label(title, systemImage: icon)
                 Spacer()
-                if current { Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Aktueller Bereich") }
+                if current { Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityLabel("Aktueller Bereich") }
             }
         }.disabled(onSelect == nil)
     }

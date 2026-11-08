@@ -1,0 +1,129 @@
+import SwiftUI
+import NotebookCore
+
+/// Spacing scale of the calendar: 4 · 8 · 12 · 16 · 24.
+enum CalendarSpace {
+    static let xs: CGFloat = 4
+    static let s: CGFloat = 8
+    static let m: CGFloat = 12
+    static let l: CGFloat = 16
+    static let xl: CGFloat = 24
+}
+
+enum CalendarPalette {
+    /// Subject colours: `CalendarSubjectColor` (by name, never blue). Selection
+    /// and actions use the app's accent (Einstellungen › Darstellung) through
+    /// the `.tint` shape style – never a fixed blue; red stays today and the
+    /// current time, green own entries. A selection is never colour alone
+    /// (frame and stronger fill).
+    static let personal = Color.green
+    static let holidays = Color.gray
+    /// Fallback of system calendars (EventKit) until their own colour is known.
+    static let system = Color(red: 0.55, green: 0.6, blue: 0.95)
+    static let today = Color(uiColor: .systemRed)
+    /// Hairlines of grids and cells: quieter than the system separator.
+    static let hairline = Color(uiColor: .separator).opacity(0.45)
+    /// Hour labels, week numbers and other quiet captions.
+    static let quiet = Color(uiColor: .tertiaryLabel)
+    /// Event background: a faint tint of the subject colour, stronger when selected.
+    static func tint(_ color: Color, selected: Bool = false, cancelled: Bool = false) -> Color {
+        color.opacity(selected ? 0.32 : cancelled ? 0.07 : 0.18)
+    }
+
+    static func color(_ event: CalendarEntry) -> Color {
+        if let name = event.colorName { return color(named: name) }
+        switch event.source {
+        case .personal: return personal
+        case .holidays: return holidays
+        case .system: return system
+        case .timetable:
+            let key = CalendarSubjectColor.key(subjectID: nil, name: event.subject ?? event.title)
+            return color(named: CalendarSubjectColor.name(for: key, chosen: [:]))
+        }
+    }
+
+    /// The named colours of `CalendarSubjectColor` (stored by name).
+    static func color(named name: String) -> Color {
+        switch name {
+        case "orange": .orange
+        case "purple": .purple
+        case "teal": .teal
+        case "pink": .pink
+        case "yellow": .yellow
+        case "brown": .brown
+        case "cyan": .cyan
+        case "olive": Color(red: 0.62, green: 0.68, blue: 0.2)
+        case "indigo": .indigo
+        case "mint": .mint
+        case "gray": .gray
+        case "green": personal
+        default: .gray
+        }
+    }
+}
+
+/// The frame of a selected, moved or new entry: the accent outside and a
+/// thin light line inside. The accent alone can be close to a subject colour
+/// or to today's red (Koralle, Rosa, Bernstein, Minze …); the inner line
+/// keeps the selection visible with every accent on every subject colour.
+struct CalendarSelectionFrame: View {
+    var radius: CGFloat
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(.tint, lineWidth: 2)
+            .overlay {
+                RoundedRectangle(cornerRadius: max(1, radius - 2), style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.85), lineWidth: 1).padding(2)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    /// A short label or count in the accent (drag time, homework count): light
+    /// text on a dark material with a faint accent fill and an accent ring –
+    /// readable with every accent (white on a filled Bernstein, Himmel or Minze
+    /// stays below 3.6:1, black text would change with the colour).
+    func calendarAccentLabel<S: InsettableShape>(_ shape: S) -> some View {
+        foregroundStyle(.primary)
+            .background { shape.fill(.tint.opacity(0.22)) }
+            .background(.thickMaterial, in: shape)
+            .overlay { shape.strokeBorder(.tint, lineWidth: 1.25) }
+    }
+}
+
+/// A wait indicator that appears only after 300 ms – short waits do not
+/// flash – and always says what is running.
+struct CalendarDelayedProgress: View {
+    let text: String
+    var large = false
+    @State private var shown = false
+
+    var body: some View {
+        ZStack {
+            Color.clear.frame(width: 1, height: 1)
+            if shown {
+                Group {
+                    if large {
+                        VStack(spacing: CalendarSpace.m) {
+                            ProgressView().controlSize(.large)
+                            Text(text).font(.subheadline).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        HStack(spacing: CalendarSpace.s) {
+                            ProgressView()
+                            Text(text).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                .transition(.opacity.animation(NotyMotion.fade))
+            }
+        }
+        .task {
+            try? await Task.sleep(for: .milliseconds(300))
+            if !Task.isCancelled { shown = true }
+        }
+    }
+}

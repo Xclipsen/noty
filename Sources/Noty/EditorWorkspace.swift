@@ -382,7 +382,7 @@ struct EditorWorkspaceView: View {
                 case .strokeEraser, .precisionEraser: lawPencil = "eraser"
                 default: break
                 }
-            })
+            }, closeTitle: index == 0 ? workspace.primaryDocument.returnTitle.map { "Zurück zu \($0)" } : nil)
     }
 
     // MARK: Law window
@@ -453,8 +453,9 @@ struct EditorWorkspaceView: View {
                     }
                     .offset(offset)
                     .position(x: frame.x + frame.width / 2, y: frame.y + frame.height / 2)
-                    // Opening and closing slide along the same way as parking.
-                    .transition(.offset(out))
+                    // Opening and closing slide along the same way as parking;
+                    // with Reduce Motion they only fade.
+                    .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .offset(out))
             }
             if stashed {
                 lawEdgeTab(l)
@@ -462,7 +463,8 @@ struct EditorWorkspaceView: View {
                     .padding(lawTabEdges(l.edge), lawTabClearsToolbar(l.edge) ? 24 : 0)
                     .padding(.bottom, l.keyboard)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: lawTabAlignment(l.edge))
-                    .transition(.opacity)
+                    // The tab slides in from the edge the window disappears into.
+                    .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .opacity.combined(with: .offset(x: l.outward.x * 14, y: l.outward.y * 14)))
             }
         }
         .notyTooltipHost()
@@ -580,8 +582,8 @@ struct EditorWorkspaceView: View {
         switch drop {
         case .dock(let edge):
             let target = LawPanelLayout(size: l.size, width: lawPanel.width, height: lawPanel.height, docked: true, edge: edge, keyboard: l.keyboard, avoidsKeyboard: l.avoidsKeyboard).frame
-            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.accentColor.opacity(0.16))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.accentColor, lineWidth: 2))
+            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.tint.opacity(0.16))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.tint, lineWidth: 2))
                 .overlay {
                     VStack(spacing: 6) {
                         lawPreviewLabel("Andocken", symbol: edge == .left ? "rectangle.lefthalf.inset.filled"
@@ -614,7 +616,7 @@ struct EditorWorkspaceView: View {
         Label(title, systemImage: symbol)
             .font(.headline).foregroundStyle(.white)
             .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(Capsule().fill(accent ? Color.accentColor.opacity(0.85) : Color(white: 0.16).opacity(0.94)))
+            .background(Capsule().fill(accent ? AnyShapeStyle(.tint.opacity(0.85)) : AnyShapeStyle(Color(white: 0.16).opacity(0.94))))
             .overlay(Capsule().strokeBorder(.white.opacity(accent ? 0 : 0.18)))
     }
 
@@ -625,10 +627,10 @@ struct EditorWorkspaceView: View {
         let symbol = switch edge { case .left: "chevron.compact.right"; case .right: "chevron.compact.left"; case .bottom: "chevron.compact.up" }
         return Image(systemName: symbol)
             .font(.system(size: 20, weight: .regular))
-            .foregroundStyle(highlighted ? Color.accentColor : Color.white.opacity(0.88))
+            .foregroundStyle(highlighted ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.white.opacity(0.88)))
             .frame(width: edge == .bottom ? 92 : 30, height: edge == .bottom ? 30 : 92)
             .lawGlass(shape)
-            .overlay(shape.stroke(highlighted ? Color.accentColor.opacity(0.8) : Color.white.opacity(0.18), lineWidth: 1))
+            .overlay(shape.stroke(highlighted ? AnyShapeStyle(.tint.opacity(0.8)) : AnyShapeStyle(Color.white.opacity(0.18)), lineWidth: 1))
             .shadow(color: .black.opacity(0.4), radius: 6)
     }
 
@@ -741,7 +743,7 @@ struct EditorWorkspaceView: View {
         return HStack(spacing: 4) {
             ForEach(0..<3, id: \.self) { _ in Circle().frame(width: 5, height: 5) }
         }
-        .foregroundStyle(active ? Color.accentColor : Color.white.opacity(0.55))
+        .foregroundStyle(active ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.white.opacity(0.55)))
         .padding(.horizontal, 10).padding(.vertical, 5)
         .background(Capsule().fill(Color.white.opacity(paneDrag?.pane == entry.pane ? 0.22 : 0.1)))
         .frame(width: 88, height: Self.strip)
@@ -788,20 +790,20 @@ struct EditorWorkspaceView: View {
         let cardWidth = min(260, max(160, landing.width * 0.45))
         return ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.accentColor.opacity(0.16))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.accentColor, lineWidth: 2))
+                .fill(.tint.opacity(0.16))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.tint, lineWidth: 2))
                 .overlay(
                     Label(sideName(drag.target, vertical: arrangement.vertical).capitalized, systemImage: arrangement.vertical
                           ? (drag.target == .first ? "rectangle.tophalf.inset.filled" : "rectangle.bottomhalf.inset.filled")
                           : (drag.target == .first ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled"))
                         .font(.headline).foregroundStyle(.white)
                         .padding(.horizontal, 14).padding(.vertical, 8)
-                        .background(Capsule().fill(Color.accentColor.opacity(0.85))))
+                        .background(Capsule().fill(.tint.opacity(0.85))))
                 .frame(width: max(0, landing.width - 12), height: max(0, landing.height - 12))
                 .offset(x: landing.x + 6, y: landing.y + 6)
             VStack(spacing: 8) {
                 HStack(spacing: 4) { ForEach(0..<3, id: \.self) { _ in Circle().frame(width: 5, height: 5) } }
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(.tint)
                 Image(systemName: "book.closed").font(.title2)
                 Text(title(model)).font(.subheadline.weight(.semibold)).lineLimit(2).multilineTextAlignment(.center)
             }
@@ -870,8 +872,8 @@ struct EditorWorkspaceView: View {
             ForEach(SplitSlot.allCases, id: \.self) { slot in
                 let frame = preview.frame(of: slot, in: size)
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Color.accentColor, lineWidth: 2)
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor.opacity(0.08)))
+                    .strokeBorder(.tint, lineWidth: 2)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.tint.opacity(0.08)))
                     .frame(width: max(0, frame.width - 8), height: max(0, frame.height - 8))
                     .offset(x: frame.x + 4, y: frame.y + 4)
             }
@@ -898,6 +900,7 @@ private struct SecondViewPicker: View {
     let onPick: (OpenNotebook, SplitSlot, Bool) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var documents: [OpenNotebook]?
+    @State private var filter = ""
 
     var body: some View {
         NavigationStack {
@@ -913,13 +916,15 @@ private struct SecondViewPicker: View {
                     }.pickerStyle(.segmented).keyOption(.choice($slot, SplitSlot.allCases))
                 } header: { Text("Zweite Ansicht") }
                 if let documents {
-                    let recent = recentDocuments(documents)
+                    let shown = filtered(documents)
+                    let recent = filter.isEmpty ? recentDocuments(documents) : []
                     if !recent.isEmpty {
                         Section("Zuletzt geöffnet") { ForEach(recent) { row($0) } }
                     }
                     Section(recent.isEmpty ? "Hefte" : "Alle Hefte") {
-                        ForEach(documents) { row($0) }
+                        ForEach(shown) { row($0) }
                         if documents.isEmpty { Text("Keine Hefte verfügbar.").foregroundStyle(.secondary) }
+                        else if shown.isEmpty { Text("Kein Heft passt zu „\(NotyText.isolated(filter))“.").foregroundStyle(.secondary) }
                     }
                 } else {
                     Section {
@@ -929,10 +934,17 @@ private struct SecondViewPicker: View {
                 }
             }
             .navigationTitle("Heft für zweite Ansicht")
+            .searchable(text: $filter, prompt: "Hefte filtern")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } } }
             .task { if documents == nil { documents = await library.editorChoices() } }
         }
         .keyboardSheet()
+    }
+
+    private func filtered(_ documents: [OpenNotebook]) -> [OpenNotebook] {
+        let term = filter.trimmingCharacters(in: .whitespaces)
+        guard !term.isEmpty else { return documents }
+        return documents.filter { $0.title.localizedStandardContains(term) || ($0.path?.localizedStandardContains(term) ?? false) }
     }
 
     private func recentDocuments(_ documents: [OpenNotebook]) -> [OpenNotebook] {
@@ -946,11 +958,20 @@ private struct SecondViewPicker: View {
     private func row(_ document: OpenNotebook) -> some View {
         Button { onPick(document, slot, vertical) } label: {
             HStack {
-                Label(document.title, systemImage: document.isRestored ? "clock.arrow.circlepath" : "book.closed")
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(document.title).lineLimit(2).truncationMode(.middle)
+                        if let path = document.path {
+                            Text(path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                        }
+                    }
+                } icon: { Image(systemName: document.isRestored ? "clock.arrow.circlepath" : "book.closed") }
                     .foregroundStyle(.primary)
+                    // Label of the row for VoiceOver and the pointer alike, read once.
+                    .pointerHelp(document.path.map { "\(document.title) – \($0)" } ?? document.title)
                 Spacer()
                 if document.id == primaryID { Text("gleiches Heft").font(.caption).foregroundStyle(.secondary) }
-                if document.id == currentID { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+                if document.id == currentID { Image(systemName: "checkmark").foregroundStyle(.tint) }
             }
         }
         .accessibilityValue(document.id == primaryID ? "gleiches Heft" : "")

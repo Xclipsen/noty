@@ -591,8 +591,11 @@ final class ArchiveFormat2Tests: XCTestCase {
         try rejects(noEnd, "no end record")
         var trailing = try build(valid); trailing.append(contentsOf: [0, 0, 0, 0])
         XCTAssertThrowsError(try LibraryArchive.decode(trailing), "data after the end record")
-        var future = valid; future.header["libraryBackupVersion"] = 3
-        try rejects(future, "format 3") { error in XCTAssertEqual(error as? LibraryArchiveError, .unsupported(3)) }
+        var future = valid; future.header["libraryBackupVersion"] = 4
+        try rejects(future, "format 4") { error in XCTAssertEqual(error as? LibraryArchiveError, .unsupported(4)) }
+        // Format 3 (B3) always carries a calendar record right after the toolbar.
+        var noCalendar = valid; noCalendar.header["libraryBackupVersion"] = 3
+        try rejects(noCalendar, "format 3 without calendar record") { error in XCTAssertEqual(error as? LibraryArchiveError, .invalid) }
         var entries = valid; entries.header["entries"] = []
         try rejects(entries, "format-1 manifest key in a format-2 header")
         var lostNotebook = valid; lostNotebook.records.removeSubrange(4...5)

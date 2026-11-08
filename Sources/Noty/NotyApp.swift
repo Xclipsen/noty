@@ -1,10 +1,13 @@
 import SwiftUI
+import UIKit
 import CryptoKit
 import NotebookCore
 
 @main
 @MainActor
 struct NotyApp: App {
+    /// APNs token for the push service (docs/PUSH.md).
+    @UIApplicationDelegateAdaptor(NotyAppDelegate.self) private var appDelegate
     @StateObject private var laws = LawLibraryModel()
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var workspaces = WorkspaceAppModel()
@@ -17,10 +20,12 @@ struct NotyApp: App {
         NotebookCore.SHA256.installAcceleratedStreaming { CryptoKitStream() }
         // Read once at launch, off unless chosen; the settings toggle documents that it applies after a restart.
         if UserDefaults.standard.object(forKey: AppSettingsKey.hangProbe) as? Bool ?? false { HangProbe.install() }
+        // Calendar notifications: taps route to the calendar (set before launch finishes).
+        CalendarNotificationHub.shared.install()
     }
     var body: some Scene {
         WindowGroup {
-            WorkspaceLibraryHost(workspaces: workspaces).id(workspaces.root.path).preferredColorScheme(.dark)
+            WorkspaceLibraryHost(workspaces: workspaces).id(workspaces.root.path).modifier(AccentTint()).preferredColorScheme(.dark)
                 .environmentObject(laws)
                 .environmentObject(laws.panel)
                 .task {
@@ -36,6 +41,25 @@ struct NotyApp: App {
                 } message: { Text(laws.error ?? "") }
         }
         .commands { NotyCommands() }
+        // Mitteilungen: background refresh through the shown area's calendar model, or nothing.
+        .backgroundTask(.appRefresh(CalendarNotificationHub.refreshIdentifier)) { await CalendarNotificationHub.runBackgroundRefresh() }
+    }
+}
+
+/// Only for the push service (docs/PUSH.md): start, and the APNs token or its failure.
+@MainActor
+final class NotyAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        CalendarPushClient.shared.launched()
+        return true
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        CalendarPushClient.shared.received(token: deviceToken)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        CalendarPushClient.shared.failed(error)
     }
 }
 

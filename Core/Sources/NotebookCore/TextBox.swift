@@ -165,6 +165,25 @@ extension Notebook {
     public mutating func raiseSchemaForTextColors(_ boxes: [TextBox]) {
         if boxes.contains(where: \.usesColorFormat) { schemaVersion = max(9, schemaVersion) }
     }
+    /// Nothing left to migrate: `preparedForTextEditing` would return an
+    /// identical copy. Cheap (no page copies), unlike its two validations.
+    var isPreparedForTextEditing: Bool {
+        guard pdfSources != nil, schemaVersion >= 4 else { return false }
+        for page in pages where page.textBoxes == nil || !page.text.isEmpty { return false }
+        for entry in deletedPages ?? [] where entry.page.textBoxes == nil || !entry.page.text.isEmpty { return false }
+        return true
+    }
+
+    /// For mutations that validate their complete result before publishing:
+    /// an already migrated notebook is used as is, which skips the two
+    /// leading whole-notebook validations of `preparedForTextEditing` (per
+    /// keystroke and image-drag frame). The caller's final `validate()` still
+    /// checks every page, so an invalid result throws exactly as before and
+    /// `self` stays untouched. Legacy notebooks take the validating migration.
+    func editableForText() throws -> Notebook {
+        isPreparedForTextEditing ? self : try preparedForTextEditing()
+    }
+
     public func preparedForTextEditing() throws -> Notebook {
         var next = try preparedForPageEditing()
         next.schemaVersion = max(4, next.schemaVersion)
@@ -186,7 +205,7 @@ extension Notebook {
 
     /// `restoring`: undo/redo installs a state this page had (`replaceContents`).
     public mutating func replaceTextBoxes(_ boxes: [TextBox], pageID: UUID, restoring: Bool = false) throws {
-        var next = try preparedForTextEditing()
+        var next = try editableForText()
         if boxes.contains(where: \.usesTextFlowFormat) { next.schemaVersion = max(8, next.schemaVersion) }
         if boxes.contains(where: \.usesRichText) { next.schemaVersion = max(7, next.schemaVersion) }
         next.raiseSchemaForTextColors(boxes)

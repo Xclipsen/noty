@@ -17,6 +17,7 @@ Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur 
 | Taste | Wirkung | Wo |
 | --- | --- | --- |
 | ⌘N / ⇧⌘N | Neues Heft / neues Textdokument | Bibliothek |
+| ⇧⌘K | Hefte ⇄ Kalender (Menü „Darstellung“; ruht bei offenem Terminfenster oder Terminformular) | Bibliothek |
 | ⌘F | Suchen; bei Gesetzfokus „Im Gesetz suchen“ | überall |
 | ⌘S | Speichern | Editor |
 | ⌘E / ⇧⌘E | PDF ganz / diese Seite | Editor |
@@ -41,6 +42,26 @@ Stand: Build 69 (`extras/build69`): Build 68 plus Helix-Erweiterungen, Tastatur 
 **⌘A:** Im Text das ganze Feld; im Textdokument der ganze Text über alle Seiten (blau markiert; ⌘C/⌘X/⌘V, ⌫ und Formatierung wirken auf alles, beim Schreiben auch Tippen, ⌘Z als ein Schritt). Ohne Cursor im Textdokument dasselbe, dann in NOR, damit kein Buchstabe versehentlich alles ersetzt. Außerhalb von INS wirkt ⌘A wie `%`. Im Heft alles Auswählbare der Seite, mit jedem Werkzeug. Das Bearbeitungsmenü „Alles auswählen“ bleibt die native Auswahl dieser Seite.
 
 Außerhalb von INS: ⌘V ersetzt eine breite Auswahl, sonst wie `P`; ⌘X schneidet eine breite Auswahl aus. Beides läuft über Engine und Register.
+
+## Kalender
+
+Nur `feat/kalender` (Test-App noty calendar), Funktionsbeschreibung in [CALENDAR-PLAN](CALENDAR-PLAN.md#navigation). Die Kalendertasten wirken nur, solange der Kalender sichtbar ist und nichts darüber liegt (Terminfenster, Terminformular, vergrößerte Notiz, Blatt oder Popover des Kalenders oder der Bibliothek, geöffnetes Heft, Befehlspalette, Tastenübersicht). Im Terminfenster gelten die Tasten des Editors (⌘←/⌘→ bewegen dort den Textcursor). **Alle Wechsel per Taste geschehen ohne Bewegung** (seit dem Stand nach Build 139, Commit `0fb2951`; bis Build 139 glitten sie wie per Tipp). Implementiert und gebaut; die Fassung ohne Bewegung ist nicht installiert, alle Kürzel sind am iPad ungeprüft.
+
+| Taste | Wirkung |
+| --- | --- |
+| ⌘← / ⌘→ | Vorheriger / nächster Zeitraum |
+| ⌘T | Heute (ohne Puls; nur das Antippen von „Heute“ pulsiert) |
+| ⌘1–⌘4 | Tag, Woche, Monat, Jahr (Reihenfolge wie Apple Kalender) |
+| ⌘+ (auch ⌘=) / ⌘− | Eine Ansicht feiner / gröber; nicht belegt, wenn es keine nächste Stufe gibt |
+| ⌘N | Neuer Termin (Formular, Menübefehl) |
+| ⌥⌘N | Schnell anlegen |
+| ⌃⌘S | Kalenderleiste ein/aus (nur, wenn sie Platz hat) |
+| ⇧⌘K | Hefte ⇄ Kalender (siehe oben; ruht auch bei offenen Kalender-Blättern) |
+| Esc | Terminfenster bzw. Großansicht schließen |
+
+- **⌃⌘S – möglicher Konflikt, ungeprüft:** ⌃⌘S ist auf dem Mac das übliche Kürzel „Seitenleiste ein-/ausblenden“. Ob iPadOS es systemweit oder in der Menüleiste ebenfalls belegt und welches Kürzel dann Vorrang hat, ist am iPad nicht geprüft.
+- **Esc in der Notiz:** Ist der Tastaturmodus für Textdokumente (Helix) aktiv oder die Tastenübersicht offen, nimmt die Leinwand Esc selbst; das Terminfenster schließt dann über ✕.
+- **Trackpad:** Zwei Finger waagerecht wischen blättert in Tag, Woche, Monat und Jahr um genau einen Zeitraum je Geste (natürliche Richtung, Schwelle 96 pt, darunter federt es zurück); Mausrad, Finger und Pencil lösen das nicht aus, bei offenem Terminfenster ruht es. Hover und Tooltips an den Knöpfen. Seit dem Stand nach Build 139, nicht installiert, ungeprüft.
 
 ## Gesetzessammlung (normale Tastatur)
 

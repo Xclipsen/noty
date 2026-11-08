@@ -55,7 +55,7 @@ enum IncomingBackup {
         try? await Task.sleep(for: .milliseconds(800))
         // Before any question: a notebook file cannot go in while one is open.
         guard kind == "notylibrary" || library.opened == nil else {
-            TopAlert.show("Notizbuch geöffnet", "Bitte zuerst das Notizbuch schließen und die Datei danach erneut aus der Dateien-App öffnen.")
+            TopAlert.show("Heft geöffnet", "Bitte zuerst das Heft schließen und die Datei danach erneut aus der Dateien-App öffnen.")
             return
         }
         let progress = TopAlert.progress("Datei wird geprüft …")
@@ -89,7 +89,9 @@ enum IncomingBackup {
         await TopAlert.dismiss(progress)
         let summary = prepared.summary
         let size = ByteCountFormatter.string(fromByteCount: Int64(summary.file.byteCount), countStyle: .file)
-        let message = "Gesichert am \(NotyText.listDate(summary.createdAt)) · \(NotyText.count(summary.notebooks.count, "Heft", "Hefte")), \(summary.folderCount) Ordner, \(NotyText.count(summary.trashedCount, "Eintrag", "Einträge")) im Papierkorb · \(size).\n\nWird als neuer getrennter Bereich wiederhergestellt. Die aktuelle Bibliothek bleibt unverändert."
+        var message = "Gesichert am \(NotyText.listDate(summary.createdAt)) · \(NotyText.count(summary.notebooks.count, "Heft", "Hefte")), \(summary.folderCount) Ordner, \(NotyText.count(summary.trashedCount, "Eintrag", "Einträge")) im Papierkorb · \(size)."
+        if let calendar = summary.calendar { message += "\n\n" + NotyText.calendarRestoreSummary(calendar) }
+        message += "\n\nWird als neuer getrennter Bereich wiederhergestellt. Die aktuelle Bibliothek bleibt unverändert."
         guard await TopAlert.ask("Bibliotheksbackup wiederherstellen?", message, confirm: "Als neuen Bereich wiederherstellen") else {
             await workspaces.discardLibraryRestore(prepared); return
         }

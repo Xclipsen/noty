@@ -91,7 +91,14 @@ final class TaskLayoutManager: NSLayoutManager {
         guard let storage = textStorage, let container = page ?? textContainers.first,
               let context = UIGraphicsGetCurrentContext() else { super.drawGlyphs(forGlyphRange: requested, at: origin); return }
         var cursor = requested.location
-        for item in TextListEditing.taskItems(in: storage.string) {
+        // Only the lines this pass draws (Swift-Audit S4): task parsing is
+        // line-local, so the drawn characters widened to whole lines find the
+        // same items as the whole text, without copying the whole document.
+        let text = storage.mutableString
+        let scope = TextLines.lineRange(text, characterRange(forGlyphRange: requested, actualGlyphRange: nil))
+        for found in TextListEditing.taskItems(in: text.substring(with: scope)) {
+            let item = (marker: NSRange(location: found.marker.location + scope.location, length: found.marker.length),
+                        body: NSRange(location: found.body.location + scope.location, length: found.body.length), checked: found.checked)
             let characters = NSRange(location: item.marker.location, length: NSMaxRange(item.body) - item.marker.location)
             let taskGlyphs = glyphRange(forCharacterRange: characters, actualCharacterRange: nil)
             let part = NSIntersectionRange(requested, taskGlyphs)
@@ -139,7 +146,7 @@ final class TaskLayoutManager: NSLayoutManager {
     /// raster draws it: previews and the PDF show the break by the page itself.
     nonisolated private func drawPageBreaks(_ glyphs: NSRange, at origin: CGPoint) {
         guard let storage = textStorage else { return }
-        let text = storage.string as NSString
+        let text: NSString = storage.mutableString
         var search = characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
         while search.length > 0 {
             let found = text.range(of: TextLines.pageBreakText, options: .literal, range: search)
@@ -167,6 +174,7 @@ final class TaskLayoutManager: NSLayoutManager {
     nonisolated private func strikeThrough(_ glyphs: NSRange, at origin: CGPoint, in container: NSTextContainer) {
         guard let storage = textStorage else { return }
         UIColor.gray.setStroke()
+        let text: NSString = storage.mutableString
         var index = glyphs.location
         while index < NSMaxRange(glyphs) {
             var lineRange = NSRange()
@@ -176,7 +184,6 @@ final class TaskLayoutManager: NSLayoutManager {
             index = NSMaxRange(lineRange)
             // Trailing spaces/line breaks are not crossed out.
             let characters = characterRange(forGlyphRange: visible, actualGlyphRange: nil)
-            let text = storage.string as NSString
             var last = NSMaxRange(characters)
             while last > characters.location, let scalar = UnicodeScalar(text.character(at: last - 1)),
                   CharacterSet.whitespacesAndNewlines.contains(scalar) { last -= 1 }
@@ -218,7 +225,7 @@ final class RuledTextLayout: NSObject, @preconcurrency NSLayoutManagerDelegate {
     func layoutManager(_ layoutManager: NSLayoutManager, shouldUse action: NSLayoutManager.ControlCharacterAction,
                        forControlCharacterAt charIndex: Int) -> NSLayoutManager.ControlCharacterAction {
         guard let storage = layoutManager.textStorage, charIndex < storage.length,
-              (storage.string as NSString).character(at: charIndex) == TextLines.pageBreak else { return action }
+              storage.mutableString.character(at: charIndex) == TextLines.pageBreak else { return action }
         return .zeroAdvancement
     }
 }
@@ -549,7 +556,7 @@ struct TextObjectLayout {
     /// field must reach that tab's stop: otherwise the caret wraps instead of
     /// standing at the stop.
     private var trailingTabEnd: CGFloat {
-        let text = storage.string as NSString
+        let text: NSString = storage.mutableString
         guard text.range(of: "\t").location != NSNotFound, manager.numberOfGlyphs > 0 else { return 0 }
         var end: CGFloat = 0
         manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { fragment, _, _, glyphs, _ in

@@ -455,6 +455,37 @@ final class ImageAssetGarbagePrimitiveTests: XCTestCase {
         XCTAssertEqual(try store(at: muchLater).collectGarbage(roots: roots).removedAssets, [unreferenced.sha256])
     }
 
+    /// S11: without anything deletable the root search (all revisions) is
+    /// skipped; a broken root is then not even read. With a candidate it runs
+    /// and still protects every referenced asset.
+    func testRootSearchRunsOnlyWhenSomethingCouldBeDeleted() throws {
+        let kept = try asset(60), young = try asset(61)
+        try write("{\"sha256\":\"\(young.sha256)\"}", "Revisions/r.json")
+        // `kept` is referenced by the caller, `young` is not yet 15 minutes old.
+        let now = store(at: Date())
+        XCTAssertEqual(try now.collectGarbage(roots: roots, keeping: [kept.sha256]), ImageAssetGarbageReport())
+        XCTAssertEqual(now.rootSearchCount, 0)
+        // Nothing deletable: an unreadable root is not touched.
+        try fm.removeItem(at: package.appendingPathComponent("Revisions"))
+        try write("x", "Revisions")
+        let referencedOnly = store(at: muchLater)
+        XCTAssertEqual(try referencedOnly.collectGarbage(roots: roots, keeping: [kept.sha256, young.sha256]), ImageAssetGarbageReport())
+        XCTAssertEqual(referencedOnly.rootSearchCount, 0)
+        // A candidate exists: the search runs and its read error still aborts.
+        let candidate = store(at: muchLater)
+        XCTAssertThrowsError(try candidate.collectGarbage(roots: roots, keeping: [kept.sha256])) {
+            XCTAssertEqual($0 as? ImageAssetError, .garbageCollectionAborted)
+        }
+        XCTAssertEqual(candidate.rootSearchCount, 1)
+        XCTAssertEqual(names(), [kept.sha256, young.sha256].sorted())
+        try fm.removeItem(at: package.appendingPathComponent("Revisions"))
+        try write("{\"sha256\":\"\(young.sha256)\"}", "Revisions/r.json")
+        let orphan = try asset(62)
+        let report = try store(at: muchLater).collectGarbage(roots: roots, keeping: [kept.sha256])
+        XCTAssertEqual(report.removedAssets, [orphan.sha256], "the revision reference protects its asset")
+        XCTAssertEqual(names(), [kept.sha256, young.sha256].sorted())
+    }
+
     func testPartialNamesAreExact() {
         let id = UUID().uuidString, h = hash(1)
         XCTAssertTrue(NotebookAssets.isPartialName("\(h).partial-\(id)"))

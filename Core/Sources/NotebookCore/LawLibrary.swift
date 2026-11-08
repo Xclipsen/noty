@@ -61,11 +61,31 @@ public struct LawDocument: Codable, Sendable {
     public var sections: [LawSection]
     public var textNote: String?
     public func validated(for entry: LawEntry, version target: LawVersion) throws -> Self {
-        guard schemaVersion == nil || (1...2).contains(schemaVersion ?? 0) else { throw LawError.invalid("Dieses Gesetzesformat ist neuer als die App.") }
-        guard id == entry.id, version == target.id, sections.count == target.sectionCount,
-              !sections.isEmpty, Set(sections.map(\.id)).count == sections.count,
-              sections.allSatisfy({ !$0.id.isEmpty && $0.text.utf8.count < 8_000_000 }) else { throw LawError.invalid("Gesetzesdatei passt nicht zum Katalog.") }
+        try Self.checkHeader(schemaVersion: schemaVersion, id: id, version: version, sectionIDs: sections.map(\.id), for: entry, version: target)
+        guard sections.allSatisfy({ $0.text.utf8.count < 8_000_000 }) else { throw LawError.invalid("Gesetzesdatei passt nicht zum Katalog.") }
         return self
+    }
+    /// The catalogue rules of `validated(for:version:)` apart from the section
+    /// texts; shared with `LawDocumentHeader` so both stay the same.
+    static func checkHeader(schemaVersion: Int?, id: String, version: String, sectionIDs: [String],
+                            for entry: LawEntry, version target: LawVersion) throws {
+        guard schemaVersion == nil || (1...2).contains(schemaVersion ?? 0) else { throw LawError.invalid("Dieses Gesetzesformat ist neuer als die App.") }
+        guard id == entry.id, version == target.id, sectionIDs.count == target.sectionCount,
+              !sectionIDs.isEmpty, Set(sectionIDs).count == sectionIDs.count,
+              sectionIDs.allSatisfy({ !$0.isEmpty }) else { throw LawError.invalid("Gesetzesdatei passt nicht zum Katalog.") }
+    }
+}
+/// Only what `hasDocument` checks against the current catalogue: no section
+/// texts, notes or HTML are materialized.
+struct LawDocumentHeader: Decodable {
+    struct Section: Decodable { var id: String }
+    var schemaVersion: Int?
+    var id: String
+    var version: String
+    var sections: [Section]
+    func check(for entry: LawEntry, version target: LawVersion) throws {
+        try LawDocument.checkHeader(schemaVersion: schemaVersion, id: id, version: version, sectionIDs: sections.map(\.id),
+                                    for: entry, version: target)
     }
 }
 public struct LawSection: Codable, Sendable, Identifiable {
@@ -83,9 +103,12 @@ public struct LawSection: Codable, Sendable, Identifiable {
 public struct LawReference: Equatable, Sendable {
     public var key: String
     public var paragraph: String?
+    /// Compiled once: quick search parses every alias split of each query.
+    private static let pattern = try? NSRegularExpression(
+        pattern: "^(?:§\\s*|Abschnitt\\s*|R\\s*|Zu\\s*§\\s*)?(\\d+[a-z]*(?:\\.\\d+[a-z]*)*)\\.?(?:\\s*(?:Abs(?:atz)?\\.?|\\()\\s*(\\d+[a-z]*)\\)?)?$",
+        options: .caseInsensitive)
     public static func parse(_ input: String) -> Self? {
-        let pattern = "^(?:§\\s*|Abschnitt\\s*|R\\s*|Zu\\s*§\\s*)?(\\d+[a-z]*(?:\\.\\d+[a-z]*)*)\\.?(?:\\s*(?:Abs(?:atz)?\\.?|\\()\\s*(\\d+[a-z]*)\\)?)?$"
-        guard let re = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+        guard let re = pattern,
               let m = re.firstMatch(in: input.trimmingCharacters(in: .whitespacesAndNewlines), range: NSRange(input.trimmingCharacters(in: .whitespacesAndNewlines).startIndex..., in: input.trimmingCharacters(in: .whitespacesAndNewlines))) else { return nil }
         let value = input.trimmingCharacters(in: .whitespacesAndNewlines) as NSString
         return Self(key: value.substring(with: m.range(at: 1)).lowercased(), paragraph: m.range(at: 2).location == NSNotFound ? nil : value.substring(with: m.range(at: 2)).lowercased())
@@ -300,6 +323,25 @@ public actor LawOfflineStore {
         guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 64_000_000 else { throw LawError.invalid("Gesetzesdatei zu groß.") }
         return try JSONDecoder().decode(LawDocument.self, from: Data(contentsOf: url)).validated(for: entry, version: version)
     }
+    /// Whether this version is usable offline, without fully decoding it
+    /// when possible: a stored file whose SHA-256 equals the catalogue's
+    /// `json` hash is byte for byte the download `putDocument` checked and
+    /// wrote unchanged, so only the catalogue rules that can change since
+    /// (format version, identity, section count and IDs) are checked again on
+    /// a light decode (`LawDocumentHeader`, no section texts). Without a hash,
+    /// or on any mismatch, the full validation decides; a file failing either
+    /// is not usable, so it is downloaded again or the update fails as before.
+    /// Reading (`document`) always validates fully.
+    public func hasDocument(_ entry: LawEntry, version: LawVersion) -> Bool {
+        guard let url = try? documentURL(entry.id, version: version.id),
+              let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 64_000_000 else { return false }
+        if let sha = version.sha256["json"], sha.count == 64,
+           let data = try? Data(contentsOf: url, options: .alwaysMapped),
+           SHA256.hexDigest(data) == sha {
+            return (try? JSONDecoder().decode(LawDocumentHeader.self, from: data).check(for: entry, version: version)) != nil
+        }
+        return (try? document(entry, version: version)) != nil
+    }
     public func documentURL(_ id: String, version: String) throws -> URL {
         guard LawEntry.safeID(id), LawEntry.safeID(version) else { throw LawError.invalid("Ungültige Gesetzeskennung.") }
         return root.appendingPathComponent("laws/\(id)/\(version)/law.json")
@@ -325,7 +367,8 @@ public actor LawOfflineStore {
         _ = try catalog.validated()
         for entry in catalog.entries {
             guard let v = entry.versions.first(where: { $0.id == entry.currentVersion }) else { throw LawError.invalid("Fassung fehlt.") }
-            _ = try document(entry, version: v)
+            // Hash-identical files: header rules only (texts were checked when written).
+            if !hasDocument(entry, version: v) { _ = try document(entry, version: v) }
         }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try JSONEncoder().encode(catalog).write(to: catalogURL, options: .atomic)

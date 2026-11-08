@@ -4,14 +4,18 @@ public struct LibraryBundle: Equatable, Sendable {
     public var snapshot: LibrarySnapshot
     public var documents: [Notebook]
     public var toolbar: ToolbarPreferences
-    public init(snapshot: LibrarySnapshot, documents: [Notebook], toolbar: ToolbarPreferences = ToolbarPreferences()) {
-        self.snapshot = snapshot; self.documents = documents; self.toolbar = toolbar
+    /// Calendar of the area (format 3); nil: the archive has none (format 2).
+    public var calendar: CalendarArchiveContent?
+    public init(snapshot: LibrarySnapshot, documents: [Notebook], toolbar: ToolbarPreferences = ToolbarPreferences(),
+                calendar: CalendarArchiveContent? = nil) {
+        self.snapshot = snapshot; self.documents = documents; self.toolbar = toolbar; self.calendar = calendar
     }
     public func validate() throws {
         try snapshot.validate(); try toolbar.validate()
         let ids = snapshot.items.filter { !$0.isFolder }.map(\.id)
         guard documents.count == ids.count, Set(documents.map(\.id)).count == documents.count,
               Set(documents.map(\.id)) == Set(ids) else { throw LibraryArchiveError.invalid }
+        try calendar?.validate(documents: Set(ids), folders: Set(snapshot.items.filter(\.isFolder).map(\.id)))
         for document in documents {
             guard snapshot.items.first(where: { $0.id == document.id })?.title == document.title else { throw LibraryArchiveError.invalid }
             _ = try Notebook.decode(JSONEncoder().encode(document))
@@ -50,7 +54,7 @@ struct LibraryArchiveManifest: Codable {
     var entries: [LibraryArchiveEntry]
 }
 
-/// Format 2 header.
+/// Format 2/3 header (3: the archive carries the area's calendar).
 struct LibraryArchiveHeader: Codable {
     var libraryBackupVersion = 2
     var checksumAlgorithm = "crc32-iso-hdlc"
@@ -86,8 +90,10 @@ public struct LibraryArchiveSummary: Equatable, Sendable {
     /// Notebook chunks in archive order.
     public let notebooks: [LibraryArchiveChunk]
     public let file: LibraryArchiveFileInfo
-    /// 1 or 2.
+    /// 1, 2 or 3 (3: with calendar).
     public var formatVersion = 1
+    /// The area's calendar (format 3), completely validated; nil otherwise.
+    public var calendar: CalendarArchiveContent?
     /// Asset records (each hash once) and their payload bytes; format 2.
     public var assetCount = 0
     public var assetBytes = 0
@@ -101,6 +107,8 @@ public struct LibraryBackupPlan: Sendable {
     public let snapshot: LibrarySnapshot
     public let toolbar: ToolbarPreferences
     let packages: [UUID: URL]
+    /// The area's committed calendar (B3); nil: none, the archive stays format 2.
+    public var calendar: CalendarBackupCapture?
     public var documentCount: Int { packages.count }
     var documents: [LibraryItem] { snapshot.items.filter { !$0.isFolder } }
 
@@ -151,6 +159,12 @@ private struct VisitFailure: Error { let error: Error }
 /// checked hashes, restore chooses every output path itself. Writers and
 /// readers hold one notebook at a time.
 ///
+/// Format 3 (B3, written when the area has calendar data): format 2 plus,
+/// right after `toolbar`, one `calendar` record (the confirmed `CalendarState`
+/// in the current calendar format, links only to notebooks of this archive)
+/// and optionally one `calendarSource` record (the WebUntis offline
+/// timetable of its connection). Never credentials. Format-2 readers reject it.
+///
 /// Format 2 (written since C5): the record stream of `RecordDescriptor`:
 /// `index`, `toolbar`, then per notebook its `notebook` record followed by
 /// those of its unique image assets (`Notebook.externalImageAssets`; none for
@@ -197,8 +211,8 @@ public enum LibraryArchive {
         try bundle.validate()
         var sink = DataSink()
         let items = bundle.documents.map { document in bundle.snapshot.items.first { $0.id == document.id }! }
-        _ = try write(snapshot: bundle.snapshot, toolbar: bundle.toolbar, documents: items, createdAt: createdAt, into: &sink,
-                      limits: .standard, document: { item in (bundle.documents.first { $0.id == item.id }!, assets) },
+        _ = try write(snapshot: bundle.snapshot, toolbar: bundle.toolbar, calendar: bundle.calendar, documents: items, createdAt: createdAt,
+                      into: &sink, limits: .standard, document: { item in (bundle.documents.first { $0.id == item.id }!, assets) },
                       validate: { _, _ in })
         guard try decode(sink.data) == bundle else { throw LibraryArchiveError.invalid }
         return sink.data
@@ -230,8 +244,8 @@ public enum LibraryArchive {
         let written: Written
         do {
             var sink = FileSink(handle: handle)
-            written = try write(snapshot: plan.snapshot, toolbar: plan.toolbar, documents: plan.documents, createdAt: createdAt,
-                                into: &sink, limits: limits, document: { item in
+            written = try write(snapshot: plan.snapshot, toolbar: plan.toolbar, calendar: plan.calendar?.content, documents: plan.documents,
+                                createdAt: createdAt, into: &sink, limits: limits, document: { item in
                 let result = try plan.readableNotebook(item)
                 if result.olderState { olderState(item) }
                 return (result.document, result.assets)
@@ -240,7 +254,9 @@ public enum LibraryArchive {
             try handle.close()
         } catch { try? handle.close(); throw error }
         let summary = try verify(url, limits: limits)
-        guard summary.formatVersion == 2, summary.snapshot == plan.snapshot, summary.toolbar == plan.toolbar,
+        let calendar = plan.calendar?.content
+        guard summary.formatVersion == (calendar == nil ? 2 : 3), summary.calendar == calendar,
+              summary.snapshot == plan.snapshot, summary.toolbar == plan.toolbar,
               summary.notebooks == written.notebooks, summary.assetCount == written.assetCount,
               summary.assetBytes == written.assetBytes else { throw LibraryArchiveError.verificationFailed }
         complete = true
@@ -249,8 +265,8 @@ public enum LibraryArchive {
 
     struct Written { var notebooks: [LibraryArchiveChunk] = []; var assetCount = 0; var assetBytes = 0 }
 
-    static func write<S: RecordArchiveSink>(snapshot: LibrarySnapshot, toolbar: ToolbarPreferences, documents: [LibraryItem],
-                                             createdAt: Date, into sink: inout S, limits: LibraryArchiveLimits,
+    static func write<S: RecordArchiveSink>(snapshot: LibrarySnapshot, toolbar: ToolbarPreferences, calendar: CalendarArchiveContent? = nil,
+                                             documents: [LibraryItem], createdAt: Date, into sink: inout S, limits: LibraryArchiveLimits,
                                              document: (LibraryItem) throws -> (Notebook, ImageAssetProviding),
                                              validate: (Notebook, ImageAssetProviding) throws -> Void) throws -> Written {
         try snapshot.validate(); try toolbar.validate()
@@ -261,13 +277,21 @@ public enum LibraryArchive {
         let encoder = chunkEncoder()
         let index = try encoder.encode(snapshot), preferences = try encoder.encode(toolbar)
         guard index.count <= limits.index, preferences.count <= limits.toolbar else { throw LibraryArchiveError.invalid }
+        // Format 3 only with a calendar: an archive without one stays readable by format-2 builds.
+        try calendar?.validate(documents: Set(expected), folders: Set(snapshot.items.filter(\.isFolder).map(\.id)))
+        let calendarRecord = try calendar.map { try CalendarArchive.encodeState($0.state) }
+        let sourceRecord = try calendar?.source.map { try CalendarArchive.encodeSource($0) }
         var writer = RecordWriter(sink, limit: limits.total)
         defer { sink = writer.sink }
         var result = Written(), emitted = Set<String>()
         do {
-            try writer.header(magic: magic, RecordArchive.recordEncoder().encode(LibraryArchiveHeader(createdAt: created)))
+            var header = LibraryArchiveHeader(createdAt: created)
+            if calendar != nil { header.libraryBackupVersion = 3 }
+            try writer.header(magic: magic, RecordArchive.recordEncoder().encode(header))
             try writer.data(.index, payload: index)
             try writer.data(.toolbar, payload: preferences)
+            if let calendarRecord { try writer.data(.calendar, payload: calendarRecord) }
+            if let sourceRecord { try writer.data(.calendarSource, payload: sourceRecord) }
             for item in documents {
                 if Task.isCancelled { throw CancellationError() }
                 try drained {
@@ -377,7 +401,7 @@ public enum LibraryArchive {
         var source = DataSource(data: data)
         var documents: [Notebook] = []
         let summary = try read(&source, limits: .standard) { document, _ in documents.append(document) }
-        return LibraryBundle(snapshot: summary.snapshot, documents: documents, toolbar: summary.toolbar)
+        return LibraryBundle(snapshot: summary.snapshot, documents: documents, toolbar: summary.toolbar, calendar: summary.calendar)
     }
 
     /// One streaming pass over a regular file: header, then every record once
@@ -418,7 +442,7 @@ public enum LibraryArchive {
             let version = try JSONDecoder().decode(LibraryArchiveVersion.self, from: header).libraryBackupVersion
             switch version {
             case 1: return try readVersion1(&reader, header: header, limits: limits, handling: handling, visit: visit)
-            case 2: return try readVersion2(&reader, header: header, limits: limits, handling: handling, visit: visit)
+            case 2, 3: return try readVersion2(&reader, header: header, version: version, limits: limits, handling: handling, visit: visit)
             default: throw LibraryArchiveError.unsupported(version)
             }
         }
@@ -429,6 +453,7 @@ public enum LibraryArchive {
         catch let error as LibraryError { throw error }
         catch let error as ToolbarError { throw error }
         catch let error as CancellationError { throw error }
+        catch let error as CalendarArchiveError { throw error }
         catch { throw LibraryArchiveError.invalid }
     }
 
@@ -489,14 +514,15 @@ public enum LibraryArchive {
                                      file: reader.file)
     }
 
-    private static func readVersion2<S: RecordArchiveSource>(_ reader: inout RecordReader<S>, header data: Data, limits: LibraryArchiveLimits,
+    private static func readVersion2<S: RecordArchiveSource>(_ reader: inout RecordReader<S>, header data: Data, version: Int, limits: LibraryArchiveLimits,
                                                                handling: RecordAssetHandling,
                                                                visit: (Notebook, ImageAssetProviding) throws -> Void) throws -> LibraryArchiveSummary {
         guard data.count <= RecordArchive.maximumRecordHeaderBytes else { throw LibraryArchiveError.invalid }
         try RecordArchive.requireKeys(data, LibraryArchiveHeader.keys)
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let header = try decoder.decode(LibraryArchiveHeader.self, from: data)
-        guard header.checksumAlgorithm == "crc32-iso-hdlc", header.assetHashAlgorithm == "sha256" else { throw LibraryArchiveError.invalid }
+        guard header.libraryBackupVersion == version, header.checksumAlgorithm == "crc32-iso-hdlc",
+              header.assetHashAlgorithm == "sha256" else { throw LibraryArchiveError.invalid }
         let indexRecord = try reader.descriptor()
         guard indexRecord.kind == .index else { throw LibraryArchiveError.invalid }
         let snapshot = try JSONDecoder().decode(LibrarySnapshot.self, from: reader.payload(indexRecord, limit: limits.index))
@@ -505,6 +531,23 @@ public enum LibraryArchive {
         guard toolbarRecord.kind == .toolbar else { throw LibraryArchiveError.invalid }
         let toolbar = try ToolbarPreferences.decode(reader.payload(toolbarRecord, limit: limits.toolbar))
         let titles = Dictionary(uniqueKeysWithValues: snapshot.items.filter { !$0.isFolder }.map { ($0.id, $0.title) })
+        // Format 3: the calendar record, optionally followed by its offline
+        // timetable, both before any notebook; validated (links to notebooks
+        // of this archive, folder of this index) before a notebook is read.
+        var calendar: CalendarArchiveContent?
+        var pending: RecordDescriptor?
+        if version == 3 {
+            let record = try reader.descriptor()
+            guard record.kind == .calendar else { throw LibraryArchiveError.invalid }
+            let state = try CalendarArchive.decodeState(reader.payload(record, limit: CalendarArchiveContent.maximumStateBytes))
+            var content = CalendarArchiveContent(state: state)
+            let next = try reader.descriptor()
+            if next.kind == .calendarSource {
+                content.source = try CalendarArchive.decodeSource(reader.payload(next, limit: CalendarArchiveContent.maximumSourceBytes))
+            } else { pending = next }
+            try content.validate(documents: Set(titles.keys), folders: Set(snapshot.items.filter(\.isFolder).map(\.id)))
+            calendar = content
+        }
         let extracted: ImageAssetProviding
         if case .extract(let directory) = handling { extracted = NotebookAssets(directory: directory, readOnly: true) }
         else { extracted = InlineImageAssets() }
@@ -520,7 +563,8 @@ public enum LibraryArchive {
         }
         while true {
             if Task.isCancelled { throw CancellationError() }
-            let descriptor = try reader.descriptor()
+            let descriptor: RecordDescriptor
+            if let next = pending { descriptor = next; pending = nil } else { descriptor = try reader.descriptor() }
             switch descriptor.kind {
             case .notebook:
                 try finishGroup()
@@ -542,9 +586,10 @@ public enum LibraryArchive {
                 guard ids == Set(titles.keys) else { throw LibraryArchiveError.invalid }
                 var summary = LibraryArchiveSummary(createdAt: header.createdAt, snapshot: snapshot, toolbar: toolbar, notebooks: chunks,
                                                     file: reader.file)
-                summary.formatVersion = 2; summary.assetCount = emitted.count; summary.assetBytes = assetBytes
+                summary.formatVersion = version; summary.assetCount = emitted.count; summary.assetBytes = assetBytes
+                summary.calendar = calendar
                 return summary
-            case .index, .toolbar:
+            case .index, .toolbar, .calendar, .calendarSource:
                 throw LibraryArchiveError.invalid
             }
         }

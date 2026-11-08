@@ -11,6 +11,12 @@ struct OpenNotebook: Identifiable {
     var searchBounds: PageRect?
     /// A search hit over a page change, in flow offsets.
     var searchFlowRange: NSRange?
+    /// Opened from a calendar event („Vergrößern“): the header button names
+    /// the way back („Rechnungswesen · Di, 3. Nov.“) instead of the library.
+    var returnTitle: String?
+    /// Folder path in the library („Alle Unterlagen / Klasse 10“): tells
+    /// notebooks with the same title apart in pickers and search hits.
+    var path: String? = nil
 }
 
 @MainActor
@@ -119,9 +125,23 @@ final class LibraryModel: ObservableObject {
             var olderStates: [String] = []
             let summary = try LibraryArchive.write(plan, to: url, validate: BackupValidation.validate,
                                                    olderState: { olderStates.append($0.title) })
-            return PreparedLibraryArchive(url: url, summary: summary, olderStates: olderStates)
+            var archive = PreparedLibraryArchive(url: url, summary: summary, olderStates: olderStates)
+            archive.calendarWarning = Self.calendarWarning(plan.calendar)
+            return archive
         }
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+
+    /// What the calendar part of a backup could not carry as it is (never silent).
+    nonisolated static func calendarWarning(_ capture: CalendarBackupCapture?) -> String? {
+        guard let capture else { return nil }
+        var parts: [String] = []
+        if capture.olderState { parts.append("Kalender: älterer lesbarer Stand gesichert, neuere Revision beschädigt") }
+        if capture.droppedLinks > 0 {
+            parts.append("Kalender: \(NotyText.count(capture.droppedLinks, "Verknüpfung", "Verknüpfungen")) zu endgültig gelöschten Heften nicht gesichert")
+        }
+        if capture.sourceMissing { parts.append("Kalender: Offline-Stundenplan nicht lesbar, nicht gesichert") }
+        return parts.isEmpty ? nil : parts.joined(separator: "; ")
     }
 
     /// Manual export from Settings: closed editors, visible progress, alert on error.
@@ -158,14 +178,18 @@ final class LibraryModel: ObservableObject {
     }
 
     func editorChoices() async -> [OpenNotebook] {
+        // One snapshot and one folder map for the whole list: paths are looked
+        // up in O(depth) and shared per folder, not searched per notebook.
+        let value = snapshot
+        var paths = FolderPaths(value)
         var choices: [OpenNotebook] = []
-        for item in snapshot.items where !item.isFolder && !snapshot.isTrashed(item.id) {
+        for item in value.items where !item.isFolder && !value.isTrashed(item.id) {
             if let directory = try? await store.documentURL(id: item.id) {
                 choices.append(OpenNotebook(id: item.id, directory: directory, title: item.title,
-                    isRestored: item.source == .restored))
+                    isRestored: item.source == .restored, path: paths.path(of: item)))
             }
         }
-        return choices
+        return choices.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 
     /// `quiet`: background reload (e.g. after closing a notebook) that keeps
@@ -404,12 +428,19 @@ final class LibraryModel: ObservableObject {
     }
     func reorder(_ ids: [UUID], parent: UUID?) async { await change { try await store.reorder(ids, parentID: parent) } }
 
-    func open(_ item: NotebookCore.LibraryItem, pageID: UUID? = nil, searchBounds: PageRect? = nil, flowRange: NSRange? = nil) async {
+    func open(_ item: NotebookCore.LibraryItem, pageID: UUID? = nil, searchBounds: PageRect? = nil, flowRange: NSRange? = nil,
+              returnTitle: String? = nil) async {
         // A second tap on the notebook being opened is no second request.
         guard opening != item.id else { return }
         await settle()
         guard accepting, !item.isFolder else { return }
-        busy = true; opening = item.id
+        opening = item.id
+        // The calendar's note beside an event commits and lets go of its
+        // notebook first (it may still file a new note, which needs the
+        // library): one writer per package, and none behind the editor.
+        if let releaseCalendarNote { await releaseCalendarNote() }
+        guard accepting else { opening = nil; return }
+        busy = true
         defer { busy = false; opening = nil }
         do {
             let url = try await store.documentURL(id: item.id)
@@ -417,7 +448,8 @@ final class LibraryModel: ObservableObject {
             guard !PackageWriteLock.shared.isHeld(url) else { error = "Dieses Heft wird gerade ergänzt. Bitte gleich noch einmal öffnen."; return }
             snapshot = try await store.markOpened(item.id)
             opened = OpenNotebook(id: item.id, directory: url, title: item.title,
-                                  isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds, searchFlowRange: flowRange)
+                                  isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds, searchFlowRange: flowRange,
+                                  returnTitle: returnTitle)
             lastEditedID = item.id
             UserDefaults.standard.set(item.id.uuidString, forKey: lastOpenedKey)
         } catch { self.error = error.localizedDescription }
@@ -433,6 +465,8 @@ final class LibraryModel: ObservableObject {
     /// the editor then restores its remembered page itself.
     private func reopenLastNotebook() async {
         guard let raw = UserDefaults.standard.string(forKey: lastOpenedKey) else { return }
+        // Settings › Allgemein › „Zuletzt geöffnetes Heft wieder öffnen“ (default on).
+        guard UserDefaults.standard.object(forKey: AppSettingsKey.reopenLastNotebook) as? Bool ?? true else { return }
         guard ready, opened == nil, !busy else { return }
         guard let id = UUID(uuidString: raw), let item = snapshot.items.first(where: { $0.id == id }),
               !item.isFolder, !snapshot.isTrashed(id) else { notebookClosedByUser(); return }
@@ -479,7 +513,7 @@ final class LibraryModel: ObservableObject {
     /// ersetzen“ moves its current state to the trash; „Beide behalten“).
     /// nil on failure (`error` set) or when declined (`importDeclined`).
     @discardableResult
-    func importBackup(_ url: URL, parent: UUID?, collision: ImportCollision? = nil) async -> ImportedNotebook? {
+    func importBackup(_ url: URL, parent: UUID?, collision: ImportCollision? = nil, title: String? = nil) async -> ImportedNotebook? {
         importDeclined = false
         await settle()
         guard accepting else { return nil }
@@ -510,7 +544,7 @@ final class LibraryModel: ObservableObject {
                 if choice == .replace { replacing = existing.id }
             }
             let result = try await NotebookImport.commit(prepared, repository: repository, library: store,
-                                                         parentID: parent, replacing: replacing)
+                                                         parentID: parent, replacing: replacing, title: title)
             snapshot = result.snapshot
             if let replacing, let pin = pinOrder.firstIndex(of: replacing) { pinOrder[pin] = result.id }
             return ImportedNotebook(id: result.id, title: result.title, replaced: replacing != nil)
@@ -520,6 +554,23 @@ final class LibraryModel: ObservableObject {
             self.error = "Import fehlgeschlagen: \(error.localizedDescription)"
             return nil
         }
+    }
+
+    /// Index and package locations for the iCloud-Ablage (`NotebookVault.run`),
+    /// captured on the library actor; the notebooks are read later, read-only.
+    /// Without the calendar: the Ablage holds notebooks only, and an unreadable
+    /// or newer calendar package must not stop it.
+    func vaultPlan() async throws -> LibraryBackupPlan { try await store.backupPlan(includeCalendar: false) }
+
+    /// Today's index and the canonical size/CRC of every active notebook's
+    /// committed state, read off the UI actor exactly as a backup would archive
+    /// it; compared with a backup's contents (BACKUP-RESTORE-PLAN Phase 1).
+    /// Throws when a notebook of today's library is not readable.
+    func backupComparison() async throws -> (snapshot: LibrarySnapshot, fingerprints: [UUID: LibraryArchiveFileInfo]) {
+        // Notebooks only: the calendar is not compared and must not block „Hefte zurückholen“.
+        let plan = try await store.backupPlan(includeCalendar: false)
+        let fingerprints = await Task.detached(priority: .userInitiated) { plan.currentFingerprints() }.value
+        return (plan.snapshot, fingerprints)
     }
 
     /// `<Titel>.noty` of the last committed revision for the share sheet,
@@ -562,11 +613,12 @@ final class LibraryModel: ObservableObject {
         document.title = title
         document.pdf = data
         document.pages = geometries.map { geometry in var page = Page(); page.geometry = geometry; return page }
-        if let writingArea {
+        if let writingArea, !document.pages.isEmpty {
+            var assignments: [UUID: PageMargins] = [:]
             for page in document.pages {
-                let margins = try writingArea.scaled(from: .init(width: 1, height: 1), to: page.geometry?.displaySize ?? .a4)
-                try document.setMargins(margins, pageIDs: [page.id])
+                assignments[page.id] = try writingArea.scaled(from: .init(width: 1, height: 1), to: page.geometry?.displaySize ?? .a4)
             }
+            try document.setMargins(assignments)
         }
         // Originals above 20 MB get schema 10 at once, so Build 46 refuses the
         // whole notebook instead of failing later edits.
@@ -634,6 +686,55 @@ final class LibraryModel: ObservableObject {
         return folder.id
     }
 
+    // MARK: Calendar notes (Kalender B2, docs/CALENDAR-PLAN.md §4)
+
+    /// Set by the calendar of this area: commits and closes its note editor
+    /// beside an event before the library opens any notebook.
+    var releaseCalendarNote: (() async -> Void)?
+
+    /// Package of a new library notebook that is not in the index yet.
+    func newDocumentDirectory(_ id: UUID) -> URL {
+        root.appendingPathComponent("Library/Documents/\(id.uuidString)", isDirectory: true)
+    }
+
+    /// Rule 8, second step: the completely committed package of a new event
+    /// note joins the library in the folder „Kalendernotizen“. The folder is
+    /// found by its stored identity only; a missing or trashed one is created
+    /// anew (never a same-named folder of the user). Returns the folder used.
+    /// Allowed above an open notebook like filing; touches only the index.
+    func adoptCalendarNote(_ id: UUID, title: String, folder: UUID?) async throws -> UUID {
+        try await filingAccess()
+        busy = true; defer { busy = false }
+        var parent = CalendarNotesFolder.usable(folder, in: snapshot)
+        if parent == nil {
+            snapshot = try await store.createFolder(title: CalendarNotesFolder.title, parentID: nil)
+            guard let created = snapshot.items.last, created.isFolder, created.title == CalendarNotesFolder.title else { throw LibraryError.unavailable }
+            parent = created.id
+        }
+        // An earlier attempt already filed it (or a library load found the package).
+        if let existing = snapshot.items.first(where: { $0.id == id }), existing.parentID == parent, !snapshot.isTrashed(id) { return parent! }
+        let name = NotebookTitles.unique(title, taken: snapshot.activeNotebookTitles(excluding: id))
+        snapshot = try await store.adoptImported(id, title: name, parentID: parent, replacing: nil)
+        return parent!
+    }
+
+    /// Lernfelder (docs/LERNFELDER.md): a new Lernfeld notebook joins the
+    /// library at the top level (the user may move it; it is found by
+    /// identity). Like `adoptCalendarNote`, allowed above an open notebook.
+    func adoptStudyNotebook(_ id: UUID, title: String) async throws {
+        try await filingAccess()
+        busy = true; defer { busy = false }
+        if snapshot.items.contains(where: { $0.id == id }), !snapshot.isTrashed(id) { return }
+        let name = NotebookTitles.unique(title, taken: snapshot.activeNotebookTitles(excluding: id))
+        snapshot = try await store.adoptImported(id, title: name, parentID: nil, replacing: nil)
+    }
+
+    /// Active notebooks of the notes folder (for linking one again).
+    func calendarNotebooks(in folder: UUID?) -> [NotebookCore.LibraryItem] {
+        guard let folder = CalendarNotesFolder.usable(folder, in: snapshot) else { return [] }
+        return snapshot.children(of: folder).filter { !$0.isFolder }
+    }
+
     /// The editor's description of a library notebook (second view, „Öffnen“).
     func openDocument(_ id: UUID) async -> OpenNotebook? {
         guard let item = snapshot.items.first(where: { $0.id == id }), !item.isFolder,
@@ -678,4 +779,32 @@ private actor PreviewGate {
     func leave() {
         if waiting.isEmpty { running -= 1 } else { waiting.removeFirst().resume() }
     }
+}
+
+/// „Alle Unterlagen / Klasse 10 / Mathe“ for many items of one snapshot:
+/// folders indexed once by ID, each folder's path built once.
+struct FolderPaths {
+    private let folders: [UUID: NotebookCore.LibraryItem]
+    private var cache: [UUID: String] = [:]
+
+    init(_ snapshot: LibrarySnapshot) {
+        folders = Dictionary(snapshot.items.filter(\.isFolder).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The folders above `item`.
+    mutating func path(of item: NotebookCore.LibraryItem) -> String {
+        guard let parent = item.parentID else { return Self.root }
+        return path(ofFolder: parent, visiting: [])
+    }
+
+    private mutating func path(ofFolder id: UUID, visiting: Set<UUID>) -> String {
+        if let known = cache[id] { return known }
+        guard let folder = folders[id], !visiting.contains(id) else { return Self.root }
+        let above = folder.parentID.map { path(ofFolder: $0, visiting: visiting.union([id])) } ?? Self.root
+        let result = above + " / " + folder.title
+        cache[id] = result
+        return result
+    }
+
+    private static let root = "Alle Unterlagen"
 }

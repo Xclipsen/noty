@@ -1,0 +1,249 @@
+import SwiftUI
+import PDFKit
+import NotebookCore
+
+/// Search in the learning material (docs/LERNFELDER.md): topics, video
+/// lessons, script pages and norms. Each result opens its video on the
+/// platform (in the browser, with the user's own login) or its script page
+/// here; with `onPin` it can be pinned to the lesson („Festhalten“).
+struct MaterialSearchSheet: View {
+    @ObservedObject private var materials = MaterialLibrary.shared
+    let initialQuery: String
+    /// The Lernfeld of the lesson: its hits rank higher.
+    let field: Int?
+    /// „Festhalten“ for the lesson; nil: search only.
+    var pinned: Set<String> = []
+    var onPin: ((MaterialLibrary.Match, CalendarMaterialRef) -> Void)?
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var searchActive = false
+    @State private var script: ScriptRequest?
+    @State private var results: [MaterialLibrary.Match] = []
+    @State private var searchedFor = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(results) { result in
+                    MaterialResultRow(result: result, catalog: materials.package(result.package)?.catalog,
+                                      isPinned: pinned.contains(result.package + "/" + result.hit.id),
+                                      onScript: { open(result) },
+                                      onNorm: { query = $0 },
+                                      onPin: onPin.map { pin in {
+                                          guard let ref = materials.reference(for: result) else { return }
+                                          materials.learn(query, result: result)
+                                          pin(result, ref)
+                                      } })
+                }
+            }
+            .overlay {
+                if materials.packages.isEmpty {
+                    ContentUnavailableView {
+                        Label("Keine Materialien", systemImage: "books.vertical")
+                    } description: {
+                        Text("Ein Materialpaket (.notymaterial) in der Dateien-App antippen oder unter Einstellungen › Kalender › Materialien hinzufügen.")
+                    }
+                } else if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    ContentUnavailableView("Material suchen", systemImage: "magnifyingglass",
+                                           description: Text("Thema, Lektion oder Paragraf, z. B. „Lieferung“, „Fahrtenbuch“ oder „§ 15 UStG“."))
+                } else if results.isEmpty, searchedFor == query {
+                    ContentUnavailableView.search(text: query)
+                }
+            }
+            .searchable(text: $query, isPresented: $searchActive, placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "Thema, Lektion oder §")
+            // Typing pauses briefly before searching; a newer query replaces an older result.
+            .task(id: query) {
+                let text = query
+                guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { results = []; searchedFor = text; return }
+                try? await Task.sleep(for: .milliseconds(180))
+                guard !Task.isCancelled else { return }
+                let found = await materials.search(text, field: field)
+                guard !Task.isCancelled, text == query else { return }
+                results = found; searchedFor = text
+            }
+            .task {
+                materials.load()
+                query = initialQuery
+                try? await Task.sleep(for: .milliseconds(150))
+                if initialQuery.isEmpty { searchActive = true }
+            }
+            .navigationTitle(field.map { "Material · LF \($0)" } ?? "Material")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } } }
+            .sheet(item: $script) { request in MaterialScriptSheet(request: request) }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func open(_ result: MaterialLibrary.Match) {
+        guard let (url, title) = materials.script(result) else { return }
+        script = ScriptRequest(url: url, title: title, page: result.hit.pages?.lowerBound ?? 1)
+    }
+}
+
+struct ScriptRequest: Identifiable, Equatable {
+    let id = UUID()
+    let url: URL
+    let title: String
+    let page: Int
+}
+
+/// One result: title, place, norms, and the actions.
+struct MaterialResultRow: View {
+    let result: MaterialLibrary.Match
+    let catalog: MaterialCatalog?
+    var isPinned = false
+    let onScript: () -> Void
+    var onNorm: ((String) -> Void)?
+    var onPin: (() -> Void)?
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        let hit = result.hit
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: hit.kind == .lesson ? "play.rectangle" : hit.kind == .unit ? "text.book.closed" : "doc.text")
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(hit.title).font(.body.weight(.medium))
+                    Text(catalog.map { MaterialLibrary.detail(hit, in: $0) + " · " + hit.chapterTitle } ?? "LF \(hit.field)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let detail = hit.detail, detail != hit.title {
+                        Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+            }
+            if !hit.norms.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(hit.norms, id: \.self) { norm in
+                            Button(norm) { onNorm?(norm) }
+                                .font(.caption2).buttonStyle(.bordered).controlSize(.mini)
+                                .accessibilityHint("Nach dieser Vorschrift suchen")
+                        }
+                    }
+                }
+            }
+            HStack(spacing: 10) {
+                if let link = hit.lessonID.flatMap({ catalog?.lessonLink($0) }) {
+                    Button {
+                        openURL(link)
+                    } label: {
+                        Label(hit.seconds.map { "Video \(MaterialLesson(id: hit.lessonID!, title: "", seconds: $0, order: 0).duration ?? "")" } ?? "Video",
+                              systemImage: "play.fill")
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if hit.pages != nil {
+                    Button { onScript() } label: { Label("Skript", systemImage: "doc.richtext") }.buttonStyle(.bordered)
+                }
+                Spacer(minLength: 0)
+                if let onPin {
+                    Button { onPin() } label: {
+                        Label(isPinned ? "Festgehalten" : "Festhalten", systemImage: isPinned ? "pin.fill" : "pin")
+                    }
+                    .buttonStyle(.borderedProminent).disabled(isPinned)
+                }
+            }
+            .font(.callout).controlSize(.small)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+/// A script PDF at a page (read only).
+struct MaterialScriptSheet: View {
+    let request: ScriptRequest
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            MaterialPDFView(url: request.url, page: request.page)
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle(request.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } }
+                    ToolbarItem(placement: .primaryAction) {
+                        ShareLink(item: request.url) { Image(systemName: "square.and.arrow.up") }
+                            .accessibilityLabel("Skript teilen")
+                    }
+                }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+struct MaterialPDFView: UIViewRepresentable {
+    let url: URL
+    /// 1-based.
+    let page: Int
+
+    func makeUIView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.backgroundColor = .black
+        view.document = PDFDocument(url: url)
+        DispatchQueue.main.async { go(view) }
+        return view
+    }
+
+    func updateUIView(_ view: PDFView, context: Context) {}
+
+    private func go(_ view: PDFView) {
+        guard let document = view.document, document.pageCount > 0 else { return }
+        let index = min(max(page - 1, 0), document.pageCount - 1)
+        if let target = document.page(at: index) { view.go(to: target) }
+    }
+}
+
+/// Settings › Kalender › Materialien: installed packages, add, remove.
+struct MaterialSettingsPage: View {
+    @ObservedObject private var materials = MaterialLibrary.shared
+    @State private var picking = false
+    @State private var removing: MaterialStore.Installed?
+    @State private var searching = false
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(materials.packages, id: \.catalog.id) { package in
+                    let catalog = package.catalog
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(catalog.title).font(.body.weight(.medium))
+                        Text("\(catalog.fields.count) Lernfelder · \(catalog.scripts.count) Skripte · "
+                             + "\(catalog.fields.reduce(0) { $0 + $1.chapters.reduce(0) { $0 + $1.lessons.count } }) Videolektionen")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let created = catalog.created { Text("Stand: \(String(created.prefix(10)))").font(.caption2).foregroundStyle(.secondary) }
+                    }
+                    .swipeActions { Button("Entfernen", role: .destructive) { removing = package } }
+                    .contextMenu { Button("Entfernen", systemImage: "trash", role: .destructive) { removing = package } }
+                }
+                Button { picking = true } label: { Label("Materialpaket hinzufügen …", systemImage: "plus") }
+                    .disabled(materials.importing)
+                if !materials.packages.isEmpty {
+                    Button { searching = true } label: { Label("Material durchsuchen", systemImage: "magnifyingglass") }
+                }
+            } header: {
+                Text("Materialpakete")
+            } footer: {
+                Text("Skripte, Videolektionen und Paragrafen einer Lernplattform als Paket (.notymaterial). Sie liegen nur auf diesem iPad, gelten für alle Bereiche und sind nicht Teil der Bibliotheksbackups – die Paketdatei selbst ist die Sicherung. Was du an Stunden festhältst, bleibt auch ohne Paket lesbar.")
+            }
+        }
+        .navigationTitle("Materialien")
+        .task { materials.load() }
+        .fileImporter(isPresented: $picking, allowedContentTypes: [.notyMaterial]) { result in
+            if case .success(let url) = result { Task { await materials.receive(url) } }
+        }
+        .confirmationDialog("Materialpaket entfernen?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
+                            titleVisibility: .visible, presenting: removing) { package in
+            Button("„\(package.catalog.title)“ entfernen", role: .destructive) { materials.remove(package.catalog.id) }
+        } message: { _ in
+            Text("Skripte und Index werden von diesem iPad gelöscht. Hefte, Themen und festgehaltene Einträge bleiben erhalten.")
+        }
+        .sheet(isPresented: $searching) { MaterialSearchSheet(initialQuery: "", field: nil) }
+    }
+}

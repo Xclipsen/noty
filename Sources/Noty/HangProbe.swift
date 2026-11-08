@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import OSLog
+import os
 import QuartzCore
 
 /// Diagnostics for main-thread stalls (Feedback 33: multi-second hangs at high
@@ -10,12 +11,15 @@ import QuartzCore
 /// (image + offset) and counters, never document content.
 enum HangProbe {
     private static let log = Logger(subsystem: "de.la.noty", category: "hang-probe")
-    nonisolated(unsafe) private static var lock = os_unfair_lock()
-    nonisolated(unsafe) private static var counts: [String: Int] = [:]
-    nonisolated(unsafe) private static var iteration: UInt64 = 0
-    nonisolated(unsafe) private static var iterationStart = CACurrentMediaTime()
-    /// Main sleeps in its run loop: that is no stall.
-    nonisolated(unsafe) private static var idle = false
+    private struct State: Sendable {
+        var counts: [String: Int] = [:]
+        var iteration: UInt64 = 0
+        var iterationStart = CACurrentMediaTime()
+        /// Main sleeps in its run loop: that is no stall.
+        var idle = false
+    }
+    /// A heap-allocated lock: `&` on a Swift `static var` gives no stable address.
+    private static let state = OSAllocatedUnfairLock(initialState: State())
     nonisolated(unsafe) private static var mainThread: thread_act_t = 0
     private static let maxFrames = 96
     nonisolated(unsafe) private static let frames = UnsafeMutablePointer<UInt>.allocate(capacity: maxFrames)
@@ -34,13 +38,15 @@ enum HangProbe {
         write("=== Start \(Date().formatted(.iso8601)), Build \(build)")
         let observer = CFRunLoopObserverCreateWithHandler(nil,
             CFRunLoopActivity.afterWaiting.rawValue | CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { _, activity in
-            os_unfair_lock_lock(&lock)
-            let elapsed = CACurrentMediaTime() - iterationStart
-            let snapshot = elapsed > 0.25 && !idle ? counts : [:]
-            idle = activity == .beforeWaiting
-            counts.removeAll(keepingCapacity: true)
-            iteration &+= 1; iterationStart = CACurrentMediaTime()
-            os_unfair_lock_unlock(&lock)
+            let sleeping = activity == .beforeWaiting
+            let (elapsed, snapshot) = state.withLock { state -> (Double, [String: Int]) in
+                let elapsed = CACurrentMediaTime() - state.iterationStart
+                let snapshot = elapsed > 0.25 && !state.idle ? state.counts : [:]
+                state.idle = sleeping
+                state.counts.removeAll(keepingCapacity: true)
+                state.iteration &+= 1; state.iterationStart = CACurrentMediaTime()
+                return (elapsed, snapshot)
+            }
             if !snapshot.isEmpty { report(elapsed: elapsed, counts: snapshot) }
         }
         CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
@@ -52,9 +58,8 @@ enum HangProbe {
     /// Main thread only. Not installed: a single branch; else one lock and a dictionary increment.
     static func hit(_ tag: StaticString) {
         guard installed else { return }
-        os_unfair_lock_lock(&lock)
-        counts["\(tag)", default: 0] += 1
-        os_unfair_lock_unlock(&lock)
+        let key = "\(tag)"
+        state.withLock { $0.counts[key, default: 0] += 1 }
     }
 
     private static func report(elapsed: Double, counts: [String: Int]) {
@@ -94,10 +99,9 @@ enum HangProbe {
         var samples = 0
         while true {
             usleep(100_000)
-            os_unfair_lock_lock(&lock)
-            let current = iteration, elapsed = CACurrentMediaTime() - iterationStart
-            let live = counts, sleeping = idle
-            os_unfair_lock_unlock(&lock)
+            let (current, elapsed, live, sleeping) = state.withLock { state in
+                (state.iteration, CACurrentMediaTime() - state.iterationStart, state.counts, state.idle)
+            }
             if current != sampledIteration { samples = 0 }
             // Sample at ~0.7 s, ~1.5 s, ~3 s and ~10 s of one stalled iteration.
             let due = samples == 0 ? 0.7 : samples == 1 ? 1.5 : samples == 2 ? 3.0 : samples == 3 ? 10.0 : .infinity
