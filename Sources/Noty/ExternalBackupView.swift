@@ -54,7 +54,7 @@ struct ExternalBackupForm: View {
                         LabeledContent("Nächster automatischer Versuch", value: NotyText.statusDate(next))
                     }
                 }
-                Stepper("\(model.policy.keep) automatische Stände behalten", value: Binding(get: { model.policy.keep }, set: { model.setRetention($0) }), in: 3...30)
+                Stepper("\(model.policy.keep) automatische Backups behalten", value: Binding(get: { model.policy.keep }, set: { model.setRetention($0) }), in: 3...30)
                 Button("Automatisches Backup ausschalten …", role: .destructive) { confirmingDisable = true }
                     .disabled(model.policy.target == .disabled)
             } header: {

@@ -194,7 +194,7 @@ private struct KeyboardHelpView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     if !KeyboardRouter.shared.isEnabled {
-                        Text("Diese Tasten gelten nur in Textdokumenten mit eingeschalteter Helix-Tastatur (Einstellungen › Editor, experimentell).")
+                        Text("Diese Tasten gelten nur in Textdokumenten mit eingeschalteter Helix-Tastatur (Einstellungen › Text & Tastatur, experimentell).")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     ForEach(contexts, id: \.self) { context in

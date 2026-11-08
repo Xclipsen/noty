@@ -24,7 +24,7 @@ struct ViewSettingsPage: View {
             .disabled(!toolbox.writable)
             Section("Schreiben") {
                 settingToggle("Schreibscrollen bis zur Bildschirmmitte",
-                              detail: "Im vergrößerten Blatt lässt sich der Blattrand bis zur Bildschirmmitte ziehen, damit du bequem am Rand schreibst.",
+                              detail: "Der Blattrand lässt sich bis zur Bildschirmmitte ziehen, damit du bequem am Rand schreibst. Auch über den Knopf in der Heftleiste.",
                               isOn: $writingScroll)
                 settingToggle("Seitenleiste im Heft anzeigen",
                               detail: "Seitenübersicht beim Öffnen eines Hefts. Merkt sich auch, wenn du sie im Heft ein- oder ausblendest.",
@@ -62,7 +62,7 @@ struct TextSettingsPage: View {
             }
             Section("Beim Tippen") {
                 settingToggle("Rechnen mit „=“",
-                              detail: "2+3= wird zu 2+3=5. Untereinander geschriebene Zahlen mit = allein in einer neuen Zeile werden addiert.",
+                              detail: "2+3= wird zu 2+3=5. Untereinander geschriebene Zahlen mit = allein in einer neuen Zeile werden von oben nach unten zusammengerechnet.",
                               isOn: $calculator)
                 settingToggle("Pfeile ersetzen",
                               detail: "Mit dem folgenden Leerzeichen wird -> zu →, => zu ⇒, <- zu ←, <-> zu ↔. ⌫ direkt danach stellt das Getippte wieder her.",
@@ -72,9 +72,9 @@ struct TextSettingsPage: View {
                               isOn: $typewriter)
             }
             Section {
-                settingToggle("Helix-Tastatur in Textdokumenten", badge: "Beta", isOn: $helix)
+                settingToggle("Helix-Tastatur in Textdokumenten", badge: "Experimentell", isOn: $helix)
                 settingToggle("Klammern automatisch schließen",
-                              detail: "Runde, eckige und geschweifte Klammern und Anführungszeichen schließen sich selbst, außer direkt neben einem Wort.",
+                              detail: "Nur mit der Helix-Tastatur: Runde, eckige und geschweifte Klammern und Anführungszeichen schließen sich selbst, außer direkt neben einem Wort.",
                               isOn: $autoPairs)
                     .disabled(!helix)
             } header: { Text("Hardware-Tastatur") } footer: {
@@ -99,7 +99,7 @@ struct ToolSettingsPage: View {
         switch UIPencilInteraction.preferredTapAction {
         case .ignore: "Aus"
         case .switchEraser: "Radierer"
-        case .switchPrevious: "Letztes Werkzeug"
+        case .switchPrevious: "Vorheriges Werkzeug"
         case .showColorPalette: "Farbpalette"
         case .showInkAttributes: "Werkzeugoptionen"
         default: "Systemeinstellung"
@@ -110,10 +110,11 @@ struct ToolSettingsPage: View {
         switch UIPencilInteraction.preferredSqueezeAction {
         case .ignore: return "Aus"
         case .switchEraser: return "Radierer"
-        case .switchPrevious: return "Letztes Werkzeug"
+        case .switchPrevious: return "Vorheriges Werkzeug"
         case .showColorPalette: return "Farbpalette"
         case .showInkAttributes: return "Werkzeugoptionen"
         case .showContextualPalette: return "Werkzeugpalette"
+        case .runSystemShortcut: return "Kurzbefehl"
         default: return "Systemeinstellung"
         }
     }
@@ -128,15 +129,16 @@ struct ToolSettingsPage: View {
     }
     var body: some View {
         Form {
+            AreaNotice(workspaces: workspaces)
             Section("Stift und Bleistift") {
                 settingToggle("Autostift",
-                              detail: "Neue Striche bekommen eine zur Seitenhelligkeit passende Farbe. Gilt auch für den Bleistift, solange du dort keine eigene Farbe wählst.",
+                              detail: "Neue Striche bekommen eine zur Seitenhelligkeit passende Farbe. Gilt für Stift, Formen und Bleistift und schaltet einen getrennt eingestellten Bleistift wieder mit.",
                               isOn: Binding(get: { toolbox.preferences.autoPen ?? false }, set: { toolbox.preferences.setAutomaticInk($0, for: .pen) }))
                 settingToggle("Formen nach Halten erkennen",
                               detail: "Stift kurz am Ende eines Strichs halten: Linien, Kreise und Vielecke werden sauber nachgezogen.",
                               isOn: Binding(get: { toolbox.preferences.recognizeShapes ?? true }, set: { toolbox.preferences.recognizeShapes = $0 }))
                 settingToggle("Durchkritzeln löscht",
-                              detail: "Schnelles Hin-und-her-Kritzeln über Geschriebenes radiert es aus.",
+                              detail: "Mit dem Stift dicht über Striche oder Formen kritzeln entfernt sie samt Gekritzel.",
                               isOn: Binding(get: { toolbox.preferences.scribbleErase ?? true }, set: { toolbox.preferences.scribbleErase = $0 }))
             }
             Section("Textmarker") {
@@ -148,9 +150,10 @@ struct ToolSettingsPage: View {
                 }
                 .keyOption(.choice(tip, [.round, .chisel]))
                 settingToggle("Linie nach Halten begradigen",
+                              detail: "Am Strichende kurz halten: Der Strich wird gerade.",
                               isOn: Binding(get: { toolbox.preferences.markerHoldStraighten ?? true }, set: { toolbox.preferences.markerHoldStraighten = $0 }))
                 settingToggle("Immer gerade",
-                              detail: "Rastet bei 0°, 90°, 45° und 30° ein.",
+                              detail: "Jeder Strich wird gerade; nahe 0°, 90°, 45° und 30° rastet er ein.",
                               isOn: Binding(get: { toolbox.preferences.markerStraight ?? false }, set: { toolbox.preferences.markerStraight = $0 }))
             }
             Section("Radierer") {
@@ -176,7 +179,7 @@ struct ToolSettingsPage: View {
                     }
                 }
                 .keyOption(.action { customizing = true })
-            } header: { Text("Werkzeugleiste") } footer: { AreaScopeFooter(workspaces: workspaces, text: "Vorhandene Striche bleiben bei allen Änderungen unverändert.") }
+            } header: { Text("Werkzeugleiste") } footer: { AreaScopeFooter(workspaces: workspaces, text: "Bereits gezeichnete Striche ändern sich nicht.") }
             Section {
                 LabeledContent("Doppeltippen", value: doubleTap)
                 if #available(iOS 17.5, *) { LabeledContent("Drücken", value: squeeze) }

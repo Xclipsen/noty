@@ -12,7 +12,7 @@ struct GeneralSettingsPage: View {
     var body: some View {
         Form {
             Section {
-                Picker("Darstellung", selection: $layout) {
+                Picker("Anordnung", selection: $layout) {
                     ForEach(LibraryLayout.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
                 }.keyOption(.choice($layout, LibraryLayout.allCases))
                 Picker("Sortierung", selection: $sort) {
@@ -28,21 +28,24 @@ struct GeneralSettingsPage: View {
             }
             Section {
                 Button("Einstellungen zurücksetzen …", role: .destructive) { confirmingReset = true }
-                    .keyOption(.action { confirmingReset = true })
+                    .keyOption(.action {
+                        KeyboardRouter.shared.ask("Einstellungen zurücksetzen?", message: Self.resetMessage, confirm: "Zurücksetzen", safe: true) { reset() }
+                    })
             } footer: {
-                Text(resetDone ? "Zurückgesetzt." : "Setzt Bibliothek, Darstellung, Ansicht und Text auf die Standardwerte. Stift-, Werkzeug- und Papiereinstellungen, Backups, Konto und alle Hefte bleiben unverändert.")
+                Text(resetDone ? "Zurückgesetzt." : "Setzt Allgemein, Darstellung, Text & Tastatur sowie Schreibscrollen, Seitenleiste und Einrasten auf die Standardwerte. Blättern, PDF-Anzeige, Stift, Werkzeugleiste, Papier, Gesetzessammlung, Backups, Konto und alle Hefte bleiben unverändert.")
             }
         }
         .navigationTitle(SettingsPage.general.title)
         .keyboardSheet()
         .confirmationDialog("Einstellungen zurücksetzen?", isPresented: $confirmingReset, titleVisibility: .visible) {
-            Button("Zurücksetzen", role: .destructive) {
-                AppSettingsKey.resettable.forEach { UserDefaults.standard.removeObject(forKey: $0) }
-                resetDone = true
-            }
-        } message: {
-            Text("Bibliothek, Darstellung, Ansicht und Text bekommen wieder die Standardwerte. Deine Hefte und Werkzeuge bleiben unverändert.")
-        }
+            Button("Zurücksetzen", role: .destructive) { reset() }
+        } message: { Text(Self.resetMessage) }
+    }
+
+    private static let resetMessage = "Die app-weiten Einstellungen bekommen wieder ihre Standardwerte. Deine Hefte, Werkzeuge und Papier bleiben unverändert."
+    private func reset() {
+        AppSettingsKey.resettable.forEach { UserDefaults.standard.removeObject(forKey: $0) }
+        resetDone = true
     }
 }
 
@@ -57,9 +60,9 @@ struct AppearanceSettingsPage: View {
                 .padding(.vertical, 10)
                 .keyOption(.choice($accent, AccentChoice.allCases))
             } header: { Text("Akzentfarbe") } footer: {
-                Text("Färbt Schalter, Auswahl, Ordner und Hervorhebungen in Bibliothek und Einstellungen. Stifte, Papier und die Werkzeugleiste im Heft bleiben unverändert.")
+                Text("Färbt Schalter, Auswahl, Ordner und Hervorhebungen in der ganzen App. Stifte, Papier und die Werkzeugleiste im Heft bleiben unverändert.")
             }
-            Section("Vorschau") {
+            Section {
                 HStack(spacing: 14) {
                     Image(systemName: "folder.fill").font(.title).foregroundStyle(.tint)
                     VStack(alignment: .leading, spacing: 2) {
@@ -73,13 +76,10 @@ struct AppearanceSettingsPage: View {
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.tint.opacity(0.18)))
                 Toggle("Schalter", isOn: .constant(true)).allowsHitTesting(false)
                 Button("Schaltfläche") { }.allowsHitTesting(false)
+            } header: { Text("Vorschau") } footer: {
+                Text("noty ist auf eine dunkle Oberfläche abgestimmt, damit das Papier im Mittelpunkt steht. Papier für neue Hefte: Einstellungen › Papier für neue Hefte; für neue Seiten eines Hefts im Heft unter „…“ › „Papier für neue Seiten“.")
             }
             .accessibilityHidden(true)
-            Section {
-                LabeledContent("Erscheinungsbild", value: "Dunkel")
-            } footer: {
-                Text("noty ist auf eine dunkle Oberfläche abgestimmt, damit das Papier im Mittelpunkt steht. Die Papierfarbe stellst du je Heft unter „Papier“ ein.")
-            }
         }
         .navigationTitle(SettingsPage.appearance.title)
         .keyboardSheet()
@@ -137,13 +137,13 @@ struct AboutSettingsPage: View {
                 Text(developerMode && !DeveloperAccess.isTestApp ? "Entwickleroptionen sind eingeschaltet." : "Tippen auf den Build kopiert Version und Build, etwa für eine Fehlermeldung.")
             }
             Section {
-                LabeledContent("Hefte und Textdokumente", value: "Dateien › Auf meinem iPad › noty")
+                LabeledContent("Hefte und Textdokumente", value: "Dateien › Auf meinem iPad › \(info("CFBundleDisplayName")) › Noty")
             } header: { Text("Datenablage") } footer: {
                 Text("Alles liegt lokal auf diesem iPad und ist über die Dateien-App sichtbar. Dort bitte nichts umbenennen oder verschieben.")
             }
             SigningRenewalSection()
             Section {
-                Text("Gesetzestexte und Lesezeichen-Abgleich der Gesetzessammlung kommen von law.xclipsen.de. noty verwendet keine Bibliotheken von Drittanbietern.")
+                Text("Gesetzestexte kommen von law.xclipsen.de; das noty-Konto gleicht dorthin Lesezeichen und Markierungen ab. noty verwendet keine Bibliotheken von Drittanbietern.")
                     .font(.footnote).foregroundStyle(.secondary)
             } header: { Text("Hinweise") }
         }
@@ -178,16 +178,18 @@ struct PrivacySettingsPage: View {
                          "Nur wenn eingeschaltet: einzelne Hefte im iCloud-Ordner dieser App in deinem iCloud-Konto.")
                 }
                 flow("books.vertical.fill", "Gesetzessammlung und noty-Konto",
-                     "Gesetzestexte werden von law.xclipsen.de geladen. Mit Konto werden E-Mail-Adresse, Lesezeichen und Markierungen dorthin abgeglichen, auf Wunsch mit „Mit Apple anmelden“. Hefte werden nie übertragen.")
+                     "Nur wenn eingeschaltet: Gesetzestexte und PDFs kommen von law.xclipsen.de. Mit noty-Konto werden dort Benutzername bzw. E-Mail-Adresse, Lesezeichen und Markierungen gespeichert, auf Wunsch mit „Mit Apple anmelden“. Hefte werden nie übertragen.")
                 flow("square.and.arrow.up.fill", "Teilen und Export",
-                     "Nur auf deinen Befehl: PDF, .noty-Dateien und Bibliotheksbackups gehen an die App oder Person, die du wählst.")
+                     "Nur auf deinen Befehl: PDF, Text, .noty-Dateien und Bibliotheksbackups gehen an die App oder Person, die du wählst.")
+            } header: { Text("Wann Daten das iPad verlassen") }
+            Section {
                 flow("arrow.triangle.2.circlepath", "Zwischen noty-Apps",
-                     "Die normale noty legt eine Kopie der Bibliothek in einen gemeinsamen Ordner auf diesem iPad, den nur noty dev, noty AI und noty calendar lesen. Dabei verlässt nichts das iPad.")
+                     "Für andere noty-Apps auf diesem iPad liegt eine Kopie der Bibliothek in einem gemeinsamen Ordner der App-Gruppe.")
                 if DeveloperAccess.visible {
                     flow("stethoscope", "Diagnose",
-                         "Eingeschaltete Diagnosen schreiben nur Codeadressen, Klassennamen und Zähler nach Dateien › noty › Diagnose, nie Inhalte. Sie bleiben auf dem iPad.")
+                         "Eingeschaltete Diagnosen schreiben nur Codeadressen, Klassennamen und Zähler nach Dateien › noty › Diagnose und ins Systemprotokoll des iPads, nie Inhalte.")
                 }
-            } header: { Text("Wann Daten das iPad verlassen") }
+            } header: { Text("Bleibt auf dem iPad") }
         }
         .navigationTitle(SettingsPage.privacy.title)
         .keyboardSheet()
@@ -230,7 +232,7 @@ struct DeveloperSettingsPage: View {
             AppSyncSection(library: library, toolbox: toolbox, workspaces: workspaces)
             Section {
                 settingToggle("Hänger-Diagnose", detail: "Schreibt bei längeren Hängern Codeadressen und Zähler nach Dateien › noty › Diagnose › haenger.txt. Wirkt nach einem Neustart der App.", isOn: $hangProbe)
-                settingToggle("Eingabe-Diagnose", detail: "Meldet Berührungen ohne Wirkung und lange Eingabesperren nach Diagnose › eingabe.txt, nur Klassennamen und Zustände. Wirkt nach einem Neustart der App.", isOn: $inputProbe)
+                settingToggle("Eingabe-Diagnose", detail: "Meldet Berührungen ohne Wirkung und lange Eingabesperren nach Dateien › noty › Diagnose › eingabe.txt, nur Klassennamen und Zustände. Wirkt nach einem Neustart der App.", isOn: $inputProbe)
                 settingToggle("Tipp-Diagnose", detail: "Zeigt nach jedem Tipp, was er getroffen hat und welche Felder dort liegen, nur Größen, keine Inhalte.", isOn: $tapDiagnostics)
                     .onChange(of: tapDiagnostics) { _, _ in TapDiagnostics.shared.refresh() }
             } header: { Text("Diagnose") }

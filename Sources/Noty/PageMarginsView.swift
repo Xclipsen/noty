@@ -316,7 +316,7 @@ struct PageMarginsView: View {
                     let chosen = on && abs(value.wrappedValue - target) < 0.5
                     Button(label) { value.wrappedValue = max(minimum, target) }
                         .font(.subheadline.weight(chosen ? .semibold : .regular))
-                        .buttonStyle(.bordered).tint(chosen ? nil : Color.gray)
+                        .buttonStyle(.bordered).tint(chosen ? AccentChoice.current.color : Color.gray)
                         .disabled(!on || !editable || target < minimum - 0.5)
                         .accessibilityLabel("\(title) \(label)")
                         .keyOption(.action { value.wrappedValue = max(minimum, target) })

@@ -152,6 +152,7 @@ struct WorkspaceLibraryHost: View {
     }
     var body: some View {
         LibraryView(model: library, workspaces: workspaces).environmentObject(toolbox).environmentObject(externalBackup)
+            .task { await workspaces.refresh() }
             .task {
                 // `scenePhase` captured by this long-running closure would stay at its
                 // first value; the model holds the current phase instead.
@@ -263,8 +264,10 @@ struct WorkspacePickerList: View {
                     }
                 }
                 if model.areas.isEmpty { Text("Noch keine getrennten Bereiche.").foregroundStyle(.secondary) }
-                Button("Neuen Testbereich anlegen", systemImage: "plus") { Task { await model.createTest() } }
-                    .keyOption(.action { Task { await model.createTest() } })
+                if DeveloperAccess.visible {
+                    Button("Neuen Testbereich anlegen", systemImage: "plus") { Task { await model.createTest() } }
+                        .keyOption(.action { Task { await model.createTest() } })
+                }
                 if model.busy { ProgressView() }
             } header: { Text("Getrennte Bereiche") } footer: {
                 if onSelect != nil && !model.areas.isEmpty {

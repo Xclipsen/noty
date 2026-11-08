@@ -141,7 +141,7 @@ struct LibraryView: View {
                 Button("OK") { model.error = nil }
             } message: { Text(model.error ?? "") }
         }
-        .sheet(item: $settingsRequest, onDismiss: switchAreaIfRequested) { request in
+        .fullScreenCover(item: $settingsRequest, onDismiss: switchAreaIfRequested) { request in
             SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces,
                          initialPage: request.page) { area in
                 selectedArea = area; switchingArea = true; settingsRequest = nil
@@ -309,8 +309,8 @@ struct LibraryView: View {
         [PaletteCommand(title: "PDF oder Bild importieren") { importingPDF = true },
          PaletteCommand(title: "Backup importieren") { importingBackup = true },
          PaletteCommand(title: "Wiederhergestellte Kopien") { showingCopies = true },
-         PaletteCommand(title: "Bereiche") { showingAreas = true },
          PaletteCommand(title: "Einstellungen") { settingsRequest = SettingsRequest() }]
+            + (DeveloperAccess.showsAreas(workspaces) ? [PaletteCommand(title: "Bereiche") { showingAreas = true }] : [])
     }
 
     // MARK: Sidebar

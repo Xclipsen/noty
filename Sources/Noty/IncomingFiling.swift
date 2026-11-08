@@ -104,7 +104,7 @@ enum IncomingFiling {
             guard let library, library.ready, let item = queue.next() else { presenting = false; return }
             let model = IncomingFilingModel(item: item, url: inbox.contentURL(item), library: library,
                                             areaTitle: workspaces?.title ?? "Meine Bibliothek", defaults: defaults())
-            let host = UIHostingController(rootView: IncomingFilingView(model: model))
+            let host = UIHostingController(rootView: IncomingFilingView(model: model).modifier(AccentTint()))
             host.modalPresentationStyle = .formSheet
             host.isModalInPresentation = true
             host.overrideUserInterfaceStyle = .dark

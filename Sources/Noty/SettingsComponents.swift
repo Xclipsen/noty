@@ -29,15 +29,16 @@ enum AccentChoice: String, CaseIterable, Identifiable {
     }
     var color: Color {
         switch self {
+        // Dark enough for white text on a filled accent (selected rows, labels).
         case .blue: Color(red: 0.04, green: 0.52, blue: 1.0)
-        case .sky: Color(red: 0.49, green: 0.83, blue: 0.99)
-        case .mint: Color(red: 0.39, green: 0.85, blue: 0.78)
-        case .green: Color(red: 0.20, green: 0.78, blue: 0.35)
-        case .amber: Color(red: 1.0, green: 0.72, blue: 0.20)
-        case .coral: Color(red: 1.0, green: 0.45, blue: 0.38)
-        case .rose: Color(red: 1.0, green: 0.42, blue: 0.62)
-        case .iris: Color(red: 0.62, green: 0.55, blue: 1.0)
-        case .graphite: Color(white: 0.68)
+        case .sky: Color(red: 0.16, green: 0.58, blue: 0.88)
+        case .mint: Color(red: 0.08, green: 0.60, blue: 0.56)
+        case .green: Color(red: 0.16, green: 0.60, blue: 0.29)
+        case .amber: Color(red: 0.84, green: 0.48, blue: 0.02)
+        case .coral: Color(red: 0.90, green: 0.34, blue: 0.28)
+        case .rose: Color(red: 0.88, green: 0.28, blue: 0.50)
+        case .iris: Color(red: 0.48, green: 0.40, blue: 0.94)
+        case .graphite: Color(white: 0.42)
         }
     }
 }
@@ -125,6 +126,20 @@ struct AreaScopeFooter: View {
     }
 }
 
+/// First row of a page whose values all belong to the open Bereich; shown
+/// only outside „Meine Bibliothek“.
+struct AreaNotice: View {
+    @ObservedObject var workspaces: WorkspaceAppModel
+    var body: some View {
+        if workspaces.areaID != nil {
+            Section {
+                Label("Gilt nur für Bereich \(NotyText.quoted(workspaces.title))", systemImage: workspaces.kind.symbol)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+}
+
 // MARK: Search
 
 /// One searchable setting: what it is called, where it lives, extra words.
@@ -143,41 +158,50 @@ struct SettingsSearchItem: Identifiable, Hashable {
 
     static func index(developer: Bool, vault: Bool) -> [SettingsSearchItem] {
         var items: [SettingsSearchItem] = [
-            .init(title: "Darstellung der Bibliothek", page: .general, section: "Bibliothek", keywords: ["raster", "liste", "ansicht"]),
+            .init(title: "Anordnung der Bibliothek", page: .general, section: "Bibliothek", keywords: ["raster", "liste", "ansicht", "darstellung"]),
             .init(title: "Sortierung", page: .general, section: "Bibliothek", keywords: ["name", "zuletzt", "reihenfolge"]),
             .init(title: "Zuletzt geöffnetes Heft wieder öffnen", page: .general, section: "Beim Start", keywords: ["start", "öffnen"]),
             .init(title: "Einstellungen zurücksetzen", page: .general, keywords: ["standard", "reset"]),
-            .init(title: "Akzentfarbe", page: .appearance, keywords: ["farbe", "design", "theme", "tint"]),
+            .init(title: "Akzentfarbe", page: .appearance, keywords: ["farbe", "design", "theme", "tint", "dunkel", "hell"]),
             .init(title: "Blättern statt Scrollen", page: .view, section: "Seiten", keywords: ["paging", "seitenweise"]),
             .init(title: "PDFs einheitlich anzeigen", page: .view, section: "Seiten", keywords: ["breite", "arbeitsblatt"]),
             .init(title: "Schreibscrollen bis zur Bildschirmmitte", page: .view, section: "Schreiben", keywords: ["scrollen", "mitte"]),
             .init(title: "Seitenleiste im Heft", page: .view, section: "Schreiben", keywords: ["seiten", "vorschau", "sidebar"]),
             .init(title: "Einrasten", page: .view, section: "Bearbeiten", keywords: ["magnet", "ausrichten", "snap"]),
-            .init(title: "Neue Textfelder in automatischer Farbe", page: .text, section: "Textfelder", keywords: ["schwarz", "weiß"]),
-            .init(title: "Neue Textfelder an Linien ausrichten", page: .text, section: "Textfelder", keywords: ["liniert", "kariert"]),
-            .init(title: "Rechnen mit „=“", page: .text, section: "Tippen", keywords: ["rechner", "calculator", "gleich"]),
-            .init(title: "Pfeile beim Tippen", page: .text, section: "Tippen", keywords: ["->", "pfeil"]),
-            .init(title: "Schreibmaschinen-Modus", page: .text, section: "Tippen", keywords: ["typewriter", "zeile"]),
+            .init(title: "Neue Textfelder in automatischer Farbe", page: .text, section: "Neue Textfelder", keywords: ["schwarz", "weiß"]),
+            .init(title: "Neue Textfelder an Linien ausrichten", page: .text, section: "Neue Textfelder", keywords: ["liniert", "kariert"]),
+            .init(title: "Rechnen mit „=“", page: .text, section: "Beim Tippen", keywords: ["rechner", "calculator", "gleich"]),
+            .init(title: "Pfeile ersetzen", page: .text, section: "Beim Tippen", keywords: ["->", "pfeil"]),
+            .init(title: "Schreibmaschinen-Modus", page: .text, section: "Beim Tippen", keywords: ["typewriter", "zeile"]),
             .init(title: "Helix-Tastatur", page: .text, section: "Hardware-Tastatur", keywords: ["vim", "tasten", "experimentell"]),
             .init(title: "Klammern automatisch schließen", page: .text, section: "Hardware-Tastatur", keywords: ["klammer", "anführungszeichen"]),
-            .init(title: "Autostift", page: .tools, section: "Stift", keywords: ["farbe", "automatisch", "schwarz"]),
-            .init(title: "Formen nach Halten erkennen", page: .tools, section: "Stift", keywords: ["kreis", "linie", "form"]),
-            .init(title: "Durchkritzeln löscht", page: .tools, section: "Stift", keywords: ["scribble", "löschen", "radieren"]),
+            .init(title: "Autostift", page: .tools, section: "Stift und Bleistift", keywords: ["farbe", "automatisch", "schwarz"]),
+            .init(title: "Formen nach Halten erkennen", page: .tools, section: "Stift und Bleistift", keywords: ["kreis", "linie", "form"]),
+            .init(title: "Durchkritzeln löscht", page: .tools, section: "Stift und Bleistift", keywords: ["scribble", "löschen", "radieren"]),
             .init(title: "Textmarkerspitze", page: .tools, section: "Textmarker", keywords: ["keil", "rund", "marker"]),
-            .init(title: "Textmarker begradigen", page: .tools, section: "Textmarker", keywords: ["gerade", "linie"]),
+            .init(title: "Textmarker immer gerade", page: .tools, section: "Textmarker", keywords: ["winkel", "gerade", "marker"]),
+            .init(title: "Linie nach Halten begradigen", page: .tools, section: "Textmarker", keywords: ["gerade", "linie"]),
             .init(title: "Radierer-Standard", page: .tools, section: "Radierer", keywords: ["präzise", "ganzer strich"]),
             .init(title: "Auch mit dem Finger zeichnen", page: .tools, section: "Eingabe", keywords: ["finger", "touch"]),
             .init(title: "Apple Pencil: Doppeltippen und Drücken", page: .tools, section: "Apple Pencil", keywords: ["squeeze", "hover", "pencil"]),
             .init(title: "Werkzeugleiste anpassen", page: .tools, section: "Werkzeugleiste", keywords: ["leiste", "position", "lieblingsstifte", "dock"]),
             .init(title: "Papier für neue Hefte", page: .paper, keywords: ["umschlag", "liniert", "kariert", "vorlage"]),
             .init(title: "Gesetzessammlung", page: .laws, keywords: ["gesetze", "paragraphen", "markierungen", "lesezeichen"]),
-            .init(title: "noty-Konto", page: .account, keywords: ["anmelden", "abmelden", "passwort", "apple"]),
+            .init(title: "noty-Konto", page: .account, keywords: ["anmelden", "abmelden", "passwort", "apple", "registrieren", "login"]),
             .init(title: "Automatisches Backup", page: .backup, section: "Automatisches Backup", keywords: ["webdav", "icloud drive", "ordner", "sichern"]),
             .init(title: "Ältere Backups wiederherstellen", page: .backup, section: "Wiederherstellen", keywords: ["zurückholen", "restore"]),
-            .init(title: "Bibliotheksbackup exportieren", page: .backup, section: "Bibliotheksbackup", keywords: ["export", "datei", ".notylibrary"]),
+            .init(title: "Bibliotheksbackup exportieren", page: .backup, section: "Bibliotheksbackup als Datei", keywords: ["export", "datei", ".notylibrary"]),
+            .init(title: "Bibliotheksbackup-Datei öffnen", page: .backup, section: "Wiederherstellen", keywords: ["importieren", ".notylibrary", "bereich"]),
+            .init(title: "WebDAV", page: .backup, section: "Ziel und Aufbewahrung", keywords: ["server", "nextcloud", "zugangsdaten"]),
+            .init(title: "Anzahl automatischer Backups", page: .backup, section: "Ziel und Aufbewahrung", keywords: ["aufbewahrung", "stände", "behalten"]),
+            .init(title: "Automatisches Backup ausschalten", page: .backup, section: "Ziel und Aufbewahrung", keywords: ["aus", "deaktivieren"]),
+            .init(title: "Gesetzessammlung aktivieren", page: .laws, keywords: ["gesetze", "einschalten"]),
+            .init(title: "Lesezeichen und Markierungen abgleichen", page: .laws, keywords: ["sync", "abgleich"]),
+            .init(title: "Neue Gesetzesfassungen automatisch laden", page: .laws, keywords: ["update", "fassung"]),
+            .init(title: "Markierungen sichern", page: .laws, section: "Persönliche Daten", keywords: ["export", "sicherung", "lesezeichen"]),
             .init(title: "Papierkorb", page: .trash, keywords: ["gelöscht", "wiederherstellen", "leeren"]),
             .init(title: "Version und Build", page: .about, keywords: ["version", "build", "über"]),
-            .init(title: "Signierung erneuern", page: .about, section: "App-Updates", keywords: ["profil", "ablauf", "erinnerung"]),
+            .init(title: "Signierung erneuern", page: .about, section: "Signierung erneuern", keywords: ["profil", "ablauf", "erinnerung"]),
             .init(title: "Datenschutz", page: .privacy, keywords: ["daten", "privatsphäre", "server"]),
         ]
         if vault {
@@ -187,7 +211,7 @@ struct SettingsSearchItem: Identifiable, Hashable {
             items += [
                 .init(title: "Diagnose", page: .developer, keywords: ["hänger", "eingabe", "tipp"]),
                 .init(title: "Bereiche", page: .developer, keywords: ["testbereich", "spiegel"]),
-                .init(title: "Abgleich zwischen noty-Apps", page: .developer, keywords: ["app-abgleich", "spiegel", "abzug"]),
+                .init(title: "Zwischen noty-Apps", page: .developer, keywords: ["app-abgleich", "spiegel", "abzug"]),
                 .init(title: "Neuer Texteditor (Test)", page: .developer, keywords: ["experimentell", "editor"]),
             ]
         }

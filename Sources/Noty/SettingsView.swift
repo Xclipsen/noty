@@ -197,7 +197,7 @@ struct SettingsView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            if proxy.size.width >= 720 { split } else { stack }
+            if proxy.size.width >= 680 { split } else { stack }
         }
         .environmentObject(toolbox)
         .environmentObject(externalBackup)
@@ -234,7 +234,28 @@ struct SettingsView: View {
             .id(selection)
         }
         .background(Color(uiColor: .systemGroupedBackground))
+        .background { splitKeys }
         .onChange(of: developer) { _, visible in if !visible, selection == .developer { selection = .about } }
+        // A narrower window shows the same page in the list layout.
+        .onChange(of: selection) { _, page in path = page.map { [$0] } ?? [] }
+    }
+
+    /// The sidebar takes no keys of its own: ⌘↓/⌘↑ step through the pages,
+    /// Esc closes Settings where the page itself does not take it.
+    private var splitKeys: some View {
+        Group {
+            Button("") { step(1) }.keyboardShortcut(.downArrow, modifiers: .command)
+            Button("") { step(-1) }.keyboardShortcut(.upArrow, modifiers: .command)
+            KeyEscapeButton { dismiss() }
+        }
+        .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+    }
+
+    private func step(_ offset: Int) {
+        let pages = SettingsPage.groups(developer: developer).flatMap(\.pages)
+        guard !pages.isEmpty else { return }
+        let index = pages.firstIndex(of: selection ?? .general) ?? 0
+        selection = pages[(index + offset + pages.count) % pages.count]
     }
 
     private var stack: some View {
@@ -245,6 +266,7 @@ struct SettingsView: View {
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
                 .keyboardSheet()
         }
+        .onChange(of: path) { _, pages in if let page = pages.first { selection = page } }
     }
 
     // MARK: Sidebar
@@ -252,6 +274,15 @@ struct SettingsView: View {
     @ViewBuilder private func sidebarContent(pushes: Bool) -> some View {
         Section {
             SettingsHeaderCard()
+            if workspaces.areaID != nil {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Bereich \(NotyText.quoted(workspaces.title))")
+                        Text(workspaces.kind == .mirror ? "Spiegel einer anderen noty-App" : "Getrennter Bereich mit eigenen Heften")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } icon: { Image(systemName: workspaces.kind.symbol).foregroundStyle(.orange) }
+            }
             searchField
         }
         if query.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -280,7 +311,8 @@ struct SettingsView: View {
                     if pushes {
                         NavigationLink(value: hit.page) { label }.keyOption(.action { path.append(hit.page) })
                     } else {
-                        label.tag(hit.page)
+                        Button { selection = hit.page; query = "" } label: { label.contentShape(Rectangle()) }
+                            .buttonStyle(.plain)
                     }
                 }
             }

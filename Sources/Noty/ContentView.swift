@@ -237,7 +237,7 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $customizingTools) { ToolbarCustomizationView(settings: toolbox) }
-            .sheet(isPresented: $showingSettings) { editorSettings?.make() }
+            .fullScreenCover(isPresented: $showingSettings) { editorSettings?.make() }
             .sheet(isPresented: $editingDefaults) {
                 if isTextDocument {
                     TextDocumentPaperView(current: model.notebook.pageDefaults) { paper, color in

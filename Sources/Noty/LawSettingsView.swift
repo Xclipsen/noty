@@ -205,7 +205,7 @@ struct LawSettingsPage: View {
                 }
                 .swipeActions {
                     Button("Nur lokal") { Task { await laws.keepLocal([item]) } }.tint(.gray)
-                    Button("Erneut") { Task { await laws.retryRejected([item]) } }
+                    Button("Erneut") { Task { await laws.retryRejected([item]) } }.tint(AccentChoice.current.color)
                 }
             }
             Button("Erneut versuchen", systemImage: "arrow.clockwise") { Task { await laws.retryRejected() } }

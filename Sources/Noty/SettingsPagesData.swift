@@ -20,6 +20,7 @@ struct BackupSettingsPage: View {
     @State private var importPurpose = ImportPurpose.libraryArchive
     @State private var showingForm = false
     @State private var showingHistory = false
+    @State private var showingAreas = false
     @State private var restoredArea = false
     /// Status of the automatic backup when its last busy phase began (announcements).
     @State private var statusBeforeBackupWork: String?
@@ -67,34 +68,36 @@ struct BackupSettingsPage: View {
             }
             NotebookVaultSection(vault: vault, library: library, workspaces: workspaces)
             Section {
-                NavigationLink {
-                    OlderBackupsView(model: externalBackup, library: library, workspaces: workspaces)
-                        .onAppear { formVisible = true }.onDisappear { formVisible = false }
-                        .keyboardSheet()
-                } label: {
-                    SettingLabel("Ältere automatische Backups", detail: "Inhalt ansehen und einzelne Hefte als Kopie zurückholen.")
-                }
-                .disabled(policy.target == .disabled)
-                .keyOption(.action { showingHistory = true })
-                Button("Bibliotheksbackup-Datei öffnen …", systemImage: "arrow.down.doc") { pick(.libraryArchive) }
-                    .disabled(!libraryIdle).keyOption(.action { pick(.libraryArchive) })
-            } header: { Text("Wiederherstellen") } footer: {
-                Text("Eine Bibliotheksbackup-Datei öffnet sich als eigener Bereich neben deiner Bibliothek. Frühere Stände des geöffneten Hefts findest du im Heft unter „Lokale Wiederherstellungspunkte“. Gelöschte Hefte liegen zuerst im Papierkorb."
-                     + (library.opened != nil ? " Export und Wiederherstellen erst nach dem Schließen des Hefts." : ""))
-            }
-            Section {
                 LabeledContent("Letzter Export", value: library.lastLibraryExport.map(NotyText.statusDate) ?? NotyText.never)
                 Button("Exportieren …", systemImage: "square.and.arrow.up", action: exportLibrary).disabled(!libraryIdle)
                     .keyOption(.action(exportLibrary))
             } header: { Text("Bibliotheksbackup als Datei") } footer: {
                 Text("Alle Hefte, Ordner, der Papierkorb und die Werkzeugeinstellungen in einer Datei, etwa für ein anderes iPad.")
             }
+            Section {
+                NavigationLink { historyView } label: {
+                    SettingLabel("Ältere automatische Backups", detail: "Inhalt ansehen und einzelne Hefte als Kopie zurückholen oder ersetzen.")
+                }
+                .disabled(policy.target == .disabled)
+                .keyOption(.action { showingHistory = true })
+                Button("Bibliotheksbackup-Datei öffnen …", systemImage: "arrow.down.doc") { pick(.libraryArchive) }
+                    .disabled(!libraryIdle).keyOption(.action { pick(.libraryArchive) })
+                if DeveloperAccess.showsAreas(workspaces) {
+                    NavigationLink {
+                        WorkspacePickerList(model: workspaces, onSelect: onSelectArea).keyboardSheet()
+                    } label: { LabeledContent("Bereiche", value: workspaces.title) }
+                    .disabled(library.busy && !library.backgroundBusy)
+                    .keyOption(.action { showingAreas = true })
+                }
+            } header: { Text("Wiederherstellen") } footer: {
+                Text("Eine Bibliotheksbackup-Datei öffnet sich als eigener Bereich neben deiner Bibliothek, erreichbar unten in der Seitenleiste der Bibliothek. Frühere Stände eines Hefts findest du im Heft unter „Lokale Wiederherstellungspunkte“. Gelöschte Hefte liegen zuerst im Papierkorb."
+                     + (library.opened != nil ? " Export und Wiederherstellen erst nach dem Schließen des Hefts." : ""))
+            }
         }
         .navigationTitle(SettingsPage.backup.title)
         .navigationDestination(isPresented: $showingForm) { backupForm }
-        .navigationDestination(isPresented: $showingHistory) {
-            OlderBackupsView(model: externalBackup, library: library, workspaces: workspaces).keyboardSheet()
-        }
+        .navigationDestination(isPresented: $showingHistory) { historyView }
+        .navigationDestination(isPresented: $showingAreas) { WorkspacePickerList(model: workspaces, onSelect: onSelectArea).keyboardSheet() }
         .keyboardSheet()
         .overlay { if library.busy || workspaces.busy || externalBackup.busy { ProgressView(activityTitle).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
         // Results of backup work for VoiceOver (polish audit F10); steps ending in „…“ stay silent.
@@ -178,6 +181,12 @@ struct BackupSettingsPage: View {
             if let archive = await library.libraryBackup() { file = LibraryArchiveFile(url: archive.url); exporting = true }
         }
     }
+    /// Both ways in (tap, keys) mark the page as showing its own backup errors.
+    private var historyView: some View {
+        OlderBackupsView(model: externalBackup, library: library, workspaces: workspaces)
+            .onAppear { formVisible = true }.onDisappear { formVisible = false }
+            .keyboardSheet()
+    }
     private var backupForm: some View {
         ExternalBackupForm(model: externalBackup, library: library, workspaces: workspaces)
             .onAppear { formVisible = true }.onDisappear { formVisible = false }
@@ -245,7 +254,7 @@ struct OlderBackupsView: View {
                 HStack(spacing: 12) {
                     Image(systemName: "archivebox").foregroundStyle(.tint).frame(width: 26).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(NotyText.listDate(Date(timeIntervalSince1970: model.policy.timestamp(name) ?? 0)))
+                        Text(NotyText.listDate(Date(timeIntervalSince1970: model.policy.timestamp(name) ?? 0), seconds: true))
                         if model.placeholders.contains(name) {
                             Text("Nur in iCloud, wird beim Öffnen geladen").font(.caption).foregroundStyle(.secondary)
                         }
