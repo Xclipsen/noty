@@ -516,6 +516,8 @@ final class CalendarModel: ObservableObject {
         plannedReminderCount = plan.requests.count
         reminderError = await CalendarReminderCenter.shared.apply(plan, root: root, namespace: notificationNamespace)
         await collectDelivered()
+        // Live Activity „Schultag“ and widget „Heute“ follow the same moments (noty calendar only).
+        CalendarSchoolDayCenter.shared.update(self)
     }
 
     /// The user switched a reminder on: asks iPadOS once.

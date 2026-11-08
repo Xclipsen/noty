@@ -343,6 +343,40 @@ final class CalendarPushClient: ObservableObject {
     private var queue: Task<Void, Never>?
     private var lastFetch: Date?
 
+    // MARK: Live Activity „Schultag“ (docs/LIVE-ACTIVITY-PLAN.md, Schritt 2)
+
+    /// Tokens of ActivityKit for the push service (hex, this launch only).
+    /// ÜBERGABESTELLE Schritt 2: noch NICHT an noty-push gemeldet. Der
+    /// Server-Schritt ergänzt hier `PUT /v1/device` (oder einen eigenen
+    /// Endpunkt) um `liveActivity: {startToken, activities: [{id, day, token}]}`
+    /// und sendet an Topic `<Bundle-ID>.push-type.liveactivity` mit dem
+    /// content-state aus `SchoolDayContentState` (JSON-Vertrag im Plan).
+    struct LiveActivityTokens: Equatable, Sendable {
+        /// Push-to-start token (iPadOS 17.2+), starts a tile without noty running.
+        var startToken: String?
+        /// Activity id → (day „YYYY-MM-DD“, update token) of running tiles.
+        var activities: [String: (day: String, token: String)] = [:]
+        static func == (a: Self, b: Self) -> Bool {
+            a.startToken == b.startToken && a.activities.mapValues { "\($0.day)|\($0.token)" } == b.activities.mapValues { "\($0.day)|\($0.token)" }
+        }
+    }
+    @Published private(set) var liveActivityTokens = LiveActivityTokens()
+
+    func receivedLiveActivityStartToken(_ token: String) {
+        liveActivityTokens.startToken = token
+        // TODO Schritt 2: an noty-push melden (nur mit Push-Einwilligung, wie das Geräte-Token).
+    }
+
+    func receivedLiveActivityToken(_ token: String, activity: String, day: String) {
+        liveActivityTokens.activities[activity] = (day, token)
+        // TODO Schritt 2: an noty-push melden; ein ungültiges Token verwirft nur diese Activity.
+    }
+
+    func liveActivityEnded(_ activity: String) {
+        liveActivityTokens.activities[activity] = nil
+        // TODO Schritt 2: dem Server sagen, dass diese Activity vorbei ist.
+    }
+
     var availability: CalendarPush.Availability { CalendarPush.availability }
     var isAvailable: Bool { if case .available = availability { true } else { false } }
 

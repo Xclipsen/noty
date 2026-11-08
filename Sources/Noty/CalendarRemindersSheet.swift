@@ -66,6 +66,7 @@ struct CalendarReminderSettingsSheet: View {
                         model.connectionRequest += 1
                     }
                 }
+                CalendarSchoolDaySection(model: model)
                 Section {
                     Toggle(isOn: toggle(\.overview)) {
                         Label("Morgen-Überblick", systemImage: "sun.horizon")

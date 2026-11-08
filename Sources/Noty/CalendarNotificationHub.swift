@@ -4,6 +4,7 @@ import UserNotifications
 import BackgroundTasks
 import CryptoKit
 import NotebookCore
+import NotyCalendarShared
 
 /// Benachrichtigungen (docs/CALENDAR-PLAN.md, 08.11.2026): the app-wide
 /// side of the calendar notifications.
@@ -54,9 +55,25 @@ final class CalendarNotificationHub: NSObject, UNUserNotificationCenterDelegate 
 
     /// The model finished loading: a tap that waited for it is handled now.
     func modelLoaded(_ model: CalendarModel) {
-        guard self.model === model, let route = pendingRoute else { return }
+        guard self.model === model else { return }
+        if let target = pendingSchoolDay { pendingSchoolDay = nil; openSchoolDay(target) }
+        guard let route = pendingRoute else { return }
         pendingRoute = nil
         handle(route)
+    }
+
+    /// A deep link that arrived before its model was loaded.
+    private var pendingSchoolDay: SchoolDayLink.Target?
+
+    /// Tap on the tile „Schultag“ or the widget „Heute“: the day/lesson of the
+    /// shown area through the normal path; another connection only says so.
+    func openSchoolDay(_ target: SchoolDayLink.Target) {
+        guard let model, model.loaded else { pendingSchoolDay = target; return }
+        if let connection = target.connectionID, model.connection?.id.uuidString != connection {
+            model.notice = "Diese Kachel gehört zu einem anderen Bereich oder einer früheren WebUntis-Verbindung."
+            return
+        }
+        model.openNotification(id: "noty.schoolday", day: target.day, entryID: target.entryID)
     }
 
     // MARK: Namespace

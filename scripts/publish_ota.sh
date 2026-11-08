@@ -63,11 +63,11 @@ if [ -n "$LAST" ] && [ "$NEXT" -le "$LAST" ] && [ "${NOTY_SAME_BUILD:-}" != 1 ];
   echo "Build $NEXT ist nicht größer als der zuletzt veröffentlichte Build $LAST; CFBundleVersion erhöhen." >&2; exit 1
 fi
 INSTALLED_ID="XTL-BAFXLQ964V.XTL-BAFXLQ964V.$BASE_ID"
-ORIGINAL="$(mktemp)"; ORIGINAL_INFO="$(mktemp)"; ORIGINAL_ENTITLEMENTS="$(mktemp)"
-cp xtool.yml "$ORIGINAL"; cp Info.plist "$ORIGINAL_INFO"; cp Noty.entitlements "$ORIGINAL_ENTITLEMENTS"
+ORIGINAL="$(mktemp)"; ORIGINAL_INFO="$(mktemp)"; ORIGINAL_ENTITLEMENTS="$(mktemp)"; ORIGINAL_WIDGET="$(mktemp)"
+cp xtool.yml "$ORIGINAL"; cp Info.plist "$ORIGINAL_INFO"; cp Noty.entitlements "$ORIGINAL_ENTITLEMENTS"; cp NotyCalendarWidgets.plist "$ORIGINAL_WIDGET"
 restore() {
-  cp "$ORIGINAL" xtool.yml; cp "$ORIGINAL_INFO" Info.plist; cp "$ORIGINAL_ENTITLEMENTS" Noty.entitlements
-  rm -f "$ORIGINAL" "$ORIGINAL_INFO" "$ORIGINAL_ENTITLEMENTS"
+  cp "$ORIGINAL" xtool.yml; cp "$ORIGINAL_INFO" Info.plist; cp "$ORIGINAL_ENTITLEMENTS" Noty.entitlements; cp "$ORIGINAL_WIDGET" NotyCalendarWidgets.plist
+  rm -f "$ORIGINAL" "$ORIGINAL_INFO" "$ORIGINAL_ENTITLEMENTS" "$ORIGINAL_WIDGET"
 }
 trap restore EXIT
 sed -i "s/^bundleID: .*/bundleID: XTL-BAFXLQ964V.$BASE_ID/" xtool.yml
@@ -87,6 +87,11 @@ entitlements["aps-environment"] = "development"
 with open(sys.argv[1], "wb") as handle: plistlib.dump(entitlements, handle)
 PY
   grep -q '<key>aps-environment</key>' Noty.entitlements || { echo "aps-environment nicht gesetzt" >&2; exit 1; }
+  # Live Activity „Schultag“ und Widget „Heute“ (docs/LIVE-ACTIVITY-PLAN.md): nur
+  # noty calendar bettet die Widget-Extension ein (xtool.yml `extensions:`),
+  # erlaubt Live Activities und kennt das Schema notycalendar; die Extension
+  # bekommt die Versionsnummern der App. Die anderen Apps bauen unverändert.
+  python3 -I scripts/calendar_build.py . || { echo "Kalender-Extension nicht vorbereitet" >&2; exit 1; }
 fi
 if [ "$CHANNEL" != stable ]; then
   sed -i "s#^iconPath: .*#iconPath: Resources/AppIcon-$CHANNEL.png#" xtool.yml
@@ -100,9 +105,15 @@ restore; trap - EXIT
 mkdir -p .tools
 # Prüft ID, Profil, Gerät, Ablauf und ob das Profil alle Entitlements der
 # App-Signatur erlaubt (sonst verweigert iOS die Installation). Jedes Problem
-# bricht ab, bevor etwas veröffentlicht wird.
+# bricht ab, bevor etwas veröffentlicht wird. Bei noty calendar prüft es auch
+# PlugIns/NotyCalendarWidgets.appex (Signatur, Profil, ID-Präfix, Version,
+# Entitlements; docs/LIVE-ACTIVITY-PLAN.md). Solange xtool die Extension mit
+# den App-Entitlements signiert (#131), meldet es das als Problem; nur für den
+# bewussten Gerätetest von Schritt 0 lässt NOTY_ALLOW_APPEX_ENTITLEMENTS=1
+# genau diese Meldungen durch (alles andere bricht weiter ab).
 CHECK_STATUS=0
-python3 -I scripts/ota_check.py xtool/Noty.ipa "$INSTALLED_ID" > .tools/ota-check.json || CHECK_STATUS=$?
+APPEX_FLAG=""; [ "${NOTY_ALLOW_APPEX_ENTITLEMENTS:-}" = 1 ] && APPEX_FLAG="--allow-appex-entitlements"
+python3 -I scripts/ota_check.py xtool/Noty.ipa "$INSTALLED_ID" $APPEX_FLAG > .tools/ota-check.json || CHECK_STATUS=$?
 cat .tools/ota-check.json
 PROBLEMS="$(python3 -I -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["problems"]))' .tools/ota-check.json 2>/dev/null || echo unlesbar)"
 if [ "$CHECK_STATUS" -ne 0 ] || [ "$PROBLEMS" != 0 ]; then

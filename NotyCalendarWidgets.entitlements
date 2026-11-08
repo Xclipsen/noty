@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Intended entitlements of the widget extension: only the App Group (widget file).
+         xtool 1.24 ignores this when signing and gives the extension the app's
+         entitlements instead (xtool #131, docs/LIVE-ACTIVITY-PLAN.md). -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.de.la.noty.shared</string>
+    </array>
+</dict>
+</plist>

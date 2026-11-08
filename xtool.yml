@@ -3,3 +3,4 @@ bundleID: de.la.noty.prototype
 infoPath: Info.plist
 iconPath: Resources/AppIcon.png
 entitlementsPath: Noty.entitlements
+product: Noty

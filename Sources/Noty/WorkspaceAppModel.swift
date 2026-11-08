@@ -1,5 +1,6 @@
 import SwiftUI
 import NotebookCore
+import NotyCalendarShared
 
 @MainActor
 final class WorkspaceAppModel: ObservableObject {
@@ -192,6 +193,8 @@ struct WorkspaceLibraryHost: View {
             }
             // Shared PDFs/pictures go to the filing sheet, noty files keep their way.
             .onOpenURL { url in
+                // Tile „Schultag“ / widget „Heute“ (notycalendar://schultag…): the calendar at the lesson.
+                if let target = SchoolDayLink.target(url) { CalendarNotificationHub.shared.openSchoolDay(target); return }
                 if IncomingFiling.handles(url) { Task { await IncomingFiling.receive(url) } }
                 else { Task { await IncomingBackup.receive(url, library: library, workspaces: workspaces) } }
             }
