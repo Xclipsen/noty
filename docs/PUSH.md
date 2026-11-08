@@ -152,7 +152,7 @@ Abmelden aller Geräte/Stilllegen: `systemctl disable --now noty-push`, `rm -rf 
 
 ## Nachträge aus der Gesamtprüfung (08.11.2026, Build 145)
 
-Unabhängige Durchsicht des Servers (71 Tests grün, nicht gegen den laufenden Dienst getestet). Umgesetzt:
+Unabhängige Durchsicht des Servers (71 Tests grün, nicht gegen den laufenden Dienst getestet). **Deployt** mit Stand `09d63f8` am 08.11.2026 um 20:59 UTC (`install.sh`, Dienst aktiv, Health-Check ok, `MemoryHigh`/`OOMPolicy` wirksam laut `systemctl show`). Umgesetzt:
 
 - **Gleichzeitige Testabrufe begrenzt:** höchstens 2 WebUntis-Testabrufe (Registrierung oder neue Freigabe) zur gleichen Zeit (`PushService.maximumConcurrentBaselines`); weitere bekommen `503 busy` mit `Retry-After: 30`. Vorher konnten ~20 parallele Anmeldungen mit gültig geformten Freigaben (Wildcard-DNS von webuntis.com) je zwei curl-Prozesse starten und das `MemoryMax` von 256 MB reißen; `OOMPolicy=stop` hätte den Dienst beendet und der Neustart alle Limiter geleert.
 - **Unit:** `MemoryHigh=192M` (Drosselung vor dem Limit) und `OOMPolicy=continue` (ein getöteter curl-Kindprozess nimmt den Dienst nicht mit).
