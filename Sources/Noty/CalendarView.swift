@@ -25,6 +25,9 @@ struct CalendarView: View {
     @Environment(\.scenePhase) private var scenePhase
     /// Command palette (⇧⌘P) and key overview (⌘/) also take Esc.
     @ObservedObject private var router = KeyboardRouter.shared
+    /// The sidebar has room (⌃⌘S active). The library measures the same width
+    /// itself for the sidebar button left of „Hefte | Kalender“.
+    @State private var sidebarFits = false
     @State private var dayList: CalendarDayListRequest?
     @State private var searching = false
     @State private var connecting = false
@@ -110,7 +113,11 @@ struct CalendarView: View {
                 VStack(spacing: 0) {
                     header(wide: contentWidth >= 660)
                     if model.selectedEvent == nil { problemBanners }
-                    content
+                    // The grid has no text field of its own: the on-screen keyboard
+                    // of the form above (title focused) must not shrink it – the
+                    // month would turn into free scrolling and jump. The event
+                    // window (with its note) still avoids the keyboard.
+                    content.ignoresSafeArea(.keyboard)
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -123,7 +130,7 @@ struct CalendarView: View {
             }
             .overlay(alignment: .bottom) { toasts }
             .onChange(of: geo.size.width >= CalendarSidebar.minimumTotalWidth, initial: true) { _, fits in
-                if model.sidebarFits != fits { model.sidebarFits = fits }
+                sidebarFits = fits
             }
         }
         .environment(\.calendarOrigin, origins)
@@ -885,7 +892,7 @@ struct CalendarView: View {
             Button("Schnell anlegen") { quickEntry = true }
                 .keyboardShortcut(navigationKeys && model.canWrite && !model.showsSamples ? KeyboardShortcut("n", modifiers: [.command, .option]) : nil)
             Button("Kalenderleiste") { NotyMotion.instant { model.sidebarWanted.toggle() } }
-                .keyboardShortcut(navigationKeys && model.sidebarFits ? KeyboardShortcut("s", modifiers: [.command, .control]) : nil)
+                .keyboardShortcut(navigationKeys && sidebarFits ? KeyboardShortcut("s", modifiers: [.command, .control]) : nil)
         }
         .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
     }

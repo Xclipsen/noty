@@ -23,6 +23,8 @@ struct CalendarTimeGrid: View {
     @State private var creation = CalendarCreateState()
     @State private var allDayCreation = CalendarCreateState()
     @State private var creating = false
+    /// A hold on a read-only all-day chip created: its tap on release opens nothing.
+    @State private var allDayGuard = CalendarSwipeGuard()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.calendarZoom) private var zoom
     @Environment(\.calendarLocalChange) private var localChange
@@ -30,8 +32,8 @@ struct CalendarTimeGrid: View {
     private var minimumColumn: CGFloat { days.count == 1 ? 260 : 96 }
     /// New events can be created here at all (the all-day row then stays visible).
     private var canCreate: Bool { model.canWrite && !model.showsSamples }
-    /// … and right now: nothing presented above the grid.
-    private var creatable: Bool { canCreate && model.selectedEvent == nil && model.draft == nil }
+    /// … and right now: nothing presented above the grid, no own event being moved.
+    private var creatable: Bool { canCreate && model.selectedEvent == nil && model.draft == nil && !dragging }
 
     var body: some View {
         GeometryReader { geo in
@@ -146,7 +148,7 @@ struct CalendarTimeGrid: View {
                 .accessibilityHidden(true)
             ForEach(items) { item in
                 let width = CGFloat(item.last - item.first + 1) * column - 4
-                CalendarAllDayChip(event: item.event, model: model)
+                CalendarAllDayChip(event: item.event, model: model, hold: allDayGuard)
                     .frame(width: width, height: laneHeight - 3)
                     .offset(x: gutter + CGFloat(item.first) * column + 2, y: 3 + CGFloat(item.lane) * laneHeight)
             }
@@ -165,12 +167,15 @@ struct CalendarTimeGrid: View {
         }
     }
 
-    /// Free space of the all-day row: inside the day columns, not on a chip.
+    /// Where a hold in the all-day row may create: inside the day columns,
+    /// on free space or on a read-only chip (holidays, lessons, read-only
+    /// system calendars – a holiday band covers whole weeks, and all-day
+    /// chips have no long press of their own). Own chips stay theirs.
     private func allDayFree(_ point: CGPoint, column: CGFloat, items: [AllDayItem]) -> Bool {
         let x = point.x - gutter
         guard x >= 0, x < column * CGFloat(days.count) else { return false }
         return !items.contains { item in
-            CGRect(x: gutter + CGFloat(item.first) * column + 2, y: 3 + CGFloat(item.lane) * laneHeight,
+            !model.isReadOnly(item.event) && CGRect(x: gutter + CGFloat(item.first) * column + 2, y: 3 + CGFloat(item.lane) * laneHeight,
                    width: CGFloat(item.last - item.first + 1) * column - 4, height: laneHeight - 3)
                 .insetBy(dx: -2, dy: -2).contains(point)
         }
@@ -179,6 +184,7 @@ struct CalendarTimeGrid: View {
     private func allDayCreate(_ phase: CalendarHoldDrag.Phase, _ point: CGPoint, column: CGFloat) {
         let state = allDayCreation
         let x = Double(point.x - gutter)
+        allDayGuard.mark()
         switch phase {
         case .began:
             let day = CalendarCreation.column(x: x, width: Double(column), count: days.count, current: nil, hysteresis: 8)
@@ -197,8 +203,11 @@ struct CalendarTimeGrid: View {
             guard let range = state.range, days.indices.contains(range.lowerBound), days.indices.contains(range.upperBound) else {
                 state.clear(animated: true); return
             }
-            model.requestNewEvent(start: days[range.lowerBound], end: days[range.upperBound], allDay: true)
-            if let id = model.draft?.id { state.draftID = id } else { state.clear(animated: true) }
+            if let id = model.requestNewEvent(start: days[range.lowerBound], end: days[range.upperBound], allDay: true) {
+                state.draftID = id
+            } else {
+                state.clear(animated: true)
+            }
         case .cancelled:
             creating = false
             state.clear(animated: true)
@@ -328,8 +337,11 @@ struct CalendarTimeGrid: View {
             guard let span = state.span, let dates = CalendarCreation.dates(span, days: days, calendar: calendar) else {
                 state.clear(animated: true); return
             }
-            model.requestNewEvent(start: dates.start, end: dates.end, allDay: false)
-            if let id = model.draft?.id { state.draftID = id } else { state.clear(animated: true) }
+            if let id = model.requestNewEvent(start: dates.start, end: dates.end, allDay: false) {
+                state.draftID = id
+            } else {
+                state.clear(animated: true)
+            }
         case .cancelled:
             creating = false
             state.clear(animated: true)
@@ -692,6 +704,8 @@ struct CalendarEventCard: View {
 struct CalendarAllDayChip: View {
     let event: CalendarEntry
     @ObservedObject var model: CalendarModel
+    /// A hold-and-drag that started on this chip (to create) does not open it on release.
+    var hold: CalendarSwipeGuard?
     @Environment(\.calendarOrigin) private var origins
     @Environment(\.calendarZoom) private var zoom
 
@@ -700,7 +714,7 @@ struct CalendarAllDayChip: View {
         let selected = model.selection == event.id
         let notes = model.hasNotes(event)
         Button {
-            guard zoom?.recentPinch != true else { return }
+            guard zoom?.recentPinch != true, hold?.recent != true else { return }
             origins?.tap(event.id, key: "allday/" + event.id)
             model.selection = event.id
         } label: {

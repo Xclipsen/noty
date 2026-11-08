@@ -139,6 +139,11 @@ extension View {
     }
 }
 
+/// The last frame of a zoom target (not observed: written on every scroll frame).
+private final class CalendarZoomFrameBox {
+    var frame: CGRect?
+}
+
 private struct CalendarZoomTargetEffect: ViewModifier {
     let kind: CalendarMode
     let start: Date
@@ -148,33 +153,39 @@ private struct CalendarZoomTargetEffect: ViewModifier {
     @Environment(\.calendarZoomFocus) private var focus
     @State private var owner = UUID()
     @State private var lit = false
+    @State private var box = CalendarZoomFrameBox()
 
+    /// One structure whether enabled or not: switching `enabled` (the month's
+    /// shown page changes while scrolling) never rebuilds the row it wraps;
+    /// it only starts or stops reporting the frame and the highlight.
     func body(content: Content) -> some View {
-        if enabled, let tracker {
-            content
-                .overlay {
-                    // Opacity only: also the form with „Bewegung reduzieren“.
-                    RoundedRectangle(cornerRadius: radius, style: .continuous)
-                        .fill(CalendarPalette.selection.opacity(0.12))
-                        .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(CalendarPalette.selection, lineWidth: 2))
-                        .opacity(lit ? 1 : 0)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                }
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(CalendarZoomTracker.space)) } action: {
-                    tracker.report(kind, start, $0, owner: owner)
-                }
-                .onDisappear { tracker.forget(kind, start, owner: owner) }
-                .onAppear { flash() }
-                .onChange(of: focus.count) { _, _ in flash() }
-        } else {
-            content
-        }
+        content
+            .overlay {
+                // Opacity only: also the form with „Bewegung reduzieren“.
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(CalendarPalette.selection.opacity(0.12))
+                    .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(CalendarPalette.selection, lineWidth: 2))
+                    .opacity(lit && enabled ? 1 : 0)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(CalendarZoomTracker.space)) } action: { frame in
+                box.frame = frame
+                if enabled { tracker?.report(kind, start, frame, owner: owner) }
+            }
+            .onChange(of: enabled) { _, on in
+                guard let tracker else { return }
+                if on, let frame = box.frame { tracker.report(kind, start, frame, owner: owner) }
+                if !on { tracker.forget(kind, start, owner: owner) }
+            }
+            .onDisappear { tracker?.forget(kind, start, owner: owner) }
+            .onAppear { flash() }
+            .onChange(of: focus.count) { _, _ in flash() }
     }
 
     /// Lights up for half a second, then fades in 0.2 s (opacity only).
     private func flash() {
-        guard focus.count > 0, focus.kind == kind, focus.start == start, Date().timeIntervalSince(focus.at) < 0.8 else { return }
+        guard enabled, tracker != nil, focus.count > 0, focus.kind == kind, focus.start == start, Date().timeIntervalSince(focus.at) < 0.8 else { return }
         withAnimation(NotyMotion.fade) { lit = true }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(500))

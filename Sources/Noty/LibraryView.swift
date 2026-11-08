@@ -58,6 +58,8 @@ struct LibraryView: View {
     @State private var frames = DropFrames()
     @State private var sidebarSize = CGSize(width: 280, height: 600)
     @State private var detailSize = CGSize(width: 600, height: 600)
+    /// Width of the detail column (both sides): the calendar sidebar button.
+    @State private var detailWidth: CGFloat = 0
     @StateObject private var pdfExport = PDFExportJob()
     /// Calendar of this area, owned by the host (per area): switching to the calendar and back keeps both.
     @ObservedObject var calendar: CalendarModel
@@ -783,6 +785,7 @@ struct LibraryView: View {
             }
         }
             .toolbar { leadingToolbar }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { detailWidth = $0 }
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let warning = model.warning {
                     Label(warning, systemImage: "exclamationmark.triangle")
@@ -816,8 +819,10 @@ struct LibraryView: View {
     @ToolbarContentBuilder private var leadingToolbar: some ToolbarContent {
         // Left of the switch (user request 08.11.2026; before, the calendar's
         // own toolbar put it right of it). Only where the sidebar has room
-        // (`sidebarFits`, from 864 pt calendar width: landscape, not portrait).
-        if showsCalendar && calendar.sidebarFits {
+        // (from 864 pt calendar width: landscape, not portrait) – measured
+        // here (`detailWidth`), so the button is there with the first frame
+        // of the calendar instead of after the calendar has measured itself.
+        if showsCalendar && detailWidth >= CalendarSidebar.minimumTotalWidth {
             ToolbarItem(placement: .topBarLeading) { calendarSidebarButton }
         }
         ToolbarItem(placement: .topBarLeading) { modeSwitch }

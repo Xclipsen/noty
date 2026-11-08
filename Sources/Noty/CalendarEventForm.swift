@@ -26,6 +26,9 @@ struct CalendarEventForm: View {
     /// A new, empty form starts in the title („+“ › „Leeres Formular“, ⌘N,
     /// holding and dragging over the grid).
     @FocusState private var titleFocused: Bool
+    /// „Ganztägig“ just set both times: the start change it made must not
+    /// move the end once more.
+    @State private var keepEnd = false
     private var systemTarget: Bool { target != .local }
     private var editingSystem: Bool { model.isSystemSeries(draft.editing) || (draft.editing.map { model.isSystem($0) } ?? false) }
     private var asksScope: Bool { draft.isSeriesOccurrence || model.isSystemSeries(draft.editing) }
@@ -122,8 +125,31 @@ struct CalendarEventForm: View {
             }
         }
         .onChange(of: draft.start) { old, new in
+            if keepEnd { keepEnd = false; return }
             // Moving the start keeps the duration.
             if let moved = calendar.date(byAdding: .second, value: Int(draft.end.timeIntervalSince(old)), to: new) { draft.end = moved }
+        }
+        .onChange(of: draft.allDay) { _, allDay in allDayChanged(allDay) }
+    }
+
+    /// „Ganztägig“ switched: the times keep meaning the same days. On: an
+    /// end exactly at midnight belongs to the day before (23:00–24:00 stays
+    /// one day; the end moves one minute back, so switching off again gives
+    /// 23:00–23:59); other times stay for switching back. Off while both
+    /// times are at midnight (an all-day draft, also one dragged over days):
+    /// 09:00 on the first day to 10:00 on the last, instead of 00:00–00:00.
+    private func allDayChanged(_ allDay: Bool) {
+        let first = calendar.startOfDay(for: draft.start)
+        let endDay = calendar.startOfDay(for: draft.end)
+        if allDay {
+            if endDay == draft.end && draft.end > draft.start { draft.end = draft.end.addingTimeInterval(-60) }
+        } else if draft.start == first && draft.end == endDay {
+            let lastDay = max(first, endDay)
+            let start = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: first) ?? first
+            let end = calendar.date(bySettingHour: 10, minute: 0, second: 0, of: lastDay) ?? start.addingTimeInterval(3_600)
+            if start != draft.start { keepEnd = true }
+            draft.start = start
+            draft.end = max(end, start.addingTimeInterval(15 * 60))
         }
     }
 

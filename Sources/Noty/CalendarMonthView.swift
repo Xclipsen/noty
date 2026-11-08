@@ -112,14 +112,17 @@ struct CalendarMonthView: View {
         return ScrollViewReader { proxy in
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {
-                    ForEach(months, id: \.self) { month in
-                        page(month, column: column, height: paging ? height : nil)
+                    // Own id type: a page's month start must not equal the id of
+                    // its first day's cell or week row (`scrollTo` would find those).
+                    ForEach(months.map(CalendarMonthPage.init), id: \.self) { page in
+                        self.page(page.start, column: column, height: paging ? height : nil)
                     }
                 }
                 .scrollTargetLayout()
             }
             .scrollTargetBehavior(CalendarMonthPaging(paging: paging))
-            .scrollPosition(id: $visibleMonth, anchor: .center)
+            .scrollPosition(id: Binding(get: { visibleMonth.map(CalendarMonthPage.init) },
+                                        set: { visibleMonth = $0?.start }), anchor: .center)
             .modifier(CalendarMonthScrollStart(centered: paging, idle: $scrollIdle))
             .scrollIndicators(.hidden)
             .scrollDisabled(creating)
@@ -145,11 +148,11 @@ struct CalendarMonthView: View {
         }
         NotyMotion.instant {
             visibleMonth = month
-            proxy.scrollTo(month, anchor: .center)
+            proxy.scrollTo(CalendarMonthPage(start: month), anchor: .center)
         }
         // After the layout of new pages (first appearance, recentred months).
         Task { @MainActor in
-            NotyMotion.instant { proxy.scrollTo(month, anchor: .center) }
+            NotyMotion.instant { proxy.scrollTo(CalendarMonthPage(start: month), anchor: .center) }
         }
     }
 
@@ -207,7 +210,7 @@ struct CalendarMonthView: View {
             // Hold a day and drag over days and weeks: a new all-day event.
             .background {
                 CalendarHoldDrag(enabled: creatable && shown,
-                                 canBegin: { $0.x >= weekColumn },
+                                 canBegin: { monthFree($0, days: days, column: column, row: row, pitch: pitch, rows: grid.weeks.count) },
                                  interrupted: { zoom?.recentPinch == true }) { phase, point in
                     monthCreate(phase, point, month: month, days: days, column: column, pitch: pitch, rows: grid.weeks.count)
                 }
@@ -215,6 +218,28 @@ struct CalendarMonthView: View {
             }
         }
         .frame(height: height)
+    }
+
+    /// Where a hold may create: the date and the free part of a day cell –
+    /// not its entry lines, „+ n weitere“ or the dots (same layout as `cell`),
+    /// which keep their taps and may get a long press of their own later.
+    private func monthFree(_ point: CGPoint, days: [Date], column: CGFloat, row: CGFloat, pitch: CGFloat, rows: Int) -> Bool {
+        guard point.x >= weekColumn, point.y >= 0, column > 0, pitch > 0 else { return false }
+        let index = CalendarCreation.gridIndex(x: Double(point.x - weekColumn), y: Double(point.y), cellWidth: Double(column),
+                                               cellHeight: Double(pitch), columns: 7, rows: rows)
+        guard days.indices.contains(index) else { return false }
+        let count = model.events(on: days[index]).count
+        guard count > 0 else { return true }
+        let occupied: CGFloat
+        if column < Self.dotColumn {
+            occupied = 40
+        } else {
+            let capacity = min(maximumLines, Int((row - dateRow - 6) / line))
+            let split = CalendarOverflow.split(total: count, capacity: capacity)
+            occupied = CGFloat(split.shown + (split.hidden > 0 ? 1 : 0)) * (line + 1)
+        }
+        let y = point.y - CGFloat(index / 7) * pitch
+        return y < dateRow - 1 || y > dateRow + occupied + 2
     }
 
     /// Press: the day under the finger; drag: every day from there to the
@@ -239,8 +264,11 @@ struct CalendarMonthView: View {
             creating = false
             guard state.page == month, let range = state.range, days.indices.contains(range.lowerBound),
                   days.indices.contains(range.upperBound) else { state.clear(animated: true); return }
-            model.requestNewEvent(start: days[range.lowerBound], end: days[range.upperBound], allDay: true)
-            if let id = model.draft?.id { state.draftID = id } else { state.clear(animated: true) }
+            if let id = model.requestNewEvent(start: days[range.lowerBound], end: days[range.upperBound], allDay: true) {
+                state.draftID = id
+            } else {
+                state.clear(animated: true)
+            }
         case .cancelled:
             creating = false
             state.clear(animated: true)
@@ -479,13 +507,16 @@ struct CalendarYearView: View {
     @Environment(\.calendarZoom) private var zoom
     @Environment(\.calendarTodayPulse) private var todayPulse
     @ScaledMetric(relativeTo: .body) private var cell: CGFloat = 44
-    /// Month (1–12) at the scroll position; starts at the anchor's month.
-    @State private var focusMonth: Int?
+    /// Estimates for the opening position (iPadOS 18): weekday letters and
+    /// one legend line.
+    @ScaledMetric(relativeTo: .caption2) private var smallLine: CGFloat = 14
+    /// Month tile at the scroll position; starts at the anchor's month.
+    @State private var focus: CalendarYearTile?
     private var calendar: Calendar { model.calendar }
 
     init(model: CalendarModel) {
         _model = ObservedObject(wrappedValue: model)
-        _focusMonth = State(initialValue: model.calendar.component(.month, from: model.anchor))
+        _focus = State(initialValue: CalendarYearTile(month: model.calendar.component(.month, from: model.anchor)))
     }
 
     var body: some View {
@@ -493,28 +524,26 @@ struct CalendarYearView: View {
             let tile = cell * 7
             let columns = max(1, Int((geo.size.width - 2 * CalendarSpace.xl + 32) / (tile + 32)))
             let first = CalendarDates.startOfYear(model.anchor, calendar: calendar)
-            // Rows of month numbers; every tile is a scroll target (`focusMonth`).
-            let rows = stride(from: 1, through: 12, by: columns).map { Array($0...min(12, $0 + columns - 1)) }
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: CalendarSpace.l) {
-                        VStack(alignment: .leading, spacing: CalendarSpace.xl) {
-                            ForEach(rows, id: \.self) { numbers in
-                                HStack(alignment: .top, spacing: 32) {
-                                    ForEach(numbers, id: \.self) { number in
-                                        month(CalendarDates.shift(first, mode: .month, by: number - 1, calendar: calendar))
-                                            .frame(width: tile, alignment: .leading)
-                                    }
-                                }
-                                .scrollTargetLayout()
+                        // One scroll target layout; its children (the tiles) carry
+                        // their own id type, distinct from the numbers inside a tile.
+                        LazyVGrid(columns: Array(repeating: GridItem(.fixed(tile), spacing: 32, alignment: .top), count: columns),
+                                  alignment: .leading, spacing: CalendarSpace.xl) {
+                            ForEach((1...12).map(CalendarYearTile.init), id: \.self) { item in
+                                month(CalendarDates.shift(first, mode: .month, by: item.month - 1, calendar: calendar))
+                                    .id(item)
                             }
                         }
+                        .scrollTargetLayout()
                         legend
                     }
                     .padding(.horizontal, CalendarSpace.xl).padding(.vertical, CalendarSpace.l)
                     .frame(maxWidth: .infinity)
                 }
-                .scrollPosition(id: $focusMonth, anchor: .center)
+                .scrollPosition(id: $focus, anchor: .center)
+                .modifier(CalendarYearScrollStart(anchor: openingAnchor(columns: columns, viewport: geo.size.height)))
                 .onAppear { center(proxy) }
                 .onChange(of: model.anchor) { _, _ in center(proxy) }
                 .onChange(of: columns) { _, _ in center(proxy) }
@@ -527,12 +556,28 @@ struct CalendarYearView: View {
     /// The anchor's month into the middle, without scrolling motion (the
     /// period change has its own); again after the first layout pass.
     private func center(_ proxy: ScrollViewProxy) {
-        let month = calendar.component(.month, from: model.anchor)
+        let item = CalendarYearTile(month: calendar.component(.month, from: model.anchor))
         NotyMotion.instant {
-            focusMonth = month
-            proxy.scrollTo(month, anchor: .center)
+            focus = item
+            proxy.scrollTo(item, anchor: .center)
         }
-        Task { @MainActor in NotyMotion.instant { proxy.scrollTo(month, anchor: .center) } }
+        Task { @MainActor in NotyMotion.instant { proxy.scrollTo(item, anchor: .center) } }
+    }
+
+    /// Where the scroll view opens (iPadOS 18, `.initialOffset`): the unit
+    /// point that puts the anchor's month row about into the middle, from
+    /// the layout's sizes – so the first frame is not January. `center`
+    /// then corrects the last points.
+    private func openingAnchor(columns: Int, viewport: CGFloat) -> UnitPoint {
+        let rows = (12 + columns - 1) / columns
+        let row = (calendar.component(.month, from: model.anchor) - 1) / columns
+        let tileHeight = 44 + smallLine + 6 * cell
+        let content = 2 * CalendarSpace.l + CGFloat(rows) * tileHeight + CGFloat(rows - 1) * CalendarSpace.xl
+            + CalendarSpace.l + 2 * smallLine
+        guard content > viewport + 1 else { return .top }
+        let middle = CalendarSpace.l + CGFloat(row) * (tileHeight + CalendarSpace.xl) + tileHeight / 2
+        let fraction = (middle - viewport / 2) / (content - viewport)
+        return UnitPoint(x: 0.5, y: min(1, max(0, fraction)))
     }
 
     /// The same source as in the status popover (`holidaySourceText`):
@@ -616,13 +661,43 @@ struct CalendarYearView: View {
     }
 }
 
+/// Scroll identity of a month page (its first day). A plain `Date` would
+/// equal the identity of that day's cell and of a week row starting on it.
+struct CalendarMonthPage: Hashable {
+    let start: Date
+}
+
+/// Year: scroll identity of a month tile (1–12), distinct from the plain
+/// numbers of the weekday and row loops inside the tiles.
+struct CalendarYearTile: Hashable {
+    let month: Int
+}
+
 /// Month pages: one page per scroll when every month fits its page,
-/// otherwise free scrolling (large text, small window).
+/// otherwise free scrolling (large text, small window). Aligned to the
+/// pages themselves (`viewAligned`, at most one per gesture), not to the
+/// container's height like `.paging`: a page measured a little differently
+/// from the scroll container (safe area, rounding) still lands exactly, also
+/// after the mouse wheel.
 struct CalendarMonthPaging: ScrollTargetBehavior {
     let paging: Bool
 
     func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
-        if paging { PagingScrollTargetBehavior.paging.updateTarget(&target, context: context) }
+        if paging { ViewAlignedScrollTargetBehavior(limitBehavior: .always).updateTarget(&target, context: context) }
+    }
+}
+
+/// iPadOS 18+: the year opens at `anchor` (the anchor's month row); before,
+/// `CalendarYearView.center` scrolls there on appear.
+private struct CalendarYearScrollStart: ViewModifier {
+    let anchor: UnitPoint
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.defaultScrollAnchor(anchor, for: .initialOffset)
+        } else {
+            content
+        }
     }
 }
 

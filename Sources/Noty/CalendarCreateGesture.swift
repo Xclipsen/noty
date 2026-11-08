@@ -19,7 +19,8 @@ import NotebookCore
 // the pinch are unchanged. Finger, Pencil and pointer (click and hold, then
 // drag) fire it; once it has begun the grid does not scroll (the views set
 // `scrollDisabled`), and with `autoScroll` the enclosing vertical scroll view
-// moves while the finger rests near its top or bottom edge.
+// moves while the finger rests near its top or bottom edge – once the finger
+// has moved after the press fired (a press near the edge does not scroll).
 
 struct CalendarHoldDrag: UIViewRepresentable {
     enum Phase { case began, changed, ended, cancelled }
@@ -28,7 +29,8 @@ struct CalendarHoldDrag: UIViewRepresentable {
     let enabled: Bool
     /// Whether a press at this point (marker coordinates) may create: free space only.
     let canBegin: (CGPoint) -> Bool
-    /// Scroll the enclosing vertical scroll view near its top/bottom edge.
+    /// Scroll the enclosing vertical scroll view near its top/bottom edge
+    /// (after the finger moved from where the press fired).
     var autoScroll = false
     /// A pinch started meanwhile: the creation ends without a result.
     let interrupted: () -> Bool
@@ -77,6 +79,12 @@ struct CalendarHoldDrag: UIViewRepresentable {
         private var lastTick: CFTimeInterval = 0
         /// A creation is running (between `.began` and its end).
         private var running = false
+        /// Where the finger was when the press fired (window coordinates):
+        /// the grid scrolls by itself only after the finger has moved from
+        /// there (`armDistance`) – a press that fires near the edge does not
+        /// start scrolling on its own.
+        private var origin: CGPoint?
+        static let armDistance: CGFloat = 12
 
         /// Auto-scroll: the edge zone and the speed at its outer end (points per second).
         static let edge: CGFloat = 64
@@ -140,13 +148,17 @@ struct CalendarHoldDrag: UIViewRepresentable {
             case .began:
                 guard enabled, !interrupted() else { stop(); return }
                 running = true
+                origin = press.location(in: nil)
                 update(.began, press.location(in: self))
-                startScrolling()
             case .changed:
                 guard running else { return }
                 // A second finger or a pinch: no event from this.
                 if press.numberOfTouches > 1 || interrupted() || !enabled { abort(); return }
                 update(.changed, press.location(in: self))
+                if link == nil, let origin {
+                    let now = press.location(in: nil)
+                    if hypot(now.x - origin.x, now.y - origin.y) >= Self.armDistance { startScrolling() }
+                }
             case .ended:
                 guard running else { return }
                 let point = press.location(in: self)
@@ -163,6 +175,7 @@ struct CalendarHoldDrag: UIViewRepresentable {
 
         private func finish() {
             running = false
+            origin = nil
             link?.invalidate()
             link = nil
         }

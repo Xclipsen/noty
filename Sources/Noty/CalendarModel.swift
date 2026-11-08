@@ -34,9 +34,6 @@ final class CalendarModel: ObservableObject {
     @Published var sidebarWanted = UserDefaults.standard.object(forKey: CalendarModel.sidebarKey) as? Bool ?? true {
         didSet { if sidebarWanted != oldValue { UserDefaults.standard.set(sidebarWanted, forKey: Self.sidebarKey) } }
     }
-    /// The calendar is wide enough for its sidebar (set by `CalendarView`):
-    /// only then is the sidebar button shown and ⌃⌘S active.
-    @Published var sidebarFits = false
     nonisolated static let sidebarKey = "noty.calendar.sidebar"
     @Published var hiddenSources: Set<CalendarSource> = [] { didSet { releaseVanishedSelection() } }
     /// Demo mode: only fictitious entries, nothing editable or stored. Off by default.
@@ -46,6 +43,9 @@ final class CalendarModel: ObservableObject {
     var visible = false {
         didSet {
             if visible && !oldValue {
+                // Another area's model may have changed the device preference meanwhile.
+                let stored = UserDefaults.standard.object(forKey: Self.sidebarKey) as? Bool ?? true
+                if stored != sidebarWanted { NotyMotion.instant { sidebarWanted = stored } }
                 refreshIfDue()
                 // A notification tapped meanwhile opens its entry now (that selection shows its note).
                 let shown = selection
@@ -688,12 +688,16 @@ final class CalendarModel: ObservableObject {
     /// span. Timed: `start`/`end` as instants (also over several days);
     /// all-day: the first and the last covered day (the form shows the last
     /// day, the end is stored exclusively). Nothing is saved before the form.
-    func requestNewEvent(start: Date, end: Date, allDay: Bool) {
-        guard draft == nil, canWrite, !showsSamples else { return }
+    /// Returns the id of the draft this call opened (nil: none – another form
+    /// is open, no write access, samples): only then does a placeholder wait for it.
+    @discardableResult
+    func requestNewEvent(start: Date, end: Date, allDay: Bool) -> UUID? {
+        guard draft == nil, canWrite, !showsSamples else { return nil }
         var prepared = CalendarDraft(start: start, calendar: calendar)
         prepared.allDay = allDay
         prepared.end = allDay ? max(calendar.startOfDay(for: start), calendar.startOfDay(for: end)) : max(end, start)
         draft = prepared
+        return prepared.id
     }
 
     func editDraft(for entry: CalendarEntry) -> CalendarDraft {
