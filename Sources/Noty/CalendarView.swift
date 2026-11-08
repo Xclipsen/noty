@@ -323,21 +323,22 @@ struct CalendarView: View {
             grid.coordinateSpace(name: CalendarZoomTracker.space)
         }
             .keyframeAnimator(initialValue: CalendarNavFrame(), trigger: key) { view, frame in
+                let frame = frame.sanitized
                 view.offset(x: frame.offset).scaleEffect(frame.scale, anchor: zoom?.anchor ?? .center).opacity(frame.opacity)
             } keyframes: { _ in
                 let move = CalendarNavFrame.start(from: previous, to: key, reduced: reduceMotion,
                                                   zoom: zoom?.from == previous ? zoom : nil)
                 KeyframeTrack(\.offset) {
-                    LinearKeyframe(move.offset, duration: 0)
-                    SpringKeyframe(0, duration: 0.42, spring: Spring(response: 0.42, dampingRatio: 1))
+                    MoveKeyframe(move.offset)
+                    SpringKeyframe(0, duration: 0.42, spring: Spring(response: 0.42, dampingRatio: 1), startVelocity: 0)
                 }
                 KeyframeTrack(\.scale) {
-                    LinearKeyframe(move.scale, duration: 0)
-                    SpringKeyframe(1, duration: 0.42, spring: Spring(response: 0.42, dampingRatio: 1))
+                    MoveKeyframe(move.scale)
+                    SpringKeyframe(1, duration: 0.42, spring: Spring(response: 0.42, dampingRatio: 1), startVelocity: 0)
                 }
                 KeyframeTrack(\.opacity) {
-                    LinearKeyframe(move.opacity, duration: 0)
-                    CubicKeyframe(1, duration: reduceMotion ? 0.16 : 0.3)
+                    MoveKeyframe(move.opacity)
+                    CubicKeyframe(1, duration: reduceMotion ? 0.16 : 0.3, startVelocity: 0, endVelocity: 0)
                 }
             }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { pinch.size = $0 }
@@ -836,6 +837,16 @@ struct CalendarNavFrame {
     var offset: CGFloat = 0
     var scale: CGFloat = 1
     var opacity: Double = 1
+
+    /// Never invisible or off-screen, whatever the animator holds (Build 133:
+    /// after ‹ › the whole grid stayed blank – a non-finite value from the
+    /// keyframes must never reach the view).
+    var sanitized: CalendarNavFrame {
+        CalendarNavFrame(
+            offset: offset.isFinite ? min(max(offset, -CalendarMotion.slide), CalendarMotion.slide) : 0,
+            scale: scale.isFinite ? min(max(scale, 0.4), 1.25) : 1,
+            opacity: opacity.isFinite ? min(max(opacity, 0.2), 1) : 1)
+    }
 
     /// `zoom`: a pinch or ⌘+/⌘- – stronger, from the opened period (see `CalendarZoomMotion`).
     static func start(from old: CalendarNavKey?, to new: CalendarNavKey, reduced: Bool, zoom: CalendarZoomMotion? = nil) -> CalendarNavFrame {

@@ -6,7 +6,7 @@
     <key>CFBundleDevelopmentRegion</key><string>de</string>
     <key>CFBundleLocalizations</key><array><string>de</string></array>
     <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>133</string>
+    <key>CFBundleVersion</key><string>134</string>
     <key>NotyChannel</key><string>stable</string>
     <key>NSCalendarsFullAccessUsageDescription</key><string>noty zeigt Termine aus Apple Kalender und Outlook (über die Kalender-Accounts dieses iPads) neben Stundenplan und Notizen an und trägt Termine, die du in noty anlegst oder änderst, in den gewählten Kalender ein. Notizen bleiben in noty.</string>
     <key>NSCameraUsageDescription</key><string>noty liest mit der Kamera nur den QR-Code der Untis-Mobile-Freigabe, um WebUntis zu verbinden. Es werden keine Bilder gespeichert.</string>
