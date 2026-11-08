@@ -43,10 +43,14 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
             .disabled(!enabled)
             if showingOptions && drag == nil {
                 let attached = layout.optionsFrame(preferredWidth: optionsWidth)
+                // Slide out of the bar, whichever side the options sit on.
+                let bar = layout.frame
+                let dx: CGFloat = attached.x >= bar.x + bar.width - 0.5 ? -6 : (attached.x + attached.width <= bar.x + 0.5 ? 6 : 0)
+                let dy: CGFloat = attached.y >= bar.y + bar.height - 0.5 ? -6 : (attached.y + attached.height <= bar.y + 0.5 ? 6 : 0)
                 options().frame(width: attached.width, height: attached.height)
                     .notyGlass()
                     .offset(x: attached.x, y: attached.y)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .offset(y: -6)))
+                    .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .opacity.combined(with: .offset(x: dx, y: dy)))
                     .animation(NotyMotion.palette(reduceMotion), value: attached)
                     .disabled(!enabled)
             }
@@ -58,6 +62,7 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
         .environment(\.colorScheme, .dark)
         .sensoryFeedback(.selection, trigger: candidate)
         .animation(NotyMotion.highlight(reduceMotion), value: drag != nil)
+        // Reduce Motion: the options fade (their transition), nothing moves.
         .animation(NotyMotion.panel(reduceMotion), value: showingOptions)
         .onChange(of: gripHeld) { _, held in
             guard !held else { return }
@@ -87,7 +92,7 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
                    height: axis == .vertical ? ToolbarLayout.grip : ToolbarLayout.thickness)
             .contentShape(Rectangle())
             .accessibilityLabel("Werkzeugleiste bewegen")
-            .notyTooltip("Werkzeugleiste bewegen – ziehen zum Andocken")
+            .notyTooltip("Werkzeugleiste bewegen – ziehen zum Andocken", hint: false)
             .environment(\.notyTooltipAxis, axis)
             .accessibilityHint(preferences.dockOnly == false ? "Ziehen zum Andocken oder freien Platzieren. Doppeltippen wechselt die Ausrichtung." : "Zu einem der vier hervorgehobenen Andockpunkte ziehen.")
             .accessibilityActions {
@@ -143,15 +148,15 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
             let active = candidate == dock
             let label = dock == .top ? "Oben" : dock == .bottom ? "Unten" : dock == .left ? "Links" : "Rechts"
             Capsule()
-                .fill(active ? Color.cyan.opacity(0.28) : Color(white: 0.15).opacity(0.85))
-                .overlay(Capsule().strokeBorder(active ? .cyan : .white.opacity(0.45), lineWidth: active ? 2 : 1))
+                .fill(active ? Color.notyAccent.opacity(0.28) : Color(white: 0.15).opacity(0.85))
+                .overlay(Capsule().strokeBorder(active ? Color.notyAccent : .white.opacity(0.45), lineWidth: active ? 2 : 1))
                 .overlay {
                     Text(active ? "\(label) · Andocken" : label).font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white).fixedSize().rotationEffect(.degrees(dock == .left ? -90 : dock == .right ? 90 : 0))
                 }
                 .frame(width: zone.width, height: zone.height)
                 .scaleEffect(active && !reduceMotion ? 1.06 : 1)
-                .shadow(color: active ? .cyan.opacity(0.45) : .black.opacity(0.2), radius: active ? 15 : 4)
+                .shadow(color: active ? Color.notyAccent.opacity(0.45) : .black.opacity(0.2), radius: active ? 15 : 4)
                 .offset(x: zone.x, y: zone.y)
                 .animation(NotyMotion.highlight(reduceMotion), value: active)
         }

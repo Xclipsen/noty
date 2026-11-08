@@ -939,7 +939,18 @@ final class EditorModel: ObservableObject {
     /// Remembered per notebook so a relaunch reopens the last viewed page, also without edits.
     private func rememberPage() {
         guard writable, !deferredCommit, notebook.pages.indices.contains(pageIndex) else { return }
-        UserDefaults.standard.set(page.id.uuidString, forKey: pageKeyPrefix + notebook.id.uuidString)
+        // Only a changed page is written (Swift-Audit S7: save() runs per stroke/keystroke).
+        let key = pageKeyPrefix + notebook.id.uuidString, value = page.id.uuidString
+        guard rememberedPage?.key != key || rememberedPage?.value != value else { return }
+        UserDefaults.standard.set(value, forKey: key)
+        rememberedPage = (key, value)
+    }
+    private var rememberedPage: (key: String, value: String)?
+    /// `@Published` announces every assignment, also of the same value; each
+    /// one re-renders the whole editor (Swift-Audit S7). Routine save cycles
+    /// therefore only assign what actually changes.
+    private func setStatus(_ next: String) {
+        if status != next { status = next }
     }
 
     /// Calendar note, first real input: claims the package and commits the
@@ -983,8 +994,8 @@ final class EditorModel: ObservableObject {
         revision += 1
         let snapshot = notebook
         let savingRevision = revision
-        status = saveFailed ? "Neuer Speicherversuch …" : "Änderungen werden gespeichert …"
-        saveFailed = false
+        setStatus(saveFailed ? "Neuer Speicherversuch …" : "Änderungen werden gespeichert …")
+        if saveFailed { saveFailed = false }
         // Give iOS time to complete a flush when moving to the background.
         let background = delayed ? nil : BackgroundSaveTask()
         pendingSave = Task {
@@ -993,7 +1004,7 @@ final class EditorModel: ObservableObject {
                 if delayed { try await Task.sleep(for: .milliseconds(250)) }
                 try Task.checkCancellation()
                 try await store.save(snapshot, revision: savingRevision)
-                if savingRevision == revision { status = "Lokal gespeichert"; retryAttempt = 0; lastPermanentFailure = nil }
+                if savingRevision == revision { setStatus("Lokal gespeichert"); retryAttempt = 0; lastPermanentFailure = nil }
             } catch is CancellationError {
                 // A newer complete snapshot supersedes this one.
             } catch {
@@ -1008,10 +1019,10 @@ final class EditorModel: ObservableObject {
     /// Errors a retry cannot fix (size limit, unknown or invalid format) wait
     /// for the user. A success, a newer save or closing cancels the retry.
     private func saveDidFail(_ failure: Error) {
-        saveFailed = true
+        if !saveFailed { saveFailed = true }
         let message = failure.localizedDescription
         guard Self.retryable(failure) else {
-            status = "Speichern fehlgeschlagen – Änderungen nur im Speicher"
+            setStatus("Speichern fehlgeschlagen – Änderungen nur im Speicher")
             // The same permanent error again (e.g. a later flush) keeps the
             // status but raises no new alert; a different error does.
             if message != lastPermanentFailure { error = message }

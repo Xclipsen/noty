@@ -36,8 +36,10 @@ enum SelectionContour {
         let pieces = CGMutablePath()
         let spacing = SelectionOutline.sampleSpacing(gap: gap)
         if let drawing {
-            for index in ink.sorted() where drawing.strokes.indices.contains(index) {
-                let stroke = drawing.strokes[index]
+            // `strokes` bridges a fresh array on every access (Swift-Audit S2).
+            let strokes = drawing.strokes
+            for index in ink.sorted() where strokes.indices.contains(index) {
+                let stroke = strokes[index]
                 let transformScale = max(hypot(stroke.transform.a, stroke.transform.b), hypot(stroke.transform.c, stroke.transform.d))
                 let width = (stroke.path.map { max($0.size.width, $0.size.height) }.max() ?? 1) * transformScale
                 let samples = Array(stroke.path.interpolatedPoints(by: .distance(spacing)))
@@ -86,8 +88,9 @@ enum SelectionContour {
             for point in SelectionOutline.hull(points) { discs.append((point, radius)) }
         }
         if let drawing {
-            for index in ink where drawing.strokes.indices.contains(index) {
-                let stroke = drawing.strokes[index]
+            let strokes = drawing.strokes
+            for index in ink where strokes.indices.contains(index) {
+                let stroke = strokes[index]
                 let transformScale = max(hypot(stroke.transform.a, stroke.transform.b), hypot(stroke.transform.c, stroke.transform.d))
                 let width = Double((stroke.path.map { max($0.size.width, $0.size.height) }.max() ?? 1) * transformScale)
                 let samples = Array(stroke.path.interpolatedPoints(by: .distance(4)))

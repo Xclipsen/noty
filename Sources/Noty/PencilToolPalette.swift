@@ -287,7 +287,7 @@ struct PencilToolPalette: View {
         ZStack(alignment: .topLeading) {
             Color.clear.frame(width: size.width, height: size.height)
                 .modifier(PaletteGlass(shape: band))
-                .overlay { band.stroke(.white.opacity(0.14), lineWidth: 0.6).allowsHitTesting(false) }
+                .notyGlassRimStroke(band)
                 // The band between items belongs to the arc gesture: no close, scrolling works there too.
                 .contentShape(band)
                 .accessibilityHidden(true)
@@ -316,7 +316,7 @@ struct PencilToolPalette: View {
                 itemView(item)
                     .frame(width: Self.hitSize, height: Self.hitSize).contentShape(Circle())
                     // Press feedback as `NotyPressStyle`, only while the touch can still be a tap.
-                    .scaleEffect(down && !reduceMotion ? 0.91 : 1)
+                    .scaleEffect(down && !reduceMotion ? 0.96 : 1)
                     .opacity(down ? 0.75 : 1)
                     .animation(.easeOut(duration: 0.12), value: down)
                     .scaleEffect(appeared || reduceMotion ? 0.7 + 0.3 * visibility : 0.6)
@@ -378,14 +378,14 @@ struct PencilToolPalette: View {
         case .autoPen:
             let on = preferences.automaticInk(for: inkTarget == .pencil ? .pencil : .pen)
             Image(systemName: on ? "a.circle.fill" : "a.circle").font(.system(size: 20, weight: .medium))
-                .foregroundStyle(on ? Color(red: 0.62, green: 0.84, blue: 1) : .white.opacity(0.9))
+                .foregroundStyle(on ? Color.notyAccent : .white.opacity(0.9))
                 .paletteButton("Autostift", value: on ? "Ein" : "Aus", hint: "Schwarz oder Weiß passend zum Hintergrund.") { activate(item) }
         }
     }
 
     private func actionGlyph(_ title: String, kind: NotyActionGlyph.Kind, enabled: Bool, item: PencilPaletteItem) -> some View {
         NotyActionGlyph(kind: kind, tint: .white.opacity(0.9)).frame(width: 20, height: 20)
-            .opacity(enabled ? 1 : 0.35)
+            .opacity(enabled ? 1 : NotyChrome.disabledOpacity)
             .paletteButton(title, enabled: enabled) { activate(item) }
     }
 
@@ -404,7 +404,8 @@ struct PencilToolPalette: View {
                         Circle().fill(color.color)
                             .overlay(Circle().strokeBorder(.white.opacity(same(color, currentColor) ? 0.95 : 0.35), lineWidth: same(color, currentColor) ? 2.5 : 1))
                             .frame(width: 26, height: 26).frame(width: 40, height: 40).contentShape(Circle())
-                    }.buttonStyle(NotyPressStyle()).accessibilityLabel("Farbe")
+                    }.buttonStyle(NotyPressStyle()).accessibilityLabel(colorName(color))
+                        .accessibilityAddTraits(same(color, currentColor) ? .isSelected : [])
                 }
                 ColorPicker("Weitere Farbe", selection: Binding(get: { currentColor.color }, set: { apply(color: InkColor($0)) }))
                     .labelsHidden().frame(width: 40, height: 40)
@@ -424,7 +425,7 @@ struct PencilToolPalette: View {
         }
         .padding(.horizontal, 6).frame(height: 48)
         .modifier(PaletteGlass(shape: Capsule()))
-        .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.6))
+        .notyGlassRim(Capsule())
         .position(x: x, y: y)
         .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.9)))
     }
@@ -443,6 +444,29 @@ struct PencilToolPalette: View {
         var result: [InkColor] = []
         for color in favorites + standard where !result.contains(where: { same($0, color) }) { result.append(color) }
         return Array(result.prefix(8))
+    }
+    /// VoiceOver name of a swatch (polish audit F19): the name the app gives
+    /// this colour elsewhere, otherwise one derived from its hue.
+    private func colorName(_ color: InkColor) -> String {
+        let named = LaserPointerView.colors.map { ($0.name, $0.color) } + TextObjectLayer.formatColors
+        if let match = named.first(where: { same($0.1, color) }) { return match.0 }
+        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+        UIColor(red: color.red, green: color.green, blue: color.blue, alpha: 1)
+            .getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        if brightness < 0.15 { return "Schwarz" }
+        if saturation < 0.15 { return brightness > 0.9 ? "Weiß" : "Grau" }
+        let degrees = hue * 360
+        let base = switch degrees {
+        case ..<15, 345...: "Rot"
+        case ..<45: "Orange"
+        case ..<70: "Gelb"
+        case ..<165: "Grün"
+        case ..<195: "Türkis"
+        case ..<255: "Blau"
+        case ..<290: "Violett"
+        default: "Pink"
+        }
+        return brightness < 0.5 ? "Dunkles \(base)" : base
     }
     private func same(_ a: InkColor, _ b: InkColor) -> Bool {
         abs(a.red - b.red) < 0.01 && abs(a.green - b.green) < 0.01 && abs(a.blue - b.blue) < 0.01 && abs(a.alpha - b.alpha) < 0.01
@@ -505,14 +529,7 @@ private struct ArcBand: Shape {
 /// `notyGlass` for arbitrary shapes, darker like the system Pencil palette.
 private struct PaletteGlass<S: Shape>: ViewModifier {
     let shape: S
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @ViewBuilder func body(content: Content) -> some View {
-        if reduceTransparency {
-            content.background(Color(white: 0.11), in: shape)
-        } else if #available(iOS 26.0, *) {
-            content.glassEffect(.regular.tint(.black.opacity(0.45)), in: shape)
-        } else {
-            content.background(Color.black.opacity(0.35), in: shape).background(.ultraThinMaterial, in: shape)
-        }
+    func body(content: Content) -> some View {
+        content.notyGlass(in: shape, tint: 0.45, solid: Color(white: 0.11), fallbackShade: 0.35)
     }
 }

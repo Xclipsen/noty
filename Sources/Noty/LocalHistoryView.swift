@@ -15,7 +15,8 @@ struct LocalHistoryView: View {
         NavigationStack {
             List {
                 Section {
-                    Text(model.notebook.isTextDocument ? "Textdokument: \(model.notebook.title)" : "Heft: \(model.notebook.title)").font(.headline)
+                    Text(model.notebook.isTextDocument ? "Textdokument: \(NotyText.isolated(model.notebook.title))" : "Heft: \(NotyText.isolated(model.notebook.title))").font(.headline)
+                        .lineLimit(3).truncationMode(.middle)
                     Text("Geöffnete Seite: \(model.pageIndex + 1)")
                     if !model.page.searchableText.isEmpty {
                         Text("Aktueller Text: \(String(model.page.searchableText.prefix(120)))")
@@ -28,10 +29,10 @@ struct LocalHistoryView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(revision.isLatest ? "Zuletzt gespeichert" : "Älterer Stand").font(.headline)
                                 if selectedID == revision.id { Label("Ausgewählt", systemImage: "checkmark.circle.fill") }
-                                Text(revision.title).foregroundStyle(.primary)
+                                Text(revision.title).foregroundStyle(.primary).lineLimit(2).truncationMode(.middle)
                                 if let date = revision.savedAt {
                                     Text(NotyText.listDate(date, seconds: true))
-                                        .font(.caption).foregroundStyle(.secondary)
+                                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                                 }
                                 Text("\(NotyText.count(revision.pageCount, "Seite", "Seiten")) · als Kopie öffnen")
                                     .font(.caption).foregroundStyle(.secondary)

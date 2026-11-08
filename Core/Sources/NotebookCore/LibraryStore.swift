@@ -121,6 +121,11 @@ public actor LibraryStore {
     private var lastGoodBytes: Data?
     private var recovered = false
     private let fm = FileManager.default
+    /// Test hook: fails the read-back after a successful append commit
+    /// (`appendIncomingPDF`). Per instance and actor-isolated, so parallel
+    /// tests cannot race on it.
+    var incomingReadBackFault: @Sendable () throws -> Void = {}
+    func setIncomingReadBackFault(_ fault: @escaping @Sendable () throws -> Void) { incomingReadBackFault = fault }
     private var directory: URL { root.appendingPathComponent("Library", isDirectory: true) }
     private var primary: URL { directory.appendingPathComponent("index.json") }
     private var previous: URL { directory.appendingPathComponent("index-previous.json") }

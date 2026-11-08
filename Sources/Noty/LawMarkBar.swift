@@ -83,7 +83,7 @@ struct LawMarkBar: View {
     }
     /// Like `SelectionActionBar`'s group divider.
     private static var divider: some View {
-        Rectangle().fill(.white.opacity(0.14)).frame(width: 1, height: 26)
+        Rectangle().fill(.white.opacity(NotyDivider.opacity)).frame(width: NotyDivider.thickness, height: NotyDivider.length)
             .allowsHitTesting(false).accessibilityHidden(true)
     }
 }
@@ -99,7 +99,7 @@ struct LawMarkToastView: View {
                 HStack(spacing: 12) {
                     Text(toast.message).font(.subheadline).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                     if toast.undo && controller.canUndo {
-                        Rectangle().fill(.white.opacity(0.14)).frame(width: 0.5, height: 18).accessibilityHidden(true)
+                        Rectangle().fill(.white.opacity(NotyDivider.opacity)).frame(width: NotyDivider.thickness, height: NotyDivider.length).accessibilityHidden(true)
                         Button("Rückgängig") { controller.undoFromToast() }
                             .font(.subheadline.weight(.semibold)).foregroundStyle(Color.notyAccent)
                             .frame(minHeight: 44).contentShape(Rectangle()).buttonStyle(NotyPressStyle())
@@ -109,7 +109,7 @@ struct LawMarkToastView: View {
                 .background(Color(white: 0.13).opacity(0.98), in: Capsule(style: .continuous))
                 .overlay(Capsule(style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
                 .foregroundStyle(.white).environment(\.colorScheme, .dark)
-                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .move(edge: .bottom).combined(with: .opacity))
                 .id(toast.id)
                 .accessibilityAddTraits(.isStaticText)
                 .onAppear {
@@ -220,9 +220,9 @@ final class LawMarkOverlay: UIView {
             guard barVisible else { return }
             barVisible = false
             let view = bar.view!
-            UIView.animate(withDuration: reduced ? 0.1 : 0.16, delay: 0, options: [.beginFromCurrentState, .curveEaseOut]) {
+            UIView.animate(withDuration: reduced ? 0.1 : 0.12, delay: 0, options: [.beginFromCurrentState, .curveEaseOut]) {
                 view.alpha = 0
-                if !reduced { view.transform = CGAffineTransform(scaleX: 0.94, y: 0.94) }
+                if !reduced { view.transform = CGAffineTransform(scaleX: 0.97, y: 0.97) }
             } completion: { _ in if !self.barVisible { view.isHidden = true; view.transform = .identity } }
             return
         }
@@ -251,8 +251,14 @@ final class LawMarkOverlay: UIView {
             view.transform = .identity; place(); view.isHidden = false
             // VoiceOver: the bar is new on screen; its first element is next.
             UIAccessibility.post(notification: .layoutChanged, argument: view)
-            if !reduced { view.transform = CGAffineTransform(scaleX: 0.92, y: 0.92) }
-            UIView.animate(withDuration: reduced ? 0.12 : 0.36, delay: 0, usingSpringWithDamping: 0.86, initialSpringVelocity: 0, options: [.beginFromCurrentState, .allowUserInteraction]) {
+            // Short, no overshoot (dozens a day), growing out of the selection:
+            // the shift anchors the edge that faces it without moving `center`.
+            let below = frame.minY >= rect.maxY
+            let dy = (below ? -0.5 : 0.5) * frame.height * 0.03
+            if !reduced { view.transform = CGAffineTransform(translationX: 0, y: dy).scaledBy(x: 0.97, y: 0.97) }
+            view.alpha = 0
+            UIView.animate(withDuration: reduced ? 0.12 : 0.2, delay: 0,
+                           options: [.beginFromCurrentState, .allowUserInteraction, .curveEaseOut]) {
                 view.alpha = 1; view.transform = .identity
             }
         } else if animated && view.center != CGPoint(x: frame.midX, y: frame.midY) && !reduced {

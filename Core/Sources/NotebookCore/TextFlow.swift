@@ -193,7 +193,7 @@ extension Notebook {
               pages[start].effectiveTextBoxes.contains(previous), previous.id == replacement.id,
               let flow = replacement.flowID, let region = replacement.flowRegion,
               flow == previous.flowID, region == previous.flowRegion else { throw TextFlowError.stale }
-        var next = try preparedForTextEditing(); next.schemaVersion = max(8, next.schemaVersion)
+        var next = try editableForText(); next.schemaVersion = max(8, next.schemaVersion)
         var text = replacement
         let existing = next.pages.indices.filter { $0 >= start }.compactMap { index -> (UUID, TextBox)? in
             guard let box = next.pages[index].effectiveTextBoxes.first(where: { $0.flowID == flow }) else { return nil }

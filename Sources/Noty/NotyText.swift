@@ -28,6 +28,29 @@ enum NotyText {
         return listDate(date)
     }
 
+    /// A user string (title, folder, area) inside a German sentence: wrapped
+    /// in a bidi isolate (FSI … PDI), so an Arabic or Hebrew title does not
+    /// reorder the quotes, „· Seite 3“ or digits around it. Display only,
+    /// never stored.
+    static func isolated(_ text: String) -> String { "\u{2068}\(text)\u{2069}" }
+
+    /// `isolated` in German quotes: „Mathe“.
+    static func quoted(_ text: String) -> String { "„\(isolated(text))“" }
+
+    /// Why `LibraryStore.validTitle` refuses `title`, for a line under the
+    /// name field (nil: accepted or simply still empty). Mirrors the store's
+    /// rule without changing it: which invisible characters titles may hold
+    /// is still open (break-ui F01).
+    static func titleProblem(_ title: String) -> String? {
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return nil }
+        if name.count > 120 { return "Höchstens 120 Zeichen (jetzt \(name.count))." }
+        let refused = name.unicodeScalars.filter { CharacterSet.controlCharacters.contains($0) }
+        if refused.isEmpty { return nil }
+        if refused.contains(where: { CharacterSet.newlines.contains($0) || $0.value < 0x20 }) { return "Bitte ohne Zeilenumbrüche." }
+        return "Dieses Zeichen ist in Titeln noch nicht erlaubt (z. B. unsichtbare Verbindungs- oder Trennzeichen, zusammengesetzte Emoji)."
+    }
+
     /// Empty value of a „last …“ date.
     static let never = "Noch nie"
 

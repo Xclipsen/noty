@@ -163,7 +163,7 @@ extension Notebook {
         guard let first else { throw TextFlowError.stale }
         let delta = (content.text as NSString).length - segments.reduce(0) { $0 + ($1.box.text as NSString).length }
         let kept = try content.fragment(NSRange(location: firstStart, length: lastEnd + delta - firstStart))
-        var next = try preparedForTextEditing(); next.schemaVersion = max(8, next.schemaVersion)
+        var next = try editableForText(); next.schemaVersion = max(8, next.schemaVersion)
         for (index, segment) in segments.enumerated() where index >= first && index <= last {
             guard let page = next.pages.firstIndex(where: { $0.id == segment.pageID }) else { throw TextFlowError.stale }
             var boxes = next.pages[page].effectiveTextBoxes

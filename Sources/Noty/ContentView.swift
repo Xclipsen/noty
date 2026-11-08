@@ -114,6 +114,8 @@ struct ContentView: View {
     @State private var pageEntryText = ""
     @State private var recentNote: String?
     @State private var recentNoteToken = 0
+    /// VoiceOver heard the current save failure series already.
+    @State private var saveFailureAnnounced = false
     private var ruler: Bool {
         get { toolbox.preferences.ruler ?? false }
         nonmutating set { toolbox.preferences.ruler = newValue }
@@ -301,6 +303,16 @@ struct ContentView: View {
         }
         .onChange(of: toolbox.preferences) { _, _ in toolbox.save() }
         .onChange(of: model.fileStatus) { _, note in showRecentNote(note) }
+        // Once per failure series and only in the active pane: automatic retries
+        // and later saves flip `saveFailed` again; a successful save ends the series.
+        .onChange(of: model.saveFailed) { _, failed in
+            guard failed, !saveFailureAnnounced, isPaneActive() else { return }
+            saveFailureAnnounced = true
+            AccessibilityNotification.Announcement("Speichern fehlgeschlagen").post()
+        }
+        .onChange(of: model.status) { _, status in
+            if status == "Lokal gespeichert" { saveFailureAnnounced = false }
+        }
         .onChange(of: model.backupStatus) { _, note in showRecentNote(note) }
         .onChange(of: model.pageIndex) { _, index in
             if isPaneActive(), model.notebook.pages.indices.contains(index) { selectedPageID = model.notebook.pages[index].id }
@@ -387,9 +399,9 @@ struct ContentView: View {
         case .lastPage: go(to: count ?? pages.count)
         case .gotoPage: if let count { go(to: count) } else { openPageEntry() }
         case .fit: fitRequest += 1
-        case .sidebar: pagesShown = true; sidebarKeys = SidebarKeyRequest(target: .pages)
-        case .outline: pagesShown = true; sidebarKeys = SidebarKeyRequest(target: .outline)
-        case .bookmarks: pagesShown = true; sidebarKeys = SidebarKeyRequest(target: .bookmarks)
+        case .sidebar: NotyMotion.instant { pagesShown = true }; sidebarKeys = SidebarKeyRequest(target: .pages)
+        case .outline: NotyMotion.instant { pagesShown = true }; sidebarKeys = SidebarKeyRequest(target: .outline)
+        case .bookmarks: NotyMotion.instant { pagesShown = true }; sidebarKeys = SidebarKeyRequest(target: .bookmarks)
         case .laws:
             if let onLawKeys { onLawKeys() } else { KeyboardRouter.shared.show(note: "Gesetzessammlung ist ausgeschaltet") }
         case .colors: openKeyColors()
@@ -600,7 +612,7 @@ struct ContentView: View {
                     Color.black.opacity(0.35).contentShape(Rectangle())
                         .paneWakeShield()
                         .onTapGesture { pagesShown = false }
-                        .transition(.opacity)
+                        .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .opacity)
                         .accessibilityLabel("Seitenleiste schließen")
                         .accessibilityAddTraits(.isButton)
                 }
@@ -618,7 +630,8 @@ struct ContentView: View {
                     }
                     .frame(width: width)
                     .paneWakeShield()
-                    .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+                    // Reduce Motion: only the sidebar fades; the layout (editor padding) stays instant.
+                    .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .move(edge: .trailing).combined(with: .opacity))
                 }
             }
             .animation(NotyMotion.panel(reduceMotion), value: pagesShown)
@@ -721,14 +734,25 @@ struct ContentView: View {
                 }
             }
             .overlay(alignment: .bottom) {
-                PDFExportProgressBadge(job: pdfExport).padding(.bottom, layout.bottomInset + 12)
+                // Narrow panes: keep clear of the page navigator (trailing). While
+                // the status pill shows (any width, it may grow almost to the pane
+                // width), sit above its measured height: „Abbrechen“ and
+                // „Erneut versuchen“ both stay reachable.
+                let narrow = geometry.size.width - layout.leftInset - layout.rightInset < 560
+                PDFExportProgressBadge(job: pdfExport)
+                    .padding(.leading, narrow ? layout.leftInset + 12 : 0)
+                    .padding(.trailing, narrow ? layout.rightInset + Self.navigatorClearance : 0)
+                    .padding(.bottom, layout.bottomInset + 12 + (statusNote != nil && statusPillHeight > 0 ? statusPillHeight + 8 : 0))
                     .animation(NotyMotion.highlight(reduceMotion), value: pdfExport.progress == nil)
             }
             .overlay(alignment: .bottomLeading) {
                 // Animation scoped to the pill: autosave updates elsewhere stay unanimated.
                 ZStack(alignment: .bottomLeading) {
                     if notebookLoaded || !model.busy, let note = statusNote {
-                        statusPill(note).padding(.leading, layout.leftInset + 12).padding(.bottom, layout.bottomInset + 12)
+                        // Never under the page navigator: its retry target stays reachable.
+                        statusPill(note, maxWidth: max(160, geometry.size.width - layout.leftInset - layout.rightInset - 12 - Self.navigatorClearance))
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { statusPillHeight = $0 }
+                            .padding(.leading, layout.leftInset + 12).padding(.bottom, layout.bottomInset + 12)
                             .transition(.opacity)
                     }
                 }.animation(NotyMotion.highlight(reduceMotion), value: statusNote)
@@ -743,14 +767,28 @@ struct ContentView: View {
         return Self.routineStatuses.contains(model.status) ? nil : model.status
     }
     private static let routineStatuses: Set<String> = ["Noch nicht gespeichert", "Bereit", "Änderungen werden gespeichert …", "Lokal gespeichert", "Importiert und lokal gespeichert"]
-    @ViewBuilder private func statusPill(_ note: String) -> some View {
-        let label = HStack(spacing: 6) {
-            if model.saveFailed { Image(systemName: "exclamationmark.triangle.fill") }
-            Text(note).lineLimit(2)
-            if model.saveFailed && model.writable { Text("Erneut versuchen").fontWeight(.semibold) }
+    /// Room the bottom-trailing page navigator takes (56 wide, 14 from the
+    /// edge) plus a gap: bottom overlays on narrow panes stay clear of it.
+    private static let navigatorClearance: CGFloat = 14 + 56 + 10
+    /// Measured height of the status pill: the PDF badge sits above it.
+    @State private var statusPillHeight: CGFloat = 0
+    @ViewBuilder private func statusPill(_ note: String, maxWidth: CGFloat) -> some View {
+        let label = NotyWidthCap(maximum: maxWidth) {
+            HStack(spacing: 6) {
+                if model.saveFailed { Image(systemName: "exclamationmark.triangle.fill") }
+                Text(note).lineLimit(2)
+                if model.saveFailed && model.writable {
+                    Text("Erneut versuchen").fontWeight(.semibold).lineLimit(1).fixedSize().layoutPriority(1)
+                }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
         }
-        .font(.caption).foregroundStyle(model.saveFailed ? Color.orange : .secondary)
-        .padding(.horizontal, 12).padding(.vertical, 7).background(.ultraThinMaterial, in: Capsule())
+        // Same glass as the rest of the editor chrome, bright text: readable on
+        // white and on dark paper (polish audit F9).
+        .font(.caption).foregroundStyle(model.saveFailed ? Color.orange : .white.opacity(0.88))
+        .notyGlass(in: Capsule())
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .environment(\.colorScheme, .dark)
         .accessibilityIdentifier("saveStatus")
         if model.saveFailed && model.writable {
             Button { model.save() } label: { label }.buttonStyle(NotyPressStyle())
@@ -761,6 +799,8 @@ struct ContentView: View {
     /// File/backup feedback stays a few seconds, then the corner is clear again.
     private func showRecentNote(_ note: String?) {
         guard let note, !note.isEmpty else { return }
+        // VoiceOver hears what the corner shows (polish audit F10).
+        if isPaneActive() { AccessibilityNotification.Announcement(note).post() }
         recentNote = note; recentNoteToken += 1
         let token = recentNoteToken
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { if recentNoteToken == token { recentNote = nil } }
@@ -784,7 +824,8 @@ struct ContentView: View {
             onFit: { fitRequest += 1 }, onCustomize: { customizingTools = true },
             onSearch: { contentSearch = true }, onSecondView: onSecondView,
             ruler: Binding(get: { ruler }, set: { ruler = $0 }),
-            more: $toolbarMore, settings: $toolbarOptions, axis: axis, activeInk: lastInkTool)
+            more: $toolbarMore, settings: $toolbarOptions, axis: axis, activeInk: lastInkTool,
+            searchTitle: isTextDocument ? "Im Dokument suchen" : "Im Heft suchen")
     }
 
     private func editorHeader(layout: ToolbarLayout) -> some View {
@@ -794,11 +835,12 @@ struct ContentView: View {
                 HStack(spacing: 0) {
                     Image(systemName: closeSymbol).frame(width: 44, height: 44)
                     if layout.headerLeadingFrame.width >= 100, notebookLoaded || closeTitle != nil {
-                        Text(closeTitle ?? model.notebook.title).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.tail)
+                        Text(closeTitle ?? model.notebook.title).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
                             .padding(.trailing, 14)
                     }
                 }.contentShape(Rectangle())
             }.accessibilityLabel(closeTitle ?? "Zur Bibliothek").accessibilityValue(notebookLoaded ? model.notebook.title : "")
+                .notyTooltip(closeTitle == nil ? "Zur Bibliothek (⌘W)" : "Zurück (⌘W)", hint: false)
                 .padding(.horizontal, 4).frame(height: 44).notyGlass()
                 .frame(maxWidth: max(52, layout.headerLeadingFrame.width), alignment: .leading)
                 .frame(width: max(52, layout.headerLeadingFrame.width), height: 44, alignment: .leading)
@@ -807,13 +849,13 @@ struct ContentView: View {
                 // Notebook-wide: the most recent change on any page, in order.
                 Button { performUndo(redo: false) } label: {
                     NotyActionGlyph(kind: .undo).frame(width: 24, height: 24).frame(width: 44, height: 44).contentShape(Rectangle())
-                        .opacity(model.canUndo ? 1 : 0.35)
-                }.accessibilityLabel("Rückgängig").disabled(!model.canUndo)
+                        .opacity(model.canUndo ? 1 : NotyChrome.disabledOpacity)
+                }.accessibilityLabel("Rückgängig").notyTooltip("Rückgängig (⌘Z)", hint: false).disabled(!model.canUndo)
                 if layout.headerActionCount >= 4 {
                     Button { performUndo(redo: true) } label: {
                         NotyActionGlyph(kind: .redo).frame(width: 24, height: 24).frame(width: 44, height: 44).contentShape(Rectangle())
-                            .opacity(model.canRedo ? 1 : 0.35)
-                    }.accessibilityLabel("Wiederholen").disabled(!model.canRedo)
+                            .opacity(model.canRedo ? 1 : NotyChrome.disabledOpacity)
+                    }.accessibilityLabel("Wiederholen").notyTooltip("Wiederholen (⇧⌘Z)", hint: false).disabled(!model.canRedo)
                 }
                 if layout.headerActionCount >= 5 {
                     Button { writingScroll.toggle() } label: {
@@ -823,24 +865,29 @@ struct ContentView: View {
                             .scaleEffect(writingScroll ? 1.12 : 1)
                             .frame(width: 44, height: 44).contentShape(Rectangle())
                     }.accessibilityLabel("Schreibscrollen")
+                        .notyTooltip("Schreibscrollen – Blattrand zur Mitte holen", hint: false)
                         .accessibilityValue(writingScroll ? "Ein" : "Aus")
                         .accessibilityHint("Seitlich scrollen, bis der Blattrand die Bildschirmmitte erreicht, um bequemer am Rand zu schreiben.")
                 }
-                optionsMenu(layout: layout)
+                optionsMenu(layout: layout).notyTooltip("Optionen – Teilen, Export, Seite", hint: false)
                 // Text documents get their pages from the text only.
                 if !layout.compactHeader, !isTextDocument {
                     Menu { pageInsertionActions } label: {
                         Image(systemName: "doc.badge.plus").frame(width: 44, height: 44).contentShape(Rectangle())
-                    }.accessibilityLabel("Neue Seite")
+                    }.accessibilityLabel("Neue Seite").notyTooltip("Seite hinzufügen", hint: false)
                 }
                 Button { pagesShown.toggle() } label: {
                     Image(systemName: "sidebar.right").frame(width: 44, height: 44).contentShape(Rectangle())
-                }.accessibilityLabel("Seitenübersicht rechts")
+                }.accessibilityLabel("Seitenübersicht rechts").notyTooltip("Seitenleiste ein/aus", hint: false)
             }.padding(.horizontal, 4).frame(width: layout.headerActionsFrame.width, height: 44)
                 .notyGlass().disabled(!canEdit)
                 .offset(x: layout.headerActionsFrame.x, y: layout.headerActionsFrame.y)
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .buttonStyle(NotyToolStyle())
+            // Fixed 44-pt chrome over the canvas: capped like system bars.
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+            .environment(\.notyTooltipAxis, .horizontal)
+            .notyTooltipHost()
     }
     @ViewBuilder private var pageInsertionActions: some View {
         Button("Standardseite hinzufügen", systemImage: "doc.badge.plus") {
@@ -854,14 +901,18 @@ struct ContentView: View {
         VStack(spacing: 3) {
             Button { stepPage(-1) } label: { Image(systemName: "chevron.up").frame(width: 48, height: 44).contentShape(Rectangle()) }
                 .disabled(currentPageIndex == 0 && currentPage.id != writingDraft.id)
-                .foregroundStyle(currentPageIndex == 0 && currentPage.id != writingDraft.id ? Color.gray.opacity(0.5) : .white)
-                .accessibilityLabel("Vorherige Seite")
+                .foregroundStyle(.white.opacity(currentPageIndex == 0 && currentPage.id != writingDraft.id ? NotyChrome.disabledOpacity : 1))
+                .accessibilityLabel("Vorherige Seite").notyTooltip("Vorherige Seite (⌘↑)", hint: false).accessibilityShowsLargeContentViewer()
             pageNumberButton
             Button { stepPage(1) } label: { Image(systemName: "chevron.down").frame(width: 48, height: 44).contentShape(Rectangle()) }
                 .disabled(currentPage.id == writingDraft.id || currentPageIndex >= model.notebook.pages.count - 1)
-                .foregroundStyle(currentPage.id == writingDraft.id || currentPageIndex >= model.notebook.pages.count - 1 ? Color.gray.opacity(0.5) : .white)
-                .accessibilityLabel("Nächste Seite")
+                .foregroundStyle(.white.opacity(currentPage.id == writingDraft.id || currentPageIndex >= model.notebook.pages.count - 1 ? NotyChrome.disabledOpacity : 1))
+                .accessibilityLabel("Nächste Seite").notyTooltip("Nächste Seite (⌘↓)", hint: false).accessibilityShowsLargeContentViewer()
         }.padding(4).notyGlass().buttonStyle(NotyToolStyle()).disabled(!canEdit)
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+            // Names open to the left, towards the page.
+            .environment(\.notyTooltipAxis, .vertical)
+            .notyTooltipHost()
     }
     /// Chevrons and ⌘↑/⌘↓: from the trailing draft page "up" returns to the last real page.
     private func stepPage(_ delta: Int) {
@@ -876,12 +927,14 @@ struct ContentView: View {
         let onDraft = currentPage.id == writingDraft.id
         return Button { openPageEntry() } label: {
             VStack(spacing: 3) {
-                Text(onDraft ? "+" : "\(currentPageIndex + 1)").font(.caption.weight(.semibold))
+                Text(onDraft ? "+" : "\(currentPageIndex + 1)").font(.caption.weight(.semibold).monospacedDigit())
+                    .lineLimit(1).minimumScaleFactor(0.7)
                 Rectangle().fill(.secondary).frame(width: 16, height: 1)
-                Text("\(count)").font(.caption)
+                Text("\(count)").font(.caption.monospacedDigit()).lineLimit(1).minimumScaleFactor(0.7)
             }.frame(width: 48, height: 40).contentShape(Rectangle())
         }
         .foregroundStyle(.white)
+        .notyTooltip("Gehe zu Seite (⌘G)", hint: false)
         // With the law window focused ⌘G is its next hit (menu „Gesetze“).
         .keyboardShortcut(lawKeys.focused ? nil : KeyboardShortcut("g", modifiers: .command))
         .accessibilityLabel(onDraft ? "Neue Seite nach Seite \(count), zum Springen tippen" : "Seite \(currentPageIndex + 1) von \(count), zum Springen tippen")
@@ -896,6 +949,7 @@ struct ContentView: View {
     private func pageEntryPanel(count: Int) -> some View {
         PageJumpPad(text: $pageEntryText, count: count, current: currentPageIndex + 1,
                     onGo: jumpToEnteredPage, onCancel: { pageEntry = false })
+            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             .presentationCompactAdaptation(.popover)
     }
     private func jumpToEnteredPage() {
@@ -933,18 +987,19 @@ struct ContentView: View {
                         Button("Diese Seite als PDF exportieren …", systemImage: "doc") { startPDFExport(pageOnly: true) }
                             .disabled(!model.writable || currentPage.id == writingDraft.id || pdfExport.running)
                     }
+                    // One symbol per meaning: the text formats go without (polish audit F15).
                     Section("Nur Text") {
-                        Button("Als Markdown teilen (.md) …", systemImage: "number") { shareText(.markdown) }
+                        Button("Als Markdown teilen (.md) …") { shareText(.markdown) }
                             .disabled(!model.writable)
-                        Button("Als Text teilen (.txt) …", systemImage: "doc.plaintext") { shareText(.plainText) }
+                        Button("Als Text teilen (.txt) …") { shareText(.plainText) }
                             .disabled(!model.writable)
-                        Button("Als Word teilen (.docx) …", systemImage: "doc.text") { shareText(.word) }
+                        Button("Als Word teilen (.docx) …") { shareText(.word) }
                             .disabled(!model.writable)
-                        Button("Als RTF teilen (.rtf) …", systemImage: "doc.richtext") { shareText(.rtf) }
+                        Button("Als RTF teilen (.rtf) …") { shareText(.rtf) }
                             .disabled(!model.writable)
                     }
                     Section(model.backupStatus) {
-                        Button("Als .noty teilen …", systemImage: "square.and.arrow.up") { shareNoty() }
+                        Button("Als .noty teilen …", systemImage: "shippingbox") { shareNoty() }
                             .disabled(!model.writable)
                         // Same checked archive as „Als .noty teilen“, but saved via
                         // the file dialog and counted as backup (status, date).
@@ -1288,7 +1343,6 @@ private struct PageJumpPad: View {
                 Text(text.isEmpty ? "\(current)" : text)
                     .font(.system(size: 34, weight: .semibold).monospacedDigit())
                     .foregroundStyle(text.isEmpty ? Color.secondary : Color.primary)
-                    .contentTransition(.numericText())
                 Text("von \(count)").font(.callout).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
@@ -1321,7 +1375,6 @@ private struct PageJumpPad: View {
                 .opacity(0).allowsHitTesting(false).accessibilityHidden(true)
         }
         .frame(width: 218)
-        .animation(.snappy(duration: 0.15), value: text)
         // The navigator styles its label white; the popover uses system colours.
         .foregroundStyle(.primary)
     }
@@ -1366,7 +1419,7 @@ private struct NotebookLoadingView: View {
             }
         }
         .allowsHitTesting(false)
-        .onAppear { withAnimation(.easeIn(duration: 0.2).delay(0.3)) { visible = true } }
+        .onAppear { withAnimation(.easeOut(duration: 0.2).delay(0.3)) { visible = true } }
     }
 }
 
