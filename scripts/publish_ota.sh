@@ -71,6 +71,17 @@ sed -i "s/^bundleID: .*/bundleID: XTL-BAFXLQ964V.$BASE_ID/" xtool.yml
 CHANNEL="${NOTY_CHANNEL:-dev}"
 sed -i "s#<key>NotyChannel</key><string>[a-z]*</string>#<key>NotyChannel</key><string>$CHANNEL</string>#" Info.plist
 grep -q "<key>NotyChannel</key><string>$CHANNEL</string>" Info.plist || { echo "NotyChannel nicht gesetzt" >&2; exit 1; }
+# Fehlerberichte (docs/DIAGNOSE.md): Commit, Empfangsadresse und Build-Schlüssel
+# nur in die gebaute App, nie ins Repo (Info.plist wird danach zurückgesetzt).
+DIAG_COMMIT="$COMMIT"; [ -z "$DIRTY" ] || DIAG_COMMIT="$COMMIT-dirty"
+sed -i "s#<key>NotyCommit</key><string>[^<]*</string>#<key>NotyCommit</key><string>$DIAG_COMMIT</string>#" Info.plist
+if [ -n "${DIAG_URL:-}" ] && [ -n "${DIAG_KEY:-}" ]; then
+  sed -i "s#<key>NotyDiagURL</key><string>[^<]*</string>#<key>NotyDiagURL</key><string>$DIAG_URL</string>#" Info.plist
+  sed -i "s#<key>NotyDiagKey</key><string>[^<]*</string>#<key>NotyDiagKey</key><string>$DIAG_KEY</string>#" Info.plist
+  grep -q "<key>NotyDiagKey</key><string>$DIAG_KEY</string>" Info.plist || { echo "NotyDiagKey nicht gesetzt" >&2; exit 1; }
+else
+  echo "Hinweis: DIAG_URL/DIAG_KEY fehlen in $ENV_FILE; dieser Build sendet keine Fehlerberichte." >&2
+fi
 if [ "$CHANNEL" != stable ]; then
   sed -i "s#^iconPath: .*#iconPath: Resources/AppIcon-$CHANNEL.png#" xtool.yml
   sed -i "s#<key>CFBundleDisplayName</key><string>noty</string>#<key>CFBundleDisplayName</key><string>$APP_NAME</string>#" Info.plist
@@ -94,6 +105,28 @@ if [ "$CHECK_STATUS" -ne 0 ] || [ "$PROBLEMS" != 0 ]; then
 fi
 BUILD="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["build"])')"
 SHORT="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["version"])')"
+
+# Binärdatei pro Build privat ablegen, damit scripts/diag_report.py
+# Aufrufketten in Code-Stellen übersetzen kann (nicht im Webverzeichnis).
+DIAG_BINARIES="${DIAG_BINARIES:-$HOME/workspace/noty/.tools/diag-binaries}"
+BIN_DIR="$DIAG_BINARIES/$CHANNEL/$BUILD"
+mkdir -p -m 700 "$BIN_DIR"
+UNPACK="$(mktemp -d)"
+python3 -I -c 'import sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);open(sys.argv[2],"wb").write(z.read("Payload/Noty.app/Noty"))' xtool/Noty.ipa "$UNPACK/Noty"
+install -m 600 "$UNPACK/Noty" "$BIN_DIR/Noty"; rm -rf "$UNPACK"
+python3 -I - "$BIN_DIR" "$CHANNEL" "$BUILD" "$BRANCH" "$DIAG_COMMIT" <<'PY'
+import json, struct, sys, uuid
+folder, channel, build, branch, commit = sys.argv[1:]
+data = open(folder + "/Noty", "rb").read()
+ncmds = struct.unpack_from("<I", data, 16)[0]; offset = 32; image_uuid = None
+for _ in range(ncmds):
+    cmd, size = struct.unpack_from("<II", data, offset)
+    if cmd == 0x1B: image_uuid = str(uuid.UUID(bytes=data[offset + 8:offset + 24])).upper()
+    offset += size
+json.dump({"channel": channel, "build": build, "branch": branch, "commit": commit, "uuid": image_uuid}, open(folder + "/info.json", "w"), indent=1)
+PY
+# Die letzten 60 Builds je Kanal bleiben.
+ls -1d "$DIAG_BINARIES/$CHANNEL"/*/ 2>/dev/null | sort -t/ -k1,1 -V | head -n -60 | xargs -r rm -rf --
 
 STAGE="$(mktemp -d)"
 cat > "$STAGE/manifest.plist" <<PLIST
