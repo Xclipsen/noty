@@ -94,10 +94,12 @@ struct LawReaderView: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            controls
-            notices
+            // Erased pieces keep the body's generic type shallow (Build 131
+            // stack overflow while SwiftUI built the reader's type metadata).
+            AnyView(controls)
+            AnyView(notices)
             if let section, let doc = document {
-                sectionHeader(section)
+                AnyView(sectionHeader(section))
                 ZStack(alignment: .bottom) {
                     reading(doc, section: section)
                     // Floating like the notebook's page navigator; the text keeps
