@@ -718,6 +718,17 @@ final class LibraryModel: ObservableObject {
         return parent!
     }
 
+    /// Lernfelder (docs/LERNFELDER.md): a new Lernfeld notebook joins the
+    /// library at the top level (the user may move it; it is found by
+    /// identity). Like `adoptCalendarNote`, allowed above an open notebook.
+    func adoptStudyNotebook(_ id: UUID, title: String) async throws {
+        try await filingAccess()
+        busy = true; defer { busy = false }
+        if snapshot.items.contains(where: { $0.id == id }), !snapshot.isTrashed(id) { return }
+        let name = NotebookTitles.unique(title, taken: snapshot.activeNotebookTitles(excluding: id))
+        snapshot = try await store.adoptImported(id, title: name, parentID: nil, replacing: nil)
+    }
+
     /// Active notebooks of the notes folder (for linking one again).
     func calendarNotebooks(in folder: UUID?) -> [NotebookCore.LibraryItem] {
         guard let folder = CalendarNotesFolder.usable(folder, in: snapshot) else { return [] }

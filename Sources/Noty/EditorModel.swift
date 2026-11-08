@@ -689,6 +689,26 @@ final class EditorModel: ObservableObject {
         }
     }
 
+    /// Lernfelder: a lesson's heading page at `index` (one undo step, saved
+    /// at once). Nil when the notebook cannot be changed now.
+    func insertSectionPage(heading: String, at index: Int) -> UUID? {
+        var inserted: UUID?
+        let done = editPages { document in
+            let id = try document.insertSectionPage(heading: heading, at: min(max(index, 0), document.pages.count))
+            inserted = id
+            return id
+        }
+        return done ? inserted : nil
+    }
+
+    /// Lernfelder: the generated heading of a section follows its topic.
+    func replaceFirstTextBox(_ box: TextBox, pageID: UUID) {
+        guard let page = notebook.pages.first(where: { $0.id == pageID }), var boxes = page.textBoxes,
+              let index = boxes.firstIndex(where: { $0.id == box.id }) else { return }
+        boxes[index] = box
+        updateTextBoxes(boxes, pageID: pageID)
+    }
+
     func duplicatePage(_ id: UUID) { editPages { try $0.duplicatePage(id) } }
     func copyPage(_ id: UUID, cut: Bool = false) {
         guard writable, !mutationsPaused, !busy else { return }

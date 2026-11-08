@@ -28,6 +28,8 @@ struct CalendarNoteArea: View {
                 }
             case .missing(let reason, let link):
                 missing(reason, link: link)
+            case .study(let prompt):
+                CalendarStudyPromptView(event: event, prompt: prompt, model: model)
             case .unavailable(let text):
                 message(symbol: "note.text", title: text)
             case .sample:
@@ -139,7 +141,7 @@ private struct CalendarNoteStatusLabel: View {
         default:
             editor.saveFailed
                 ? ("exclamationmark.triangle.fill", "Nicht gespeichert", true)
-                : ("folder", "In „Kalendernotizen“", false)
+                : session.study ? ("book.pages", "In „\(session.title)“", false) : ("folder", "In „Kalendernotizen“", false)
         }
     }
 }

@@ -17,6 +17,9 @@ struct CalendarSettingsPage: View {
     @State private var showingWebUntis = false
     @State private var showingSystem = false
     @State private var showingNotifications = false
+    @State private var showingStudy = false
+    @State private var showingMaterials = false
+    @ObservedObject private var materials = MaterialLibrary.shared
     /// „Untis-Zugang prüfen“ inside the Mitteilungen page.
     @State private var webUntisFromNotifications = false
 
@@ -68,6 +71,19 @@ struct CalendarSettingsPage: View {
                 .keyOption(.action { showingSystem = true })
             } header: { Text("Verbindungen") } footer: { AreaScopeFooter(workspaces: workspaces) }
             Section {
+                NavigationLink { CalendarStudySettingsPage(model: model) } label: {
+                    SettingLabel("Lernfelder", detail: studySummary)
+                }
+                .keyOption(.action { showingStudy = true })
+                NavigationLink { MaterialSettingsPage() } label: {
+                    SettingLabel("Materialien", detail: materials.packages.isEmpty ? "Kein Materialpaket"
+                                 : materials.packages.map(\.catalog.title).joined(separator: ", "))
+                }
+                .keyOption(.action { showingMaterials = true })
+            } header: { Text("Schule") } footer: {
+                Text("Stunden eines Lernfelds werden zu Abschnitten mit Überschrift im Heft des Lernfelds; Skripte, Videos und Paragrafen der Materialien lassen sich am Thema der Stunde festhalten.")
+            }
+            Section {
                 NavigationLink { notificationsPage } label: {
                     SettingLabel("Mitteilungen", detail: notificationSummary)
                 }
@@ -81,6 +97,8 @@ struct CalendarSettingsPage: View {
         .navigationDestination(isPresented: $showingWebUntis) { webUntisPage }
         .navigationDestination(isPresented: $showingSystem) { systemPage }
         .navigationDestination(isPresented: $showingNotifications) { notificationsPage }
+        .navigationDestination(isPresented: $showingStudy) { CalendarStudySettingsPage(model: model) }
+        .navigationDestination(isPresented: $showingMaterials) { MaterialSettingsPage() }
         .keyboardSheet()
         .task { await model.refreshReminderPermission() }
         // The push consent after connecting, if the WebUntis page was already left.
@@ -105,6 +123,12 @@ struct CalendarSettingsPage: View {
         case .calendarSystem: showingSystem = true
         case .calendarNotifications: showingNotifications = true
         }
+    }
+
+    private var studySummary: String {
+        let fields = model.studyFields.count, rules = model.state.studyRules.count
+        if fields == 0 { return "Fächer des Stundenplans Lernfeldern zuordnen" }
+        return "\(fields) Lernfelder · \(rules) Zuordnungen"
     }
 
     // MARK: Sub-pages (the calendar's sheets without their frame)

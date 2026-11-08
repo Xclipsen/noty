@@ -226,6 +226,8 @@ struct WorkspaceLibraryHost: View {
             .onOpenURL { url in
                 // Tile „Schultag“ / widget „Heute“ (notycalendar://schultag…): the calendar at the lesson.
                 if let target = SchoolDayLink.target(url) { CalendarNotificationHub.shared.openSchoolDay(target); return }
+                // Learning material (docs/LERNFELDER.md): for the whole device, not the area.
+                if MaterialLibrary.isPackage(url) { Task { await MaterialLibrary.shared.receive(url) }; return }
                 if IncomingFiling.handles(url) { Task { await IncomingFiling.receive(url) } }
                 else { Task { await IncomingBackup.receive(url, library: library, workspaces: workspaces) } }
             }
@@ -234,6 +236,8 @@ struct WorkspaceLibraryHost: View {
                 let toolbox = self.toolbox
                 IncomingFiling.attach(library: library, workspaces: workspaces, defaults: { toolbox.preferences.defaultAppearance })
             }
+            // Lernfelder: pinned material shows its video and script from the start.
+            .task { MaterialLibrary.shared.load() }
             // Event notes are notebooks of this library (Kalender B2).
             .task { calendar.attach(library: library, defaultAppearance: { [toolbox] in toolbox.preferences.defaultAppearance ?? NotebookAppearance() }) }
     }

@@ -16,6 +16,8 @@ struct PageSidebarView: View {
     /// Text document: a tap on an entry of the Gliederung (caret behind the heading).
     var onOutline: ((TextOutlineEntry) -> Void)? = nil
     @StateObject private var cache = PageThumbnailCache()
+    /// Lernfelder: lesson sections of a Lernfeld notebook („Inhalt“).
+    @ObservedObject private var studyOutline = StudyOutline.shared
     /// Gliederung of a text document; recomputed off the main thread after
     /// the text rests briefly (`refreshTextOutline`), never per keystroke.
     @State private var textOutline: [TextOutlineEntry] = []
@@ -230,7 +232,35 @@ struct PageSidebarView: View {
 
     @ViewBuilder
     private var outlineList: some View {
-        if model.pdfOutline.isEmpty {
+        let sections = studyOutline.sections(for: model.notebook)
+        if !sections.isEmpty {
+            let order = Dictionary(model.notebook.pages.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { a, _ in a })
+            let current = currentPage.id
+            List {
+                Section("Stunden") {
+                    ForEach(sections) { section in
+                        StudySectionRow(section: section, pageNumber: (order[section.headingPageID] ?? 0) + 1,
+                                        current: section.pageIDs.contains(current)) {
+                            guard canEdit else { return }
+                            selectPage(section.headingPageID); onSelect?()
+                        }
+                        .listRowBackground(Color.clear)
+                    }
+                }
+                if !model.pdfOutline.isEmpty {
+                    Section("PDF") {
+                        ForEach(model.pdfOutline) { item in
+                            NotebookOutlineRow(item: item, selectedPage: current, keyItem: keyOutlineItem?.id) { id in
+                                guard canEdit else { return }
+                                selectPage(id); onSelect?()
+                            }
+                            .listRowBackground(Color.clear)
+                        }
+                    }
+                }
+            }.listStyle(.plain).scrollContentBackground(.hidden)
+                .disabled(!canEdit)
+        } else if model.pdfOutline.isEmpty {
             ContentUnavailableView("Kein PDF-Inhaltsverzeichnis", systemImage: "list.bullet.indent",
                                    description: Text("Die enthaltenen PDFs haben kein Inhaltsverzeichnis mit erreichbaren Seiten."))
         } else {

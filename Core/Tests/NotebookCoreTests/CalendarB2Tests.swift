@@ -416,8 +416,8 @@ final class CalendarB2Tests: XCTestCase {
     func testFormat1WithFormat2FieldsIsRejected() throws {
         let bytes = Data(#"{"events":[],"formatVersion":1,"noteLinks":[{"x":1}],"settings":{"mode":"week","weekDays":5}}"#.utf8)
         XCTAssertThrowsError(try CalendarStore.decode(bytes))
-        let newer = Data(#"{"events":[],"formatVersion":5}"#.utf8)
-        XCTAssertThrowsError(try CalendarStore.decode(newer)) { XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(5)) }
+        let newer = Data(#"{"events":[],"formatVersion":6}"#.utf8)
+        XCTAssertThrowsError(try CalendarStore.decode(newer)) { XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(6)) }
     }
 }
 

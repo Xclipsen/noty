@@ -34,6 +34,13 @@
         <key>UTTypeTagSpecification</key><dict>
             <key>public.filename-extension</key><array><string>notylibrary</string></array>
         </dict>
+    </dict><dict>
+        <key>UTTypeIdentifier</key><string>de.la.noty.material</string>
+        <key>UTTypeDescription</key><string>noty Materialpaket</string>
+        <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+        <key>UTTypeTagSpecification</key><dict>
+            <key>public.filename-extension</key><array><string>notymaterial</string></array>
+        </dict>
     </dict></array>
     <key>CFBundleDocumentTypes</key><array><dict>
         <key>CFBundleTypeName</key><string>noty-Datei</string>
@@ -45,6 +52,11 @@
         <key>CFBundleTypeRole</key><string>Viewer</string>
         <key>LSHandlerRank</key><string>Owner</string>
         <key>LSItemContentTypes</key><array><string>de.la.noty.library</string></array>
+    </dict><dict>
+        <key>CFBundleTypeName</key><string>noty Materialpaket</string>
+        <key>CFBundleTypeRole</key><string>Viewer</string>
+        <key>LSHandlerRank</key><string>Owner</string>
+        <key>LSItemContentTypes</key><array><string>de.la.noty.material</string></array>
     </dict><dict>
         <key>CFBundleTypeName</key><string>PDF</string>
         <key>CFBundleTypeRole</key><string>Viewer</string>

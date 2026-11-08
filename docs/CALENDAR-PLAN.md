@@ -36,6 +36,7 @@ Lesart (AGENTS.md): **implementiert** = Code vorhanden; **gebaut** = erster noty
 | Live Activity per Push (Schritt 2) | nein | – | – | – | – |
 | Bibliotheksbackup und Restore mit Kalender | ja | 103 (127 Kalenderformat 4) | ja (139) | ungeprüft (Host-Roundtrip unter Linux bestanden) | – |
 | Kalenderpaket (ein Schreiber, Revisionen, Formate 1–4, Migration) | ja | 101 (Format 2: 102, 3: 103, 4: 127) | ja (139) | ungeprüft | – |
+| Lernfelder: Materialpaket und -suche, Kalenderformat 5 (Lernfelder, Zuordnung, Themen), Stunde → Abschnitt im Lernfeld-Heft, Themenkarte ([LERNFELDER](LERNFELDER.md)) | ja | iPad-Build erfolgreich auf `feat/lernfelder` | nein | ungeprüft | Auftrag 08.11.2026 |
 | Backend-Synchronisierung (Stufe D) | nein | – | – | – | – |
 | Durchgehendes Fachheft aus Stundennotizen | nein (bestätigt für später) | – | – | – | – |
 
@@ -72,6 +73,8 @@ Der Nutzer hat diesen Umfang am 03.11.2026 mit „ja so will ich das aber nur fe
 - 06.11.2026: **Outlook/Microsoft 365 über die Systemkonten des iPads** (EventKit), keine Graph-API (Stufe C). Ferien-Rückfall für **NRW**. UI-Überarbeitung nach Rückmeldung („Statusmeldungen wegen WebUntis-Freigabe stören … Merker-Bereich als größeres schwebendes Fenster“).
 - 07.11.2026: Animationen „vernünftig einpflegen“.
 - 08.11.2026: Umschalter Hefte/Kalender mit ausgeblendeter Bibliotheksleiste; neues Terminfenster („Das Pop-up für die Notizen gefällt mir noch nicht so“); Zoom zwischen den Ansichten; **Benachrichtigungen** (heute „Mitteilungen“) mit festgelegtem Umfang ([§2](#mitteilungen-08112026)); **Push bei geschlossener App** als bewusste Ausnahme von „kein Backend“ ([PUSH](PUSH.md)); **Live Activity „Schultag“ und Widget „Heute“** mit eigenen Entscheidungen ([LIVE-ACTIVITY-PLAN](LIVE-ACTIVITY-PLAN.md#entscheidungen-des-nutzers-08112026)), Bauauftrag für die Schritte 0, 1 und 3.
+
+- 08.11.2026 abends: **Lernfelder** – Hefte je Lernfeld mit Stunden als Überschriften, Thema je Stunde, Skripte/Videos/Paragrafen der Lernplattform festhalten ([LERNFELDER](LERNFELDER.md)); Kalenderformat 5.
 
 Weiterhin **nicht beauftragt**: Stufe D (Synchronisierung), durchgehendes Fachheft, Live Activity per Push (Schritt 2), die Ideen in [CALENDAR-IDEAS](CALENDAR-IDEAS.md). Freigabeweg: Arbeit auf `feat/kalender`, Test in noty calendar; nach `dev`/`main` erst mit ausdrücklicher Freigabe.
 
@@ -459,12 +462,13 @@ Vor Freigabe eines weiteren direkten Providers: erlaubten Zugang, Beispieldaten,
 
 ## 8. Datenformat, Speicherpfade und feste Schlüssel
 
-Formatdetails: [STORAGE](STORAGE.md) (Kalenderpaket Format 1–4), [LIBRARY-BACKUP](LIBRARY-BACKUP.md) (Archiv Format 3).
+Formatdetails: [STORAGE](STORAGE.md) (Kalenderpaket Format 1–4), [LERNFELDER](LERNFELDER.md) (Format 5, Materialpaket), [LIBRARY-BACKUP](LIBRARY-BACKUP.md) (Archiv Format 3).
 
 - **Kalenderpaket** je Bereich (`<Bereich>` = `Documents/Noty` bzw. `NotyWorkspaces/Areas/<UUID>/Data`): `Calendar/manifest.json`, `manifest-previous.json`, `Revisions/<UUID>.json` (unveränderliche `CalendarState`-Revisionen), `Quarantine/`, `Migration/format-<n>-<Datei>` (exakte Altbytes), `Cache/<Verbindung>.json` (Offline-Stundenplan `CalendarSourceSnapshot` Format 1, optional `homework`). Ein Schreiber: `CalendarRepository` mit `PackageWriteLock`.
-- **Kalenderformat (`CalendarState.formatVersion`) aktuell 4:** 1 = B1, 2 = B2 (Serien, Links, Zuordnungen, Fachfarben, Notizordner, Kontokennung), 3 = B3 (Erinnerungen, Unterrichtserinnerung, gelöschte Termine), 4 = Stufe C (`settings.systemCalendars`, Notizziel `system`, `homeworkDone`). Formate 1–3 werden gelesen und beim ersten Commit migriert; Format ≥ 5 sperrt. Ältere Builds sperren neuere Formate (Build 101 sperrt 2, Build 102 sperrt 3, Builds 103–123 sperren 4).
+- **Kalenderformat (`CalendarState.formatVersion`) aktuell 5:** 1 = B1, 2 = B2 (Serien, Links, Zuordnungen, Fachfarben, Notizordner, Kontokennung), 3 = B3 (Erinnerungen, Unterrichtserinnerung, gelöschte Termine), 4 = Stufe C (`settings.systemCalendars`, Notizziel `system`, `homeworkDone`), 5 = Lernfelder (`studyFields`, `studyRules`, `lessonTopics`, [LERNFELDER](LERNFELDER.md)). Formate 1–4 werden gelesen und beim ersten Commit migriert; Format ≥ 6 sperrt. Ältere Builds sperren neuere Formate (Build 101 sperrt 2, Build 102 sperrt 3, Builds 103–123 sperren 4, Builds bis 143 sperren 5).
 - **Zeitwerte** in Kalenderdateien: Sekunden seit 2001-01-01 UTC (Foundation-Referenzdatum); nur `savedAtUnix` im Manifest ist Unix-Zeit. Ganztägig: zivile Daten, Ende exklusiv.
-- **Bibliotheksarchiv** Format 3 mit Datensätzen `calendar` (Kalenderformat 3 oder 4) und optional `calendarSource`; ohne Kalender Format 2.
+- **Bibliotheksarchiv** Format 3 mit Datensätzen `calendar` (Kalenderformat 3, 4 oder 5) und optional `calendarSource`; ohne Kalender Format 2.
+- **Materialpakete** (`Documents/NotyMaterials/<id>/`, für das ganze Gerät, nicht im Bibliotheksbackup) und gelernte Suchvorlieben `noty.v2.materialPins.<paket>`: [LERNFELDER](LERNFELDER.md).
 
 **Feste Kennungen – nicht ändern** (gespeicherte Daten, Schlüsselbund, geplante Mitteilungen, Server-Verträge und Profile hängen daran; eine Änderung verliert Daten oder erzeugt Doppelte):
 

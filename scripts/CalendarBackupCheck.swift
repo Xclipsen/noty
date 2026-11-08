@@ -55,6 +55,14 @@ extension PageWorkflowCheck {
                                                       toPeriodID: "4800", toDate: CivilDate("2026-11-11")!, confirmedAt: created)]
         state.settings.subjectColors = ["webuntis:12": "indigo"]; state.settings.notesFolderID = folder
         state.settings.lessonReminderMinutes = 10
+        // Format 5: a Lernfeld with its notebook, a rule and a lesson topic with pinned material (fictitious).
+        let field = CalendarStudyField(number: 3, title: "Umsatzsteuer (erfunden)", notebookID: note.id, package: "beispiel-material")
+        state.studyFields = [field]
+        state.studyRules = [CalendarStudyRule(subjectKey: "webuntis:12", subjectName: "SR", weekday: 1, startFrom: 480, startTo: 630,
+                                              fieldID: field.id)]
+        state.lessonTopics = [CalendarLessonTopic(target: .lesson(anchor), topic: "Die Lieferung", summary: "Merksatz (erfunden)",
+            materials: [CalendarMaterialRef(package: "beispiel-material", key: "lesson:00000000-0000-4000-8000-000000000042",
+                                            label: "Ort der Lieferung", detail: "LF 3 · Kapitel 4 · S. 5–9")], modifiedAt: created)]
         let repository = CalendarRepository(areaRoot: area)
         _ = try await repository.load()
         try await repository.save(state, revision: 1)
@@ -99,7 +107,9 @@ extension PageWorkflowCheck {
             && restoredSnapshot?.lessons.map(\.key.sourceID) == snapshot.lessons.map(\.key.sourceID)
         let detached = restored.connection?.id != connection && restored.connection?.source == state.connection?.source
             && restoredSnapshot?.connection == restored.connection?.id
-        return (summary.formatVersion == 3, identical, restored.noteLinks.allSatisfy { documents.contains($0.documentID) }, detached,
+        let linksLocal = restored.noteLinks.allSatisfy { documents.contains($0.documentID) }
+            && restored.studyFields.allSatisfy { $0.notebookID.map(documents.contains) ?? true }
+        return (summary.formatVersion == 3, identical, linksLocal, detached,
                 secretFree, corruptRejected && nothingPublished)
     }
 }
