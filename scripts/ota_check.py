@@ -6,7 +6,7 @@ codesign needed) with what the embedded provisioning profile allows. iOS
 refuses to install an app whose signature claims more, e.g.
 `com.apple.developer.applesignin` without the capability in the profile.
 
-Push (docs/PUSH.md): for noty calendar (ID ending in `.de.la.noty.calendar`,
+Push (docs/PUSH.md): for noty calendar and the normal noty (ID ending in `.de.la.noty.calendar` or `.de.la.noty.prototype`,
 or `--push`) `aps-environment` must be in the signature and in the profile
 with the same value; otherwise APNs hands out no token and the push service
 cannot reach the iPad. Both values are printed (`aps_environment`).
@@ -19,7 +19,7 @@ executable not empty (xtool #313) – and its signed entitlements are listed
 extensions with the app's entitlements (#131): the extension then claims the
 app's `application-identifier`, which its own profile does not allow. That
 is always a problem; `scripts/resign_extensions.py` fixes it after the build.
-noty calendar must contain NotyCalendarWidgets.appex and NSSupportsLiveActivities.
+noty calendar and the normal noty must contain NotyCalendarWidgets.appex and NSSupportsLiveActivities.
 
 Seal (`seal_ok`, app and each appex): every CodeDirectory's page hashes and
 bound Info.plist/requirements/CodeResources/entitlements, a non-ad-hoc CMS
@@ -217,7 +217,8 @@ def entitlement_problems(signed, permitted):
     return problems
 
 
-PUSH_SUFFIX = ".de.la.noty.calendar"
+# Apps with push, Live Activities and the widget extension: noty calendar and the normal noty.
+PUSH_SUFFIXES = (".de.la.noty.calendar", ".de.la.noty.prototype")
 
 
 def push_problems(signed, permitted, required):
@@ -335,7 +336,7 @@ def main(path, expected, push=None):
                 if problem not in problems: problems.append(problem)
     except (ValueError, struct.error, plistlib.InvalidFileException) as error:
         problems.append(f"Entitlements der App-Signatur nicht lesbar ({error})")
-    push_required = expected.endswith(PUSH_SUFFIX) if push is None else push
+    push_required = expected.endswith(PUSH_SUFFIXES) if push is None else push
     for problem in push_problems(signed, entitlements, push_required):
         if problem not in problems: problems.append(problem)
     problems += [f"App-Signatur: {p}" for p in seal]
@@ -346,9 +347,9 @@ def main(path, expected, push=None):
         if isinstance(entry, dict) and "cdhash" in entry and entry["cdhash"].hex() not in report.get("cdhashes", []):
             problems.append(f"App-Signatur: cdhash von {report['name']} in CodeResources veraltet")
     problems += appex_problems
-    if expected.endswith(PUSH_SUFFIX):
-        if not any(a["name"] == WIDGET_EXTENSION for a in appex): problems.append(f"noty calendar ohne {WIDGET_EXTENSION}")
-        if info.get("NSSupportsLiveActivities") is not True: problems.append("noty calendar ohne NSSupportsLiveActivities")
+    if expected.endswith(PUSH_SUFFIXES):
+        if not any(a["name"] == WIDGET_EXTENSION for a in appex): problems.append(f"Build ohne {WIDGET_EXTENSION}")
+        if info.get("NSSupportsLiveActivities") is not True: problems.append("Build ohne NSSupportsLiveActivities")
     print(json.dumps({"build": info["CFBundleVersion"], "version": info.get("CFBundleShortVersionString", info["CFBundleVersion"]),
                       "id_ok": info["CFBundleIdentifier"] == expected, "team": team, "devices": len(profile.get("ProvisionedDevices", [])),
                       "profile_expires": expires.date().isoformat(), "debug_entitlement": entitlements.get("get-task-allow"),

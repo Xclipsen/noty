@@ -15,7 +15,8 @@ enum CalendarPush {
 
     /// Only noty calendar talks to the server (its bundle id is the only
     /// allowed APNs topic there).
-    static let channel = "calendar"
+    /// Apps with push: noty and noty calendar (each its own topic = bundle id).
+    static let channels: Set<String> = ["stable", "calendar"]
 
     enum Availability: Equatable, Sendable {
         /// `environment`: „sandbox“ or „production“ as the server expects it.
@@ -26,8 +27,8 @@ enum CalendarPush {
     }
 
     static let availability: Availability = {
-        let channel = Bundle.main.object(forInfoDictionaryKey: "NotyChannel") as? String
-        guard channel == Self.channel else { return .otherChannel }
+        let channel = Bundle.main.object(forInfoDictionaryKey: "NotyChannel") as? String ?? "stable"
+        guard Self.channels.contains(channel) else { return .otherChannel }
         guard baseURL != nil else { return .unavailable("Die Adresse des Mitteilungsdienstes fehlt in dieser Version.") }
         switch provisionedAPSEnvironment() {
         case "development": return .available(environment: "sandbox")

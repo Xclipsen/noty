@@ -153,3 +153,7 @@ Quelltext xtool 1.24.0 (`XKit/Signer/SignerImpl.swift`: „TODO #131 … temp ha
 ### Gerätetest
 
 Der gebündelte Gerätetest steht seit 08.11.2026 bei Build 139 in [CALENDAR-LOG](CALENDAR-LOG.md#build-139--extension-nachsigniert-test-kachel-08112026): Installation und Test-Kachel sind vom Nutzer bestätigt, ein echter Schultag, Antippen, Widget, Ruhezeiten und der Start ab iPadOS 26 sind ungeprüft. Die Prüfpunkte der Korrekturen nach Build 139 (Kachel-Alert statt zweiter Mitteilung, 8-h-Neustart, Test-Kachel-Status nach Neustart) stehen unter „Ausstehend“ im selben Dokument.
+
+## Normale noty (08.11.2026, Build 147)
+
+Kachel „Schultag“ und Widget „Heute“ gibt es seit Build 147 auch in der **normalen noty**: `calendar_build.py` bettet die Extension für die Kanäle `stable` und `calendar` ein, `CalendarSchoolDayCenter.supported` lässt beide zu (`SchoolDayLink.calendarChannels`). Jede App hat ihr **eigenes Schema** für den Sprung aus Kachel und Widget (`noty://schultag…` bzw. `notycalendar://schultag…`, `SchoolDayLink.scheme(channel:)`), damit iPadOS nie die falsche App öffnet. Die Widget-Datei liegt je App unter `NotyWidgets/<Kanal>/` in der gemeinsamen App Group. Am iPad ungeprüft.
