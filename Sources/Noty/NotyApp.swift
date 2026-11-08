@@ -20,7 +20,7 @@ struct NotyApp: App {
     }
     var body: some Scene {
         WindowGroup {
-            WorkspaceLibraryHost(workspaces: workspaces).id(workspaces.root.path).preferredColorScheme(.dark)
+            WorkspaceLibraryHost(workspaces: workspaces).id(workspaces.root.path).modifier(AccentTint()).preferredColorScheme(.dark)
                 .environmentObject(laws)
                 .environmentObject(laws.panel)
                 .task {

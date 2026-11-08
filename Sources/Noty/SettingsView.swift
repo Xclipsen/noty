@@ -37,6 +37,16 @@ enum AppSettingsKey {
     /// Lasso: what it selects (`SelectionFilter.bits`) and freeform/rectangle.
     static let lassoFilter = "noty.lasso.filter"
     static let lassoMode = "noty.lasso.mode"
+    /// Reopen the notebook that was open when the app was last used (default on).
+    static let reopenLastNotebook = "noty.app.reopenLastNotebook"
+    /// `AccentChoice` of the whole app (default blue, the former system tint).
+    static let accent = "noty.app.accent"
+    /// Developer tools in the normal noty (unlocked in „Über noty“).
+    static let developerMode = "noty.app.developerMode"
+    /// What „Einstellungen zurücksetzen“ resets: app-wide preferences only;
+    /// per-area values (toolbar.json), backups, accounts and data stay.
+    static let resettable = [homeLayout, librarySort, writingScroll, typewriter, sidebarVisible, snapping, automaticTextColor,
+                             alignTextToLines, calculator, arrows, helixTextDocuments, autoPairs, reopenLastNotebook, accent]
 }
 
 enum LibraryLayout: String, CaseIterable, Identifiable {
@@ -73,43 +83,6 @@ enum LibrarySort: String, CaseIterable, Identifiable {
     }
 }
 
-enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
-    case general, account, laws, editor, tools, paper, backup, trash, about, diagnostics
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .general: "Allgemein"
-        case .account: "Konto"
-        case .laws: "Gesetzessammlung"
-        case .editor: "Editor"
-        case .tools: "Stift & Werkzeuge"
-        case .paper: "Papier für neue Hefte"
-        case .backup: "Backup"
-        case .trash: "Papierkorb"
-        case .about: "Über noty"
-        case .diagnostics: "Diagnose"
-        }
-    }
-    var symbol: String {
-        switch self {
-        case .general: "gearshape"
-        case .account: "person.crop.circle"
-        case .laws: "books.vertical"
-        case .editor: "rectangle.and.pencil.and.ellipsis"
-        case .tools: "pencil.tip.crop.circle"
-        case .paper: "squareshape.split.3x3"
-        case .backup: "externaldrive"
-        case .trash: "trash"
-        case .about: "info.circle"
-        case .diagnostics: "stethoscope"
-        }
-    }
-    /// True when the page edits data stored per area (Bereich).
-    var perArea: Bool { [.tools, .paper, .backup, .trash].contains(self) }
-    /// Rows of the settings root, grouped.
-    static let rootSections: [[SettingsPage]] = [[.general, .account, .laws, .editor, .tools, .paper], [.backup, .trash], [.about, .diagnostics]]
-}
-
 struct SettingsRequest: Identifiable {
     let id = UUID()
     var page: SettingsPage?
@@ -128,9 +101,76 @@ extension EnvironmentValues {
     }
 }
 
+
+enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
+    case general, appearance, view, text, tools, paper, laws, account, backup, trash, about, privacy, developer
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .general: "Allgemein"
+        case .appearance: "Darstellung"
+        case .view: "Ansicht & Seiten"
+        case .text: "Text & Tastatur"
+        case .tools: "Stift & Werkzeuge"
+        case .paper: "Papier für neue Hefte"
+        case .laws: "Gesetzessammlung"
+        case .account: "noty-Konto"
+        case .backup: "Backup & Wiederherstellen"
+        case .trash: "Papierkorb"
+        case .about: "Über noty"
+        case .privacy: "Datenschutz"
+        case .developer: "Entwickler"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .general: "gearshape.fill"
+        case .appearance: "paintpalette.fill"
+        case .view: "book.pages.fill"
+        case .text: "character.cursor.ibeam"
+        case .tools: "pencil.tip"
+        case .paper: "squareshape.split.3x3"
+        case .laws: "books.vertical.fill"
+        case .account: "person.crop.circle.fill"
+        case .backup: "externaldrive.fill.badge.icloud"
+        case .trash: "trash.fill"
+        case .about: "info.circle.fill"
+        case .privacy: "hand.raised.fill"
+        case .developer: "hammer.fill"
+        }
+    }
+    var tint: Color {
+        switch self {
+        case .general: Color(white: 0.55)
+        case .appearance: Color(red: 0.93, green: 0.36, blue: 0.58)
+        case .view: Color(red: 0.25, green: 0.52, blue: 0.98)
+        case .text: Color(red: 0.98, green: 0.58, blue: 0.18)
+        case .tools: Color(red: 0.16, green: 0.72, blue: 0.62)
+        case .paper: Color(red: 0.80, green: 0.62, blue: 0.30)
+        case .laws: Color(red: 0.86, green: 0.30, blue: 0.27)
+        case .account: Color(red: 0.36, green: 0.55, blue: 0.95)
+        case .backup: Color(red: 0.20, green: 0.70, blue: 0.40)
+        case .trash: Color(white: 0.48)
+        case .about: Color(red: 0.45, green: 0.50, blue: 0.62)
+        case .privacy: Color(red: 0.28, green: 0.45, blue: 0.86)
+        case .developer: Color(red: 0.93, green: 0.48, blue: 0.16)
+        }
+    }
+    struct Group: Identifiable { let id: Int; let title: String?; let pages: [SettingsPage] }
+    /// Sidebar groups, T3-style: unnamed first and last group.
+    @MainActor static func groups(developer: Bool) -> [Group] {
+        [Group(id: 0, title: nil, pages: [.general, .appearance]),
+         Group(id: 1, title: "Schreiben", pages: [.view, .text, .tools, .paper]),
+         Group(id: 2, title: "Funktionen", pages: [.laws, .account]),
+         Group(id: 3, title: "Daten", pages: [.backup, .trash]),
+         Group(id: 4, title: nil, pages: [.about, .privacy] + (developer ? [.developer] : []))]
+    }
+}
+
 /// Central settings. Presented from the library toolbar; the editor can present
 /// it with the same per-area models. `onSelectArea` is nil where switching areas
-/// is not possible (e.g. with an open notebook).
+/// is not possible (e.g. with an open notebook). Wide: sidebar with groups,
+/// search and the page beside it; narrow: a list that pushes the pages.
 struct SettingsView: View {
     @ObservedObject var library: LibraryModel
     @ObservedObject var toolbox: ToolbarSettingsModel
@@ -138,38 +178,26 @@ struct SettingsView: View {
     @ObservedObject var workspaces: WorkspaceAppModel
     var onSelectArea: ((TestWorkspace?) -> Void)?
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var vault = NotebookVaultModel.shared
+    @AppStorage(AppSettingsKey.developerMode) private var developerMode = false
+    @AppStorage(AppSettingsKey.accent) private var accent = AccentChoice.blue
+    @State private var selection: SettingsPage?
     @State private var path: [SettingsPage]
+    @State private var query = ""
 
     init(library: LibraryModel, toolbox: ToolbarSettingsModel, externalBackup: ExternalBackupModel,
          workspaces: WorkspaceAppModel, initialPage: SettingsPage? = nil, onSelectArea: ((TestWorkspace?) -> Void)? = nil) {
         self.library = library; self.toolbox = toolbox; self.externalBackup = externalBackup
         self.workspaces = workspaces; self.onSelectArea = onSelectArea
+        _selection = State(initialValue: initialPage ?? .general)
         _path = State(initialValue: initialPage.map { [$0] } ?? [])
     }
 
+    private var developer: Bool { _ = developerMode; return DeveloperAccess.visible }
+
     var body: some View {
-        NavigationStack(path: $path) {
-            List {
-                Section {
-                    Label {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Bereich \(NotyText.quoted(workspaces.title))")
-                            Text(workspaces.kind == nil ? "Standardbereich" : workspaces.kind == .mirror ? "Spiegel einer anderen noty-App, wird beim nächsten Abgleich ersetzt" : "Getrennter Test-/Restore-Bereich").font(.caption).foregroundStyle(.secondary)
-                        }
-                    } icon: { Image(systemName: workspaces.kind.symbol) }
-                } footer: {
-                    Text("Mit „Bereich“ markierte Einstellungen gelten nur für diesen Bereich und sind in seinem Bibliotheksbackup enthalten. Die übrigen gelten für die ganze App auf diesem iPad.")
-                }
-                ForEach(SettingsPage.rootSections, id: \.self) { pages in
-                    Section {
-                        ForEach(pages) { page in pageRow(page) }
-                    }
-                }
-            }
-            .navigationTitle("Einstellungen")
-            .navigationDestination(for: SettingsPage.self) { page in destination(page) }
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
-            .keyboardSheet()
+        GeometryReader { proxy in
+            if proxy.size.width >= 680 { split } else { stack }
         }
         .environmentObject(toolbox)
         .environmentObject(externalBackup)
@@ -182,558 +210,206 @@ struct SettingsView: View {
         .alert("Bereiche", isPresented: Binding(get: { workspaces.error != nil }, set: { if !$0 { workspaces.error = nil } })) {
             Button("OK") { workspaces.error = nil }
         } message: { Text(workspaces.error ?? "") }
+        .tint(accent.color)
         .preferredColorScheme(.dark)
     }
 
-    private func pageRow(_ page: SettingsPage) -> some View {
-        NavigationLink(value: page) {
-            HStack {
-                Label(page.title, systemImage: page.symbol)
-                Spacer()
-                if page == .trash, !library.trashedItems.isEmpty {
-                    Text("\(library.trashedItems.count)").foregroundStyle(.secondary).monospacedDigit()
+    // MARK: Layouts
+
+    private var split: some View {
+        HStack(spacing: 0) {
+            List(selection: $selection) {
+                sidebarContent(pushes: false)
+            }
+            .listStyle(.sidebar)
+            .frame(width: 300)
+            Divider().ignoresSafeArea()
+            NavigationStack {
+                destination(selection ?? .general)
+                    .frame(maxWidth: 820)
+                    .frame(maxWidth: .infinity)
+                    .background(Color(uiColor: .systemGroupedBackground))
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
+            }
+            .id(selection)
+        }
+        .background(Color(uiColor: .systemGroupedBackground))
+        .background { splitKeys }
+        .onChange(of: developer) { _, visible in if !visible, selection == .developer { selection = .about } }
+        // A narrower window shows the same page in the list layout.
+        .onChange(of: selection) { _, page in path = page.map { [$0] } ?? [] }
+    }
+
+    /// The sidebar takes no keys of its own: ⌘↓/⌘↑ step through the pages,
+    /// Esc closes Settings where the page itself does not take it.
+    private var splitKeys: some View {
+        Group {
+            Button("") { step(1) }.keyboardShortcut(.downArrow, modifiers: .command)
+            Button("") { step(-1) }.keyboardShortcut(.upArrow, modifiers: .command)
+            KeyEscapeButton { dismiss() }
+        }
+        .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+    }
+
+    private func step(_ offset: Int) {
+        let pages = SettingsPage.groups(developer: developer).flatMap(\.pages)
+        guard !pages.isEmpty else { return }
+        let index = pages.firstIndex(of: selection ?? .general) ?? 0
+        selection = pages[(index + offset + pages.count) % pages.count]
+    }
+
+    private var stack: some View {
+        NavigationStack(path: $path) {
+            List { sidebarContent(pushes: true) }
+                .navigationTitle("Einstellungen")
+                .navigationDestination(for: SettingsPage.self) { page in destination(page) }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
+                .keyboardSheet()
+        }
+        .onChange(of: path) { _, pages in if let page = pages.first { selection = page } }
+    }
+
+    // MARK: Sidebar
+
+    @ViewBuilder private func sidebarContent(pushes: Bool) -> some View {
+        Section {
+            SettingsHeaderCard()
+            if workspaces.areaID != nil {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Bereich \(NotyText.quoted(workspaces.title))")
+                        Text(workspaces.kind == .mirror ? "Spiegel einer anderen noty-App" : "Getrennter Bereich mit eigenen Heften")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } icon: { Image(systemName: workspaces.kind.symbol).foregroundStyle(.orange) }
+            }
+            searchField
+        }
+        if query.trimmingCharacters(in: .whitespaces).isEmpty {
+            ForEach(SettingsPage.groups(developer: developer)) { group in
+                Section {
+                    ForEach(group.pages) { page in pageRow(page, pushes: pushes) }
+                } header: {
+                    if let title = group.title { Text(title) }
                 }
-                if page.perArea { Text("Bereich").font(.caption2).foregroundStyle(.secondary)
-                    .padding(.horizontal, 6).padding(.vertical, 2).background(Capsule().fill(.secondary.opacity(0.15))) }
+            }
+        } else {
+            let hits = SettingsSearchItem.index(developer: developer, vault: vault.available).filter { $0.matches(query) }
+            Section("Treffer") {
+                if hits.isEmpty {
+                    Text("Keine Einstellung gefunden").foregroundStyle(.secondary)
+                }
+                ForEach(hits) { hit in
+                    let label = HStack(spacing: 12) {
+                        SettingsTile(symbol: hit.page.symbol, color: hit.page.tint, size: 26)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(hit.title)
+                            Text(([hit.page.title] + [hit.section].compactMap { $0 }).joined(separator: " › "))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if pushes {
+                        NavigationLink(value: hit.page) { label }.keyOption(.action { path.append(hit.page) })
+                    } else {
+                        Button { selection = hit.page; query = "" } label: { label.contentShape(Rectangle()) }
+                            .buttonStyle(.plain)
+                    }
+                }
             }
         }
-        .accessibilityHint(page.perArea ? "Gilt nur für den aktuellen Bereich" : "Gilt für die ganze App")
-        .keyOption(.action { path.append(page) })
     }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Einstellungen durchsuchen", text: $query)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                .submitLabel(.search)
+            if !query.isEmpty {
+                Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain).accessibilityLabel("Suche löschen")
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder private func pageRow(_ page: SettingsPage, pushes: Bool) -> some View {
+        let label = HStack(spacing: 12) {
+            SettingsTile(symbol: page.symbol, color: page.tint)
+            Text(page.title)
+            Spacer(minLength: 4)
+            trailing(page)
+        }
+        if pushes {
+            NavigationLink(value: page) { label }.keyOption(.action { path.append(page) })
+        } else {
+            label.tag(page)
+        }
+    }
+
+    @ViewBuilder private func trailing(_ page: SettingsPage) -> some View {
+        switch page {
+        case .trash where !library.trashedItems.isEmpty:
+            Text("\(library.trashedItems.count)").foregroundStyle(.secondary).monospacedDigit()
+        case .backup:
+            let healthy = BackupHealth(externalBackup).isSetUp
+            Circle().fill(healthy ? Color.green : Color.orange).frame(width: 8, height: 8)
+                .accessibilityLabel(healthy ? "Backup eingerichtet" : "Backup prüfen")
+        case .developer:
+            if let channel = AppSyncModel.shared.channel, channel != .stable { SettingsBadge(channel.appName) }
+        default: EmptyView()
+        }
+    }
+
+    // MARK: Pages
 
     @ViewBuilder private func destination(_ page: SettingsPage) -> some View {
         switch page {
         case .general: GeneralSettingsPage()
-        case .account: NotyAccountSettingsPage()
+        case .appearance: AppearanceSettingsPage()
+        case .view: ViewSettingsPage(toolbox: toolbox, workspaces: workspaces)
+        case .text: TextSettingsPage()
+        case .tools: ToolSettingsPage(toolbox: toolbox, workspaces: workspaces)
+        case .paper: PaperSettingsPage(toolbox: toolbox, workspaces: workspaces)
         case .laws: LawSettingsPage()
-        case .editor: EditorSettingsPage(toolbox: toolbox, area: workspaces.title)
-        case .tools: ToolSettingsPage(toolbox: toolbox, area: workspaces.title)
-        case .paper: PaperSettingsPage(toolbox: toolbox, area: workspaces.title)
+        case .account: NotyAccountSettingsPage()
         case .backup: BackupSettingsPage(library: library, toolbox: toolbox, externalBackup: externalBackup,
                                          workspaces: workspaces, onSelectArea: onSelectArea)
-        case .trash: TrashSettingsPage(library: library, area: workspaces.title)
-        case .about: AboutSettingsPage(toolbox: toolbox, workspaces: workspaces)
-        case .diagnostics: DiagnosticsSettingsPage()
+        case .trash: TrashSettingsPage(library: library, workspaces: workspaces)
+        case .about: AboutSettingsPage(workspaces: workspaces)
+        case .privacy: PrivacySettingsPage()
+        case .developer: DeveloperSettingsPage(library: library, toolbox: toolbox, workspaces: workspaces, onSelectArea: onSelectArea)
         }
     }
 }
 
-private func areaFooter(_ area: String) -> some View {
-    Text("Gilt für Bereich \(NotyText.quoted(area)) und wird mit dessen Werkzeugeinstellungen gespeichert.")
-}
-
-private struct GeneralSettingsPage: View {
-    @AppStorage(AppSettingsKey.homeLayout) private var layout = LibraryLayout.grid
-    @AppStorage(AppSettingsKey.librarySort) private var sort = LibrarySort.manual
+/// App icon, name, version and – in the test apps – which app this is.
+struct SettingsHeaderCard: View {
+    private static func info(_ key: String) -> String { Bundle.main.object(forInfoDictionaryKey: key) as? String ?? "–" }
+    static let icon: UIImage? = {
+        let info = Bundle.main.infoDictionary
+        let icons = (info?["CFBundleIcons~ipad"] ?? info?["CFBundleIcons"]) as? [String: Any]
+        let files = (icons?["CFBundlePrimaryIcon"] as? [String: Any])?["CFBundleIconFiles"] as? [String]
+        return files?.reversed().lazy.compactMap { UIImage(named: $0) }.first
+    }()
     var body: some View {
-        Form {
-            Section("Bibliothek") {
-                Picker("Darstellung", selection: $layout) {
-                    ForEach(LibraryLayout.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
-                }.keyOption(.choice($layout, LibraryLayout.allCases))
-                Picker("Sortierung", selection: $sort) {
-                    ForEach(LibrarySort.allCases) { Text($0.title).tag($0) }
-                }.keyOption(.choice($sort, LibrarySort.allCases))
-            }
-        }
-        .navigationTitle("Allgemein")
-        .keyboardSheet()
-    }
-}
-
-private struct EditorSettingsPage: View {
-    @ObservedObject var toolbox: ToolbarSettingsModel
-    let area: String
-    @AppStorage(AppSettingsKey.writingScroll) private var writingScroll = false
-    @AppStorage(AppSettingsKey.sidebarVisible) private var sidebarVisible = true
-    @AppStorage(AppSettingsKey.typewriter) private var typewriter = false
-    @AppStorage(AppSettingsKey.snapping) private var snapping = true
-    @AppStorage(AppSettingsKey.calculator) private var calculator = true
-    @AppStorage(AppSettingsKey.arrows) private var arrows = true
-    @AppStorage(AppSettingsKey.automaticTextColor) private var automaticTextColor = true
-    @AppStorage(AppSettingsKey.alignTextToLines) private var alignTextToLines = true
-    @AppStorage(AppSettingsKey.helixTextDocuments) private var helix = false
-    @AppStorage(AppSettingsKey.autoPairs) private var autoPairs = false
-    var body: some View {
-        Form {
-            Section {
-                keyToggle("Schreibscrollen bis zur Bildschirmmitte", isOn: $writingScroll)
-                keyToggle("Seitenleiste beim Öffnen zeigen", isOn: $sidebarVisible)
-                keyToggle("Schreibmaschinen-Modus beim Tippen", isOn: $typewriter)
-                keyToggle("Neue Textfelder in automatischer Farbe", isOn: $automaticTextColor)
-                    .accessibilityHint("Schwarz oder Weiß passend zum Papier. Aus: Neue Felder übernehmen die zuletzt benutzte Farbe.")
-                keyToggle("Neue Textfelder an Linien ausrichten", isOn: $alignTextToLines)
-                    .accessibilityHint("Auf liniertem oder kariertem Papier stehen die Zeilen neuer Textfelder auf den Linien. Bestehende Felder bleiben unverändert; jedes Feld lässt sich in der Formatleiste umschalten.")
-                keyToggle("Rechnen mit „=“", isOn: $calculator)
-                    .accessibilityHint("2+3= wird zu 2+3=5, 2 + 3 = zu 2 + 3 = 5. Von oben nach unten: Zahlen untereinander, dann = allein in einer neuen Zeile.")
-                keyToggle("Pfeile beim Tippen (-> wird →)", isOn: $arrows)
-                    .accessibilityHint("Mit dem folgenden Leerzeichen: -> wird →, => wird ⇒, <- wird ←, <-> wird ↔, nur am Zeilenanfang oder nach einem Leerzeichen. ⌫ direkt danach stellt das Getippte wieder her.")
-                keyToggle("Einrasten", isOn: $snapping)
-                    .accessibilityHint("Textfelder, Bilder, Formen und Auswahlen rasten beim langsamen Verschieben an Kanten, Mitten, Linien und Seitenrändern ein.")
-                keyToggle("Helix-Tastatur in Textdokumenten (experimentell)", isOn: $helix)
-                    .accessibilityHint("Steuert Textdokumente mit einer Hardware-Tastatur: Erst auswählen, dann handeln. i schreibt, Esc geht eine Ebene zurück, die Leertaste öffnet das Menü, Leertaste und h zeigen alle Tasten. Hefte und Bibliothek bleiben unverändert.")
-                Toggle("Klammern automatisch schließen", isOn: $autoPairs)
-                    .disabled(!helix)
-                    .accessibilityHint("Mit der Helix-Tastatur schließt die Eingabe runde, eckige und geschweifte Klammern und Anführungszeichen selbst, außer direkt neben einem Wort.")
-            } header: { Text("Alle Bereiche") } footer: {
-                Text("Die Helix-Tastatur ist experimentell und wirkt nur in Textdokumenten mit einer Hardware-Tastatur. Die Seitenleiste merkt sich auch das letzte Ein- oder Ausblenden im Editor. Der Schreibmaschinen-Modus hält die Schreibzeile beim Tippen im oberen Drittel, auch mit schwebender oder externer Tastatur. Einrasten wirkt nur bei langsamer Bewegung; ein zweiter Finger auf dem Bildschirm unterdrückt es beim Ziehen. „An Linien ausrichten“ wirkt nur auf liniertem oder kariertem Papier und in Schreibplatz mit Linien; bestehende Felder bleiben, wie sie sind.")
-            }
-            Section {
-                keyToggle("Blättern statt vertikal scrollen", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
-                keyToggle("PDFs einheitlich anzeigen", isOn: Binding(get: { toolbox.preferences.normalizePageWidths ?? false }, set: { toolbox.preferences.normalizePageWidths = $0 }))
-                    .accessibilityHint("Gleiche Arbeitsblattbreite mit Schreibraum daneben. Ändert nur die Anzeige.")
-                keyToggle("Auch mit dem Finger zeichnen", isOn: $toolbox.preferences.fingerDrawing)
-            } header: { Text("Bereich \(NotyText.quoted(area))") } footer: {
-                Text("„PDFs einheitlich anzeigen“ ändert nur die Anzeige; PDF-Originale und Export bleiben unverändert. Beim Fingerzeichnen mit zwei Fingern navigieren.")
-            }
-            .disabled(!toolbox.writable)
-            if !toolbox.status.isEmpty { Section { Text(toolbox.status).font(.caption) } }
-        }
-        .navigationTitle("Editor")
-        .keyboardSheet()
-    }
-}
-
-private struct ToolSettingsPage: View {
-    @ObservedObject var toolbox: ToolbarSettingsModel
-    let area: String
-    /// A link has no action a key could run.
-    @State private var customizing = false
-    private var hoverPreviewState: String {
-        if #available(iOS 17.5, *) { return UIPencilInteraction.prefersHoverToolPreview ? "System: ein" : "System: aus" }
-        return "Systemeinstellung"
-    }
-    var body: some View {
-        Form {
-            Section {
-                keyToggle("Autostift für neue Striche", isOn: Binding(get: { toolbox.preferences.autoPen ?? false }, set: { toolbox.preferences.setAutomaticInk($0, for: .pen) }))
-                keyToggle("Stift/Bleistift: Formen nach Halten erkennen", isOn: Binding(get: { toolbox.preferences.recognizeShapes ?? true }, set: { toolbox.preferences.recognizeShapes = $0 }))
-                keyToggle("Textmarker: Linie nach Halten begradigen", isOn: Binding(get: { toolbox.preferences.markerHoldStraighten ?? true }, set: { toolbox.preferences.markerHoldStraighten = $0 }))
-                let tip = Binding(get: { toolbox.preferences.effectiveMarkerTip }, set: { toolbox.preferences.markerTip = $0 })
-                Picker("Textmarkerspitze", selection: tip) {
-                    Text("Rund").tag(MarkerTip.round); Text("Keil").tag(MarkerTip.chisel)
-                }.keyOption(.choice(tip, [.round, .chisel]))
-                keyToggle("Textmarker immer gerade (rastet bei 0°/90°, 45°, 30° ein)", isOn: Binding(get: { toolbox.preferences.markerStraight ?? false }, set: { toolbox.preferences.markerStraight = $0 }))
-                let precise = Binding(get: { toolbox.preferences.eraserPrecision ?? false }, set: { toolbox.preferences.eraserPrecision = $0 })
-                Picker("Radierer-Standard", selection: precise) {
-                    Text("Ganzer Strich").tag(false); Text("Präzise").tag(true)
-                }.keyOption(.toggle(precise))
-            } header: { Text("Stift, Marker, Radierer") } footer: {
-                Text("Autostift wählt für neue Striche eine zur Seitenhelligkeit passende Farbe. Runde Markerspitze: gleichmäßig breit und durchscheinend; Keil: klassischer Marker. Vorhandene Striche bleiben unverändert.")
-            }
-            // PencilKit offers no per-view switch for its hover tool preview; the
-            // system setting is read-only (`prefersHoverToolPreview`). The stored
-            // `pencilPreview` field stays in the toolbar format for compatibility.
-            Section {
-                LabeledContent("Pencil-Hover-Vorschau", value: hoverPreviewState)
-            } footer: {
-                Text("Die Werkzeugvorschau beim Schweben folgt der Systemeinstellung unter Einstellungen › Apple Pencil. iPadOS bietet Apps keine Möglichkeit, sie nur in noty abzuschalten.")
-            }
-            Section {
-                let dock = Binding(get: { toolbox.preferences.effectiveDock }, set: { toolbox.preferences.dock = $0 })
-                Picker("Leistenposition", selection: dock) {
-                    Text("Oben").tag(ToolbarDock.top)
-                    Text("Unten").tag(ToolbarDock.bottom)
-                    Text("Links").tag(ToolbarDock.left)
-                    Text("Rechts").tag(ToolbarDock.right)
-                    if toolbox.preferences.dockOnly == false { Text("Schwebend").tag(ToolbarDock.floating) }
-                }.keyOption(.choice(dock, toolbox.preferences.dockOnly == false ? [.top, .bottom, .left, .right, .floating] : [.top, .bottom, .left, .right]))
-                NavigationLink("Werkzeugleiste anpassen") { ToolbarCustomizationList(settings: toolbox).keyboardSheet() }
-                    .keyOption(.action { customizing = true })
-            } header: { Text("Werkzeugleiste") } footer: { areaFooter(area) }
-            if !toolbox.status.isEmpty { Section { Text(toolbox.status).font(.caption) } }
-        }
-        .disabled(!toolbox.writable)
-        .navigationTitle("Stift & Werkzeuge")
-        .navigationDestination(isPresented: $customizing) { ToolbarCustomizationList(settings: toolbox).keyboardSheet() }
-        .keyboardSheet()
-    }
-}
-
-private struct PaperSettingsPage: View {
-    @ObservedObject var toolbox: ToolbarSettingsModel
-    let area: String
-    private var appearance: Binding<NotebookAppearance> {
-        Binding(get: { toolbox.preferences.defaultAppearance ?? NotebookAppearance() },
-                set: { toolbox.preferences.defaultAppearance = $0 })
-    }
-    var body: some View {
-        Form {
-            Section {
-                HStack(alignment: .top, spacing: 20) {
-                    NotebookCoverPreview(appearance: appearance.wrappedValue).aspectRatio(0.71, contentMode: .fit).frame(maxWidth: 110)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 10) {
-                        keyToggle("Umschlag", isOn: appearance.coverEnabled)
-                        Text("Startwerte für neue Hefte und Textdokumente. Beim Anlegen weiterhin änderbar; bestehende bleiben unverändert.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                NotebookAppearanceEditor(appearance: appearance, paperHeading: "Papier").padding(.vertical, 6)
-            } footer: { areaFooter(area) }
-            Section {
-                Button("Auf noty-Standard zurücksetzen") { toolbox.preferences.defaultAppearance = nil }
-                    .disabled(toolbox.preferences.defaultAppearance == nil)
-                    .keyOption(.action { toolbox.preferences.defaultAppearance = nil })
-            }
-        }
-        .disabled(!toolbox.writable)
-        .navigationTitle("Papier für neue Hefte")
-        .keyboardSheet()
-    }
-}
-
-/// Deliberately short: status at the top right, a few rows, explanations in
-/// the info popover. The complete form stays one level deeper.
-private struct BackupSettingsPage: View {
-    @ObservedObject var library: LibraryModel
-    @ObservedObject var toolbox: ToolbarSettingsModel
-    @ObservedObject var externalBackup: ExternalBackupModel
-    @ObservedObject var workspaces: WorkspaceAppModel
-    let onSelectArea: ((TestWorkspace?) -> Void)?
-    @State private var exporting = false
-    /// One importer for both purposes: two `.fileImporter`s on one view conflict in SwiftUI.
-    private enum ImportPurpose { case backupFolder, libraryArchive }
-    @State private var importing = false
-    @State private var importPurpose = ImportPurpose.libraryArchive
-    @State private var showingInfo = false
-    @State private var showingForm = false
-    @State private var showingAreas = false
-    @State private var restoredArea = false
-    /// Status of the automatic backup when its last busy phase began (announcements).
-    @State private var statusBeforeBackupWork: String?
-    /// The pushed form shows backup errors itself; avoid a second alert.
-    @State private var formVisible = false
-    @State private var file: LibraryArchiveFile?
-    private var libraryIdle: Bool { library.ready && !library.busy && !workspaces.busy && library.opened == nil }
-    private var health: BackupHealth { BackupHealth(externalBackup) }
-    private var policy: ExternalBackupPolicy { externalBackup.policy }
-    private var targetName: String {
-        switch policy.target {
-        case .disabled: "Keins"
-        case .folder: policy.folderName ?? "Dateien-Ordner"
-        case .webDAV: URL(string: policy.endpoint)?.host() ?? "WebDAV"
-        }
-    }
-    private var lastBackup: String {
-        if externalBackup.busy { return "Läuft …" }
-        return policy.lastSuccess.map(NotyText.statusDate) ?? NotyText.never
-    }
-    var body: some View {
-        Form {
-            Section("Automatisches Backup") {
-                if policy.target == .disabled {
-                    Button("Backup-Ordner wählen …", systemImage: "folder.badge.plus") { pick(.backupFolder) }
-                        .disabled(externalBackup.busy).keyOption(.action { pick(.backupFolder) })
-                } else {
-                    LabeledContent(policy.target == .webDAV ? "WebDAV" : "Backup-Ordner", value: targetName)
-                    LabeledContent("Letztes Backup", value: lastBackup)
-                    Button("Jetzt sichern", systemImage: "arrow.clockwise") {
-                        Task { await externalBackup.attempt(library: library, toolbox: toolbox, manual: true) }
-                    }.disabled(externalBackup.busy || !library.ready)
-                        .keyOption(.action { Task { await externalBackup.attempt(library: library, toolbox: toolbox, manual: true) } })
-                    if policy.target == .folder {
-                        Button(health == .folderUnreachable ? "Backup-Ordner neu wählen …" : "Backup-Ordner ändern …", systemImage: "folder") { pick(.backupFolder) }
-                            .disabled(externalBackup.busy).keyOption(.action { pick(.backupFolder) })
-                    }
-                }
-                NavigationLink("Weitere Optionen") { backupForm }.keyOption(.action { showingForm = true })
-            }
-            Section("Bibliotheksbackup") {
-                LabeledContent("Letzter Export", value: library.lastLibraryExport.map(NotyText.statusDate) ?? NotyText.never)
-                Button("Exportieren …", systemImage: "square.and.arrow.up", action: exportLibrary).disabled(!libraryIdle)
-                    .keyOption(.action(exportLibrary))
-                Button("Als neuen Bereich wiederherstellen …", systemImage: "arrow.down.doc") { pick(.libraryArchive) }
-                    .disabled(!libraryIdle).keyOption(.action { pick(.libraryArchive) })
-            }
-            AppSyncSection(library: library, toolbox: toolbox, workspaces: workspaces)
-            Section {
-                NavigationLink {
-                    WorkspacePickerList(model: workspaces, onSelect: onSelectArea).keyboardSheet()
-                } label: {
-                    LabeledContent("Bereiche", value: workspaces.title)
-                }
-                .disabled(library.busy && !library.backgroundBusy)
-                .keyOption(.action { showingAreas = true })
-            } footer: {
-                if library.opened != nil { Text("Export und Wiederherstellen erst nach dem Schließen des Hefts.") }
-            }
-        }
-        .navigationTitle("Backup")
-        .navigationDestination(isPresented: $showingForm) { backupForm }
-        .navigationDestination(isPresented: $showingAreas) { WorkspacePickerList(model: workspaces, onSelect: onSelectArea).keyboardSheet() }
-        .keyboardSheet()
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showingInfo = true } label: {
-                    HStack(spacing: 6) {
-                        Text(health.shortTitle).font(.subheadline.weight(.semibold))
-                        Image(systemName: "info.circle")
-                    }
-                    .foregroundStyle(health.isSetUp ? Color.green : Color.orange)
-                }
-                .accessibilityLabel("Backup-Status: \(health.shortTitle)")
-                .accessibilityHint("Zeigt Details zum Backup")
-                .popover(isPresented: $showingInfo) { info }
-            }
-        }
-        .overlay { if library.busy || workspaces.busy || externalBackup.busy { ProgressView(activityTitle).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
-        // Results of backup work for VoiceOver (polish audit F10); steps ending in „…“ stay silent.
-        .onChange(of: library.backupStatus) { _, note in
-            if !note.hasSuffix("…") { AccessibilityNotification.Announcement(note).post() }
-        }
-        // Only a new result: retrieving an archive leaves the status as it was,
-        // so an unchanged (or still running „…“) status stays silent.
-        .onChange(of: externalBackup.busy) { _, busy in
-            if busy { statusBeforeBackupWork = externalBackup.status; return }
-            let status = externalBackup.status
-            if status != statusBeforeBackupWork, !status.hasSuffix("…") { AccessibilityNotification.Announcement(status).post() }
-            statusBeforeBackupWork = nil
-        }
-        .onAppear { externalBackup.checkFolder() }
-        .fileImporter(isPresented: $importing,
-                      allowedContentTypes: importPurpose == .backupFolder ? [.folder] : [.notyLibrary, .data]) { result in
-            if importPurpose == .backupFolder {
-                if case .success(let url) = result { externalBackup.useFolder(url) }
-                return
-            }
-            switch result {
-            case .success(let url): Task {
-                if await workspaces.restoreLibrary(url) {
-                    library.backupStatus = "Bibliothek als neuen Bereich wiederhergestellt · Einstellungen › Backup › Bereiche"
-                    restoredArea = true
-                }
-            }
-            case .failure(let error): library.error = error.localizedDescription
-            }
-        }
-        .fileExporter(isPresented: $exporting, document: file, contentType: .notyLibrary,
-                      defaultFilename: NotyText.libraryFileName()) { result in
-            switch result {
-            case .success: library.libraryBackupExported()
-            case .failure(let error):
-                library.backupStatus = "Bibliotheksbackup-Export nicht abgeschlossen"
-                library.error = error.localizedDescription
-            }
-        }
-        .alert("Backup", isPresented: Binding(get: { externalBackup.error != nil && !formVisible }, set: { if !$0 { externalBackup.error = nil } })) {
-            Button("OK") { externalBackup.error = nil }
-        } message: { Text(externalBackup.error ?? "") }
-        .alert("Als neuen Bereich wiederhergestellt", isPresented: $restoredArea) {
-            Button("OK", role: .cancel) { }
-        } message: { Text(NotyText.restoredAreaMessage) }
-    }
-
-    private func pick(_ purpose: ImportPurpose) { importPurpose = purpose; importing = true }
-    /// Words for the spinner: what is running (polish audit F8, labels only).
-    private var activityTitle: String {
-        if externalBackup.busy {
-            // The external backup reports its steps; retrieving keeps the last note.
-            return externalBackup.status.hasSuffix("…") ? externalBackup.status : "Backup wird geladen und geprüft …"
-        }
-        if workspaces.busy { return "Bereich wird übernommen …" }
-        return "Bibliotheksbackup wird erstellt …"
-    }
-    private func exportLibrary() {
-        Task {
-            guard await toolbox.flush() else { library.error = toolbox.status; return }
-            if let archive = await library.libraryBackup() { file = LibraryArchiveFile(url: archive.url); exporting = true }
-        }
-    }
-    private var backupForm: some View {
-        ExternalBackupForm(model: externalBackup, library: library, workspaces: workspaces)
-            .onAppear { formVisible = true }.onDisappear { formVisible = false }
-            .keyboardSheet()
-    }
-
-    /// A few short lines only: status, last backup, target.
-    private var info: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label(health.shortTitle, systemImage: health.isSetUp ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .font(.headline).foregroundStyle(health.isSetUp ? Color.green : Color.orange)
-            LabeledContent("Letztes Backup", value: policy.lastSuccess.map(NotyText.statusDate) ?? NotyText.never)
-            LabeledContent(policy.target == .webDAV ? "WebDAV" : "Backup-Ordner", value: targetName)
-            if !health.isSetUp, policy.target != .disabled {
-                Text(externalBackup.status).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
-            }
-        }
-        .font(.subheadline)
-        .padding(18)
-        .frame(width: 300)
-        .presentationCompactAdaptation(.popover)
-    }
-}
-
-private struct TrashSettingsPage: View {
-    @ObservedObject var library: LibraryModel
-    let area: String
-    @State private var purging: NotebookCore.LibraryItem?
-    @State private var confirmingEmpty = false
-    private var editable: Bool { library.ready && !library.busy && library.opened == nil }
-    private var items: [NotebookCore.LibraryItem] { library.trashedItems }
-    var body: some View {
-        List {
-            if library.opened != nil {
-                Section { Label("Bei geöffnetem Heft kann der Papierkorb nicht bearbeitet werden.", systemImage: "info.circle").font(.callout) }
-            }
-            if let status = library.trashStatus {
-                Section { Text(status).font(.callout) }
-            }
-            Section {
-                ForEach(items) { item in row(item).keyOption(.action { ask(item) }) }
-            } footer: {
-                Text("Einträge im Papierkorb bleiben vollständig gespeichert und sind in Bibliotheksbackups enthalten. noty leert den Papierkorb nie automatisch. Ordner stellen ihren Inhalt mit wieder her.")
-            }
-            if !items.isEmpty {
-                Section {
-                    Button("Papierkorb leeren …", systemImage: "trash.slash", role: .destructive) { confirmingEmpty = true }
-                        .disabled(!editable)
-                        .keyOption(.action {
-                            KeyboardRouter.shared.ask("Papierkorb leeren?", message: "Alle Einträge im Papierkorb einschließlich enthaltener Ordnerinhalte werden vom iPad entfernt. Das kann nicht rückgängig gemacht werden.",
-                                                      confirm: "\(NotyText.count(items.count, "Eintrag", "Einträge")) endgültig löschen", safe: true) { Task { await library.emptyTrash() } }
-                        })
-                }
-            }
-        }
-        .overlay {
-            if items.isEmpty {
-                ContentUnavailableView("Papierkorb ist leer", systemImage: "trash",
-                                       description: Text("Gelöschte Hefte, Textdokumente und Ordner erscheinen hier, bis sie wiederhergestellt oder endgültig gelöscht werden."))
-            } else if library.busy { ProgressView("Papierkorb wird bearbeitet …") }
-        }
-        .navigationTitle("Papierkorb · \(NotyText.isolated(area))")
-        .navigationBarTitleDisplayMode(.inline)
-        .keyboardSheet()
-        .confirmationDialog("Endgültig löschen?", isPresented: Binding(get: { purging != nil }, set: { if !$0 { purging = nil } }),
-                            titleVisibility: .visible, presenting: purging) { item in
-            // Fixed verb: a long title in the button would truncate the action away; the name is in the message.
-            Button("Endgültig löschen", role: .destructive) {
-                purging = nil
-                Task { await library.purge([item.id]) }
-            }
-            Button("Abbrechen", role: .cancel) { purging = nil }
-        } message: { item in
-            Text(purgeMessage(item))
-        }
-        .confirmationDialog("Papierkorb leeren?", isPresented: $confirmingEmpty, titleVisibility: .visible) {
-            Button("\(NotyText.count(items.count, "Eintrag", "Einträge")) endgültig löschen", role: .destructive) { Task { await library.emptyTrash() } }
-            Button("Abbrechen", role: .cancel) { }
-        } message: {
-            Text("Alle Einträge im Papierkorb einschließlich enthaltener Ordnerinhalte werden vom iPad entfernt. Das kann nicht rückgängig gemacht werden. Ältere Backups enthalten diese Einträge weiterhin.")
-        }
-        .onDisappear { library.trashStatus = nil }
-    }
-
-    /// Enter on a row: what its menu offers, the final step with its own question.
-    private func ask(_ item: NotebookCore.LibraryItem) {
-        guard editable else { return }
-        var options = [KeyQuestion.Option(title: "Wiederherstellen") { Task { await library.restore(item.id) } }]
-        if item.source != .legacyMain {
-            options.append(KeyQuestion.Option(title: "Endgültig löschen …", destructive: true) {
-                KeyboardRouter.shared.ask("Endgültig löschen?", message: purgeMessage(item), confirm: "Endgültig löschen", safe: true) {
-                    Task { await library.purge([item.id]) }
-                }
-            })
-        }
-        options.append(KeyQuestion.Option(title: "Abbrechen"))
-        KeyboardRouter.shared.present(KeyQuestion(title: item.title, message: "", options: options, chosen: options[0].id))
-    }
-    private func row(_ item: NotebookCore.LibraryItem) -> some View {
         HStack(spacing: 14) {
-            Image(systemName: item.librarySymbol(filled: false)).font(.title3).foregroundStyle(.secondary).frame(width: 28)
-                .accessibilityHidden(true)
+            if let icon = Self.icon {
+                Image(uiImage: icon).resizable().frame(width: 52, height: 52)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .accessibilityHidden(true)
+            } else {
+                SettingsTile(symbol: "pencil.and.scribble", color: AccentChoice.current.color, size: 52)
+            }
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.title).lineLimit(2).truncationMode(.middle)
-                // One string: separate texts each wrapped into ragged mini-columns.
-                Text(details(item)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            }
-            Spacer()
-            Menu {
-                Button("Wiederherstellen", systemImage: "arrow.uturn.backward") { Task { await library.restore(item.id) } }
-                if item.source != .legacyMain {
-                    Button("Endgültig löschen …", systemImage: "trash.slash", role: .destructive) { purging = item }
+                HStack(spacing: 6) {
+                    Text(AppSyncModel.shared.channel?.appName ?? "noty").font(.title3.weight(.semibold))
                 }
-            } label: { Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44) }
-                .accessibilityLabel("Aktionen für \(item.title)")
-                .disabled(!editable)
-        }
-        .swipeActions(edge: .trailing) {
-            if item.source != .legacyMain {
-                Button("Endgültig löschen …", systemImage: "trash.slash", role: .destructive) { purging = item }.disabled(!editable)
-            }
-            Button("Wiederherstellen", systemImage: "arrow.uturn.backward") { Task { await library.restore(item.id) } }
-                .tint(.blue).disabled(!editable)
-        }
-        .contextMenu {
-            Button("Wiederherstellen", systemImage: "arrow.uturn.backward") { Task { await library.restore(item.id) } }.disabled(!editable)
-            if item.source != .legacyMain {
-                Button("Endgültig löschen …", systemImage: "trash.slash", role: .destructive) { purging = item }.disabled(!editable)
+                Text("Version \(Self.info("CFBundleShortVersionString")) · Build \(Self.info("CFBundleVersion"))")
+                    .font(.footnote).foregroundStyle(.secondary).monospacedDigit()
             }
         }
-    }
-
-    private func details(_ item: NotebookCore.LibraryItem) -> String {
-        var parts: [String] = []
-        if let date = item.deletedAt { parts.append("Gelöscht \(NotyText.listDate(date))") }
-        let count = library.purgeCount(item) - 1
-        if item.isFolder, count > 0 { parts.append(NotyText.count(count, "enthaltener Eintrag", "enthaltene Einträge")) }
-        if item.source == .legacyMain { parts.append("Ursprüngliches Heft") }
-        return parts.joined(separator: " · ")
-    }
-
-    private func purgeMessage(_ item: NotebookCore.LibraryItem) -> String {
-        let contained = library.purgeCount(item) - 1
-        let content = !item.isFolder || contained <= 0 ? ""
-            : contained == 1 ? " einschließlich 1 enthaltenen Eintrags" : " einschließlich \(contained) enthaltener Einträge"
-        return "\(NotyText.quoted(item.title))\(content) wird vom iPad entfernt. Das kann nicht rückgängig gemacht werden. Ältere Backups enthalten den Eintrag weiterhin."
-    }
-}
-
-private struct AboutSettingsPage: View {
-    @ObservedObject var toolbox: ToolbarSettingsModel
-    @ObservedObject var workspaces: WorkspaceAppModel
-    private func info(_ key: String) -> String { Bundle.main.object(forInfoDictionaryKey: key) as? String ?? "–" }
-    var body: some View {
-        Form {
-            Section("noty") {
-                LabeledContent("Version", value: info("CFBundleShortVersionString"))
-                LabeledContent("Build", value: info("CFBundleVersion"))
-                LabeledContent("Werkzeugformat", value: "\(toolbox.preferences.formatVersion)")
-                LabeledContent("Bibliotheksindex", value: "Format 1")
-            }
-            Section {
-                LabeledContent("Meine Bibliothek", value: "Auf meinem iPad › noty › Noty")
-                LabeledContent("Test-/Restore-Bereiche", value: "Auf meinem iPad › noty › NotyWorkspaces")
-                LabeledContent("Aktueller Bereich", value: workspaces.title)
-            } header: { Text("Datenablage") } footer: {
-                Text("Alle Unterlagen liegen lokal im App-Container und sind über die Dateien-App sichtbar. Dort bitte nichts umbenennen oder verschieben. Hefte und Textdokumente verlassen das iPad nur über ein selbst eingerichtetes Backup, einen Export oder Teilen. Das freiwillige noty-Konto gleicht nur Lesezeichen und Markierungen der Gesetzessammlung mit law.xclipsen.de ab; Gesetzestexte werden von dort geladen.")
-            }
-            SigningRenewalSection()
-        }
-        .navigationTitle("Über noty")
-        .keyboardSheet()
-    }
-}
-
-/// Own page: a freeze of „Über noty“ must not take the tools to find it with it.
-private struct DiagnosticsSettingsPage: View {
-    @AppStorage(AppSettingsKey.hangProbe) private var hangProbe = false
-    @AppStorage(AppSettingsKey.inputProbe) private var inputProbe = InputProbe.defaultEnabled
-    @AppStorage(AppSettingsKey.tapDiagnostics) private var tapDiagnostics = false
-    @AppStorage(AppSettingsKey.textEditor2) private var textEditor2 = false
-    var body: some View {
-        Form {
-            Section {
-                keyToggle("Hänger-Diagnose", isOn: $hangProbe)
-                keyToggle("Eingabe-Diagnose", isOn: $inputProbe)
-                keyToggle("Tipp-Diagnose", isOn: $tapDiagnostics)
-                    .onChange(of: tapDiagnostics) { _, _ in TapDiagnostics.shared.refresh() }
-                keyToggle("Neuer Texteditor (Test)", isOn: $textEditor2)
-            } footer: {
-                Text("Tipp-Diagnose: zeigt nach jedem Tipp, was er getroffen hat und welche Felder dort liegen, nur Größen, keine Inhalte. Hänger-Diagnose: schreibt bei längeren Hängern nur Codeadressen und Zähler ins Systemprotokoll und nach Dateien › Auf meinem iPad › noty › Diagnose › haenger.txt, keine Inhalte. Eingabe-Diagnose: meldet Berührungen ohne Wirkung und lange Eingabesperren nach Dateien › Auf meinem iPad › noty › Diagnose › eingabe.txt, nur Klassennamen und Zustände, keine Inhalte. Beide wirken nach einem Neustart der App. Neuer Texteditor: ein Text über alle Seiten eines Textdokuments, im Blättermodus aus; noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.")
-            }
-        }
-        .navigationTitle("Diagnose")
-        .keyboardSheet()
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
     }
 }

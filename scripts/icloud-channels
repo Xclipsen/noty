@@ -1,0 +1,3 @@
+# Kanäle mit iCloud-Ablage (docs/ICLOUD.md), je Zeile einer: stable, dev, ai, calendar.
+# Jeder braucht seinen Container iCloud.de.la.noty[.<kanal>] im Apple-Entwicklerportal.
+dev

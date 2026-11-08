@@ -16,7 +16,7 @@ struct NotyAccountSettingsPage: View {
     var body: some View {
         Form {
             if let user = laws.user, !laws.sessionExpired {
-                Section("Noty-Konto") {
+                Section("noty-Konto") {
                     LabeledContent("Angemeldet", value: user.email ?? user.name)
                     Text("Dasselbe Konto gilt für noty und law.xclipsen.de. Hefte und Textdokumente werden nicht hochgeladen.").font(.caption).foregroundStyle(.secondary)
                     if LawLibraryModel.mailDelivery, user.emailVerified != true {
@@ -43,7 +43,7 @@ struct NotyAccountSettingsPage: View {
                         Button("Abmelden", role: .destructive) { Task { await laws.logout() } }
                     }
                 }
-                Section(recovery ? "Passwort zurücksetzen" : registering ? "Noty-Konto erstellen" : "Bei noty anmelden") {
+                Section(recovery ? "Passwort zurücksetzen" : registering ? "noty-Konto erstellen" : "Bei noty anmelden") {
                     TextField(recovery ? "E-Mail" : registering ? "Benutzername" : "Benutzername oder E-Mail", text: $email)
                         .keyboardType(recovery ? .emailAddress : .default).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled()
                     if !recovery || recoverySent {
@@ -89,10 +89,7 @@ struct NotyAccountSettingsPage: View {
             if let error = laws.error { Section { Text(error).foregroundStyle(.orange); Button("Hinweis schließen") { laws.error = nil } } }
             if !message.isEmpty { Section { Text(message).foregroundStyle(.secondary) } }
             if laws.accountBusy { ProgressView() }
-            Section {
-                NavigationLink("Gesetzessammlung und Abgleich") { LawSettingsPage() }
-            }
-        }.navigationTitle("Konto").disabled(laws.accountBusy)
+        }.navigationTitle("noty-Konto").disabled(laws.accountBusy)
             .task { if laws.user != nil, laws.user?.apple == nil { await laws.refreshAccount() } }
             .confirmationDialog("Apple trennen?", isPresented: $confirmUnlink, titleVisibility: .visible) {
                 Button("Apple trennen", role: .destructive) {
@@ -208,7 +205,7 @@ struct LawSettingsPage: View {
                 }
                 .swipeActions {
                     Button("Nur lokal") { Task { await laws.keepLocal([item]) } }.tint(.gray)
-                    Button("Erneut") { Task { await laws.retryRejected([item]) } }.tint(.accentColor)
+                    Button("Erneut") { Task { await laws.retryRejected([item]) } }.tint(AccentChoice.current.color)
                 }
             }
             Button("Erneut versuchen", systemImage: "arrow.clockwise") { Task { await laws.retryRejected() } }

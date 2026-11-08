@@ -104,7 +104,7 @@ enum IncomingFiling {
             guard let library, library.ready, let item = queue.next() else { presenting = false; return }
             let model = IncomingFilingModel(item: item, url: inbox.contentURL(item), library: library,
                                             areaTitle: workspaces?.title ?? "Meine Bibliothek", defaults: defaults())
-            let host = UIHostingController(rootView: IncomingFilingView(model: model))
+            let host = UIHostingController(rootView: IncomingFilingView(model: model).modifier(AccentTint()))
             host.modalPresentationStyle = .formSheet
             host.isModalInPresentation = true
             host.overrideUserInterfaceStyle = .dark
@@ -637,14 +637,14 @@ struct IncomingFilingView: View {
             }
             Button { model.folder = row.id } label: {
                 HStack {
-                    Image(systemName: row.id == nil ? "tray.full" : "folder").foregroundStyle(Color.accentColor)
+                    Image(systemName: row.id == nil ? "tray.full" : "folder").foregroundStyle(.tint)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(row.title).foregroundStyle(.primary)
                         if showsPath, row.id != nil { Text(row.path).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                     }
                     Spacer()
                     if model.folder == row.id {
-                        Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Gewählt")
+                        Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityLabel("Gewählt")
                     }
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain)
@@ -691,13 +691,13 @@ struct IncomingFilingView: View {
     private func notebookRow(_ item: NotebookCore.LibraryItem) -> some View {
         Button { model.notebook = item.id } label: {
             HStack {
-                Image(systemName: item.librarySymbol(filled: false)).foregroundStyle(Color.accentColor)
+                Image(systemName: item.librarySymbol(filled: false)).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.title).foregroundStyle(.primary)
                     Text(IncomingTargets.path(of: item.parentID, in: model.snapshot)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
-                if model.notebook == item.id { Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Gewählt") }
+                if model.notebook == item.id { Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityLabel("Gewählt") }
             }.contentShape(Rectangle())
         }.buttonStyle(.plain)
     }

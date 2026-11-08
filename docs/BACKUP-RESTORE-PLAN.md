@@ -31,6 +31,8 @@ Ein Ort **„Wiederherstellen“**, an dem man einen Zeitpunkt wählt, sieht, wa
 
 ### Phase 1: Einzelne Hefte aus einem Backup zurückholen (größter Gewinn)
 
+**Stand 08.11.2026 auf `feat/wiederherstellen`: implementiert, Core-Tests, Host-Roundtrip und SDK-Build erfolgreich; nicht installiert, am iPad ungeprüft.** Details: [LIBRARY-BACKUP](LIBRARY-BACKUP.md), Ergänzung vom 08.11.2026. Abweichung vom Plan: Eine Vorschau der ersten Seite gibt es noch nicht (Ordnerpfad und Seitenzahl ja).
+
 - In „Ältere Backups“ öffnet ein Tipp auf einen Eintrag eine Detailansicht. Sie holt das Archiv, prüft es vollständig und zeigt:
   - die Hefte mit Ordnerpfad, Seitenzahl und Vorschau der ersten Seite,
   - einen Vergleich mit heute: **gelöscht seitdem**, **geändert seitdem**, **unverändert**, **nur heute vorhanden** (Vergleich über Dokument-ID und Revisions-Prüfsumme bzw. Inhalt),
@@ -63,11 +65,33 @@ Ein Ort **„Wiederherstellen“**, an dem man einen Zeitpunkt wählt, sieht, wa
   - In **noty dev, noty AI und noty calendar** bleibt der gespiegelte Bereich „noty“ für den App-Abgleich ([APP-SYNC](APP-SYNC.md)), da er dort ein Entwicklerwerkzeug ist. Die Einbahnstraße bleibt unverändert.
 - Erst umsetzen, wenn Phasen 1 und 2 am iPad bestätigt sind.
 
-### Phase 5 (offen): Sync
+### Phase 5: Sync
+
+**Stand 08.11.2026: Stufe 1 als iCloud-Ablage implementiert** (jedes Heft einzeln mit Ständen im iCloud-Container der App, Zurückholen als Kopie oder Ersetzen), Build 141 auf `feat/wiederherstellen`, nicht installiert, am iPad ungeprüft. Details: [ICLOUD](ICLOUD.md). Nutzerentscheidung: iCloud statt eigener Server; iCloud-Dokumente (Dateien) statt CloudKit, weil die Hefte schon als geprüfte Dateien vorliegen. Stufe 2 (Abgleich in beide Richtungen) folgt, wenn ein zweites Gerät da ist.
 
 Eine PDF-Kopie im Backupziel ist **nicht** gewünscht, das Backup bleibt im noty-Format.
 
 **Warum nicht iCloud wie bei Goodnotes:** Ein CloudKit-Sync oder ein Sync über den iCloud-Container braucht die iCloud-Berechtigung. xtool 1.24.0 kennt sie nicht (`XKit/Model/Entitlements/EntitlementTypes.swift`). Schlimmer noch: `DeveloperServicesAddAppOperation` gleicht bei jedem signierten Build die Fähigkeiten der App-ID ab und **löscht alle, die es nicht kennt** (Ausnahme: In-App-Kauf). Ein von Hand im Apple-Entwicklerportal eingeschaltetes iCloud wäre nach dem nächsten Build wieder weg, und das Profil enthielte es nicht. Gehen würde es nur mit einem eigenen xtool-Fork, der die Fähigkeit samt Container-Zuordnung kennt. Das ist aufwendig, ungeprüft und müsste bei jedem xtool-Update nachgezogen werden. **Nicht empfohlen.**
+
+**Ergebnis vom 08.11.2026: iCloud mit xtool funktioniert auf dem iPad** (Test-App, nicht noty)
+
+- **Getestet:** Die Test-App `~/workspace/icloud-probe` (App-ID `XTL-BAFXLQ964V.de.la.noty.icloudprobe`, Container `iCloud.de.la.noty.probe`) wurde unter Linux mit dem gepatchten xtool signiert, per Link installiert und auf dem iPad ausgeführt. Ergebnis des Nutzers: Profil mit iCloud-Diensten, CloudKit- und Dokumente-Container, CloudKit-Konto verfügbar, CloudKit-Datensatz geschrieben, zurückgelesen und gelöscht, Datei im iCloud-Dokumentordner geschrieben und gelesen: **alles OK.**
+- **Ablauf:** Der Nutzer legt den Container einmal im Apple-Entwicklerportal an und ordnet ihn der App-ID zu (CloudKit, „Xcode 6“). In den ersten ~15 Minuten danach meldete CloudKit `CKError 10 „Invalid bundle ID for container“`, dann ging es (bekannte Verzögerung bei Apple). iCloud-Dokumente gingen sofort.
+- **gepatchtes xtool** `xtool-noty` (`~/workspace/xtool-noty`, Zweig `noty/icloud`, Version `1.24.0-noty.4`, Anleitung `NOTY.md`): schaltet iCloud für Apps mit `com.apple.developer.icloud-services` selbst ein, ändert vorhandene Fähigkeiten nie und protokolliert mit `XTOOL_TRACE_CAPABILITIES=1`, was an Apple geht. Das normale `xtool` 1.24.0 bleibt unverändert und baut alle noty-Apps wie bisher.
+- **Korrektur der Annahme unten:** Laut Protokoll liefert Apples Schnittstelle die Typen vorhandener Fähigkeiten nicht mit (`capabilityType: null`). Das normale xtool erreicht seinen Lösch-Zweig deshalb nie und **löscht iCloud nicht**. Mit iCloud und Container im Portal erzeugte auch das normale xtool 1.24.0 ein vollständiges Profil (`ota_check.py` ohne Probleme, am iPad nicht installiert). Es kann iCloud nur nicht selbst einschalten und schickt seine bekannten Fähigkeiten bei jedem Build erneut als CREATE.
+- **Bei Updates:** Ein künftiges xtool, das die Typen korrekt liest, könnte iCloud wieder löschen. Deshalb nach jedem xtool-Update zuerst die Test-App signieren und das Profil prüfen, erst dann eine noty-App mit iCloud.
+- **Noch offen:** Container für noty, noty dev und noty AI (je ein eigener, Einbahnstraße), die Wahl zwischen CloudKit und iCloud-Dokumenten für den Sync und der Sync selbst. An noty selbst ist nichts geändert.
+
+**Vorab-Untersuchung vom 08.11.2026** (vor dem Test, teilweise durch das Ergebnis oben überholt)
+
+- *Was fehlt:* xtool 1.24.0 und der aktuelle Stand von `xtool-org/xtool` (`origin/main`, geprüft am 08.11.2026) kennen die iCloud-Einträge nicht (`com.apple.developer.icloud-services`, `…icloud-container-identifiers`, `…ubiquity-container-identifiers`, `…icloud-container-environment`). Apples Schnittstelle kennt die Fähigkeit aber (`ICLOUD` mit Einstellung `ICLOUD_VERSION` = `XCODE_6` in `DeveloperAPI/Generated/Types.swift`).
+- *Signatur:* Bei bezahlten Teams lässt xtool unbekannte Einträge in der Signatur stehen (nur bei kostenlosen Teams werden sie gefiltert). Das Problem ist allein `DeveloperServicesAddAppOperation`: Es löscht an der App-ID jede Fähigkeit, die es nicht kennt. Dann fehlt iCloud im neu erzeugten Profil.
+- *Kleiner Patch:* die iCloud-Einträge als bekannte Fähigkeit `ICLOUD`/`XCODE_6` eintragen, so wie es xtool schon für „Mit Apple anmelden“ macht (`EntitlementTypes.swift` und `DeveloperServicesCapability.swift`, zusammen etwa 50–100 Zeilen). Den **Container** legt der Nutzer einmal je App im Apple-Entwicklerportal an und ordnet ihn zu. Ein automatisches Anlegen wie bei App Groups bräuchte Xcodes interne Container-Aufrufe. Davon ist nur `/_cloudContainer/listCloudContainers.action` öffentlich belegt (Apple-Forum), Anlegen und Zuordnen nicht, deshalb **nicht empfohlen**.
+- *Eigenes xtool bauen:* Die Swift-Abhängigkeiten ließen sich hier testweise bauen. Am Host fehlen nur die Header von libimobiledevice. Der vorgesehene Weg ist der offizielle Docker-Build von xtool (`Dockerfile` baut libplist 2.6.0, libimobiledevice-glue 1.3.1 und libimobiledevice selbst, `Linux/build.sh` erzeugt das AppImage). Docker ist vorhanden. Ein Wrapper-Wechsel wie beim Schritt 1.22.2 → 1.24.0, das alte AppImage bleibt daneben. Noch nicht ausgeführt.
+- *Absicherung:* `ota_check.py` verlangt die iCloud-Einträge in Signatur **und** Profil, sonst keine Veröffentlichung. `publish_ota.sh` prüft, dass das gepatchte xtool läuft. Erst mit noty dev oder noty AI testen.
+- *Getrennte Container:* `iCloud.de.la.noty` für die normale noty und eigene Container für noty dev und noty AI, sonst würden Testdaten die echten Hefte erreichen (Einbahnstraße aus [APP-SYNC](APP-SYNC.md)).
+- *Aufwand:* Patch, Build, Absicherung und Probe auf dem iPad (ein CloudKit-Datensatz schreiben und lesen) etwa 2–3 Arbeitstage. **Der Sync selbst in noty ist der deutlich größere Teil** (Konfliktregeln, PDFs und Bilder, iCloud-Speicherplatz des Nutzers, Abgleich im Hintergrund, Tests mit zwei Geräten) und kommt unabhängig vom Weg dazu.
+- *Bei jedem xtool-Update:* Den Patch auf die neue Version übertragen, mit Docker neu bauen, zuerst mit noty dev signieren und das Profil prüfen. Bei einem Patch in zwei Dateien meist ohne Konflikte. **Nie das offizielle xtool für eine noty-App benutzen:** Es würde iCloud wieder von der App-ID löschen, und der Container müsste im Portal neu zugeordnet werden. Die Hefte auf dem iPad sind davon nicht betroffen, nur der Abgleich fällt aus, bis wieder mit dem gepatchten xtool signiert wird. Ohne diese Pflege geht es nur, wenn der Patch bei xtool selbst aufgenommen wird (Pull Request an das öffentliche Projekt, nur mit Zustimmung des Nutzers).
 
 **Wege ohne Apple-Berechtigung:**
 

@@ -62,5 +62,5 @@ enum NotyText {
     }
 
     /// After restoring a library backup as a new area (all three ways).
-    static let restoredAreaMessage = "Der neue Bereich ist unter Einstellungen › Backup › Bereiche verfügbar. Die aktuelle Bibliothek bleibt erhalten."
+    static let restoredAreaMessage = "Der neue Bereich steht unten in der Seitenleiste der Bibliothek und unter Einstellungen › Backup & Wiederherstellen › Bereiche. Deine Bibliothek bleibt unverändert."
 }

@@ -1,5 +1,17 @@
 # Bibliotheksbackup und getrennte Bereiche – Build 11
 
+## Ergänzung 08.11.2026 · Einzelne Hefte aus einem Backup zurückholen (`feat/wiederherstellen`)
+
+Stand: **implementiert, Core-Tests (1359), Host-Roundtrip und SDK-Build (`xtool dev build`) erfolgreich; nicht installiert, am iPad ungeprüft.** Plan: [BACKUP-RESTORE-PLAN](BACKUP-RESTORE-PLAN.md) Phase 1.
+
+- **Bedienung:** Einstellungen › Backup & Daten › Ältere Backups › „Inhalt ansehen und Hefte zurückholen …“. Das Archiv wird geladen und geprüft (wie bisher `ExternalBackupModel.retrieve`), dann mit der heutigen Bibliothek verglichen. Die Liste zeigt die damals aktiven Hefte mit Ordnerpfad und Seitenzahl, gruppiert nach „Seitdem endgültig gelöscht“, „Heute im Papierkorb“, „Seitdem geändert“ und „Unverändert“. „Nur Unterschiede zeigen“ ist anfangs an. Mehrfachauswahl ist möglich.
+- **„Als Kopie zurückholen“** (Standard, Nutzerentscheidung): Gibt es das Heft heute noch, heißt die Kopie „Titel (Stand TT.MM.JJJJ)“ (Datum des Backups, Titel gekürzt, nie das Datum, ≤ 120 Zeichen); sonst kommt es unter seinem Namen zurück. Es landet im damaligen Ordner, wenn der heute existiert und nicht im Papierkorb liegt, sonst in der obersten Ebene.
+- **„Ersetzen …“** (nach Bestätigung, nur für geänderte Hefte): Der heutige Stand kommt in einem Indexcommit in den Papierkorb, der Backup-Stand nimmt Platz, Ordner und Anheftung ein (`LibraryStore.adoptImported`, wie beim `.noty`-Import „Vorhandenes ersetzen“). Gelöschte Hefte unter den ausgewählten kommen normal zurück.
+- **Weg der Daten:** `LibraryBackupBrowser.extract` liest das Archiv in einem weiteren geprüften Durchgang (Bildoriginale nach `tmp/NotyBackupArchives/<UUID>/Assets`) und schreibt jedes gewählte Heft als `.notybackup` Format 2, das `BackupArchive.write` zurückliest. Danach nimmt jedes Heft genau den Weg des `.noty`-Imports: `LibraryModel.importBackup` → Stage, Streaming-Prüfung, PDFKit-/PencilKit-Prüfung, erneute Stage-Prüfung, neues Paket mit neuer Dokument-ID, frisch zurückgelesen, dann Indexeintrag. Der Zwischenordner wird danach entfernt, Reste nach 24 Stunden (`BackupScratch.removeStale`).
+- **Vergleich:** kanonische Größe und CRC (`LibraryArchive.fingerprint`) des Backup-Hefts gegen den bestätigten heutigen Stand (`LibraryBackupPlan.currentFingerprints`, außerhalb des UI-Actors). Ein Titelwechsel zählt als Änderung. Ist ein heutiges Heft nicht lesbar, wird darauf hingewiesen, und vorhandene Hefte erscheinen als „geändert“.
+- **Unverändert:** kein Archiv-, Heft- oder Indexformatwechsel. Heutige Hefte werden beim Zurückholen als Kopie nicht angefasst (Test: Manifestbytes gleich). „Ganze Bibliothek als neuen Bereich …“ und „Datei exportieren …“ stehen weiter unter „Mehr“.
+- **Nachweise:** `LibraryBackupBrowserTests` (8 Tests: Inhaltsverzeichnis mit Ordnern und Papierkorb, geändert/umbenannt/Papierkorb/gelöscht/neu, Kopie neben dem heutigen Heft im Ordner bei unverändertem Original, Ersetzen mit Position und Anheftung und wiederherstellbarem Altstand, Ordnerrückfall, Bildoriginale, fremde ID, Kopietitel). Am iPad **ungeprüft:** Laden aus iCloud Drive und WebDAV (auch Platzhalter), Darstellung der Liste, Kopie und Ersetzen an echten Heften.
+
 ## Ergänzung 21.10.2026 · Format 2 mit Bild-Assets
 
 Stand: **implementiert und erfolgreich gebaut, nicht installiert, am iPad ungeprüft.** Überholt „Format 1 unverändert“ und die Manifest-Beschreibung im folgenden Abschnitt.

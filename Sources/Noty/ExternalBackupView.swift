@@ -28,9 +28,6 @@ struct ExternalBackupForm: View {
     @State private var endpoint = ""
     @State private var username = ""
     @State private var password = ""
-    @State private var exporting = false
-    @State private var file: LibraryArchiveFile?
-    @State private var restored = false
     @State private var confirmingRemoval = false
     @State private var confirmingDisable = false
     var body: some View {
@@ -57,13 +54,13 @@ struct ExternalBackupForm: View {
                         LabeledContent("Nächster automatischer Versuch", value: NotyText.statusDate(next))
                     }
                 }
-                Stepper("\(model.policy.keep) automatische Stände behalten", value: Binding(get: { model.policy.keep }, set: { model.setRetention($0) }), in: 3...30)
-                Button("Jetzt sichern") { Task { await model.attempt(library: library, toolbox: toolbox, manual: true) } }
-                    .disabled(model.policy.target == .disabled || !library.ready)
-                Button("Automatisches Backup ausschalten …") { confirmingDisable = true }
+                Stepper("\(model.policy.keep) automatische Backups behalten", value: Binding(get: { model.policy.keep }, set: { model.setRetention($0) }), in: 3...30)
+                Button("Automatisches Backup ausschalten …", role: .destructive) { confirmingDisable = true }
                     .disabled(model.policy.target == .disabled)
             } header: {
-                Text("Aktives Ziel · Bereich \(NotyText.quoted(workspaces.title))").lineLimit(2).truncationMode(.middle)
+                Text(workspaces.areaID == nil ? "Aktives Ziel" : "Aktives Ziel · Bereich \(NotyText.quoted(workspaces.title))").lineLimit(2).truncationMode(.middle)
+            } footer: {
+                Text("Einmal am Tag, solange noty benutzt wird. Nach Fehlern folgen weitere Versuche nach 15 Minuten, 1, 4 und 12 Stunden.")
             }
             Section("Backup-Ordner (Dateien, iCloud Drive)") {
                 Button(model.policy.target == .folder ? "Anderen Backup-Ordner wählen …" : "Backup-Ordner wählen …") { folderPicker = true }
@@ -81,44 +78,14 @@ struct ExternalBackupForm: View {
             } header: { Text("WebDAV") } footer: {
                 Text("Zugangsdaten nur im Schlüsselbund dieses iPads, nie im Backup. Der Ordner muss bereits existieren. Ein leeres Passwortfeld behält das gespeicherte Passwort.")
             }
-            Section("Ältere Backups") {
-                Button("Liste vom Ziel neu laden") { Task { do { try await model.reloadHistory() } catch { model.error = "Liste konnte nicht geladen werden. Backup-Ziel prüfen." } } }
-                ForEach(model.history, id: \.self) { name in
-                    VStack(alignment: .leading) {
-                        HStack {
-                            Text(NotyText.listDate(Date(timeIntervalSince1970: model.policy.timestamp(name) ?? 0), seconds: true))
-                            if model.placeholders.contains(name) {
-                                Image(systemName: "icloud.and.arrow.down").foregroundStyle(.secondary).accessibilityLabel("Nur in iCloud, wird beim Öffnen geladen")
-                            }
-                        }
-                        HStack {
-                            Button("Als neuen Bereich wiederherstellen") { Task {
-                                guard let archive = await model.retrieve(name) else { return }
-                                defer { BackupScratch.remove(archive.url) }
-                                restored = await workspaces.restoreLibrary(archive.url)
-                                if !restored { model.error = workspaces.error ?? "Wiederherstellung fehlgeschlagen."; workspaces.error = nil }
-                            } }
-                            Button("Datei exportieren …") { Task {
-                                if let archive = await model.retrieve(name) { file = LibraryArchiveFile(url: archive.url); exporting = true }
-                            } }
-                        }.font(.caption)
-                    }.padding(.vertical, 4)
-                }
-                if model.history.isEmpty { Text("Noch keine Backups vom aktiven Ziel geladen.").foregroundStyle(.secondary) }
-            }
             if showsSigning { SigningRenewalSection() }
         }
         .disabled(model.busy || workspaces.busy)
         .overlay { if model.busy { ProgressView(model.status.hasSuffix("…") ? model.status : "Backup wird geladen und geprüft …").padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
-        .navigationTitle("Automatisches Backup")
+        .navigationTitle("Ziel und Aufbewahrung")
         .onAppear { endpoint = model.policy.endpoint; username = model.username; model.checkFolder() }
         .fileImporter(isPresented: $folderPicker, allowedContentTypes: [.folder]) { result in
             switch result { case .success(let url): model.useFolder(url); case .failure: model.error = "Kein Backup-Ordner gewählt." }
-        }
-        .fileExporter(isPresented: $exporting, document: file, contentType: .notyLibrary, defaultFilename: NotyText.libraryFileName()) { result in
-            if let url = file?.url { BackupScratch.remove(url) }
-            file = nil
-            if case .failure = result { model.error = "Export nicht abgeschlossen." }
         }
         .confirmationDialog("WebDAV-Zugangsdaten entfernen?", isPresented: $confirmingRemoval, titleVisibility: .visible) {
             Button("Zugangsdaten entfernen", role: .destructive) { model.removeCredentials(); username = "" }
@@ -129,9 +96,6 @@ struct ExternalBackupForm: View {
         .alert("Backup", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
-        .alert("Als neuen Bereich wiederhergestellt", isPresented: $restored) {
-            Button("OK", role: .cancel) { }
-        } message: { Text(NotyText.restoredAreaMessage) }
     }
     private var targetTitle: String {
         switch model.policy.target {

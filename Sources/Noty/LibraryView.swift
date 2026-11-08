@@ -141,7 +141,7 @@ struct LibraryView: View {
                 Button("OK") { model.error = nil }
             } message: { Text(model.error ?? "") }
         }
-        .sheet(item: $settingsRequest, onDismiss: switchAreaIfRequested) { request in
+        .fullScreenCover(item: $settingsRequest, onDismiss: switchAreaIfRequested) { request in
             SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces,
                          initialPage: request.page) { area in
                 selectedArea = area; switchingArea = true; settingsRequest = nil
@@ -309,8 +309,8 @@ struct LibraryView: View {
         [PaletteCommand(title: "PDF oder Bild importieren") { importingPDF = true },
          PaletteCommand(title: "Backup importieren") { importingBackup = true },
          PaletteCommand(title: "Wiederhergestellte Kopien") { showingCopies = true },
-         PaletteCommand(title: "Bereiche") { showingAreas = true },
          PaletteCommand(title: "Einstellungen") { settingsRequest = SettingsRequest() }]
+            + (DeveloperAccess.showsAreas(workspaces) ? [PaletteCommand(title: "Bereiche") { showingAreas = true }] : [])
     }
 
     // MARK: Sidebar
@@ -356,7 +356,7 @@ struct LibraryView: View {
             Label {
                 Text(title).foregroundStyle(.primary)
             } icon: {
-                Image(systemName: systemImage).foregroundStyle(Color.accentColor)
+                Image(systemName: systemImage).foregroundStyle(.tint)
             }
             .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
             .padding(.horizontal, 10).padding(.vertical, 3)
@@ -375,7 +375,7 @@ struct LibraryView: View {
 
     @ViewBuilder private func sidebarBackground(selected: Bool, dropInto: Bool) -> some View {
         if dropInto { dropHighlight }
-        else if selected { RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.18)) }
+        else if selected { RoundedRectangle(cornerRadius: 10).fill(.tint.opacity(0.18)) }
     }
 
     /// Two pinned tiles side by side whenever the sidebar is wide enough.
@@ -388,7 +388,7 @@ struct LibraryView: View {
         return Button { activate(item) } label: {
             VStack(alignment: .leading, spacing: 6) {
                 Image(systemName: item.librarySymbol(filled: true))
-                    .font(.title3).foregroundStyle(Color.accentColor)
+                    .font(.title3).foregroundStyle(.tint)
                 Text(item.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
                     .lineLimit(2).truncationMode(.middle).multilineTextAlignment(.leading)
                     // Full title for the pointer; VoiceOver keeps label + hint of the tile.
@@ -397,7 +397,7 @@ struct LibraryView: View {
             .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 12)
-                .fill(selected ? Color.accentColor.opacity(0.18) : Color(uiColor: .tertiarySystemFill)))
+                .fill(selected ? AnyShapeStyle(.tint.opacity(0.18)) : AnyShapeStyle(Color(uiColor: .tertiarySystemFill))))
             .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(NotyPressStyle())
@@ -456,7 +456,7 @@ struct LibraryView: View {
                         .pointerHelp(item.title)
                 } icon: {
                     Image(systemName: item.librarySymbol(filled: false))
-                        .foregroundStyle(item.isFolder ? Color.accentColor : Color.secondary)
+                        .foregroundStyle(item.isFolder ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                 }
                 .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                 .contentShape(Rectangle())
@@ -478,8 +478,8 @@ struct LibraryView: View {
     // MARK: Drag & drop
 
     private var dropHighlight: some View {
-        RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.25))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2))
+        RoundedRectangle(cornerRadius: 10).fill(.tint.opacity(0.25))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.tint, lineWidth: 2))
             .allowsHitTesting(false)
     }
 
@@ -623,11 +623,14 @@ struct LibraryView: View {
 
     private var sidebarFooter: some View {
         HStack {
-            Button { showingAreas = true } label: {
-                Label(workspaces.title, systemImage: workspaces.kind.symbol).lineLimit(1)
+            // Bereiche are a test tool: hidden in the normal noty unless one exists.
+            if DeveloperAccess.showsAreas(workspaces) {
+                Button { showingAreas = true } label: {
+                    Label(workspaces.title, systemImage: workspaces.kind.symbol).lineLimit(1)
+                }
+                .disabled(model.busy && !model.backgroundBusy || workspaces.busy)
+                .accessibilityLabel("Bereich \(workspaces.title)").accessibilityHint("Bereich wechseln")
             }
-            .disabled(model.busy && !model.backgroundBusy || workspaces.busy)
-            .accessibilityLabel("Bereich \(workspaces.title)").accessibilityHint("Bereich wechseln")
             Spacer()
             let count = model.trashedItems.count
             if count > 0 {
@@ -847,7 +850,7 @@ struct LibraryView: View {
                     .background {
                         // Dropping anywhere else moves into the shown folder.
                         if let mark = dropMark, mark.zone == .detail, mark.target == .into(parentID) {
-                            Color.accentColor.opacity(0.06).allowsHitTesting(false)
+                            Rectangle().fill(.tint.opacity(0.06)).allowsHitTesting(false)
                         }
                     }
                     .overlay(alignment: .topLeading) { insertionLine(detailLine) }
@@ -940,7 +943,7 @@ struct LibraryView: View {
     }
 
     private var keyboardFocusRing: some View {
-        RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, lineWidth: 2).allowsHitTesting(false)
+        RoundedRectangle(cornerRadius: 10).strokeBorder(.tint, lineWidth: 2).allowsHitTesting(false)
     }
 
     private func documentCard(_ item: NotebookCore.LibraryItem) -> some View {
@@ -948,7 +951,7 @@ struct LibraryView: View {
             Button { activate(item) } label: {
                 Group {
                     if item.isFolder {
-                        Image(systemName: "folder.fill").font(.system(size: 76)).foregroundStyle(Color.accentColor)
+                        Image(systemName: "folder.fill").font(.system(size: 76)).foregroundStyle(.tint)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else { LibraryNotebookArtwork(item: item, model: model) }
                 }.aspectRatio(0.72, contentMode: .fit)
@@ -983,7 +986,7 @@ struct LibraryView: View {
         Button { activate(item) } label: {
             HStack(spacing: 14) {
                 Image(systemName: item.isFolder ? "folder.fill" : item.librarySymbol(filled: false))
-                    .font(.title2).foregroundStyle(item.isFolder ? Color.accentColor : .secondary).frame(width: 32)
+                    .font(.title2).foregroundStyle(item.isFolder ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary)).frame(width: 32)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title).foregroundStyle(.primary).lineLimit(2).truncationMode(.middle)
                     // One string: separate texts in an HStack each wrapped into ragged mini-columns.
@@ -1149,8 +1152,8 @@ private struct InsertionLine: View {
     var body: some View {
         let stack = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
         stack {
-            Circle().stroke(Color.accentColor, lineWidth: 2).frame(width: 7, height: 7)
-            Rectangle().fill(Color.accentColor).frame(width: vertical ? 2 : nil, height: vertical ? nil : 2)
+            Circle().stroke(.tint, lineWidth: 2).frame(width: 7, height: 7)
+            Rectangle().fill(.tint).frame(width: vertical ? 2 : nil, height: vertical ? nil : 2)
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
