@@ -56,6 +56,28 @@ CRASH_STACK = [{"image": "libswiftCore.dylib", "offset": 0x1234}, {"image": "Swi
 CRASH_SIG = "crash:stackOverflow|Noty+0x1a91ac>Noty+0x1a9200"
 
 
+class SameRunTests(unittest.TestCase):
+    """The device test of Build 135: a test hang, then a test crash, in one run."""
+
+    def test_exit_folds_only_into_the_crash_and_kernel_hangs_are_not_called_file_access(self):
+        with tempfile.TemporaryDirectory(prefix="diag-same-run-") as tmp:
+            store, launch = Path(tmp) / "reports", "F4ABCC0B-E001-4F02-A37A-2CA0313777B9"
+            kernel_stack = [{"image": "libsystem_kernel.dylib", "offset": 0x6818}, {"image": "libsystem_c.dylib", "offset": 0xD648},
+                            {"image": "Foundation", "offset": 0x321A8C}, {"image": "Noty", "offset": 0x10}]
+            write(store, make_report("appHang", 135, at=NOW - 70_000, launch=launch, details={"durationMs": "3006"},
+                                     stack=kernel_stack, signature="appHang|Noty+0x10"))
+            write(store, make_report("crash", 135, at=NOW, launch=launch, details={"exceptionType": "6", "signal": "5"},
+                                     stack=[{"image": "Noty", "offset": 0x20}], signature="crash:swiftTrap|Noty+0x20"))
+            write(store, make_report("abnormalExit", 135, at=NOW + 1000, launch=launch, details={"state": "active"}))
+            code, text = run("--store", str(store), "--binaries", str(Path(tmp) / "none"), "--json", "--since", "all")
+            self.assertEqual(code, 0)
+            groups = {g["kind"]: g for g in json.loads(text)["groups"]}
+            self.assertEqual(sorted(groups), ["appHang", "crash"])
+            self.assertEqual(groups["crash"]["abnormalExits"], 1)
+            self.assertEqual(groups["appHang"]["abnormalExits"], 0)
+            self.assertEqual(groups["appHang"]["headline"], "Hauptthread blockiert in einem Systemaufruf")
+
+
 class SyntheticStore(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

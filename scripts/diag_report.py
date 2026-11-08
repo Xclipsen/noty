@@ -93,9 +93,8 @@ COCOA_ERRORS = {
 SWIFTUI_IMAGES = {"SwiftUI", "SwiftUICore", "AttributeGraph"}
 PENCILKIT_IMAGES = {"PencilKit", "PencilKitCore"}
 WAIT_IMAGES = {"libsystem_pthread.dylib", "libdispatch.dylib", "libsystem_platform.dylib"}
-FILE_IMAGES = {"Foundation", "libsqlite3.dylib", "CoreData", "libsystem_c.dylib"}
 FILE_SYMBOL = re.compile(r"FileManager|FileHandle|contentsOf|write\(to|\bfsync\b|\bread\(|\bwrite\(|\bopen\(|replaceItem|moveItem|copyItem|createDirectory|removeItem")
-WAIT_SYMBOL = re.compile(r"semaphore_wait|__psynch|mach_msg|DispatchSemaphore|\.wait\(|_dispatch_sync|pthread_mutex|os_unfair_lock|NSLock|OSAllocatedUnfairLock|dispatch_sync")
+WAIT_SYMBOL = re.compile(r"semaphore_wait|__psynch|mach_msg|DispatchSemaphore|\.wait\(|_dispatch_sync|pthread_mutex|os_unfair_lock|NSLock|OSAllocatedUnfairLock|dispatch_sync|\bsleep|usleep|nanosleep")
 
 HANG_HINTS = {
     "swiftui": ("Hänger beim View-Aufbau (SwiftUI)",
@@ -105,6 +104,9 @@ HANG_HINTS = {
                   "Große Zeichnungen laden/zusammenführen, PKDrawing-Serialisierung oder Canvas-Neuaufbau auf dem Hauptthread."),
     "file": ("Dateizugriff auf dem Hauptthread",
              "Lesen, Schreiben oder fsync auf dem Hauptthread. In einen Hintergrund-Task verschieben."),
+    "kernel": ("Hauptthread blockiert in einem Systemaufruf",
+               "Warten, Schlafen oder Ein-/Ausgabe. Ohne Symbole der Systemfunktionen ist das nicht zu unterscheiden; "
+               "die innerste App-Funktion zeigt, wer den Aufruf macht. Ein solcher Aufruf gehört nicht auf den Hauptthread."),
     "wait": ("Hauptthread wartet auf eine Sperre oder einen anderen Thread",
              "DispatchQueue.sync, Semaphore oder Lock auf dem Hauptthread, während ein anderer Thread die Sperre hält "
              "(oft Speichern/I/O). Synchrones Warten vermeiden."),
@@ -412,11 +414,16 @@ def hang_category(report: dict, infos: list[dict]) -> str:
     symbols = " ".join(str(f.get("symbol", "")) for f in segment)
     app_names = " ".join(i["function"] or "" for i in infos if i["app"])[:4000]
     top = images[0] if images else ""
-    if WAIT_SYMBOL.search(symbols) or (top == "libsystem_kernel.dylib" and any(i in WAIT_IMAGES for i in images[1:5])):
+    inner_app = " ".join((i["function"] or "") for i in infos[:12] if i["app"])
+    # Only what the evidence shows: system frames carry no names, so a kernel
+    # frame on top alone does not tell waiting, sleeping and file access apart.
+    if (WAIT_SYMBOL.search(symbols) or WAIT_SYMBOL.search(inner_app)
+            or (top == "libsystem_kernel.dylib" and any(i in WAIT_IMAGES for i in images[1:3]))):
         return "wait"
-    if (FILE_SYMBOL.search(symbols) or (top == "libsystem_kernel.dylib" and any(i in FILE_IMAGES for i in images[1:6]))
-            or FILE_SYMBOL.search(" ".join((i["function"] or "") for i in infos[:12] if i["app"]))):
+    if FILE_SYMBOL.search(symbols) or FILE_SYMBOL.search(inner_app):
         return "file"
+    if top == "libsystem_kernel.dylib":
+        return "kernel"
     if any(i in PENCILKIT_IMAGES for i in images):
         return "pencilkit"
     if any(i in SWIFTUI_IMAGES for i in images) or ("body.getter" in app_names and any(i in SWIFTUI_IMAGES for i in
@@ -579,15 +586,19 @@ def group_reports(reports: list[dict], all_reports: list[dict], symbols: Symboli
         group = groups.setdefault(analysis.key, {"key": analysis.key, "items": []})
         group["items"].append(analysis)
 
+    def exits_of(report: dict) -> list[dict]:
+        # Only a crash owns the exit of its run; a hang earlier in the same run does not.
+        return folded.get(report.get("launchID"), []) if report["kind"] == "crash" else []
+
     result = []
     for group in groups.values():
         items = sorted(group["items"], key=lambda a: when(a.report))
         newest = items[-1]
-        exits = [x for a in items for x in folded.get(a.report.get("launchID"), [])]
+        exits = [x for a in items for x in exits_of(a.report)]
         # Steps of the newest report that has any (its own or its folded exit's).
         crumb_source = newest.report
         for analysis in reversed(items):
-            candidates = [analysis.report] + folded.get(analysis.report.get("launchID"), [])
+            candidates = [analysis.report] + exits_of(analysis.report)
             found = next((r for r in candidates if r["breadcrumbs"]), None)
             if found:
                 crumb_source = found
