@@ -88,15 +88,29 @@ final class CalendarReminderCenter {
     /// (reminders and overviews delivered while noty was not running).
     func delivered(namespace: String) async -> [CalendarNotificationRecord] {
         await center.deliveredNotifications().compactMap { notification in
-            guard notification.request.content.userInfo[CalendarNotificationHub.areaKey] as? String == namespace else { return nil }
+            // Push notifications (docs/PUSH.md) name their area through their connection.
+            guard CalendarNotificationHub.route(notification.request).area == namespace else { return nil }
             return CalendarNotificationHub.record(notification)
         }
     }
 
-    /// Read in the bell: gone from the Mitteilungszentrale as well.
+    /// Read in the bell: gone from the Mitteilungszentrale as well. Push
+    /// notifications have identifiers of their own (from APNs) and are
+    /// found by their change id.
     func removeDelivered(_ ids: [String]) {
         guard !ids.isEmpty else { return }
         center.removeDeliveredNotifications(withIdentifiers: ids)
+        let raw = Set(ids.compactMap(CalendarNotificationLog.pushRawChangeID))
+        guard !raw.isEmpty else { return }
+        Task {
+            let delivered = await center.deliveredNotifications()
+            let matching = delivered.filter { notification in
+                guard let push = notification.request.content.userInfo[CalendarNotificationHub.pushKey] as? [String: Any],
+                      let id = push["changeID"] as? String else { return false }
+                return raw.contains(id)
+            }.map(\.request.identifier)
+            if !matching.isEmpty { center.removeDeliveredNotifications(withIdentifiers: matching) }
+        }
     }
 
     private func replace(with plan: CalendarReminderPlan, namespace: String) async -> String? {

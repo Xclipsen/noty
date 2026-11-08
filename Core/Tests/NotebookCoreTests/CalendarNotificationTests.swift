@@ -331,6 +331,60 @@ final class CalendarNotificationTests: XCTestCase {
         XCTAssertEqual(CalendarNotificationLog.decode(mixed)?.records.map(\.id), ["a"])
     }
 
+    /// docs/PUSH.md: the server reports changes under its own marker; the
+    /// same change found by app and server appears once even when the two
+    /// comparison pairs gave different kinds.
+    func testPushEntriesAndAppEntriesAreDeduplicatedAcrossOrigins() {
+        let namespace = "calendar.abc12"
+        let old = lesson("77", "2026-11-12", 8, rooms: ["R 1.01"])
+        var moved = lesson("77", "2026-11-12", 8, rooms: ["R 1.12"])
+        let roomOnly = CalendarLessonChange(kinds: [.roomChanged], lesson: moved, previous: old)
+        moved.subjectLong = "Englisch"
+        let both = CalendarLessonChange(kinds: [.roomChanged, .substitution], lesson: moved, previous: old)
+        let substitution = CalendarLessonChange(kinds: [.substitution], lesson: moved, previous: old)
+        let cancelled = CalendarLessonChange(kinds: [.cancelled], lesson: lesson("77", "2026-11-12", 8, rooms: ["R 1.12"], statuses: [.cancelled]), previous: old)
+
+        func push(_ change: CalendarLessonChange) -> CalendarNotificationRecord {
+            CalendarNotificationRecord(id: CalendarNotificationLog.pushChangeID(namespace: namespace, changeID: change.id), kind: .change,
+                                       title: "Stundenplanänderung", body: change.text(calendar: berlin), date: now,
+                                       day: change.lesson.date, entryID: change.lesson.id)
+        }
+        func local(_ change: CalendarLessonChange) -> CalendarNotificationRecord {
+            CalendarNotificationRecord(change: change, date: now, calendar: berlin, namespace: namespace)
+        }
+
+        let server = push(roomOnly)
+        XCTAssertTrue(CalendarNotificationLog.isPushChange(server.id))
+        XCTAssertFalse(CalendarNotificationLog.isPushChange(local(roomOnly).id))
+        XCTAssertEqual(CalendarNotificationLog.pushRawChangeID(server.id), roomOnly.id)
+        XCTAssertNil(CalendarNotificationLog.pushRawChangeID(local(roomOnly).id))
+        XCTAssertEqual(CalendarNotificationLog.changeMatchKey(server.id), CalendarNotificationLog.changeMatchKey(local(both).id),
+                       "Raum mit Punkt, andere Arten: dieselbe Änderung")
+        XCTAssertNotEqual(CalendarNotificationLog.changeMatchKey(server.id), CalendarNotificationLog.changeMatchKey(local(cancelled).id))
+        XCTAssertNil(CalendarNotificationLog.changeMatchKey("noty.calendar.calendar.abc12.event.x"))
+        XCTAssertNil(CalendarNotificationLog.changeMatchKey(CalendarNotificationLog.changePrefix + namespace + ".summary.123"))
+
+        // Server first, then the app with other kinds: only the server's entry.
+        var log = CalendarNotificationLog()
+        XCTAssertEqual(log.addChanges([server], now: now).count, 1)
+        XCTAssertEqual(log.addChanges([local(both)], now: now).count, 0)
+        XCTAssertEqual(log.addChanges([server], now: now).count, 0, "dieselbe ID nur einmal")
+        // A cancellation of the same lesson is a change of its own.
+        XCTAssertEqual(log.addChanges([local(cancelled)], now: now).count, 1)
+        XCTAssertEqual(log.relatedChangeIDs(push(cancelled).id), [push(cancelled).id, local(cancelled).id])
+
+        // App first, then the server: only the app's entry.
+        var other = CalendarNotificationLog()
+        other.addChanges([local(both)], now: now)
+        XCTAssertEqual(other.addChanges([server, push(substitution)], now: now).count, 0)
+        // Within one origin a further change of the same lesson stays.
+        var app = CalendarNotificationLog()
+        app.addChanges([local(roomOnly)], now: now)
+        XCTAssertEqual(app.addChanges([local(substitution)], now: now).count, 1)
+        // Other kinds pass unchanged.
+        XCTAssertEqual(app.addChanges([CalendarNotificationRecord(id: "r1", kind: .event, title: "T", body: "", date: now)], now: now).count, 1)
+    }
+
     func testSummaryOfSeveralChanges() {
         let changes = (1...5).map { CalendarLessonChange(kinds: [.cancelled], lesson: lesson("\($0)", "2026-11-12", 7 + $0, statuses: [.cancelled]), previous: nil) }
         let summary = CalendarLessonChange.summary(changes, calendar: berlin)

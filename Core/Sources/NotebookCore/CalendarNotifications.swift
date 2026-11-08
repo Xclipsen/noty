@@ -330,6 +330,79 @@ public struct CalendarNotificationLog: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: Push service (docs/PUSH.md)
+
+extension CalendarNotificationLog {
+    /// Between namespace and change id of the entries the push service
+    /// (noty-push) reported: `noty.calendar-change.<Kanal>.<Bereich>.push.change.…`.
+    /// Marks their origin, so a change found by the app and the same change
+    /// found by the server can be recognised although their ids differ.
+    public static let pushMarker = "push."
+
+    /// Bell id of a change the push service reported (`changeID` raw, as
+    /// `CalendarLessonChange.id` on the server).
+    public static func pushChangeID(namespace: String, changeID: String) -> String {
+        changePrefix + (namespace.isEmpty ? "" : namespace + ".") + pushMarker + changeID
+    }
+
+    /// Whether `id` is a change entry reported by the push service.
+    public static func isPushChange(_ id: String) -> Bool {
+        id.hasPrefix(changePrefix) && id.contains("." + pushMarker + "change.")
+    }
+
+    /// The raw change id (`change.…`) of a push entry, nil for others.
+    public static func pushRawChangeID(_ id: String) -> String? {
+        guard isPushChange(id), let range = id.range(of: "." + pushMarker + "change.") else { return nil }
+        return "change." + id[range.upperBound...]
+    }
+
+    /// What a change entry says independent of the comparison pair that
+    /// found it: period, day, resulting start and rooms, and whether it is
+    /// a cancellation, a reinstatement or any other change. The kinds
+    /// themselves depend on that pair (the server compares hourly, the app
+    /// with its own last state: „Raumwechsel“ + later „Vertretung“ there,
+    /// „Raumwechsel, Vertretung“ here) and are left out. Nil for anything
+    /// that is no change entry.
+    public static func changeMatchKey(_ id: String) -> String? {
+        guard id.hasPrefix(changePrefix) else { return nil }
+        let rest = "." + id.dropFirst(changePrefix.count)
+        guard let range = rest.range(of: ".change.") else { return nil }
+        let parts = rest[range.upperBound...].split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        // change.<periode>.<YYYY-MM-DD>.<arten>.<beginn>.<räume> – the period may contain dots, the rooms too.
+        guard let dateIndex = parts.indices.dropFirst().first(where: { CivilDate(parts[$0]) != nil }),
+              parts.count >= dateIndex + 3, Int(parts[dateIndex + 2]) != nil else { return nil }
+        let kinds = parts[dateIndex + 1].split(separator: "-")
+        let category = kinds.contains("cancelled") ? "cancelled" : kinds.contains("reinstated") ? "reinstated" : "changed"
+        let period = parts[..<dateIndex].joined(separator: ".")
+        let rooms = parts[(dateIndex + 3)...].joined(separator: ".")
+        return [period, parts[dateIndex], category, parts[dateIndex + 2], rooms].joined(separator: "|")
+    }
+
+    /// As `add`, and a change entry is also left out when an entry of the
+    /// other origin (app ↔ push service) says the same (`changeMatchKey`).
+    /// Within one origin only the exact id counts: there a second entry for
+    /// the same lesson is a further change.
+    @discardableResult
+    public mutating func addChanges(_ new: [CalendarNotificationRecord], now: Date) -> [CalendarNotificationRecord] {
+        var known: [String: Set<Bool>] = [:]
+        for record in records where record.kind == .change {
+            if let key = Self.changeMatchKey(record.id) { known[key, default: []].insert(Self.isPushChange(record.id)) }
+        }
+        let kept = new.filter { record in
+            guard record.kind == .change, let key = Self.changeMatchKey(record.id) else { return true }
+            return !(known[key]?.contains(!Self.isPushChange(record.id)) ?? false)
+        }
+        return add(kept, now: now)
+    }
+
+    /// `id` and the entries of the other origin that say the same: read together.
+    public func relatedChangeIDs(_ id: String) -> [String] {
+        guard let key = Self.changeMatchKey(id) else { return [id] }
+        let push = Self.isPushChange(id)
+        return [id] + records.filter { $0.id != id && Self.isPushChange($0.id) != push && Self.changeMatchKey($0.id) == key }.map(\.id)
+    }
+}
+
 extension CalendarLessonChange {
     /// One text for several changes found at once (one notification instead of a flood).
     public static func summary(_ changes: [CalendarLessonChange], calendar: Calendar) -> (title: String, body: String) {

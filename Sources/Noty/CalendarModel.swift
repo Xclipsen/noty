@@ -126,6 +126,8 @@ final class CalendarModel: ObservableObject {
     /// Bumped when a notification or a bell entry opens something: the
     /// library switches to the calendar.
     @Published var openRequest = 0
+    /// Bumped by „Untis-Zugang prüfen“ (push): the calendar opens the WebUntis sheet.
+    @Published var connectionRequest = 0
     @Published var notificationHintDone = CalendarNotificationPreferences.hintDone
     /// `reminderPermission` was read at least once (no hint before that).
     var permissionChecked = false
@@ -248,6 +250,8 @@ final class CalendarModel: ObservableObject {
         rescheduleReminders()
         if visible { refreshIfDue() }
         CalendarNotificationHub.shared.modelLoaded(self)
+        // Push service (docs/PUSH.md): settings/token to the server, its history into the bell.
+        Task { await CalendarPushClient.shared.sync(self) }
     }
 
     /// Applies `change` in memory and commits it. On failure the change stays
@@ -665,6 +669,8 @@ final class CalendarModel: ObservableObject {
         rebuild()
         rescheduleReminders()
         await refresh(manual: true)
+        // Push follows a new Freigabe of its area (with the consent given before).
+        await CalendarPushClient.shared.connectionChanged(self, from: old.connection?.id, to: record.id)
     }
 
     /// Removes connection record, offline timetable and access data. Own
@@ -688,6 +694,13 @@ final class CalendarModel: ObservableObject {
         // Only WebUntis entries go away (own and system calendar entries stay).
         if let entry = selectedEvent, entry.source == .timetable || entry.source == .holidays { selection = nil }
         rebuild()
+        // Push service: its copy of the Freigabe is deleted as well; „gelöscht“ only after the server confirmed.
+        let push = CalendarPushClient.shared
+        let wasPush = push.state.connectionID == record.id && push.state.registered
+        await push.connectionChanged(self, from: record.id, to: nil)
+        if wasPush, push.state.pendingDelete {
+            problems.append("Die Freigabe auf dem noty-Server ist noch nicht gelöscht (keine Verbindung); noty wiederholt das beim nächsten Start")
+        }
         return problems.isEmpty ? nil : "Getrennt, aber nicht alles entfernt: " + problems.joined(separator: "; ")
     }
 

@@ -175,6 +175,15 @@ final class ServiceTests: XCTestCase {
         await service.tick()
         XCTAssertEqual(source.calls, calls, "kein Abruf mehr mit abgelehnter Freigabe")
         XCTAssertEqual(sender.sent.count, 1, "Hinweis nur einmal")
+        // The same Freigabe sent again (the app reached WebUntis with it) is a retry.
+        source.error = nil
+        let retried = try await service.update(id: id, UpdateInput(setup: setup()))
+        XCTAssertEqual(retried.state, .active, "erneut gesendete gleiche Freigabe startet neu")
+        source.error = WebUntisError.server(code: -8504, message: "bad credentials")
+        clock.set(at(2026, 11, 9, 16, 7)); await service.poll(id)
+        clock.set(at(2026, 11, 9, 17, 7)); await service.poll(id)
+        state = await service.record(id)!.state
+        XCTAssertEqual(state, .authFailed)
         // A new Freigabe (PUT) makes it active again with a new baseline.
         source.error = nil
         var other = setup(); other.user = "max.muster2"

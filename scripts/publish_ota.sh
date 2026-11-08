@@ -63,14 +63,31 @@ if [ -n "$LAST" ] && [ "$NEXT" -le "$LAST" ] && [ "${NOTY_SAME_BUILD:-}" != 1 ];
   echo "Build $NEXT ist nicht größer als der zuletzt veröffentlichte Build $LAST; CFBundleVersion erhöhen." >&2; exit 1
 fi
 INSTALLED_ID="XTL-BAFXLQ964V.XTL-BAFXLQ964V.$BASE_ID"
-ORIGINAL="$(mktemp)"; ORIGINAL_INFO="$(mktemp)"
-cp xtool.yml "$ORIGINAL"; cp Info.plist "$ORIGINAL_INFO"
-restore() { cp "$ORIGINAL" xtool.yml; cp "$ORIGINAL_INFO" Info.plist; rm -f "$ORIGINAL" "$ORIGINAL_INFO"; }
+ORIGINAL="$(mktemp)"; ORIGINAL_INFO="$(mktemp)"; ORIGINAL_ENTITLEMENTS="$(mktemp)"
+cp xtool.yml "$ORIGINAL"; cp Info.plist "$ORIGINAL_INFO"; cp Noty.entitlements "$ORIGINAL_ENTITLEMENTS"
+restore() {
+  cp "$ORIGINAL" xtool.yml; cp "$ORIGINAL_INFO" Info.plist; cp "$ORIGINAL_ENTITLEMENTS" Noty.entitlements
+  rm -f "$ORIGINAL" "$ORIGINAL_INFO" "$ORIGINAL_ENTITLEMENTS"
+}
 trap restore EXIT
 sed -i "s/^bundleID: .*/bundleID: XTL-BAFXLQ964V.$BASE_ID/" xtool.yml
 CHANNEL="${NOTY_CHANNEL:-dev}"
 sed -i "s#<key>NotyChannel</key><string>[a-z]*</string>#<key>NotyChannel</key><string>$CHANNEL</string>#" Info.plist
 grep -q "<key>NotyChannel</key><string>$CHANNEL</string>" Info.plist || { echo "NotyChannel nicht gesetzt" >&2; exit 1; }
+# Push-Mitteilungen (docs/PUSH.md) nur für noty calendar: nur dieser Build
+# verlangt aps-environment (development, wie alle Builds hier development-
+# signiert sind). Die eingecheckte Noty.entitlements bleibt ohne, damit die
+# Profile von noty, noty dev und noty AI die Fähigkeit nicht brauchen;
+# ota_check.py verlangt sie bei noty calendar in Signatur und Profil.
+if [ "$CHANNEL" = calendar ]; then
+  python3 -I - Noty.entitlements <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as handle: entitlements = plistlib.load(handle)
+entitlements["aps-environment"] = "development"
+with open(sys.argv[1], "wb") as handle: plistlib.dump(entitlements, handle)
+PY
+  grep -q '<key>aps-environment</key>' Noty.entitlements || { echo "aps-environment nicht gesetzt" >&2; exit 1; }
+fi
 if [ "$CHANNEL" != stable ]; then
   sed -i "s#^iconPath: .*#iconPath: Resources/AppIcon-$CHANNEL.png#" xtool.yml
   sed -i "s#<key>CFBundleDisplayName</key><string>noty</string>#<key>CFBundleDisplayName</key><string>$APP_NAME</string>#" Info.plist

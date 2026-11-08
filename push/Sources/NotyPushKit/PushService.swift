@@ -120,8 +120,11 @@ public actor PushService {
         guard let current = records[id] else { throw ServiceError.notFound }
         let newConnection = input.connectionID ?? current.connectionID
         let newZone = input.timeZone ?? current.timeZone
-        let needsBaseline = (input.setup.map { $0 != current.setup } ?? false) || newConnection != current.connectionID
-            || newZone != current.timeZone
+        // The same Freigabe sent again after „Untis-Zugang prüfen“ (the app
+        // reached WebUntis with it meanwhile) is a retry: new test fetch and
+        // baseline as for a new one, otherwise the device stayed paused for good.
+        let needsBaseline = (input.setup.map { $0 != current.setup || current.state == .authFailed } ?? false)
+            || newConnection != current.connectionID || newZone != current.timeZone
         var snapshot: CalendarSourceSnapshot?
         let started = now()
         if needsBaseline {

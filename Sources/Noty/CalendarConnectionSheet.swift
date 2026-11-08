@@ -22,6 +22,8 @@ struct CalendarConnectionSheet: View {
     @State private var failure: String?
     @State private var confirmingDisconnect = false
     @State private var replacing = false
+    /// Push service (docs/PUSH.md): consent offered after connecting.
+    @State private var offeringPush = false
 
     @FocusState private var focused: WebUntisEntryField?
     private var scannerAvailable: Bool { DataScannerViewController.isSupported }
@@ -58,6 +60,7 @@ struct CalendarConnectionSheet: View {
         }
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(working)
+        .calendarPushConsent(isPresented: $offeringPush, model: model)
     }
 
     private var notice: some View {
@@ -248,6 +251,8 @@ struct CalendarConnectionSheet: View {
                 replacing = false
                 key = ""; user = ""
                 result = nil
+                // Only after a working local connection; nothing is uploaded without „Zustimmen“.
+                if CalendarPushClient.shared.shouldOffer(for: model) { offeringPush = true }
             } catch { failure = (error as? CalendarStoreError)?.localizedDescription ?? WebUntisClient.testMessage(error) }
             working = false
         }

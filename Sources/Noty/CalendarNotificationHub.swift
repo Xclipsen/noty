@@ -11,7 +11,9 @@ import NotebookCore
 ///  - Delegate of `UNUserNotificationCenter`: a tap on a calendar
 ///    notification opens its day/entry through the calendar model of the
 ///    area it belongs to (`model.openNotification`, the normal `show` path);
-///    a notification of another area only says so.
+///    a notification of another area only says so. Push notifications of
+///    the server noty-push (docs/PUSH.md) carry `userInfo["noty"]` instead:
+///    their connection names the area, `auth` opens the WebUntis sheet.
 ///  - Background refresh (`BGAppRefreshTask`, scheduled when the app leaves
 ///    the foreground; iPadOS decides if and when it runs): it uses the
 ///    calendar model of the shown area – the same repository and write claim
@@ -27,6 +29,8 @@ final class CalendarNotificationHub: NSObject, UNUserNotificationCenterDelegate 
     nonisolated static let dayKey = "noty.day"
     nonisolated static let entryKey = "noty.entry"
     nonisolated static let kindKey = "noty.kind"
+    /// userInfo key of push notifications (`{"kind", "connectionID", "changeID", "changeIDs", "day", "entryID", …}`).
+    nonisolated static let pushKey = "noty"
 
     /// The calendar of the shown area (weak: an area switch replaces it).
     private(set) weak var model: CalendarModel?
@@ -38,6 +42,10 @@ final class CalendarNotificationHub: NSObject, UNUserNotificationCenterDelegate 
         let area: String?
         let day: CivilDate?
         let entry: String?
+        /// Kind of a push notification (change, summary, auth, test); nil for local ones.
+        var push: String? = nil
+        /// Bell entries a push notification stands for (read on tap).
+        var readIDs: [String] = []
     }
 
     func install() { UNUserNotificationCenter.current().delegate = self }
@@ -73,7 +81,10 @@ final class CalendarNotificationHub: NSObject, UNUserNotificationCenterDelegate 
         guard route.area != nil else { return [.banner, .list, .sound] }
         let record = Self.record(notification)
         await MainActor.run {
-            if let record, let model = self.model, model.notificationNamespace == route.area { model.addDelivered([record]) }
+            guard let model = self.model, model.notificationNamespace == route.area else { return }
+            if let record { model.addDelivered([record]) }
+            // A push in the foreground: banner, and the server's history into the bell (a summary's entries too).
+            if route.push != nil { Task { await CalendarPushClient.shared.sync(model, force: true) } }
         }
         return [.banner, .list, .sound]
     }
@@ -95,11 +106,37 @@ final class CalendarNotificationHub: NSObject, UNUserNotificationCenterDelegate 
             model.notice = "Diese Mitteilung gehört zu einem anderen Bereich. Wechsle dorthin, um den Termin zu sehen."
             return
         }
+        if let kind = route.push {
+            if kind == "auth" {
+                // „Untis-Zugang prüfen“: straight to the WebUntis sheet.
+                model.openRequest += 1
+                model.connectionRequest += 1
+                return
+            }
+            model.markChangesRead(route.readIDs)
+            // A summary's entries arrive with the server's history; read as well.
+            let ids = route.readIDs
+            Task {
+                await CalendarPushClient.shared.sync(model, force: true)
+                model.markChangesRead(ids)
+            }
+        }
         model.openNotification(id: route.id, day: route.day, entryID: route.entry)
     }
 
     nonisolated static func route(_ request: UNNotificationRequest) -> Route {
         let info = request.content.userInfo
+        if let push = info[pushKey] as? [String: Any] {
+            let kind = push["kind"] as? String ?? "change"
+            let area = CalendarPushClient.namespace(forConnection: push["connectionID"] as? String)
+            var ids = push["changeIDs"] as? [String] ?? []
+            if let id = push["changeID"] as? String, !ids.contains(id) { ids.insert(id, at: 0) }
+            let readIDs = area.map { area in ids.map { CalendarNotificationLog.pushChangeID(namespace: area, changeID: $0) } } ?? []
+            // A single change is its own bell entry; the others keep the request id.
+            let id = kind == "change" ? readIDs.first ?? request.identifier : request.identifier
+            return Route(id: id, area: kind == "test" ? nil : area, day: (push["day"] as? String).flatMap(CivilDate.init),
+                         entry: push["entryID"] as? String, push: kind, readIDs: readIDs)
+        }
         return Route(id: request.identifier, area: info[areaKey] as? String, day: (info[dayKey] as? String).flatMap(CivilDate.init),
                      entry: info[entryKey] as? String)
     }
@@ -108,6 +145,13 @@ final class CalendarNotificationHub: NSObject, UNUserNotificationCenterDelegate 
     nonisolated static func record(_ notification: UNNotification) -> CalendarNotificationRecord? {
         let request = notification.request
         let info = request.content.userInfo
+        if info[pushKey] is [String: Any] {
+            // Push: a single change is a bell entry (the same id as from `GET /v1/changes`).
+            let route = Self.route(request)
+            guard route.push == "change", route.area != nil, route.readIDs.first == route.id else { return nil }
+            return CalendarNotificationRecord(id: route.id, kind: .change, title: request.content.title, body: request.content.body,
+                                              date: notification.date, day: route.day, entryID: route.entry)
+        }
         guard info[areaKey] is String, let raw = info[kindKey] as? String,
               let kind = CalendarNotificationRecord.Kind(rawValue: raw) else { return nil }
         return CalendarNotificationRecord(id: request.identifier, kind: kind, title: request.content.title, body: request.content.body,

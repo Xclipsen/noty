@@ -168,6 +168,8 @@ struct WorkspaceLibraryHost: View {
                 if phase == .active { Task { await externalBackup.attempt(library: library, toolbox: toolbox) } }
                 // Kalender B3: the rolling reminder window moves on with every activation.
                 if phase == .active { calendar.rescheduleReminders() }
+                // Push service: token/settings to the server, its history into the bell (docs/PUSH.md).
+                if phase == .active { Task { await CalendarPushClient.shared.sync(calendar) } }
                 // A new event note is created now, not only after its input pause.
                 if phase != .active { calendar.sceneLeftForeground() }
                 // Benachrichtigungen: ask iPadOS for a background refresh (it decides when).

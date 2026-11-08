@@ -5,6 +5,11 @@ signature claims (read from the code signature of the main executable, no
 codesign needed) with what the embedded provisioning profile allows. iOS
 refuses to install an app whose signature claims more, e.g.
 `com.apple.developer.applesignin` without the capability in the profile.
+
+Push (docs/PUSH.md): for noty calendar (ID ending in `.de.la.noty.calendar`,
+or `--push`) `aps-environment` must be in the signature and in the profile
+with the same value; otherwise APNs hands out no token and the push service
+cannot reach the iPad. Both values are printed (`aps_environment`).
 """
 import datetime, fnmatch, json, plistlib, struct, sys, zipfile
 
@@ -90,7 +95,24 @@ def entitlement_problems(signed, permitted):
     return problems
 
 
-def main(path, expected):
+PUSH_SUFFIX = ".de.la.noty.calendar"
+
+
+def push_problems(signed, permitted, required):
+    """Problems with `aps-environment` (signature vs. profile; only required for push builds)."""
+    problems = []
+    in_signature, in_profile = signed.get("aps-environment"), permitted.get("aps-environment")
+    if required:
+        if in_signature is None:
+            problems.append("Push: Signatur ohne „aps-environment“ (Noty.entitlements des Builds prüfen)")
+        if in_profile is None:
+            problems.append("Push: Profil ohne „aps-environment“ (Fähigkeit Push Notifications für die App-ID einschalten und neu signieren)")
+    if in_signature is not None and in_profile is not None and in_signature != in_profile:
+        problems.append(f"Push: Signatur „{in_signature}“, Profil „{in_profile}“ (aps-environment)")
+    return problems
+
+
+def main(path, expected, push=None):
     with zipfile.ZipFile(path) as ipa:
         names = ipa.namelist()
         app = next(n for n in names if n.count("/") == 2 and n.endswith(".app/Info.plist"))
@@ -115,13 +137,20 @@ def main(path, expected):
                 if problem not in problems: problems.append(problem)
     except (ValueError, struct.error, plistlib.InvalidFileException) as error:
         problems.append(f"Entitlements der App-Signatur nicht lesbar ({error})")
+    push_required = expected.endswith(PUSH_SUFFIX) if push is None else push
+    for problem in push_problems(signed, entitlements, push_required):
+        if problem not in problems: problems.append(problem)
     print(json.dumps({"build": info["CFBundleVersion"], "version": info.get("CFBundleShortVersionString", info["CFBundleVersion"]),
                       "id_ok": info["CFBundleIdentifier"] == expected, "team": team, "devices": len(profile.get("ProvisionedDevices", [])),
                       "profile_expires": expires.date().isoformat(), "debug_entitlement": entitlements.get("get-task-allow"),
                       "signed_entitlements": sorted(signed), "apple_sign_in": "com.apple.developer.applesignin" in signed,
+                      "aps_environment": {"signature": signed.get("aps-environment"), "profile": entitlements.get("aps-environment"),
+                                          "required": push_required},
                       "problems": problems}, ensure_ascii=False))
     return 1 if problems else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], sys.argv[2]))
+    arguments = [a for a in sys.argv[1:] if a not in ("--push", "--no-push")]
+    flag = True if "--push" in sys.argv else False if "--no-push" in sys.argv else None
+    sys.exit(main(arguments[0], arguments[1], flag))

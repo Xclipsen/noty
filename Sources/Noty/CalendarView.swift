@@ -171,6 +171,8 @@ struct CalendarView: View {
             Text("Dieser Termin gehört zu einer Serie.")
         }
         .onChange(of: model.storageError) { _, error in if error == nil { hiddenStorageError = nil } }
+        // „Untis-Zugang prüfen“ (push) opens the WebUntis sheet.
+        .onChange(of: model.connectionRequest) { _, _ in if !model.showsSamples { connecting = true } }
         .background { shortcuts }
     }
 
@@ -654,6 +656,8 @@ struct CalendarView: View {
                         settingsAfterNotifications = true
                         showingNotifications = false
                     }, close: { showingNotifications = false })
+                    // The server's history (push) into the bell when it opens.
+                    .task { await CalendarPushClient.shared.sync(model) }
                     .onDisappear {
                         if settingsAfterNotifications { settingsAfterNotifications = false; editingReminders = true }
                     }

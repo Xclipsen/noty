@@ -58,6 +58,14 @@ struct CalendarReminderSettingsSheet: View {
                          ? "Erst mit verbundenem WebUntis. Gemeldet werden Ausfall, Vertretung, Raumwechsel und verlegte Stunden, sobald noty sie beim Abrufen erkennt."
                          : "Ausfall, Vertretung, Raumwechsel und verlegte Stunden, sobald noty sie beim Abrufen erkennt – auch im Hintergrund, wenn iPadOS es zulässt. Verglichen werden nur Tage, die vorher und jetzt vollständig geladen wurden. Welche Änderungen WebUntis über den inoffiziellen Zugang wirklich meldet, ist für deine Schule noch nicht bestätigt.")
                 }
+                CalendarPushSection(model: model) {
+                    // The WebUntis sheet follows once this one is gone.
+                    dismiss()
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(700))
+                        model.connectionRequest += 1
+                    }
+                }
                 Section {
                     Toggle(isOn: toggle(\.overview)) {
                         Label("Morgen-Überblick", systemImage: "sun.horizon")

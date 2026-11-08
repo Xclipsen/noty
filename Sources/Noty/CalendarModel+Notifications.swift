@@ -46,6 +46,8 @@ extension CalendarModel {
             if switchedOn { await requestReminderPermission() }
             await rescheduleRemindersNow()
             CalendarNotificationHub.shared.scheduleBackgroundRefresh()
+            // Push service: new settings to the server; changes off signs off (docs/PUSH.md).
+            await CalendarPushClient.shared.sync(self)
         }
     }
 
@@ -55,6 +57,8 @@ extension CalendarModel {
     /// (`CalendarChangeDetector`: only days both cover, only the future),
     /// keeps new changes in the bell and – outside the quiet hours –
     /// announces them: one notification, or one summary for several.
+    /// While the push service is in charge of this connection (docs/PUSH.md)
+    /// the changes go into the bell only: the server notifies.
     func recordChanges(since before: CalendarSourceSnapshot?) async {
         guard notificationSettings.changes, let before, let after = snapshot, before != after else { return }
         let now = Date()
@@ -63,7 +67,8 @@ extension CalendarModel {
         let records = changes.map { CalendarNotificationRecord(change: $0, date: now, calendar: calendar, namespace: notificationNamespace) }
         let added = Set(addRecords(records).map(\.id))
         let fresh = zip(changes, records).filter { added.contains($0.1.id) }
-        guard !fresh.isEmpty, !notificationSettings.isQuiet(now, calendar: calendar) else { return }
+        guard !fresh.isEmpty, !notificationSettings.isQuiet(now, calendar: calendar),
+              !CalendarPushClient.shared.isActive(for: state.connection?.id) else { return }
         if fresh.count == 1, let pair = fresh.first {
             let (change, record) = pair
             await CalendarReminderCenter.shared.post(id: record.id, title: record.title, body: record.body, namespace: notificationNamespace,
@@ -80,10 +85,12 @@ extension CalendarModel {
 
     // MARK: History
 
+    /// Changes found by the app and by the push service are kept once
+    /// (`CalendarNotificationLog.addChanges`).
     @discardableResult
     func addRecords(_ records: [CalendarNotificationRecord]) -> [CalendarNotificationRecord] {
         var log = notificationLog
-        let added = log.add(records, now: Date())
+        let added = log.addChanges(records, now: Date())
         guard !added.isEmpty else { return [] }
         notificationLog = log
         persistNotificationLog()
@@ -98,6 +105,29 @@ extension CalendarModel {
         let delivered = await CalendarReminderCenter.shared.delivered(namespace: notificationNamespace)
         // A summary is shown in the Mitteilungszentrale only; its changes are already in the bell.
         addRecords(delivered.filter { !$0.id.contains(".summary.") })
+    }
+
+    /// The server's change history (`GET /v1/changes`) into the bell, under
+    /// the push ids of this area.
+    func mergePushChanges(_ changes: [CalendarPushAPI.Change]) {
+        let records = changes.compactMap { change -> CalendarNotificationRecord? in
+            guard let day = CivilDate(change.day), change.detected.isFinite else { return nil }
+            return CalendarNotificationRecord(id: CalendarNotificationLog.pushChangeID(namespace: notificationNamespace, changeID: change.id),
+                                              kind: .change, title: change.title, body: change.body,
+                                              date: Date(timeIntervalSince1970: change.detected), day: day, entryID: change.entryID)
+        }
+        addRecords(records)
+    }
+
+    /// Entries a tapped push notification stands for, and the same changes
+    /// as found by the app.
+    func markChangesRead(_ ids: [String]) {
+        let all = Set(ids.flatMap { notificationLog.relatedChangeIDs($0) })
+        let unread = notificationLog.records.filter { all.contains($0.id) && !$0.read }.map(\.id)
+        guard !unread.isEmpty else { return }
+        for id in unread { notificationLog.markRead(id) }
+        persistNotificationLog()
+        CalendarReminderCenter.shared.removeDelivered(unread)
     }
 
     func markNotificationRead(_ id: String) {
