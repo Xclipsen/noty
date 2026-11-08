@@ -33,6 +33,8 @@ extension CalendarModel {
             try? WebUntisKeychain.delete(old.id)
         }
         showsSamples = false
+        // Just connected: its timetable is shown even if „Stundenplan“ was switched off.
+        reveal(.timetable, announce: false)
         snapshot = try? await repository.sourceSnapshot()
         rebuild()
         rescheduleReminders()

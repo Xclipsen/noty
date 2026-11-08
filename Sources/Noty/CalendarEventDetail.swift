@@ -246,9 +246,8 @@ struct CalendarEventPanel: View {
                 .overlay(alignment: .topTrailing) {
                     if homework > 0 {
                         Text("\(homework)").font(.caption2.weight(.bold)).monospacedDigit()
-                            .foregroundStyle(.white)
                             .frame(minWidth: 16, minHeight: 16)
-                            .background(Circle().fill(.tint))
+                            .calendarAccentLabel(Circle())
                             .padding(.top, 3).padding(.trailing, 3)
                     }
                 }

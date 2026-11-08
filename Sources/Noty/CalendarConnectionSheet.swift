@@ -15,7 +15,8 @@ struct CalendarConnectionSheet: View {
         NavigationStack {
             CalendarWebUntisForm(model: model, disconnected: { dismiss() })
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } } }
+                // Not while connecting: the result (and the push consent) belongs to this sheet.
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() }.disabled(model.connectionBusy) } }
         }
         .preferredColorScheme(.dark)
     }
@@ -46,6 +47,8 @@ struct CalendarWebUntisForm: View {
     @State private var replacing = false
     /// Push service (docs/PUSH.md): consent offered after connecting.
     @State private var offeringPush = false
+    /// This form is on screen (otherwise the consent waits in the model).
+    @State private var shown = false
 
     @FocusState private var focused: WebUntisEntryField?
     private var scannerAvailable: Bool { DataScannerViewController.isSupported }
@@ -59,6 +62,8 @@ struct CalendarWebUntisForm: View {
             }
         }
         .disabled(working)
+        // Not left halfway (also the settings sidebar, Esc and „Fertig“ check `model.connectionBusy`).
+        .navigationBarBackButtonHidden(working)
         .navigationTitle("WebUntis")
         .toolbar {
             if working { ToolbarItem(placement: .confirmationAction) { CalendarDelayedProgress(text: workingText) } }
@@ -77,6 +82,8 @@ struct CalendarWebUntisForm: View {
         }
         .interactiveDismissDisabled(working)
         .calendarPushConsent(isPresented: $offeringPush, model: model)
+        .onAppear { shown = true }
+        .onDisappear { shown = false }
     }
 
     private var notice: some View {
@@ -100,11 +107,14 @@ struct CalendarWebUntisForm: View {
         } footer: { notice }
         Section {
             Button { model.refreshNow() } label: { Label("Aktualisieren", systemImage: "arrow.clockwise") }
+                .keyOption(.action { model.refreshNow() })
                 .disabled(model.syncing || model.credentialsMissing)
             Button { replacing = true } label: {
                 Label(model.credentialsMissing ? "Auf diesem Gerät neu verbinden …" : "Mit anderer Freigabe verbinden …", systemImage: "qrcode")
             }
+            .keyOption(.action { replacing = true })
             Button(role: .destructive) { confirmingDisconnect = true } label: { Label("Trennen", systemImage: "link.badge.minus") }
+                .keyOption(.action { confirmingDisconnect = true })
         } footer: {
             Text("Automatisch aktualisiert beim Öffnen des Kalenders und beim Zurückkehren in die App, während der Kalender sichtbar ist höchstens alle 15 Minuten.")
         }
@@ -117,6 +127,7 @@ struct CalendarWebUntisForm: View {
             Button { scanning = true } label: {
                 Label("QR-Code der Freigabe scannen", systemImage: "qrcode.viewfinder").font(.headline)
             }
+            .keyOption(.action { scanning = true })
             .disabled(!scannerAvailable)
             if !scannerAvailable {
                 Text("Auf diesem Gerät ist kein Scannen möglich. Bitte die Freigabe einfügen oder die Angaben unten eingeben.")
@@ -125,6 +136,7 @@ struct CalendarWebUntisForm: View {
             Button { pasteFromClipboard() } label: {
                 Label("Freigabe aus Zwischenablage einfügen", systemImage: "doc.on.clipboard")
             }
+            .keyOption(.action { pasteFromClipboard() })
         } footer: { notice }
         Section {
             entryField(.server, text: $server, prompt: "schulname.webuntis.com",
@@ -139,14 +151,22 @@ struct CalendarWebUntisForm: View {
                 Button { apply(check.entry.swapped, normalize: false) } label: {
                     Label("Vertauscht? Server und Schule tauschen", systemImage: "arrow.up.arrow.down")
                 }
+                .keyOption(.action { apply(check.entry.swapped, normalize: false) })
             }
         } header: { Text("Oder von Hand") } footer: {
             Text("Ein kompletter Freigabe-Link (untis://…) darf in jedes Feld eingefügt werden; dann werden alle Felder ausgefüllt.")
         }
         Section {
-            Button("Verbindung testen") { test() }.disabled(check.setup == nil)
-            Button("Verbinden") { connect() }.disabled(check.setup == nil || !model.canWrite)
-            if replacing { Button("Abbrechen", role: .cancel) { replacing = false; failure = nil; result = nil } }
+            Button("Verbindung testen") { test() }
+                .keyOption(.action { test() })
+                .disabled(check.setup == nil)
+            Button("Verbinden") { connect() }
+                .keyOption(.action { connect() })
+                .disabled(check.setup == nil || !model.canWrite)
+            if replacing {
+                Button("Abbrechen", role: .cancel) { cancelReplacing() }
+                    .keyOption(.action { cancelReplacing() })
+            }
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(check.lines, id: \.self) { line in
@@ -177,6 +197,7 @@ struct CalendarWebUntisForm: View {
             }
             .textInputAutocapitalization(.never).autocorrectionDisabled()
             .focused($focused, equals: field)
+            .keyOption(.text(text))
             .submitLabel(field == WebUntisEntryField.allCases.last ? .done : .next)
             // Return goes on to the next field (the last one closes the keyboard).
             .onSubmit {
@@ -194,6 +215,16 @@ struct CalendarWebUntisForm: View {
             Text(help).font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
         }
         .padding(.vertical, 2)
+    }
+
+    private func cancelReplacing() { replacing = false; failure = nil; result = nil }
+
+    /// `working` and `model.connectionBusy` together: the task clears both,
+    /// also when this form is no longer on screen.
+    private func setWorking(_ on: Bool, _ text: String? = nil) {
+        if let text { workingText = text }
+        working = on
+        model.connectionBusy = on
     }
 
     private var entry: WebUntisEntry { WebUntisEntry(server: server, school: school, user: user, key: key) }
@@ -246,9 +277,8 @@ struct CalendarWebUntisForm: View {
     }
 
     private func test() {
-        guard let setup = preparedSetup() else { return }
-        workingText = "Wird getestet …"
-        working = true; failure = nil; result = nil
+        guard !working, let setup = preparedSetup() else { return }
+        setWorking(true, "Wird getestet …"); failure = nil; result = nil
         Task {
             let client = WebUntisClient(setup: setup)
             defer { client.finish() }
@@ -256,14 +286,13 @@ struct CalendarWebUntisForm: View {
                 let user = try await client.user()
                 result = "Verbindung funktioniert: \(user.subjects.count) Fächer, \(user.holidays.count) Ferienzeiträume, \(user.teachers.isEmpty ? "keine Lehrkräfte freigegeben" : "\(user.teachers.count) Lehrkräfte")."
             } catch { failure = WebUntisClient.testMessage(error) }
-            working = false
+            setWorking(false)
         }
     }
 
     private func connect() {
-        guard let setup = preparedSetup() else { return }
-        workingText = "Wird verbunden …"
-        working = true; failure = nil; result = nil
+        guard !working, let setup = preparedSetup() else { return }
+        setWorking(true, "Wird verbunden …"); failure = nil; result = nil
         Task {
             let client = WebUntisClient(setup: setup)
             defer { client.finish() }
@@ -275,18 +304,21 @@ struct CalendarWebUntisForm: View {
                 key = ""; user = ""
                 result = nil
                 // Only after a working local connection; nothing is uploaded without „Zustimmen“.
-                if CalendarPushClient.shared.shouldOffer(for: model) { offeringPush = true }
+                // Here while this form is on screen, otherwise where the user is now.
+                if CalendarPushClient.shared.shouldOffer(for: model) {
+                    if shown { offeringPush = true } else { model.pushOfferPending = true }
+                }
             } catch { failure = (error as? CalendarStoreError)?.localizedDescription ?? WebUntisClient.testMessage(error) }
-            working = false
+            setWorking(false)
         }
     }
 
     private func disconnect() {
-        workingText = "Wird getrennt …"
-        working = true
+        guard !working else { return }
+        setWorking(true, "Wird getrennt …")
         Task {
             failure = await model.disconnect()
-            working = false
+            setWorking(false)
             if failure == nil { disconnected?() }
         }
     }

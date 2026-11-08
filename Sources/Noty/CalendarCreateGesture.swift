@@ -321,8 +321,8 @@ struct CalendarHoldDrag: UIViewRepresentable {
     }
 }
 
-/// Appearance of every placeholder: the selection blue, a little stronger
-/// than a selected card, with a thin outline; nothing for VoiceOver (the
+/// Appearance of every placeholder: the accent, a little stronger than a
+/// selected card, with the selection frame; nothing for VoiceOver (the
 /// „+“ button is its way to a new event).
 private struct CalendarCreateBlock: View {
     var title: String?
@@ -334,9 +334,7 @@ private struct CalendarCreateBlock: View {
     var body: some View {
         RoundedRectangle(cornerRadius: radius, style: .continuous)
             .fill(.tint.opacity(fill))
-            .overlay {
-                RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(.tint, lineWidth: 1.5)
-            }
+            .overlay { CalendarSelectionFrame(radius: radius) }
             .overlay(alignment: .topLeading) {
                 if title != nil || detail != nil {
                     VStack(alignment: .leading, spacing: 1) {

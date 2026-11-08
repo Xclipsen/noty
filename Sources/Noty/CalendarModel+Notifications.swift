@@ -254,9 +254,12 @@ extension CalendarModel {
         markChangesRead(readIDs)
         if showsSamples { showsSamples = false }
         if let day { anchor = day.start(in: calendar) }
-        if let entryID, let entry = event(entryID) {
+        // Its calendar may be switched off (`hiddenSources` is kept): then it is switched back on.
+        if let entryID, let entry = revealedEvent(entryID) {
             show(entry)
         } else if day != nil {
+            // A timetable change or the school-day tile without a (still) known lesson: show the timetable of that day.
+            if id.hasPrefix(CalendarNotificationLog.changePrefix) || id == "noty.schoolday" { reveal(.timetable) }
             selection = nil
             if mode == .year || mode == .month { mode = .day }
         }

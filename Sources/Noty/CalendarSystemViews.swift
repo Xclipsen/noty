@@ -35,46 +35,57 @@ struct CalendarSystemSection: View {
     @ObservedObject var model: CalendarModel
     @State private var working = false
     @State private var failure: String?
+    /// Accounts whose calendars are unfolded (also by keys: Enter on the account).
+    @State private var expanded: Set<String> = []
 
     var body: some View {
         Section {
             if !model.systemEnabled {
-                Button {
-                    run { await model.connectSystemCalendars() }
-                } label: {
+                Button { connect() } label: {
                     Label("Apple Kalender und Outlook verbinden …", systemImage: "calendar.badge.plus")
                 }
+                .keyOption(.action { connect() })
             } else if let problem = model.systemAccess.problem {
                 Label(problem, systemImage: "lock").foregroundStyle(.orange)
-                Button("iPad-Einstellungen öffnen") {
-                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-                }
-                Button("Ausschalten", role: .destructive) { run { await model.disconnectSystemCalendars() } }
+                Button("iPad-Einstellungen öffnen") { openSettings() }
+                    .keyOption(.action { openSettings() })
+                Button("Ausschalten", role: .destructive) { disconnect() }
+                    .keyOption(.action { disconnect() })
             } else {
                 if let status = model.systemStatusText { Label(status, systemImage: model.systemReading ? "arrow.triangle.2.circlepath" : "checkmark.circle") }
                 ForEach(groups, id: \.0) { account, calendars in
-                    DisclosureGroup(account.isEmpty ? "Weitere" : account) {
+                    let unfolded = Binding(get: { expanded.contains(account) },
+                                           set: { open in if open { expanded.insert(account) } else { expanded.remove(account) } })
+                    DisclosureGroup(account.isEmpty ? "Weitere" : account, isExpanded: unfolded) {
                         ForEach(calendars) { item in
-                            Toggle(isOn: Binding(get: { !model.hiddenSystemCalendars.contains(item.id) },
-                                                 set: { shown in Task { await model.setSystemCalendar(item.id, shown: shown) } })) {
+                            let shown = Binding(get: { !model.hiddenSystemCalendars.contains(item.id) },
+                                                set: { shown in Task { await model.setSystemCalendar(item.id, shown: shown) } })
+                            Toggle(isOn: shown) {
                                 HStack(spacing: 8) {
                                     Circle().fill(color(item.colorHex)).frame(width: 10, height: 10)
                                     Text(item.title)
                                     if !item.writable { Image(systemName: "lock").font(.caption).foregroundStyle(.secondary).accessibilityLabel("schreibgeschützt") }
                                 }
                             }
+                            .keyOption(.toggle(shown))
                         }
                     }
+                    .keyOption(.action { unfolded.wrappedValue.toggle() })
                 }
-                Picker(selection: Binding(get: { model.systemDefaultTarget },
-                                          set: { target in Task { await model.setDefaultWriteTarget(target) } })) {
+                let target = Binding(get: { model.systemDefaultTarget },
+                                     set: { target in Task { await model.setDefaultWriteTarget(target) } })
+                Picker(selection: target) {
                     Text("Persönlich (noty)").tag(CalendarWriteTarget.local)
                     ForEach(model.writableSystemCalendars) { Text($0.displayName).tag(CalendarWriteTarget.system(calendarID: $0.id)) }
                 } label: {
                     SettingLabel("Neue Termine in", detail: "Vorauswahl im Formular; jeder Termin lässt sich dort umstellen.")
                 }
-                Button("Jetzt neu einlesen") { model.reloadSystemCalendars() }.disabled(model.systemReading)
-                Button("Ausschalten", role: .destructive) { run { await model.disconnectSystemCalendars() } }
+                .keyOption(.choice(target, [CalendarWriteTarget.local] + model.writableSystemCalendars.map { .system(calendarID: $0.id) }))
+                Button("Jetzt neu einlesen") { model.reloadSystemCalendars() }
+                    .keyOption(.action { model.reloadSystemCalendars() })
+                    .disabled(model.systemReading)
+                Button("Ausschalten", role: .destructive) { disconnect() }
+                    .keyOption(.action { disconnect() })
             }
             if let failure { Label(failure, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
         } header: {
@@ -94,7 +105,14 @@ struct CalendarSystemSection: View {
         return Color(red: c.red, green: c.green, blue: c.blue)
     }
 
+    private func connect() { run { await model.connectSystemCalendars() } }
+    private func disconnect() { run { await model.disconnectSystemCalendars() } }
+    private func openSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+    }
+
     private func run(_ action: @escaping () async -> String?) {
+        guard !working else { return }
         working = true
         failure = nil
         Task {

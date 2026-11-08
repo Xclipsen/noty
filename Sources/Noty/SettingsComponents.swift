@@ -143,12 +143,19 @@ struct AreaNotice: View {
 // MARK: Search
 
 /// One searchable setting: what it is called, where it lives, extra words.
+/// A sub-page a search hit opens directly instead of only its page.
+enum SettingsSubpage: Hashable {
+    case calendarColors, calendarWebUntis, calendarSystem, calendarNotifications
+}
+
 struct SettingsSearchItem: Identifiable, Hashable {
     var id: String { page.rawValue + "·" + title }
     let title: String
     let page: SettingsPage
     var section: String?
     var keywords: [String] = []
+    /// Where the setting really is when it is on a sub-page of `page`.
+    var subpage: SettingsSubpage?
 
     func matches(_ query: String) -> Bool {
         let words = query.lowercased().split(separator: " ").map(String.init)
@@ -187,20 +194,27 @@ struct SettingsSearchItem: Identifiable, Hashable {
             .init(title: "Werkzeugleiste anpassen", page: .tools, section: "Werkzeugleiste", keywords: ["leiste", "position", "lieblingsstifte", "dock"]),
             .init(title: "Papier für neue Hefte", page: .paper, keywords: ["umschlag", "liniert", "kariert", "vorlage"]),
             .init(title: "Wochentage", page: .calendar, section: "Ansicht", keywords: ["kalender", "woche", "wochenende", "montag", "freitag"]),
-            .init(title: "Fachfarben", page: .calendar, section: "Ansicht", keywords: ["kalender", "farbe", "fach", "stundenplan"]),
+            .init(title: "Fachfarben", page: .calendar, section: "Ansicht", keywords: ["kalender", "farbe", "fach", "stundenplan"],
+                  subpage: .calendarColors),
             .init(title: "Sichtbare Kalender", page: .calendar, section: "Sichtbare Kalender",
                   keywords: ["kalender", "stundenplan", "persönlich", "ferien", "feiertage", "ausblenden", "einblenden", "quellen"]),
             .init(title: "WebUntis", page: .calendar, section: "Verbindungen",
-                  keywords: ["kalender", "stundenplan", "schule", "untis", "freigabe", "qr", "verbinden", "trennen", "aktualisieren"]),
+                  keywords: ["kalender", "stundenplan", "schule", "untis", "freigabe", "qr", "verbinden", "trennen", "aktualisieren"],
+                  subpage: .calendarWebUntis),
             .init(title: "Apple Kalender und Outlook", page: .calendar, section: "Verbindungen",
-                  keywords: ["kalender", "systemkalender", "icloud", "microsoft 365", "exchange", "neue termine in"]),
+                  keywords: ["kalender", "systemkalender", "icloud", "microsoft 365", "exchange", "neue termine in"],
+                  subpage: .calendarSystem),
             .init(title: "Mitteilungen", page: .calendar, section: "Mitteilungen",
-                  keywords: ["kalender", "benachrichtigungen", "glocke", "erlaubnis", "push", "banner"]),
-            .init(title: "Stundenplanänderungen", page: .calendar, section: "Mitteilungen", keywords: ["ausfall", "vertretung", "raumwechsel"]),
-            .init(title: "Morgen-Überblick", page: .calendar, section: "Mitteilungen", keywords: ["morgens", "uhrzeit", "tag"]),
+                  keywords: ["kalender", "benachrichtigungen", "glocke", "erlaubnis", "push", "banner"],
+                  subpage: .calendarNotifications),
+            .init(title: "Stundenplanänderungen", page: .calendar, section: "Mitteilungen", keywords: ["ausfall", "vertretung", "raumwechsel"],
+                  subpage: .calendarNotifications),
+            .init(title: "Morgen-Überblick", page: .calendar, section: "Mitteilungen", keywords: ["morgens", "uhrzeit", "tag"],
+                  subpage: .calendarNotifications),
             .init(title: "Erinnerung vor Terminen und Unterricht", page: .calendar, section: "Mitteilungen",
-                  keywords: ["erinnerung", "vorlaufzeit", "minuten", "unterricht", "termin"]),
-            .init(title: "Ruhezeiten", page: .calendar, section: "Mitteilungen", keywords: ["nacht", "stumm", "ruhe"]),
+                  keywords: ["erinnerung", "vorlaufzeit", "minuten", "unterricht", "termin"], subpage: .calendarNotifications),
+            .init(title: "Ruhezeiten", page: .calendar, section: "Mitteilungen", keywords: ["nacht", "stumm", "ruhe"],
+                  subpage: .calendarNotifications),
             .init(title: "Gesetzessammlung", page: .laws, keywords: ["gesetze", "paragraphen", "markierungen", "lesezeichen"]),
             .init(title: "noty-Konto", page: .account, keywords: ["anmelden", "abmelden", "passwort", "apple", "registrieren", "login"]),
             .init(title: "Automatisches Backup", page: .backup, section: "Automatisches Backup", keywords: ["webdav", "icloud drive", "ordner", "sichern"]),
@@ -224,11 +238,11 @@ struct SettingsSearchItem: Identifiable, Hashable {
         }
         if CalendarPush.availability != .otherChannel {
             items.append(.init(title: "Auch bei geschlossener App", page: .calendar, section: "Mitteilungen",
-                               keywords: ["push", "server", "hintergrund", "stundenplanänderungen"]))
+                               keywords: ["push", "server", "hintergrund", "stundenplanänderungen"], subpage: .calendarNotifications))
         }
         if CalendarSchoolDayCenter.shared.supported {
             items.append(.init(title: "Schultag auf dem Sperrbildschirm", page: .calendar, section: "Mitteilungen",
-                               keywords: ["live-aktivität", "kachel", "widget", "sperrbildschirm"]))
+                               keywords: ["live-aktivität", "kachel", "widget", "sperrbildschirm"], subpage: .calendarNotifications))
         }
         if developer {
             items += [

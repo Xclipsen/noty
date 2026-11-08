@@ -140,6 +140,8 @@ extension CalendarModel {
             settings.enabled = true
             state.settings.systemCalendars = settings
         }
+        // Just connected: its events are shown even if the calendar was switched off before.
+        if ok || unsaved { reveal(.system, announce: false) }
         reloadSystemCalendars()
         return ok || unsaved ? nil : saveError
     }

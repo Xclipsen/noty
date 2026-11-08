@@ -17,9 +17,14 @@ enum CalendarSource: String, CaseIterable, Identifiable, Hashable {
         case .timetable: "Stundenplan"
         case .personal: "Persönlich"
         case .holidays: "Ferien"
-        case .system: "Kalender"
+        // One name everywhere (Einstellungen, Seitenleiste, Menü „…“, VoiceOver);
+        // the narrow sidebar falls back to `shortTitle` only when it does not fit.
+        case .system: "Apple Kalender und Outlook"
         }
     }
+    /// Only where the full title does not fit in one line (calendar sidebar
+    /// with large text): the same words, shortened.
+    var shortTitle: String { self == .system ? "Apple Kalender/Outlook" : title }
     /// Symbol of the source in lists and chips.
     var symbol: String {
         switch self {

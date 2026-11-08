@@ -191,6 +191,8 @@ struct SettingsView: View {
     @State private var selection: SettingsPage?
     @State private var path: [SettingsPage]
     @State private var query = ""
+    /// The sub-page of the search hit just chosen (handed to its page, which clears it).
+    @State private var subpage: SettingsSubpage?
 
     init(library: LibraryModel, toolbox: ToolbarSettingsModel, externalBackup: ExternalBackupModel,
          workspaces: WorkspaceAppModel, calendar: CalendarModel, initialPage: SettingsPage? = nil,
@@ -224,13 +226,20 @@ struct SettingsView: View {
 
     // MARK: Layouts
 
+    /// The sidebar keeps its page while a page must not be left
+    /// (`CalendarModel.connectionBusy`: WebUntis connects).
+    private var guardedSelection: Binding<SettingsPage?> {
+        Binding(get: { selection }, set: { page in if !calendar.connectionBusy { selection = page } })
+    }
+
     private var split: some View {
         HStack(spacing: 0) {
-            List(selection: $selection) {
+            List(selection: guardedSelection) {
                 sidebarContent(pushes: false)
             }
             .listStyle(.sidebar)
             .frame(width: 300)
+            .modifier(DisabledWhileConnecting(calendar: calendar))
             Divider().ignoresSafeArea()
             NavigationStack {
                 destination(selection ?? .general)
@@ -254,12 +263,13 @@ struct SettingsView: View {
         Group {
             Button("") { step(1) }.keyboardShortcut(.downArrow, modifiers: .command)
             Button("") { step(-1) }.keyboardShortcut(.upArrow, modifiers: .command)
-            KeyEscapeButton { dismiss() }
+            KeyEscapeButton { if !calendar.connectionBusy { dismiss() } }
         }
         .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
     }
 
     private func step(_ offset: Int) {
+        guard !calendar.connectionBusy else { return }
         let pages = SettingsPage.groups(developer: developer).flatMap(\.pages)
         guard !pages.isEmpty else { return }
         let index = pages.firstIndex(of: selection ?? .general) ?? 0
@@ -272,7 +282,7 @@ struct SettingsView: View {
                 .navigationTitle("Einstellungen")
                 .navigationDestination(for: SettingsPage.self) { page in destination(page) }
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
-                .keyboardSheet()
+                .keyboardSheet(onCancel: { if !calendar.connectionBusy { dismiss() } })
         }
         .onChange(of: path) { _, pages in if let page = pages.first { selection = page } }
     }
@@ -317,14 +327,33 @@ struct SettingsView: View {
                         }
                     }
                     if pushes {
-                        NavigationLink(value: hit.page) { label }.keyOption(.action { path.append(hit.page) })
+                        // A button, not a link: the hit may name a sub-page of its page.
+                        Button { open(hit, pushes: true) } label: {
+                            HStack {
+                                label
+                                Spacer(minLength: 4)
+                                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .keyOption(.action { open(hit, pushes: true) })
                     } else {
-                        Button { selection = hit.page; query = "" } label: { label.contentShape(Rectangle()) }
+                        Button { open(hit, pushes: false) } label: { label.contentShape(Rectangle()) }
                             .buttonStyle(.plain)
                     }
                 }
             }
         }
+    }
+
+    /// A search hit: its page and, where it has one, its sub-page. The list
+    /// layout pushes the page (the search stays for the way back), the
+    /// sidebar selects it.
+    private func open(_ hit: SettingsSearchItem, pushes: Bool) {
+        guard !calendar.connectionBusy else { return }
+        subpage = hit.subpage
+        if pushes { path.append(hit.page) } else { selection = hit.page; query = "" }
     }
 
     private var searchField: some View {
@@ -379,7 +408,7 @@ struct SettingsView: View {
         case .text: TextSettingsPage()
         case .tools: ToolSettingsPage(toolbox: toolbox, workspaces: workspaces)
         case .paper: PaperSettingsPage(toolbox: toolbox, workspaces: workspaces)
-        case .calendar: CalendarSettingsPage(model: calendar, workspaces: workspaces)
+        case .calendar: CalendarSettingsPage(model: calendar, workspaces: workspaces, open: $subpage)
         case .laws: LawSettingsPage()
         case .account: NotyAccountSettingsPage()
         case .backup: BackupSettingsPage(library: library, toolbox: toolbox, externalBackup: externalBackup,
@@ -391,6 +420,13 @@ struct SettingsView: View {
                                                onSelectArea: onSelectArea)
         }
     }
+}
+
+/// Dims the settings sidebar while WebUntis connects (its selection is
+/// guarded as well). Only this modifier observes the calendar, not the settings.
+private struct DisabledWhileConnecting: ViewModifier {
+    @ObservedObject var calendar: CalendarModel
+    func body(content: Content) -> some View { content.disabled(calendar.connectionBusy) }
 }
 
 /// App icon, name, version and – in the test apps – which app this is.

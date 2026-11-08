@@ -21,6 +21,47 @@ extension View {
             Text(CalendarPush.consentText)
         }
     }
+
+    /// The consent remembered after connecting WebUntis when the form was
+    /// already gone (`model.pushOfferPending`): offered by the first place
+    /// that is on screen and free (`ready`) – Einstellungen › Kalender or the
+    /// calendar –, once, and only while it still applies (`shouldOffer`).
+    func calendarPushOffer(model: CalendarModel, ready: Bool = true) -> some View {
+        modifier(CalendarPushOfferPresenter(model: model, ready: ready))
+    }
+}
+
+private struct CalendarPushOfferPresenter: ViewModifier {
+    @ObservedObject var model: CalendarModel
+    let ready: Bool
+    @State private var onScreen = false
+    /// `ready` as last seen (read again after the short wait in `claim`).
+    @State private var free = false
+    @State private var offering = false
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { onScreen = true; free = ready; claim(waiting: true) }
+            .onDisappear { onScreen = false }
+            .onChange(of: ready) { _, now in free = now; if now { claim(waiting: true) } }
+            .onChange(of: model.pushOfferPending) { _, pending in if pending { claim(waiting: false) } }
+            .calendarPushConsent(isPresented: $offering, model: model)
+    }
+
+    /// `waiting`: a cover or sheet may still be on its way out (an alert
+    /// would not appear beneath it).
+    private func claim(waiting: Bool) {
+        guard model.pushOfferPending, onScreen, free, !offering else { return }
+        if waiting {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(650))
+                claim(waiting: false)
+            }
+            return
+        }
+        model.pushOfferPending = false
+        if CalendarPushClient.shared.shouldOffer(for: model) { offering = true }
+    }
 }
 
 /// „Auch bei geschlossener App“: on/off (off deletes everything on the
@@ -110,6 +151,11 @@ struct CalendarPushSection: View {
                     line("Aktiv · " + CalendarPushClient.pauseText(pause) + " Mitteilungen kommen trotzdem weiter.", "hourglass", .secondary)
                 } else if let error = state.lastError {
                     line("Server nicht erreichbar: \(error) Bis dahin meldet noty Änderungen selbst.", "exclamationmark.triangle", .orange)
+                    retryButton("Erneut versuchen")
+                } else if state.serverError != nil {
+                    // Registered, but the server's own WebUntis fetch fails (details: developer page).
+                    line("Der Server meldet ein Problem beim Abrufen des Stundenplans. Bis es behoben ist, kommen Änderungen womöglich nur, wenn noty selbst aktualisiert.",
+                         "exclamationmark.triangle", .orange)
                     retryButton("Erneut versuchen")
                 } else {
                     // Last contact and the server's own fetch problems: developer page.

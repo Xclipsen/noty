@@ -449,6 +449,56 @@ final class CalendarB3Tests: XCTestCase {
         XCTAssertNil(try BackupArchive.encode(Notebook.blank(title: "Heft")).range(of: Data("calendar".utf8)))
     }
 
+    /// iCloud-Ablage and „Hefte zurückholen“ only need the notebooks: a newer or
+    /// unreadable calendar package blocks the library backup (never silently
+    /// without the calendar), but not the notebook-only plan, which neither reads
+    /// nor captures it.
+    func testNotebookOnlyPlanIgnoresNewerOrUnreadableCalendar() async throws {
+        let source = root.appendingPathComponent("Source", isDirectory: true)
+        let area = try await makeArea(at: source)
+        let library = LibraryStore(root: source)
+        let archive = root.appendingPathComponent("vorher.notylibrary")
+        _ = try LibraryArchive.write(try await library.backupPlan(), to: archive)
+        let full = try await library.backupPlan(includeCalendar: false)
+        XCTAssertNil(full.calendar, "ohne Kalender erfasst")
+        XCTAssertEqual(full.documentCount, 1)
+
+        // A newer build committed format 99: the package is locked here.
+        let package = source.appendingPathComponent("Calendar", isDirectory: true)
+        let bytes = Data(#"{"formatVersion":99,"zukunft":true}"#.utf8)
+        let file = UUID().uuidString + ".json"
+        try bytes.write(to: package.appendingPathComponent("Revisions/\(file)"))
+        let manifest = RevisionManifest(revisions: [RevisionRecord(file: file, byteCount: bytes.count, crc32: SnapshotChecksum.crc32(bytes),
+                                                                   savedAtUnix: 1_799_000_000)])
+        try JSONEncoder().encode(manifest).write(to: package.appendingPathComponent("manifest.json"), options: .atomic)
+        let lockedManifest = try Data(contentsOf: package.appendingPathComponent("manifest.json"))
+        do { _ = try await library.backupPlan(); XCTFail("Bibliotheksbackup ohne Kalender angenommen") }
+        catch { XCTAssertEqual(error as? CalendarStoreError, .unsupportedFormat(99)) }
+
+        let plan = try await library.backupPlan(includeCalendar: false)
+        XCTAssertNil(plan.calendar)
+        XCTAssertEqual(plan.snapshot.items.map(\.id), full.snapshot.items.map(\.id))
+        let fingerprints = plan.currentFingerprints()
+        XCTAssertNotNil(fingerprints[area.notebook.id], "Heft bleibt vergleichbar")
+        let current = try await library.load().snapshot
+        let catalog = try LibraryBackupBrowser.catalog(archive: archive, current: current, fingerprints: fingerprints)
+        XCTAssertEqual(catalog.entries.map(\.id), [area.notebook.id])
+        XCTAssertTrue(catalog.differences.isEmpty, "Heft unverändert trotz gesperrtem Kalender")
+
+        // Only read: the newer revision and its manifest stay exactly as they were.
+        XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent("Revisions/\(file)")), bytes)
+        XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent("manifest.json")), lockedManifest)
+
+        // No verifiable revision at all (both manifests unreadable): the same.
+        try Data("kein json".utf8).write(to: package.appendingPathComponent("manifest.json"))
+        try? FileManager.default.removeItem(at: package.appendingPathComponent("manifest-previous.json"))
+        do { _ = try await LibraryStore(root: source).backupPlan(); XCTFail("unlesbarer Kalender angenommen") }
+        catch { XCTAssertEqual(error as? CalendarStoreError, .noCompleteRevision) }
+        let damaged = try await LibraryStore(root: source).backupPlan(includeCalendar: false)
+        XCTAssertNil(damaged.calendar)
+        XCTAssertNotNil(damaged.currentFingerprints()[area.notebook.id])
+    }
+
     // MARK: Restored areas never activate a source
 
     func testRestoredConnectionNeedsReconnectAndKeepsB1Anchors() throws {

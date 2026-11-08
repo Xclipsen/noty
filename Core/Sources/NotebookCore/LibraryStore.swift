@@ -291,7 +291,11 @@ public actor LibraryStore {
     /// Quick, on the library actor: the complete index (including trash and
     /// folders), preferences and every package location. Notebook contents are
     /// read afterwards from committed revisions, off this actor (`LibraryArchive.write`).
-    public func backupPlan() throws -> LibraryBackupPlan {
+    /// `includeCalendar: false` (iCloud-Ablage, comparison with a backup): the
+    /// area's calendar is neither read nor captured, so an unreadable or newer
+    /// calendar package cannot block notebook-only work; `plan.calendar` is nil.
+    /// Never pass it for a library backup (the archive would silently lose the calendar).
+    public func backupPlan(includeCalendar: Bool = true) throws -> LibraryBackupPlan {
         let result = try load()
         guard result.unreadableDocuments == 0 else { throw LibraryArchiveError.incomplete }
         var packages: [UUID: URL] = [:]
@@ -308,6 +312,7 @@ public actor LibraryStore {
         }
         let preferences = try ToolbarPreferenceStore.read(root: root)
         var plan = LibraryBackupPlan(snapshot: result.snapshot, toolbar: preferences.0, packages: packages)
+        guard includeCalendar else { return plan }
         // B3: the area's committed calendar goes into the same archive (read-only).
         let calendar = try CalendarArchive.capture(areaRoot: root, library: result.snapshot)
         if calendar.content != nil { plan.calendar = calendar }

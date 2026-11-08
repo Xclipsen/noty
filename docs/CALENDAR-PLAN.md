@@ -1,6 +1,6 @@
 # noty Kalender – Produkt- und Entwicklungsplan
 
-Stand: 08.11.2026, Branch `feat/kalender`. Zuletzt veröffentlicht: **noty calendar Build 139** (OTA-Seite: `feat/kalender · b8a2f0a`). Danach Commit `0fb2951` (Review-Befunde, Emil-Feinschliff, Trackpad-Wischen, Aufteilung der Dateien): implementiert und gebaut, nicht veröffentlicht, nicht installiert, am iPad ungeprüft; nur der Server-Teil ist auf dem VPS in Betrieb. Danach (nicht committet): Einstellungsseite „Kalender“, Begriff „Mitteilungen“, Auswahl in der Akzentfarbe ([§2](#einstellungsseite-kalender-08112026)) – implementiert, iPad-Build erfolgreich, am iPad ungeprüft.
+Stand: 08.11.2026, Branch `feat/kalender`. Zuletzt veröffentlicht: **noty calendar Build 142** (Einstellungsseite „Kalender“, Umschalter in der Seitenleiste, Startposition von Woche/Tag, Review-Fixes; siehe [CALENDAR-LOG](CALENDAR-LOG.md)) – implementiert, iPad-Build erfolgreich, veröffentlicht, nicht installiert geprüft, am iPad ungeprüft. Der Server-Teil (noty-push) ist auf dem VPS in Betrieb.
 
 Dieser Plan beschreibt jedes Thema **einmal**: Stand je Funktion, Ziel und Entscheidungen, Funktionsumfang, Regeln, Datenformat und offene Punkte. Was wann gebaut, veröffentlicht, installiert und am iPad geprüft wurde, steht **je Build** mit den wörtlichen Nachweisen in [CALENDAR-LOG](CALENDAR-LOG.md). Eigene Dokumente: Push-Dienst [PUSH](PUSH.md), Schultag-Kachel und Widget [LIVE-ACTIVITY-PLAN](LIVE-ACTIVITY-PLAN.md), nicht beauftragte Ideen [CALENDAR-IDEAS](CALENDAR-IDEAS.md). Der Plan erweitert [SCOPE](SCOPE.md). Die frühere, nach Datum gewachsene Fassung mit allen Umsetzungsabschnitten: `git show 0fb2951:docs/CALENDAR-PLAN.md`.
 
@@ -15,7 +15,7 @@ Lesart (AGENTS.md): **implementiert** = Code vorhanden; **gebaut** = erster noty
 | Umschalter Hefte · Kalender, ⇧⌘K | ja | 133 (Fixes nach 139) | ja (139) | ungeprüft | – |
 | Zoom zwischen Ansichten (Pinch, ⌘+ / ⌘−) | ja | 133 (Fixes nach 139) | ja (139) | ungeprüft | – |
 | Trackpad-Wischen | ja | nach 139 | nein | ungeprüft | – |
-| Termin per Halten und Ziehen anlegen; Monat senkrecht blättern; Jahr beim Monat des Ankers; Kalenderleisten-Knopf links vom Umschalter | ja | nach 140 (iPad-Build erfolgreich, nicht committet, ohne Buildnummer) | nein | ungeprüft | – |
+| Termin per Halten und Ziehen anlegen; Monat senkrecht blättern; Jahr beim Monat des Ankers; Kalenderleisten-Knopf links vom Umschalter | ja | 142 | nein | ungeprüft | – |
 | Einstellungsseite „Kalender“ (Ansicht, sichtbare Kalender gespeichert, Verbindungen getrennt, Mitteilungen), Begriff „Mitteilungen“, Entwicklerwerkzeuge auf der Entwickler-Seite, Datenschutz-Zeilen, Auswahl in der Akzentfarbe | ja | nach 140 (iPad-Build erfolgreich, nicht committet, ohne Buildnummer) | nein | ungeprüft | – |
 | Bewegung und Animationen | ja | 129 (Emil-Feinschliff nach 139) | Stand 129 ja (139); Feinschliff nein | ungeprüft | – |
 | Terminfenster | ja | 127 (129 wächst aus der Karte, 133 überarbeitet, Zeiten nach 139) | ja (139) | ungeprüft | – (Anlass 133: altes Fenster gefiel nicht) |
@@ -289,6 +289,16 @@ Live Activity „Schultag“ (Sperrbildschirm und Mitteilungszentrale: aktuelle 
 - Das **Bibliotheksbackup** (manuell und automatisch/extern) enthält den bestätigten Kalender des Bereichs – eigene Termine mit Serien, Ausnahmen, geänderten Terminen und Erinnerung, gelöschte Termine, Notiz-Links, Stundenzuordnungen, Fachfarben, Einstellungen, Systemkalender-Einstellungen, Hausaufgaben-Haken, den geheimnisfreien Verbindungseintrag – sowie den letzten WebUntis-Offline-Stundenplan mit Abrufzeiten (Archivformat 3, [LIBRARY-BACKUP](LIBRARY-BACKUP.md)). Ohne Kalenderdaten bleibt es Format 2. Terminhefte sind gewöhnliche Hefte im Backup. Ein Heftbackup enthält keinen Kalender (Einstellungen › Backup sagt es).
 - **Restore** nur in einen neuen getrennten Bereich, Kalenderteil vor dem Veröffentlichen vollständig geprüft; Links zeigen auf die Hefte des neuen Bereichs, nie bereichsübergreifend. WebUntis wird nie automatisch aktiv (neue Verbindungs-ID, „Auf diesem Gerät neu verbinden …“), Systemkalender sind aus. Die Bestätigung beim Öffnen einer `.notylibrary` nennt Termine, Terminnotizen, Stundenplanstand und das Neuverbinden.
 - **Nicht im Backup** (abgeleitet bzw. gerätebezogen): Mitteilungsverlauf, Mitteilungs- und Push-Einstellungen, ausgeblendete Kalender (`noty.calendar.hiddenSources.<Bereich>`), Systemkalender-Termine, Zugangsdaten, Kachel-/Widget-Daten.
+
+### Startposition von Woche und Tag (08.11.2026)
+
+Nutzerwunsch: „Der Kalender soll in der Woche immer bei den Terminen starten und nicht bei 0 Uhr.“ Regel als reine Funktion `CalendarScrollStart` (Core, `CalendarScrollStartTests`):
+1. Frühester Beginn eines Termins mit Uhrzeit an den gezeigten Tagen − 30 min, auf die volle Stunde abgerundet (ganztägige und ausgeblendete Kalender zählen nicht).
+2. Ist heute dabei und jetzt vor dem Ende des letzten heutigen Termins, rückt der Start auf jetzt − 1 h vor, aber nie über den Beginn (− 30 min) eines noch nicht vorbeigegangenen Termins hinaus.
+3. Ohne Termine: 7:00, bzw. jetzt − 1 h, wenn heute dabei ist.
+Greift beim Öffnen, beim Wechsel zu Woche/Tag (auch per Zoom), beim Blättern (‹ ›, Wischen, Tastatur), bei „Heute“ und beim Öffnen aus einer Mitteilung, immer ohne Animation. Nachlauf bei nachkommenden Daten nur ab iPadOS 18, höchstens 20 s und nur ohne Nutzereingriff; nie während Halten-und-Ziehen oder Verschieben. Vermutete Ursache des alten Verhaltens: Die alte Regel nahm nur „jetzt − 1 h“ (kurz nach Mitternacht = 0:00) und positionierte nur beim ersten Erscheinen. Implementiert und gebaut (Build 142), am iPad ungeprüft.
+
+Außerdem nach dem Review der Einstellungsseite: Verbinden sperrt das Verlassen der WebUntis-Seite, das Push-Einwilligungsangebot wird im Modell gemerkt und nachgeholt; Antippen einer Mitteilung blendet einen ausgeblendeten Kalender wieder ein (mit Hinweis), Verbinden ebenso; einheitlich „Apple Kalender und Outlook“; Schlüssel `noty.v2.calendarHiddenSources.<Bereich>` (alter Schlüssel einmalig übernommen); Auswahl mit 2 pt Akzent außen und heller 1-pt-Innenlinie, Akzent-Etiketten auf dunklem Material; iCloud-Ablage und „Hefte zurückholen“ lesen den Kalender nicht mehr (`backupPlan(includeCalendar: false)`).
 
 ## 3. Stufen und Lieferumfang
 

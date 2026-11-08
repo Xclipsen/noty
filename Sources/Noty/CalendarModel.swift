@@ -46,9 +46,30 @@ final class CalendarModel: ObservableObject {
             releaseVanishedSelection()
         }
     }
-    /// `noty.calendar.hiddenSources.<Bereich>`, the area as other per-area
-    /// preferences name it (`StableDefaults.scope`: its path inside Documents).
+    /// `noty.v2.calendarHiddenSources.<Bereich>` (`StableSettingsKey`, like
+    /// the other per-area preferences; `<Bereich>` = `StableDefaults.scope`,
+    /// the area's path inside Documents).
     let hiddenSourcesKey: String
+    nonisolated static func hiddenSourcesKey(scope: String) -> String {
+        StableSettingsKey.key("calendarHiddenSources", scope: scope)
+    }
+    /// The first key (08.11.2026, only in builds of `feat/kalender`), moved once.
+    nonisolated static func legacyHiddenSourcesKey(scope: String) -> String { "noty.calendar.hiddenSources." + scope }
+
+    /// Once per area: the value of the first key moves to the current one
+    /// (a value already there wins); the first key is removed.
+    static func migrateHiddenSources(scope: String) {
+        let defaults = UserDefaults.standard, old = legacyHiddenSourcesKey(scope: scope), key = hiddenSourcesKey(scope: scope)
+        guard let value = defaults.stringArray(forKey: old) else { return }
+        if defaults.object(forKey: key) == nil { defaults.set(value, forKey: key) }
+        defaults.removeObject(forKey: old)
+    }
+
+    /// A removed area (`WorkspaceAppModel.remove`): its choice goes with it.
+    static func forgetHiddenSources(scope: String) {
+        UserDefaults.standard.removeObject(forKey: hiddenSourcesKey(scope: scope))
+        UserDefaults.standard.removeObject(forKey: legacyHiddenSourcesKey(scope: scope))
+    }
     /// Demo mode: only fictitious entries, nothing editable or stored. Off by default.
     @Published var showsSamples = false { didSet { if showsSamples != oldValue { selection = nil; sampleYear = nil; rebuild() } } }
     @Published private(set) var today = Date()
@@ -173,6 +194,14 @@ final class CalendarModel: ObservableObject {
     @Published private(set) var presentingOverlays = false
     /// The calendar view instance that set `presentingOverlays`.
     private var overlayOwner: UUID?
+    /// The WebUntis form tests, connects or disconnects (`CalendarWebUntisForm`):
+    /// its page must not be left meanwhile – no back, Esc, „Fertig“ or settings
+    /// page switch. Set and cleared by the form's task itself, so it never stays on.
+    @Published var connectionBusy = false
+    /// After connecting WebUntis the push consent is due, but the form was no
+    /// longer on screen: offered where the user is now (`calendarPushOffer`:
+    /// Einstellungen › Kalender or the calendar), once.
+    @Published var pushOfferPending = false
     /// Notification taps that wait until the calendar is on screen (`showPending`).
     var pendingOpen: CalendarPendingOpen?
     var pendingConnectionSheet: Date?
@@ -223,7 +252,9 @@ final class CalendarModel: ObservableObject {
         repository = CalendarRepository(areaRoot: root)
         notificationNamespace = CalendarNotificationHub.namespace(root: root)
         notificationFile = CalendarNotificationLogFile(namespace: notificationNamespace)
-        hiddenSourcesKey = "noty.calendar.hiddenSources." + StableDefaults.scope(root)
+        let scope = StableDefaults.scope(root)
+        Self.migrateHiddenSources(scope: scope)
+        hiddenSourcesKey = Self.hiddenSourcesKey(scope: scope)
         // Unknown names (a later build's source) are ignored, not kept.
         hiddenSources = Set((UserDefaults.standard.stringArray(forKey: hiddenSourcesKey) ?? []).compactMap(CalendarSource.init(rawValue:)))
         // Only the shown area plans reminders (an area switch replaces them).
@@ -617,6 +648,23 @@ final class CalendarModel: ObservableObject {
     }
 
     private func visible(_ entry: CalendarEntry) -> Bool { !hiddenSources.contains(entry.source) }
+
+    /// The user asked for something of a switched-off calendar directly (a
+    /// notification, the school-day tile, a new connection): switch it back
+    /// on – and say so – instead of opening nothing.
+    func reveal(_ source: CalendarSource, announce: Bool = true) {
+        guard hiddenSources.contains(source) else { return }
+        hiddenSources.remove(source)
+        if announce { notice = "„\(source.title)“ war ausgeblendet und ist wieder eingeblendet." }
+    }
+
+    /// Like `event(_:)`, but also finds an entry of a switched-off calendar
+    /// and switches that calendar back on (`reveal`).
+    func revealedEvent(_ id: String?) -> CalendarEntry? {
+        guard let id, let entry = byID[id] else { return nil }
+        reveal(entry.source)
+        return entry
+    }
 
     func refreshToday() {
         let now = Date()

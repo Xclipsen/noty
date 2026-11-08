@@ -64,12 +64,12 @@ final class WorkspaceAppModel: ObservableObject {
         busy = true
         defer { busy = false }
         var failure: String?
-        let namespace = await calendarNamespace(area)
+        let namespace = await calendarNamespace(area), scope = await areaScope(area)
         do { try await store.remove(area.id, protecting: [Self.mainRoot]) }
         catch { failure = error.localizedDescription }
         await refresh()
         // Also after `leftoverFiles`: the area is gone from the list then.
-        if !areas.contains(where: { $0.id == area.id }) { areaRemoved(namespace) }
+        if !areas.contains(where: { $0.id == area.id }) { areaRemoved(namespace, scope: scope) }
         if let failure { error = failure }
     }
 
@@ -79,10 +79,18 @@ final class WorkspaceAppModel: ObservableObject {
         return CalendarNotificationHub.namespace(root: directory)
     }
 
+    /// The area's preference scope (`StableDefaults.scope`), read before it is removed.
+    private func areaScope(_ area: TestWorkspace) async -> String? {
+        guard let directory = try? await store.directory(for: area.id) else { return nil }
+        return StableDefaults.scope(directory)
+    }
+
     /// A removed area whose WebUntis connection the push service polls: signed
     /// off there too (docs/PUSH.md, „Abmelden“), like „Trennen“. In the
-    /// background: the area list does not wait for the server.
-    private func areaRemoved(_ namespace: String?) {
+    /// background: the area list does not wait for the server. Its calendar
+    /// choice „Sichtbare Kalender“ (a device preference) goes as well.
+    private func areaRemoved(_ namespace: String?, scope: String? = nil) {
+        if let scope { CalendarModel.forgetHiddenSources(scope: scope) }
         guard let namespace else { return }
         Task { await CalendarPushClient.shared.areaRemoved(namespace: namespace) }
     }
@@ -130,10 +138,10 @@ final class WorkspaceAppModel: ObservableObject {
     func removeMirror(_ area: TestWorkspace) async -> Bool {
         guard !busy, area.kind == .mirror, area.id != areaID else { return false }
         busy = true; defer { busy = false }
-        let namespace = await calendarNamespace(area)
+        let namespace = await calendarNamespace(area), scope = await areaScope(area)
         let removed = (try? await store.remove(area.id, protecting: [Self.mainRoot])) != nil
         await refresh()
-        if !areas.contains(where: { $0.id == area.id }) { areaRemoved(namespace) }
+        if !areas.contains(where: { $0.id == area.id }) { areaRemoved(namespace, scope: scope) }
         return removed
     }
     func restoreLibrary(_ url: URL) async -> Bool {

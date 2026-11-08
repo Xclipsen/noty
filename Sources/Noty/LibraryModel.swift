@@ -558,14 +558,17 @@ final class LibraryModel: ObservableObject {
 
     /// Index and package locations for the iCloud-Ablage (`NotebookVault.run`),
     /// captured on the library actor; the notebooks are read later, read-only.
-    func vaultPlan() async throws -> LibraryBackupPlan { try await store.backupPlan() }
+    /// Without the calendar: the Ablage holds notebooks only, and an unreadable
+    /// or newer calendar package must not stop it.
+    func vaultPlan() async throws -> LibraryBackupPlan { try await store.backupPlan(includeCalendar: false) }
 
     /// Today's index and the canonical size/CRC of every active notebook's
     /// committed state, read off the UI actor exactly as a backup would archive
     /// it; compared with a backup's contents (BACKUP-RESTORE-PLAN Phase 1).
     /// Throws when a notebook of today's library is not readable.
     func backupComparison() async throws -> (snapshot: LibrarySnapshot, fingerprints: [UUID: LibraryArchiveFileInfo]) {
-        let plan = try await store.backupPlan()
+        // Notebooks only: the calendar is not compared and must not block „Hefte zurückholen“.
+        let plan = try await store.backupPlan(includeCalendar: false)
         let fingerprints = await Task.detached(priority: .userInitiated) { plan.currentFingerprints() }.value
         return (plan.snapshot, fingerprints)
     }

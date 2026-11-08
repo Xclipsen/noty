@@ -62,6 +62,37 @@ enum CalendarPalette {
     }
 }
 
+/// The frame of a selected, moved or new entry: the accent outside and a
+/// thin light line inside. The accent alone can be close to a subject colour
+/// or to today's red (Koralle, Rosa, Bernstein, Minze …); the inner line
+/// keeps the selection visible with every accent on every subject colour.
+struct CalendarSelectionFrame: View {
+    var radius: CGFloat
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(.tint, lineWidth: 2)
+            .overlay {
+                RoundedRectangle(cornerRadius: max(1, radius - 2), style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.85), lineWidth: 1).padding(2)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    /// A short label or count in the accent (drag time, homework count): light
+    /// text on a dark material with a faint accent fill and an accent ring –
+    /// readable with every accent (white on a filled Bernstein, Himmel or Minze
+    /// stays below 3.6:1, black text would change with the colour).
+    func calendarAccentLabel<S: InsettableShape>(_ shape: S) -> some View {
+        foregroundStyle(.primary)
+            .background { shape.fill(.tint.opacity(0.22)) }
+            .background(.thickMaterial, in: shape)
+            .overlay { shape.strokeBorder(.tint, lineWidth: 1.25) }
+    }
+}
+
 /// A wait indicator that appears only after 300 ms – short waits do not
 /// flash – and always says what is running.
 struct CalendarDelayedProgress: View {

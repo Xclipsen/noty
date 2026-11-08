@@ -98,7 +98,8 @@ struct CalendarSidebar: View {
             Text("Kalender").font(.headline).accessibilityAddTraits(.isHeader).padding(.bottom, CalendarSpace.xs)
             ForEach(model.listedSources) { source in
                 let shown = !model.hiddenSources.contains(source)
-                toggleRow(title: source.title, shown: shown, style: sourceStyle(source), readOnly: source.readOnly && source != .system) {
+                toggleRow(title: source.title, shortTitle: source.shortTitle, shown: shown, style: sourceStyle(source),
+                          readOnly: source.readOnly && source != .system) {
                     if shown { model.hiddenSources.insert(source) } else { model.hiddenSources.remove(source) }
                 }
                 if source == .system && shown { systemCalendars }
@@ -126,14 +127,18 @@ struct CalendarSidebar: View {
         }
     }
 
-    private func toggleRow(title: String, shown: Bool, style: AnyShapeStyle, readOnly: Bool, indent: CGFloat = 0,
+    private func toggleRow(title: String, shortTitle: String? = nil, shown: Bool, style: AnyShapeStyle, readOnly: Bool, indent: CGFloat = 0,
                            toggle: @escaping () -> Void) -> some View {
         Button(action: toggle) {
             HStack(spacing: CalendarSpace.s) {
                 Image(systemName: shown ? "checkmark.circle.fill" : "circle")
                     .font(indent > 0 ? .subheadline : .body)
                     .foregroundStyle(shown ? style : AnyShapeStyle(Color.secondary))
-                Text(title).font(.subheadline).foregroundStyle(shown ? .primary : .secondary).lineLimit(1)
+                ViewThatFits(in: .horizontal) {
+                    Text(title).lineLimit(1)
+                    if let shortTitle, shortTitle != title { Text(shortTitle).lineLimit(1) }
+                }
+                .font(.subheadline).foregroundStyle(shown ? .primary : .secondary)
                 Spacer(minLength: 0)
                 if readOnly {
                     Image(systemName: "lock.fill").font(.system(size: 9)).foregroundStyle(.tertiary)

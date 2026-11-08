@@ -25,6 +25,20 @@ struct CalendarTimeGrid: View {
     @State private var creating = false
     /// A hold on a read-only all-day chip created: its tap on release opens nothing.
     @State private var allDayGuard = CalendarSwipeGuard()
+    // Start position (`CalendarScrollStart`; docs: CALENDAR-PLAN „Startposition“)
+    /// A new view or period wants its start hour; done once the hour grid has a height.
+    @State private var startPending = true
+    /// Height of the hour grid's scroll view (0 until its first layout).
+    @State private var viewport: CGFloat = 0
+    /// The hour last put at the top by `placeStart`, and when.
+    @State private var placedHour: Int?
+    @State private var placedAt = Date.distantPast
+    /// Bumped by every placement: a late second pass of an older one is dropped.
+    @State private var placement = 0
+    /// The user scrolled (or held, dragged, created) since the last placement:
+    /// arriving data never moves the grid then.
+    @State private var userScrolled = false
+    @Environment(\.calendarTodayPulse) private var todayPulse
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.calendarZoom) private var zoom
     @Environment(\.calendarLocalChange) private var localChange
@@ -39,13 +53,16 @@ struct CalendarTimeGrid: View {
         GeometryReader { geo in
             let natural = (geo.size.width - gutter) / CGFloat(max(1, days.count))
             let column = max(natural, minimumColumn)
+            let allDay = canCreate || !allDayItems.isEmpty
+            // The hour grid's height before its own layout (first frame on iPadOS 18).
+            let estimate = geo.size.height - headerHeight - 0.5 - (allDay ? allDayHeight : 0)
             let content = VStack(spacing: 0) {
                 header(column)
                 // When there is something all-day in the shown days – and always
                 // while new events can be created (holding there creates all-day ones).
-                if canCreate || !allDayItems.isEmpty { allDayRow(column) }
+                if allDay { allDayRow(column) }
                 Rectangle().fill(CalendarPalette.hairline).frame(height: 0.5)
-                hours(column)
+                hours(column, estimate: estimate)
             }
             .frame(width: gutter + column * CGFloat(days.count), height: geo.size.height)
             if natural < minimumColumn {
@@ -136,11 +153,14 @@ struct CalendarTimeGrid: View {
         return spans.indices.map { AllDayItem(event: spans[$0].0, first: spans[$0].1, last: spans[$0].2, lane: lanes[$0]) }
     }
 
+    /// At least one lane: the empty row is where all-day events are created.
+    private var allDayHeight: CGFloat {
+        CGFloat(max(1, (allDayItems.map(\.lane).max() ?? -1) + 1)) * laneHeight + 6
+    }
+
     private func allDayRow(_ column: CGFloat) -> some View {
         let items = allDayItems
-        // At least one lane: the empty row is where all-day events are created.
-        let lanes = max(1, (items.map(\.lane).max() ?? -1) + 1)
-        let height = CGFloat(lanes) * laneHeight + 6
+        let height = allDayHeight
         return ZStack(alignment: .topLeading) {
             Text("ganztägig").font(.caption2).foregroundStyle(CalendarPalette.quiet)
                 .lineLimit(1).minimumScaleFactor(0.8)
@@ -218,9 +238,11 @@ struct CalendarTimeGrid: View {
 
     private func y(_ minutes: Int) -> CGFloat { topInset + CGFloat(minutes) / 60 * hourHeight }
 
-    private func hours(_ column: CGFloat) -> some View {
+    private func hours(_ column: CGFloat, estimate: CGFloat) -> some View {
         // Once per grid render: derived from the whole offline timetable.
         let homework = model.homeworkDueEntryIDs
+        let start = startHour
+        let total = y(24 * 60) + topInset
         return ScrollViewReader { proxy in
             ScrollView(.vertical) {
                 ZStack(alignment: .topLeading) {
@@ -254,13 +276,101 @@ struct CalendarTimeGrid: View {
                 }
             }
             .scrollDisabled(dragging || creating)
-            .onAppear {
-                let hour = days.contains { calendar.isDate($0, inSameDayAs: model.today) }
-                    ? max(0, calendar.component(.hour, from: Date()) - 1) : 7
-                // After the first layout pass, otherwise the targets have no frames yet.
-                Task { @MainActor in proxy.scrollTo("hour-\(hour)", anchor: .top) }
+            // iPadOS 18: a new grid (first open, Woche/Tag, zoom) is at its start
+            // hour from the first frame; the passes of `placeStart` confirm it.
+            .modifier(CalendarGridScrollStart(anchor: UnitPoint(x: 0.5, y: min(1, max(0, y(start * 60) / max(1, total - estimate)))),
+                                              scrolled: { userScrolled = true }))
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                let first = viewport <= 0
+                viewport = height
+                // Waited for the first layout: now the targets have frames.
+                if first, height > 0, startPending { placeStart(proxy) }
             }
+            .onAppear { requestStart(proxy) }
+            // ‹ ›, trackpad swipe, keys, „Heute“ and a notification: the new period's start.
+            .onChange(of: days) { _, _ in requestStart(proxy) }
+            // „Heute“ while today is already shown.
+            .onChange(of: todayPulse.count) { _, _ in requestStart(proxy) }
+            // Entries that arrive just after (loading, first fetch of a week).
+            .onChange(of: start) { _, hour in dataMoved(to: hour, proxy) }
+            // Holding, creating, moving: the user's position from now on. A
+            // period change meanwhile places its start once they end.
+            .onChange(of: creating) { _, now in if now { userScrolled = true } else if startPending { placeStart(proxy) } }
+            .onChange(of: dragging) { _, now in if now { userScrolled = true } else if startPending { placeStart(proxy) } }
         }
+    }
+
+    // MARK: Start position
+
+    /// The start hour of the shown days (`CalendarScrollStart`): the shown
+    /// timed entries (hidden calendars do not count) and, when today is
+    /// shown, the current time.
+    private var startHour: Int {
+        var seen = Set<String>()
+        let entries = days.flatMap { model.events(on: $0) }
+            .filter { !$0.allDay && seen.insert($0.id).inserted }
+            .map { (start: $0.start, end: $0.end) }
+        let now = Date()
+        let today = days.firstIndex { calendar.isDate($0, inSameDayAs: now) }
+        let minute = calendar.component(.hour, from: now) * 60 + calendar.component(.minute, from: now)
+        return CalendarScrollStart.hour(items: CalendarScrollStart.items(days: days, entries: entries, calendar: calendar),
+                                        today: today.map { (day: $0, minute: minute) })
+    }
+
+    /// A new view or period (also „Heute“): put its start hour at the top.
+    private func requestStart(_ proxy: ScrollViewProxy) {
+        startPending = true
+        userScrolled = false
+        placeStart(proxy)
+    }
+
+    /// Without animation (the period change has its own motion; keys none).
+    /// Before the first layout it waits for the height (`onGeometryChange`).
+    /// A second pass after this layout and a third a moment later: a scroll
+    /// view that was just created (Woche/Tag, a width that switches to
+    /// sideways scrolling) may not take an early `scrollTo` – the grid then
+    /// stayed at 0:00. Never while holding, creating or moving.
+    private func placeStart(_ proxy: ScrollViewProxy) {
+        guard viewport > 0, !creating, !dragging else { return }
+        startPending = false
+        let hour = startHour
+        placedHour = hour
+        placedAt = Date()
+        placement += 1
+        let generation = placement
+        scroll(proxy, to: hour)
+        Task { @MainActor in
+            scrollAgain(proxy, to: hour, generation: generation)
+            try? await Task.sleep(for: .milliseconds(120))
+            scrollAgain(proxy, to: hour, generation: generation)
+        }
+    }
+
+    private func scrollAgain(_ proxy: ScrollViewProxy, to hour: Int, generation: Int) {
+        guard generation == placement, !userScrolled, !creating, !dragging else { return }
+        scroll(proxy, to: hour)
+    }
+
+    private func scroll(_ proxy: ScrollViewProxy, to hour: Int) {
+        NotyMotion.instant { proxy.scrollTo("hour-\(hour)", anchor: .top) }
+    }
+
+    /// How long after a placement arriving entries may still move the grid.
+    private static let settleWindow: TimeInterval = 20
+
+    /// Entries arrived (or went) and the start hour is another one: follow
+    /// it only shortly after the period was shown and only while nobody
+    /// scrolled or touched the grid – a later refresh or a notification never
+    /// moves it. iPadOS 17 cannot tell a user's scroll: there only periods
+    /// and views place the grid.
+    private func dataMoved(to hour: Int, _ proxy: ScrollViewProxy) {
+        guard #available(iOS 18.0, *) else { return }
+        guard !startPending, let placed = placedHour, hour != placed, !userScrolled, !creating, !dragging,
+              model.selection == nil, model.draft == nil,
+              Date().timeIntervalSince(placedAt) < Self.settleWindow else { return }
+        placedHour = hour
+        placement += 1
+        scroll(proxy, to: hour)
     }
 
     private func hourLines(_ column: CGFloat) -> some View {
@@ -558,9 +668,7 @@ struct CalendarEventCard: View {
             .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(CalendarPalette.tint(color, selected: selected || move != nil, cancelled: cancelled)))
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay {
-                if selected || move != nil || stretch != nil {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.tint, lineWidth: 1.5)
-                }
+                if selected || move != nil || stretch != nil { CalendarSelectionFrame(radius: 6) }
             }
             .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
@@ -674,8 +782,7 @@ struct CalendarEventCard: View {
     private func dragLabel(_ text: String) -> some View {
         Text(text).font(.caption2.weight(.semibold)).monospacedDigit()
             .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(.tint, in: Capsule())
-            .foregroundStyle(.white)
+            .calendarAccentLabel(Capsule())
             .offset(y: -18)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
@@ -697,6 +804,25 @@ struct CalendarEventCard: View {
                     }
                 })
             .accessibilityHidden(true)
+    }
+}
+
+/// iPadOS 18+: the initial offset of a new hour grid (no first frame at
+/// 0:00) and whether the user scrolls it. iPadOS 17: only `placeStart`.
+private struct CalendarGridScrollStart: ViewModifier {
+    let anchor: UnitPoint
+    let scrolled: () -> Void
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content
+                .defaultScrollAnchor(anchor, for: .initialOffset)
+                .onScrollPhaseChange { _, phase in
+                    if phase == .tracking || phase == .interacting { scrolled() }
+                }
+        } else {
+            content
+        }
     }
 }
 
@@ -729,7 +855,7 @@ struct CalendarAllDayChip: View {
             .background(CalendarPalette.tint(color, selected: selected))
             .clipShape(RoundedRectangle(cornerRadius: 5))
             .overlay {
-                if selected { RoundedRectangle(cornerRadius: 5).strokeBorder(.tint, lineWidth: 1.5) }
+                if selected { CalendarSelectionFrame(radius: 5) }
             }
             .contentShape(Rectangle())
         }

@@ -421,7 +421,7 @@ struct CalendarMonthRow: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 4))
-            .overlay { if selected { RoundedRectangle(cornerRadius: 4).strokeBorder(.tint, lineWidth: 1.5) } }
+            .overlay { if selected { CalendarSelectionFrame(radius: 4) } }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

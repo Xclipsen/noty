@@ -27,6 +27,9 @@ struct CalendarColorsList: View {
             Section {
                 ForEach(model.subjects, id: \.key) { subject in
                     let name = CalendarSubjectColor.name(for: subject.key, chosen: model.subjectColors)
+                    // Keys: ←/→ (or space) step through „Automatisch“ and the colours.
+                    let choice = Binding<String>(get: { model.subjectColors[subject.key] ?? "" },
+                                                 set: { model.setSubjectColor(subject.key, to: $0.isEmpty ? nil : $0) })
                     Menu {
                         CalendarColorPicker(key: subject.key, model: model)
                     } label: {
@@ -39,6 +42,7 @@ struct CalendarColorsList: View {
                         }
                         .frame(minHeight: 44)
                     }
+                    .keyOption(.choice(choice, [""] + CalendarSubjectColor.choosable))
                 }
             } footer: {
                 Text(model.subjects.isEmpty ? "Fächer erscheinen, sobald der Stundenplan aus WebUntis geladen ist."

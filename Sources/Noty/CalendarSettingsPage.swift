@@ -10,6 +10,8 @@ import NotebookCore
 struct CalendarSettingsPage: View {
     @ObservedObject var model: CalendarModel
     @ObservedObject var workspaces: WorkspaceAppModel
+    /// A search hit's sub-page (`SettingsSearchItem.subpage`): opened once, then cleared.
+    @Binding var open: SettingsSubpage?
     /// Links have no action a key could run: these open the same pages.
     @State private var showingColors = false
     @State private var showingWebUntis = false
@@ -41,18 +43,19 @@ struct CalendarSettingsPage: View {
                 NavigationLink { colorsPage } label: {
                     SettingLabel("Fachfarben", detail: "Eine feste Farbe je Fach aus dem Stundenplan; eigene Termine bleiben grün.")
                 }
-                .disabled(model.showsSamples || !model.canWrite)
+                // Inside `.disabled`: the key option is off as well while the row is.
                 .keyOption(.action { showingColors = true })
+                .disabled(model.showsSamples || !model.canWrite)
             } header: { Text("Ansicht") } footer: { AreaScopeFooter(workspaces: workspaces) }
             Section {
                 ForEach(model.listedSources) { source in
-                    settingToggle(title(source), detail: detail(source), isOn: Binding(
+                    settingToggle(source.title, detail: detail(source), isOn: Binding(
                         get: { !model.hiddenSources.contains(source) },
                         set: { shown in if shown { model.hiddenSources.remove(source) } else { model.hiddenSources.insert(source) } }))
                 }
             } header: { Text("Sichtbare Kalender") } footer: {
                 AreaScopeFooter(workspaces: workspaces,
-                                text: "Ausgeblendete Termine bleiben gespeichert; ihre Erinnerungen und Mitteilungen kommen weiter. Auch in der Kalenderleiste und im Menü „…“ umschaltbar.")
+                                text: "Ausgeblendete Termine bleiben gespeichert; ihre Erinnerungen und Mitteilungen kommen weiter, und eine angetippte Mitteilung blendet ihren Kalender wieder ein. Auch in der Kalenderleiste und im Menü „…“ umschaltbar.")
             }
             Section {
                 NavigationLink { webUntisPage } label: {
@@ -80,12 +83,34 @@ struct CalendarSettingsPage: View {
         .navigationDestination(isPresented: $showingNotifications) { notificationsPage }
         .keyboardSheet()
         .task { await model.refreshReminderPermission() }
+        // The push consent after connecting, if the WebUntis page was already left.
+        .calendarPushOffer(model: model)
+        .onAppear { openRequested(waiting: true) }
+        .onChange(of: open) { _, _ in openRequested(waiting: false) }
+    }
+
+    /// Opens the sub-page a search hit asked for (after the page is in place).
+    private func openRequested(waiting: Bool) {
+        guard let page = open else { return }
+        if waiting {
+            Task { @MainActor in openRequested(waiting: false) }
+            return
+        }
+        open = nil
+        guard !model.connectionBusy else { return }
+        showingColors = false; showingWebUntis = false; showingSystem = false; showingNotifications = false
+        switch page {
+        case .calendarColors: if !model.showsSamples && model.canWrite { showingColors = true }
+        case .calendarWebUntis: showingWebUntis = true
+        case .calendarSystem: showingSystem = true
+        case .calendarNotifications: showingNotifications = true
+        }
     }
 
     // MARK: Sub-pages (the calendar's sheets without their frame)
 
     private var colorsPage: some View { CalendarColorsList(model: model).keyboardSheet() }
-    private var webUntisPage: some View { CalendarWebUntisForm(model: model).keyboardSheet() }
+    private var webUntisPage: some View { CalendarWebUntisPage(model: model) }
     private var systemPage: some View { CalendarSystemForm(model: model).keyboardSheet() }
     private var notificationsPage: some View {
         CalendarNotificationSettingsForm(model: model) { webUntisFromNotifications = true }
@@ -94,10 +119,6 @@ struct CalendarSettingsPage: View {
     }
 
     // MARK: Texts
-
-    private func title(_ source: CalendarSource) -> String {
-        source == .system ? "Apple Kalender und Outlook" : source.title
-    }
 
     private func detail(_ source: CalendarSource) -> String {
         switch source {
@@ -122,6 +143,7 @@ struct CalendarSettingsPage: View {
         guard model.systemEnabled else { return "Aus. Liest und schreibt die Kalender dieses iPads, auch Microsoft 365." }
         if let problem = model.systemAccess.problem { return problem }
         if let error = model.systemError { return error }
+        if model.hiddenSources.contains(.system) { return "Verbunden · unter „Sichtbare Kalender“ ausgeblendet" }
         let shown = model.systemCalendars.filter { !model.hiddenSystemCalendars.contains($0.id) }.count
         return "Verbunden · " + NotyText.count(shown, "Kalender eingeblendet", "Kalender eingeblendet")
     }
@@ -139,6 +161,19 @@ struct CalendarSettingsPage: View {
         if settings.eventReminders { parts.append("Erinnerung " + CalendarReminder.text(settings.eventMinutes)) }
         if let lesson = model.lessonReminderMinutes { parts.append("Unterricht \(lesson) Minuten vorher") }
         return parts.isEmpty ? "Alle aus." : parts.joined(separator: ", ")
+    }
+}
+
+/// Einstellungen › Kalender › WebUntis: the form, which is not left while it
+/// connects (`model.connectionBusy`): the back button is hidden (that also
+/// stops the swipe back) and Esc does nothing meanwhile.
+private struct CalendarWebUntisPage: View {
+    @ObservedObject var model: CalendarModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        CalendarWebUntisForm(model: model)
+            .keyboardSheet(onCancel: { if !model.connectionBusy { dismiss() } })
     }
 }
 

@@ -211,6 +211,9 @@ struct CalendarView: View {
             if !open { openRequestedConnectionSheet(afterOverlay: true) }
         }
         .onDisappear { model.setPresentingOverlays(false, owner: overlayOwner) }
+        // The push consent after connecting WebUntis in Settings, if that page was
+        // left meanwhile: only while nothing (settings, sheet, notebook) covers the calendar.
+        .calendarPushOffer(model: model, ready: keys)
         .background { shortcuts }
         // Outermost: the sheets (form, deleted events) mark their changes too.
         .environment(\.calendarLocalChange, localChange)
@@ -865,7 +868,8 @@ struct CalendarView: View {
                     get: { !model.hiddenSources.contains(source) },
                     set: { shown in if shown { model.hiddenSources.remove(source) } else { model.hiddenSources.insert(source) } }
                 )) {
-                    Text(source.readOnly ? "\(source.title) · schreibgeschützt" : source.title)
+                    // Like the sidebar: Apple Kalender/Outlook can be written (per calendar), no lock.
+                    Text(source.readOnly && source != .system ? "\(source.title) · schreibgeschützt" : source.title)
                 }
             }
         }
