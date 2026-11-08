@@ -3,6 +3,7 @@
 # eigenen Server (docs/ENVIRONMENT.md, „Update unterwegs“). Ziel und geheimer
 # Pfad stehen in .tools/ota.env, nie im öffentlichen Repo:
 #   OTA_HOST=ssh-host  OTA_DIR=/absoluter/pfad  OTA_URL=https://host/pfad
+# NOTY_DRY_RUN=1: nur bauen, signieren und prüfen, nichts veröffentlichen.
 # Gibt es OTA_DIR hier, läuft das Skript auf dem Zielrechner selbst: ohne ssh.
 # Die Datei muss die installierte App-ID tragen, sonst entstünde eine zweite
 # App mit leerem Container. xtool stellt beim Signieren immer die Team-ID
@@ -157,6 +158,8 @@ if [ -n "$ICLOUD_CONTAINER" ]; then
   python3 -I -c 'import json,sys;s=set(json.load(open(".tools/ota-check.json"))["signed_entitlements"]);sys.exit(0 if {"com.apple.developer.icloud-services","com.apple.developer.ubiquity-container-identifiers"}<=s else 1)' \
     || { echo "Signatur ohne iCloud-Einträge; nichts veröffentlicht." >&2; exit 1; }
 fi
+# Probelauf: bauen, signieren und prüfen, aber nichts veröffentlichen.
+if [ "${NOTY_DRY_RUN:-}" = 1 ]; then echo "Probelauf: geprüft, nichts veröffentlicht (xtool/Noty.ipa)."; exit 0; fi
 BUILD="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["build"])')"
 SHORT="$(python3 -I -c 'import json;print(json.load(open(".tools/ota-check.json"))["version"])')"
 if [ "${NOTY_DRY_RUN:-}" = 1 ]; then
