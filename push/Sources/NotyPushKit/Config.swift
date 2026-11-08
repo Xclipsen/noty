@@ -1,0 +1,134 @@
+import Foundation
+
+/// When the server asks WebUntis (hours of the school's local wall clock).
+/// Default: hourly 5:00–20:59 on weekdays, every two hours 8–20 on weekends,
+/// nothing from 21:00 to 4:59 (user decision 08.11.2026).
+public struct PollScheduleConfig: Codable, Equatable, Sendable {
+    public var weekdayHours: [Int] = Array(5...20)
+    public var weekendHours: [Int] = [8, 10, 12, 14, 16, 18, 20]
+    /// Each device polls at a fixed minute 0..<spreadMinutes after the full
+    /// hour (derived from its id), so several devices do not hit WebUntis at once.
+    public var spreadMinutes = 15
+
+    public init() {}
+
+    public var isValid: Bool {
+        let hours = 0...23
+        return weekdayHours.allSatisfy(hours.contains) && weekendHours.allSatisfy(hours.contains)
+            && !(weekdayHours.isEmpty && weekendHours.isEmpty) && (1...59).contains(spreadMinutes)
+    }
+
+    private enum CodingKeys: String, CodingKey { case weekdayHours, weekendHours, spreadMinutes }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = PollScheduleConfig()
+        weekdayHours = try c.decodeIfPresent([Int].self, forKey: .weekdayHours) ?? d.weekdayHours
+        weekendHours = try c.decodeIfPresent([Int].self, forKey: .weekendHours) ?? d.weekendHours
+        spreadMinutes = try c.decodeIfPresent(Int.self, forKey: .spreadMinutes) ?? d.spreadMinutes
+    }
+}
+
+/// Non-secret configuration (`/etc/noty-push/config.json`). Secrets (data
+/// key, APNs .p8) are separate files, read via systemd `LoadCredential`.
+public struct PushConfig: Codable, Equatable, Sendable {
+    public var listenHost = "127.0.0.1"
+    public var port = 8795
+    public var dataDirectory = "/var/lib/noty-push"
+    /// Relative paths are resolved in `$CREDENTIALS_DIRECTORY` (systemd), else next to the config file.
+    public var dataKeyFile = "data.key"
+    public var apnsKeyFile = "apns.p8"
+    public var apnsKeyID = ""
+    public var teamID = ""
+    /// APNs topics = CFBundleIdentifier of the signed app (docs/PUSH.md).
+    public var allowedBundleIDs: [String] = []
+    public var maxDevices = 5
+    /// The app sends this string to confirm the user accepted the consent text.
+    public var consentVersion = "webuntis-push-1"
+    /// Days from today that are compared (today included).
+    public var windowDays = 14
+    public var schedule = PollScheduleConfig()
+    public var curlPath = "/usr/bin/curl"
+    public var registrationsPerHourPerIP = 5
+    public var registrationsPerDay = 20
+    public var requestsPerMinutePerIP = 60
+    /// Devices whose token became invalid or whose Untis access failed are
+    /// deleted after this many days without a successful update.
+    public var inactiveRetentionDays = 30
+
+    public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case listenHost, port, dataDirectory, dataKeyFile, apnsKeyFile, apnsKeyID, teamID, allowedBundleIDs, maxDevices,
+             consentVersion, windowDays, schedule, curlPath, registrationsPerHourPerIP, registrationsPerDay,
+             requestsPerMinutePerIP, inactiveRetentionDays
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = PushConfig()
+        func v<T: Decodable>(_ key: CodingKeys, _ fallback: T) throws -> T { try c.decodeIfPresent(T.self, forKey: key) ?? fallback }
+        listenHost = try v(.listenHost, d.listenHost); port = try v(.port, d.port)
+        dataDirectory = try v(.dataDirectory, d.dataDirectory); dataKeyFile = try v(.dataKeyFile, d.dataKeyFile)
+        apnsKeyFile = try v(.apnsKeyFile, d.apnsKeyFile); apnsKeyID = try v(.apnsKeyID, d.apnsKeyID); teamID = try v(.teamID, d.teamID)
+        allowedBundleIDs = try v(.allowedBundleIDs, d.allowedBundleIDs); maxDevices = try v(.maxDevices, d.maxDevices)
+        consentVersion = try v(.consentVersion, d.consentVersion); windowDays = try v(.windowDays, d.windowDays)
+        schedule = try v(.schedule, d.schedule); curlPath = try v(.curlPath, d.curlPath)
+        registrationsPerHourPerIP = try v(.registrationsPerHourPerIP, d.registrationsPerHourPerIP)
+        registrationsPerDay = try v(.registrationsPerDay, d.registrationsPerDay)
+        requestsPerMinutePerIP = try v(.requestsPerMinutePerIP, d.requestsPerMinutePerIP)
+        inactiveRetentionDays = try v(.inactiveRetentionDays, d.inactiveRetentionDays)
+    }
+
+    /// Problems that prevent starting (German, for `noty-push check`).
+    public var problems: [String] {
+        var result: [String] = []
+        if !["127.0.0.1", "::1"].contains(listenHost) { result.append("listenHost muss 127.0.0.1 oder ::1 sein (nur über nginx erreichbar).") }
+        if !(1024...65535).contains(port) { result.append("port außerhalb 1024–65535.") }
+        if !dataDirectory.hasPrefix("/") { result.append("dataDirectory muss absolut sein.") }
+        if apnsKeyID.count != 10 || !apnsKeyID.allSatisfy({ $0.isASCII && ($0.isUppercase || $0.isNumber) }) { result.append("apnsKeyID: 10 Zeichen A–Z/0–9 erwartet.") }
+        if teamID.count != 10 || !teamID.allSatisfy({ $0.isASCII && ($0.isUppercase || $0.isNumber) }) { result.append("teamID: 10 Zeichen A–Z/0–9 erwartet.") }
+        if allowedBundleIDs.isEmpty || !allowedBundleIDs.allSatisfy(Self.isBundleID) { result.append("allowedBundleIDs leer oder ungültig.") }
+        if !(1...50).contains(maxDevices) { result.append("maxDevices außerhalb 1–50.") }
+        if !(1...28).contains(windowDays) { result.append("windowDays außerhalb 1–28.") }
+        if !schedule.isValid { result.append("schedule ungültig (Stunden 0–23, spreadMinutes 1–59).") }
+        if !curlPath.hasPrefix("/") { result.append("curlPath muss absolut sein.") }
+        if consentVersion.isEmpty || consentVersion.count > 64 { result.append("consentVersion leer oder zu lang.") }
+        if registrationsPerHourPerIP < 1 || registrationsPerDay < 1 || requestsPerMinutePerIP < 1 { result.append("Ratenlimits müssen ≥ 1 sein.") }
+        if !(1...365).contains(inactiveRetentionDays) { result.append("inactiveRetentionDays außerhalb 1–365.") }
+        return result
+    }
+
+    static func isBundleID(_ text: String) -> Bool {
+        (3...155).contains(text.count) && text.contains(".")
+            && text.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-") }
+    }
+
+    public static func load(_ path: String) throws -> PushConfig {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        guard data.count <= 64_000 else { throw PushError.configuration("Konfiguration zu groß") }
+        return try JSONDecoder().decode(PushConfig.self, from: data)
+    }
+
+    /// Absolute path of a secret file: as given when absolute, else in
+    /// `$CREDENTIALS_DIRECTORY` (systemd LoadCredential), else next to the config.
+    public static func secretPath(_ name: String, configPath: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
+        if name.hasPrefix("/") { return name }
+        if let directory = environment["CREDENTIALS_DIRECTORY"], !directory.isEmpty { return directory + "/" + name }
+        return URL(fileURLWithPath: configPath).deletingLastPathComponent().appendingPathComponent(name).path
+    }
+}
+
+public enum PushError: Error, Equatable, CustomStringConvertible {
+    case configuration(String)
+    case crypto(String)
+    case storage(String)
+    case transport(String)
+
+    public var description: String {
+        switch self {
+        case .configuration(let text): "Konfiguration: \(text)"
+        case .crypto(let text): "Verschlüsselung: \(text)"
+        case .storage(let text): "Speicher: \(text)"
+        case .transport(let text): "Verbindung: \(text)"
+        }
+    }
+}

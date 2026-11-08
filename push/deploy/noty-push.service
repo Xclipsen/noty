@@ -1,0 +1,51 @@
+# Push-Dienst für noty calendar (docs/PUSH.md). Installation: push/deploy/install.sh
+# (als root). Lauscht nur auf 127.0.0.1; öffentlich nur über nginx (HTTPS).
+# Geheimnisse kommen per LoadCredential (root-eigene Dateien 0600 in
+# /etc/noty-push/), der Dienstbenutzer liest sie nur über $CREDENTIALS_DIRECTORY.
+[Unit]
+Description=noty calendar Mitteilungsdienst (WebUntis-Änderungen per APNs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=noty-push
+Group=noty-push
+ExecStart=/opt/noty-push/noty-push serve --config /etc/noty-push/config.json
+LoadCredential=data.key:/etc/noty-push/data.key
+LoadCredential=apns.p8:/etc/noty-push/apns.p8
+Restart=on-failure
+RestartSec=10
+MemoryMax=256M
+TasksMax=64
+CPUQuota=50%
+StateDirectory=noty-push
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+# AF_UNIX: curl/glibc (Namensauflösung über nscd/systemd-resolved).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/noty-push
+InaccessiblePaths=-/srv/obsidian
+
+[Install]
+WantedBy=multi-user.target
