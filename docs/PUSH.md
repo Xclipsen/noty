@@ -178,3 +178,12 @@ Stand 08.11.2026: Schritte 1–11 **implementiert und gebaut** (Core-Tests, `xto
 12. Prüfen am Gerät (gebündelt): Registrierung, `noty-push test-push`, echte Änderung bei geschlossener App, Ruhezeit-Zusammenfassung um 6 Uhr, Trennen löscht Serverdatei (`noty-push status`).
 
 **Gerätetest App-Teil (gebündelt, ungeprüft):** Voraussetzung signierter noty-calendar-Build über `NOTY_CHANNEL=calendar scripts/publish_ota.sh` mit `aps_environment` in Signatur und Profil (`ota_check` ohne Probleme) und laufender Server. (1) Kalender verbinden → Einwilligungsdialog → „Zustimmen“ → Blatt „Benachrichtigungen“: „Aktiv“; `noty-push status` zeigt das Gerät (sandbox, richtige Verbindung). (2) `noty-push test-push <id>` bei geschlossener App → Mitteilung; antippen öffnet noty ohne Fehler. (3) Echte Änderung bei weggewischter App → Mitteilung; antippen öffnet Tag/Stunde; Glocke zeigt sie **einmal**, auch nach „Aktualisieren“ in der App (keine lokale Zweitmitteilung). (4) Ruhezeit: Zusammenfassung um 6 Uhr; antippen → Glocke enthält die Einzeländerungen, gelesen. (5) Schalter aus → `noty-push status` ohne Gerät; im Flugmodus ausschalten → „Abmeldung steht noch aus“, nach dem nächsten Start weg. (6) „Trennen“ → Gerät auf dem Server weg; erneut verbinden → Dialog erscheint wieder. (7) „Nicht jetzt“ → keine Anfrage an den Server (nginx-Log), lokale Mitteilungen wie bisher.
+
+## Inbetriebnahme und Nachweis (08.11.2026)
+
+- Dienst `noty-push` auf dem VPS installiert und aktiv (systemd, 127.0.0.1:8795); nginx `noty.xclipsen.de/push/v1/{health,register,device,changes}` freigeschaltet, übrige Pfade weiter 404 (auch `..`-Rohpfade geprüft).
+- xtool 1.24 schaltet die Push-Fähigkeit für noty calendar selbst ein: Build 137 hat `aps-environment = development` in Signatur und Profil (`ota_check`: keine Probleme).
+- Gerät (iPad des Nutzers, sandbox) hat sich aus Build 137 registriert; Testabruf der Freigabe beim Server erfolgreich.
+- Erste Test-Push scheiterte mit `403 InvalidProviderToken`: Key ID in `/etc/noty-push/config.json` war vertippt (letztes Zeichen). Nach Korrektur `noty-push test-push` → `delivered`; **vom Nutzer am iPad bestätigt** (Mitteilung kam an).
+- Hinweis Betrieb: `noty-push`-CLI als Dienstbenutzer aus einem für ihn lesbaren Arbeitsverzeichnis starten (z. B. `cd /`), sonst scheitert der curl-Aufruf mit „Permission denied“.
+- Noch ungeprüft: echte Stundenplanänderung (Ausfall/Vertretung/Raumwechsel) über den Server, Ruhezeit-Zusammenfassung um 6 Uhr, Abmelden löscht Serverdatei.
