@@ -14,7 +14,8 @@ enum NotyMotion {
     /// Hefte ⇄ Kalender by tap (switch, sidebar entry). User request
     /// 08.11.2026 („eine bisschen smoothere Animation“) takes precedence over
     /// the 0.3-s rule for taps: content, library column and the switch's
-    /// marker glide in ONE critically damped transaction (no overshoot).
+    /// marker glide with ONE critically damped curve (no overshoot; the
+    /// column a frame later, `LibraryView.setCalendar`).
     /// Reduce Motion: only a cross-fade. Keys stay instant (`instant`).
     static func modeSwitch(_ reduced: Bool) -> Animation {
         reduced ? .easeInOut(duration: modeSwitchDuration(reduced)) : .smooth(duration: modeSwitchDuration(reduced))

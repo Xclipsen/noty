@@ -293,3 +293,7 @@ Stand: Commits `a09a6de` und Review-Fixes danach. **Implementiert, iPad-Build er
 ## Build 142 – dev-Abgleich (neue Einstellungen), Einstellungsseite „Kalender“, Umschalter in der Seitenleiste, Startposition Woche/Tag (08.11.2026)
 
 **Implementiert, iPad-Build erfolgreich, als noty calendar Build 142 veröffentlicht; nicht installiert geprüft, am iPad ungeprüft.** Core 1529 Tests (3 übersprungen) grün. Inhalt: dev (ae85dd7, neue Einstellungen als Vollbild mit Seitenleiste, Akzentfarbe, einzelne Hefte aus Backups) gemergt (`4cd90f0`); Einstellungsseite „Kalender“ (`a806e60`) samt Review-Fixes; Umschalter Hefte|Kalender in der Seitenleiste und weicherer Wechsel (`28ba76f`, Nutzer-Screenshot 08.11.2026); Startposition von Woche/Tag bei den Terminen statt 0 Uhr (Nutzerwunsch); weitere Review-Fixes (siehe CALENDAR-PLAN §2 „Startposition von Woche und Tag“). Gerätetests: CALENDAR-PLAN §2 und docs/SETTINGS.md.
+
+## Build 143 – Umschalter oben links ohne Versatz (08.11.2026)
+
+Nutzer-Screenshot 08.11.2026 18:07: Kalenderleisten-Knopf und Umschalter standen im Kalender kurzzeitig ca. 55 pt zu weit rechts (Platz des System-Seitenleistenknopfs während des Spaltengleitens). Fix: Systemknopf und Inhalt wechseln zuerst, die Spalte folgt ein Bild später mit derselben Animation; Umschalter in der Seitenleiste nur außerhalb des Kalenders. **Implementiert, iPad-Build erfolgreich, als noty calendar Build 143 veröffentlicht; am iPad ungeprüft.** Ursache zu ≈ 70 % gesichert (Screenshot-Messung), siehe CALENDAR-PLAN §2 „Umschalter“.

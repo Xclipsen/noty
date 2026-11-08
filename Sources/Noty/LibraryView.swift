@@ -334,42 +334,65 @@ struct LibraryView: View {
             && !calendar.presentingOverlays
     }
 
-    /// Tapping (switch, sidebar): ONE transaction (`NotyMotion.modeSwitch`,
+    /// Tapping (switch, sidebar): ONE motion (`NotyMotion.modeSwitch`,
     /// 0.45 s without overshoot, user request 08.11.2026) – the content
     /// cross-fades with a 20-pt shift (`NotyMotion.modeTransition`) while the
     /// library sidebar collapses (or comes back), the switch changes its bar
     /// and its marker slides. ⇧⌘K, the command palette and a notification:
     /// at once. Reduce Motion: the column changes at once, the content only
     /// cross-fades (0.2 s).
+    /// When the column moves by tap, it follows one frame later
+    /// (`columnLag`): the system sidebar button must already be gone (→
+    /// Kalender) or back in the detail bar (→ Hefte) when the split view
+    /// starts its column animation. In the same update the detail bar kept
+    /// the removed button's place for the whole glide (Build 142, landscape:
+    /// calendar sidebar button and switch ≈ 55 pt too far right until the
+    /// sidebar was gone, then a jump to the edge).
     private func setCalendar(_ shown: Bool, animated: Bool) {
         guard shown != showsCalendar, shown || canSwitchMode else { return }
-        let layout = {
+        // Never force the sidebar open (portrait would cover the content):
+        // a hidden one stays hidden, otherwise the system places it as it
+        // does by itself.
+        let target: NavigationSplitViewVisibility = shown || visibilityBeforeCalendar == .detailOnly ? .detailOnly : .automatic
+        let returning = !shown && target != .detailOnly && besideBeforeCalendar == splitWidth
+        let prepare = {
             if shown {
                 search = ""; libraryEditMode = .inactive; keyboardFocus = nil
                 visibilityBeforeCalendar = columnVisibility
                 besideBeforeCalendar = switchInSidebar ? splitWidth : nil
                 sidebarReturning = false
-                columnVisibility = .detailOnly
-            } else {
-                // Never force the sidebar open (portrait would cover the
-                // content): a hidden one stays hidden, otherwise the system
-                // places it as it does by itself.
-                columnVisibility = visibilityBeforeCalendar == .detailOnly ? .detailOnly : .automatic
-                sidebarReturning = columnVisibility != .detailOnly && besideBeforeCalendar == splitWidth
+            }
+        }
+        let column = {
+            columnVisibility = target
+            if !shown {
+                sidebarReturning = returning
                 visibilityBeforeCalendar = nil
                 besideBeforeCalendar = nil
             }
         }
         calendarRevealDelay = animated ? NotyMotion.modeSwitchDuration(reduceMotion) : 0
         if !animated {
-            NotyMotion.instant { layout(); showsCalendar = shown }
+            NotyMotion.instant { prepare(); column(); showsCalendar = shown }
         } else if reduceMotion {
-            NotyMotion.instant(layout)
+            NotyMotion.instant { prepare(); column() }
             withAnimation(NotyMotion.modeSwitch(true)) { showsCalendar = shown }
+        } else if columnVisibility == target {
+            withAnimation(NotyMotion.modeSwitch(false)) { prepare(); column(); showsCalendar = shown }
         } else {
-            withAnimation(NotyMotion.modeSwitch(false)) { layout(); showsCalendar = shown }
+            // Content, switch and system button first, the column a frame later
+            // in the same motion (both transactions `modeSwitch`).
+            withAnimation(NotyMotion.modeSwitch(false)) { prepare(); showsCalendar = shown }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.columnLag) {
+                guard showsCalendar == shown else { return }
+                withAnimation(NotyMotion.modeSwitch(false)) { column() }
+            }
         }
     }
+
+    /// One frame at 60 Hz (two at 120 Hz): by then the bars of the first
+    /// transaction are laid out and committed.
+    private static let columnLag: TimeInterval = 1.0 / 60
 
     /// The library sidebar stands beside the content: measured, the detail
     /// column is clearly narrower than the split view. Laid over the content
@@ -382,8 +405,11 @@ struct LibraryView: View {
     /// sidebar button, user request 08.11.2026) while the sidebar stands
     /// beside the content, otherwise top left in the detail column (in the
     /// calendar after the calendar sidebar button). Always exactly one.
+    /// Never in the calendar: → Kalender leaves the sidebar's bar with the
+    /// content, a frame before the column (`setCalendar`), so it does not
+    /// stay there without the system button beside it.
     private var switchInSidebar: Bool {
-        columnVisibility != .detailOnly && (sidebarBeside || sidebarReturning)
+        !showsCalendar && columnVisibility != .detailOnly && (sidebarBeside || sidebarReturning)
     }
 
     /// Words, symbols or both, chosen by the sidebar's width and used in both
@@ -523,7 +549,8 @@ struct LibraryView: View {
         .navigationTitle("noty")
         .toolbar { sidebarToolbar }
         // In the calendar the library sidebar is away on purpose: no system
-        // toggle beside the switch (the switch brings it back).
+        // toggle beside the switch (the switch brings it back). Changes with
+        // `showsCalendar`, a frame before the column (`setCalendar`).
         .toolbar(removing: showsCalendar ? .sidebarToggle : nil)
         .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 380)
         .safeAreaInset(edge: .bottom) { sidebarFooter }
