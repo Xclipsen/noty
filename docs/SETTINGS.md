@@ -18,12 +18,13 @@ Die Einstellungen öffnen sich über das ganze Fenster (`fullScreenCover`, aus d
 | Schreiben | Text & Tastatur | Neue Textfelder, Beim Tippen, Hardware-Tastatur (Helix „Experimentell“, Klammern) |
 | Schreiben | Stift & Werkzeuge | Stift und Bleistift (Autostift, Formen, **Durchkritzeln löscht** neu), Textmarker, Radierer, Eingabe (Finger), Werkzeugleiste anpassen, Apple Pencil (Systemwerte für Doppeltippen, Drücken und Schweben, nur Anzeige) |
 | Schreiben | Papier für neue Hefte | unverändert |
+| Funktionen | Kalender | nur auf `feat/kalender` (dort in jeder App, ohne Kanal-Schalter): Ansicht, Sichtbare Kalender, Verbindungen (WebUntis; Apple Kalender und Outlook), Mitteilungen – Abschnitt [Kalender](#kalender-für-featkalender) |
 | Funktionen | Gesetzessammlung, noty-Konto | unverändert, ohne den doppelten Link vom Konto |
 | Daten | Backup & Wiederherstellen | Statuskarte, Automatisches Backup (→ „Ziel und Aufbewahrung“), iCloud-Ablage, Bibliotheksbackup als Datei, Wiederherstellen („Ältere automatische Backups“, „Bibliotheksbackup-Datei öffnen …“, Bereiche sobald es welche gibt) |
 | Daten | Papierkorb | unverändert |
 | – | Über noty | Version, Build (Tippen kopiert; siebenmal schaltet in der normalen noty die Entwickleroptionen ein), Datenablage, Signierung erneuern, Hinweise |
-| – | Datenschutz | neu: was das iPad wann verlässt und was auf dem iPad bleibt |
-| – | Entwickler | nur noty dev/AI/calendar oder freigeschaltet: Bereiche, Zwischen noty-Apps, Diagnose, Experimente (Neuer Texteditor), Interna |
+| – | Datenschutz | neu: was das iPad wann verlässt und was auf dem iPad bleibt (auf `feat/kalender` mit WebUntis, Push-Server, Apple Kalender/Outlook, Schultag-Kachel) |
+| – | Entwickler | nur noty dev/AI/calendar oder freigeschaltet: Bereiche, Zwischen noty-Apps, Diagnose, Kalender (`feat/kalender`), Experimente (Neuer Texteditor), Interna |
 
 ## Regeln für neue Einstellungen
 
@@ -31,22 +32,28 @@ Die Einstellungen öffnen sich über das ganze Fenster (`fullScreenCover`, aus d
 - **Ort:** in der Seite, zu der die Aufgabe gehört; nichts doppelt anbieten. Kontextnahe Kurzwege (Bibliotheksmenü, Werkzeugoptionen im Heft) dürfen bleiben.
 - **Bereich:** Werte aus `toolbar.json` gelten je Bereich. Das sagt die Seite nur außerhalb von „Meine Bibliothek“ (`AreaScopeFooter`, `AreaNotice`); Bereiche sind ein Testwerkzeug.
 - **Test- und Entwicklerwerkzeuge** nur über `DeveloperAccess.visible`; Bereiche über `DeveloperAccess.showsAreas(workspaces)`, damit ein wiederhergestellter Bereich auch in der normalen noty erreichbar bleibt.
-- **Akzentfarbe:** Farbe über die Formatvorlage `.tint` (bzw. `AccentChoice.current.color` in `Canvas` und `AttributedString`), nie `Color.accentColor`. Das Heft behält `Color.notyAccent` für die Werkzeugleiste.
+- **Akzentfarbe:** Farbe über die Formatvorlage `.tint` (bzw. `AccentChoice.current.color` in `Canvas` und `AttributedString`), nie `Color.accentColor`. Das Heft behält `Color.notyAccent` für die Werkzeugleiste. Im Kalender sind Auswahl, Ziehen/Anlegen, Zoom-Rahmen und Hinweise in der Akzentfarbe (früher festes Systemblau `CalendarPalette.selection`, entfernt); Fachfarben, Rot für heute und Grün für eigene Termine bleiben fest. Das Widget „Heute“ läuft als eigene Extension ohne die App-Einstellung und behält seine feste grüne Fortschrittsfarbe.
 - **Suche:** Jede neue Einstellung bekommt einen Eintrag in `SettingsSearchItem.index` mit Seite, Abschnitt und Suchwörtern.
 - **Neue Seite:** Fall in `SettingsPage` (Titel, Symbol, Farbe), Gruppe in `SettingsPage.groups`, Ziel in `SettingsView.destination`.
 
 ## Kalender (für `feat/kalender`)
 
-Der Kalender hat heute keine Seite in den Einstellungen; seine Optionen liegen in drei Sheets und vier Menüs. Vorgesehen ist eine Seite **„Kalender“** in der Gruppe „Funktionen“ mit:
+Stand 08.11.2026, Zweig `feat/kalender` (nicht committet): **umgesetzt – implementiert, iPad-Build (`xtool dev build`) erfolgreich ohne neue Warnungen; nicht veröffentlicht, nicht installiert, am iPad ungeprüft.** Seite **„Kalender“** in der Gruppe „Funktionen“ (`SettingsPage.calendar`, `CalendarSettingsPage.swift`). Sie benutzt das `CalendarModel` des offenen Bereichs, das `WorkspaceLibraryHost` besitzt und `LibraryView` an `SettingsView` (auch aus dem Heft) weiterreicht – kein zweites Modell, kein zweiter Schreiber. Einen Kanal- oder Feature-Schalter für den Kalender gibt es nicht: Auf `feat/kalender` hat jede App den Kalender, auf `dev`/`main` gibt es weder Kalender noch Seite. Nur Push und Schultag-Kachel hängen am Kanal `calendar` und erscheinen nur dort.
 
-1. **Ansicht:** Wochentage (5/7), Quellen ein/aus (Stundenplan, Persönlich, Ferien, Apple Kalender). `hiddenSources` dabei speichern.
-2. **Verbindungen:** WebUntis (Status, Aktualisieren, neu verbinden, trennen) und „Apple Kalender und Outlook“ (`CalendarSystemSection`) getrennt; „Neue Termine in“.
-3. **Fachfarben** (Link auf das bestehende Sheet).
-4. **Mitteilungen:** Erlaubnis, Stundenplanänderungen, Morgen-Überblick, Erinnerungen, Unterricht, Ruhezeiten, „Auch bei geschlossener App“. Ein Begriff („Mitteilungen“) statt Benachrichtigungen/Erinnerungen gemischt; was je Gerät und was je Bereich gespeichert ist, in der Zeile sagen.
-5. **Entwickler-Seite:** „Beispieldaten anzeigen“, Test-Kachel, Planerzähler und Push-Diagnose dorthin, aus dem Kalender heraus.
-6. **Datenschutz:** WebUntis (Zugang im Schlüsselbund, Abruf vom Schulserver) und der Push-Server (`NotyPushURL`) als eigene Zeilen in `PrivacySettingsPage`.
+| Abschnitt | Inhalt | gespeichert |
+| --- | --- | --- |
+| Ansicht | Wochentage (Montag–Freitag/ganze Woche), Fachfarben (Unterseite) | je Bereich im Kalenderpaket (auch im Bibliotheksbackup) |
+| Sichtbare Kalender | Stundenplan, Persönlich, Ferien, Apple Kalender und Outlook (nur verbunden) | **neu gespeichert:** `UserDefaults` `noty.calendar.hiddenSources.<Bereich>` (`<Bereich>` = `StableDefaults.scope`, z. B. `Noty`), je Gerät und Bereich, nicht im Backup; vorher ging die Auswahl beim Neustart verloren |
+| Verbindungen | „WebUntis“ und „Apple Kalender und Outlook“ getrennt, je als Unterseite mit Status in der Zeile | je Bereich; WebUntis-Zugang im Schlüsselbund |
+| Mitteilungen | Unterseite: Erlaubnis, Stundenplanänderungen, „Auch bei geschlossener App“, „Schultag auf dem Sperrbildschirm“, Morgen-Überblick, Erinnerung (vor eigenen Terminen, vor dem Unterricht), Ruhezeiten | je Gerät (`noty.calendar.notifications`), außer „Vor dem Unterricht“: je Bereich im Kalenderpaket – so steht es in der Zeile |
 
-Die Sheets im Kalender können als Kurzwege bleiben, sollten aber dieselben Ansichten wiederverwenden.
+- **Ein Begriff:** „Mitteilungen“ für Funktion, Seite, Schalter, Glocke und Menü (die Banner von iPadOS heißen ebenso); „Erinnerung“ nur für den Vorlauf vor einem Termin oder einer Stunde. Menü „…“ › „Mitteilungen …“, Blatt- und Glockentitel „Mitteilungen“, VoiceOver der Glocke „Mitteilungen“, Hinweis „Mitteilungen bei Stundenplanänderungen …?“, Knopf „Mitteilungen einschalten“.
+- **Zeilen mit sichtbarer Erklärung:** Schalter als `settingToggle(Titel, detail:, isOn:)`, Picker mit `SettingLabel`; die langen Fußzeilen der Blätter sind in die Zeilen gewandert und gekürzt.
+- **Kurzwege im Kalender** bleiben und zeigen dieselben Ansichten (`CalendarWebUntisForm`, `CalendarSystemForm`, `CalendarColorsList`, `CalendarNotificationSettingsForm` in Blättern): Menü „…“ › „WebUntis …“ öffnet nur WebUntis (Blatt „WebUntis“, früher „Kalender verbinden“ mit beiden Verbindungen), neu „Apple Kalender und Outlook …“ nur diese; „Verwalten …“ im Status-Popover öffnet ebenfalls nur Apple Kalender und Outlook.
+- **Entwickler-Seite** (nur `DeveloperAccess.visible`), Abschnitte „Kalender“, „Schultag-Kachel“, „Push-Dienst“: „Beispieldaten anzeigen“, geplante Mitteilungen (Planerzähler), Test-Kachel (starten, Änderung simulieren, beenden, „Echte Kachel“), Push-Diagnose (Dienst, Geräte-ID gekürzt auf 8 Zeichen, gewünscht/Einwilligung, registriert, Serverstatus, Verbindung, letzter Kontakt, letzter Abruf des Servers, letzter Fehler, „Jetzt abgleichen“). Aus der normalen Oberfläche entfernt: Planerzähler und Test-Kachel aus dem Mitteilungs-Blatt, „zuletzt abgeglichen“ und „Letzter Abruf des Servers“ aus dem Push-Status (dort steht nur noch, was der Nutzer wissen oder tun muss). „Beispieldaten anzeigen“ steht im Menü „…“ nur noch mit `DeveloperAccess.visible` (Abschnitt „Entwickler“); das ist in noty calendar immer der Fall, weil es eine Test-App ist. Für Erstnutzer ist es kein Einstieg: Laut Plan dienen die Beispieldaten der Designabnahme, ohne Verbindung führen „+“ und „WebUntis verbinden …“ weiter; den Hinweis „Zum Ansehen: Beispieldaten anzeigen“ im leeren Kalender gibt es nur noch mit Entwicklerzugang. Die Marke „Beispieldaten ×“ neben dem Titel bleibt, damit man den Modus immer verlassen kann.
+- **Datenschutz:** neue Zeilen „WebUntis“ (Abruf direkt vom WebUntis-Server der Schule, Zugang nur im Schlüsselbund dieses iPads, nie in Datei oder Backup), „Mitteilungen bei geschlossener App“ (nur noty calendar; nur eingeschaltet: Freigabe verschlüsselt auf dem Server aus `NotyPushURL`, Token, Stunden zweier Wochen; stündlicher Abruf; „Aus“/„Trennen“ löscht), „Apple Kalender und Outlook“ (Abgleich durch das Konto in iPadOS) und unter „Bleibt auf dem iPad“ „Schultag-Kachel und Widget“ (App-Gruppe; Kachel ohne Entsperren sichtbar).
+- **Suche:** Einträge für Wochentage, Fachfarben, Sichtbare Kalender, WebUntis, Apple Kalender und Outlook, Mitteilungen, Stundenplanänderungen, Morgen-Überblick, Erinnerung, Ruhezeiten, je nach Kanal Push und Schultag-Kachel; auf der Entwickler-Seite Beispieldaten, geplante Mitteilungen, Test-Kachel, Push-Diagnose.
+- **Ungeprüft am iPad:** siehe gebündelter Gerätetest in [CALENDAR-PLAN](CALENDAR-PLAN.md#einstellungsseite-kalender-08112026).
 
 ## Bewusst nicht umgesetzt
 

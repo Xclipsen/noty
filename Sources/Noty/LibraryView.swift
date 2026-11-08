@@ -156,7 +156,7 @@ struct LibraryView: View {
         }
         .fullScreenCover(item: $settingsRequest, onDismiss: switchAreaIfRequested) { request in
             SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces,
-                         initialPage: request.page) { area in
+                         calendar: calendar, initialPage: request.page) { area in
                 selectedArea = area; switchingArea = true; settingsRequest = nil
             }
         }
@@ -176,8 +176,9 @@ struct LibraryView: View {
                 .environment(\.searchIndexArea, StableDefaults.scope(model.root))
                 .publishesEditorCommands()
                 .overlay { KeyboardOverlay(scope: .editor) }
-                .environment(\.editorSettings, EditorSettingsPresenter { [model, toolbox, externalBackup, workspaces] in
-                    AnyView(SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces))
+                .environment(\.editorSettings, EditorSettingsPresenter { [model, toolbox, externalBackup, workspaces, calendar] in
+                    AnyView(SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces,
+                                         calendar: calendar))
                 })
         }
         .sheet(item: $moving) { item in

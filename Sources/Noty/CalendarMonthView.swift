@@ -413,12 +413,15 @@ struct CalendarMonthRow: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .opacity(cancelled ? 0.55 : 1)
             .background {
-                if event.allDay || selected {
-                    RoundedRectangle(cornerRadius: 4).fill(CalendarPalette.tint(event.allDay ? color : CalendarPalette.selection, selected: selected && event.allDay))
+                if event.allDay {
+                    RoundedRectangle(cornerRadius: 4).fill(CalendarPalette.tint(color, selected: selected))
+                } else if selected {
+                    // Same strength as `CalendarPalette.tint` unselected, in the accent.
+                    RoundedRectangle(cornerRadius: 4).fill(.tint.opacity(0.18))
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 4))
-            .overlay { if selected { RoundedRectangle(cornerRadius: 4).strokeBorder(CalendarPalette.selection, lineWidth: 1.5) } }
+            .overlay { if selected { RoundedRectangle(cornerRadius: 4).strokeBorder(.tint, lineWidth: 1.5) } }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

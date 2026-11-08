@@ -167,7 +167,7 @@ struct PrivacySettingsPage: View {
         Form {
             Section {
                 Label {
-                    Text("Hefte, Textdokumente und Einstellungen liegen auf diesem iPad. noty enthält keine Werbung, keine Nutzungsanalyse und kein Tracking.")
+                    Text("Hefte, Textdokumente, Termine und Einstellungen liegen auf diesem iPad. noty enthält keine Werbung, keine Nutzungsanalyse und kein Tracking.")
                 } icon: { Image(systemName: "lock.shield.fill").foregroundStyle(.green) }
             }
             Section {
@@ -179,10 +179,22 @@ struct PrivacySettingsPage: View {
                 }
                 flow("books.vertical.fill", "Gesetzessammlung und noty-Konto",
                      "Nur wenn eingeschaltet: Gesetzestexte und PDFs kommen von law.xclipsen.de. Mit noty-Konto werden dort Benutzername bzw. E-Mail-Adresse, Lesezeichen und Markierungen gespeichert, auf Wunsch mit „Mit Apple anmelden“. Hefte werden nie übertragen.")
+                flow("graduationcap.fill", "WebUntis",
+                     "Nur wenn verbunden: noty ruft Stundenplan, Ferien und Hausaufgaben direkt vom WebUntis-Server deiner Schule ab (in der Regel schulname.webuntis.com). Benutzer und Schlüssel der Freigabe liegen nur im Schlüsselbund dieses iPads, nie in einer Datei oder einem Backup.")
+                if CalendarPush.availability != .otherChannel {
+                    flow("antenna.radiowaves.left.and.right", "Mitteilungen bei geschlossener App",
+                         "Nur wenn eingeschaltet: Deine WebUntis-Freigabe liegt verschlüsselt auf dem noty-Server (\(CalendarPush.baseURL?.host() ?? "noty-Server")), dazu das Mitteilungs-Token dieses iPads und die Stunden der nächsten zwei Wochen zum Vergleich. Der Server ruft den Stundenplan stündlich ab und meldet Änderungen über Apple. „Aus“ oder „Trennen“ löscht dort alles.")
+                }
+                flow("calendar", "Apple Kalender und Outlook",
+                     "Nur wenn verbunden: noty liest und schreibt die Kalender dieses iPads. Ob und wohin sie abgeglichen werden (iCloud, Microsoft 365), bestimmt das Konto in iPadOS; Terminnotizen bleiben in noty.")
                 flow("square.and.arrow.up.fill", "Teilen und Export",
                      "Nur auf deinen Befehl: PDF, Text, .noty-Dateien und Bibliotheksbackups gehen an die App oder Person, die du wählst.")
             } header: { Text("Wann Daten das iPad verlassen") }
             Section {
+                if CalendarSchoolDayCenter.shared.supported {
+                    flow("rectangle.badge.checkmark", "Schultag-Kachel und Widget",
+                         "Für Kachel und Widget liegen die Stunden von heute und morgen im gemeinsamen Ordner der noty-Apps auf diesem iPad. Die Kachel ist auf dem Sperrbildschirm auch ohne Entsperren sichtbar.")
+                }
                 flow("arrow.triangle.2.circlepath", "Zwischen noty-Apps",
                      "Für andere noty-Apps auf diesem iPad liegt eine Kopie der Bibliothek in einem gemeinsamen Ordner der App-Gruppe.")
                 if DeveloperAccess.visible {
@@ -209,6 +221,7 @@ struct DeveloperSettingsPage: View {
     @ObservedObject var library: LibraryModel
     @ObservedObject var toolbox: ToolbarSettingsModel
     @ObservedObject var workspaces: WorkspaceAppModel
+    let calendar: CalendarModel
     let onSelectArea: ((TestWorkspace?) -> Void)?
     @AppStorage(AppSettingsKey.hangProbe) private var hangProbe = false
     @AppStorage(AppSettingsKey.inputProbe) private var inputProbe = InputProbe.defaultEnabled
@@ -236,6 +249,7 @@ struct DeveloperSettingsPage: View {
                 settingToggle("Tipp-Diagnose", detail: "Zeigt nach jedem Tipp, was er getroffen hat und welche Felder dort liegen, nur Größen, keine Inhalte.", isOn: $tapDiagnostics)
                     .onChange(of: tapDiagnostics) { _, _ in TapDiagnostics.shared.refresh() }
             } header: { Text("Diagnose") }
+            CalendarDeveloperSection(model: calendar)
             Section("Experimente") {
                 settingToggle("Neuer Texteditor", detail: "Ein Text über alle Seiten eines Textdokuments, im Blättermodus aus, noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.", badge: "Test", isOn: $textEditor2)
             }

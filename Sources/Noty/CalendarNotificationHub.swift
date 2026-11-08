@@ -6,7 +6,7 @@ import CryptoKit
 import NotebookCore
 import NotyCalendarShared
 
-/// Benachrichtigungen (docs/CALENDAR-PLAN.md, 08.11.2026): the app-wide
+/// Mitteilungen (docs/CALENDAR-PLAN.md, 08.11.2026): the app-wide
 /// side of the calendar notifications.
 ///
 ///  - Delegate of `UNUserNotificationCenter`: a tap on a calendar
@@ -233,7 +233,7 @@ enum CalendarNotificationPreferences {
         if let data = try? JSONEncoder().encode(settings) { UserDefaults.standard.set(data, forKey: key) }
     }
 
-    /// The one-time hint „Benachrichtigungen einschalten“ was answered.
+    /// The one-time hint „Mitteilungen einschalten“ was answered.
     static var hintDone: Bool {
         get { UserDefaults.standard.bool(forKey: hintKey) }
         set { UserDefaults.standard.set(newValue, forKey: hintKey) }

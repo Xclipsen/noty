@@ -3,7 +3,7 @@ import UIKit
 import UserNotifications
 import NotebookCore
 
-/// Kalender B3 / Benachrichtigungen (08.11.2026): hands the plan of the shown area
+/// Kalender B3 / Mitteilungen (08.11.2026): hands the plan of the shown area
 /// (`CalendarReminderPlanner`, Core) to iPadOS as one-shot local
 /// notifications (reminders and Morgen-Überblicke; identifiers carry the
 /// channel/area namespace). iPadOS keeps about 64 pending requests per app, so the plan

@@ -194,7 +194,7 @@ struct WorkspaceLibraryHost: View {
                 if phase == .active { Task { await CalendarPushClient.shared.sync(calendar) } }
                 // A new event note is created now, not only after its input pause.
                 if phase != .active { calendar.sceneLeftForeground() }
-                // Benachrichtigungen: ask iPadOS for a background refresh (it decides when).
+                // Mitteilungen: ask iPadOS for a background refresh (it decides when).
                 if phase == .background { CalendarNotificationHub.shared.scheduleBackgroundRefresh() }
                 if phase == .active { Task { await AppSyncModel.shared.mirror(workspaces: workspaces) } }
                 // Beim Wechsel in eine andere noty-App den Abzug ablegen.

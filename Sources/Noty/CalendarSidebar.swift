@@ -245,7 +245,7 @@ struct CalendarMiniMonth: View {
             .frame(maxWidth: .infinity).frame(height: 36)
             .background {
                 if inRange {
-                    RoundedRectangle(cornerRadius: 8).fill(CalendarPalette.selection.opacity(0.18))
+                    RoundedRectangle(cornerRadius: 8).fill(.tint.opacity(0.18))
                 } else if holiday && inMonth {
                     RoundedRectangle(cornerRadius: 8).fill(CalendarPalette.holidays.opacity(0.16)).padding(.vertical, 4)
                 }

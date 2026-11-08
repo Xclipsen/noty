@@ -103,7 +103,7 @@ extension EnvironmentValues {
 
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
-    case general, appearance, view, text, tools, paper, laws, account, backup, trash, about, privacy, developer
+    case general, appearance, view, text, tools, paper, calendar, laws, account, backup, trash, about, privacy, developer
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -113,6 +113,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .text: "Text & Tastatur"
         case .tools: "Stift & Werkzeuge"
         case .paper: "Papier für neue Hefte"
+        case .calendar: "Kalender"
         case .laws: "Gesetzessammlung"
         case .account: "noty-Konto"
         case .backup: "Backup & Wiederherstellen"
@@ -130,6 +131,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .text: "character.cursor.ibeam"
         case .tools: "pencil.tip"
         case .paper: "squareshape.split.3x3"
+        case .calendar: "calendar"
         case .laws: "books.vertical.fill"
         case .account: "person.crop.circle.fill"
         case .backup: "externaldrive.fill.badge.icloud"
@@ -147,6 +149,8 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .text: Color(red: 0.98, green: 0.58, blue: 0.18)
         case .tools: Color(red: 0.16, green: 0.72, blue: 0.62)
         case .paper: Color(red: 0.80, green: 0.62, blue: 0.30)
+        // Not red: the Gesetzessammlung beside it is.
+        case .calendar: Color(red: 0.58, green: 0.40, blue: 0.92)
         case .laws: Color(red: 0.86, green: 0.30, blue: 0.27)
         case .account: Color(red: 0.36, green: 0.55, blue: 0.95)
         case .backup: Color(red: 0.20, green: 0.70, blue: 0.40)
@@ -161,7 +165,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     @MainActor static func groups(developer: Bool) -> [Group] {
         [Group(id: 0, title: nil, pages: [.general, .appearance]),
          Group(id: 1, title: "Schreiben", pages: [.view, .text, .tools, .paper]),
-         Group(id: 2, title: "Funktionen", pages: [.laws, .account]),
+         Group(id: 2, title: "Funktionen", pages: [.calendar, .laws, .account]),
          Group(id: 3, title: "Daten", pages: [.backup, .trash]),
          Group(id: 4, title: nil, pages: [.about, .privacy] + (developer ? [.developer] : []))]
     }
@@ -176,6 +180,9 @@ struct SettingsView: View {
     @ObservedObject var toolbox: ToolbarSettingsModel
     @ObservedObject var externalBackup: ExternalBackupModel
     @ObservedObject var workspaces: WorkspaceAppModel
+    /// The calendar of the open area (owned by `WorkspaceLibraryHost`); its
+    /// pages observe it themselves.
+    let calendar: CalendarModel
     var onSelectArea: ((TestWorkspace?) -> Void)?
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var vault = NotebookVaultModel.shared
@@ -186,9 +193,10 @@ struct SettingsView: View {
     @State private var query = ""
 
     init(library: LibraryModel, toolbox: ToolbarSettingsModel, externalBackup: ExternalBackupModel,
-         workspaces: WorkspaceAppModel, initialPage: SettingsPage? = nil, onSelectArea: ((TestWorkspace?) -> Void)? = nil) {
+         workspaces: WorkspaceAppModel, calendar: CalendarModel, initialPage: SettingsPage? = nil,
+         onSelectArea: ((TestWorkspace?) -> Void)? = nil) {
         self.library = library; self.toolbox = toolbox; self.externalBackup = externalBackup
-        self.workspaces = workspaces; self.onSelectArea = onSelectArea
+        self.workspaces = workspaces; self.calendar = calendar; self.onSelectArea = onSelectArea
         _selection = State(initialValue: initialPage ?? .general)
         _path = State(initialValue: initialPage.map { [$0] } ?? [])
     }
@@ -371,6 +379,7 @@ struct SettingsView: View {
         case .text: TextSettingsPage()
         case .tools: ToolSettingsPage(toolbox: toolbox, workspaces: workspaces)
         case .paper: PaperSettingsPage(toolbox: toolbox, workspaces: workspaces)
+        case .calendar: CalendarSettingsPage(model: calendar, workspaces: workspaces)
         case .laws: LawSettingsPage()
         case .account: NotyAccountSettingsPage()
         case .backup: BackupSettingsPage(library: library, toolbox: toolbox, externalBackup: externalBackup,
@@ -378,7 +387,8 @@ struct SettingsView: View {
         case .trash: TrashSettingsPage(library: library, workspaces: workspaces)
         case .about: AboutSettingsPage(workspaces: workspaces)
         case .privacy: PrivacySettingsPage()
-        case .developer: DeveloperSettingsPage(library: library, toolbox: toolbox, workspaces: workspaces, onSelectArea: onSelectArea)
+        case .developer: DeveloperSettingsPage(library: library, toolbox: toolbox, workspaces: workspaces, calendar: calendar,
+                                               onSelectArea: onSelectArea)
         }
     }
 }

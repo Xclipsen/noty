@@ -71,7 +71,10 @@ struct CalendarSyncSymbol: View {
 /// the actions („Jetzt aktualisieren“, „Verbinden …“).
 struct CalendarStatusPopover: View {
     @ObservedObject var model: CalendarModel
+    /// WebUntis sheet.
     let connect: () -> Void
+    /// „Apple Kalender und Outlook“ sheet.
+    let manageSystem: () -> Void
     let close: () -> Void
     @Environment(\.openURL) private var openURL
 
@@ -177,7 +180,7 @@ struct CalendarStatusPopover: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.systemReading)
                 }
-                Button("Verwalten …") { connect() }.buttonStyle(.bordered)
+                Button("Verwalten …") { manageSystem() }.buttonStyle(.bordered)
             }
             .font(.subheadline.weight(.semibold))
             Text("noty liest die Kalender dieses iPads. Den Abgleich mit iCloud oder Microsoft 365 übernimmt iPadOS; „eingelesen“ heißt nicht „mit dem Konto abgeglichen“.")

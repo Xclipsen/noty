@@ -3,15 +3,35 @@ import UIKit
 import VisionKit
 import NotebookCore
 
-/// „WebUntis verbinden“ (Stufe B1). Inoffizieller Zugang über die
-/// Untis-Mobile-Freigabe (WebUntis → Profil → Freigaben): QR code or
-/// server, school, user and key by hand. „Verbindung testen“ only reads;
-/// „Verbinden“ stores user and key in this iPad's keychain (never in files,
-/// logs or backups) and loads the timetable. „Trennen“ removes access data
-/// and offline timetable; own events and notes stay.
+/// „WebUntis“ as a sheet of the calendar (menu „…“ › „WebUntis …“, status
+/// popover, „Untis-Zugang prüfen“): the same form as Einstellungen ›
+/// Kalender › WebUntis. Apple Kalender und Outlook has its own sheet
+/// (`CalendarSystemSheet`).
 struct CalendarConnectionSheet: View {
     @ObservedObject var model: CalendarModel
     @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            CalendarWebUntisForm(model: model, disconnected: { dismiss() })
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+/// „WebUntis“ (Stufe B1). Zugang über die Untis-Mobile-Freigabe (WebUntis
+/// → Profil → Freigaben): QR code or server, school, user and key by hand.
+/// „Verbindung testen“ only reads; „Verbinden“ stores user and key in this
+/// iPad's keychain (never in files, logs or backups) and loads the
+/// timetable. „Trennen“ removes access data and offline timetable; own
+/// events and notes stay. Used by the sheet and by Einstellungen › Kalender.
+struct CalendarWebUntisForm: View {
+    @ObservedObject var model: CalendarModel
+    /// After a successful „Trennen“ (the sheet closes; the settings page stays
+    /// and shows the entry fields).
+    var disconnected: (() -> Void)?
     @State private var server = ""
     @State private var school = ""
     @State private var user = ""
@@ -31,42 +51,36 @@ struct CalendarConnectionSheet: View {
     private var scannerAvailable: Bool { DataScannerViewController.isSupported }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                if let connection = model.connection, !replacing {
-                    connectedSection(connection)
-                } else {
-                    entrySections
-                }
-                CalendarSystemSection(model: model)
-            }
-            .disabled(working)
-            .navigationTitle("Kalender verbinden")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } }
-                if working { ToolbarItem(placement: .confirmationAction) { CalendarDelayedProgress(text: workingText) } }
-            }
-            .sheet(isPresented: $scanning) {
-                CalendarQRScanner { text in
-                    scanning = false
-                    apply(scanned: text)
-                } cancel: { scanning = false }
-                .ignoresSafeArea()
-            }
-            .confirmationDialog("WebUntis trennen?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
-                Button("Trennen", role: .destructive) { disconnect() }
-            } message: {
-                Text("Benutzer, Schlüssel und der offline gespeicherte Stundenplan werden von diesem iPad entfernt. Eigene Termine und Notizen bleiben erhalten.")
+        Form {
+            if let connection = model.connection, !replacing {
+                connectedSection(connection)
+            } else {
+                entrySections
             }
         }
-        .preferredColorScheme(.dark)
+        .disabled(working)
+        .navigationTitle("WebUntis")
+        .toolbar {
+            if working { ToolbarItem(placement: .confirmationAction) { CalendarDelayedProgress(text: workingText) } }
+        }
+        .sheet(isPresented: $scanning) {
+            CalendarQRScanner { text in
+                scanning = false
+                apply(scanned: text)
+            } cancel: { scanning = false }
+            .ignoresSafeArea()
+        }
+        .confirmationDialog("WebUntis trennen?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
+            Button("Trennen", role: .destructive) { disconnect() }
+        } message: {
+            Text("Benutzer, Schlüssel und der offline gespeicherte Stundenplan werden von diesem iPad entfernt. Eigene Termine und Notizen bleiben erhalten.")
+        }
         .interactiveDismissDisabled(working)
         .calendarPushConsent(isPresented: $offeringPush, model: model)
     }
 
     private var notice: some View {
-        Text("Anmeldung über die Untis-Mobile-Freigabe (WebUntis → Profil → Freigaben). noty liest damit nur Stundenplan und Ferien; Benutzer und Schlüssel bleiben ausschließlich im Schlüsselbund dieses iPads und gelangen in keine Datei und kein Backup.")
+        Text("Anmeldung über die Untis-Mobile-Freigabe (WebUntis → Profil → Freigaben). noty liest damit nur Stundenplan, Ferien und Hausaufgaben – direkt vom WebUntis-Server deiner Schule; Benutzer und Schlüssel bleiben ausschließlich im Schlüsselbund dieses iPads und gelangen in keine Datei und kein Backup.")
     }
 
     @ViewBuilder private func connectedSection(_ connection: CalendarConnectionRecord) -> some View {
@@ -273,7 +287,7 @@ struct CalendarConnectionSheet: View {
         Task {
             failure = await model.disconnect()
             working = false
-            if failure == nil { dismiss() }
+            if failure == nil { disconnected?() }
         }
     }
 }

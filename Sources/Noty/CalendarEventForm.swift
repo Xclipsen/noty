@@ -170,7 +170,7 @@ struct CalendarEventForm: View {
             }
         } footer: {
             if !draft.reminder && general {
-                Text("Ohne eigene Erinnerung gilt die allgemeine: \(CalendarReminder.text(model.notificationSettings.eventMinutes)) (Benachrichtigungen).")
+                Text("Ohne eigene Erinnerung gilt die allgemeine: \(CalendarReminder.text(model.notificationSettings.eventMinutes)) (Einstellungen › Kalender › Mitteilungen).")
             } else if draft.reminder && systemTarget {
                 Text("Die Erinnerung trägt der Systemkalender ein und meldet sie selbst.")
             } else if draft.reminder {

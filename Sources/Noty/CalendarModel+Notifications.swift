@@ -1,12 +1,12 @@
 import Foundation
 import NotebookCore
 
-// Benachrichtigungen (docs/CALENDAR-PLAN.md, 08.11.2026): timetable
+// Mitteilungen (docs/CALENDAR-PLAN.md, 08.11.2026): timetable
 // changes, bell history, tap routing and the settings of the shown area.
 extension CalendarModel {
     var unreadNotifications: Int { notificationLog.unreadCount }
 
-    /// The one-time offer „Benachrichtigungen einschalten“: only with real
+    /// The one-time offer „Mitteilungen einschalten“: only with real
     /// data, before iPadOS was ever asked, and until answered.
     var showsNotificationHint: Bool {
         loaded && permissionChecked && !showsSamples && !notificationHintDone && reminderPermission == .notDetermined

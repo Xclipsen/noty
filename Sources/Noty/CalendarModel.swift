@@ -35,7 +35,20 @@ final class CalendarModel: ObservableObject {
         didSet { if sidebarWanted != oldValue { UserDefaults.standard.set(sidebarWanted, forKey: Self.sidebarKey) } }
     }
     nonisolated static let sidebarKey = "noty.calendar.sidebar"
-    @Published var hiddenSources: Set<CalendarSource> = [] { didSet { releaseVanishedSelection() } }
+    /// Calendars switched off in the view (menu „…“, sidebar, Einstellungen ›
+    /// Kalender). A device preference per area (`hiddenSourcesKey`), not in
+    /// the calendar package and not in backups.
+    @Published var hiddenSources: Set<CalendarSource> = [] {
+        didSet {
+            if hiddenSources != oldValue {
+                UserDefaults.standard.set(hiddenSources.map(\.rawValue).sorted(), forKey: hiddenSourcesKey)
+            }
+            releaseVanishedSelection()
+        }
+    }
+    /// `noty.calendar.hiddenSources.<Bereich>`, the area as other per-area
+    /// preferences name it (`StableDefaults.scope`: its path inside Documents).
+    let hiddenSourcesKey: String
     /// Demo mode: only fictitious entries, nothing editable or stored. Off by default.
     @Published var showsSamples = false { didSet { if showsSamples != oldValue { selection = nil; sampleYear = nil; rebuild() } } }
     @Published private(set) var today = Date()
@@ -131,7 +144,7 @@ final class CalendarModel: ObservableObject {
     @Published var reminderError: String?
     @Published var lastUndo: UndoStep?
 
-    // MARK: Benachrichtigungen (08.11.2026; logic in CalendarModel+Notifications.swift)
+    // MARK: Mitteilungen (08.11.2026; logic in CalendarModel+Notifications.swift)
     /// Channel and area in every notification identifier and userInfo.
     let notificationNamespace: String
     /// The user's choices (device preference, `CalendarNotificationPreferences`).
@@ -210,6 +223,9 @@ final class CalendarModel: ObservableObject {
         repository = CalendarRepository(areaRoot: root)
         notificationNamespace = CalendarNotificationHub.namespace(root: root)
         notificationFile = CalendarNotificationLogFile(namespace: notificationNamespace)
+        hiddenSourcesKey = "noty.calendar.hiddenSources." + StableDefaults.scope(root)
+        // Unknown names (a later build's source) are ignored, not kept.
+        hiddenSources = Set((UserDefaults.standard.stringArray(forKey: hiddenSourcesKey) ?? []).compactMap(CalendarSource.init(rawValue:)))
         // Only the shown area plans reminders (an area switch replaces them).
         CalendarReminderCenter.shared.activate(root: root)
         CalendarNotificationHub.shared.attach(self)

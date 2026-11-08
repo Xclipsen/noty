@@ -83,7 +83,7 @@ struct CalendarPinchScaled<Content: View>: View {
             .scaleEffect(reduced ? 1 : pinch.scale, anchor: pinch.anchor)
             .overlay {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(CalendarPalette.selection.opacity(0.8), lineWidth: 2)
+                    .strokeBorder(.tint.opacity(0.8), lineWidth: 2)
                     .padding(4)
                     .opacity(pinch.armed != nil ? 1 : 0)
                     .animation(NotyMotion.fade, value: pinch.armed != nil)
@@ -163,8 +163,8 @@ private struct CalendarZoomTargetEffect: ViewModifier {
             .overlay {
                 // Opacity only: also the form with „Bewegung reduzieren“.
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(CalendarPalette.selection.opacity(0.12))
-                    .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(CalendarPalette.selection, lineWidth: 2))
+                    .fill(.tint.opacity(0.12))
+                    .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(.tint, lineWidth: 2))
                     .opacity(lit && enabled ? 1 : 0)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)

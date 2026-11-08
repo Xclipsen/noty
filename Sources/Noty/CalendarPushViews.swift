@@ -2,13 +2,15 @@ import SwiftUI
 import NotebookCore
 
 // Push-Dienst (docs/PUSH.md): the consent before anything is uploaded and
-// the section „Auch bei geschlossener App“ of the sheet „Benachrichtigungen“.
+// the section „Auch bei geschlossener App“ of „Mitteilungen“. Its details
+// (device id, last contact, server state) are on the developer page
+// (`CalendarDeveloperSection`).
 
 extension View {
     /// The consent (text and version `CalendarPush.consentVersion`) before
     /// the first upload. „Zustimmen“ registers; „Nicht jetzt“ keeps
     /// everything local and is not asked again (the switch in
-    /// „Benachrichtigungen“ asks once more).
+    /// „Mitteilungen“ asks once more).
     func calendarPushConsent(isPresented: Binding<Bool>, model: CalendarModel) -> some View {
         alert(CalendarPush.consentTitle, isPresented: isPresented) {
             Button("Zustimmen") { Task { await CalendarPushClient.shared.enable(for: model) } }
@@ -22,11 +24,12 @@ extension View {
 }
 
 /// „Auch bei geschlossener App“: on/off (off deletes everything on the
-/// server), status and a short explanation. Shown only in noty calendar.
+/// server) with its explanation and what the user has to know or do now.
+/// Shown only in noty calendar.
 struct CalendarPushSection: View {
     @ObservedObject var model: CalendarModel
     @ObservedObject private var push = CalendarPushClient.shared
-    /// The sheet should close to show the WebUntis sheet („Untis-Zugang prüfen“).
+    /// „Untis-Zugang prüfen“: show the WebUntis form (the sheet closes first).
     let reconnect: () -> Void
     @State private var asking = false
 
@@ -35,19 +38,17 @@ struct CalendarPushSection: View {
             Section {
                 switch push.availability {
                 case .available:
-                    Toggle(isOn: Binding(get: { push.isOn(for: model) }, set: { switchTo($0) })) {
-                        Label("Auch bei geschlossener App", systemImage: "antenna.radiowaves.left.and.right")
-                    }
-                    .disabled(model.connection == nil || push.working)
+                    settingToggle("Auch bei geschlossener App",
+                                  detail: "Der noty-Server prüft deinen Stundenplan stündlich (werktags 5–21 Uhr, am Wochenende seltener) und meldet Änderungen über Apple, auch wenn noty geschlossen ist. Dafür liegt deine WebUntis-Freigabe verschlüsselt auf dem Server; „Aus“ oder „Trennen“ löscht dort alles.",
+                                  isOn: Binding(get: { push.isOn(for: model) }, set: { switchTo($0) }))
+                        .disabled(model.connection == nil || push.working)
                     status
                 case .unavailable(let reason):
-                    Label("Auch bei geschlossener App: nicht verfügbar. \(reason)", systemImage: "antenna.radiowaves.left.and.right.slash")
+                    SettingLabel("Auch bei geschlossener App", detail: "Nicht verfügbar. \(reason)")
                         .foregroundStyle(.secondary)
                 case .otherChannel:
                     EmptyView()
                 }
-            } footer: {
-                Text("Der noty-Server prüft deinen Stundenplan stündlich (werktags 5–21 Uhr, am Wochenende seltener) und meldet Änderungen über Apple – auch wenn noty geschlossen oder weggewischt ist. Dafür liegt deine WebUntis-Freigabe verschlüsselt auf dem Server. Solange das aktiv ist, trägt noty selbst gefundene Änderungen nur in die Glocke ein. Ausschalten oder „Trennen“ löscht alles auf dem Server.")
             }
             .calendarPushConsent(isPresented: $asking, model: model)
         }
@@ -86,7 +87,8 @@ struct CalendarPushSection: View {
             } else if model.reminderPermission != .allowed {
                 line("Wartet auf die Erlaubnis für Mitteilungen.", "bell.slash", .orange)
             } else if model.credentialsMissing {
-                line("Wartet auf die WebUntis-Zugangsdaten dieses iPads (oben neu verbinden).", "key", .orange)
+                line("Wartet auf die WebUntis-Zugangsdaten dieses iPads.", "key", .orange)
+                Button { reconnect() } label: { Label("WebUntis neu verbinden …", systemImage: "qrcode") }
             } else {
                 line("Wird eingerichtet …", "hourglass", .secondary)
                 retryButton("Erneut versuchen")
@@ -110,11 +112,8 @@ struct CalendarPushSection: View {
                     line("Server nicht erreichbar: \(error) Bis dahin meldet noty Änderungen selbst.", "exclamationmark.triangle", .orange)
                     retryButton("Erneut versuchen")
                 } else {
-                    line("Aktiv" + (state.lastContact.map { " · zuletzt abgeglichen " + CalendarText.clock($0, calendar: model.calendar) } ?? ""),
-                         "checkmark.circle", .green)
-                    if let problem = state.serverError {
-                        line("Letzter Abruf des Servers: \(problem)", "info.circle", .secondary)
-                    }
+                    // Last contact and the server's own fetch problems: developer page.
+                    line("Aktiv – Änderungen meldet der Server; noty trägt eigene Funde nur in die Glocke ein.", "checkmark.circle", .green)
                 }
             }
         }

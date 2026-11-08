@@ -11,14 +11,15 @@ enum CalendarSpace {
 }
 
 enum CalendarPalette {
-    /// Subject colours: `CalendarSubjectColor` (by name). Blue stays reserved
-    /// for selection and actions, red for today and the current time, green
-    /// for own entries.
+    /// Subject colours: `CalendarSubjectColor` (by name, never blue). Selection
+    /// and actions use the app's accent (Einstellungen › Darstellung) through
+    /// the `.tint` shape style – never a fixed blue; red stays today and the
+    /// current time, green own entries. A selection is never colour alone
+    /// (frame and stronger fill).
     static let personal = Color.green
     static let holidays = Color.gray
     /// Fallback of system calendars (EventKit) until their own colour is known.
     static let system = Color(red: 0.55, green: 0.6, blue: 0.95)
-    static let selection = Color(uiColor: .systemBlue)
     static let today = Color(uiColor: .systemRed)
     /// Hairlines of grids and cells: quieter than the system separator.
     static let hairline = Color(uiColor: .separator).opacity(0.45)

@@ -559,7 +559,7 @@ struct CalendarEventCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay {
                 if selected || move != nil || stretch != nil {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(CalendarPalette.selection, lineWidth: 1.5)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.tint, lineWidth: 1.5)
                 }
             }
             .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -674,7 +674,7 @@ struct CalendarEventCard: View {
     private func dragLabel(_ text: String) -> some View {
         Text(text).font(.caption2.weight(.semibold)).monospacedDigit()
             .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(CalendarPalette.selection, in: Capsule())
+            .background(.tint, in: Capsule())
             .foregroundStyle(.white)
             .offset(y: -18)
             .allowsHitTesting(false)
@@ -684,7 +684,7 @@ struct CalendarEventCard: View {
     /// Bottom edge: drag to change the duration (same steps as moving). The
     /// visible grip stays small; it takes touches 44 pt high.
     private var resizeHandle: some View {
-        Capsule().fill(CalendarPalette.selection).frame(width: 30, height: 5)
+        Capsule().fill(.tint).frame(width: 30, height: 5)
             .frame(maxWidth: .infinity).frame(height: 22)
             .contentShape(NotyHitShape())
             .offset(y: 11)
@@ -729,7 +729,7 @@ struct CalendarAllDayChip: View {
             .background(CalendarPalette.tint(color, selected: selected))
             .clipShape(RoundedRectangle(cornerRadius: 5))
             .overlay {
-                if selected { RoundedRectangle(cornerRadius: 5).strokeBorder(CalendarPalette.selection, lineWidth: 1.5) }
+                if selected { RoundedRectangle(cornerRadius: 5).strokeBorder(.tint, lineWidth: 1.5) }
             }
             .contentShape(Rectangle())
         }

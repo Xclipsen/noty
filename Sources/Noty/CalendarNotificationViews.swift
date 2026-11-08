@@ -1,7 +1,7 @@
 import SwiftUI
 import NotebookCore
 
-// Benachrichtigungen (docs/CALENDAR-PLAN.md, 08.11.2026): the bell beside
+// Mitteilungen (docs/CALENDAR-PLAN.md, 08.11.2026): the bell beside
 // the sync symbol and its history popover.
 
 /// Bell of the toolbar with the number of unread entries (never colour
@@ -28,10 +28,10 @@ struct CalendarBellSymbol: View {
             }
             .animation(NotyMotion.fade, value: unread > 0)
             .accessibilityElement()
-            .accessibilityLabel("Benachrichtigungen")
+            .accessibilityLabel("Mitteilungen")
             .accessibilityValue(unread == 0 ? "Keine ungelesenen" : NotyText.count(unread, "ungelesene", "ungelesene"))
             .accessibilityHint("Zeigt den Verlauf")
-            .help("Benachrichtigungen")
+            .help("Mitteilungen")
     }
 }
 
@@ -68,7 +68,7 @@ struct CalendarNotificationsPopover: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: CalendarSpace.s) {
             HStack(spacing: CalendarSpace.s) {
-                Text("Benachrichtigungen").font(.headline).accessibilityAddTraits(.isHeader)
+                Text("Mitteilungen").font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: CalendarSpace.s)
                 Button("Alle gelesen") { model.markAllNotificationsRead() }
                     .font(.subheadline.weight(.semibold))
@@ -76,7 +76,7 @@ struct CalendarNotificationsPopover: View {
                 Button { openSettings() } label: {
                     Image(systemName: "gearshape").frame(width: 44, height: 44).contentShape(Rectangle())
                 }
-                .accessibilityLabel("Einstellungen für Benachrichtigungen")
+                .accessibilityLabel("Einstellungen für Mitteilungen")
             }
             .buttonStyle(.borderless)
             switch model.reminderPermission {
@@ -99,7 +99,7 @@ struct CalendarNotificationsPopover: View {
     private var empty: some View {
         VStack(spacing: CalendarSpace.s) {
             Image(systemName: "bell").font(.title2).foregroundStyle(.secondary).accessibilityHidden(true)
-            Text("Noch keine Benachrichtigungen").font(.subheadline.weight(.semibold))
+            Text("Noch keine Mitteilungen").font(.subheadline.weight(.semibold))
             Text("Stundenplanänderungen, Morgen-Überblicke und Erinnerungen erscheinen hier – auch die, die nur in den Ruhezeiten kamen.")
                 .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -129,7 +129,7 @@ struct CalendarNotificationsPopover: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                Circle().fill(record.read ? Color.clear : Color.accentColor).frame(width: 8, height: 8)
+                Circle().fill(record.read ? AnyShapeStyle(Color.clear) : AnyShapeStyle(.tint)).frame(width: 8, height: 8)
                     .padding(.top, 6)
                     .accessibilityHidden(true)
             }

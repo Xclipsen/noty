@@ -63,7 +63,7 @@ struct CalendarQuickEntryPopover: View {
         let calendar = model.calendar
         HStack(alignment: .top, spacing: CalendarSpace.m) {
             Image(systemName: draft == nil ? "text.cursor" : "calendar.badge.plus")
-                .font(.title3).foregroundStyle(draft == nil ? Color.secondary : CalendarPalette.selection).frame(width: 28)
+                .font(.title3).foregroundStyle(draft == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint)).frame(width: 28)
                 .accessibilityHidden(true)
             if let draft {
                 VStack(alignment: .leading, spacing: 2) {

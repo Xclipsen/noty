@@ -431,7 +431,8 @@ final class CalendarSchoolDayCenter: ObservableObject {
     }
 }
 
-/// Blatt „Benachrichtigungen“: „Schultag auf dem Sperrbildschirm“ (only in noty calendar).
+/// „Mitteilungen“: „Schultag auf dem Sperrbildschirm“ (only in noty calendar).
+/// The test tile is on the developer page (`CalendarDeveloperSection`).
 struct CalendarSchoolDaySection: View {
     @ObservedObject var model: CalendarModel
     @ObservedObject private var center = CalendarSchoolDayCenter.shared
@@ -440,10 +441,10 @@ struct CalendarSchoolDaySection: View {
     var body: some View {
         if center.supported {
             Section {
-                Toggle(isOn: Binding(get: { center.enabled }, set: { center.setEnabled($0, model: model) })) {
-                    Label("Schultag auf dem Sperrbildschirm", systemImage: "rectangle.badge.checkmark")
-                }
-                .disabled(model.connection == nil)
+                settingToggle("Schultag auf dem Sperrbildschirm",
+                              detail: "An Tagen mit Unterricht ab 30 Minuten vor der ersten Stunde: aktuelle Stunde mit Raum und Restzeit, Pausen und die nächste Stunde mit Ausfall, Vertretung oder Raumwechsel. Nach der letzten Stunde verschwindet sie.",
+                              isOn: Binding(get: { center.enabled }, set: { center.setEnabled($0, model: model) }))
+                    .disabled(model.connection == nil)
                 if !center.systemAllowed {
                     Label("Live-Aktivitäten sind in den iPad-Einstellungen für noty calendar ausgeschaltet.", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
@@ -456,14 +457,8 @@ struct CalendarSchoolDaySection: View {
                 if let error = center.lastError {
                     Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                 }
-                Button { center.startDemo() } label: { Label("Test-Kachel starten", systemImage: "play.rectangle") }
-                    .disabled(!center.systemAllowed)
-                if center.demoRunning {
-                    Button { center.demoChange() } label: { Label("Änderung simulieren", systemImage: "bell.badge") }
-                    Button(role: .destructive) { center.endDemo() } label: { Label("Test-Kachel beenden", systemImage: "stop.circle") }
-                }
             } footer: {
-                Text("An Tagen mit Unterricht zeigt eine Kachel auf dem Sperrbildschirm ab 30 Minuten vor der ersten Stunde die aktuelle Stunde mit Raum und Restzeit, Pausen und Freistunden, den Tagesfortschritt und die nächste Stunde mit Ausfall, Vertretung oder Raumwechsel. Nach der letzten Stunde verschwindet sie. Eine Stundenplanänderung des Tages meldet die Kachel selbst und weckt den Bildschirm (dann ohne zweite Mitteilung), außer in den Ruhezeiten oder wenn „Stundenplanänderungen“ aus ist; schickt der Mitteilungsdienst die Änderungen, aktualisiert sich die Kachel still. Vorerst aktualisiert sich die Kachel nur, wenn noty calendar läuft oder im Hintergrund abrufen darf; dazwischen läuft der Countdown weiter und die Kachel zeigt beim nächsten Stundenwechsel „Stand veraltet“. Vor iPadOS 26 startet sie erst, wenn du noty calendar an dem Morgen öffnest.")
+                Text("Eine Änderung des Tages meldet die Kachel selbst und weckt den Bildschirm, außer in den Ruhezeiten; kommt sie vom Server, aktualisiert sich die Kachel still. Sonst aktualisiert sie sich nur, wenn noty calendar läuft oder im Hintergrund abrufen darf, und zeigt dazwischen „Stand veraltet“. Vor iPadOS 26 startet sie erst, wenn du noty calendar morgens öffnest. Die Kachel ist auch ohne Entsperren sichtbar.")
             }
         }
     }

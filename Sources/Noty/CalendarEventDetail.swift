@@ -248,7 +248,7 @@ struct CalendarEventPanel: View {
                         Text("\(homework)").font(.caption2.weight(.bold)).monospacedDigit()
                             .foregroundStyle(.white)
                             .frame(minWidth: 16, minHeight: 16)
-                            .background(Circle().fill(CalendarPalette.selection))
+                            .background(Circle().fill(.tint))
                             .padding(.top, 3).padding(.trailing, 3)
                     }
                 }

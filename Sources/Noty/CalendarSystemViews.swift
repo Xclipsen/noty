@@ -1,7 +1,32 @@
 import SwiftUI
 import NotebookCore
 
-/// „Apple Kalender und Outlook“ (Stufe C) inside the connection sheet:
+/// „Apple Kalender und Outlook“ as a sheet of the calendar (menu „…“,
+/// „Verwalten …“ in the status popover); the same form as Einstellungen ›
+/// Kalender › Apple Kalender und Outlook.
+struct CalendarSystemSheet: View {
+    @ObservedObject var model: CalendarModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            CalendarSystemForm(model: model)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+struct CalendarSystemForm: View {
+    @ObservedObject var model: CalendarModel
+    var body: some View {
+        Form { CalendarSystemSection(model: model) }
+            .navigationTitle("Apple Kalender und Outlook")
+    }
+}
+
+/// „Apple Kalender und Outlook“ (Stufe C), one section of `CalendarSystemForm`:
 /// connect consciously (asks iPadOS for full calendar access once), show or
 /// hide single calendars, choose the preselected target of new events,
 /// read anew, switch off. Outlook appears when the Microsoft 365/Exchange
@@ -41,10 +66,12 @@ struct CalendarSystemSection: View {
                         }
                     }
                 }
-                Picker("Neue Termine in", selection: Binding(get: { model.systemDefaultTarget },
-                                                            set: { target in Task { await model.setDefaultWriteTarget(target) } })) {
+                Picker(selection: Binding(get: { model.systemDefaultTarget },
+                                          set: { target in Task { await model.setDefaultWriteTarget(target) } })) {
                     Text("Persönlich (noty)").tag(CalendarWriteTarget.local)
                     ForEach(model.writableSystemCalendars) { Text($0.displayName).tag(CalendarWriteTarget.system(calendarID: $0.id)) }
+                } label: {
+                    SettingLabel("Neue Termine in", detail: "Vorauswahl im Formular; jeder Termin lässt sich dort umstellen.")
                 }
                 Button("Jetzt neu einlesen") { model.reloadSystemCalendars() }.disabled(model.systemReading)
                 Button("Ausschalten", role: .destructive) { run { await model.disconnectSystemCalendars() } }

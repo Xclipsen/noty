@@ -156,7 +156,7 @@ struct SettingsSearchItem: Identifiable, Hashable {
         return words.allSatisfy { haystack.contains($0) }
     }
 
-    static func index(developer: Bool, vault: Bool) -> [SettingsSearchItem] {
+    @MainActor static func index(developer: Bool, vault: Bool) -> [SettingsSearchItem] {
         var items: [SettingsSearchItem] = [
             .init(title: "Anordnung der Bibliothek", page: .general, section: "Bibliothek", keywords: ["raster", "liste", "ansicht", "darstellung"]),
             .init(title: "Sortierung", page: .general, section: "Bibliothek", keywords: ["name", "zuletzt", "reihenfolge"]),
@@ -186,6 +186,21 @@ struct SettingsSearchItem: Identifiable, Hashable {
             .init(title: "Apple Pencil: Doppeltippen und Drücken", page: .tools, section: "Apple Pencil", keywords: ["squeeze", "hover", "pencil"]),
             .init(title: "Werkzeugleiste anpassen", page: .tools, section: "Werkzeugleiste", keywords: ["leiste", "position", "lieblingsstifte", "dock"]),
             .init(title: "Papier für neue Hefte", page: .paper, keywords: ["umschlag", "liniert", "kariert", "vorlage"]),
+            .init(title: "Wochentage", page: .calendar, section: "Ansicht", keywords: ["kalender", "woche", "wochenende", "montag", "freitag"]),
+            .init(title: "Fachfarben", page: .calendar, section: "Ansicht", keywords: ["kalender", "farbe", "fach", "stundenplan"]),
+            .init(title: "Sichtbare Kalender", page: .calendar, section: "Sichtbare Kalender",
+                  keywords: ["kalender", "stundenplan", "persönlich", "ferien", "feiertage", "ausblenden", "einblenden", "quellen"]),
+            .init(title: "WebUntis", page: .calendar, section: "Verbindungen",
+                  keywords: ["kalender", "stundenplan", "schule", "untis", "freigabe", "qr", "verbinden", "trennen", "aktualisieren"]),
+            .init(title: "Apple Kalender und Outlook", page: .calendar, section: "Verbindungen",
+                  keywords: ["kalender", "systemkalender", "icloud", "microsoft 365", "exchange", "neue termine in"]),
+            .init(title: "Mitteilungen", page: .calendar, section: "Mitteilungen",
+                  keywords: ["kalender", "benachrichtigungen", "glocke", "erlaubnis", "push", "banner"]),
+            .init(title: "Stundenplanänderungen", page: .calendar, section: "Mitteilungen", keywords: ["ausfall", "vertretung", "raumwechsel"]),
+            .init(title: "Morgen-Überblick", page: .calendar, section: "Mitteilungen", keywords: ["morgens", "uhrzeit", "tag"]),
+            .init(title: "Erinnerung vor Terminen und Unterricht", page: .calendar, section: "Mitteilungen",
+                  keywords: ["erinnerung", "vorlaufzeit", "minuten", "unterricht", "termin"]),
+            .init(title: "Ruhezeiten", page: .calendar, section: "Mitteilungen", keywords: ["nacht", "stumm", "ruhe"]),
             .init(title: "Gesetzessammlung", page: .laws, keywords: ["gesetze", "paragraphen", "markierungen", "lesezeichen"]),
             .init(title: "noty-Konto", page: .account, keywords: ["anmelden", "abmelden", "passwort", "apple", "registrieren", "login"]),
             .init(title: "Automatisches Backup", page: .backup, section: "Automatisches Backup", keywords: ["webdav", "icloud drive", "ordner", "sichern"]),
@@ -202,10 +217,18 @@ struct SettingsSearchItem: Identifiable, Hashable {
             .init(title: "Papierkorb", page: .trash, keywords: ["gelöscht", "wiederherstellen", "leeren"]),
             .init(title: "Version und Build", page: .about, keywords: ["version", "build", "über"]),
             .init(title: "Signierung erneuern", page: .about, section: "Signierung erneuern", keywords: ["profil", "ablauf", "erinnerung"]),
-            .init(title: "Datenschutz", page: .privacy, keywords: ["daten", "privatsphäre", "server"]),
+            .init(title: "Datenschutz", page: .privacy, keywords: ["daten", "privatsphäre", "server", "webuntis", "push", "schlüsselbund"]),
         ]
         if vault {
             items.append(.init(title: "Hefte einzeln in iCloud sichern", page: .backup, section: "iCloud-Ablage", keywords: ["icloud", "sync", "stände"]))
+        }
+        if CalendarPush.availability != .otherChannel {
+            items.append(.init(title: "Auch bei geschlossener App", page: .calendar, section: "Mitteilungen",
+                               keywords: ["push", "server", "hintergrund", "stundenplanänderungen"]))
+        }
+        if CalendarSchoolDayCenter.shared.supported {
+            items.append(.init(title: "Schultag auf dem Sperrbildschirm", page: .calendar, section: "Mitteilungen",
+                               keywords: ["live-aktivität", "kachel", "widget", "sperrbildschirm"]))
         }
         if developer {
             items += [
@@ -213,7 +236,15 @@ struct SettingsSearchItem: Identifiable, Hashable {
                 .init(title: "Bereiche", page: .developer, keywords: ["testbereich", "spiegel"]),
                 .init(title: "Zwischen noty-Apps", page: .developer, keywords: ["app-abgleich", "spiegel", "abzug"]),
                 .init(title: "Neuer Texteditor (Test)", page: .developer, keywords: ["experimentell", "editor"]),
+                .init(title: "Beispieldaten im Kalender", page: .developer, section: "Kalender", keywords: ["demo", "kalender", "erfunden"]),
+                .init(title: "Geplante Mitteilungen", page: .developer, section: "Kalender", keywords: ["planerzähler", "erinnerungen", "kalender"]),
             ]
+            if CalendarSchoolDayCenter.shared.supported {
+                items.append(.init(title: "Test-Kachel", page: .developer, section: "Schultag-Kachel", keywords: ["live-aktivität", "demo", "simulieren"]))
+            }
+            if CalendarPush.availability != .otherChannel {
+                items.append(.init(title: "Push-Diagnose", page: .developer, section: "Push-Dienst", keywords: ["geräte-id", "server", "status", "kontakt"]))
+            }
         }
         return items
     }

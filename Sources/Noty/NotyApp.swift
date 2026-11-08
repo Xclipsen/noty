@@ -41,7 +41,7 @@ struct NotyApp: App {
                 } message: { Text(laws.error ?? "") }
         }
         .commands { NotyCommands() }
-        // Benachrichtigungen: background refresh through the shown area's calendar model, or nothing.
+        // Mitteilungen: background refresh through the shown area's calendar model, or nothing.
         .backgroundTask(.appRefresh(CalendarNotificationHub.refreshIdentifier)) { await CalendarNotificationHub.runBackgroundRefresh() }
     }
 }

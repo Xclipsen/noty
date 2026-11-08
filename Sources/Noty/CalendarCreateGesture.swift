@@ -333,9 +333,9 @@ private struct CalendarCreateBlock: View {
 
     var body: some View {
         RoundedRectangle(cornerRadius: radius, style: .continuous)
-            .fill(CalendarPalette.selection.opacity(fill))
+            .fill(.tint.opacity(fill))
             .overlay {
-                RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(CalendarPalette.selection, lineWidth: 1.5)
+                RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(.tint, lineWidth: 1.5)
             }
             .overlay(alignment: .topLeading) {
                 if title != nil || detail != nil {

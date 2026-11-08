@@ -30,12 +30,16 @@ struct CalendarView: View {
     @State private var sidebarFits = false
     @State private var dayList: CalendarDayListRequest?
     @State private var searching = false
+    /// WebUntis sheet (menu „…“ › „WebUntis …“, status popover, „Untis-Zugang prüfen“).
     @State private var connecting = false
+    /// „Apple Kalender und Outlook …“ (menu „…“, „Verwalten …“ in the status popover).
+    @State private var managingSystem = false
     @State private var choosingColors = false
     @State private var editingNotifications = false
     @State private var showingDeleted = false
     @State private var showingStatus = false
     @State private var connectAfterStatus = false
+    @State private var systemAfterStatus = false
     /// Bell history popover; its gear opens the settings once it is gone.
     @State private var showingNotifications = false
     @State private var settingsAfterNotifications = false
@@ -78,7 +82,7 @@ struct CalendarView: View {
     /// Sheets, popovers and dialogs of the calendar itself (reported to the
     /// model as `presentingOverlays`: the library then keeps its switch still).
     private var overlaysOpen: Bool {
-        dayList != nil || searching || connecting || choosingColors || editingNotifications || showingDeleted || showingStatus
+        dayList != nil || searching || connecting || managingSystem || choosingColors || editingNotifications || showingDeleted || showingStatus
             || showingNotifications || quickEntry || showingHomework || model.draft != nil || model.enlargedDraft != nil
             || model.pendingSeriesChange != nil
     }
@@ -182,6 +186,7 @@ struct CalendarView: View {
         .sheet(item: $dayList) { CalendarDayListSheet(day: $0.day, model: model) }
         .sheet(isPresented: $searching) { CalendarSearchSheet(model: model) }
         .sheet(isPresented: $connecting) { CalendarConnectionSheet(model: model) }
+        .sheet(isPresented: $managingSystem) { CalendarSystemSheet(model: model) }
         .sheet(isPresented: $choosingColors) { CalendarColorsSheet(model: model) }
         .sheet(isPresented: $editingNotifications) { CalendarNotificationSettingsSheet(model: model) }
         .sheet(isPresented: $showingDeleted) { CalendarDeletedEventsSheet(model: model) }
@@ -639,7 +644,9 @@ struct CalendarView: View {
         if model.connection == nil {
             return model.mode == .year
                 ? "Eigene Termine mit „+“ anlegen oder WebUntis im Menü „…“ verbinden."
-                : "Eigene Termine mit „+“ anlegen oder WebUntis im Menü „…“ verbinden. Zum Ansehen: „Beispieldaten anzeigen“."
+                // „Beispieldaten“ is a developer tool (design review), not a way in.
+                : "Eigene Termine mit „+“ anlegen oder WebUntis im Menü „…“ verbinden."
+                    + (DeveloperAccess.visible ? " Zum Ansehen: „Beispieldaten anzeigen“." : "")
         }
         if model.mode == .year { return "Unterricht erscheint nur für geladene Zeiträume." }
         return "Laut WebUntis kein Unterricht; keine eigenen Termine."
@@ -682,9 +689,9 @@ struct CalendarView: View {
     /// changes and overview; the system dialog appears only on „Einschalten“.
     private var notificationHint: some View {
         HStack(alignment: .center, spacing: CalendarSpace.m) {
-            Image(systemName: "bell.badge").font(.subheadline.weight(.semibold)).foregroundStyle(Color.accentColor)
+            Image(systemName: "bell.badge").font(.subheadline.weight(.semibold)).foregroundStyle(.tint)
                 .accessibilityHidden(true)
-            Text("Benachrichtigungen bei Stundenplanänderungen, morgens ein Überblick und Erinnerungen vor deinen Terminen?")
+            Text("Mitteilungen bei Stundenplanänderungen, morgens ein Überblick und Erinnerungen vor deinen Terminen?")
                 .font(.footnote).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Später") { withAnimation(NotyMotion.panel(reduceMotion)) { model.dismissNotificationHint() } }
@@ -694,8 +701,8 @@ struct CalendarView: View {
         }
         .padding(.leading, CalendarSpace.m).padding(.trailing, CalendarSpace.s).padding(.vertical, 6)
         .frame(minHeight: 44)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.accentColor.opacity(0.12)))
-        .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.accentColor.opacity(0.3), lineWidth: 0.5) }
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.tint.opacity(0.12)))
+        .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.tint.opacity(0.3), lineWidth: 0.5) }
         .accessibilityElement(children: .contain)
     }
 
@@ -790,9 +797,13 @@ struct CalendarView: View {
                         // The sheet follows once the popover is gone (`onDisappear`).
                         connectAfterStatus = true
                         showingStatus = false
+                    }, manageSystem: {
+                        systemAfterStatus = true
+                        showingStatus = false
                     }, close: { showingStatus = false })
                     .onDisappear {
                         if connectAfterStatus { connectAfterStatus = false; connecting = true }
+                        if systemAfterStatus { systemAfterStatus = false; managingSystem = true }
                     }
                 }
             }
@@ -841,7 +852,7 @@ struct CalendarView: View {
             Button { searching = true } label: { Label("Termine suchen …", systemImage: "magnifyingglass") }
             Button { choosingColors = true } label: { Label("Fachfarben …", systemImage: "paintpalette") }
                 .disabled(model.showsSamples || !model.canWrite)
-            Button { editingNotifications = true } label: { Label("Benachrichtigungen …", systemImage: "bell") }
+            Button { editingNotifications = true } label: { Label("Mitteilungen …", systemImage: "bell") }
                 .disabled(model.showsSamples)
             Button { showingDeleted = true } label: {
                 Label(model.deletedEvents.isEmpty ? "Gelöschte Termine …" : "Gelöschte Termine (\(model.deletedEvents.count)) …", systemImage: "trash")
@@ -858,19 +869,25 @@ struct CalendarView: View {
                 }
             }
         }
-        Section("WebUntis") {
+        // Each entry opens only its own connection (the same views as
+        // Einstellungen › Kalender › Verbindungen).
+        Section("Verbindungen") {
             if model.connection != nil {
-                Button { model.refreshNow() } label: { Label("Aktualisieren", systemImage: "arrow.clockwise") }
+                Button { model.refreshNow() } label: { Label("WebUntis aktualisieren", systemImage: "arrow.clockwise") }
                     .disabled(model.syncing || model.credentialsMissing || model.showsSamples)
-                Button { connecting = true } label: { Label("WebUntis-Verbindung …", systemImage: "link") }
+                Button { connecting = true } label: { Label("WebUntis …", systemImage: "link") }
             } else {
                 Button { connecting = true } label: { Label("WebUntis verbinden …", systemImage: "link.badge.plus") }
                     .disabled(!model.canWrite)
             }
+            Button { managingSystem = true } label: { Label("Apple Kalender und Outlook …", systemImage: "calendar.badge.plus") }
         }
-        Section("Ansicht") {
-            Toggle("Beispieldaten anzeigen", isOn: $model.showsSamples)
-            Text("Nur zum Ansehen: frei erfundene Termine, nichts wird gespeichert.")
+        // A developer tool (design review); also in Einstellungen › Entwickler.
+        if DeveloperAccess.visible {
+            Section("Entwickler") {
+                Toggle("Beispieldaten anzeigen", isOn: $model.showsSamples)
+                Text("Frei erfundene Termine, nichts wird gespeichert.")
+            }
         }
     }
 
