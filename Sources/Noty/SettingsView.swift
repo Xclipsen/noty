@@ -723,14 +723,15 @@ private struct DiagnosticsSettingsPage: View {
     @AppStorage(AppSettingsKey.textEditor2) private var textEditor2 = false
     var body: some View {
         Form {
+            DiagnosticReportsSection()
             Section {
-                keyToggle("Hänger-Diagnose", isOn: $hangProbe)
+                keyToggle("Ausführliche Hänger-Diagnose", isOn: $hangProbe)
                 keyToggle("Eingabe-Diagnose", isOn: $inputProbe)
                 keyToggle("Tipp-Diagnose", isOn: $tapDiagnostics)
                     .onChange(of: tapDiagnostics) { _, _ in TapDiagnostics.shared.refresh() }
                 keyToggle("Neuer Texteditor (Test)", isOn: $textEditor2)
             } footer: {
-                Text("Tipp-Diagnose: zeigt nach jedem Tipp, was er getroffen hat und welche Felder dort liegen, nur Größen, keine Inhalte. Hänger-Diagnose: schreibt bei längeren Hängern nur Codeadressen und Zähler ins Systemprotokoll und nach Dateien › Auf meinem iPad › noty › Diagnose › haenger.txt, keine Inhalte. Eingabe-Diagnose: meldet Berührungen ohne Wirkung und lange Eingabesperren nach Dateien › Auf meinem iPad › noty › Diagnose › eingabe.txt, nur Klassennamen und Zustände, keine Inhalte. Beide wirken nach einem Neustart der App. Neuer Texteditor: ein Text über alle Seiten eines Textdokuments, im Blättermodus aus; noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.")
+                Text("Tipp-Diagnose: zeigt nach jedem Tipp, was er getroffen hat und welche Felder dort liegen, nur Größen, keine Inhalte. Ausführliche Hänger-Diagnose: Hänger ab 2 s landen immer als Fehlerbericht; dieser Schalter schreibt zusätzlich schon ab 0,7 s nur Codeadressen und Zähler ins Systemprotokoll und nach Dateien › Auf meinem iPad › noty › Diagnose › haenger.txt, keine Inhalte. Eingabe-Diagnose: meldet Berührungen ohne Wirkung und lange Eingabesperren nach Dateien › Auf meinem iPad › noty › Diagnose › eingabe.txt, nur Klassennamen und Zustände, keine Inhalte. Beide wirken nach einem Neustart der App. Neuer Texteditor: ein Text über alle Seiten eines Textdokuments, im Blättermodus aus; noch ohne Formatleiste. Wirkt beim nächsten Öffnen eines Dokuments.")
             }
         }
         .navigationTitle("Diagnose")

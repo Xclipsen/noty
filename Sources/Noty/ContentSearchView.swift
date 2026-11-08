@@ -133,6 +133,7 @@ final class ContentSearchModel: ObservableObject {
             publish(force: true)
             if let retain { await store.prune(keeping: retain) }
             var summary = Summary()
+            let measurement = Diagnostics.begin("search.index")
             do {
                 for document in documents {
                     try Task.checkCancellation()
@@ -140,11 +141,13 @@ final class ContentSearchModel: ObservableObject {
                                     store: store, expected: expected, summary: &summary)
                 }
                 guard generation == expected else { return }
+                Diagnostics.end(measurement, ["notebooks": documents.count, "records": records.count])
                 publish(force: true)
                 status = summary.text(records: records.count, total: total)
             } catch is CancellationError {
                 if generation == expected { publish(force: true); status = "Suche angehalten · bisherige Treffer bleiben sichtbar und gespeichert" }
             } catch {
+                Diagnostics.failure("search.index", error)
                 if generation == expected { publish(force: true); self.error = error.localizedDescription; status = "Suche unvollständig · bisherige Treffer sichtbar" }
             }
         }
@@ -406,6 +409,8 @@ struct ContentSearchView: View {
         if !hits.isEmpty || !query.isEmpty { try? await Task.sleep(for: .milliseconds(120)) }
         guard !Task.isCancelled else { return }
         let tasksOnly = openTasks, term = query, source = openTasks ? model.tasks : model.records
+        let measurement = Diagnostics.begin("search")
+        defer { Diagnostics.end(measurement, ["records": source.count, "hits": hits.count]) }
         let found = await Task.detached(priority: .userInitiated) { () -> [ContentSearchHit] in
             if tasksOnly { return source.filter { term.trimmingCharacters(in: .whitespaces).isEmpty || $0.matches(term) } }
             return Array(source.lazy.filter { $0.matches(term) }.prefix(300))

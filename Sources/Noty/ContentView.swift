@@ -301,7 +301,14 @@ struct ContentView: View {
                         ?? ids[min(max(0, model.pageIndex), ids.count - 1)]
                 }
             }
-            .onChange(of: selectedPageID) { _, _ in if isPaneActive() { model.pageIndex = currentPageIndex } }
+            .onChange(of: selectedPageID) { _, _ in
+                guard isPaneActive() else { return }
+                // The switch's own main-thread work: until the next run-loop turn.
+                let measurement = Diagnostics.begin("page.switch")
+                model.pageIndex = currentPageIndex
+                let index = model.pageIndex, pages = model.notebook.pages.count
+                DispatchQueue.main.async { Diagnostics.end(measurement, ["index": index, "pages": pages]) }
+            }
             .onChange(of: model.pageContentGeneration) { _, _ in textFocus = nil; writingDraft = Page() }
             .onChange(of: model.mutationsPaused || model.busy) { _, blocked in if !blocked { adoptHeldDraftDrawing() } }
             .onChange(of: tool) { old, value in

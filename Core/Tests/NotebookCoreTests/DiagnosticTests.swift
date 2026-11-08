@@ -88,6 +88,21 @@ final class DiagnosticTests: XCTestCase {
         XCTAssertTrue(payload.contains("NSException"))
     }
 
+    /// The shared fixture that the server's tests validate as well
+    /// (diagnostics/test_server.py): Swift and Python agree on format 1.
+    func testSharedFixtureDecodesAndMatchesTheRules() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("diagnostics/fixtures/report-v1.json")
+        let report = try DiagnosticReport.decode(Data(contentsOf: url))
+        XCTAssertEqual(report.kind, .crash)
+        XCTAssertEqual(DiagnosticAnalysis.pattern(for: report), .stackOverflow)
+        var rebuilt = report; rebuilt.summary = ""; rebuilt.signature = ""
+        rebuilt = rebuilt.finalized()
+        XCTAssertEqual(rebuilt.summary, report.summary)
+        XCTAssertEqual(rebuilt.signature, report.signature)
+        XCTAssertEqual(try DiagnosticReport.decode(report.encoded()), report)
+    }
+
     // MARK: Journal and sessions
 
     func testJournalKeepsTheLast200AndPersistsEveryEvent() throws {

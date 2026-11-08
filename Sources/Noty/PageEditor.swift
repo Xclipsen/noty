@@ -1225,6 +1225,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if heldShape != nil {
             holdCompletion.drawingChanged(); finishHeldStroke(serial: holdSerial); return
         }
+        // Only a slow one leaves a breadcrumb (docs/DIAGNOSE.md): no I/O here.
+        let measurement = Diagnostics.begin("stroke.commit", quiet: true)
+        defer { Diagnostics.end(measurement) }
         // Tool changed during the stroke: published as drawn, no straightening,
         // scribble erase or width learning with the other tool's options.
         let processed = drawnWith == tool ? tool : nil

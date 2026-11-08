@@ -133,13 +133,16 @@ final class LibraryModel: ObservableObject {
         busy = true; defer { busy = false }
         discardPreparedExport()
         backupStatus = "Bibliotheksbackup wird vorbereitet …"
+        let measurement = Diagnostics.begin("backup")
         do {
             let archive = try await buildArchive()
+            Diagnostics.end(measurement, ["notebooks": archive.summary.notebooks.count])
             preparedExport = archive.url; preparedExportWarning = archive.warning
             backupStatus = archive.warning.map { "Bibliotheksbackup vorbereitet; \($0)" } ?? "Bibliotheksbackup vollständig vorbereitet"
             return archive
         } catch {
             backupStatus = "Bibliotheksbackup fehlgeschlagen"
+            Diagnostics.failure("backup", error)
             self.error = error.localizedDescription
             return nil
         }
@@ -184,7 +187,7 @@ final class LibraryModel: ObservableObject {
         do {
             let result = try await store.load()
             if snapshot != result.snapshot { snapshot = result.snapshot }
-            if !ready { ready = true }
+            if !ready { ready = true; Diagnostics.enter(phase: "library"); Diagnostics.note("library.ready", ["items": result.snapshot.items.count]) }
             // Forget expansion only for entries that no longer exist at all
             // (trashed folders may come back and keep their state).
             let known = Set(snapshot.items.map(\.id))
@@ -418,6 +421,8 @@ final class LibraryModel: ObservableObject {
         guard accepting, !item.isFolder else { return }
         busy = true; opening = item.id
         defer { busy = false; opening = nil }
+        // Ends when the editor has the notebook loaded (`EditorModel`).
+        Diagnostics.begin(shared: "notebook.open")
         do {
             let url = try await store.documentURL(id: item.id)
             // Another writer (an append of a shared file) holds the package.
@@ -427,7 +432,11 @@ final class LibraryModel: ObservableObject {
                                   isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds, searchFlowRange: flowRange)
             lastEditedID = item.id
             UserDefaults.standard.set(item.id.uuidString, forKey: lastOpenedKey)
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            Diagnostics.cancel(shared: "notebook.open")
+            Diagnostics.failure("notebook.open", error)
+            self.error = error.localizedDescription
+        }
     }
 
     private var opening: UUID?
@@ -524,6 +533,7 @@ final class LibraryModel: ObservableObject {
         } catch {
             // A failed validation or commit keeps its stage for analysis for a
             // day (BACKUPS.md); `removeStaleStages` at launch clears it.
+            Diagnostics.failure("restore", error)
             self.error = "Import fehlgeschlagen: \(error.localizedDescription)"
             return nil
         }

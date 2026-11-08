@@ -30,9 +30,11 @@ public enum DiagnosticAnalysis {
         case "law.window": "Gesetzesfenster"
         case "law.load": "Gesetz laden"
         case "search": "Suche"
+        case "search.index": "Suchindex erfassen"
         case "pdf.export": "PDF-Export"
         case "backup": "Backup"
-        case "appSync": "App-Abgleich"
+        case "appSync": "App-Abgleich (Abzug)"
+        case "appSync.mirror": "App-Abgleich (Spiegel)"
         case "restore": "Wiederherstellen"
         default: operation
         }

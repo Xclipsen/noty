@@ -196,10 +196,11 @@ public enum DiagnosticThresholds {
         case "stroke.commit": 150
         case "law.window": 1_000
         case "law.load": 2_000
-        case "search": 2_000
+        case "search": 1_000
+        case "search.index": 30_000
         case "pdf.export": 15_000
         case "backup": 30_000
-        case "appSync": 15_000
+        case "appSync", "appSync.mirror": 15_000
         default: 1_000
         }
     }

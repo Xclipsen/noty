@@ -80,7 +80,8 @@ public final class DiagnosticJournal: @unchecked Sendable {
         append(DiagnosticBreadcrumb(t: DiagnosticReport.milliseconds(now()), e: event.name, v: numbers))
     }
 
-    func append(_ crumb: DiagnosticBreadcrumb) {
+    /// Callers outside Core pass only names checked by `DiagnosticPrivacy.isSafeName`.
+    public func append(_ crumb: DiagnosticBreadcrumb) {
         let line: Data? = (try? JSONEncoder().encode(crumb)).map { $0 + Data([0x0A]) }
         lock.lock(); defer { lock.unlock() }
         if ring.count < Self.capacity { ring.append(crumb) } else { ring[next] = crumb }

@@ -46,9 +46,11 @@ extension LawReaderView {
         let request = UUID(); requestID = request
         loading = true; loadError = ""
         defer { if requestID == request { loading = false } }
+        let measurement = Diagnostics.begin("law.load")
         do {
             let doc = try await laws.document(entry, version: version)
             guard !Task.isCancelled, requestID == request else { return }
+            Diagnostics.end(measurement, ["sections": doc.sections.count])
             let found = target.flatMap { key in doc.sections.first { $0.id == key || $0.keys.contains(key) } }
             if target != nil && found == nil && !resume { loadError = "Diese Fundstelle ist in dieser Fassung nicht vorhanden."; return }
             textSelection.clear()
@@ -57,7 +59,10 @@ extension LawReaderView {
             sectionID = shown?.id ?? ""; jumpParagraph = paragraph
             pdfURL = nil; viewPDF = false; pdfTarget = nil
             follow(shown, from: field)
-        } catch { if requestID == request { loadError = error.localizedDescription } }
+        } catch {
+            Diagnostics.failure("law.load", error)
+            if requestID == request { loadError = error.localizedDescription }
+        }
     }
     func search(_ value: String, allowFullText: Bool = false, bareReference: Bool = true, from field: LawLookupField) async {
         if let target = LawQuickTarget.parse(value, entries: laws.entries), let entry = laws.entries.first(where: { $0.id == target.lawID }) {

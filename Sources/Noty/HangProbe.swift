@@ -3,49 +3,92 @@ import Darwin
 import OSLog
 import os
 import QuartzCore
+import MachO
+import NotebookCore
 
 /// Diagnostics for main-thread stalls (Feedback 33: multi-second hangs at high
-/// zoom). A background watchdog samples the main thread's frame-pointer chain
-/// when one run-loop iteration exceeds 0.7 s; `hit` counts named code paths per
-/// iteration so a feedback loop shows up as an outlier. Logs only addresses
-/// (image + offset) and counters, never document content.
+/// zoom). Two modes:
+/// - Always on (`installWatchdog`, from `Diagnostics.start`): a run-loop
+///   observer notes every main iteration of 250 ms or more as a `hang`
+///   breadcrumb; a background watchdog samples the main thread's frame-pointer
+///   chain once an iteration reaches 2 s and stores an `appHang` report with
+///   that stack (rewritten with the final duration when main recovers).
+///   Costs one lock per run-loop wake-up and a thread that wakes every 100 ms.
+/// - Verbose (Einstellungen › Diagnose › Hänger-Diagnose, `install`): in
+///   addition `hit` counts named code paths per iteration, and stalls are
+///   sampled at 0.7, 1.5, 3 and 10 s into the system log and
+///   Documents/Diagnose/haenger.txt.
+/// Records only addresses (image + offset) and counters, never document content.
 enum HangProbe {
     private static let log = Logger(subsystem: "de.la.noty", category: "hang-probe")
+    private struct PendingHang: Sendable {
+        var iteration: UInt64
+        var id: String
+        var createdAt: Int64
+        var stack: [DiagnosticFrame]
+        var test: Bool
+    }
     private struct State: Sendable {
         var counts: [String: Int] = [:]
         var iteration: UInt64 = 0
         var iterationStart = CACurrentMediaTime()
         /// Main sleeps in its run loop: that is no stall.
         var idle = false
+        /// The 2 s report of the current iteration, finished when it ends.
+        var pending: PendingHang?
+        /// The hidden test menu's hang is running.
+        var testing = false
     }
     /// A heap-allocated lock: `&` on a Swift `static var` gives no stable address.
     private static let state = OSAllocatedUnfairLock(initialState: State())
     nonisolated(unsafe) private static var mainThread: thread_act_t = 0
     private static let maxFrames = 96
     nonisolated(unsafe) private static let frames = UnsafeMutablePointer<UInt>.allocate(capacity: maxFrames)
+    nonisolated(unsafe) private static var watching = false
     nonisolated(unsafe) private static var installed = false
-    /// Off by default (Settings › Diagnose, read at launch). Also gates the
+    /// The verbose mode (Settings › Diagnose, read at launch). Also gates the
     /// editor's timing and input traces, so normal use logs nothing per touch.
     static var isInstalled: Bool { installed }
 
+    /// Verbose mode on top of the watchdog.
     @MainActor static func install() {
         guard !installed else { return }
         installed = true
+        installWatchdog()
+        write("=== Start \(Date().formatted(.iso8601)), Build \(Diagnostics.build)")
+    }
+
+    /// The always-on watchdog (`Diagnostics.start`).
+    @MainActor static func installWatchdog() {
+        guard !watching else { return }
+        watching = true
         mainThread = mach_thread_self()
         // Allocates: must not happen on first use, while main is suspended.
         _ = frames
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-        write("=== Start \(Date().formatted(.iso8601)), Build \(build)")
         let observer = CFRunLoopObserverCreateWithHandler(nil,
             CFRunLoopActivity.afterWaiting.rawValue | CFRunLoopActivity.beforeWaiting.rawValue, true, 0) { _, activity in
             let sleeping = activity == .beforeWaiting
-            let (elapsed, snapshot) = state.withLock { state -> (Double, [String: Int]) in
+            let verbose = installed
+            let (elapsed, snapshot, finished) = state.withLock { state -> (Double, [String: Int], PendingHang?) in
                 let elapsed = CACurrentMediaTime() - state.iterationStart
-                let snapshot = elapsed > 0.25 && !state.idle ? state.counts : [:]
+                let stalled = elapsed > 0.25 && !state.idle
+                let snapshot = stalled && verbose ? state.counts : [:]
+                let finished = state.pending?.iteration == state.iteration ? state.pending : nil
+                if finished != nil { state.pending = nil }
                 state.idle = sleeping
-                state.counts.removeAll(keepingCapacity: true)
+                if verbose { state.counts.removeAll(keepingCapacity: true) }
                 state.iteration &+= 1; state.iterationStart = CACurrentMediaTime()
-                return (elapsed, snapshot)
+                return (stalled ? elapsed : 0, snapshot, finished)
+            }
+            guard elapsed > 0 else { return }
+            let ms = Int(elapsed * 1000)
+            Diagnostics.noteHang(milliseconds: ms)
+            if let finished {
+                Diagnostics.queue.async {
+                    Diagnostics.hangReport(milliseconds: ms, stack: finished.stack, id: finished.id,
+                                           createdAt: finished.createdAt, test: finished.test)
+                    Uploader.shared.schedule(after: 5)
+                }
             }
             if !snapshot.isEmpty { report(elapsed: elapsed, counts: snapshot) }
         }
@@ -55,11 +98,19 @@ enum HangProbe {
         thread.start()
     }
 
-    /// Main thread only. Not installed: a single branch; else one lock and a dictionary increment.
+    /// Main thread only. Not verbose: a single branch; else one lock and a dictionary increment.
     static func hit(_ tag: StaticString) {
         guard installed else { return }
         let key = "\(tag)"
         state.withLock { $0.counts[key, default: 0] += 1 }
+    }
+
+    /// The hidden test menu: blocks main for `seconds`, marked as a test.
+    @MainActor static func testHang(seconds: Double) {
+        Diagnostics.note("test.hang", ["ms": Int(seconds * 1000)])
+        state.withLock { $0.testing = true }
+        Thread.sleep(forTimeInterval: seconds)
+        state.withLock { $0.testing = false }
     }
 
     private static func report(elapsed: Double, counts: [String: Int]) {
@@ -95,21 +146,76 @@ enum HangProbe {
     }
 
     private static func watchdog() {
-        var sampledIteration: UInt64 = .max
+        var watchedIteration: UInt64 = .max
         var samples = 0
+        var reported = false
+        let reportAfter = Double(DiagnosticThresholds.hangReportMilliseconds) / 1000
         while true {
             usleep(100_000)
-            let (current, elapsed, live, sleeping) = state.withLock { state in
-                (state.iteration, CACurrentMediaTime() - state.iterationStart, state.counts, state.idle)
+            let (current, elapsed, live, sleeping, testing) = state.withLock { state in
+                (state.iteration, CACurrentMediaTime() - state.iterationStart, state.counts, state.idle, state.testing)
             }
-            if current != sampledIteration { samples = 0 }
-            // Sample at ~0.7 s, ~1.5 s, ~3 s and ~10 s of one stalled iteration.
-            let due = samples == 0 ? 0.7 : samples == 1 ? 1.5 : samples == 2 ? 3.0 : samples == 3 ? 10.0 : .infinity
-            guard !sleeping, elapsed >= due else { continue }
-            sampledIteration = current; samples += 1
-            let count = sampleMainThread()
-            symbolizeAndLog(count: count, elapsed: elapsed, sample: samples, counts: live)
+            if current != watchedIteration { watchedIteration = current; samples = 0; reported = false }
+            guard !sleeping else { continue }
+            if installed {
+                // Sample at ~0.7 s, ~1.5 s, ~3 s and ~10 s of one stalled iteration.
+                let due = samples == 0 ? 0.7 : samples == 1 ? 1.5 : samples == 2 ? 3.0 : samples == 3 ? 10.0 : .infinity
+                if elapsed >= due {
+                    samples += 1
+                    let count = sampleMainThread()
+                    symbolizeAndLog(count: count, elapsed: elapsed, sample: samples, counts: live)
+                }
+            }
+            if !reported, elapsed >= reportAfter {
+                reported = true
+                let stack = diagnosticFrames(count: sampleMainThread())
+                let pending = PendingHang(iteration: current, id: UUID().uuidString,
+                                          createdAt: DiagnosticReport.milliseconds(Date()), stack: stack, test: testing)
+                let stillStalled = state.withLock { state -> Bool in
+                    guard state.iteration == current else { return false }
+                    state.pending = pending; return true
+                }
+                // Written now: if the system ends the app during the stall, the report survives.
+                if stillStalled {
+                    Diagnostics.hangReport(milliseconds: Int(elapsed * 1000), stack: stack, id: pending.id,
+                                           createdAt: pending.createdAt, test: testing)
+                }
+            }
         }
+    }
+
+    /// Image name, offset into the image and its Mach-O UUID per address.
+    private static func diagnosticFrames(count: Int) -> [DiagnosticFrame] {
+        (0..<count).map { index in
+            let address = frames[index]
+            var info = Dl_info()
+            guard dladdr(UnsafeRawPointer(bitPattern: address), &info) != 0, let base = info.dli_fbase else {
+                return DiagnosticFrame(image: "?", offset: UInt64(address))
+            }
+            let image = info.dli_fname.map { String(cString: $0) }.map { ($0 as NSString).lastPathComponent } ?? "?"
+            return DiagnosticFrame(image: image, offset: UInt64(address - UInt(bitPattern: base)), uuid: imageUUID(base))
+        }
+    }
+
+    nonisolated(unsafe) private static var uuids: [UInt: String] = [:]
+    /// LC_UUID of a loaded image; watchdog thread only.
+    private static func imageUUID(_ base: UnsafeMutableRawPointer) -> String? {
+        let key = UInt(bitPattern: base)
+        if let known = uuids[key] { return known }
+        let header = base.assumingMemoryBound(to: mach_header_64.self).pointee
+        guard header.magic == MH_MAGIC_64 else { return nil }
+        var command = base.advanced(by: MemoryLayout<mach_header_64>.size)
+        for _ in 0..<header.ncmds {
+            let load = command.assumingMemoryBound(to: load_command.self).pointee
+            if load.cmd == UInt32(LC_UUID) {
+                let uuid = command.assumingMemoryBound(to: uuid_command.self).pointee.uuid
+                let text = UUID(uuid: uuid).uuidString
+                uuids[key] = text
+                return text
+            }
+            command = command.advanced(by: Int(load.cmdsize))
+        }
+        return nil
     }
 
     /// Suspends main only while copying raw return addresses into a
