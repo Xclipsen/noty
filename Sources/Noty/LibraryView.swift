@@ -20,6 +20,10 @@ struct LibraryView: View {
     @ObservedObject var model: LibraryModel
     @ObservedObject var workspaces: WorkspaceAppModel
     @EnvironmentObject private var externalBackup: ExternalBackupModel
+    /// Restore requests (BACKUP-RESTORE-PLAN Phase 2/4): an editor's timeline, an opened library file.
+    @ObservedObject private var restoreRouter = RestoreRouter.shared
+    /// „Öffnen“ in the timeline: opened after its sheet has closed.
+    @State private var openAfterTimeline: UUID?
     @EnvironmentObject private var toolbox: ToolbarSettingsModel
     @AppStorage(AppSettingsKey.homeLayout) private var layout = LibraryLayout.grid
     @AppStorage(AppSettingsKey.librarySort) private var sort = LibrarySort.manual
@@ -211,9 +215,34 @@ struct LibraryView: View {
             }
         }
         .sheet(isPresented: $showingAreas, onDismiss: switchAreaIfRequested) {
-            WorkspacePickerView(model: workspaces) { area in
+            WorkspacePickerView(model: workspaces, library: model) { area in
                 selectedArea = area; switchingArea = true; showingAreas = false
             }
+        }
+        // „Älteren Stand wiederherstellen …“ from the editor: shown once the notebook is closed.
+        .sheet(item: Binding(get: { model.opened == nil ? restoreRouter.timeline : nil },
+                             set: { restoreRouter.timeline = $0 }), onDismiss: {
+            if let id = openAfterTimeline, let item = model.snapshot.activeNotebook(id) {
+                openAfterTimeline = nil
+                Task { await model.open(item) }
+            }
+        }) { request in
+            NavigationStack {
+                NotebookTimelineView(notebookID: request.id, library: model, externalBackup: externalBackup) { id in
+                    openAfterTimeline = id; restoreRouter.timeline = nil
+                }
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { restoreRouter.timeline = nil } } }
+            }
+            .keyboardSheet()
+        }
+        // A library backup file opened from Files.
+        .sheet(item: Binding(get: { model.opened == nil ? restoreRouter.archive : nil },
+                             set: { restoreRouter.archive = $0 })) { request in
+            BackupContentsView(source: .file(request.url, title: request.title), library: model, selectAll: request.selectAll,
+                               openAsArea: DeveloperAccess.visible ? { url in await workspaces.restoreLibrary(url) } : nil)
+        }
+        .onChange(of: model.opened == nil && !presenting && restoreRouter.timeline == nil && restoreRouter.archive == nil, initial: true) { _, free in
+            restoreRouter.libraryFree = free
         }
         .sheet(isPresented: $showingCopies, onDismiss: {
             if let copy = selectedCopy, let item = model.snapshot.items.first(where: { $0.id == copy.id }) {

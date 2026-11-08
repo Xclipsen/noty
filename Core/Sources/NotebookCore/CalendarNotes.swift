@@ -288,3 +288,27 @@ public actor CalendarNoteCreation {
         }
     }
 }
+
+extension CalendarState {
+    /// A notebook was replaced by an earlier state of it (BACKUP-RESTORE-PLAN:
+    /// the restored state gets a new identity but keeps its page IDs; today's
+    /// state moves to the trash). Event notes and the Lernfeld follow the
+    /// restored notebook. False when nothing referred to `old`.
+    @discardableResult
+    public mutating func notebookReplaced(_ old: UUID, by new: UUID) -> Bool {
+        guard old != new else { return false }
+        var changed = false
+        for index in noteLinks.indices where noteLinks[index].documentID == old {
+            noteLinks[index].documentID = new; changed = true
+        }
+        for index in studyFields.indices where studyFields[index].notebookID == old {
+            studyFields[index].notebookID = new; changed = true
+        }
+        return changed
+    }
+
+    /// Notebooks the calendar refers to (event notes, Lernfelder).
+    public var referencedNotebooks: Set<UUID> {
+        Set(noteLinks.map(\.documentID)).union(studyFields.compactMap(\.notebookID))
+    }
+}

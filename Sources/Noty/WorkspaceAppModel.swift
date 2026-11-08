@@ -144,6 +144,24 @@ final class WorkspaceAppModel: ObservableObject {
         if !areas.contains(where: { $0.id == area.id }) { areaRemoved(namespace, scope: scope) }
         return removed
     }
+    /// BACKUP-RESTORE-PLAN Phase 4: a Bereich's notebooks as a checked library
+    /// backup file, to bring them into „Meine Bibliothek“ (contents view, all
+    /// selected). Loading the area's index may repair it like opening the area
+    /// would; nothing else is written there. Busy meanwhile, so no removal or
+    /// app sync runs on the area at the same time. The caller owns the file.
+    func archive(of area: TestWorkspace) async throws -> URL {
+        guard area.id != areaID else { throw BackupPostponed(reason: "Der Bereich ist gerade geöffnet") }
+        guard !busy else { throw BackupPostponed(reason: "Bereiche werden gerade geändert") }
+        busy = true; defer { busy = false }
+        let directory = try await store.directory(for: area.id)
+        let url = try BackupScratch.newFile("notylibrary")
+        do {
+            let plan = try await LibraryStore(root: directory).backupPlan(includeCalendar: false)
+            try await Task.detached(priority: .userInitiated) { _ = try LibraryArchive.write(plan, to: url) }.value
+        } catch { BackupScratch.remove(url); throw error }
+        return url
+    }
+
     func restoreLibrary(_ url: URL) async -> Bool {
         do {
             let prepared = try await prepareLibraryRestore(url)
@@ -245,11 +263,12 @@ struct WorkspaceLibraryHost: View {
 
 struct WorkspacePickerView: View {
     @ObservedObject var model: WorkspaceAppModel
+    var library: LibraryModel?
     let onSelect: (TestWorkspace?) -> Void
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
-            WorkspacePickerList(model: model, onSelect: onSelect)
+            WorkspacePickerList(model: model, onSelect: onSelect, library: library)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Fertig") { dismiss() } } }
         }
         .keyboardSheet()
@@ -266,8 +285,24 @@ struct WorkspacePickerView: View {
 struct WorkspacePickerList: View {
     @ObservedObject var model: WorkspaceAppModel
     let onSelect: ((TestWorkspace?) -> Void)?
+    /// „Meine Bibliothek“ for taking over an area's notebooks (nil: not offered).
+    var library: LibraryModel?
     @State private var removal: WorkspaceRemovalSummary?
+    @State private var takeover: RestoreRouter.Archive?
     private func removable(_ area: TestWorkspace) -> Bool { onSelect != nil && model.areaID != area.id }
+    private var canTakeOver: Bool { library != nil && model.areaID == nil }
+    /// The area's notebooks as a backup file, shown with everything selected:
+    /// „Als Kopie zurückholen“ brings them into this library; the area stays.
+    private func takeOver(_ area: TestWorkspace) {
+        Task {
+            do {
+                let url = try await model.archive(of: area)
+                takeover = RestoreRouter.Archive(url: url, title: "Bereich „\(area.title)“", selectAll: true)
+            } catch {
+                TopAlert.show("Übernehmen nicht möglich", "Die Hefte des Bereichs konnten nicht gelesen werden (\(error.localizedDescription)). Es wurde nichts verändert.")
+            }
+        }
+    }
     var body: some View {
         List {
             Section {
@@ -302,8 +337,15 @@ struct WorkspacePickerList: View {
                         if removable(area) {
                             Button("Entfernen …", systemImage: "trash") { requestRemoval(area) }.tint(.red)
                         }
+                        if canTakeOver {
+                            Button("Übernehmen …", systemImage: "tray.and.arrow.down") { takeOver(area) }.tint(.accentColor)
+                        }
                     }
                     .contextMenu {
+                        // Phase 4: the notebooks of a Bereich come into „Meine Bibliothek“ (only from there).
+                        if canTakeOver {
+                            Button("Hefte in Meine Bibliothek übernehmen …", systemImage: "tray.and.arrow.down") { takeOver(area) }
+                        }
                         if onSelect != nil {
                             Button("Bereich entfernen …", systemImage: "trash", role: .destructive) { requestRemoval(area) }
                                 .disabled(!removable(area))
@@ -334,6 +376,12 @@ struct WorkspacePickerList: View {
             }
             Button("Abbrechen", role: .cancel) { removal = nil }
         } message: { summary in Text(Self.removalMessage(summary)) }
+        // Shown here (above Settings or the area sheet), not by the library.
+        .sheet(item: $takeover) { request in
+            if let library {
+                BackupContentsView(source: .file(request.url, title: request.title), library: library, selectAll: request.selectAll)
+            }
+        }
     }
 
     private func requestRemoval(_ area: TestWorkspace) {

@@ -74,7 +74,29 @@ enum IncomingBackup {
             return
         }
         defer { BackupScratch.remove(copy); removeFromInbox(url) }
-        if kind == "notylibrary" { await offerLibrary(copy, progress: progress, workspaces: workspaces) }
+        if kind == "notylibrary" {
+            // BACKUP-RESTORE-PLAN Phase 4: the contents, brought back into this library;
+            // a new Bereich only in the test apps, on request.
+            await TopAlert.dismiss(progress)
+            if DeveloperAccess.visible {
+                guard let choice = await TopAlert.choose("Bibliotheksbackup öffnen", "Inhalt ansehen und Hefte in diese Bibliothek zurückholen, oder die ganze Datei als eigenen Bereich öffnen?",
+                                                         actions: [("Inhalt ansehen", .default, true), ("Als neuen Bereich", .default, false)]) else { return }
+                if !choice { await offerLibrary(copy, progress: nil, workspaces: workspaces); return }
+            }
+            // The view takes over the checked copy (the deferred removal then finds nothing).
+            guard let own = try? BackupScratch.newFile("notylibrary"), (try? FileManager.default.moveItem(at: copy, to: own)) != nil else {
+                TopAlert.show("Kein Platz", "Die Datei konnte nicht zwischengespeichert werden. Es wurde nichts verändert.")
+                return
+            }
+            guard RestoreRouter.shared.show(RestoreRouter.Archive(url: own, title: "Bibliotheksbackup")) else {
+                TopAlert.show("Schon ein Bibliotheksbackup geöffnet", "Bitte zuerst das geöffnete Bibliotheksbackup schließen, dann diese Datei erneut öffnen. Es wurde nichts verändert.")
+                return
+            }
+            if !RestoreRouter.shared.libraryFree {
+                TopAlert.show("Bibliotheksbackup", "Der Inhalt erscheint, sobald das geöffnete Heft, die Einstellungen oder das offene Fenster geschlossen sind.")
+            }
+            return
+        }
         else { await offerNotebook(copy, progress: progress, library: library) }
     }
 

@@ -356,7 +356,7 @@ struct EditorWorkspaceView: View {
 
     private func pane(_ model: EditorModel, index: Int) -> some View {
         let panelModel = lawPanel
-        return ContentView(model: model, isRestoredCopy: false, isLibraryDocument: true, initialSearchBounds: index == 0 ? workspace.primaryDocument.searchBounds : nil,
+        return ContentView(model: model, isRestoredCopy: false, isLibraryDocument: true, offersRestoreTimeline: true, initialSearchBounds: index == 0 ? workspace.primaryDocument.searchBounds : nil,
             initialFlowRange: index == 0 ? workspace.primaryDocument.searchFlowRange : nil,
             isPaneActive: { workspace.activePane == index && !workspace.closing }, isPaneSelected: { workspace.activePane == index }, onActivatePane: { workspace.activePane = index },
             onCloseWorkspace: { Task {

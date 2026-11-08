@@ -103,7 +103,7 @@ extension EnvironmentValues {
 
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
-    case general, appearance, view, text, tools, paper, calendar, laws, account, backup, trash, about, privacy, developer
+    case general, appearance, view, text, tools, paper, calendar, laws, account, backup, restore, trash, about, privacy, developer
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -116,7 +116,8 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .calendar: "Kalender"
         case .laws: "Gesetzessammlung"
         case .account: "noty-Konto"
-        case .backup: "Backup & Wiederherstellen"
+        case .backup: "Backup"
+        case .restore: "Wiederherstellen"
         case .trash: "Papierkorb"
         case .about: "Über noty"
         case .privacy: "Datenschutz"
@@ -135,6 +136,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .laws: "books.vertical.fill"
         case .account: "person.crop.circle.fill"
         case .backup: "externaldrive.fill.badge.icloud"
+        case .restore: "clock.arrow.circlepath"
         case .trash: "trash.fill"
         case .about: "info.circle.fill"
         case .privacy: "hand.raised.fill"
@@ -154,6 +156,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .laws: Color(red: 0.86, green: 0.30, blue: 0.27)
         case .account: Color(red: 0.36, green: 0.55, blue: 0.95)
         case .backup: Color(red: 0.20, green: 0.70, blue: 0.40)
+        case .restore: Color(red: 0.12, green: 0.58, blue: 0.70)
         case .trash: Color(white: 0.48)
         case .about: Color(red: 0.45, green: 0.50, blue: 0.62)
         case .privacy: Color(red: 0.28, green: 0.45, blue: 0.86)
@@ -166,7 +169,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         [Group(id: 0, title: nil, pages: [.general, .appearance]),
          Group(id: 1, title: "Schreiben", pages: [.view, .text, .tools, .paper]),
          Group(id: 2, title: "Funktionen", pages: [.calendar, .laws, .account]),
-         Group(id: 3, title: "Daten", pages: [.backup, .trash]),
+         Group(id: 3, title: "Daten", pages: [.backup, .restore, .trash]),
          Group(id: 4, title: nil, pages: [.about, .privacy] + (developer ? [.developer] : []))]
     }
 }
@@ -413,6 +416,7 @@ struct SettingsView: View {
         case .account: NotyAccountSettingsPage()
         case .backup: BackupSettingsPage(library: library, toolbox: toolbox, externalBackup: externalBackup,
                                          workspaces: workspaces, onSelectArea: onSelectArea)
+        case .restore: RestoreSettingsPage(library: library, externalBackup: externalBackup, workspaces: workspaces)
         case .trash: TrashSettingsPage(library: library, workspaces: workspaces)
         case .about: AboutSettingsPage(workspaces: workspaces)
         case .privacy: PrivacySettingsPage()

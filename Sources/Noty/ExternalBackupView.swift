@@ -54,13 +54,13 @@ struct ExternalBackupForm: View {
                         LabeledContent("Nächster automatischer Versuch", value: NotyText.statusDate(next))
                     }
                 }
-                Stepper("\(model.policy.keep) automatische Backups behalten", value: Binding(get: { model.policy.keep }, set: { model.setRetention($0) }), in: 3...30)
+                Stepper("Die neuesten \(model.policy.keep) Backups behalten", value: Binding(get: { model.policy.keep }, set: { model.setRetention($0) }), in: 3...30)
                 Button("Automatisches Backup ausschalten …", role: .destructive) { confirmingDisable = true }
                     .disabled(model.policy.target == .disabled)
             } header: {
                 Text(workspaces.areaID == nil ? "Aktives Ziel" : "Aktives Ziel · Bereich \(NotyText.quoted(workspaces.title))").lineLimit(2).truncationMode(.middle)
             } footer: {
-                Text("Einmal am Tag, solange noty benutzt wird. Nach Fehlern folgen weitere Versuche nach 15 Minuten, 1, 4 und 12 Stunden.")
+                Text("Einmal am Tag, solange noty benutzt wird. Nach Fehlern folgen weitere Versuche nach 15 Minuten, 1, 4 und 12 Stunden. Außer den neuesten bleibt gestaffelt je ein Backup der letzten 7 Tage, 4 Wochen und 6 Monate, damit sich auch ein vor Wochen gelöschtes Heft zurückholen lässt.")
             }
             Section("Backup-Ordner (Dateien, iCloud Drive)") {
                 Button(model.policy.target == .folder ? "Anderen Backup-Ordner wählen …" : "Backup-Ordner wählen …") { folderPicker = true }
