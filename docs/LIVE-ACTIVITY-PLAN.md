@@ -53,11 +53,13 @@ Reihenfolge: 0 → 1 → 2; 3 unabhängig nach 0; 4 nur auf ausdrücklichen Wuns
 - Workarounds hängen an xtool-Versionen (bei Updates von xtool erneut prüfen).
 - WebUntis-Status außer REGULAR sind weiterhin real unbestätigt.
 
-## Offene Entscheidungen des Nutzers
+## Entscheidungen des Nutzers (08.11.2026)
 
-1. Inhalt: nur Jetzt/Nächstes oder auch Tagesfortschritt, Hausaufgaben, Pausen/Freistunden?
-2. Start: automatisch an jedem Schultag (z. B. 30 Min. vor der 1. Stunde) oder nur per Schalter/Hand?
-3. Ende: direkt nach der letzten Stunde oder noch eine Weile stehen lassen?
-4. Änderung während des Tages: Bildschirm wecken (Alert) oder still aktualisieren?
-5. Abends schon „Morgen“-Vorschau?
-6. Zusätzlich ein normales Widget (Schritt 3)?
+- **Inhalt:** Jetzt + Danach (Fach, Raum, Countdown), Tagesfortschritt („Stunde 3/6“), in Pausen/Freistunden „Pause · noch 12 Min.“ bzw. „Freistunde“. **Keine** Hausaufgabenzeile.
+- **Start:** automatisch an jedem Schultag 30 Min. vor der ersten Stunde (nur an Tagen mit Unterricht).
+- **Ende:** direkt nach der letzten Stunde.
+- **Änderung tagsüber:** Kachel-Update mit Alert (weckt den Bildschirm); Ruhezeiten 21–6 gelten weiter.
+- **Zusätzlich ein normales Widget** „Heute/Als Nächstes“ (Schritt 3) wird gewünscht.
+- Abends-Vorschau „Morgen“ und Buttons: nicht gewählt.
+
+Bauauftrag: noch nicht erteilt (Stand 08.11.2026).
