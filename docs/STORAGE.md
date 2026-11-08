@@ -1,6 +1,17 @@
 # Lokaler Revisionsspeicher – Format 1
 
 
+## Ergänzung 06.11.2026 · Kalenderpaket Format 4 (Stufe C)
+
+Nur `feat/kalender`, Test-App „noty calendar“ ab Build 127 (veröffentlicht laut Commit; Installation von Build 139 durch den Nutzer bestätigt, Kalenderdaten am iPad ungeprüft). **Aktuelles Kalenderformat ist 4** (`CalendarState.currentFormat` in `Core/Sources/NotebookCore/CalendarData.swift`); die Abschnitte zu Format 1–3 unten gelten weiter für Aufbau, Commit und Migration. Stand je Funktion: [CALENDAR-PLAN](CALENDAR-PLAN.md#8-datenformat-speicherpfade-und-feste-schlüssel), Nachweise: [CALENDAR-LOG](CALENDAR-LOG.md#build-127--ui-überarbeitung-stufe-c-hausaufgaben-ferien-nrw-06112026).
+
+- **CalendarState Format 4** zusätzlich: `settings.systemCalendars {enabled, hiddenCalendars[], defaultTarget?}` (Apple Kalender/Outlook über EventKit, höchstens 500 ausgeblendete Kalender; nach einem Restore `enabled = false`), Notizziel `{"kind":"system","system":{externalID?, itemID, calendarID, occurrence?, occurrenceLocal?}}` (ein Termin bzw. eine Durchführung eines Systemkalenders; `occurrenceLocal` „YYYY-MM-DD“ bzw. „YYYY-MM-DDTHH:MM“ für ganztägige und „floating“ Serien, nie zusammen mit `occurrence`) und `homeworkDone[] {source, homeworkID, doneAt}` (lokal als erledigt markierte WebUntis-Hausaufgaben, an die Kontokennung gebunden, höchstens 20 000; wird nie an WebUntis gesendet). Systemkalender-Termine selbst werden **nicht** im Paket gespeichert.
+- **Migration 1/2/3 → 4** wie bisher: Lesen schreibt nichts, vor dem ersten Commit im Format 4 die exakten Altbytes nach `Migration/format-<n>-<Datei>`; ein Format 3 mit Format-4-Feldern gilt als ungültig. **Format ≥ 5 sperrt** (der Satz „Format ≥ 4 sperrt“ im Abschnitt Format 3 unten ist damit überholt). Ältere Builds (bis Build 123) sperren Format 4.
+- **Offline-Stundenplan** bleibt Cacheformat 1 mit optionalem Schlüssel `homework` (tageweise ersetzt wie Stunden; ältere Builds verwerfen ihn beim nächsten Schreiben, der Cache ist ersetzbar).
+- **Bibliotheksbackup** bleibt Archivformat 3; der Datensatz `calendar` trägt Kalenderformat 3 oder 4 (ältere Builds lehnen 4 ab). [LIBRARY-BACKUP](LIBRARY-BACKUP.md) nennt dort noch nur Format 3. Swift-Validierung, `scripts/calendar_format.py`, `verify_library_backup.py` und Host-Roundtrip (`CalendarBackupCheck.swift`, `check_calendar_backup.py`) kennen Format 4.
+- **Außerhalb des Pakets** (abgeleitet, nicht im Backup): Mitteilungsverlauf `Library/Application Support/CalendarNotifications/<Kanal>.<Bereich>.json` (ab Build 136) und die Widget-Datei `NotyWidgets/<Kanal>/schoolday.json` in der App Group (ab Build 138); beide ändern das Kalenderformat nicht.
+
+
 ## Ergänzung 04.11.2026 · Kalenderpaket Format 3 (B3)
 
 Nur `feat/kalender`, Test-App „noty calendar“ Build 103; implementiert und gebaut, **am iPad ungeprüft**. Paketaufbau und Commitregeln unverändert (B1/B2 unten); neu ist das Inhaltsformat 3.

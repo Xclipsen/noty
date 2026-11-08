@@ -13,6 +13,7 @@ Motion-Durchsicht (Tokens in `NotyMotion.swift`). Grundregel unverändert: nur v
 - **Bewegung reduzieren** heißt überblenden, nicht nichts: Seitenleiste, Werkzeugoptionen, Toast, Gesetzsuche und Gesetzesfenster (öffnen/parken/schließen) blenden 0,15 s (`NotyMotion.fade` an der Einblendung selbst) ohne Verschiebung; das Layout (Heftbreite, Andocken) wechselt sofort.
 - **Haptik:** Begradigen nach Halten im Gesetz-PDF tickt am Pencil Pro wie im Heft (`UICanvasFeedbackGenerator.pathCompleted`).
 - Bewusst beibehalten: Hover-Lift der Werkzeugsymbole, Ausweichen der Seite vor den Optionen, elastisches Zurückfedern, laufende Auswahlkontur, Ebenenpfeil, sofortige Seitensprünge, Schreibmaschinen-Gleiten, Squeeze-Fächer.
+- **Kalender** (nur `feat/kalender`, noty calendar): folgt seit dem Feinschliff vom 08.11.2026 diesen Regeln (`CalendarMotion` auf den `NotyMotion`-Tokens: Tastatur ohne Bewegung, Taps ohne Überschwingen, Feder nur nach Gesten); Einzelheiten in [CALENDAR-PLAN](CALENDAR-PLAN.md#bewegung-und-animationen-07112026-feinschliff-08112026). Implementiert und gebaut, nicht installiert, am iPad ungeprüft.
 - Implementiert und mit `xtool dev build` gebaut, nicht installiert, am iPad ungeprüft.
 
 ## Objektbedienung vereinheitlicht – Build 64, 22.10.2026
