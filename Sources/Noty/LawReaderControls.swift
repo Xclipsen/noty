@@ -218,13 +218,13 @@ extension LawReaderView {
         switch status.state {
         case .guest:
             cause = "Ohne Konto bleiben Lesezeichen und Markierungen auf diesem iPad."
-            step = "Zum Abgleichen unter Einstellungen › Konto anmelden."
+            step = "Zum Abgleichen unter Einstellungen › noty-Konto anmelden."
         case .paused:
             cause = "Lesezeichen und Markierungen bleiben so lange auf diesem iPad."
             step = "Einschalten unter Einstellungen › Gesetzessammlung."
         case .expired:
             cause = "Änderungen bleiben auf diesem iPad und werden später gesendet."
-            step = "Unter Einstellungen › Konto erneut anmelden."
+            step = "Unter Einstellungen › noty-Konto erneut anmelden."
         case .failed:
             cause = "Änderungen bleiben auf diesem iPad und werden später gesendet."
             step = nil; action = ("Erneut abgleichen", "arrow.clockwise", sync)

@@ -475,7 +475,7 @@ private struct KeyOptionModifier: ViewModifier {
             content
                 .overlay {
                     if scope.focused == id {
-                        RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 2).padding(-4).allowsHitTesting(false)
+                        RoundedRectangle(cornerRadius: 8).strokeBorder(.tint, lineWidth: 2).padding(-4).allowsHitTesting(false)
                     }
                 }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { scope.place(id, $0) }

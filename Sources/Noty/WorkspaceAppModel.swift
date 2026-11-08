@@ -175,11 +175,13 @@ struct WorkspaceLibraryHost: View {
     }
     var body: some View {
         LibraryView(model: library, workspaces: workspaces, calendar: calendar).environmentObject(toolbox).environmentObject(externalBackup)
+            .task { await workspaces.refresh() }
             .task {
                 // `scenePhase` captured by this long-running closure would stay at its
                 // first value; the model holds the current phase instead.
                 while !Task.isCancelled {
                     if externalBackup.sceneActive { await externalBackup.attempt(library: library, toolbox: toolbox) }
+                    if externalBackup.sceneActive { await NotebookVaultModel.shared.attempt(library: library, workspaces: workspaces) }
                     do { try await Task.sleep(for: .seconds(60)) } catch { break }
                 }
             }
@@ -198,6 +200,8 @@ struct WorkspaceLibraryHost: View {
                 // Beim Wechsel in eine andere noty-App den Abzug ablegen.
                 if phase == .background {
                     Task { await AppSyncModel.shared.publish(library: library, toolbox: toolbox, workspaces: workspaces) }
+                    // iCloud-Ablage: every changed notebook now; iOS grants a short time for it.
+                    Task { await NotebookVaultModel.shared.attemptWhileLeaving(library: library, workspaces: workspaces) }
                 }
             }
             .task {
@@ -274,7 +278,7 @@ struct WorkspacePickerList: View {
                             }
                             Spacer()
                             if model.areaID == area.id {
-                                Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Aktueller Bereich")
+                                Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityLabel("Aktueller Bereich")
                             }
                         }
                     }
@@ -295,8 +299,10 @@ struct WorkspacePickerList: View {
                     }
                 }
                 if model.areas.isEmpty { Text("Noch keine getrennten Bereiche.").foregroundStyle(.secondary) }
-                Button("Neuen Testbereich anlegen", systemImage: "plus") { Task { await model.createTest() } }
-                    .keyOption(.action { Task { await model.createTest() } })
+                if DeveloperAccess.visible {
+                    Button("Neuen Testbereich anlegen", systemImage: "plus") { Task { await model.createTest() } }
+                        .keyOption(.action { Task { await model.createTest() } })
+                }
                 if model.busy { ProgressView() }
             } header: { Text("Getrennte Bereiche") } footer: {
                 if onSelect != nil && !model.areas.isEmpty {
@@ -339,7 +345,7 @@ struct WorkspacePickerList: View {
             HStack {
                 Label(title, systemImage: icon)
                 Spacer()
-                if current { Image(systemName: "checkmark").foregroundStyle(Color.accentColor).accessibilityLabel("Aktueller Bereich") }
+                if current { Image(systemName: "checkmark").foregroundStyle(.tint).accessibilityLabel("Aktueller Bereich") }
             }
         }.disabled(onSelect == nil)
     }

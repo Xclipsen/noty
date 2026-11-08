@@ -266,7 +266,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $customizingTools) { ToolbarCustomizationView(settings: toolbox) }
-        .sheet(isPresented: $showingSettings) { editorSettings?.make() }
+        .fullScreenCover(isPresented: $showingSettings) { editorSettings?.make() }
         .sheet(isPresented: $editingDefaults) {
             if isTextDocument {
                 TextDocumentPaperView(current: model.notebook.pageDefaults) { paper, color in
@@ -1396,7 +1396,7 @@ private struct PageJumpKeyStyle: ButtonStyle {
         configuration.label
             .foregroundStyle(prominent ? Color.white : Color.primary)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(prominent ? Color.accentColor : Color.primary.opacity(configuration.isPressed ? 0.22 : 0.1)))
+                .fill(prominent ? AnyShapeStyle(.tint) : AnyShapeStyle(Color.primary.opacity(configuration.isPressed ? 0.22 : 0.1))))
             .opacity(isEnabled ? (configuration.isPressed && prominent ? 0.8 : 1) : 0.35)
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }

@@ -138,6 +138,18 @@ enum BackupScratch {
               folder.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path else { return }
         try? FileManager.default.removeItem(at: folder)
     }
+    /// An empty UUID folder for intermediate files (notebooks taken out of a
+    /// library backup); removed with `removeFolder`, leftovers by `removeStale`.
+    nonisolated static func newFolder() throws -> URL {
+        let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+    nonisolated static func removeFolder(_ folder: URL) {
+        guard UUID(uuidString: folder.lastPathComponent) != nil,
+              folder.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path else { return }
+        try? FileManager.default.removeItem(at: folder)
+    }
     /// Leftovers of interrupted runs, e.g. after the app was terminated mid-backup.
     nonisolated static func removeStale(olderThan age: TimeInterval = 24 * 3600) {
         let fm = FileManager.default

@@ -129,11 +129,13 @@ public enum NotebookImport {
     /// belongs to `repository` (`NotebookRepository(directory: library.root)`).
     /// `replacing`: see `LibraryStore.adoptImported`; its title does not count
     /// as taken because it moves to the trash.
+    /// `title`: the title to use instead of the file's (e.g. „Titel (Stand …)“
+    /// for a restored state); made unique the same way.
     public static func commit(_ prepared: PreparedRestore, repository: NotebookRepository, library: LibraryStore,
-                              parentID: UUID?, replacing: UUID?) async throws -> Result {
+                              parentID: UUID?, replacing: UUID?, title wanted: String? = nil) async throws -> Result {
         let current = try await library.load().snapshot
         if let replacing, current.activeNotebook(replacing) == nil { throw LibraryError.unavailable }
-        let title = NotebookTitles.unique(prepared.document.title, taken: current.activeNotebookTitles(excluding: replacing))
+        let title = NotebookTitles.unique(wanted ?? prepared.document.title, taken: current.activeNotebookTitles(excluding: replacing))
         let documents = library.root.appendingPathComponent("Library/Documents", isDirectory: true)
         let committed = try await repository.commitRestore(prepared, title: title, into: documents)
         // The file's document kind decides the entry (notebook or text document).
