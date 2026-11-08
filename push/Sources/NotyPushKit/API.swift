@@ -311,6 +311,9 @@ public final class APIRouter: Sendable {
         guard let dot = value.firstIndex(of: ".") else { return .unauthorized }
         let id = String(value[..<dot]), secret = String(value[value.index(after: dot)...])
         guard DeviceStore.isValidID(id), (20...100).contains(secret.count) else { return .unauthorized }
+        // Deliberate (ReviewFixTests): over the limit even the right secret gets
+        // 429, never 401 – the app keeps its secret and retries later. Only
+        // someone who knows the (non-public) device id could cause that wait.
         if let wait = authFailures.wait(id, limit: Self.authFailuresPerHour, now: now()) { return .rateLimited(wait) }
         guard await service.authenticate(id: id, secret: secret) else {
             authFailures.record(id, limit: Self.authFailuresPerHour, now: now())
@@ -380,7 +383,11 @@ public final class APIRouter: Sendable {
         do { return try WebUntisSetup(server: body.server, school: body.school, user: body.user, key: body.key, schoolNumber: body.schoolNumber) }
         catch { throw Invalid.field("setup") }
     }
-    static func settings(_ value: DeviceSettings?) -> DeviceSettings { value ?? DeviceSettings() }
+    static func settings(_ value: DeviceSettings?) throws -> DeviceSettings {
+        guard let value else { return DeviceSettings() }
+        guard value.isValid else { throw Invalid.field("settings") }
+        return value
+    }
 
     func decode<T: Decodable>(_ type: T.Type, _ request: APIRequest) -> T? {
         guard request.headers["content-type"]?.lowercased().hasPrefix("application/json") == true else { return nil }
@@ -409,7 +416,7 @@ public final class APIRouter: Sendable {
         do {
             input = RegistrationInput(deviceToken: try Self.token(body.deviceToken), environment: try Self.environment(body.apnsEnvironment),
                                       bundleID: try bundle(body.bundleID), connectionID: try Self.connection(body.connectionID),
-                                      timeZone: try Self.zone(body.timeZone), settings: Self.settings(body.settings),
+                                      timeZone: try Self.zone(body.timeZone), settings: try Self.settings(body.settings),
                                       setup: try Self.setup(body.setup),
                                       connectionTimeZone: try Self.zone(body.connectionTimeZone, field: "connectionTimeZone"))
             if let raw = body.registrationID {
@@ -439,7 +446,10 @@ public final class APIRouter: Sendable {
                 }
                 input.setup = try Self.setup(value)
             }
-            input.settings = body.settings
+            if let settings = body.settings {
+                guard settings.isValid else { throw Invalid.field("settings") }
+                input.settings = settings
+            }
         } catch { return validationError(error) }
         do { return .json(200, ["status": try await service.update(id: id, input)]) }
         catch { return response(for: error) }
@@ -474,6 +484,10 @@ public final class APIRouter: Sendable {
             return response
         case ServiceError.registrationCancelled:
             return .error(410, "registration_cancelled", "Diese Anmeldung wurde inzwischen zurückgezogen.")
+        case ServiceError.busy:
+            var response = APIResponse.error(503, "busy", "Der Mitteilungsdienst prüft gerade andere Freigaben. Bitte gleich erneut versuchen.")
+            response.retryAfter = 30
+            return response
         case ServiceError.serverNotAllowed:
             let hosts = config.allowedUntisHostSuffixes.map { "<schule>." + $0 }.joined(separator: ", ")
             return .error(400, "invalid_server", "Der Mitteilungsdienst ruft nur WebUntis-Server der Form \(hosts) ab; diese Freigabe nennt einen anderen Server.")

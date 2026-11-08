@@ -36,7 +36,7 @@ Lesart (AGENTS.md): **implementiert** = Code vorhanden; **gebaut** = erster noty
 | Live Activity per Push (Schritt 2) | nein | – | – | – | – |
 | Bibliotheksbackup und Restore mit Kalender | ja | 103 (127 Kalenderformat 4) | ja (139) | ungeprüft (Host-Roundtrip unter Linux bestanden) | – |
 | Kalenderpaket (ein Schreiber, Revisionen, Formate 1–4, Migration) | ja | 101 (Format 2: 102, 3: 103, 4: 127) | ja (139) | ungeprüft | – |
-| Lernfelder: Materialpaket und -suche, Kalenderformat 5 (Lernfelder, Zuordnung, Themen), Stunde → Abschnitt im Lernfeld-Heft, Themenkarte ([LERNFELDER](LERNFELDER.md)) | ja | 144 | nein | ungeprüft | Auftrag 08.11.2026 |
+| Lernfelder: Materialpaket und -suche, Kalenderformat 5 (Lernfelder, Zuordnung, Themen), Stunde → Abschnitt im Lernfeld-Heft, Themenkarte ([LERNFELDER](LERNFELDER.md)) | ja | 144 (145: Prüfbefunde) | nein | ungeprüft | Auftrag 08.11.2026 |
 | Backend-Synchronisierung (Stufe D) | nein | – | – | – | – |
 | Durchgehendes Fachheft aus Stundennotizen | nein (bestätigt für später) | – | – | – | – |
 
@@ -498,6 +498,10 @@ Formatdetails: [STORAGE](STORAGE.md) (Kalenderpaket Format 1–4), [LERNFELDER](
 - ⌃⌘S (Kalenderleiste) kann mit einem System-Kürzel für die Seitenleiste kollidieren – ungeprüft ([KEYBOARD](KEYBOARD.md#kalender)).
 
 **Bekannte Grenzen (bewusst)**
+
+- Eine WebUntis-Antwort **ohne eine einzige Stunde** für einen Zeitraum, der vorher Stunden hatte, gilt seit Build 145 als die bekannte leere Antwort der Mobile-API, nicht als Streichung: Diese Tage behalten ihren Stand (Kachel, Erinnerungen) und werden beim nächsten Abruf erneut geholt. Eine Antwort mit Stunden an anderen Tagen, aber keiner an einem Tag, wird dagegen übernommen (Tag leer). Fällt ein ganzer Zeitraum wirklich aus, zeigt noty ihn erst, wenn WebUntis irgendeine Stunde im Zeitraum liefert.
+- Lernfeld-Block: Die Verknüpfung hängt an der ersten (nicht ausgefallenen) Stunde des Blocks; ersatzweise an einem anderen Mitglied. Vergibt WebUntis für genau diese Stunde eine neue Perioden-ID, erscheint der Abschnitt als „ungeklärt“-Eintrag (Notiz bleibt), und die Stunde bietet „Mitschrift beginnen“ erneut an.
+- Trackpad-Wischen entscheidet die Richtung am ersten Scroll-Ereignis (|x| > 1,5·|y|); ein diagonal begonnenes Wischen kann bis zum Abheben nicht greifen (Prüfbefund 08.11.2026, am Gerät ungeprüft).
 
 - Hintergrundabruf ist nicht garantiert (iPadOS entscheidet; nach Wegwischen in der Regel keiner); ohne Push kommen Änderungen dann erst beim nächsten Öffnen. Nur der geöffnete Bereich benachrichtigt; ein Gerät kann nur eine Verbindung per Push melden lassen.
 - Eine Zusatzstunde an einem bisher stundenfreien (oder leer abgerufenen) Tag wird nicht gemeldet.

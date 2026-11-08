@@ -176,7 +176,9 @@ public struct CalendarSchoolDay: Equatable, Sendable {
     /// never loaded (not „no lessons“).
     public static func lessons(snapshot: CalendarSourceSnapshot?, day: CivilDate) -> [SchoolDayLesson]? {
         guard let lessons = snapshot?.lessons(on: day) else { return nil }
-        return lessons.map(SchoolDayLesson.init(lesson:))
+        // Only lessons: a period without duration or over several days (WebUntis
+        // events) is no lesson of the school day.
+        return lessons.filter { $0.end > $0.start && $0.end.timeIntervalSince($0.start) <= 12 * 3600 }.map(SchoolDayLesson.init(lesson:))
     }
 
     public var dayStart: Int { taking[0].start }

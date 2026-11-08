@@ -120,9 +120,15 @@ public protocol PushSender: Sendable {
 public enum APNs {
     public static let maximumPayloadBytes = 4096
 
-    /// `apns-collapse-id` is limited to 64 bytes: longer ids are hashed.
+    /// `apns-collapse-id` is limited to 64 bytes and, as a header, kept to
+    /// `[A-Za-z0-9._-]` here (room names carry spaces and umlauts): anything
+    /// else is hashed.
     public static func collapseID(_ id: String) -> String {
-        if id.utf8.count <= 64 { return id }
+        let plain = id.utf8.count <= 64 && !id.isEmpty && id.unicodeScalars.allSatisfy {
+            ($0.value >= 48 && $0.value <= 57) || ($0.value >= 65 && $0.value <= 90) || ($0.value >= 97 && $0.value <= 122)
+                || $0 == "." || $0 == "_" || $0 == "-"
+        }
+        if plain { return id }
         return "h." + Crypto.SHA256.hash(data: Data(id.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
     }
 

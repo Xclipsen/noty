@@ -79,7 +79,7 @@ extension CalendarModel {
                 } else {
                     event.recurrence = nil
                 }
-                CalendarNoteLinks.retarget(&state.noteLinks, event: id, old: before, new: event)
+                CalendarNoteLinks.retarget(state: &state, event: id, old: before, new: event)
                 savedEntryID = CalendarEntry.localID(id, event.recurrence == nil ? nil : (draft.editing?.originalDate?.adding(days: shift) ?? CalendarSeries.firstDate(of: newTiming)))
             }
             event.modifiedAt = now
@@ -266,7 +266,7 @@ extension CalendarModel {
                     // Changed occurrences move the same way (days and wall clock).
                     event.timing = first
                     event.recurrence = CalendarSeries.moved(series, from: before.timing, to: first)
-                    CalendarNoteLinks.retarget(&state.noteLinks, event: id, old: before, new: event)
+                    CalendarNoteLinks.retarget(state: &state, event: id, old: before, new: event)
                 }
             } else {
                 event.timing = timing

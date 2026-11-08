@@ -244,8 +244,9 @@ public enum WebUntis {
         for (index, holiday) in (result.masterData.holidays ?? []).enumerated() {
             // WebUntis end dates are inclusive (assumption, to verify on the
             // device against the school calendar); stored exclusive.
+            // One odd row of the school's master data must not block the whole timetable: skipped.
             guard let start = CivilDate(holiday.startDate), let last = CivilDate(holiday.endDate), last >= start,
-                  start.days(to: last) <= 366 else { throw WebUntisError.invalidResponse("Ferien") }
+                  start.days(to: last) <= 366 else { continue }
             let name = holiday.longName?.nilIfBlank ?? holiday.name?.nilIfBlank ?? "Ferien"
             user.holidays.append(CalendarHoliday(id: holiday.id.map(String.init) ?? "index-\(index)", name: name,
                                                  start: start, end: last.adding(days: 1)))

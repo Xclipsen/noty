@@ -67,6 +67,11 @@ extension CalendarModel {
         await mutations.acquire(); mutations.release()
         if unsaved { await retrySave() }
         var parts: [String] = []
+        // Lernfelder: a notebook committed but not yet in the library or linked.
+        for (_, creation) in studyCreations where !creation.model.deferredCommit {
+            _ = await creation.model.flushBeforeClosing()
+            parts.append("Das Lernfeld-Heft „\(creation.title)“ ist angelegt, aber noch nicht in der Bibliothek oder mit der Stunde verknüpft. Es erscheint beim nächsten Start lose in der Bibliothek; die Stunde bekäme dann ein zweites Heft.")
+        }
         let titles = lingering.values.map { $0.notebook.title.isEmpty ? "Notiz" : "„\($0.notebook.title)“" }.sorted()
         if !titles.isEmpty {
             parts.append((titles.count == 1 ? "Die Kalendernotiz \(titles[0]) ist" : "Die Kalendernotizen \(titles.joined(separator: ", ")) sind")
@@ -82,9 +87,11 @@ extension CalendarModel {
     /// changes that exist only in memory are let go explicitly.
     func discardUnsavedForAreaSwitch() {
         for model in lingering.values { model.abandonUnsavedChanges() }
+        for creation in studyCreations.values where creation.model.deferredCommit { creation.model.abandonUnsavedChanges() }
         lingering = [:]
         parked = [:]
         creations = [:]
+        studyCreations = [:]
         unsaved = false
         saveError = nil
     }
@@ -108,10 +115,14 @@ extension CalendarModel {
         }
         guard !runs.isEmpty else { return }
         let background = CalendarBackgroundTask(name: "noty-calendar-note")
-        Task {
+        // On the note queue: a note opened again meanwhile keeps its model
+        // (a free flush would close a model a new session just took over).
+        let previous = noteQueue
+        noteQueue = Task { [weak self] in
+            await previous?.value
             for session in runs { await session.creation?.value }
             // A note created from the parked list commits its newest state and lets go.
-            await retryLingering()
+            await self?.retryLingering()
             background.end()
         }
     }
@@ -152,7 +163,11 @@ extension CalendarModel {
         if creations[target.key] == nil, prepareStudyPrompt(for: entry) { return }
         // A note whose creation stopped: the same document again, never a second one.
         if let creation = creations[target.key] {
+            // Committed = the stage says so, or the package is on disk (the
+            // first save failed after `deferredCommit` was cleared and a later
+            // flush wrote it): the same document again, never a second one.
             let committed = await creation.stage >= .notebookCommitted
+                || FileManager.default.fileExists(atPath: library.newDocumentDirectory(creation.documentID).appendingPathComponent("manifest.json").path)
             parked[creation.documentID] = nil
             if let model = lingering.removeValue(forKey: creation.documentID)
                 ?? (committed ? EditorModel(storageRoot: library.newDocumentDirectory(creation.documentID), restoreDirectory: restores) : nil) {
@@ -271,6 +286,9 @@ extension CalendarModel {
             if case .failed = session.phase {
                 notice = "Die Notiz zu „\(session.entry.title)“ liegt in „Kalendernotizen“, ist aber noch nicht fertig mit dem Termin verknüpft. Beim nächsten Öffnen des Termins wird es erneut versucht."
             }
+            // Creation not finished (library step or link): the session stays
+            // parked, so the background and the area switch can resume it.
+            if creations[session.target.key] != nil { parked[session.documentID] = session }
             if !(await model.flushBeforeClosing()) {
                 lingering[session.documentID] = model
                 notice = "Die Notiz zu „\(session.entry.title)“ konnte noch nicht gespeichert werden; noty versucht es weiter."
@@ -284,9 +302,13 @@ extension CalendarModel {
     /// package would make each switch wait).
     private func retryLingering(resumingCreations: Bool = false) async {
         if resumingCreations {
-            for (id, session) in parked where lingering[id] != nil && session.model.deferredCommit && session.phase != .creating {
+            // Drafts still in memory, and committed notes whose library or
+            // link step is open (their model is still writable).
+            for (id, session) in parked where session.phase != .creating && creations[session.target.key] != nil
+                && (session.model.deferredCommit ? lingering[id] != nil : session.model.writable) {
                 continueCreation(session)
                 await session.creation?.value
+                if session.phase == .saved { parked[id] = nil }
             }
         }
         for (id, model) in lingering where !model.deferredCommit {
@@ -313,10 +335,15 @@ extension CalendarModel {
         if session.model.deferredCommit || session.phase == .creating { enlargedDraft = session; return }
         let id = session.documentID, page = session.model.page.id
         let back = "\(entry.title) · \(CalendarText.shortDate(entry.start, calendar: calendar))"
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
             await closeNote()
-            guard let library, let item = library.snapshot.items.first(where: { $0.id == id }), !library.snapshot.isTrashed(id) else { return }
-            await library.open(item, pageID: page, returnTitle: back)
+            if let library, let item = library.snapshot.items.first(where: { $0.id == id }), !library.snapshot.isTrashed(id) {
+                await library.open(item, pageID: page, returnTitle: back)
+            }
+            // Not opened (e.g. the note's package still busy, or the notebook
+            // gone meanwhile): the note beside the event comes back instead of a spinner.
+            if library?.opened?.id != id, selection == entry.id, let current = selectedEvent { showNote(for: current) }
         }
     }
 

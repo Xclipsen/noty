@@ -54,6 +54,8 @@ public enum ServiceError: Error, Equatable {
     /// The app withdrew this registration (`DELETE` by registration id)
     /// while it was still running: nothing was stored.
     case registrationCancelled
+    /// Too many test fetches run right now (each is a curl process): later.
+    case busy
 }
 
 /// What the app may see about its registration (no secrets).
@@ -131,8 +133,11 @@ public actor PushService {
     public func recordContact(id: String) {
         guard var record = records[id] else { return }
         let time = now()
-        if let last = record.lastContact, last <= time, time.timeIntervalSince(last) < Self.contactPrecision { return }
+        if let last = record.lastContact, last <= time, time.timeIntervalSince(last) < Self.contactPrecision,
+           record.registrationHash == nil { return }
         record.lastContact = time
+        // The app has its secret: the registration id (unauthenticated delete) is no longer needed.
+        record.registrationHash = nil
         do { try persist(record) } catch { Log.error("Kontakt nicht gespeichert \(Log.device(id)): \(error)") }
     }
 
@@ -156,8 +161,8 @@ public actor PushService {
         }
         defer { if let hash { registering.remove(hash); withdrawn.remove(hash) } }
         let started = now()
-        let snapshot = try await baseline(setup: input.setup, connection: input.connectionID, connectionTimeZone: input.connectionTimeZone,
-                                          at: started)
+        let snapshot = try await gatedBaseline(setup: input.setup, connection: input.connectionID,
+                                               connectionTimeZone: input.connectionTimeZone, at: started)
         if let hash, withdrawn.contains(hash) {
             Log.info("Anmeldung zurückgezogen, nichts gespeichert")
             throw ServiceError.registrationCancelled
@@ -215,8 +220,8 @@ public actor PushService {
         var snapshot: CalendarSourceSnapshot?
         let started = now()
         if needsBaseline {
-            snapshot = try await baseline(setup: input.setup ?? current.setup, connection: newConnection,
-                                          connectionTimeZone: newConnectionZone, at: started)
+            snapshot = try await gatedBaseline(setup: input.setup ?? current.setup, connection: newConnection,
+                                               connectionTimeZone: newConnectionZone, at: started)
         }
         guard var record = records[id] else { throw ServiceError.notFound }  // deleted meanwhile
         if let token = input.deviceToken { record.deviceToken = token }
@@ -262,6 +267,20 @@ public actor PushService {
     }
 
     /// Complete first fetch of the window: the comparison base (no notifications).
+    /// At most `maximumConcurrentBaselines` test fetches at a time (two curl
+    /// processes each): more would let a burst of registrations exceed the
+    /// service's memory limit. Beyond it the request is answered `busy`.
+    static let maximumConcurrentBaselines = 2
+    private var baselineRuns = 0
+
+    private func gatedBaseline(setup: WebUntisSetup, connection: UUID, connectionTimeZone: String,
+                               at started: Date) async throws -> CalendarSourceSnapshot {
+        guard baselineRuns < Self.maximumConcurrentBaselines else { throw ServiceError.busy }
+        baselineRuns += 1
+        defer { baselineRuns -= 1 }
+        return try await baseline(setup: setup, connection: connection, connectionTimeZone: connectionTimeZone, at: started)
+    }
+
     private func baseline(setup: WebUntisSetup, connection: UUID, connectionTimeZone: String,
                           at time: Date) async throws -> CalendarSourceSnapshot {
         guard let zone = TimeZone(identifier: connectionTimeZone) else { throw ServiceError.storage("Zeitzone") }

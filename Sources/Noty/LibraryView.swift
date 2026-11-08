@@ -1068,7 +1068,7 @@ struct LibraryView: View {
         selectedArea = nil; switchingArea = false
         Task {
             if toolbox.writable {
-                guard await toolbox.flush() else { model.error = toolbox.status; return }
+                guard await toolbox.flush() else { model.error = toolbox.status; calendar.selectionChanged(); return }
             }
             // The calendar's note beside an event commits and lets go first.
             // The switch disposes this area's calendar model: a note or a
@@ -1077,7 +1077,11 @@ struct LibraryView: View {
             if let unsaved = await calendar.prepareAreaSwitch() {
                 guard await TopAlert.ask("Kalender nicht gespeichert",
                                          unsaved + "\n\nBeim Wechseln des Bereichs gehen diese Änderungen verloren. Ohne Wechsel versucht noty es weiter.",
-                                         confirm: "Verwerfen und wechseln") else { return }
+                                         confirm: "Verwerfen und wechseln") else {
+                    // Staying: the note beside the selected event opens again.
+                    calendar.selectionChanged()
+                    return
+                }
                 calendar.discardUnsavedForAreaSwitch()
             }
             // The new area's store must not start beside a running import.

@@ -184,9 +184,15 @@ extension CalendarModel {
                 let requested = Date()
                 let answer = try await client.timetable(user: user, start: range.0, end: range.1, connection: connection.id, timeZone: zone)
                 guard session == generation, state.connection?.id == connection.id else { return }
-                snapshot = try await repository.merge(CalendarTimetableFetch(connection: connection.id, start: range.0, end: range.1,
-                                                                             fetchedAt: requested, lessons: answer.lessons,
-                                                                             homework: answer.homework))
+                let fetch = CalendarTimetableFetch(connection: connection.id, start: range.0, end: range.1, fetchedAt: requested,
+                                                   lessons: answer.lessons, homework: answer.homework)
+                // An answer without a single lesson for a range that had lessons is the
+                // mobile API's known empty reply, not a removal: those days keep their
+                // state (and are asked again next time), so the school-day tile and the
+                // lesson reminders of today do not vanish. A reply that has lessons but
+                // none on one day is taken as it is.
+                let emptyReply = answer.lessons.isEmpty && !(snapshot?.emptiedDays(by: fetch).isEmpty ?? true)
+                snapshot = try await repository.merge(fetch, keepingEmptiedDays: emptyReply)
             }
             syncError = nil
             lastSuccess = Date()

@@ -757,7 +757,9 @@ final class CalendarModel: ObservableObject {
 
     /// New entry: next full hour on the shown day.
     func requestNewEvent() {
-        guard draft == nil, canWrite, !showsSamples else { return }
+        // Not over another sheet/popover, the enlarged note or the series dialog:
+        // a second presentation would collide and leave the form unreachable.
+        guard draft == nil, canWrite, !showsSamples, !presentingOverlays, enlargedDraft == nil, pendingSeriesChange == nil else { return }
         let hour = calendar.component(.hour, from: Date())
         let day = calendar.startOfDay(for: mode == .day || mode == .week ? anchor : today)
         let start = calendar.date(bySettingHour: min(22, hour + 1), minute: 0, second: 0, of: day) ?? day

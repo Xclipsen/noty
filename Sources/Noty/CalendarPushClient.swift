@@ -899,7 +899,9 @@ final class CalendarPushClient: ObservableObject {
                 model.mergePushChanges(result.changes)
             }
             // A little overlap: entries found again are known by their id.
-            let next = max(0, Int(result.serverTime.rounded(.down)) - 120)
+            // An implausible server time (not finite, far future) leaves the cursor where it is.
+            let serverTime = result.serverTime
+            let next = serverTime.isFinite && serverTime > 0 && serverTime < 1e11 ? max(0, Int(serverTime.rounded(.down)) - 120) : state.since
             change { $0.since = next; $0.lastContact = Date(); $0.lastError = nil; $0.lastFailure = nil }
         } catch let failure as CalendarPushAPI.Failure where failure.deviceUnknown {
             try? CalendarPushKeychain.delete()

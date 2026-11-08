@@ -289,7 +289,11 @@ final class CalendarStore {
         guard primaryFingerprint() != observedPrimary else { return }
         do { _ = try readManifest(primary) }
         catch RevisionError.unsupportedFormat { throw CalendarStoreError.concurrentChange }
-        catch { return }
+        catch {
+            // Damaged since it was read: the commit puts it aside (Quarantine) instead of overwriting it.
+            damagedPrimary = true
+            return
+        }
         throw CalendarStoreError.concurrentChange
     }
 
@@ -418,10 +422,12 @@ public actor CalendarRepository {
     /// Merges one complete fetch (per-day newer-wins) and writes the cache.
     /// A fetch for another connection than the committed one is discarded.
     /// A failed write keeps the previous cache on disk and in memory.
-    public func merge(_ fetch: CalendarTimetableFetch) throws -> CalendarSourceSnapshot {
+    /// `keepingEmptiedDays`: days with lessons here and none in `fetch` keep
+    /// their state (an empty answer of the mobile API, not a removal).
+    public func merge(_ fetch: CalendarTimetableFetch, keepingEmptiedDays: Bool = false) throws -> CalendarSourceSnapshot {
         guard store.current?.connection?.id == fetch.connection else { throw CalendarStoreError.staleConnection }
         var next = (try? sourceSnapshot()) ?? CalendarSourceSnapshot(connection: fetch.connection)
-        try next.merge(fetch)
+        if keepingEmptiedDays { try next.mergeKeepingEmptiedDays(fetch) } else { try next.merge(fetch) }
         try writeCache(next)
         return next
     }

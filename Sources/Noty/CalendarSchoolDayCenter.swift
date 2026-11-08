@@ -80,7 +80,8 @@ final class CalendarSchoolDayCenter: ObservableObject {
         observeStartToken()
         refreshDemoRunning()
         let now = Date()
-        let calendar = model.calendar
+        // The school's day, not the device's: the widget reads the file in that zone as well.
+        let calendar = CalendarDates.german(timeZone: model.schoolTimeZone)
         let snapshot = model.credentialsMissing ? nil : model.snapshot
         let connection = model.connection?.id
         writeWidget(namespace: model.notificationNamespace, connection: connection, snapshot: snapshot, now: now, calendar: calendar)

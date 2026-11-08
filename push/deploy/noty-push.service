@@ -17,6 +17,10 @@ LoadCredential=apns.p8:/etc/noty-push/apns.p8
 Restart=on-failure
 RestartSec=10
 MemoryMax=256M
+# Above MemoryHigh the kernel throttles first; a killed curl child (test fetch)
+# must not take the service down with it.
+MemoryHigh=192M
+OOMPolicy=continue
 TasksMax=64
 CPUQuota=50%
 StateDirectory=noty-push

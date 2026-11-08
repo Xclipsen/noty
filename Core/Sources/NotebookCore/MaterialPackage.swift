@@ -28,8 +28,10 @@ public struct MaterialPackageReader {
         let end = try handle.read(upToCount: Int(tail)) ?? Data()
         guard let eocd = Self.lastIndex(of: [0x50, 0x4B, 0x05, 0x06], in: end) else { throw MaterialError.notAPackage }
         let count = Int(Self.u16(end, eocd + 10)), size = UInt64(Self.u32(end, eocd + 12)), start = UInt64(Self.u32(end, eocd + 16))
+        // The directory is read whole: never more than its entries can need (and never gigabytes).
         guard Self.u16(end, eocd + 4) == 0, Self.u16(end, eocd + 6) == 0, count <= Self.maximumEntries,
-              count != 0xFFFF, start != 0xFFFF_FFFF, start + size <= length else { throw MaterialError.notAPackage }
+              count != 0xFFFF, start != 0xFFFF_FFFF, start + size <= length,
+              size <= UInt64(count) * (46 + 3 * 65_535), size <= 16_000_000 else { throw MaterialError.notAPackage }
         try handle.seek(toOffset: start)
         let directory = try handle.read(upToCount: Int(size)) ?? Data()
         guard directory.count == Int(size) else { throw MaterialError.notAPackage }

@@ -167,6 +167,8 @@ final class CalendarNotificationHub: NSObject, UNUserNotificationCenterDelegate 
 
     /// The history entry of a delivered calendar notification (nil for others).
     nonisolated static func record(_ notification: UNNotification) -> CalendarNotificationRecord? {
+        // A summary („3 Stundenplanänderungen“) is no history entry: its changes are in the bell one by one.
+        if notification.request.identifier.contains(".summary.") { return nil }
         let request = notification.request
         let info = request.content.userInfo
         if info[pushKey] is [String: Any] {
@@ -189,7 +191,9 @@ final class CalendarNotificationHub: NSObject, UNUserNotificationCenterDelegate 
     /// minimum as in the foreground; iPadOS decides when, or whether, it
     /// runs). Only when there is something to refresh for.
     func scheduleBackgroundRefresh() {
-        guard let model, model.wantsBackgroundRefresh else {
+        // No loaded model (a background launch whose scene is not up yet): keep
+        // the chain alive; only a loaded model that wants no refresh ends it.
+        if let model, model.loaded, !model.wantsBackgroundRefresh {
             BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.refreshIdentifier)
             return
         }

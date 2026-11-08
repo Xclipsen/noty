@@ -120,6 +120,48 @@ public enum CalendarNoteLinks {
             }
         }
     }
+
+    /// The whole state follows a change of an own event: its note links
+    /// (above), the lesson topics keyed to its occurrences (format 5, same
+    /// rules; a collision keeps the newer topic) and – for a moved series –
+    /// the „Gelöschte Termine“ entries of its occurrences, whose date and
+    /// series copy move along, so they stay restorable.
+    public static func retarget(state: inout CalendarState, event id: UUID, old: LocalCalendarEvent?, new: LocalCalendarEvent) {
+        retarget(&state.noteLinks, event: id, old: old, new: new)
+        guard let old else { return }
+        let oldFirst = CalendarSeries.firstDate(of: old.timing), newFirst = CalendarSeries.firstDate(of: new.timing)
+        let shift = oldFirst.days(to: newFirst)
+        for index in state.lessonTopics.indices {
+            guard case .local(let event, let date) = state.lessonTopics[index].target, event == id else { continue }
+            switch (old.recurrence != nil, new.recurrence != nil, date) {
+            case (false, true, nil): state.lessonTopics[index].target = .local(event: id, date: newFirst)
+            case (true, false, let day?) where day == oldFirst: state.lessonTopics[index].target = .local(event: id, date: nil)
+            case (true, true, let day?) where shift != 0: state.lessonTopics[index].target = .local(event: id, date: day.adding(days: shift))
+            default: break
+            }
+        }
+        // One topic per target: of two that now share one, the newer stays.
+        var seen: [String: Int] = [:]
+        var drop = Set<UUID>()
+        for (index, topic) in state.lessonTopics.enumerated() {
+            if let other = seen[topic.target.key] {
+                let keep = state.lessonTopics[other].modifiedAt >= topic.modifiedAt ? other : index
+                drop.insert(state.lessonTopics[keep == other ? index : other].id)
+                seen[topic.target.key] = keep
+            } else { seen[topic.target.key] = index }
+        }
+        if !drop.isEmpty { state.lessonTopics.removeAll { drop.contains($0.id) } }
+        if old.recurrence != nil, let rule = new.recurrence, shift != 0 {
+            for index in state.deletedEvents.indices where state.deletedEvents[index].event.id == id {
+                guard let occurrence = state.deletedEvents[index].occurrence else { continue }
+                let movedDate = occurrence.adding(days: shift)
+                // Only when the series as it is now still has that occurrence (else the entry keeps its old meaning).
+                guard CalendarSeries.generates(movedDate, timing: new.timing, rule: rule) else { continue }
+                state.deletedEvents[index].occurrence = movedDate
+                state.deletedEvents[index].event = new
+            }
+        }
+    }
 }
 
 /// „Rückgängig“ of one change of an own event: the event as it was and the
@@ -130,6 +172,10 @@ public struct CalendarUndoSnapshot: Equatable, Sendable {
     public let event: LocalCalendarEvent?
     /// Link id → target before the change, for every link of this event.
     public let linkTargets: [UUID: CalendarNoteTarget]
+    /// Topic id → target before the change (format 5), for every topic of this event.
+    public let topicTargets: [UUID: CalendarNoteTarget]
+    /// „Gelöschte Termine“ entries of this event as they were (a moved series moves them).
+    public let deleted: [UUID: CalendarDeletedEvent]
     /// The „Gelöschte Termine“ entry the change created (removed again).
     public var trashID: UUID?
 
@@ -141,6 +187,12 @@ public struct CalendarUndoSnapshot: Equatable, Sendable {
             if case .local(let owner, _) = link.target, owner == id { targets[link.id] = link.target }
         }
         linkTargets = targets
+        var topics: [UUID: CalendarNoteTarget] = [:]
+        for topic in state.lessonTopics {
+            if case .local(let owner, _) = topic.target, owner == id { topics[topic.id] = topic.target }
+        }
+        topicTargets = topics
+        deleted = Dictionary(state.deletedEvents.filter { $0.event.id == id }.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         self.trashID = trashID
     }
 
@@ -155,6 +207,12 @@ public struct CalendarUndoSnapshot: Equatable, Sendable {
         }
         for index in state.noteLinks.indices {
             if let target = linkTargets[state.noteLinks[index].id] { state.noteLinks[index].target = target }
+        }
+        for index in state.lessonTopics.indices {
+            if let target = topicTargets[state.lessonTopics[index].id] { state.lessonTopics[index].target = target }
+        }
+        for index in state.deletedEvents.indices {
+            if let entry = deleted[state.deletedEvents[index].id] { state.deletedEvents[index] = entry }
         }
         if let trashID { state.deletedEvents.removeAll { $0.id == trashID } }
     }

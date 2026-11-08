@@ -150,6 +150,18 @@ Abmelden aller Geräte/Stilllegen: `systemctl disable --now noty-push`, `rm -rf 
 - **Core:** Ein komplett verlegter Tag gilt nicht als leere Antwort, wenn seine Perioden-IDs im selben Abruf an einem anderen Tag auftauchen. Wiederholungen werden über beide Herkünfte (App und Server) erkannt. In Änderungs-IDs wird „~“ in Raumnamen als „%7E“ geschrieben; IDs ohne „~“ bleiben gleich.
 - Tests: Core 1497 (3 übersprungen), push 71, alle grün. Der Abruf um 13:14 UTC lief unter der neuen systemd-Härtung (SystemCallFilter, PrivateUsers) fehlerfrei.
 
+## Nachträge aus der Gesamtprüfung (08.11.2026, Build 145)
+
+Unabhängige Durchsicht des Servers (71 Tests grün, nicht gegen den laufenden Dienst getestet). Umgesetzt:
+
+- **Gleichzeitige Testabrufe begrenzt:** höchstens 2 WebUntis-Testabrufe (Registrierung oder neue Freigabe) zur gleichen Zeit (`PushService.maximumConcurrentBaselines`); weitere bekommen `503 busy` mit `Retry-After: 30`. Vorher konnten ~20 parallele Anmeldungen mit gültig geformten Freigaben (Wildcard-DNS von webuntis.com) je zwei curl-Prozesse starten und das `MemoryMax` von 256 MB reißen; `OOMPolicy=stop` hätte den Dienst beendet und der Neustart alle Limiter geleert.
+- **Unit:** `MemoryHigh=192M` (Drosselung vor dem Limit) und `OOMPolicy=continue` (ein getöteter curl-Kindprozess nimmt den Dienst nicht mit).
+- **`apns-collapse-id`** nur noch aus `[A-Za-z0-9._-]` (≤ 64 Byte), sonst gehasht – Raumnamen mit Leerzeichen/Umlauten könnten sonst von APNs als `BadCollapseId` abgelehnt werden und die Mitteilung endgültig fehlschlagen lassen.
+- **Einstellungen geprüft:** `settings` mit ungültigen Ruhezeiten/Werten werden bei Registrierung und Update mit `400 invalid_settings` abgewiesen (vorher stillschweigend übernommen, mögliche Dauer-Ruhezeit).
+- **Registrierungs-ID verfällt** beim ersten authentifizierten Kontakt des Geräts: Wer sie kennt, kann das Gerät dann nicht mehr unauthentifiziert löschen.
+
+Bewusst nicht geändert: Nach 120 falschen Secrets je Geräte-ID und Stunde antwortet der Server auch dem richtigen Secret mit 429 (nie 401), damit die App es behält – wer die (nicht öffentliche) Geräte-ID kennt, könnte so eine Stunde Wartezeit erzwingen. Offen: Limiter leben im Speicher und starten nach einem Neustart leer.
+
 ## Was in der App umgesetzt ist (App-Anbindung)
 
 Stand 08.11.2026: Schritte 1–11 **implementiert und gebaut**, veröffentlicht ab noty calendar **Build 137** und vom Nutzer installiert (Registrierung, Test-Push angekommen); die Korrekturen nach Build 139 (Commit `0fb2951`, in der Tabelle mit „seit 0fb2951“ markiert) sind gebaut, **nicht installiert, am iPad ungeprüft**. Gerätetest: [CALENDAR-LOG](CALENDAR-LOG.md). Code: `Sources/Noty/CalendarPushClient.swift` (Konfiguration, Schlüsselbund, Zustand, HTTP, Abgleich), `CalendarPushViews.swift` (Einwilligung, Abschnitt „Auch bei geschlossener App“), Anbindung in `CalendarNotificationHub` (Payload `userInfo["noty"]`, Antippen, Vordergrund), `CalendarModel(+Notifications)` (Unterdrücken, Zusammenführen, Verbinden/Trennen), `CalendarReminderCenter` (zugestellte Pushes in Glocke/entfernen), `CalendarView`, `CalendarConnectionSheet`, `CalendarRemindersSheet`, `WorkspaceAppModel`, `NotyApp` (`NotyAppDelegate` für den Token), `Info.plist` (`NotyPushURL`), Core `CalendarNotifications.swift` (Push-IDs, Entdoppeln), `scripts/publish_ota.sh`, `scripts/ota_check.py`.
