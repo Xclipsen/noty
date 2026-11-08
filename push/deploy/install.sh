@@ -36,7 +36,7 @@ id noty-push >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /no
 install -d -m 755 /opt/noty-push
 install -m 755 "$BIN" /opt/noty-push/noty-push.new
 mv -f /opt/noty-push/noty-push.new /opt/noty-push/noty-push
-install -d -m 700 -o root -g root /etc/noty-push
+install -d -m 711 -o root -g root /etc/noty-push
 if [ ! -s /etc/noty-push/data.key ]; then
   ( umask 077; /opt/noty-push/noty-push genkey > /etc/noty-push/data.key )
   echo "Datenschlüssel erzeugt: /etc/noty-push/data.key (Sicherung getrennt von /var/lib/noty-push aufbewahren)"
