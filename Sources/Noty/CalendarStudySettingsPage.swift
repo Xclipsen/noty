@@ -1,0 +1,124 @@
+import SwiftUI
+import NotebookCore
+
+/// Einstellungen › Kalender › Lernfelder (docs/LERNFELDER.md): the area's
+/// Lernfelder and which lessons belong to them – a whole subject, or one
+/// block of the timetable (weekday and time) that differs from it.
+struct CalendarStudySettingsPage: View {
+    @ObservedObject var model: CalendarModel
+    @ObservedObject private var materials = MaterialLibrary.shared
+    @State private var adding = false
+    @State private var newNumber = ""
+    @State private var newTitle = ""
+    @State private var removing: CalendarStudyField?
+
+    var body: some View {
+        Form {
+            if !model.canWrite {
+                Section { Label(model.storageError ?? "Der Kalender ist noch nicht geladen.", systemImage: "lock").foregroundStyle(.orange) }
+            }
+            fieldsSection
+            if !model.studyFields.isEmpty { assignmentSection }
+        }
+        .navigationTitle("Lernfelder")
+        .task { materials.load() }
+        .alert("Lernfeld hinzufügen", isPresented: $adding) {
+            TextField("Nummer, z. B. 3", text: $newNumber).keyboardType(.numberPad)
+            TextField("Titel", text: $newTitle)
+            Button("Hinzufügen") {
+                let number = Int(newNumber.trimmingCharacters(in: .whitespaces)) ?? 0, title = newTitle
+                Task { _ = await model.addField(number: number, title: title) }
+            }
+            Button("Abbrechen", role: .cancel) {}
+        } message: { Text("Nummer 1–99, noch nicht vergeben.") }
+        .confirmationDialog("Lernfeld entfernen?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
+                            titleVisibility: .visible, presenting: removing) { field in
+            Button("\(field.displayName) entfernen", role: .destructive) { Task { await model.removeField(field.id) } }
+        } message: { _ in
+            Text("Die Zuordnungen dieses Lernfelds werden entfernt. Das Heft, seine Seiten, Themen und festgehaltenes Material bleiben erhalten.")
+        }
+    }
+
+    // MARK: Fields
+
+    private var fieldsSection: some View {
+        Section {
+            ForEach(model.studyFields) { field in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(field.displayName)
+                    Text(notebookText(field)).font(.caption).foregroundStyle(.secondary)
+                }
+                .swipeActions { Button("Entfernen", role: .destructive) { removing = field } }
+                .contextMenu { Button("Entfernen", systemImage: "trash", role: .destructive) { removing = field } }
+            }
+            ForEach(materials.packages, id: \.catalog.id) { package in
+                let missing = package.catalog.fields.filter { field in !model.studyFields.contains { $0.number == field.number } }
+                if !missing.isEmpty {
+                    Button {
+                        Task { await model.importFields(from: package.catalog) }
+                    } label: {
+                        Label("\(missing.count) Lernfelder aus „\(package.catalog.title)“ übernehmen", systemImage: "square.and.arrow.down")
+                    }
+                }
+            }
+            Button { newNumber = ""; newTitle = ""; adding = true } label: { Label("Lernfeld hinzufügen …", systemImage: "plus") }
+        } header: {
+            Text("Lernfelder")
+        } footer: {
+            Text("Jedes Lernfeld bekommt ein eigenes Heft „LF n – Titel“, sobald die erste Stunde mitgeschrieben wird. Es liegt oben in der Bibliothek und lässt sich verschieben oder umbenennen.")
+        }
+        .disabled(!model.canWrite)
+    }
+
+    private func notebookText(_ field: CalendarStudyField) -> String {
+        guard let id = field.notebookID, let library = model.library,
+              let item = library.snapshot.items.first(where: { $0.id == id }) else { return "Heft entsteht mit der ersten Mitschrift" }
+        return library.snapshot.isTrashed(id) ? "Heft „\(item.title)“ liegt im Papierkorb" : "Heft „\(item.title)“"
+    }
+
+    // MARK: Assignment
+
+    private var assignmentSection: some View {
+        let slots = model.timetableSlots
+        let subjects = Dictionary(grouping: slots, by: \.subjectKey)
+        let keys = subjects.keys.sorted { (subjects[$0]?.first?.subjectName ?? $0) < (subjects[$1]?.first?.subjectName ?? $1) }
+        return Section {
+            if keys.isEmpty {
+                Text("Noch kein Stundenplan geladen. Nach dem Verbinden mit WebUntis stehen hier die Fächer.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(keys, id: \.self) { key in
+                let list = subjects[key] ?? []
+                let name = list.first?.subjectName ?? key
+                fieldPicker(name, selection: binding(subjectKey: key, name: name, weekday: nil, from: nil, to: nil))
+                if list.count > 1 || model.state.studyRules.contains(where: { $0.subjectKey == key && $0.weekday != nil }) {
+                    ForEach(list) { slot in
+                        fieldPicker("   \(slot.label)", selection: binding(subjectKey: key, name: name, weekday: slot.weekday,
+                                                                         from: slot.start, to: slot.end), inherit: true)
+                            .font(.subheadline)
+                    }
+                }
+            }
+        } header: {
+            Text("Zuordnung nach Stundenplan")
+        } footer: {
+            Text("Erst das ganze Fach, dann bei Bedarf einzelne Blöcke anders, z. B. „SR“ → LF 4 und „SR Mo 08:00–10:15“ → LF 3. Der genauere Eintrag gewinnt. Stunden ohne Lernfeld bekommen weiter eine eigene kleine Notiz.")
+        }
+        .disabled(!model.canWrite)
+    }
+
+    private func fieldPicker(_ title: String, selection: Binding<UUID?>, inherit: Bool = false) -> some View {
+        Picker(title, selection: selection) {
+            Text(inherit ? "wie das Fach" : "kein Lernfeld").tag(UUID?.none)
+            ForEach(model.studyFields) { field in Text(field.shortName + " · " + field.title).tag(UUID?.some(field.id)) }
+        }
+    }
+
+    private func binding(subjectKey: String, name: String, weekday: Int?, from: Int?, to: Int?) -> Binding<UUID?> {
+        Binding(
+            get: { model.rule(subjectKey: subjectKey, weekday: weekday, startFrom: from, startTo: to)?.fieldID },
+            set: { field in
+                Task { await model.setRule(subjectKey: subjectKey, subjectName: name, weekday: weekday, startFrom: from, startTo: to, field: field) }
+            })
+    }
+}

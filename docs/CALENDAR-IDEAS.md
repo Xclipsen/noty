@@ -7,7 +7,7 @@ Ideensammlung, **nicht beauftragt** (außer wo „umgesetzt“ steht). Erstellt 
 | 1 | **„Jetzt mitschreiben“**: Knopf/Kürzel öffnet die laufende (bzw. nächste) Stunde direkt mit Notiz | S | nein | sehr lohnend | offen |
 | 2 | **Letzte Stunde im Blick**: im Terminfenster Vorschau der letzten Notiz desselben Kurses (über `lessonID`) + offene Hausaufgaben | S–M | nein | sehr lohnend | offen (offene Hausaufgaben stehen inzwischen im Terminfenster) |
 | 3 | **Stundenplanänderungen hervorheben**: „Neu“-Marken, Abschnitt „Änderungen“, optionale Mitteilung | M | nein (Cache) | sehr lohnend; hängt an den WebUntis-Status ([CALENDAR-PLAN §9](CALENDAR-PLAN.md#9-offene-punkte)) | **umgesetzt** als Benachrichtigungen: Änderungsmitteilungen, Verlauf in der Glocke, Änderungen im Morgen-Überblick (Build 136), Push bei geschlossener App (Build 137), Änderungsmarke in der Schultag-Kachel (Build 138). Nicht umgesetzt: „Neu“-Marken im Raster |
-| 4 | **Fachansicht**: alle Stundennotizen eines Fachs chronologisch durchblättern, gemeinsamer PDF-Export (nur Links, kein Sammelheft) | M | nein | hoch | offen |
+| 4 | **Fachansicht**: alle Stundennotizen eines Fachs chronologisch durchblättern, gemeinsamer PDF-Export (nur Links, kein Sammelheft) | M | nein | hoch | **anders umgesetzt** als Lernfeld-Hefte mit Stunden als Überschriften ([LERNFELDER](LERNFELDER.md), am iPad ungeprüft) |
 | 5 | **Klausuren** mit Countdown und vorgeschlagenen Lernblöcken | M–L | ja (Format 5) | hoch | offen |
 | 6 | Freie Zeit doppelt antippen → Schnell anlegen vorbelegt (Scribble im Feld) | S | nein | hoch | offen |
 | 7 | Eigene Hausaufgaben „bis zur nächsten Stunde“ | M | ja | erst Abgrenzung zum Merker klären | offen |

@@ -136,11 +136,20 @@ extension CalendarModel {
             if library.snapshot.isTrashed(item.id) { noteState = .missing(.trashed(item.title), link); return }
             guard let document = await library.openDocument(item.id) else { noteState = .missing(.deleted, link); return }
             parked[item.id] = nil
+            // The link's page: a Lernfeld section (or the first page of a small note).
+            let study = state.studyFields.contains { $0.notebookID == item.id }
+            // A small note opens where it was last read; a Lernfeld section at its heading.
             let model = lingering.removeValue(forKey: item.id)
-                ?? EditorModel(storageRoot: document.directory, restoreDirectory: restores, libraryTitle: item.title)
-            start(CalendarNoteSession(entry: entry, target: link.target, documentID: item.id, title: item.title, model: model, phase: .saved))
+                ?? EditorModel(storageRoot: document.directory, restoreDirectory: restores, preferredPageID: study ? link.pageID : nil,
+                               libraryTitle: item.title)
+            start(CalendarNoteSession(entry: entry, target: link.target, documentID: item.id, title: item.title, model: model, phase: .saved,
+                                      study: study))
+            if study, let page = link.pageID, model.notebook.pages.contains(where: { $0.id == page }) { model.showPage(page) }
             return
         }
+        // Lernfelder: a lesson of a Lernfeld gets a section of the field's notebook, not a notebook of its own
+        // – unless a small note of it is still being created (that one is finished first, never hidden).
+        if creations[target.key] == nil, prepareStudyPrompt(for: entry) { return }
         // A note whose creation stopped: the same document again, never a second one.
         if let creation = creations[target.key] {
             let committed = await creation.stage >= .notebookCommitted
@@ -171,6 +180,8 @@ extension CalendarModel {
         return CalendarNotesFolder.noteTitle(subject: entry.subject ?? entry.title, date: day, taken: taken)
     }
 
+    func startStudySession(_ session: CalendarNoteSession) { start(session) }
+
     private func start(_ session: CalendarNoteSession) {
         noteSession = session
         noteState = .session(session)
@@ -187,6 +198,8 @@ extension CalendarModel {
             // First real input: create the notebook, then link it (rule 8).
             if content { continueCreation(session) }
         case .saved:
+            // A Lernfeld notebook has content for every section; the link keeps `hasContent`.
+            if session.study { return }
             if let index = state.noteLinks.firstIndex(where: { $0.documentID == session.documentID && $0.target == session.target }),
                state.noteLinks[index].hasContent != content {
                 Task { await commit { if let i = $0.noteLinks.firstIndex(where: { $0.documentID == session.documentID && $0.target == session.target }) { $0.noteLinks[i].hasContent = content } } }
@@ -340,6 +353,7 @@ extension CalendarModel {
 
     /// Page flip and „Seite hinzufügen“ beside the event (the editor's own model).
     func addNotePage() {
+        if let session = noteSession, session.study, addStudyPage(session) { return }
         guard let model = noteSession?.model, model.writable, let last = model.notebook.pages.last else { return }
         let defaults = model.notebook.pageDefaults
         model.insertPaper(defaults.paper, color: defaults.color, relativeTo: last.id)
@@ -391,6 +405,8 @@ enum CalendarNoteState {
     case unavailable(String)
     case missing(Missing, CalendarNoteLink)
     case session(CalendarNoteSession)
+    /// Lernfelder: a lesson of a Lernfeld without its section yet.
+    case study(CalendarStudyPrompt)
 }
 
 /// The note of one event while it is shown: the normal editor model of its
@@ -414,11 +430,15 @@ final class CalendarNoteSession: ObservableObject, Identifiable {
     let title: String
     let model: EditorModel
     @Published var phase: Phase
+    /// A section of a Lernfeld notebook (docs/LERNFELDER.md).
+    let study: Bool
     var creation: Task<Void, Never>?
     private var observer: AnyCancellable?
 
-    init(entry: CalendarEntry, target: CalendarNoteTarget, documentID: UUID, title: String, model: EditorModel, phase: Phase) {
+    init(entry: CalendarEntry, target: CalendarNoteTarget, documentID: UUID, title: String, model: EditorModel, phase: Phase,
+         study: Bool = false) {
         self.entry = entry; self.target = target; self.documentID = documentID; self.title = title; self.model = model; self.phase = phase
+        self.study = study
     }
 
     func observe(_ changed: @escaping @MainActor (Notebook) -> Void) {

@@ -323,6 +323,11 @@ struct CalendarEventPanel: View {
         VStack(alignment: .leading, spacing: CalendarSpace.l) {
             if let label = event.status.label, let symbol = event.status.symbol { statusCallout(label, symbol: symbol) }
             facts
+            // Lernfelder: topic, pinned material and key sentence of the lesson (block).
+            if !event.isSample, event.source == .timetable, model.topicTarget(for: event) != nil {
+                // A new card per entry: an unsaved topic is saved to its own lesson when the entry changes.
+                CalendarTopicCard(event: event, model: model).id(event.id)
+            }
             let homework = model.homework(for: event)
             if !homework.isEmpty { homeworkSection(homework) }
             // Only the homework lines whose task is in the list above are

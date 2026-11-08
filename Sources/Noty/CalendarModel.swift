@@ -242,6 +242,10 @@ final class CalendarModel: ObservableObject {
     private var byID: [String: CalendarEntry] = [:]
     private var byDay: [Date: [CalendarEntry]] = [:]
     var linkByEntry: [String: CalendarNoteLink] = [:]
+    /// Lernfelder: lesson id → first lesson of its block (`studyBlocks`).
+    var studyAnchorByEntry: [String: String] = [:]
+    /// Lernfelder: notebooks being created, per field (`CalendarStudyCreation`).
+    var studyCreations: [UUID: CalendarStudyCreation] = [:]
     private(set) var candidates: [UUID: [CalendarLesson]] = [:]
     @Published private(set) var truncatedSeries: [String] = []
     private var sampleYear: Int?
@@ -275,6 +279,8 @@ final class CalendarModel: ObservableObject {
         self.library = library
         self.defaultAppearance = defaultAppearance
         library.releaseCalendarNote = { [weak self] in _ = await self?.closeNote() }
+        // Lernfelder: the editor's page list shows the lesson sections of a Lernfeld notebook.
+        StudyOutline.shared.attach { [weak self] notebook in self?.studySections(of: notebook) ?? [] }
         library.$snapshot.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in
             MainActor.assumeIsolated { self?.libraryChanged() }
         }.store(in: &subscriptions)
@@ -442,6 +448,7 @@ final class CalendarModel: ObservableObject {
         candidates = [:]
         systemCandidates = [:]
         var truncated: [String] = []
+        studyAnchorByEntry = [:]
         if showsSamples {
             let year = calendar.component(.year, from: anchor)
             sampleYear = year
@@ -466,6 +473,15 @@ final class CalendarModel: ObservableObject {
                 entries.append(systemEntry(event))
             }
             entries += indexLinks(entries)
+            // Lernfelder: every lesson of a block shares the link of its first lesson.
+            studyAnchorByEntry = studyBlocks(entries)
+            // The first lesson's link, else any member's (the block changed since).
+            var blocks: [String: [String]] = [:]
+            for (id, anchor) in studyAnchorByEntry { blocks[anchor, default: []].append(id) }
+            for (anchor, members) in blocks {
+                guard let link = linkByEntry[anchor] ?? members.sorted().lazy.compactMap({ self.linkByEntry[$0] }).first else { continue }
+                for id in members where linkByEntry[id] == nil { linkByEntry[id] = link }
+            }
             scheduleSystemReadIfNeeded()
         }
         truncatedSeries = truncated
@@ -484,6 +500,7 @@ final class CalendarModel: ObservableObject {
         }
         byDay = index
         objectWillChange.send()
+        StudyOutline.shared.changed()
         releaseVanishedSelection()
     }
 

@@ -28,7 +28,7 @@ enum IncomingFiling {
     /// Everything but the noty file types goes here; the content decides.
     static func handles(_ url: URL) -> Bool {
         let kind = url.pathExtension.lowercased()
-        return url.isFileURL && kind != "notylibrary" && !NotyFile.notebookExtensions.contains(kind)
+        return url.isFileURL && kind != "notylibrary" && kind != "notymaterial" && !NotyFile.notebookExtensions.contains(kind)
     }
 
     /// The library of the current area (re-attached after an area switch).

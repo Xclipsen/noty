@@ -6,18 +6,31 @@ checks raising ValueError (also under python -O). Never prints contents.
 CalendarState formats: 1 (B1: events, settings, connection), 2 (B2: series,
 note links, lesson mappings, subject colours, notes folder, source
 identity), 3 (B3: reminders, lesson reminder setting, deleted events), 4
-(Stufe C: system calendar settings, notes of system events, homework marks).
+(Stufe C: system calendar settings, notes of system events, homework marks),
+5 (Lernfelder: study fields, rules assigning lessons, lesson topics with
+pinned material).
 The connection record never contains access data: its keys are exactly the
 known non-secret ones. A library archive carries format 3 (B3 builds) or the
-current format 4. The offline timetable (cache format 1) may carry homework.
+current format 5 (archives of format 4 builds keep format 4). The offline timetable (cache format 1) may carry homework.
 """
+import math
 import re
 
 from notebook_format import check, foundation_date, number, strict, uuid_string
 
-CURRENT_FORMAT = 4
-ARCHIVE_FORMATS = (3, 4)
-STATE_KEYS = {"formatVersion", "events", "settings", "connection", "noteLinks", "lessonMappings", "deletedEvents", "homeworkDone"}
+CURRENT_FORMAT = 5
+ARCHIVE_FORMATS = (3, 4, 5)
+STATE_KEYS = {"formatVersion", "events", "settings", "connection", "noteLinks", "lessonMappings", "deletedEvents", "homeworkDone",
+              "studyFields", "studyRules", "lessonTopics"}
+FIELD_KEYS = {"id", "number", "title", "notebookID", "package"}
+RULE_KEYS = {"id", "subjectKey", "subjectName", "weekday", "startFrom", "startTo", "fieldID"}
+TOPIC_KEYS = {"id", "target", "topic", "summary", "materials", "modifiedAt"}
+MATERIAL_KEYS = {"package", "key", "label", "detail"}
+PACKAGE = re.compile(r"[a-z0-9-]{1,64}")
+MAXIMUM_FIELDS = 40
+MAXIMUM_RULES = 500
+MAXIMUM_TOPICS = 20_000
+MAXIMUM_MATERIALS = 30
 EVENT_KEYS = {"id", "title", "location", "details", "timing", "recurrence", "reminderMinutes", "createdAt", "modifiedAt"}
 SETTINGS_KEYS = {"weekDays", "mode", "subjectColors", "notesFolderID", "lessonReminderMinutes", "systemCalendars"}
 SYSTEM_KEYS = {"enabled", "hiddenCalendars", "defaultTarget"}
@@ -158,7 +171,19 @@ def connection(value, version):
 def link(value, version):
     keys(value, LINK_KEYS, "Unexpected note link fields")
     uuid_string(value["id"])
-    target = value["target"]
+    note_target(value["target"], version)
+    if value.get("pageID") is not None:
+        uuid_string(value["pageID"])
+    check(type(value["hasContent"]) is bool, "Invalid note content flag")
+    text(value["contextTitle"], 1, 300, "Invalid note context")
+    for key in ("createdAt", "contextStart", "contextEnd"):
+        foundation_date(value[key])
+    check(value["contextEnd"] >= value["contextStart"], "Invalid note context time")
+    return uuid_string(value["documentID"])
+
+
+def note_target(target, version):
+    """Checks a note target and returns its identity key (like Swift `CalendarNoteTarget.key`)."""
     check(isinstance(target, dict) and target.get("kind") in ("local", "lesson", "system"), "Invalid note target")
     if target["kind"] == "system":
         check(version >= 4, "System event note before calendar format 4")
@@ -177,11 +202,13 @@ def link(value, version):
             local = anchor["occurrenceLocal"]
             check(isinstance(local, str) and LOCAL_OCCURRENCE.fullmatch(local) is not None, "Invalid local occurrence")
             civil(local[:10])
+        return ("system", system_key(anchor))
     elif target["kind"] == "local":
         keys(target, {"kind", "event", "date"}, "Invalid note target")
         uuid_string(target["event"])
         if target.get("date") is not None:
             civil(target["date"])
+        return ("local", target["event"].upper(), target.get("date"))
     else:
         keys(target, {"kind", "lesson"}, "Invalid note target")
         anchor = target["lesson"]
@@ -190,14 +217,82 @@ def link(value, version):
         text(anchor["periodID"], 1, 100, "Invalid lesson period")
         check(anchor.get("lessonID") is None or (isinstance(anchor["lessonID"], str) and len(anchor["lessonID"]) <= 100), "Invalid lesson course")
         civil(anchor["originalDate"]); text(anchor["originalStart"], 0, 40, "Invalid lesson start")
-    if value.get("pageID") is not None:
-        uuid_string(value["pageID"])
-    check(type(value["hasContent"]) is bool, "Invalid note content flag")
-    text(value["contextTitle"], 1, 300, "Invalid note context")
-    for key in ("createdAt", "contextStart", "contextEnd"):
-        foundation_date(value[key])
-    check(value["contextEnd"] >= value["contextStart"], "Invalid note context time")
-    return uuid_string(value["documentID"])
+        return ("lesson", anchor["source"], anchor["periodID"])
+
+
+def study(state, version):
+    """Lernfelder (format 5). Returns the notebook ids of the fields."""
+    fields = state.get("studyFields", [])
+    rules = state.get("studyRules", [])
+    topics = state.get("lessonTopics", [])
+    check(isinstance(fields, list) and isinstance(rules, list) and isinstance(topics, list), "Invalid study data")
+    check(version >= 5 or not (fields or rules or topics), "Study data before calendar format 5")
+    check(len(fields) <= MAXIMUM_FIELDS and len(rules) <= MAXIMUM_RULES and len(topics) <= MAXIMUM_TOPICS, "Too much study data")
+    field_ids, numbers, notebooks = set(), set(), []
+    for item in fields:
+        keys(item, FIELD_KEYS, "Unexpected study field fields")
+        field_ids.add(uuid_string(item["id"]))
+        check(type(item["number"]) is int and 1 <= item["number"] <= 99, "Invalid study field number")
+        numbers.add(item["number"])
+        title(item["title"])
+        if item.get("notebookID") is not None:
+            notebooks.append(uuid_string(item["notebookID"]))
+        if item.get("package") is not None:
+            check(isinstance(item["package"], str) and PACKAGE.fullmatch(item["package"]) is not None, "Invalid material package")
+    check(len(field_ids) == len(fields) and len(numbers) == len(fields), "Duplicate study field")
+    check(len(set(notebooks)) == len(notebooks), "Two study fields share a notebook")
+    rule_ids = set()
+    for item in rules:
+        keys(item, RULE_KEYS, "Unexpected study rule fields")
+        rule_ids.add(uuid_string(item["id"]))
+        text(item["subjectKey"], 1, 300, "Invalid study rule subject")
+        text(item["subjectName"], 1, 200, "Invalid study rule subject")
+        check(item.get("weekday") is None or (type(item["weekday"]) is int and 1 <= item["weekday"] <= 7), "Invalid study rule weekday")
+        start, end = item.get("startFrom"), item.get("startTo")
+        check((start is None and end is None) or (type(start) is int and type(end) is int and 0 <= start < end <= 1440),
+              "Invalid study rule time")
+        check(uuid_string(item["fieldID"]) in field_ids, "Study rule of an unknown field")
+    check(len(rule_ids) == len(rules), "Duplicate study rule")
+    topic_ids, targets = set(), set()
+    for item in topics:
+        keys(item, TOPIC_KEYS, "Unexpected lesson topic fields")
+        topic_ids.add(uuid_string(item["id"]))
+        targets.add(note_target(item["target"], version))
+        topic = item.get("topic", "")
+        check(isinstance(topic, str) and len(topic) <= 200 and "\n" not in topic, "Invalid lesson topic")
+        check(isinstance(item.get("summary", ""), str) and len(item.get("summary", "")) <= 2000, "Invalid key sentence")
+        materials = item.get("materials", [])
+        check(isinstance(materials, list) and len(materials) <= MAXIMUM_MATERIALS, "Invalid pinned material")
+        pinned = set()
+        for material in materials:
+            keys(material, MATERIAL_KEYS, "Unexpected pinned material fields")
+            check(isinstance(material["package"], str) and PACKAGE.fullmatch(material["package"]) is not None, "Invalid material package")
+            text(material["key"], 3, 200, "Invalid material key")
+            check("\n" not in material["key"], "Invalid material key")
+            text(material["label"], 1, 300, "Invalid material label")
+            if material.get("detail") is not None:
+                text(material["detail"], 0, 300, "Invalid material detail")
+            pinned.add((material["package"], material["key"]))
+        check(len(pinned) == len(materials), "Duplicate pinned material")
+        foundation_date(item["modifiedAt"])
+    check(len(topic_ids) == len(topics) and len(targets) == len(topics), "Duplicate lesson topic")
+    return notebooks
+
+
+def system_key(anchor):
+    """Like Swift `CalendarSystemAnchor.key`: external id (blank = none) or
+    item id, then the local occurrence or the occurrence in whole seconds."""
+    external = (anchor.get("externalID") or "").strip()
+    identity = "x:" + anchor["externalID"] if external else "i:" + anchor["itemID"]
+    local = (anchor.get("occurrenceLocal") or "").strip()
+    if local:
+        occurrence = "l" + anchor["occurrenceLocal"]
+    elif anchor.get("occurrence") is not None:
+        value = anchor["occurrence"]
+        occurrence = str(int(math.copysign(math.floor(abs(value) + 0.5), value)))
+    else:
+        occurrence = "-"
+    return identity + "/" + occurrence
 
 
 def mapping(value):
@@ -211,7 +306,7 @@ def mapping(value):
 
 
 @strict
-def validate_state(state, formats=(1, 2, 3, 4)):
+def validate_state(state, formats=(1, 2, 3, 4, 5)):
     """Returns (summary counts, document ids of all links, notes folder, connection id)."""
     keys(state, STATE_KEYS, "Unexpected calendar state fields")
     version = state["formatVersion"]
@@ -252,13 +347,16 @@ def validate_state(state, formats=(1, 2, 3, 4)):
         text(item["homeworkID"], 1, 100, "Invalid homework id")
         foundation_date(item["doneAt"])
     check(len({(item["source"], item["homeworkID"]) for item in marks}) == len(marks), "Duplicate homework mark")
+    notebooks = study(state, version)
     summary = {"formatVersion": version, "events": len(events), "series": sum(e.get("recurrence") is not None for e in events),
                "reminders": sum(e.get("reminderMinutes") is not None for e in events), "noteLinks": len(links),
                "lessonMappings": len(mappings), "deletedEvents": len(deleted), "connection": connection_id is not None,
                "lessonReminder": state.get("settings", {}).get("lessonReminderMinutes") is not None,
                "homeworkDone": len(marks), "systemCalendars": state.get("settings", {}).get("systemCalendars") is not None,
-               "systemNotes": sum(item["target"]["kind"] == "system" for item in links)}
-    return summary, set(documents), folder, connection_id
+               "systemNotes": sum(item["target"]["kind"] == "system" for item in links),
+               "studyFields": len(state.get("studyFields", [])), "studyRules": len(state.get("studyRules", [])),
+               "lessonTopics": len(state.get("lessonTopics", []))}
+    return summary, set(documents) | set(notebooks), folder, connection_id
 
 
 @strict

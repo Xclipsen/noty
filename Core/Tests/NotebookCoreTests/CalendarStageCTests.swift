@@ -48,7 +48,7 @@ final class CalendarStageCTests: XCTestCase {
         let (file, bytes) = try writePackage(Self.format3JSON)
         let repository = CalendarRepository(areaRoot: root)
         let loaded = try await repository.load()
-        XCTAssertEqual(loaded.state.formatVersion, 4)
+        XCTAssertEqual(loaded.state.formatVersion, CalendarState.currentFormat)
         XCTAssertEqual(loaded.state.events.first?.reminderMinutes, 10)
         XCTAssertNil(loaded.state.settings.systemCalendars)
         var next = loaded.state
@@ -66,14 +66,14 @@ final class CalendarStageCTests: XCTestCase {
         XCTAssertFalse(reopened.recovered)
     }
 
-    func testFormat3WithFormat4FieldsIsRejectedAndFormat5Locks() {
+    func testFormat3WithFormat4FieldsIsRejectedAndFormat6Locks() {
         let withMarks = Self.format3JSON.replacingOccurrences(of: #""formatVersion":3"#,
             with: #""formatVersion":3,"homeworkDone":[{"doneAt":815000000,"homeworkID":"1","source":"webuntis:x"}]"#)
         XCTAssertThrowsError(try CalendarStore.decode(Data(withMarks.utf8)))
         let withSystem = Self.format3JSON.replacingOccurrences(of: #""weekDays":5}"#, with: #""weekDays":5,"systemCalendars":{"enabled":true}}"#)
         XCTAssertThrowsError(try CalendarStore.decode(Data(withSystem.utf8)))
-        XCTAssertThrowsError(try CalendarStore.decode(Data(#"{"events":[],"formatVersion":5}"#.utf8))) {
-            XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(5))
+        XCTAssertThrowsError(try CalendarStore.decode(Data(#"{"events":[],"formatVersion":6}"#.utf8))) {
+            XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(6))
         }
     }
 
@@ -101,8 +101,8 @@ final class CalendarStageCTests: XCTestCase {
         state.homeworkDone = [CalendarHomeworkMark(source: "webuntis:abc", homeworkID: "7", doneAt: created)]
         let bytes = try CalendarArchive.encodeState(state)
         XCTAssertEqual(try CalendarArchive.decodeState(bytes), state)
-        XCTAssertThrowsError(try CalendarArchive.decodeState(Data(#"{"events":[],"formatVersion":5}"#.utf8))) {
-            XCTAssertEqual($0 as? CalendarArchiveError, .unsupported(5))
+        XCTAssertThrowsError(try CalendarArchive.decodeState(Data(#"{"events":[],"formatVersion":6}"#.utf8))) {
+            XCTAssertEqual($0 as? CalendarArchiveError, .unsupported(6))
         }
         let restored = try CalendarArchive.restored(CalendarArchiveContent(state: state), documents: [:], folders: [:])
         XCTAssertEqual(restored.state.settings.systemCalendars?.enabled, false, "Restore aktiviert keine Quelle")
