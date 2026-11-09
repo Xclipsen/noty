@@ -35,6 +35,6 @@ Die Bibliothek wird nur gelesen (schreibgeschützte `RevisionStore`, `BackupActi
 - **Ungeprüft am iPad:** Schalter und Status, tatsächlicher Upload und Upload-Anzeige, Sichern beim Verlassen der App (Hintergrundzeit), Platzhalter beim Zurückholen, Zurückholen als Kopie und Ersetzen an echten Heften.
 - **Noch nicht umgesetzt:** Abgleich in beide Richtungen (Stufe 2, braucht ein zweites Gerät), Aufräumen alter `.partial`-Reste, Anzeige des iCloud-Speicherplatzes insgesamt.
 
-## Normale noty (08.11.2026, Build 147)
+## Normale noty (09.11.2026, Build 149)
 
-`stable` steht seit Build 147 in `scripts/icloud-channels`: Die normale noty wird mit `xtool-noty` und dem Container `iCloud.de.la.noty` signiert. Voraussetzung im Apple-Entwicklerportal: Container `iCloud.de.la.noty` angelegt und der App-ID **„XTool XTL-BAFXLQ964V de la noty prototype“** zugeordnet (iCloud mit „Include CloudKit support“). Fehlt die Zuordnung, lehnt `ota_check.py` den Build ab – es wird dann nichts veröffentlicht. Die iCloud-Ablage ist in der App anfangs aus (Schalter unter Backup & Daten).
+`stable` steht seit Build 149 in `scripts/icloud-channels`: Die normale noty wird mit `xtool-noty` und dem Container `iCloud.de.la.noty` signiert. Voraussetzung im Apple-Entwicklerportal: Container `iCloud.de.la.noty` angelegt und der App-ID **„XTool XTL-BAFXLQ964V de la noty prototype“** zugeordnet (iCloud mit „Include CloudKit support“). Fehlt die Zuordnung, lehnt `ota_check.py` den Build ab – es wird dann nichts veröffentlicht. Die iCloud-Ablage ist in der App anfangs aus (Schalter unter Backup & Daten).
