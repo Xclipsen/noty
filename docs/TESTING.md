@@ -2,6 +2,10 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Zusammenführung Gesetzesverweise, Feinschliff, Diagnose (09.11.2026, `dev`/`main`, Build 149)
+
+`feat/paragraphen`, `feat/feinschliff` und `feat/diagnose` in drei Stufen in `dev` gemergt (Konflikte zugunsten des neueren dev-Stands: Einstellungen, Kalender, Editor-Aufbau; die Diagnose-Berichte sitzen in der Entwicklerseite der Einstellungen, der Editor misst den Seitenwechsel). **Implementiert, `swift test --package-path Core`: 1617 Tests, 0 Fehler, 7 übersprungen; Diagnose-Servertests 19 OK; Host-Roundtrip bestanden; `xtool dev build` ohne Fehler. Nicht installiert, am iPad ungeprüft.** Gebündelter Gerätetest offen: Gesetzesverweis in einem Textfeld („§ 3 MuSchG“) erkannt, Hover-Karte, Öffnen im Gesetzesfenster, ⌘L ohne Absturz; Start nach erzwungenem Abbruch (LaunchGuard-Hinweis); Einstellungen › Entwickler › Fehlerberichte mit Testbericht am Server.
+
 ## Fehler- und Ruckler-Diagnose (08.11.2026, Branch `feat/diagnose`)
 
 Beschreibung: [DIAGNOSE](DIAGNOSE.md). **Implementiert, Core-Tests (`DiagnosticTests`) und Servertests (`python3 -B -m unittest diagnostics/test_server.py scripts/test_diag_report.py`) bestanden, iPad-SDK-Build erfolgreich.** Server auf diesem Rechner installiert; über den öffentlichen HTTPS-Pfad: Testbericht 201, Duplikat 409, ohne Schlüssel 401, Testdatei danach entfernt. **Kein Build mit Diagnose veröffentlicht oder installiert, am iPad ungeprüft** (MetricKit-Zustellung, Hänger-Wächter, Senden aus der App, Leistung).
