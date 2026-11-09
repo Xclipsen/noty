@@ -76,7 +76,9 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// Counts edits of the attached store's text (`NSTextStorage` notifications).
     private var flowVersion = 0
     private weak var observedStorage: NSTextStorage?
-    private var flowObserver: NSObjectProtocol?
+    /// Removes itself on release, also when the links object goes without
+    /// `observe(nil)` (Swift-Audit S17).
+    private var flowObserver: NotificationObserverToken?
     /// The flow's citations hide from an edit of its text until it is scanned again.
     private var flowStale = false
     private var lastFlowKey: FlowKey?
@@ -96,7 +98,14 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     private weak var pdfRequested: PDFPage?
     private var pdfLoaded = false
     private var pdfString: String?
-    private var pdfCache: (page: ObjectIdentifier, layout: PageLayout, found: [LawCitation], placements: [LawCitationPlacement])?
+    /// PDF citations laid out so far; complete when `next == found.count`
+    /// (built in chunks, `pdfChunk` per run-loop turn).
+    private var pdfCache: (page: ObjectIdentifier, layout: PageLayout, found: [LawCitation], placements: [LawCitationPlacement], next: Int)?
+    /// A further chunk of PDF placements waits in `LawCitationPDFText`.
+    private var pdfStepQueued = false
+    /// Consecutive scans or builds postponed by a stroke (or a Pencil touch
+    /// that never ended); `restRetryLimit` parks them until the next event.
+    private var restRetries = 0
     /// Inputs of the last requested scan; equal inputs schedule nothing.
     private var requested: ContentKey?
     private var pending: DispatchWorkItem?
@@ -124,6 +133,10 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     private var downTarget: LawCitationPlacement.Key?
 
     private static let debounce: TimeInterval = 0.3
+    private static let restRetryLimit = 10
+    private static let restRetryCeiling: TimeInterval = 5
+    /// PDF selections per run-loop turn (each costs about 0.5–5 ms).
+    private static let pdfChunk = 12
     private static let pencilDwell: TimeInterval = 0.5
     private static let pointerDwell: TimeInterval = 0.4
     /// No pencil card this soon after the Pencil left the paper (writing hovers between letters).
@@ -158,10 +171,11 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         installed = true
         underline.frame = sheet.bounds
         underline.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        underline.onWindowChange = { [weak self] attached in
-            guard let self else { return }
-            if attached { self.requested = nil; self.contentChanged() } else { self.detached() }
-        }
+        // Inserting moves the underline into the window: its callback would run
+        // `contentChanged` again inside this one, before gestures and
+        // subscriptions exist. The callback is set only once all is wired
+        // (end of this function); the outer call scans as usual.
+        underline.onWindowChange = nil
         sheet.insertSubview(underline, aboveSubview: sheet.textLayer)
 
         hover.addTarget(self, action: #selector(hovered(_:)))
@@ -177,19 +191,33 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
             gesture.delegate = self
             sheet.addGestureRecognizer(gesture)
         }
+        // Main delivery guaranteed whoever publishes (the closures are main-actor isolated).
         model.$scannerGeneration.removeDuplicates().dropFirst()
-            .sink { [weak self] _ in self?.scannerChanged() }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.scannerChanged() } }
             .store(in: &subscriptions)
         model.$handwritingEnabled.removeDuplicates().dropFirst()
-            .sink { [weak self] _ in self?.scannerChanged() }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.scannerChanged() } }
             .store(in: &subscriptions)
         inkReader.onChange = { [weak self] in self?.inkChanged() }
         inkReader.isIdle = { [weak self] in self?.inkIdle ?? false }
+        underline.onWindowChange = { [weak self] attached in
+            guard let self, self.installed else { return }
+            if attached { self.requested = nil; self.contentChanged() } else { self.detached() }
+        }
     }
 
     // MARK: Viewport
 
-    private static var viewports: [ObjectIdentifier: (offset: CGPoint, zoom: CGFloat)] = [:]
+    /// Last offset/zoom per viewport. Weak keys: a released scroll view's entry
+    /// goes with it, and a new one at a reused address starts fresh instead of
+    /// counting as a move (Swift-Audit S20).
+    private final class ViewportState {
+        let offset: CGPoint, zoom: CGFloat
+        init(offset: CGPoint, zoom: CGFloat) { self.offset = offset; self.zoom = zoom }
+    }
+    private static let viewports = NSMapTable<UIScrollView, ViewportState>.weakToStrongObjects()
     /// Scroll or zoom of the notebook began: a shown card goes at once.
     static func viewportMoved() {
         lastViewportMove = CACurrentMediaTime()
@@ -199,9 +227,9 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// Every scroll/zoom callback, also programmatic ones (jumps, caret
     /// reveal): a card goes once offset or zoom really changed.
     static func viewportChanged(_ viewport: UIScrollView) {
-        let id = ObjectIdentifier(viewport), now = (offset: viewport.contentOffset, zoom: viewport.zoomScale)
-        let last = viewports[id]
-        viewports[id] = now
+        let now = ViewportState(offset: viewport.contentOffset, zoom: viewport.zoomScale)
+        let last = viewports.object(forKey: viewport)
+        viewports.setObject(now, forKey: viewport)
         guard let last else { return }
         if hypot(now.offset.x - last.offset.x, now.offset.y - last.offset.y) > 0.5 || abs(now.zoom / max(last.zoom, 0.0001) - 1) > 0.001 {
             lastViewportMove = CACurrentMediaTime()
@@ -232,7 +260,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// its texts are already scanned.
     func contentChanged(full: Bool = false) {
         guard let sheet, let editor = sheet.configuration else { return }
-        guard editor.lawCitations else { clear(); return }
+        // Safe mode after interrupted launches: no links on pages (LaunchGuard).
+        guard editor.lawCitations, !LaunchGuard.safeMode else { clear(); return }
         activate()
         if full, !previewBoxes.isEmpty { previewBoxes = []; redraw() }
         if let previous = pageID, previous != editor.pageID { pageLeft(previous) }
@@ -247,7 +276,11 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         let key = ContentKey(pageID: editor.pageID, layout: editor.layout, paper: sheet.textLayer.linePaper,
                              boxes: editor.textBoxes, source: editor.sourcePage.map { ObjectIdentifier($0) },
                              generation: model.scannerGeneration, context: editor.lawContext, flow: flow)
-        guard key != requested else { return }
+        // Postponed scans that gave up (stuck Pencil touch) start again with this event.
+        let parked = restRetries >= Self.restRetryLimit && pending == nil
+        if parked { restRetries = 0 }
+        inkReader.resume()
+        guard key != requested || parked else { return }
         // Another page or geometry: old positions are never shown on it.
         if requested?.pageID != key.pageID || requested?.layout != key.layout { textPlacements = []; placementsChanged() }
         requested = key
@@ -270,10 +303,9 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// Edits of the flow's text: its underlines hide and it is scanned again.
     private func observe(_ storage: NSTextStorage?) {
         guard storage !== observedStorage else { return }
-        if let flowObserver { NotificationCenter.default.removeObserver(flowObserver) }
         flowObserver = nil; observedStorage = storage
         guard let storage else { return }
-        flowObserver = NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification, object: storage, queue: nil) { [weak self] note in
+        flowObserver = NotificationObserverToken(NotificationCenter.default.addObserver(forName: NSTextStorage.didProcessEditingNotification, object: storage, queue: .main) { [weak self] note in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.flowVersion &+= 1
@@ -281,7 +313,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
                 // Never inside the edit itself.
                 DispatchQueue.main.async { [weak self] in self?.contentChanged() }
             }
-        }
+        })
     }
     /// Every rendering pass (`WorksheetView.updateRendering`): the viewport
     /// attaches the flow's page without configuring the sheet again.
@@ -327,7 +359,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         guard let sheet, let editor = sheet.configuration, editor.lawCitations, sheet.window != nil else { return }
         guard let scanner = model.scanner else { clear(); return }
         // Never while a stroke is drawn: try again once the Pencil rests.
-        if sheet.inkActive || pencilDown { schedule(); return }
+        if sheet.inkActive || pencilDown { retryWhileWriting(); return }
+        restRetries = 0
         let generation = model.scannerGeneration, lawID = editor.lawContext.defaultLawID
         if generation != scannedGeneration || lawID != scannedLawID {
             scanned = [:]; boxCache = [:]; pdfCache = nil; flowCache = nil
@@ -350,7 +383,7 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         // Only this page's texts stay cached.
         scanned = scanned.filter { texts.contains($0.key) }
         // The flow is scanned once per document text for all its pages (`LawCitationFlowScans`).
-        var flowScan: Task<[LawCitation], Never>?
+        var flowScan: Task<[LawCitation]?, Never>?
         let flowString = flowText.flatMap { $0.text.isEmpty ? nil : $0.text }
         if let flowString, let store = flowText?.store, scanned[flowString] == nil {
             if let shared = LawCitationFlowScans.result(flowString, store: store, generation: generation, lawID: lawID) {
@@ -367,7 +400,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
             var found = missing.isEmpty ? [] : await Task.detached(priority: .utility) {
                 missing.map { ($0, scanner.citations(in: $0, defaultLawID: lawID)) }
             }.value
-            if let flowScan, let flowString { found.append((flowString, await flowScan.value)) }
+            // A superseded flow scan yields nil: the newer text's scan follows.
+            if let flowScan, let flowString, let citations = await flowScan.value { found.append((flowString, citations)) }
             guard let self, self.scanToken == token, self.scannedGeneration == generation, self.scannedLawID == lawID,
                   self.model.scannerGeneration == generation, self.sheet?.configuration?.pageID == page else { return }
             for (text, citations) in found { self.scanned[text] = citations }
@@ -406,7 +440,8 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// Geometry for the found citations (main actor: TextKit and PDFKit).
     private func build() {
         guard let sheet, let editor = sheet.configuration else { return }
-        if sheet.inkActive || pencilDown { schedule(); return }
+        if sheet.inkActive || pencilDown { retryWhileWriting(); return }
+        restRetries = 0
         let origin = sheet.pageLayout.contentOrigin, paper = sheet.textLayer.linePaper
         let dark = (editor.margins?.color ?? editor.paperColor) == .dark
         var result: [LawCitationPlacement] = []
@@ -423,14 +458,19 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         }
         boxCache = cache
         if let source = editor.sourcePage, pdfPage === source, let text = pdfString, let found = scanned[text], !found.isEmpty {
-            let id = ObjectIdentifier(source)
-            if let cached = pdfCache, cached.page == id, cached.layout == sheet.pageLayout, cached.found == found {
-                result += cached.placements
-            } else {
-                let placed = Self.placements(found, on: source, text: text, layout: sheet.pageLayout)
-                pdfCache = (id, sheet.pageLayout, found, placed)
-                result += placed
+            let id = ObjectIdentifier(source), layout = sheet.pageLayout
+            var entry = pdfCache.flatMap { $0.page == id && $0.layout == layout && $0.found == found ? $0 : nil }
+                ?? (page: id, layout: layout, found: found, placements: [], next: 0)
+            // A dense page (80+ citations) is laid out over several turns:
+            // one chunk now, the rest through the shared one-per-turn queue.
+            if entry.next < found.count {
+                let end = min(found.count, entry.next + Self.pdfChunk)
+                entry.placements += Self.placements(Array(found[entry.next..<end]), on: source, text: text, layout: layout)
+                entry.next = end
             }
+            pdfCache = entry
+            result += entry.placements
+            if entry.next < found.count { queuePDFStep() }
         }
         // Text editor 2: this page's part of the flow, if the text read is still the store's.
         let flow = currentFlowKey()
@@ -451,6 +491,29 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
         }
         textPlacements = result
         placementsChanged()
+    }
+
+    /// The next chunk of PDF placements, after the other sheets' turns.
+    private func queuePDFStep() {
+        guard !pdfStepQueued else { return }
+        pdfStepQueued = true
+        LawCitationPDFText.enqueue { [weak self] in
+            guard let self else { return }
+            self.pdfStepQueued = false
+            // Superseded or cleared meanwhile: the next scan builds again.
+            guard self.pending == nil, let cached = self.pdfCache, cached.next < cached.found.count else { return }
+            self.build()
+        }
+    }
+
+    /// A stroke (or a Pencil touch that never ended) postpones scanning:
+    /// 0.3, 0.6, 1.2 … s up to `restRetryCeiling`, parked after
+    /// `restRetryLimit` until the next configuration or rendering pass.
+    private func retryWhileWriting() {
+        guard restRetries < Self.restRetryLimit else { pending?.cancel(); pending = nil; return }
+        let delay = min(Self.restRetryCeiling, Self.debounce * pow(2, Double(restRetries)))
+        restRetries += 1
+        schedule(after: delay)
     }
 
     /// Ink results arrived (or went): they join the text's placements.
@@ -627,6 +690,11 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     /// The sheet's zoom (page point → screen point): dots stay the same size on screen.
     func displayScaleChanged(_ scale: CGFloat) {
         flowMoved()
+        // A real rendering pass: parked retries (ink, scan) try again.
+        inkReader.resume()
+        if restRetries >= Self.restRetryLimit, pending == nil, sheet?.configuration?.lawCitations == true, model.scanner != nil {
+            restRetries = 0; schedule()
+        }
         guard installed, scale.isFinite, scale > 0, abs(scale - displayScale) / displayScale > 0.15 else { return }
         displayScale = scale
         underline.restyle(scale: scale)
@@ -888,6 +956,14 @@ final class LawCitationPageLinks: NSObject, UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }
 
+/// A block observer that unregisters when released (`deinit` of a
+/// `@MainActor` class cannot reach its isolated properties).
+final class NotificationObserverToken: @unchecked Sendable {
+    private let token: NSObjectProtocol
+    init(_ token: NSObjectProtocol) { self.token = token }
+    deinit { NotificationCenter.default.removeObserver(token) }
+}
+
 /// Scanner results of Text editor 2's flow, shared by the sheets showing it:
 /// per document text store one finished result and at most one scan in
 /// flight, which every page asking for the same text and context awaits.
@@ -900,7 +976,7 @@ enum LawCitationFlowScans {
         }
     }
     private static var done: [ObjectIdentifier: (key: Key, text: String, found: [LawCitation])] = [:]
-    private static var running: [ObjectIdentifier: (key: Key, text: String, task: Task<[LawCitation], Never>)] = [:]
+    private static var running: [ObjectIdentifier: (key: Key, text: String, task: Task<[LawCitation]?, Never>)] = [:]
     /// Stores remembered (a closed document's entry goes with the next ones).
     private static let limit = 4
 
@@ -910,15 +986,23 @@ enum LawCitationFlowScans {
     }
     /// The running scan of exactly this text and context, or a new one
     /// (replacing an older one of the store, whose result is then unused).
+    /// At most one whole-text scan per store runs (Swift-Audit S20): a new
+    /// one waits for the running one, and a replaced one that has not begun
+    /// yet skips its scan and yields nil.
     static func scan(_ text: String, store: ObjectIdentifier, generation: Int, lawID: String?,
-                     scanner: LawCitationScanner) -> Task<[LawCitation], Never> {
+                     scanner: LawCitationScanner) -> Task<[LawCitation]?, Never> {
         let key = Key(text, generation: generation, lawID: lawID)
         if let current = running[store], current.key == key, current.text == text { return current.task }
-        let task = Task.detached(priority: .utility) { scanner.citations(in: text, defaultLawID: lawID) }
+        let previous = running[store]?.task
+        previous?.cancel()
+        let task = Task.detached(priority: .utility) { () -> [LawCitation]? in
+            _ = await previous?.value
+            guard !Task.isCancelled else { return nil }
+            return scanner.citations(in: text, defaultLawID: lawID)
+        }
         running[store] = (key, text, task)
         Task {
-            let found = await task.value
-            guard running[store]?.key == key else { return }
+            guard let found = await task.value, running[store]?.key == key else { return }
             running[store] = nil
             if done[store] == nil, done.count >= limit, let old = done.keys.first { done[old] = nil }
             done[store] = (key, text, found)
@@ -991,13 +1075,21 @@ final class LawCitationUnderlineView: UIView {
             if placement.kind == .ink {
                 let path = placement.onDark ? inkDarkPath : inkLightPath
                 for line in placement.lines {
-                    let radius = min(4, line.area.height / 3, line.area.width / 3)
-                    path.addRoundedRect(in: line.area, cornerWidth: radius, cornerHeight: radius)
+                    // CoreGraphics asserts on NaN, negative or oversized radii:
+                    // a degenerate rect is skipped instead of drawn.
+                    let area = line.area.standardized
+                    guard !area.isNull, !area.isInfinite, area.origin.x.isFinite, area.origin.y.isFinite,
+                          area.width.isFinite, area.height.isFinite, area.width > 0, area.height > 0 else { continue }
+                    let radius = max(0, min(4, area.height / 3, area.width / 3))
+                    path.addRoundedRect(in: area, cornerWidth: radius, cornerHeight: radius)
                 }
                 continue
             }
             let path = placement.onDark ? darkPath : lightPath
-            for line in placement.lines { path.move(to: line.start); path.addLine(to: line.end) }
+            for line in placement.lines {
+                guard line.start.x.isFinite, line.start.y.isFinite, line.end.x.isFinite, line.end.y.isFinite else { continue }
+                path.move(to: line.start); path.addLine(to: line.end)
+            }
         }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         light.path = lightPath.isEmpty ? nil : lightPath

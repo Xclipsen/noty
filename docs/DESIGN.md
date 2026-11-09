@@ -2,16 +2,18 @@
 
 ## Bewegung: Regeln nach Häufigkeit – 07.11.2026
 
-Motion-Durchsicht (Tokens in `NotyMotion.swift`). Grundregel unverändert: nur vom Nutzer ausgelöstes Chrome animieren, nie Heft-, Tinten- oder Autosave-Werte. Ohne Paragraphen-Funktion auf dev portiert (07.11.2026).
+Motion-Durchsicht (Tokens in `NotyMotion.swift`). Grundregel unverändert: nur vom Nutzer ausgelöstes Chrome animieren, nie Heft-, Tinten- oder Autosave-Werte.
 
 - **Häufiges und Tastatur sind sofort.** Werkzeugwechsel (Tippen, Doppeltipp, Squeeze, Tasten), Tab-/Filterwechsel und Folge-Scroll der Seitenleiste, Ordnerwechsel und Tastaturfokus der Bibliothek, Fokuslinie des Gesetzesfensters, Ziffern in „Gehe zu Seite“. Per Taste geöffnete Seitenleiste (Seiten/Gliederung/Lesezeichen) und die Gesetzsuche (⌘F, Esc) erscheinen ohne Gleiten (`NotyMotion.instant`); Knopf-/Tippwege gleiten weiter. Ausnahme bis zur Nutzerentscheidung: das Gesetzesfenster per Taste animiert weiter.
 - **Keine Feder ohne Geste.** `palette` (Leistenebene, Andocken, Toast) ist kritisch gedämpft (0,3 s, kein Überschwingen); `panel` unverändert im Gefühl. Austritte sind schneller als Eintritte (`NotyMotion.exit`, 0,12 s).
 - **Markierungsleiste im Gesetz:** 0,2 s ease-out, Scale 0,97, wächst von der Seite, die zur Auswahl zeigt; Austritt 0,12 s.
+- **Verweiskarte** wächst aus dem Verweis (auch am Rand geklemmt), verschwindet in 0,12 s; Stift aufs Papier blendet sie im selben Frame aus.
 - **Werkzeugoptionen** gleiten aus der Leiste heraus (oben, unten, seitlich). **Lasche** des geparkten Gesetzesfensters schiebt sich 14 pt aus der Kante, in die das Fenster verschwindet.
 - **Seite löschen:** 0,2 s ease-out ausblenden mit Scale 0,96 (statt Zusammenquetschen mit ease-in), hinter allen übrigen Seiten, die darüber nachrücken. Ladeanzeige blendet ease-out ein.
 - **Drücken:** Scale 0,96 für `NotyPressStyle`, `NotyToolStyle` und die Squeeze-Palette (vorher 0,91/0,94).
 - **Bewegung reduzieren** heißt überblenden, nicht nichts: Seitenleiste, Werkzeugoptionen, Toast, Gesetzsuche und Gesetzesfenster (öffnen/parken/schließen) blenden 0,15 s (`NotyMotion.fade` an der Einblendung selbst) ohne Verschiebung; das Layout (Heftbreite, Andocken) wechselt sofort.
-- **Haptik:** Begradigen nach Halten im Gesetz-PDF tickt am Pencil Pro wie im Heft (`UICanvasFeedbackGenerator.pathCompleted`).
+- **Absatz-Blitz** nach einem Verweissprung: 60 Hz, nur der Absatz wird neu gezeichnet, Ausblenden 0,6 s ease-out.
+- **Haptik:** Begradigen nach Halten im Gesetz-PDF tickt am Pencil Pro wie im Heft (`UICanvasFeedbackGenerator.pathCompleted`). Hover-Haptik an Verweisen unverändert (Entscheidung offen).
 - **Ausnahme auf Nutzerwunsch (08.11.2026): Hefte ⇄ Kalender per Tippen** gleitet länger als die Tap-Regel (`NotyMotion.modeSwitch`: `.smooth(duration: 0.45)`, kein Überschwingen; Inhalt 20 pt, Skalierung 0,98, gehende Seite nach ≈ 0,18 s ausgeblendet), Spalte, Umschalter und Markierung in derselben Transaktion; Tastatur sofort, „Bewegung reduzieren“ 0,2 s Überblenden ([CALENDAR-PLAN](CALENDAR-PLAN.md#umschalter-bibliothekkalender-08112026)).
 - Bewusst beibehalten: Hover-Lift der Werkzeugsymbole, Ausweichen der Seite vor den Optionen, elastisches Zurückfedern, laufende Auswahlkontur, Ebenenpfeil, sofortige Seitensprünge, Schreibmaschinen-Gleiten, Squeeze-Fächer.
 - **Kalender** (nur `feat/kalender`, noty calendar): folgt seit dem Feinschliff vom 08.11.2026 diesen Regeln (`CalendarMotion` auf den `NotyMotion`-Tokens: Tastatur ohne Bewegung, Taps ohne Überschwingen, Feder nur nach Gesten); Einzelheiten in [CALENDAR-PLAN](CALENDAR-PLAN.md#bewegung-und-animationen-07112026-feinschliff-08112026). Implementiert und gebaut, nicht installiert, am iPad ungeprüft.

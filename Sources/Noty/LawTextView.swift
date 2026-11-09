@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Combine
+import os
 import NotebookCore
 
 struct NativeLawText: UIViewRepresentable {
@@ -92,16 +93,20 @@ struct NativeLawText: UIViewRepresentable {
             c.linkTap?.isEnabled = !penActive
             c.applyHighlights()
         }
-        let bodyKey = "\(sectionID):\(fontSize):\(text.hashValue):\(html.hashValue):\(notes.hashValue)"
-        if c.bodyKey != bodyKey {
+        // Identity, not a hash of up to 250 KB per SwiftUI update (window drag,
+        // hover, selection): law, version, section, size and lengths, then the
+        // strings themselves (equal storage compares in O(1)).
+        let lengths = "\(text.utf8.count):\(html?.utf8.count ?? -1):\(notes.utf8.count)"
+        let bodyKey = "\(lawID)|\(versionID)|\(sectionID):\(fontSize):\(lengths)"
+        if c.bodyKey != bodyKey || c.bodyText != text || c.bodyHTML != html || c.bodyNotes != notes {
             let changedSection = c.sectionID != sectionID
             let resized = !changedSection && c.fontSize != fontSize
             let offset = v.contentOffset
             // The first visible character stays on top when the size changes.
             let topCharacter = resized ? v.closestPosition(to: CGPoint(x: v.textContainerInset.left + 1, y: offset.y + v.textContainerInset.top + 1)) .map { v.offset(from: v.beginningOfDocument, to: $0) } : nil
             let attributes = LawReadingStyle.attributes(fontSize: fontSize)
-            let richKey = "\(sectionID):\(text.hashValue):\(html.hashValue)"
-            if c.richKey != richKey {
+            let richKey = "\(lawID)|\(versionID)|\(sectionID):\(lengths)"
+            if c.richKey != richKey || c.bodyText != text || c.bodyHTML != html {
                 // The HTML importer spins a nested run loop through WebKit; inside
                 // updateUIView that re-entered SwiftUI's update and hung the app
                 // (Build 97). Show the plain text now, the rich text right after.
@@ -127,6 +132,7 @@ struct NativeLawText: UIViewRepresentable {
             let rendered = body.string
             if !notes.isEmpty { body.append(NSAttributedString(string: "\n\n" + notes, attributes: attributes)) }
             c.renderedText = rendered; c.bodyLength = (rendered as NSString).length
+            c.renderedVersion &+= 1
             selection.text = rendered
             c.updating = true
             v.attributedText = body
@@ -145,6 +151,7 @@ struct NativeLawText: UIViewRepresentable {
             }
             c.updating = false
             c.bodyKey = bodyKey; c.sectionID = sectionID; c.fontSize = fontSize; c.marksKey = nil
+            c.bodyText = text; c.bodyHTML = html; c.bodyNotes = notes
             if changedSection { c.endFlash(redraw: false); c.dropTarget(); c.endHoverCard() }
             c.refreshFlashRange()
             // The rich text replacing the plain one (or a new size) moves the
@@ -192,7 +199,21 @@ struct NativeLawText: UIViewRepresentable {
         private var richBase: CGFloat = 17
         var updating = false
         var renderedText = ""
+        /// Counts every new `renderedText` (cache key of the Absatz range).
+        var renderedVersion = 0
+        /// The inputs `bodyKey` was built from (compared after the cheap key).
+        var bodyText: String?, bodyHTML: String?, bodyNotes: String?
         var bodyLength = 0
+        /// The Absatz range in `renderedText`, computed once per text and
+        /// paragraph: `applyTarget` runs on every layout and scroll while a
+        /// jump holds, and two regex passes over a long section per call cost frames.
+        private var absatzCache: (paragraph: String, version: Int, range: NSRange?)?
+        func absatzRange(_ paragraph: String) -> NSRange? {
+            if let cached = absatzCache, cached.paragraph == paragraph, cached.version == renderedVersion { return cached.range }
+            let range = LawAbsatz.range(paragraph, in: renderedText)
+            absatzCache = (paragraph, renderedVersion, range)
+            return range
+        }
         var markRanges: [MarkRange] = []
         weak var stroke: LawPencilStroke?
         weak var tap: UITapGestureRecognizer?
@@ -214,6 +235,7 @@ struct NativeLawText: UIViewRepresentable {
         /// Cross-references of the shown section (`refreshLinks`), scanned off the main thread.
         private(set) var links: [LawCitation] = []
         private var linkKey = ""
+        private var linkVersion = -1
         /// The tap began while text or a mark was selected: it only ends that.
         private var tapHadSelection = false
         private var scannerWatch: AnyCancellable?
@@ -268,7 +290,7 @@ struct NativeLawText: UIViewRepresentable {
             var y: CGFloat
             switch target {
             case .paragraph(let paragraph):
-                guard let range = LawAbsatz.range(paragraph, in: renderedText), range.location < bodyLength else { self.target = nil; return }
+                guard let range = absatzRange(paragraph), range.location < bodyLength else { self.target = nil; return }
                 let glyphs = layout.glyphRange(forCharacterRange: NSRange(location: range.location, length: 1), actualCharacterRange: nil)
                 let rect = layout.boundingRect(forGlyphRange: glyphs, in: v.textContainer)
                 guard rect.minY.isFinite else { return }
@@ -305,14 +327,16 @@ struct NativeLawText: UIViewRepresentable {
                 flashTimer = timer
                 return
             }
-            let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
+            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
                 // The view went away: the timer ends itself.
                 let gone = MainActor.assumeIsolated { () -> Bool in
                     guard let self else { return true }
                     let elapsed = Date().timeIntervalSince(start)
                     guard elapsed > 1.3 else { return false }
-                    let alpha = 1 - CGFloat(elapsed - 1.3) / 0.8
-                    if alpha <= 0 { self.endFlash(redraw: true) } else { self.flashAlpha = alpha; self.applyHighlights() }
+                    // Ease-out over 0.6 s; only the Absatz is redrawn per frame.
+                    let t = min(1, CGFloat(elapsed - 1.3) / 0.6)
+                    let alpha = (1 - t) * (1 - t)
+                    if alpha <= 0 { self.endFlash(redraw: true) } else { self.flashAlpha = alpha; self.applyFlashOnly() }
                     return false
                 }
                 if gone { timer.invalidate() }
@@ -329,7 +353,7 @@ struct NativeLawText: UIViewRepresentable {
         /// The highlighted Absatz in the text shown now (plain or rich).
         func refreshFlashRange() {
             guard let flashParagraph else { flashRange = nil; return }
-            flashRange = LawAbsatz.range(flashParagraph, in: renderedText).flatMap { NSMaxRange($0) <= bodyLength ? $0 : nil }
+            flashRange = absatzRange(flashParagraph).flatMap { NSMaxRange($0) <= bodyLength ? $0 : nil }
         }
 
         // MARK: Cross-references
@@ -343,10 +367,12 @@ struct NativeLawText: UIViewRepresentable {
                 if !links.isEmpty { links = []; applyHighlights() }
                 return
             }
-            let key = "\(law)|\(parent.versionID)|\(preview.readerScannerGeneration)|\((text as NSString).length)|\(text.hashValue)"
-            guard key != linkKey else { return }
-            linkKey = key
-            if let hit = Self.linkCache[key] { links = hit; applyHighlights(); return }
+            // Rendered text identity: section, version and plain or rich text
+            // (the strings are compared only on a cache hit, never hashed).
+            let key = "\(law)|\(parent.versionID)|\(preview.readerScannerGeneration)|\(parent.sectionID)|\(rich != nil)|\(bodyLength)"
+            guard key != linkKey || renderedVersion != linkVersion else { return }
+            linkKey = key; linkVersion = renderedVersion
+            if let hit = Self.linkCache[key], hit.text == text { links = hit.links; applyHighlights(); return }
             if !links.isEmpty { links = []; applyHighlights() }
             Task { [weak self] in
                 let has = self?.parent.hasSection
@@ -355,13 +381,13 @@ struct NativeLawText: UIViewRepresentable {
                         .filter { $0.lawID != law || has?($0.reference.key) ?? true }
                 }.value
                 guard let self, self.linkKey == key else { return }
-                Self.linkCache[key] = found; Self.linkOrder.append(key)
+                if Self.linkCache.updateValue((text, found), forKey: key) == nil { Self.linkOrder.append(key) }
                 if Self.linkOrder.count > 32 { Self.linkCache[Self.linkOrder.removeFirst()] = nil }
                 self.links = found
                 self.applyHighlights()
             }
         }
-        @MainActor private static var linkCache: [String: [LawCitation]] = [:]
+        @MainActor private static var linkCache: [String: (text: String, links: [LawCitation])] = [:]
         @MainActor private static var linkOrder: [String] = []
         private var linksActive: Bool { parent.pen.kind == .none && parent.onCitation != nil }
         /// A plain tap on a cross-reference opens it in the reader. Not while
@@ -506,11 +532,11 @@ struct NativeLawText: UIViewRepresentable {
         /// source text is authoritative. Never fetch remote HTML resources.
         @MainActor static var importing = false
         /// Recently imported sections (paging back and forth imports once).
-        @MainActor private static var cache: [String: (rich: NSAttributedString, base: CGFloat)] = [:]
+        @MainActor private static var cache: [String: (rich: NSAttributedString, base: CGFloat, text: String, html: String?)] = [:]
         @MainActor private static var cacheOrder: [String] = []
         @MainActor func importRich(html: String?, text: String, key: String) {
             rich = nil
-            if let hit = Self.cache[key] { richBase = hit.base; rich = hit.rich; return }
+            if let hit = Self.cache[key], hit.text == text, hit.html == html { richBase = hit.base; rich = hit.rich; return }
             guard let html, !html.isEmpty, html.utf8.count <= 250_000,
                   html.range(of: "<(?:script|iframe|img|link|object|style)|(?:src|href)\\s*=|url\\s*\\(|@import", options: [.regularExpression, .caseInsensitive]) == nil else { return }
             Self.importing = true; defer { Self.importing = false }
@@ -526,7 +552,7 @@ struct NativeLawText: UIViewRepresentable {
             }
             richBase = lengths.max { $0.value < $1.value }?.key ?? 17
             rich = imported
-            Self.cache[key] = (imported, richBase); Self.cacheOrder.append(key)
+            if Self.cache.updateValue((imported, richBase, text, html), forKey: key) == nil { Self.cacheOrder.append(key) }
             if Self.cacheOrder.count > 12 { Self.cache[Self.cacheOrder.removeFirst()] = nil }
         }
         /// The imported text with every font scaled so the body text is `size` pt.
@@ -543,6 +569,25 @@ struct NativeLawText: UIViewRepresentable {
         /// the layout manager and redraws (no attribute changes).
         func applyHighlights() {
             guard let container else { return }
+            container.layout.fills = highlightFills()
+            container.layout.links = linksActive ? links.map(\.range).filter { NSMaxRange($0) <= bodyLength } : []
+            container.layout.invalidateDisplay(forCharacterRange: NSRange(location: 0, length: container.storage.length))
+        }
+        /// Fade step of the jump highlight: same fills, but only the Absatz is redrawn.
+        private func applyFlashOnly() {
+            guard let container, let flashRange, NSMaxRange(flashRange) <= container.storage.length else { applyHighlights(); return }
+            let layout = container.layout
+            layout.fills = highlightFills()
+            // The block is painted 4 pt beyond the Absatz lines: include one
+            // line fragment on each side, or the fade leaves stripes there.
+            let glyphs = layout.glyphRange(forCharacterRange: flashRange, actualCharacterRange: nil)
+            var lower = glyphs.location, upper = NSMaxRange(glyphs)
+            var line = NSRange()
+            if lower > 0 { layout.lineFragmentRect(forGlyphAt: lower - 1, effectiveRange: &line); lower = line.location }
+            if upper < layout.numberOfGlyphs { layout.lineFragmentRect(forGlyphAt: upper, effectiveRange: &line); upper = NSMaxRange(line) }
+            layout.invalidateDisplay(forGlyphRange: NSRange(location: lower, length: max(0, upper - lower)))
+        }
+        private func highlightFills() -> [LawMarkLayoutManager.Fill] {
             let selection = parent.selection
             var outlined = Set(selection.tapped ? selection.marks : [])
             if let adjusting = selection.controller?.adjusting { outlined.insert(adjusting) }
@@ -557,9 +602,7 @@ struct NativeLawText: UIViewRepresentable {
             if let flashRange, flashAlpha > 0, NSMaxRange(flashRange) <= bodyLength {
                 fills.insert(.init(range: flashRange, color: UIColor(Color.notyAccent).withAlphaComponent(0.2 * flashAlpha), outline: nil, block: true), at: 0)
             }
-            container.layout.fills = fills
-            container.layout.links = linksActive ? links.map(\.range).filter { NSMaxRange($0) <= bodyLength } : []
-            container.layout.invalidateDisplay(forCharacterRange: NSRange(location: 0, length: container.storage.length))
+            return fills
         }
         private func marks(in range: NSRange) -> [String] {
             markRanges.filter { NSIntersectionRange($0.range, range).length > 0 }.map(\.id)
@@ -770,6 +813,18 @@ struct LawTextJump: Equatable {
 /// and the citation card (excerpt, quote).
 enum LawAbsatz {
     private static let anyStart = try? NSRegularExpression(pattern: "(?m)^[ \\t\\u00A0]*\\(\\d+[a-z]?\\)")
+    /// Compiled once per marker: `range` runs on every layout and scroll
+    /// callback during a jump.
+    private static let markerPatterns = OSAllocatedUnfairLock<[String: NSRegularExpression]>(initialState: [:])
+    private static func markerPattern(_ marker: String) -> NSRegularExpression? {
+        if let cached = markerPatterns.withLock({ $0[marker] }) { return cached }
+        guard let re = try? NSRegularExpression(pattern: "(?m)^[ \\t\\u00A0]*(" + NSRegularExpression.escapedPattern(for: marker) + ")") else { return nil }
+        markerPatterns.withLock { patterns in
+            if patterns.count >= 64 { patterns.removeAll() }
+            patterns[marker] = re
+        }
+        return re
+    }
     /// From „(6)“ at the start of a line (else the first „(6)“ anywhere) up to
     /// the next Absatz at the start of a line, else to the end; trailing
     /// white space trimmed. Nil when the text has no such marker.
@@ -778,8 +833,7 @@ enum LawAbsatz {
         let all = NSRange(location: 0, length: source.length)
         let marker = "(\(paragraph))"
         var start: Int?
-        if let re = try? NSRegularExpression(pattern: "(?m)^[ \\t\\u00A0]*(" + NSRegularExpression.escapedPattern(for: marker) + ")"),
-           let match = re.firstMatch(in: text, range: all) {
+        if let re = markerPattern(marker), let match = re.firstMatch(in: text, range: all) {
             start = match.range(at: 1).location
         } else {
             let found = source.range(of: marker)

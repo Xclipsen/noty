@@ -40,6 +40,10 @@ struct LawCitationCardLayer: View {
                 if let presentation = model.presentation {
                     let anchor = presentation.anchor.offsetBy(dx: -global.minX, dy: -global.minY)
                     let place = Self.placement(anchor: anchor, size: CGSize(width: width, height: height), in: bounds)
+                    // Grow out of the citation itself (x is clamped to the edges,
+                    // so the card's centre is not necessarily above the citation).
+                    let unit = UnitPoint(x: width > 0 ? min(max((anchor.midX - place.origin.x) / width, 0), 1) : 0.5,
+                                         y: height > 0 ? min(max((anchor.midY - place.origin.y) / height, 0), 1) : 0.5)
                     // At most the reserved room: with large type the text gives
                     // up lines (header and hint stay), the card never grows over
                     // the citation.
@@ -50,12 +54,19 @@ struct LawCitationCardLayer: View {
                         // bottom of its room, below it at the top.
                         .frame(width: width, height: height, alignment: place.above ? .bottom : .top)
                         .offset(x: place.origin.x, y: place.origin.y)
-                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96, anchor: place.above ? .bottom : .top)))
+                        // Insertion carries its own animation; removal follows the
+                        // implicit exit below, so `NotyMotion.instant` (Pencil on
+                        // the paper) really removes the card in the same frame.
+                        .transition(.asymmetric(
+                            insertion: (reduceMotion ? AnyTransition.opacity : .opacity.combined(with: .scale(scale: 0.96, anchor: unit)))
+                                .animation(NotyMotion.highlight(reduceMotion)),
+                            removal: .opacity))
                         .id(model.cardID)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-            .animation(NotyMotion.highlight(reduceMotion), value: model.presentation == nil ? -1 : model.cardID)
+            // Exits are faster than entrances (also when switching citations).
+            .animation(NotyMotion.exit, value: model.presentation == nil ? -1 : model.cardID)
             // Rotation, split, law window, keyboard: the anchor is no longer where it was.
             .onChange(of: "\(geometry.size.width)|\(geometry.size.height)|\(global.minX)|\(global.minY)|\(keyboard)") { _, _ in
                 model.dismiss()
@@ -93,6 +104,9 @@ struct LawCitationCard: View {
 
     /// Height of the quote button; the hint row keeps this room for it.
     private static let quoteHeight: CGFloat = 44
+    /// Measured width of the quote button: the hint keeps clear of it at
+    /// large text sizes (it overlapped „Tippen zum Öffnen“ from AX1 on).
+    @State private var quoteWidth: CGFloat = 0
 
     var body: some View {
         Button { model.openPresented() } label: {
@@ -101,11 +115,13 @@ struct LawCitationCard: View {
                 bodyText
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.up.forward.square").accessibilityHidden(true)
-                    Text(openHint)
+                    Text(openHint).lineLimit(1).minimumScaleFactor(0.8)
                 }
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.white.opacity(0.55))
                 .padding(.top, 2)
+                // Card padding 14, button inset 6: quoteWidth leaves an 8-pt gap.
+                .padding(.trailing, model.canQuote ? quoteWidth : 0)
                 // Room beside the hint for the separate quote button above it.
                 .frame(minHeight: model.canQuote ? Self.quoteHeight - 10 : nil, alignment: .leading)
             }
@@ -114,7 +130,7 @@ struct LawCitationCard: View {
             // Whatever does not fit the room stays inside the card.
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .notyGlass()
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+            .notyGlassRim(RoundedRectangle(cornerRadius: 16, style: .continuous), opacity: 0.18, lineWidth: 0.5)
             .shadow(color: .black.opacity(0.4), radius: 14, y: 6)
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
@@ -144,6 +160,7 @@ struct LawCitationCard: View {
         Button { model.quotePresented() } label: {
             Label("Als Zitat einfügen", systemImage: "text.quote")
                 .font(.caption.weight(.semibold))
+                .lineLimit(1).fixedSize()
                 .foregroundStyle(Color.notyAccent)
                 .padding(.horizontal, 10).frame(minHeight: 30)
                 .background(Color.white.opacity(0.1), in: Capsule(style: .continuous))
@@ -152,6 +169,10 @@ struct LawCitationCard: View {
         }
         .buttonStyle(NotyPressStyle())
         .hoverEffect(.highlight)
+        // Never wider than the 292-pt card; the large content viewer shows it in full.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+        .accessibilityShowsLargeContentViewer()
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { quoteWidth = $0 }
         .accessibilityHint("Fügt den Gesetzestext mit Fundstelle unter dem Verweis als Textfeld ein")
     }
 
@@ -159,7 +180,8 @@ struct LawCitationCard: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: "book.closed").font(.subheadline).foregroundStyle(Color.notyAccent).accessibilityHidden(true)
-                Text(model.heading).font(.headline).foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.8)
+                // Two lines: a long „§ … Satz … Nr. …“ must keep the law abbreviation at its end.
+                Text(model.heading).font(.headline).foregroundStyle(.white).lineLimit(2).minimumScaleFactor(0.8)
             }
             if case let .section(_, title, _, _, _) = model.content, !title.isEmpty {
                 Text(title).font(.subheadline).foregroundStyle(.white.opacity(0.7)).lineLimit(2)

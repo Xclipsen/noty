@@ -43,7 +43,7 @@ struct NotebookLawContextView: View {
                         Button("Gesetzesbezug entfernen", role: .destructive) { preferences.set(NotebookLawContext(), for: documentID) }
                     }
                 } footer: {
-                    Text("Gilt nur auf diesem iPad und nur für „\(title)“. Die Einstellung wird nicht im Heft gespeichert und ist deshalb nicht im Backup, im PDF oder im Abgleich mit anderen Apps enthalten.")
+                    Text("Gilt nur auf diesem iPad und nur für \(NotyText.quoted(title)). Die Einstellung wird nicht im Heft gespeichert und ist deshalb nicht im Backup, im PDF oder im Abgleich mit anderen Apps enthalten.")
                 }
             }
             .navigationTitle("Gesetzesbezug")
@@ -88,6 +88,8 @@ private struct LawChoiceList: View {
     var body: some View {
         let laws = entries.filter { $0.kind != "administration" && matches($0) }
         let administrative = entries.filter { $0.kind == "administration" && matches($0) }
+        // Thousands of entries: open at the current choice instead of the top.
+        ScrollViewReader { proxy in
         List {
             if query.isEmpty {
                 row(id: nil, abbr: "Keins", name: "Bloße Paragraphen bleiben ohne Gesetz")
@@ -100,11 +102,17 @@ private struct LawChoiceList: View {
             }
             if entries.isEmpty {
                 Text("Der Gesetzeskatalog ist noch nicht geladen.").foregroundStyle(.secondary)
+            } else if !query.isEmpty, laws.isEmpty, administrative.isEmpty {
+                Text("Kein Gesetz passt zu \(NotyText.quoted(query)).").foregroundStyle(.secondary)
             }
+        }
+        .onAppear { proxy.scrollTo(selection ?? Self.noneID, anchor: .center) }
         }
         .searchable(text: $query, prompt: "Gesetz suchen")
         .navigationTitle("Standardgesetz")
     }
+
+    private static let noneID = "\u{0}none"
 
     private func row(id: String?, abbr: String, name: String) -> some View {
         Button {
@@ -122,5 +130,6 @@ private struct LawChoiceList: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selection == id ? .isSelected : [])
+        .id(id ?? Self.noneID)
     }
 }

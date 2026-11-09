@@ -1387,7 +1387,10 @@ final class ObjectEditingLayer: UIView, UIGestureRecognizerDelegate {
             let frames = inkRects(value.drawing)
             rects += applyingPreview ? frames.map { $0.applying(inkTransform ?? .identity) } : frames
         }
-        return rects.reduce(nil) { $0?.union($1) ?? $1 }
+        // A stroke with an empty path has `.null` bounds (origin +inf): it
+        // must not reach the bar's or contour's layer position.
+        let finite = rects.filter { !$0.isNull && !$0.isInfinite && [$0.minX, $0.minY, $0.width, $0.height].allSatisfy(\.isFinite) }
+        return finite.reduce(nil) { $0?.union($1) ?? $1 }
     }
     /// Render bounds of the selected strokes, kept per drawing and selection:
     /// a drag asks for the bounds several times per touch event, which went

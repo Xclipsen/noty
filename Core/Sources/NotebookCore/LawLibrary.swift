@@ -63,7 +63,13 @@ public struct LawDocument: Codable, Sendable {
     public func validated(for entry: LawEntry, version target: LawVersion) throws -> Self {
         try Self.checkHeader(schemaVersion: schemaVersion, id: id, version: version, sectionIDs: sections.map(\.id), for: entry, version: target)
         guard sections.allSatisfy({ $0.text.utf8.count < 8_000_000 }) else { throw LawError.invalid("Gesetzesdatei passt nicht zum Katalog.") }
-        return self
+        var checked = self
+        // A PDF page below 1 (or a non-finite top) is no position: the section
+        // then has none, like one the server sent without it.
+        for index in checked.sections.indices where checked.sections[index].pdf.map({ $0.page < 1 || !$0.top.isFinite }) == true {
+            checked.sections[index].pdf = nil
+        }
+        return checked
     }
     /// The catalogue rules of `validated(for:version:)` apart from the section
     /// texts; shared with `LawDocumentHeader` so both stay the same.

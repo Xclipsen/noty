@@ -465,9 +465,17 @@ final class LibraryModel: ObservableObject {
     /// the editor then restores its remembered page itself.
     private func reopenLastNotebook() async {
         guard let raw = UserDefaults.standard.string(forKey: lastOpenedKey) else { return }
+        // The last run ended before it settled (LaunchGuard): the notebook may
+        // be what crashed, so it is not reopened and forgotten for later
+        // launches too; the user opens it from the library.
+        if LaunchGuard.shared.skipsRestore {
+            LaunchGuard.log.notice("[launch] last notebook not reopened (interrupted launch)")
+            notebookClosedByUser(); return
+        }
         // Settings › Allgemein › „Zuletzt geöffnetes Heft wieder öffnen“ (default on).
         guard UserDefaults.standard.object(forKey: AppSettingsKey.reopenLastNotebook) as? Bool ?? true else { return }
         guard ready, opened == nil, !busy else { return }
+        LaunchGuard.log.notice("[launch] reopening last notebook")
         guard let id = UUID(uuidString: raw), let item = snapshot.items.first(where: { $0.id == id }),
               !item.isFolder, !snapshot.isTrashed(id) else { notebookClosedByUser(); return }
         busy = true
@@ -526,7 +534,8 @@ final class LibraryModel: ObservableObject {
         let repository = NotebookRepository(directory: root)
         do {
             let prepared = try await repository.prepareRestore(from: url)
-            try EditorModelValidation.validate(prepared.document, assets: prepared.assets)
+            // Off the UI actor: same checks and errors as the catalogue path.
+            try await EditorModelValidation.validateDetached(prepared.document, assets: prepared.assets)
             snapshot = try await store.load().snapshot
             var replacing: UUID?
             if let existing = snapshot.activeNotebook(prepared.sourceDocumentID) {

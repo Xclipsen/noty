@@ -149,7 +149,8 @@ final class LawCitationPreviewModel: ObservableObject {
         guard self.laws !== laws else { return }
         self.laws = laws
         watching = [
-            laws.$catalog.sink { [weak self] catalog in
+            // Main delivery guaranteed, whoever publishes (`assumeIsolated` traps otherwise).
+            laws.$catalog.receive(on: DispatchQueue.main).sink { [weak self] catalog in
                 // `sink` runs before the property is set: use the value passed.
                 MainActor.assumeIsolated { self?.catalogChanged(catalog?.entries ?? []) }
             },
@@ -180,7 +181,8 @@ final class LawCitationPreviewModel: ObservableObject {
     private func refreshScanner() {
         guard let laws else { return }
         let key = laws.enabled && !entries.isEmpty ? catalogKey : nil
-        linksOn = laws.citationLinks
+        // Safe mode after interrupted launches: no links, no handwriting OCR (LaunchGuard).
+        linksOn = laws.citationLinks && !LaunchGuard.safeMode
         let handwriting = linksOn && (UserDefaults.standard.object(forKey: LawLibraryModel.citationHandwritingKey) as? Bool ?? true)
         if handwriting != handwritingEnabled { handwritingEnabled = handwriting }
         if key != builtKey {
@@ -295,7 +297,7 @@ final class LawCitationPreviewModel: ObservableObject {
     /// Pencil touched the paper, page scrolled/zoomed or page changed: hide at once.
     func pageInteractionBegan() {
         guard presentation != nil else { return }
-        dismiss()
+        NotyMotion.instant { dismiss() }
     }
 
     // MARK: Called by the card

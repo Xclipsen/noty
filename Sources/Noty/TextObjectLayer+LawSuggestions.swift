@@ -87,7 +87,7 @@ extension TextObjectLayer {
 
     /// The cheap check, on every keystroke: only plain typing at a caret.
     private func quickLawTrigger(_ editor: PageTextView) -> LawSuggestionTrigger? {
-        guard active, editor.isFirstResponder, editor.markedTextRange == nil, editor.selectedRange.length == 0,
+        guard active, !LaunchGuard.safeMode, editor.isFirstResponder, editor.markedTextRange == nil, editor.selectedRange.length == 0,
               KeyboardRouter.shared.allowsTyping, LawCitationPreviewModel.shared.scanner != nil else { return nil }
         return LawSuggestionTrigger.find(in: editor.textStorage.string as NSString, caret: editor.selectedRange.location)
     }

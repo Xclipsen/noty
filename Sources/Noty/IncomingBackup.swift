@@ -169,13 +169,19 @@ enum TopAlert {
     /// `present` fails silently above a controller that is just going away. It
     /// is tried again; if the alert never appears, `unshown` answers for it, so
     /// nothing waits for a reply forever.
+    /// A late first attempt may still land: the same controller is never
+    /// presented twice (UIKit raises), and a reply arrives only once (`ReplyOnce`).
+    private static func shown(_ alert: UIAlertController) -> Bool {
+        alert.presentingViewController != nil || alert.isBeingPresented || alert.isViewLoaded
+    }
     private static func present(_ alert: UIAlertController, unshown: (() -> Void)? = nil) {
         Task { @MainActor in
             for _ in 0..<8 {
+                if shown(alert) { return }
                 guard let top else { break }
                 top.present(alert, animated: true)
                 try? await Task.sleep(for: .milliseconds(300))
-                if alert.presentingViewController != nil || alert.isViewLoaded { return }
+                if shown(alert) { return }
             }
             unshown?()
         }
@@ -183,22 +189,24 @@ enum TopAlert {
     static func ask(_ title: String, _ message: String, confirm: String) async -> Bool {
         await withCheckedContinuation { continuation in
             guard top != nil else { continuation.resume(returning: false); return }
+            let reply = ReplyOnce(continuation)
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "Abbrechen", style: .cancel) { _ in continuation.resume(returning: false) })
-            alert.addAction(UIAlertAction(title: confirm, style: .default) { _ in continuation.resume(returning: true) })
-            present(alert) { continuation.resume(returning: false) }
+            alert.addAction(UIAlertAction(title: "Abbrechen", style: .cancel) { _ in reply.resume(false) })
+            alert.addAction(UIAlertAction(title: confirm, style: .default) { _ in reply.resume(true) })
+            present(alert) { reply.resume(false) }
         }
     }
     /// Several answers plus „Abbrechen“; nil when cancelled.
     static func choose<Choice: Sendable>(_ title: String, _ message: String, actions: [(String, UIAlertAction.Style, Choice)]) async -> Choice? {
         await withCheckedContinuation { continuation in
             guard top != nil else { continuation.resume(returning: nil); return }
+            let reply = ReplyOnce(continuation)
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             for (label, style, choice) in actions {
-                alert.addAction(UIAlertAction(title: label, style: style) { _ in continuation.resume(returning: choice) })
+                alert.addAction(UIAlertAction(title: label, style: style) { _ in reply.resume(choice) })
             }
-            alert.addAction(UIAlertAction(title: "Abbrechen", style: .cancel) { _ in continuation.resume(returning: nil) })
-            present(alert) { continuation.resume(returning: nil) }
+            alert.addAction(UIAlertAction(title: "Abbrechen", style: .cancel) { _ in reply.resume(nil) })
+            present(alert) { reply.resume(nil) }
         }
     }
     static func progress(_ title: String) -> UIAlertController? {
@@ -222,6 +230,13 @@ enum TopAlert {
                 once.finish()
             }
         }
+    }
+    /// Resumes its continuation at most once: an alert that appears after
+    /// `unshown` answered must not resume it a second time (fatal).
+    @MainActor private final class ReplyOnce<Value: Sendable> {
+        private var continuation: CheckedContinuation<Value, Never>?
+        init(_ continuation: CheckedContinuation<Value, Never>) { self.continuation = continuation }
+        func resume(_ value: Value) { continuation?.resume(returning: value); continuation = nil }
     }
     @MainActor private final class DismissOnce {
         var continuation: CheckedContinuation<Void, Never>?

@@ -49,7 +49,7 @@ Entfallen: „Jetzt speichern“ (Autosave und Sichern beim Verlassen bleiben un
 
 ## Feinschliff Interaktion und Optik – 07.11.2026
 
-Branch `feat/feinschliff`, nach dem Audit „Interaction & visual polish“ (Befundnummern F…). Kein Core-, Format- oder Speicherumfang. Ohne Paragraphen-Funktion auf dev portiert (07.11.2026, Branch `feat/feinschliff-dev`).
+Branch `feat/feinschliff`, nach dem Audit „Interaction & visual polish“ (Befundnummern F…). Kein Core-, Format- oder Speicherumfang.
 
 - **F1 Ein Tooltip:** `notyTooltip` setzt kein `.help` mehr (mit Zeiger kam sonst die System-Blase zur noty-Blase); der Text geht als Bedienhilfe-Hinweis an VoiceOver, wo er nicht nur das Label wiederholt (`hint: false`). Die Auswahlleiste setzt kein `toolTip` mehr. Ausnahme: „An Linien ausrichten“ in der Formatleiste behält `toolTip`, dort gibt es keine noty-Blase.
 - **F2/A1 Aufwärmen:** `NotyTooltipClock` ist die gemeinsame Uhr aller Namen (SwiftUI-Leisten und Auswahlleiste): der erste wartet 0,65 s, solange einer steht oder bis 0,6 s danach erscheint der nächste sofort und ohne Überblenden.
@@ -66,7 +66,7 @@ Branch `feat/feinschliff`, nach dem Audit „Interaction & visual polish“ (Bef
 - **F19** Farbfelder der Squeeze-Palette nennen ihre Farbe und den Zustand „ausgewählt“.
 - **F20 Deaktiviert:** ein Aussehen, Weiß 0,35 (`NotyChrome.disabledOpacity`): Kopf, Navigatorpfeile, Auswahlleiste, Palette.
 - **Offen (Gerät/Modell):** F3 Haptik, F5 Überlauf-Kante, F7 Hover in der Squeeze-Palette, F8 Fortschritt/Abbrechen, F12 Hover-Sprache, F16 Kontextmenü-Vorschau/Ziehen in der Seitenleiste, F18 Trefferflächen.
-- **Stand:** implementiert; auf dev portiert mit `xtool dev build` gebaut, nicht installiert, am iPad ungeprüft (Zeiger-/Stift-Hover, Glasränder unter iOS 26, Kontrast des Statushinweises, VoiceOver-Ansagen).
+- **Stand:** implementiert; Build siehe Abschlussbericht des Zweigs; am iPad ungeprüft (Zeiger-/Stift-Hover, Glasränder unter iOS 26, Kontrast des Statushinweises, VoiceOver-Ansagen).
 
 ## Stand und Nachweise
 

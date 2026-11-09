@@ -174,6 +174,8 @@ struct WorkspaceLibraryHost: View {
     /// Calendar of this area (`<Bereich>/Calendar/`); a new area gets a new model.
     @StateObject private var calendar: CalendarModel
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var lawPanel: LawPanelModel
+    @AppStorage(LawLibraryModel.enabledKey) private var lawsEnabled = false
     init(workspaces: WorkspaceAppModel) {
         self.workspaces = workspaces
         _library = StateObject(wrappedValue: LibraryModel(root: workspaces.root))
@@ -184,6 +186,12 @@ struct WorkspaceLibraryHost: View {
     var body: some View {
         LibraryView(model: library, workspaces: workspaces, calendar: calendar).environmentObject(toolbox).environmentObject(externalBackup)
             .task { await workspaces.refresh() }
+            // Launch breadcrumbs and the phase an interrupted run reached (LaunchGuard).
+            .onChange(of: library.ready, initial: true) { _, ready in if ready { LaunchGuard.shared.enter(.library) } }
+            .onChange(of: library.opened?.id, initial: true) { _, id in if id != nil { LaunchGuard.shared.enter(.editorOpen) } }
+            .onChange(of: library.opened != nil && lawsEnabled && lawPanel.isVisible, initial: true) { _, shown in
+                if shown { LaunchGuard.shared.enter(.lawWindow) }
+            }
             .task {
                 // `scenePhase` captured by this long-running closure would stay at its
                 // first value; the model holds the current phase instead.

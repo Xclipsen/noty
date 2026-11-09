@@ -104,11 +104,13 @@ enum LawCitationInk {
     /// with a known law written directly behind the number (no inferred
     /// law, nothing in between), and never after a number or „Abs.“/„Nr.“/
     /// „S.“/„Satz“ (there „S 1“ means Satz 1). Same length: ranges stay valid.
+    /// Fixed patterns of `normalized`, compiled once (it runs per recognised line).
+    private static let normalizeCandidates = try? NSRegularExpression(pattern: "(?<![\\p{L}\\p{N}§$])[S$](?=[ \\t]?\\d)")
+    private static let normalizeShape = try? NSRegularExpression(pattern: "^§[ \\t]?\\d{1,4}[ \\t]?[a-z]?[ \\t]+\\p{L}[\\p{L}\\d]*$")
+    private static let normalizeBlocked = try? NSRegularExpression(pattern: "^(\\d+[a-z]?|[IVX]+|Abs\\.?|Absatz|Nr\\.?|S\\.?|Satz|§+)$")
     nonisolated static func normalized(_ text: String, scanner: LawCitationScanner, defaultLawID: String?) -> String {
         let ns = text as NSString
-        guard let candidates = try? NSRegularExpression(pattern: "(?<![\\p{L}\\p{N}§$])[S$](?=[ \\t]?\\d)"),
-              let shape = try? NSRegularExpression(pattern: "^§[ \\t]?\\d{1,4}[ \\t]?[a-z]?[ \\t]+\\p{L}[\\p{L}\\d]*$"),
-              let blocked = try? NSRegularExpression(pattern: "^(\\d+[a-z]?|[IVX]+|Abs\\.?|Absatz|Nr\\.?|S\\.?|Satz|§+)$") else { return text }
+        guard let candidates = normalizeCandidates, let shape = normalizeShape, let blocked = normalizeBlocked else { return text }
         let found = candidates.matches(in: text, range: NSRange(location: 0, length: ns.length)).prefix(20)
         guard !found.isEmpty else { return text }
         var accepted: [NSRange] = []
@@ -209,6 +211,10 @@ final class LawCitationInkReader {
     /// A page that just appeared.
     private static let appear: TimeInterval = 1.2
     private static let retry: TimeInterval = 1.0
+    /// Waits while the page is not idle: 1, 2, 4 … s, at most `retryCeiling`;
+    /// after `retryLimit` the reader parks until `resume` or `update`.
+    private static let retryCeiling: TimeInterval = 30
+    private static let retryLimit = 8
     /// Recognised lines per ink state (`LawCitationInk.key`), newest last.
     /// Lines are small: a few hundred pages stay in memory.
     private static var cache: [String: [LawCitationInkLine]] = [:]
@@ -239,6 +245,8 @@ final class LawCitationInkReader {
     private var cancelFlag: LawCitationInkCancel?
     private var token = 0
     private var scanner: LawCitationScanner?
+    /// Consecutive not-idle retries; `retryLimit` parks the reader.
+    private var retries = 0
 
     /// Every page configuration: schedules a recognition once the ink rests.
     /// `page`: the configured page (geometry, margins) for the ink fingerprint.
@@ -283,7 +291,8 @@ final class LawCitationInkReader {
         token += 1
     }
 
-    private func schedule(after delay: TimeInterval) {
+    private func schedule(after delay: TimeInterval, retrying: Bool = false) {
+        if !retrying { retries = 0 }
         stop()
         let work = DispatchWorkItem { [weak self] in self?.run() }
         timer = work
@@ -293,7 +302,8 @@ final class LawCitationInkReader {
     private func run() {
         timer = nil
         guard let inputs, let scanner else { return }
-        guard isIdle() else { schedule(after: Self.retry); return }
+        guard isIdle() else { retryLater(); return }
+        retries = 0
         token += 1
         let token = token, cancel = LawCitationInkCancel()
         cancelFlag = cancel
@@ -318,7 +328,7 @@ final class LawCitationInkReader {
             }
             if lines == nil {
                 // Still on screen and resting right before the expensive part.
-                guard self.isIdle() else { self.schedule(after: Self.retry); return }
+                guard self.isIdle() else { self.retryLater(); return }
                 guard let read = await Task.detached(priority: .utility, operation: {
                     await LawCitationInkQueue.shared.recognize(data, layout: layout, cancel: cancel)
                 }).value else { return }
@@ -336,6 +346,24 @@ final class LawCitationInkReader {
             self.resultKey = (ink, generation, lawID)
             if found != self.matches { self.matches = found; self.onChange?() }
         }
+    }
+
+    /// Not idle (off screen, scrolling, writing): back off instead of waking
+    /// the main thread every second for every loaded sheet; parked after
+    /// `retryLimit` attempts.
+    private func retryLater() {
+        guard retries < Self.retryLimit else { stop(); return }
+        let delay = min(Self.retryCeiling, Self.retry * pow(2, Double(retries)))
+        retries += 1
+        schedule(after: delay, retrying: true)
+    }
+
+    /// A real event on the sheet (configuration, rendering pass after a
+    /// scroll or zoom): a reader backing off or parked tries again soon.
+    /// Cheap when nothing waits.
+    func resume() {
+        guard retries > 0, inputs != nil, scanner != nil, job == nil else { return }
+        schedule(after: Self.retry)
     }
 
     private static func remember(_ key: String, _ lines: [LawCitationInkLine]) {

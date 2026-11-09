@@ -88,7 +88,7 @@ final class LawSuggestionModel: ObservableObject {
         guard self.laws !== laws else { return }
         self.laws = laws
         watching = [
-            laws.$catalog.sink { [weak self] catalog in
+            laws.$catalog.receive(on: DispatchQueue.main).sink { [weak self] catalog in
                 MainActor.assumeIsolated { self?.catalogChanged(catalog?.entries ?? []) }
             },
             NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)

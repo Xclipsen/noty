@@ -32,6 +32,9 @@ import UIKit.UIGestureRecognizerSubclass
 @MainActor
 final class PencilGuard {
     static let shared = PencilGuard()
+    /// Off in the safe mode after interrupted launches (LaunchGuard): no
+    /// gate is installed and nothing counts as covered, so ink always starts.
+    static var enabled: Bool { !LaunchGuard.safeMode }
 
     private final class Entry {
         weak var view: UIView?
@@ -59,7 +62,7 @@ final class PencilGuard {
     /// presentation behind `view` (the editor under a sheet) or empty does
     /// not count.
     func covers(_ point: CGPoint, in view: UIView) -> Bool {
-        guard !entries.isEmpty, let window = view.window else { return false }
+        guard Self.enabled, !entries.isEmpty, let window = view.window else { return false }
         let location = view.convert(point, to: window)
         let root = Self.root(of: view, in: window)
         let rootIndex = root.flatMap { window.subviews.firstIndex(of: $0) }
@@ -142,11 +145,16 @@ final class PencilGuardGate: UIGestureRecognizer, UIGestureRecognizerDelegate {
         delegate = self
         cancelsTouchesInView = false; delaysTouchesBegan = false; delaysTouchesEnded = false
     }
+    /// Fail-safe: with the guard off, without a decision or outside a
+    /// window the gate takes no touch, so the ink recognizers never wait.
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        blocks?(touch) == true
+        guard PencilGuard.enabled, isEnabled, view?.window != nil, let blocks else { return false }
+        return blocks(touch)
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        // Touches whose end UIKit never delivered do not keep the gate going.
+        tracked = tracked.filter { $0.phase != .ended && $0.phase != .cancelled }
         tracked.formUnion(touches)
         if state == .possible { state = .began }
     }
@@ -155,11 +163,14 @@ final class PencilGuardGate: UIGestureRecognizer, UIGestureRecognizerDelegate {
     }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
         tracked.subtract(touches)
-        if tracked.isEmpty { state = .ended }
+        guard tracked.isEmpty else { return }
+        // Only from a recognised state; `.possible` → `.failed` releases the waiting recognizers.
+        state = state == .began || state == .changed ? .ended : .failed
     }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
         tracked.subtract(touches)
-        if tracked.isEmpty { state = .cancelled }
+        guard tracked.isEmpty else { return }
+        state = state == .began || state == .changed ? .cancelled : .failed
     }
     override func reset() { tracked.removeAll(); super.reset() }
     override func canPrevent(_ preventedGestureRecognizer: UIGestureRecognizer) -> Bool { false }

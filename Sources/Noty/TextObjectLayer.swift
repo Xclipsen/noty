@@ -1306,7 +1306,11 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         applyListEdits(edits, at: index, editor: editor)
     }
     func applyListEdits(_ edits: [TextListEditing.Edit], at index: Int, editor: PageTextView) {
-        guard !edits.isEmpty else { return }
+        // All or nothing: edits computed from a text the editor no longer
+        // holds must not reach `replaceCharacters` (NSRangeException).
+        let length = editor.textStorage.length
+        guard !edits.isEmpty, boxes.indices.contains(index),
+              edits.allSatisfy({ $0.range.location >= 0 && $0.range.length >= 0 && NSMaxRange($0.range) <= length }) else { return }
         let previous = boxes[index], selection = TextListEditing.selection(editor.selectedRange, after: edits)
         updating = true
         editor.textStorage.beginEditing()

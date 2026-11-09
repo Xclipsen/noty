@@ -28,7 +28,8 @@ enum InputProbe {
     /// (Info.plist `NotyChannel`, set per app by publish_ota.sh); Einstellungen › Diagnose.
     nonisolated static let defaultEnabled = (Bundle.main.object(forInfoDictionaryKey: "NotyChannel") as? String ?? "stable") != "stable"
     /// Read once at launch: off, no touch is observed, no timer runs.
-    static let enabled = UserDefaults.standard.object(forKey: AppSettingsKey.inputProbe) as? Bool ?? defaultEnabled
+    /// Never in the safe mode after interrupted launches (LaunchGuard).
+    static let enabled = !LaunchGuard.safeMode && (UserDefaults.standard.object(forKey: AppSettingsKey.inputProbe) as? Bool ?? defaultEnabled)
 
     // MARK: Registered state
 

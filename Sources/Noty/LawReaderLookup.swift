@@ -108,8 +108,13 @@ extension LawReaderView {
         } else if allowFullText, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard let doc = document else { loadError = "Bitte zuerst ein Gesetz wählen."; return }
             let term = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            // Every section with the words, for the hit stepper; the first one opens.
-            let found = doc.sections.filter { "\($0.label) \($0.title) \($0.text) \($0.notes)".lowercased().contains(term) }
+            // Every section with the words, for the hit stepper; the first one
+            // opens. Off the main thread over text folded once per version.
+            let generation = LawFullTextSearch.begin()
+            let positions = await LawFullTextSearch.sections(in: doc, lawID: selectedID, containing: term)
+            // A newer search, another law or version meanwhile: this result is dropped.
+            guard LawFullTextSearch.isCurrent(generation), document?.version == doc.version, document?.id == doc.id else { return }
+            let found = positions.compactMap { doc.sections.indices.contains($0) ? doc.sections[$0] : nil }
             if field == .query { hits = found.map(\.id); hitTerm = value }
             if let first = found.first {
                 showSection(first, from: field)
@@ -148,5 +153,38 @@ extension LawReaderView {
         let id = requestID
         do { let url = try await laws.pdf(entry, version: doc.version); guard requestID == id else { return }; textSelection.clear(); pdfURL = url; viewPDF = true; loadError = "" }
         catch { loadError = error.localizedDescription }
+    }
+}
+
+/// Full-text search of the law reader: section texts lowercased once per law
+/// version (the last few kept), searched in a detached task, so Return in the
+/// search field no longer folds megabytes of law text on the main thread.
+/// Same match as before: label, title, text and notes joined by spaces.
+enum LawFullTextSearch {
+    @MainActor private static var generation = 0
+    @MainActor static func begin() -> Int { generation &+= 1; return generation }
+    @MainActor static func isCurrent(_ value: Int) -> Bool { value == generation }
+
+    private actor Folded {
+        private var entries: [(key: String, sections: [String])] = []
+        func sections(_ key: String, build: @Sendable () -> [String]) -> [String] {
+            if let hit = entries.first(where: { $0.key == key }) { return hit.sections }
+            let folded = build()
+            entries.append((key, folded))
+            if entries.count > 3 { entries.removeFirst() }
+            return folded
+        }
+    }
+    private static let folded = Folded()
+
+    /// Positions of the sections (in document order) whose joined, lowercased text contains `term`.
+    static func sections(in doc: LawDocument, lawID: String, containing term: String) async -> [Int] {
+        let key = "\(lawID)|\(doc.id)|\(doc.version)|\(doc.sections.count)"
+        return await Task.detached(priority: .userInitiated) {
+            let sections = await folded.sections(key) {
+                doc.sections.map { "\($0.label) \($0.title) \($0.text) \($0.notes)".lowercased() }
+            }
+            return sections.indices.filter { sections[$0].contains(term) }
+        }.value
     }
 }

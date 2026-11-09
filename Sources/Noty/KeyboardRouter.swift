@@ -811,23 +811,27 @@ final class KeyboardRouter: ObservableObject {
 /// without content that stays first responder while nothing else is.
 final class KeyboardHostView: UIView {
     override var canBecomeFirstResponder: Bool { true }
-    private var observing = false
+    private var observers: [NotificationObserverToken] = []
     override func didMoveToWindow() {
         super.didMoveToWindow()
         guard window != nil else { return }
         KeyboardRouter.shared.host = self
         KeyboardRouter.shared.reclaim()
-        guard !observing else { return }
-        observing = true
+        guard observers.isEmpty else { return }
         // At launch the window is not key yet; a finished text gives the focus back.
+        // Delivered on the main queue whoever posts (GameController's keyboard
+        // notifications promise no thread; the handlers are main-actor code).
+        let center = NotificationCenter.default
         for name in [UITextField.textDidEndEditingNotification, UITextView.textDidEndEditingNotification,
                      UIWindow.didBecomeKeyNotification, UIApplication.didBecomeActiveNotification] {
-            NotificationCenter.default.addObserver(self, selector: #selector(focusChanged), name: name, object: nil)
+            observers.append(NotificationObserverToken(center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { KeyboardRouter.shared.reclaim() }
+            }))
         }
-        NotificationCenter.default.addObserver(self, selector: #selector(keyboardGone), name: .GCKeyboardDidDisconnect, object: nil)
+        observers.append(NotificationObserverToken(center.addObserver(forName: .GCKeyboardDidDisconnect, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { KeyboardRouter.shared.keyboardDisconnected() }
+        }))
     }
-    @objc private func focusChanged() { KeyboardRouter.shared.reclaim() }
-    @objc private func keyboardGone() { KeyboardRouter.shared.keyboardDisconnected() }
     /// Takes the keys unless text is being typed; the sheets and the editor
     /// cover above the library have to be gone first.
     func claim() {

@@ -12,6 +12,10 @@ struct NotyApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var workspaces = WorkspaceAppModel()
     init() {
+        // First: decides whether this launch restores the last notebook and
+        // the law window, and whether it runs in the safe mode (LaunchGuard).
+        LaunchGuard.start()
+        LaunchGuard.log.notice("[launch] app init")
         // Inline image originals are hashed once per session (content addresses);
         // CryptoKit instead of the portable Swift SHA-256, checked against test vectors first.
         NotebookCore.SHA256.installAccelerated { data in Array(CryptoKit.SHA256.hash(data: data)) }
@@ -19,7 +23,8 @@ struct NotyApp: App {
         // 500 MB per notebook; the portable digest reaches only a few MB/s in debug builds.
         NotebookCore.SHA256.installAcceleratedStreaming { CryptoKitStream() }
         // Read once at launch, off unless chosen; the settings toggle documents that it applies after a restart.
-        if UserDefaults.standard.object(forKey: AppSettingsKey.hangProbe) as? Bool ?? false { HangProbe.install() }
+        // Not in the safe mode after interrupted launches.
+        if !LaunchGuard.safeMode, UserDefaults.standard.object(forKey: AppSettingsKey.hangProbe) as? Bool ?? false { HangProbe.install() }
         // Calendar notifications: taps route to the calendar (set before launch finishes).
         CalendarNotificationHub.shared.install()
     }
@@ -29,16 +34,18 @@ struct NotyApp: App {
                 .environmentObject(laws)
                 .environmentObject(laws.panel)
                 .task {
+                    LaunchGuard.log.notice("[launch] first scene task")
                     // Law citations on pages follow the catalog and the settings.
                     LawCitationPreviewModel.shared.connect(laws)
                     LawSuggestionModel.shared.connect(laws)
                     await laws.start()
+                    LaunchGuard.log.notice("[launch] law library started")
                     while !Task.isCancelled {
                         do { try await Task.sleep(for: .seconds(45)) } catch { return }
                         if laws.sceneActive { await laws.tick() }
                     }
                 }
-                .onChange(of: scenePhase, initial: true) { _, phase in laws.sceneActive = phase == .active; if phase == .active { TapDiagnostics.shared.refresh(); Task { await laws.tick() } } }
+                .onChange(of: scenePhase, initial: true) { _, phase in LaunchGuard.shared.scenePhaseChanged(phase); laws.sceneActive = phase == .active; if phase == .active { TapDiagnostics.shared.refresh(); Task { await laws.tick() } } }
                 .alert("Gesetzessammlung", isPresented: Binding(get: { laws.error != nil && laws.inlineErrorPages == 0 }, set: { if !$0 { laws.error = nil } })) {
                     Button("OK") { laws.error = nil }
                 } message: { Text(laws.error ?? "") }
