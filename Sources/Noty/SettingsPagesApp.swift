@@ -243,6 +243,8 @@ struct DeveloperSettingsPage: View {
                 Text("Getrennte Test- und Restore-Bereiche mit eigenen Heften und Einstellungen. Für die finale Version nicht vorgesehen.")
             }
             AppSyncSection(library: library, toolbox: toolbox, workspaces: workspaces)
+            // Fehlerberichte (docs/DIAGNOSE.md): automatic sending, the last reports, test actions.
+            DiagnosticReportsSection()
             Section {
                 settingToggle("Hänger-Diagnose", detail: "Schreibt bei längeren Hängern Codeadressen und Zähler nach Dateien › noty › Diagnose › haenger.txt. Wirkt nach einem Neustart der App.", isOn: $hangProbe)
                 settingToggle("Eingabe-Diagnose", detail: "Meldet Berührungen ohne Wirkung und lange Eingabesperren nach Dateien › noty › Diagnose › eingabe.txt, nur Klassennamen und Zustände. Wirkt nach einem Neustart der App.", isOn: $inputProbe)

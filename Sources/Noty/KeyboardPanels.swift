@@ -223,20 +223,21 @@ extension KeyboardRouter {
 final class KeyPanelHostView: UIView {
     weak var panel: KeyPanel? { didSet { panel?.host = self } }
     override var canBecomeFirstResponder: Bool { true }
-    private var observing = false
+    private var observers: [NotificationObserverToken] = []
     override func didMoveToWindow() {
         super.didMoveToWindow()
         guard window != nil else { return }
         panel?.host = self
         KeyboardRouter.shared.reclaim()
-        guard !observing else { return }
-        observing = true
+        guard observers.isEmpty else { return }
         // A tapped field finished, or a keyboard was attached with the sheet open.
+        // Main queue whoever posts (GameController promises no thread).
         for name in [UITextField.textDidEndEditingNotification, UITextView.textDidEndEditingNotification, .GCKeyboardDidConnect] {
-            NotificationCenter.default.addObserver(self, selector: #selector(focusChanged), name: name, object: nil)
+            observers.append(NotificationObserverToken(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { KeyboardRouter.shared.reclaim() }
+            }))
         }
     }
-    @objc private func focusChanged() { KeyboardRouter.shared.reclaim() }
     private var controller: UIViewController? {
         var responder: UIResponder? = self
         while let current = responder {

@@ -225,6 +225,13 @@ public enum ContentSearchPlanner {
         }
     }
 
+    /// Fingerprint of the page's handwriting layer as the index stores it
+    /// (layout and drawing; nil without ink). Lets citation links reuse
+    /// indexed handwriting lines of exactly this ink.
+    public static func handwritingFingerprint(_ page: Page) -> String? {
+        fingerprints(page, pdfIdentity: nil).handwriting
+    }
+
     static func fingerprints(_ page: Page, pdfIdentity: String?) -> SearchPageFingerprints {
         // Canonical bounds depend on the page layout (crop, rotation, margins).
         func layout(_ tag: String) -> ContentFingerprint {

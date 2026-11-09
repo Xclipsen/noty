@@ -60,9 +60,13 @@ final class AppSyncModel: ObservableObject {
         let commit: BackupCommit
         if committed { commit = await library.editorCommit?() ?? .busy } else { commit = await toolbox.flush() ? .committed : .failed }
         guard commit == .committed else { if manual { status = "Heft wird gerade gespeichert; gleich erneut versuchen" }; return }
+        let measurement = Diagnostics.begin("appSync")
         let archive: PreparedLibraryArchive
         do { archive = try await library.buildArchive(editorsCommitted: committed) }
-        catch { status = "Abzug nicht erstellt: \(error.localizedDescription)"; return }
+        catch {
+            if !(error is BackupPostponed) { Diagnostics.failure("appSync", error) }
+            status = "Abzug nicht erstellt: \(error.localizedDescription)"; return
+        }
         defer { BackupScratch.remove(archive.url) }
         let previous = published
         do {
@@ -74,9 +78,13 @@ final class AppSyncModel: ObservableObject {
                 return try AppSyncOutbox.publish(archive: archive.url, summary: archive.summary, channel: channel, groupRoot: groupRoot)
             }.value
             if let snapshot { published = snapshot }
+            Diagnostics.end(measurement, ["notebooks": archive.summary.notebooks.count, "changed": snapshot == nil ? 0 : 1])
             status = "Abzug für die anderen noty-Apps: \(NotyText.statusDate(published?.createdAt ?? Date()))"
                 + (snapshot == nil ? " · unverändert" : "") + (archive.warning.map { " · \($0)" } ?? "")
-        } catch { status = "Abzug nicht abgelegt: \(error.localizedDescription)" }
+        } catch {
+            Diagnostics.failure("appSync", error)
+            status = "Abzug nicht abgelegt: \(error.localizedDescription)"
+        }
     }
 
     // MARK: Spiegel
@@ -113,6 +121,7 @@ final class AppSyncModel: ObservableObject {
             }
             guard let snapshot else { continue }
             let url = AppSyncOutbox.archiveURL(snapshot, groupRoot: groupRoot)
+            let measurement = Diagnostics.begin("appSync.mirror")
             do {
                 let prepared = try await workspaces.prepareLibraryRestore(url)
                 guard prepared.summary.file == snapshot.file else {
@@ -124,8 +133,10 @@ final class AppSyncModel: ObservableObject {
                                                                    importedAt: Date(), stale: (state?.stale ?? []) + [state?.area].compactMap { $0 })
                 if let next { save(next, for: source) }
                 await removeStale(&next, source: source, workspaces: workspaces)
+                Diagnostics.end(measurement, ["notebooks": snapshot.notebooks])
                 messages.append("Stand von \(source.appName) übernommen (\(NotyText.count(snapshot.notebooks, "Heft", "Hefte")))")
             } catch {
+                Diagnostics.failure("appSync.mirror", error)
                 messages.append("\(source.appName) nicht übernommen: \(error.localizedDescription)")
             }
         }

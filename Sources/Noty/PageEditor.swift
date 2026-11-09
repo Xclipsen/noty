@@ -95,6 +95,13 @@ struct PageEditor {
     /// A stroke was committed on this page while another one was selected
     /// (ruler strokes on a visible neighbour): select this page.
     var onSelectPage: () -> Void = {}
+    /// Law citations become links (underline, card); off in restored copies,
+    /// which have no card or law window.
+    var lawCitations = true
+    /// Default law and tax year of this notebook for citation links (NotebookLawPreferences).
+    var lawContext = NotebookLawContext()
+    /// Search index of this notebook: handwriting citations reuse its recognised lines.
+    var lawSearchIndex: LawCitationIndexSource? = nil
 }
 
 extension PageEditor {
@@ -333,6 +340,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     var holdFeedback: UIFeedbackGenerator?
     private let holdGesture = PencilHoldGesture()
     private let checkboxTap = CheckboxTapGesture()
+    private let inkGate = PencilGuardGate()
     private let interactionObserver = PageInteractionObserver()
     /// Finger taps select objects while an ink tool stays active; double tap
     /// offers „Textfeld hinzufügen“ (WorksheetView+FingerObjects.swift).
@@ -361,6 +369,8 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     private var selectionInkSource: Data?
     private var selectionInkIndices = Set<Int>()
     private var selectionInkFrame = CGRect.zero
+    /// Law citations on this page: underlines, hover card, tap (WorksheetView+LawCitations.swift).
+    let lawCitations = LawCitationPageLinks()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -462,6 +472,16 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         }
         addGestureRecognizer(checkboxTap)
         canvas.drawingGestureRecognizer.require(toFail: checkboxTap)
+        // No ink starts on or beside chrome over the page (`PencilGuard`).
+        // Only with the guard on (off in the safe mode after interrupted
+        // launches); the gate itself takes no touch when in doubt, so ink works.
+        if PencilGuard.enabled {
+            inkGate.blocks = { [weak self] touch in self?.inkGuarded(touch) ?? false }
+            addGestureRecognizer(inkGate)
+            canvas.drawingGestureRecognizer.require(toFail: inkGate)
+        }
+        holdGesture.refuses = { [weak self] touch in self?.inkGuarded(touch) ?? false }
+        objectLayer.refusesStart = { [weak self] touch in self?.inkGuarded(touch) ?? false }
         configureRulerStroke()
         // A Pencil tap on a checkbox toggles it, also at the ruler (as for the canvas).
         rulerStroke.require(toFail: checkboxTap)
@@ -473,6 +493,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         addGestureRecognizer(interactionObserver)
         textLayer.onEditingActive = { [weak self] active in
             guard let self else { return }; self.textEditing = active; self.onInteraction?(self.textInteractionID, active)
+            self.lawCitations.editingChanged(active)
             if active { self.claimSelectionFocus() }
             // A field that stopped editing leaves no first responder; ⌘Z keeps working.
             if !active { DispatchQueue.main.async { [weak self] in self?.claimUndoResponder() } }
@@ -526,6 +547,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         eraseTrail.strokeColor = UIColor(white: 0.55, alpha: 0.35).cgColor; eraseTrail.isHidden = true
         hitHighlight.isUserInteractionEnabled = false; hitHighlight.backgroundColor = UIColor.systemYellow.withAlphaComponent(0.22)
         hitHighlight.layer.borderColor = UIColor.systemOrange.cgColor; hitHighlight.layer.borderWidth = 2
+        lawCitations.install(on: self)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -588,6 +610,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// (magnified) unless the visible area is no longer covered at all.
     func updateRendering(visible: CGRect, scale: CGFloat, live: Bool = false) {
         if bounds.intersects(visible) { lastVisible = visible.intersection(bounds) }
+        lawCitations.displayScaleChanged(scale)
         guard !inkActive, bounds.intersects(visible), bounds.width > 0, bounds.height > 0 else { return }
         // Text keeps its own zoom-resolution viewport (not capped like ink).
         textLayer.updateDisplay(visible: visible, scale: scale, screenScale: window?.screen.scale ?? 2, live: live)
@@ -699,6 +722,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         textLayer.adoptCallback(editor.onTextBoxes)
         imageLayer.adoptCallbacks(onChange: editor.onImages, onError: editor.onError)
         objectLayer.adoptCommit(editor.onContent)
+        lawCitations.contentChanged()
     }
 
     func configure(_ editor: PageEditor) {
@@ -893,6 +917,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         pdfView?.isUserInteractionEnabled = tool == .read
         if modeChanged || focusChanged || first { updateInputMode(); fingerObjects.linkNativeDoubleTaps(in: canvas) }
         if pendingTextField != nil { openPendingTextField() }
+        lawCitations.contentChanged(full: true)
         setNeedsLayout()
     }
 
@@ -1113,6 +1138,7 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         guard !updating, let editor = configuration, objectLayer.handlesTapsItself || objectLayer.hasTouchSelection,
               lastObjectPreview != content else { return }
         lastObjectPreview = content
+        lawCitations.objectPreview(content.textBoxes)
         shapeLayer.configure(content.shapes, origin: pageLayout.contentOrigin)
         updating = true
         defer { updating = false }
@@ -1225,6 +1251,9 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
         if heldShape != nil {
             holdCompletion.drawingChanged(); finishHeldStroke(serial: holdSerial); return
         }
+        // Only a slow one leaves a breadcrumb (docs/DIAGNOSE.md): no I/O here.
+        let measurement = Diagnostics.begin("stroke.commit", quiet: true)
+        defer { Diagnostics.end(measurement) }
         // Tool changed during the stroke: published as drawn, no straightening,
         // scribble erase or width learning with the other tool's options.
         let processed = drawnWith == tool ? tool : nil
@@ -1419,11 +1448,23 @@ final class WorksheetView: UIView, PKCanvasViewDelegate, UIPencilInteractionDele
     /// region's colour. Hit-testing (also for Pencil hover) precedes delivery.
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         let hit = super.hitTest(point, with: event)
+        // Pencil hover on or beside chrome over the page: the canvas does not
+        // see it, so no ink preview shows where no stroke can start
+        // (`PencilGuard`). The sheet keeps the hover (citations).
+        if let hit, event?.type == .hover, hit === canvas || hit.isDescendant(of: canvas),
+           PencilGuard.shared.covers(point, in: self) { return self }
         if let hit, !inkActive, hit === canvas || hit.isDescendant(of: canvas), event?.type == .touches || event?.type == .hover {
             if event?.type == .touches { commitPendingHeldStroke() }
             automaticInkPoint = point; updateInkTool(at: point)
         }
         return hit
+    }
+    /// A touch that would start ink, eraser, lasso or a shape here begins on
+    /// or just beside chrome over the page: Pencil always, a finger only
+    /// while it draws (`PencilGuard`). Asked once per touch-down.
+    func inkGuarded(_ touch: UITouch) -> Bool {
+        guard touch.type == .pencil || (touch.type == .direct && holdGesture.allowFinger) else { return false }
+        return PencilGuard.shared.covers(touch.location(in: self), in: self)
     }
     private func updateInkTool(at point: CGPoint) {
         guard automaticPen, tool == .pen || tool == .pencil, !inkActive else { return }

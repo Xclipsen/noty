@@ -259,7 +259,7 @@ struct EditorWorkspaceView: View {
                             .frame(width: max(0, frame.width), height: max(0, frame.height), alignment: .topLeading)
                             .clipped()
                             .opacity(hidden ? 0 : (paneDrag?.pane == entry.pane ? 0.4 : 1))
-                            .allowsHitTesting(!hidden).accessibilityHidden(hidden)
+                            .allowsHitTesting(!hidden).accessibilityHidden(hidden).environment(\.pencilGuardEnabled, !hidden)
                     }
                 }
                 .frame(width: editorWidth, height: notebookArea.height, alignment: .topLeading)
@@ -278,6 +278,11 @@ struct EditorWorkspaceView: View {
             .overlay(alignment: .top) {
                 if lawDockHint != nil && hidesSecond { lawDockHintView(in: notebookArea).transition(.opacity) }
             }
+            // Preview of a law citation on a page, above the law window too.
+            // Only the card takes touches; everything beside it reaches the page.
+            .overlay {
+                if lawsEnabled { LawCitationCardLayer(keyboard: keyboard) }
+            }
             // Panes clip themselves already; this keeps a stashed law window
             // from drawing beyond the workspace edge.
             .clipped()
@@ -287,7 +292,17 @@ struct EditorWorkspaceView: View {
             }
             .onChange(of: lawPhase, initial: true) { _, phase in
                 if phase == .visible { lawReaderLoaded = true } else if phase == .closed { lawReaderLoaded = false }
+                // Parked or closed: a card of the reader's text has nothing to point at.
+                if phase != .visible { LawCitationPreviewModel.shared.dismissReaderCard() }
+                // Closed by any way: „Zurück zur Notiz“ has nothing left to restore.
+                if phase == .closed, laws.citationJump == nil { laws.citationReturn = nil }
             }
+            // Docking, split and keyboard move the notebooks: a card would point at
+            // where the citation was (the layer itself sees only its own size).
+            .onChange(of: "\(notebookArea.x)|\(notebookArea.y)|\(notebookArea.width)|\(notebookArea.height)|\(split)|\(keyboard)") { _, _ in
+                LawCitationPreviewModel.shared.dismiss()
+            }
+            .onChange(of: current) { _, _ in LawCitationPreviewModel.shared.dismiss() }
             .onChange(of: hidesSecond) { _, hides in
                 withAnimation(NotyMotion.highlight(reduceMotion)) { lawDockHint = hides ? UUID() : nil }
                 if hides { AccessibilityNotification.Announcement(Self.lawDockHintText).post() }
@@ -343,7 +358,12 @@ struct EditorWorkspaceView: View {
             Button("OK") { workspace.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspace.error ?? "") }
         .onAppear { library.editorCommit = { await workspace.commitForBackup(toolbox: toolbox) }; library.workspace = workspace }
-        .onDisappear { library.editorCommit = nil; if library.workspace === workspace { library.workspace = nil } }
+        .onDisappear {
+            library.editorCommit = nil; if library.workspace === workspace { library.workspace = nil }
+            // Nothing of this notebook's citations may show up in the next one.
+            LawCitationPreviewModel.shared.dismiss()
+            laws.citationJump = nil; laws.citationReturn = nil
+        }
         .interactiveDismissDisabled()
     }
 
@@ -635,9 +655,7 @@ struct EditorWorkspaceView: View {
     }
 
     /// The tab left at the screen edge while the window is parked, like iPad
-    /// Slide Over: tap it, or pull it inward and the window follows. The small
-    /// ✕ beside it closes the window completely; the notebook menu
-    /// „Gesetzessammlung“ opens it again.
+    /// Slide Over: tap it, or pull it inward and the window follows.
     private func lawEdgeTab(_ l: LawPanelLayout) -> some View {
         let edge = l.edge, out = l.outward
         let tab = Button { lawPanel.unpark() } label: {
@@ -667,27 +685,10 @@ struct EditorWorkspaceView: View {
             .accessibilityLabel("Gesetzessammlung hervorholen")
             .accessibilityAction(named: "Schließen") { lawPanel.close() }
             .notyTooltip("Hervorholen (⌥⌘L)")
-        let close = Button { lawPanel.close() } label: {
-            Image(systemName: "xmark").font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.88))
-                .frame(width: 28, height: 28)
-                .lawGlass(Circle())
-                .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
-                .shadow(color: .black.opacity(0.4), radius: 4)
-                .frame(width: 44, height: 44).contentShape(Rectangle())
-        }
-            .buttonStyle(NotyPressStyle())
-            .accessibilityLabel("Gesetzessammlung schließen")
-            .accessibilityHint("Schließt ganz, auch die Lasche. Wieder öffnen: Heft-Menü › Gesetzessammlung oder ⇧⌘L.")
-            .notyTooltip("Ganz schließen")
-        return Group {
-            if edge == .bottom {
-                HStack(alignment: .bottom, spacing: 6) { tab; close.padding(.bottom, -6) }
-            } else {
-                VStack(alignment: edge == .left ? .leading : .trailing, spacing: 6) { close.padding(edge == .left ? .leading : .trailing, -6); tab }
-                    .environment(\.notyTooltipAxis, .vertical)
-            }
-        }
+        // Only the tab stays at the edge (user request 06.11.2026): the round ✕
+        // beside it is gone. Closing completely: notebook menu „Gesetzessammlung“,
+        // ⇧⌘L, or the tab's VoiceOver action.
+        return tab.environment(\.notyTooltipAxis, edge == .bottom ? .horizontal : .vertical).pencilGuard(margin: 10)
     }
 
     private func choose() {
@@ -732,7 +733,7 @@ struct EditorWorkspaceView: View {
                 }.padding(.trailing, 4)
             }
         }
-        .frame(height: Self.strip)
+        .frame(height: Self.strip).pencilGuard(margin: 8)
         .environment(\.colorScheme, .dark)
     }
 
@@ -838,7 +839,7 @@ struct EditorWorkspaceView: View {
                 // Stacked: centred on the gap, left of the lower pane's grab handle.
                 .offset(x: vertical ? -size.width / 4 : 0, y: vertical ? 4 : -strip / 2)
         }
-        .frame(width: vertical ? size.width : thickness, height: vertical ? thickness : max(0, size.height - strip))
+        .frame(width: vertical ? size.width : thickness, height: vertical ? thickness : max(0, size.height - strip)).pencilGuard(margin: 4)
         .offset(x: vertical ? 0 : position - thickness / 2, y: vertical ? position - 11 : strip)
         .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .named(Self.space))
             .updating($dividerGestureActive) { _, state, _ in state = true }

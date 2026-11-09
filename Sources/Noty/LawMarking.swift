@@ -92,8 +92,11 @@ final class LawTextSelection: ObservableObject {
     func scroll(screens: Double) { scroll(by: CGFloat(screens) * (scroller?.bounds.height ?? 0)) }
     /// To the start, or past everything to the end.
     func scrollToEdge(end: Bool) { scroll(by: end ? .greatestFiniteMagnitude / 2 : -.greatestFiniteMagnitude / 2) }
+    /// Told before the keys scroll (`NativeLawText` then lets go of a jump target).
+    var willScroll: (() -> Void)?
     private func scroll(by distance: CGFloat) {
         guard let scroller else { return }
+        willScroll?()
         let inset = scroller.adjustedContentInset
         let limit = max(-inset.top, scroller.contentSize.height - scroller.bounds.height + inset.bottom)
         scroller.setContentOffset(CGPoint(x: scroller.contentOffset.x, y: min(limit, max(-inset.top, scroller.contentOffset.y + distance))), animated: false)
@@ -105,7 +108,9 @@ final class LawTextSelection: ObservableObject {
         if tapped != (id != nil) { tapped = id != nil }
     }
     func clear() {
-        view?.selectedTextRange = nil
+        // Only a real selection: resetting an empty one let UIKit scroll the
+        // text back to its caret at the top right after a jump.
+        if (view?.selectedRange.length ?? 0) > 0 { view?.selectedTextRange = nil }
         if pdf?.currentSelection != nil { pdf?.clearSelection() }
         if range.length > 0 { range = NSRange(location: 0, length: 0) }
         if !marks.isEmpty { marks = [] }

@@ -61,7 +61,7 @@ extension WorksheetView {
     func configureRulerStroke() {
         rulerStroke.addTarget(self, action: #selector(rulerStroked(_:)))
         rulerStroke.isEnabled = false
-        rulerStroke.takes = { [weak self] touch in self?.rulerTakes(touch) ?? false }
+        rulerStroke.takes = { [weak self] touch in guard let self, !self.inkGuarded(touch) else { return false }; return self.rulerTakes(touch) }
         addGestureRecognizer(rulerStroke)
         canvas.drawingGestureRecognizer.require(toFail: rulerStroke)
         rulerWatch.isEnabled = false

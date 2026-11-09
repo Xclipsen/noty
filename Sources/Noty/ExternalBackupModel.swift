@@ -185,6 +185,7 @@ final class ExternalBackupModel: ObservableObject {
         case .committed: blockedCount = 0; blockedUntil = nil
         }
         status = "Backup-Ziel wird geprüft …"
+        let measurement = Diagnostics.begin("backup")
         let folderURL: URL?
         do { folderURL = try await reachableTarget() }
         catch { fail(Self.isUnreachable(error) ? .unreachable : .failed, error, manual: manual); return }
@@ -200,6 +201,7 @@ final class ExternalBackupModel: ObservableObject {
             if let folderURL { try await writeFolder(archive, name: name, folder: folderURL) }
             else { try await writeWebDAV(archive, name: name) }
         } catch { fail(Self.isUnreachable(error) ? .unreachable : .failed, error, manual: manual); return }
+        Diagnostics.end(measurement, ["notebooks": archive.summary.notebooks.count, "external": 1])
         // Older readable notebook states are a warning, never a failure.
         policy.recordSuccess(warning: archive.warning); persist()
         status = (archive.warning.map { "Backup mit Hinweis: \($0) · " } ?? "") + (policy.target == .folder
@@ -233,6 +235,8 @@ final class ExternalBackupModel: ObservableObject {
         // Cancelled (area switch, app ended the run): retried normally, no backoff step.
         if error is CancellationError || (error as? URLError)?.code == .cancelled { postpone("Vorgang abgebrochen", manual: manual); return }
         let reason = Self.reason(error)
+        // Offline is no defect: a breadcrumb only. Domain and code, never the endpoint.
+        if outcome == .unreachable { Diagnostics.note("backup.unreachable") } else { Diagnostics.failure("backup", error) }
         policy.recordFailure(outcome, reason: reason); persist()
         let next = policy.nextAttempt.map { " · nächster Versuch \(NotyText.statusDate($0))" } ?? ""
         status = (outcome == .unreachable ? "Backup-Ziel nicht erreichbar: " : "Backup fehlgeschlagen: ") + reason + next
