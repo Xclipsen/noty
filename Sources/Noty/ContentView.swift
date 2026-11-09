@@ -116,6 +116,9 @@ struct ContentView: View {
     @State private var recentNoteToken = 0
     /// VoiceOver heard the current save failure series already.
     @State private var saveFailureAnnounced = false
+    /// „Gesetzesbezug …“ (Standardgesetz, Veranlagungsjahr) of this notebook.
+    @State private var editingLawContext = false
+    @ObservedObject private var lawPreferences = NotebookLawPreferences.shared
     private var ruler: Bool {
         get { toolbox.preferences.ruler ?? false }
         nonmutating set { toolbox.preferences.ruler = newValue }
@@ -188,6 +191,12 @@ struct ContentView: View {
         .preference(key: EditorCommandsPreference.self, value: editorCommands)
         // Shortcuts of the law window: model, key responder, Esc in its fields.
         .background { if !isRestoredCopy { LawKeyAnchor(active: isPaneActive()) } }
+        .sheet(isPresented: $editingLawContext) {
+            NotebookLawContextView(documentID: model.notebook.id, title: model.notebook.title)
+        }
+        .onReceive(LawCitationPreviewModel.shared.$quoteRequest) { request in
+            if let request { receiveLawQuote(request) }
+        }
     }
 
     @ViewBuilder private var editorBody: some View {
@@ -376,7 +385,7 @@ struct ContentView: View {
         let onDraft = currentPage.id == writingDraft.id
         // A second presentation over an open sheet would never appear.
         let presenting = contentSearch || showingSettings || editingDefaults || addingPage || customizingTools || showingHistory || model.openedRestore != nil
-            || marginsPage != nil || exporting || importingImage || choosingPhoto || pageEntry || model.error != nil
+            || marginsPage != nil || exporting || importingImage || choosingPhoto || pageEntry || editingLawContext || model.error != nil
         return EditorCommandActions(owner: ObjectIdentifier(model), pane: paneID, canEdit: canEdit && !presenting,
             canExportPage: model.writable && !onDraft, exporting: pdfExport.running,
             hasPrevious: onDraft || currentPageIndex > 0, hasNext: !onDraft && currentPageIndex < model.notebook.pages.count - 1, isTextDocument: isTextDocument,
@@ -791,8 +800,9 @@ struct ContentView: View {
         .environment(\.colorScheme, .dark)
         .accessibilityIdentifier("saveStatus")
         if model.saveFailed && model.writable {
-            Button { model.save() } label: { label }.buttonStyle(NotyPressStyle())
+            Button { model.save() } label: { label }.buttonStyle(NotyPressStyle()).pencilGuard(margin: 6)
         } else {
+            // Display only: writing beneath the routine note stays possible.
             label.allowsHitTesting(false)
         }
     }
@@ -841,7 +851,7 @@ struct ContentView: View {
                 }.contentShape(Rectangle())
             }.accessibilityLabel(closeTitle ?? "Zur Bibliothek").accessibilityValue(notebookLoaded ? model.notebook.title : "")
                 .notyTooltip(closeTitle == nil ? "Zur Bibliothek (⌘W)" : "Zurück (⌘W)", hint: false)
-                .padding(.horizontal, 4).frame(height: 44).notyGlass()
+                .padding(.horizontal, 4).frame(height: 44).notyGlass().pencilGuard()
                 .frame(maxWidth: max(52, layout.headerLeadingFrame.width), alignment: .leading)
                 .frame(width: max(52, layout.headerLeadingFrame.width), height: 44, alignment: .leading)
                 .offset(x: layout.headerLeadingFrame.x, y: layout.headerLeadingFrame.y)
@@ -880,7 +890,7 @@ struct ContentView: View {
                     Image(systemName: "sidebar.right").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Seitenübersicht rechts").notyTooltip("Seitenleiste ein/aus", hint: false)
             }.padding(.horizontal, 4).frame(width: layout.headerActionsFrame.width, height: 44)
-                .notyGlass().disabled(!canEdit)
+                .notyGlass().pencilGuard().disabled(!canEdit)
                 .offset(x: layout.headerActionsFrame.x, y: layout.headerActionsFrame.y)
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .buttonStyle(NotyToolStyle())
@@ -908,7 +918,7 @@ struct ContentView: View {
                 .disabled(currentPage.id == writingDraft.id || currentPageIndex >= model.notebook.pages.count - 1)
                 .foregroundStyle(.white.opacity(currentPage.id == writingDraft.id || currentPageIndex >= model.notebook.pages.count - 1 ? NotyChrome.disabledOpacity : 1))
                 .accessibilityLabel("Nächste Seite").notyTooltip("Nächste Seite (⌘↓)", hint: false).accessibilityShowsLargeContentViewer()
-        }.padding(4).notyGlass().buttonStyle(NotyToolStyle()).disabled(!canEdit)
+        }.padding(4).notyGlass().pencilGuard(margin: 12).buttonStyle(NotyToolStyle()).disabled(!canEdit)
             .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
             // Names open to the left, towards the page.
             .environment(\.notyTooltipAxis, .vertical)
@@ -1010,6 +1020,9 @@ struct ContentView: View {
             }
             Section {
                 if let onLaws { LawPanelMenuToggle(action: onLaws) }
+                if onLaws != nil, !isRestoredCopy {
+                    Button("Gesetzesbezug …", systemImage: "character.book.closed") { editingLawContext = true }
+                }
                 Menu("Ansicht", systemImage: "eye") {
                     Toggle("Schreibscrollen bis zur Bildschirmmitte", systemImage: "arrow.left.and.right.square", isOn: $writingScroll)
                     Toggle("Blättern statt Scrollen", systemImage: "book.pages", isOn: Binding(get: { toolbox.preferences.paging ?? false }, set: { toolbox.preferences.paging = $0 }))
@@ -1312,7 +1325,57 @@ struct ContentView: View {
                 // Leaving a field returns to the tool before the text tool (Textneubau).
                 guard isPaneActive(), tool == .text, !textToolLocked else { return }
                 tool = toolBeforeText.flatMap { $0 == .text ? nil : $0 } ?? lastInkTool
-            })
+            },
+            lawCitations: !isRestoredCopy,
+            lawContext: lawContext(for: page),
+            lawSearchIndex: isRestoredCopy ? nil : LawCitationIndexSource(area: searchIndexArea ?? StableDefaults.scope(model.storageRoot), documentID: model.notebook.id))
+    }
+
+    /// The notebook's stored context plus what this page allows. Quotes need a
+    /// writable notebook page: no restored copy, no draft page, and no text
+    /// document (a free field there would lie over the flow, see
+    /// `EditorModel.insertLawQuote`).
+    private func lawContext(for page: Page) -> NotebookLawContext {
+        guard !isRestoredCopy else { return NotebookLawContext() }
+        var context = lawPreferences.context(for: model.notebook.id)
+        context.notebookID = model.notebook.id
+        context.canQuote = model.writable && !isTextDocument && page.id != writingDraft.id
+            && model.notebook.pages.contains { $0.id == page.id }
+        return context
+    }
+
+    /// „Als Zitat einfügen“ from the card: the view showing that page inserts
+    /// it (the active view first, another one showing it a moment later);
+    /// one nobody shows is dropped, so it never lands in a notebook opened later.
+    private func receiveLawQuote(_ request: LawQuoteRequest) {
+        let shared = LawCitationPreviewModel.shared
+        // Duplicates and restored copies keep page ids: the notebook must match, too.
+        let owns = !isRestoredCopy && request.notebookID == model.notebook.id && model.notebook.pages.contains { $0.id == request.pageID }
+        let delay = owns ? (isPaneActive() ? 0 : 0.15) : 1.0
+        func consume() {
+            guard shared.quoteRequest?.id == request.id else { return }
+            shared.quoteRequest = nil
+            guard owns else { return }
+            insertLawQuote(request, attempt: 0)
+        }
+        // Never inside the publisher's own delivery: the other views still receive it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { consume() }
+    }
+    /// Marked text (IME, dictation) in a field keeps that field's own boxes
+    /// until it is committed; a quote added meanwhile would be overwritten by
+    /// the next keystroke. Wait for the commit (up to ~4 s), then refuse.
+    private func insertLawQuote(_ request: LawQuoteRequest, attempt: Int) {
+        if let input = UIResponder.currentFirstResponder as? UITextInput, input.markedTextRange != nil {
+            guard attempt < 16 else {
+                model.error = "Die Eingabe im Textfeld ist noch nicht abgeschlossen. Das Zitat wurde nicht eingefügt; bitte danach erneut einfügen."
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { insertLawQuote(request, attempt: attempt + 1) }
+            return
+        }
+        guard request.notebookID == model.notebook.id else { return }
+        if let problem = model.insertLawQuote(request) { model.error = problem }
+        else { showRecentNote("Zitat eingefügt") }
     }
 
 }

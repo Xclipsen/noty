@@ -1,10 +1,7 @@
 import SwiftUI
 import PDFKit
 import PencilKit
-import Vision
 import NotebookCore
-
-private struct RecognizedLine: Sendable { let text: String; let bounds: PageRect }
 
 /// One derived index directory per area (library root) under Library/Caches.
 /// Never part of a notebook package, revision or backup; safe to delete.
@@ -290,14 +287,8 @@ final class ContentSearchModel: ObservableObject {
         }
     }
 
-    nonisolated private static func scale(_ layout: PageLayout) -> CGFloat {
-        min(2, 2400 / max(layout.canvas.width, layout.canvas.height))
-    }
-    nonisolated private static func canonical(_ rect: PageRect, _ layout: PageLayout) -> PageRect {
-        .init(x: rect.x * layout.canvas.width - layout.contentOrigin.x,
-              y: (1 - rect.y - rect.height) * layout.canvas.height - layout.contentOrigin.y,
-              width: rect.width * layout.canvas.width, height: rect.height * layout.canvas.height)
-    }
+    nonisolated private static func scale(_ layout: PageLayout) -> CGFloat { PageTextRecognition.scale(layout) }
+    nonisolated private static func canonical(_ rect: PageRect, _ layout: PageLayout) -> PageRect { PageTextRecognition.canonical(rect, layout) }
 
     /// Scan/PDF background (only without a meaningful text layer) plus inserted images.
     /// `keepAlive` (the PDF document) outlives drawing its page off the main actor.
@@ -320,32 +311,16 @@ final class ContentSearchModel: ObservableObject {
         return lines
     }
 
-    /// Ink normalised to black for OCR; stored strokes stay untouched.
+    /// Ink normalised to black for OCR; stored strokes stay untouched (`PageTextRecognition`).
     private static func recognizeInk(_ data: Data, layout: PageLayout) async throws -> [SearchLine] {
         try await Task.detached(priority: .utility) { () throws -> [SearchLine] in
-            let drawing = try PKDrawing(data: data)
-            let strokes = drawing.strokes.map { stroke in
-                PKStroke(ink: PKInk(.pen, color: .black), path: stroke.path, transform: stroke.transform, mask: stroke.mask)
-            }
-            let pixelScale = scale(layout)
-            let ink = PDFExporter.inkImage(PKDrawing(strokes: strokes), from: layout.canonicalInkBounds, scale: pixelScale)
-            guard let image = PageRaster.bitmap(size: layout.canvas.cgSize, scale: pixelScale, opaque: true, { context in
-                UIColor.white.setFill(); context.fill(layout.canvas.bounds)
-                ink.draw(in: layout.canvas.bounds)
-            }) else { throw ImageImportError.invalid }
+            let image = try PageTextRecognition.inkImage(data, layout: layout)
             return try recognize(image).map { SearchLine(text: $0.text, kind: .handwriting, bounds: canonical($0.bounds, layout)) }
         }.value
     }
 
-    nonisolated private static func recognize(_ image: CGImage) throws -> [RecognizedLine] {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate; request.recognitionLanguages = ["de-DE", "en-US"]
-        request.usesLanguageCorrection = true
-        try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-        return (request.results ?? []).compactMap { observation in
-            guard let candidate = observation.topCandidates(1).first else { return nil }
-            return RecognizedLine(text: candidate.string, bounds: PageRect(observation.boundingBox))
-        }
+    nonisolated private static func recognize(_ image: CGImage) throws -> [PageTextRecognition.Line] {
+        try PageTextRecognition.recognize(image)
     }
 }
 

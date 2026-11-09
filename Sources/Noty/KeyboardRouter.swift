@@ -516,6 +516,8 @@ final class KeyboardRouter: ObservableObject {
     func handle(_ presses: Set<UIPress>, text: (any KeyboardTextTarget)? = nil) -> Bool {
         // A key press is the user's input, also when the keyboard mode is off.
         UserInputClock.note()
+        if appCommand(presses) { return true }
+        if citationCardEscape(presses) { return true }
         guard isEnabled || helpVisible else { return false }
         var used = false
         for press in presses.sorted(by: { $0.timestamp < $1.timestamp }) {
@@ -523,6 +525,47 @@ final class KeyboardRouter: ObservableObject {
             if handle(key, time: press.timestamp, text: text) { used = true }
         }
         return used
+    }
+    /// A law citation card goes first with Esc (no modifiers), only while one
+    /// is shown, or for the other way of the press that closed it. Through
+    /// the gate: a second delivery of an unused press is no new Esc, and the
+    /// key-up of a used one stays away from the system too.
+    private func citationCardEscape(_ presses: Set<UIPress>) -> Bool {
+        guard let press = presses.first(where: { $0.key?.keyCode == .keyboardEscape }), let key = press.key,
+              key.modifierFlags.intersection([.command, .shift, .alternate, .control]).isEmpty else { return false }
+        let code = key.keyCode.rawValue
+        guard gate.isFresh(key: code, time: press.timestamp),
+              LawCitationPreviewModel.shared.consumeEscape(by: .press) else { return false }
+        _ = gate.began(key: code, time: press.timestamp)
+        gate.swallow(key: code)
+        return true
+    }
+    /// ⌘F and ⌘L that reached a responder of the app: the menu did not take
+    /// them (a disabled or conflicting entry, e.g. the system's Edit › Find).
+    /// Same actions and rules as the menu (`AppCommandCenter`), at most once
+    /// per press; anything else, or nothing to do, passes on unchanged.
+    private func appCommand(_ presses: Set<UIPress>) -> Bool {
+        for press in presses {
+            guard let key = press.key,
+                  key.modifierFlags.intersection([.command, .shift, .alternate, .control]) == .command else { continue }
+            let command: AppCommandCenter.Command
+            switch key.charactersIgnoringModifiers.lowercased() {
+            case "f": command = .search
+            case "l": command = .lawLookup
+            default: continue
+            }
+            let center = AppCommandCenter.shared
+            guard center.isAvailable(command) else { return false }
+            let code = key.keyCode.rawValue
+            // The responder chain walked on with this press: it was not used before.
+            guard gate.began(key: code, time: press.timestamp) else { return false }
+            // Used, or the menu ran it a moment ago: the press ends here either way.
+            center.perform(command, by: .press)
+            gate.swallow(key: code)
+            if HangProbe.isInstalled { Self.log.notice("[noty.keys] app-command=\(command.rawValue, privacy: .public) responder=\(Self.responderName, privacy: .public)") }
+            return true
+        }
+        return false
     }
     private func handle(_ key: UIKey, time: TimeInterval, text: (any KeyboardTextTarget)?) -> Bool {
         let code = key.keyCode.rawValue, token = Self.token(for: key, commands: context == .text && textPrompt == nil), tracing = HangProbe.isInstalled
@@ -570,6 +613,8 @@ final class KeyboardRouter: ObservableObject {
     @discardableResult
     func handle(token: String, text: (any KeyboardTextTarget)? = nil) -> Bool {
         UserInputClock.note()
+        // A law citation card goes first with Esc, only while one is shown.
+        if token == "<Esc>", LawCitationPreviewModel.shared.consumeEscape(by: .keyCommand) { return true }
         guard isEnabled || helpVisible else { return false }
         if !keyboardSeen { keyboardSeen = true }
         cancelRepeat()

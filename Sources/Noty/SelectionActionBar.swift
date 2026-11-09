@@ -129,10 +129,13 @@ final class SelectionActionBar: UIScrollView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// A bar taken away mid-hover must not leave the shared clock warm.
+    /// Beside the bar no ink, lasso or shape starts on its own notebook's
+    /// pages (`PencilGuard`); taps and object drags there still work. A bar
+    /// taken away mid-hover must not leave the shared clock warm.
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil {
+        if window != nil { PencilGuard.shared.register(self, margin: 8, local: true) } else {
+            PencilGuard.shared.unregister(self)
             pendingHover?.cancel(); pendingHover = nil
             if hoverShown { hoverShown = false; NotyTooltipClock.didHide() }
         }

@@ -4,10 +4,22 @@ import NotebookCore
 /// Which input started a lookup; that field keeps what was typed there.
 enum LawLookupField { case query, number }
 
+/// How `LawReaderView.open` ended.
+enum LawOpenOutcome {
+    case opened
+    /// The document loaded, but this version has no such section (nothing changed).
+    case missingSection
+    /// The document could not be loaded (`loadError` says why; nothing changed).
+    case failed
+    /// A newer request replaced this one.
+    case superseded
+}
+
 extension LawReaderView {
     /// Opens the law and section the reader showed last (or the first law).
     func openInitial() async {
-        guard selectedID.isEmpty, !loading,
+        // A citation waiting for this reader wins over the last reading spot.
+        guard selectedID.isEmpty, !loading, laws.citationJump == nil, citationJumpID == nil,
               let entry = laws.entries.first(where: { $0.id == laws.lastReadingSpot?.lawId }) ?? laws.entries.first else { return }
         await resume(entry)
     }
@@ -15,18 +27,22 @@ extension LawReaderView {
     /// at its last read spot instead of jumping to the beginning.
     func choose(_ entry: LawEntry) async {
         guard entry.id != selectedID else { return }
+        endCrossTrail()
         await resume(entry)
     }
     /// Continues `entry` where it was read (B10): the remembered version if
     /// the catalogue still has it (otherwise the current one), the section,
     /// and text or PDF with its page. The scroll offset is not restored yet.
-    func resume(_ entry: LawEntry) async {
-        let spot = laws.readingSpot(law: entry.id)
+    /// `spot`: another remembered place of `entry` (the way back after a citation).
+    func resume(_ entry: LawEntry, at place: LawReadingSpot? = nil) async {
+        let spot = place ?? laws.readingSpot(law: entry.id)
         let version = spot?.versionId.flatMap { id in entry.versions.contains { $0.id == id } ? id : nil }
-        await open(entry, version: version, target: spot?.sectionId, resume: true)
+        // A request after this one (e.g. a citation jump) keeps its own place.
+        guard await open(entry, version: version, target: spot?.sectionId, resume: true) == .opened else { return }
         // Only a PDF already on this iPad: reopening never starts a large download.
+        let request = requestID
         guard spot?.view == .pdf, selectedID == entry.id, !viewPDF, let doc = document,
-              await laws.pdfIsOffline(entry, version: doc.version), selectedID == entry.id else { return }
+              await laws.pdfIsOffline(entry, version: doc.version), selectedID == entry.id, requestID == request else { return }
         pdfTarget = spot?.pdfPage
         await togglePDF()
         // No PDF (offline, missing): the text stays without an error line.
@@ -42,22 +58,44 @@ extension LawReaderView {
     }
     /// `resume`: a remembered target that no longer exists opens the beginning
     /// silently instead of reporting a missing citation.
-    func open(_ entry: LawEntry, version: String? = nil, target: String? = nil, paragraph: String? = nil, resume: Bool = false, from field: LawLookupField? = nil) async {
+    @discardableResult
+    func open(_ entry: LawEntry, version: String? = nil, target: String? = nil, paragraph: String? = nil, resume: Bool = false, from field: LawLookupField? = nil) async -> LawOpenOutcome {
         let request = UUID(); requestID = request
+        endCrossTrail()
         loading = true; loadError = ""
         defer { if requestID == request { loading = false } }
         do {
             let doc = try await laws.document(entry, version: version)
-            guard !Task.isCancelled, requestID == request else { return }
+            guard !Task.isCancelled, requestID == request else { return .superseded }
             let found = target.flatMap { key in doc.sections.first { $0.id == key || $0.keys.contains(key) } }
-            if target != nil && found == nil && !resume { loadError = "Diese Fundstelle ist in dieser Fassung nicht vorhanden."; return }
+            if target != nil && found == nil && !resume { loadError = "Diese Fundstelle ist in dieser Fassung nicht vorhanden."; return .missingSection }
             textSelection.clear()
             selectedID = entry.id; versionID = doc.version; document = doc
             let shown = found ?? doc.sections.first
-            sectionID = shown?.id ?? ""; jumpParagraph = paragraph
+            sectionID = shown?.id ?? ""; jump(to: paragraph)
             pdfURL = nil; viewPDF = false; pdfTarget = nil
             follow(shown, from: field)
-        } catch { if requestID == request { loadError = error.localizedDescription } }
+            return .opened
+        } catch {
+            guard requestID == request else { return .superseded }
+            loadError = error.localizedDescription
+            return .failed
+        }
+    }
+    /// Another place chosen by hand: „Zurück zu § …“ is no longer offered,
+    /// and „Zurück zur Notiz“ follows its own rule again (`citationNavigated`).
+    func endCrossTrail() {
+        if !crossNavigating, !crossBack.isEmpty { crossBack = [] }
+    }
+    /// Scrolls the text to an Absatz of the shown section (again, if it is the
+    /// same) and highlights it; nil just ends a pending target.
+    func jump(to paragraph: String?) {
+        jumpParagraph = paragraph; restoreOffset = nil
+        if paragraph != nil { jumpSerial += 1 }
+    }
+    /// Puts the text back at an earlier offset (way back), once the section shows.
+    func restore(offset: CGFloat) {
+        jumpParagraph = nil; restoreOffset = offset; jumpSerial += 1
     }
     func search(_ value: String, allowFullText: Bool = false, bareReference: Bool = true, from field: LawLookupField) async {
         if let target = LawQuickTarget.parse(value, entries: laws.entries), let entry = laws.entries.first(where: { $0.id == target.lawID }) {
@@ -65,7 +103,7 @@ extension LawReaderView {
         } else if bareReference, let ref = LawReference.parse(value), let entry {
             if let doc = document, let s = doc.sections.first(where: { $0.keys.contains(ref.key) }) {
                 showSection(s, from: field)
-                jumpParagraph = ref.paragraph
+                jump(to: ref.paragraph)
             } else { await open(entry, version: document?.version, target: ref.key, paragraph: ref.paragraph, from: field) }
         } else if allowFullText, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard let doc = document else { loadError = "Bitte zuerst ein Gesetz wählen."; return }
@@ -87,6 +125,7 @@ extension LawReaderView {
     /// outside the hits the nearest one in that direction.
     func stepHit(_ delta: Int) {
         guard !hits.isEmpty, let sections = document?.sections else { return }
+        endCrossTrail()
         let next: Int
         if let i = hits.firstIndex(of: sectionID) {
             next = (i + delta % hits.count + hits.count) % hits.count
@@ -101,6 +140,9 @@ extension LawReaderView {
     }
     func togglePDF() async {
         guard let entry, let doc = document else { return }
+        // A jump target belongs to the text view it was meant for: the text
+        // view made anew after the PDF must not replay it.
+        jumpParagraph = nil; restoreOffset = nil
         if viewPDF { viewPDF = false; pdfTarget = pdfPage; return }
         guard section?.pdf != nil || pdfTarget != nil else { loadError = LawReaderView.noPDFPosition; return }
         let id = requestID
