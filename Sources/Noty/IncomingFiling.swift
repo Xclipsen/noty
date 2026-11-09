@@ -114,6 +114,8 @@ enum IncomingFiling {
                     if !keepCopy { Task.detached(priority: .utility) { inbox.remove(item.id) } }
                     queue.finish(item.id)
                     presenting = false
+                    // The notebook under the sheet: no recognizer waits for a touch that ended in it.
+                    StalledGestures.requestReset()
                     Task { @MainActor in
                         await then?()
                         pump()

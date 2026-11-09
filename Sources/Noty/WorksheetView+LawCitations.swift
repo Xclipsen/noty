@@ -1144,6 +1144,8 @@ final class LawCitationTouchObserver: UIGestureRecognizer {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        // Lost touches (`StalledGestures`) must not keep `touching` set.
+        active = active.filter { event.stillDown($0) }; pencils = pencils.filter { event.stillDown($0) }
         active.formUnion(touches)
         pencils.formUnion(touches.filter { $0.type == .pencil })
         guard let touch = touches.first else { return }

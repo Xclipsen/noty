@@ -90,6 +90,8 @@ final class PageInteractionObserver: UIGestureRecognizer {
     var onChange: ((Bool) -> Void)?
     private var touches = Set<UITouch>()
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        // A lost touch (`StalledGestures`) would keep the editor „in input“ for good.
+        self.touches = self.touches.filter { event.stillDown($0) }
         self.touches.formUnion(touches); onChange?(true)
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) { }
