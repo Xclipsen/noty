@@ -119,7 +119,9 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     private enum FieldDrag { case move, left, right }
     /// Weiches Einrasten for frame-zone moves and width points.
     let snapping = DragSnapping()
-    private lazy var accessory = makeAccessory()
+    lazy var accessory = makeAccessory()
+    /// Tippvorschlag for law citations (TextObjectLayer+LawSuggestions.swift).
+    let lawSuggestion = LawSuggestionState()
     var buttons: [String: UIButton] = [:]
     /// BUG-18 input diagnosis (category `text-input`), only with Settings › Diagnose.
     private let inputLog = Logger(subsystem: "de.la.noty", category: "text-input")
@@ -188,6 +190,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         if reset {
             onEditingActive?(false)
             compositionBase = nil
+            hideLawSuggestions()
             generation += 1; dragStart = nil; notice.isHidden = true
             // A pending flow settle works on the document by box ID and survives
             // a page/layout switch; a restore or undo (new content generation)
@@ -930,6 +933,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
     }
     func textViewDidEndEditing(_ textView: UITextView) {
         KeyboardRouter.shared.textEnded()
+        hideLawSuggestions()
         replacedArrow = nil; keptArrow = nil
         (textView as? PageTextView)?.placement = nil
         onEditingActive?(fields.values.contains { $0.editor.isFirstResponder })
@@ -972,6 +976,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         layoutIfNeeded(); requestCaretReveal(.typing)
         keyboardTyped(editor)
         calculate(editor, previous: previous)
+        lawSuggestionTextChanged(editor)
     }
     /// A typed „=“ calculates (`TextCalculator`). On the next turn of the run
     /// loop: UIKit is still finishing its own insertion here.
@@ -1245,6 +1250,7 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
                 let base = compositionBase ?? persisted; compositionBase = nil
                 commitFlow(previous: base, editor: editor)
             }
+            if let editor = textView as? PageTextView { lawSuggestionSelectionChanged(editor) }
             // Selection drags/handles never move the page; a moved caret only when hidden.
             updateAccessory()
             if textView.isFirstResponder, textView.selectedRange.length == 0 { requestCaretReveal(.navigation) }
@@ -1300,7 +1306,11 @@ final class TextObjectLayer: UIView, UITextViewDelegate, UIGestureRecognizerDele
         applyListEdits(edits, at: index, editor: editor)
     }
     func applyListEdits(_ edits: [TextListEditing.Edit], at index: Int, editor: PageTextView) {
-        guard !edits.isEmpty else { return }
+        // All or nothing: edits computed from a text the editor no longer
+        // holds must not reach `replaceCharacters` (NSRangeException).
+        let length = editor.textStorage.length
+        guard !edits.isEmpty, boxes.indices.contains(index),
+              edits.allSatisfy({ $0.range.location >= 0 && $0.range.length >= 0 && NSMaxRange($0.range) <= length }) else { return }
         let previous = boxes[index], selection = TextListEditing.selection(editor.selectedRange, after: edits)
         updating = true
         editor.textStorage.beginEditing()

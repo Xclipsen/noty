@@ -23,6 +23,7 @@ struct NativeLawPDF: UIViewRepresentable {
         NotificationCenter.default.addObserver(c, selector: #selector(Coordinator.selectionChanged), name: .PDFViewSelectionChanged, object: v)
         NotificationCenter.default.addObserver(c, selector: #selector(Coordinator.visiblePagesChanged), name: .PDFViewVisiblePagesChanged, object: v)
         NotificationCenter.default.addObserver(c, selector: #selector(Coordinator.visiblePagesChanged), name: .PDFViewScaleChanged, object: v)
+        NotificationCenter.default.addObserver(c, selector: #selector(Coordinator.memoryWarning), name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
         // Pencil strokes are previewed here; the overlay itself takes no touches.
         let ink = LawPDFInkOverlay()
         ink.pdf = v; ink.isUserInteractionEnabled = false; ink.backgroundColor = .clear
@@ -59,7 +60,7 @@ struct NativeLawPDF: UIViewRepresentable {
         let destination = "\(page):\(top)"
         if c.destination != destination {
             c.destination = destination
-            if let p = v.document?.page(at: max(0, page - 1)) {
+            if let doc = v.document, let p = doc.lawPage(at: min(max(0, page - 1), doc.pageCount - 1)) {
                 let bounds = p.bounds(for: .cropBox)
                 v.go(to: PDFDestination(page: p, at: CGPoint(x: bounds.minX, y: bounds.maxY - bounds.height * max(0, min(1, top)))))
             }
@@ -76,7 +77,11 @@ struct NativeLawPDF: UIViewRepresentable {
         weak var tap: UITapGestureRecognizer?
         var destination = ""
         /// Text of each page with glyph boxes, built when a text mark or Pencil needs it.
+        /// Only the most recently used pages (a long law would otherwise keep
+        /// every scrolled page's glyphs); dropped on a memory warning.
         private var layouts: [Int: LawPDFTextLayout] = [:]
+        private var layoutOrder: [Int] = []
+        private static let layoutLimit = 8
         /// Rectangles of text marks shown on a page (page index → mark → rectangles).
         private var textRects: [Int: [String: [LawPDFRect]]] = [:]
         /// What each page's annotations were built from.
@@ -127,9 +132,11 @@ struct NativeLawPDF: UIViewRepresentable {
         /// Pages the provision of a text mark may lie on (0-based indices).
         private func pages(of anchor: LawAnchor, count: Int) -> ClosedRange<Int>? {
             let sections = self.sections
-            guard let index = sections.firstIndex(where: { $0.id == anchor.sectionId }), let start = sections[index].pdf?.page else { return nil }
-            let next = sections.dropFirst(index + 1).first { $0.pdf != nil }?.pdf?.page ?? count
-            return max(0, start - 1)...max(start - 1, min(count - 1, next - 1))
+            guard let index = sections.firstIndex(where: { $0.id == anchor.sectionId }), let start = sections[index].pdf?.page,
+                  start >= 1, start <= count else { return nil }
+            let next = sections.dropFirst(index + 1).first { ($0.pdf?.page ?? 0) >= 1 }?.pdf?.page ?? count
+            // Never `a...b` with b < a: the end is at least the start.
+            return (start - 1)...max(start - 1, min(count - 1, next - 1))
         }
         private func marks(onPage index: Int, count: Int) -> (pdf: [LawPersonalItem], text: [LawPersonalItem]) {
             var pdf: [LawPersonalItem] = [], text: [LawPersonalItem] = []
@@ -157,7 +164,7 @@ struct NativeLawPDF: UIViewRepresentable {
                 hasher.combine(selected.intersection((pdf + text).map(\.id)).sorted())
                 hasher.combine(sections.count)
                 let key = hasher.finalize()
-                guard applied[index] != key, let page = doc.page(at: index) else { continue }
+                guard applied[index] != key, let page = doc.lawPage(at: index) else { continue }
                 applied[index] = key
                 rebuild(page, index: index, pdf: pdf, text: text, selected: selected)
             }
@@ -223,8 +230,11 @@ struct NativeLawPDF: UIViewRepresentable {
         }
         /// Glyph boxes of a page, normalised to its crop box, origin top left.
         private func layout(_ index: Int) -> LawPDFTextLayout? {
-            if let cached = layouts[index] { return cached }
-            guard let page = view?.document?.page(at: index) else { return nil }
+            if let cached = layouts[index] {
+                layoutOrder.removeAll { $0 == index }; layoutOrder.append(index)
+                return cached
+            }
+            guard let page = view?.document?.lawPage(at: index) else { return nil }
             let crop = page.bounds(for: .cropBox)
             guard crop.width > 0, crop.height > 0 else { return nil }
             let string = (page.string ?? "") as NSString
@@ -237,8 +247,12 @@ struct NativeLawPDF: UIViewRepresentable {
             }
             let layout = LawPDFTextLayout(glyphs: glyphs, aspectRatio: crop.height / crop.width)
             layouts[index] = layout
+            layoutOrder.append(index)
+            while layoutOrder.count > Self.layoutLimit { layouts[layoutOrder.removeFirst()] = nil }
             return layout
         }
+        /// Glyph boxes are rebuilt on demand; the shown annotations stay.
+        @objc func memoryWarning() { layouts = [:]; layoutOrder = [] }
 
         // MARK: Selection and taps
 
@@ -263,7 +277,7 @@ struct NativeLawPDF: UIViewRepresentable {
         }
         /// The topmost mark at a normalised point of page `index`.
         private func mark(at p: LawPDFPoint, page index: Int) -> String? {
-            guard let page = view?.document?.page(at: index) else { return nil }
+            guard let page = view?.document?.lawPage(at: index) else { return nil }
             let crop = page.bounds(for: .cropBox), aspect = crop.height / max(1, crop.width)
             let pad = 0.004
             for item in parent.items.reversed() where !item.deleted && pageNumber(item) == index + 1 {
@@ -326,7 +340,7 @@ struct NativeLawPDF: UIViewRepresentable {
             var union = CGRect.null
             if hasPDFSelection, let current = v.currentSelection {
                 for page in current.pages { union = union.union(v.convert(current.bounds(for: page), from: page)) }
-            } else if parent.selection.tapped, let id = parent.selection.marks.first, let found = rects(of: id), let page = v.document?.page(at: found.index) {
+            } else if parent.selection.tapped, let id = parent.selection.marks.first, let found = rects(of: id), let page = v.document?.lawPage(at: found.index) {
                 for rect in found.rects { union = union.union(v.convert(pageRect(rect, on: page), from: page)) }
             }
             return union.isNull ? nil : container.overlay.convert(union, from: v)
@@ -388,7 +402,7 @@ struct NativeLawPDF: UIViewRepresentable {
         }
         func text(ofMark id: String) -> String? {
             guard let item = parent.items.first(where: { $0.id == id }) else { return nil }
-            if case let .array(values) = item.payload["rectangles"], let number = pageNumber(item), let page = view?.document?.page(at: number - 1) {
+            if case let .array(values) = item.payload["rectangles"], let number = pageNumber(item), let page = view?.document?.lawPage(at: number - 1) {
                 let parts = values.compactMap(LawPDFRect.init(json:)).compactMap { page.selection(for: pageRect($0, on: page))?.string }
                 if !parts.isEmpty { return parts.joined(separator: "\n") }
             }
@@ -512,6 +526,12 @@ struct NativeLawPDF: UIViewRepresentable {
             return hit
         }
     }
+}
+
+extension PDFDocument {
+    /// `page(at:)` only inside the document: PDFKit may raise outside it,
+    /// and page numbers come from server data and synced marks.
+    func lawPage(at index: Int) -> PDFPage? { (0..<pageCount).contains(index) ? page(at: index) : nil }
 }
 
 /// The PDF view with the mark overlay above it.

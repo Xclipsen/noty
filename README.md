@@ -23,6 +23,14 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Zusammenführung 09.11.2026 (dev und main, Build 149, noch nicht veröffentlicht):** `feat/paragraphen` (Gesetzesverweise im Heft, Schutzrand für den Stift, ⌘F/⌘L-Zustellung), `feat/feinschliff` (Absturzschutz beim Start, Gesetzesleser-Fix) und `feat/diagnose` (Fehler- und Ruckler-Diagnose) sind in `dev` und `main`. Nachweise: 1617 Core-Tests, Host-Roundtrip, Diagnose-Servertests und `xtool dev build`; die zusammengeführte Fassung ist **am iPad ungeprüft**. Die Veröffentlichung der normalen noty wartet auf den iCloud-Container im Apple-Entwicklerportal ([ICLOUD](docs/ICLOUD.md)).
+
+**Fehler- und Ruckler-Diagnose (`feat/diagnose`, 08.11.2026; seit 09.11.2026 in `main`):** Abstürze, Hänger, langsame Vorgänge und Fehler aus noty dev, noty AI und noty calendar gehen automatisch als einheitlicher Bericht an den eigenen Server, ohne Heftinhalte; die normale noty sendet nur auf Wunsch. Auswertung mit `scripts/diag_report.py`. Core- und Servertests sowie iPad-SDK-Build bestanden, Server installiert; nicht installiert, am iPad ungeprüft ([DIAGNOSE](docs/DIAGNOSE.md)).
+
+**noty dev Build 128 (`feat/paragraphen`, 07.11.2026):** Gesetzesverweise P2/P3 (Gesetzesbezug pro Heft, Querverweise im Gesetzesleser mit Hover-Karte, Absatz-Sprung mit Hervorhebung, Als Zitat einfügen, Tippvorschlag, Texteditor 2, Handschrift), Schutzrand gegen Striche an Bedienleisten, ⌘F/⌘L über zentrale Befehlsstelle, Lasche ohne ✕, Bibliothek ohne Backup-Knopf. Implementiert, gebaut, zwei Review-Runden, 1386 Core-Tests und Host-Roundtrip bestanden; am iPad ungeprüft. [Details](docs/PARAGRAPH-LINKS.md).
+
+**Gesetzesverweise im Heft, noty dev Build 125 (`feat/paragraphen`, 06.11.2026):** In Textfeldern, Fließtext und PDF-Text werden „§ 35a EStG“, „R 9.1 LStR“, „AEAO zu § 122 AO“ usw. dezent unterstrichen. Hover mit Apple Pencil oder Trackpad zeigt eine Vorschau aus dem lokalen Bestand, Antippen oder Klicken öffnet das Gesetzesfenster dort, „Zurück zur Notiz“ führt zurück. Kein Formatwechsel. Implementiert und gebaut, 1365 Core-Tests und Host-Roundtrip bestanden, am iPad ungeprüft. [Details](docs/PARAGRAPH-LINKS.md), [Plan Merker/Steuerkanzlei](docs/MERKER-PLAN.md).
+
 **noty 1.0, Build 121 (05.11.2026):** Release-Kandidat 2 (Build 120) als normale noty, vom Nutzer freigegeben. Dazu kommt der Abgleich jetzt auch mit der vierten App „noty calendar“ ([APP-SYNC](docs/APP-SYNC.md)). Veröffentlicht für noty, noty dev, noty AI und noty calendar. Am iPad ungeprüft.
 
 **Release-Kandidat 2, Build 120 (`feat/rc2` → `dev`, 05.11.2026):** Stand von Build 118 (inkl. Abgleich zwischen den noty-Apps) plus Korrekturen aus einer vollständigen Code-Prüfung in acht Bereichen: Stifte, Lasso/Objekte, Text, Speichern, Backup/PDF, Oberfläche, Gesetzessammlung, Release. Kein Formatwechsel gegenüber Build 110–117. Korrigiert:

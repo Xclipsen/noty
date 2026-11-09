@@ -38,6 +38,7 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
             }
             .frame(width: frame.width, height: frame.height)
             .notyGlass()
+            .pencilGuard()
             .offset(x: frame.x, y: frame.y)
             .animation(drag == nil ? NotyMotion.palette(reduceMotion) : nil, value: frame)
             .disabled(!enabled)
@@ -49,6 +50,7 @@ struct ToolbarPaletteHost<Content: View, Options: View>: View {
                 let dy: CGFloat = attached.y >= bar.y + bar.height - 0.5 ? -6 : (attached.y + attached.height <= bar.y + 0.5 ? 6 : 0)
                 options().frame(width: attached.width, height: attached.height)
                     .notyGlass()
+                    .pencilGuard()
                     .offset(x: attached.x, y: attached.y)
                     .transition(reduceMotion ? .opacity.animation(NotyMotion.fade) : .opacity.combined(with: .offset(x: dx, y: dy)))
                     .animation(NotyMotion.palette(reduceMotion), value: attached)

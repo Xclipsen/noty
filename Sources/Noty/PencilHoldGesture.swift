@@ -10,6 +10,8 @@ final class PencilHoldGesture: UIGestureRecognizer, UIGestureRecognizerDelegate 
     var onBegin: ((CGPoint) -> Void)?
     var onEnd: ((Bool) -> Void)?
     var allowFinger = false
+    /// The touch starts on or beside chrome (`PencilGuard`): no held shape or sweep.
+    var refuses: ((UITouch) -> Bool)?
     private var timer: Timer?
     private var point = CGPoint.zero
     private weak var tracked: UITouch?
@@ -29,6 +31,7 @@ final class PencilHoldGesture: UIGestureRecognizer, UIGestureRecognizerDelegate 
             for touch in touches { ignore(touch, for: event) }
             return
         }
+        if refuses?(touch) == true { for touch in touches { ignore(touch, for: event) }; return }
         for other in touches where other !== touch { ignore(other, for: event) }
         tracked = touch; point = touch.location(in: view?.window ?? view)
         state = .began; onBegin?(touch.location(in: view)); onPoint?(touch.location(in: view)); arm()

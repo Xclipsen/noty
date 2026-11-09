@@ -232,3 +232,26 @@ final class LawLibraryTests: XCTestCase, @unchecked Sendable {
         let items = try await restored.items(); XCTAssertEqual(items.count, 1); XCTAssertTrue(items[0].deleted)
     }
 }
+
+extension LawLibraryTests {
+    /// Crash audit #3: a PDF page below 1 from the server is no position (the
+    /// reader would otherwise build an empty `0...-1` page range).
+    func testInvalidPDFPagesBecomeMissingPositions() throws {
+        let version = LawVersion(id: "v1", status: ["Teststand"], dataUrl: "/data/laws/hgb/v1/law.json", pdfUrl: "/data/laws/hgb/v1/law.pdf",
+                                 pages: 3, sectionCount: 4, sha256: [:])
+        let entry = LawEntry(id: "hgb", abbr: "HGB", name: "Gesetz", category: "Test", kind: "law", aliases: nil, currentVersion: "v1", versions: [version])
+        func section(_ id: String, page: Int?) -> [String: Any] {
+            var value: [String: Any] = ["id": id, "keys": [id], "label": id, "title": "", "text": "Text", "notes": ""]
+            if let page { value["pdf"] = ["page": page, "top": 0.5] }
+            return value
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["id": "hgb", "abbr": "HGB", "name": "Gesetz", "kind": "law", "version": "v1", "status": ["Test"],
+            "sourceUrl": "https://example.test/law",
+            "sections": [section("a", page: 0), section("b", page: -4), section("c", page: 2), section("d", page: nil)]])
+        let document = try JSONDecoder().decode(LawDocument.self, from: data).validated(for: entry, version: version)
+        XCTAssertNil(document.sections[0].pdf)
+        XCTAssertNil(document.sections[1].pdf)
+        XCTAssertEqual(document.sections[2].pdf?.page, 2)
+        XCTAssertNil(document.sections[3].pdf)
+    }
+}

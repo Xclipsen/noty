@@ -151,6 +151,7 @@ final class EditorModel: ObservableObject {
             defer { busy = false }
             if self.writeClaim == nil { self.writeClaim = await PackageWriteLock.shared.claim(root, waitingUpTo: 15) }
             guard self.writeClaim != nil else {
+                Diagnostics.cancel(shared: "notebook.open")
                 status = "Heft wird an anderer Stelle bearbeitet – nicht geöffnet"
                 self.error = "Dieses Heft ist gerade in einer anderen Ansicht geöffnet oder wird ergänzt. Bitte schließen und gleich noch einmal öffnen; es wurde nichts verändert."
                 return
@@ -179,6 +180,8 @@ final class EditorModel: ObservableObject {
                 if let id = self.preferredPageID ?? remembered,
                    let index = loaded.pages.firstIndex(where: { $0.id == id }) { pageIndex = index }
                 writable = true
+                Diagnostics.end(shared: "notebook.open", ["pages": loaded.pages.count, "recovered": recovered ? 1 : 0])
+                Diagnostics.enter(phase: "notebook")
                 if recovered {
                     // An older fallback is committed only with the first real
                     // change: opening alone never replaces the newer manifest
@@ -198,6 +201,8 @@ final class EditorModel: ObservableObject {
                     _ = try? await store.collectAssetGarbage(.opening, keeping: ImageAssetRegistry.shared.clipboardHashes)
                 }
             } catch {
+                Diagnostics.cancel(shared: "notebook.open")
+                Diagnostics.failure("notebook.open", error)
                 status = "Lesefehler – Originaldateien geschützt"
                 self.error = "Gespeicherte Daten sind nicht lesbar. Originaldateien bleiben erhalten. Ein exportiertes Backup kann über Dateien wiederhergestellt werden. \(error.localizedDescription)"
             }
@@ -1023,7 +1028,9 @@ final class EditorModel: ObservableObject {
             do {
                 if delayed { try await Task.sleep(for: .milliseconds(250)) }
                 try Task.checkCancellation()
+                let measurement = Diagnostics.begin("save")
                 try await store.save(snapshot, revision: savingRevision)
+                Diagnostics.end(measurement, ["pages": snapshot.pages.count])
                 if savingRevision == revision { setStatus("Lokal gespeichert"); retryAttempt = 0; lastPermanentFailure = nil }
             } catch is CancellationError {
                 // A newer complete snapshot supersedes this one.
@@ -1040,6 +1047,7 @@ final class EditorModel: ObservableObject {
     /// for the user. A success, a newer save or closing cancels the retry.
     private func saveDidFail(_ failure: Error) {
         if !saveFailed { saveFailed = true }
+        Diagnostics.failure("save", failure)
         let message = failure.localizedDescription
         guard Self.retryable(failure) else {
             setStatus("Speichern fehlgeschlagen – Änderungen nur im Speicher")
@@ -1130,7 +1138,7 @@ final class EditorModel: ObservableObject {
     }
 
     private func openPreparedRestore(_ prepared: PreparedRestore, message: String) async throws {
-        try validate(prepared.document, assets: prepared.assets)
+        try await EditorModelValidation.validateDetached(prepared.document, assets: prepared.assets)
         var restored = try await store.commitRestoreCopy(prepared, libraryRoot: libraryRoot)
         restored.preferredPageID = page.id
         backupStatus = message
@@ -1159,6 +1167,34 @@ enum EditorModelValidation {
     static func validate(_ document: Notebook, assets: ImageAssetProviding? = nil) throws {
         _ = try NotebookPDFCatalog(document)
         try validateContent(document, assets: assets)
+    }
+
+    /// The checks of `validate` off the UI actor (import of a `.noty`, a
+    /// local revision opened as a copy): the CoreGraphics PDF, geometry,
+    /// PencilKit and image checks of `BackupValidation`, plus the PDFKit
+    /// acceptance of the catalogue (parse, not locked, page count) on
+    /// private `PDFDocument`s that no view or other thread ever sees. The
+    /// catalogue itself is built when the notebook is opened.
+    nonisolated static func validateDetached(_ document: Notebook, assets: ImageAssetProviding? = nil) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            if let assets { try BackupValidation.validate(document, assets) } else { try BackupValidation.validate(document) }
+            try validatePDFKitAcceptance(document)
+        }.value
+    }
+
+    /// The parts of `NotebookPDFCatalog.init` that PDFKit may judge
+    /// differently from CoreGraphics, without creating any `PDFPage`.
+    nonisolated static func validatePDFKitAcceptance(_ document: Notebook) throws {
+        for source in document.pdfSources ?? [] {
+            guard let pdf = PDFDocument(data: source.data), !pdf.isLocked, pdf.pageCount == source.pageCount else {
+                throw StorageError.invalidDocument
+            }
+        }
+        if let data = document.pdf {
+            guard let pdf = PDFDocument(data: data), !pdf.isLocked, pdf.pageCount == document.pages.count else {
+                throw StorageError.invalidDocument
+            }
+        }
     }
     /// PencilKit drawings and images of active and trashed pages. No UI or
     /// PDFKit objects: safe off the UI actor (the PDF part is the catalogue).

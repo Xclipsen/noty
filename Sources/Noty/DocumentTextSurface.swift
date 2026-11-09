@@ -131,6 +131,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         addInteraction(UIScribbleInteraction(delegate: NoScribble.shared))
         pointerBeam = TextPointerBeam(on: self) { [weak self] point in self?.pointerTextHeight(at: point) }
         addGestureRecognizer(touchWatcher)
+        installLawCitationLinks() // hover over flow citations reaches the sheet below
         touchWatcher.onEnded = { [weak self] touch in
             guard let self, self.lastTouchEndedAsTap else { return }
             let point = touch.location(in: self), count = touch.tapCount
@@ -253,6 +254,9 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     /// The model has a new text for the buffer.
     func replacingAllText(_ load: () -> Void) {
         inputDelegate?.textWillChange(self); inputDelegate?.selectionWillChange(self)
+        // A composition does not survive a new buffer: its range would point
+        // into text that is gone (the model never held the marked text).
+        marked = nil; markBase = nil
         load()
         selection = clamped(selection)
         inputDelegate?.selectionDidChange(self); inputDelegate?.textDidChange(self)
@@ -543,7 +547,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     var markedTextRange: UITextRange? { marked.map(DocumentTextRange.init) }
     func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
         guard isActive, KeyboardRouter.shared.allowsTyping else { return }
-        let value = markedText ?? "", target = marked ?? selection
+        let value = markedText ?? "", target = clamped(marked ?? selection)
         if markBase == nil { markBase = (selection, selection) }
         var attributes = typingAttributes
         attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
@@ -554,8 +558,9 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         if length == 0 { unmarkText() } else { requestCaretReveal(.typing) }
     }
     func unmarkText() {
-        guard let range = marked, let base = markBase else { return }
-        marked = nil; markBase = nil
+        guard let marked, let base = markBase else { return }
+        self.marked = nil; markBase = nil
+        let range = clamped(marked)
         store.setAttributes(typingAttributes, range: range)
         let text = (store.string as NSString).substring(with: range)
         selection = NSRange(location: NSMaxRange(range), length: 0)
@@ -566,6 +571,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     private func replaceMarked(_ range: NSRange, with text: String) {
         guard let base = markBase else { return }
         marked = nil; markBase = nil
+        let range = clamped(range)
         store.replace(range, with: NSAttributedString(string: text, attributes: typingAttributes))
         selection = NSRange(location: range.location + (text as NSString).length, length: 0)
         commit([TextListEditing.Edit(range: base.range, replacement: text)], style: typingStyle, before: base.selection, separate: false)
@@ -599,7 +605,10 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
 
     // MARK: UITextInput: positions
 
-    private func offset(_ position: UITextPosition) -> Int { (position as? DocumentTextPosition)?.offset ?? 0 }
+    /// Clamped: UIKit may still hold a position from before the text got shorter.
+    private func offset(_ position: UITextPosition) -> Int {
+        min(max(0, (position as? DocumentTextPosition)?.offset ?? 0), store.storage.length)
+    }
     var beginningOfDocument: UITextPosition { DocumentTextPosition(0) }
     var endOfDocument: UITextPosition { DocumentTextPosition(store.storage.length) }
     func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? {
@@ -651,7 +660,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
     // MARK: UITextInput: geometry
 
     func firstRect(for range: UITextRange) -> CGRect {
-        guard let range = (range as? DocumentTextRange)?.range else { return .zero }
+        guard let range = ((range as? DocumentTextRange)?.range).map({ clamped($0) }) else { return .zero }
         if let first = store.selectionRects(range, pages: []).first, let frame = frame(ofPage: first.page) {
             return frame.surface(first.rect).cgRect
         }
@@ -663,7 +672,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         return overlayOwnsSelection ? CGRect(x: rect.minX, y: rect.minY, width: 0, height: 0) : rect
     }
     func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
-        guard !overlayOwnsSelection, let range = (range as? DocumentTextRange)?.range else { return [] }
+        guard !overlayOwnsSelection, let range = ((range as? DocumentTextRange)?.range).map({ clamped($0) }) else { return [] }
         return store.selectionRects(range, pages: visiblePages).compactMap { part in
             frame(ofPage: part.page).map { DocumentSelectionRectangle($0.surface(part.rect).cgRect, containsStart: part.containsStart, containsEnd: part.containsEnd) }
         }
@@ -672,7 +681,7 @@ final class DocumentTextSurface: UIView, @preconcurrency UITextInput {
         DocumentTextPosition(store.offset(closestTo: Self.point(point), in: store.frames))
     }
     func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? {
-        guard let range = (range as? DocumentTextRange)?.range else { return nil }
+        guard let range = ((range as? DocumentTextRange)?.range).map({ clamped($0) }) else { return nil }
         return DocumentTextPosition(min(max(store.offset(closestTo: Self.point(point), in: store.frames), range.location), NSMaxRange(range)))
     }
     func characterRange(at point: CGPoint) -> UITextRange? {

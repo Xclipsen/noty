@@ -307,7 +307,7 @@ struct LibraryView: View {
         // No sheet changes with these alerts: the keys have to come back by themselves.
         .onChange(of: model.error == nil && workspaces.error == nil && backupMessage == nil) { _, _ in KeyboardRouter.shared.reclaim() }
         .onChange(of: model.snapshot) { _, _ in leaveUnavailableFolder() }
-        .focusedSceneValue(\.libraryCommands, model.opened == nil && !presenting ? LibraryCommandActions(
+        .publishesLibraryCommands(model.opened == nil && !presenting ? LibraryCommandActions(
             newNotebook: editable ? { creatingNotebook = true } : nil,
             search: editable ? { searchAllNotebooks() } : nil,
             newTextDocument: editable ? { creatingTextDocument = true } : nil,
@@ -890,6 +890,10 @@ struct LibraryView: View {
         }
             .toolbar { leadingToolbar }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { detailWidth = $0 }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                // After an interrupted launch (LaunchGuard).
+                LaunchNoticeBanner()
+            }
             .safeAreaInset(edge: .top, spacing: 0) {
                 if let warning = model.warning {
                     Label(warning, systemImage: "exclamationmark.triangle")

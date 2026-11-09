@@ -58,8 +58,12 @@ final class LawPanelModel: ObservableObject {
         let defaults = UserDefaults.standard
         let edge = defaults.string(forKey: Self.edgeKey).flatMap(LawPanelEdge.init(rawValue:))
             ?? (defaults.bool(forKey: Self.leftKey) ? .left : .right)
-        state = LawPanelState(isOpen: defaults.bool(forKey: Self.openKey), isStashed: defaults.bool(forKey: Self.stashedKey),
+        // After an interrupted launch the window starts closed (and stays so
+        // for the next launch); edge, docking and size are kept (LaunchGuard).
+        let restore = !LaunchGuard.shared.skipsRestore
+        state = LawPanelState(isOpen: restore && defaults.bool(forKey: Self.openKey), isStashed: restore && defaults.bool(forKey: Self.stashedKey),
                               isDocked: defaults.bool(forKey: Self.dockedKey), edge: edge)
+        if !restore { store(state) }
     }
 
     var phase: LawPanelState.Phase { state.phase }
@@ -89,6 +93,13 @@ final class LawPanelModel: ObservableObject {
     @discardableResult private func change(animated: Bool = true, _ transition: (inout LawPanelState) -> Bool) -> Bool {
         var next = state
         guard transition(&next) else { return false }
+        if next.phase != state.phase {
+            switch next.phase {
+            case .visible: Diagnostics.note("law.window.shown"); Diagnostics.enter(phase: "lawWindow")
+            case .parked: Diagnostics.note("law.window.parked")
+            case .closed: Diagnostics.note("law.window.closed")
+            }
+        }
         // Reduce Motion: no animation for the layout; the window and its tab
         // fade through their own transitions (EditorWorkspace).
         if animated, let animation = NotyMotion.panel(UIAccessibility.isReduceMotionEnabled) {

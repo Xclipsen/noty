@@ -190,6 +190,8 @@ final class LaserTouchObserver: UIGestureRecognizer, UIGestureRecognizerDelegate
         guard !blocked, let touch = touches.first(where: {
             $0.type == .pencil || $0.type == .indirectPointer || (allowFinger && $0.type == .direct)
         }) else { return }
+        // Not from on or beside chrome over the pages (`PencilGuard`).
+        if let view, PencilGuard.shared.covers(touch.location(in: view), in: view) { return }
         // Finger drawing: a second finger already down means navigation.
         if touch.type == .direct, active.filter({ $0.type == .direct }).count > 1 { blocked = true; return }
         tracked = touch; tracking = true; onBegin?(touch)

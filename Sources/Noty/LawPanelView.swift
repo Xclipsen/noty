@@ -62,6 +62,9 @@ struct LawPanelView: View {
         .lawKeyFocusArea()
         .overlay { if !docked { shape.strokeBorder(.white.opacity(0.18), lineWidth: 1).allowsHitTesting(false) } }
         .shadow(color: .black.opacity(docked ? 0 : 0.45), radius: 18, y: 8)
+        // The whole window and a near-miss band around it (bar, grip, resize
+        // handle, rounded corners) keep notebook ink from starting there.
+        .pencilGuard(margin: docked ? 8 : 12, active: panel.isVisible)
         .environment(\.colorScheme, .dark)
     }
 

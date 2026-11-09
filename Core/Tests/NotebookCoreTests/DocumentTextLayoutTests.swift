@@ -424,3 +424,20 @@ private extension Notebook {
         return page
     }
 }
+
+/// Crash audit #1: UIKit may hand back a position from before the text got
+/// shorter; the grapheme steps clamp instead of reading past the end.
+final class StaleBoundaryTests: XCTestCase {
+    func testBoundariesClampOutOfRangeIndices() {
+        let text = "ab\r\nc" as NSString // length 5
+        XCTAssertEqual(text.previousBoundary(99), 4)
+        XCTAssertEqual(text.previousBoundary(5), 4)
+        XCTAssertEqual(text.previousBoundary(-3), 0)
+        XCTAssertEqual(text.nextBoundary(99), 5)
+        XCTAssertEqual(text.nextBoundary(-3), 1)
+        XCTAssertEqual(DocumentCaretMotion.previous("" as NSString, 7), 0)
+        XCTAssertEqual(DocumentCaretMotion.next("" as NSString, -1), 0)
+        // `\r\n` stays one step from a clamped end.
+        XCTAssertEqual(("ab\r\n" as NSString).previousBoundary(10), 2)
+    }
+}

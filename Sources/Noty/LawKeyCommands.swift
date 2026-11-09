@@ -219,7 +219,10 @@ final class LawKeyboard: ObservableObject {
     // MARK: Actions
 
     func perform(_ action: LawShortcuts.Action) {
+        // Esc closes a law citation card first, only while one is shown.
+        if case .escape = action, LawCitationPreviewModel.shared.consumeEscape(by: .keyCommand) { return }
         guard available, panel != nil else { return }
+        Self.note(action)
         switch action {
         case .toggleWindow:
             // Visible → closed, parked or closed → visible with the keys.
@@ -234,6 +237,8 @@ final class LawKeyboard: ObservableObject {
             panel?.togglePark()
             if !wasShown { focus(claiming: true) }
         case .lookup:
+            // Under a sheet the window would open behind it.
+            guard !covered else { return }
             openWindow()
             pendingSearch = true
             focus(claiming: false)
@@ -438,5 +443,20 @@ extension View {
     /// applied by `LawPanelView` to the whole window (bar and reader).
     func lawKeyFocusArea() -> some View {
         simultaneousGesture(TapGesture().onEnded { LawKeyboard.shared.windowTouched() })
+    }
+}
+
+extension LawKeyboard {
+    /// The law keys in the diagnosis history (docs/DIAGNOSE.md): fixed names only.
+    fileprivate static func note(_ action: LawShortcuts.Action) {
+        switch action {
+        case .toggleWindow: Diagnostics.note("key.law.toggle")
+        case .parkWindow: Diagnostics.note("key.law.park")
+        case .lookup: Diagnostics.note("key.law.lookup")
+        case .find: Diagnostics.note("key.law.find")
+        case .escape: Diagnostics.note("key.law.escape")
+        case .dock, .float: Diagnostics.note("key.law.place")
+        default: Diagnostics.note("key.law.other")
+        }
     }
 }
