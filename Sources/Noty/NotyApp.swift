@@ -16,6 +16,8 @@ struct NotyApp: App {
         // the law window, and whether it runs in the safe mode (LaunchGuard).
         LaunchGuard.start()
         LaunchGuard.log.notice("[launch] app init")
+        // Then the run's history, the hang watchdog and MetricKit (docs/DIAGNOSE.md).
+        Diagnostics.start()
         // Inline image originals are hashed once per session (content addresses);
         // CryptoKit instead of the portable Swift SHA-256, checked against test vectors first.
         NotebookCore.SHA256.installAccelerated { data in Array(CryptoKit.SHA256.hash(data: data)) }
@@ -45,7 +47,11 @@ struct NotyApp: App {
                         if laws.sceneActive { await laws.tick() }
                     }
                 }
-                .onChange(of: scenePhase, initial: true) { _, phase in LaunchGuard.shared.scenePhaseChanged(phase); laws.sceneActive = phase == .active; if phase == .active { TapDiagnostics.shared.refresh(); Task { await laws.tick() } } }
+                .onChange(of: scenePhase, initial: true) { _, phase in
+                    LaunchGuard.shared.scenePhaseChanged(phase)
+                    Diagnostics.scene(phase == .active ? .active : phase == .background ? .background : .inactive)
+                    laws.sceneActive = phase == .active; if phase == .active { TapDiagnostics.shared.refresh(); Task { await laws.tick() } }
+                }
                 .alert("Gesetzessammlung", isPresented: Binding(get: { laws.error != nil && laws.inlineErrorPages == 0 }, set: { if !$0 { laws.error = nil } })) {
                     Button("OK") { laws.error = nil }
                 } message: { Text(laws.error ?? "") }

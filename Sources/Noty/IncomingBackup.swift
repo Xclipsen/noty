@@ -82,6 +82,7 @@ enum IncomingBackup {
         let prepared: PreparedLibraryRestore
         do { prepared = try await workspaces.prepareLibraryRestore(copy) }
         catch {
+            Diagnostics.failure("restore", error)
             await TopAlert.dismiss(progress)
             TopAlert.show("Bibliotheksbackup abgelehnt", error.localizedDescription + " Es wurde nichts verändert.")
             return
@@ -103,6 +104,7 @@ enum IncomingBackup {
             await TopAlert.dismiss(running)
             TopAlert.show("Als neuen Bereich wiederhergestellt", "„\(area.title)“: " + NotyText.restoredAreaMessage)
         } catch {
+            Diagnostics.failure("restore", error)
             await workspaces.discardLibraryRestore(prepared)
             await TopAlert.dismiss(running)
             TopAlert.show("Wiederherstellung fehlgeschlagen", error.localizedDescription + " Die Datei bitte erneut öffnen.")

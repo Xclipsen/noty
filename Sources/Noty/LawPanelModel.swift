@@ -93,6 +93,13 @@ final class LawPanelModel: ObservableObject {
     @discardableResult private func change(animated: Bool = true, _ transition: (inout LawPanelState) -> Bool) -> Bool {
         var next = state
         guard transition(&next) else { return false }
+        if next.phase != state.phase {
+            switch next.phase {
+            case .visible: Diagnostics.note("law.window.shown"); Diagnostics.enter(phase: "lawWindow")
+            case .parked: Diagnostics.note("law.window.parked")
+            case .closed: Diagnostics.note("law.window.closed")
+            }
+        }
         // Reduce Motion: no animation for the layout; the window and its tab
         // fade through their own transitions (EditorWorkspace).
         if animated, let animation = NotyMotion.panel(UIAccessibility.isReduceMotionEnabled) {

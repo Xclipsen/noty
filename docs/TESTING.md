@@ -2,6 +2,20 @@
 
 Aktuelle Prüfwege und Nachweise ab Build 47/48. Der vollständige frühere Verlauf (Phase 0 bis Build 46, Gerätechecks, Exportartefakte, Installationsbelege) liegt unverändert im [Archiv](history/TESTING-ARCHIV.md). Ergebnisse immer als **implementiert**, **erfolgreich gebaut**, **installiert** und **auf dem iPad getestet** trennen.
 
+## Fehler- und Ruckler-Diagnose (08.11.2026, Branch `feat/diagnose`)
+
+Beschreibung: [DIAGNOSE](DIAGNOSE.md). **Implementiert, Core-Tests (`DiagnosticTests`) und Servertests (`python3 -B -m unittest diagnostics/test_server.py scripts/test_diag_report.py`) bestanden, iPad-SDK-Build erfolgreich.** Server auf diesem Rechner installiert; über den öffentlichen HTTPS-Pfad: Testbericht 201, Duplikat 409, ohne Schlüssel 401, Testdatei danach entfernt. **Kein Build mit Diagnose veröffentlicht oder installiert, am iPad ungeprüft** (MetricKit-Zustellung, Hänger-Wächter, Senden aus der App, Leistung).
+
+Gebündelter Gerätetest in noty dev:
+1. noty dev von `feat/diagnose` veröffentlichen (`scripts/publish_ota.sh`). Prüfen, dass der Hinweis „DIAG_URL/DIAG_KEY fehlen“ nicht erscheint und `.tools/diag-binaries/dev/<build>/` mit `Noty` und `info.json` entsteht. Installieren.
+2. Einstellungen › Diagnose: Schalter „Fehlerberichte automatisch senden“ ist an, die Build-Zeile nennt Kanal, Build und Commit. Build-Zeile fünfmal antippen: Abschnitt „Test“ erscheint.
+3. „Testbericht senden“: Bericht `test` liegt kurz danach auf dem Server.
+4. „Testhänger (3 s)“: Bericht `appHang` mit etwa 3000 ms und Hauptthread-Aufrufkette.
+5. „Testabsturz“ bestätigen, noty neu starten: sofort ein `abnormalExit`; ein `crash` von MetricKit meist beim nächsten oder übernächsten Start (Muster Swift-Laufzeitfalle, Funktionsname aus der Symbolisierung).
+6. Am Server: `sudo python3 -B scripts/diag_report.py --all --since 1d`, Einzelbericht mit `--show ID`. Breadcrumbs und Frames lesen; enthält ein Bericht Titel, Text oder Pfad, ist das ein Fehler.
+7. „Letzte Berichte“ zeigt die Berichte als „gesendet“; „Diagnose teilen …“ erzeugt eine JSON-Datei.
+8. Danach normale Nutzung über einige Tage: spürbare Verzögerung beim Schreiben, Öffnen oder Seitenwechsel? Täglich kommen `metrics`-Berichte an.
+
 ## Kalender Review-Korrekturen (04.11.2026, `feat/kalender`, noty calendar Build 104)
 
 **Implementiert, erfolgreich gebaut (`xtool dev build`) und als noty calendar Build 104 veröffentlicht; nicht installiert geprüft, am iPad ungeprüft.** `swift test --package-path Core`: 1168 Tests ausgeführt, 0 Fehler, 3 übersprungen (umgebungsbedingt wie bisher). Neu: `CalendarReviewFixTests` (10): Serienverschiebung mit einzeln geänderten Terminen (Tage, Wanduhr, Sommerzeitende, ganztägig, Artwechsel, Validierung), Rückgängig mit Notizlinks (täglich, wöchentlich, Löschung), serielle Kalender-Warteschlange, Speicherreihenfolge unter Sperrkonkurrenz und Sperre nach `close()`. Host-Roundtrip (`bash scripts/check_page_workflow.sh`) bestanden. Bereichswechsel-Dialog, Hintergrund-Anlage neuer Notizen und Verbinden/Trennen in der Warteschlange sind nur gebaut; Gerätetest siehe [CALENDAR-LOG](CALENDAR-LOG.md#build-104--review-korrekturen-04112026).

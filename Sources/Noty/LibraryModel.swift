@@ -150,13 +150,16 @@ final class LibraryModel: ObservableObject {
         busy = true; defer { busy = false }
         discardPreparedExport()
         backupStatus = "Bibliotheksbackup wird vorbereitet …"
+        let measurement = Diagnostics.begin("backup")
         do {
             let archive = try await buildArchive()
+            Diagnostics.end(measurement, ["notebooks": archive.summary.notebooks.count])
             preparedExport = archive.url; preparedExportWarning = archive.warning
             backupStatus = archive.warning.map { "Bibliotheksbackup vorbereitet; \($0)" } ?? "Bibliotheksbackup vollständig vorbereitet"
             return archive
         } catch {
             backupStatus = "Bibliotheksbackup fehlgeschlagen"
+            Diagnostics.failure("backup", error)
             self.error = error.localizedDescription
             return nil
         }
@@ -201,7 +204,7 @@ final class LibraryModel: ObservableObject {
         do {
             let result = try await store.load()
             if snapshot != result.snapshot { snapshot = result.snapshot }
-            if !ready { ready = true }
+            if !ready { ready = true; Diagnostics.enter(phase: "library"); Diagnostics.note("library.ready", ["items": result.snapshot.items.count]) }
             // Forget expansion only for entries that no longer exist at all
             // (trashed folders may come back and keep their state).
             let known = Set(snapshot.items.map(\.id))
@@ -442,17 +445,26 @@ final class LibraryModel: ObservableObject {
         guard accepting else { opening = nil; return }
         busy = true
         defer { busy = false; opening = nil }
+        // Ends when the editor has the notebook loaded (`EditorModel`).
+        Diagnostics.begin(shared: "notebook.open")
         do {
             let url = try await store.documentURL(id: item.id)
             // Another writer (an append of a shared file) holds the package.
-            guard !PackageWriteLock.shared.isHeld(url) else { error = "Dieses Heft wird gerade ergänzt. Bitte gleich noch einmal öffnen."; return }
+            guard !PackageWriteLock.shared.isHeld(url) else {
+                Diagnostics.cancel(shared: "notebook.open")
+                error = "Dieses Heft wird gerade ergänzt. Bitte gleich noch einmal öffnen."; return
+            }
             snapshot = try await store.markOpened(item.id)
             opened = OpenNotebook(id: item.id, directory: url, title: item.title,
                                   isRestored: item.source == .restored, preferredPageID: pageID, searchBounds: searchBounds, searchFlowRange: flowRange,
                                   returnTitle: returnTitle)
             lastEditedID = item.id
             UserDefaults.standard.set(item.id.uuidString, forKey: lastOpenedKey)
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            Diagnostics.cancel(shared: "notebook.open")
+            Diagnostics.failure("notebook.open", error)
+            self.error = error.localizedDescription
+        }
     }
 
     private var opening: UUID?
@@ -480,13 +492,15 @@ final class LibraryModel: ObservableObject {
               !item.isFolder, !snapshot.isTrashed(id) else { notebookClosedByUser(); return }
         busy = true
         defer { busy = false }
+        // Ends when the editor has the notebook loaded (`EditorModel`).
+        Diagnostics.begin(shared: "notebook.open")
         do {
             let url = try await store.documentURL(id: id)
             snapshot = try await store.markOpened(id)
-            guard opened == nil else { return }
+            guard opened == nil else { Diagnostics.cancel(shared: "notebook.open"); return }
             opened = OpenNotebook(id: id, directory: url, title: item.title, isRestored: item.source == .restored)
             lastEditedID = id
-        } catch { notebookClosedByUser() }
+        } catch { Diagnostics.cancel(shared: "notebook.open"); notebookClosedByUser() }
     }
 
     func importPDF(_ url: URL, parent: UUID?, writingArea: PageMargins? = nil) async {
@@ -560,6 +574,7 @@ final class LibraryModel: ObservableObject {
         } catch {
             // A failed validation or commit keeps its stage for analysis for a
             // day (BACKUPS.md); `removeStaleStages` at launch clears it.
+            Diagnostics.failure("restore", error)
             self.error = "Import fehlgeschlagen: \(error.localizedDescription)"
             return nil
         }

@@ -64,9 +64,11 @@ extension LawReaderView {
         endCrossTrail()
         loading = true; loadError = ""
         defer { if requestID == request { loading = false } }
+        let measurement = Diagnostics.begin("law.load")
         do {
             let doc = try await laws.document(entry, version: version)
             guard !Task.isCancelled, requestID == request else { return .superseded }
+            Diagnostics.end(measurement, ["sections": doc.sections.count])
             let found = target.flatMap { key in doc.sections.first { $0.id == key || $0.keys.contains(key) } }
             if target != nil && found == nil && !resume { loadError = "Diese Fundstelle ist in dieser Fassung nicht vorhanden."; return .missingSection }
             textSelection.clear()
@@ -77,6 +79,7 @@ extension LawReaderView {
             follow(shown, from: field)
             return .opened
         } catch {
+            Diagnostics.failure("law.load", error)
             guard requestID == request else { return .superseded }
             loadError = error.localizedDescription
             return .failed

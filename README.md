@@ -23,6 +23,8 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Fehler- und Ruckler-Diagnose (`feat/diagnose`, 08.11.2026; seit 09.11.2026 in `main`):** Abstürze, Hänger, langsame Vorgänge und Fehler aus noty dev, noty AI und noty calendar gehen automatisch als einheitlicher Bericht an den eigenen Server, ohne Heftinhalte; die normale noty sendet nur auf Wunsch. Auswertung mit `scripts/diag_report.py`. Core- und Servertests sowie iPad-SDK-Build bestanden, Server installiert; nicht installiert, am iPad ungeprüft ([DIAGNOSE](docs/DIAGNOSE.md)).
+
 **noty dev Build 128 (`feat/paragraphen`, 07.11.2026):** Gesetzesverweise P2/P3 (Gesetzesbezug pro Heft, Querverweise im Gesetzesleser mit Hover-Karte, Absatz-Sprung mit Hervorhebung, Als Zitat einfügen, Tippvorschlag, Texteditor 2, Handschrift), Schutzrand gegen Striche an Bedienleisten, ⌘F/⌘L über zentrale Befehlsstelle, Lasche ohne ✕, Bibliothek ohne Backup-Knopf. Implementiert, gebaut, zwei Review-Runden, 1386 Core-Tests und Host-Roundtrip bestanden; am iPad ungeprüft. [Details](docs/PARAGRAPH-LINKS.md).
 
 **Gesetzesverweise im Heft, noty dev Build 125 (`feat/paragraphen`, 06.11.2026):** In Textfeldern, Fließtext und PDF-Text werden „§ 35a EStG“, „R 9.1 LStR“, „AEAO zu § 122 AO“ usw. dezent unterstrichen. Hover mit Apple Pencil oder Trackpad zeigt eine Vorschau aus dem lokalen Bestand, Antippen oder Klicken öffnet das Gesetzesfenster dort, „Zurück zur Notiz“ führt zurück. Kein Formatwechsel. Implementiert und gebaut, 1365 Core-Tests und Host-Roundtrip bestanden, am iPad ungeprüft. [Details](docs/PARAGRAPH-LINKS.md), [Plan Merker/Steuerkanzlei](docs/MERKER-PLAN.md).

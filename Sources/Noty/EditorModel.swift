@@ -151,6 +151,7 @@ final class EditorModel: ObservableObject {
             defer { busy = false }
             if self.writeClaim == nil { self.writeClaim = await PackageWriteLock.shared.claim(root, waitingUpTo: 15) }
             guard self.writeClaim != nil else {
+                Diagnostics.cancel(shared: "notebook.open")
                 status = "Heft wird an anderer Stelle bearbeitet – nicht geöffnet"
                 self.error = "Dieses Heft ist gerade in einer anderen Ansicht geöffnet oder wird ergänzt. Bitte schließen und gleich noch einmal öffnen; es wurde nichts verändert."
                 return
@@ -179,6 +180,8 @@ final class EditorModel: ObservableObject {
                 if let id = self.preferredPageID ?? remembered,
                    let index = loaded.pages.firstIndex(where: { $0.id == id }) { pageIndex = index }
                 writable = true
+                Diagnostics.end(shared: "notebook.open", ["pages": loaded.pages.count, "recovered": recovered ? 1 : 0])
+                Diagnostics.enter(phase: "notebook")
                 if recovered {
                     // An older fallback is committed only with the first real
                     // change: opening alone never replaces the newer manifest
@@ -198,6 +201,8 @@ final class EditorModel: ObservableObject {
                     _ = try? await store.collectAssetGarbage(.opening, keeping: ImageAssetRegistry.shared.clipboardHashes)
                 }
             } catch {
+                Diagnostics.cancel(shared: "notebook.open")
+                Diagnostics.failure("notebook.open", error)
                 status = "Lesefehler – Originaldateien geschützt"
                 self.error = "Gespeicherte Daten sind nicht lesbar. Originaldateien bleiben erhalten. Ein exportiertes Backup kann über Dateien wiederhergestellt werden. \(error.localizedDescription)"
             }
@@ -1023,7 +1028,9 @@ final class EditorModel: ObservableObject {
             do {
                 if delayed { try await Task.sleep(for: .milliseconds(250)) }
                 try Task.checkCancellation()
+                let measurement = Diagnostics.begin("save")
                 try await store.save(snapshot, revision: savingRevision)
+                Diagnostics.end(measurement, ["pages": snapshot.pages.count])
                 if savingRevision == revision { setStatus("Lokal gespeichert"); retryAttempt = 0; lastPermanentFailure = nil }
             } catch is CancellationError {
                 // A newer complete snapshot supersedes this one.
@@ -1040,6 +1047,7 @@ final class EditorModel: ObservableObject {
     /// for the user. A success, a newer save or closing cancels the retry.
     private func saveDidFail(_ failure: Error) {
         if !saveFailed { saveFailed = true }
+        Diagnostics.failure("save", failure)
         let message = failure.localizedDescription
         guard Self.retryable(failure) else {
             setStatus("Speichern fehlgeschlagen – Änderungen nur im Speicher")

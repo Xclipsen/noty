@@ -1,0 +1,49 @@
+# Empfang der noty-Fehlerberichte (docs/DIAGNOSE.md).
+# Installation: diagnostics/install.sh (als root). Nur 127.0.0.1, über nginx
+# unter einem geheimen Pfad erreichbar. Schlüssel in /etc/noty-diagnostics/keys.
+[Unit]
+Description=noty Fehlerberichte (Empfang)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=noty-diag
+Group=noty-diag
+Environment=NOTY_DIAG_STORE=/var/lib/noty-diagnostics/reports
+Environment=NOTY_DIAG_KEYS_FILE=/etc/noty-diagnostics/keys
+Environment=NOTY_DIAG_PORT=8794
+Environment=NOTY_DIAG_RETENTION_DAYS=90
+Environment=NOTY_DIAG_RATE=30
+Environment=NOTY_DIAG_DAILY=2000
+ExecStart=/usr/bin/python3 -I -B /opt/noty-diagnostics/server.py
+Restart=on-failure
+RestartSec=5
+MemoryMax=256M
+TasksMax=64
+CPUQuota=50%
+StateDirectory=noty-diagnostics
+StateDirectoryMode=0750
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadWritePaths=/var/lib/noty-diagnostics
+InaccessiblePaths=-/srv/obsidian
+
+[Install]
+WantedBy=multi-user.target

@@ -313,13 +313,19 @@ final class PDFExportJob: ObservableObject {
         guard task == nil else { return }
         progress = Progress(done: 0, total: pageIDs.map { ids in snapshot.pages.filter { ids.contains($0.id) }.count } ?? snapshot.pages.count)
         // Weak: a closed editor releases the job, whose deinit cancels the export.
+        let pages = progress?.total ?? 0
         task = Task { [weak self] in
             let result: Result<Data, Error>
+            let measurement = Diagnostics.begin("pdf.export")
             do {
                 result = .success(try await PDFExporter.export(snapshot, pageIDs: pageIDs, sourcePage: sourcePage, assets: assets) { done, total in
                     self?.progress = Progress(done: done, total: total)
                 })
             } catch { result = .failure(error) }
+            switch result {
+            case .success(let data): Diagnostics.end(measurement, ["pages": pages, "kb": data.count / 1024])
+            case .failure(let error): if !(error is CancellationError) { Diagnostics.failure("pdf.export", error) }
+            }
             guard let self else { return }
             self.task = nil; self.progress = nil
             completion(result)

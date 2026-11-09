@@ -149,7 +149,7 @@ final class WorkspaceAppModel: ObservableObject {
             let prepared = try await prepareLibraryRestore(url)
             _ = try await commitLibraryRestore(prepared)
             return true
-        } catch { self.error = error.localizedDescription; return false }
+        } catch { Diagnostics.failure("restore", error); self.error = error.localizedDescription; return false }
     }
 }
 
