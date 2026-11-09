@@ -58,7 +58,7 @@ def main(results):
     archive = verify_library_backup.verify(results / "kalender.notylibrary")
     calendar = archive["calendar"]
     check(archive["formatVersion"] == 3 and calendar["events"] == 1 and calendar["series"] == 1 and calendar["noteLinks"] == 3
-          and calendar["formatVersion"] == 5 and calendar["systemNotes"] == 1
+          and calendar["formatVersion"] == 6 and calendar["systemNotes"] == 1 and calendar["subjectNotebooks"] == 1
           and calendar["studyFields"] == 1 and calendar["studyRules"] == 1 and calendar["lessonTopics"] == 1 and calendar["systemCalendars"]
           and calendar["homeworkDone"] == 1 and calendar["timetable"]["homework"] == 1
           and calendar["deletedEvents"] == 2 and calendar["lessonMappings"] == 1 and calendar["reminders"] == 1
@@ -71,7 +71,7 @@ def main(results):
     for store in (source, restored):
         part = store["calendar"]
         check(part["committed"] and part["links_without_notebook"] == 0 and part["notes_folder_present"]
-              and part["timetable"]["lessons"] == 1 and part["noteLinks"] == 3 and part["formatVersion"] == 5, "Kalenderpaket unvollständig")
+              and part["timetable"]["lessons"] == 1 and part["noteLinks"] == 3 and part["formatVersion"] == 6 and part["subjectNotebooks"] == 1, "Kalenderpaket unvollständig")
 
     def mutated(name, change_state=None, change_items=None, header_change=None):
         header, items = records(raw)
@@ -98,11 +98,19 @@ def main(results):
         state["connection"]["key"] = "JBSWY3DPEHPK3PXP"
 
     def newer(state):
-        state["formatVersion"] = 6
+        state["formatVersion"] = 7
 
     def study_under_format4(state):
         # Lernfelder (format 5) under format 4.
         state["formatVersion"] = 4
+        del state["subjectNotebooks"]
+
+    def subjects_under_format5(state):
+        # Fach-Hefte (format 6) under format 5.
+        state["formatVersion"] = 5
+
+    def subject_of_field_notebook(state):
+        state["subjectNotebooks"][0]["notebookID"] = state["studyFields"][0]["notebookID"]
 
     def downgraded(state):
         # Format-4 fields (system note, homework marks) under format 3.
@@ -129,9 +137,11 @@ def main(results):
 
     cases = {"Link auf Heft außerhalb des Archivs": mutated("kalender-link.notylibrary", link_elsewhere),
              "Geheimnisfeld in der Verbindung": mutated("kalender-geheim.notylibrary", secret_field),
-             "Kalenderformat 6": mutated("kalender-format6.notylibrary", newer),
+             "Kalenderformat 7": mutated("kalender-format7.notylibrary", newer),
              "Format-4-Felder unter Format 3": mutated("kalender-format3-mit-4.notylibrary", downgraded),
              "Format-5-Felder unter Format 4": mutated("kalender-format4-mit-5.notylibrary", study_under_format4),
+             "Format-6-Felder unter Format 5": mutated("kalender-format5-mit-6.notylibrary", subjects_under_format5),
+             "Fach-Heft ist Lernfeld-Heft": mutated("kalender-fachheft-lernfeld.notylibrary", subject_of_field_notebook),
              "Fremdfeld in den Systemkalendern": mutated("kalender-system-feld.notylibrary", secret_in_system_settings),
              "Notizordner außerhalb des Archivs": mutated("kalender-ordner.notylibrary", folder_elsewhere),
              "Format 3 ohne Kalender": mutated("kalender-fehlt.notylibrary", change_items=no_calendar),

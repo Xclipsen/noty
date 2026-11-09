@@ -14,6 +14,7 @@ Die Berufsschule ist nach **Lernfeldern** organisiert, nicht nach Fächern: WS =
 | Materialsuche (Thema, Lektion, Seite, Paragraf, Seitentext) mit Video-Link und Skriptansicht | ja | ja | nein | ungeprüft (unter Linux mit dem echten Paket geprüft, s. u.) |
 | Kalenderformat 5: Lernfelder, Zuordnungsregeln, Themen mit festgehaltenem Material | ja | ja | nein | ungeprüft (Core-Tests, Host-Rundlauf, Python-Prüfer bestanden) |
 | Stunde → Abschnitt mit Überschrift im Lernfeld-Heft, Block aus mehreren Stunden | ja | ja | nein | ungeprüft |
+| **Fach-Hefte** (Kalenderformat 6, 09.11.2026, `feat/fachheft`, noty dev Build 150): Fach → eigenes Heft der Bibliothek, Stunde öffnet es groß an ihrer Seite | ja | ja | nein | ungeprüft (Core-Tests 1620, Host-Rundlauf, Python-Prüfer bestanden) |
 | Themenkarte im Terminfenster (Thema, Material, Merksatz) | ja | ja | nein | ungeprüft |
 | Einstellungen › Kalender › Lernfelder / Materialien | ja | ja | nein | ungeprüft |
 | Inhalt der Lernfeld-Hefte in der Seitenleiste („Stunden“) | ja | ja | nein | ungeprüft |
@@ -29,7 +30,19 @@ Die Berufsschule ist nach **Lernfeldern** organisiert, nicht nach Fächern: WS =
 5. **Thema und Material:** In den Details der Stunde stehen „Thema“, „Skript und Video suchen“ und „Merksatz“. Die Suche ist mit dem Thema vorbelegt, Treffer des eigenen Lernfelds stehen weiter oben. Jeder Treffer hat ▶ Video (öffnet die Lektion auf der Plattform im Browser mit dem eigenen Login), Skript (öffnet das PDF auf der Seite) und **Festhalten**. Festgehaltenes steht an der Stunde. Eine spätere Suche mit demselben Begriff zeigt das Festgehaltene zuerst. Ein Paragraf-Knopf sucht nach dieser Vorschrift.
 6. **Wiederfinden:** Im Lernfeld-Heft zeigt die Seitenleiste unter „Inhalt“ die Liste „Stunden“ (Thema, Datum, Seitenzahl). Im Kalender öffnet die Stunde ihren Abschnitt. Die Überschrift ist normaler Text im Heft, also auch durchsuchbar und im PDF-Export enthalten.
 
-Stunden ohne Lernfeld (z. B. Deutsch) und eigene Termine bleiben wie bisher: eine kleine Notiz in „Kalendernotizen“.
+Stunden ohne Lernfeld (z. B. Deutsch) und eigene Termine bleiben wie bisher: eine kleine Notiz in „Kalendernotizen“ – oder, seit Kalenderformat 6, ein **Fach-Heft**:
+
+## Fach-Hefte (Kalenderformat 6, 09.11.2026)
+
+Auftrag des Nutzers („heute steht Religion an, ich tippe drauf, und ein Notizbuch wird geöffnet“, Entscheidung: der große Editor, nicht die Notiz neben dem Termin): Ein Fach ohne Lernfeld-Regel bekommt **ein bestehendes Heft der Bibliothek** als Fach-Heft, ohne Nummern, Material oder Regeln.
+
+1. **Zuordnen:** In der Stunde im Kalender „…“ › „Fach-Heft für „Religion“ wählen …“ (nur bei einer noch leeren neuen Notiz und nur, wenn keine Lernfeld-Regel greift). Zur Wahl stehen gewöhnliche aktive Hefte: keine Textdokumente, keine Lernfeld-Hefte, keine Kalendernotizen, kein Heft eines anderen Fachs. Die Wahl legt sofort die Seite dieser Stunde an und öffnet das Heft.
+2. **Danach:** Die Stunde zeigt statt des Editors eine Karte „„Religion“ öffnen“. Beim ersten Mal entsteht wie im Lernfeld eine Seite mit Überschrift („Mo 09.11.2026 · Religion · 08:00–08:45“, Doppelstunden als ein Block) an der richtigen Stelle nach Datum; dann öffnet sich das Heft **groß** an dieser Seite, mit „Zurück zu Religion · Mo 9. Nov.“ zum Kalender. Später öffnet die Karte die bestehende Seite. Thema, Merksatz und festgehaltenes Material funktionieren wie bei Lernfeld-Stunden; die Seitenleiste des Hefts zeigt die Liste „Stunden“.
+3. **Ändern:** Unter der Karte „Fach-Heft ändern“ (anderes Heft, Zuordnung aufheben) oder Einstellungen › Kalender › Lernfelder › „Fach-Hefte“. Aufheben lässt Heft und bisherige Seiten unverändert; die Stunden bekommen wieder kleine Notizen. Stunden, die schon eine eigene kleine Notiz hatten, behalten sie.
+4. **Vorrang:** Greift für eine Stunde eine Lernfeld-Regel, gilt das Lernfeld; das Fach-Heft gilt nur für Stunden ohne Regel.
+5. **Heft weg:** Liegt das Heft im Papierkorb, bietet die Karte „Heft wiederherstellen“ oder „Anderes Heft wählen“. Endgültig gelöscht: „Heft wählen“; ein Backup lässt die Zuordnung dann weg. Ersetzen eines Hefts verlangt wie bei Lernfeld-Heften, dass niemand das Paket hält (ein Schreiber je Paket; die Karte öffnet den Editor erst, nachdem die Seite festgeschrieben und das Paket freigegeben ist).
+
+Datenmodell: `subjectNotebooks` in `CalendarState` (Format 6): `{id, subjectKey (wie Fachfarben), subjectName (1–200, getrimmt), notebookID}`, höchstens 200, je Fach ein Heft, je Heft ein Fach, nie das Heft eines Lernfelds (`CalendarStudy.validate`). Die Seiten selbst sind gewöhnliche Abschnitte (`CalendarNoteLink.pageID`, `StudySections`), das Heftformat bleibt unverändert. Nur geschrieben, wenn nicht leer: ein Stand ohne Fach-Hefte ist bytegleich zu Format 5 bis auf die Versionsnummer.
 
 ## Datenmodell
 
@@ -43,9 +56,9 @@ Neue optionale Schlüssel, nur geschrieben, wenn nicht leer:
 
 Abschnitte werden **nicht** im Heft gespeichert: Ein Abschnitt ist die Seite, auf die ein `CalendarNoteLink.pageID` zeigt, plus alle folgenden Seiten bis zur nächsten verlinkten Seite (`StudySections`). Das Heftformat bleibt unverändert. Die Überschrift ist ein gewöhnliches Textfeld. Ihre Höhe wird großzügig für den Text berechnet, damit nichts abgeschnitten wird. Ändert sich das Thema, wird die Überschrift nur angepasst, solange sie noch genau dem erzeugten Text entspricht.
 
-Migration: Formate 1–4 werden gelesen und beim ersten Commit migriert, die exakten Altbytes vorher unter `Migration/format-<n>-…`. Format 4 mit Lernfeld-Schlüsseln ist kein Format 4 und wird abgelehnt. Format ≥ 6 sperrt. Ältere Builds (bis noty calendar 143) sperren Format 5.
+Migration: Formate 1–5 werden gelesen und beim ersten Commit migriert, die exakten Altbytes vorher unter `Migration/format-<n>-…`. Format 4 mit Lernfeld-Schlüsseln ist kein Format 4, Format 5 mit `subjectNotebooks` kein Format 5; beides wird abgelehnt. Format ≥ 7 sperrt. Ältere Builds (bis noty calendar 143) sperren Format 5, Builds bis noty 149 sperren Format 6.
 
-Bibliotheksbackup: Der Kalenderdatensatz trägt Format 3, 4 oder 5. Beim Sichern verliert ein Lernfeld, dessen Heft endgültig gelöscht ist, nur die Heft-Kennung (das nächste Mitschreiben legt ein neues Heft an). Beim Wiederherstellen wird die Heft-Kennung wie die Notizlinks auf die Kopie umgeschrieben; fehlt sie, wird abgelehnt. Python-Prüfer `calendar_format.py` prüft dieselben Regeln unabhängig und zählt die Lernfeld-Hefte zu den Heften, die im Archiv sein müssen.
+Bibliotheksbackup: Der Kalenderdatensatz trägt Format 3 bis 6. Beim Sichern verliert ein Lernfeld, dessen Heft endgültig gelöscht ist, nur die Heft-Kennung (das nächste Mitschreiben legt ein neues Heft an); ein Fach-Heft, dessen Heft endgültig gelöscht ist, fällt aus dem Backup heraus (die nächste Stunde fragt neu). Beim Wiederherstellen werden Lernfeld- und Fach-Heft-Kennungen wie die Notizlinks auf die Kopie umgeschrieben. Beim Wiederherstellen wird die Heft-Kennung wie die Notizlinks auf die Kopie umgeschrieben; fehlt sie, wird abgelehnt. Python-Prüfer `calendar_format.py` prüft dieselben Regeln unabhängig und zählt die Lernfeld-Hefte zu den Heften, die im Archiv sein müssen.
 
 ### Materialpaket `.notymaterial`
 

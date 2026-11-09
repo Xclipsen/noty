@@ -72,8 +72,8 @@ final class CalendarStageCTests: XCTestCase {
         XCTAssertThrowsError(try CalendarStore.decode(Data(withMarks.utf8)))
         let withSystem = Self.format3JSON.replacingOccurrences(of: #""weekDays":5}"#, with: #""weekDays":5,"systemCalendars":{"enabled":true}}"#)
         XCTAssertThrowsError(try CalendarStore.decode(Data(withSystem.utf8)))
-        XCTAssertThrowsError(try CalendarStore.decode(Data(#"{"events":[],"formatVersion":6}"#.utf8))) {
-            XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(6))
+        XCTAssertThrowsError(try CalendarStore.decode(Data(#"{"events":[],"formatVersion":7}"#.utf8))) {
+            XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(7))
         }
     }
 
@@ -101,8 +101,8 @@ final class CalendarStageCTests: XCTestCase {
         state.homeworkDone = [CalendarHomeworkMark(source: "webuntis:abc", homeworkID: "7", doneAt: created)]
         let bytes = try CalendarArchive.encodeState(state)
         XCTAssertEqual(try CalendarArchive.decodeState(bytes), state)
-        XCTAssertThrowsError(try CalendarArchive.decodeState(Data(#"{"events":[],"formatVersion":6}"#.utf8))) {
-            XCTAssertEqual($0 as? CalendarArchiveError, .unsupported(6))
+        XCTAssertThrowsError(try CalendarArchive.decodeState(Data(#"{"events":[],"formatVersion":7}"#.utf8))) {
+            XCTAssertEqual($0 as? CalendarArchiveError, .unsupported(7))
         }
         let restored = try CalendarArchive.restored(CalendarArchiveContent(state: state), documents: [:], folders: [:])
         XCTAssertEqual(restored.state.settings.systemCalendars?.enabled, false, "Restore aktiviert keine Quelle")

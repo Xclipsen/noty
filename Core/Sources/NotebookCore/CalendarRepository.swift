@@ -172,6 +172,10 @@ final class CalendarStore {
             throw CalendarStoreError.invalidState
         }
         var state = try JSONDecoder().decode(CalendarState.self, from: bytes)
+        if version < 6 {
+            // Format 1–5 know no Fach-Hefte.
+            guard state.subjectNotebooks.isEmpty else { throw CalendarStoreError.invalidState }
+        }
         if version < 5 {
             // Format 1–4 know no Lernfelder.
             guard state.studyFields.isEmpty, state.studyRules.isEmpty, state.lessonTopics.isEmpty else {

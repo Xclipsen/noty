@@ -19,6 +19,7 @@ struct CalendarStudySettingsPage: View {
             }
             fieldsSection
             if !model.studyFields.isEmpty { assignmentSection }
+            if !model.subjectNotebooks.isEmpty { subjectsSection }
         }
         .navigationTitle("Lernfelder")
         .task { materials.load() }
@@ -68,6 +69,35 @@ struct CalendarStudySettingsPage: View {
             Text("Jedes Lernfeld bekommt ein eigenes Heft „LF n – Titel“, sobald die erste Stunde mitgeschrieben wird. Es liegt oben in der Bibliothek und lässt sich verschieben oder umbenennen.")
         }
         .disabled(!model.canWrite)
+    }
+
+    // MARK: Fach-Hefte (format 6)
+
+    private var subjectsSection: some View {
+        Section {
+            ForEach(model.subjectNotebooks) { subject in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(subject.subjectName)
+                    Text(subjectNotebookText(subject)).font(.caption).foregroundStyle(.secondary)
+                }
+                .swipeActions { Button("Aufheben", role: .destructive) { Task { await model.removeSubjectNotebook(subject.id) } } }
+                .contextMenu {
+                    Button("Zuordnung aufheben", systemImage: "link.badge.minus", role: .destructive) { Task { await model.removeSubjectNotebook(subject.id) } }
+                }
+            }
+        } header: {
+            Text("Fach-Hefte")
+        } footer: {
+            Text("Stunden dieser Fächer schreiben in das gewählte Heft der Bibliothek: je Stunde eine neue Seite mit Überschrift, das Heft öffnet sich groß. Zugeordnet wird in der Stunde im Kalender („…“ › „Fach-Heft wählen“); ein Lernfeld hat Vorrang. Aufheben lässt Heft und bisherige Seiten unverändert.")
+        }
+        .disabled(!model.canWrite)
+    }
+
+    private func subjectNotebookText(_ subject: CalendarSubjectNotebook) -> String {
+        guard let library = model.library, let item = library.snapshot.items.first(where: { $0.id == subject.notebookID }) else {
+            return "Heft gibt es nicht mehr · beim nächsten Öffnen der Stunde neu wählen"
+        }
+        return library.snapshot.isTrashed(item.id) ? "Heft „\(item.title)“ liegt im Papierkorb" : "Heft „\(item.title)“"
     }
 
     private func notebookText(_ field: CalendarStudyField) -> String {

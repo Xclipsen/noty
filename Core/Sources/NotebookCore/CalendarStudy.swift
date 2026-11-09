@@ -32,6 +32,28 @@ public struct CalendarStudyField: Identifiable, Equatable, Sendable, Codable {
     private enum CodingKeys: String, CodingKey { case id, number, title, notebookID, package }
 }
 
+/// A subject's own notebook („Fach-Heft“, calendar format 6, docs/LERNFELDER.md):
+/// every lesson of the subject that no Lernfeld rule claims gets a headed
+/// section in this ordinary notebook of the library, chosen by the user (the
+/// notebook keeps its identity; nothing is created for it).
+public struct CalendarSubjectNotebook: Identifiable, Equatable, Sendable, Codable {
+    public let id: UUID
+    /// `CalendarSubjectColor.key(subjectID:name:)`.
+    public var subjectKey: String
+    /// Shown name of the subject („Religion“).
+    public var subjectName: String
+    public var notebookID: UUID
+
+    public init(id: UUID = UUID(), subjectKey: String, subjectName: String, notebookID: UUID) {
+        self.id = id; self.subjectKey = subjectKey; self.notebookID = notebookID
+        self.subjectName = CalendarState.validTitle(subjectName) ?? String(subjectName.prefix(200))
+    }
+
+    var isValid: Bool { (1...300).contains(subjectKey.count) && CalendarState.validTitle(subjectName) == subjectName }
+
+    private enum CodingKeys: String, CodingKey { case id, subjectKey, subjectName, notebookID }
+}
+
 /// Which lessons belong to a field: a subject (WebUntis subject key, as for
 /// subject colours), optionally only on one weekday and/or with a start in a
 /// time window. The most specific matching rule wins (weekday and time over
@@ -155,6 +177,7 @@ public enum CalendarStudy {
     public static let maximumFields = 40
     public static let maximumRules = 500
     public static let maximumTopics = 20_000
+    public static let maximumSubjectNotebooks = 200
     static let weekdayNames = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
 
     static func clock(_ minutes: Int) -> String { String(format: "%02d:%02d", minutes / 60, minutes % 60) }
@@ -200,7 +223,18 @@ public enum CalendarStudy {
         return Array(order[lower...upper])
     }
 
-    static func validate(fields: [CalendarStudyField], rules: [CalendarStudyRule], topics: [CalendarLessonTopic]) throws {
+    /// The subject notebook of a lesson, nil when the subject has none.
+    public static func subjectNotebook(subjectKey: String, in subjects: [CalendarSubjectNotebook]) -> CalendarSubjectNotebook? {
+        subjects.first { $0.subjectKey == subjectKey }
+    }
+
+    static func validate(fields: [CalendarStudyField], rules: [CalendarStudyRule], topics: [CalendarLessonTopic],
+                         subjects: [CalendarSubjectNotebook] = []) throws {
+        // One notebook per subject, one subject per notebook, never a Lernfeld's notebook.
+        guard subjects.count <= maximumSubjectNotebooks, Set(subjects.map(\.id)).count == subjects.count,
+              Set(subjects.map(\.subjectKey)).count == subjects.count,
+              Set(subjects.map(\.notebookID)).count == subjects.count, subjects.allSatisfy(\.isValid),
+              Set(subjects.map(\.notebookID)).isDisjoint(with: fields.compactMap(\.notebookID)) else { throw CalendarStoreError.invalidState }
         guard fields.count <= maximumFields, rules.count <= maximumRules, topics.count <= maximumTopics,
               Set(fields.map(\.id)).count == fields.count, Set(fields.map(\.number)).count == fields.count,
               fields.allSatisfy(\.isValid),

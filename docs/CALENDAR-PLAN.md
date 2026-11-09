@@ -462,12 +462,12 @@ Vor Freigabe eines weiteren direkten Providers: erlaubten Zugang, Beispieldaten,
 
 ## 8. Datenformat, Speicherpfade und feste Schlüssel
 
-Formatdetails: [STORAGE](STORAGE.md) (Kalenderpaket Format 1–4), [LERNFELDER](LERNFELDER.md) (Format 5, Materialpaket), [LIBRARY-BACKUP](LIBRARY-BACKUP.md) (Archiv Format 3).
+Formatdetails: [STORAGE](STORAGE.md) (Kalenderpaket Format 1–4), [LERNFELDER](LERNFELDER.md) (Format 5 Lernfelder, Format 6 Fach-Hefte, Materialpaket), [LIBRARY-BACKUP](LIBRARY-BACKUP.md) (Archiv Format 3).
 
 - **Kalenderpaket** je Bereich (`<Bereich>` = `Documents/Noty` bzw. `NotyWorkspaces/Areas/<UUID>/Data`): `Calendar/manifest.json`, `manifest-previous.json`, `Revisions/<UUID>.json` (unveränderliche `CalendarState`-Revisionen), `Quarantine/`, `Migration/format-<n>-<Datei>` (exakte Altbytes), `Cache/<Verbindung>.json` (Offline-Stundenplan `CalendarSourceSnapshot` Format 1, optional `homework`). Ein Schreiber: `CalendarRepository` mit `PackageWriteLock`.
-- **Kalenderformat (`CalendarState.formatVersion`) aktuell 5:** 1 = B1, 2 = B2 (Serien, Links, Zuordnungen, Fachfarben, Notizordner, Kontokennung), 3 = B3 (Erinnerungen, Unterrichtserinnerung, gelöschte Termine), 4 = Stufe C (`settings.systemCalendars`, Notizziel `system`, `homeworkDone`), 5 = Lernfelder (`studyFields`, `studyRules`, `lessonTopics`, [LERNFELDER](LERNFELDER.md)). Formate 1–4 werden gelesen und beim ersten Commit migriert; Format ≥ 6 sperrt. Ältere Builds sperren neuere Formate (Build 101 sperrt 2, Build 102 sperrt 3, Builds 103–123 sperren 4, Builds bis 143 sperren 5).
+- **Kalenderformat (`CalendarState.formatVersion`) aktuell 6:** 1 = B1, 2 = B2 (Serien, Links, Zuordnungen, Fachfarben, Notizordner, Kontokennung), 3 = B3 (Erinnerungen, Unterrichtserinnerung, gelöschte Termine), 4 = Stufe C (`settings.systemCalendars`, Notizziel `system`, `homeworkDone`), 5 = Lernfelder (`studyFields`, `studyRules`, `lessonTopics`, [LERNFELDER](LERNFELDER.md)), 6 = Fach-Hefte (`subjectNotebooks`). Formate 1–5 werden gelesen und beim ersten Commit migriert; Format ≥ 7 sperrt. Ältere Builds sperren neuere Formate (Build 101 sperrt 2, Build 102 sperrt 3, Builds 103–123 sperren 4, Builds bis 143 sperren 5, Builds bis noty 149 sperren 6).
 - **Zeitwerte** in Kalenderdateien: Sekunden seit 2001-01-01 UTC (Foundation-Referenzdatum); nur `savedAtUnix` im Manifest ist Unix-Zeit. Ganztägig: zivile Daten, Ende exklusiv.
-- **Bibliotheksarchiv** Format 3 mit Datensätzen `calendar` (Kalenderformat 3, 4 oder 5) und optional `calendarSource`; ohne Kalender Format 2.
+- **Bibliotheksarchiv** Format 3 mit Datensätzen `calendar` (Kalenderformat 3 bis 6) und optional `calendarSource`; ohne Kalender Format 2.
 - **Materialpakete** (`Documents/NotyMaterials/<id>/`, für das ganze Gerät, nicht im Bibliotheksbackup) und gelernte Suchvorlieben `noty.v2.materialPins.<paket>`: [LERNFELDER](LERNFELDER.md).
 
 **Feste Kennungen – nicht ändern** (gespeicherte Daten, Schlüsselbund, geplante Mitteilungen, Server-Verträge und Profile hängen daran; eine Änderung verliert Daten oder erzeugt Doppelte):

@@ -23,6 +23,8 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Fach-Hefte, noty dev Build 150 (`feat/fachheft`, 09.11.2026):** Ein Fach ohne Lernfeld bekommt ein bestehendes Heft der Bibliothek; die Stunde im Kalender legt dort eine Seite mit Überschrift an und öffnet das Heft groß (Kalenderformat 6, [LERNFELDER](docs/LERNFELDER.md)). Core-Tests, Host-Roundtrip und iPad-Build bestanden, am iPad ungeprüft.
+
 **Zusammenführung 09.11.2026 (dev und main, Build 149, noch nicht veröffentlicht):** `feat/paragraphen` (Gesetzesverweise im Heft, Schutzrand für den Stift, ⌘F/⌘L-Zustellung), `feat/feinschliff` (Absturzschutz beim Start, Gesetzesleser-Fix) und `feat/diagnose` (Fehler- und Ruckler-Diagnose) sind in `dev` und `main`. Nachweise: 1617 Core-Tests, Host-Roundtrip, Diagnose-Servertests und `xtool dev build`; die zusammengeführte Fassung ist **am iPad ungeprüft**. Die Veröffentlichung der normalen noty wartet auf den iCloud-Container im Apple-Entwicklerportal ([ICLOUD](docs/ICLOUD.md)).
 
 **Fehler- und Ruckler-Diagnose (`feat/diagnose`, 08.11.2026; seit 09.11.2026 in `main`):** Abstürze, Hänger, langsame Vorgänge und Fehler aus noty dev, noty AI und noty calendar gehen automatisch als einheitlicher Bericht an den eigenen Server, ohne Heftinhalte; die normale noty sendet nur auf Wunsch. Auswertung mit `scripts/diag_report.py`. Core- und Servertests sowie iPad-SDK-Build bestanden, Server installiert; nicht installiert, am iPad ungeprüft ([DIAGNOSE](docs/DIAGNOSE.md)).

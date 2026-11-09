@@ -40,6 +40,8 @@ struct CalendarNoteArea: View {
             }
         }
         .task(id: event.id) { model.showNote(for: event) }
+        // „Fach-Heft wählen …“ (docs/LERNFELDER.md): a notebook of the library for this subject.
+        .sheet(item: $model.subjectNotebookPicker) { entry in CalendarSubjectNotebookPicker(entry: entry, model: model) }
     }
 
     private func message(symbol: String, title: String, text: String? = nil) -> some View {
@@ -170,6 +172,13 @@ struct CalendarNoteMenuItems: View {
                     }
                 } label: {
                     Label("Vorhandene Notiz verknüpfen", systemImage: "link")
+                }
+            }
+            // Fach-Heft: the subject's lessons write into one chosen notebook (not for Lernfeld lessons).
+            if session.phase == .draft, !EditorModel.hasContent(editor.notebook), event.source == .timetable, !event.isSample,
+               event.subjectKey != nil, model.studyHome(for: event) == nil {
+                Button { model.subjectNotebookPicker = event } label: {
+                    Label("Fach-Heft für „\(event.subject ?? event.title)“ wählen …", systemImage: "book.closed")
                 }
             }
         }

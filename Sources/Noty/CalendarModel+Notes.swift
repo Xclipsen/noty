@@ -145,6 +145,8 @@ extension CalendarModel {
                 noteState = .missing(.deleted, link); return
             }
             if library.snapshot.isTrashed(item.id) { noteState = .missing(.trashed(item.title), link); return }
+            // Fach-Heft: a card that opens the notebook full screen, no editor beside the event.
+            if prepareSubjectPrompt(for: entry, link: link) { return }
             guard let document = await library.openDocument(item.id) else { noteState = .missing(.deleted, link); return }
             parked[item.id] = nil
             // The link's page: a Lernfeld section (or the first page of a small note).
@@ -432,7 +434,8 @@ enum CalendarNoteState {
     case unavailable(String)
     case missing(Missing, CalendarNoteLink)
     case session(CalendarNoteSession)
-    /// Lernfelder: a lesson of a Lernfeld without its section yet.
+    /// Lernfelder: a lesson of a Lernfeld without its section yet; Fach-Hefte:
+    /// the card that starts or opens the subject notebook's section.
     case study(CalendarStudyPrompt)
 }
 

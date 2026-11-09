@@ -18,10 +18,10 @@ import re
 
 from notebook_format import check, foundation_date, number, strict, uuid_string
 
-CURRENT_FORMAT = 5
-ARCHIVE_FORMATS = (3, 4, 5)
+CURRENT_FORMAT = 6
+ARCHIVE_FORMATS = (3, 4, 5, 6)
 STATE_KEYS = {"formatVersion", "events", "settings", "connection", "noteLinks", "lessonMappings", "deletedEvents", "homeworkDone",
-              "studyFields", "studyRules", "lessonTopics"}
+              "studyFields", "studyRules", "lessonTopics", "subjectNotebooks"}
 FIELD_KEYS = {"id", "number", "title", "notebookID", "package"}
 RULE_KEYS = {"id", "subjectKey", "subjectName", "weekday", "startFrom", "startTo", "fieldID"}
 TOPIC_KEYS = {"id", "target", "topic", "summary", "materials", "modifiedAt"}
@@ -220,8 +220,12 @@ def note_target(target, version):
         return ("lesson", anchor["source"], anchor["periodID"])
 
 
+SUBJECT_KEYS = {"id", "subjectKey", "subjectName", "notebookID"}
+MAXIMUM_SUBJECTS = 200
+
+
 def study(state, version):
-    """Lernfelder (format 5). Returns the notebook ids of the fields."""
+    """Lernfelder (format 5) and Fach-Hefte (format 6). Returns the notebook ids of fields and subjects."""
     fields = state.get("studyFields", [])
     rules = state.get("studyRules", [])
     topics = state.get("lessonTopics", [])
@@ -276,7 +280,22 @@ def study(state, version):
         check(len(pinned) == len(materials), "Duplicate pinned material")
         foundation_date(item["modifiedAt"])
     check(len(topic_ids) == len(topics) and len(targets) == len(topics), "Duplicate lesson topic")
-    return notebooks
+    subjects = state.get("subjectNotebooks", [])
+    check(isinstance(subjects, list), "Invalid subject notebooks")
+    check(version >= 6 or not subjects, "Subject notebooks before calendar format 6")
+    check(len(subjects) <= MAXIMUM_SUBJECTS, "Too many subject notebooks")
+    subject_ids, subject_keys, subject_notebooks = set(), set(), []
+    for item in subjects:
+        keys(item, SUBJECT_KEYS, "Unexpected subject notebook fields")
+        subject_ids.add(uuid_string(item["id"]))
+        text(item["subjectKey"], 1, 300, "Invalid subject notebook subject")
+        title(item["subjectName"])
+        subject_keys.add(item["subjectKey"])
+        subject_notebooks.append(uuid_string(item["notebookID"]))
+    check(len(subject_ids) == len(subjects) and len(subject_keys) == len(subjects)
+          and len(set(subject_notebooks)) == len(subjects), "Duplicate subject notebook")
+    check(not (set(subject_notebooks) & set(notebooks)), "A subject notebook is a study field's notebook")
+    return notebooks + subject_notebooks
 
 
 def system_key(anchor):
@@ -306,7 +325,7 @@ def mapping(value):
 
 
 @strict
-def validate_state(state, formats=(1, 2, 3, 4, 5)):
+def validate_state(state, formats=(1, 2, 3, 4, 5, 6)):
     """Returns (summary counts, document ids of all links, notes folder, connection id)."""
     keys(state, STATE_KEYS, "Unexpected calendar state fields")
     version = state["formatVersion"]
@@ -355,7 +374,7 @@ def validate_state(state, formats=(1, 2, 3, 4, 5)):
                "homeworkDone": len(marks), "systemCalendars": state.get("settings", {}).get("systemCalendars") is not None,
                "systemNotes": sum(item["target"]["kind"] == "system" for item in links),
                "studyFields": len(state.get("studyFields", [])), "studyRules": len(state.get("studyRules", [])),
-               "lessonTopics": len(state.get("lessonTopics", []))}
+               "lessonTopics": len(state.get("lessonTopics", [])), "subjectNotebooks": len(state.get("subjectNotebooks", []))}
     return summary, set(documents) | set(notebooks), folder, connection_id
 
 

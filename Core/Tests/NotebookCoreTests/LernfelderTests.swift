@@ -297,7 +297,7 @@ final class LernfelderTests: XCTestCase {
         try JSONEncoder().encode(manifest).write(to: package.appendingPathComponent("manifest.json"))
         let repository = CalendarRepository(areaRoot: root)
         let loaded = try await repository.load()
-        XCTAssertEqual(loaded.state.formatVersion, 5)
+        XCTAssertEqual(loaded.state.formatVersion, 6)
         XCTAssertEqual(loaded.state.homeworkDone.count, 1)
         var next = loaded.state
         next.studyFields = [CalendarStudyField(number: 1, title: "Rolle im Betrieb")]
@@ -308,12 +308,102 @@ final class LernfelderTests: XCTestCase {
         XCTAssertTrue(archived[0].hasPrefix("format-4-"))
         XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent("Migration/\(archived[0])")), bytes, "exakte Altbytes")
 
-        // Format 4 with study fields is not format 4; format 6 locks.
+        // Format 4 with study fields is not format 4; format 7 locks.
         let mixed = Data(#"{"events":[],"formatVersion":4,"studyFields":[{"id":"00000000-0000-4000-8000-000000000001","number":1,"title":"x"}]}"#.utf8)
         XCTAssertThrowsError(try CalendarStore.decode(mixed))
-        XCTAssertThrowsError(try CalendarStore.decode(Data(#"{"events":[],"formatVersion":6}"#.utf8))) {
-            XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(6))
+        XCTAssertThrowsError(try CalendarStore.decode(Data(#"{"events":[],"formatVersion":7}"#.utf8))) {
+            XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(7))
         }
+    }
+
+    // MARK: Format 6: Fach-Hefte
+
+    func testFormat6SubjectNotebooksRoundTripAndValidate() async throws {
+        let lernfeld = UUID(), religion = UUID()
+        var state = studyState(notebook: lernfeld)
+        state.subjectNotebooks = [CalendarSubjectNotebook(subjectKey: "webuntis:rel", subjectName: "Religion", notebookID: religion)]
+        XCTAssertNoThrow(try state.validate())
+        let repository = CalendarRepository(areaRoot: root)
+        _ = try await repository.load()
+        try await repository.save(state, revision: 1)
+        await repository.close()
+        let reread = try await CalendarRepository(areaRoot: root).load().state
+        XCTAssertEqual(reread, state)
+        XCTAssertEqual(reread.formatVersion, 6)
+
+        var broken = state
+        broken.subjectNotebooks.append(CalendarSubjectNotebook(subjectKey: "webuntis:rel", subjectName: "Reli 2", notebookID: UUID()))
+        XCTAssertThrowsError(try broken.validate(), "ein Heft je Fach")
+        broken = state; broken.subjectNotebooks.append(CalendarSubjectNotebook(subjectKey: "webuntis:eth", subjectName: "Ethik", notebookID: religion))
+        XCTAssertThrowsError(try broken.validate(), "ein Fach je Heft")
+        broken = state; broken.subjectNotebooks[0].notebookID = lernfeld
+        XCTAssertThrowsError(try broken.validate(), "kein Lernfeld-Heft")
+        broken = state; broken.subjectNotebooks[0].subjectName = " "
+        XCTAssertThrowsError(try broken.validate())
+        XCTAssertEqual(CalendarStudy.subjectNotebook(subjectKey: "webuntis:rel", in: state.subjectNotebooks)?.notebookID, religion)
+        XCTAssertNil(CalendarStudy.subjectNotebook(subjectKey: "webuntis:sr", in: state.subjectNotebooks))
+        // Without Fach-Hefte the state is written exactly as format 5 wrote it (no key).
+        var plain = state; plain.subjectNotebooks = []
+        XCTAssertFalse(String(decoding: try CalendarStore.encoder.encode(plain), as: UTF8.self).contains("subjectNotebooks"))
+    }
+
+    func testFormat5MigratesWithExactOldBytesAndRefusesSubjectNotebooks() async throws {
+        let package = root.appendingPathComponent("Calendar", isDirectory: true)
+        try FileManager.default.createDirectory(at: package.appendingPathComponent("Revisions"), withIntermediateDirectories: true)
+        var old = studyState(notebook: UUID()); old.formatVersion = 5
+        let bytes = try CalendarStore.encoder.encode(old)
+        XCTAssertTrue(String(decoding: bytes, as: UTF8.self).contains(#""formatVersion":5"#))
+        let file = UUID().uuidString + ".json"
+        try bytes.write(to: package.appendingPathComponent("Revisions/\(file)"))
+        let manifest = RevisionManifest(revisions: [RevisionRecord(file: file, byteCount: bytes.count, crc32: SnapshotChecksum.crc32(bytes),
+                                                                   savedAtUnix: 1_790_000_000)])
+        try JSONEncoder().encode(manifest).write(to: package.appendingPathComponent("manifest.json"))
+        let repository = CalendarRepository(areaRoot: root)
+        let loaded = try await repository.load()
+        XCTAssertEqual(loaded.state.formatVersion, 6)
+        XCTAssertEqual(loaded.state.studyFields, old.studyFields)
+        XCTAssertEqual(loaded.state.lessonTopics, old.lessonTopics)
+        var next = loaded.state
+        next.subjectNotebooks = [CalendarSubjectNotebook(subjectKey: "webuntis:rel", subjectName: "Religion", notebookID: UUID())]
+        try await repository.save(next, revision: 1)
+        await repository.close()
+        let archived = try FileManager.default.contentsOfDirectory(atPath: package.appendingPathComponent("Migration").path)
+        XCTAssertEqual(archived.count, 1)
+        XCTAssertTrue(archived[0].hasPrefix("format-5-"))
+        XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent("Migration/\(archived[0])")), bytes, "exakte Altbytes")
+        let migrated = try await CalendarRepository(areaRoot: root).load().state
+        XCTAssertEqual(migrated, next)
+
+        // Format 5 with a Fach-Heft is not format 5.
+        let mixed = Data(#"{"events":[],"formatVersion":5,"subjectNotebooks":[{"id":"00000000-0000-4000-8000-000000000001","subjectKey":"webuntis:rel","subjectName":"Religion","notebookID":"00000000-0000-4000-8000-000000000002"}]}"#.utf8)
+        XCTAssertThrowsError(try CalendarStore.decode(mixed))
+    }
+
+    func testArchiveCarriesSubjectNotebooksRemapsAndDropsDeletedOnes() async throws {
+        let lernfeld = UUID(), religion = UUID(), copy = UUID(), copy2 = UUID()
+        var state = studyState(notebook: lernfeld)
+        state.subjectNotebooks = [CalendarSubjectNotebook(subjectKey: "webuntis:rel", subjectName: "Religion", notebookID: religion)]
+        let bytes = try CalendarArchive.encodeState(state)
+        XCTAssertEqual(try CalendarArchive.decodeState(bytes), state)
+        let restored = try CalendarArchive.restored(CalendarArchiveContent(state: state), documents: [lernfeld: copy, religion: copy2], folders: [:])
+        XCTAssertEqual(restored.state.subjectNotebooks[0].notebookID, copy2)
+        XCTAssertEqual(restored.state.studyFields[0].notebookID, copy)
+        XCTAssertThrowsError(try CalendarArchive.restored(CalendarArchiveContent(state: state), documents: [lernfeld: copy], folders: [:])) {
+            XCTAssertEqual($0 as? CalendarArchiveError, .danglingReference)
+        }
+        XCTAssertThrowsError(try CalendarArchiveContent(state: state).validate(documents: [lernfeld], folders: []))
+        XCTAssertNoThrow(try CalendarArchiveContent(state: state).validate(documents: [lernfeld, religion], folders: []))
+
+        // Backup of an area whose Religion notebook is deleted for good: the subject chooses anew, the field keeps its notebook.
+        let repository = CalendarRepository(areaRoot: root)
+        _ = try await repository.load()
+        try await repository.save(state, revision: 1)
+        await repository.close()
+        var library = LibrarySnapshot()
+        library.items = [LibraryItem(id: lernfeld, title: "LF 3", parentID: nil, source: .library)]
+        let capture = try CalendarArchive.capture(areaRoot: root, library: library)
+        XCTAssertEqual(capture.content?.state.subjectNotebooks, [])
+        XCTAssertEqual(capture.content?.state.studyFields[0].notebookID, lernfeld)
     }
 
     func testArchiveCarriesStudyDataAndRemapsTheFieldNotebook() throws {
