@@ -213,10 +213,10 @@ struct PageSidebarView: View {
         }
         .background(Color(white: 0.065))
         .environment(\.colorScheme, .dark)
-        .sheet(isPresented: $showingTrash) {
+        .sheet(isPresented: $showingTrash, onDismiss: { StalledGestures.requestReset() }) {
             PageTrashView(model: model, cache: cache)
         }
-        .sheet(item: $addingPage) { request in
+        .sheet(item: $addingPage, onDismiss: { StalledGestures.requestReset() }) { request in
             AddPageSheet(position: request.position, enabled: canEdit, defaults: model.notebook.appearance,
                          onPaper: { style, color, geometry, position in
                 let placement = placement(anchor: request.anchor, position: position)

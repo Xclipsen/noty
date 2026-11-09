@@ -167,9 +167,14 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         documentText?.view.isFirstResponder == true || sheets.values.contains(where: { $0.editingCaret != nil })
     }
 
+    /// Pending `resetStalledGestures` (one at a time, after the sheet is gone).
+    private var stalledGestureReset: DispatchWorkItem?
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         delegate = self; backgroundColor = Self.backdrop
+        NotificationCenter.default.addObserver(self, selector: #selector(resetStalledGesturesSoon),
+            name: .notyResetStalledGestures, object: nil)
         contentInsetAdjustmentBehavior = .never; keyboardDismissMode = .interactive
         delaysContentTouches = false; alwaysBounceVertical = true; alwaysBounceHorizontal = true; bouncesZoom = false
         panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
@@ -693,6 +698,43 @@ final class NotebookViewport: UIScrollView, UIScrollViewDelegate, UIGestureRecog
         guard let scene = note.object as? UIScene, scene === window?.windowScene else { return }
         revealGate.activate(at: CACurrentMediaTime())
         restoreResumePoint()
+        // Back from another app (sharing a file, the system file picker): a touch may have ended there.
+        resetStalledGesturesSoon()
+    }
+
+    /// After the presentation's dismissal animation, once nothing moves.
+    @objc private func resetStalledGesturesSoon() {
+        stalledGestureReset?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.resetStalledGestures() }
+        stalledGestureReset = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
+    }
+
+    /// What opening a menu does (`StalledGestures`): every enabled recognizer
+    /// of the notebook and its pages is switched off and on, which cancels a
+    /// touch UIKit still counts as down and resets the recognizer, so the
+    /// scroll pan no longer waits for it. Only while the notebook is at rest:
+    /// a running scroll, zoom or stroke is never cut off (tried again later).
+    func resetStalledGestures(attempt: Int = 0) {
+        stalledGestureReset = nil
+        guard window != nil else { return }
+        let inkRunning = sheets.values.contains { [.began, .changed].contains($0.canvas.drawingGestureRecognizer.state) }
+        guard !isTracking, !isDragging, !isDecelerating, !isZooming, !isZoomBouncing, !liveZoom, !inkRunning else {
+            if attempt < 8 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.resetStalledGestures(attempt: attempt + 1) }
+            }
+            return
+        }
+        var recognizers: [UIGestureRecognizer] = []
+        func collect(_ view: UIView) {
+            recognizers += view.gestureRecognizers ?? []
+            for child in view.subviews { collect(child) }
+        }
+        collect(self)
+        for recognizer in recognizers where recognizer.isEnabled {
+            recognizer.isEnabled = false
+            recognizer.isEnabled = true
+        }
     }
     /// Puts back zoom and offset from before the app switch while the gate
     /// still offers them (same size and page, no input since the return).
