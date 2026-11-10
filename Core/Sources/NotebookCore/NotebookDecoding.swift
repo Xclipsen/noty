@@ -23,7 +23,7 @@ public struct DecodedNotebook: Sendable {
 
 /// The only decoder of stored notebook bytes (revisions, prototype files,
 /// archives). Checks the schema header before anything else: unknown newer
-/// schemas (≥ 17) stay `unsupportedSchema`, never a fallback.
+/// schemas (≥ 18) stay `unsupportedSchema`, never a fallback.
 ///
 /// Schema 5–11 embedded image originals as `data`: each is hashed and kept
 /// in `inlineImageBytes`, the object gets its content address. The legacy

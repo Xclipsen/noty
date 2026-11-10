@@ -103,15 +103,15 @@ final class ImageAssetMigrationTests: XCTestCase {
         XCTAssertEqual(try NotebookDecoding.decode(JSONEncoder().encode(full)).notebook, full)
         full.pages[0].images!.append(ImageObject(asset: .declared(1, seed: 99), pixelWidth: 8, pixelHeight: 6))
         XCTAssertThrowsError(try NotebookDecoding.decode(JSONEncoder().encode(full)))
-        // Schema 17 is locked before anything else, also inside a package.
-        let future = try mutated(current) { $0["schemaVersion"] = 17 }
+        // Schema 18 is locked before anything else, also inside a package.
+        let future = try mutated(current) { $0["schemaVersion"] = 18 }
         XCTAssertThrowsError(try NotebookDecoding.decode(future)) { error in
-            guard case StorageError.unsupportedSchema(17) = error else { return XCTFail("\(error)") }
+            guard case StorageError.unsupportedSchema(18) = error else { return XCTFail("\(error)") }
         }
         let root = try directory()
         try legacyPackage(root, bytes: future)
         XCTAssertThrowsError(try RevisionStore(directory: root).load()) { error in
-            guard case StorageError.unsupportedSchema(17) = error else { return XCTFail("\(error)") }
+            guard case StorageError.unsupportedSchema(18) = error else { return XCTFail("\(error)") }
         }
     }
 

@@ -2,18 +2,65 @@ import SwiftUI
 import NotebookCore
 
 extension NotebookCover {
+    /// The main colours follow Post-it tones (pink, orange, yellow, green,
+    /// blue), so notebooks match the sticky notes of their subject.
     var color: Color {
         switch self {
-        case .blue: Color(red: 0.25, green: 0.55, blue: 0.82)
+        case .pink: Color(red: 0.98, green: 0.45, blue: 0.69)
+        case .orange: Color(red: 1.0, green: 0.62, blue: 0.27)
+        case .yellow: Color(red: 1.0, green: 0.87, blue: 0.36)
+        case .green: Color(red: 0.60, green: 0.83, blue: 0.35)
+        case .blue: Color(red: 0.35, green: 0.72, blue: 0.92)
         case .purple: Color(red: 0.64, green: 0.49, blue: 0.80)
-        case .green: Color(red: 0.24, green: 0.68, blue: 0.53)
-        case .yellow: Color(red: 0.92, green: 0.77, blue: 0.30)
         case .coral: Color(red: 0.86, green: 0.43, blue: 0.42)
+        case .red: Color(red: 0.80, green: 0.21, blue: 0.23)
+        case .teal: Color(red: 0.15, green: 0.58, blue: 0.58)
+        case .navy: Color(red: 0.17, green: 0.27, blue: 0.52)
+        case .brown: Color(red: 0.55, green: 0.38, blue: 0.25)
         case .gray: Color(white: 0.52)
+        case .black: Color(white: 0.13)
         }
     }
-    var title: String { switch self { case .blue: "Blau"; case .purple: "Lila"; case .green: "Grün"; case .yellow: "Gelb"; case .coral: "Koralle"; case .gray: "Grau" } }
+    var title: String {
+        switch self {
+        case .pink: "Pink"; case .orange: "Orange"; case .yellow: "Gelb"; case .green: "Grün"; case .blue: "Blau"
+        case .purple: "Lila"; case .coral: "Koralle"; case .red: "Rot"; case .teal: "Türkis"; case .navy: "Dunkelblau"
+        case .brown: "Braun"; case .gray: "Grau"; case .black: "Schwarz"
+        }
+    }
+    /// Light colours carry a dark checkmark.
+    var markColor: Color { NotebookCover.main.contains(self) ? .black.opacity(0.7) : .white }
 }
+
+/// Cover colour choice: the five main colours (Post-it tones for the main
+/// subjects) first, the further colours below. Shared by „Neues Heft“,
+/// Settings › Papier für neue Hefte and „Umschlag ändern“.
+struct NotebookCoverPicker: View {
+    @Binding var cover: NotebookCover
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            row("Hauptfarben", NotebookCover.main, size: 44)
+            row("Weitere Farben", NotebookCover.more, size: 34)
+        }.keyOption(.choice($cover, NotebookCover.allCases))
+    }
+    private func row(_ title: String, _ covers: [NotebookCover], size: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 14) {
+                ForEach(covers, id: \.self) { item in
+                    Button { cover = item } label: {
+                        Circle().fill(item.color).frame(width: size, height: size)
+                            .overlay(Circle().stroke(.white.opacity(0.15)))
+                            .overlay { if cover == item { Image(systemName: "checkmark").foregroundStyle(item.markColor).bold() } }
+                    }.buttonStyle(NotyPressStyle())
+                        .accessibilityLabel("Umschlag \(item.title)")
+                        .accessibilityAddTraits(cover == item ? .isSelected : [])
+                }
+            }
+        }
+    }
+}
+
 extension PaperStyle {
     var title: String { switch self { case .blank: "Blanko"; case .lined: "Liniert"; case .grid: "Kariert"; case .legacyTest: "Schreibprobe" } }
 }
@@ -58,16 +105,7 @@ struct NotebookAppearanceEditor: View {
         VStack(alignment: .leading, spacing: 24) {
             if appearance.coverEnabled && fixedFormat == nil {
                 Text("Umschlagfarbe").font(.headline)
-                HStack(spacing: 16) {
-                    ForEach(NotebookCover.allCases, id: \.self) { cover in
-                        Button { appearance.cover = cover } label: {
-                            Circle().fill(cover.color).frame(width: 38, height: 38)
-                                .overlay { if appearance.cover == cover { Image(systemName: "checkmark").foregroundStyle(.white).bold() } }
-                        }.buttonStyle(NotyPressStyle())
-                            .accessibilityLabel("Umschlag \(cover.title)")
-                            .accessibilityAddTraits(appearance.cover == cover ? .isSelected : [])
-                    }
-                }.keyOption(.choice($appearance.cover, NotebookCover.allCases))
+                NotebookCoverPicker(cover: $appearance.cover)
             }
             Text(paperHeading).font(.headline)
             if let fixedFormat {
@@ -170,6 +208,58 @@ struct NotebookCreationView: View {
     private func create() {
         creating = true
         Task { if await onCreate(title, appearance) { dismiss() }; creating = false }
+    }
+}
+
+/// Library „Umschlag ändern …“: cover on/off and colour of an existing
+/// notebook. Paper and pages stay untouched.
+struct NotebookCoverEditView: View {
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    @State private var appearance: NotebookAppearance
+    @State private var saving = false
+    private let initial: NotebookAppearance
+    let onSave: (Bool, NotebookCover) async -> Bool
+    init(title: String, current: NotebookAppearance, onSave: @escaping (Bool, NotebookCover) async -> Bool) {
+        self.title = title; initial = current; self.onSave = onSave
+        var start = current
+        // A notebook without cover starts from the main colour picker, cover on.
+        if !start.coverEnabled { start.coverEnabled = true }
+        _appearance = State(initialValue: start)
+    }
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                HStack(alignment: .top, spacing: 24) {
+                    NotebookCoverPreview(appearance: appearance).aspectRatio(appearance.landscape ? 1.41 : 0.71, contentMode: .fit)
+                        .frame(maxWidth: appearance.landscape ? 200 : 150)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 18) {
+                        keyToggle("Umschlag", isOn: $appearance.coverEnabled)
+                        if appearance.coverEnabled {
+                            NotebookCoverPicker(cover: $appearance.cover)
+                        } else {
+                            Text("Ohne Umschlag zeigt die Bibliothek die erste Seite.").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("Nur der Umschlag ändert sich; Seiten und Papier bleiben, wie sie sind.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.padding(24)
+            }
+            .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() }.disabled(saving) }
+                ToolbarItem(placement: .confirmationAction) { Button("Fertig", action: save).disabled(saving) }
+            }
+            .disabled(saving)
+            .animation(.default, value: appearance.coverEnabled)
+        }.preferredColorScheme(.dark)
+        .keyboardSheet(onDefault: { if !saving { save() } }, onCancel: { if !saving { dismiss() } })
+    }
+    private func save() {
+        guard appearance.coverEnabled != initial.coverEnabled || appearance.cover != initial.cover else { return dismiss() }
+        saving = true
+        Task { if await onSave(appearance.coverEnabled, appearance.cover) { dismiss() }; saving = false }
     }
 }
 

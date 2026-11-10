@@ -32,6 +32,10 @@ python3 -B scripts/verify_office_export.py "$task_check/results/textdokument.rtf
 python3 -B scripts/verify_device_store.py "$task_check/results/LineAlignment"
 python3 -B scripts/verify_backup.py "$task_check/results/heft-v16.noty" --compare "$task_check/results/current-v16.json"
 python3 -B scripts/verify_library_backup.py "$task_check/results/linien.notylibrary"
+# Schema 17: cover colour changed in the library (package, `.noty`, library archive).
+python3 -B scripts/verify_device_store.py "$task_check/results/CoverPalette"
+python3 -B scripts/verify_backup.py "$task_check/results/heft-v17.noty" --compare "$task_check/results/current-v17.json"
+python3 -B scripts/verify_library_backup.py "$task_check/results/umschlag.notylibrary"
 python3 -B scripts/verify_device_store.py "$task_check/results/Source"
 # Restore copies (Restores/*) and the migrated schema-11 package carry their assets.
 python3 -B scripts/verify_device_store.py "$task_check/results/RestoreCheck"

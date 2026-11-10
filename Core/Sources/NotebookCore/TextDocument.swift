@@ -23,7 +23,7 @@ extension Notebook {
         appearance.paper = paper; appearance.color = color
         var result = try blank(title: title, appearance: appearance)
         result.kind = .textDocument
-        result.schemaVersion = textDocumentSchemaVersion
+        result.schemaVersion = max(textDocumentSchemaVersion, result.schemaVersion)
         result.pages[0].textBoxes = [try result.pages[0].emptyTextFlow(id: UUID(), dark: color == .dark)]
         try result.validate()
         return result

@@ -603,6 +603,38 @@ extension LibraryStore {
         return IncomingAppendResult(pageIDs: ids, title: item.title, verified: verified)
     }
 
+    /// Library „Umschlag ändern“ for a notebook no editor has open: same
+    /// single-writer rules as `appendIncomingPDF` (write claim from before
+    /// loading until after the commit, newest revision only, no build on a
+    /// recovered fallback, one complete new revision, manifest last). Only
+    /// the cover changes (`Notebook.setCover`). Returns false without a
+    /// commit when the cover already is so.
+    @discardableResult
+    public func setCover(_ id: UUID, enabled: Bool, cover: NotebookCover) throws -> Bool {
+        let snapshot = try committedSnapshot()
+        guard let item = snapshot.items.first(where: { $0.id == id }), !item.isFolder, !snapshot.isTrashed(id),
+              !item.isTextDocument else { throw LibraryError.unavailable }
+        let url = try documentURL(id: id)
+        guard let claim = PackageWriteLock.shared.claim(url) else { throw CoverChangeError.inUse }
+        defer { claim.release() }
+        let store = RevisionStore(directory: url)
+        var document = try store.load()
+        guard !store.recovered, document.id == id else { throw CoverChangeError.unreadable }
+        guard try document.setCover(enabled: enabled, cover: cover) else { return false }
+        try store.save(document)
+        return true
+    }
+
+}
+
+public enum CoverChangeError: Error, Equatable, LocalizedError {
+    case inUse, unreadable
+    public var errorDescription: String? {
+        switch self {
+        case .inUse: "Das Heft ist gerade geöffnet oder wird ergänzt. Bitte schließen und noch einmal versuchen; der Umschlag blieb unverändert."
+        case .unreadable: "Der neueste Stand dieses Hefts ist nicht lesbar. Bitte das Heft öffnen und prüfen; der Umschlag blieb unverändert."
+        }
+    }
 }
 
 public struct IncomingAppendResult: Sendable, Equatable {

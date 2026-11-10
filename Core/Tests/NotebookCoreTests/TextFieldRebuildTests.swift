@@ -162,9 +162,9 @@ final class TextFieldRebuildTests: XCTestCase {
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         json["schemaVersion"] = 13
         XCTAssertThrowsError(try Notebook.decode(JSONSerialization.data(withJSONObject: json)), "rotation under schema 13")
-        json["schemaVersion"] = 17
+        json["schemaVersion"] = 18
         XCTAssertThrowsError(try Notebook.decode(JSONSerialization.data(withJSONObject: json))) { error in
-            guard case StorageError.unsupportedSchema(17) = error else { return XCTFail("\(error)") }
+            guard case StorageError.unsupportedSchema(18) = error else { return XCTFail("\(error)") }
         }
         // A region without a flow is schema 14 only.
         var migrated = TextBox(x: 40, y: 40, width: 100, height: 30, text: "m"); migrated.flowRegion = .page

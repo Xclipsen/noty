@@ -25,8 +25,11 @@ FIELD_FILLS = ("yellow", "green", "blue", "pink", "gray", "purple")
 FIELD_BORDERS = ("text", "accent")
 TEXT_DOCUMENT_SCHEMA = 15  # text documents (`kind: "textDocument"`): one flow over paper pages
 LINE_ALIGNMENT_SCHEMA = 16  # free text fields aligned to the paper lines (`alignsToLines`, only true)
+COVER_PALETTE_SCHEMA = 17  # further cover colours beyond the original six
+LEGACY_COVERS = ("blue", "purple", "green", "yellow", "coral", "gray")
+COVERS = LEGACY_COVERS + ("pink", "orange", "red", "teal", "navy", "brown", "black")
 MAX_SHAPE_VERTICES = 64
-CURRENT_SCHEMA = 16
+CURRENT_SCHEMA = 17
 ASSET_HASH = re.compile(r"[0-9a-f]{64}")
 # Foundation dates: seconds since 2001 (JSONEncoder default); Swift accepts years 1…9999.
 REFERENCE_DATE_UNIX = 978_307_200
@@ -154,7 +157,7 @@ def appearance(value):
     if value is None:
         return
     check(type(value["coverEnabled"]) is bool and type(value["landscape"]) is bool, "Invalid appearance")
-    check(value["cover"] in ("blue", "purple", "green", "yellow", "coral", "gray"), "Unknown cover")
+    check(value["cover"] in COVERS, "Unknown cover")
     check(value["format"] in ("a4", "a5", "a3", "letter"), "Unknown paper format")
     check(value["paper"] in ("blank", "lined", "grid"), "Unknown paper style")
     check(value["color"] in ("white", "dark"), "Unknown paper color")
@@ -365,6 +368,8 @@ def validate_notebook(document):
     if document.get("appearance") is not None:
         check(version >= 7, "Appearance needs schema 7")
         appearance(document["appearance"])
+        check(document["appearance"]["cover"] in LEGACY_COVERS or version >= COVER_PALETTE_SCHEMA,
+              "Cover colour needs schema 17")
     kind = document.get("kind")
     # Notebooks store no kind; text documents need schema 15.
     check(kind in (None, "textDocument"), "Unknown document kind")

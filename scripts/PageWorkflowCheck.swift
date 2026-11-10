@@ -192,6 +192,7 @@ struct PageWorkflowCheck {
         let textDocumentExtras = try await Self.checkTextDocumentExtras(root: root)
         let calendarBackup = try await Self.checkCalendarBackup(root: root)
         let lineAlignment = try await Self.checkLineAlignment(root: root)
+        let coverPalette = try await Self.checkCoverPalette(root: root)
         let report: [String: Any] = ["schemaVersion": document.schemaVersion,
             "textFieldSurvivesLibraryRestore": roundTrip.documents[0].pages[1].textBoxes?.first == continuation,
             "unmaterializedDraftExcludedFromNotebookArchive": !roundTrip.documents[0].pages.contains(where: { $0.id == document.writingDraft().id }),
@@ -221,6 +222,8 @@ struct PageWorkflowCheck {
             "textDocumentPageBreakKept": textDocumentExtras.breakKept, "textDocumentPaperChanged": textDocumentExtras.paperChanged,
             "lineAlignmentSchema16KeepsExactSchema14BytesUnderMigrations": lineAlignment.exactBytesArchived,
             "lineAlignmentSurvivesCopyTrashBackupAndLibraryRestore": lineAlignment.alignmentKept,
+            "coverSchema17KeepsExactSchema7BytesUnderMigrations": coverPalette.exactBytesArchived,
+            "coverChangeKeepsPagesAndSurvivesBackupAndLibraryRestore": coverPalette.coverKept,
             "calendarArchiveFormat3": calendarBackup.format3, "calendarRestoredIdentical": calendarBackup.identical,
             "calendarLinksPointIntoRestoredArea": calendarBackup.linksLocal, "calendarConnectionDetachedOnRestore": calendarBackup.detached,
             "calendarArchiveWithoutAccessData": calendarBackup.secretFree, "calendarCorruptionRejectedBeforePublishing": calendarBackup.corruptRejected]
@@ -482,6 +485,50 @@ struct PageWorkflowCheck {
             && restoredDocuments[0].deletedPages == reopened.deletedPages && restoredDocuments[0].schemaVersion == 16
         guard alignmentKept else { throw StorageError.invalidDocument }
         return (exactBytesArchived, alignmentKept)
+    }
+
+    /// Umschlagfarben (schema 17): a schema-7 notebook with handwriting gets
+    /// a new cover colour through the library („Umschlag ändern“, write
+    /// claim). The first commit keeps the exact old bytes under Migrations/
+    /// and writes 17; pages stay byte-equal. `.noty` and library
+    /// backup/restore keep the colour; Python checks package, `.noty` and library.
+    static func checkCoverPalette(root: URL) async throws -> (exactBytesArchived: Bool, coverKept: Bool) {
+        let fm = FileManager.default
+        let libraryRoot = root.appendingPathComponent("CoverPalette", isDirectory: true)
+        let library = LibraryStore(root: libraryRoot); _ = try await library.load()
+        var appearance = NotebookAppearance(); appearance.cover = .green; appearance.paper = .grid
+        var book = try Notebook.blank(title: "Mathe", appearance: appearance)
+        book.pages[0].drawing = Data([1, 2, 3, 4])
+        guard book.schemaVersion == 7 else { throw StorageError.invalidDocument }
+        _ = try await library.createDocument(book, parentID: nil)
+        let package = try await library.documentURL(id: book.id)
+        let stored = try fm.contentsOfDirectory(at: package.appendingPathComponent("Revisions"), includingPropertiesForKeys: nil)
+        guard stored.count == 1 else { throw StorageError.invalidDocument }
+        let oldBytes = try Data(contentsOf: stored[0])
+        guard try await library.setCover(book.id, enabled: true, cover: .pink) else { throw StorageError.invalidDocument }
+        let archived = try fm.contentsOfDirectory(at: package.appendingPathComponent("Migrations"), includingPropertiesForKeys: nil)
+            .map { $0.appendingPathComponent("notebook-v7.json") }.filter { fm.fileExists(atPath: $0.path) }
+        let exactBytesArchived = try archived.count == 1 && Data(contentsOf: archived[0]) == oldBytes
+        let repository = NotebookRepository(directory: package)
+        let reopened = try RevisionStore(directory: package, readOnly: true).load()
+        guard exactBytesArchived, reopened.schemaVersion == 17, reopened.appearance?.cover == .pink,
+              reopened.appearance?.paper == .grid, reopened.pages == book.pages else { throw StorageError.invalidDocument }
+        _ = try BackupArchive.write(reopened, assets: repository.assets, to: root.appendingPathComponent("heft-v17.noty"))
+        try JSONEncoder().encode(reopened).write(to: root.appendingPathComponent("current-v17.json"))
+        let archiveURL = root.appendingPathComponent("umschlag.notylibrary")
+        _ = try LibraryArchive.write(try await library.backupPlan(), to: archiveURL)
+        let workspaces = WorkspaceStore(root: root.appendingPathComponent("CoverPaletteWorkspaces"))
+        let staged = try await workspaces.prepareRestore(file: archiveURL)
+        let restored = try await workspaces.commitRestore(staged, title: "Umschlag-Restore")
+        let restoredLibrary = LibraryStore(root: try await workspaces.directory(for: restored.id))
+        var restoredDocuments: [Notebook] = []
+        for item in try await restoredLibrary.load().snapshot.items where !item.isFolder {
+            restoredDocuments.append(try RevisionStore(directory: try await restoredLibrary.documentURL(id: item.id), readOnly: true).load())
+        }
+        let coverKept = restoredDocuments.count == 1 && restoredDocuments[0].appearance == reopened.appearance
+            && restoredDocuments[0].pages == reopened.pages && restoredDocuments[0].schemaVersion == 17
+        guard coverKept else { throw StorageError.invalidDocument }
+        return (exactBytesArchived, coverKept)
     }
 
     /// Page text as Build ≤ 62 stored it (schema 13, flow segments over two
