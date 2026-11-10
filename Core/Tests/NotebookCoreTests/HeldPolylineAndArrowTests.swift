@@ -259,9 +259,9 @@ final class HeldPolylineAndArrowTests: XCTestCase {
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         json["schemaVersion"] = 12
         XCTAssertThrowsError(try Notebook.decode(JSONSerialization.data(withJSONObject: json)))
-        json["schemaVersion"] = 17
+        json["schemaVersion"] = 18
         XCTAssertThrowsError(try Notebook.decode(JSONSerialization.data(withJSONObject: json))) { error in
-            guard case StorageError.unsupportedSchema(17) = error else { return XCTFail("\(error)") }
+            guard case StorageError.unsupportedSchema(18) = error else { return XCTFail("\(error)") }
         }
         XCTAssertEqual(try Notebook.decode(data), other)
     }

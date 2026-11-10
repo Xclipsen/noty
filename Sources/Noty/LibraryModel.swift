@@ -702,6 +702,28 @@ final class LibraryModel: ObservableObject {
         return result
     }
 
+    /// The notebook's stored or inferred defaults, read from its last commit
+    /// (start of „Umschlag ändern“).
+    func coverAppearance(_ id: UUID) async -> NotebookAppearance? {
+        do { return try await committedNotebook(id).0.pageDefaults }
+        catch { self.error = error.localizedDescription; return nil }
+    }
+
+    /// „Umschlag ändern“ for a notebook no view has open, through the library
+    /// actor (write claim, one complete new revision; `LibraryStore.setCover`).
+    func setCover(_ id: UUID, enabled: Bool, cover: NotebookCover) async -> Bool {
+        guard opened?.id != id, workspace?.holds(id) != true else { error = CoverChangeError.inUse.localizedDescription; return false }
+        await settle()
+        guard accepting else { return false }
+        guard opened?.id != id, workspace?.holds(id) != true else { error = CoverChangeError.inUse.localizedDescription; return false }
+        busy = true; defer { busy = false }
+        do {
+            try await store.setCover(id, enabled: enabled, cover: cover)
+            artworkRevision[id, default: 0] += 1
+            return true
+        } catch { self.error = error.localizedDescription; return false }
+    }
+
     func createIncomingFolder(_ title: String, parent: UUID?) async throws -> UUID {
         try await filingAccess()
         busy = true; defer { busy = false }

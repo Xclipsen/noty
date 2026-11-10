@@ -248,9 +248,9 @@ final class TextLineAlignmentTests: XCTestCase {
         XCTAssertEqual(try Notebook.decode(data).pages[0].textBoxes?[0].alignsToLines, true)
         json["schemaVersion"] = 15
         XCTAssertThrowsError(try Notebook.decode(JSONSerialization.data(withJSONObject: json)), "alignment under schema 15")
-        json["schemaVersion"] = 17
+        json["schemaVersion"] = 18
         XCTAssertThrowsError(try Notebook.decode(JSONSerialization.data(withJSONObject: json))) { error in
-            guard case StorageError.unsupportedSchema(17) = error else { return XCTFail("\(error)") }
+            guard case StorageError.unsupportedSchema(18) = error else { return XCTFail("\(error)") }
         }
         var off = aligned(y: 100); off.alignsToLines = false
         XCTAssertThrowsError(try off.validate(), "only true is stored")

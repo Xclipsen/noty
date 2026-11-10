@@ -40,6 +40,7 @@ struct LibraryView: View {
     @State private var keyboardFocus: UUID?
     @State private var nameAction = NameAction.folder
     @State private var moving: NotebookCore.LibraryItem?
+    @State private var coverEditing: CoverEditing?
     @State private var trashing: NotebookCore.LibraryItem?
     @State private var showingCopies = false
     @State private var selectedCopy: RestoredNotebook?
@@ -203,6 +204,13 @@ struct LibraryView: View {
                     AnyView(SettingsView(library: model, toolbox: toolbox, externalBackup: externalBackup, workspaces: workspaces,
                                          calendar: calendar))
                 })
+        }
+        .sheet(item: $coverEditing) { editing in
+            NotebookCoverEditView(title: "Umschlag – \(editing.item.title)", current: editing.appearance) { enabled, cover in
+                await model.setCover(editing.item.id, enabled: enabled, cover: cover)
+            }.alert("Bibliothek", isPresented: errorShown) {
+                Button("OK") { model.error = nil }
+            } message: { Text(model.error ?? "") }
         }
         .sheet(item: $moving) { item in
             MoveDestinationView(item: item, snapshot: model.snapshot) { destination in
@@ -1297,6 +1305,9 @@ struct LibraryView: View {
             }
             Button("Umbenennen …", systemImage: "pencil") { prompt(.rename(item.id), value: item.title) }
             Button("Verschieben …", systemImage: "folder") { moving = item }
+            if !item.isFolder && !item.isTextDocument {
+                Button("Umschlag ändern …", systemImage: "paintpalette") { editCover(item) }
+            }
             if !item.isFolder {
                 Button("Duplizieren", systemImage: "plus.square.on.square") { Task { await model.duplicate(item) } }
                 // Rare export variants in one submenu, as in the editor (polish audit F15).
@@ -1319,6 +1330,10 @@ struct LibraryView: View {
             Divider()
             Button("In den Papierkorb …", systemImage: "trash", role: .destructive) { trashing = item }
         }
+    }
+
+    private func editCover(_ item: NotebookCore.LibraryItem) {
+        Task { if let appearance = await model.coverAppearance(item.id) { coverEditing = CoverEditing(item: item, appearance: appearance) } }
     }
 
     /// Expands the ancestors of a folder shown on the right; never collapses anything.
@@ -1549,6 +1564,13 @@ private struct LibraryNotebookArtwork: View {
             catch { failed = true }
         }
     }
+}
+
+/// One presentation of „Umschlag ändern“ with the notebook's current defaults.
+private struct CoverEditing: Identifiable {
+    let item: NotebookCore.LibraryItem
+    let appearance: NotebookAppearance
+    var id: UUID { item.id }
 }
 
 /// One presentation of the content search, carrying the documents it searches.
