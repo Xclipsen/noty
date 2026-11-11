@@ -219,7 +219,10 @@ struct PageSidebarView: View {
         .background(Color(white: 0.065))
         .environment(\.colorScheme, .dark)
         .sheet(item: $materialField, onDismiss: { StalledGestures.requestReset() }) { request in
-            MaterialSearchSheet(initialQuery: "", field: request.field)
+            MaterialSearchSheet(initialQuery: "", field: request.field, onInsertScript: canEdit ? { url, page in
+                materialField = nil
+                insertScript(url, page: page)
+            } : nil)
         }
         .sheet(isPresented: $showingTrash, onDismiss: { StalledGestures.requestReset() }) {
             PageTrashView(model: model, cache: cache)
@@ -973,6 +976,30 @@ extension TextBox {
         let scale = Double(layout.coordinateScale)
         return PageRect(x: box.x + Double(rect.minX) * scale, y: box.y + Double(rect.minY) * scale,
                         width: max(1, Double(rect.width) * scale), height: max(1, Double(rect.height) * scale))
+    }
+}
+
+extension PageSidebarView {
+    /// „Ins Heft einfügen“ from a script: one page or the whole script behind
+    /// the current page, as PDF pages with writing space in the notebook's
+    /// paper, through the normal PDF insert (copied into the notebook,
+    /// one undo step). Marking and writing then work as on any sheet.
+    func insertScript(_ url: URL, page: Int?) {
+        var source = url
+        if let page {
+            guard let document = PDFDocument(url: url), let original = document.page(at: page - 1),
+                  let copy = original.copy() as? PDFPage else { model.error = "Diese Skriptseite ist nicht lesbar."; return }
+            let single = PDFDocument()
+            single.insert(copy, at: 0)
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("NotyScriptPages", isDirectory: true)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let file = folder.appendingPathComponent(UUID().uuidString + ".pdf")
+            guard single.write(to: file) else { model.error = "Die Skriptseite konnte nicht vorbereitet werden."; return }
+            source = file
+        }
+        let defaults = model.notebook.pageDefaults
+        let paper = defaults.paper == .legacyTest ? PaperStyle.blank : defaults.paper
+        model.insertPDF(source, relativeTo: currentPage.id, writingArea: PageMargins(right: 1.0, style: paper, color: defaults.color))
     }
 }
 

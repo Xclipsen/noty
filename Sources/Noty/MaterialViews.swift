@@ -14,6 +14,8 @@ struct MaterialSearchSheet: View {
     /// „Festhalten“ for the lesson; nil: search only.
     var pinned: Set<String> = []
     var onPin: ((MaterialLibrary.Match, CalendarMaterialRef) -> Void)?
+    /// Opened from a notebook: script pages can go into it (`nil` page: the whole script).
+    var onInsertScript: ((URL, Int?) -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var searchActive = false
@@ -82,7 +84,7 @@ struct MaterialSearchSheet: View {
             .navigationTitle(field.map { "Material · LF \($0)" } ?? "Material")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } } }
-            .sheet(item: $script) { request in MaterialScriptSheet(request: request) }
+            .sheet(item: $script) { request in MaterialScriptSheet(request: request, onInsert: onInsertScript) }
         }
         .preferredColorScheme(.dark)
     }
@@ -222,16 +224,39 @@ struct MaterialResultRow: View {
 /// A script PDF at a page (read only).
 struct MaterialScriptSheet: View {
     let request: ScriptRequest
+    /// From a notebook: „Ins Heft einfügen“ (page 1-based; nil: the whole script).
+    var onInsert: ((URL, Int?) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+    @State private var currentPage: Int
+    @State private var pageCount = 0
+
+    init(request: ScriptRequest, onInsert: ((URL, Int?) -> Void)? = nil) {
+        self.request = request; self.onInsert = onInsert
+        _currentPage = State(initialValue: request.page)
+    }
 
     var body: some View {
         NavigationStack {
-            MaterialPDFView(url: request.url, page: request.page)
+            MaterialPDFView(url: request.url, page: request.page) { page, count in currentPage = page; pageCount = count }
                 .ignoresSafeArea(edges: .bottom)
                 .navigationTitle(request.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } }
+                    if let onInsert {
+                        ToolbarItem(placement: .primaryAction) {
+                            // Writing and marking happen in the notebook: the pages go in as PDF pages with writing space.
+                            Menu {
+                                Button("Diese Seite (S. \(currentPage))", systemImage: "doc.badge.plus") { onInsert(request.url, currentPage); dismiss() }
+                                Button(pageCount > 0 ? "Ganzes Skript (\(pageCount) Seiten)" : "Ganzes Skript", systemImage: "doc.on.doc") {
+                                    onInsert(request.url, nil); dismiss()
+                                }
+                            } label: {
+                                Label("Ins Heft einfügen", systemImage: "square.and.pencil")
+                            }
+                            .accessibilityHint("Danach im Heft markieren und schreiben")
+                        }
+                    }
                     ToolbarItem(placement: .primaryAction) {
                         ShareLink(item: request.url) { Image(systemName: "square.and.arrow.up") }
                             .accessibilityLabel("Skript teilen")
@@ -246,6 +271,19 @@ struct MaterialPDFView: UIViewRepresentable {
     let url: URL
     /// 1-based.
     let page: Int
+    /// The page shown (1-based) and the page count, whenever it changes.
+    var onPage: ((Int, Int) -> Void)? = nil
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPage: onPage) }
+
+    final class Coordinator: NSObject {
+        let onPage: ((Int, Int) -> Void)?
+        init(onPage: ((Int, Int) -> Void)?) { self.onPage = onPage }
+        @objc func changed(_ note: Notification) {
+            guard let view = note.object as? PDFView, let document = view.document, let page = view.currentPage else { return }
+            onPage?(document.index(for: page) + 1, document.pageCount)
+        }
+    }
 
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
@@ -254,7 +292,14 @@ struct MaterialPDFView: UIViewRepresentable {
         view.displayDirection = .vertical
         view.backgroundColor = .black
         view.document = PDFDocument(url: url)
-        DispatchQueue.main.async { go(view) }
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.changed(_:)),
+                                               name: .PDFViewPageChanged, object: view)
+        DispatchQueue.main.async {
+            go(view)
+            if let document = view.document, let current = view.currentPage {
+                onPage?(document.index(for: current) + 1, document.pageCount)
+            }
+        }
         return view
     }
 
