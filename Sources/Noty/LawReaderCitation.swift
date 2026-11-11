@@ -34,7 +34,7 @@ extension LawReaderView {
             laws.citationReturn = back
         }
         let before = "\(selectedID)|\(sectionID)|\(viewPDF)"
-        var missing = "\(LawCitationText.reference(jump.key, paragraph: jump.paragraph, abbr: entry.abbr)) ist in \(jump.version == nil ? "der aktuellen Fassung" : jump.year.map { "der Fassung für \($0)" } ?? "dieser Fassung") nicht enthalten."
+        var missing = "\(entry.citation(key: jump.key, paragraph: jump.paragraph)) ist in \(jump.version == nil ? "der aktuellen Fassung" : jump.year.map { "der Fassung für \($0)" } ?? "dieser Fassung") nicht enthalten."
         var outcome = await open(entry, version: jump.version, target: jump.key, paragraph: jump.paragraph)
         guard citationJumpID == jump.id else { return true }
         var notice: String?
@@ -43,7 +43,7 @@ extension LawReaderView {
             // iPad): the current one instead, saying so.
             outcome = await open(entry, target: jump.key, paragraph: jump.paragraph)
             guard citationJumpID == jump.id else { return true }
-            missing = "\(LawCitationText.reference(jump.key, paragraph: jump.paragraph, abbr: entry.abbr)) ist in der aktuellen Fassung nicht enthalten."
+            missing = "\(entry.citation(key: jump.key, paragraph: jump.paragraph)) ist in der aktuellen Fassung nicht enthalten."
             if outcome == .opened {
                 notice = (jump.year.map { "Fassung für \($0)" } ?? "Diese Fassung") + " nicht verfügbar – aktuelle Fassung gezeigt"
             }
@@ -155,7 +155,7 @@ extension LawReaderView {
             // Nothing moved: no step back to offer.
             crossBack.removeAll { $0.id == step.id }
             if outcome == .missingSection {
-                loadError = "\(LawCitationText.reference(key, paragraph: paragraph, abbr: target.abbr)) ist in dieser Fassung nicht enthalten."
+                loadError = "\(target.citation(key: key, paragraph: paragraph)) ist in dieser Fassung nicht enthalten."
             }
         }
     }
