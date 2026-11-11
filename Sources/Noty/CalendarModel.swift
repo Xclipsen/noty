@@ -293,6 +293,7 @@ final class CalendarModel: ObservableObject {
         self.library = library
         self.defaultAppearance = defaultAppearance
         library.releaseCalendarNote = { [weak self] in _ = await self?.closeNote() }
+        library.calendarNotebookReplaced = { [weak self] old, new in await self?.notebookReplaced(old, by: new) }
         // Lernfelder: the editor's page list shows the lesson sections of a Lernfeld notebook.
         StudyOutline.shared.attach { [weak self] notebook in self?.studySections(of: notebook) ?? [] }
         library.$snapshot.dropFirst().receive(on: RunLoop.main).sink { [weak self] _ in

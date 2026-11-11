@@ -105,6 +105,16 @@ final class LibraryBackupBrowserTests: XCTestCase {
         XCTAssertNil(result.entries.first { $0.id == purged.id }?.currentTitle)
         XCTAssertEqual(result.newSince, ["Neu"])
         XCTAssertEqual(result.differences.count, 4)
+
+        // Phase 4: the whole library back to this state.
+        let plan = LibraryBackupBrowser.wholeRestorePlan(result)
+        XCTAssertEqual(Set(plan.replace.map(\.id)), [edited.id, renamed.id])
+        XCTAssertEqual(Set(plan.bringBack.map(\.id)), [trashed.id, purged.id])
+        let neu = try await store.load().snapshot.items.first { $0.title == "Neu" }
+        XCTAssertEqual(plan.toTrash, [try XCTUnwrap(neu).id])
+        XCTAssertFalse(plan.isEmpty)
+        let unchanged = try await catalog(try await backup(store, in: outside), store)
+        XCTAssertTrue(LibraryBackupBrowser.wholeRestorePlan(unchanged).isEmpty, "frisches Backup: nichts zu tun")
     }
 
     func testCopyComesBackNextToTodaysNotebookInItsFolderAndTodayStaysUntouched() async throws {

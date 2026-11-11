@@ -77,6 +77,10 @@ final class ExternalBackupModel: ObservableObject {
     @Published private(set) var folderUnreachable = false
     /// Keychain username, read once (not on every render).
     @Published private(set) var storedUsername: String?
+    /// What each backup of this series contained (BACKUP-RESTORE-PLAN Phase 3),
+    /// kept locally; derived, so a missing or damaged file loses only details.
+    @Published private(set) var summaries: BackupSummaryIndex
+    nonisolated static let summaryRoot = URL.applicationSupportDirectory.appendingPathComponent("BackupSummaries", isDirectory: true)
     /// Kept current by the host from scenePhase; the long-running loop reads it here.
     var sceneActive = false
     nonisolated static let folderUnreachableText = "Backup-Ordner nicht mehr erreichbar – bitte neu wählen"
@@ -90,10 +94,13 @@ final class ExternalBackupModel: ObservableObject {
             return ExternalBackupPolicy.preferredMigration(decoded).flatMap { try? JSONEncoder().encode($0) } ?? values.first
         }
         let saved = UserDefaults.standard.data(forKey: key)
+        let loaded: ExternalBackupPolicy
         if let saved, let value = try? JSONDecoder().decode(ExternalBackupPolicy.self, from: saved), (try? value.validate()) != nil {
-            policy = value
+            loaded = value
             status = Self.summary(value)
-        } else { policy = ExternalBackupPolicy(); status = saved == nil ? "Automatisches Backup nicht eingerichtet" : "Backup-Ziel unlesbar · bitte neu einrichten" }
+        } else { loaded = ExternalBackupPolicy(); status = saved == nil ? "Automatisches Backup nicht eingerichtet" : "Backup-Ziel unlesbar · bitte neu einrichten" }
+        policy = loaded
+        summaries = BackupSummaryIndex.load(root: Self.summaryRoot, series: loaded.series)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 60; configuration.timeoutIntervalForResource = 6 * 3600
         configuration.urlCredentialStorage = nil; configuration.httpCookieStorage = nil; configuration.urlCache = nil
@@ -119,7 +126,21 @@ final class ExternalBackupModel: ObservableObject {
     var username: String { storedUsername ?? "" }
     var hasStoredCredentials: Bool { storedUsername != nil }
     private var credentialAccount: String { policy.series.uuidString }
-    private func persist() { if let data = try? JSONEncoder().encode(policy) { UserDefaults.standard.set(data, forKey: key) } }
+    private func persist() {
+        if let data = try? JSONEncoder().encode(policy) { UserDefaults.standard.set(data, forKey: key) }
+        // A new target starts a new series (`startTarget` keeps it; a new policy does not).
+        if summaries.series != policy.series { summaries = BackupSummaryIndex.load(root: Self.summaryRoot, series: policy.series) }
+    }
+
+    /// The summary of a backup just written and read back; never fails the backup.
+    private func recordSummary(name: String, archive: LibraryArchiveSummary) {
+        var index = summaries
+        index.record(BackupSummary(file: name, archive: archive, previous: index.newest))
+        do { try index.save(root: Self.summaryRoot); summaries = index } catch { summaries = index }
+    }
+
+    /// The summary of a listed backup, if one was recorded on this iPad.
+    func summary(_ name: String) -> BackupSummary? { summaries.summary(for: name) }
     func disable() { guard !busy else { return }; policy.target = .disabled; persist(); history = []; status = "Automatisches Backup ausgeschaltet" }
     func setRetention(_ count: Int) { guard !busy else { return }; policy.keep = min(30, max(3, count)); persist() }
     func useFolder(_ url: URL) {
@@ -213,6 +234,7 @@ final class ExternalBackupModel: ObservableObject {
         Diagnostics.end(measurement, ["notebooks": archive.summary.notebooks.count, "external": 1])
         // Older readable notebook states are a warning, never a failure.
         policy.recordSuccess(warning: archive.warning); persist()
+        recordSummary(name: name, archive: archive.summary)
         status = (archive.warning.map { "Backup mit Hinweis: \($0) · " } ?? "") + (policy.target == .folder
             ? "Zieldatei geprüft · Cloud-Upload übernimmt die Dateien-App"
             : "WebDAV-Backup vollständig zurückgelesen und geprüft")
@@ -446,6 +468,13 @@ final class ExternalBackupModel: ObservableObject {
             listing = value
         } else { listing = ExternalBackupListing() }
         history = listing.archives; placeholders = listing.placeholders; temporaries = listing.temporaries
+        // Summaries of archives no longer at the target go (the list is complete here).
+        let present = Set(listing.archives)
+        if policy.target != .disabled, summaries.summaries.contains(where: { !present.contains($0.file) }) {
+            var index = summaries
+            index.summaries.removeAll { !present.contains($0.file) }
+            try? index.save(root: Self.summaryRoot); summaries = index
+        }
     }
     /// Own archives in iCloud Drive that are only local so far (iCloud may
     /// also be full). Other providers tell nothing here: an empty set.

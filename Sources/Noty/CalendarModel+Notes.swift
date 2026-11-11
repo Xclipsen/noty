@@ -355,6 +355,16 @@ extension CalendarModel {
         if let entry = selectedEvent { showNote(for: entry) }
     }
 
+    /// A notebook replaced by an earlier state (Wiederherstellen › Ersetzen):
+    /// its event notes and Lernfeld follow it. A failed calendar save leaves
+    /// them on the old notebook, now in the trash (shown as such, restorable).
+    func notebookReplaced(_ old: UUID, by new: UUID) async {
+        guard state.referencedNotebooks.contains(old) else { return }
+        if !(await commit { $0.notebookReplaced(old, by: new) }) {
+            notice = "Die Kalendernotizen zum ersetzten Heft zeigen noch auf den bisherigen Stand im Papierkorb."
+        }
+    }
+
     /// Removes only the link; the notebook stays in the library.
     func unlink(_ link: CalendarNoteLink) async {
         await commit { $0.noteLinks.removeAll { $0.id == link.id } }

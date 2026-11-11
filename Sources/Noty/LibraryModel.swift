@@ -600,12 +600,29 @@ final class LibraryModel: ObservableObject {
                     importDeclined = true
                     return nil
                 }
-                if choice == .replace { replacing = existing.id }
+                if choice == .replace {
+                    // One writer per package: the calendar's note beside an event lets
+                    // go of it first (outside `busy`: it may still file a note). Anything
+                    // else still writing it refuses the replacement, so its newest state
+                    // never lands in the trash unseen.
+                    busy = false
+                    if let releaseCalendarNote { await releaseCalendarNote() }
+                    busy = true
+                    let package = try await store.documentURL(id: existing.id)
+                    guard opened?.id != existing.id, let claim = await PackageWriteLock.shared.claim(package, waitingUpTo: 3) else {
+                        await repository.discardRestore(prepared)
+                        throw ReplaceBusy()
+                    }
+                    claim.release()
+                    replacing = existing.id
+                }
             }
             let result = try await NotebookImport.commit(prepared, repository: repository, library: store,
                                                          parentID: parent, replacing: replacing, title: title)
             snapshot = result.snapshot
             if let replacing, let pin = pinOrder.firstIndex(of: replacing) { pinOrder[pin] = result.id }
+            // Event notes and the Lernfeld follow the restored state (same pages, new identity).
+            if let replacing, let calendarNotebookReplaced { await calendarNotebookReplaced(replacing, result.id) }
             return ImportedNotebook(id: result.id, title: result.title, replaced: replacing != nil)
         } catch {
             // A failed validation or commit keeps its stage for analysis for a
@@ -773,6 +790,16 @@ final class LibraryModel: ObservableObject {
     /// Set by the calendar of this area: commits and closes its note editor
     /// beside an event before the library opens any notebook.
     var releaseCalendarNote: (() async -> Void)?
+    /// Set by the calendar of this area: a notebook it refers to was replaced
+    /// by an earlier state (old identity, new identity).
+    var calendarNotebookReplaced: ((UUID, UUID) async -> Void)?
+
+    /// „Ersetzen“ while the notebook is still being written.
+    struct ReplaceBusy: LocalizedError {
+        var errorDescription: String? {
+            "Dieses Heft wird gerade noch gespeichert oder ist geöffnet (zum Beispiel als Kalendernotiz). Bitte gleich noch einmal versuchen."
+        }
+    }
 
     /// Package of a new library notebook that is not in the index yet.
     func newDocumentDirectory(_ id: UUID) -> URL {

@@ -1,5 +1,9 @@
 # Heft-Backup und Wiederherstellung – Format 1
 
+## Ergänzung 08.11.2026 · Wiederherstellen (BACKUP-RESTORE-PLAN Phasen 2–4)
+
+Einstellungen › **Wiederherstellen** bündelt alles: Zeitleiste je Heft (lokale Stände, automatische Backups dieses iPads, iCloud-Ablage), Backup-Inhalte, „Ganze Bibliothek auf diesen Stand bringen“, Bibliotheksbackup-Datei, Papierkorb. Alles kommt über den geprüften `.noty`-Import in die normale Bibliothek (als Kopie oder an Stelle des heutigen Stands, der in den Papierkorb kommt); neue Stände landen nicht mehr unter „Wiederhergestellte Kopien“, und die normale noty legt beim Wiederherstellen keinen Bereich mehr an. Automatische Backups: zusätzlich zu den neuesten N gestaffelt je eins der letzten 7 Tage, 4 Wochen, 6 Monate; lokale Zusammenfassungen je Backup (abgeleitet, nicht im Archiv). Details und Nachweise: [BACKUP-RESTORE-PLAN](BACKUP-RESTORE-PLAN.md). Am iPad ungeprüft.
+
 ## Ergänzung 04.11.2026 · Kalender (B3, `feat/kalender`)
 
 Ein Heftbackup (`.noty`/`.notybackup`) enthält nur sein Heft, auch wenn es eine Terminnotiz ist: keine Termine, keine Links, keinen Stundenplan, und es behauptet keine Kalendersicherung. Kalenderdaten sichert nur das Bibliotheksbackup ab Format 3 ([LIBRARY-BACKUP](LIBRARY-BACKUP.md)). Autosave, lokale Historie, Heftbackup, Bibliotheksbackup und PDF-Export bleiben getrennt.

@@ -78,6 +78,19 @@ public actor NotebookRepository {
         return try prepareStaged { input in try BackupArchive.write(decoded.notebook, assets: assets, to: input).file }
     }
 
+    /// A local state as a verified `.notybackup` file titled `title`, for the
+    /// library's staged import (copy or „Aktuellen Stand ersetzen“,
+    /// BACKUP-RESTORE-PLAN Phase 2). Read-only on this package: the revision
+    /// files are immutable, nothing is staged or committed here.
+    public func exportLocalRevision(id: UUID, title: String, to url: URL) throws {
+        let activity = BackupActivity.shared.begin(); defer { activity.end() }
+        let decoded = try store.localRevision(id: id)
+        let assets = ChainedImageAssets([decoded.inlineAssets, store.assets])
+        var document = decoded.notebook
+        document.title = try LibraryStore.validTitle(title)
+        _ = try BackupArchive.write(document, assets: assets, to: url)
+    }
+
     private var stagingRoot: URL { store.directory.appendingPathComponent("BackupStaging", isDirectory: true) }
 
     /// Stages of failed imports stay for analysis, but not for ever: they can
