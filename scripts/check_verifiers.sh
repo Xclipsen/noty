@@ -122,6 +122,10 @@ backup("schema-99.notybackup", dict(valid, schemaVersion=99))
 backup("crc.notybackup", valid, lambda data: data.__setitem__(len(data) - 3, data[len(data) - 3] ^ 1))
 backup("trailing.notybackup", valid, lambda data: data.extend(b" "))
 backup("title-type.notybackup", dict(valid, title=5))
+# Unusual titles are normalised on import, never a reason to refuse the file.
+backup("title-multiline.notybackup", dict(valid, title="Zeile 1\nZeile 2"))
+backup("title-empty.notybackup", dict(valid, title=""))
+backup("title-long.notybackup", dict(valid, title="A" * 5000))
 backup("urn-page-id.notybackup", dict(valid, pages=[dict(valid["pages"][0], id="urn:uuid:" + uid().lower())] + valid["pages"][1:]))
 backup("page-count-type.notybackup", dict(valid, pdfSources=[dict(valid["pdfSources"][0], pageCount="1")]))
 backup("source-enum.notybackup", dict(valid, pages=[dict(valid["pages"][0], paper="glossy")] + valid["pages"][1:]))
@@ -632,6 +636,15 @@ done
 
 accept verify_backup.py "$work/backups/valid.notybackup" --compare "$work/backups/valid.json"
 accept verify_backup.py "$work/backups/large-source-schema-10.notybackup"
+for name in multiline empty long; do
+    accept verify_backup.py "$work/backups/title-$name.notybackup"
+    if ! grep -q "warning: Title is not a valid library title" "$work/last.log"; then
+        echo "FEHLER: verify_backup.py warnt nicht vor dem Titel in $name" >&2; cat "$work/last.log" >&2; exit 1
+    fi
+done
+if grep -q "warning" <(python3 -B scripts/verify_backup.py "$work/backups/valid.notybackup" 2>&1); then
+    echo "FEHLER: verify_backup.py warnt bei einem gültigen Titel" >&2; exit 1
+fi
 for name in schema-99 crc trailing title-type urn-page-id page-count-type source-enum large-source-schema-9; do
     reject verify_backup.py "$work/backups/$name.notybackup"
 done

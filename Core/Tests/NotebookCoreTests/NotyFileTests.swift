@@ -58,6 +58,54 @@ final class NotyFileTests: XCTestCase {
         }
     }
 
+    func testAnyTitleOfAnIncomingFileBecomesAValidLibraryTitle() throws {
+        let cases: [(raw: String, expected: String)] = [
+            (String(repeating: "A", count: 5_000_000), String(repeating: "A", count: 120)),
+            ("Zeile 1\nZeile 2", "Zeile 1 Zeile 2"),
+            ("", "Unbenanntes Heft"),
+            ("Eins\u{2028}Zwei\u{2029}Drei\u{85}Vier\r\nFünf", "Eins Zwei Drei Vier  Fünf"),
+            ("\u{2028}\u{200B}\t", "Unbenanntes Heft"),
+            (String(repeating: "👍🏽", count: 200), String(repeating: "👍🏽", count: 120)),
+            (String(repeating: "x", count: 119) + " " + "yz", String(repeating: "x", count: 119)),
+        ]
+        for (raw, expected) in cases {
+            let title = NotebookTitles.sanitized(raw)
+            XCTAssertEqual(title, expected)
+            XCTAssertEqual(try LibraryStore.validTitle(title), title)
+        }
+        // One endless combining sequence counts as a single character.
+        let stacked = NotebookTitles.sanitized("e" + String(repeating: "\u{301}", count: 5_000_000))
+        XCTAssertEqual(try LibraryStore.validTitle(stacked), stacked)
+        XCTAssertLessThanOrEqual(stacked.unicodeScalars.count, NotebookTitles.maximumScalars)
+    }
+
+    func testAFileWithAnUnusualTitleIsNotRefusedButImportedUnderANormalisedTitle() async throws {
+        let root = try directory(), outside = try directory()
+        let library = LibraryStore(root: root); _ = try await library.load()
+        let repository = NotebookRepository(directory: root)
+        let titles = [String(repeating: "A", count: 5_000_000), "Zeile 1\u{2028}Zeile 2\nZeile 3", ""]
+        let expected = [String(repeating: "A", count: 120), "Zeile 1 Zeile 2 Zeile 3", "Unbenanntes Heft"]
+        for (index, raw) in titles.enumerated() {
+            let original = notebook(raw)
+            let url = outside.appendingPathComponent("datei-\(index).noty")
+            _ = try BackupArchive.write(original, to: url)
+            // The file itself stays readable exactly as written: an own older backup is never rejected.
+            XCTAssertEqual(try BackupArchive.verify(url).document.title, raw)
+            let prepared = try await repository.prepareRestore(from: url)
+            XCTAssertEqual(NotebookTitles.sanitized(prepared.document.title), expected[index], "what the confirmation shows")
+            let result = try await NotebookImport.commit(prepared, repository: repository, library: library, parentID: nil, replacing: nil)
+            XCTAssertEqual(result.title, expected[index])
+            XCTAssertEqual(try XCTUnwrap(result.snapshot.items.first { $0.id == result.id }).title, expected[index])
+            let package = try await library.documentURL(id: result.id)
+            XCTAssertEqual(try RevisionStore(directory: package, readOnly: true).load().title, expected[index])
+        }
+        // A restored copy (local history path) is named the same way.
+        let url = outside.appendingPathComponent("kopie.noty")
+        _ = try BackupArchive.write(notebook("Kopie\nzwei"), to: url)
+        let copy = try await repository.commitRestoreCopy(try await repository.prepareRestore(from: url), libraryRoot: root)
+        XCTAssertEqual(copy.title, "Kopie zwei")
+    }
+
     func testShareFileNameIsSafe() {
         XCTAssertEqual(NotyFile.fileName(for: "Bio/Chemie: Teil 1"), "Bio-Chemie- Teil 1.noty")
         XCTAssertEqual(NotyFile.fileName(for: "..versteckt"), "versteckt.noty")
