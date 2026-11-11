@@ -62,7 +62,8 @@ public enum SchoolDayWidgetStore {
     /// `kind` of the widget „Heute“ (WidgetCenter.reloadTimelines).
     public static let widgetKind = "NotyCalendarToday"
 
-    /// Info.plist `NotyChannel` (app and extension carry it).
+    /// Info.plist `NotyChannel` (app and extension carry it; calendar_build.py
+    /// copies the app's value into the extension's plist).
     public static var channel: String {
         let value = Bundle.main.object(forInfoDictionaryKey: "NotyChannel") as? String ?? "stable"
         return value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) } && !value.isEmpty ? value : "stable"
@@ -109,6 +110,13 @@ public enum SchoolDayText {
     /// file names no zone of its own (its format stays as it is), so the
     /// extension reads it in that one.
     public static let calendar = CalendarDates.german(timeZone: CalendarDefaults.timeZone)
+
+    /// Home-screen name of the app a tile or widget belongs to: „noty“ for
+    /// the normal noty, „noty calendar“ for noty calendar. From the channel
+    /// (like `SchoolDayLink.scheme(channel:)`), so app and extension name the
+    /// app whose widget file and scheme they use.
+    public static func appName(channel: String) -> String { channel == "stable" ? "noty" : "noty " + channel }
+    public static var appName: String { appName(channel: SchoolDayWidgetStore.channel) }
 
     /// „08:05“ for Unix seconds (Core's 24-hour clock).
     public static func clock(_ seconds: Int, calendar: Calendar = SchoolDayText.calendar) -> String {

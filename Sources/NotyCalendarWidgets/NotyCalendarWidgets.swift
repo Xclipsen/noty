@@ -4,7 +4,7 @@ import ActivityKit
 import NotebookCore
 import NotyCalendarShared
 
-// Widget extension of noty calendar (docs/LIVE-ACTIVITY-PLAN.md):
+// Widget extension of noty and noty calendar (docs/LIVE-ACTIVITY-PLAN.md):
 //  - Live Activity „Schultag“ on the lock screen (ActivityKit; started,
 //    updated and ended by the app, later also by the push service),
 //  - widget „Heute“ (home and lock screen) from the derived App-Group file.
@@ -92,7 +92,7 @@ struct SchoolDayLockView: View {
                 Text(SchoolDayText.progress(state)).font(.caption.weight(.semibold)).monospacedDigit().foregroundStyle(.secondary)
             }
             if stale {
-                Label("Stand veraltet – noty calendar öffnen", systemImage: "exclamationmark.arrow.circlepath")
+                Label("Stand veraltet – \(SchoolDayText.appName) öffnen", systemImage: "exclamationmark.arrow.circlepath")
                     .font(.caption).foregroundStyle(.orange).lineLimit(1)
             } else if let next = state.next, state.phase != .before {
                 NextLine(lesson: next)
@@ -164,7 +164,7 @@ struct SchoolDayTodayWidget: Widget {
                 .containerBackground(.fill.tertiary, for: .widget)
         }
         .configurationDisplayName("Heute")
-        .description("Aktuelle und nächste Stunde aus dem Stundenplan von noty calendar.")
+        .description("Aktuelle und nächste Stunde aus dem Stundenplan von " + SchoolDayText.appName + ".")
         .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular])
     }
 }
@@ -186,7 +186,7 @@ struct SchoolDayTodayView: View {
         Group {
             switch entry.content {
             case .notLoaded:
-                message("Stundenplan nicht geladen", "noty calendar öffnen")
+                message("Stundenplan nicht geladen", "\(SchoolDayText.appName) öffnen")
             case .noLessonsToday(let tomorrow):
                 message("Heute kein Unterricht", tomorrow.map { "Morgen \(SchoolDayText.clock($0.start)): \($0.title)" })
             case .doneToday(let tomorrow):
