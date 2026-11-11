@@ -23,6 +23,8 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Freigabe 11.11.2026 · normale noty Build 156 (`main`):** Auf Wunsch des Nutzers („dev auf main“) kommt der Stand von noty dev Build 155 in die normale noty: Umschlagfarben und „Umschlag ändern“ (Heftschema 17), Scrollen nach Import/Rückkehr in die App nicht mehr blockiert, Fach-Hefte (Kalenderformat 6), „Lernfeld-Heft wählen“, Ordner exportieren und importieren, Spiegel im Hintergrund. Heftschema 17 und Kalenderformat 6 sperren ältere Builds (normale noty ≤ 149, noty calendar ≤ 148); vor der Installation ein Bibliotheksbackup anlegen. Die Einzelteile sind am iPad weiterhin **ungeprüft**, Core-Tests, Host-Roundtrip und iPad-Build bestanden.
+
 **Spiegel im Hintergrund, noty dev Build 155 (11.11.2026):** Die Übernahme eines neuen Abzugs der normalen noty sperrt die Bibliothek von noty dev nicht mehr ([APP-SYNC](docs/APP-SYNC.md)). iPad-Build bestanden, am iPad ungeprüft.
 
 **Ordner exportieren und importieren, noty dev Build 154 (`feat/ordner-export`, 11.11.2026):** Ein Ordner lässt sich mit Unterordnern und Heften als `.notylibrary` teilen; eine solche Datei kommt wahlweise in die aktuelle Bibliothek (fehlende Ordner entstehen, gleichnamige werden benutzt, Hefte als neue Hefte) statt nur als getrennter Bereich ([LIBRARY](docs/LIBRARY.md)). Kein Formatwechsel. Core-Tests, Host-Roundtrip, Archivprüfer und iPad-Build bestanden, am iPad ungeprüft.
