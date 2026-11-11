@@ -76,7 +76,8 @@ final class CalendarSchoolDayCenter: ObservableObject {
 
     /// Recomputes widget file and activity for the shown area's model.
     func update(_ model: CalendarModel) {
-        guard supported, model.loaded, CalendarNotificationHub.shared.model === model else { return }
+        // Only from a state that was really loaded: a failed load is empty and would delete the widget file.
+        guard supported, model.derivesData, CalendarNotificationHub.shared.model === model else { return }
         observeStartToken()
         refreshDemoRunning()
         let now = Date()

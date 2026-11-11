@@ -94,6 +94,12 @@ final class CalendarModel: ObservableObject {
     @Published private(set) var loaded = false
     /// The calendar package could not be read safely: writing is locked.
     @Published private(set) var storageError: String?
+    /// Let go for an area switch (`releaseForAreaSwitch`): nothing is committed
+    /// or derived from this model any more.
+    private(set) var released = false
+    /// Bumped by every `releaseForAreaSwitch` (a load that waited meanwhile did not fail).
+    private var releases = 0
+    private var loading = false
     /// Last commit failed; the change stays in memory (`unsaved`).
     @Published var saveError: String?
     @Published var unsaved = false
@@ -174,6 +180,12 @@ final class CalendarModel: ObservableObject {
     @Published var notificationLog = CalendarNotificationLog()
     let notificationFile: CalendarNotificationLogFile
     var notificationLogVersion = 0
+    /// The stored bell history was read (`readNotificationLog`); before that
+    /// nothing is written to it.
+    var notificationLogRead = false
+    /// Notifications shown or tapped before that read (a cold start by
+    /// tapping one); merged into the stored history then.
+    var earlyNotificationRecords: [CalendarNotificationRecord] = []
     /// Bumped when a notification or a bell entry opens something: the
     /// library switches to the calendar.
     @Published var openRequest = 0
@@ -299,14 +311,32 @@ final class CalendarModel: ObservableObject {
     }
 
     var connection: CalendarConnectionRecord? { state.connection }
-    var canWrite: Bool { loaded && storageError == nil }
+    var canWrite: Bool { loaded && storageError == nil && !released }
+    /// Reminders, Morgen-Überblicke, the widget file and the tile „Schultag“
+    /// are derived from the committed state. Only a state that was really
+    /// loaded may replace them: after a failed load (`storageError`) the
+    /// state is empty, and planning from it would remove everything planned
+    /// before. Neither from a model that was let go for an area switch.
+    var derivesData: Bool { loaded && storageError == nil && !released }
     var subjectColors: [String: String] { state.settings.subjectColors }
 
     // MARK: Loading and committing
 
     private func load() async {
+        guard !loading, !loaded else { return }
+        loading = true
+        defer { loading = false }
+        let epoch = releases
+        // The bell history first (a file of its own, independent of the calendar package): the hub
+        // may hand over a notification from the moment this model exists.
+        if !notificationLogRead { await readNotificationLog() }
+        // Let go meanwhile: no claim is taken (`resumeAfterAreaSwitch` loads again).
+        guard !released else { return }
         do {
-            let result = try await repository.load()
+            // The model of an earlier visit of this area may still hold the write claim for a
+            // moment (A → B → A while its timetable request runs): tried again instead of locking
+            // the calendar for the session. Until then it stays „wird geladen“.
+            let result = try await repository.load(retryingBusyAfter: CalendarRepository.busyRetryDelays)
             state = result.state
             applyingSettings = true
             weekDays = [5, 7].contains(state.settings.weekDays) ? state.settings.weekDays : 5
@@ -330,9 +360,15 @@ final class CalendarModel: ObservableObject {
                 }
             }
         } catch {
+            // Let go for an area switch while it waited (closing the repository ends the
+            // attempts): not a failed load. If the switch did not happen, it loads again.
+            if releases != epoch {
+                loading = false
+                if !released { await load() }
+                return
+            }
             storageError = error.localizedDescription
         }
-        notificationLog = await notificationFile.read()
         loaded = true
         attachSystemService()
         rebuild()
@@ -365,6 +401,8 @@ final class CalendarModel: ObservableObject {
     }
 
     func write(_ next: CalendarState) async -> Bool {
+        // Let go for an area switch: this model must not take the write claim again.
+        guard !released else { return false }
         revision += 1
         let current = revision
         do {
@@ -378,6 +416,32 @@ final class CalendarModel: ObservableObject {
             }
             return false
         }
+    }
+
+    /// Area switch, after `prepareAreaSwitch` and right before the other area
+    /// is shown: this model lets go of its calendar package. A WebUntis
+    /// refresh that still runs keeps the model alive until its request ends
+    /// (up to a minute), and the write claim was released only with the
+    /// model – switching back meanwhile found the package still claimed.
+    /// The answer of that refresh is dropped (`generation`), nothing is
+    /// committed or planned from this model any more, and the claim is free
+    /// at once. The caller calls `resumeAfterAreaSwitch` when the switch did
+    /// not happen.
+    func releaseForAreaSwitch() async {
+        released = true
+        releases += 1
+        generation += 1
+        syncing = false
+        await repository.close()
+    }
+
+    /// The area switch did not happen (the area store refused it): this
+    /// model is the shown one again. The repository takes its claim back
+    /// with the next load or commit.
+    func resumeAfterAreaSwitch() {
+        guard released else { return }
+        released = false
+        if loaded { rescheduleReminders() } else if !loading { Task { await load() } }
     }
 
     func retrySave() async {
