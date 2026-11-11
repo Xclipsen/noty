@@ -264,8 +264,12 @@ final class KeyboardRouter: ObservableObject {
         }
     }
     /// Touch alone again: sheets and the search field behave as without a keyboard.
+    /// NOR and SEL need a key to get out of, and the indicator is gone with the
+    /// keyboard: the on-screen keyboard writes, as after a tap in the text.
     func keyboardDisconnected() {
-        if GCKeyboard.coalesced == nil { keyboardSeen = false }
+        guard GCKeyboard.coalesced == nil else { return }
+        keyboardSeen = false
+        if isEnabled, mode != .insert { writingRequested() }
     }
     /// Diagnose: the states between two keys (`idevicesyslog | grep noty.keys`).
     func trace(_ event: String) {

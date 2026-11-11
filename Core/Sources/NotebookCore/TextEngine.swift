@@ -223,8 +223,6 @@ public struct TextEngine {
     /// The insert run a command opened; `lastInsert` once it ended.
     var insertRun: InsertRun?
     var lastInsert: (entry: Command, typed: TypedText)?
-    /// `endInsertRun` found the indent of an unused new line.
-    var unusedIndent: NSRange?
     var macros: [String: [MacroStep]] = [:]
     var recording: MacroRecording?
     /// Registers of the macros that are playing; a macro never calls itself.
@@ -543,8 +541,9 @@ public struct TextEngine {
         case .escape:
             switch mode {
             case .insert:
-                endInsertRun()
-                if let blank = unusedIndent { commit([Edit(range: blank, replacement: "")], into: &outcome) }
+                // Only the run that ends here may take its indent back: insert mode
+                // from a tap has none, and a kept range would hit a later text.
+                if let blank = endInsertRun() { commit([Edit(range: blank, replacement: "")], into: &outcome) }
                 mode = .normal
             case .select: mode = .normal
             case .normal:
