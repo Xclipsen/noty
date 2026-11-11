@@ -32,6 +32,7 @@ import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 FORMAT_VERSION = 1
 APP_IMAGE = "Noty"
@@ -153,32 +154,157 @@ def is_report(obj: object) -> bool:
             and isinstance(obj.get("app"), dict))
 
 
-def load_store(store: Path) -> tuple[list[dict], int]:
-    reports, skipped, seen = [], 0, set()
+# The store is not trusted. The upload key is in every published app, and the
+# receiving service checked less in earlier versions, so a stored file can
+# carry any JSON. Every report is rebuilt from the known fields with checked
+# types (`normalized`), and every string loses its control characters before
+# anything is printed: this output is read in a terminal and by agents.
+REPORT_ID = re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")
+CHANNEL = re.compile(r"[A-Za-z0-9_-]{1,32}")
+MAX_MS = 4_102_444_800_000  # 01.01.2100: later times are not the app's and overflow the date functions
+MAX_FRAMES, MAX_BREADCRUMBS = 4096, 1000  # what the service ever accepted
+
+
+class Malformed(Exception):
+    """A stored report with a field of the wrong type or shape."""
+
+
+def clean(text: str) -> str:
+    """The text without control characters (C0 with ESC, BEL, CR and LF, DEL,
+    C1), line separators, invisible format characters and unpaired surrogates:
+    nothing from a report may steer the terminal, start a line of its own or
+    break the output encoding."""
+    return text if text.isprintable() else "".join(ch for ch in text if ch.isprintable())
+
+
+def normalized(obj: dict) -> tuple[dict, bool]:
+    """The report with the known fields only, types checked, strings cleaned.
+
+    Raises Malformed for a wrong type or shape. The flag tells whether
+    characters had to be removed.
+    """
+    removed = False
+
+    def text(value: object, limit: int = 200) -> str:
+        nonlocal removed
+        if not isinstance(value, str) or len(value) > limit:
+            raise Malformed
+        cleaned = clean(value)
+        removed = removed or cleaned != value
+        return cleaned
+
+    def whole(value: object, low: int, high: int) -> int:
+        # bool is an int in Python; JSON true is no time and no offset.
+        if type(value) is not int or not low <= value < high:
+            raise Malformed
+        return value
+
+    def table(value: object, limit: int) -> dict:
+        if not isinstance(value, dict) or len(value) > limit:
+            raise Malformed
+        return value
+
+    def rows(value: object, limit: int) -> list:
+        if not isinstance(value, list) or len(value) > limit:
+            raise Malformed
+        return value
+
+    def field(source: dict, key: str, default=None):
+        """Left out and null mean the same, as for Swift optionals."""
+        value = source.get(key)
+        return default if value is None else value
+
+    def frame(value: object) -> dict:
+        value = table(value, 16)
+        out = {"image": text(field(value, "image", "?")), "offset": whole(value.get("offset"), 0, 1 << 64)}
+        for key in ("uuid", "symbol"):
+            if value.get(key) is not None:
+                out[key] = text(value[key], 500)
+        return out
+
+    def crumb(value: object) -> dict:
+        value = table(value, 16)
+        out = {"t": whole(value.get("t"), 0, MAX_MS)}
+        if value.get("e") is not None:
+            out["e"] = text(value["e"])
+        if value.get("v") is not None:
+            out["v"] = {text(key): whole(number, -(1 << 63), 1 << 63) for key, number in table(value["v"], 64).items()}
+        return out
+
+    if not REPORT_ID.fullmatch(obj["id"]):
+        raise Malformed
+    app = table(obj["app"], 16)
+    device = table(field(obj, "device", {}), 16)
+    report = {
+        "formatVersion": FORMAT_VERSION, "id": obj["id"], "kind": obj["kind"],
+        "createdAt": whole(obj["createdAt"], 0, MAX_MS),
+        "occurredAt": None if obj.get("occurredAt") is None else whole(obj["occurredAt"], 0, MAX_MS),
+        "app": {key: text(app[key]) for key in ("channel", "bundleID", "version", "build", "commit") if app.get(key) is not None},
+        "device": {key: text(device[key]) for key in ("model", "os") if device.get(key) is not None},
+        "launchID": None if obj.get("launchID") is None else text(obj["launchID"]),
+        "launchPhase": None if obj.get("launchPhase") is None else text(obj["launchPhase"]),
+        "summary": None if obj.get("summary") is None else text(obj["summary"], 1000),
+        "signature": None if obj.get("signature") is None else text(obj["signature"], 1000),
+        "details": {text(key): text(value, 500) for key, value in table(field(obj, "details", {}), 200).items()},
+        "callStack": [frame(f) for f in rows(field(obj, "callStack", []), MAX_FRAMES)],
+        "breadcrumbs": [crumb(c) for c in rows(field(obj, "breadcrumbs", []), MAX_BREADCRUMBS)],
+    }
+    # Channel and build also name the folder of the binary for symbolication.
+    if "build" not in report["app"] or not CHANNEL.fullmatch(report["app"].get("channel", "")):
+        raise Malformed
+    payload = obj.get("payload")
+    if payload is not None:
+        if not isinstance(payload, str):
+            raise Malformed
+        report["payload"] = payload  # never printed, only its length
+    return {key: value for key, value in report.items() if value is not None}, removed
+
+
+class Loaded(NamedTuple):
+    reports: list[dict]
+    skipped: int    # unreadable files and files that are no report of this format
+    malformed: int  # reports with a field of the wrong type or shape
+    sanitized: int  # reports shown without the control characters they carried
+
+    def notes(self) -> list[str]:
+        notes = []
+        if self.skipped:
+            notes.append(f"{self.skipped} Dateien übersprungen (unlesbar oder fremdes Format).")
+        if self.malformed:
+            notes.append(f"{self.malformed} {'Bericht' if self.malformed == 1 else 'Berichte'} übersprungen "
+                         "(Felder mit falschem Typ oder falscher Form).")
+        if self.sanitized:
+            notes.append(f"Aus {self.sanitized} {'Bericht' if self.sanitized == 1 else 'Berichten'} Steuerzeichen entfernt.")
+        return notes
+
+
+def load_store(store: Path) -> Loaded:
+    reports, skipped, malformed, sanitized, seen = [], 0, 0, 0, set()
     if not store.is_dir():
-        return [], 0
+        return Loaded([], 0, 0, 0)
     for path in sorted(store.rglob("*.json")):
         try:
             obj = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeDecodeError):
+        except (OSError, ValueError, UnicodeDecodeError, RecursionError):
             skipped += 1
             continue
         if not is_report(obj):
             skipped += 1
             continue
-        if obj["id"].upper() in seen:
+        try:
+            report, removed = normalized(obj)
+        except (Malformed, LookupError, TypeError, ValueError, ArithmeticError, RecursionError):
+            # One bad file must never end the call for all reports.
+            malformed += 1
             continue
-        seen.add(obj["id"].upper())
-        obj["_path"] = str(path)
-        obj.setdefault("details", {})
-        obj.setdefault("callStack", [])
-        obj.setdefault("breadcrumbs", [])
-        if not isinstance(obj["details"], dict):
-            obj["details"] = {}
-        obj["callStack"] = [f for f in obj["callStack"] if isinstance(f, dict) and isinstance(f.get("offset"), int)]
-        obj["breadcrumbs"] = [c for c in obj["breadcrumbs"] if isinstance(c, dict) and isinstance(c.get("t"), int)]
-        reports.append(obj)
-    return reports, skipped
+        if report["id"].upper() in seen:
+            continue
+        seen.add(report["id"].upper())
+        # Folder and file name come from the report (channel, build, ID).
+        report["_path"] = clean(str(path))
+        sanitized += removed or report["_path"] != str(path)
+        reports.append(report)
+    return Loaded(reports, skipped, malformed, sanitized)
 
 
 def build_of(report: dict) -> str:
@@ -857,7 +983,8 @@ def main(argv: list[str] | None = None, out=None) -> int:
         print(error, file=sys.stderr)
         return 2
     store = Path(args.store)
-    all_reports, skipped = load_store(store)
+    loaded = load_store(store)
+    all_reports, skipped = loaded.reports, loaded.skipped
     symbols = Symbolizer(Path(args.binaries) if args.binaries else None)
 
     if args.show:
@@ -865,6 +992,8 @@ def main(argv: list[str] | None = None, out=None) -> int:
         matches = [r for r in all_reports if r["id"].upper().startswith(prefix)]
         if not matches:
             print(f"Kein Bericht mit ID {args.show} in {store}.", file=out)
+            for note in loaded.notes():
+                print(note, file=out)
             return 1
         if len(matches) > 1:
             print(f"{len(matches)} Berichte passen zu {args.show}:", file=out)
@@ -900,9 +1029,7 @@ def main(argv: list[str] | None = None, out=None) -> int:
     groups = group_reports(shown, [r for r in all_reports], symbols)
     metrics = latest_metrics(metric_source)
 
-    notes = []
-    if skipped:
-        notes.append(f"{skipped} Dateien übersprungen (unlesbar oder fremdes Format).")
+    notes = loaded.notes()
     if hidden:
         notes.append(f"{hidden} Tageswert-/Testberichte ausgeblendet (--all zeigt sie).")
     if shown and not symbols.available:
@@ -914,7 +1041,8 @@ def main(argv: list[str] | None = None, out=None) -> int:
 
     since_text = "alle Zeit" if cutoff is None else f"seit {ms_to_local(cutoff)}"
     if args.json:
-        data = {"store": str(store), "since": ms_to_iso(cutoff), "skipped": skipped, "hidden": hidden,
+        data = {"store": str(store), "since": ms_to_iso(cutoff), "skipped": skipped, "malformed": loaded.malformed,
+                "sanitized": loaded.sanitized, "hidden": hidden,
                 "symbolication": symbols.available, "missingBinaries": sorted(symbols.missing_builds),
                 "groups": [group_json(g) for g in groups], "metrics": metrics}
         json.dump(data, out, ensure_ascii=False, indent=1)

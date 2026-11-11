@@ -1,0 +1,775 @@
+[
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+      {
+        "e" : "notebook.open",
+        "t" : 1799999996000,
+        "v" : {
+          "ms" : 412,
+          "pages" : 34
+        }
+      },
+      {
+        "e" : "phase.notebook",
+        "t" : 1799999999200
+      }
+    ],
+    "callStack" : [
+
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "durationMs" : "2400",
+      "operation" : "notebook.open",
+      "pages" : "34",
+      "thresholdMs" : "2000"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000001",
+    "kind" : "slow",
+    "launchID" : "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D",
+    "launchPhase" : "notebook",
+    "occurredAt" : 1800000000000,
+    "signature" : "slow:notebook.open",
+    "summary" : "Langsam: Heft öffnen 2400 ms (Schwelle 2000 ms)"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+      {
+        "e" : "notebook.open",
+        "t" : 1799999996000,
+        "v" : {
+          "ms" : 412,
+          "pages" : 34
+        }
+      },
+      {
+        "e" : "phase.notebook",
+        "t" : 1799999999200
+      }
+    ],
+    "callStack" : [
+
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "errorCode" : "640",
+      "errorDomain" : "NSCocoaErrorDomain",
+      "operation" : "save"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000002",
+    "kind" : "failure",
+    "launchID" : "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D",
+    "launchPhase" : "running",
+    "occurredAt" : 1800000000000,
+    "signature" : "failure:save",
+    "summary" : "Speichern fehlgeschlagen (NSCocoaErrorDomain 640)"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+
+    ],
+    "callStack" : [
+
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "errorCode" : "-1",
+      "errorDomain" : "NSPOSIXErrorDomain",
+      "operation" : "appSync.mirror"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000003",
+    "kind" : "failure",
+    "launchID" : "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D",
+    "occurredAt" : 1800000000000,
+    "signature" : "failure:appSync.mirror",
+    "summary" : "App-Abgleich (Spiegel) fehlgeschlagen (NSPOSIXErrorDomain -1)"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+      {
+        "e" : "notebook.open",
+        "t" : 1799999996000,
+        "v" : {
+          "ms" : 412,
+          "pages" : 34
+        }
+      },
+      {
+        "e" : "phase.notebook",
+        "t" : 1799999999200
+      }
+    ],
+    "callStack" : [
+      {
+        "image" : "libsystem_kernel.dylib",
+        "offset" : 26648,
+        "uuid" : "6E6E4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "libc++.1.dylib",
+        "offset" : 54856
+      },
+      {
+        "image" : "?",
+        "offset" : 18446744073709551615
+      },
+      {
+        "image" : "Noty",
+        "offset" : 16,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      }
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "durationMs" : "3006",
+      "test" : "1"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000004",
+    "kind" : "appHang",
+    "launchID" : "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D",
+    "launchPhase" : "running",
+    "occurredAt" : 1800000000000,
+    "signature" : "appHang|Noty+0x10",
+    "summary" : "Hänger · 3006 ms · bei Noty+0x10"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+      {
+        "e" : "notebook.open",
+        "t" : 1799999996000,
+        "v" : {
+          "ms" : 412,
+          "pages" : 34
+        }
+      },
+      {
+        "e" : "phase.notebook",
+        "t" : 1799999999200
+      }
+    ],
+    "callStack" : [
+
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "build" : "148",
+      "reportingBuild" : "149",
+      "state" : "active"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000005",
+    "kind" : "abnormalExit",
+    "launchID" : "5A4B3C2D-1E0F-4A9B-8C7D-6E5F4A3B2C1D",
+    "launchPhase" : "lawWindow",
+    "occurredAt" : 1799999999200,
+    "signature" : "abnormalExit",
+    "summary" : "Unerwartet beendet · in Phase lawWindow"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+      {
+        "e" : "notebook.open",
+        "t" : 1799999996000,
+        "v" : {
+          "ms" : 412,
+          "pages" : 34
+        }
+      },
+      {
+        "e" : "phase.notebook",
+        "t" : 1799999999200
+      }
+    ],
+    "callStack" : [
+      {
+        "image" : "libswiftCore.dylib",
+        "offset" : 4660,
+        "uuid" : "5D5D4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 1741228,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 48,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "?",
+        "offset" : 7
+      }
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "build" : "149",
+      "exceptionCode" : "1",
+      "exceptionType" : "6",
+      "exceptionTypeName" : "EXC_BREAKPOINT",
+      "signal" : "5",
+      "signalName" : "SIGTRAP",
+      "source" : "metrickit"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000006",
+    "kind" : "crash",
+    "launchID" : "5A4B3C2D-1E0F-4A9B-8C7D-6E5F4A3B2C1D",
+    "launchPhase" : "lawWindow",
+    "occurredAt" : 1799999999500,
+    "payload" : "{\"callStackTree\":{\"callStackPerThread\":true,\"callStacks\":[{\"callStackRootFrames\":[{\"binaryName\":\"libswiftCore.dylib\",\"binaryUUID\":\"5D5D4483-5555-3144-A1D4-85A5F72E486E\",\"offsetIntoBinaryTextSegment\":4660,\"sampleCount\":1,\"subFrames\":[{\"binaryName\":\"Noty\",\"binaryUUID\":\"4C4C4483-5555-3144-A1D4-85A5F72E486E\",\"offsetIntoBinaryTextSegment\":1741228,\"sampleCount\":1,\"subFrames\":[{\"binaryName\":\"Noty\",\"binaryUUID\":\"4C4C4483-5555-3144-A1D4-85A5F72E486E\",\"offsetIntoBinaryTextSegment\":48,\"sampleCount\":1,\"subFrames\":[{\"offsetIntoBinaryTextSegment\":7,\"sampleCount\":1}]}]}]}],\"threadAttributed\":true}]},\"diagnosticMetaData\":{\"appBuildVersion\":\"149\",\"exceptionReason\":{\"className\":\"NSException\",\"exceptionName\":\"NSRangeException\",\"exceptionType\":\"\"},\"exceptionType\":6,\"osVersion\":\"iPadOS 26.1 (23B85)\",\"signal\":5}}",
+    "signature" : "crash:swiftTrap|Noty+0x1a91ac>Noty+0x30",
+    "summary" : "Absturz · EXC_BREAKPOINT · SIGTRAP · Swift-Laufzeitfalle (fatalError, erzwungenes Entpacken, Index außerhalb, Überlauf) · bei Noty+0x1a91ac"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+
+    ],
+    "callStack" : [
+      {
+        "image" : "libswiftCore.dylib",
+        "offset" : 4660,
+        "uuid" : "5D5D4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 1741228,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 48,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "?",
+        "offset" : 7
+      }
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "exceptionName" : "NSRangeException",
+      "exceptionType" : "10",
+      "exceptionTypeName" : "EXC_CRASH",
+      "objcException" : "NSRangeException",
+      "signal" : "6",
+      "signalName" : "SIGABRT",
+      "source" : "metrickit"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000007",
+    "kind" : "crash",
+    "launchID" : "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D",
+    "occurredAt" : 1800000000000,
+    "signature" : "crash:objcException|Noty+0x1a91ac>Noty+0x30",
+    "summary" : "Absturz · NSRangeException · SIGABRT · Objective-C-Ausnahme · bei Noty+0x1a91ac"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+      {
+        "e" : "notebook.open",
+        "t" : 1799999996000,
+        "v" : {
+          "ms" : 412,
+          "pages" : 34
+        }
+      },
+      {
+        "e" : "phase.notebook",
+        "t" : 1799999999200
+      }
+    ],
+    "callStack" : [
+
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "exceptionType" : "10",
+      "exceptionTypeName" : "EXC_CRASH",
+      "signal" : "9",
+      "signalName" : "SIGKILL",
+      "source" : "metrickit",
+      "terminationReason" : "Namespace SPRINGBOARD, Code 0x8badf00d"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000008",
+    "kind" : "crash",
+    "launchID" : "5A4B3C2D-1E0F-4A9B-8C7D-6E5F4A3B2C1D",
+    "launchPhase" : "lawWindow",
+    "occurredAt" : 1800000000000,
+    "signature" : "crash:watchdog",
+    "summary" : "Absturz · EXC_CRASH · SIGKILL · Watchdog-Abbruch: der Hauptthread blockierte zu lange"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+      {
+        "e" : "notebook.open",
+        "t" : 1799999996000,
+        "v" : {
+          "ms" : 412,
+          "pages" : 34
+        }
+      },
+      {
+        "e" : "phase.notebook",
+        "t" : 1799999999200
+      }
+    ],
+    "callStack" : [
+      {
+        "image" : "libswiftCore.dylib",
+        "offset" : 4660,
+        "uuid" : "5D5D4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 1741228,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 48,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "?",
+        "offset" : 7
+      }
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "exceptionType" : "1",
+      "exceptionTypeName" : "EXC_BAD_ACCESS",
+      "signal" : "11",
+      "signalName" : "SIGSEGV",
+      "source" : "metrickit",
+      "stackGuard" : "1"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000009",
+    "kind" : "crash",
+    "launchID" : "5A4B3C2D-1E0F-4A9B-8C7D-6E5F4A3B2C1D",
+    "launchPhase" : "lawWindow",
+    "occurredAt" : 1800000000000,
+    "signature" : "crash:stackOverflow|Noty+0x1a91ac>Noty+0x30",
+    "summary" : "Absturz · EXC_BAD_ACCESS · SIGSEGV · Stapelüberlauf (meist beim View-Aufbau: tief verschachtelte SwiftUI-Typen oder Rekursion) · bei Noty+0x1a91ac"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+      {
+        "e" : "notebook.open",
+        "t" : 1799999996000,
+        "v" : {
+          "ms" : 412,
+          "pages" : 34
+        }
+      },
+      {
+        "e" : "phase.notebook",
+        "t" : 1799999999200
+      }
+    ],
+    "callStack" : [
+      {
+        "image" : "libswiftCore.dylib",
+        "offset" : 4660,
+        "uuid" : "5D5D4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 1741228,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 48,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "?",
+        "offset" : 7
+      }
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "build" : "149",
+      "durationMs" : "2100",
+      "source" : "metrickit"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000010",
+    "kind" : "hang",
+    "launchID" : "5A4B3C2D-1E0F-4A9B-8C7D-6E5F4A3B2C1D",
+    "launchPhase" : "lawWindow",
+    "occurredAt" : 1800000000000,
+    "signature" : "hang|Noty+0x1a91ac>Noty+0x30",
+    "summary" : "Hänger (System) · 2100 ms · bei Noty+0x1a91ac"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+
+    ],
+    "callStack" : [
+      {
+        "image" : "libswiftCore.dylib",
+        "offset" : 4660,
+        "uuid" : "5D5D4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 1741228,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 48,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "?",
+        "offset" : 7
+      }
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "durationMs" : "91000",
+      "source" : "metrickit"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000011",
+    "kind" : "cpu",
+    "launchID" : "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D",
+    "occurredAt" : 1800000000000,
+    "signature" : "cpu|Noty+0x1a91ac>Noty+0x30",
+    "summary" : "CPU-Last · bei Noty+0x1a91ac"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+
+    ],
+    "callStack" : [
+
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "source" : "metrickit"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000012",
+    "kind" : "diskWrite",
+    "launchID" : "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D",
+    "occurredAt" : 1800000000000,
+    "signature" : "diskWrite",
+    "summary" : "Schreiblast"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+
+    ],
+    "callStack" : [
+      {
+        "image" : "libswiftCore.dylib",
+        "offset" : 4660,
+        "uuid" : "5D5D4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 1741228,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "Noty",
+        "offset" : 48,
+        "uuid" : "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+      },
+      {
+        "image" : "?",
+        "offset" : 7
+      }
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "durationMs" : "5200",
+      "source" : "metrickit"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000013",
+    "kind" : "launch",
+    "launchID" : "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D",
+    "occurredAt" : 1800000000000,
+    "signature" : "launch|Noty+0x1a91ac>Noty+0x30",
+    "summary" : "Langsamer Start · bei Noty+0x1a91ac"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+
+    ],
+    "callStack" : [
+
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "build" : "149",
+      "cpuSeconds" : "310",
+      "exitBackgroundMemory" : "2",
+      "exitBackgroundMemoryPressure" : "7",
+      "exitBackgroundSuspendedLockedFile" : "0",
+      "exitBackgroundWatchdog" : "0",
+      "exitForegroundAbnormal" : "0",
+      "exitForegroundBadAccess" : "0",
+      "exitForegroundIllegalInstruction" : "0",
+      "exitForegroundMemory" : "0",
+      "exitForegroundNormal" : "4",
+      "exitForegroundWatchdog" : "1",
+      "from" : "1799913600000",
+      "hangCount" : "3",
+      "hangMsMean" : "450",
+      "launchFirstDrawMsMean" : "820",
+      "launchResumeMsMean" : "120",
+      "memoryPeakMB" : "612",
+      "scrollHitchMsPerS" : "2.10",
+      "source" : "metrickit",
+      "to" : "1800000000000"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000014",
+    "kind" : "metrics",
+    "launchID" : "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D",
+    "occurredAt" : 1800000000000,
+    "payload" : "{\"callStackTree\":{\"callStackPerThread\":true,\"callStacks\":[{\"callStackRootFrames\":[{\"binaryName\":\"libswiftCore.dylib\",\"binaryUUID\":\"5D5D4483-5555-3144-A1D4-85A5F72E486E\",\"offsetIntoBinaryTextSegment\":4660,\"sampleCount\":1,\"subFrames\":[{\"binaryName\":\"Noty\",\"binaryUUID\":\"4C4C4483-5555-3144-A1D4-85A5F72E486E\",\"offsetIntoBinaryTextSegment\":1741228,\"sampleCount\":1,\"subFrames\":[{\"binaryName\":\"Noty\",\"binaryUUID\":\"4C4C4483-5555-3144-A1D4-85A5F72E486E\",\"offsetIntoBinaryTextSegment\":48,\"sampleCount\":1,\"subFrames\":[{\"offsetIntoBinaryTextSegment\":7,\"sampleCount\":1}]}]}]}],\"threadAttributed\":true}]},\"diagnosticMetaData\":{\"appBuildVersion\":\"149\",\"exceptionReason\":{\"className\":\"NSException\",\"exceptionName\":\"NSRangeException\",\"exceptionType\":\"\"},\"exceptionType\":6,\"osVersion\":\"iPadOS 26.1 (23B85)\",\"signal\":5}}",
+    "signature" : "metrics",
+    "summary" : "Tageswerte"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+
+    ],
+    "callStack" : [
+
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "build" : "?",
+      "memoryExits" : "2",
+      "source" : "metrickit"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000015",
+    "kind" : "memory",
+    "launchID" : "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D",
+    "occurredAt" : 1800000000000,
+    "signature" : "memory:memoryLimit",
+    "summary" : "Speicherlimit · 2× vom System wegen Speicherverbrauch beendet"
+  },
+  {
+    "app" : {
+      "build" : "149",
+      "bundleID" : "de.la.noty.dev",
+      "channel" : "dev",
+      "commit" : "040b1f4",
+      "version" : "1.0"
+    },
+    "breadcrumbs" : [
+      {
+        "e" : "notebook.open",
+        "t" : 1799999996000,
+        "v" : {
+          "ms" : 412,
+          "pages" : 34
+        }
+      },
+      {
+        "e" : "phase.notebook",
+        "t" : 1799999999200
+      }
+    ],
+    "callStack" : [
+
+    ],
+    "createdAt" : 1800000000000,
+    "details" : {
+      "test" : "test.report"
+    },
+    "device" : {
+      "model" : "iPad17,1",
+      "os" : "iPadOS 26.1"
+    },
+    "formatVersion" : 1,
+    "id" : "00000000-0000-4000-8000-000000000016",
+    "kind" : "test",
+    "launchID" : "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D",
+    "launchPhase" : "library",
+    "occurredAt" : 1800000000000,
+    "signature" : "test",
+    "summary" : "Test"
+  }
+]
