@@ -233,6 +233,8 @@ struct WorkspaceLibraryHost: View {
             }
             // Shared PDFs/pictures go to the filing sheet, noty files keep their way.
             .onOpenURL { url in
+                // A launch by a file or link shows that, not the last notebook.
+                LibraryModel.launchHasExplicitReason()
                 // Tile „Schultag“ / widget „Heute“ (notycalendar://schultag…): the calendar at the lesson.
                 if let target = SchoolDayLink.target(url) { CalendarNotificationHub.shared.openSchoolDay(target); return }
                 // Learning material (docs/LERNFELDER.md): for the whole device, not the area.
