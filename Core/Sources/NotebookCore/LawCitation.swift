@@ -717,7 +717,11 @@ public struct LawCitationScanner: Sendable {
         /// `allowUnknown`: any other capitalised word counts as a written but
         /// unknown law ("XYZG", "SolZG", "Handelsgesetzbuch").
         /// `name`: written as a catalog name, not an abbreviation.
-        func law(at i: Int, allowUnknown: Bool) -> (hit: LawHit, end: Int, name: Bool)? {
+        /// `bracket`: a "(EStG)" after the law is read as part of it. The law
+        /// inside that bracket takes none of its own, so the lookahead never
+        /// nests: "AO (AO (AO (…" costs the same at every start and needs no
+        /// stack, however long the text is.
+        func law(at i: Int, allowUnknown: Bool, bracket: Bool = true) -> (hit: LawHit, end: Int, name: Bool)? {
             guard i < n, isLetter(c(i)), !isWordChar(c(i - 1)) else { return nil }
             // "Muster-AO", "Muster-Abgabenordnung": the law is only part of a word.
             if c(i - 1) == 0x2D, isWordChar(c(i - 2)) {
@@ -732,7 +736,7 @@ public struct LawCitationScanner: Sendable {
                 var hit: LawHit = ids.count == 1 ? .known(ids.first!) : .ambiguous
                 // "Einkommensteuergesetz (EStG)": the bracket must name the same law.
                 let p = skipWS(best)
-                if c(p) == 0x28, let inner = law(at: p + 1, allowUnknown: false), c(inner.end) == 0x29 {
+                if bracket, c(p) == 0x28, let inner = law(at: p + 1, allowUnknown: false, bracket: false), c(inner.end) == 0x29 {
                     if inner.hit != hit { hit = .ambiguous }
                     best = inner.end + 1
                 }
