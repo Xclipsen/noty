@@ -207,8 +207,11 @@ public final class RevisionStore {
         guard !fm.fileExists(atPath: primary.path), !fm.fileExists(atPath: previous.path) else {
             throw RevisionError.noCompleteRevision
         }
+        // Zero-length rests of an aborted first commit hold no state: a new
+        // notebook with the same ID can still be created (`PackageShell`).
         if !hasLegacyFiles, fm.fileExists(atPath: revisions.path),
-           !(try fm.contentsOfDirectory(atPath: revisions.path)).isEmpty {
+           try fm.contentsOfDirectory(atPath: revisions.path)
+               .contains(where: { !PackageShell.isEmptyFile(revisions.appendingPathComponent($0)) }) {
             throw RevisionError.noCompleteRevision
         }
         let legacy = NotebookStore(directory: directory)
@@ -254,10 +257,21 @@ public final class RevisionStore {
         // bring a removed image back). A failure aborts before any revision;
         // written assets without a revision are harmless orphans.
         let pending = assets.pendingReferences
-        try assets.persist(document.externalImageAssets + pending, from: source)
-        try commitFault(.assetsWritten)
-        try fm.createDirectory(at: revisions, withIntermediateDirectories: true)
-        try validateRevisionDirectory()
+        let references = document.externalImageAssets + pending
+        // This call starts the package: nothing is on disk yet, or only rests
+        // without content of an earlier attempt. If it fails, it removes what
+        // it created, so no manifest-less directory stays in the library.
+        let directoryExisted = itemExists(directory)
+        let startsPackage = lastManifest == nil && (!directoryExisted || PackageShell.isShell(directory))
+        do {
+            try assets.persist(references, from: source)
+            try commitFault(.assetsWritten)
+            try fm.createDirectory(at: revisions, withIntermediateDirectories: true)
+            try validateRevisionDirectory()
+        } catch {
+            if startsPackage { discardStartedPackage(references, keepingDirectory: directoryExisted) }
+            throw error
+        }
         var old = lastManifest
         var written: [String] = []
         let manifest: RevisionManifest
@@ -298,6 +312,7 @@ public final class RevisionStore {
             try manifestBytes.write(to: primary, options: .atomic)
         } catch {
             discardUncommitted(written)
+            if startsPackage { discardStartedPackage(references, keepingDirectory: directoryExisted) }
             throw error
         }
         lastManifest = manifest
@@ -535,6 +550,19 @@ public final class RevisionStore {
         for file in files where !referenced.contains(file) {
             if (try? fm.removeItem(at: revisions.appendingPathComponent(file))) != nil { known.remove(file) }
         }
+    }
+
+    /// After a failed first commit of a package that this call started (no
+    /// directory before, or only a `PackageShell`): removes the originals the
+    /// call wrote (their bytes are still pending or in their source), then
+    /// its own empty directories and zero-length rests. Never recursive:
+    /// anything else keeps its directory, which then stays reported as an
+    /// unreadable notebook. Nothing happens once any manifest or legacy
+    /// document exists; a directory that was there before the call remains.
+    private func discardStartedPackage(_ references: [ImageAssetReference], keepingDirectory: Bool) {
+        guard !itemExists(primary), !itemExists(previous), !hasLegacyFiles else { return }
+        assets.discardWritten(references)
+        PackageShell.remove(directory, keepingRoot: keepingDirectory)
     }
 
     /// Does not follow a final symlink.

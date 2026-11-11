@@ -161,7 +161,13 @@ public actor LibraryStore {
                     if let existing = candidate.items.first(where: { $0.id == id }) {
                         guard existing.source == source else { throw LibraryError.invalidIndex }
                         try requireDirectory(folder)
-                    } else { try discover(at: folder, source: source, into: &candidate) }
+                    } else {
+                        // Rests without content of an aborted first commit are
+                        // no notebook: not reported, and left in place (the
+                        // inventory only reads; a later commit may reuse them).
+                        if !hasDocument(at: folder), PackageShell.isShell(folder) { continue }
+                        try discover(at: folder, source: source, into: &candidate)
+                    }
                 } catch { unreadable += 1 }
             }
         }
@@ -444,7 +450,8 @@ public actor LibraryStore {
         guard !value.items.contains(where: { $0.id == notebook.id }) else { throw LibraryError.invalidIndex }
         let title = try Self.validTitle(notebook.title)
         let destination = root.appendingPathComponent("Library/Documents/\(notebook.id.uuidString)", isDirectory: true)
-        guard !fm.fileExists(atPath: destination.path) else { throw LibraryError.invalidIndex }
+        // Rests without content of an aborted attempt with this ID are no package.
+        guard !fm.fileExists(atPath: destination.path) || PackageShell.isShell(destination) else { throw LibraryError.invalidIndex }
         let parent = destination.deletingLastPathComponent()
         try fm.createDirectory(at: parent, withIntermediateDirectories: true)
         try requireDirectory(parent)
