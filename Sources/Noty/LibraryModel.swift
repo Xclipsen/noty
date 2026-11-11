@@ -95,6 +95,8 @@ final class LibraryModel: ObservableObject {
     /// An archive is being written from committed packages; the library stays
     /// usable, only permanent deletion waits for it.
     private(set) var archiveRunning = false
+    /// „Ordner exportieren“ / „Ordner importieren“ läuft (kein zweiter daneben). Jeder Weg setzt es zurück.
+    private(set) var folderTransferRunning = false
     private var preparedExport: URL?
     private var preparedExportWarning: String?
 
@@ -702,6 +704,28 @@ final class LibraryModel: ObservableObject {
         return result
     }
 
+    /// The notebook's stored or inferred defaults, read from its last commit
+    /// (start of „Umschlag ändern“).
+    func coverAppearance(_ id: UUID) async -> NotebookAppearance? {
+        do { return try await committedNotebook(id).0.pageDefaults }
+        catch { self.error = error.localizedDescription; return nil }
+    }
+
+    /// „Umschlag ändern“ for a notebook no view has open, through the library
+    /// actor (write claim, one complete new revision; `LibraryStore.setCover`).
+    func setCover(_ id: UUID, enabled: Bool, cover: NotebookCover) async -> Bool {
+        guard opened?.id != id, workspace?.holds(id) != true else { error = CoverChangeError.inUse.localizedDescription; return false }
+        await settle()
+        guard accepting else { return false }
+        guard opened?.id != id, workspace?.holds(id) != true else { error = CoverChangeError.inUse.localizedDescription; return false }
+        busy = true; defer { busy = false }
+        do {
+            try await store.setCover(id, enabled: enabled, cover: cover)
+            artworkRevision[id, default: 0] += 1
+            return true
+        } catch { self.error = error.localizedDescription; return false }
+    }
+
     func createIncomingFolder(_ title: String, parent: UUID?) async throws -> UUID {
         try await filingAccess()
         busy = true; defer { busy = false }
@@ -832,3 +856,165 @@ struct FolderPaths {
 
     private static let root = "Alle Unterlagen"
 }
+
+// MARK: Ordner exportieren und importieren (docs/LIBRARY.md)
+
+extension LibraryModel {
+    /// `<Ordner>.notylibrary` for the share sheet: the folder with everything
+    /// active below it as an ordinary library archive (format 2, no calendar),
+    /// written and read back off the UI actor like a library backup. A notebook
+    /// whose newest revision is unreadable stops the export instead of sharing
+    /// an older state.
+    func folderShareFile(for item: NotebookCore.LibraryItem) async -> URL? {
+        guard item.isFolder else { return nil }
+        guard ready, opened == nil, !busy, !archiveRunning, !folderTransferRunning else {
+            error = "Bitte warten, bis der laufende Vorgang abgeschlossen ist."
+            return nil
+        }
+        folderTransferRunning = true; defer { folderTransferRunning = false }
+        let progress = TopAlert.progress("Ordner wird exportiert …")
+        do {
+            let plan = try await store.backupPlan(includeCalendar: false).restricted(toFolder: item.id)
+            guard plan.documentCount > 0 else {
+                await TopAlert.dismiss(progress)
+                error = "Der Ordner „\(item.title)“ enthält keine Hefte. Es wurde nichts exportiert."
+                return nil
+            }
+            let url = try BackupScratch.newShareFile(title: item.title, fileExtension: "notylibrary")
+            do {
+                let older = try await Task.detached(priority: .userInitiated) { () throws -> [String] in
+                    // Reads the packages' originals: no asset GC meanwhile.
+                    let activity = BackupActivity.shared.begin(); defer { activity.end() }
+                    var olderStates: [String] = []
+                    _ = try LibraryArchive.write(plan, to: url, validate: BackupValidation.validate, olderState: { olderStates.append($0.title) })
+                    return olderStates
+                }.value
+                guard older.isEmpty else {
+                    BackupScratch.removeShare(url)
+                    await TopAlert.dismiss(progress)
+                    error = "Der neueste Stand von \(older.map(NotyText.quoted).joined(separator: ", ")) ist nicht lesbar. Bitte öffnen und prüfen; der Ordner wurde nicht exportiert."
+                    return nil
+                }
+            } catch { BackupScratch.removeShare(url); throw error }
+            await TopAlert.dismiss(progress)
+            return url
+        } catch {
+            await TopAlert.dismiss(progress)
+            self.error = "Ordner exportieren nicht möglich: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Takes a library archive (`.notylibrary`: an exported folder or a whole
+    /// library backup) **into this library** instead of a separate area: its
+    /// active folders under `base` (nil: the top level), existing ones of the
+    /// same name are used, missing ones created in one index commit; then every
+    /// active notebook as a new notebook through the staged, checked `.noty`
+    /// import (`importBackup`). Today's notebooks are never changed. The
+    /// archive's trash, calendar and toolbar are not taken over.
+    /// `isScratchCopy`: `archive` already is our own local copy (opened from Files).
+    func importFolders(from archive: URL, base: UUID?, isScratchCopy: Bool = false) async {
+        await settle()
+        guard ready, opened == nil, !busy, !archiveRunning, !folderTransferRunning else {
+            TopAlert.show("Gerade nicht möglich", (opened != nil ? "Bitte zuerst das geöffnete Heft schließen." : "Bitte warten, bis der laufende Vorgang abgeschlossen ist.")
+                          + " Es wurde nichts verändert.")
+            return
+        }
+        folderTransferRunning = true; defer { folderTransferRunning = false }
+        let checking = TopAlert.progress("Datei wird geprüft …")
+        // A provider file (iCloud Drive, placeholder) is copied completely first, like every import.
+        let file: URL
+        if isScratchCopy { file = archive } else {
+            do {
+                let copy = try BackupScratch.newFile("notylibrary")
+                let access = archive.startAccessingSecurityScopedResource()
+                defer { if access { archive.stopAccessingSecurityScopedResource() } }
+                try await Task.detached(priority: .userInitiated) {
+                    try CoordinatedBackupFiles().reading(archive, metadataOnly: false) { source in
+                        _ = try BoundedFile.copy(from: source, to: copy, limit: LibraryArchive.maximumBytes)
+                    }
+                }.value
+                file = copy
+            } catch {
+                await TopAlert.dismiss(checking)
+                TopAlert.show("Datei nicht lesbar", "Die Datei konnte nicht in noty kopiert werden. Es wurde nichts verändert.")
+                return
+            }
+        }
+        defer { if !isScratchCopy { BackupScratch.remove(file) } }
+        let summary: LibraryArchiveSummary, preview: LibraryMergePlan
+        do {
+            summary = try await Task.detached(priority: .userInitiated) { try LibraryArchive.verify(file) }.value
+            preview = try LibraryMerge.plan(backup: summary.snapshot, current: snapshot, base: base)
+        } catch {
+            await TopAlert.dismiss(checking)
+            TopAlert.show("Datei abgelehnt", error.localizedDescription + " Es wurde nichts verändert.")
+            return
+        }
+        await TopAlert.dismiss(checking)
+        guard !preview.notebooks.isEmpty else {
+            TopAlert.show("Keine Hefte in der Datei", "Die Datei enthält keine aktiven Hefte. Es wurde nichts verändert.")
+            return
+        }
+        let place = base.flatMap { id in snapshot.items.first { $0.id == id } }.map { "in den Ordner „\($0.title)“" } ?? "in die oberste Ebene"
+        var message = "\(NotyText.count(preview.notebooks.count, "Heft", "Hefte")) aus dem Stand vom \(NotyText.listDate(summary.createdAt)) kommen \(place)."
+        if !preview.folders.isEmpty {
+            message += " Ordner: \(preview.createdFolders) neu, \(preview.reusedFolders) vorhandene mit gleichem Namen werden benutzt."
+        }
+        message += "\n\nJedes Heft kommt als neues Heft dazu. Vorhandene Hefte bleiben unverändert; ein Heft mit gleichem Namen bekommt eine Nummer."
+        if preview.skippedTrashed > 0 { message += " Der Papierkorb der Datei wird nicht übernommen." }
+        if summary.calendar != nil { message += " Kalender und Werkzeugleiste der Datei werden nicht übernommen." }
+        guard await TopAlert.ask("In diese Bibliothek übernehmen?", message, confirm: "Übernehmen") else { return }
+        guard ready, opened == nil, !busy else {
+            TopAlert.show("Gerade nicht möglich", "Bitte warten, bis der laufende Vorgang abgeschlossen ist. Es wurde nichts verändert.")
+            return
+        }
+        let running = TopAlert.progress("Hefte werden übernommen …")
+        let folders: [UUID: UUID], plan: LibraryMergePlan
+        do {
+            let result = try await store.mergeFolders(of: summary.snapshot, under: base)
+            snapshot = result.snapshot; folders = result.folders; plan = result.plan
+        } catch {
+            await TopAlert.dismiss(running)
+            TopAlert.show("Übernahme nicht möglich", error.localizedDescription + " Es wurde nichts verändert.")
+            return
+        }
+        let created = plan.createdFolders > 0 ? " Die \(plan.createdFolders == 1 ? "neue Ordner ist" : "\(plan.createdFolders) neuen Ordner sind") schon angelegt." : ""
+        let work: URL, files: [UUID: URL]
+        do { work = try BackupScratch.newFolder() } catch {
+            await TopAlert.dismiss(running)
+            TopAlert.show("Übernahme nicht möglich", "Kein Platz für die Zwischendateien. Es wurde kein Heft übernommen." + created)
+            return
+        }
+        defer { BackupScratch.removeFolder(work) }
+        do {
+            let titles = Dictionary(plan.notebooks.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
+            files = try await Task.detached(priority: .userInitiated) {
+                try LibraryBackupBrowser.extract(archive: file, titles: titles, into: work)
+            }.value
+        } catch {
+            await TopAlert.dismiss(running)
+            TopAlert.show("Übernahme nicht möglich", "Die Hefte konnten nicht aus der Datei gelesen werden. Es wurde kein Heft übernommen." + created)
+            return
+        }
+        var taken: [String] = [], failed: [String] = [], reason: String?
+        for item in plan.notebooks {
+            guard let source = files[item.id] else { failed.append(NotyText.quoted(item.title)); continue }
+            let parent = item.backupParent.flatMap { folders[$0] } ?? base
+            if let imported = await importBackup(source, parent: parent, collision: .keepBoth) {
+                taken.append(NotyText.quoted(imported.title))
+            } else {
+                failed.append(NotyText.quoted(item.title))
+                if reason == nil { reason = error }
+                error = nil
+            }
+        }
+        await TopAlert.dismiss(running)
+        var report = taken.isEmpty ? "" : "\(NotyText.count(taken.count, "Heft liegt", "Hefte liegen")) jetzt \(place)" + (plan.folders.isEmpty ? "." : " in ihren Ordnern.")
+        if !failed.isEmpty {
+            report += (report.isEmpty ? "" : "\n\n") + "Nicht übernommen: \(failed.joined(separator: ", ")). " + (reason ?? "") + " Dafür wurde nichts verändert." + created
+        }
+        TopAlert.show(failed.isEmpty ? "Übernommen" : (taken.isEmpty ? "Nicht übernommen" : "Teilweise übernommen"), report)
+    }
+}
+

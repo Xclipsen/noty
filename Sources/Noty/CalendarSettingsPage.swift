@@ -126,9 +126,11 @@ struct CalendarSettingsPage: View {
     }
 
     private var studySummary: String {
-        let fields = model.studyFields.count, rules = model.state.studyRules.count
-        if fields == 0 { return "Fächer des Stundenplans Lernfeldern zuordnen" }
-        return "\(fields) Lernfelder · \(rules) Zuordnungen"
+        let fields = model.studyFields.count, rules = model.state.studyRules.count, subjects = model.subjectNotebooks.count
+        if fields == 0, subjects == 0 { return "Fächer des Stundenplans Lernfeldern oder eigenen Heften zuordnen" }
+        var text = "\(fields) Lernfelder · \(rules) Zuordnungen"
+        if subjects > 0 { text += " · \(NotyText.count(subjects, "Fach-Heft", "Fach-Hefte"))" }
+        return text
     }
 
     // MARK: Sub-pages (the calendar's sheets without their frame)

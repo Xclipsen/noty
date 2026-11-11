@@ -189,6 +189,8 @@ struct ContentView: View {
             }
         }
         .preference(key: EditorCommandsPreference.self, value: editorCommands)
+        // Whatever was presented over the pages ended: no recognizer stays waiting for a touch that ended there.
+        .onChange(of: presentsOverEditor) { was, now in if was && !now { StalledGestures.requestReset() } }
         // Shortcuts of the law window: model, key responder, Esc in its fields.
         .background { if !isRestoredCopy { LawKeyAnchor(active: isPaneActive()) } }
         .sheet(isPresented: $editingLawContext) {
@@ -386,13 +388,18 @@ struct ContentView: View {
         model.updateDrawing(data, pageID: draft.id)
     }
 
+    /// A sheet, picker, importer or dialog of this editor is shown.
+    private var presentsOverEditor: Bool {
+        contentSearch || showingSettings || editingDefaults || addingPage || customizingTools || showingHistory || model.openedRestore != nil
+            || marginsPage != nil || exporting || importingImage || choosingPhoto || pageEntry || editingLawContext || model.error != nil
+    }
+
     /// App menu / ⌘ shortcuts of this pane while it is the active one.
     private var editorCommands: EditorCommandActions? {
         guard isPaneActive(), notebookLoaded else { return nil }
         let onDraft = currentPage.id == writingDraft.id
         // A second presentation over an open sheet would never appear.
-        let presenting = contentSearch || showingSettings || editingDefaults || addingPage || customizingTools || showingHistory || model.openedRestore != nil
-            || marginsPage != nil || exporting || importingImage || choosingPhoto || pageEntry || editingLawContext || model.error != nil
+        let presenting = presentsOverEditor
         return EditorCommandActions(owner: ObjectIdentifier(model), pane: paneID, canEdit: canEdit && !presenting,
             canExportPage: model.writable && !onDraft, exporting: pdfExport.running,
             hasPrevious: onDraft || currentPageIndex > 0, hasNext: !onDraft && currentPageIndex < model.notebook.pages.count - 1, isTextDocument: isTextDocument,

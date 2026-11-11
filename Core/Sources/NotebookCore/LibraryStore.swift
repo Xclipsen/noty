@@ -397,6 +397,33 @@ public actor LibraryStore {
         return next
     }
 
+    /// „Ordner importieren“: creates the folders of the archive index `backup`
+    /// that today's library does not have yet (`LibraryMerge.plan`, computed
+    /// against the index as it is now), all in **one** index commit. Returns
+    /// today's folder for every active folder of the archive. Notebooks are not
+    /// touched; nothing is committed when no folder is missing.
+    public func mergeFolders(of backup: LibrarySnapshot, under base: UUID?) throws
+        -> (snapshot: LibrarySnapshot, plan: LibraryMergePlan, folders: [UUID: UUID]) {
+        var next = try current()
+        try backup.validate()
+        let plan = try LibraryMerge.plan(backup: backup, current: next, base: base)
+        var folders: [UUID: UUID] = [:]
+        for step in plan.folders {
+            if let existing = step.existing { folders[step.backupID] = existing; continue }
+            // Parents come first in the plan, so the parent's place is known.
+            let parentID: UUID?
+            if let backupParent = step.backupParent {
+                guard let mapped = folders[backupParent] else { throw LibraryError.invalidIndex }
+                parentID = mapped
+            } else { parentID = base }
+            let folder = LibraryItem(title: try Self.validTitle(step.title), parentID: parentID)
+            next.items.append(folder)
+            folders[step.backupID] = folder.id
+        }
+        if plan.createdFolders > 0 { try commit(next) }
+        return (next, plan, folders)
+    }
+
     public func createDocument(_ notebook: Notebook, parentID: UUID?) throws -> LibrarySnapshot {
         var next = try current()
         try checkParent(parentID, in: next)

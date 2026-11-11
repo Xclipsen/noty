@@ -41,7 +41,12 @@ public struct Notebook: Codable, Equatable, Sendable {
     /// them as notebooks.
     /// 16: free text fields aligned to the paper lines (`TextBox.alignsToLines`);
     /// older builds would lay them out freely, so they refuse them.
-    public static let currentSchemaVersion = 16
+    /// 17: further cover colours (`NotebookCover`: pink, orange, red, teal,
+    /// navy, brown, black); older builds refuse such a notebook instead of
+    /// failing to decode its cover.
+    public static let currentSchemaVersion = 17
+    /// Lowest schema of the cover colours beyond the original six.
+    public static let coverPaletteSchemaVersion = 17
     /// Lowest schema of a text document.
     public static let textDocumentSchemaVersion = 15
     /// Lowest schema whose image objects reference assets instead of embedding.
@@ -79,7 +84,9 @@ public struct Notebook: Codable, Equatable, Sendable {
         let deleted = deletedPages ?? []
         let allPages = pages + deleted.map(\.page)
         if let appearance {
-            guard schemaVersion >= 7 else { throw StorageError.invalidDocument }
+            guard schemaVersion >= 7, appearance.cover.isLegacy || schemaVersion >= Self.coverPaletteSchemaVersion else {
+                throw StorageError.invalidDocument
+            }
             try appearance.validate()
         }
         if let kind {

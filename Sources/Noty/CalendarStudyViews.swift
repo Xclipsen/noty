@@ -145,33 +145,19 @@ struct CalendarStudyPromptView: View {
 
     var body: some View {
         VStack(spacing: CalendarSpace.s) {
-            Image(systemName: "book.pages").font(.system(size: 30)).foregroundStyle(.secondary)
+            Image(systemName: prompt.home.isSubject ? "book.closed" : "book.pages").font(.system(size: 30)).foregroundStyle(.secondary)
                 .padding(.bottom, CalendarSpace.xs).accessibilityHidden(true)
-            Text(prompt.field.displayName).font(.headline)
+            Text(title).font(.headline)
+            if prompt.home.isSubject {
+                Text("Fach-Heft für „\(prompt.home.displayName)“").font(.caption).foregroundStyle(.secondary)
+            }
             Text(explanation).font(.subheadline).foregroundStyle(.secondary)
             if let failure = prompt.failure {
                 Label(failure, systemImage: "exclamationmark.triangle.fill").font(.footnote).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(spacing: CalendarSpace.s) {
-                if case .trashed(let id, _) = prompt.notebook {
-                    Button { Task { await model.restoreStudyNotebook(id, for: event) } } label: {
-                        Label("Heft wiederherstellen", systemImage: "arrow.uturn.backward")
-                    }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                    Button { model.beginStudyNote(for: event, replacingTrashed: true) } label: {
-                        Label("Neues Heft anlegen", systemImage: "plus")
-                    }
-                    .buttonStyle(.bordered).controlSize(.large)
-                } else {
-                    Button {
-                        model.beginStudyNote(for: event)
-                    } label: {
-                        if prompt.creating { ProgressView() } else { Label("Mitschrift beginnen", systemImage: "square.and.pencil") }
-                    }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                    .keyboardShortcut(.return, modifiers: [.command])
-                }
+                if prompt.home.isSubject { subjectActions } else { fieldActions }
             }
             .disabled(prompt.creating)
             .padding(.top, CalendarSpace.m)
@@ -181,14 +167,97 @@ struct CalendarStudyPromptView: View {
         .padding(CalendarSpace.xl)
     }
 
-    private var explanation: String {
+    private var title: String {
+        switch prompt.notebook {
+        case .ready(let title), .trashed(_, let title): prompt.home.isSubject ? title : prompt.home.displayName
+        case .none: prompt.home.displayName
+        }
+    }
+
+    // MARK: Lernfeld
+
+    @ViewBuilder private var fieldActions: some View {
+        if case .trashed(let id, _) = prompt.notebook {
+            Button { Task { await model.restoreStudyNotebook(id, for: event) } } label: {
+                Label("Heft wiederherstellen", systemImage: "arrow.uturn.backward")
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+            Button { model.beginStudyNote(for: event, replacingTrashed: true) } label: {
+                Label("Neues Heft anlegen", systemImage: "plus")
+            }
+            .buttonStyle(.bordered).controlSize(.large)
+        } else {
+            Button {
+                model.beginStudyNote(for: event)
+            } label: {
+                if prompt.creating { ProgressView() } else { Label("Mitschrift beginnen", systemImage: "square.and.pencil") }
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+            .keyboardShortcut(.return, modifiers: [.command])
+        }
+    }
+
+    // MARK: Fach-Heft (docs/LERNFELDER.md): the notebook opens full screen
+
+    @ViewBuilder private var subjectActions: some View {
         switch prompt.notebook {
         case .ready(let title):
-            "Die Mitschrift dieser Stunde kommt als neue Seite mit Überschrift in „\(title)“ – an die passende Stelle nach Datum."
-        case .trashed(_, let title):
-            "Das Heft „\(title)“ dieses Lernfelds liegt im Papierkorb. Wiederherstellen und dort weiterschreiben, oder ein neues Heft anlegen (das alte bleibt im Papierkorb)."
+            Button {
+                if prompt.existingPage != nil { model.openSubjectSection(for: event) } else { model.beginStudyNote(for: event) }
+            } label: {
+                if prompt.creating { ProgressView() } else { Label("„\(title)“ öffnen", systemImage: "arrow.up.left.and.arrow.down.right") }
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+            .keyboardShortcut(.return, modifiers: [.command])
+            Menu {
+                Button("Anderes Heft wählen …", systemImage: "book.closed") { model.subjectNotebookPicker = event }
+                Button("Zuordnung aufheben", systemImage: "link.badge.minus", role: .destructive) {
+                    if case .subject(let subject) = prompt.home { Task { await model.removeSubjectNotebook(subject.id) } }
+                }
+            } label: {
+                Text("Fach-Heft ändern").font(.footnote)
+            }
+            .buttonStyle(.borderless)
+        case .trashed(let id, _):
+            Button { Task { await model.restoreStudyNotebook(id, for: event) } } label: {
+                Label("Heft wiederherstellen", systemImage: "arrow.uturn.backward")
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+            Button { model.subjectNotebookPicker = event } label: {
+                Label("Anderes Heft wählen …", systemImage: "book.closed")
+            }
+            .buttonStyle(.bordered).controlSize(.large)
         case .none:
-            "Für dieses Lernfeld gibt es noch kein Heft. Die erste Mitschrift legt „\(prompt.field.notebookTitle)“ an."
+            Button { model.subjectNotebookPicker = event } label: {
+                Label("Heft wählen …", systemImage: "book.closed")
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+        }
+    }
+
+    private var explanation: String {
+        if prompt.home.isSubject {
+            switch prompt.notebook {
+            case .ready(let title):
+                return prompt.existingPage != nil
+                    ? "Die Mitschrift dieser Stunde steht in „\(title)“. Öffnen zeigt das Heft an dieser Seite."
+                    : "Eine neue Seite mit Überschrift kommt an die passende Stelle nach Datum in „\(title)“; das Heft öffnet sich dort."
+            case .trashed(_, let title):
+                return "Das Heft „\(title)“ liegt im Papierkorb. Wiederherstellen und dort weiterschreiben, oder ein anderes Heft für dieses Fach wählen."
+            case .none:
+                return "Das Heft dieses Fachs gibt es nicht mehr. Bitte ein anderes Heft wählen; bisherige Seiten bleiben, wo sie sind."
+            }
+        }
+        switch prompt.notebook {
+        case .ready(let title):
+            return "Die Mitschrift dieser Stunde kommt als neue Seite mit Überschrift in „\(title)“ – an die passende Stelle nach Datum."
+        case .trashed(_, let title):
+            return "Das Heft „\(title)“ dieses Lernfelds liegt im Papierkorb. Wiederherstellen und dort weiterschreiben, oder ein neues Heft anlegen (das alte bleibt im Papierkorb)."
+        case .none:
+            if case .field(let field) = prompt.home {
+                return "Für dieses Lernfeld gibt es noch kein Heft. Die erste Mitschrift legt „\(field.notebookTitle)“ an."
+            }
+            return ""
         }
     }
 }

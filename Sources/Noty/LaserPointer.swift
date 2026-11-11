@@ -182,6 +182,9 @@ final class LaserTouchObserver: UIGestureRecognizer, UIGestureRecognizerDelegate
         cancelsTouchesInView = false; delaysTouchesBegan = false; delaysTouchesEnded = false
     }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        // Lost touches (`StalledGestures`): a stroke whose end never came is over.
+        active = active.filter { event.stillDown($0) }
+        if tracking, let tracked, !event.stillDown(tracked), !touches.contains(tracked) { finish(); blocked = false }
         active.formUnion(touches)
         if tracking {
             if tracked?.type == .direct, touches.contains(where: { $0.type == .direct }) { finish(); blocked = true }

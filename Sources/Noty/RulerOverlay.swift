@@ -230,6 +230,15 @@ final class RulerMoveGesture: UIGestureRecognizer {
     private var moving: Bool { state == .began || state == .changed }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        // Fingers whose end never arrived (`StalledGestures`) no longer hold
+        // the ruler, and with it every scroll and zoom of the notebook.
+        if !fingers.isEmpty {
+            let kept = zip(fingers, starts).filter { event.stillDown($0.0) && !touches.contains($0.0) }
+            if kept.count != fingers.count {
+                fingers = kept.map { $0.0 }; starts = kept.map { $0.1 }
+                if fingers.isEmpty, moving { onEnd?(); state = .cancelled; return }
+            }
+        }
         for touch in touches where touch.type != .direct { ignore(touch, for: event) }
         let direct = touches.filter { $0.type == .direct }
         guard !direct.isEmpty else { if fingers.isEmpty { state = .failed }; return }

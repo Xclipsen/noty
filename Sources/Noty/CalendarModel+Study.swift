@@ -4,20 +4,42 @@ import NotebookCore
 // Lernfelder (calendar format 5, docs/LERNFELDER.md): lessons assigned to a
 // Lernfeld by rules; a lesson block's note is a headed section of the field's
 // notebook instead of a small notebook of its own; per block a topic, an own
-// key sentence and pinned learning material.
+// key sentence and pinned learning material. Fach-Hefte (format 6): the same
+// sections in an ordinary notebook the user chose for a subject; the notebook
+// opens full screen instead of beside the event.
 
-/// The note area of a Lernfeld lesson that has no section yet.
+/// Where a lesson block's section lives.
+enum StudyHome: Equatable {
+    case field(CalendarStudyField)
+    /// Fach-Heft: the subject's own notebook, chosen by the user.
+    case subject(CalendarSubjectNotebook)
+    var id: UUID {
+        switch self { case .field(let field): field.id; case .subject(let subject): subject.id }
+    }
+    var notebookID: UUID? {
+        switch self { case .field(let field): field.notebookID; case .subject(let subject): subject.notebookID }
+    }
+    var isSubject: Bool { if case .subject = self { true } else { false } }
+    /// Shown above the prompt.
+    var displayName: String {
+        switch self { case .field(let field): field.displayName; case .subject(let subject): subject.subjectName }
+    }
+}
+
+/// The note area of a Lernfeld or Fach-Heft lesson: start (or open) its section.
 struct CalendarStudyPrompt: Equatable {
     enum Notebook: Equatable {
         /// A new section goes into it.
         case ready(String)
-        /// The field's notebook is in the trash: restore it or start a new one.
+        /// The notebook is in the trash: restore it or start a new one (Lernfeld) / choose another (Fach-Heft).
         case trashed(UUID, String)
-        /// None yet (or deleted for good): the first section creates it.
+        /// None yet (Lernfeld: the first section creates it) or deleted for good (Fach-Heft: choose another).
         case none
     }
-    let field: CalendarStudyField
+    let home: StudyHome
     let notebook: Notebook
+    /// Fach-Heft: the block already has its section; the prompt only opens it.
+    var existingPage: UUID?
     var creating = false
     var failure: String?
 }
@@ -55,18 +77,33 @@ extension CalendarModel {
         return CalendarStudy.field(subjectKey: key, weekday: weekday, startMinutes: minutes, rules: state.studyRules, fields: state.studyFields)
     }
 
+    /// Lernfeld (by rule) or Fach-Heft (by subject) of a timetable lesson; the
+    /// Lernfeld wins. Nil: the lesson gets a small note of its own.
+    func studyHome(for entry: CalendarEntry) -> StudyHome? {
+        var school = Calendar(identifier: .gregorian)
+        school.timeZone = schoolTimeZone
+        return studyHome(for: entry, school: school)
+    }
+
+    private func studyHome(for entry: CalendarEntry, school: Calendar) -> StudyHome? {
+        if let field = studyField(for: entry, school: school) { return .field(field) }
+        guard !entry.isSample, entry.source == .timetable, entry.ghostLinkID == nil, let key = entry.subjectKey,
+              let subject = CalendarStudy.subjectNotebook(subjectKey: key, in: state.subjectNotebooks) else { return nil }
+        return .subject(subject)
+    }
+
     /// Entry id → id of the first lesson of its block, for every lesson of a
-    /// Lernfeld (consecutive lessons of the same subject and field on one
-    /// day share one heading, one topic and one link).
+    /// Lernfeld or Fach-Heft (consecutive lessons of the same subject and home
+    /// on one day share one heading, one topic and one link).
     /// The block's first lesson is its first one not cancelled (else its first).
     func studyBlocks(_ entries: [CalendarEntry]) -> [String: String] {
-        guard !state.studyRules.isEmpty else { return [:] }
+        guard !state.studyRules.isEmpty || !state.subjectNotebooks.isEmpty else { return [:] }
         var school = Calendar(identifier: .gregorian)
         school.timeZone = schoolTimeZone
         var byDay: [CivilDate: [(entry: CalendarEntry, key: String)]] = [:]
         for entry in entries where entry.source == .timetable && entry.ghostLinkID == nil {
-            guard let subject = entry.subjectKey, let field = studyField(for: entry, school: school) else { continue }
-            byDay[CivilDate(entry.start, calendar: calendar), default: []].append((entry, subject + "|" + field.id.uuidString))
+            guard let subject = entry.subjectKey, let home = studyHome(for: entry, school: school) else { continue }
+            byDay[CivilDate(entry.start, calendar: calendar), default: []].append((entry, subject + "|" + home.id.uuidString))
         }
         var result: [String: String] = [:]
         for (_, list) in byDay {
@@ -167,6 +204,52 @@ extension CalendarModel {
         }
     }
 
+    // MARK: Lernfeld-Heft wählen (Einstellungen › Kalender › Lernfelder)
+
+    /// Notebooks the field may take: ordinary active notebooks of the library
+    /// (no text documents, no calendar note, none of another field or of a
+    /// subject), by title. The field's own notebook is not listed.
+    func fieldNotebookCandidates(for field: CalendarStudyField) -> [NotebookCore.LibraryItem] {
+        guard let library else { return [] }
+        var taken = CalendarStudy.notebooksTaken(forField: field.id, fields: state.studyFields, subjects: state.subjectNotebooks)
+        if let own = field.notebookID { taken.insert(own) }
+        return CalendarNotesFolder.sectionNotebookCandidates(in: library.snapshot, notesFolder: state.settings.notesFolderID, taken: taken)
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    /// Sections of lessons that already point into the field's current notebook.
+    func fieldSectionCount(_ field: CalendarStudyField) -> Int {
+        guard let id = field.notebookID else { return 0 }
+        return state.noteLinks.filter { $0.documentID == id && $0.pageID != nil }.count
+    }
+
+    /// „Lernfeld-Heft wählen“: from the next lesson note on the field writes
+    /// its sections into `item`, an existing notebook of the library (new
+    /// sections go to its end, `StudySections.insertionIndex`). nil: the field
+    /// lets its notebook go and gets a new one with the next note. The
+    /// notebooks themselves and the sections written so far are not touched.
+    @discardableResult
+    func setFieldNotebook(_ item: NotebookCore.LibraryItem?, for fieldID: UUID) async -> Bool {
+        guard canWrite, !showsSamples, let field = state.studyFields.first(where: { $0.id == fieldID }) else { return false }
+        if let item {
+            // Chosen from a list that may be older than the library: check again.
+            guard fieldNotebookCandidates(for: field).contains(where: { $0.id == item.id }) else {
+                notice = "„\(item.title)“ kann nicht mehr gewählt werden. Bitte ein anderes Heft wählen."
+                return false
+            }
+        }
+        // The note beside the event may show this field's prompt or section: close it first.
+        await closeNote()
+        let saved = await commit { state in
+            try? CalendarStudy.setNotebook(item?.id, ofField: fieldID, fields: &state.studyFields, subjects: state.subjectNotebooks)
+        }
+        // A notebook this field was still creating is no longer its notebook (it stays in the library if it got that far).
+        let changed = saved && state.studyFields.first(where: { $0.id == fieldID })?.notebookID == item?.id
+        if changed { studyCreations[fieldID] = nil }
+        if let entry = selectedEvent { showNote(for: entry) }
+        return changed
+    }
+
     /// The rule for exactly this subject/weekday/time window: set (field) or removed (nil).
     func setRule(subjectKey: String, subjectName: String, weekday: Int?, startFrom: Int?, startTo: Int?, field: UUID?) async {
         await commit { state in
@@ -230,17 +313,91 @@ extension CalendarModel {
         return best.values.map(\.0).sorted { ($0.subjectName, $0.weekday, $0.start) < ($1.subjectName, $1.weekday, $1.start) }
     }
 
+    // MARK: Fach-Hefte (Einstellungen › Kalender › Lernfelder, „…“ of a lesson)
+
+    var subjectNotebooks: [CalendarSubjectNotebook] {
+        state.subjectNotebooks.sorted { $0.subjectName.localizedStandardCompare($1.subjectName) == .orderedAscending }
+    }
+
+    func isSubjectNotebook(_ id: UUID) -> Bool { state.subjectNotebooks.contains { $0.notebookID == id } }
+
+    /// Notebooks a subject may write into: ordinary active notebooks of the
+    /// library (no text documents, no Lernfeld notebook, no calendar note,
+    /// none of another subject), by title.
+    func subjectNotebookCandidates(for entry: CalendarEntry) -> [NotebookCore.LibraryItem] {
+        guard let library else { return [] }
+        let taken = Set(state.subjectNotebooks.filter { $0.subjectKey != entry.subjectKey }.map(\.notebookID))
+            .union(state.studyFields.compactMap(\.notebookID))
+        return CalendarNotesFolder.sectionNotebookCandidates(in: library.snapshot, notesFolder: state.settings.notesFolderID, taken: taken)
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    /// „Fach-Heft wählen“: from now on every lesson of the subject (without a
+    /// Lernfeld rule) writes a headed section into `item`; this lesson starts
+    /// at once. Lessons already linked to a small note keep it.
+    func assignSubjectNotebook(_ item: NotebookCore.LibraryItem, for entry: CalendarEntry) async {
+        guard canWrite, !showsSamples, entry.source == .timetable, let key = entry.subjectKey else { return }
+        if let session = noteSession, session.entryID == entry.id, session.phase != .draft || EditorModel.hasContent(session.model.notebook) {
+            notice = "Diese Stunde hat schon eine eigene Notiz; das Fach-Heft gilt ab der nächsten Stunde."
+        }
+        await closeNote()
+        let name = CalendarState.validTitle(entry.subject ?? entry.title) ?? "Fach"
+        let subject = CalendarSubjectNotebook(subjectKey: key, subjectName: name, notebookID: item.id)
+        guard await commit({ state in
+            state.subjectNotebooks.removeAll { $0.subjectKey == key || $0.notebookID == item.id }
+            state.subjectNotebooks.append(subject)
+        }) else { return }
+        guard selection == entry.id else { return }
+        showNote(for: entry)
+        if linkByEntry[entry.id] == nil { beginStudyNote(for: entry) }
+    }
+
+    /// „Zuordnung aufheben“: the subject's lessons get small notes again; the
+    /// notebook and the sections written so far stay as they are.
+    func removeSubjectNotebook(_ id: UUID) async {
+        await commit { $0.subjectNotebooks.removeAll { $0.id == id } }
+        if let entry = selectedEvent { releaseNote(); showNote(for: entry) }
+    }
+
+    /// A Fach-Heft lesson whose section exists: the notebook, full screen, at that page.
+    func openSubjectSection(for entry: CalendarEntry) {
+        guard let link = linkByEntry[entry.id] else { return }
+        Task { [weak self] in await self?.openNotebook(link.documentID, page: link.pageID, for: entry) }
+    }
+
+    /// Full editor on `id` at `page`, back to this event afterwards. Never from
+    /// inside the note queue: `closeNote` waits for it.
+    private func openNotebook(_ id: UUID, page: UUID?, for entry: CalendarEntry) async {
+        let back = "\(entry.title) · \(CalendarText.shortDate(entry.start, calendar: calendar))"
+        await closeNote()
+        if let library, let item = library.snapshot.items.first(where: { $0.id == id }), !library.snapshot.isTrashed(id) {
+            await library.open(item, pageID: page, returnTitle: back)
+        }
+        // Not opened (package busy, notebook gone): the card beside the event comes back.
+        if library?.opened?.id != id, selection == entry.id, let current = selectedEvent { showNote(for: current) }
+    }
+
     // MARK: Lesson sections in the Lernfeld notebook
 
-    /// A Lernfeld lesson without a section yet: offer to start one.
+    /// A Lernfeld or Fach-Heft lesson without a section yet: offer to start one.
     func prepareStudyPrompt(for entry: CalendarEntry) -> Bool {
-        guard linkByEntry[entry.id] == nil, let field = studyField(for: entry) else { return false }
-        noteState = .study(CalendarStudyPrompt(field: field, notebook: studyNotebookState(field)))
+        guard linkByEntry[entry.id] == nil, let home = studyHome(for: entry) else { return false }
+        noteState = .study(CalendarStudyPrompt(home: home, notebook: studyNotebookState(home.notebookID)))
         return true
     }
 
-    private func studyNotebookState(_ field: CalendarStudyField) -> CalendarStudyPrompt.Notebook {
-        guard let id = field.notebookID, let library, let item = library.snapshot.items.first(where: { $0.id == id }) else { return .none }
+    /// A Fach-Heft lesson whose section exists: the card that opens the notebook
+    /// (its editor never runs beside the event).
+    func prepareSubjectPrompt(for entry: CalendarEntry, link: CalendarNoteLink) -> Bool {
+        guard let subject = state.subjectNotebooks.first(where: { $0.notebookID == link.documentID }) else { return false }
+        var prompt = CalendarStudyPrompt(home: .subject(subject), notebook: studyNotebookState(subject.notebookID))
+        prompt.existingPage = link.pageID
+        noteState = .study(prompt)
+        return true
+    }
+
+    private func studyNotebookState(_ notebookID: UUID?) -> CalendarStudyPrompt.Notebook {
+        guard let id = notebookID, let library, let item = library.snapshot.items.first(where: { $0.id == id }) else { return .none }
         return library.snapshot.isTrashed(id) ? .trashed(id, item.title) : .ready(item.title)
     }
 
@@ -264,7 +421,7 @@ extension CalendarModel {
 
     private func createStudySection(for entry: CalendarEntry, replacingTrashed: Bool) async {
         guard selection == entry.id, case .study(var prompt) = noteState else { return }
-        guard let field = studyField(for: entry), let library, library.ready, library.opened == nil, canWrite else { return }
+        guard let home = studyHome(for: entry), let library, library.ready, library.opened == nil, canWrite else { return }
         let anchor = studyAnchor(for: entry)
         guard let target = anchor.noteTarget else { return }
         if linkByEntry[entry.id] != nil { noteState = .none; showNote(for: entry); return }
@@ -281,9 +438,9 @@ extension CalendarModel {
         let restores = root.appendingPathComponent("Restores", isDirectory: true)
         let model: EditorModel, documentID: UUID, pageID: UUID, title: String
         var created = false
-        let current = studyNotebookState(field)
-        if case .trashed = current, !replacingTrashed { fail("Das Heft dieses Lernfelds liegt im Papierkorb."); return }
-        if case .ready = current, let id = field.notebookID, let item = library.snapshot.items.first(where: { $0.id == id }),
+        let current = studyNotebookState(home.notebookID)
+        if case .trashed = current, !replacingTrashed { fail(home.isSubject ? "Das Heft dieses Fachs liegt im Papierkorb." : "Das Heft dieses Lernfelds liegt im Papierkorb."); return }
+        if case .ready = current, let id = home.notebookID, let item = library.snapshot.items.first(where: { $0.id == id }),
            let document = await library.openDocument(id) {
             documentID = id; title = item.title
             parked[id] = nil
@@ -315,6 +472,10 @@ extension CalendarModel {
             }
         } else {
             // No usable notebook (none yet, deleted for good, unreadable, or one in the trash replaced on request).
+            guard case .field(let field) = home else {
+                // A Fach-Heft is always a notebook the user chose: never created here.
+                fail("Das Heft dieses Fachs gibt es nicht mehr. Bitte ein anderes Heft wählen."); return
+            }
             created = true
             if let pending = studyCreations[field.id] {
                 documentID = pending.documentID; pageID = pending.pageID; title = pending.title
@@ -347,17 +508,31 @@ extension CalendarModel {
                                     contextStart: anchor.start, contextEnd: end)
         let linked = await commit { state in
             if !state.noteLinks.contains(where: { $0.target == target && $0.documentID == documentID }) { state.noteLinks.append(link) }
-            if created, let index = state.studyFields.firstIndex(where: { $0.id == field.id }) {
+            if created, case .field(let field) = home, let index = state.studyFields.firstIndex(where: { $0.id == field.id }) {
                 state.studyFields[index].notebookID = documentID
             }
         }
-        if created, state.studyFields.contains(where: { $0.id == field.id && $0.notebookID == documentID }) { studyCreations[field.id] = nil }
-        guard selection == entry.id else {
-            if !(await model.flushBeforeClosing()) { lingering[documentID] = model }
-            return
+        if created, case .field(let field) = home, state.studyFields.contains(where: { $0.id == field.id && $0.notebookID == documentID }) {
+            studyCreations[field.id] = nil
         }
         if !linked {
             notice = "Die Seite in „\(title)“ ist angelegt, die Verknüpfung mit der Stunde aber noch nicht gespeichert (\(saveError ?? "")). noty versucht es weiter."
+        }
+        if home.isSubject {
+            // Fach-Heft: the page is committed; the notebook opens full screen at it
+            // (outside this queue: opening closes the note, which waits for the queue).
+            guard await model.flushBeforeClosing() else {
+                lingering[documentID] = model
+                fail(model.saveBlocked ?? "Die neue Seite ist noch nicht gespeichert. Bitte erneut versuchen; es wird dieselbe Seite verwendet.")
+                return
+            }
+            guard selection == entry.id else { return }
+            Task { [weak self] in await self?.openNotebook(documentID, page: pageID, for: entry) }
+            return
+        }
+        guard selection == entry.id else {
+            if !(await model.flushBeforeClosing()) { lingering[documentID] = model }
+            return
         }
         let session = CalendarNoteSession(entry: entry, target: target, documentID: documentID, title: title, model: model, phase: .saved,
                                           study: true)
@@ -403,9 +578,9 @@ extension CalendarModel {
         session.model.replaceFirstTextBox(changed, pageID: page)
     }
 
-    /// Sections of a Lernfeld notebook for its page list („Inhalt“).
+    /// Sections of a Lernfeld or Fach-Heft notebook for its page list („Inhalt“).
     func studySections(of notebook: Notebook) -> [StudySection] {
-        guard state.studyFields.contains(where: { $0.notebookID == notebook.id }) else { return [] }
+        guard state.studyFields.contains(where: { $0.notebookID == notebook.id }) || isSubjectNotebook(notebook.id) else { return [] }
         return StudySections.sections(of: notebook, links: state.noteLinks, topics: state.lessonTopics)
     }
 }

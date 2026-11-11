@@ -153,8 +153,9 @@ final class PencilGuardGate: UIGestureRecognizer, UIGestureRecognizerDelegate {
     }
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        // Touches whose end UIKit never delivered do not keep the gate going.
-        tracked = tracked.filter { $0.phase != .ended && $0.phase != .cancelled }
+        // Touches whose end UIKit never delivered do not keep the gate going
+        // (a lost touch keeps its last phase; the event no longer has it).
+        tracked = tracked.filter { event.stillDown($0) }
         tracked.formUnion(touches)
         if state == .possible { state = .began }
     }

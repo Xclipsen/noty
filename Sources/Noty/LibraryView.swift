@@ -40,6 +40,7 @@ struct LibraryView: View {
     @State private var keyboardFocus: UUID?
     @State private var nameAction = NameAction.folder
     @State private var moving: NotebookCore.LibraryItem?
+    @State private var coverEditing: CoverEditing?
     @State private var trashing: NotebookCore.LibraryItem?
     @State private var showingCopies = false
     @State private var selectedCopy: RestoredNotebook?
@@ -94,7 +95,7 @@ struct LibraryView: View {
     /// Background work (refresh after closing a notebook, automatic backup)
     /// keeps the library interactive and visually unchanged.
     private var editable: Bool {
-        model.ready && model.opened == nil && !workspaces.busy && (!model.busy || model.backgroundBusy)
+        model.ready && model.opened == nil && (!workspaces.busy || workspaces.backgroundBusy) && (!model.busy || model.backgroundBusy)
     }
     /// Menu shortcuts pause while a sheet/dialog is shown: a second presentation would not appear.
     private var presenting: Bool {
@@ -204,6 +205,13 @@ struct LibraryView: View {
                                          calendar: calendar))
                 })
         }
+        .sheet(item: $coverEditing) { editing in
+            NotebookCoverEditView(title: "Umschlag – \(editing.item.title)", current: editing.appearance) { enabled, cover in
+                await model.setCover(editing.item.id, enabled: enabled, cover: cover)
+            }.alert("Bibliothek", isPresented: errorShown) {
+                Button("OK") { model.error = nil }
+            } message: { Text(model.error ?? "") }
+        }
         .sheet(item: $moving) { item in
             MoveDestinationView(item: item, snapshot: model.snapshot) { destination in
                 moving = nil
@@ -257,9 +265,12 @@ struct LibraryView: View {
                 }
             }, onError: { model.error = $0 })
         }
-        .fileImporter(isPresented: $importingBackup, allowedContentTypes: [.noty, .notyBackup, .json, .data]) { result in
+        .fileImporter(isPresented: $importingBackup, allowedContentTypes: [.noty, .notyBackup, .notyLibrary, .json, .data]) { result in
             switch result {
-            case .success(let url): Task { if await model.importBackup(url, parent: parentID) != nil { showNewItem() } }
+            case .success(let url):
+                // One picker for both: a library archive brings its folders along (docs/LIBRARY.md).
+                if url.pathExtension.lowercased() == "notylibrary" { let base = parentID; Task { await model.importFolders(from: url, base: base) } }
+                else { Task { if await model.importBackup(url, parent: parentID) != nil { showNewItem() } } }
             case .failure(let error): model.error = error.localizedDescription
             }
         }
@@ -995,6 +1006,7 @@ struct LibraryView: View {
                 Section {
                     Button("PDF oder Bild importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
                     Button(".noty importieren …", systemImage: "arrow.down.doc") { importingBackup = true }
+                    Button("Ordner importieren (.notylibrary) …", systemImage: "folder.badge.plus") { importingBackup = true }
                     if !activeCopies.isEmpty {
                         Button("Wiederhergestellte Kopien …", systemImage: "clock.arrow.circlepath") { showingCopies = true }
                     }
@@ -1043,6 +1055,11 @@ struct LibraryView: View {
     /// `<Titel>.noty` of the last committed revision in the share sheet.
     private func shareNoty(_ item: NotebookCore.LibraryItem) {
         Task { if let url = await model.shareFile(for: item) { NotyShare.present(url) } }
+    }
+
+    /// `<Ordner>.notylibrary`: the folder with its subfolders and notebooks in the share sheet.
+    private func exportFolder(_ item: NotebookCore.LibraryItem) {
+        Task { if let url = await model.folderShareFile(for: item) { NotyShare.present(url) } }
     }
 
     /// Notebook or text document as `<Titel>.txt`/`.md`/`.rtf`/`.docx` of the last committed
@@ -1297,6 +1314,12 @@ struct LibraryView: View {
             }
             Button("Umbenennen …", systemImage: "pencil") { prompt(.rename(item.id), value: item.title) }
             Button("Verschieben …", systemImage: "folder") { moving = item }
+            if !item.isFolder && !item.isTextDocument {
+                Button("Umschlag ändern …", systemImage: "paintpalette") { editCover(item) }
+            }
+            if item.isFolder {
+                Button("Ordner exportieren …", systemImage: "square.and.arrow.up") { exportFolder(item) }
+            }
             if !item.isFolder {
                 Button("Duplizieren", systemImage: "plus.square.on.square") { Task { await model.duplicate(item) } }
                 // Rare export variants in one submenu, as in the editor (polish audit F15).
@@ -1319,6 +1342,10 @@ struct LibraryView: View {
             Divider()
             Button("In den Papierkorb …", systemImage: "trash", role: .destructive) { trashing = item }
         }
+    }
+
+    private func editCover(_ item: NotebookCore.LibraryItem) {
+        Task { if let appearance = await model.coverAppearance(item.id) { coverEditing = CoverEditing(item: item, appearance: appearance) } }
     }
 
     /// Expands the ancestors of a folder shown on the right; never collapses anything.
@@ -1549,6 +1576,13 @@ private struct LibraryNotebookArtwork: View {
             catch { failed = true }
         }
     }
+}
+
+/// One presentation of „Umschlag ändern“ with the notebook's current defaults.
+private struct CoverEditing: Identifiable {
+    let item: NotebookCore.LibraryItem
+    let appearance: NotebookAppearance
+    var id: UUID { item.id }
 }
 
 /// One presentation of the content search, carrying the documents it searches.

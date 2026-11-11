@@ -198,7 +198,7 @@ backup("text-flow-rotated.notybackup", texted(14, [text_box(flowID=uid(), flowRe
 backup("text-flow-autowidth.notybackup", texted(14, [text_box(flowID=uid(), flowRegion="page", autoWidth=True)]))
 backup("text-flow-without-region.notybackup", texted(14, [text_box(flowID=uid())]))
 backup("text-region-enum.notybackup", texted(14, [text_box(flowRegion="middle")]))
-backup("text-schema-17.notybackup", texted(17, [text_box(rotation=30)]))
+backup("text-schema-18.notybackup", texted(18, [text_box(rotation=30)]))
 # Schema 16: „An Linien ausrichten“ (only true, free fields only, also on migrated fields).
 backup("text-aligned-schema-16.notybackup",
        texted(16, [text_box(alignsToLines=True), text_box(alignsToLines=True, autoWidth=True, fill="yellow"),
@@ -218,6 +218,20 @@ backup("text-style-fill-type.notybackup", texted(14, [text_box(fill=True)]))
 backup("text-style-border-enum.notybackup", texted(14, [text_box(border="thick")]))
 backup("text-style-flow.notybackup", texted(14, [text_box(flowID=uid(), flowRegion="page", fill="green")]))
 
+# Schema 17: further cover colours (pink, orange, red, teal, navy, brown, black).
+def covered(version, cover, **changes):
+    look = dict({"coverEnabled": True, "cover": cover, "format": "a4", "landscape": False, "paper": "lined", "color": "white"}, **changes)
+    return dict(valid, schemaVersion=version, appearance=look)
+
+
+backup("cover-pink-schema-17.notybackup", covered(17, "pink"))
+backup("cover-black-off-schema-17.notybackup", covered(17, "black", coverEnabled=False))
+backup("cover-blue-schema-16.notybackup", covered(16, "blue"))
+backup("cover-coral-schema-7.notybackup", covered(7, "coral"))
+backup("cover-pink-schema-16.notybackup", covered(16, "pink"))
+backup("cover-orange-schema-7.notybackup", covered(7, "orange"))
+backup("cover-enum.notybackup", covered(17, "magenta"))
+backup("cover-type.notybackup", covered(17, 3))
 
 # Schema 15: text documents (one flow over paper pages, Textneubau Stufe 3).
 def text_document(version=15, kind="textDocument", **changes):
@@ -256,7 +270,7 @@ backup("textdoc-margins.notybackup", text_document_with(lambda d: d["pages"][0].
 backup("textdoc-two-flows.notybackup", text_document_with(lambda d: d["pages"][1]["textBoxes"][0].update(flowID=uid())))
 backup("textdoc-margin-flow.notybackup", text_document_with(lambda d: d["pages"][0]["textBoxes"][0].update(flowRegion="right")))
 backup("textdoc-legacy-paper.notybackup", text_document_with(lambda d: d["pages"][0].update(paper="legacyTest")))
-backup("textdoc-schema-17.notybackup", text_document(version=17))
+backup("textdoc-schema-18.notybackup", text_document(version=18))
 # A free field aligned to the lines raises a text document to 16.
 backup("textdoc-aligned-schema-16.notybackup", text_document_with(lambda d: d.update(schemaVersion=16)
                                                                    or d["pages"][0]["textBoxes"][1].update(alignsToLines=True)))
@@ -479,7 +493,7 @@ schema_case("v2-schema12-pixel-mismatch.notybackup",
             with_images([image_object(sha, len(image)), image_object(sha, len(image), width=9, x=50)]))
 schema_case("v2-schema12-size-mismatch.notybackup",
             with_images([image_object(sha, len(image)), image_object(sha, len(image) + 1, x=50)]))
-schema_case("v2-schema17.notybackup", with_images([image_object(sha, len(image))], version=17))
+schema_case("v2-schema18.notybackup", with_images([image_object(sha, len(image))], version=18))
 # Format 1 has no asset records: a schema-12 notebook with images is refused.
 v1_document = with_images([image_object(sha, len(image))])
 v1_payload = json.dumps(v1_document).encode()
@@ -632,16 +646,22 @@ for name in fields-schema-14 plain-schema-13 flow-schema-14 style-schema-14 alig
     accept verify_backup.py "$work/backups/text-$name.notybackup"
 done
 for name in rotation-schema-13 autowidth-schema-13 region-schema-13 rotation-range rotation-type autowidth-false \
-            flow-rotated flow-autowidth flow-without-region region-enum schema-17 style-fill-schema-13 \
+            flow-rotated flow-autowidth flow-without-region region-enum schema-18 style-fill-schema-13 \
             style-border-schema-13 style-fill-enum style-fill-type style-border-enum style-flow \
             aligned-schema-15 aligned-false aligned-type aligned-number aligned-flow; do
     reject verify_backup.py "$work/backups/text-$name.notybackup"
+done
+for name in pink-schema-17 black-off-schema-17 blue-schema-16 coral-schema-7; do
+    accept verify_backup.py "$work/backups/cover-$name.notybackup"
+done
+for name in pink-schema-16 orange-schema-7 enum type; do
+    reject verify_backup.py "$work/backups/cover-$name.notybackup"
 done
 accept verify_backup.py "$work/backups/textdoc-valid.notybackup"
 accept verify_backup.py "$work/backups/textdoc-dark.notybackup"
 accept verify_backup.py "$work/backups/textdoc-page-break.notybackup"
 accept verify_backup.py "$work/backups/textdoc-aligned-schema-16.notybackup"
-for name in schema-14 kind-notebook kind-enum pdf-source pdf-page margins two-flows margin-flow legacy-paper schema-17 \
+for name in schema-14 kind-notebook kind-enum pdf-source pdf-page margins two-flows margin-flow legacy-paper schema-18 \
             aligned-schema-15; do
     reject verify_backup.py "$work/backups/textdoc-$name.notybackup"
 done
@@ -651,7 +671,7 @@ for name in extra-asset asset-first no-end trailing version-3 header-key crc des
     reject verify_backup.py "$work/backups/v2-$name.notybackup"
 done
 for name in schema12-data-and-asset schema12-data schema11-asset schema11-data-and-asset schema12-hash-upper schema12-hash-63 \
-            schema12-hash-path schema12-asset-over-20mb schema12-over-500mb schema12-pixel-mismatch schema12-size-mismatch schema17; do
+            schema12-hash-path schema12-asset-over-20mb schema12-over-500mb schema12-pixel-mismatch schema12-size-mismatch schema18; do
     reject verify_backup.py "$work/backups/v2-$name.notybackup"
     # The notebook rule itself must refuse (not a missing asset record afterwards).
     if grep -q "Referenced asset missing" "$work/last.log"; then

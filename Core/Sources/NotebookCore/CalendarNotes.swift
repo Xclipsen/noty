@@ -225,6 +225,18 @@ public enum CalendarLessonMatching {
 public enum CalendarNotesFolder {
     public static let title = "Kalendernotizen"
 
+    /// Notebooks a Lernfeld or a subject may write its sections into: ordinary
+    /// active notebooks of the library – no folders, text documents or
+    /// restored copies, nothing in the trash, no calendar note (a notebook
+    /// directly in the notes folder `notesFolder`), none of `taken`.
+    public static func sectionNotebookCandidates(in snapshot: LibrarySnapshot, notesFolder: UUID?, taken: Set<UUID>) -> [LibraryItem] {
+        let notes = usable(notesFolder, in: snapshot)
+        return snapshot.items.filter { item in
+            !item.isFolder && !item.isTextDocument && item.source != .restored && !snapshot.isTrashed(item.id)
+                && !taken.contains(item.id) && (notes == nil || item.parentID != notes)
+        }
+    }
+
     /// The stored folder if it still is an active folder of `snapshot`;
     /// otherwise nil (the caller creates a new one and stores its id). Never
     /// looked up by name: a folder of the same name may be the user's own.

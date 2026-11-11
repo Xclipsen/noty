@@ -23,6 +23,16 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Freigabe 11.11.2026 · normale noty Build 156 (`main`):** Auf Wunsch des Nutzers („dev auf main“) kommt der Stand von noty dev Build 155 in die normale noty: Umschlagfarben und „Umschlag ändern“ (Heftschema 17), Scrollen nach Import/Rückkehr in die App nicht mehr blockiert, Fach-Hefte (Kalenderformat 6), „Lernfeld-Heft wählen“, Ordner exportieren und importieren, Spiegel im Hintergrund. Heftschema 17 und Kalenderformat 6 sperren ältere Builds (normale noty ≤ 149, noty calendar ≤ 148); vor der Installation ein Bibliotheksbackup anlegen. Die Einzelteile sind am iPad weiterhin **ungeprüft**, Core-Tests, Host-Roundtrip und iPad-Build bestanden.
+
+**Spiegel im Hintergrund, noty dev Build 155 (11.11.2026):** Die Übernahme eines neuen Abzugs der normalen noty sperrt die Bibliothek von noty dev nicht mehr ([APP-SYNC](docs/APP-SYNC.md)). iPad-Build bestanden, am iPad ungeprüft.
+
+**Ordner exportieren und importieren, noty dev Build 154 (`feat/ordner-export`, 11.11.2026):** Ein Ordner lässt sich mit Unterordnern und Heften als `.notylibrary` teilen; eine solche Datei kommt wahlweise in die aktuelle Bibliothek (fehlende Ordner entstehen, gleichnamige werden benutzt, Hefte als neue Hefte) statt nur als getrennter Bereich ([LIBRARY](docs/LIBRARY.md)). Kein Formatwechsel. Core-Tests, Host-Roundtrip, Archivprüfer und iPad-Build bestanden, am iPad ungeprüft.
+
+**Lernfeld-Heft wählen, noty dev Build 153 (`feat/lernfeld-heft`, 11.11.2026):** Ein Lernfeld kann in ein vorhandenes Heft der Bibliothek schreiben (Einstellungen › Kalender › Lernfelder › „…“ › „Heft wählen …“), z. B. in ein importiertes Heft mit den bisherigen Unterlagen; neue Stunden kommen dort ans Ende ([LERNFELDER](docs/LERNFELDER.md)). Kein Formatwechsel. Core-Tests und iPad-Build bestanden, am iPad ungeprüft.
+
+**Fach-Hefte, noty dev Build 150 (`feat/fachheft`, 09.11.2026):** Ein Fach ohne Lernfeld bekommt ein bestehendes Heft der Bibliothek; die Stunde im Kalender legt dort eine Seite mit Überschrift an und öffnet das Heft groß (Kalenderformat 6, [LERNFELDER](docs/LERNFELDER.md)). Core-Tests, Host-Roundtrip und iPad-Build bestanden, am iPad ungeprüft.
+
 **Zusammenführung 09.11.2026 (dev und main, Build 149, noch nicht veröffentlicht):** `feat/paragraphen` (Gesetzesverweise im Heft, Schutzrand für den Stift, ⌘F/⌘L-Zustellung), `feat/feinschliff` (Absturzschutz beim Start, Gesetzesleser-Fix) und `feat/diagnose` (Fehler- und Ruckler-Diagnose) sind in `dev` und `main`. Nachweise: 1617 Core-Tests, Host-Roundtrip, Diagnose-Servertests und `xtool dev build`; die zusammengeführte Fassung ist **am iPad ungeprüft**. Die Veröffentlichung der normalen noty wartet auf den iCloud-Container im Apple-Entwicklerportal ([ICLOUD](docs/ICLOUD.md)).
 
 **Fehler- und Ruckler-Diagnose (`feat/diagnose`, 08.11.2026; seit 09.11.2026 in `main`):** Abstürze, Hänger, langsame Vorgänge und Fehler aus noty dev, noty AI und noty calendar gehen automatisch als einheitlicher Bericht an den eigenen Server, ohne Heftinhalte; die normale noty sendet nur auf Wunsch. Auswertung mit `scripts/diag_report.py`. Core- und Servertests sowie iPad-SDK-Build bestanden, Server installiert; nicht installiert, am iPad ungeprüft ([DIAGNOSE](docs/DIAGNOSE.md)).

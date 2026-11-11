@@ -100,6 +100,8 @@ final class CalendarModel: ObservableObject {
     @Published private(set) var recoveredNotice: String?
     /// A short notice (rejected drag, failed change), dismissible.
     @Published var notice: String?
+    /// „Fach-Heft wählen …“ for this lesson (sheet of the event window; docs/LERNFELDER.md).
+    @Published var subjectNotebookPicker: CalendarEntry?
     /// Confirmed state (set only by `commit`/`transition`/`load`).
     var state = CalendarState()
     private var revision = 0

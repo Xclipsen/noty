@@ -300,8 +300,9 @@ public struct CalendarState: Equatable, Sendable, Codable {
     /// lesson mappings, subject colours, notes folder, source identity);
     /// 3 = B3 (reminders, lesson reminder setting, deleted events); 4 = Stufe C
     /// (system calendar settings, notes of system events, homework marks);
-    /// 5 = Lernfelder (study fields, rules, lesson topics with pinned material).
-    public static let currentFormat = 5
+    /// 5 = Lernfelder (study fields, rules, lesson topics with pinned material);
+    /// 6 = Fach-Hefte (a subject's own notebook for its lesson sections).
+    public static let currentFormat = 6
     /// Older formats this version reads and migrates on its next commit
     /// (the exact old bytes are archived first, `CalendarStore`).
     public static let migratableFormats = 1..<currentFormat
@@ -332,12 +333,15 @@ public struct CalendarState: Equatable, Sendable, Codable {
     public var studyFields: [CalendarStudyField] = []
     public var studyRules: [CalendarStudyRule] = []
     public var lessonTopics: [CalendarLessonTopic] = []
+    /// Fach-Hefte (format 6): subjects whose lessons write into one chosen
+    /// notebook of the library (docs/LERNFELDER.md).
+    public var subjectNotebooks: [CalendarSubjectNotebook] = []
 
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
         case formatVersion, events, settings, connection, noteLinks, lessonMappings, deletedEvents, homeworkDone
-        case studyFields, studyRules, lessonTopics
+        case studyFields, studyRules, lessonTopics, subjectNotebooks
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -352,6 +356,7 @@ public struct CalendarState: Equatable, Sendable, Codable {
         studyFields = try c.decodeIfPresent([CalendarStudyField].self, forKey: .studyFields) ?? []
         studyRules = try c.decodeIfPresent([CalendarStudyRule].self, forKey: .studyRules) ?? []
         lessonTopics = try c.decodeIfPresent([CalendarLessonTopic].self, forKey: .lessonTopics) ?? []
+        subjectNotebooks = try c.decodeIfPresent([CalendarSubjectNotebook].self, forKey: .subjectNotebooks) ?? []
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -363,6 +368,7 @@ public struct CalendarState: Equatable, Sendable, Codable {
         if !studyFields.isEmpty { try c.encode(studyFields, forKey: .studyFields) }
         if !studyRules.isEmpty { try c.encode(studyRules, forKey: .studyRules) }
         if !lessonTopics.isEmpty { try c.encode(lessonTopics, forKey: .lessonTopics) }
+        if !subjectNotebooks.isEmpty { try c.encode(subjectNotebooks, forKey: .subjectNotebooks) }
     }
 
     static func validate(_ event: LocalCalendarEvent) throws {
@@ -378,7 +384,7 @@ public struct CalendarState: Equatable, Sendable, Codable {
     public var isEmpty: Bool {
         events.isEmpty && connection == nil && noteLinks.isEmpty && lessonMappings.isEmpty && deletedEvents.isEmpty
             && homeworkDone.isEmpty && settings == CalendarSettings()
-            && studyFields.isEmpty && studyRules.isEmpty && lessonTopics.isEmpty
+            && studyFields.isEmpty && studyRules.isEmpty && lessonTopics.isEmpty && subjectNotebooks.isEmpty
     }
 
     static func validInstant(_ date: Date) -> Bool {
@@ -435,7 +441,7 @@ public struct CalendarState: Equatable, Sendable, Codable {
               lessonMappings.allSatisfy({ $0.isValid }) else { throw CalendarStoreError.invalidState }
         guard homeworkDone.count <= Self.maximumHomeworkMarks, Set(homeworkDone.map(\.id)).count == homeworkDone.count,
               homeworkDone.allSatisfy({ $0.isValid }), settings.systemCalendars?.isValid ?? true else { throw CalendarStoreError.invalidState }
-        try CalendarStudy.validate(fields: studyFields, rules: studyRules, topics: lessonTopics)
+        try CalendarStudy.validate(fields: studyFields, rules: studyRules, topics: lessonTopics, subjects: subjectNotebooks)
     }
 }
 

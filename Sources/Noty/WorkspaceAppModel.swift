@@ -12,6 +12,11 @@ final class WorkspaceAppModel: ObservableObject {
     @Published private(set) var areaID: UUID?
     @Published var areas: [TestWorkspace] = []
     @Published var busy = false
+    /// The running area operation is a mirror of another noty app being taken
+    /// over or removed (`AppSyncModel`): it only writes a new area beside the
+    /// others and never touches the open one, so the library stays usable.
+    /// Area switches, removals and restores still wait for `busy`.
+    @Published private(set) var backgroundBusy = false
     @Published var error: String?
 
     init() {
@@ -106,11 +111,12 @@ final class WorkspaceAppModel: ObservableObject {
     }
     /// Copies the archive into a new stage and checks it completely, including
     /// the Apple-framework layers of every notebook, one at a time off the UI actor.
-    func prepareLibraryRestore(_ url: URL) async throws -> PreparedLibraryRestore {
+    /// `background`: for a mirror (see `backgroundBusy`).
+    func prepareLibraryRestore(_ url: URL, background: Bool = false) async throws -> PreparedLibraryRestore {
         guard !busy else { throw BackupPostponed(reason: "Eine Wiederherstellung läuft bereits") }
-        busy = true
+        busy = true; backgroundBusy = background
         let access = url.startAccessingSecurityScopedResource()
-        defer { if access { url.stopAccessingSecurityScopedResource() }; busy = false }
+        defer { if access { url.stopAccessingSecurityScopedResource() }; busy = false; backgroundBusy = false }
         // A coordinated read makes the file provider download an iCloud file first.
         try await Task.detached(priority: .userInitiated) { try CoordinatedBackupFiles().reading(url, metadataOnly: false) { _ in } }.value
         return try await store.prepareRestore(file: url, validate: BackupValidation.validate)
@@ -128,7 +134,7 @@ final class WorkspaceAppModel: ObservableObject {
     /// Spiegel einer anderen noty-App (AppSyncModel): immer ein neuer Bereich der Art `mirror`.
     func commitMirror(_ prepared: PreparedLibraryRestore, title: String) async throws -> TestWorkspace {
         guard !busy else { throw BackupPostponed(reason: "Ein Bereichsvorgang läuft bereits") }
-        busy = true; defer { busy = false }
+        busy = true; backgroundBusy = true; defer { busy = false; backgroundBusy = false }
         let area = try await store.commitRestore(prepared, title: title, kind: .mirror)
         await refresh()
         return area
@@ -137,7 +143,7 @@ final class WorkspaceAppModel: ObservableObject {
     /// `mirror`, nie den geöffneten, nie „Meine Bibliothek“ (Store prüft erneut).
     func removeMirror(_ area: TestWorkspace) async -> Bool {
         guard !busy, area.kind == .mirror, area.id != areaID else { return false }
-        busy = true; defer { busy = false }
+        busy = true; backgroundBusy = true; defer { busy = false; backgroundBusy = false }
         let namespace = await calendarNamespace(area), scope = await areaScope(area)
         let removed = (try? await store.remove(area.id, protecting: [Self.mainRoot])) != nil
         await refresh()

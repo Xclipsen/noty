@@ -297,7 +297,7 @@ final class LernfelderTests: XCTestCase {
         try JSONEncoder().encode(manifest).write(to: package.appendingPathComponent("manifest.json"))
         let repository = CalendarRepository(areaRoot: root)
         let loaded = try await repository.load()
-        XCTAssertEqual(loaded.state.formatVersion, 5)
+        XCTAssertEqual(loaded.state.formatVersion, 6)
         XCTAssertEqual(loaded.state.homeworkDone.count, 1)
         var next = loaded.state
         next.studyFields = [CalendarStudyField(number: 1, title: "Rolle im Betrieb")]
@@ -308,12 +308,102 @@ final class LernfelderTests: XCTestCase {
         XCTAssertTrue(archived[0].hasPrefix("format-4-"))
         XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent("Migration/\(archived[0])")), bytes, "exakte Altbytes")
 
-        // Format 4 with study fields is not format 4; format 6 locks.
+        // Format 4 with study fields is not format 4; format 7 locks.
         let mixed = Data(#"{"events":[],"formatVersion":4,"studyFields":[{"id":"00000000-0000-4000-8000-000000000001","number":1,"title":"x"}]}"#.utf8)
         XCTAssertThrowsError(try CalendarStore.decode(mixed))
-        XCTAssertThrowsError(try CalendarStore.decode(Data(#"{"events":[],"formatVersion":6}"#.utf8))) {
-            XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(6))
+        XCTAssertThrowsError(try CalendarStore.decode(Data(#"{"events":[],"formatVersion":7}"#.utf8))) {
+            XCTAssertEqual($0 as? CalendarStoreError, .unsupportedFormat(7))
         }
+    }
+
+    // MARK: Format 6: Fach-Hefte
+
+    func testFormat6SubjectNotebooksRoundTripAndValidate() async throws {
+        let lernfeld = UUID(), religion = UUID()
+        var state = studyState(notebook: lernfeld)
+        state.subjectNotebooks = [CalendarSubjectNotebook(subjectKey: "webuntis:rel", subjectName: "Religion", notebookID: religion)]
+        XCTAssertNoThrow(try state.validate())
+        let repository = CalendarRepository(areaRoot: root)
+        _ = try await repository.load()
+        try await repository.save(state, revision: 1)
+        await repository.close()
+        let reread = try await CalendarRepository(areaRoot: root).load().state
+        XCTAssertEqual(reread, state)
+        XCTAssertEqual(reread.formatVersion, 6)
+
+        var broken = state
+        broken.subjectNotebooks.append(CalendarSubjectNotebook(subjectKey: "webuntis:rel", subjectName: "Reli 2", notebookID: UUID()))
+        XCTAssertThrowsError(try broken.validate(), "ein Heft je Fach")
+        broken = state; broken.subjectNotebooks.append(CalendarSubjectNotebook(subjectKey: "webuntis:eth", subjectName: "Ethik", notebookID: religion))
+        XCTAssertThrowsError(try broken.validate(), "ein Fach je Heft")
+        broken = state; broken.subjectNotebooks[0].notebookID = lernfeld
+        XCTAssertThrowsError(try broken.validate(), "kein Lernfeld-Heft")
+        broken = state; broken.subjectNotebooks[0].subjectName = " "
+        XCTAssertThrowsError(try broken.validate())
+        XCTAssertEqual(CalendarStudy.subjectNotebook(subjectKey: "webuntis:rel", in: state.subjectNotebooks)?.notebookID, religion)
+        XCTAssertNil(CalendarStudy.subjectNotebook(subjectKey: "webuntis:sr", in: state.subjectNotebooks))
+        // Without Fach-Hefte the state is written exactly as format 5 wrote it (no key).
+        var plain = state; plain.subjectNotebooks = []
+        XCTAssertFalse(String(decoding: try CalendarStore.encoder.encode(plain), as: UTF8.self).contains("subjectNotebooks"))
+    }
+
+    func testFormat5MigratesWithExactOldBytesAndRefusesSubjectNotebooks() async throws {
+        let package = root.appendingPathComponent("Calendar", isDirectory: true)
+        try FileManager.default.createDirectory(at: package.appendingPathComponent("Revisions"), withIntermediateDirectories: true)
+        var old = studyState(notebook: UUID()); old.formatVersion = 5
+        let bytes = try CalendarStore.encoder.encode(old)
+        XCTAssertTrue(String(decoding: bytes, as: UTF8.self).contains(#""formatVersion":5"#))
+        let file = UUID().uuidString + ".json"
+        try bytes.write(to: package.appendingPathComponent("Revisions/\(file)"))
+        let manifest = RevisionManifest(revisions: [RevisionRecord(file: file, byteCount: bytes.count, crc32: SnapshotChecksum.crc32(bytes),
+                                                                   savedAtUnix: 1_790_000_000)])
+        try JSONEncoder().encode(manifest).write(to: package.appendingPathComponent("manifest.json"))
+        let repository = CalendarRepository(areaRoot: root)
+        let loaded = try await repository.load()
+        XCTAssertEqual(loaded.state.formatVersion, 6)
+        XCTAssertEqual(loaded.state.studyFields, old.studyFields)
+        XCTAssertEqual(loaded.state.lessonTopics, old.lessonTopics)
+        var next = loaded.state
+        next.subjectNotebooks = [CalendarSubjectNotebook(subjectKey: "webuntis:rel", subjectName: "Religion", notebookID: UUID())]
+        try await repository.save(next, revision: 1)
+        await repository.close()
+        let archived = try FileManager.default.contentsOfDirectory(atPath: package.appendingPathComponent("Migration").path)
+        XCTAssertEqual(archived.count, 1)
+        XCTAssertTrue(archived[0].hasPrefix("format-5-"))
+        XCTAssertEqual(try Data(contentsOf: package.appendingPathComponent("Migration/\(archived[0])")), bytes, "exakte Altbytes")
+        let migrated = try await CalendarRepository(areaRoot: root).load().state
+        XCTAssertEqual(migrated, next)
+
+        // Format 5 with a Fach-Heft is not format 5.
+        let mixed = Data(#"{"events":[],"formatVersion":5,"subjectNotebooks":[{"id":"00000000-0000-4000-8000-000000000001","subjectKey":"webuntis:rel","subjectName":"Religion","notebookID":"00000000-0000-4000-8000-000000000002"}]}"#.utf8)
+        XCTAssertThrowsError(try CalendarStore.decode(mixed))
+    }
+
+    func testArchiveCarriesSubjectNotebooksRemapsAndDropsDeletedOnes() async throws {
+        let lernfeld = UUID(), religion = UUID(), copy = UUID(), copy2 = UUID()
+        var state = studyState(notebook: lernfeld)
+        state.subjectNotebooks = [CalendarSubjectNotebook(subjectKey: "webuntis:rel", subjectName: "Religion", notebookID: religion)]
+        let bytes = try CalendarArchive.encodeState(state)
+        XCTAssertEqual(try CalendarArchive.decodeState(bytes), state)
+        let restored = try CalendarArchive.restored(CalendarArchiveContent(state: state), documents: [lernfeld: copy, religion: copy2], folders: [:])
+        XCTAssertEqual(restored.state.subjectNotebooks[0].notebookID, copy2)
+        XCTAssertEqual(restored.state.studyFields[0].notebookID, copy)
+        XCTAssertThrowsError(try CalendarArchive.restored(CalendarArchiveContent(state: state), documents: [lernfeld: copy], folders: [:])) {
+            XCTAssertEqual($0 as? CalendarArchiveError, .danglingReference)
+        }
+        XCTAssertThrowsError(try CalendarArchiveContent(state: state).validate(documents: [lernfeld], folders: []))
+        XCTAssertNoThrow(try CalendarArchiveContent(state: state).validate(documents: [lernfeld, religion], folders: []))
+
+        // Backup of an area whose Religion notebook is deleted for good: the subject chooses anew, the field keeps its notebook.
+        let repository = CalendarRepository(areaRoot: root)
+        _ = try await repository.load()
+        try await repository.save(state, revision: 1)
+        await repository.close()
+        var library = LibrarySnapshot()
+        library.items = [LibraryItem(id: lernfeld, title: "LF 3", parentID: nil, source: .library)]
+        let capture = try CalendarArchive.capture(areaRoot: root, library: library)
+        XCTAssertEqual(capture.content?.state.subjectNotebooks, [])
+        XCTAssertEqual(capture.content?.state.studyFields[0].notebookID, lernfeld)
     }
 
     func testArchiveCarriesStudyDataAndRemapsTheFieldNotebook() throws {
@@ -376,5 +466,90 @@ final class LernfelderTests: XCTestCase {
                                       contextTitle: "x", contextStart: at(12, 8), contextEnd: at(12, 9)))
         XCTAssertEqual(StudySections.sections(of: notebook, links: links).count, 3)
         XCTAssertNoThrow(try notebook.validate())
+    }
+
+    // MARK: Lernfeld-Heft wählen
+
+    func testFieldTakesAnExistingNotebookOnlyWhenItIsFree() throws {
+        let own = UUID(), religion = UUID(), imported = UUID()
+        var state = studyState(notebook: own)
+        let second = CalendarStudyField(number: 4, title: "Einkommensteuer")
+        state.studyFields.append(second)
+        state.subjectNotebooks = [CalendarSubjectNotebook(subjectKey: "webuntis:rel", subjectName: "Religion", notebookID: religion)]
+        let first = state.studyFields[0].id
+        XCTAssertEqual(CalendarStudy.notebooksTaken(forField: second.id, fields: state.studyFields, subjects: state.subjectNotebooks),
+                       [own, religion])
+        XCTAssertEqual(CalendarStudy.notebooksTaken(forField: first, fields: state.studyFields, subjects: state.subjectNotebooks),
+                       [religion], "das eigene Heft zählt nicht als vergeben")
+
+        // A free notebook of the library: taken over, everything else unchanged.
+        let before = state
+        try CalendarStudy.setNotebook(imported, ofField: second.id, fields: &state.studyFields, subjects: state.subjectNotebooks)
+        XCTAssertEqual(state.studyFields.first { $0.id == second.id }?.notebookID, imported)
+        XCTAssertEqual(state.studyFields[0], before.studyFields[0])
+        XCTAssertEqual(state.noteLinks, before.noteLinks)
+        XCTAssertEqual(state.studyRules, before.studyRules)
+        XCTAssertNoThrow(try state.validate())
+
+        // The notebook of another field or of a subject: refused, nothing changes.
+        for taken in [own, religion] {
+            var broken = state
+            XCTAssertThrowsError(try CalendarStudy.setNotebook(taken, ofField: second.id, fields: &broken.studyFields, subjects: broken.subjectNotebooks))
+            XCTAssertEqual(broken, state)
+        }
+        // An unknown field: refused.
+        var unknown = state
+        XCTAssertThrowsError(try CalendarStudy.setNotebook(UUID(), ofField: UUID(), fields: &unknown.studyFields, subjects: unknown.subjectNotebooks))
+        XCTAssertEqual(unknown, state)
+
+        // Choosing the same notebook again and letting it go.
+        try CalendarStudy.setNotebook(imported, ofField: second.id, fields: &state.studyFields, subjects: state.subjectNotebooks)
+        try CalendarStudy.setNotebook(nil, ofField: second.id, fields: &state.studyFields, subjects: state.subjectNotebooks)
+        XCTAssertNil(state.studyFields.first { $0.id == second.id }?.notebookID)
+        XCTAssertNoThrow(try state.validate())
+        // Freed: the other field may take it now.
+        try CalendarStudy.setNotebook(imported, ofField: first, fields: &state.studyFields, subjects: state.subjectNotebooks)
+        XCTAssertNoThrow(try state.validate())
+    }
+
+    func testSectionNotebookCandidatesAreOrdinaryActiveNotebooks() {
+        var snapshot = LibrarySnapshot()
+        let notes = LibraryItem(title: "Kalendernotizen"), folder = LibraryItem(title: "Schule"), bin = LibraryItem(title: "Alt")
+        var trashedFolder = bin; trashedFolder.deletedAt = created
+        let free = LibraryItem(title: "LF 3 – Umsatzsteuer", parentID: folder.id, source: .library)
+        let legacy = LibraryItem(title: "Erstes Heft", source: .legacyMain)
+        let taken = LibraryItem(title: "LF 4", source: .library)
+        let small = LibraryItem(title: "SR · 09.11.2026", parentID: notes.id, source: .library)
+        let restored = LibraryItem(title: "Kopie", source: .restored)
+        var text = LibraryItem(title: "Aufsatz", source: .library); text.kind = .textDocument
+        var trashed = LibraryItem(title: "Weg", source: .library); trashed.deletedAt = created
+        let inTrashedFolder = LibraryItem(title: "Im Papierkorb-Ordner", parentID: bin.id, source: .library)
+        snapshot.items = [notes, folder, trashedFolder, free, legacy, taken, small, restored, text, trashed, inTrashedFolder]
+
+        let found = CalendarNotesFolder.sectionNotebookCandidates(in: snapshot, notesFolder: notes.id, taken: [taken.id])
+        XCTAssertEqual(found.map(\.id), [free.id, legacy.id], "nur gewöhnliche aktive Hefte, in Bibliotheksreihenfolge")
+        // Without a usable notes folder its former notebooks are ordinary notebooks.
+        let without = CalendarNotesFolder.sectionNotebookCandidates(in: snapshot, notesFolder: nil, taken: [])
+        XCTAssertEqual(Set(without.map(\.id)), [free.id, legacy.id, taken.id, small.id])
+    }
+
+    func testFirstSectionOfAChosenNotebookGoesBehindItsPages() throws {
+        // A notebook with pages of its own (imported), no lesson section yet.
+        var notebook = Notebook.blank(title: "LF 3 – Umsatzsteuer")
+        _ = try notebook.insertPaper(.lined, at: 1)
+        _ = try notebook.insertPaper(.lined, at: 2)
+        let existing = notebook.pages.map(\.id)
+        let index = StudySections.insertionIndex(for: at(9, 8), in: notebook, sections: [])
+        XCTAssertEqual(index, 3)
+        let heading = try notebook.insertSectionPage(heading: "Mo 09.11.2026 · SR · 08:00–10:30", at: index)
+        XCTAssertEqual(notebook.pages.map(\.id), existing + [heading], "vorhandene Seiten bleiben unverändert vorn")
+        let anchor = CalendarLessonAnchor(source: "webuntis:x", periodID: "1", lessonID: nil, originalDate: CivilDate("2026-11-09")!,
+                                          originalStart: "2026-11-09T08:00")
+        let link = CalendarNoteLink(target: .lesson(anchor), documentID: notebook.id, pageID: heading, createdAt: created,
+                                    contextTitle: "SR", contextStart: at(9, 8), contextEnd: at(9, 10, 30))
+        let sections = StudySections.sections(of: notebook, links: [link])
+        XCTAssertEqual(sections.map(\.pageIDs), [[heading]])
+        // An earlier lesson caught up later goes before that section, still behind the notebook's own pages.
+        XCTAssertEqual(StudySections.insertionIndex(for: at(2, 8), in: notebook, sections: sections), 3)
     }
 }

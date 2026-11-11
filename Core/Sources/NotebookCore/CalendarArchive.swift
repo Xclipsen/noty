@@ -35,6 +35,7 @@ public struct CalendarArchiveContent: Equatable, Sendable {
         try state.validate()
         guard state.noteLinks.allSatisfy({ documents.contains($0.documentID) }),
               state.studyFields.allSatisfy({ $0.notebookID.map(documents.contains) ?? true }),
+              state.subjectNotebooks.allSatisfy({ documents.contains($0.notebookID) }),
               state.settings.notesFolderID.map({ folders.contains($0) }) ?? true else { throw CalendarArchiveError.danglingReference }
         if let source {
             guard let connection = state.connection, source.connection == connection.id else { throw CalendarArchiveError.invalid }
@@ -88,6 +89,8 @@ public enum CalendarArchive {
         for index in state.studyFields.indices where state.studyFields[index].notebookID.map({ !documents.contains($0) }) ?? false {
             state.studyFields[index].notebookID = nil
         }
+        // A subject whose notebook was deleted for good chooses one again at its next lesson.
+        state.subjectNotebooks.removeAll { !documents.contains($0.notebookID) }
         if let folder = state.settings.notesFolderID, !folders.contains(folder) { state.settings.notesFolderID = nil }
         var source: CalendarSourceSnapshot?
         var missing = false
@@ -142,7 +145,8 @@ public enum CalendarArchive {
         // No key beyond the known ones, also inside the connection record.
         guard let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
               Set(object.keys).isSubset(of: ["formatVersion", "events", "settings", "connection", "noteLinks", "lessonMappings",
-                                             "deletedEvents", "homeworkDone", "studyFields", "studyRules", "lessonTopics"]) else {
+                                             "deletedEvents", "homeworkDone", "studyFields", "studyRules", "lessonTopics",
+                                             "subjectNotebooks"]) else {
             throw CalendarArchiveError.invalid
         }
         if let connection = object["connection"] {
@@ -186,6 +190,10 @@ public enum CalendarArchive {
             guard let notebook = state.studyFields[index].notebookID else { continue }
             guard let mapped = documents[notebook] else { throw CalendarArchiveError.danglingReference }
             state.studyFields[index].notebookID = mapped
+        }
+        for index in state.subjectNotebooks.indices {
+            guard let mapped = documents[state.subjectNotebooks[index].notebookID] else { throw CalendarArchiveError.danglingReference }
+            state.subjectNotebooks[index].notebookID = mapped
         }
         if let folder = state.settings.notesFolderID {
             guard let mapped = folders[folder] else { throw CalendarArchiveError.danglingReference }

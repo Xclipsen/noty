@@ -123,7 +123,8 @@ final class AppSyncModel: ObservableObject {
             let url = AppSyncOutbox.archiveURL(snapshot, groupRoot: groupRoot)
             let measurement = Diagnostics.begin("appSync.mirror")
             do {
-                let prepared = try await workspaces.prepareLibraryRestore(url)
+                // In the background: the open library stays usable while the mirror is checked and written.
+                let prepared = try await workspaces.prepareLibraryRestore(url, background: true)
                 guard prepared.summary.file == snapshot.file else {
                     await workspaces.discardLibraryRestore(prepared)
                     throw AppSyncError.changedWhileCopying

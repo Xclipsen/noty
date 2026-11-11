@@ -24,6 +24,10 @@ extension PageWorkflowCheck {
         var note = Notebook.blank(title: "Mathematik · 10.11.2026"); note.pages[0].text = "Stundennotiz (erfunden)"
         try RevisionStore(directory: area.appendingPathComponent("Library/Documents/\(note.id.uuidString)")).save(note)
         _ = try await library.adoptImported(note.id, title: note.title, parentID: folder, replacing: nil)
+        // Format 6: an ordinary notebook of the library as a subject's Fach-Heft.
+        var religion = Notebook.blank(title: "Religion (erfunden)"); religion.pages[0].text = "Fach-Heft (erfunden)"
+        try RevisionStore(directory: area.appendingPathComponent("Library/Documents/\(religion.id.uuidString)")).save(religion)
+        _ = try await library.adoptImported(religion.id, title: religion.title, parentID: nil, replacing: nil)
         let setup = try WebUntisSetup(server: "erfunden-geheim.example.invalid", school: "Beispielschule", user: "max.erfunden",
                                       key: "JBSWY3DPEHPK3PXPGEHEIMGEHEIM")
         let connection = UUID()
@@ -63,6 +67,7 @@ extension PageWorkflowCheck {
         state.lessonTopics = [CalendarLessonTopic(target: .lesson(anchor), topic: "Die Lieferung", summary: "Merksatz (erfunden)",
             materials: [CalendarMaterialRef(package: "beispiel-material", key: "lesson:00000000-0000-4000-8000-000000000042",
                                             label: "Ort der Lieferung", detail: "LF 3 · Kapitel 4 · S. 5–9")], modifiedAt: created)]
+        state.subjectNotebooks = [CalendarSubjectNotebook(subjectKey: "webuntis:77", subjectName: "Religion", notebookID: religion.id)]
         let repository = CalendarRepository(areaRoot: area)
         _ = try await repository.load()
         try await repository.save(state, revision: 1)
@@ -109,6 +114,7 @@ extension PageWorkflowCheck {
             && restoredSnapshot?.connection == restored.connection?.id
         let linksLocal = restored.noteLinks.allSatisfy { documents.contains($0.documentID) }
             && restored.studyFields.allSatisfy { $0.notebookID.map(documents.contains) ?? true }
+            && restored.subjectNotebooks.allSatisfy { documents.contains($0.notebookID) }
         return (summary.formatVersion == 3, identical, linksLocal, detached,
                 secretFree, corruptRejected && nothingPublished)
     }

@@ -1,7 +1,20 @@
 import Foundation
 
+/// Cover colour of a notebook in the library. The first five are the main
+/// colours (Post-it tones for the main subjects), the rest further colours.
+/// `allCases` is the display order; stored is the raw name.
 public enum NotebookCover: String, Codable, CaseIterable, Sendable {
-    case blue, purple, green, yellow, coral, gray
+    case pink, orange, yellow, green, blue
+    case purple, coral, red, teal, navy, brown, gray, black
+
+    /// Pink, Orange, Gelb, Grün, Blau.
+    public static let main: [NotebookCover] = [.pink, .orange, .yellow, .green, .blue]
+    /// Every other colour, in display order.
+    public static var more: [NotebookCover] { allCases.filter { !main.contains($0) } }
+
+    /// Colours of schema 7–16. The others need `Notebook.coverPaletteSchemaVersion`,
+    /// so older builds refuse such a notebook instead of failing to read it.
+    public var isLegacy: Bool { [.blue, .purple, .green, .yellow, .coral, .gray].contains(self) }
 }
 
 public enum PaperFormat: String, Codable, CaseIterable, Sendable {
@@ -39,7 +52,7 @@ extension Notebook {
     public static func blank(title: String, appearance: NotebookAppearance) throws -> Notebook {
         try appearance.validate()
         var result = blank(title: title)
-        result.schemaVersion = 7; result.appearance = appearance
+        result.schemaVersion = appearance.cover.isLegacy ? 7 : coverPaletteSchemaVersion; result.appearance = appearance
         result.pages[0].geometry = appearance.geometry
         result.pages[0].paper = appearance.paper; result.pages[0].paperColor = appearance.color
         try result.validate()
@@ -157,6 +170,25 @@ extension Notebook {
             guard !onlyMargins || snapshot.liesInMargins(shape.bounds) else { return shape }
             return PaperInkInversion.converted(shape, to: color)
         }
+    }
+
+    /// Library „Umschlag ändern“: switches the cover on or off and sets its
+    /// colour. Paper, format and every page stay exactly as they are. Older
+    /// notebooks without stored appearance get their inferred page defaults
+    /// stored along. A new colour raises the schema to 17; text documents
+    /// have no cover. Returns false when nothing changes.
+    @discardableResult
+    public mutating func setCover(enabled: Bool, cover: NotebookCover) throws -> Bool {
+        guard !isTextDocument else { throw StorageError.invalidDocument }
+        var appearance = pageDefaults
+        guard appearance.coverEnabled != enabled || appearance.cover != cover else { return false }
+        var next = try preparedForPageEditing()
+        next.schemaVersion = max(7, next.schemaVersion)
+        if !cover.isLegacy { next.schemaVersion = max(Self.coverPaletteSchemaVersion, next.schemaVersion) }
+        appearance.coverEnabled = enabled; appearance.cover = cover
+        next.appearance = appearance
+        try next.validate(); self = next
+        return true
     }
 
     /// Notebooks created before appearances existed: keep the library preview

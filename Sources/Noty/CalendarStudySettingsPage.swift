@@ -11,6 +11,7 @@ struct CalendarStudySettingsPage: View {
     @State private var newNumber = ""
     @State private var newTitle = ""
     @State private var removing: CalendarStudyField?
+    @State private var choosingNotebook: CalendarStudyField?
 
     var body: some View {
         Form {
@@ -19,6 +20,7 @@ struct CalendarStudySettingsPage: View {
             }
             fieldsSection
             if !model.studyFields.isEmpty { assignmentSection }
+            if !model.subjectNotebooks.isEmpty { subjectsSection }
         }
         .navigationTitle("Lernfelder")
         .task { materials.load() }
@@ -31,6 +33,7 @@ struct CalendarStudySettingsPage: View {
             }
             Button("Abbrechen", role: .cancel) {}
         } message: { Text("Nummer 1–99, noch nicht vergeben.") }
+        .sheet(item: $choosingNotebook) { field in CalendarFieldNotebookPicker(field: field, model: model) }
         .confirmationDialog("Lernfeld entfernen?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
                             titleVisibility: .visible, presenting: removing) { field in
             Button("\(field.displayName) entfernen", role: .destructive) { Task { await model.removeField(field.id) } }
@@ -44,12 +47,25 @@ struct CalendarStudySettingsPage: View {
     private var fieldsSection: some View {
         Section {
             ForEach(model.studyFields) { field in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(field.displayName)
-                    Text(notebookText(field)).font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(field.displayName)
+                        Text(notebookText(field)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Menu {
+                        notebookActions(field)
+                        Button("Entfernen", systemImage: "trash", role: .destructive) { removing = field }
+                    } label: {
+                        Image(systemName: "ellipsis.circle").imageScale(.large).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Heft und Aktionen für \(field.shortName)")
                 }
                 .swipeActions { Button("Entfernen", role: .destructive) { removing = field } }
-                .contextMenu { Button("Entfernen", systemImage: "trash", role: .destructive) { removing = field } }
+                .contextMenu {
+                    notebookActions(field)
+                    Button("Entfernen", systemImage: "trash", role: .destructive) { removing = field }
+                }
             }
             ForEach(materials.packages, id: \.catalog.id) { package in
                 let missing = package.catalog.fields.filter { field in !model.studyFields.contains { $0.number == field.number } }
@@ -65,9 +81,46 @@ struct CalendarStudySettingsPage: View {
         } header: {
             Text("Lernfelder")
         } footer: {
-            Text("Jedes Lernfeld bekommt ein eigenes Heft „LF n – Titel“, sobald die erste Stunde mitgeschrieben wird. Es liegt oben in der Bibliothek und lässt sich verschieben oder umbenennen.")
+            Text("Jedes Lernfeld bekommt ein eigenes Heft „LF n – Titel“, sobald die erste Stunde mitgeschrieben wird. Es liegt oben in der Bibliothek und lässt sich verschieben oder umbenennen. Über „…“ › „Heft wählen“ schreibt ein Lernfeld stattdessen in ein vorhandenes Heft der Bibliothek, neue Stunden kommen dort ans Ende.")
         }
         .disabled(!model.canWrite)
+    }
+
+    /// „Heft wählen …“ / „Anderes Heft wählen …“ and, with a notebook, letting it go.
+    @ViewBuilder private func notebookActions(_ field: CalendarStudyField) -> some View {
+        Button(field.notebookID == nil ? "Heft wählen …" : "Anderes Heft wählen …", systemImage: "book.closed") { choosingNotebook = field }
+        if field.notebookID != nil {
+            Button("Heft lösen", systemImage: "link.badge.minus") { Task { await model.setFieldNotebook(nil, for: field.id) } }
+        }
+    }
+
+    // MARK: Fach-Hefte (format 6)
+
+    private var subjectsSection: some View {
+        Section {
+            ForEach(model.subjectNotebooks) { subject in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(subject.subjectName)
+                    Text(subjectNotebookText(subject)).font(.caption).foregroundStyle(.secondary)
+                }
+                .swipeActions { Button("Aufheben", role: .destructive) { Task { await model.removeSubjectNotebook(subject.id) } } }
+                .contextMenu {
+                    Button("Zuordnung aufheben", systemImage: "link.badge.minus", role: .destructive) { Task { await model.removeSubjectNotebook(subject.id) } }
+                }
+            }
+        } header: {
+            Text("Fach-Hefte")
+        } footer: {
+            Text("Stunden dieser Fächer schreiben in das gewählte Heft der Bibliothek: je Stunde eine neue Seite mit Überschrift, das Heft öffnet sich groß. Zugeordnet wird in der Stunde im Kalender („…“ › „Fach-Heft wählen“); ein Lernfeld hat Vorrang. Aufheben lässt Heft und bisherige Seiten unverändert.")
+        }
+        .disabled(!model.canWrite)
+    }
+
+    private func subjectNotebookText(_ subject: CalendarSubjectNotebook) -> String {
+        guard let library = model.library, let item = library.snapshot.items.first(where: { $0.id == subject.notebookID }) else {
+            return "Heft gibt es nicht mehr · beim nächsten Öffnen der Stunde neu wählen"
+        }
+        return library.snapshot.isTrashed(item.id) ? "Heft „\(item.title)“ liegt im Papierkorb" : "Heft „\(item.title)“"
     }
 
     private func notebookText(_ field: CalendarStudyField) -> String {

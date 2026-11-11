@@ -1,5 +1,9 @@
 # Bibliotheksbackup und getrennte Bereiche – Build 11
 
+## Ergänzung 11.11.2026 · `.notylibrary` in die aktuelle Bibliothek übernehmen (`feat/ordner-export`)
+
+Eine `.notylibrary`-Datei, die aus der Dateien-App geöffnet wird, bietet jetzt zwei Wege: „In diese Bibliothek übernehmen …“ (Ordner anlegen bzw. benutzen, Hefte als neue Hefte; [LIBRARY](LIBRARY.md), Nachtrag 11.11.2026) und wie bisher „Als neuen Bereich wiederherstellen“. Format, Schreiben und Bereichs-Restore sind unverändert. „Ordner exportieren“ schreibt dasselbe Format 2 für einen Teilbaum. Stand: implementiert, Core-Tests, Host-Roundtrip und SDK-Build bestanden; am iPad ungeprüft.
+
 ## Ergänzung 08.11.2026 · Einzelne Hefte aus einem Backup zurückholen (`feat/wiederherstellen`)
 
 Stand: **implementiert, Core-Tests (1359), Host-Roundtrip und SDK-Build (`xtool dev build`) erfolgreich; nicht installiert, am iPad ungeprüft.** Plan: [BACKUP-RESTORE-PLAN](BACKUP-RESTORE-PLAN.md) Phase 1.
