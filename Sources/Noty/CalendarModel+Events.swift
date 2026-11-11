@@ -65,13 +65,14 @@ extension CalendarModel {
                 event.title = title; event.location = location; event.details = details
                 event.timing = newTiming
                 if var newRule = rule {
-                    // Keep exceptions/changes of the old series, moved along like
-                    // the series (days and wall clock, CalendarSeries.moved). The
+                    // Keep exceptions/changes of the old series, moved along with
+                    // their occurrences (CalendarSeries.moved; a monthly series by
+                    // occurrence, not by days: month ends). The
                     // occurrence the form was opened from takes the series' new
                     // values: its own change (if any) is dropped.
                     if var old = event.recurrence {
                         if let occurrence = draft.editing?.originalDate { old.overrides.removeAll { $0.originalDate == occurrence } }
-                        let moved = CalendarSeries.moved(old, from: before.timing, to: newTiming)
+                        let moved = CalendarSeries.moved(old, from: before.timing, to: newTiming, as: newRule)
                         newRule.exceptions = draft.exceptionsEdited ? draft.exceptions(calendar: calendar) : moved.exceptions
                         newRule.overrides = moved.overrides
                     }
@@ -80,7 +81,7 @@ extension CalendarModel {
                     event.recurrence = nil
                 }
                 CalendarNoteLinks.retarget(state: &state, event: id, old: before, new: event)
-                savedEntryID = CalendarEntry.localID(id, event.recurrence == nil ? nil : (draft.editing?.originalDate?.adding(days: shift) ?? CalendarSeries.firstDate(of: newTiming)))
+                savedEntryID = CalendarEntry.localID(id, event.recurrence == nil ? nil : (draft.editing?.originalDate.map { CalendarNoteLinks.movedDate($0, old: before, new: event) } ?? CalendarSeries.firstDate(of: newTiming)))
             }
             event.modifiedAt = now
             if let problem = event.timing.problem { problemText = problem; snapshot.restore(in: &state); return }
