@@ -77,7 +77,7 @@ Prüfung mit dem echten Paket (`NOTY_MATERIAL_PACKAGE=… swift test --filter Le
 - Ein neues Lernfeld-Heft wird je Lernfeld nur einmal angelegt. Scheitert das Einsortieren in die Bibliothek oder die Verknüpfung, verwendet der nächste Versuch dasselbe Heft und dieselbe Seite (`CalendarStudyCreation`).
 - Liegt das Heft eines Lernfelds im Papierkorb, bietet die Stunde „Heft wiederherstellen“ oder „Neues Heft anlegen“ an; ein endgültig gelöschtes oder unlesbares Heft wird durch ein neues ersetzt (die Kennung im Lernfeld wird umgestellt).
 - Eine Stunde, deren kleine Notiz noch angelegt wird, zeigt zuerst diese Notiz, nicht den Lernfeld-Hinweis.
-- Ein Block übernimmt die Verknüpfung seiner ersten (nicht ausgefallenen) Stunde, sonst die eines anderen Mitglieds.
+- Ein Block übernimmt die Verknüpfung seiner ersten (nicht ausgefallenen) Stunde, sonst die eines anderen Mitglieds. Seit 11.11.2026 (`feat/audit-fixes`, `CalendarLessonTopics`, `CalendarLessonTopicTests`; am iPad ungeprüft) gilt derselbe Block-Rückfall auch für das Thema (Thema, Merksatz, Material), nicht nur für die Notizverknüpfung: Das Thema bleibt bei der Stunde, wenn sich ihr Beginn ändert oder die erste Stunde des Blocks ausfällt, und es folgt wie die Notiz einem Quellenwechsel des Termins. Offen bleibt, ob WebUntis einer verschobenen Stunde dieselbe Perioden-ID lässt ([CALENDAR-PLAN](CALENDAR-PLAN.md#9-offene-punkte)).
 - Die Themenkarte speichert nur, was dort geändert wurde. Ändert die andere Stunde desselben Blocks das Thema, übernimmt die Karte den neuen Stand, solange dort nicht getippt wird.
 - Aufräumen beim Start löscht nur Reste, die älter als eine Stunde sind; ein durch Abbruch zurückgebliebenes altes Paket wird zurückgelegt statt gelöscht.
 

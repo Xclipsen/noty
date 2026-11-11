@@ -45,7 +45,7 @@ Reihenfolge: als `.partial` kopieren, Größe+CRC prüfen, umbenennen, `current.
 
 ## Spiegelbereiche
 
-Neuer Stand → Bibliotheks-Restore (vollständige Prüfung inkl. Apple-Frameworks wie beim normalen Restore) in einen **neuen** Bereich der Art `mirror`, Titel „Von noty · Datum“. Danach wird der vorige Spiegel derselben Quelle entfernt, sobald er nicht geöffnet ist; ist der aktuelle Spiegel geöffnet, wartet die Übernahme, bis der Bereich verlassen wird. Änderungen in einem Spiegel gehen beim nächsten Stand verloren und kommen nie zurück. Der Merkzettel je Quelle (letzter Inhalt, Bereich, ausstehende alte Bereiche) liegt in den `UserDefaults` der Spiegel-App.
+Neuer Stand → Bibliotheks-Restore (vollständige Prüfung inkl. Apple-Frameworks wie beim normalen Restore) in einen **neuen** Bereich der Art `mirror`, Titel „Von noty · Datum“. Danach wird der vorige Spiegel derselben Quelle entfernt, sobald er nicht geöffnet ist; ist der aktuelle Spiegel geöffnet, wartet die Übernahme, bis der Bereich verlassen wird. Änderungen in einem Spiegel gehen beim nächsten Stand verloren und kommen nie zurück. Der Merkzettel je Quelle (letzter Inhalt, Bereich, ausstehende alte Bereiche) liegt in den `UserDefaults` der Spiegel-App. Während ein Spiegelabzug geprüft wird, zeigt die Bibliothek seit 11.11.2026 (`feat/audit-fixes`, am iPad ungeprüft) die Fortschrittskapsel „Abgleich wird geprüft …“ (nur in den Test-Apps; die normale noty spiegelt nie und zeigt nichts Neues), und ein in dieser Zeit gewählter Bereichswechsel wartet bis zu 60 s auf das Ende des Bereichsvorgangs und meldet sich sonst, statt stillschweigend verworfen zu werden.
 
 Ältere Builds kennen die Bereichsart `mirror` nicht und zählen solche Bereiche als „nicht lesbar“; das betrifft nur noty dev/noty AI.
 
