@@ -9,7 +9,9 @@ Annahme nur
   ``NOTY_DIAG_KEYS_FILE``, nie im Repo),
 - bis 1 MB pro Bericht,
 - innerhalb der Ratenbegrenzung (pro Absender-IP und gesamt pro Tag),
-- im Berichtsformat 1 mit festen Namen in Ereignissen und Angaben.
+- im Berichtsformat 1: genau die Felder aus ``DiagnosticReport.swift``, jedes
+  mit Typ, Länge und Zeichenvorrat geprüft; unbekannte Felder, Steuerzeichen
+  und Zeiten außerhalb 2020–2100 werden mit 400 abgelehnt.
 
 Ablage: ``STORE/<kanal>/<build>/<zeit>-<art>-<id>.json``; dieselbe ID wird nur
 einmal angenommen (409). Nach 90 Tagen wird gelöscht. Keine Weitergabe.
@@ -37,11 +39,57 @@ MAX_BYTES = 1_000_000
 CHANNELS = {"stable", "dev", "ai", "calendar"}
 KINDS = {"crash", "hang", "appHang", "cpu", "memory", "diskWrite", "launch", "slow",
          "failure", "abnormalExit", "metrics", "test"}
-SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,48}$")
-REPORT_ID = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
-BUILD = re.compile(r"^[0-9]{1,6}$")
+
+# The form is fixed (DiagnosticReport.swift): exactly these fields, nothing
+# else. Swift, this file and scripts/diag_report.py change together, so an
+# unknown field is an error and is not stored. Optional fields are left out by
+# the app, never null.
+REPORT_FIELDS = {"formatVersion", "id", "kind", "createdAt", "app", "device", "summary", "signature",
+                 "details", "callStack", "breadcrumbs"}
+REPORT_OPTIONAL = {"occurredAt", "launchID", "launchPhase", "payload"}
+APP_FIELDS = {"channel", "bundleID", "version", "build", "commit"}
+DEVICE_FIELDS = {"model", "os"}
+FRAME_FIELDS, FRAME_OPTIONAL = {"image", "offset"}, {"uuid"}
+CRUMB_FIELDS, CRUMB_OPTIONAL = {"t", "e"}, {"v"}
+
+# What the app sends at most: DiagnosticJournal.capacity, DiagnosticReport.finalized
+# (a stack over 512 frames is cut to 448, a payload over 600 000 bytes dropped).
+MAX_BREADCRUMBS = 200
+MAX_FRAMES = 512
+MAX_PAYLOAD = 600_000
+MAX_DETAILS = 64
+MAX_VALUES = 32
+# Milliseconds since 1970: 01.01.2020 up to 01.01.2100 for the report's own
+# times. Breadcrumbs only need to stay inside what a date can hold.
+MIN_MS = 1_577_836_800_000
+MAX_MS = 4_102_444_800_000
+
+# Every text is matched as a whole (fullmatch): "$" would let a trailing
+# newline through. No class contains control characters, so none can reach the
+# store, the journal or the terminal of scripts/diag_report.py.
+SAFE_NAME = re.compile(r"[A-Za-z0-9._-]{1,48}")
+REPORT_ID = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+BUILD = re.compile(r"[0-9]{1,6}")
 # Detail values: printable ASCII without slashes, as DiagnosticPrivacy.safeDetail.
-SAFE_DETAIL = re.compile(r"^[\x20-\x2e\x30-\x5b\x5d-\x7d]{0,160}$")
+SAFE_DETAIL = re.compile(r"[\x20-\x2e\x30-\x5b\x5d-\x7d]{0,160}")
+# CFBundleShortVersionString, NotyCommit ("" locally, "-dirty" possible) and
+# the bundle identifier; "?" where the app found none.
+VERSION = re.compile(r"[A-Za-z0-9._+?-]{1,24}")
+COMMIT = re.compile(r"[A-Za-z0-9._-]{0,48}")
+BUNDLE_ID = re.compile(r"[A-Za-z0-9._?-]{1,160}")
+# Hardware model (iPad17,1) and "iPadOS <version>".
+MODEL = re.compile(r"[A-Za-z0-9,._?-]{1,32}")
+SYSTEM = re.compile(r"iPadOS [A-Za-z0-9.]{1,24}|\?")
+# Binary names (Noty, libc++.1.dylib, "?" when unknown) and Mach-O UUIDs.
+IMAGE = re.compile(r"[A-Za-z0-9._+?-]{1,128}")
+IMAGE_UUID = re.compile(REPORT_ID.pattern + r"|[0-9A-Fa-f]{32}")
+# DiagnosticAnalysis.signature: kind:operation:pattern|image+0xoffset>…
+SIGNATURE = re.compile(r"[A-Za-z0-9._:|>+?-]{1,700}")
+# DiagnosticAnalysis.summary: fixed German words, detail values and frames on one line.
+SUMMARY = re.compile(r"[\x20-\x2e\x30-\x5b\x5d-\x7dÄÖÜäöüß·×]{1,700}")
+# MetricKit's JSON is not checked for content, but it is one line of text
+# without control characters (C0, DEL, C1) or unpaired surrogates.
+UNPRINTABLE = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
 
 
 class Rejected(Exception):
@@ -51,46 +99,100 @@ class Rejected(Exception):
         self.reason = reason
 
 
+def _fields(value: object, required: set, optional: set, reason: str) -> dict:
+    """An object with all required and no unknown fields."""
+    if not isinstance(value, dict) or not required <= value.keys() or not value.keys() <= required | optional:
+        raise Rejected(400, reason)
+    return value
+
+
+def _text(value: object, pattern: re.Pattern, reason: str) -> str:
+    if not isinstance(value, str) or not pattern.fullmatch(value):
+        raise Rejected(400, reason)
+    return value
+
+
+def _whole(value: object, low: int, high: int, reason: str) -> int:
+    """A whole number in low ..< high. JSON true is an int in Python and is not one here."""
+    if type(value) is not int or not low <= value < high:
+        raise Rejected(400, reason)
+    return value
+
+
 def validate(report: object) -> dict:
-    """Checks the fixed form; raises Rejected(400) with a short reason."""
+    """Checks the fixed form: every field with type, length and characters.
+
+    Raises Rejected(400) with a short reason made of fixed words; the reason
+    never repeats text from the report.
+    """
     if not isinstance(report, dict):
         raise Rejected(400, "kein Objekt")
-    if report.get("formatVersion") != FORMAT_VERSION:
+    if type(report.get("formatVersion")) is not int or report["formatVersion"] != FORMAT_VERSION:
         raise Rejected(400, "formatVersion")
-    if report.get("kind") not in KINDS:
+    _fields(report, REPORT_FIELDS, REPORT_OPTIONAL, "Felder")
+    if not isinstance(report["kind"], str) or report["kind"] not in KINDS:
         raise Rejected(400, "kind")
-    if not isinstance(report.get("id"), str) or not REPORT_ID.match(report["id"]):
-        raise Rejected(400, "id")
-    if not isinstance(report.get("createdAt"), int):
-        raise Rejected(400, "createdAt")
-    app = report.get("app")
-    if not isinstance(app, dict) or app.get("channel") not in CHANNELS:
+    _text(report["id"], REPORT_ID, "id")
+    _whole(report["createdAt"], MIN_MS, MAX_MS, "createdAt")
+    if "occurredAt" in report:
+        _whole(report["occurredAt"], MIN_MS, MAX_MS, "occurredAt")
+
+    app = _fields(report["app"], APP_FIELDS, set(), "app")
+    if not isinstance(app["channel"], str) or app["channel"] not in CHANNELS:
         raise Rejected(400, "app.channel")
-    if not isinstance(app.get("build"), str) or not BUILD.match(app["build"]):
-        raise Rejected(400, "app.build")
-    if not isinstance(report.get("device"), dict):
-        raise Rejected(400, "device")
-    details = report.get("details", {})
-    if not isinstance(details, dict):
+    _text(app["build"], BUILD, "app.build")
+    _text(app["version"], VERSION, "app.version")
+    _text(app["commit"], COMMIT, "app.commit")
+    _text(app["bundleID"], BUNDLE_ID, "app.bundleID")
+    device = _fields(report["device"], DEVICE_FIELDS, set(), "device")
+    _text(device["model"], MODEL, "device.model")
+    _text(device["os"], SYSTEM, "device.os")
+
+    if "launchID" in report:
+        _text(report["launchID"], REPORT_ID, "launchID")
+    if "launchPhase" in report:
+        _text(report["launchPhase"], SAFE_NAME, "launchPhase")
+    _text(report["summary"], SUMMARY, "summary")
+    _text(report["signature"], SIGNATURE, "signature")
+
+    details = report["details"]
+    if not isinstance(details, dict) or len(details) > MAX_DETAILS:
         raise Rejected(400, "details")
     for key, value in details.items():
-        if not SAFE_NAME.match(key) or not isinstance(value, str) or not SAFE_DETAIL.match(value):
-            raise Rejected(400, "details." + (key if SAFE_NAME.match(key) else "?"))
-    crumbs = report.get("breadcrumbs", [])
-    if not isinstance(crumbs, list) or len(crumbs) > 1000:
+        if not SAFE_NAME.fullmatch(key):
+            raise Rejected(400, "details.?")
+        _text(value, SAFE_DETAIL, "details." + key)
+
+    crumbs = report["breadcrumbs"]
+    if not isinstance(crumbs, list) or len(crumbs) > MAX_BREADCRUMBS:
         raise Rejected(400, "breadcrumbs")
     for crumb in crumbs:
-        if not isinstance(crumb, dict) or not isinstance(crumb.get("e"), str) or not SAFE_NAME.match(crumb["e"]):
-            raise Rejected(400, "breadcrumbs.e")
-        values = crumb.get("v") or {}
-        if not isinstance(values, dict) or any(not SAFE_NAME.match(k) or not isinstance(v, int) for k, v in values.items()):
-            raise Rejected(400, "breadcrumbs.v")
-    stack = report.get("callStack", [])
-    if not isinstance(stack, list) or len(stack) > 4096:
+        _fields(crumb, CRUMB_FIELDS, CRUMB_OPTIONAL, "breadcrumbs")
+        _whole(crumb["t"], 0, MAX_MS, "breadcrumbs.t")
+        _text(crumb["e"], SAFE_NAME, "breadcrumbs.e")
+        if "v" in crumb:
+            values = crumb["v"]
+            if not isinstance(values, dict) or len(values) > MAX_VALUES:
+                raise Rejected(400, "breadcrumbs.v")
+            for key, value in values.items():
+                if not SAFE_NAME.fullmatch(key):
+                    raise Rejected(400, "breadcrumbs.v")
+                _whole(value, -(1 << 63), 1 << 63, "breadcrumbs.v")  # Swift Int
+
+    stack = report["callStack"]
+    if not isinstance(stack, list) or len(stack) > MAX_FRAMES:
         raise Rejected(400, "callStack")
     for frame in stack:
-        if not isinstance(frame, dict) or not isinstance(frame.get("offset"), int) or not isinstance(frame.get("image"), str):
-            raise Rejected(400, "callStack.frame")
+        _fields(frame, FRAME_FIELDS, FRAME_OPTIONAL, "callStack.frame")
+        _text(frame["image"], IMAGE, "callStack.image")
+        _whole(frame["offset"], 0, 1 << 64, "callStack.offset")  # Swift UInt64
+        if "uuid" in frame:
+            _text(frame["uuid"], IMAGE_UUID, "callStack.uuid")
+
+    if "payload" in report:
+        payload = report["payload"]
+        if not isinstance(payload, str) or len(payload) > MAX_PAYLOAD or UNPRINTABLE.search(payload):
+            raise Rejected(400, "payload")
     return report
 
 
@@ -227,9 +329,12 @@ def make_handler(store: Store, keys_file: str | None, limiter: RateLimiter):
                 raise Rejected(413, "zu groß")
             body = self.rfile.read(length)
             try:
-                report = validate(json.loads(body))
-            except (ValueError, UnicodeDecodeError):
+                # UTF-8 only, as the app writes it. Nesting or numbers beyond
+                # the parser are not a report either.
+                parsed = json.loads(body.decode("utf-8"))
+            except (ValueError, RecursionError):
                 raise Rejected(400, "kein JSON")
+            report = validate(parsed)
             path = store.save(report, body)
             sys.stderr.write(f"angenommen {report['app']['channel']} {report['app']['build']} {report['kind']} {path.name}\n")
             self.reply(201, "angenommen")

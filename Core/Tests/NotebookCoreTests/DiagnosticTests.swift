@@ -103,6 +103,109 @@ final class DiagnosticTests: XCTestCase {
         XCTAssertEqual(try DiagnosticReport.decode(report.encoded()), report)
     }
 
+    /// One report of every kind, built by `DiagnosticReporter` from fixed
+    /// input the way the app builds them. `diagnostics/fixtures/reports-v1-kinds.json`
+    /// holds exactly these: the server's tests accept each of them
+    /// (diagnostics/test_server.py checks every field's type, length and
+    /// characters) and the viewer's tests render them. A change to a summary,
+    /// a signature or the details fails here first; rewrite the file with
+    /// NOTY_WRITE_DIAG_FIXTURE=1 and the Python tests tell whether the server
+    /// still takes what the app sends.
+    func testKindFixtureIsWhatTheReporterBuilds() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("diagnostics/fixtures/reports-v1-kinds.json")
+        let built = kindReports()
+        if ProcessInfo.processInfo.environment["NOTY_WRITE_DIAG_FIXTURE"] == "1" {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
+            try (encoder.encode(built) + Data([0x0A])).write(to: url, options: .atomic)
+        }
+        let stored = try JSONDecoder().decode([DiagnosticReport].self, from: Data(contentsOf: url))
+        XCTAssertEqual(stored.count, built.count)
+        for (expected, report) in zip(built, stored) {
+            XCTAssertEqual(report, expected, "\(expected.kind.rawValue) \(expected.id)")
+            XCTAssertEqual(report.formatVersion, DiagnosticReport.currentFormatVersion)
+        }
+        XCTAssertEqual(Set(stored.map(\.kind)), Set(DiagnosticKind.allCases))
+    }
+
+    private func kindReports() -> [DiagnosticReport] {
+        let time: Int64 = 1_800_000_000_000
+        let reporter = DiagnosticReporter(
+            app: DiagnosticAppInfo(channel: "dev", bundleID: "de.la.noty.dev", version: "1.0", build: "149", commit: "040b1f4"),
+            device: DiagnosticDeviceInfo(model: "iPad17,1", os: "iPadOS 26.1"), launchID: "0B9C8D7E-6F50-4A3B-9C2D-1E0F9A8B7C6D")
+        let crumbs = [DiagnosticBreadcrumb(t: time - 4000, e: "notebook.open", v: ["pages": 34, "ms": 412]),
+                      DiagnosticBreadcrumb(t: time - 800, e: "phase.notebook")]
+        let session = DiagnosticSessionLog.Session(launchID: "5A4B3C2D-1E0F-4A9B-8C7D-6E5F4A3B2C1D", build: "148",
+                                                   startedAt: time - 60_000, phase: "lawWindow", state: .active, updatedAt: time - 1000)
+        let noty = "4C4C4483-5555-3144-A1D4-85A5F72E486E"
+        let tree = Data("""
+        {"callStackTree":{"callStackPerThread":true,"callStacks":[{"threadAttributed":true,"callStackRootFrames":[
+          {"binaryName":"libswiftCore.dylib","offsetIntoBinaryTextSegment":4660,"sampleCount":1,"binaryUUID":"5D5D4483-5555-3144-A1D4-85A5F72E486E",
+           "subFrames":[{"binaryName":"Noty","offsetIntoBinaryTextSegment":1741228,"sampleCount":1,"binaryUUID":"\(noty)",
+             "subFrames":[{"binaryName":"Noty","offsetIntoBinaryTextSegment":48,"sampleCount":1,"binaryUUID":"\(noty)",
+               "subFrames":[{"offsetIntoBinaryTextSegment":7,"sampleCount":1}]}]}]}]}]},
+         "diagnosticMetaData":{"appBuildVersion":"149","exceptionType":6,"signal":5,"osVersion":"iPadOS 26.1 (23B85)",
+           "exceptionReason":{"composedMessage":"Heft Geheimtitel","className":"NSException","exceptionName":"NSRangeException"}}}
+        """.utf8)
+        let hangStack = [DiagnosticFrame(image: "libsystem_kernel.dylib", offset: 0x6818, uuid: "6E6E4483-5555-3144-A1D4-85A5F72E486E"),
+                         DiagnosticFrame(image: "libc++.1.dylib", offset: 0xD648),
+                         DiagnosticFrame(image: "?", offset: UInt64.max),
+                         DiagnosticFrame(image: "Noty", offset: 0x10, uuid: noty)]
+
+        var trap = DiagnosticReporter.MetricKitFacts(kind: .crash)
+        trap.occurredAt = time - 500; trap.build = "149"; trap.exceptionType = 6; trap.exceptionCode = 1; trap.signal = 5
+        trap.callStackJSON = tree; trap.payloadJSON = tree
+        var objc = DiagnosticReporter.MetricKitFacts(kind: .crash)
+        objc.exceptionType = 10; objc.signal = 6; objc.objcExceptionName = "NSRangeException"; objc.callStackJSON = tree
+        var watchdog = DiagnosticReporter.MetricKitFacts(kind: .crash)
+        watchdog.exceptionType = 10; watchdog.signal = 9; watchdog.terminationReason = "Namespace SPRINGBOARD, Code 0x8badf00d"
+        var overflow = DiagnosticReporter.MetricKitFacts(kind: .crash)
+        overflow.exceptionType = 1; overflow.signal = 11; overflow.stackGuard = true; overflow.callStackJSON = tree
+        var hang = DiagnosticReporter.MetricKitFacts(kind: .hang)
+        hang.durationMilliseconds = 2100; hang.callStackJSON = tree; hang.build = "149"
+        var cpu = DiagnosticReporter.MetricKitFacts(kind: .cpu)
+        cpu.durationMilliseconds = 91_000; cpu.callStackJSON = tree
+        var launch = DiagnosticReporter.MetricKitFacts(kind: .launch)
+        launch.durationMilliseconds = 5200; launch.callStackJSON = tree
+        let daily = ["source": "metrickit", "from": String(time - 86_400_000), "to": String(time), "build": "149",
+                     "launchFirstDrawMsMean": "820", "launchResumeMsMean": "120", "hangMsMean": "450", "hangCount": "3",
+                     "scrollHitchMsPerS": "2.10", "memoryPeakMB": "612", "cpuSeconds": "310", "exitForegroundNormal": "4",
+                     "exitForegroundMemory": "0", "exitForegroundWatchdog": "1", "exitForegroundBadAccess": "0",
+                     "exitForegroundIllegalInstruction": "0", "exitForegroundAbnormal": "0", "exitBackgroundMemory": "2",
+                     "exitBackgroundMemoryPressure": "7", "exitBackgroundWatchdog": "0", "exitBackgroundSuspendedLockedFile": "0"]
+        // As DiagnosticsMetricKit builds the entry for exits by memory limit.
+        var memory = reporter.metrics(["source": "metrickit", "memoryExits": "2", "build": "?"], payloadJSON: nil, at: time)
+        memory.kind = .memory; memory.summary = ""; memory.signature = ""
+        memory = memory.finalized()
+        memory.summary = "Speicherlimit · 2× vom System wegen Speicherverbrauch beendet"
+
+        var reports = [
+            reporter.slow("notebook.open", milliseconds: 2400, threshold: 2000, values: ["pages": 34], phase: "notebook",
+                          breadcrumbs: crumbs, at: time),
+            reporter.failure("save", error: NSError(domain: "NSCocoaErrorDomain", code: 640), phase: "running", breadcrumbs: crumbs, at: time),
+            reporter.failure("appSync.mirror", error: NSError(domain: "NSPOSIXErrorDomain", code: -1), phase: nil, breadcrumbs: [], at: time),
+            reporter.appHang(milliseconds: 3006, stack: hangStack, phase: "running", breadcrumbs: crumbs, at: time, test: true),
+            reporter.abnormalExit(session, breadcrumbs: crumbs, at: time),
+            reporter.metricKit(trap, session: session, breadcrumbs: crumbs, at: time),
+            reporter.metricKit(objc, session: nil, breadcrumbs: [], at: time),
+            reporter.metricKit(watchdog, session: session, breadcrumbs: crumbs, at: time),
+            reporter.metricKit(overflow, session: session, breadcrumbs: crumbs, at: time),
+            reporter.metricKit(hang, session: session, breadcrumbs: crumbs, at: time),
+            reporter.metricKit(cpu, session: nil, breadcrumbs: [], at: time),
+            reporter.metricKit(DiagnosticReporter.MetricKitFacts(kind: .diskWrite), session: nil, breadcrumbs: [], at: time),
+            reporter.metricKit(launch, session: nil, breadcrumbs: [], at: time),
+            reporter.metrics(daily, payloadJSON: tree, at: time),
+            memory,
+            reporter.test("test.report", phase: "library", breadcrumbs: crumbs, at: time),
+        ]
+        for index in reports.indices {
+            let number = String(index + 1)
+            reports[index].id = "00000000-0000-4000-8000-" + String(repeating: "0", count: 12 - number.count) + number
+        }
+        return reports
+    }
+
     // MARK: Journal and sessions
 
     func testJournalKeepsTheLast200AndPersistsEveryEvent() throws {
