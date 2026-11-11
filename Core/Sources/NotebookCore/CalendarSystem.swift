@@ -298,6 +298,40 @@ public enum CalendarSourceMove {
             }
         }
     }
+
+    // Topic, key sentence and pinned material (format 5) belong to the same
+    // target as the notes and follow the same changes of the source.
+
+    /// The topic of the local single event `id` now belongs to `anchor`.
+    public static func retargetLocal(topics: inout [CalendarLessonTopic], event id: UUID, to anchor: CalendarSystemAnchor) {
+        for index in topics.indices {
+            if case .local(let event, nil) = topics[index].target, event == id { topics[index].target = .system(anchor) }
+        }
+        CalendarLessonTopics.unique(&topics)
+    }
+
+    /// The topic of a system single event now belongs to the local event `id`.
+    public static func retargetSystem(topics: inout [CalendarLessonTopic], from anchor: CalendarSystemAnchor, to id: UUID) {
+        for index in topics.indices {
+            if case .system(let old) = topics[index].target, old.identity == anchor.identity, old.isSingle {
+                topics[index].target = .local(event: id, date: nil)
+            }
+        }
+        CalendarLessonTopics.unique(&topics)
+    }
+
+    /// Topics of a system event follow its new identity: `old` → `new`.
+    public static func retarget(topics: inout [CalendarLessonTopic], from old: CalendarSystemAnchor, to new: CalendarSystemAnchor) {
+        for index in topics.indices {
+            if case .system(let anchor) = topics[index].target, anchor.identity == old.identity {
+                var moved = new
+                moved.occurrence = anchor.occurrence
+                moved.occurrenceLocal = anchor.occurrenceLocal
+                topics[index].target = .system(moved)
+            }
+        }
+        CalendarLessonTopics.unique(&topics)
+    }
 }
 
 public enum CalendarSystemNotes {

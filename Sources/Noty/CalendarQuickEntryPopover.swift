@@ -69,13 +69,13 @@ struct CalendarQuickEntryPopover: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(draft.title.isEmpty ? "Ohne Titel" : draft.title).font(.subheadline.weight(.semibold))
                         .foregroundStyle(draft.title.isEmpty ? .secondary : .primary)
-                    Text(CalendarText.longDate(draft.start, calendar: calendar) + " · "
+                    Text(day(draft, calendar: calendar) + " · "
                          + (draft.allDay ? "ganztägig" : CalendarText.timeRange(draft.start, draft.end, calendar: calendar)))
                         .font(.footnote).foregroundStyle(.secondary).monospacedDigit()
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Erkannt: " + (draft.title.isEmpty ? "ohne Titel" : draft.title) + ", "
-                                    + CalendarText.longDate(draft.start, calendar: calendar))
+                                    + day(draft, calendar: calendar))
             } else {
                 Text("Titel, Tag und Uhrzeit in einer Zeile eingeben.").font(.footnote).foregroundStyle(.secondary)
             }
@@ -83,6 +83,14 @@ struct CalendarQuickEntryPopover: View {
         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .padding(CalendarSpace.s)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.06)))
+    }
+
+    /// The day, or first and last day of an all-day range („12.11. bis 14.11.“).
+    private func day(_ draft: CalendarDraft, calendar: Calendar) -> String {
+        guard draft.allDay, !calendar.isDate(draft.start, inSameDayAs: draft.end), draft.end > draft.start else {
+            return CalendarText.longDate(draft.start, calendar: calendar)
+        }
+        return CalendarText.dayRange(draft.start, draft.end, calendar: calendar)
     }
 
     private func open(_ draft: CalendarDraft?) {

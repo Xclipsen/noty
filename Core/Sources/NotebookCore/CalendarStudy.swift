@@ -151,6 +151,54 @@ public struct CalendarLessonTopic: Identifiable, Equatable, Sendable, Codable {
     }
 }
 
+/// Finding and replacing the topic of a lesson or event. A topic is found by
+/// the identity the state's invariant uses – one topic per `target.key`
+/// (`CalendarStudy.validate`) – not by the whole target: a lesson's anchor is
+/// rebuilt from the lesson as delivered, so the same period with another
+/// start is still the same lesson. The topic of a Lernfeld block may be
+/// stored under any lesson of the block: its first lesson changes when a
+/// lesson is cancelled or the cancellation is withdrawn.
+public enum CalendarLessonTopics {
+    /// Position of the topic of `target`, else of the first lesson of `block`
+    /// (the targets of all lessons of its block, in order) that has one.
+    public static func index(in topics: [CalendarLessonTopic], target: CalendarNoteTarget, block: [CalendarNoteTarget] = []) -> Int? {
+        for key in [target.key] + block.map(\.key) {
+            if let index = topics.firstIndex(where: { $0.target.key == key }) { return index }
+        }
+        return nil
+    }
+
+    public static func topic(in topics: [CalendarLessonTopic], target: CalendarNoteTarget, block: [CalendarNoteTarget] = []) -> CalendarLessonTopic? {
+        index(in: topics, target: target, block: block).map { topics[$0] }
+    }
+
+    /// Changes the topic of `target` (found as above, else a new one) and
+    /// stores it under `target`, replacing what was found: there is never a
+    /// second topic with the same key. A topic that becomes empty is removed.
+    /// Topics of other lessons of the block that were not found stay.
+    public static func update(_ topics: inout [CalendarLessonTopic], target: CalendarNoteTarget, block: [CalendarNoteTarget] = [],
+                              _ change: (inout CalendarLessonTopic) -> Void) {
+        let found = index(in: topics, target: target, block: block)
+        var topic = found.map { topics[$0] } ?? CalendarLessonTopic(target: target)
+        change(&topic)
+        topic.target = target
+        topics.removeAll { $0.id == topic.id || $0.target.key == target.key }
+        if !topic.isEmpty { topics.append(topic) }
+    }
+
+    /// One topic per key: of several that share one after a change of their
+    /// targets, the newest stays.
+    static func unique(_ topics: inout [CalendarLessonTopic]) {
+        var kept: [String: Int] = [:]
+        var drop = Set<UUID>()
+        for (index, topic) in topics.enumerated() {
+            guard let other = kept[topic.target.key] else { kept[topic.target.key] = index; continue }
+            if topics[other].modifiedAt >= topic.modifiedAt { drop.insert(topic.id) } else { drop.insert(topics[other].id); kept[topic.target.key] = index }
+        }
+        if !drop.isEmpty { topics.removeAll { drop.contains($0.id) } }
+    }
+}
+
 public enum CalendarStudy {
     public static let maximumFields = 40
     public static let maximumRules = 500
