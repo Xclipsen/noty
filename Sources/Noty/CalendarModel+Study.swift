@@ -397,11 +397,16 @@ extension CalendarModel {
         return true
     }
 
-    /// A Fach-Heft lesson whose section exists: the card that opens the notebook
-    /// (its editor never runs beside the event).
+    /// A Fach-Heft or Lernfeld lesson whose section exists: the card that opens
+    /// the whole notebook full screen at that page (since 11.11.2026 also for
+    /// Lernfelder, user's wish: „direkt groß, das komplette Heft“; the editor
+    /// never runs beside the event).
     func prepareSubjectPrompt(for entry: CalendarEntry, link: CalendarNoteLink) -> Bool {
-        guard let subject = state.subjectNotebooks.first(where: { $0.notebookID == link.documentID }) else { return false }
-        var prompt = CalendarStudyPrompt(home: .subject(subject), notebook: studyNotebookState(subject.notebookID))
+        let home: StudyHome
+        if let subject = state.subjectNotebooks.first(where: { $0.notebookID == link.documentID }) { home = .subject(subject) }
+        else if let field = state.studyFields.first(where: { $0.notebookID == link.documentID }) { home = .field(field) }
+        else { return false }
+        var prompt = CalendarStudyPrompt(home: home, notebook: studyNotebookState(link.documentID))
         prompt.existingPage = link.pageID
         noteState = .study(prompt)
         return true
@@ -529,26 +534,15 @@ extension CalendarModel {
         if !linked {
             notice = "Die Seite in „\(title)“ ist angelegt, die Verknüpfung mit der Stunde aber noch nicht gespeichert (\(saveError ?? "")). noty versucht es weiter."
         }
-        if home.isSubject {
-            // Fach-Heft: the page is committed; the notebook opens full screen at it
-            // (outside this queue: opening closes the note, which waits for the queue).
-            guard await model.flushBeforeClosing() else {
-                lingering[documentID] = model
-                fail(model.saveBlocked ?? "Die neue Seite ist noch nicht gespeichert. Bitte erneut versuchen; es wird dieselbe Seite verwendet.")
-                return
-            }
-            guard selection == entry.id else { return }
-            Task { [weak self] in await self?.openNotebook(documentID, page: pageID, for: entry) }
+        // Fach-Heft and Lernfeld alike: the page is committed; the whole notebook opens
+        // full screen at it (outside this queue: opening closes the note, which waits for the queue).
+        guard await model.flushBeforeClosing() else {
+            lingering[documentID] = model
+            fail(model.saveBlocked ?? "Die neue Seite ist noch nicht gespeichert. Bitte erneut versuchen; es wird dieselbe Seite verwendet.")
             return
         }
-        guard selection == entry.id else {
-            if !(await model.flushBeforeClosing()) { lingering[documentID] = model }
-            return
-        }
-        let session = CalendarNoteSession(entry: entry, target: target, documentID: documentID, title: title, model: model, phase: .saved,
-                                          study: true)
-        startStudySession(session)
-        model.showPage(pageID)
+        guard selection == entry.id else { return }
+        Task { [weak self] in await self?.openNotebook(documentID, page: pageID, for: entry) }
     }
 
     /// The model has loaded its notebook and may be changed (≤ 20 s).

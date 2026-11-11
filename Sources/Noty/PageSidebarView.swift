@@ -21,6 +21,11 @@ struct PageSidebarView: View {
     /// Gliederung of a text document; recomputed off the main thread after
     /// the text rests briefly (`refreshTextOutline`), never per keystroke.
     @State private var textOutline: [TextOutlineEntry] = []
+    /// Notebooks: titles and headings of the free fields („Inhalt“ › „Überschriften“).
+    @State private var fieldHeadings: [NotebookHeading] = []
+    /// Lernfeld notebooks: the field's material (docs/LERNFELDER.md).
+    @State private var materialField: MaterialFieldRequest?
+    @ObservedObject private var materials = MaterialLibrary.shared
     @State private var outlineTask: Task<Void, Never>?
     @State private var editMode: EditMode = .inactive
     @State private var showingTrash = false
@@ -213,6 +218,9 @@ struct PageSidebarView: View {
         }
         .background(Color(white: 0.065))
         .environment(\.colorScheme, .dark)
+        .sheet(item: $materialField, onDismiss: { StalledGestures.requestReset() }) { request in
+            MaterialSearchSheet(initialQuery: "", field: request.field)
+        }
         .sheet(isPresented: $showingTrash, onDismiss: { StalledGestures.requestReset() }) {
             PageTrashView(model: model, cache: cache)
         }
@@ -233,18 +241,59 @@ struct PageSidebarView: View {
     @ViewBuilder
     private var outlineList: some View {
         let sections = studyOutline.sections(for: model.notebook)
-        if !sections.isEmpty {
+        let field = studyOutline.field(for: model.notebook.id)
+        if sections.isEmpty && fieldHeadings.isEmpty && model.pdfOutline.isEmpty && field == nil {
+            ContentUnavailableView("Kein Inhalt", systemImage: "list.bullet.indent",
+                                   description: Text("Textfelder im Stil Titel oder Überschrift, Stunden aus dem Kalender und Inhaltsverzeichnisse von PDFs erscheinen hier."))
+        } else {
             let order = Dictionary(model.notebook.pages.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { a, _ in a })
             let current = currentPage.id
             List {
-                Section("Stunden") {
-                    ForEach(sections) { section in
-                        StudySectionRow(section: section, pageNumber: (order[section.headingPageID] ?? 0) + 1,
-                                        current: section.pageIDs.contains(current)) {
-                            guard canEdit else { return }
-                            selectPage(section.headingPageID); onSelect?()
+                if let field {
+                    Section("Material") {
+                        Button { materialField = MaterialFieldRequest(field: field) } label: {
+                            Label(materials.packages.isEmpty ? "Material hinzufügen …" : "Skripte und Videos · LF \(field)",
+                                  systemImage: "books.vertical")
+                                .frame(minHeight: 36, alignment: .leading).contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain).foregroundStyle(Color.notyAccent)
                         .listRowBackground(Color.clear)
+                    }
+                }
+                if !sections.isEmpty {
+                    Section("Stunden") {
+                        ForEach(sections) { section in
+                            StudySectionRow(section: section, pageNumber: (order[section.headingPageID] ?? 0) + 1,
+                                            current: section.pageIDs.contains(current)) {
+                                guard canEdit else { return }
+                                selectPage(section.headingPageID); onSelect?()
+                            }
+                            .listRowBackground(Color.clear)
+                        }
+                    }
+                }
+                if !fieldHeadings.isEmpty {
+                    Section("Überschriften") {
+                        ForEach(fieldHeadings) { heading in
+                            Button {
+                                guard canEdit else { return }
+                                selectPage(heading.pageID); onSelect?()
+                            } label: {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(heading.text)
+                                        .font(heading.preset == .title ? .headline : .subheadline)
+                                        .foregroundStyle(heading.pageID == current ? Color.notyAccent : .primary)
+                                        .lineLimit(2).multilineTextAlignment(.leading)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    Text("\(heading.pageIndex + 1)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                }
+                                .padding(.leading, heading.preset == .title ? 0 : 12)
+                                .frame(minHeight: 36).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(heading.preset.title): \(heading.text), Seite \(heading.pageIndex + 1)")
+                            .listRowBackground(Color.clear)
+                        }
                     }
                 }
                 if !model.pdfOutline.isEmpty {
@@ -259,19 +308,6 @@ struct PageSidebarView: View {
                     }
                 }
             }.listStyle(.plain).scrollContentBackground(.hidden)
-                .disabled(!canEdit)
-        } else if model.pdfOutline.isEmpty {
-            ContentUnavailableView("Kein PDF-Inhaltsverzeichnis", systemImage: "list.bullet.indent",
-                                   description: Text("Die enthaltenen PDFs haben kein Inhaltsverzeichnis mit erreichbaren Seiten."))
-        } else {
-            List(model.pdfOutline) { item in
-                NotebookOutlineRow(item: item, selectedPage: currentPage.id, keyItem: keyOutlineItem?.id) { id in
-                    guard canEdit else { return }
-                    selectPage(id); onSelect?()
-                }
-                .listRowBackground(Color.clear)
-            }.listStyle(.plain).scrollContentBackground(.hidden)
-                .disabled(!canEdit)
         }
     }
 
@@ -310,14 +346,21 @@ struct PageSidebarView: View {
     /// the short wait, so typing costs no extraction; older results never
     /// overwrite newer ones (the previous task is cancelled).
     private func refreshTextOutline(_ notebook: Notebook, after wait: Duration = .zero) {
-        guard notebook.isTextDocument, selectedTab == .outline else { return }
+        guard selectedTab == .outline else { return }
         outlineTask?.cancel()
         outlineTask = Task {
             if wait > .zero { try? await Task.sleep(for: wait) }
             guard !Task.isCancelled else { return }
-            let entries = await Task.detached(priority: .userInitiated) { notebook.textOutline }.value
-            guard !Task.isCancelled else { return }
-            if entries != textOutline { textOutline = entries }
+            if notebook.isTextDocument {
+                let entries = await Task.detached(priority: .userInitiated) { notebook.textOutline }.value
+                guard !Task.isCancelled else { return }
+                if entries != textOutline { textOutline = entries }
+            } else {
+                // Notebooks: headings of the free fields (`Notebook.fieldHeadings`).
+                let entries = await Task.detached(priority: .userInitiated) { notebook.fieldHeadings }.value
+                guard !Task.isCancelled else { return }
+                if entries != fieldHeadings { fieldHeadings = entries }
+            }
         }
     }
 
@@ -932,3 +975,10 @@ extension TextBox {
                         width: max(1, Double(rect.width) * scale), height: max(1, Double(rect.height) * scale))
     }
 }
+
+/// „Skripte und Videos“ of a Lernfeld notebook (page list › Inhalt).
+struct MaterialFieldRequest: Identifiable, Equatable {
+    let id = UUID()
+    let field: Int
+}
+

@@ -45,6 +45,16 @@ Auftrag des Nutzers („heute steht Religion an, ich tippe drauf, und ein Notizb
 
 Datenmodell: `subjectNotebooks` in `CalendarState` (Format 6): `{id, subjectKey (wie Fachfarben), subjectName (1–200, getrimmt), notebookID}`, höchstens 200, je Fach ein Heft, je Heft ein Fach, nie das Heft eines Lernfelds (`CalendarStudy.validate`). Die Seiten selbst sind gewöhnliche Abschnitte (`CalendarNoteLink.pageID`, `StudySections`), das Heftformat bleibt unverändert. Nur geschrieben, wenn nicht leer: ein Stand ohne Fach-Hefte ist bytegleich zu Format 5 bis auf die Versionsnummer.
 
+## Lernfeld-Stunden öffnen das ganze Heft groß, „Inhalt“ mit Überschriften und Material (11.11.2026, `feat/lernfeld-gross`, noty dev Build 157)
+
+Nutzerwunsch zu Build 156: „es soll direkt groß aufgehen und bitte das komplette Heft anzeigen“, dazu Skripte im Heft und eine ausgebaute Seitenleiste.
+
+- **Groß wie ein Fach-Heft:** Eine Lernfeld-Stunde läuft nicht mehr als kleiner Editor neben dem Termin. „Mitschrift beginnen“ legt die Seite mit Überschrift an (wie bisher nach Datum einsortiert), speichert sie und öffnet dann das **ganze** Heft groß an dieser Seite, mit „Zurück zu …“ zum Kalender. Hat die Stunde ihre Seite schon, zeigt sie die Karte „„LF n – …“ öffnen“ (`prepareSubjectPrompt` gilt jetzt für Fach- und Lernfeld-Hefte, `createStudySection` öffnet in beiden Fällen groß). Folge: Ein später geändertes Thema passt die Überschrift nicht mehr automatisch an (das ging nur, solange das Heft neben dem Termin offen war; bei Fach-Heften schon bisher so), und „Seite hinzufügen“ im großen Editor fügt wie sonst hinter der aktuellen Seite ein.
+- **Seitenleiste › Inhalt bei Heften:** neben „Stunden“ und „PDF“ jetzt „Überschriften“: Absätze freier Textfelder im Stil Titel oder Überschrift, nach Seiten und von oben nach unten (`Notebook.fieldHeadings`, Core, ≤ 400 Einträge; Unterüberschriften bleiben draußen). Ein Tipp springt zur Seite. Ohne alles: „Kein Inhalt“ statt „Kein PDF-Inhaltsverzeichnis“.
+- **Material im Heft:** Ist das Heft das Heft eines Lernfelds, steht oben im „Inhalt“ „Skripte und Videos · LF n“. Es öffnet die Materialsuche des Lernfelds; ohne Suchbegriff listet sie dessen Kapitel (`MaterialChapterRow`): „Skript“ öffnet das Skript, aufgeklappt stehen die Videolektionen mit Sprung ins Skript an ihre Seite und ▶ zum Video auf der Plattform (mit eigenem Login). Ohne installiertes Materialpaket heißt der Eintrag „Material hinzufügen …“ und erklärt den Weg.
+
+Nachweis: `NotebookHeadingsTests` (Core); `xtool dev build`. Am iPad **ungeprüft**: Öffnen aus dem Kalender (neu und vorhandene Stunde), Zurück zum Kalender, Überschriften der importierten Schulhefte, Materialliste, Skriptansicht, Video-Link.
+
 ## Lernfeld-Heft wählen (11.11.2026)
 
 Auftrag des Nutzers vom 11.11.2026: Seine bisherigen Schulunterlagen liegen, nach Lernfeldern geordnet, als fertige Hefte vor (importierte `.noty`-Dateien „LF 1 – …“ bis „LF 4 – …“). Neue Stunden sollen in **diese** Hefte geschrieben werden, nicht in ein zweites, von noty angelegtes „LF n – Titel“.

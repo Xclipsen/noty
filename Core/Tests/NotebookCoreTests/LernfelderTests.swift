@@ -553,3 +553,36 @@ final class LernfelderTests: XCTestCase {
         XCTAssertEqual(StudySections.insertionIndex(for: at(2, 8), in: notebook, sections: sections), 3)
     }
 }
+
+/// „Inhalt“ of a notebook: titles and headings of its free fields.
+final class NotebookHeadingsTests: XCTestCase {
+    func testHeadingsOfFreeFieldsInPageOrderWithoutSubheadingsAndBody() throws {
+        var notebook = Notebook.blank(title: "LF 3")
+        let second = try notebook.insertPaper(.lined, at: 1)
+        let first = notebook.pages[0].id
+        var body = TextBoxStyle(fontSize: 16)
+        body.automaticColor = true
+        // Page 1: a field with a title run, a body line and a heading run; a second field above it.
+        let text = "LF 3 – Umsatzsteuer\nnormaler Text\nEinführung\n\nAufgabe 1"
+        var box = TextBox(x: 40, y: 200, width: 500, height: 200, text: text, style: body)
+        func run(_ part: String, _ size: Double, bold: Bool) -> TextRun {
+            let range = (text as NSString).range(of: part)
+            var style = body; style.fontSize = size; style.bold = bold
+            return TextRun(location: range.location, length: range.length, style: style)
+        }
+        box.runs = [run("LF 3 – Umsatzsteuer", 30, bold: true), run("Einführung", 20, bold: true), run("Aufgabe 1", 17, bold: true)]
+        var top = TextBoxStyle(fontSize: 20, bold: true); top.automaticColor = true
+        let above = TextBox(x: 40, y: 40, width: 500, height: 40, text: "Oben", style: top)
+        try notebook.replaceTextBoxes([box, above], pageID: first)
+        // Page 2: one heading field.
+        try notebook.replaceTextBoxes([TextBox(x: 40, y: 40, width: 500, height: 40, text: "Ort der Lieferung", style: top)], pageID: second)
+
+        let headings = notebook.fieldHeadings
+        XCTAssertEqual(headings.map(\.text), ["Oben", "LF 3 – Umsatzsteuer", "Einführung", "Ort der Lieferung"])
+        XCTAssertEqual(headings.map(\.preset), [.heading, .title, .heading, .heading])
+        XCTAssertEqual(headings.map(\.pageIndex), [0, 0, 0, 1])
+        XCTAssertEqual(headings[2].location, (text as NSString).range(of: "Einführung").location)
+        XCTAssertEqual(Set(headings.map(\.id)).count, headings.count)
+        XCTAssertTrue(Notebook.blank(title: "leer").fieldHeadings.isEmpty)
+    }
+}
