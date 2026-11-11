@@ -23,6 +23,8 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Normale noty Build 159 (`main`, 11.11.2026):** Skripte lassen sich aus der Skriptansicht eines Hefts „Ins Heft einfügen“ (eine Seite oder das ganze Skript, mit Schreibplatz) und dort markieren und beschreiben ([LERNFELDER](docs/LERNFELDER.md)). Auf Wunsch des Nutzers direkt nach main; iPad-Build bestanden, am iPad ungeprüft.
+
 **Freigabe 11.11.2026 · normale noty Build 158 (`main`):** Auf Wunsch des Nutzers („direkt auf main“) der Stand von noty dev Build 157 (Lernfeld groß, Inhalt mit Überschriften und Material), am iPad ungeprüft.
 
 **Lernfeld groß und Material im Heft, noty dev Build 157 (`feat/lernfeld-gross`, 11.11.2026):** Lernfeld-Stunden öffnen wie Fach-Hefte das ganze Heft groß; die Seitenleiste „Inhalt“ zeigt Überschriften der Textfelder und bei Lernfeld-Heften „Skripte und Videos“ des Lernfelds ([LERNFELDER](docs/LERNFELDER.md)). Core-Tests und iPad-Build bestanden, am iPad ungeprüft.

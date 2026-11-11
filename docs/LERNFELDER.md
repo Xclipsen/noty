@@ -53,7 +53,9 @@ Nutzerwunsch zu Build 156: „es soll direkt groß aufgehen und bitte das komple
 - **Seitenleiste › Inhalt bei Heften:** neben „Stunden“ und „PDF“ jetzt „Überschriften“: Absätze freier Textfelder im Stil Titel oder Überschrift, nach Seiten und von oben nach unten (`Notebook.fieldHeadings`, Core, ≤ 400 Einträge; Unterüberschriften bleiben draußen). Ein Tipp springt zur Seite. Ohne alles: „Kein Inhalt“ statt „Kein PDF-Inhaltsverzeichnis“.
 - **Material im Heft:** Ist das Heft das Heft eines Lernfelds, steht oben im „Inhalt“ „Skripte und Videos · LF n“. Es öffnet die Materialsuche des Lernfelds; ohne Suchbegriff listet sie dessen Kapitel (`MaterialChapterRow`): „Skript“ öffnet das Skript, aufgeklappt stehen die Videolektionen mit Sprung ins Skript an ihre Seite und ▶ zum Video auf der Plattform (mit eigenem Login). Ohne installiertes Materialpaket heißt der Eintrag „Material hinzufügen …“ und erklärt den Weg.
 
-Nachweis: `NotebookHeadingsTests` (Core); `xtool dev build`. Am iPad **ungeprüft**: Öffnen aus dem Kalender (neu und vorhandene Stunde), Zurück zum Kalender, Überschriften der importierten Schulhefte, Materialliste, Skriptansicht, Video-Link.
+- **Skript ins Heft (Build 159):** In der Skriptansicht, die aus einem Heft geöffnet wurde, steht „Ins Heft einfügen“ › „Diese Seite (S. n)“ oder „Ganzes Skript (n Seiten)“. Die Seiten kommen hinter die aktuelle Heftseite als PDF-Seiten mit Schreibplatz rechts im Papier des Hefts (normaler PDF-Einfügeweg: Original vollständig ins Heft kopiert, ein Rückgängig-Schritt); dort lässt sich markieren und schreiben wie auf jedem Arbeitsblatt. Eine einzelne Seite wird mit PDFKit als eigenes einseitiges PDF vorbereitet. Aus dem Kalender geöffnet bleibt das Skript nur zum Lesen.
+
+Nachweis: `NotebookHeadingsTests` (Core); `xtool dev build`. Am iPad **ungeprüft** (auch „Ins Heft einfügen“): Öffnen aus dem Kalender (neu und vorhandene Stunde), Zurück zum Kalender, Überschriften der importierten Schulhefte, Materialliste, Skriptansicht, Video-Link.
 
 ## Lernfeld-Heft wählen (11.11.2026)
 
