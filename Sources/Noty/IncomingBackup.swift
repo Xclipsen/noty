@@ -74,11 +74,13 @@ enum IncomingBackup {
             return
         }
         defer { BackupScratch.remove(copy); removeFromInbox(url) }
-        if kind == "notylibrary" { await offerLibrary(copy, progress: progress, workspaces: workspaces) }
+        if kind == "notylibrary" { await offerLibrary(copy, progress: progress, library: library, workspaces: workspaces) }
         else { await offerNotebook(copy, progress: progress, library: library) }
     }
 
-    private static func offerLibrary(_ copy: URL, progress: UIAlertController?, workspaces: WorkspaceAppModel) async {
+    private enum LibraryChoice: Sendable { case merge, area }
+
+    private static func offerLibrary(_ copy: URL, progress: UIAlertController?, library: LibraryModel, workspaces: WorkspaceAppModel) async {
         let prepared: PreparedLibraryRestore
         do { prepared = try await workspaces.prepareLibraryRestore(copy) }
         catch {
@@ -92,9 +94,16 @@ enum IncomingBackup {
         let size = ByteCountFormatter.string(fromByteCount: Int64(summary.file.byteCount), countStyle: .file)
         var message = "Gesichert am \(NotyText.listDate(summary.createdAt)) · \(NotyText.count(summary.notebooks.count, "Heft", "Hefte")), \(summary.folderCount) Ordner, \(NotyText.count(summary.trashedCount, "Eintrag", "Einträge")) im Papierkorb · \(size)."
         if let calendar = summary.calendar { message += "\n\n" + NotyText.calendarRestoreSummary(calendar) }
-        message += "\n\nWird als neuer getrennter Bereich wiederhergestellt. Die aktuelle Bibliothek bleibt unverändert."
-        guard await TopAlert.ask("Bibliotheksbackup wiederherstellen?", message, confirm: "Als neuen Bereich wiederherstellen") else {
-            await workspaces.discardLibraryRestore(prepared); return
+        message += "\n\n„In diese Bibliothek übernehmen“ legt die Ordner der Datei hier an (vorhandene gleichnamige werden benutzt) und holt jedes Heft als neues Heft dazu; vorhandene Hefte bleiben unverändert."
+            + "\n\n„Als neuen Bereich wiederherstellen“ legt alles als getrennten Bereich an. Die aktuelle Bibliothek bleibt unverändert."
+        let choice = await TopAlert.choose("Bibliotheksbackup öffnen", message, actions: [
+            ("In diese Bibliothek übernehmen …", .default, LibraryChoice.merge),
+            ("Als neuen Bereich wiederherstellen", .default, .area)])
+        guard choice == .area else {
+            await workspaces.discardLibraryRestore(prepared)
+            // The checked copy stays until this function returns; the merge asks once more with the details.
+            if choice == .merge { await library.importFolders(from: copy, base: nil, isScratchCopy: true) }
+            return
         }
         let running = TopAlert.progress("Bereich wird angelegt …")
         // A running area switch is no reason to throw the checked file away.

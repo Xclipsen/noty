@@ -265,9 +265,12 @@ struct LibraryView: View {
                 }
             }, onError: { model.error = $0 })
         }
-        .fileImporter(isPresented: $importingBackup, allowedContentTypes: [.noty, .notyBackup, .json, .data]) { result in
+        .fileImporter(isPresented: $importingBackup, allowedContentTypes: [.noty, .notyBackup, .notyLibrary, .json, .data]) { result in
             switch result {
-            case .success(let url): Task { if await model.importBackup(url, parent: parentID) != nil { showNewItem() } }
+            case .success(let url):
+                // One picker for both: a library archive brings its folders along (docs/LIBRARY.md).
+                if url.pathExtension.lowercased() == "notylibrary" { let base = parentID; Task { await model.importFolders(from: url, base: base) } }
+                else { Task { if await model.importBackup(url, parent: parentID) != nil { showNewItem() } } }
             case .failure(let error): model.error = error.localizedDescription
             }
         }
@@ -1003,6 +1006,7 @@ struct LibraryView: View {
                 Section {
                     Button("PDF oder Bild importieren …", systemImage: "doc.badge.plus") { importingPDF = true }
                     Button(".noty importieren …", systemImage: "arrow.down.doc") { importingBackup = true }
+                    Button("Ordner importieren (.notylibrary) …", systemImage: "folder.badge.plus") { importingBackup = true }
                     if !activeCopies.isEmpty {
                         Button("Wiederhergestellte Kopien …", systemImage: "clock.arrow.circlepath") { showingCopies = true }
                     }
@@ -1051,6 +1055,11 @@ struct LibraryView: View {
     /// `<Titel>.noty` of the last committed revision in the share sheet.
     private func shareNoty(_ item: NotebookCore.LibraryItem) {
         Task { if let url = await model.shareFile(for: item) { NotyShare.present(url) } }
+    }
+
+    /// `<Ordner>.notylibrary`: the folder with its subfolders and notebooks in the share sheet.
+    private func exportFolder(_ item: NotebookCore.LibraryItem) {
+        Task { if let url = await model.folderShareFile(for: item) { NotyShare.present(url) } }
     }
 
     /// Notebook or text document as `<Titel>.txt`/`.md`/`.rtf`/`.docx` of the last committed
@@ -1307,6 +1316,9 @@ struct LibraryView: View {
             Button("Verschieben …", systemImage: "folder") { moving = item }
             if !item.isFolder && !item.isTextDocument {
                 Button("Umschlag ändern …", systemImage: "paintpalette") { editCover(item) }
+            }
+            if item.isFolder {
+                Button("Ordner exportieren …", systemImage: "square.and.arrow.up") { exportFolder(item) }
             }
             if !item.isFolder {
                 Button("Duplizieren", systemImage: "plus.square.on.square") { Task { await model.duplicate(item) } }
