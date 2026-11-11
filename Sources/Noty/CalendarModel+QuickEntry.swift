@@ -15,8 +15,9 @@ extension CalendarModel {
         var draft = CalendarDraft(start: parsed.start, calendar: calendar)
         draft.title = parsed.title
         draft.allDay = parsed.allDay
-        // The form shows the last day of all-day events (end inclusive).
-        draft.end = parsed.allDay ? parsed.start : parsed.end
+        // The form shows the last day of all-day events (end inclusive);
+        // „12.11. bis 14.11.“ keeps its range.
+        draft.end = parsed.formEnd(calendar: calendar)
         return draft
     }
 

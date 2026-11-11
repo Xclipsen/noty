@@ -128,6 +128,16 @@ public struct CalendarQuickEntry: Equatable, Sendable {
         return CalendarQuickEntry(title: title, start: start, end: calendar.date(byAdding: .day, value: 1, to: last) ?? last, allDay: true)
     }
 
+    /// The end as the event form shows it: the form's end of an all-day
+    /// event is its last day (inclusive), `end` is exclusive – so „12.11. bis
+    /// 14.11.“ (end 15.11.) gives 14.11. Never before the start; a timed
+    /// entry keeps its end. Whole days through the calendar (a day of 23 or
+    /// 25 hours is one day).
+    public func formEnd(calendar: Calendar) -> Date {
+        guard allDay else { return end }
+        return max(start, CalendarDates.day(-1, after: end, calendar: calendar))
+    }
+
     /// „10“, „10:30“, „10.30“, „9“ (hour only when `loose`).
     static func parseTime(_ text: String, loose: Bool) -> (Int, Int)? {
         let token = text.trimmingCharacters(in: .whitespaces)

@@ -455,6 +455,30 @@ final class CalendarQuickEntryTests: XCTestCase {
         XCTAssertEqual(parse("Lernen Mo. 16:30 bis 17:15").end, at(11, 9, 17, 15))
     }
 
+    func testAllDayRangeKeepsItsLastDayInTheForm() throws {
+        // The parser ends all-day ranges exclusively, the form shows the last day.
+        let trip = parse("Klassenfahrt 12.11. bis 14.11.")
+        XCTAssertTrue(trip.allDay)
+        XCTAssertEqual(trip.start, berlin.startOfDay(for: at(11, 12, 12)))
+        XCTAssertEqual(trip.end, berlin.startOfDay(for: at(11, 15, 12)))
+        XCTAssertEqual(trip.formEnd(calendar: berlin), berlin.startOfDay(for: at(11, 14, 12)))
+        XCTAssertEqual(parse("Messe 12.11.-14.11.").formEnd(calendar: berlin), berlin.startOfDay(for: at(11, 14, 12)))
+        XCTAssertEqual(parse("Kurs Mo bis Mi").formEnd(calendar: berlin), berlin.startOfDay(for: at(11, 11, 12)))
+        // One day: start and last day are the same.
+        let single = parse("Klassenfahrt 12.11.")
+        XCTAssertEqual(single.formEnd(calendar: berlin), single.start)
+        // Over the end of summer time (31 Oct 2027, a day of 25 hours) and its start (28 Mar 2027, 23 hours).
+        let autumn = parse("Herbstfahrt 30.10.2027 bis 01.11.2027")
+        XCTAssertEqual(autumn.formEnd(calendar: berlin), berlin.startOfDay(for: at(11, 1, 12, year: 2027)))
+        XCTAssertEqual(parse("Fahrt 27.03.2027 bis 28.03.2027").formEnd(calendar: berlin), berlin.startOfDay(for: at(3, 28, 12, year: 2027)))
+        XCTAssertEqual(parse("Fahrt 28.03.2027 bis 29.03.2027").formEnd(calendar: berlin), berlin.startOfDay(for: at(3, 29, 12, year: 2027)))
+        // Never before the start; a timed entry keeps its end.
+        let start = berlin.startOfDay(for: at(11, 12, 12))
+        XCTAssertEqual(CalendarQuickEntry(title: "x", start: start, end: start, allDay: true).formEnd(calendar: berlin), start)
+        let timed = parse("Lernen Montag 16:30-18 Uhr")
+        XCTAssertEqual(timed.formEnd(calendar: berlin), at(11, 9, 18))
+    }
+
     func testDatesRelativeDaysAndAllDay() {
         let trip = parse("Klassenfahrt 12.11.")
         XCTAssertTrue(trip.allDay); XCTAssertEqual(trip.title, "Klassenfahrt")
