@@ -88,9 +88,10 @@ final class WorkspaceAppModel: ObservableObject {
     /// A removed area whose WebUntis connection the push service polls: signed
     /// off there too (docs/PUSH.md, „Abmelden“), like „Trennen“. In the
     /// background: the area list does not wait for the server. Its calendar
-    /// choice „Sichtbare Kalender“ (a device preference) goes as well.
+    /// choice „Sichtbare Kalender“ (a device preference) goes as well, and so
+    /// does its search index (plain text of its notebooks under Library/Caches).
     private func areaRemoved(_ namespace: String?, scope: String? = nil) {
-        if let scope { CalendarModel.forgetHiddenSources(scope: scope) }
+        if let scope { CalendarModel.forgetHiddenSources(scope: scope); ContentSearchIndexLocation.removeArea(scope) }
         guard let namespace else { return }
         Task { await CalendarPushClient.shared.areaRemoved(namespace: namespace) }
     }

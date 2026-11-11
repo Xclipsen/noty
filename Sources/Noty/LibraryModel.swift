@@ -401,6 +401,12 @@ final class LibraryModel: ObservableObject {
             let result = try await action()
             snapshot = result.snapshot
             restoredCopies.removeAll { result.purgedIDs.contains($0.id) }
+            // The search index under Library/Caches holds the notebooks' text in
+            // plain form (typed, PDF, OCR, handwriting): it goes with them. Derived
+            // data, removed without a result, so it can never fail the deletion.
+            if !result.purgedIDs.isEmpty {
+                await ContentSearchIndexLocation.store(area: StableDefaults.scope(root)).remove(result.purgedIDs)
+            }
             var parts = [result.purgedIDs.count == 1 ? "1 Eintrag endgültig gelöscht." : "\(result.purgedIDs.count) Einträge endgültig gelöscht."]
             if !result.retainedIDs.isEmpty {
                 parts.append("Das ursprüngliche Heft liegt direkt im App-Ordner und bleibt im Papierkorb.")

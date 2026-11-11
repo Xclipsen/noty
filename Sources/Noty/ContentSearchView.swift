@@ -17,6 +17,14 @@ enum ContentSearchIndexLocation {
         stores[area] = store
         return store
     }
+    /// A removed area: its whole index directory (plain text of its notebooks)
+    /// goes too. In the background and without a result: a failure here must
+    /// never fail or undo the removal itself.
+    static func removeArea(_ area: String) {
+        let store = store(area: area)
+        stores[area] = nil
+        Task { await store.removeAll() }
+    }
 }
 
 private struct SearchIndexAreaKey: EnvironmentKey { static let defaultValue: String? = nil }
