@@ -30,6 +30,11 @@ public enum LaunchPhase: String, Sendable, CaseIterable {
 /// A run is finished once the app was active for a few seconds or went to
 /// the background cleanly. Opening a notebook or the law window later arms
 /// the guard again until that step has run for a few seconds as well.
+///
+/// A process iPadOS launched in the background (calendar refresh) and that
+/// never showed a scene is no start the user saw: `backgroundLaunch()` sets
+/// the run aside, `foreground()` arms it again when a scene is shown later
+/// in the same process.
 public struct LaunchGuardState: Equatable, Sendable {
     public enum Mode: Equatable, Sendable { case normal, skipRestore, safe }
 
@@ -52,6 +57,23 @@ public struct LaunchGuardState: Equatable, Sendable {
     /// Phase the current run reached (raw value; unknown values are ignored).
     public var phase: String?
 
+    /// This process was launched in the background and has shown no scene
+    /// (`backgroundLaunch()`): the three values above are those `begin()`
+    /// found. In memory only, like everything below.
+    public private(set) var setAside = false
+    private struct Stored: Equatable, Sendable {
+        var inProgress: Bool
+        var streak: Int
+        var phase: String?
+    }
+    /// What `begin()` found, and the streak it left.
+    private var found: Stored?
+    private var begun = 0
+    /// A scene of this process was in the foreground.
+    private var shown = false
+    /// Phase reached while set aside, for arming again.
+    private var reached = LaunchPhase.starting
+
     public init(inProgress: Bool = false, streak: Int = 0, phase: String? = nil) {
         self.inProgress = inProgress; self.streak = max(0, streak); self.phase = phase
     }
@@ -60,6 +82,8 @@ public struct LaunchGuardState: Equatable, Sendable {
     /// arms the guard for this one.
     public mutating func begin() -> Launch {
         let previous = phase.flatMap(LaunchPhase.init(rawValue:))
+        found = Stored(inProgress: inProgress, streak: streak, phase: phase)
+        setAside = false; shown = false; reached = .starting
         let launch: Launch
         if inProgress {
             streak = min(streak + 1, 99)
@@ -70,7 +94,34 @@ public struct LaunchGuardState: Equatable, Sendable {
         }
         inProgress = true
         phase = LaunchPhase.starting.rawValue
+        begun = streak
         return launch
+    }
+
+    /// The process runs in the background without ever having shown a scene
+    /// (launched for the calendar refresh). The stored values go back to what
+    /// `begin()` found: a suspended process ended later is not counted, and
+    /// the verdict about the run before reaches the next start the user sees
+    /// unchanged. True when this set the run aside; no effect once a scene
+    /// was in the foreground (a refresh in a process the user had opened).
+    @discardableResult
+    public mutating func backgroundLaunch() -> Bool {
+        guard let found, !shown, !setAside else { return false }
+        setAside = true
+        inProgress = found.inProgress; streak = found.streak; phase = found.phase
+        return true
+    }
+
+    /// A scene is in the foreground: from here on this is a start the user
+    /// sees. Arms a run set aside by `backgroundLaunch()` again, as `begin()`
+    /// left it (with the phase reached meanwhile); true when it did.
+    @discardableResult
+    public mutating func foreground() -> Bool {
+        shown = true
+        guard setAside else { return false }
+        setAside = false
+        inProgress = true; streak = begun; phase = reached.rawValue
+        return true
     }
 
     /// A phase was reached. Returns true when this re-armed a finished run
@@ -78,6 +129,8 @@ public struct LaunchGuardState: Equatable, Sendable {
     /// after the same delay.
     @discardableResult
     public mutating func enter(_ next: LaunchPhase) -> Bool {
+        // Set aside: the stored values belong to the run before.
+        if setAside { reached = next; return false }
         if inProgress { phase = next.rawValue; return false }
         guard next == .editorOpen || next == .lawWindow else { return false }
         inProgress = true
@@ -89,12 +142,15 @@ public struct LaunchGuardState: Equatable, Sendable {
     /// background). The streak stays until the next `begin()`, so a crash
     /// after re-arming still counts on top of it.
     public mutating func finish() {
+        // Set aside: `inProgress` is the unfinished run before, not this one.
+        guard !setAside else { return }
         inProgress = false
     }
 
     /// „Normal neu starten“: the next launch runs normally whatever happened.
     public mutating func resetToNormal() {
         inProgress = false; streak = 0; phase = nil
+        setAside = false; found = nil
     }
 
     /// The library's notice for this launch (nil: normal launch).

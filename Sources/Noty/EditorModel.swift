@@ -89,9 +89,34 @@ final class EditorModel: ObservableObject {
     private var lastPermanentFailure: String?
     /// Saving cannot succeed by waiting. The last commit stays valid.
     var saveBlocked: String? { saveFailed ? lastPermanentFailure : nil }
+    /// Newest save failure of either kind (`retrying`: the automatic retry
+    /// runs for it); cleared by a successful save.
+    private var lastFailure: (message: String, retrying: Bool)?
+    /// For a close attempt (`EditorClosePolicy`, Core, with tests).
+    var closeSaveState: EditorClosePolicy.SaveState {
+        EditorClosePolicy.SaveState(failed: saveFailed, reason: lastFailure?.message, retrying: lastFailure?.retrying ?? false)
+    }
+    /// The save fails right now, whether noty still retries it or not: the
+    /// reason for offering „Ohne Speichern schließen“ when the user leaves.
+    /// An error that keeps failing (disk full) must not lock the editor.
+    var closeBlocked: String? { EditorClosePolicy.abandonReason(closeSaveState) }
     /// The user chose to close without the changes since the last commit.
     func abandonUnsavedChanges() {
         retryTask?.cancel(); saveFailed = false; writable = false
+        releaseWriteClaim()
+    }
+    /// The same when the user confirmed it while leaving, possibly during an
+    /// automatic retry: no new attempt starts, a running one is superseded
+    /// and awaited. It then neither reports into the closed editor (a late
+    /// failure would keep the workspace open with this view unwritable) nor
+    /// writes after the claim is released. What it still commits is the
+    /// user's newest state; the last commit stays valid either way.
+    func abandonUnsavedChangesWhenLeaving() async {
+        retryTask?.cancel(); retryTask = nil
+        saveFailed = false; writable = false
+        revision += 1
+        pendingSave?.cancel()
+        await pendingSave?.value
         releaseWriteClaim()
     }
     /// The process-wide single-writer claim of this package
@@ -1031,7 +1056,7 @@ final class EditorModel: ObservableObject {
                 let measurement = Diagnostics.begin("save")
                 try await store.save(snapshot, revision: savingRevision)
                 Diagnostics.end(measurement, ["pages": snapshot.pages.count])
-                if savingRevision == revision { setStatus("Lokal gespeichert"); retryAttempt = 0; lastPermanentFailure = nil }
+                if savingRevision == revision { setStatus("Lokal gespeichert"); retryAttempt = 0; lastPermanentFailure = nil; lastFailure = nil }
             } catch is CancellationError {
                 // A newer complete snapshot supersedes this one.
             } catch {
@@ -1049,6 +1074,7 @@ final class EditorModel: ObservableObject {
         if !saveFailed { saveFailed = true }
         Diagnostics.failure("save", failure)
         let message = failure.localizedDescription
+        lastFailure = (message: message, retrying: Self.retryable(failure))
         guard Self.retryable(failure) else {
             setStatus("Speichern fehlgeschlagen – Änderungen nur im Speicher")
             // The same permanent error again (e.g. a later flush) keeps the

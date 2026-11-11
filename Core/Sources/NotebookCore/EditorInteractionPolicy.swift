@@ -109,3 +109,45 @@ public enum PaperRuling {
         max(natural, nextBaseline(atOrAfter: natural) - baselineLift)
     }
 }
+
+/// What a failed attempt to leave a notebook view offers. Any failing save
+/// makes „Ohne Speichern schließen“ available when the user asks to leave:
+/// an error waiting for the user as well as one the automatic retry keeps
+/// trying (disk full and the like can last for hours). Nothing is discarded
+/// without that confirmation; the automatic retry is not affected.
+public enum EditorClosePolicy {
+    /// Save state of one editor at the moment the user asks to leave it.
+    public struct SaveState: Equatable, Sendable {
+        /// The newest save attempt failed.
+        public var failed: Bool
+        /// Message of the newest failure.
+        public var reason: String?
+        /// The automatic retry is running for that failure.
+        public var retrying: Bool
+        public init(failed: Bool, reason: String?, retrying: Bool) {
+            self.failed = failed; self.reason = reason; self.retrying = retrying
+        }
+    }
+
+    public static let unknownReason = "Das Heft konnte nicht gespeichert werden."
+    public static let retryNote = "Noty versucht das Speichern weiter automatisch, solange das Heft geöffnet bleibt."
+
+    /// The reason shown with the offer to close without saving; nil when
+    /// nothing failed (saved, or only a running operation keeps it open).
+    public static func abandonReason(_ state: SaveState) -> String? {
+        guard state.failed else { return nil }
+        let reason = state.reason.flatMap { $0.isEmpty ? nil : $0 } ?? unknownReason
+        return state.retrying ? reason + "\n\n" + retryNote : reason
+    }
+
+    /// Several views closing together: the views given up with one
+    /// confirmation (every one whose save fails, of either kind, so none
+    /// stays behind half closed) and the reason shown, an error waiting for
+    /// the user first. Nil: no view fails, nothing is offered.
+    public static func abandonOffer(_ panes: [SaveState]) -> (reason: String, panes: [Int])? {
+        let failing = panes.indices.filter { panes[$0].failed }
+        guard let first = failing.first(where: { !panes[$0].retrying }) ?? failing.first,
+              let reason = abandonReason(panes[first]) else { return nil }
+        return (reason, failing)
+    }
+}

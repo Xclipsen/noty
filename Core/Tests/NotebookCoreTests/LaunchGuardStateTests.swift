@@ -74,4 +74,144 @@ final class LaunchGuardStateTests: XCTestCase {
         XCTAssertEqual(LaunchGuardState.notice(for: .init(mode: .skipRestore, interrupted: 1, phase: nil)),
                        "Der letzte Start wurde unterbrochen. Das zuletzt geöffnete Heft wurde nicht automatisch geöffnet.")
     }
+
+    // MARK: Background launch (calendar refresh without a scene)
+
+    /// The next process: only the three stored values survive.
+    private func relaunched(_ state: LaunchGuardState) -> LaunchGuardState {
+        LaunchGuardState(inProgress: state.inProgress, streak: state.streak, phase: state.phase)
+    }
+
+    func testBackgroundLaunchIsNotAnInterruptedStart() {
+        var background = LaunchGuardState()
+        XCTAssertEqual(background.begin().mode, .normal)
+        XCTAssertTrue(background.backgroundLaunch())
+        XCTAssertFalse(background.backgroundLaunch(), "set aside once")
+        // The suspended process is ended; the user starts the app.
+        var next = relaunched(background)
+        XCTAssertEqual(next.begin(), .init(mode: .normal, interrupted: 0, phase: nil))
+    }
+
+    func testTwoBackgroundLaunchesNeverReachTheSafeMode() {
+        var first = LaunchGuardState()
+        _ = first.begin(); first.backgroundLaunch()
+        var second = relaunched(first)
+        XCTAssertEqual(second.begin().mode, .normal)
+        second.backgroundLaunch()
+        var third = relaunched(second)
+        XCTAssertEqual(third.begin().mode, .normal)
+        third.backgroundLaunch()
+        var fourth = relaunched(third)
+        XCTAssertEqual(fourth.begin(), .init(mode: .normal, interrupted: 0, phase: nil))
+    }
+
+    /// Without the background signal a second start cannot tell an ended
+    /// background process from a crash before the first frame: that still counts.
+    func testCrashBeforeTheFirstFrameStillCounts() {
+        var crashed = LaunchGuardState()
+        _ = crashed.begin()
+        var next = relaunched(crashed)
+        XCTAssertEqual(next.begin(), .init(mode: .skipRestore, interrupted: 1, phase: .starting))
+    }
+
+    func testBackgroundLaunchShownLaterCountsACrash() {
+        var state = LaunchGuardState()
+        _ = state.begin()
+        state.backgroundLaunch()
+        // Loaded in the background; nothing of it is stored while set aside.
+        XCTAssertFalse(state.enter(.library))
+        XCTAssertFalse(state.inProgress)
+        XCTAssertNil(state.phase)
+        // The user opens the app: the same process shows its scene.
+        XCTAssertTrue(state.foreground())
+        XCTAssertTrue(state.inProgress)
+        XCTAssertEqual(state.phase, LaunchPhase.library.rawValue)
+        XCTAssertFalse(state.foreground(), "armed once")
+        state.enter(.editorOpen)
+        // Crash before the run settled.
+        var next = relaunched(state)
+        XCTAssertEqual(next.begin(), .init(mode: .skipRestore, interrupted: 1, phase: .editorOpen))
+    }
+
+    func testBackgroundLaunchShownLaterAndSettledStaysNormal() {
+        var state = LaunchGuardState()
+        _ = state.begin()
+        state.backgroundLaunch()
+        state.foreground()
+        state.finish()
+        var next = relaunched(state)
+        XCTAssertEqual(next.begin().mode, .normal)
+    }
+
+    /// A real crash, then a background launch the user never saw: the start
+    /// after it still skips the restore, counted once, with the crash's phase.
+    func testBackgroundLaunchKeepsTheVerdictAboutTheRunBefore() {
+        var crashed = LaunchGuardState()
+        _ = crashed.begin()
+        crashed.enter(.library); crashed.enter(.editorOpen)
+        var background = relaunched(crashed)
+        XCTAssertEqual(background.begin().mode, .skipRestore)
+        background.backgroundLaunch()
+        // Neither a later phase nor a clean end of the unseen run changes it.
+        background.enter(.library)
+        background.finish()
+        XCTAssertEqual(relaunched(background), relaunched(crashed))
+        var next = relaunched(background)
+        XCTAssertEqual(next.begin(), .init(mode: .skipRestore, interrupted: 1, phase: .editorOpen))
+        // A second real crash right after: safe mode, as without the background launch.
+        var again = relaunched(next)
+        XCTAssertEqual(again.begin().mode, .safe)
+    }
+
+    /// The same process shown later continues the streak `begin()` counted.
+    func testBackgroundLaunchAfterACrashShownLaterKeepsTheStreak() {
+        var crashed = LaunchGuardState()
+        _ = crashed.begin()
+        var background = relaunched(crashed)
+        XCTAssertEqual(background.begin().mode, .skipRestore)
+        background.backgroundLaunch()
+        XCTAssertTrue(background.foreground())
+        XCTAssertEqual(background.streak, 1)
+        var next = relaunched(background)
+        XCTAssertEqual(next.begin().mode, .safe)
+    }
+
+    /// A scene connected in the background finishes the run first; the
+    /// refresh then still sets it aside.
+    func testBackgroundLaunchAfterACleanBackgroundSceneIsSetAsideToo() {
+        var crashed = LaunchGuardState()
+        _ = crashed.begin()
+        var background = relaunched(crashed)
+        _ = background.begin()
+        background.finish()
+        XCTAssertTrue(background.backgroundLaunch())
+        var next = relaunched(background)
+        XCTAssertEqual(next.begin().mode, .skipRestore)
+    }
+
+    /// A refresh in a process the user had opened changes nothing.
+    func testRefreshAfterAForegroundStartChangesNothing() {
+        var crashed = LaunchGuardState()
+        _ = crashed.begin()
+        var state = relaunched(crashed)
+        XCTAssertEqual(state.begin().mode, .skipRestore)
+        XCTAssertFalse(state.foreground())
+        state.finish()
+        let settled = state
+        XCTAssertFalse(state.backgroundLaunch())
+        XCTAssertEqual(state, settled)
+        var next = relaunched(state)
+        XCTAssertEqual(next.begin().mode, .normal)
+    }
+
+    func testNormalRestartClearsASetAsideRun() {
+        var state = LaunchGuardState()
+        _ = state.begin()
+        state.backgroundLaunch()
+        state.resetToNormal()
+        XCTAssertFalse(state.setAside)
+        XCTAssertFalse(state.backgroundLaunch())
+        XCTAssertFalse(state.foreground())
+        XCTAssertFalse(state.inProgress)
+    }
 }

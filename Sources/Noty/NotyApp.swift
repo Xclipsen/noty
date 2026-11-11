@@ -59,7 +59,11 @@ struct NotyApp: App {
         }
         .commands { NotyCommands() }
         // Mitteilungen: background refresh through the shown area's calendar model, or nothing.
-        .backgroundTask(.appRefresh(CalendarNotificationHub.refreshIdentifier)) { await CalendarNotificationHub.runBackgroundRefresh() }
+        // A process launched only for this, without a shown scene, is no interrupted start (LaunchGuard).
+        .backgroundTask(.appRefresh(CalendarNotificationHub.refreshIdentifier)) {
+            await LaunchGuard.shared.backgroundRefreshBegan()
+            await CalendarNotificationHub.runBackgroundRefresh()
+        }
     }
 }
 
