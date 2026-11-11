@@ -467,4 +467,89 @@ final class LernfelderTests: XCTestCase {
         XCTAssertEqual(StudySections.sections(of: notebook, links: links).count, 3)
         XCTAssertNoThrow(try notebook.validate())
     }
+
+    // MARK: Lernfeld-Heft wählen
+
+    func testFieldTakesAnExistingNotebookOnlyWhenItIsFree() throws {
+        let own = UUID(), religion = UUID(), imported = UUID()
+        var state = studyState(notebook: own)
+        let second = CalendarStudyField(number: 4, title: "Einkommensteuer")
+        state.studyFields.append(second)
+        state.subjectNotebooks = [CalendarSubjectNotebook(subjectKey: "webuntis:rel", subjectName: "Religion", notebookID: religion)]
+        let first = state.studyFields[0].id
+        XCTAssertEqual(CalendarStudy.notebooksTaken(forField: second.id, fields: state.studyFields, subjects: state.subjectNotebooks),
+                       [own, religion])
+        XCTAssertEqual(CalendarStudy.notebooksTaken(forField: first, fields: state.studyFields, subjects: state.subjectNotebooks),
+                       [religion], "das eigene Heft zählt nicht als vergeben")
+
+        // A free notebook of the library: taken over, everything else unchanged.
+        let before = state
+        try CalendarStudy.setNotebook(imported, ofField: second.id, fields: &state.studyFields, subjects: state.subjectNotebooks)
+        XCTAssertEqual(state.studyFields.first { $0.id == second.id }?.notebookID, imported)
+        XCTAssertEqual(state.studyFields[0], before.studyFields[0])
+        XCTAssertEqual(state.noteLinks, before.noteLinks)
+        XCTAssertEqual(state.studyRules, before.studyRules)
+        XCTAssertNoThrow(try state.validate())
+
+        // The notebook of another field or of a subject: refused, nothing changes.
+        for taken in [own, religion] {
+            var broken = state
+            XCTAssertThrowsError(try CalendarStudy.setNotebook(taken, ofField: second.id, fields: &broken.studyFields, subjects: broken.subjectNotebooks))
+            XCTAssertEqual(broken, state)
+        }
+        // An unknown field: refused.
+        var unknown = state
+        XCTAssertThrowsError(try CalendarStudy.setNotebook(UUID(), ofField: UUID(), fields: &unknown.studyFields, subjects: unknown.subjectNotebooks))
+        XCTAssertEqual(unknown, state)
+
+        // Choosing the same notebook again and letting it go.
+        try CalendarStudy.setNotebook(imported, ofField: second.id, fields: &state.studyFields, subjects: state.subjectNotebooks)
+        try CalendarStudy.setNotebook(nil, ofField: second.id, fields: &state.studyFields, subjects: state.subjectNotebooks)
+        XCTAssertNil(state.studyFields.first { $0.id == second.id }?.notebookID)
+        XCTAssertNoThrow(try state.validate())
+        // Freed: the other field may take it now.
+        try CalendarStudy.setNotebook(imported, ofField: first, fields: &state.studyFields, subjects: state.subjectNotebooks)
+        XCTAssertNoThrow(try state.validate())
+    }
+
+    func testSectionNotebookCandidatesAreOrdinaryActiveNotebooks() {
+        var snapshot = LibrarySnapshot()
+        let notes = LibraryItem(title: "Kalendernotizen"), folder = LibraryItem(title: "Schule"), bin = LibraryItem(title: "Alt")
+        var trashedFolder = bin; trashedFolder.deletedAt = created
+        let free = LibraryItem(title: "LF 3 – Umsatzsteuer", parentID: folder.id, source: .library)
+        let legacy = LibraryItem(title: "Erstes Heft", source: .legacyMain)
+        let taken = LibraryItem(title: "LF 4", source: .library)
+        let small = LibraryItem(title: "SR · 09.11.2026", parentID: notes.id, source: .library)
+        let restored = LibraryItem(title: "Kopie", source: .restored)
+        var text = LibraryItem(title: "Aufsatz", source: .library); text.kind = .textDocument
+        var trashed = LibraryItem(title: "Weg", source: .library); trashed.deletedAt = created
+        let inTrashedFolder = LibraryItem(title: "Im Papierkorb-Ordner", parentID: bin.id, source: .library)
+        snapshot.items = [notes, folder, trashedFolder, free, legacy, taken, small, restored, text, trashed, inTrashedFolder]
+
+        let found = CalendarNotesFolder.sectionNotebookCandidates(in: snapshot, notesFolder: notes.id, taken: [taken.id])
+        XCTAssertEqual(found.map(\.id), [free.id, legacy.id], "nur gewöhnliche aktive Hefte, in Bibliotheksreihenfolge")
+        // Without a usable notes folder its former notebooks are ordinary notebooks.
+        let without = CalendarNotesFolder.sectionNotebookCandidates(in: snapshot, notesFolder: nil, taken: [])
+        XCTAssertEqual(Set(without.map(\.id)), [free.id, legacy.id, taken.id, small.id])
+    }
+
+    func testFirstSectionOfAChosenNotebookGoesBehindItsPages() throws {
+        // A notebook with pages of its own (imported), no lesson section yet.
+        var notebook = Notebook.blank(title: "LF 3 – Umsatzsteuer")
+        _ = try notebook.insertPaper(.lined, at: 1)
+        _ = try notebook.insertPaper(.lined, at: 2)
+        let existing = notebook.pages.map(\.id)
+        let index = StudySections.insertionIndex(for: at(9, 8), in: notebook, sections: [])
+        XCTAssertEqual(index, 3)
+        let heading = try notebook.insertSectionPage(heading: "Mo 09.11.2026 · SR · 08:00–10:30", at: index)
+        XCTAssertEqual(notebook.pages.map(\.id), existing + [heading], "vorhandene Seiten bleiben unverändert vorn")
+        let anchor = CalendarLessonAnchor(source: "webuntis:x", periodID: "1", lessonID: nil, originalDate: CivilDate("2026-11-09")!,
+                                          originalStart: "2026-11-09T08:00")
+        let link = CalendarNoteLink(target: .lesson(anchor), documentID: notebook.id, pageID: heading, createdAt: created,
+                                    contextTitle: "SR", contextStart: at(9, 8), contextEnd: at(9, 10, 30))
+        let sections = StudySections.sections(of: notebook, links: [link])
+        XCTAssertEqual(sections.map(\.pageIDs), [[heading]])
+        // An earlier lesson caught up later goes before that section, still behind the notebook's own pages.
+        XCTAssertEqual(StudySections.insertionIndex(for: at(2, 8), in: notebook, sections: sections), 3)
+    }
 }

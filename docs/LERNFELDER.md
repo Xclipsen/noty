@@ -17,6 +17,7 @@ Die Berufsschule ist nach **Lernfeldern** organisiert, nicht nach Fächern: WS =
 | **Fach-Hefte** (Kalenderformat 6, 09.11.2026, `feat/fachheft`, noty dev Build 150): Fach → eigenes Heft der Bibliothek, Stunde öffnet es groß an ihrer Seite | ja | ja | nein | ungeprüft (Core-Tests 1620, Host-Rundlauf, Python-Prüfer bestanden) |
 | Themenkarte im Terminfenster (Thema, Material, Merksatz) | ja | ja | nein | ungeprüft |
 | Einstellungen › Kalender › Lernfelder / Materialien | ja | ja | nein | ungeprüft |
+| **Lernfeld-Heft wählen** (11.11.2026, `feat/lernfeld-heft`, noty dev Build 153): ein Lernfeld schreibt in ein vorhandenes Heft der Bibliothek | ja | ja | nein | ungeprüft (Core-Tests 1630, `xtool dev build` bestanden) |
 | Inhalt der Lernfeld-Hefte in der Seitenleiste („Stunden“) | ja | ja | nein | ungeprüft |
 | Gesetzes-Reader direkt am Paragrafen öffnen, Rückverweise „deine Seiten“ | nein | – | – | – |
 | Lernfeld-Übersicht mit Abdeckung der Kapitel, Klausurmodus | nein | – | – | – |
@@ -43,6 +44,19 @@ Auftrag des Nutzers („heute steht Religion an, ich tippe drauf, und ein Notizb
 5. **Heft weg:** Liegt das Heft im Papierkorb, bietet die Karte „Heft wiederherstellen“ oder „Anderes Heft wählen“. Endgültig gelöscht: „Heft wählen“; ein Backup lässt die Zuordnung dann weg. Ersetzen eines Hefts verlangt wie bei Lernfeld-Heften, dass niemand das Paket hält (ein Schreiber je Paket; die Karte öffnet den Editor erst, nachdem die Seite festgeschrieben und das Paket freigegeben ist).
 
 Datenmodell: `subjectNotebooks` in `CalendarState` (Format 6): `{id, subjectKey (wie Fachfarben), subjectName (1–200, getrimmt), notebookID}`, höchstens 200, je Fach ein Heft, je Heft ein Fach, nie das Heft eines Lernfelds (`CalendarStudy.validate`). Die Seiten selbst sind gewöhnliche Abschnitte (`CalendarNoteLink.pageID`, `StudySections`), das Heftformat bleibt unverändert. Nur geschrieben, wenn nicht leer: ein Stand ohne Fach-Hefte ist bytegleich zu Format 5 bis auf die Versionsnummer.
+
+## Lernfeld-Heft wählen (11.11.2026)
+
+Auftrag des Nutzers vom 11.11.2026: Seine bisherigen Schulunterlagen liegen, nach Lernfeldern geordnet, als fertige Hefte vor (importierte `.noty`-Dateien „LF 1 – …“ bis „LF 4 – …“). Neue Stunden sollen in **diese** Hefte geschrieben werden, nicht in ein zweites, von noty angelegtes „LF n – Titel“.
+
+1. **Wählen:** Einstellungen › Kalender › Lernfelder, am Lernfeld „…“ (oder langes Drücken) › „Heft wählen …“. Zur Wahl stehen gewöhnliche aktive Hefte der Bibliothek: keine Textdokumente, keine wiederhergestellten Kopien, keine Kalendernotizen, nichts aus dem Papierkorb, kein Heft eines anderen Lernfelds oder Fachs (`CalendarNotesFolder.sectionNotebookCandidates`, dieselbe Regel wie beim Fach-Heft). Die Liste ist durchsuchbar und nennt den Ordner.
+2. **Wirkung:** Nur die Kennung am Lernfeld ändert sich (`CalendarStudy.setNotebook`); das gewählte Heft wird dabei nicht geöffnet und nicht verändert. Die nächste Mitschrift legt wie immer eine Seite mit Überschrift an. In einem Heft ohne Abschnitte kommt sie **ans Ende**, hinter die vorhandenen Seiten; spätere Stunden sortieren sich nach Datum unter die Abschnitte ein (`StudySections.insertionIndex`, unverändert). Die neue Seite nimmt Papier und Farbe aus den Seitenvorgaben des Hefts.
+3. **Ändern / lösen:** „Anderes Heft wählen …“ stellt um, „Heft lösen“ nimmt die Kennung weg (die nächste Mitschrift legt dann wieder ein neues „LF n – Titel“ an). In beiden Fällen bleiben das alte Heft und seine Seiten unverändert, und die bisherigen Mitschriften bleiben an ihren Stunden verknüpft. Sie öffnen dann aber als gewöhnliches Heft neben dem Termin (ohne Abschnittsleiste), weil das alte Heft kein Lernfeld-Heft mehr ist; der Auswahldialog sagt, wie viele Mitschriften das betrifft.
+4. **Heft weg:** Wie bisher: Papierkorb → „Heft wiederherstellen“ oder „Neues Heft anlegen“; endgültig gelöscht → die nächste Mitschrift legt ein neues an.
+
+Kein Formatwechsel: `studyFields[].notebookID` gibt es seit Format 5, die Regel „ein Heft hat einen Besitzer“ prüft `CalendarStudy.validate` schon. Eine Wahl aus einer veralteten Liste wird vor dem Speichern noch einmal gegen die Bibliothek geprüft; ein vergebenes Heft lehnt der Core ab, der Stand bleibt unverändert. Eine noch laufende Neuanlage des Lernfeld-Hefts (`studyCreations`) wird nach der Wahl nicht mehr fortgesetzt.
+
+Nachweis: `LernfelderTests.testFieldTakesAnExistingNotebookOnlyWhenItIsFree`, `testSectionNotebookCandidatesAreOrdinaryActiveNotebooks`, `testFirstSectionOfAChosenNotebookGoesBehindItsPages` (Core, Linux). Die Bedienung (Menü, Auswahlblatt, erste Mitschrift in einem importierten Heft mit PDF-Seiten) ist am iPad ungeprüft.
 
 ## Datenmodell
 

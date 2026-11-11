@@ -228,6 +228,27 @@ public enum CalendarStudy {
         subjects.first { $0.subjectKey == subjectKey }
     }
 
+    /// Notebooks the field `id` may not take as its own: those of the other
+    /// fields and every Fach-Heft (one notebook has one owner).
+    public static func notebooksTaken(forField id: UUID, fields: [CalendarStudyField],
+                                      subjects: [CalendarSubjectNotebook]) -> Set<UUID> {
+        Set(fields.filter { $0.id != id }.compactMap(\.notebookID)).union(subjects.map(\.notebookID))
+    }
+
+    /// „Lernfeld-Heft wählen“: the field writes its sections into `notebook`
+    /// from now on (an ordinary notebook of the library the user chose), or
+    /// – nil – gets a new notebook with its next lesson note. Sections written
+    /// so far stay where they are. Throws when the field does not exist or the
+    /// notebook already belongs to another field or subject.
+    public static func setNotebook(_ notebook: UUID?, ofField id: UUID, fields: inout [CalendarStudyField],
+                                   subjects: [CalendarSubjectNotebook]) throws {
+        guard let index = fields.firstIndex(where: { $0.id == id }) else { throw CalendarStoreError.invalidState }
+        if let notebook, notebooksTaken(forField: id, fields: fields, subjects: subjects).contains(notebook) {
+            throw CalendarStoreError.invalidState
+        }
+        fields[index].notebookID = notebook
+    }
+
     static func validate(fields: [CalendarStudyField], rules: [CalendarStudyRule], topics: [CalendarLessonTopic],
                          subjects: [CalendarSubjectNotebook] = []) throws {
         // One notebook per subject, one subject per notebook, never a Lernfeld's notebook.

@@ -204,6 +204,52 @@ extension CalendarModel {
         }
     }
 
+    // MARK: Lernfeld-Heft wählen (Einstellungen › Kalender › Lernfelder)
+
+    /// Notebooks the field may take: ordinary active notebooks of the library
+    /// (no text documents, no calendar note, none of another field or of a
+    /// subject), by title. The field's own notebook is not listed.
+    func fieldNotebookCandidates(for field: CalendarStudyField) -> [NotebookCore.LibraryItem] {
+        guard let library else { return [] }
+        var taken = CalendarStudy.notebooksTaken(forField: field.id, fields: state.studyFields, subjects: state.subjectNotebooks)
+        if let own = field.notebookID { taken.insert(own) }
+        return CalendarNotesFolder.sectionNotebookCandidates(in: library.snapshot, notesFolder: state.settings.notesFolderID, taken: taken)
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    /// Sections of lessons that already point into the field's current notebook.
+    func fieldSectionCount(_ field: CalendarStudyField) -> Int {
+        guard let id = field.notebookID else { return 0 }
+        return state.noteLinks.filter { $0.documentID == id && $0.pageID != nil }.count
+    }
+
+    /// „Lernfeld-Heft wählen“: from the next lesson note on the field writes
+    /// its sections into `item`, an existing notebook of the library (new
+    /// sections go to its end, `StudySections.insertionIndex`). nil: the field
+    /// lets its notebook go and gets a new one with the next note. The
+    /// notebooks themselves and the sections written so far are not touched.
+    @discardableResult
+    func setFieldNotebook(_ item: NotebookCore.LibraryItem?, for fieldID: UUID) async -> Bool {
+        guard canWrite, !showsSamples, let field = state.studyFields.first(where: { $0.id == fieldID }) else { return false }
+        if let item {
+            // Chosen from a list that may be older than the library: check again.
+            guard fieldNotebookCandidates(for: field).contains(where: { $0.id == item.id }) else {
+                notice = "„\(item.title)“ kann nicht mehr gewählt werden. Bitte ein anderes Heft wählen."
+                return false
+            }
+        }
+        // The note beside the event may show this field's prompt or section: close it first.
+        await closeNote()
+        let saved = await commit { state in
+            try? CalendarStudy.setNotebook(item?.id, ofField: fieldID, fields: &state.studyFields, subjects: state.subjectNotebooks)
+        }
+        // A notebook this field was still creating is no longer its notebook (it stays in the library if it got that far).
+        let changed = saved && state.studyFields.first(where: { $0.id == fieldID })?.notebookID == item?.id
+        if changed { studyCreations[fieldID] = nil }
+        if let entry = selectedEvent { showNote(for: entry) }
+        return changed
+    }
+
     /// The rule for exactly this subject/weekday/time window: set (field) or removed (nil).
     func setRule(subjectKey: String, subjectName: String, weekday: Int?, startFrom: Int?, startTo: Int?, field: UUID?) async {
         await commit { state in
@@ -280,13 +326,9 @@ extension CalendarModel {
     /// none of another subject), by title.
     func subjectNotebookCandidates(for entry: CalendarEntry) -> [NotebookCore.LibraryItem] {
         guard let library else { return [] }
-        let snapshot = library.snapshot
         let taken = Set(state.subjectNotebooks.filter { $0.subjectKey != entry.subjectKey }.map(\.notebookID))
             .union(state.studyFields.compactMap(\.notebookID))
-        let notes = CalendarNotesFolder.usable(state.settings.notesFolderID, in: snapshot)
-        return snapshot.items
-            .filter { !$0.isFolder && !$0.isTextDocument && $0.source != .restored && !snapshot.isTrashed($0.id)
-                && !taken.contains($0.id) && (notes == nil || $0.parentID != notes) }
+        return CalendarNotesFolder.sectionNotebookCandidates(in: library.snapshot, notesFolder: state.settings.notesFolderID, taken: taken)
             .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
     }
 

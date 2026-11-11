@@ -23,6 +23,8 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Lernfeld-Heft wählen, noty dev Build 153 (`feat/lernfeld-heft`, 11.11.2026):** Ein Lernfeld kann in ein vorhandenes Heft der Bibliothek schreiben (Einstellungen › Kalender › Lernfelder › „…“ › „Heft wählen …“), z. B. in ein importiertes Heft mit den bisherigen Unterlagen; neue Stunden kommen dort ans Ende ([LERNFELDER](docs/LERNFELDER.md)). Kein Formatwechsel. Core-Tests und iPad-Build bestanden, am iPad ungeprüft.
+
 **Fach-Hefte, noty dev Build 150 (`feat/fachheft`, 09.11.2026):** Ein Fach ohne Lernfeld bekommt ein bestehendes Heft der Bibliothek; die Stunde im Kalender legt dort eine Seite mit Überschrift an und öffnet das Heft groß (Kalenderformat 6, [LERNFELDER](docs/LERNFELDER.md)). Core-Tests, Host-Roundtrip und iPad-Build bestanden, am iPad ungeprüft.
 
 **Zusammenführung 09.11.2026 (dev und main, Build 149, noch nicht veröffentlicht):** `feat/paragraphen` (Gesetzesverweise im Heft, Schutzrand für den Stift, ⌘F/⌘L-Zustellung), `feat/feinschliff` (Absturzschutz beim Start, Gesetzesleser-Fix) und `feat/diagnose` (Fehler- und Ruckler-Diagnose) sind in `dev` und `main`. Nachweise: 1617 Core-Tests, Host-Roundtrip, Diagnose-Servertests und `xtool dev build`; die zusammengeführte Fassung ist **am iPad ungeprüft**. Die Veröffentlichung der normalen noty wartet auf den iCloud-Container im Apple-Entwicklerportal ([ICLOUD](docs/ICLOUD.md)).
