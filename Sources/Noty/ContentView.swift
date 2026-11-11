@@ -608,8 +608,9 @@ struct ContentView: View {
         if let onCloseWorkspace { onCloseWorkspace(); return }
         Task {
             if await model.flushBeforeClosing() { _ = await toolbox.flush(); dismiss(); return }
-            if let reason = model.saveBlocked, await TopAlert.ask(EditorWorkspace.blockedTitle, EditorWorkspace.blockedMessage(reason), confirm: EditorWorkspace.blockedConfirm) {
-                model.abandonUnsavedChanges(); _ = await toolbox.flush(); dismiss(); return
+            // Any failing save, also one noty still retries: the user may leave.
+            if let reason = model.closeBlocked, await TopAlert.ask(EditorWorkspace.blockedTitle, EditorWorkspace.blockedMessage(reason), confirm: EditorWorkspace.blockedConfirm) {
+                await model.abandonUnsavedChangesWhenLeaving(); _ = await toolbox.flush(); dismiss(); return
             }
             // Stays open: `Space f` must not fire at some later close.
             KeyboardRouter.shared.searchAllAfterClosing = false
