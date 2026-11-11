@@ -264,6 +264,8 @@ def check_appex(ipa, names, root, info, expected):
         if appex_info.get("CFBundleVersion") != info.get("CFBundleVersion"): own.append("CFBundleVersion weicht von der App ab")
         if appex_info.get("CFBundleShortVersionString") != info.get("CFBundleShortVersionString"):
             own.append("CFBundleShortVersionString weicht von der App ab")
+        if appex_info.get("NotyChannel") != info.get("NotyChannel"):
+            own.append("NotyChannel weicht von der App ab (Widget läse die Datei einer anderen App und öffnete deren Schema)")
         try:
             binary = ipa.read(base + "/" + appex_info["CFBundleExecutable"])
         except KeyError:

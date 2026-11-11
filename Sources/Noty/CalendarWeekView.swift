@@ -73,8 +73,13 @@ struct CalendarTimeGrid: View {
                 content
             }
         }
-        // Another period: a placeholder of the old days goes at once.
-        .onChange(of: days) { _, _ in endCreations() }
+        // Another period: a placeholder of the old days goes at once, and so does
+        // the scroll lock of a card that was held meanwhile (⌘→ or „›“ with a
+        // second finger remove the card; its own report need not arrive any more).
+        .onChange(of: days) { _, _ in
+            endCreations()
+            if dragging { dragging = false }
+        }
         // The form the placeholder opened closed (saved or cancelled): it goes.
         .onChange(of: model.draft?.id) { _, id in
             creation.formChanged(to: id)
@@ -574,6 +579,9 @@ struct CalendarEventCard: View {
     /// moved the event (or springs back if the change was rejected). Bound
     /// to the times it was dropped from, so the new position never doubles up.
     @State private var settling: Settling?
+    /// This card reported a running move/stretch (`onDragState(true)`) and has
+    /// not taken it back yet.
+    @State private var reportedDrag = false
 
     private struct Settling: Equatable {
         var offset: CGSize = .zero
@@ -701,7 +709,16 @@ struct CalendarEventCard: View {
                     model.drag(event, days: days(drag.translation.width), minutes: minutes(drag.translation.height), resize: false)
                 }
             }, including: movable ? .all : .subviews)
-        .onChange(of: move != nil || stretch != nil) { _, active in onDragState(active) }
+        .onChange(of: move != nil || stretch != nil) { _, active in
+            reportedDrag = active
+            onDragState(active)
+        }
+        // The card goes while it is held (another period, the event removed by a
+        // sync): the change above need not be delivered any more, and the grid
+        // would stay locked. Only the card that reported the drag takes it back.
+        .onDisappear {
+            if reportedDrag { reportedDrag = false; onDragState(false) }
+        }
         .onChange(of: event.start) { _, _ in settling = nil }
         .onChange(of: event.end) { _, _ in settling = nil }
         .sensoryFeedback(.selection, trigger: move.map { minutes($0.height) + 10_000 * days($0.width) })
