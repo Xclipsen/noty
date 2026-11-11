@@ -21,9 +21,20 @@ struct MaterialSearchSheet: View {
     @State private var results: [MaterialLibrary.Match] = []
     @State private var searchedFor = ""
 
+    /// Without a search term and with a Lernfeld: its chapters to browse (scripts, video lessons).
+    private var browsing: [(package: MaterialStore.Installed, chapter: MaterialChapter)] {
+        guard let field, query.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
+        return materials.packages.flatMap { package in
+            package.catalog.fields.filter { $0.number == field }.flatMap(\.chapters).map { (package, $0) }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             List {
+                ForEach(browsing, id: \.chapter.key) { entry in
+                    MaterialChapterRow(package: entry.package, chapter: entry.chapter, field: field ?? 0) { request in script = request }
+                }
                 ForEach(results) { result in
                     MaterialResultRow(result: result, catalog: materials.package(result.package)?.catalog,
                                       isPinned: pinned.contains(result.package + "/" + result.hit.id),
@@ -43,7 +54,7 @@ struct MaterialSearchSheet: View {
                     } description: {
                         Text("Ein Materialpaket (.notymaterial) in der Dateien-App antippen oder unter Einstellungen › Kalender › Materialien hinzufügen.")
                     }
-                } else if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                } else if query.trimmingCharacters(in: .whitespaces).isEmpty, browsing.isEmpty {
                     ContentUnavailableView("Material suchen", systemImage: "magnifyingglass",
                                            description: Text("Thema, Lektion oder Paragraf, z. B. „Lieferung“, „Fahrtenbuch“ oder „§ 15 UStG“."))
                 } else if results.isEmpty, searchedFor == query {
@@ -66,7 +77,7 @@ struct MaterialSearchSheet: View {
                 materials.load()
                 query = initialQuery
                 try? await Task.sleep(for: .milliseconds(150))
-                if initialQuery.isEmpty { searchActive = true }
+                if initialQuery.isEmpty, field == nil { searchActive = true }
             }
             .navigationTitle(field.map { "Material · LF \($0)" } ?? "Material")
             .navigationBarTitleDisplayMode(.inline)
@@ -79,6 +90,62 @@ struct MaterialSearchSheet: View {
     private func open(_ result: MaterialLibrary.Match) {
         guard let (url, title) = materials.script(result) else { return }
         script = ScriptRequest(url: url, title: title, page: result.hit.pages?.lowerBound ?? 1)
+    }
+}
+
+/// One chapter of a Lernfeld while browsing: its script, and its video lessons to unfold.
+struct MaterialChapterRow: View {
+    let package: MaterialStore.Installed
+    let chapter: MaterialChapter
+    let field: Int
+    let openScript: (ScriptRequest) -> Void
+    @Environment(\.openURL) private var openURL
+    @State private var expanded = false
+
+    private var scriptURL: URL? {
+        guard let script = chapter.script else { return nil }
+        let url = package.scriptURL(script)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+    private var title: String { "LF \(field) · \(chapter.label) \(chapter.title)" }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            ForEach(chapter.lessons) { lesson in
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(lesson.title).font(.subheadline).lineLimit(2)
+                        if let pages = lesson.pages, let first = pages.first {
+                            Text(pages.count > 1 && pages[1] != first ? "Skript S. \(first)–\(pages[1])" : "Skript S. \(first)")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                    if let url = scriptURL, let first = lesson.pages?.first {
+                        Button { openScript(ScriptRequest(url: url, title: title, page: first)) } label: { Image(systemName: "doc.richtext") }
+                            .buttonStyle(.borderless).accessibilityLabel("Skript ab Seite \(first)")
+                    }
+                    if let link = package.catalog.lessonLink(lesson.id) {
+                        Button { openURL(link) } label: { Image(systemName: "play.fill") }
+                            .buttonStyle(.borderless).accessibilityLabel("Video „\(lesson.title)“")
+                    }
+                }
+                .frame(minHeight: 40)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(chapter.title).font(.body).lineLimit(2)
+                    Text(chapter.label + (chapter.lessons.isEmpty ? "" : " · \(NotyText.count(chapter.lessons.count, "Video", "Videos"))"))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if let url = scriptURL {
+                    Button { openScript(ScriptRequest(url: url, title: title, page: 1)) } label: { Label("Skript", systemImage: "doc.richtext") }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+            }
+        }
     }
 }
 

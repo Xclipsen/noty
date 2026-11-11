@@ -186,6 +186,13 @@ struct CalendarStudyPromptView: View {
                 Label("Neues Heft anlegen", systemImage: "plus")
             }
             .buttonStyle(.bordered).controlSize(.large)
+        } else if prompt.existingPage != nil, case .ready(let title) = prompt.notebook {
+            // The section exists: the whole notebook, full screen, at this lesson's page.
+            Button { model.openSubjectSection(for: event) } label: {
+                if prompt.creating { ProgressView() } else { Label("„\(title)“ öffnen", systemImage: "arrow.up.left.and.arrow.down.right") }
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+            .keyboardShortcut(.return, modifiers: [.command])
         } else {
             Button {
                 model.beginStudyNote(for: event)
@@ -250,7 +257,9 @@ struct CalendarStudyPromptView: View {
         }
         switch prompt.notebook {
         case .ready(let title):
-            return "Die Mitschrift dieser Stunde kommt als neue Seite mit Überschrift in „\(title)“ – an die passende Stelle nach Datum."
+            return prompt.existingPage != nil
+                ? "Die Mitschrift dieser Stunde steht in „\(title)“. Öffnen zeigt das ganze Heft groß an dieser Seite."
+                : "Die Mitschrift dieser Stunde kommt als neue Seite mit Überschrift in „\(title)“ – an die passende Stelle nach Datum; das ganze Heft öffnet sich groß dort."
         case .trashed(_, let title):
             return "Das Heft „\(title)“ dieses Lernfelds liegt im Papierkorb. Wiederherstellen und dort weiterschreiben, oder ein neues Heft anlegen (das alte bleibt im Papierkorb)."
         case .none:
@@ -270,11 +279,16 @@ final class StudyOutline: ObservableObject {
     static let shared = StudyOutline()
     @Published private(set) var revision = 0
     private var provider: ((Notebook) -> [StudySection])?
+    private var fieldProvider: ((UUID) -> Int?)?
     private init() {}
 
-    func attach(_ provider: @escaping (Notebook) -> [StudySection]) { self.provider = provider; revision += 1 }
+    /// `field`: the Lernfeld number whose notebook this is (its material in the page list).
+    func attach(_ provider: @escaping (Notebook) -> [StudySection], field: @escaping (UUID) -> Int?) {
+        self.provider = provider; fieldProvider = field; revision += 1
+    }
     func changed() { revision += 1 }
     func sections(for notebook: Notebook) -> [StudySection] { provider?(notebook) ?? [] }
+    func field(for notebook: UUID) -> Int? { fieldProvider?(notebook) }
 }
 
 /// One lesson section in the page list.
