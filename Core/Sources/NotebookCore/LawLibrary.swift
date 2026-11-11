@@ -27,6 +27,35 @@ public struct LawCatalog: Codable, Sendable {
         return self
     }
 }
+public extension LawCatalog {
+    /// This new catalog with what `old` still knows, so old markings remain
+    /// navigable: versions the new catalog no longer lists stay with their
+    /// entry, and an entry that is gone stays in its old list.
+    ///
+    /// Both lists count as one: a document that moved between `laws` and
+    /// `administrative` is listed once, where the new catalog has it, with
+    /// its old versions. Kept twice, its ID would fail `validated()` and with
+    /// it every further update.
+    func retaining(_ old: LawCatalog?) -> LawCatalog {
+        guard let old else { return self }
+        var previous: [String: LawEntry] = [:]
+        for entry in old.entries where previous[entry.id] == nil { previous[entry.id] = entry }
+        var listed = Set(entries.map(\.id))
+        func merged(_ entries: [LawEntry], old: [LawEntry]) -> [LawEntry] {
+            var result = entries.map { entry in
+                var e = entry
+                if let before = previous[e.id] { e.versions += before.versions.filter { v in !e.versions.contains(where: { $0.id == v.id }) } }
+                return e
+            }
+            for entry in old where listed.insert(entry.id).inserted { result.append(entry) }
+            return result
+        }
+        var next = self
+        next.laws = merged(laws, old: old.laws)
+        next.administrative = merged(administrative ?? [], old: old.administrative ?? [])
+        return next
+    }
+}
 public struct LawEntry: Codable, Sendable, Identifiable, Equatable {
     public var id: String
     public var abbr: String

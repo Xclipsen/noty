@@ -233,18 +233,9 @@ final class LawLibraryModel: ObservableObject {
                     try await offline.putDocument(bytes, entry: entry, version: version)
                 }
             }
-            // Retain old catalog entries/versions so old markings remain navigable.
-            func merged(_ entries: [LawEntry], old: [LawEntry]) -> [LawEntry] {
-                var result = entries.map { entry in
-                    var e = entry
-                    if let previous = old.first(where: { $0.id == e.id }) { e.versions += previous.versions.filter { v in !e.versions.contains(where: { $0.id == v.id }) } }
-                    return e
-                }
-                result += old.filter { e in !result.contains(where: { $0.id == e.id }) }
-                return result
-            }
-            next.laws = merged(next.laws, old: catalog?.laws ?? [])
-            next.administrative = merged(next.administrative ?? [], old: catalog?.administrative ?? [])
+            // Retain old catalog entries/versions so old markings remain navigable;
+            // a document that changed lists is kept once (`LawCatalog.retaining`).
+            next = next.retaining(catalog)
             try await offline.publish(next)
             catalog = next; lastCheck = Date(); progress = "\(NotyText.count(next.entries.count, "Dokument", "Dokumente")) offline verfügbar"
             byteCount = await offline.byteCount()
