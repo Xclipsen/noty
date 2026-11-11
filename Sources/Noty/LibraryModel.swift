@@ -556,7 +556,7 @@ final class LibraryModel: ObservableObject {
                 var choice = collision
                 if choice == nil {
                     choice = await TopAlert.choose("Heft schon vorhanden",
-                        "„\(prepared.document.title)“ liegt bereits als „\(existing.title)“ in der Bibliothek. „Vorhandenes ersetzen“ legt dessen aktuellen Stand vorher in den Papierkorb.",
+                        "„\(NotebookTitles.sanitized(prepared.document.title))“ liegt bereits als „\(existing.title)“ in der Bibliothek. „Vorhandenes ersetzen“ legt dessen aktuellen Stand vorher in den Papierkorb.",
                         actions: [("Vorhandenes ersetzen", .destructive, ImportCollision.replace), ("Beide behalten", .default, .keepBoth)])
                 }
                 guard let choice else {

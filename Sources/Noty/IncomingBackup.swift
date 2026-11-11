@@ -123,7 +123,8 @@ enum IncomingBackup {
         await TopAlert.dismiss(progress)
         let document = decoded.document, trashed = document.deletedPages?.count ?? 0
         let kind = document.isTextDocument ? "Textdokument" : "Heft"
-        let summary = "„\(document.title)“ · \(NotyText.count(document.pages.count, "Seite", "Seiten"))" + (trashed > 0 ? ", \(trashed) im Seitenpapierkorb" : "")
+        // The file's title is shown and stored only normalised (any length, line breaks).
+        let summary = "„\(NotebookTitles.sanitized(document.title))“ · \(NotyText.count(document.pages.count, "Seite", "Seiten"))" + (trashed > 0 ? ", \(trashed) im Seitenpapierkorb" : "")
             + (decoded.isLegacyJSON ? " · altes Format ohne Prüfsumme" : "")
         let collision: LibraryModel.ImportCollision?
         if let existing = library.snapshot.activeNotebook(document.id) {
