@@ -916,6 +916,11 @@ struct LibraryView: View {
                 if model.ready && model.busy && !model.backgroundBusy {
                     ProgressView("Bibliothek wird bearbeitet …").font(.footnote)
                         .padding(.horizontal, 14).padding(.vertical, 10).background(.regularMaterial, in: Capsule()).padding(12)
+                } else if model.ready && workspaces.busy && AppSyncModel.shared.mirroring {
+                    // Test apps only: checking a mirror snapshot locks the library
+                    // (`editable`); without this nothing showed why it did not react.
+                    ProgressView("Abgleich wird geprüft …").font(.footnote)
+                        .padding(.horizontal, 14).padding(.vertical, 10).background(.regularMaterial, in: Capsule()).padding(12)
                 }
             }
     }

@@ -33,7 +33,15 @@ final class WorkspaceAppModel: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
     func select(_ record: TestWorkspace?) async {
-        guard !busy else { return }
+        // A switch asked for during other area work (test apps: a mirror
+        // snapshot is checked on every activation) is not dropped silently:
+        // it waits for that, and says so when it does not end.
+        var waited = 0
+        while busy, waited < 600 { try? await Task.sleep(for: .milliseconds(100)); waited += 1 }
+        guard !busy else {
+            error = "Der Bereich wurde nicht gewechselt, weil noch ein anderer Bereichsvorgang läuft. Bitte gleich noch einmal versuchen."
+            return
+        }
         // Busy while the store records the switch: a removal never interleaves.
         busy = true
         defer { busy = false }
