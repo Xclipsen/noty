@@ -95,7 +95,7 @@ struct LibraryView: View {
     /// Background work (refresh after closing a notebook, automatic backup)
     /// keeps the library interactive and visually unchanged.
     private var editable: Bool {
-        model.ready && model.opened == nil && !workspaces.busy && (!model.busy || model.backgroundBusy)
+        model.ready && model.opened == nil && (!workspaces.busy || workspaces.backgroundBusy) && (!model.busy || model.backgroundBusy)
     }
     /// Menu shortcuts pause while a sheet/dialog is shown: a second presentation would not appear.
     private var presenting: Bool {
