@@ -163,12 +163,31 @@ extension CalendarModel {
     /// (`CalendarNotificationLog.addChanges`).
     @discardableResult
     func addRecords(_ records: [CalendarNotificationRecord]) -> [CalendarNotificationRecord] {
+        // The stored history is not read yet (the model just started): kept and merged after the
+        // read. Written now, these entries alone would replace the stored history.
+        guard notificationLogRead else {
+            earlyNotificationRecords += records
+            return []
+        }
         var log = notificationLog
         let added = log.addChanges(records, now: Date())
         guard !added.isEmpty else { return [] }
         notificationLog = log
         persistNotificationLog()
         return added
+    }
+
+    /// Reads the stored bell history (once, at the start of `load`) and adds
+    /// what arrived before (`CalendarNotificationLog.merging`: nothing
+    /// stored is lost, no entry twice, read entries stay read).
+    func readNotificationLog() async {
+        let stored = await notificationFile.read()
+        // After the read, without a suspension in between: nothing arrives unseen.
+        let merged = CalendarNotificationLog.merging(stored: stored, early: earlyNotificationRecords, now: Date())
+        earlyNotificationRecords = []
+        notificationLog = merged.log
+        notificationLogRead = true
+        if !merged.added.isEmpty { persistNotificationLog() }
     }
 
     /// A calendar notification of this area was shown or tapped.
@@ -220,6 +239,8 @@ extension CalendarModel {
     }
 
     private func persistNotificationLog() {
+        // Never before the stored history was read: the file would be replaced by an empty one.
+        guard notificationLogRead else { return }
         notificationLogVersion += 1
         let log = notificationLog, version = notificationLogVersion, file = notificationFile
         Task { await file.write(log, version: version) }

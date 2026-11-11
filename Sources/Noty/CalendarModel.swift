@@ -180,6 +180,12 @@ final class CalendarModel: ObservableObject {
     @Published var notificationLog = CalendarNotificationLog()
     let notificationFile: CalendarNotificationLogFile
     var notificationLogVersion = 0
+    /// The stored bell history was read (`readNotificationLog`); before that
+    /// nothing is written to it.
+    var notificationLogRead = false
+    /// Notifications shown or tapped before that read (a cold start by
+    /// tapping one); merged into the stored history then.
+    var earlyNotificationRecords: [CalendarNotificationRecord] = []
     /// Bumped when a notification or a bell entry opens something: the
     /// library switches to the calendar.
     @Published var openRequest = 0
@@ -321,6 +327,11 @@ final class CalendarModel: ObservableObject {
         loading = true
         defer { loading = false }
         let epoch = releases
+        // The bell history first (a file of its own, independent of the calendar package): the hub
+        // may hand over a notification from the moment this model exists.
+        if !notificationLogRead { await readNotificationLog() }
+        // Let go meanwhile: no claim is taken (`resumeAfterAreaSwitch` loads again).
+        guard !released else { return }
         do {
             // The model of an earlier visit of this area may still hold the write claim for a
             // moment (A → B → A while its timetable request runs): tried again instead of locking
@@ -358,7 +369,6 @@ final class CalendarModel: ObservableObject {
             }
             storageError = error.localizedDescription
         }
-        notificationLog = await notificationFile.read()
         loaded = true
         attachSystemService()
         rebuild()

@@ -254,6 +254,8 @@ actor CalendarNotificationLogFile {
     let url: URL
     private var written = 0
     private var locked = false
+    /// `read()` ran: before that a write would replace a history nobody has seen.
+    private var wasRead = false
 
     init(namespace: String) {
         let base = URL.applicationSupportDirectory.appendingPathComponent("CalendarNotifications", isDirectory: true)
@@ -261,6 +263,7 @@ actor CalendarNotificationLogFile {
     }
 
     func read() -> CalendarNotificationLog {
+        wasRead = true
         guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]), values.isRegularFile == true,
               (values.fileSize ?? 0) <= 4_000_000, let data = try? Data(contentsOf: url) else { return CalendarNotificationLog() }
         guard let log = CalendarNotificationLog.decode(data) else { locked = true; return CalendarNotificationLog() }
@@ -268,7 +271,7 @@ actor CalendarNotificationLogFile {
     }
 
     func write(_ log: CalendarNotificationLog, version: Int) {
-        guard !locked, version > written else { return }
+        guard wasRead, !locked, version > written else { return }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try log.encoded().write(to: url, options: .atomic)
