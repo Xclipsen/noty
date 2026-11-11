@@ -392,9 +392,19 @@ struct EditorWorkspaceView: View {
         .alert("Ansichten", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
             Button("OK") { workspace.error = nil }.keyboardShortcut(.defaultAction)
         } message: { Text(workspace.error ?? "") }
-        .onAppear { library.editorCommit = { await workspace.commitForBackup(toolbox: toolbox) }; library.workspace = workspace }
+        .onAppear {
+            library.editorCommit = { await workspace.commitForBackup(toolbox: toolbox) }; library.workspace = workspace
+            // „Neben dem Heft öffnen“ of a script: the second view, never hidden by a docked window.
+            ScriptBeside.shared.open = { [weak library, weak workspace] url, title, page in
+                Task {
+                    await library?.openScriptBeside(url, title: title, page: page)
+                    if workspace?.secondary != nil && lawPanel.isOpen && lawPanel.docked { lawPanel.docked = false }
+                }
+            }
+        }
         .onDisappear {
             library.editorCommit = nil; if library.workspace === workspace { library.workspace = nil }
+            ScriptBeside.shared.open = nil
             // Nothing of this notebook's citations may show up in the next one.
             LawCitationPreviewModel.shared.dismiss()
             laws.citationJump = nil; laws.citationReturn = nil

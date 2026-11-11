@@ -1079,3 +1079,72 @@ extension LibraryModel {
     }
 }
 
+// MARK: Skript neben dem Heft (docs/LERNFELDER.md, 11.11.2026)
+
+/// The open editor's way to show a script beside it (set by the workspace view).
+@MainActor
+final class ScriptBeside {
+    static let shared = ScriptBeside()
+    var open: ((URL, String, Int) -> Void)?
+    private init() {}
+}
+
+extension LibraryModel {
+    /// A script of the learning material in the second view beside the open
+    /// notebook, to read, mark and write on. Each script gets **one** notebook
+    /// of its own in the folder „Skripte“ (created the first time, reused
+    /// afterwards; the user's notebooks are never changed), with a narrow
+    /// writing space beside each page. Opens at `page` (1-based).
+    func openScriptBeside(_ url: URL, title: String, page: Int) async {
+        guard let workspace else { return }
+        let key = StableDefaults.scope(root) + "|" + url.lastPathComponent
+        var known = UserDefaults.standard.dictionary(forKey: "noty.v2.scriptNotebooks") as? [String: String] ?? [:]
+        var id = known[key].flatMap(UUID.init(uuidString:))
+        if let current = id, snapshot.activeNotebook(current) == nil { id = nil }
+        if id == nil {
+            do {
+                await settle()
+                var waited = 0
+                while busy && waited < 100 { try? await Task.sleep(for: .milliseconds(50)); waited += 1 }
+                guard ready, !busy else { throw IncomingFilingError.libraryBusy }
+                busy = true; defer { busy = false }
+                // The folder „Skripte“ at the top level (an active one of that name is reused).
+                var folder = snapshot.items.first { $0.isFolder && $0.parentID == nil && $0.title == "Skripte" && !snapshot.isTrashed($0.id) }?.id
+                if folder == nil {
+                    let before = Set(snapshot.items.map(\.id))
+                    snapshot = try await store.createFolder(title: "Skripte", parentID: nil)
+                    folder = snapshot.items.first { !before.contains($0.id) }?.id
+                }
+                let name = NotebookTitles.unique(try LibraryStore.validTitle(NotebookTitles.sanitized(title)), taken: snapshot.activeNotebookTitles())
+                let document = try await Task.detached(priority: .userInitiated) { () throws -> Notebook in
+                    let (data, geometries) = try PDFImportCheck.pages(of: Self.readPDF(url))
+                    return try Self.importedNotebook(data: data, geometries: geometries, title: name,
+                                                     writingArea: PageMargins(right: 0.25, style: .lined, color: .dark))
+                }.value
+                snapshot = try await store.createDocument(document, parentID: folder)
+                id = document.id
+                known[key] = document.id.uuidString
+                UserDefaults.standard.set(known, forKey: "noty.v2.scriptNotebooks")
+            } catch {
+                self.error = "Skript konnte nicht geöffnet werden: \(error.localizedDescription)"
+                return
+            }
+        }
+        guard let id, let item = snapshot.activeNotebook(id), let directory = try? await store.documentURL(id: id) else { return }
+        // The page of the script: by its PDF page, the order of a fresh import otherwise.
+        let target: UUID?
+        if let (notebook, _) = try? await committedNotebook(id) {
+            let index = page - 1
+            target = (notebook.pages.first { $0.pdfReference?.pageIndex == index }
+                ?? (notebook.pages.indices.contains(index) ? notebook.pages[index] : nil))?.id
+        } else { target = nil }
+        if workspace.secondaryID == id, let pane = workspace.secondary {
+            if let target { pane.showPage(target) }
+            return
+        }
+        var document = OpenNotebook(id: id, directory: directory, title: item.title, isRestored: false)
+        document.preferredPageID = target
+        await workspace.openSecondary(document)
+    }
+}
+

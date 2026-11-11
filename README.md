@@ -23,6 +23,8 @@ Core-Tests, echter Host-Offlineroundtrip und iPad-SDK-Build sind geprüft. Websi
 
 ## Aktueller Stand der bisherigen Lieferung
 
+**Normale noty Build 160 (`main`, 11.11.2026):** Skripte öffnen sich „Neben dem Heft“ in der zweiten Ansicht, je Skript ein eigenes Heft im Ordner „Skripte“ zum Markieren und Schreiben; das Lernfeld-Heft bleibt unverändert ([LERNFELDER](docs/LERNFELDER.md)). Auf Wunsch des Nutzers direkt nach main; iPad-Build bestanden, am iPad ungeprüft.
+
 **Normale noty Build 159 (`main`, 11.11.2026):** Skripte lassen sich aus der Skriptansicht eines Hefts „Ins Heft einfügen“ (eine Seite oder das ganze Skript, mit Schreibplatz) und dort markieren und beschreiben ([LERNFELDER](docs/LERNFELDER.md)). Auf Wunsch des Nutzers direkt nach main; iPad-Build bestanden, am iPad ungeprüft.
 
 **Freigabe 11.11.2026 · normale noty Build 158 (`main`):** Auf Wunsch des Nutzers („direkt auf main“) der Stand von noty dev Build 157 (Lernfeld groß, Inhalt mit Überschriften und Material), am iPad ungeprüft.

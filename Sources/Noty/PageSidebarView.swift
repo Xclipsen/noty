@@ -222,7 +222,7 @@ struct PageSidebarView: View {
             MaterialSearchSheet(initialQuery: "", field: request.field, onInsertScript: canEdit ? { url, page in
                 materialField = nil
                 insertScript(url, page: page)
-            } : nil)
+            } : nil, onScriptBeside: { materialField = nil })
         }
         .sheet(isPresented: $showingTrash, onDismiss: { StalledGestures.requestReset() }) {
             PageTrashView(model: model, cache: cache)
