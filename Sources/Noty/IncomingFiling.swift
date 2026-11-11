@@ -10,7 +10,8 @@ import NotebookCore
 /// incoming folder at once (security-scoped access and a coordinated read
 /// only for that copy, the provider path is never kept), checked by its
 /// content, then offered one after another in the filing sheet above
-/// whatever is on screen: library, open notebook or a dialog. Nothing is
+/// whatever is on screen: library, open notebook or a sheet; an alert is
+/// answered first (a sheet presented from it would go away with it). Nothing is
 /// written into a notebook or the library before the user files it there.
 /// The copy stays until it was filed or discarded, also over a restart.
 @MainActor
@@ -23,6 +24,8 @@ enum IncomingFiling {
     private static var defaults: @MainActor () -> NotebookAppearance? = { nil }
     private static var listedLeftovers = false
     private static var presenting = false
+    /// The file whose sheet is up and not answered yet (`watch`).
+    private static var offered: UUID?
     private static var receiving: Task<Void, Never>?
 
     /// Everything but the noty file types goes here; the content decides.
@@ -101,6 +104,14 @@ enum IncomingFiling {
                 try? await Task.sleep(for: .milliseconds(100)); waited += 1
             }
             try? await Task.sleep(for: .milliseconds(800))
+            // Never on an alert or progress dialog (another incoming file's
+            // `TopAlert`, a question of the app): a sheet presented from it
+            // goes away with it. Nothing is taken from the queue; asked again.
+            if TopAlert.top is UIAlertController {
+                presenting = false
+                Task { try? await Task.sleep(for: .seconds(2)); pump() }
+                return
+            }
             guard let library, library.ready, let item = queue.next() else { presenting = false; return }
             let model = IncomingFilingModel(item: item, url: inbox.contentURL(item), library: library,
                                             areaTitle: workspaces?.title ?? "Meine Bibliothek", defaults: defaults())
@@ -109,7 +120,9 @@ enum IncomingFiling {
             host.isModalInPresentation = true
             host.overrideUserInterfaceStyle = .dark
             host.preferredContentSize = CGSize(width: 620, height: 780)
+            offered = item.id
             model.close = { [weak host] keepCopy, then in
+                offered = nil
                 let done = {
                     if !keepCopy { Task.detached(priority: .utility) { inbox.remove(item.id) } }
                     queue.finish(item.id)
@@ -124,20 +137,45 @@ enum IncomingFiling {
                 if let host, host.presentingViewController != nil { host.dismiss(animated: true) { done() } } else { done() }
             }
             guard await present(host) else {
-                // Nothing to present on (scene in the background): offered again later.
+                // Nothing to present on (scene in the background, an alert on top): offered again later.
+                offered = nil
                 queue.postponeCurrent()
                 presenting = false
                 Task { try? await Task.sleep(for: .seconds(2)); pump() }
+                return
+            }
+            watch(host, model: model, item: item)
+        }
+    }
+
+    /// The sheet can go away without `close` having run (a controller below
+    /// it was dismissed): `presenting` would stay set and no further file be
+    /// offered until the app restarts. The offer then ends as the model
+    /// stands: a filed file is finished, an undecided one comes again first.
+    private static func watch(_ host: UIViewController, model: IncomingFilingModel, item: IncomingItem) {
+        Task {
+            while offered == item.id {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard offered == item.id else { return }
+                // Still up, also while covered by something it presented itself.
+                if host.presentingViewController != nil || host.isBeingPresented { continue }
+                // Filing goes on without the sheet; its result decides.
+                if model.working != nil { continue }
+                offered = nil
+                if model.done != nil { model.finish(); return }
+                queue.postponeCurrent()
+                presenting = false
+                pump()
                 return
             }
         }
     }
 
     /// `present` fails silently above a controller that is just going away;
-    /// tried a few times like `TopAlert`.
+    /// tried a few times like `TopAlert`. Never on an alert (see `pump`).
     private static func present(_ host: UIViewController) async -> Bool {
         for _ in 0..<10 {
-            if let top = TopAlert.top, !top.isBeingDismissed {
+            if let top = TopAlert.top, !top.isBeingDismissed, !(top is UIAlertController) {
                 top.present(host, animated: true)
                 try? await Task.sleep(for: .milliseconds(350))
                 if host.presentingViewController != nil { return true }

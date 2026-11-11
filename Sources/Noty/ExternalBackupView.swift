@@ -68,7 +68,7 @@ struct ExternalBackupForm: View {
             Section {
                 TextField("HTTPS-Adresse des vorhandenen Ordners", text: $endpoint).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                 TextField("Benutzername", text: $username).textInputAutocapitalization(.never).autocorrectionDisabled()
-                SecureField(model.hasStoredCredentials ? "Gespeichert – leer lassen zum Beibehalten" : "Passwort / App-Passwort", text: $password)
+                SecureField(model.keepsStoredPassword(for: endpoint) ? "Gespeichert – leer lassen zum Beibehalten" : "Passwort / App-Passwort", text: $password)
                 Button("WebDAV als aktives Ziel speichern") {
                     model.useWebDAV(endpoint: endpoint, username: username, password: password); password = ""
                 }
@@ -76,7 +76,7 @@ struct ExternalBackupForm: View {
                     Button("Zugangsdaten entfernen …", role: .destructive) { confirmingRemoval = true }
                 }
             } header: { Text("WebDAV") } footer: {
-                Text("Zugangsdaten nur im Schlüsselbund dieses iPads, nie im Backup. Der Ordner muss bereits existieren. Ein leeres Passwortfeld behält das gespeicherte Passwort.")
+                Text("Zugangsdaten nur im Schlüsselbund dieses iPads, nie im Backup. Der Ordner muss bereits existieren. Ein leeres Passwortfeld behält das gespeicherte Passwort, solange die Adresse beim selben Server bleibt; für einen anderen Server bitte neu eingeben.")
             }
             if showsSigning { SigningRenewalSection() }
         }

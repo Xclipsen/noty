@@ -114,6 +114,21 @@ public struct ExternalBackupPolicy: Codable, Equatable, Sendable {
               url.query == nil, url.fragment == nil else { throw StorageError.invalidDocument }
         return url.hasDirectoryPath ? url : url.appendingPathComponent("", isDirectory: true)
     }
+    /// Scheme, host and port that receive the Authorization header, normalised
+    /// (lowercase, default port made explicit); nil when any part is missing.
+    public static func webDAVServer(_ string: String) -> String? {
+        guard let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased(), !host.isEmpty,
+              let port = url.port ?? ["https": 443, "http": 80][scheme] else { return nil }
+        return "\(scheme)://\(host):\(port)"
+    }
+    /// A stored password may only be reused for the server it was entered for:
+    /// same scheme, host and port; the folder path may differ. Unusable
+    /// addresses never match.
+    public static func sameWebDAVServer(_ stored: String, _ entered: String) -> Bool {
+        guard let stored = webDAVServer(stored), let entered = webDAVServer(entered) else { return false }
+        return stored == entered
+    }
 }
 
 /// What the library badge and Settings show. A merely postponed attempt is

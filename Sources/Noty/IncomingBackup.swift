@@ -97,8 +97,16 @@ enum IncomingBackup {
             await workspaces.discardLibraryRestore(prepared); return
         }
         let running = TopAlert.progress("Bereich wird angelegt …")
-        // A running area switch is no reason to throw the checked file away.
-        while workspaces.busy { try? await Task.sleep(for: .milliseconds(100)) }
+        // A running area switch is no reason to throw the checked file away,
+        // but this dialog has no button: never wait for ever.
+        var waited = 0
+        while workspaces.busy, waited < 300 { try? await Task.sleep(for: .milliseconds(100)); waited += 1 }
+        guard !workspaces.busy else {
+            await workspaces.discardLibraryRestore(prepared)
+            await TopAlert.dismiss(running)
+            TopAlert.show("Bereich nicht angelegt", "Ein anderer Bereichsvorgang läuft noch. Es wurde nichts verändert. Die Datei bitte später erneut öffnen.")
+            return
+        }
         do {
             let area = try await workspaces.commitLibraryRestore(prepared)
             await TopAlert.dismiss(running)

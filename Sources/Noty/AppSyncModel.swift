@@ -14,6 +14,9 @@ final class AppSyncModel: ObservableObject {
     let channel: AppSyncChannel?
     let groupRoot: URL?
     @Published private(set) var busy = false
+    /// A mirror check runs (never in the normal noty). Read by the library when
+    /// `WorkspaceAppModel.busy` changes, to name why it is locked; not published.
+    private(set) var mirroring = false
     @Published private(set) var status: String?
     /// Zuletzt gelesene Abzüge der Quellen (Anzeige).
     @Published private(set) var sources: [AppSyncChannel: AppSyncSnapshot] = [:]
@@ -104,7 +107,7 @@ final class AppSyncModel: ObservableObject {
         guard let channel, channel != .stable, !channel.mirrors.isEmpty, let groupRoot, !busy, !workspaces.busy else { return }
         if !manual, let lastMirrorCheck, Date().timeIntervalSince(lastMirrorCheck) < 50 { return }
         lastMirrorCheck = Date()
-        busy = true; defer { busy = false }
+        busy = true; mirroring = true; defer { busy = false; mirroring = false }
         await workspaces.refresh()
         var messages: [String] = []
         for source in channel.mirrors {

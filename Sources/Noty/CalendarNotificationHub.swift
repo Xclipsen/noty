@@ -121,6 +121,7 @@ final class CalendarNotificationHub: NSObject, UNUserNotificationCenterDelegate 
     }
 
     private func handle(_ route: Route) {
+        LibraryModel.launchHasExplicitReason()
         guard let model, model.loaded else { pendingRoute = route; return }
         guard model.notificationNamespace == route.area else {
             model.presentNotice("Diese Mitteilung gehört zu einem anderen Bereich. Wechsle dorthin, um den Termin zu sehen.")

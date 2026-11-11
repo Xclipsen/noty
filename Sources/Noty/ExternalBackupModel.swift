@@ -132,7 +132,13 @@ final class ExternalBackupModel: ObservableObject {
             try policy.validate(); persist(); history = []; placeholders = []; status = "Backup-Ordner gewählt · erstes Backup steht aus"
         } catch { self.error = "Ordner konnte nicht eingerichtet werden." }
     }
-    /// An empty password keeps the stored one (also when only the name changes).
+    /// The password field may stay empty only for the server the stored password was entered for.
+    func keepsStoredPassword(for endpoint: String) -> Bool {
+        hasStoredCredentials && ExternalBackupPolicy.sameWebDAVServer(policy.endpoint, endpoint)
+    }
+    /// An empty password keeps the stored one (also when only the name or the
+    /// folder path changes), but never for another scheme, host or port: the
+    /// first request would hand the stored password to that address.
     func useWebDAV(endpoint: String, username: String, password: String) {
         guard !busy else { return }
         do {
@@ -143,6 +149,9 @@ final class ExternalBackupModel: ObservableObject {
             if password.isEmpty {
                 guard let stored = try? BackupKeychain.credentials(credentialAccount) else {
                     self.error = "Bitte das Passwort bzw. App-Passwort eingeben."; return
+                }
+                guard ExternalBackupPolicy.sameWebDAVServer(policy.endpoint, url.absoluteString) else {
+                    self.error = "Die Adresse gehört zu einem anderen Server als das gespeicherte Passwort. Bitte das Passwort bzw. App-Passwort für diese Adresse neu eingeben."; return
                 }
                 secret = stored.password
             } else { secret = password }
