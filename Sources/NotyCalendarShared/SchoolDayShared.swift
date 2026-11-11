@@ -145,5 +145,16 @@ public enum SchoolDayText {
         }
     }
 
+    /// Widget „Heute“ while the first lesson is further away than its
+    /// countdown range (`SchoolDayContentState.showsStartTime(at:)`):
+    /// „Zuerst: Mathematik · R 112“ instead of „Gleich: …“ and
+    /// „Beginn 08:00“ (as on the tile) instead of the countdown.
+    public static func first(_ state: SchoolDayContentState) -> String {
+        "Zuerst: " + (state.next.map(line) ?? "Unterricht")
+    }
+    public static func begin(_ state: SchoolDayContentState, calendar: Calendar = SchoolDayText.calendar) -> String {
+        "Beginn \(clock(state.phaseEnd, calendar: calendar))"
+    }
+
     public static func date(_ seconds: Int) -> Date { Date(timeIntervalSince1970: TimeInterval(seconds)) }
 }
