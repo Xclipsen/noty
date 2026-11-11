@@ -497,6 +497,20 @@ public final class NotebookAssets: ImageAssetProviding, @unchecked Sendable {
         return partial
     }
 
+    /// Only after a failed first commit of a package that call started
+    /// (`RevisionStore.save`): removes the files `persist` wrote for
+    /// `references`, so no manifest-less package with originals stays. Their
+    /// bytes are still pending here or in the source they were copied from.
+    /// Regular files only; the directory is left to the caller.
+    func discardWritten<S: Sequence>(_ references: S) where S.Element == ImageAssetReference {
+        guard !readOnly, directoryState() == .directory else { return }
+        for reference in references where reference.isValid {
+            let url = fileURL(reference.sha256)
+            guard case .regular = item(url), (try? fm.removeItem(at: url)) != nil else { continue }
+            locked { verified.remove(reference.sha256); damaged.remove(reference.sha256) }
+        }
+    }
+
     private func prepareDirectory() throws {
         if directoryState() == .missing { try fm.createDirectory(at: directory, withIntermediateDirectories: true) }
         guard directoryState() == .directory else { throw ImageAssetError.invalidDirectory }
