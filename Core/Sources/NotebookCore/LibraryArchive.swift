@@ -26,6 +26,9 @@ public struct LibraryBundle: Equatable, Sendable {
 public enum LibraryArchiveError: Error, LocalizedError, Equatable {
     case invalid, unsupported(Int), incomplete, destinationExists, archiveTooLarge, notebookTooLarge(String), verificationFailed
     case damagedImage(String)
+    /// A restore could not write the image originals on this device; the
+    /// file itself was not found defective.
+    case extractionFailed(outOfSpace: Bool)
     public var errorDescription: String? {
         switch self {
         case .invalid: "Die Datei ist kein vollständiges gültiges Bibliotheksbackup."
@@ -36,6 +39,7 @@ public enum LibraryArchiveError: Error, LocalizedError, Equatable {
         case .notebookTooLarge(let title): "Die Daten des Hefts „\(title)“ sind ohne Bildoriginale größer als 200 MB (meist große PDFs); es kann nicht gesichert werden."
         case .verificationFailed: "Das zurückgelesene Backup stimmt nicht mit dem geprüften Archiv überein. Ältere Backups bleiben erhalten."
         case .damagedImage(let title): "Ein Bildoriginal im Heft „\(title)“ fehlt oder ist beschädigt. Bibliotheksbackup abgebrochen; Dateien bleiben erhalten."
+        case .extractionFailed(let outOfSpace): BackupError.extractionFailedText(outOfSpace: outOfSpace)
         }
     }
 }
@@ -454,6 +458,7 @@ public enum LibraryArchive {
         catch let error as ToolbarError { throw error }
         catch let error as CancellationError { throw error }
         catch let error as CalendarArchiveError { throw error }
+        catch let error as RecordArchiveExtractionFailed { throw LibraryArchiveError.extractionFailed(outOfSpace: error.outOfSpace) }
         catch { throw LibraryArchiveError.invalid }
     }
 
@@ -462,7 +467,7 @@ public enum LibraryArchive {
     private static func embedded(_ decoded: DecodedNotebook, _ handling: RecordAssetHandling) throws -> InlineImageAssets {
         let inline = decoded.inlineAssets
         if case .extract(let directory) = handling, !inline.isEmpty {
-            try NotebookAssets(directory: directory).persist(inline.references, from: inline)
+            try RecordArchiveExtractionFailed.persisting(inline, to: directory)
         }
         return inline
     }
