@@ -4,7 +4,7 @@ import ActivityKit
 import NotebookCore
 import NotyCalendarShared
 
-// Widget extension of noty calendar (docs/LIVE-ACTIVITY-PLAN.md):
+// Widget extension of noty and noty calendar (docs/LIVE-ACTIVITY-PLAN.md):
 //  - Live Activity „Schultag“ on the lock screen (ActivityKit; started,
 //    updated and ended by the app, later also by the push service),
 //  - widget „Heute“ (home and lock screen) from the derived App-Group file.
@@ -92,7 +92,7 @@ struct SchoolDayLockView: View {
                 Text(SchoolDayText.progress(state)).font(.caption.weight(.semibold)).monospacedDigit().foregroundStyle(.secondary)
             }
             if stale {
-                Label("Stand veraltet – noty calendar öffnen", systemImage: "exclamationmark.arrow.circlepath")
+                Label("Stand veraltet – \(SchoolDayText.appName) öffnen", systemImage: "exclamationmark.arrow.circlepath")
                     .font(.caption).foregroundStyle(.orange).lineLimit(1)
             } else if let next = state.next, state.phase != .before {
                 NextLine(lesson: next)
@@ -164,7 +164,7 @@ struct SchoolDayTodayWidget: Widget {
                 .containerBackground(.fill.tertiary, for: .widget)
         }
         .configurationDisplayName("Heute")
-        .description("Aktuelle und nächste Stunde aus dem Stundenplan von noty calendar.")
+        .description("Aktuelle und nächste Stunde aus dem Stundenplan von " + SchoolDayText.appName + ".")
         .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular])
     }
 }
@@ -186,7 +186,7 @@ struct SchoolDayTodayView: View {
         Group {
             switch entry.content {
             case .notLoaded:
-                message("Stundenplan nicht geladen", "noty calendar öffnen")
+                message("Stundenplan nicht geladen", "\(SchoolDayText.appName) öffnen")
             case .noLessonsToday(let tomorrow):
                 message("Heute kein Unterricht", tomorrow.map { "Morgen \(SchoolDayText.clock($0.start)): \($0.title)" })
             case .doneToday(let tomorrow):
@@ -210,13 +210,23 @@ struct SchoolDayTodayView: View {
     }
 
     @ViewBuilder private func today(_ state: SchoolDayContentState) -> some View {
+        // `before` holds from midnight on, its countdown range begins only 30
+        // minutes before the first lesson. Until then: the start time instead of
+        // „Gleich“ and a timer that has not begun. The timeline has an entry at
+        // `phaseStart` (a transition), which switches to the countdown.
+        let early = state.showsStartTime(at: Int(entry.date.timeIntervalSince1970))
+        let headline = early ? SchoolDayText.first(state) : SchoolDayText.headline(state)
         switch family {
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 1) {
-                Text(SchoolDayText.headline(state)).font(.headline).lineLimit(1)
+                Text(headline).font(.headline).lineLimit(1)
                 HStack(spacing: 3) {
-                    Text(state.phase == .before ? "in" : "noch")
-                    Text(timerInterval: range(state.phaseStart, state.phaseEnd), countsDown: true).monospacedDigit()
+                    if early {
+                        Text(SchoolDayText.begin(state))
+                    } else {
+                        Text(state.phase == .before ? "in" : "noch")
+                        Text(timerInterval: range(state.phaseStart, state.phaseEnd), countsDown: true).monospacedDigit()
+                    }
                     Text("· " + SchoolDayText.progress(state))
                 }
                 .font(.caption).lineLimit(1)
@@ -230,10 +240,14 @@ struct SchoolDayTodayView: View {
                 HStack {
                     Text(SchoolDayText.progress(state)).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Spacer()
-                    Text(timerInterval: range(state.phaseStart, state.phaseEnd), countsDown: true)
-                        .font(.caption.weight(.semibold)).monospacedDigit().multilineTextAlignment(.trailing)
+                    if early {
+                        Text(SchoolDayText.begin(state)).font(.caption.weight(.semibold)).monospacedDigit()
+                    } else {
+                        Text(timerInterval: range(state.phaseStart, state.phaseEnd), countsDown: true)
+                            .font(.caption.weight(.semibold)).monospacedDigit().multilineTextAlignment(.trailing)
+                    }
                 }
-                Text(SchoolDayText.headline(state)).font(.headline).lineLimit(family == .systemSmall ? 2 : 1)
+                Text(headline).font(.headline).lineLimit(family == .systemSmall ? 2 : 1)
                 if let note = state.current?.note {
                     Text(note).font(.caption.weight(.bold)).foregroundStyle(state.current?.changed == true ? .red : .secondary)
                 }

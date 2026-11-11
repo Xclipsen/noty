@@ -16,13 +16,22 @@ public enum NotebookTitles {
     public static let maximumLength = 120
     public static let fallback = "Unbenanntes Heft"
 
+    /// Only this many leading Unicode scalars of an incoming title are looked
+    /// at: far more than 120 characters of any script or emoji need, and a
+    /// bound for a title of megabytes (also as one endless combining sequence).
+    static let maximumScalars = maximumLength * 32
+
     /// A valid library title (`LibraryStore.validTitle`) from a file's title:
-    /// control characters (line breaks) become spaces, surrounding white space
-    /// is trimmed, at most 120 characters; empty becomes „Unbenanntes Heft“.
+    /// control characters and every kind of line break become spaces,
+    /// surrounding white space is trimmed, at most 120 characters (cut on a
+    /// character boundary); empty becomes „Unbenanntes Heft“. A notebook file
+    /// is never refused because of its title: whatever shows or stores the
+    /// title of an incoming `.noty`/`.notybackup` goes through this.
     public static func sanitized(_ raw: String) -> String {
         var scalars = String.UnicodeScalarView()
-        for scalar in raw.unicodeScalars {
-            scalars.append(CharacterSet.controlCharacters.contains(scalar) ? " " : scalar)
+        for scalar in raw.unicodeScalars.prefix(maximumScalars) {
+            // U+2028/U+2029 are line breaks, but no control characters.
+            scalars.append(CharacterSet.controlCharacters.contains(scalar) || CharacterSet.newlines.contains(scalar) ? " " : scalar)
         }
         var name = String(scalars).trimmingCharacters(in: .whitespacesAndNewlines)
         if name.count > maximumLength { name = String(name.prefix(maximumLength)).trimmingCharacters(in: .whitespacesAndNewlines) }

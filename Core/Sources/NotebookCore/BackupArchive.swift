@@ -8,6 +8,9 @@ public enum BackupError: Error, LocalizedError {
     case checksumMismatch
     case invalidStaging
     case verificationFailed
+    /// A restore could not write the image originals on this device; the
+    /// file itself was not found defective.
+    case extractionFailed(outOfSpace: Bool)
 
     public var errorDescription: String? {
         switch self {
@@ -18,7 +21,17 @@ public enum BackupError: Error, LocalizedError {
         case .checksumMismatch: "Die Backup-Prüfsumme stimmt nicht. Es wurde nichts wiederhergestellt."
         case .invalidStaging: "Die vorbereitete Wiederherstellung ist nicht mehr gültig. Bitte das Backup erneut wählen."
         case .verificationFailed: "Das zurückgelesene Backup stimmt nicht mit dem Heft überein. Es wurde keine Backup-Datei übergeben."
+        case .extractionFailed(let outOfSpace): BackupError.extractionFailedText(outOfSpace: outOfSpace)
         }
+    }
+}
+
+extension BackupError {
+    /// One wording for `.noty` and `.notylibrary` restores.
+    static func extractionFailedText(outOfSpace: Bool) -> String {
+        outOfSpace
+            ? "Zu wenig freier Speicher auf dem iPad: Die Bilder aus dem Backup konnten nicht abgelegt werden. Die Backup-Datei ist davon nicht betroffen; bitte Speicher freigeben und erneut versuchen."
+            : "Die Bilder aus dem Backup konnten auf dem iPad nicht abgelegt werden. Die Backup-Datei ist davon nicht betroffen; bitte erneut versuchen."
     }
 }
 
@@ -213,8 +226,8 @@ public enum BackupArchive {
         // Embedded originals (schema ≤ 11) join the extracted assets, written
         // and verified the same way; names come from their computed hashes.
         if case .extract(let directory) = handling, !decoded.inlineImageBytes.isEmpty {
-            let inline = InlineImageAssets(bytes: decoded.inlineImageBytes)
-            try NotebookAssets(directory: directory).persist(inline.references, from: inline)
+            do { try RecordArchiveExtractionFailed.persisting(InlineImageAssets(bytes: decoded.inlineImageBytes), to: directory) }
+            catch let error as RecordArchiveExtractionFailed { throw BackupError.extractionFailed(outOfSpace: error.outOfSpace) }
         }
         return decoded
     }
@@ -337,6 +350,7 @@ public enum BackupArchive {
                                  inlineImageBytes: decoded.inlineImageBytes)
         } catch is RecordArchiveInvalid { throw BackupError.invalidArchive }
         catch is RecordArchiveTruncated { throw BackupError.invalidArchive }
+        catch let error as RecordArchiveExtractionFailed { throw BackupError.extractionFailed(outOfSpace: error.outOfSpace) }
     }
 
     /// Read in bounded chunks so even a growing/provider file cannot cause an

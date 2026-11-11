@@ -12,7 +12,7 @@ Die Einstellungen öffnen sich über das ganze Fenster (`fullScreenCover`, aus d
 
 | Gruppe | Seite | Inhalt |
 | --- | --- | --- |
-| – | Allgemein | Bibliothek (Anordnung, Sortierung), Beim Start („Zuletzt geöffnetes Heft wieder öffnen“, neu), „Einstellungen zurücksetzen …“ (nur app-weite Werte, `AppSettingsKey.resettable`) |
+| – | Allgemein | Bibliothek (Anordnung, Sortierung), Beim Start („Zuletzt geöffnetes Heft wieder öffnen“, neu; seit 11.11.2026 nicht, wenn die App durch eine Datei, eine Mitteilung oder Kachel/Widget gestartet wurde – der Merker bleibt für den nächsten normalen Start erhalten; am iPad ungeprüft), „Einstellungen zurücksetzen …“ (nur app-weite Werte, `AppSettingsKey.resettable`) |
 | – | Darstellung | Akzentfarbe (9 Farben, neu), Vorschau, Hinweis auf das dunkle Design |
 | Schreiben | Ansicht & Seiten | Seiten (Blättern, PDFs einheitlich: je Bereich), Schreiben (Schreibscrollen, Seitenleiste), Bearbeiten (Einrasten) |
 | Schreiben | Text & Tastatur | Neue Textfelder, Beim Tippen, Hardware-Tastatur (Helix „Experimentell“, Klammern) |

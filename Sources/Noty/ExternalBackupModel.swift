@@ -132,7 +132,13 @@ final class ExternalBackupModel: ObservableObject {
             try policy.validate(); persist(); history = []; placeholders = []; status = "Backup-Ordner gewählt · erstes Backup steht aus"
         } catch { self.error = "Ordner konnte nicht eingerichtet werden." }
     }
-    /// An empty password keeps the stored one (also when only the name changes).
+    /// The password field may stay empty only for the server the stored password was entered for.
+    func keepsStoredPassword(for endpoint: String) -> Bool {
+        hasStoredCredentials && ExternalBackupPolicy.sameWebDAVServer(policy.endpoint, endpoint)
+    }
+    /// An empty password keeps the stored one (also when only the name or the
+    /// folder path changes), but never for another scheme, host or port: the
+    /// first request would hand the stored password to that address.
     func useWebDAV(endpoint: String, username: String, password: String) {
         guard !busy else { return }
         do {
@@ -143,6 +149,9 @@ final class ExternalBackupModel: ObservableObject {
             if password.isEmpty {
                 guard let stored = try? BackupKeychain.credentials(credentialAccount) else {
                     self.error = "Bitte das Passwort bzw. App-Passwort eingeben."; return
+                }
+                guard ExternalBackupPolicy.sameWebDAVServer(policy.endpoint, url.absoluteString) else {
+                    self.error = "Die Adresse gehört zu einem anderen Server als das gespeicherte Passwort. Bitte das Passwort bzw. App-Passwort für diese Adresse neu eingeben."; return
                 }
                 secret = stored.password
             } else { secret = password }
@@ -264,6 +273,7 @@ final class ExternalBackupModel: ObservableObject {
             case .incomplete: return "Ein Heft ist nicht vollständig lesbar"
             case .verificationFailed: return "Zurückgelesenes Backup weicht ab"
             case .damagedImage(let title): return "Bildoriginal in „\(title.prefix(40))“ fehlt oder ist beschädigt"
+            case .extractionFailed(let outOfSpace): return outOfSpace ? "Zu wenig freier Speicher auf dem iPad" : "Bilder konnten nicht abgelegt werden"
             default: return "Archiv ungültig"
             }
         case let error as BackupTargetError:
@@ -280,7 +290,10 @@ final class ExternalBackupModel: ObservableObject {
         case let error as CocoaError where error.code == .fileWriteNoPermission || error.code == .fileWriteVolumeReadOnly:
             return reason(BackupTargetError.folderNotWritable)
         case is ImageAssetError: return "Bildoriginal eines Hefts fehlt oder ist beschädigt"
-        case is StorageError, is RevisionError, is BackupError: return "Inhalt eines Hefts ungültig"
+        case let error as BackupError:
+            if case .extractionFailed(let outOfSpace) = error { return outOfSpace ? "Zu wenig freier Speicher auf dem iPad" : "Bilder konnten nicht abgelegt werden" }
+            return "Inhalt eines Hefts ungültig"
+        case is StorageError, is RevisionError: return "Inhalt eines Hefts ungültig"
         default: return "Backup nicht abgeschlossen"
         }
     }

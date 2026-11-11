@@ -321,6 +321,8 @@ public enum CalendarSeries {
     /// The series after a change of „Alle Termine“ that moved the first
     /// occurrence by `days`: exceptions and changed occurrences move along,
     /// so they keep meaning the same occurrences.
+    /// The plain day shift – right for daily and weekly series only; a
+    /// monthly series is moved by occurrence (`CalendarSeries.moved`).
     public static func shifted(_ rule: CalendarRecurrence, byDays days: Int) -> CalendarRecurrence {
         guard days != 0 else { return rule }
         var next = rule

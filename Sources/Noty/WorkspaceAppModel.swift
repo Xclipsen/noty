@@ -38,7 +38,15 @@ final class WorkspaceAppModel: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
     func select(_ record: TestWorkspace?) async {
-        guard !busy else { return }
+        // A switch asked for during other area work (test apps: a mirror
+        // snapshot is checked on every activation) is not dropped silently:
+        // it waits for that, and says so when it does not end.
+        var waited = 0
+        while busy, waited < 600 { try? await Task.sleep(for: .milliseconds(100)); waited += 1 }
+        guard !busy else {
+            error = "Der Bereich wurde nicht gewechselt, weil noch ein anderer Bereichsvorgang läuft. Bitte gleich noch einmal versuchen."
+            return
+        }
         // Busy while the store records the switch: a removal never interleaves.
         busy = true
         defer { busy = false }
@@ -93,9 +101,10 @@ final class WorkspaceAppModel: ObservableObject {
     /// A removed area whose WebUntis connection the push service polls: signed
     /// off there too (docs/PUSH.md, „Abmelden“), like „Trennen“. In the
     /// background: the area list does not wait for the server. Its calendar
-    /// choice „Sichtbare Kalender“ (a device preference) goes as well.
+    /// choice „Sichtbare Kalender“ (a device preference) goes as well, and so
+    /// does its search index (plain text of its notebooks under Library/Caches).
     private func areaRemoved(_ namespace: String?, scope: String? = nil) {
-        if let scope { CalendarModel.forgetHiddenSources(scope: scope) }
+        if let scope { CalendarModel.forgetHiddenSources(scope: scope); ContentSearchIndexLocation.removeArea(scope) }
         guard let namespace else { return }
         Task { await CalendarPushClient.shared.areaRemoved(namespace: namespace) }
     }
@@ -238,6 +247,8 @@ struct WorkspaceLibraryHost: View {
             }
             // Shared PDFs/pictures go to the filing sheet, noty files keep their way.
             .onOpenURL { url in
+                // A launch by a file or link shows that, not the last notebook.
+                LibraryModel.launchHasExplicitReason()
                 // Tile „Schultag“ / widget „Heute“ (notycalendar://schultag…): the calendar at the lesson.
                 if let target = SchoolDayLink.target(url) { CalendarNotificationHub.shared.openSchoolDay(target); return }
                 // Learning material (docs/LERNFELDER.md): for the whole device, not the area.

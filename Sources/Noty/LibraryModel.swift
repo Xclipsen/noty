@@ -63,6 +63,27 @@ final class LibraryModel: ObservableObject {
     /// Only the first library loaded in this process (always the main library
     /// at launch) may reopen a notebook; switching areas later never does.
     private static var launchReopenPending = true
+    /// Why the app was started: a file/URL, a tapped notification or the
+    /// widget link wins over reopening the last notebook (`LaunchReopenGate`).
+    private static var launchReopen = LaunchReopenGate()
+    /// Called by the entry points as early as they run (`onOpenURL`, the
+    /// notification hub). The stored pointer stays for the next normal launch.
+    static func launchHasExplicitReason() { launchReopen.noteExplicitReason() }
+    /// The reason may arrive after the library has loaded, so this waits for
+    /// the first scene activation it is delivered with, then two more turns of
+    /// the main queue. A normal start is active by then and does not wait.
+    private static func launchAllowsReopen() async -> Bool {
+        var turns = 0
+        while true {
+            switch launchReopen.decision(sceneActive: UIApplication.shared.applicationState == .active) {
+            case .skip: return false
+            case .wait: turns = 0; try? await Task.sleep(for: .milliseconds(50))
+            case .reopen:
+                if turns == 2 { return true }
+                turns += 1; await Task.yield()
+            }
+        }
+    }
 
     init(root: URL = URL.documentsDirectory.appendingPathComponent("Noty", isDirectory: true)) {
         self.root = root
@@ -403,6 +424,12 @@ final class LibraryModel: ObservableObject {
             let result = try await action()
             snapshot = result.snapshot
             restoredCopies.removeAll { result.purgedIDs.contains($0.id) }
+            // The search index under Library/Caches holds the notebooks' text in
+            // plain form (typed, PDF, OCR, handwriting): it goes with them. Derived
+            // data, removed without a result, so it can never fail the deletion.
+            if !result.purgedIDs.isEmpty {
+                await ContentSearchIndexLocation.store(area: StableDefaults.scope(root)).remove(result.purgedIDs)
+            }
             var parts = [result.purgedIDs.count == 1 ? "1 Eintrag endgültig gelöscht." : "\(result.purgedIDs.count) Einträge endgültig gelöscht."]
             if !result.retainedIDs.isEmpty {
                 parts.append("Das ursprüngliche Heft liegt direkt im App-Ordner und bleibt im Papierkorb.")
@@ -488,6 +515,12 @@ final class LibraryModel: ObservableObject {
         }
         // Settings › Allgemein › „Zuletzt geöffnetes Heft wieder öffnen“ (default on).
         guard UserDefaults.standard.object(forKey: AppSettingsKey.reopenLastNotebook) as? Bool ?? true else { return }
+        // Started by a file, a notification or the widget: that is shown, not
+        // the last notebook under which it would be refused or hidden. The
+        // pointer is kept, the next normal launch reopens it.
+        guard await Self.launchAllowsReopen() else {
+            LaunchGuard.log.notice("[launch] last notebook not reopened (launch has its own target)"); return
+        }
         guard ready, opened == nil, !busy else { return }
         LaunchGuard.log.notice("[launch] reopening last notebook")
         guard let id = UUID(uuidString: raw), let item = snapshot.items.first(where: { $0.id == id }),
@@ -499,7 +532,8 @@ final class LibraryModel: ObservableObject {
         do {
             let url = try await store.documentURL(id: id)
             snapshot = try await store.markOpened(id)
-            guard opened == nil else { Diagnostics.cancel(shared: "notebook.open"); return }
+            // Last moment: a reason that arrived while the store was read still wins.
+            guard opened == nil, !Self.launchReopen.explicitReason else { Diagnostics.cancel(shared: "notebook.open"); return }
             opened = OpenNotebook(id: id, directory: url, title: item.title, isRestored: item.source == .restored)
             lastEditedID = id
         } catch { Diagnostics.cancel(shared: "notebook.open"); notebookClosedByUser() }
@@ -558,7 +592,7 @@ final class LibraryModel: ObservableObject {
                 var choice = collision
                 if choice == nil {
                     choice = await TopAlert.choose("Heft schon vorhanden",
-                        "„\(prepared.document.title)“ liegt bereits als „\(existing.title)“ in der Bibliothek. „Vorhandenes ersetzen“ legt dessen aktuellen Stand vorher in den Papierkorb.",
+                        "„\(NotebookTitles.sanitized(prepared.document.title))“ liegt bereits als „\(existing.title)“ in der Bibliothek. „Vorhandenes ersetzen“ legt dessen aktuellen Stand vorher in den Papierkorb.",
                         actions: [("Vorhandenes ersetzen", .destructive, ImportCollision.replace), ("Beide behalten", .default, .keepBoth)])
                 }
                 guard let choice else {

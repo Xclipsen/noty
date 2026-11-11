@@ -76,7 +76,8 @@ final class CalendarSchoolDayCenter: ObservableObject {
 
     /// Recomputes widget file and activity for the shown area's model.
     func update(_ model: CalendarModel) {
-        guard supported, model.loaded, CalendarNotificationHub.shared.model === model else { return }
+        // Only from a state that was really loaded: a failed load is empty and would delete the widget file.
+        guard supported, model.derivesData, CalendarNotificationHub.shared.model === model else { return }
         observeStartToken()
         refreshDemoRunning()
         let now = Date()
@@ -447,7 +448,7 @@ struct CalendarSchoolDaySection: View {
                               isOn: Binding(get: { center.enabled }, set: { center.setEnabled($0, model: model) }))
                     .disabled(model.connection == nil)
                 if !center.systemAllowed {
-                    Label("Live-Aktivitäten sind in den iPad-Einstellungen für noty calendar ausgeschaltet.", systemImage: "exclamationmark.triangle")
+                    Label("Live-Aktivitäten sind in den iPad-Einstellungen für \(SchoolDayText.appName) ausgeschaltet.", systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.orange)
                     Button("iPad-Einstellungen öffnen") {
                         if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
@@ -459,7 +460,7 @@ struct CalendarSchoolDaySection: View {
                     Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                 }
             } footer: {
-                Text("Eine Änderung des Tages meldet die Kachel selbst und weckt den Bildschirm, außer in den Ruhezeiten; kommt sie vom Server, aktualisiert sich die Kachel still. Sonst aktualisiert sie sich nur, wenn noty calendar läuft oder im Hintergrund abrufen darf, und zeigt dazwischen „Stand veraltet“. Vor iPadOS 26 startet sie erst, wenn du noty calendar morgens öffnest. Die Kachel ist auch ohne Entsperren sichtbar.")
+                Text("Eine Änderung des Tages meldet die Kachel selbst und weckt den Bildschirm, außer in den Ruhezeiten; kommt sie vom Server, aktualisiert sich die Kachel still. Sonst aktualisiert sie sich nur, wenn \(SchoolDayText.appName) läuft oder im Hintergrund abrufen darf, und zeigt dazwischen „Stand veraltet“. Vor iPadOS 26 startet sie erst, wenn du \(SchoolDayText.appName) morgens öffnest. Die Kachel ist auch ohne Entsperren sichtbar.")
             }
         }
     }

@@ -137,23 +137,34 @@ extension CalendarModel {
         return studyAnchor(for: entry).noteTarget ?? entry.noteTarget
     }
 
+    /// The targets of all lessons of the block of `entry`, by start. A topic
+    /// stored under one of them belongs to the block: its first lesson
+    /// changes when a lesson is cancelled (`CalendarLessonTopics`).
+    func topicBlockTargets(for entry: CalendarEntry) -> [CalendarNoteTarget] {
+        let anchor = studyAnchor(for: entry)
+        return events(on: anchor.start).filter { studyAnchorByEntry[$0.id] == anchor.id }.compactMap(\.noteTarget)
+    }
+
+    /// Found by the target's key (the same period with another start is the
+    /// same lesson), else under another lesson of the block.
     func topic(for entry: CalendarEntry) -> CalendarLessonTopic? {
         guard let target = topicTarget(for: entry) else { return nil }
-        return state.lessonTopics.first { $0.target == target }
+        return CalendarLessonTopics.topic(in: state.lessonTopics, target: target, block: topicBlockTargets(for: entry))
     }
 
     /// Topic, key sentence and pinned material: one commit; an entry that
     /// becomes empty is removed.
     func updateTopic(for entry: CalendarEntry, _ change: @escaping (inout CalendarLessonTopic) -> Void) async {
         guard canWrite, !showsSamples, let target = topicTarget(for: entry) else { return }
+        let block = topicBlockTargets(for: entry)
         await commit { state in
-            var topic = state.lessonTopics.first { $0.target == target } ?? CalendarLessonTopic(target: target)
-            change(&topic)
-            topic.topic = String(topic.topic.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces).prefix(200))
-            topic.summary = String(topic.summary.prefix(2_000))
-            topic.modifiedAt = Date()
-            state.lessonTopics.removeAll { $0.target == target }
-            if !topic.isEmpty { state.lessonTopics.append(topic) }
+            // Replaces the topic that is shown (never a second one with the same key).
+            CalendarLessonTopics.update(&state.lessonTopics, target: target, block: block) { topic in
+                change(&topic)
+                topic.topic = String(topic.topic.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces).prefix(200))
+                topic.summary = String(topic.summary.prefix(2_000))
+                topic.modifiedAt = Date()
+            }
         }
     }
 

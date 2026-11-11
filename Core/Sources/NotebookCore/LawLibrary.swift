@@ -27,6 +27,35 @@ public struct LawCatalog: Codable, Sendable {
         return self
     }
 }
+public extension LawCatalog {
+    /// This new catalog with what `old` still knows, so old markings remain
+    /// navigable: versions the new catalog no longer lists stay with their
+    /// entry, and an entry that is gone stays in its old list.
+    ///
+    /// Both lists count as one: a document that moved between `laws` and
+    /// `administrative` is listed once, where the new catalog has it, with
+    /// its old versions. Kept twice, its ID would fail `validated()` and with
+    /// it every further update.
+    func retaining(_ old: LawCatalog?) -> LawCatalog {
+        guard let old else { return self }
+        var previous: [String: LawEntry] = [:]
+        for entry in old.entries where previous[entry.id] == nil { previous[entry.id] = entry }
+        var listed = Set(entries.map(\.id))
+        func merged(_ entries: [LawEntry], old: [LawEntry]) -> [LawEntry] {
+            var result = entries.map { entry in
+                var e = entry
+                if let before = previous[e.id] { e.versions += before.versions.filter { v in !e.versions.contains(where: { $0.id == v.id }) } }
+                return e
+            }
+            for entry in old where listed.insert(entry.id).inserted { result.append(entry) }
+            return result
+        }
+        var next = self
+        next.laws = merged(laws, old: old.laws)
+        next.administrative = merged(administrative ?? [], old: old.administrative ?? [])
+        return next
+    }
+}
 public struct LawEntry: Codable, Sendable, Identifiable, Equatable {
     public var id: String
     public var abbr: String
@@ -110,21 +139,51 @@ public struct LawReference: Equatable, Sendable {
     public var key: String
     public var paragraph: String?
     /// Compiled once: quick search parses every alias split of each query.
+    /// „§“, „Art.“, „Abschnitt“, „R“ or „Zu §“, the number, an Absatz and any
+    /// finer qualifiers („Satz 1 Nr. 3 Buchst. a“). The reference has no field
+    /// for those: they are accepted and lead to the Absatz or the provision.
     private static let pattern = try? NSRegularExpression(
-        pattern: "^(?:§\\s*|Abschnitt\\s*|R\\s*|Zu\\s*§\\s*)?(\\d+[a-z]*(?:\\.\\d+[a-z]*)*)\\.?(?:\\s*(?:Abs(?:atz)?\\.?|\\()\\s*(\\d+[a-z]*)\\)?)?$",
+        pattern: "^(?:§\\s*|Art(?:ikel|\\.)?\\s*|Abschnitt\\s*|R\\s*|Zu\\s*§\\s*)?(\\d+[a-z]*(?:\\.\\d+[a-z]*)*)\\.?(?:\\s*(?:Abs(?:atz)?\\.?|\\()\\s*(\\d+[a-z]*)\\)?)?"
+            + "(?:\\s*,?\\s*(?:Satz|S\\.|Nr\\.?|Nummer|Buchst\\.?|Buchstabe|lit\\.?|Halbsatz|Hs\\.?|Alt\\.?|Alternative)\\s*(?:\\d+[a-z]*|[a-z]{1,2})\\.?)*$",
         options: .caseInsensitive)
     public static func parse(_ input: String) -> Self? {
-        guard let re = pattern,
-              let m = re.firstMatch(in: input.trimmingCharacters(in: .whitespacesAndNewlines), range: NSRange(input.trimmingCharacters(in: .whitespacesAndNewlines).startIndex..., in: input.trimmingCharacters(in: .whitespacesAndNewlines))) else { return nil }
-        let value = input.trimmingCharacters(in: .whitespacesAndNewlines) as NSString
+        let text = cleaned(input)
+        guard let re = pattern, let m = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { return nil }
+        let value = text as NSString
         return Self(key: value.substring(with: m.range(at: 1)).lowercased(), paragraph: m.range(at: 2).location == NSNotFound ? nil : value.substring(with: m.range(at: 2)).lowercased())
+    }
+    /// The input without surrounding white space and the punctuation closing a
+    /// sentence („§ 35a EStG.“ copied from a text).
+    static func cleaned(_ input: String) -> String {
+        var value = Substring(input.trimmingCharacters(in: .whitespacesAndNewlines))
+        while let last = value.last, ".,;:!?".contains(last) { value = value.dropLast() }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+public extension LawEntry {
+    /// Documents cited by article instead of „§“.
+    private static let articleLaws: Set<String> = ["gg", "euv", "aeuv", "grch", "emrk", "egbgb", "eghgb"]
+    /// „§ 35a Abs. 2 EStG“, „Art. 3 GG“, „R 9.1 LStR“, „Abschnitt 1.1 UStAE“,
+    /// „AEAO zu § 122“: how a provision of this document is written when its
+    /// own label is not at hand (it is missing in the version shown).
+    func citation(key: String, paragraph: String?) -> String {
+        let absatz = paragraph.map { " Abs. \($0)" } ?? ""
+        guard kind == "administration" else {
+            return (Self.articleLaws.contains(id.lowercased()) ? "Art. " : "§ ") + key + absatz + " " + abbr
+        }
+        switch id.lowercased() {
+        case "aeao": return "\(abbr) zu § \(key)"
+        case "ustae": return "Abschnitt \(key)\(absatz) \(abbr)"
+        // Richtlinien („LStR“, „EStR“) are cited with „R“, anything else by its number alone.
+        default: return (abbr.hasSuffix("R") ? "R " : "") + key + absatz + " " + abbr
+        }
     }
 }
 public struct LawQuickTarget: Equatable, Sendable {
     public var lawID: String
     public var reference: LawReference
     public static func parse(_ input: String, entries: [LawEntry]) -> Self? {
-        let query = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = LawReference.cleaned(input)
         var matches: [Self] = []
         for entry in entries {
             for alias in [entry.abbr, entry.id] + (entry.aliases ?? []) + (entry.id == "hgb" ? ["HBG"] : []) {

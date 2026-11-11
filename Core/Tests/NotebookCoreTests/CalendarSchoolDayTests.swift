@@ -236,6 +236,49 @@ final class CalendarSchoolDayTests: XCTestCase {
 
     // MARK: Widget file
 
+    /// From midnight on the widget is in `before`, but the countdown range
+    /// starts 30 minutes before the first lesson: until then the widget shows
+    /// the start time, and its timeline switches exactly at that moment.
+    func testWidgetShowsStartTimeUntilTheCountdownBegins() throws {
+        let civil = CivilDate("2026-11-09")!
+        var snapshot = CalendarSourceSnapshot(connection: connection)
+        let start = Date(timeIntervalSince1970: TimeInterval(at(8)))
+        let key = CalendarOccurrenceKey(provider: "webuntis", connection: connection, sourceID: "1", seriesID: nil, originalStart: "x")
+        var value = CalendarLesson(key: key, date: civil, start: start, end: start.addingTimeInterval(2700))
+        value.subjectLong = "Mathematik"
+        snapshot.lessons = [value]
+        snapshot.days[civil.description] = 0
+        let early = Date(timeIntervalSince1970: TimeInterval(at(6, 30)))
+        let file = SchoolDayWidgetFile(namespace: "calendar.abc", connectionID: connection, snapshot: snapshot, now: early, calendar: berlin)
+
+        struct NotToday: Error { let time: Int }
+        func state(_ time: Int) throws -> SchoolDayContentState {
+            guard case .today(let state) = SchoolDayWidgetContent.at(Date(timeIntervalSince1970: TimeInterval(time)), file: file, calendar: berlin) else {
+                throw NotToday(time: time)
+            }
+            return state
+        }
+        let before = try state(at(6, 30))
+        XCTAssertEqual(before.phase, .before)
+        XCTAssertEqual(before.phaseStart, at(7, 30), "the countdown range still starts with the tile")
+        XCTAssertEqual(before.phaseEnd, at(8))
+        XCTAssertTrue(before.showsStartTime(at: at(6, 30)), "06:30: the start time, not a countdown that has not begun")
+        XCTAssertTrue(try state(at(0, 1)).showsStartTime(at: at(0, 1)))
+        XCTAssertTrue(before.showsStartTime(at: at(7, 30) - 1))
+        XCTAssertFalse(try state(at(7, 30)).showsStartTime(at: at(7, 30)), "from 07:30 on the countdown runs")
+        XCTAssertFalse(try state(at(7, 45)).showsStartTime(at: at(7, 45)))
+        let lesson = try state(at(8, 10))
+        XCTAssertEqual(lesson.phase, .lesson)
+        XCTAssertFalse(lesson.showsStartTime(at: at(8, 10)))
+        XCTAssertFalse(lesson.showsStartTime(at: at(6)), "only the phase before the first lesson")
+
+        // The entry that replaces the start time by the countdown.
+        let moments = SchoolDayWidgetContent.timeline(from: early, file: file, calendar: berlin).map { Int($0.timeIntervalSince1970) }
+        XCTAssertEqual(Array(moments.prefix(3)), [at(6, 30), at(7, 30), at(8)])
+        let switched = try XCTUnwrap(moments.first { $0 > at(6, 30) })
+        XCTAssertFalse(try state(switched).showsStartTime(at: switched))
+    }
+
     func testWidgetFileAndContent() throws {
         let civil = CivilDate("2026-11-09")!
         var snapshot = CalendarSourceSnapshot(connection: connection)

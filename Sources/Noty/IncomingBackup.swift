@@ -106,8 +106,16 @@ enum IncomingBackup {
             return
         }
         let running = TopAlert.progress("Bereich wird angelegt …")
-        // A running area switch is no reason to throw the checked file away.
-        while workspaces.busy { try? await Task.sleep(for: .milliseconds(100)) }
+        // A running area switch is no reason to throw the checked file away,
+        // but this dialog has no button: never wait for ever.
+        var waited = 0
+        while workspaces.busy, waited < 300 { try? await Task.sleep(for: .milliseconds(100)); waited += 1 }
+        guard !workspaces.busy else {
+            await workspaces.discardLibraryRestore(prepared)
+            await TopAlert.dismiss(running)
+            TopAlert.show("Bereich nicht angelegt", "Ein anderer Bereichsvorgang läuft noch. Es wurde nichts verändert. Die Datei bitte später erneut öffnen.")
+            return
+        }
         do {
             let area = try await workspaces.commitLibraryRestore(prepared)
             await TopAlert.dismiss(running)
@@ -132,7 +140,8 @@ enum IncomingBackup {
         await TopAlert.dismiss(progress)
         let document = decoded.document, trashed = document.deletedPages?.count ?? 0
         let kind = document.isTextDocument ? "Textdokument" : "Heft"
-        let summary = "„\(document.title)“ · \(NotyText.count(document.pages.count, "Seite", "Seiten"))" + (trashed > 0 ? ", \(trashed) im Seitenpapierkorb" : "")
+        // The file's title is shown and stored only normalised (any length, line breaks).
+        let summary = "„\(NotebookTitles.sanitized(document.title))“ · \(NotyText.count(document.pages.count, "Seite", "Seiten"))" + (trashed > 0 ? ", \(trashed) im Seitenpapierkorb" : "")
             + (decoded.isLegacyJSON ? " · altes Format ohne Prüfsumme" : "")
         let collision: LibraryModel.ImportCollision?
         if let existing = library.snapshot.activeNotebook(document.id) {

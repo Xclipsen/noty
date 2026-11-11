@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import NotebookCore
 
 /// Calendar in the library's detail column (docs/CALENDAR-PLAN.md, B1 and
@@ -172,13 +173,24 @@ struct CalendarView: View {
         // `model.visible` follows the library's Hefte/Kalender switch (LibraryView).
         .onAppear { model.refreshToday() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { model.refreshToday(); model.refreshIfDue() } }
+        // Midnight (also a time-zone or clock change) while the calendar stays in
+        // front: today's marker, the now line and „+“ follow the new day. UIKit
+        // posts this on the main thread; `refreshToday` changes nothing while
+        // the day is the same and never moves the shown period or the selection.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+            model.refreshToday()
+        }
         // While shown: at most every 15 minutes (the model enforces the interval). Restarted
         // whenever the scene or the cover changes: a long-running closure keeps the
         // values of its start. Not while a notebook covers the calendar.
         .task(id: scenePhase == .active && !covered) {
             guard scenePhase == .active && !covered else { return }
+            // The day may have changed while a notebook covered the calendar.
+            model.refreshToday()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) } catch { break }
+                // Fallback for the day change, should the notification not arrive.
+                model.refreshToday()
                 model.refreshIfDue()
             }
         }

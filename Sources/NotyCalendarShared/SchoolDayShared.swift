@@ -62,7 +62,8 @@ public enum SchoolDayWidgetStore {
     /// `kind` of the widget „Heute“ (WidgetCenter.reloadTimelines).
     public static let widgetKind = "NotyCalendarToday"
 
-    /// Info.plist `NotyChannel` (app and extension carry it).
+    /// Info.plist `NotyChannel` (app and extension carry it; calendar_build.py
+    /// copies the app's value into the extension's plist).
     public static var channel: String {
         let value = Bundle.main.object(forInfoDictionaryKey: "NotyChannel") as? String ?? "stable"
         return value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) } && !value.isEmpty ? value : "stable"
@@ -110,6 +111,13 @@ public enum SchoolDayText {
     /// extension reads it in that one.
     public static let calendar = CalendarDates.german(timeZone: CalendarDefaults.timeZone)
 
+    /// Home-screen name of the app a tile or widget belongs to: „noty“ for
+    /// the normal noty, „noty calendar“ for noty calendar. From the channel
+    /// (like `SchoolDayLink.scheme(channel:)`), so app and extension name the
+    /// app whose widget file and scheme they use.
+    public static func appName(channel: String) -> String { channel == "stable" ? "noty" : "noty " + channel }
+    public static var appName: String { appName(channel: SchoolDayWidgetStore.channel) }
+
     /// „08:05“ for Unix seconds (Core's 24-hour clock).
     public static func clock(_ seconds: Int, calendar: Calendar = SchoolDayText.calendar) -> String {
         CalendarText.clock(date(seconds), calendar: calendar)
@@ -135,6 +143,17 @@ public enum SchoolDayText {
         case .free: "Freistunde bis \(clock(state.phaseEnd, calendar: calendar))"
         case .done: "Schultag vorbei"
         }
+    }
+
+    /// Widget „Heute“ while the first lesson is further away than its
+    /// countdown range (`SchoolDayContentState.showsStartTime(at:)`):
+    /// „Zuerst: Mathematik · R 112“ instead of „Gleich: …“ and
+    /// „Beginn 08:00“ (as on the tile) instead of the countdown.
+    public static func first(_ state: SchoolDayContentState) -> String {
+        "Zuerst: " + (state.next.map(line) ?? "Unterricht")
+    }
+    public static func begin(_ state: SchoolDayContentState, calendar: Calendar = SchoolDayText.calendar) -> String {
+        "Beginn \(clock(state.phaseEnd, calendar: calendar))"
     }
 
     public static func date(_ seconds: Int) -> Date { Date(timeIntervalSince1970: TimeInterval(seconds)) }
