@@ -16,6 +16,8 @@ struct MaterialSearchSheet: View {
     var onPin: ((MaterialLibrary.Match, CalendarMaterialRef) -> Void)?
     /// Opened from a notebook: script pages can go into it (`nil` page: the whole script).
     var onInsertScript: ((URL, Int?) -> Void)?
+    /// Opened from a notebook: closes this sheet before a script opens beside the notebook.
+    var onScriptBeside: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var searchActive = false
@@ -84,7 +86,7 @@ struct MaterialSearchSheet: View {
             .navigationTitle(field.map { "Material · LF \($0)" } ?? "Material")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } } }
-            .sheet(item: $script) { request in MaterialScriptSheet(request: request, onInsert: onInsertScript) }
+            .sheet(item: $script) { request in MaterialScriptSheet(request: request, onInsert: onInsertScript, onBeside: onScriptBeside) }
         }
         .preferredColorScheme(.dark)
     }
@@ -226,12 +228,14 @@ struct MaterialScriptSheet: View {
     let request: ScriptRequest
     /// From a notebook: „Ins Heft einfügen“ (page 1-based; nil: the whole script).
     var onInsert: ((URL, Int?) -> Void)? = nil
+    /// Before the script opens beside the notebook: the sheets above it close.
+    var onBeside: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var currentPage: Int
     @State private var pageCount = 0
 
-    init(request: ScriptRequest, onInsert: ((URL, Int?) -> Void)? = nil) {
-        self.request = request; self.onInsert = onInsert
+    init(request: ScriptRequest, onInsert: ((URL, Int?) -> Void)? = nil, onBeside: (() -> Void)? = nil) {
+        self.request = request; self.onInsert = onInsert; self.onBeside = onBeside
         _currentPage = State(initialValue: request.page)
     }
 
@@ -244,17 +248,26 @@ struct MaterialScriptSheet: View {
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Fertig") { dismiss() } }
                     if let onInsert {
+                        // Beside the open notebook, to mark and write on (its own notebook in „Skripte“).
+                        if let beside = ScriptBeside.shared.open {
+                            ToolbarItem(placement: .primaryAction) {
+                                Button { onBeside?(); beside(request.url, request.title, currentPage); dismiss() } label: {
+                                    Label("Neben dem Heft öffnen", systemImage: "rectangle.split.2x1")
+                                }
+                                .accessibilityHint("Zum Markieren und Schreiben, das eigene Heft bleibt unverändert")
+                            }
+                        }
                         ToolbarItem(placement: .primaryAction) {
-                            // Writing and marking happen in the notebook: the pages go in as PDF pages with writing space.
                             Menu {
-                                Button("Diese Seite (S. \(currentPage))", systemImage: "doc.badge.plus") { onInsert(request.url, currentPage); dismiss() }
-                                Button(pageCount > 0 ? "Ganzes Skript (\(pageCount) Seiten)" : "Ganzes Skript", systemImage: "doc.on.doc") {
-                                    onInsert(request.url, nil); dismiss()
+                                Section("Ins Heft einfügen") {
+                                    Button("Diese Seite (S. \(currentPage))", systemImage: "doc.badge.plus") { onInsert(request.url, currentPage); dismiss() }
+                                    Button(pageCount > 0 ? "Ganzes Skript (\(pageCount) Seiten)" : "Ganzes Skript", systemImage: "doc.on.doc") {
+                                        onInsert(request.url, nil); dismiss()
+                                    }
                                 }
                             } label: {
-                                Label("Ins Heft einfügen", systemImage: "square.and.pencil")
+                                Label("Mehr", systemImage: "ellipsis.circle")
                             }
-                            .accessibilityHint("Danach im Heft markieren und schreiben")
                         }
                     }
                     ToolbarItem(placement: .primaryAction) {
