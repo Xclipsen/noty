@@ -183,6 +183,61 @@ final class NotebookVaultTests: XCTestCase {
         XCTAssertFalse(NotebookVault.removeVersion(folder.appendingPathComponent("fremd.txt"), coordination: DirectBackupFiles()))
     }
 
+    func testRetentionAlsoAppliesToNotebooksThatAreNoLongerChanged() async throws {
+        let s = try await setup()
+        let a = notebook("Erdkunde"), gone = notebook("Abgegeben")
+        for document in [a, gone] { _ = try await s.store.createDocument(document, parentID: nil) }
+        var (head, _) = try await run(s, head: nil, at: start)
+        // Both change and are filed on seven consecutive days.
+        for day in 1...6 {
+            for document in [a, gone] {
+                var edited = document; edited.pages[0].text = "Tag \(day)"
+                try RevisionStore(directory: try await s.store.documentURL(id: document.id)).save(edited)
+            }
+            (head, _) = try await run(s, head: head, at: start.addingTimeInterval(Double(day) * 86_400))
+        }
+        XCTAssertEqual(head.notebooks.map(\.versions.count), [7, 7], "one per day of the last week")
+        let newest = try XCTUnwrap(head.notebooks.first { $0.id == a.id }?.versions.first)
+        _ = try await s.store.trash(gone.id)
+
+        // 400 days after the last change, nothing to upload.
+        let (later, report) = try await run(s, head: head, at: start.addingTimeInterval(406 * 86_400))
+        XCTAssertEqual(report.uploaded, [])
+        XCTAssertEqual(report.unchanged, 1)
+        XCTAssertEqual(report.removedVersions, 4, "only the three newest are left of the unchanged notebook")
+        let versions = try XCTUnwrap(later.notebooks.first { $0.id == a.id }).versions
+        XCTAssertEqual(versions.count, 3)
+        XCTAssertEqual(versions.first, newest, "the newest version is never removed")
+        XCTAssertEqual(try files(s, a.id), versions.map(\.file).sorted())
+        // Documented: a notebook deleted from the library keeps its versions.
+        XCTAssertEqual(try XCTUnwrap(later.notebooks.first { $0.id == gone.id }).versions.count, 7)
+        XCTAssertEqual(try files(s, gone.id).count, 7)
+        // The head in iCloud records the removal.
+        XCTAssertEqual(try NotebookVault.readHead(root: s.vault, device: device), later)
+        let (_, again) = try await run(s, head: later, at: start.addingTimeInterval(407 * 86_400))
+        XCTAssertEqual(again.removedVersions, 0)
+    }
+
+    func testRetentionAlsoAppliesWhileAChangeWaitsForTheMinimumInterval() async throws {
+        let s = try await setup()
+        let a = notebook("Physik")
+        _ = try await s.store.createDocument(a, parentID: nil)
+        var (head, _) = try await run(s, head: nil, at: start)
+        for day in 1...6 {
+            var edited = a; edited.pages[0].text = "Tag \(day)"
+            try RevisionStore(directory: try await s.store.documentURL(id: a.id)).save(edited)
+            (head, _) = try await run(s, head: head, at: start.addingTimeInterval(Double(day) * 86_400))
+        }
+        var edited = a; edited.pages[0].text = "noch nicht abgelegt"
+        try RevisionStore(directory: try await s.store.documentURL(id: a.id)).save(edited)
+        // Changed, but the interval (two years) has not passed.
+        let (later, report) = try await run(s, head: head, at: start.addingTimeInterval(406 * 86_400), interval: 730 * 86_400)
+        XCTAssertEqual(report.waiting, 1)
+        XCTAssertEqual(report.removedVersions, 4)
+        XCTAssertEqual(try XCTUnwrap(later.notebooks.first).versions.count, 3)
+        XCTAssertEqual(try NotebookVault.readHead(root: s.vault, device: device), later)
+    }
+
     func testHeadsOfOtherDevicesAndNewerFormatsAreReadNotOverwritten() async throws {
         let s = try await setup()
         let a = notebook("Chemie")
