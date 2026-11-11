@@ -193,7 +193,8 @@ final class CalendarNotificationHub: NSObject, UNUserNotificationCenterDelegate 
     func scheduleBackgroundRefresh() {
         // No loaded model (a background launch whose scene is not up yet): keep
         // the chain alive; only a loaded model that wants no refresh ends it.
-        if let model, model.loaded, !model.wantsBackgroundRefresh {
+        // (A failed load knows no connection: it does not end the chain either.)
+        if let model, model.loaded, model.storageError == nil, !model.wantsBackgroundRefresh {
             BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.refreshIdentifier)
             return
         }

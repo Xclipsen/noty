@@ -1090,7 +1090,13 @@ struct LibraryView: View {
             }
             // The new area's store must not start beside a running import.
             await model.waitUntilIdle()
+            // This area's calendar gives up its write claim now, not only when its model is gone
+            // (a running timetable request keeps it alive): switching back finds the package free.
+            let shown = workspaces.root.path
+            await calendar.releaseForAreaSwitch()
             await workspaces.select(area)
+            // The switch did not happen (this host stays): the calendar works again.
+            if workspaces.root.path == shown { calendar.resumeAfterAreaSwitch() }
         }
     }
 

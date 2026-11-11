@@ -66,6 +66,12 @@ extension CalendarModel {
         guard loaded else { return }
         reminderPermission = await CalendarReminderCenter.shared.permission()
         permissionChecked = true
+        // No plan from a state that was not loaded (`derivesData`): what iPadOS has planned, the
+        // widget file and the tile stay as they are. A model let go for an area switch does nothing.
+        guard derivesData else {
+            if !released { await collectDelivered() }
+            return
+        }
         // A detached connection (restored area, access data missing) shows its
         // timetable as outdated but never reminds from it.
         let plan = CalendarNotificationPlanner.plan(state: state, snapshot: credentialsMissing ? nil : snapshot,

@@ -156,7 +156,8 @@ extension CalendarModel {
     /// `background`: run by the background refresh – missing or still locked
     /// access data and a cancelled request change nothing that is shown.
     func refresh(manual: Bool, windows: [(CivilDate, CivilDate)]? = nil, background: Bool = false) async {
-        guard let connection = state.connection, !syncing else { return }
+        // A model let go for an area switch starts nothing (`releaseForAreaSwitch`).
+        guard let connection = state.connection, !syncing, !released else { return }
         let keychain = WebUntisKeychain.read(connection.id)
         guard let setup = keychain.setup else {
             if background || keychain.locked { return }
